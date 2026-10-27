@@ -73,7 +73,7 @@ from faultmaven.exceptions import (
     is_billing_error,
     walk_cause_chain,
 )
-from faultmaven.models.exceptions import OAuthProtocolError
+from faultmaven.models.exceptions import IndexBudgetRefused, OAuthProtocolError
 from faultmaven.modules.auth.exceptions import TeamOperationRefused
 from faultmaven.modules.knowledge.exceptions import ItemTitleScrubUnavailable
 from faultmaven.utils.serialization import to_json_safe
@@ -523,6 +523,46 @@ async def item_title_scrub_unavailable_handler(
             ),
         ),
     )
+
+
+async def index_budget_refused_handler(
+    request: Request,
+    exc: IndexBudgetRefused,
+) -> JSONResponse:
+    """Answer a KB document this deployment cannot index in one request (#2055).
+
+    Refused before anything was written, by every path that indexes a
+    document. **413** when the document alone can never fit the request
+    window: the detail is the refusal's own sentence, written for the person
+    who sent it (its size and the limit). **503** + ``Retry-After`` when
+    indexing queued ahead of it, or a model still loading, is the obstacle:
+    the wait is read from the queue as it stands, and nothing the exception
+    carries reaches a 5xx (the error-text rule, #1400).
+    """
+    logger.info("Indexing refused: %s %s", request.method, request.url.path)
+    if exc.retry_after_seconds is None:
+        refusal = HTTPException(
+            status_code=413,
+            detail=exc.message,
+            headers={"x-error-code": "KNOWLEDGE_DOCUMENT_TOO_LARGE"},
+        )
+    else:
+        from faultmaven.api.dependencies import indexing_retry_after_seconds
+
+        wait = indexing_retry_after_seconds()
+        refusal = HTTPException(
+            status_code=503,
+            detail=(
+                "Indexing is busy or still loading its model, so this document "
+                "cannot be indexed within this request. Nothing was saved; "
+                f"retry in about {wait} seconds."
+            ),
+            headers={
+                "x-error-code": "KNOWLEDGE_INDEXING_BUSY",
+                "Retry-After": str(wait),
+            },
+        )
+    return await http_exception_handler(request, refusal)
 
 
 async def not_found_exception_handler(
@@ -1120,6 +1160,7 @@ def get_exception_handlers() -> dict[Type[Exception], Callable]:
         ConflictError: conflict_exception_handler,
         TeamOperationRefused: team_operation_refused_handler,
         ItemTitleScrubUnavailable: item_title_scrub_unavailable_handler,
+        IndexBudgetRefused: index_budget_refused_handler,
         ServiceError: service_error_handler,
         ServiceException: service_exception_handler,
         LLMException: service_exception_handler,

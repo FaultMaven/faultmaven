@@ -42,11 +42,15 @@ from faultmaven.config.tenant_context import (
     writable_enterprise_id,
 )
 from faultmaven.exceptions import ValidationException
+from faultmaven.infrastructure.embedding_guard import (
+    check_index_budget,
+    request_window_seconds,
+)
 from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
     KB_COLLECTION,
 )
 from faultmaven.models import KnowledgeBaseDocument, SearchResult
-from faultmaven.models.exceptions import KnowledgeBaseError
+from faultmaven.models.exceptions import IndexBudgetRefused, KnowledgeBaseError
 from faultmaven.models.interfaces import (
     IKnowledgeVectorStore,
     ILLMProvider,
@@ -347,6 +351,26 @@ def _token_position(lowered: str, token: str) -> int:
     """Offset of ``token`` in ``lowered`` as a whole word, or -1."""
     match = re.search(rf"\b{re.escape(token)}\b", lowered)
     return match.start() if match else -1
+
+
+def refuse_unindexable(content: str) -> None:
+    """Refuse, before anything is written, a document this deployment cannot
+    index inside its request window (#2055).
+
+    Raises ``IndexBudgetRefused``: 413 when the document alone can never fit,
+    503 + ``Retry-After`` when queued indexing or a cold model is in the way.
+    Estimated on the chunks the indexer would embed. A no-op while
+    ``INDEX_REQUEST_WINDOW_SECONDS`` is 0, the standalone default. The indexer
+    checks again at the embed, as the belt.
+    """
+    window = request_window_seconds()
+    if window is None:
+        return
+    from faultmaven.modules.knowledge.domain.services.content_chunker import (
+        ContentChunker,
+    )
+
+    check_index_budget(ContentChunker().split(content), budget_seconds=window)
 
 
 class KnowledgeService:
@@ -874,6 +898,7 @@ class KnowledgeService:
         prechunked: Optional[List[tuple[str, List[float]]]] = None,
         *,
         enterprise_id: str,
+        within_request_window: bool = True,
     ) -> int:
         """Index a document's chunks + embeddings into the vector store.
 
@@ -894,6 +919,12 @@ class KnowledgeService:
                 :class:`ContentChunker` and embedded with BGE-M3 — the
                 upload/draft path. Per-chunk metadata is derived from the
                 document frontmatter either way (it is not carried in the pack).
+            within_request_window: Whether the embed is refused when it cannot
+                finish inside ``INDEX_REQUEST_WINDOW_SECONDS`` (#2055), the
+                belt to :func:`refuse_unindexable` at the top of every KB
+                write. False only for the failed-commit compensation, which
+                re-indexes content the row already holds; the embed guard
+                bounds it either way.
         Returns:
             Number of chunks indexed. Never 0 for a failure — see Raises.
 
@@ -984,7 +1015,15 @@ class KnowledgeService:
                 # module that owns "the embedder would not load OR would not
                 # return". This used to hand-roll the None check with no time
                 # bound at all, so an unavailable model raised but a hung one
-                # held the request open indefinitely (#953).
+                # held the request open indefinitely (#953). The request
+                # window first (#2055): the belt to ``refuse_unindexable``,
+                # with nothing awaited before the embed joins the queue.
+                check_index_budget(
+                    chunks,
+                    budget_seconds=(
+                        request_window_seconds() if within_request_window else None
+                    ),
+                )
                 embeddings = await embed_texts_or_raise(
                     chunks,
                     subject=f"Indexing document {document.document_id}",
@@ -1178,9 +1217,13 @@ class KnowledgeService:
             if observed is None or not observed.is_published:
                 await self._discard_vectors_for_vanished_row(document_id)
             else:
+                # Exempt from the request window (#2055): this restores the
+                # content the row already holds, and refusing it would leave
+                # the vectors describing an update that was never saved.
                 await self._index_document_in_vector_store(
                     self._build_index_model(observed),
                     enterprise_id=observed.enterprise_id,
+                    within_request_window=False,
                 )
         except Exception as restore_error:
             logger.error(
@@ -1320,6 +1363,9 @@ class KnowledgeService:
         Raises:
             RunbookQualityError: a non-shipped body holds a secret or a
                 destructive command (422). Nothing has been written.
+            IndexBudgetRefused: the body cannot be indexed within the request
+                window (413, or 503 + ``Retry-After``; #2055). Nothing has
+                been written.
         """
         # Lazy imports keep this method self-contained against the knowledge
         # vertical (avoids top-level cycles between service and persistence).
@@ -1335,6 +1381,11 @@ class KnowledgeService:
         from faultmaven.modules.knowledge.taxonomy import KnowledgeScope
 
         now = datetime.now(timezone.utc)
+
+        # The request window (#2055), before the row or a vector exists. A
+        # pack runbook arrives embedded and costs no embed.
+        if prechunked is None:
+            refuse_unindexable(content)
 
         if not shipped:
             from faultmaven.infrastructure.persistence.models import (
@@ -1521,7 +1572,10 @@ class KnowledgeService:
         but not one inside the milliseconds between that writer's vector
         delete and its commit.
 
-        Returns the number of chunks indexed. Fail-safe 0 (no raise) when the
+        Returns the number of chunks indexed. Raises only
+        ``IndexBudgetRefused``, for a row too large to index within the
+        request window (#2055), which the repair pass records. Otherwise
+        fail-safe 0 (no raise) when the
         row is absent or unpublished (before or after the embed), no vector
         store is wired, the embedding
         model is unavailable, or the row names no usable tenant (the indexer's
@@ -1598,6 +1652,11 @@ class KnowledgeService:
             chunks = await self._index_document_in_vector_store(
                 doc_model, prechunked=None, enterprise_id=row.enterprise_id
             )
+        except IndexBudgetRefused:
+            # The one raise (#2055): the row cannot be indexed within the
+            # request window, and the repair pass reports it as refused rather
+            # than as one more orphan a later boot may fix.
+            raise
         except KnowledgeBaseError as e:
             # Deliberate, documented tolerance — see the docstring. A failed
             # boot-time repair leaves the row orphaned for a later attempt; it
@@ -1719,6 +1778,9 @@ class KnowledgeService:
                 (422 at the API boundary). Raised before any row is
                 created, so a refusal leaves nothing behind and needs no
                 compensation.
+            IndexBudgetRefused: the content cannot be indexed within the
+                request window (413, or 503 + ``Retry-After``; #2055), raised
+                before any row is created.
         """
         try:
             import uuid as _uuid
@@ -1749,6 +1811,11 @@ class KnowledgeService:
             # a draft row, and one over the bound could never be saved back.
             # Refused before anything is minted or ingested; 422.
             ensure_draft_content_within_bound(content)
+
+            # The request window (#2055), here and not only in
+            # ``ingest_runbook``: the upload, job and draft rows below are
+            # committed before it runs.
+            refuse_unindexable(content)
 
             # The quality gate, before the id is minted and before any row
             # exists. A refusal must leave nothing behind, which is only free
@@ -1924,11 +1991,12 @@ class KnowledgeService:
                 },
             }
 
-        except RunbookQualityError:
+        except (RunbookQualityError, IndexBudgetRefused):
             # A refused draft is a client-side outcome (422), not a service
             # fault. Logged as a warning by the global handler; re-raised here
             # without the "Failed to upload document" ERROR line, which would
-            # otherwise make every rejected paste look like an outage.
+            # otherwise make every rejected paste look like an outage. A
+            # document refused for the request window (#2055) is the same.
             raise
         except Exception as e:
             logger.error(f"Failed to upload document: {e}")
@@ -2837,6 +2905,11 @@ class KnowledgeService:
                 # corpus as 16 extra chunks and 1284 of 1297 chunks carrying a
                 # ``\r``.
                 content = normalize_line_endings(kwargs["content"])
+                # The request window (#2055), before the first write and
+                # before the destructive swap, so a refusal leaves the stored
+                # document and its vectors as they were.
+                if self._vector_store:
+                    refuse_unindexable(content)
                 # The security half of the gate, before the first write
                 # (#2012): a body holding a credential is refused (422), and
                 # the body is otherwise stored as the author wrote it. It used
@@ -2996,9 +3069,10 @@ class KnowledgeService:
                 ),
             }
 
-        except RunbookQualityError:
+        except (RunbookQualityError, IndexBudgetRefused):
             # A refused body is a client-side outcome (422), not a fault:
             # re-raised without the ERROR line, as ``upload_document`` does.
+            # So is one refused for the request window (#2055).
             raise
         except Exception as e:
             logger.error(f"Failed to update document {document_id}: {e}")
@@ -3024,8 +3098,9 @@ class KnowledgeService:
                     updated_count += 1
                 else:
                     errors.append(f"Document {doc_id} not found")
-            except RunbookQualityError as refused:
-                # The body holds a credential (#2012): the caller's content,
+            except (RunbookQualityError, IndexBudgetRefused) as refused:
+                # The body holds a credential (#2012), or cannot be indexed
+                # within the request window (#2055): the caller's content,
                 # refused before anything was written, not a fault. The entry
                 # stays the generic text this endpoint's policy requires.
                 errors.append(f"Document {doc_id}: update failed")

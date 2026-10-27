@@ -57,6 +57,7 @@ from faultmaven.bootstrap.kb_orphan_sweep import (
     resolve_sweep_mode,
     sweep_authored_orphans,
 )
+from faultmaven.models.exceptions import IndexBudgetRefused
 from faultmaven.models.interfaces import IKnowledgeVectorStore
 
 logger = logging.getLogger(__name__)
@@ -80,6 +81,9 @@ class BootstrapResult:
         self.authored_orphans: AuthoredSweepResult = AuthoredSweepResult()
         self.repaired_rows: list[str] = []  # DB rows re-embedded this boot
         self.orphaned_rows: list[str] = []  # DB rows still w/o vectors after repair
+        # Of those, rows too large to index within the request window (#2055):
+        # no later boot repairs them while the window stands.
+        self.refused_rows: list[str] = []
 
     def __repr__(self) -> str:
         # The authored-orphan counts ride on THIS line because it is the one the
@@ -104,7 +108,8 @@ class BootstrapResult:
             f"authored_orphans_misstamped={sweep['misstamped']}, "
             f"authored_orphans_unremoved={sweep['unremoved']}, "
             f"repaired_rows={len(self.repaired_rows)}, "
-            f"orphaned_rows={len(self.orphaned_rows)})"
+            f"orphaned_rows={len(self.orphaned_rows)}, "
+            f"refused_rows={len(self.refused_rows)})"
         )
 
 
@@ -257,6 +262,7 @@ async def bootstrap_kb(
         role_may_update=role_may_update,
         max_rows=max_rows,
         max_chunks=max_chunks,
+        refused=result.refused_rows,
     )
 
     logger.info(
@@ -734,6 +740,7 @@ async def _repair_orphaned_rows(
     role_may_update: bool,
     max_rows: int = KB_REPAIR_MAX_ROWS,
     max_chunks: int = KB_REPAIR_MAX_CHUNKS,
+    refused: Optional[list[str]] = None,
 ) -> tuple[list[str], list[str]]:
     """Re-embed orphaned knowledge_items rows (SQL row present, vectors missing).
 
@@ -764,6 +771,10 @@ async def _repair_orphaned_rows(
     ``max_rows`` skips a bulk-loss anomaly entirely, and ``max_chunks`` caps the
     embedding work per boot (deferring the rest to the next boot) so startup
     readiness is never gated on an unbounded re-embed.
+
+    A row refused for the request window (``IndexBudgetRefused``, #2055) stays
+    orphaned and is also appended to ``refused``, the repair summary
+    ``GET /admin/config/status`` reports.
     """
     if not orphaned_rows:
         return [], []
@@ -814,6 +825,12 @@ async def _repair_orphaned_rows(
             chunks = await knowledge_service.reindex_missing_vectors(
                 item_id, role_may_update=role_may_update
             )
+        except IndexBudgetRefused as exc:
+            logger.warning(f"KB repair refused for {item_id}: {exc}")
+            still_orphaned.append(item_id)
+            if refused is not None:
+                refused.append(item_id)
+            continue
         except Exception as exc:
             logger.warning(f"KB repair failed for {item_id}: {exc}")
             still_orphaned.append(item_id)

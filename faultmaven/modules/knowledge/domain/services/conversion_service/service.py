@@ -36,6 +36,7 @@ from faultmaven.infrastructure.persistence.models import (
     UploadedFileModel,
 )
 from faultmaven.infrastructure.security.model_content import model_boundary_redacted
+from faultmaven.models.exceptions import IndexBudgetRefused
 from faultmaven.modules.auth.contracts import IAccountDirectory, is_team_member
 from faultmaven.modules.knowledge.domain.case_authoring import (
     CASE_ID_RULE,
@@ -103,6 +104,9 @@ from faultmaven.modules.knowledge.domain.services.conversion_service.runbook_sca
 )
 from faultmaven.modules.knowledge.domain.services.document_preprocessor import (
     DocumentPreprocessor,
+)
+from faultmaven.modules.knowledge.domain.services.knowledge_service import (
+    refuse_unindexable,
 )
 from faultmaven.modules.knowledge.domain.services.runbook_validator import (
     RunbookQualityError,
@@ -1842,11 +1846,12 @@ class ConversionService:
                         }
                     )
                     failed += 1
-            except (NotFoundError, ValidationException) as e:
+            except (NotFoundError, ValidationException, IndexBudgetRefused) as e:
                 # ``verify_draft``'s own refusals — "Draft not found", "Draft has
                 # validation errors that must be fixed before verification" — and
                 # the publication gate's ``RunbookQualityError``, which lists the
-                # validator's findings about the content. Hand-written and
+                # validator's findings about the content, and a draft too large
+                # to index within the request window (#2055). Hand-written and
                 # pathless, so the sentence is what the caller gets, as it was
                 # on main.
                 results.append(
@@ -1993,6 +1998,11 @@ class ConversionService:
         # checks the text it is handed again, for every caller.
         await aenforce_runbook_security(read_content)
 
+        # The request window (#2055), before anything is written: a draft this
+        # deployment cannot index in one request stays a draft (413, or 503 +
+        # Retry-After). ``ingest_runbook`` checks again, as does the indexer.
+        refuse_unindexable(read_content)
+
         # The verified frontmatter, written into the draft's text (#1950). The
         # validation gate above passed, so the frontmatter parses. This text can
         # be a few characters longer than the draft (``status: verified``, the
@@ -2097,10 +2107,11 @@ class ConversionService:
                 team_id=team_id,
                 verified_by=user_id,
             )
-        except RunbookQualityError:
-            # The body holds a credential (#2012): refused before anything was
-            # written, and the draft stays a draft. A client-side outcome
-            # (422), so not logged as an ingestion failure.
+        except (RunbookQualityError, IndexBudgetRefused):
+            # The body holds a credential (#2012), or cannot be indexed within
+            # the request window (#2055): refused before anything was written,
+            # and the draft stays a draft. A client-side outcome, so not
+            # logged as an ingestion failure.
             raise
         except Exception as e:
             # `ingest_runbook` cleaned up its own SQL row before raising. The

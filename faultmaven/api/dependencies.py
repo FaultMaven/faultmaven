@@ -11,8 +11,12 @@ only consumer.
 
 from typing import Any, Optional
 
-from faultmaven.api.models import DatabaseTimeoutsStatus
+from faultmaven.api.models import DatabaseTimeoutsStatus, KnowledgeIndexingStatus
 from faultmaven.infrastructure.chroma_client import chroma_client_kind
+from faultmaven.infrastructure.embedding_guard import (
+    index_retry_after_seconds,
+    indexing_status,
+)
 from faultmaven.infrastructure.persistence.database import (
     active_database_backend,
     active_database_bounds,
@@ -32,6 +36,8 @@ from faultmaven.infrastructure.redis_client import is_fakeredis
 __all__ = [
     "database_backend_name",
     "database_timeouts_status",
+    "indexing_retry_after_seconds",
+    "knowledge_indexing_status",
     "session_storage_backend_name",
     "vector_storage_backend_name",
 ]
@@ -112,3 +118,23 @@ def vector_storage_backend_name(kb_client: Any, evidence_client: Any) -> str:
     if kb == evidence == "persistent":
         return "chromadb (persistent, split: kb + evidence)"
     return f"chromadb (kb: {kb or 'disabled'}, evidence: {evidence or 'disabled'})"
+
+
+# ============================================================
+# KB indexing (#2055)
+# ============================================================
+
+
+def knowledge_indexing_status(kb_bootstrap: Any) -> KnowledgeIndexingStatus:
+    """The KB request window and indexing rate in force, with the rows the
+    startup repair (``kb_bootstrap``, the lifespan's ``BootstrapResult``, or
+    None) refused for the window."""
+    return KnowledgeIndexingStatus(
+        **indexing_status(),
+        repair_refused_rows=list(getattr(kb_bootstrap, "refused_rows", [])),
+    )
+
+
+def indexing_retry_after_seconds() -> int:
+    """A busy indexing refusal's ``Retry-After``, read from the queue as it stands."""
+    return index_retry_after_seconds()

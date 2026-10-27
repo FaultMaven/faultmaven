@@ -51,7 +51,7 @@ from faultmaven.exceptions import AuthorizationError, ValidationException
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models import KnowledgeBaseDocument, SearchRequest
 from faultmaven.models.api import DocumentSnippetResponse
-from faultmaven.models.exceptions import KnowledgeBaseError
+from faultmaven.models.exceptions import IndexBudgetRefused, KnowledgeBaseError
 from faultmaven.modules.auth.contracts import DevUser, is_team_member
 from faultmaven.modules.knowledge.api.platform_tier import (
     require_global_authoring_allowed,
@@ -96,6 +96,47 @@ RUNBOOK_SECURITY_HELP = (
     "${DB_PASSWORD}, and rotate it: it has been exposed. Remove any "
     "destructive command. The runbook is unchanged."
 )
+
+
+#: The answers a route that indexes a document gives when this deployment
+#: cannot index it within ``INDEX_REQUEST_WINDOW_SECONDS`` (#2055). Raised as
+#: ``IndexBudgetRefused`` before anything is written, and answered by
+#: ``api.exception_handlers``.
+INDEX_REFUSAL_RESPONSES: Dict[int | str, Dict[str, Any]] = {
+    413: {
+        "description": (
+            "Too large; nothing was saved. `x-error-code: "
+            "KNOWLEDGE_DOCUMENT_TOO_LARGE`: the document cannot be indexed "
+            "within this deployment's request window however long the client "
+            "waits; split it into smaller documents. Otherwise the request "
+            "exceeds MAX_UPLOAD_SIZE_MB."
+        ),
+        "headers": {
+            "x-error-code": {
+                "description": "KNOWLEDGE_DOCUMENT_TOO_LARGE, when sent.",
+                "schema": {"type": "string"},
+            }
+        },
+    },
+    503: {
+        "description": (
+            "Unavailable; nothing was saved. `x-error-code: "
+            "KNOWLEDGE_INDEXING_BUSY`: indexing already queued, or a model "
+            "still loading, leaves no room for this document within the "
+            "request window; retry after `Retry-After` seconds."
+        ),
+        "headers": {
+            "x-error-code": {
+                "description": "KNOWLEDGE_INDEXING_BUSY, when sent.",
+                "schema": {"type": "string"},
+            },
+            "Retry-After": {
+                "description": "Seconds, with KNOWLEDGE_INDEXING_BUSY.",
+                "schema": {"type": "integer"},
+            },
+        },
+    },
+}
 
 
 def runbook_quality_detail(
@@ -290,7 +331,7 @@ SUGGESTED_DOCUMENT_TYPES = {
 
 
 # (No legacy router paths)
-@router.post("/documents", status_code=201)
+@router.post("/documents", status_code=201, responses=INDEX_REFUSAL_RESPONSES)
 @trace("api_upload_document")
 async def upload_document(
     file: UploadFile = File(...),
@@ -517,6 +558,10 @@ async def upload_document(
     except ItemTitleScrubUnavailable:
         # The title's redaction (#1981) could not run: a server-side
         # dependency, so the global handler's generic 503, not the blanket 500.
+        raise
+    except IndexBudgetRefused:
+        # Refused before anything was written (#2055): the global handler's
+        # 413, or 503 + Retry-After.
         raise
     except Exception as e:
         logger.error(f"Document upload failed: {e}")
@@ -1052,7 +1097,7 @@ async def fulltext_search_documents(
         raise HTTPException(status_code=500, detail="Full-text search failed")
 
 
-@router.put("/documents/{document_id}")
+@router.put("/documents/{document_id}", responses=INDEX_REFUSAL_RESPONSES)
 async def update_document(
     document_id: str,
     update_data: dict,
@@ -1118,6 +1163,11 @@ async def update_document(
                 quality_error, help_text=RUNBOOK_SECURITY_HELP
             ),
         ) from quality_error
+    except IndexBudgetRefused:
+        # Refused before the first write (#2055), so the document and its
+        # vectors are unchanged: the global handler's 413, or 503 +
+        # Retry-After. Ahead of the arm below, which would answer 503 for both.
+        raise
     except KnowledgeBaseError as e:
         # Re-indexing failed, so the edit was NOT saved: the row is committed
         # only after the vectors are in place (#952), which is what lets this

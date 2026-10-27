@@ -160,6 +160,8 @@ def mock_settings():
     # True): an auto-created MagicMock attribute is truthy, so the KB push
     # would report enabled on a process that composed no knowledge service.
     settings.knowledge.kb_prefetch_enabled = False
+    # The shipped default (#2055): a MagicMock would read as a window of 1 s.
+    settings.knowledge.index_request_window_seconds = 0
     settings.tools.web_search_api_key = None
     settings.tools.web_search_engine_id = None
     settings.is_cloud = False  # standalone (canonical DEPLOYMENT_MODE, ADR-004)
@@ -1066,6 +1068,52 @@ class TestGetEnvConfigStatus:
             )
 
         assert result.session_storage == expected
+
+    @pytest.mark.asyncio
+    async def test_the_indexing_window_rate_and_refused_repairs_are_reported(
+        self, mock_admin_user, mock_settings, rate_limited_app, live_backends
+    ):
+        """The window a KB write is refused by, the rate its estimate uses and
+        the rows the startup repair could not index inside it (#2055)."""
+        from types import SimpleNamespace
+
+        from faultmaven.infrastructure import embedding_guard
+
+        live_backends.install(
+            rate_limited_app,
+            engine=live_backends.sqlite_engine(),
+            redis=live_backends.fake_redis(),
+            kb=None,
+            evidence=None,
+        )
+        mock_settings.knowledge.index_request_window_seconds = 600
+        rate_limited_app.state.kb_bootstrap_result = SimpleNamespace(
+            refused_rows=["kb_0123456789abcdef"]
+        )
+        learned = embedding_guard._LearnedRate()
+        learned.learn(elapsed=100.0, nbytes=1000, cores=1.0)
+
+        with (
+            patch(SETTINGS_PATCH, return_value=mock_settings),
+            patch.object(embedding_guard, "_rate", learned),
+            patch(
+                "faultmaven.infrastructure.model_cache.inference_cores",
+                return_value=0.25,
+            ),
+        ):
+            result = await get_env_config_status(
+                request=_request_for(rate_limited_app), current_user=mock_admin_user
+            )
+
+        indexing = result.knowledge_indexing
+        assert indexing.request_window_seconds == 600
+        assert indexing.cores == 0.25
+        assert indexing.measured_core_seconds_per_byte == (
+            embedding_guard.INDEX_CORE_SECONDS_PER_BYTE
+        )
+        assert indexing.learned_core_seconds_per_byte == learned.core_seconds_per_byte
+        assert indexing.learned_samples == 1
+        assert indexing.repair_refused_rows == ["kb_0123456789abcdef"]
 
     @pytest.mark.asyncio
     async def test_session_ttl_is_the_built_stores_not_the_setting(

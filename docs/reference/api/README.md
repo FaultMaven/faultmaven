@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 14.7.0
+**Version:** 14.8.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -2811,6 +2811,11 @@ check cannot run (the sanitizer or its pseudonym key is unavailable) the
 request answers **503**, a retryable server-side condition, with a generic
 detail, and the draft stays a draft.
 
+A draft this deployment cannot index within its request window is refused
+before anything is written, and stays a draft: **413** when it alone can
+never fit, **503** + ``Retry-After`` when queued indexing or a model still
+loading is in the way (#2055).
+
 **Tags:** `knowledge-conversion`
 
 **Auth:** `HTTPBearer`
@@ -2823,7 +2828,9 @@ detail, and the draft stays a draft.
 **Responses:**
 
 - `200` — Successful Response
+- `413` — Too large; nothing was saved. `x-error-code: KNOWLEDGE_DOCUMENT_TOO_LARGE`: the document cannot be indexed within this deployment's request window however long the client waits; split it into smaller documents. Otherwise the request exceeds MAX_UPLOAD_SIZE_MB.
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
+- `503` — Unavailable; nothing was saved. `x-error-code: KNOWLEDGE_INDEXING_BUSY`: indexing already queued, or a model still loading, leaves no room for this document within the request window; retry after `Retry-After` seconds.
 
 ---
 
@@ -2930,7 +2937,9 @@ condition, with a generic detail, and nothing is saved.
 **Responses:**
 
 - `201` — Successful Response (`object`)
+- `413` — Too large; nothing was saved. `x-error-code: KNOWLEDGE_DOCUMENT_TOO_LARGE`: the document cannot be indexed within this deployment's request window however long the client waits; split it into smaller documents. Otherwise the request exceeds MAX_UPLOAD_SIZE_MB.
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
+- `503` — Unavailable; nothing was saved. `x-error-code: KNOWLEDGE_INDEXING_BUSY`: indexing already queued, or a model still loading, leaves no room for this document within the request window; retry after `Retry-After` seconds.
 
 ---
 
@@ -3163,7 +3172,9 @@ type but not its text, and nothing is saved (#2012). A placeholder such as
 **Responses:**
 
 - `200` — Successful Response (`object`)
+- `413` — Too large; nothing was saved. `x-error-code: KNOWLEDGE_DOCUMENT_TOO_LARGE`: the document cannot be indexed within this deployment's request window however long the client waits; split it into smaller documents. Otherwise the request exceeds MAX_UPLOAD_SIZE_MB.
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
+- `503` — Unavailable; nothing was saved. `x-error-code: KNOWLEDGE_INDEXING_BUSY`: indexing already queued, or a model still loading, leaves no room for this document within the request window; retry after `Retry-After` seconds.
 
 ---
 
@@ -5330,6 +5341,7 @@ Read-only environment configuration status for dashboard display.
 - `db_backend` (string, required) — 'sqlite' or 'postgresql' — the dialect of the database engine the running process built; 'not initialized' before it has built one
 - `deployment` (string, required) — 'standalone' or 'cloud' — from DEPLOYMENT_MODE (ADR-004)
 - `features` (object, optional) — Optional features and their configuration status
+- `knowledge_indexing` (object, required) — The request window a KB write must index its document in, and the indexing rate its estimate uses.
 - `llm_provider` (string, required) — Primary LLM provider name
 - `personal_tenant_limits` (object, required) — Effective values of the settings that bound self-service sign-up: whether an org-less SSO identity may provision a personal tenant, how many such tenants may be provisioned per hour deployment-wide, and how many investigation turns each one gets per UTC day.
 - `pii_redaction_enabled` (boolean, required)
@@ -5539,6 +5551,24 @@ Response model for knowledge base document operations.
 - `verification_level` (integer, optional)
 - `verification_reason` (object, optional)
 - `verification_status` (object, optional)
+
+---
+
+### KnowledgeIndexingStatus
+
+The window and rate a KB write is refused by before any embed (#2055).
+
+Read from the running process: the setting, the CPU quota it sees, and
+the indexing rate it has learned from its own completed batches.
+
+**Properties:**
+
+- `cores` (number, required) — The CPU an encode gets: the container's CPU quota (a fraction included), or the node's core count, capped at 4, the most the rate was measured at.
+- `learned_core_seconds_per_byte` (number, required) — The rate estimates use: a moving average over this process's completed indexing batches on a loaded model, never below the measured rate.
+- `learned_samples` (integer, required) — Indexing batches the learned rate has averaged.
+- `measured_core_seconds_per_byte` (number, required) — The measured indexing rate, the floor of the learned one: core-seconds per UTF-8 byte of chunk text.
+- `repair_refused_rows` (array, required) — Knowledge items the startup KB repair could not re-index within the request window, so they stay without vectors: unretrievable until split or re-saved. Empty when no startup repair ran in this process.
+- `request_window_seconds` (integer, required) — INDEX_REQUEST_WINDOW_SECONDS: the seconds a KB upload, update or verify may spend indexing its document. A document estimated to need more is refused 413 before anything is written; 0 refuses nothing up front.
 
 ---
 

@@ -79,6 +79,31 @@ class KnowledgeBaseError(FaultMavenError):
         super().__init__(message, error_code or "KNOWLEDGE_BASE_ERROR", context)
 
 
+class IndexBudgetRefused(KnowledgeBaseError):
+    """A batch refused before any embed: it cannot finish inside its caller's
+    budget (#2055, ``infrastructure.embedding_guard.index_budget_refusal``).
+
+    ``retry_after_seconds`` is None when the batch alone exceeds the budget, so
+    no retry fits it (``KNOWLEDGE_DOCUMENT_TOO_LARGE``, 413). Otherwise the work
+    queued ahead of it, or a model not loaded yet, is the obstacle, and a retry
+    after that many seconds may fit (``KNOWLEDGE_INDEXING_BUSY``, 503 +
+    ``Retry-After``). ``message`` is written for the person who sent the text.
+    """
+
+    def __init__(
+        self, message: str, *, retry_after_seconds: Optional[int] = None
+    ) -> None:
+        super().__init__(
+            message,
+            error_code=(
+                "KNOWLEDGE_DOCUMENT_TOO_LARGE"
+                if retry_after_seconds is None
+                else "KNOWLEDGE_INDEXING_BUSY"
+            ),
+        )
+        self.retry_after_seconds = retry_after_seconds
+
+
 class SessionManagementError(FaultMavenError):
     """Session and case management errors"""
 

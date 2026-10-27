@@ -494,6 +494,25 @@ as `session_ttl_seconds`.
 | `SESSION_TIMEOUT_MINUTES` | int (1–1440) | 30 | Minutes a session lives past its last write. A preset fills it in when it is unset: `local` sets 60, `standard` and `enterprise` set 30. A preset applies when `CONFIG_PRESET` names it, and `local` also applies by itself to a deployment that configures nothing (no LLM provider, Redis or ChromaDB server) |
 | `SESSION_MAX_SESSIONS_PER_USER` | int (>= 1) | 10 | Live sessions one user may hold; a new session evicts the least recently active beyond it |
 
+## Knowledge Base Indexing
+
+`KnowledgeSettings.index_request_window_seconds` (`settings.knowledge`). The KB
+upload, update and draft-verify routes index the document inside the request
+(#2055), so behind a proxy whose read timeout is shorter than the indexing a
+document needs, the client is cut off after all the work. With a window set,
+such a document is refused before anything is written: **413**
+`KNOWLEDGE_DOCUMENT_TOO_LARGE` when it alone cannot fit, **503**
+`KNOWLEDGE_INDEXING_BUSY` + `Retry-After` when indexing already queued, or a
+model still loading, is the obstacle. The estimate is UTF-8 bytes of chunk text
+at a measured 7.6 core-ms per byte, divided by the CPU quota (at most 4 cores),
+and rises with the rate the process observes. The window, the cores and the
+learned rate are reported under `knowledge_indexing` on
+`GET /api/v1/admin/config/status`.
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `INDEX_REQUEST_WINDOW_SECONDS` | int (0, or 60–3600) | 0 | Seconds a KB write may spend indexing its document. `0` refuses nothing up front; the embedding guard (twice the estimate plus 180 s for a model load) still bounds the embed. Set it below the fronting proxy's read timeout, less the rest of the request: Cloud sets 600 under an ingress `proxy-read-timeout` of 660 s |
+
 ## Related Documentation
 
 - [Context Management Guide](./CONTEXT_MANAGEMENT.md)

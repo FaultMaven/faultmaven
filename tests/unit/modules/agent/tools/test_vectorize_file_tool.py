@@ -416,9 +416,7 @@ class TestDataTypeReadBoundary:
         context = self._context_with_file_type(stored)
 
         with (
-            patch(
-                "faultmaven.core.preprocessing.vector_storage.model_cache"
-            ) as model_cache,
+            patch("faultmaven.infrastructure.model_cache.model_cache") as model_cache,
             patch(
                 "faultmaven.core.preprocessing.vector_storage.store_in_vector_db_background",
                 wraps=__import__(

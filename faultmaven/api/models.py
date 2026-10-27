@@ -478,6 +478,54 @@ class DatabaseTimeoutsStatus(BaseModel):
     )
 
 
+class KnowledgeIndexingStatus(BaseModel):
+    """The window and rate a KB write is refused by before any embed (#2055).
+
+    Read from the running process: the setting, the CPU quota it sees, and
+    the indexing rate it has learned from its own completed batches.
+    """
+
+    request_window_seconds: int = Field(
+        description=(
+            "INDEX_REQUEST_WINDOW_SECONDS: the seconds a KB upload, update or "
+            "verify may spend indexing its document. A document estimated to "
+            "need more is refused 413 before anything is written; 0 refuses "
+            "nothing up front."
+        )
+    )
+    cores: float = Field(
+        description=(
+            "The CPU an encode gets: the container's CPU quota (a fraction "
+            "included), or the node's core count, capped at 4, the most the "
+            "rate was measured at."
+        )
+    )
+    measured_core_seconds_per_byte: float = Field(
+        description=(
+            "The measured indexing rate, the floor of the learned one: "
+            "core-seconds per UTF-8 byte of chunk text."
+        )
+    )
+    learned_core_seconds_per_byte: float = Field(
+        description=(
+            "The rate estimates use: a moving average over this process's "
+            "completed indexing batches on a loaded model, never below the "
+            "measured rate."
+        )
+    )
+    learned_samples: int = Field(
+        description="Indexing batches the learned rate has averaged."
+    )
+    repair_refused_rows: List[str] = Field(
+        description=(
+            "Knowledge items the startup KB repair could not re-index within "
+            "the request window, so they stay without vectors: unretrievable "
+            "until split or re-saved. Empty when no startup repair ran in "
+            "this process."
+        )
+    )
+
+
 class EnvConfigStatusResponse(BaseModel):
     """Read-only environment configuration status for dashboard display."""
 
@@ -551,6 +599,12 @@ class EnvConfigStatusResponse(BaseModel):
             "The bounds in force on a database that stops answering: the "
             "PostgreSQL command, connect and statement timeouts the engine was "
             "built with, and the deadline on the token-revocation read."
+        )
+    )
+    knowledge_indexing: KnowledgeIndexingStatus = Field(
+        description=(
+            "The request window a KB write must index its document in, and "
+            "the indexing rate its estimate uses."
         )
     )
     timestamp: datetime

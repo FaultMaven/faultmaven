@@ -2254,4 +2254,30 @@ asked to accept, and it belongs to a person.
 # when they adopt 14.7.0, and a fallback built without an answer from the
 # core must set it to `true`. The Dashboard's hand-declared
 # `MetaCapabilityFeatures` declares every field optional.
-API_CONTRACT_VERSION = "14.7.0"
+
+# 14.8.0 — MINOR. A KB document this deployment cannot index within its
+# request window is refused before anything is written (#2055), on
+# `POST /api/v1/knowledge/documents`, `PUT /api/v1/knowledge/documents/{id}`
+# and `POST /api/v1/knowledge/conversions/{id}/drafts/{draft_id}/verify`, which
+# now declare both answers:
+#
+# * **413** `x-error-code: KNOWLEDGE_DOCUMENT_TOO_LARGE` when the document alone
+#   cannot fit, whatever the client waits. The `detail` names its size and the
+#   limit in KB and says to split it. The upload route's existing 413 (the
+#   file over MAX_UPLOAD_SIZE_MB) carries no `x-error-code`.
+# * **503** `x-error-code: KNOWLEDGE_INDEXING_BUSY` + `Retry-After` (seconds)
+#   when indexing queued ahead of it, or a model still loading, leaves no room.
+#
+# The window is `INDEX_REQUEST_WINDOW_SECONDS`, 0 (no up-front refusal) by
+# default, so a deployment that sets nothing answers as before; Cloud sets it
+# below its ingress read timeout. Such a document used to be cut off after
+# about eleven minutes of work, by the embedding guard (a 500 on upload, a 503
+# on update) or by the ingress. `GET /api/v1/admin/config/status` gains the
+# required `knowledge_indexing` block (`KnowledgeIndexingStatus`): the window,
+# the cores, the measured and learned indexing rates, and the rows the startup
+# repair refused.
+#
+# MINOR: new response codes on three routes and a new field on a response-only
+# schema; no request shape changes and nothing is removed. Every client
+# already shows a 4xx/5xx `detail` as the error text.
+API_CONTRACT_VERSION = "14.8.0"

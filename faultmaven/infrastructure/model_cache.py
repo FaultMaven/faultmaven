@@ -131,6 +131,17 @@ def _resolve_thread_count() -> int:
     return os.cpu_count() or 1
 
 
+def inference_cores() -> float:
+    """The CPU an encode gets, in cores: the CFS quota, a fraction included.
+
+    Not the thread count: a 250m quota pins one thread that runs a quarter of
+    the time, so it indexes at a quarter of one core (#2055). Unconstrained, the
+    node's core count. Imports nothing.
+    """
+    quota = _cgroup_cpu_quota()
+    return quota if quota is not None else float(os.cpu_count() or 1)
+
+
 def pin_thread_env() -> int:
     """Set the BLAS/OpenMP env knobs. Must run BEFORE torch is imported.
 

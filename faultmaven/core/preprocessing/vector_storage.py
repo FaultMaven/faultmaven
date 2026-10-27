@@ -19,7 +19,11 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 
 from faultmaven.core.preprocessing.models import Chunk, UnifiedDataType
-from faultmaven.infrastructure.model_cache import model_cache
+from faultmaven.infrastructure.embedding_guard import (
+    check_index_budget,
+    embed_texts_or_raise,
+)
+from faultmaven.models.exceptions import IndexBudgetRefused, KnowledgeBaseError
 from faultmaven.utils.token_estimation import _get_tiktoken_encoder
 
 logger = logging.getLogger(__name__)
@@ -178,7 +182,7 @@ def chunk_structural_index(
 class VectorIndexOutcome(str, Enum):
     """What actually happened to a file's vector index.
 
-    Four states, because they mean four different things to whoever asks next
+    Several states, because they mean different things to whoever asks next
     and only one of them makes the file searchable. ``store_in_vector_db_background``
     returned ``None`` for all of them, which is fine for a fire-and-forget
     background task and wrong for ``vectorize_file``: that tool reported
@@ -195,9 +199,16 @@ class VectorIndexOutcome(str, Enum):
     NOTHING_TO_INDEX = "nothing_to_index"
     #: BGE-M3 could not be loaded. Nothing written; retry once it is back.
     EMBEDDER_UNAVAILABLE = "embedder_unavailable"
-    #: Chunking, embedding, or the ChromaDB write raised. Nothing guaranteed
-    #: written.
+    #: Chunking, embedding, or the ChromaDB write raised, or the embed timed
+    #: out. Nothing guaranteed written.
     FAILED = "failed"
+    #: Refused before any embed: the file alone cannot be indexed within its
+    #: caller's budget (#2055). Nothing written. Only where a budget was given.
+    TOO_LARGE = "too_large"
+    #: Refused before any embed: indexing queued ahead, or a model still
+    #: loading, leaves too little of the caller's budget (#2055). Nothing
+    #: written; a later attempt may fit.
+    BUSY = "busy"
 
 
 async def store_in_vector_db_background(
@@ -209,6 +220,7 @@ async def store_in_vector_db_background(
     case_vector_store: Any,
     max_chunk_tokens: Optional[int] = None,
     overlap_tokens: Optional[int] = None,
+    budget_seconds: Optional[float] = None,
 ) -> VectorIndexOutcome:
     """
     Chunk a structural index and store it in the case's ChromaDB collection.
@@ -223,8 +235,10 @@ async def store_in_vector_db_background(
     Despite the name, there is no upload-time caller: ``VectorizeFileTool`` is
     the only one, and it awaits this inside the directed-analysis tool loop —
     proactively as a background task, or reactively under
-    ``vectorization_reactive_timeout_seconds``. The time-bound policy lives
-    there, not here.
+    ``vectorization_reactive_timeout_seconds``. It states the budget; the embed
+    runs through ``embedding_guard.embed_texts_or_raise``, which refuses a
+    batch that budget cannot fit, queues it behind other indexing, and bounds
+    it (#2055).
 
     Args:
         case_id: Case identifier
@@ -237,6 +251,8 @@ async def store_in_vector_db_background(
             settings (VECTOR_CHUNK_SIZE_TOKENS, default 500).
         overlap_tokens: Overlap between chunks. When None, read from
             settings (VECTOR_CHUNK_OVERLAP_TOKENS, default 50).
+        budget_seconds: The caller's time budget for the embed; None (a
+            background caller) refuses nothing, and the guard alone bounds it.
 
     Returns:
         The :class:`VectorIndexOutcome`. Only ``INDEXED`` means searchable.
@@ -292,12 +308,13 @@ async def store_in_vector_db_background(
                 }
             )
 
-        # 3. Generate BGE-M3 embeddings for all chunks (off the event loop via
-        # the model_cache async boundary).
+        # 3. Generate BGE-M3 embeddings for all chunks, through the one module
+        # that refuses, queues and bounds every indexing embed (#2055); this
+        # call used to await the model with no bound at all.
         #
-        # None → BGE-M3 unavailable, and there is nothing useful to write. This
-        # used to fall back to ChromaDB's default embedding, which pins the
-        # collection to that model's dimension: search embeds with BGE-M3
+        # An unavailable model → nothing useful to write. This used to fall
+        # back to ChromaDB's default embedding, which pins the collection to
+        # that model's dimension: search embeds with BGE-M3
         # (CaseVectorStore.search, #941), so those chunks are unsearchable
         # forever, AND every later BGE-M3 write into the same collection is
         # rejected on dimension — one unavailable-model window poisoning the
@@ -305,8 +322,23 @@ async def store_in_vector_db_background(
         # writable once the model returns, and the evidence itself is still
         # reachable through the Evidence record and the Tier 1 structural index.
         texts = [doc["content"] for doc in documents]
-        embeddings = await model_cache.aembed_texts(texts)
-        if embeddings is None:
+        try:
+            check_index_budget(texts, budget_seconds=budget_seconds)
+            embeddings = await embed_texts_or_raise(
+                texts,
+                subject=f"Indexing evidence {evidence_id}",
+                operation="vectorize_evidence",
+            )
+        except IndexBudgetRefused as refused:
+            logger.info(f"Vector indexing refused for {evidence_id}: {refused}")
+            return (
+                VectorIndexOutcome.TOO_LARGE
+                if refused.retry_after_seconds is None
+                else VectorIndexOutcome.BUSY
+            )
+        except KnowledgeBaseError as embed_error:
+            if embed_error.error_code != "KNOWLEDGE_EMBEDDER_UNAVAILABLE":
+                raise  # a timeout: FAILED, below
             logger.warning(
                 f"BGE-M3 unavailable for {evidence_id}: skipping vector "
                 f"indexing rather than writing into a second embedding space. "

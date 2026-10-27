@@ -11,12 +11,14 @@ that difference is a request that never answers.
 The bound is deliberately proportional to the batch rather than a flat ceiling:
 a fixed number tight enough to be useful for a 3-chunk edit would make a large
 document permanently un-editable, trading a hang for a silent capability loss.
+Since #2055 the proportion is to the batch's BYTES at the measured indexing
+rate, not to its chunk count: twice the estimate, plus a model load.
 There is no way to opt out of it — an earlier revision of this change carried a
 `bounded=False` knob for the boot repair path, and it was removed once the
 argument for it turned out to be wrong (the per-boot chunk budget bounds how
 much work a boot starts, not how long one call may take). The only remaining
-way to embed unbounded is to bypass this module, which several write-side sites
-still do; see its docstring.
+way to embed unbounded is to bypass this module; since #2055 neither indexing
+embed does.
 """
 
 import asyncio
@@ -28,10 +30,10 @@ from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.infrastructure import embedding_guard
 from faultmaven.infrastructure.embedding_guard import (
     EMBED_BATCH_LOAD_SECONDS,
-    EMBED_BATCH_PER_TEXT_SECONDS,
     EMBED_TIMEOUT_SECONDS,
     batch_embed_timeout,
     embed_texts_or_raise,
+    estimated_index_seconds,
 )
 from faultmaven.models.exceptions import KnowledgeBaseError
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
@@ -78,23 +80,23 @@ def test_the_batch_bound_covers_a_cold_load_where_the_query_bound_does_not():
         "the constant term must cover the 60-120s cold load this repo "
         "documents, or a healthy first index times out"
     )
-    assert batch_embed_timeout(0) == EMBED_BATCH_LOAD_SECONDS
-    assert batch_embed_timeout(0) > EMBED_TIMEOUT_SECONDS
+    assert batch_embed_timeout([]) == EMBED_BATCH_LOAD_SECONDS
+    assert batch_embed_timeout([]) > EMBED_TIMEOUT_SECONDS
 
 
 def test_the_bound_scales_with_the_work():
-    """A property over the space, not one instance: every additional chunk buys
-    exactly one more per-text allowance, so no document size is structurally
-    un-embeddable."""
+    """A property over the space, not one instance: every additional byte buys
+    exactly twice its estimated cost, so no document size is structurally
+    un-embeddable (#2055 moved the unit from the chunk to the byte)."""
     for n in (1, 5, 50, 1244):
-        assert batch_embed_timeout(n) == pytest.approx(
-            EMBED_BATCH_LOAD_SECONDS + EMBED_BATCH_PER_TEXT_SECONDS * n
+        texts = ["x" * 900] * n
+        assert batch_embed_timeout(texts) == pytest.approx(
+            EMBED_BATCH_LOAD_SECONDS + 2 * estimated_index_seconds(texts)
         )
-    assert batch_embed_timeout(1244) > batch_embed_timeout(50) > batch_embed_timeout(1)
-
-
-def test_a_negative_count_cannot_shrink_the_bound_below_the_load_budget():
-    assert batch_embed_timeout(-5) == EMBED_BATCH_LOAD_SECONDS
+    big, mid, small = (["x" * 900] * n for n in (1244, 50, 1))
+    assert (
+        batch_embed_timeout(big) > batch_embed_timeout(mid) > batch_embed_timeout(small)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -106,7 +108,7 @@ def test_a_negative_count_cannot_shrink_the_bound_below_the_load_budget():
 async def test_a_hung_embed_raises_instead_of_hanging():
     with patch(_EMBED_TEXTS, new=_never_returns):
         with patch.object(embedding_guard, "EMBED_BATCH_LOAD_SECONDS", 0.05):
-            with patch.object(embedding_guard, "EMBED_BATCH_PER_TEXT_SECONDS", 0.0):
+            with patch.object(embedding_guard._rate, "core_seconds_per_byte", 0.0):
                 with pytest.raises(KnowledgeBaseError) as excinfo:
                     await embed_texts_or_raise(
                         ["chunk"], subject="Indexing", operation="test"
@@ -148,7 +150,7 @@ async def test_a_slow_but_progressing_embed_is_not_cut_off():
     """
     with patch(_EMBED_TEXTS, new=_slow_but_finishes):
         with patch.object(embedding_guard, "EMBED_BATCH_LOAD_SECONDS", 1.0):
-            with patch.object(embedding_guard, "EMBED_BATCH_PER_TEXT_SECONDS", 0.0):
+            with patch.object(embedding_guard._rate, "core_seconds_per_byte", 0.0):
                 vectors = await embed_texts_or_raise(
                     ["chunk"], subject="Indexing", operation="test"
                 )
@@ -197,7 +199,7 @@ async def test_the_indexing_path_is_bounded_by_default():
 
     with patch(_EMBED_TEXTS, new=_never_returns):
         with patch.object(embedding_guard, "EMBED_BATCH_LOAD_SECONDS", 0.05):
-            with patch.object(embedding_guard, "EMBED_BATCH_PER_TEXT_SECONDS", 0.0):
+            with patch.object(embedding_guard._rate, "core_seconds_per_byte", 0.0):
                 with pytest.raises(KnowledgeBaseError) as excinfo:
                     await service._index_document_in_vector_store(
                         _document(), enterprise_id=STANDALONE_ENTERPRISE_ID
@@ -250,7 +252,7 @@ async def test_boot_repair_is_bounded_too_so_a_hang_cannot_crashloop_the_pod():
 
     with patch(_EMBED_TEXTS, new=_hang_but_record):
         with patch.object(embedding_guard, "EMBED_BATCH_LOAD_SECONDS", 0.05):
-            with patch.object(embedding_guard, "EMBED_BATCH_PER_TEXT_SECONDS", 0.0):
+            with patch.object(embedding_guard._rate, "core_seconds_per_byte", 0.0):
                 chunks = await service.reindex_missing_vectors(
                     "doc-1", role_may_update=True
                 )

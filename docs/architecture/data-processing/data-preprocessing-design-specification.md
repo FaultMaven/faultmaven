@@ -107,7 +107,7 @@ Closes the last failure mode from the 2026-04-21 proactive-redundancy incident c
 
 The systemic fix separates proactive and reactive time-bound policies:
 
-- **Proactive path is now unbounded** at `_vectorize_evidence`. Background tasks run to natural completion; the in-flight registry prevents duplicate tasks, and `Evidence.vectorized` captures success. Time-bounding fire-and-forget work only guarantees wasted CPU.
+- **Proactive path has no orchestration bound** at `_vectorize_evidence`. Background tasks run to natural completion, the encode bounded only by the embedding guard (twice its estimate plus a model load, #2055); the in-flight registry prevents duplicate tasks, and `Evidence.vectorized` captures success. Time-bounding fire-and-forget work only guarantees wasted CPU.
 - **Reactive path is bounded by a configurable setting**: `AgentSettings.vectorization_reactive_timeout_seconds` (default 180 s). Reactive vectorization blocks the agent inside the tool loop, so it genuinely needs a bound; but the bound is sized to real CPU workloads and is exposed for operator tuning.
 
 See §5.3 for the full semantics and §5.7 for the setting.
@@ -962,7 +962,7 @@ turns — that flag is what stops repeat vectorization, not a call counter.
 
 **Reactive vectorization** calls `_reactive_vectorize()` which checks the size gate, calls `_vectorize_evidence()` wrapped with `asyncio.wait_for(..., timeout=settings.agent.vectorization_reactive_timeout_seconds)`, and injects the `[SYSTEM]` message on success. Each trigger fires independently — whichever fires first vectorizes the file. On reactive timeout, no advisory is appended and the agent proceeds without semantic-search results for that turn; a proactive task for the same evidence may still be in flight and can benefit later turns.
 
-**Time-bound semantics — proactive vs. reactive**: the two paths have intentionally different timeout policies. Proactive tasks are fire-and-forget background work that the tool loop never synchronously awaits, so time-bounding them via `asyncio.wait_for` only guarantees wasted CPU when the encode outlasts the bound (asyncio cancels the Future but cannot stop the thread-pool worker, which runs to completion anyway — but the post-encode `add_documents(...)` call never runs because the await was cancelled). Proactive therefore runs **unbounded** at the `_vectorize_evidence` / `_auto_vectorize` layer (`EvidenceVectorizer`, `milestone_engine/vectorization.py`); the in-flight registry (`EvidenceVectorizer._inflight_vectorize`) prevents duplicate tasks, and the persistent `Evidence.vectorized` flag captures completion for future turns. Reactive, by contrast, blocks the agent inside the tool loop, so it **must** be bounded — the bound lives at the caller (`EvidenceVectorizer._reactive_vectorize`) via the configurable `vectorization_reactive_timeout_seconds` setting (default 180 s). (A second orchestration path mirrored this split until #982; there is now only one.) This was introduced after the 2026-04-21 incident where a hardcoded 60 s `wait_for` inside the vectorize helpers made BGE-M3 CPU encodes (observed ~135 s for OpenSSH_2k.log) always fail the persistence path, leaving `Evidence.vectorized = False` and re-triggering proactive on every subsequent turn.
+**Time-bound semantics — proactive vs. reactive**: the two paths have intentionally different timeout policies. Proactive tasks are fire-and-forget background work that the tool loop never synchronously awaits, so time-bounding them via `asyncio.wait_for` only guarantees wasted CPU when the encode outlasts the bound (asyncio cancels the Future but cannot stop the thread-pool worker, which runs to completion anyway — but the post-encode `add_documents(...)` call never runs because the await was cancelled). Proactive therefore has **no bound of its own** at the `_vectorize_evidence` / `_auto_vectorize` layer (`EvidenceVectorizer`, `milestone_engine/vectorization.py`): it states no budget, and only the embedding guard bounds its encode (#2055); the in-flight registry (`EvidenceVectorizer._inflight_vectorize`) prevents duplicate tasks, and the persistent `Evidence.vectorized` flag captures completion for future turns. Reactive, by contrast, blocks the agent inside the tool loop, so it **must** be bounded — the bound lives at the caller (`EvidenceVectorizer._reactive_vectorize`) via the configurable `vectorization_reactive_timeout_seconds` setting (default 180 s). Since #2055 each trigger also states its budget to the indexing refusal (`embedding_guard.index_budget_refusal`): reactive its timeout, a model-invoked `vectorize_file` what is left of its turn, proactive none. A file that cannot be indexed inside its budget is refused before any embed (`VectorIndexOutcome.TOO_LARGE`, or `BUSY` when queued indexing is in the way), and every indexing embed waits its turn in one queue. (A second orchestration path mirrored this split until #982; there is now only one.) This was introduced after the 2026-04-21 incident where a hardcoded 60 s `wait_for` inside the vectorize helpers made BGE-M3 CPU encodes (observed ~135 s for OpenSSH_2k.log) always fail the persistence path, leaving `Evidence.vectorized = False` and re-triggering proactive on every subsequent turn.
 
 When auto-vectorization fires (proactive or reactive), a `[SYSTEM]` message is injected into the tool result context:
 
@@ -1071,7 +1071,7 @@ See also [Evidence Failure Modes](./evidence-failure-modes.md) for adjacent fail
 # Tier 4: Vectorization (on-demand)
 VECTORIZATION_MIN_SIZE_BYTES=50000       # Skip files smaller than this
 VECTORIZATION_MAX_SIZE_BYTES=50000000    # Skip files larger than this
-VECTORIZATION_REACTIVE_TIMEOUT_SECONDS=180  # Reactive bound (proactive unbounded)
+VECTORIZATION_REACTIVE_TIMEOUT_SECONDS=180  # Reactive bound (proactive: embed guard only)
 CHROMADB_COLLECTION_PREFIX=case_
 
 # Chunking (read at startup via faultmaven/config/settings.py)
@@ -1496,7 +1496,7 @@ DEEP_ANALYSIS_MAX_TOKENS=2000        # 256–16000; deep-analysis LLM response c
 # ============================================================
 VECTORIZATION_MIN_SIZE_BYTES=50000        # Min file size for auto-vectorization eligibility
 VECTORIZATION_MAX_SIZE_BYTES=50000000     # 50MB hard cap (not configurable)
-VECTORIZATION_REACTIVE_TIMEOUT_SECONDS=180 # 30–600; bound on synchronous reactive vectorize inside the DA tool loop. Proactive vectorize is intentionally unbounded.
+VECTORIZATION_REACTIVE_TIMEOUT_SECONDS=180 # 30–600; bound on synchronous reactive vectorize inside the DA tool loop. Proactive vectorize has no bound of its own; the embedding guard bounds its encode (#2055).
 CHROMADB_COLLECTION_PREFIX=case_
 VECTOR_CHUNK_SIZE_TOKENS=500
 VECTOR_CHUNK_OVERLAP_TOKENS=50

@@ -40,7 +40,7 @@ from faultmaven.exceptions import (
     ServiceException,
     ValidationException,
 )
-from faultmaven.models.exceptions import OAuthProtocolError
+from faultmaven.models.exceptions import IndexBudgetRefused, OAuthProtocolError
 from faultmaven.modules.auth.exceptions import TeamOperationRefused
 from faultmaven.modules.knowledge.exceptions import ItemTitleScrubUnavailable
 
@@ -413,6 +413,7 @@ class TestGetExceptionHandlers:
             ConflictError,
             TeamOperationRefused,
             ItemTitleScrubUnavailable,
+            IndexBudgetRefused,
             ServiceError,
             ServiceException,
             LLMException,

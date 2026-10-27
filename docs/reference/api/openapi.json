@@ -3032,6 +3032,10 @@
             "title": "Features",
             "type": "object"
           },
+          "knowledge_indexing": {
+            "$ref": "#/components/schemas/KnowledgeIndexingStatus",
+            "description": "The request window a KB write must index its document in, and the indexing rate its estimate uses."
+          },
           "llm_provider": {
             "description": "Primary LLM provider name",
             "title": "Llm Provider",
@@ -3095,6 +3099,7 @@
           "turn_timing",
           "personal_tenant_limits",
           "database_timeouts",
+          "knowledge_indexing",
           "timestamp"
         ],
         "title": "EnvConfigStatusResponse",
@@ -3785,6 +3790,54 @@
           "updated_at"
         ],
         "title": "KnowledgeBaseDocument",
+        "type": "object"
+      },
+      "KnowledgeIndexingStatus": {
+        "description": "The window and rate a KB write is refused by before any embed (#2055).\n\nRead from the running process: the setting, the CPU quota it sees, and\nthe indexing rate it has learned from its own completed batches.",
+        "properties": {
+          "cores": {
+            "description": "The CPU an encode gets: the container's CPU quota (a fraction included), or the node's core count, capped at 4, the most the rate was measured at.",
+            "title": "Cores",
+            "type": "number"
+          },
+          "learned_core_seconds_per_byte": {
+            "description": "The rate estimates use: a moving average over this process's completed indexing batches on a loaded model, never below the measured rate.",
+            "title": "Learned Core Seconds Per Byte",
+            "type": "number"
+          },
+          "learned_samples": {
+            "description": "Indexing batches the learned rate has averaged.",
+            "title": "Learned Samples",
+            "type": "integer"
+          },
+          "measured_core_seconds_per_byte": {
+            "description": "The measured indexing rate, the floor of the learned one: core-seconds per UTF-8 byte of chunk text.",
+            "title": "Measured Core Seconds Per Byte",
+            "type": "number"
+          },
+          "repair_refused_rows": {
+            "description": "Knowledge items the startup KB repair could not re-index within the request window, so they stay without vectors: unretrievable until split or re-saved. Empty when no startup repair ran in this process.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Repair Refused Rows",
+            "type": "array"
+          },
+          "request_window_seconds": {
+            "description": "INDEX_REQUEST_WINDOW_SECONDS: the seconds a KB upload, update or verify may spend indexing its document. A document estimated to need more is refused 413 before anything is written; 0 refuses nothing up front.",
+            "title": "Request Window Seconds",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "request_window_seconds",
+          "cores",
+          "measured_core_seconds_per_byte",
+          "learned_core_seconds_per_byte",
+          "learned_samples",
+          "repair_refused_rows"
+        ],
+        "title": "KnowledgeIndexingStatus",
         "type": "object"
       },
       "KnowledgeScope": {
@@ -7077,7 +7130,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "14.7.0"
+    "version": "14.8.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -12070,7 +12123,7 @@
     },
     "/api/v1/knowledge/conversions/{conversion_id}/drafts/{draft_id}/verify": {
       "post": {
-        "description": "Promote draft to verified status and trigger ingestion into ChromaDB.\n\nVerifying a draft publishes it into the KB at the job's scope; a global\ndraft is the platform corpus, so the service refuses (AuthorizationError \u2192\n403) unless the caller may author global scope (admin single-tenant; never\na tenant session under multi, #770).\n\nService-layer typed exceptions (AuthorizationError, NotFoundError,\nConflictError, ValidationException) propagate to the global handlers in\napi/exception_handlers.py for canonical translation to 403 / 404 / 409 /\n422 respectively. The route no longer catches ValueError; see\ndocs/architecture/specifications/exception-contract.md.\n\nThe published title is redacted before anything is written (#1981). If that\ncheck cannot run (the sanitizer or its pseudonym key is unavailable) the\nrequest answers **503**, a retryable server-side condition, with a generic\ndetail, and the draft stays a draft.",
+        "description": "Promote draft to verified status and trigger ingestion into ChromaDB.\n\nVerifying a draft publishes it into the KB at the job's scope; a global\ndraft is the platform corpus, so the service refuses (AuthorizationError \u2192\n403) unless the caller may author global scope (admin single-tenant; never\na tenant session under multi, #770).\n\nService-layer typed exceptions (AuthorizationError, NotFoundError,\nConflictError, ValidationException) propagate to the global handlers in\napi/exception_handlers.py for canonical translation to 403 / 404 / 409 /\n422 respectively. The route no longer catches ValueError; see\ndocs/architecture/specifications/exception-contract.md.\n\nThe published title is redacted before anything is written (#1981). If that\ncheck cannot run (the sanitizer or its pseudonym key is unavailable) the\nrequest answers **503**, a retryable server-side condition, with a generic\ndetail, and the draft stays a draft.\n\nA draft this deployment cannot index within its request window is refused\nbefore anything is written, and stays a draft: **413** when it alone can\nnever fit, **503** + ``Retry-After`` when queued indexing or a model still\nloading is in the way (#2055).",
         "operationId": "verify_draft_api_v1_knowledge_conversions__conversion_id__drafts__draft_id__verify_post",
         "parameters": [
           {
@@ -12101,6 +12154,17 @@
             },
             "description": "Successful Response"
           },
+          "413": {
+            "description": "Too large; nothing was saved. `x-error-code: KNOWLEDGE_DOCUMENT_TOO_LARGE`: the document cannot be indexed within this deployment's request window however long the client waits; split it into smaller documents. Otherwise the request exceeds MAX_UPLOAD_SIZE_MB.",
+            "headers": {
+              "x-error-code": {
+                "description": "KNOWLEDGE_DOCUMENT_TOO_LARGE, when sent.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
           "422": {
             "content": {
               "application/json": {
@@ -12110,6 +12174,23 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "description": "Unavailable; nothing was saved. `x-error-code: KNOWLEDGE_INDEXING_BUSY`: indexing already queued, or a model still loading, leaves no room for this document within the request window; retry after `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds, with KNOWLEDGE_INDEXING_BUSY.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "x-error-code": {
+                "description": "KNOWLEDGE_INDEXING_BUSY, when sent.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -12297,6 +12378,17 @@
             },
             "description": "Successful Response"
           },
+          "413": {
+            "description": "Too large; nothing was saved. `x-error-code: KNOWLEDGE_DOCUMENT_TOO_LARGE`: the document cannot be indexed within this deployment's request window however long the client waits; split it into smaller documents. Otherwise the request exceeds MAX_UPLOAD_SIZE_MB.",
+            "headers": {
+              "x-error-code": {
+                "description": "KNOWLEDGE_DOCUMENT_TOO_LARGE, when sent.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
           "422": {
             "content": {
               "application/json": {
@@ -12306,6 +12398,23 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "description": "Unavailable; nothing was saved. `x-error-code: KNOWLEDGE_INDEXING_BUSY`: indexing already queued, or a model still loading, leaves no room for this document within the request window; retry after `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds, with KNOWLEDGE_INDEXING_BUSY.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "x-error-code": {
+                "description": "KNOWLEDGE_INDEXING_BUSY, when sent.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -12595,6 +12704,17 @@
             },
             "description": "Successful Response"
           },
+          "413": {
+            "description": "Too large; nothing was saved. `x-error-code: KNOWLEDGE_DOCUMENT_TOO_LARGE`: the document cannot be indexed within this deployment's request window however long the client waits; split it into smaller documents. Otherwise the request exceeds MAX_UPLOAD_SIZE_MB.",
+            "headers": {
+              "x-error-code": {
+                "description": "KNOWLEDGE_DOCUMENT_TOO_LARGE, when sent.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
           "422": {
             "content": {
               "application/json": {
@@ -12604,6 +12724,23 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "description": "Unavailable; nothing was saved. `x-error-code: KNOWLEDGE_INDEXING_BUSY`: indexing already queued, or a model still loading, leaves no room for this document within the request window; retry after `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds, with KNOWLEDGE_INDEXING_BUSY.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "x-error-code": {
+                "description": "KNOWLEDGE_INDEXING_BUSY, when sent.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [

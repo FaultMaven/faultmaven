@@ -316,7 +316,7 @@ async def _index(case_vector_store, embeddings, structural_index="## Errors\nOOM
     )
 
     with patch(
-        "faultmaven.core.preprocessing.vector_storage.model_cache.aembed_texts",
+        "faultmaven.infrastructure.model_cache.model_cache.aembed_texts",
         new=AsyncMock(return_value=embeddings),
     ):
         return await store_in_vector_db_background(

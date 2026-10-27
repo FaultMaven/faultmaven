@@ -27,7 +27,9 @@ HEADER_SPLIT_BOUNDARY_RE = re.compile(r"\n(?=#{1,4}\s+\S)")
 # admits many ways to reach the same rule, so a body of alternating newline and
 # space rescans -- 17.9s at 64 KB, synchronously inside
 # `async def _index_document_in_vector_store`, on content from
-# `POST /knowledge/documents` bounded only by MAX_UPLOAD_SIZE_MB (default 10).
+# `POST /knowledge/documents` bounded by MAX_UPLOAD_SIZE_MB (default 10). The
+# request window (#2055) does not bound this: it refuses on the chunks, so the
+# split runs first.
 # Blank lines around a rule are still matched: the `\n` immediately preceding it
 # is the one that anchors.
 HR_SPLIT_BOUNDARY_RE = re.compile(r"\r?\n[ \t]*(?:---+|\*\*\*+|___+)[ \t]*\r?\n")

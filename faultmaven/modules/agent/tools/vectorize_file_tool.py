@@ -21,7 +21,9 @@ Design Reference: docs/architecture/data-processing/README.md
 
 import json
 import logging
-from typing import Any, Dict
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Any, Dict, Iterator, Optional, Tuple
 
 from faultmaven.config.settings import get_settings
 from faultmaven.models.interfaces import ToolResult
@@ -60,6 +62,38 @@ def append_vectorization_advisory(text: str, indexed: bool) -> str:
     if not indexed or VECTORIZED_SYSTEM_MESSAGE in text:
         return text
     return text + VECTORIZED_SYSTEM_MESSAGE
+
+
+#: The index budget an orchestration trigger states for the ``vectorize_file``
+#: call it makes (#2055). Unset means the model invoked the tool in its turn.
+_TRIGGER_BUDGET: ContextVar[Optional[Tuple[Optional[float]]]] = ContextVar(
+    "vectorize_trigger_budget", default=None
+)
+
+
+@contextmanager
+def vectorize_budget(seconds: Optional[float]) -> Iterator[None]:
+    """State the index budget for the ``vectorize_file`` calls made inside.
+
+    The reactive trigger states its own timeout; the proactive one states None,
+    a background task with no deadline, which the embed guard alone bounds.
+    Read when the call runs, so a task created inside keeps it.
+    """
+    token = _TRIGGER_BUDGET.set((seconds,))
+    try:
+        yield
+    finally:
+        _TRIGGER_BUDGET.reset(token)
+
+
+def _index_budget() -> Optional[float]:
+    """The budget a trigger stated, else what is left of the model's turn."""
+    stated = _TRIGGER_BUDGET.get()
+    if stated is not None:
+        return stated[0]
+    from faultmaven.core.investigation.turn_budget import spendable_turn_budget
+
+    return spendable_turn_budget()
 
 
 class VectorizeFileTool(AgentTool):
@@ -265,6 +299,7 @@ class VectorizeFileTool(AgentTool):
                     "file_data_type": data_type_str,
                 },
                 case_vector_store=self.case_vector_store,
+                budget_seconds=_index_budget(),
             )
 
             logger.info(
@@ -341,11 +376,16 @@ class VectorizeFileTool(AgentTool):
                 error=None,
             )
 
-        reason = (
-            "the embedding model is unavailable"
-            if outcome is VectorIndexOutcome.EMBEDDER_UNAVAILABLE
-            else "indexing failed"
-        )
+        reason = {
+            VectorIndexOutcome.EMBEDDER_UNAVAILABLE: "the embedding model is unavailable",
+            # #2055: refused before any embed, so nothing was written.
+            VectorIndexOutcome.TOO_LARGE: (
+                "it is too large to index in the time this deployment allows here"
+            ),
+            VectorIndexOutcome.BUSY: (
+                "the indexer is busy with other files or still loading its model"
+            ),
+        }.get(outcome, "indexing failed")
         return ToolResult(
             success=False,
             data=None,

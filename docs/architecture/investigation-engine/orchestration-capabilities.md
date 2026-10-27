@@ -160,7 +160,7 @@ wired into `_tool_augmented_generate()` — not a port of the substring check.
 2. When **any single trigger** fires on a qualifying file, auto-vectorize it — no user confirmation needed. Qualifying means `vectorization_min_size_bytes <= size <= VECTORIZATION_MAX_SIZE_BYTES`; files outside that band are left alone.
 3. Three independent triggers: tool timeout, 3+ consecutive empty `search_file` results on the same file, and `deep_analysis` confidence below 0.2.
 4. After 3 consecutive empty searches the tool result also carries a `[SYSTEM]` advisory suggesting a different `deep_analysis` query.
-5. Reactive vectorization runs inside the tool loop, so it is bounded by `vectorization_reactive_timeout_seconds`; on timeout the agent proceeds without semantic search for that turn. Proactive vectorization (above) is unbounded because it runs concurrently with the LLM rather than blocking it.
+5. Reactive vectorization runs inside the tool loop, so it is bounded by `vectorization_reactive_timeout_seconds`; on timeout the agent proceeds without semantic search for that turn. Proactive vectorization (above) has no bound of its own because it runs concurrently with the LLM rather than blocking it; the embedding guard still bounds its encode (#2055).
 
 > **Changed in #982.** The named `EvidenceDAState` dataclass, the fourth trigger
 > (3+ DA invocations) and the cross-turn `da_invocation_count` persisted on the

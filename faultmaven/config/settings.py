@@ -2484,6 +2484,30 @@ class KnowledgeSettings(BaseSettings):
     chunk_size: int = Field(default=1000, validation_alias="DOCUMENT_CHUNK_SIZE")
     chunk_overlap: int = Field(default=100, validation_alias="DOCUMENT_CHUNK_OVERLAP")
 
+    # The KB upload, update and verify routes index inside the request (#2055),
+    # so behind a proxy read timeout a document that takes longer is cut off
+    # after all the work. Set below that timeout, it refuses such a document
+    # before anything is written. 0 refuses nothing; the embed guard still
+    # bounds the embed.
+    index_request_window_seconds: int = Field(
+        default=0,
+        validation_alias="INDEX_REQUEST_WINDOW_SECONDS",
+        description=(
+            "Seconds a KB write may spend indexing its document: 0 (no "
+            "up-front refusal) or 60-3600."
+        ),
+    )
+
+    @field_validator("index_request_window_seconds")
+    @classmethod
+    def _window_is_off_or_bounded(cls, v: int) -> int:
+        if v != 0 and not 60 <= v <= 3600:
+            raise ValueError(
+                f"INDEX_REQUEST_WINDOW_SECONDS ({v}) must be 0 (no up-front "
+                "refusal) or between 60 and 3600"
+            )
+        return v
+
     model_config = {"env_prefix": "", "extra": "ignore"}
 
 
@@ -3225,7 +3249,8 @@ class AgentSettings(BaseSettings):
             "Proactive vectorization is intentionally UNBOUNDED at the "
             "orchestration layer — it's a fire-and-forget background "
             "task and time-bounding it only guarantees wasted work when "
-            "encode outlasts the bound."
+            "encode outlasts the bound. The embedding guard still bounds "
+            "every encode (#2055)."
         ),
     )
 

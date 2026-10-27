@@ -37,6 +37,7 @@ from pydantic import BaseModel, Field
 
 from faultmaven.exceptions import FaultMavenException, RawModelContentRefused
 from faultmaven.modules.auth.contracts import DevUser
+from faultmaven.modules.knowledge.api.routes import INDEX_REFUSAL_RESPONSES
 from faultmaven.modules.knowledge.domain.models.conversion import (
     ConversionErrorCode,
     DraftUpdateRequest,
@@ -453,6 +454,7 @@ async def verify_batch(
 @router.post(
     "/conversions/{conversion_id}/drafts/{draft_id}/verify",
     dependencies=[Depends(_require_auth)],
+    responses=INDEX_REFUSAL_RESPONSES,
 )
 async def verify_draft(
     conversion_id: str,
@@ -477,6 +479,11 @@ async def verify_draft(
     check cannot run (the sanitizer or its pseudonym key is unavailable) the
     request answers **503**, a retryable server-side condition, with a generic
     detail, and the draft stays a draft.
+
+    A draft this deployment cannot index within its request window is refused
+    before anything is written, and stays a draft: **413** when it alone can
+    never fit, **503** + ``Retry-After`` when queued indexing or a model still
+    loading is in the way (#2055).
     """
     result = await service.verify_draft(
         conversion_id=conversion_id,

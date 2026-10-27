@@ -1358,6 +1358,15 @@ async def get_env_config_status(
             None,
         )
 
+        # The KB indexing window and the rate this process has learned
+        # (#2055), with the startup repair's refusals, which no later boot
+        # repairs while the window stands.
+        from faultmaven.api.dependencies import knowledge_indexing_status
+
+        knowledge_indexing = knowledge_indexing_status(
+            getattr(request.app.state, "kb_bootstrap_result", None)
+        )
+
         return EnvConfigStatusResponse(
             auth_mode=settings.auth.auth_mode,
             deployment=deployment,
@@ -1374,6 +1383,7 @@ async def get_env_config_status(
             turn_timing=turn_timing,
             personal_tenant_limits=personal_tenant_limits,
             database_timeouts=database_timeouts,
+            knowledge_indexing=knowledge_indexing,
             timestamp=datetime.now(timezone.utc),
         )
 

@@ -81,6 +81,8 @@ async def _bootstrap_kb_step(app: FastAPI) -> None:
                 enterprise_id=STANDALONE_ENTERPRISE_ID,
             )
             logger.info(f"✅ KB bootstrap: {kb_result!r}")
+            # Its refused repairs are reported on /admin/config/status (#2055).
+            app.state.kb_bootstrap_result = kb_result
             if kb_result.failed:
                 # Don't block startup, but make failures loud.
                 for path, reason in kb_result.failed:

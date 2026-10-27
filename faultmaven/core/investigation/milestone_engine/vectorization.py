@@ -7,6 +7,7 @@ from typing import Any
 
 from faultmaven.modules.agent.tools.vectorize_file_tool import (
     append_vectorization_advisory,
+    vectorize_budget,
 )
 
 logger = logging.getLogger(__name__)
@@ -74,9 +75,12 @@ class EvidenceVectorizer:
                 )
                 continue
 
-            task = asyncio.create_task(
-                self._vectorize_evidence(ev.evidence_id, tool_context)
-            )
+            # A background task with no deadline: no budget to refuse against,
+            # and the embed guard bounds the embed (#2055).
+            with vectorize_budget(None):
+                task = asyncio.create_task(
+                    self._vectorize_evidence(ev.evidence_id, tool_context)
+                )
             self._inflight_vectorize[ev.evidence_id] = task
             # Remove from registry once the task settles (success,
             # failure, or cancellation). If persistence succeeded the
@@ -108,7 +112,8 @@ class EvidenceVectorizer:
         of truth for "is this evidence already in the case vector store".
 
         No internal ``asyncio.wait_for``: time-bound policy belongs at the
-        caller. Proactive callers run this unbounded as a background task
+        caller. Proactive callers run this as a background task with no
+        budget of their own (the embed guard still bounds the encode, #2055)
         — the in-flight registry prevents duplicates, and bounding a
         background task that the caller never synchronously awaits only
         guarantees wasted CPU when ``asyncio.wait_for`` cancels the
@@ -401,10 +406,13 @@ class EvidenceVectorizer:
         # see _vectorize_evidence docstring for the split rationale.
         reactive_timeout = float(settings.agent.vectorization_reactive_timeout_seconds)
         try:
-            success = await asyncio.wait_for(
-                self._vectorize_evidence(evidence_id, tool_context),
-                timeout=reactive_timeout,
-            )
+            # The same budget is the refusal's (#2055): a file that cannot be
+            # indexed inside it is refused before any embed, not cut off.
+            with vectorize_budget(reactive_timeout):
+                success = await asyncio.wait_for(
+                    self._vectorize_evidence(evidence_id, tool_context),
+                    timeout=reactive_timeout,
+                )
         except TimeoutError:
             logger.warning(
                 "Reactive vectorization timed out for %s after %ss "
