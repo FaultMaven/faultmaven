@@ -627,8 +627,8 @@ async def test_bare_decline_keeps_cheap_canned_acknowledgment():
 
 @pytest.mark.asyncio
 async def test_a_no_that_says_more_is_processed_and_records_nothing():
-    """A reply that opens with a decline token joined to a question carries
-    the actual question — the content must reach the LLM.
+    """The #656 turn-11-shaped message: starts with a decline token but
+    carries the actual question — the content must reach the LLM.
 
     #1813, ruling (a): a typed decline is bare, so this is not a decline at
     all. It is a substantive non-answer carrying "?", which the escape lane
@@ -640,23 +640,7 @@ async def test_a_no_that_says_more_is_processed_and_records_nothing():
     await _run_expecting_fall_through(
         engine,
         case,
-        "No, we did not do anything yet, I showed the configmap without "
-        "modification - did you see anything wrong?",
-    )
-    assert case.progress.deferred_disposition_declined_signatures == []
-
-
-@pytest.mark.asyncio
-async def test_a_no_sentence_beside_a_question_is_processed_and_recorded():
-    """The #656 turn-11 message: "No." is a sentence of its own, so it declines
-    the offer, and the question beside it does not undo that (#2352). The
-    decline is recorded and the message still reaches the LLM."""
-    engine = _engine()
-    case = _signed_pending_close()
-    await _run_expecting_fall_through(
-        engine,
-        case,
         "No. we did not do anything yet. I showed the configmap without "
         "modification. did you see anything wrong?",
     )
-    assert case.progress.deferred_disposition_declined_signatures == [_SIGNATURE]
+    assert case.progress.deferred_disposition_declined_signatures == []

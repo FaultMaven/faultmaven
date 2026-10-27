@@ -35,10 +35,11 @@ def _minted_intent_swallows_gate_consent(
     engine treats those intents as deterministic consent (the DECIDE-click
     path) and consults them BEFORE its INV-26 bare-token guards. A click
     IS deterministic consent; an inference from typed text is not. So a
-    minted intent that would commit a gate must pass the same substance
-    test the typed-confirmation matcher applies (``is_substantive_reply``
-    — shared single source of truth): "yes but what about the replication
-    lag?" is substantive input, never consent.
+    minted intent that would commit a gate must pass the same bare test the
+    typed-confirmation matcher applies (``confirmation_token_class``, whose
+    substance screen ``is_substantive_reply`` is the shared single source of
+    truth): "yes but what about the replication lag?" and "please close the
+    case" are not consent.
 
     **Two gates, not one.** Until fm#918 this returned False whenever the
     case had no ``pending_transition``, justified as "mints with no

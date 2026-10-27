@@ -29,6 +29,9 @@ from faultmaven.core.investigation.milestone_engine.stage_gates import (
 from faultmaven.core.investigation.milestone_engine.terminal_replies import (
     _resolution_confirmation_suggestions,
 )
+from faultmaven.core.investigation.milestone_engine.transition_consent import (
+    requests_close,
+)
 from faultmaven.core.investigation.schemas import (
     InvestigationResponse_Diagnosis,
     TurnPayload,
@@ -43,6 +46,12 @@ from faultmaven.modules.agent.domain.services.investigation_service.service impo
 )
 from faultmaven.modules.case.contracts import CaseState
 from tests.model_content import disabled_redaction
+from tests.unit.core.investigation.test_declined_resolution_binds_the_model_1895 import (
+    _engine,
+)
+from tests.unit.core.investigation.test_declined_resolution_binds_the_model_1895 import (
+    _turn as _engine_turn,
+)
 from tests.unit.core.investigation.test_resolution_backstop_turn import (
     _confirmed_case,
 )
@@ -181,52 +190,96 @@ class TestAMintedYesAtAPendingGateNeedsABareConsent:
         assert store.row().state == CaseState.RESOLVED
 
 
-class TestTheClassifierIsOfferedNoTerminalStep:
-    @staticmethod
-    def _terminal_cards():
-        case = _declined_with_the_chip()
-        return [
-            declined_resolve_card(case),
-            declined_close_card("false_alarm"),
-            declined_close_card("deferred"),
-        ]
-
-    async def test_only_the_other_choices_reach_the_prompt(self):
-        cards = self._terminal_cards()
-        confirm, decline = _resolution_confirmation_suggestions(
-            _resolve_offer_pending()
-        )
+class TestTheClassifierIsNotOfferedTheChip:
+    async def test_only_the_reopen_chip_is_kept_from_the_prompt(self):
+        """Only a step to RESOLVED is withheld: the declined-close cards stay,
+        since the user's own close binds the model, never the user."""
+        chip = declined_resolve_card(_declined_with_the_chip())
+        closes = [declined_close_card("false_alarm"), declined_close_card("deferred")]
         classifier = _router("1")
 
         minted = await IntentResolver(classifier).resolve(
-            "sounds right", [*cards, decline], redaction_ctx=disabled_redaction()
+            "close it as a false alarm",
+            [chip, *closes],
+            redaction_ctx=disabled_redaction(),
         )
 
-        prompt = classifier.route.await_args.kwargs["messages"][0]["content"]
-        assert decline["label"] in str(prompt)
-        for card in cards:
-            assert card["label"] not in str(prompt)
-        assert minted == decline["intent"]
+        prompt = str(classifier.route.await_args.kwargs["messages"][0]["content"])
+        assert chip["label"] not in prompt
+        assert all(card["label"] in prompt for card in closes)
+        assert minted == closes[0]["intent"]
 
-    async def test_with_only_terminal_choices_the_classifier_is_not_called(self):
+    async def test_with_only_the_chip_the_classifier_is_not_called(self):
         classifier = _router("1")
-        resolver = IntentResolver(classifier)
-        cards = self._terminal_cards()
-
-        for message in (DECLINE, CLOSE_REQUEST, "close it as a false alarm"):
+        chip = declined_resolve_card(_declined_with_the_chip())
+        for message in (DECLINE, CLOSE_REQUEST):
             assert (
-                await resolver.resolve(
-                    message, cards, redaction_ctx=disabled_redaction()
+                await IntentResolver(classifier).resolve(
+                    message, [chip], redaction_ctx=disabled_redaction()
                 )
                 is None
             )
         classifier.route.assert_not_called()
 
-    async def test_the_exact_text_of_a_terminal_choice_still_resolves_to_it(self):
+    async def test_the_exact_text_of_the_chip_still_resolves_to_it(self):
         classifier = _router("1")
-        for card in self._terminal_cards():
-            minted = await IntentResolver(classifier).resolve(
-                card["payload"], [card], redaction_ctx=disabled_redaction()
-            )
-            assert minted == card["intent"]
+        chip = declined_resolve_card(_declined_with_the_chip())
+        minted = await IntentResolver(classifier).resolve(
+            chip["payload"], [chip], redaction_ctx=disabled_redaction()
+        )
+        assert minted == chip["intent"]
         classifier.route.assert_not_called()
+
+
+#: A close request (``requests_close``): a close-only consent token, or a
+#: sentence asking to close, not negated and not a question.
+CLOSE_REQUESTS = [
+    "Please close the case.",
+    "Just close it.",
+    "close it",
+    "Close it as unresolved, we're out of time.",
+    CLOSE_REQUEST,
+    "Go ahead and close this case.",
+]
+NOT_CLOSE_REQUESTS = [
+    "Don't close it yet.",
+    "Please close the dashboard tab and resolve it.",
+    "It's close to resolved.",
+    "Can you close it?",
+    "Should we close the case?",
+    "Do not close the case.",
+    "I'd rather not close it yet.",
+    "Yes, mark it resolved.",
+    "yes",
+    "Close enough, mark it resolved.",
+]
+
+
+@pytest.mark.parametrize("message", CLOSE_REQUESTS)
+def test_a_close_request(message):
+    assert requests_close(message) is True
+
+
+@pytest.mark.parametrize("message", NOT_CLOSE_REQUESTS)
+def test_not_a_close_request(message):
+    assert requests_close(message) is False
+
+
+class TestACloseRequestEscapesAPendingResolve:
+    """Review item 4: re-asked, a short close request met the resolve pair
+    forever. Through the engine, with no intent (the mint is dropped)."""
+
+    @pytest.mark.parametrize(
+        "message", ["Please close the case.", "Just close it.", "close it"]
+    )
+    async def test_withdrawn_and_handed_to_the_model(self, message):
+        case = _confirmed_case()
+        engine = _engine()
+        await _engine_turn(engine, case, "errors gone")
+        assert case.pending_transition["to_state"] == "resolved"
+
+        result = await _engine_turn(engine, case, message)
+
+        assert RE_ASK not in result["agent_response"]
+        engine.generator.generate_structured_output.assert_awaited_once()
+        assert case.pending_transition is None

@@ -45,6 +45,7 @@ from faultmaven.core.investigation.milestone_engine.transition_consent import (
     offer_click_refusal,
     opens_with_consent_loosely,
     pending_gate_verdict,
+    requests_close,
     terminal_offer_key,
 )
 from faultmaven.core.investigation.milestone_engine.transition_turns import (
@@ -668,12 +669,11 @@ class MilestoneEngine:
             # with no offer left standing, and 0c must not refuse it there.
             click_answered_by_gate = False
 
-            # Whether the turn BEGAN with an offer standing: 0b or 0b' answers
-            # such a turn, withdrawals included, and 0b'' below reads only the
-            # others ("Not yet." to a revision declines the revision only).
-            turn_began_with_offer = bool(
-                getattr(case, "pending_transition", None)
-            ) or revision_pending(case)
+            # Whether 0b below answers this turn: it began with a terminal
+            # offer standing that is not ``needs_info``. 0b'' reads only the
+            # other turns, revision and ``needs_info`` turns included.
+            _standing = getattr(case, "pending_transition", None)
+            gate_answers_turn = bool(_standing) and not _standing.get("needs_info")
 
             # 0b. Pending transition confirmation — short-circuit before LLM
             # When a pending transition exists (User-Agent Handshake), check if
@@ -714,9 +714,20 @@ class MilestoneEngine:
                 # substance proxy. Computed once so the decline and
                 # non-answer branches below cannot drift apart.
                 stripped_message = (user_message or "").strip()
+                # A typed request to CLOSE at a pending RESOLVE offer (#2222).
+                # No offered choice answers it, so it is substantive whatever
+                # its length: it escapes the gate, which then withdraws the
+                # offer and hands it to the model, as with no resolve control
+                # on screen. Re-asked, "close it" met the resolve pair forever.
+                close_requested = (
+                    case.pending_transition.get("to_state") == CaseState.RESOLVED.value
+                    and (typed or intent_type in (None, "conversation"))
+                    and requests_close(stripped_message)
+                )
                 message_is_substantive = bool(stripped_message) and (
                     len(stripped_message) > _PENDING_GATE_SUBSTANTIVE_LEN
                     or is_question(stripped_message)
+                    or close_requested
                 )
 
                 # Contradicting status_transition intent cancels the pending
@@ -881,8 +892,8 @@ class MilestoneEngine:
                         # and a re-ask must never become a decline (#1783,
                         # ruling (a); the one-re-present cap #656 added is
                         # gone). None of these is worth an LLM turn.
-                        text_escapes = (
-                            verdict == "not_an_answer" and message_is_substantive
+                        text_escapes = message_is_substantive and (
+                            verdict == "not_an_answer" or close_requested
                         )
                         if text_escapes or turn_carries_upload:
                             # The offer is withdrawn either way; whether that
@@ -1000,19 +1011,27 @@ class MilestoneEngine:
                         ),
                     )
 
-            # 0b''. A typed decline of resolution with no offer standing
-            # (#2352). The offer it answers was withdrawn on an earlier turn, or
-            # made in the model's prose alone, so 0b never saw it, and the
-            # backstop re-proposed at the end of this very turn. Recorded here,
-            # before the model and every proposer run, against the state it
-            # was given on: the backstop's covering check then holds the offer
-            # and the "Mark it resolved" chip goes on the reply (#1895). Typed
-            # text only: a click carries its own answer.
+            # 0b''. A typed decline of resolution on a turn 0b did not answer
+            # (#2352): the offer it answers was withdrawn on an earlier turn,
+            # made in the model's prose alone, or stands as ``needs_info``, so
+            # the backstop re-proposed at the end of this very turn. Read here,
+            # before the model and every proposer run: the decline is recorded
+            # against the state it was given on, and the turn is marked so a
+            # confirmation the model records from the same words is covered
+            # too (``restamp_resolve_decline``). The backstop's covering check
+            # then holds the offer and the "Mark it resolved" chip goes on the
+            # reply (#1895). Typed text only: a click carries its own answer.
+            # The decline constructions only, never a bare token: a plain "no"
+            # here answers whatever the model asked, and "Not yet." on a
+            # revision turn declines the revision alone. The readers scan a
+            # bounded slice of the text (``_SCANNED_EDGE``).
             if (
-                not turn_began_with_offer
+                not gate_answers_turn
                 and (typed or intent_type in (None, "conversation"))
                 and case.state == CaseState.INVESTIGATING
-                and declines_offer_explicitly(user_message, CaseState.RESOLVED.value)
+                and declines_offer_explicitly(
+                    user_message, CaseState.RESOLVED.value, bare_token=False
+                )
             ):
                 _record_resolve_decline_without_offer(case, metadata)
 

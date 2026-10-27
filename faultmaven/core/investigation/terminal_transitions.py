@@ -109,8 +109,9 @@ def is_question(user_message: "str | None") -> bool:
     ``is_substantive_reply`` below; the engine's ``message_is_substantive`` and its escape-lane record
     rule (a question withdraws an offer and is never recorded as a refusal);
     ``pending_gate_verdict``'s minted decline on a question (#1813); and
-    ``declines_offer_explicitly``, which skips a question sentence but not the
-    sentence beside it: an explicit decline binds beside a question (#2352).
+    ``declines_offer_explicitly`` and ``requests_close``, which skip a question
+    sentence but not the sentence beside it: an explicit decline binds beside
+    a question (#2352).
     """
     text = user_message or ""
     return any(c in QUESTION_MARKS for c in text) or any(

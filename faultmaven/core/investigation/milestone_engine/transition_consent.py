@@ -10,10 +10,10 @@ A click is consent only to the offer it names (#1812, ruling (a)): every
 confirmation card carries its offer's key (``terminal_offer_key``,
 ``gate1_offer_key``), and a click whose key is not the standing offer's
 executes nothing. A typed decline is as bare as a typed consent (#1813), or
-is a sentence of the reply that declines the named target, a question beside
-it or not (``declines_offer_explicitly``, #2352). Gate 1 reads a typed consent
-through the same bare test (#1794), which the engine now reads itself while
-Gate 1 is pending (#1841).
+is a sentence of the reply in one of the named target's decline
+constructions, a question beside it or not (``declines_offer_explicitly``,
+#2352). Gate 1 reads a typed consent through the same bare test (#1794),
+which the engine now reads itself while Gate 1 is pending (#1841).
 
 Nothing else stands in for consent (#1838, #1839): a status-dropdown re-pick
 of the pending target re-shows the offer's card, and no LLM-written card ships
@@ -40,6 +40,7 @@ import unicodedata
 from typing import Any, Literal, Optional
 
 from faultmaven.core.investigation.terminal_transitions import (
+    QUESTION_SHORTCODES,
     is_question,
     is_substantive_reply,
 )
@@ -206,31 +207,64 @@ _DECLINE_TOKENS = (
     "stop",
 )
 
-#: An explicit decline of a named target, inside a sentence (#2352,
-#: ``declines_offer_explicitly``): a present-tense negator, then the target
-#: within 25 characters, with no clause break and no relative pronoun between.
-#: No past-tense negator: "the rollback didn't resolve it, the config change
-#: did" confirms a fix. ``that`` and ``what`` keep "That's not what resolved
-#: it." from reading as one.
-_DECLINE_NEGATORS = (
-    r"(?:not|cannot|can't|can not|don't|do not|won't|wouldn't|isn't|is not"
-    r"|aren't|shouldn't|cant|dont|wont|wouldnt|isnt|arent|shouldnt)"
-)
+#: How much of a reply the decline and close-request readers scan: its first
+#: and last ``_SCANNED_EDGE`` characters. Either is a remark the user types
+#: around whatever they paste, so it sits at one end of the message; the cap
+#: keeps a pasted log from costing a scan of every sentence in it, on every
+#: turn (an unbounded scan of a 95 KB paste measured about 300 ms).
+_SCANNED_EDGE = 1000
+
+#: The constructions that decline a named target (#2352): a CLOSED list, so a
+#: reply that confirms a fix ("the rollback did not resolve it, the config
+#: change did"), asks for resolution ("Don't forget to resolve it.", "There's
+#: no reason not to resolve it.") or quotes an error ("host could not be
+#: resolved") is not one. Read per sentence (``declines_offer_explicitly``).
 _DECLINED_OBJECT = r"(?:it|this|the\s+case|this\s+case)"
-_NEGATED_TARGET_RE = {
-    target: re.compile(
-        rf"\b{_DECLINE_NEGATORS}\b"
-        r"(?:(?!\b(?:what|which|that|who|how)\b)[^.?!,;:\u2014\u2013\n]){0,25}?"
-        rf"\b{named}",
-        re.IGNORECASE,
-    )
-    for target, named in (
-        ("resolved", rf"(?:resolved\b|resolve\s+{_DECLINED_OBJECT}\b)"),
-        ("closed", rf"(?:closed\b|close\s+{_DECLINED_OBJECT}\b)"),
-    )
+_NEGATED_AUXILIARY = (
+    r"(?:can't|cant|cannot|can\s+not|won't|wont|wouldn't|wouldnt|shouldn't"
+    r"|shouldnt|don't|dont|do\s+not)"
+)
+_NEGATED_IMPERATIVE = r"(?:don't|dont|do\s+not)"
+_DECLINED_SUBJECT = r"(?:it|this|the\s+case|this\s+case|the\s+issue|the\s+problem)"
+_IS_NOT = r"(?:\s+isn't|\s+isnt|\s+is\s+not|'s\s+not|s\s+not)"
+_DECLINE_CONSTRUCTIONS: dict[str, tuple[re.Pattern[str], ...]] = {
+    target: tuple(re.compile(pattern, re.IGNORECASE) for pattern in patterns)
+    for target, patterns in {
+        "resolved": (
+            # "I can't call it resolved", "I wouldn't mark this case as resolved"
+            rf"\b{_NEGATED_AUXILIARY}\s+(?:yet\s+)?(?:call|mark|consider|treat"
+            rf"|count)\s+{_DECLINED_OBJECT}\s+(?:as\s+)?(?:fully\s+)?resolved\b",
+            # "Don't resolve it yet"
+            rf"\b{_NEGATED_IMPERATIVE}\s+resolve\s+{_DECLINED_OBJECT}\b",
+            # "It's not resolved", "The issue isn't fully resolved"
+            rf"\b{_DECLINED_SUBJECT}{_IS_NOT}\s+(?:yet\s+)?(?:fully\s+)?resolved\b",
+            # The whole sentence: "Not resolved yet."
+            r"^(?:it's\s+|its\s+)?not\s+(?:yet\s+)?resolved(?:\s+yet)?$",
+        ),
+        "closed": (
+            rf"\b{_NEGATED_IMPERATIVE}\s+close\s+{_DECLINED_OBJECT}\b",
+            rf"\b{_NEGATED_AUXILIARY}\s+(?:yet\s+)?close\s+{_DECLINED_OBJECT}\b",
+        ),
+    }.items()
 }
-#: A sentence keeps its terminators, so ``no?`` stays a question.
-_SENTENCE_RE = re.compile(r"[^.?!\n]+[.?!]*")
+
+#: A request to close (``requests_close``): "(please / just / go ahead and)
+#: close it / this / the case", not negated.
+_CLOSE_REQUEST_RE = re.compile(
+    r"(?<!n't )(?<!not )(?<!dont )\b(?:please\s+|just\s+|go\s+ahead\s+and\s+"
+    r"|let's\s+)?close\s+(?:it|this|the\s+case|this\s+case|this\s+one)\b",
+    re.IGNORECASE,
+)
+_NEGATED_CLOSE_RE = re.compile(
+    r"\b(?:don't|dont|do\s+not|can't|cannot|won't|wouldn't|shouldn't|not)\s+"
+    r"(?:\w+\s+){0,2}close\b",
+    re.IGNORECASE,
+)
+
+#: A sentence keeps its terminators, so ``no?`` stays a question. Fullwidth
+#: and ideographic marks end a sentence too.
+_SENTENCE_RE = re.compile(r"[^.?!？！。]+[.?!？！。]*")
+
 
 PendingGateVerdict = Literal["confirm", "decline", "reask", "not_an_answer"]
 
@@ -499,8 +533,9 @@ def opens_with_consent_loosely(user_message: str) -> bool:
     ``*Yes*, …``, ``_Yes_, …``, ``"Yes" — …``, a ``Yes`` behind a U+200B.
 
     For the engine's escape-lane record rule ONLY. A reply that reaches that
-    rule has already escaped the gate (it is over 40 characters, or a
-    question): it is withdrawn and the LLM processes it whatever this says.
+    rule has already escaped the gate (it is over 40 characters, a question,
+    or a request to close at a pending resolve, ``requests_close``): it is
+    withdrawn and the LLM processes it whatever this says.
     This decides only whether the withdrawal is RECORDED as a refusal, so
     reading loosely costs at most a refusal left unrecorded, and a consenting
     reply under markup is never recorded as one. Never read by anything that
@@ -554,38 +589,84 @@ def _user_declines_transition(user_message: str) -> bool:
     return _undecorated(user_message).rstrip(".!, ") in _DECLINE_TOKENS
 
 
-def declines_offer_explicitly(user_message: str, to_state: Optional[str]) -> bool:
-    """Whether ``user_message`` says, in a sentence of its own, that the case is
-    not to go to ``to_state`` (#2352).
-
-    True when the reply does not open with consent
-    (``opens_with_consent_loosely``) and one sentence that is not a question
-    (``is_question``) is a bare decline (``_user_declines_transition``) or
-    negates the target: ``I can't call it resolved yet``, ``Don't resolve it
-    yet``, ``It's not resolved — the errors are back`` (``_NEGATED_TARGET_RE``).
-    A question beside it does not undo it: ``Can you explain the evidence? I
-    can't call it resolved yet.`` declines. With no target (the revision gate)
-    only the bare-decline sentence counts.
-
-    Not a decline: ``Why isn't it resolved yet?``, ``Yes, go ahead and resolve
-    it. I can't think of anything else.``, ``Note the latency didn't resolve
-    until 09:40.``, ``That's not what resolved it.``, ``no?``. Nor, by #1813
-    ruling (a), a decline token joined to more by a comma or a dash (``No,
-    keep it open.``, ``no, not yet``): those are re-asked.
-    """
+def _scanned(user_message: str) -> str:
+    """``user_message`` normalised (``_normalize_reply``), cut to its first and
+    last ``_SCANNED_EDGE`` characters with a sentence break between, and every
+    run of whitespace made one space, so a line break inside a sentence does
+    not split it."""
     text = _normalize_reply(user_message or "")
-    if not text or opens_with_consent_loosely(text):
-        return False
-    negated = _NEGATED_TARGET_RE.get(to_state or "")
+    if len(text) > 2 * _SCANNED_EDGE:
+        text = f"{text[:_SCANNED_EDGE]}. {text[-_SCANNED_EDGE:]}"
+    return " ".join(text.split())
+
+
+def _statements(text: str):
+    """The sentences of ``text`` that are not questions, terminators trimmed."""
     for sentence in _SENTENCE_RE.findall(text):
         sentence = sentence.strip()
-        if not sentence or is_question(sentence):
-            continue
-        if _user_declines_transition(sentence) or (
-            negated is not None and negated.search(sentence)
-        ):
-            return True
-    return False
+        if sentence and not is_question(sentence):
+            yield sentence
+
+
+def declines_offer_explicitly(
+    user_message: str, to_state: Optional[str], *, bare_token: bool
+) -> bool:
+    """Whether ``user_message`` declines ``to_state`` explicitly (#2352).
+
+    True when one sentence that is not a question is one of the target's
+    decline constructions (``_DECLINE_CONSTRUCTIONS``): ``I can't call it
+    resolved yet``, ``Don't resolve it yet``, ``It's not resolved — the errors
+    are back``, ``Not resolved yet.``; ``Don't close it yet``. A question
+    beside it does not undo it (``Can you explain the evidence? I can't call
+    it resolved yet.``), and neither does a consent opener (``OK, but I can't
+    call it resolved yet.``). A sentence ends at ``.``, ``!``, ``?`` and their
+    fullwidth forms, and Slack's question shortcodes count as ``?``.
+
+    With ``bare_token``, a reply that is, as a whole, one bare decline token
+    (``_user_declines_transition``: ``no``, ``Not yet.``) declines too, as
+    #1813 ruling (a) reads it at a pending gate. Only as a whole: ``No. Go
+    ahead and resolve it.`` and ``No. Keep it open.`` are not declines, nor is
+    ``No, keep it open.``. Without it (no offer pending, where a plain ``no``
+    answers whatever the model asked) only the constructions count. With no
+    target (the revision gate) only the bare token does.
+    """
+    if bare_token and _user_declines_transition(user_message):
+        return True
+    constructions = _DECLINE_CONSTRUCTIONS.get(to_state or "", ())
+    if not constructions:
+        return False
+    text = _scanned(user_message)
+    for code in QUESTION_SHORTCODES:
+        text = text.replace(code, "?")
+    return any(
+        pattern.search(sentence.rstrip(".!！。").strip())
+        for sentence in _statements(text)
+        for pattern in constructions
+    )
+
+
+def requests_close(user_message: str) -> bool:
+    """Whether ``user_message`` asks to close the case (#2222): as a whole, a
+    consent token that names a close and nothing else (``close it``), or a
+    sentence that is not a question and asks to close it, not negated
+    (``Please close the case.``, ``Just close it.``, ``We're out of time on
+    this one — please close the case.``).
+
+    Not ``yes``, ``Don't close it yet.``, ``Can you close it?``, ``It's close to
+    resolved.`` or ``Please close the dashboard tab and resolve it.``. The
+    engine reads it at a pending RESOLVE offer, where it is a request no offered
+    choice answers: it escapes the gate, whatever its length.
+    """
+    text = _scanned(user_message)
+    if (
+        confirmation_token_class(text, "closed") is not None
+        and confirmation_token_class(text, "resolved") is None
+    ):
+        return True
+    return any(
+        _CLOSE_REQUEST_RE.search(sentence) and not _NEGATED_CLOSE_RE.search(sentence)
+        for sentence in _statements(text)
+    )
 
 
 def is_bare_gate_reply(text: str) -> bool:
@@ -620,9 +701,18 @@ def card_reads_as_bare_reply(text: str) -> bool:
     U+FEFF is not bare as written, and arrives as ``Close it``. Over-reading
     here costs a card its payload, never a consent. ``_flatten_follow_ups``
     reads it for a card's payload and for its label.
+
+    A text the gate reads as an explicit decline of either target
+    (``declines_offer_explicitly``, #2352) counts too: clicked later, it would
+    decline the offer standing then.
     """
     sent = "".join(c for c in text if not _is_invisible(c)).strip()
-    return is_bare_gate_reply(text) or is_bare_gate_reply(sent)
+    return any(
+        is_bare_gate_reply(t)
+        or declines_offer_explicitly(t, "resolved", bare_token=False)
+        or declines_offer_explicitly(t, "closed", bare_token=False)
+        for t in (text, sent)
+    )
 
 
 def pending_gate_verdict(
@@ -646,16 +736,16 @@ def pending_gate_verdict(
 
     * ``confirm`` — execute. Only a click (``"intent"``), or a bare consent
       token (``confirmation_token_class``) that no minted decline contradicts;
-    * ``decline`` — an explicit decline: the Not-yet click, a typed reply with
-      a sentence that declines (``declines_offer_explicitly``: a BARE decline
-      token, or one negating the target, a question beside it or not; #2352),
-      or a minted decline on text that is neither consent-shaped nor a
-      question;
+    * ``decline`` — an explicit decline: the Not-yet click, a typed reply
+      that is one BARE decline token as a whole, or that has a sentence in one
+      of the target's decline constructions, a question beside it or not
+      (``declines_offer_explicitly``, #2352), or a minted decline on text that
+      is neither consent-shaped nor a question;
     * ``reask`` — show the proposal's buttons again, and record nothing: a
       consent-shaped reply that is not bare, a bare consent a minted decline
       contradicts, or a minted confirmation on text that is not bare;
     * ``not_an_answer`` — the reply answers neither way, a minted decline on
-      a question with no declining sentence in it included (#1813;
+      a question with no decline construction in it included (#1813;
       ``is_question``, #1840): the escape lane's question rule then withdraws
       the proposal and records nothing. The caller re-asks a short one and
       sends a substantive one down the escape lane.
@@ -671,9 +761,9 @@ def pending_gate_verdict(
     # An explicit decline binds even beside a question (#2352): "Can you
     # explain the evidence? I can't call it resolved yet." declines. Ahead of
     # the question rule below, which keeps "no?" and a bare question.
-    if declines_offer_explicitly(user_message, to_state):
+    if declines_offer_explicitly(user_message, to_state, bare_token=True):
         return "decline", None
-    # A minted decline on a question with no declining sentence is not a
+    # A minted decline on a question with no decline construction is not a
     # refusal (#1813), so "no?" (not bare) lands here too.
     if typed and intent_value is False and is_question(user_message):
         return "not_an_answer", None

@@ -283,26 +283,29 @@ def _record_deferred_disposition_decline(
 
 
 def _record_resolve_decline_without_offer(case: "Case", metadata: dict) -> None:
-    """Record a typed decline of resolution given with no offer standing
-    (#2352).
+    """Record a typed decline of resolution on a turn the pending gate did not
+    answer (#2352).
 
     The offer a user declines is not always pending when they answer it: a
     question withdrew it on the turn before, or the model asked in prose ("Would
     you like me to resolve the case?") and stood nothing behind it. Unrecorded,
     "I can't call it resolved yet." declined nothing, and the backstop
-    re-proposed at the end of that same turn. So the engine, on a typed turn
-    that began with no offer standing and declines resolution explicitly
+    re-proposed at the end of that same turn. So the engine, on such a typed
+    turn whose text declines resolution explicitly
     (``declines_offer_explicitly``), records the decline here against the state
     it was given on: the signature derived as for a declined LLM-opened offer
     (``_record_deferred_disposition_decline``), and only on SUGGEST_RESOLVE,
     the verdict every resolve proposer's signature carries.
 
-    The turn is marked even when an entry already covers the signature (a
-    repeat decline): ``restamp_resolve_decline`` then covers a confirmation
-    the model records from this turn's words too.
+    The turn is marked whatever the verdict or the list says. The confirmation
+    that makes the case resolution-ready can arrive in the same message ("the
+    errors are gone, but I can't call it resolved yet"), and a repeat decline
+    appends nothing; either way ``restamp_resolve_decline`` then covers what the
+    model records this turn, reading the verdict at apply time.
     """
     if not getattr(case, "progress", None):
         return
+    metadata[_RESOLVE_DECLINED_THIS_TURN_KEY] = True
     from faultmaven.core.investigation.terminal_transitions import (
         ClosureReadiness,
         closure_verdict,
@@ -312,7 +315,6 @@ def _record_resolve_decline_without_offer(case: "Case", metadata: dict) -> None:
     verdict = closure_verdict(case)
     if verdict != ClosureReadiness.SUGGEST_RESOLVE:
         return
-    metadata[_RESOLVE_DECLINED_THIS_TURN_KEY] = True
     signature = deferred_disposition_signature(case, verdict)
     if _append_declined_signature(case, signature):
         logger.info(

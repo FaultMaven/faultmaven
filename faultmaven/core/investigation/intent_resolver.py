@@ -10,8 +10,8 @@ click. The adoption site (``InvestigationService``) therefore applies the
 INV-26 substance guard before adopting a minted intent that would confirm
 a pending TERMINAL transition (#721): typed input that is not a bare consent
 is never consumed as consent to an irreversible RESOLVED/CLOSED (#2222). And the
-classifier tier never mints a terminal step at all: a ``status_transition``
-choice is matched only by its exact text (#2222).
+classifier tier never mints a step to RESOLVED: a ``status_transition`` choice
+to ``resolved`` is matched only by its exact text (#2222).
 
 Design: see docs/architecture/investigation-engine/choice-response-resolution.md
 """
@@ -104,17 +104,21 @@ class IntentResolver:
             )
             return matched
 
-        # Tier 2: LLM classifier for semantic matching. Never offered a
-        # TERMINAL step (#2222): asked which choice the user is "responding
-        # to", it matched "I can't call it resolved yet." and "please close the
+        # Tier 2: LLM classifier for semantic matching. Never offered a step
+        # to RESOLVED (#2222): asked which choice the user is "responding to",
+        # it matched "I can't call it resolved yet." and "please close the
         # case" to the "Mark it resolved" chip, and the chip re-proposed the
-        # resolution the user had just declined. A terminal step is taken only
-        # by its click or its exact text (tier 1). With no other choice left,
-        # the classifier is not called.
+        # resolution the user had just declined. That step is taken only by
+        # its click or its exact text (tier 1). A close card stays: the user's
+        # own close binds the model, never the user. With no other choice
+        # left, the classifier is not called.
         classifiable = [
             c
             for c in choices
-            if c["intent"].get("type") != IntentType.STATUS_TRANSITION.value
+            if not (
+                c["intent"].get("type") == IntentType.STATUS_TRANSITION.value
+                and c["intent"].get("to_state") == "resolved"
+            )
         ]
         if not classifiable:
             return None

@@ -24,6 +24,7 @@ from faultmaven.core.investigation.intent_resolver import IntentResolver
 from faultmaven.core.investigation.milestone_engine.affordances import _gate1_is_pending
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.milestone_engine.transition_consent import (
+    declines_offer_explicitly,
     gate1_bare_consent,
 )
 from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommitPlan
@@ -106,6 +107,7 @@ from faultmaven.modules.agent.domain.services.query_classifier import (
 )
 from faultmaven.modules.case.contracts import (
     Case,
+    CaseState,
     TurnOutcome,
     TurnReceipt,
     TurnReceiptExistsError,
@@ -911,12 +913,13 @@ class InvestigationService:
                     resolved_qi = QueryIntent(**resolved_intent)
                     if _minted_intent_swallows_gate_consent(case, resolved_qi, query):
                         # INV-26 guard (#721, widened by fm#918): the
-                        # resolver's classifier tier matched substantive
-                        # typed text ("yes but what about the replication
-                        # lag?") to a suggestion whose intent would COMMIT
-                        # A GATE — the pending TERMINAL transition, or
-                        # INQUIRY's Gate 1. Substantive input is never
-                        # consent — drop the minted intent so the message
+                        # resolver's classifier tier matched typed text that
+                        # is not a bare consent ("yes but what about the
+                        # replication lag?", "please close the case") to a
+                        # suggestion whose intent would COMMIT A GATE — the
+                        # pending TERMINAL transition, or INQUIRY's Gate 1
+                        # (#2222). Such text is never consent — drop the
+                        # minted intent so the message
                         # flows through as a normal turn (where a pending
                         # transition exists its own escape lane withdraws
                         # the proposal and processes the message; the
@@ -925,8 +928,9 @@ class InvestigationService:
                         logger.info(
                             "Discarded classifier-minted intent "
                             f"{resolved_qi.type.value} for case "
-                            f"{case.case_id}: substantive reply must not "
-                            "commit a gate (INV-26, #721/fm#918)"
+                            f"{case.case_id}: a reply that is not a bare "
+                            "consent must not commit a gate (INV-26, "
+                            "#721/fm#918/#2222)"
                         )
                     else:
                         intent = resolved_qi
@@ -996,6 +1000,11 @@ class InvestigationService:
         # would skip the engine and leave Gate 1 pending. The exemption is
         # that one reply, not the phase: every other message at a pending
         # Gate 1 is triaged as before.
+        #
+        # So is an explicit decline of resolution on an INVESTIGATING case
+        # (``declines_offer_explicitly``, #2352): the engine records it, and an
+        # aside verdict would answer it off the case and record nothing, so
+        # the backstop would re-offer what the user just declined.
         oob_kind: Optional[OutOfBandKind] = None
         if (
             intent_type == IntentType.CONVERSATION
@@ -1008,6 +1017,12 @@ class InvestigationService:
             # A bare consent at a pending Gate 1 is the engine's to read
             # (#1841), never the classifier's: see above.
             and not (_gate1_is_pending(case) and gate1_bare_consent(query))
+            # An explicit decline of resolution is the engine's to record
+            # (#2352).
+            and not (
+                case.state == CaseState.INVESTIGATING
+                and declines_offer_explicitly(query, "resolved", bare_token=False)
+            )
         ):
             oob_kind = await self.out_of_band_triage.triage(
                 case, query, classification, redaction_ctx=redaction_ctx

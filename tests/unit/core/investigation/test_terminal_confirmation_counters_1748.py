@@ -54,7 +54,10 @@ from faultmaven.core.investigation.milestone_engine.transition_consent import (
     confirmation_token_class,
     pending_gate_verdict,
 )
-from faultmaven.core.investigation.schemas import TurnPayload
+from faultmaven.core.investigation.schemas import (
+    InvestigationResponse_Diagnosis,
+    TurnPayload,
+)
 from faultmaven.core.investigation.terminal_transitions import propose_transition
 from faultmaven.models.api_models import IntentType, QueryIntent
 from faultmaven.modules.agent.domain.services.investigation_service.service import (
@@ -764,10 +767,8 @@ class TestTheConfirmationCounter:
         "message",
         [
             "ok go ahead",
-            "sure, close it",
             "ok yes",
             "lgtm, confirmed",
-            "yes please close it",
             "ok, don't close it yet",
         ],
     )
@@ -1031,14 +1032,30 @@ class TestOnlyAClickOrABareTokenExecutes:
             via="explicit_token", to_state="resolved"
         )
 
-    async def test_close_it_does_not_confirm_a_pending_resolve(self, counters):
+    @pytest.mark.parametrize(
+        "message", ["close it", "sure, close it", "yes please close it"]
+    )
+    async def test_close_it_does_not_confirm_a_pending_resolve(self, counters, message):
+        """Nor is it re-asked (#2222): no offered choice answers a request to
+        close, so it escapes the gate, which withdraws the resolve offer and
+        hands the message to the model, as with no resolve control on screen."""
         confirmation, _ = counters
         store = _Store(_investigating_case())
         _sign_the_offer(store)
+        svc = _service(store)
+        svc.engine.generator.generate_structured_output = AsyncMock(
+            return_value=InvestigationResponse_Diagnosis(
+                agent_response="Noted.", state_updates={}
+            )
+        )
 
-        response = await _turn(_service(store), "close it")
+        response = await _turn(svc, message)
 
-        _assert_re_asked(store, response)
+        svc.engine.generator.generate_structured_output.assert_awaited_once()
+        assert "Please select one of the options above" not in response.agent_response
+        assert store.row().state == CaseState.INVESTIGATING
+        assert store.row().pending_transition is None
+        assert store.row().turn_history[-1].terminal_confirmed_via is None
         confirmation.labels.assert_not_called()
 
     async def test_close_it_closes_a_pending_close(self, counters):
