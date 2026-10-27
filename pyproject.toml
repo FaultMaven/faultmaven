@@ -186,10 +186,11 @@ cloud = [
     # Observability (Opik tracing, Prometheus metrics)
     "opik>=1.11.13",
     # Transitive via opik and never imported by FaultMaven; declared solely
-    # to floor it at the release that patches the ten LiteLLM Proxy
-    # advisories (critical GHSA-4xpc-pv4p-pm3w / GHSA-r75f-5x8p-qvmc among
-    # them). Held back for months by the pydantic ceiling lifted above.
-    "litellm>=1.84.0",
+    # to floor it. >=1.84.0: the ten LiteLLM Proxy advisories (critical
+    # GHSA-4xpc-pv4p-pm3w / GHSA-r75f-5x8p-qvmc among them), held back for
+    # months by the pydantic ceiling lifted above. >=1.100.4:
+    # CVE-2026-114612 / GHSA-7hp6-4w63-5g45.
+    "litellm>=1.100.4",
     "prometheus-client>=0.20.0",
 
     # Security (Presidio PII redaction)
