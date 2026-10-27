@@ -23,6 +23,10 @@ from faultmaven.modules.case.contracts import (
 )
 from faultmaven.modules.case.domain.models.case import Case
 from tests.model_content import disabled_redaction
+from tests.unit.modules.agent.tools.leaky_failure import (
+    assert_reported_by_class,
+    leaky_error,
+)
 
 
 def _case_with_orphan_file() -> Case:
@@ -158,3 +162,18 @@ async def test_deep_analysis_reads_both_stored_vocabularies(stored, expected):
 
     assert result.success, result.error
     assert tier2.analyze.await_args.kwargs["data_type"] is UnifiedDataType(expected)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_analysis_names_its_class_not_its_text(caplog):
+    """#2332: the model reads the class; the server log, the text."""
+    tier2 = _fake_tier2()
+    tier2.analyze.side_effect = leaky_error()
+    case = _case_with_orphan_file()
+
+    result = await DeepAnalysisTool(tier2_service=tier2).execute_with_context(
+        {"evidence_id": "file_fa0e00000001", "query": "anything"}, _ctx(case)
+    )
+
+    assert result.success is False
+    assert_reported_by_class(result.error, caplog.text)

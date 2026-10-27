@@ -11,7 +11,13 @@ import logging
 from typing import Any, Dict, Optional
 
 from faultmaven.models.interfaces import ToolResult
-from faultmaven.modules.agent.tools.base import AgentTool, ToolContext, tool_registry
+from faultmaven.modules.agent.tools.base import (
+    AgentTool,
+    ToolContext,
+    tool_failure,
+    tool_registry,
+)
+from faultmaven.utils.exception_name import exception_class_name
 
 logger = logging.getLogger(__name__)
 
@@ -189,11 +195,13 @@ class ReadFileTool(AgentTool):
             try:
                 file_data = await storage.retrieve_file(storage_ref)
             except Exception as e:
-                return ToolResult(
-                    success=False,
-                    data=None,
-                    error=f"Could not read evidence file: {e}",
+                # The class only: the storage service logged a read failure's
+                # text itself, and a missing file is an expected outcome.
+                logger.warning(
+                    f"Could not read evidence file for evidence {evidence_id} "
+                    f"({exception_class_name(e)})"
                 )
+                return tool_failure("Could not read evidence file", e)
 
             # Domain Evidence has no mime_type; infer a loose default so the
             # text-vs-binary heuristics in _process_file_content keep working.
@@ -206,6 +214,7 @@ class ReadFileTool(AgentTool):
                 max_lines=max_lines,
                 offset=offset,
                 display_name=shown_name,
+                evidence_id=evidence_id,
             )
 
             logger.info(
@@ -227,11 +236,7 @@ class ReadFileTool(AgentTool):
 
         except Exception as e:
             logger.exception(f"Failed to read evidence {evidence_id}: {e}")
-            return ToolResult(
-                success=False,
-                data=None,
-                error=f"Failed to read evidence: {str(e)}",
-            )
+            return tool_failure("Failed to read evidence", e)
 
     def _process_file_content(
         self,
@@ -241,6 +246,7 @@ class ReadFileTool(AgentTool):
         max_lines: Optional[int] = None,
         offset: int = 0,
         display_name: Optional[str] = None,
+        evidence_id: Optional[str] = None,
     ) -> str:
         """Process file content based on type.
 
@@ -256,6 +262,8 @@ class ReadFileTool(AgentTool):
                 the LLM reads. Defaults to ``filename``; the caller passes
                 ``UploadedFile.display_name`` so a minted
                 ``pasted-content-<ts>.txt`` never reaches the model (#666).
+            evidence_id: The evidence being read, for the log line a failed
+                read writes: the only copy of the exception's text.
 
         Returns:
             Processed content as string
@@ -263,11 +271,15 @@ class ReadFileTool(AgentTool):
         shown = display_name or filename
         # Check if file is too large
         if len(file_data) > MAX_TEXT_SIZE and max_lines is None:
-            return self._handle_large_file(file_data, shown, mime_type)
+            return self._handle_large_file(
+                file_data, shown, mime_type, evidence_id=evidence_id
+            )
 
         # Check if it's a text file
         if self._is_text_file(mime_type, filename):
-            return self._process_text_file(file_data, max_lines, offset)
+            return self._process_text_file(
+                file_data, max_lines, offset, evidence_id=evidence_id
+            )
 
         # Check if it's an image
         if mime_type.startswith("image/"):
@@ -335,6 +347,8 @@ class ReadFileTool(AgentTool):
         file_data: bytes,
         max_lines: Optional[int] = None,
         offset: int = 0,
+        *,
+        evidence_id: Optional[str] = None,
     ) -> str:
         """Process text file content with optional line limits."""
         try:
@@ -369,13 +383,16 @@ class ReadFileTool(AgentTool):
             return content
 
         except Exception as e:
-            return f"[Error reading file: {str(e)}]"
+            logger.exception(f"Failed to read text of evidence {evidence_id}: {e}")
+            return f"[Error reading file: {exception_class_name(e)}]"
 
     def _handle_large_file(
         self,
         file_data: bytes,
         filename: str,
         mime_type: str,
+        *,
+        evidence_id: Optional[str] = None,
     ) -> str:
         """Handle large files by returning a summary."""
         try:
@@ -418,8 +435,12 @@ class ReadFileTool(AgentTool):
             return "\n".join(result)
 
         except Exception as e:
+            logger.exception(
+                f"Failed to summarize large file of evidence {evidence_id}: {e}"
+            )
             return (
-                f"[Large file: {filename}, {len(file_data)} bytes, error reading: {e}]"
+                f"[Large file: {filename}, {len(file_data)} bytes, "
+                f"error reading: {exception_class_name(e)}]"
             )
 
     def _summarize_image(

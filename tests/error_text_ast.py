@@ -185,7 +185,7 @@ _UNBOUND_EXCEPTION_RENDERERS = frozenset(
 )
 
 
-def _mentions(node: ast.AST, name: str) -> bool:
+def _mentions(node: ast.AST, name: str, *, text_only: bool = False) -> bool:
     """Can the *value* of ``node`` carry text from the exception bound to ``name``?
 
     Not a plain ``ast.walk`` for ``Name``: reading the exception is not the same
@@ -204,14 +204,75 @@ def _mentions(node: ast.AST, name: str) -> bool:
 
     Everything else over-approximates deliberately: an unrecognised call that
     receives the exception is assumed to carry it.
+
+    ``text_only`` adds a third: a call whose result carries none of its
+    arguments' text (``_text_carrying_args``: the exception's class, a bool or
+    a count) carries only the arguments it renders. The tool-result guard asks
+    with it (#2332); the HTTP guards do not, and keep their reviewed
+    ``type(e).__name__`` allowlist entry.
     """
     if isinstance(node, ast.Name):
         return node.id == name
     if isinstance(node, ast.Compare):
         return False
     if isinstance(node, ast.IfExp):
-        return _mentions(node.body, name) or _mentions(node.orelse, name)
-    return any(_mentions(child, name) for child in ast.iter_child_nodes(node))
+        return _mentions(node.body, name, text_only=text_only) or _mentions(
+            node.orelse, name, text_only=text_only
+        )
+    if text_only and isinstance(node, ast.Call):
+        carried = _text_carrying_args(node)
+        if carried is not None:
+            return any(_mentions(arg, name, text_only=True) for arg in carried)
+    return any(
+        _mentions(child, name, text_only=text_only)
+        for child in ast.iter_child_nodes(node)
+    )
+
+
+#: Calls whose result carries none of their arguments' text (#2332): the
+#: exception's class (``exception_class_name(e)``, ``type(e)``), or a bool or a
+#: count (``isinstance``, ``any``, ``len``, ...).
+_TEXT_FREE_CALLS = frozenset(
+    {"exception_class_name", "type", "isinstance", "issubclass", "any", "all"}
+    | {"bool", "len"}
+)
+
+#: Calls that render one argument by its class and the rest as text, with that
+#: argument's position and keyword: ``tool_failure(reason, exc, guidance=...)``
+#: puts ``reason`` and ``guidance`` in front of the model, and ``exc`` only by
+#: class.
+_CLASS_ONLY_ARGUMENT = {"tool_failure": (1, "exc")}
+
+
+def _text_carrying_args(call: ast.Call) -> list[ast.AST] | None:
+    """The arguments ``call``'s result still carries as text; ``None`` when it
+    is no call this module knows, so every argument counts."""
+    name = _terminal_name(call.func)
+    if name in _TEXT_FREE_CALLS:
+        return []
+    if name in _CLASS_ONLY_ARGUMENT:
+        position, keyword = _CLASS_ONLY_ARGUMENT[name]
+        return [arg for i, arg in enumerate(call.args) if i != position] + [
+            kw.value for kw in call.keywords if kw.arg != keyword
+        ]
+    return None
+
+
+def _walk_text(node: ast.AST, text_only: bool):
+    """``ast.walk``, minus the arguments whose text a call's result drops."""
+    if not text_only:
+        yield from ast.walk(node)
+        return
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        yield current
+        if isinstance(current, ast.Call):
+            carried = _text_carrying_args(current)
+            if carried is not None:
+                stack.extend(carried)
+                continue
+        stack.extend(ast.iter_child_nodes(current))
 
 
 def _written_name(target: ast.AST) -> str | None:
@@ -376,22 +437,26 @@ def _carries_exception(
     exc_name: str,
     assigns: dict[str, list[ast.AST]],
     _depth: int = 0,
+    *,
+    text_only: bool = False,
 ) -> bool:
     """Does ``expr`` carry the exception named ``exc_name``, directly or via a
     local alias?
 
     ``exc_name`` is a handler's ``as`` name or an exception parameter; the
-    question is the same either way.
+    question is the same either way. ``text_only``: see ``_mentions``.
     """
-    if _mentions(expr, exc_name):
+    if _mentions(expr, exc_name, text_only=text_only):
         return True
     if _depth >= _MAX_ALIAS_DEPTH:
         return False
-    for child in ast.walk(expr):
+    for child in _walk_text(expr, text_only):
         if not isinstance(child, ast.Name) or child.id == exc_name:
             continue
         for value in assigns.get(child.id, ()):
-            if _carries_exception(value, exc_name, assigns, _depth + 1):
+            if _carries_exception(
+                value, exc_name, assigns, _depth + 1, text_only=text_only
+            ):
                 return True
     return False
 
@@ -1203,7 +1268,9 @@ class _Taint(NamedTuple):
     broad: bool
 
 
-def _tainted_names(handlers: list[ast.ExceptHandler]) -> dict[str, _Taint]:
+def _tainted_names(
+    handlers: list[ast.ExceptHandler], *, text_only: bool = False
+) -> dict[str, _Taint]:
     """Names bound in these handlers to the exception, and where that happens.
 
     ``broad`` is True when ANY handler tainting the name is a broad one, which
@@ -1236,7 +1303,10 @@ def _tainted_names(handlers: list[ast.ExceptHandler]) -> dict[str, _Taint]:
         broad = _is_broad_handler_type(handler.type)
         assigns = _local_assignments(handler)
         for name, values in assigns.items():
-            if any(_carries_exception(v, handler.name, assigns) for v in values):
+            if any(
+                _carries_exception(v, handler.name, assigns, text_only=text_only)
+                for v in values
+            ):
                 seen = tainted.get(name, _Taint(handler.lineno, False))
                 tainted[name] = _Taint(
                     min(seen.line, handler.lineno), seen.broad or broad
@@ -1341,6 +1411,98 @@ def _names_in(expr: ast.AST) -> set[str]:
     """
     found: set[str] = set()
     for node in ast.walk(expr):
+        if isinstance(node, ast.Name):
+            found.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            dotted = _dotted_name(node)
+            if dotted:
+                found.add(dotted)
+    return found
+
+
+def tool_result_leak_sites(path: pathlib.Path, *, returns: bool) -> list[str]:
+    """``file:line`` for every tool result carrying a caught exception's text.
+
+    A tool's result goes into the model's context, and the model can repeat
+    it into the stored answer every reader of the case is served (#2332). Two
+    sinks:
+
+    * a ``ToolResult(...)`` whose ``error`` or ``data`` carries the text;
+    * with ``returns``, any ``return`` carrying it. A tool's helpers hand back
+      strings that become its result: ``read_file``'s content readers,
+      ``search_file``'s resolver. Asked of ``modules/agent/tools/`` only,
+      where a returned value is a tool's.
+
+    Carried inside the handler, or after it through a local the handler
+    tainted, as the returned-body pass does; or from an exception PARAMETER
+    (``_exception_params``), the helper twin, which is what ``tool_failure``
+    itself is. Any handler type: a typed arm can carry a key or a path as well
+    as a broad one can, so the guard's allowlist names the typed arms whose
+    every raiser writes for the caller. An exception's class is not its text
+    (``_text_carrying_args``).
+    """
+    tree = parse_file(path)
+    exception_classes = _module_exception_classes(tree)
+    offenders: list[str] = []
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        own = list(_own_nodes(fn))
+        handlers = [n for n in own if isinstance(n, ast.ExceptHandler) and n.name]
+        params = [name for name, _ in _exception_params(fn, exception_classes)]
+        if not handlers and not params:
+            continue
+        tainted = _tainted_names(handlers, text_only=True)
+        owner = {id(n): h for h in handlers for n in ast.walk(h)}
+        assigns = {id(h): _local_assignments(h) for h in handlers}
+        fn_assigns = _local_assignments(fn) if params else {}
+        for node in own:
+            carried = _tool_result_text(node, returns)
+            if carried is None:
+                continue
+            leaks = _renders_the_live_exception(carried) or any(
+                name in tainted and node.lineno > tainted[name].line
+                for name in _text_names(carried)
+            )
+            handler = owner.get(id(node))
+            if not leaks and handler is not None:
+                leaks = _carries_exception(
+                    carried, handler.name, assigns[id(handler)], text_only=True
+                )
+            if not leaks:
+                leaks = any(
+                    _carries_exception(carried, name, fn_assigns, text_only=True)
+                    for name in params
+                )
+            if leaks:
+                offenders.append(f"{path.name}:{node.lineno}")
+    return sorted(set(offenders), key=lambda s: int(s.rsplit(":", 1)[1]))
+
+
+def _is_tool_result(node: ast.AST | None) -> bool:
+    return isinstance(node, ast.Call) and _terminal_name(node.func) == "ToolResult"
+
+
+def _tool_result_text(node: ast.AST, returns: bool) -> ast.AST | None:
+    """What ``node`` puts in front of the model, or ``None``.
+
+    A ``ToolResult``'s ``data`` and ``error`` (by keyword, or second and third
+    positional), not its flags; with ``returns``, a returned value that is not
+    a ``ToolResult``, which is read as one already.
+    """
+    if _is_tool_result(node):
+        shown = [kw.value for kw in node.keywords if kw.arg in {"data", "error"}]
+        shown += node.args[1:3]
+        return ast.Tuple(elts=shown, ctx=ast.Load()) if shown else None
+    if returns and isinstance(node, ast.Return) and not _is_tool_result(node.value):
+        return node.value
+    return None
+
+
+def _text_names(expr: ast.AST) -> set[str]:
+    """``_names_in``, minus the arguments whose text a call's result drops."""
+    found: set[str] = set()
+    for node in _walk_text(expr, True):
         if isinstance(node, ast.Name):
             found.add(node.id)
         elif isinstance(node, ast.Attribute):

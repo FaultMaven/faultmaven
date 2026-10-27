@@ -19,6 +19,10 @@ from faultmaven.modules.agent.tools.vectorize_file_tool import (
     append_vectorization_advisory,
 )
 from tests.model_content import disabled_redaction
+from tests.unit.modules.agent.tools.leaky_failure import (
+    assert_reported_by_class,
+    leaky_error,
+)
 
 
 def _make_evidence(
@@ -189,6 +193,33 @@ class TestVectorization:
         assert call_kwargs["case_id"] == "case_123"
         assert call_kwargs["evidence_id"] == "ev_abc"
         assert "Structural index" in call_kwargs["structural_index"]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_case_read_names_its_class_not_its_text(
+        self, tool, mock_settings, caplog
+    ):
+        """#2332: the model reads the class and what it may conclude; the
+        server log, the text. The case read cannot fail in production, where
+        the context carries the turn's case; this pins the catch-all's text
+        for a defect that reaches it (the store catches everything itself)."""
+        repo = MagicMock()
+        repo.get = AsyncMock(side_effect=leaky_error())
+        context = ToolContext(
+            session_id="sess_1",
+            case_id="case_123",
+            enterprise_id="org_1",
+            user_id="user_1",
+            case_repository=repo,
+            redaction_ctx=disabled_redaction(),
+        )
+
+        result = await tool.execute_with_context(
+            params={"evidence_id": "ev_abc"}, context=context
+        )
+
+        assert result.success is False
+        assert "says nothing about its contents" in result.error
+        assert_reported_by_class(result.error, caplog.text)
 
     @pytest.mark.asyncio
     async def test_no_preprocessed_content(self, tool, mock_settings):

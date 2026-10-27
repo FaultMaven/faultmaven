@@ -20,7 +20,7 @@ import logging
 from typing import Any, Dict
 
 from faultmaven.models.interfaces import ToolResult
-from faultmaven.modules.agent.tools.base import AgentTool, ToolContext
+from faultmaven.modules.agent.tools.base import AgentTool, ToolContext, tool_failure
 from faultmaven.modules.case.domain.models.evidence import EntityType
 
 logger = logging.getLogger(__name__)
@@ -135,11 +135,7 @@ class ListTopEntitiesTool(AgentTool):
                 raw_type,
                 e,
             )
-            return ToolResult(
-                success=False,
-                data=None,
-                error=f"Top-entity query failed: {e}",
-            )
+            return tool_failure("Top-entity query failed", e)
 
         return ToolResult(
             success=True,

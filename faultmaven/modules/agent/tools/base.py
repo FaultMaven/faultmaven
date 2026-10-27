@@ -12,9 +12,10 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from faultmaven.exceptions import RawModelContentRefused
+from faultmaven.exceptions import RawModelContentRefused, walk_cause_chain
 from faultmaven.infrastructure.security.case_redaction import CaseRedactionContext
 from faultmaven.models.interfaces import BaseTool, IAgentToolRegistry, ToolResult
+from faultmaven.utils.exception_name import exception_class_name
 
 logger = logging.getLogger(__name__)
 
@@ -253,6 +254,47 @@ class AgentTool(BaseTool, ABC):
         return isinstance(value, expected)
 
 
+#: Timeouts that subclass no builtin ``TimeoutError``: the S3 storage
+#: backend's (botocore is an optional install, so they are named, not imported).
+_LIBRARY_TIMEOUTS = frozenset(
+    {"botocore.exceptions.ReadTimeoutError", "botocore.exceptions.ConnectTimeoutError"}
+)
+
+
+def _timed_out(exc: BaseException) -> bool:
+    """Is ``exc``, or an exception it was raised ``from``, a timeout?
+
+    By class, never by message. The chain matters because a storage timeout
+    reaches a tool wrapped: ``FileStorageService.retrieve_file`` raises
+    ``ServiceError`` from the backend's error. ``TimeoutError`` covers
+    ``asyncio.TimeoutError``, ``socket.timeout`` and
+    ``concurrent.futures.TimeoutError`` (aliases of it since Python 3.11), and
+    ``DatabaseTimeout`` and ``ExternalCallTimeout``.
+    """
+    return any(
+        isinstance(link, TimeoutError)
+        or f"{type(link).__module__}.{type(link).__qualname__}" in _LIBRARY_TIMEOUTS
+        for link in walk_cause_chain(exc)
+    )
+
+
+def tool_failure(reason: str, exc: BaseException, *, guidance: str = "") -> ToolResult:
+    """A failed result naming ``exc``'s class, never its text (#2332).
+
+    A tool's result goes into the model's context, and the model can repeat it
+    into the stored answer every reader of the case is served. An exception's
+    text can carry a connection URI, SQL with its values, or an internal host or
+    storage key, so the model is told the failure, the exception's class and
+    what it may conclude (``guidance``). The caller logs the text. Whether the
+    failure was a timeout is recorded as ``timed_out``, for code that reacts to
+    one.
+    """
+    error = f"{reason} ({exception_class_name(exc)})."
+    if guidance:
+        error = f"{error} {guidance}"
+    return ToolResult(success=False, data=None, error=error, timed_out=_timed_out(exc))
+
+
 class AgentToolRegistry(IAgentToolRegistry):
     """Registry for agent-specific tools.
 
@@ -348,11 +390,7 @@ class AgentToolRegistry(IAgentToolRegistry):
             raise
         except Exception as e:
             logger.exception(f"Tool '{tool_name}' execution failed: {e}")
-            return ToolResult(
-                success=False,
-                data=None,
-                error=f"Tool execution failed: {str(e)}",
-            )
+            return tool_failure("Tool execution failed", e)
 
     def clear(self) -> None:
         """Clear all registered tools (useful for testing)."""

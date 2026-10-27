@@ -25,12 +25,17 @@ class ToolResult(BaseModel):
     Attributes:
         success: Whether the tool execution was successful
         data: The data returned by the tool
-        error: Error message if execution failed
+        error: Error message if execution failed. A fixed reason, never an
+            exception's text (#2332), so code never reads a kind of failure
+            out of it.
+        timed_out: The failure was a timeout, decided by exception class
+            (``tool_failure``). What the engine reacts to a timeout on.
     """
 
     success: bool
     data: Any
     error: Optional[str] = None
+    timed_out: bool = False
 
 
 class BaseTool(ABC):

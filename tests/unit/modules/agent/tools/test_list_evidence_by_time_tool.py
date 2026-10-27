@@ -14,6 +14,10 @@ from faultmaven.modules.agent.tools.list_evidence_by_time_tool import (
     ListEvidenceByTimeTool,
 )
 from tests.model_content import disabled_redaction
+from tests.unit.modules.agent.tools.leaky_failure import (
+    assert_reported_by_class,
+    leaky_error,
+)
 
 
 def _ctx() -> ToolContext:
@@ -128,13 +132,11 @@ class TestDelegation:
         assert ev["coverage_end_ts"] == "2026-04-23T14:30:00+00:00"
 
     @pytest.mark.asyncio
-    async def test_repo_exception_becomes_tool_error(self, tool, repo):
-        repo.list_evidence_by_time_window.side_effect = RuntimeError(
-            "DB connection lost"
-        )
+    async def test_repo_exception_becomes_tool_error(self, tool, repo, caplog):
+        repo.list_evidence_by_time_window.side_effect = leaky_error()
         result = await tool.execute_with_context(params={}, context=_ctx())
         assert result.success is False
-        assert "DB connection lost" in result.error
+        assert_reported_by_class(result.error, caplog.text)
 
 
 # ---------------------------------------------------------------------------

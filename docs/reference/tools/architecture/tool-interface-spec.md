@@ -283,12 +283,15 @@ async def execute(self, params: Dict) -> ToolResult:
 
 Tools must handle errors gracefully:
 ```python
+from faultmaven.modules.agent.tools.base import tool_failure
+
 async def execute(self, params: Dict) -> ToolResult:
     try:
         result = await self._do_work(params)
         return ToolResult(success=True, data=result)
-    except TimeoutError:
-        return ToolResult(success=False, error="Operation timed out")
+    except TimeoutError as e:
+        # Records timed_out, which the engine reads (#2332).
+        return tool_failure("Operation timed out", e)
     except Exception as e:
         self.logger.error(f"Unexpected error: {e}")
         return ToolResult(success=False, error="Internal tool error")
@@ -418,8 +421,8 @@ ToolResult(success=False, error="Missing required parameter: query")
 # External service errors
 ToolResult(success=False, error="API rate limit exceeded. Retry after 60s")
 
-# Timeout errors
-ToolResult(success=False, error="Operation timed out after 30s")
+# Timeout errors: "Operation timed out (TimeoutError).", with timed_out set
+tool_failure("Operation timed out", exc)
 
 # Internal errors
 ToolResult(success=False, error="Internal tool error. See logs for details")

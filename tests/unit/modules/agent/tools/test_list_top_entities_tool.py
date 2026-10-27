@@ -17,6 +17,10 @@ from faultmaven.modules.agent.tools.list_top_entities_tool import (
 )
 from faultmaven.modules.case.domain.models.evidence import CaseEntity, EntityType
 from tests.model_content import disabled_redaction
+from tests.unit.modules.agent.tools.leaky_failure import (
+    assert_reported_by_class,
+    leaky_error,
+)
 
 
 def _ctx() -> ToolContext:
@@ -123,8 +127,8 @@ class TestExecute:
         assert repo.list_top_entities.await_args.kwargs["limit"] == 10
 
     @pytest.mark.asyncio
-    async def test_repo_exception_degrades_to_error_result(self, tool, repo):
-        repo.list_top_entities.side_effect = RuntimeError("boom")
+    async def test_repo_exception_degrades_to_error_result(self, tool, repo, caplog):
+        repo.list_top_entities.side_effect = leaky_error()
         result = await tool.execute_with_context({"entity_type": "ip"}, _ctx())
         assert result.success is False
-        assert "boom" in result.error
+        assert_reported_by_class(result.error, caplog.text)

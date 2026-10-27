@@ -119,6 +119,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.types import Tool as MCPTool
 
 from faultmaven.models.interfaces import BaseTool, ToolResult
+from faultmaven.modules.agent.tools.base import tool_failure
 from faultmaven.tools.registry import register_tool
 
 
@@ -231,10 +232,12 @@ class MCPClientTool(BaseTool):
                 )
 
         except Exception as e:
-            self.logger.error(f"MCP client tool failed: {e}")
-            return ToolResult(
-                success=False,
-                error=f"MCP execution failed: {str(e)}"
+            # The text goes to the log; the model reads the class (#2332).
+            self.logger.exception(f"MCP client tool failed: {e}")
+            return tool_failure(
+                "MCP execution failed",
+                e,
+                guidance="This says nothing about what the MCP server holds.",
             )
 
     def get_schema(self) -> Dict[str, Any]:

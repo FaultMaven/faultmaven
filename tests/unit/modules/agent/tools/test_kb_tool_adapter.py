@@ -14,6 +14,10 @@ from faultmaven.modules.agent.tools.kb_tool_adapter import (
     KBToolAdapter,
 )
 from tests.model_content import disabled_redaction
+from tests.unit.modules.agent.tools.leaky_failure import (
+    assert_reported_by_class,
+    leaky_error,
+)
 
 #: A case scope as ``case_retrieval_scope`` builds it for a shared case.
 CASE_SCOPE = {
@@ -109,16 +113,6 @@ class TestKBToolAdapter:
         assert result.success is False
         assert "No question" in result.error
 
-    @pytest.mark.asyncio
-    async def test_handles_tool_failure(self, mock_kb_tool, context):
-        mock_kb_tool._arun.side_effect = Exception("ChromaDB unavailable")
-        adapter = KBToolAdapter(wrapped_tool=mock_kb_tool)
-
-        result = await adapter.execute_with_context({"question": "test"}, context)
-
-        assert result.success is False
-        assert "failed" in result.error.lower()
-
     def test_adapter_name(self, mock_kb_tool):
         adapter = KBToolAdapter(wrapped_tool=mock_kb_tool)
         assert adapter.name == "kb_qa"
@@ -151,15 +145,30 @@ class TestCaseEvidenceQAAdapter:
             empty_result=CaseEvidenceConfig().empty_result_message,
         )
 
-    @pytest.mark.asyncio
-    async def test_handles_tool_failure(self, mock_case_evidence_tool, context):
-        mock_case_evidence_tool._arun.side_effect = Exception("Search failed")
-        adapter = CaseEvidenceQAAdapter(wrapped_tool=mock_case_evidence_tool)
-
-        result = await adapter.execute_with_context({"question": "test"}, context)
-
-        assert result.success is False
-
     def test_adapter_name(self, mock_case_evidence_tool):
         adapter = CaseEvidenceQAAdapter(wrapped_tool=mock_case_evidence_tool)
         assert adapter.name == "case_evidence_search"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "adapter_cls, guidance",
+    [
+        (KBToolAdapter, "draw no conclusion about what it holds"),
+        (CaseEvidenceQAAdapter, "draw no conclusion about the case's evidence"),
+    ],
+)
+async def test_a_failed_search_names_its_class_and_keeps_its_guidance(
+    adapter_cls, guidance, context, caplog
+):
+    """#2332: the class and the #943 guidance reach the model, the text the log."""
+    wrapped = AsyncMock()
+    wrapped._arun = AsyncMock(side_effect=leaky_error())
+
+    result = await adapter_cls(wrapped_tool=wrapped).execute_with_context(
+        {"question": "test"}, context
+    )
+
+    assert result.success is False
+    assert guidance in result.error
+    assert_reported_by_class(result.error, caplog.text)

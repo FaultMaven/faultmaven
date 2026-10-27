@@ -22,6 +22,10 @@ from faultmaven.modules.agent.tools.reclassify_evidence_tool import (
     ReclassifyEvidenceTool,
 )
 from tests.model_content import disabled_redaction
+from tests.unit.modules.agent.tools.leaky_failure import (
+    assert_reported_by_class,
+    leaky_error,
+)
 
 #: Sentinel: ``_ctx(None)`` means "no in-flight case", which is a real
 #: (and refused) shape, so it cannot also be the default.
@@ -204,6 +208,43 @@ class TestReclassifierDelegation:
             )
         assert result.success is False
         assert "no stored raw file" in result.error
+
+    @pytest.mark.asyncio
+    async def test_an_unexpected_error_names_its_class_not_its_text(
+        self, tool, reclassifier, caplog
+    ):
+        """#2332: the catch-all. The typed arms above carry authored messages."""
+        reclassifier.reclassify_in_turn.side_effect = leaky_error()
+        with _enable_flag(True):
+            result = await tool.execute_with_context(
+                params={"evidence_id": "ev_abc", "data_type": "logs_and_errors"},
+                context=_ctx(),
+            )
+        assert result.success is False
+        assert_reported_by_class(result.error, caplog.text)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "raised, reported",
+        [
+            (NotFoundError("Evidence", "ev_abc"), "was not found in this case"),
+            # What the storage read raises: the key is internal (#2332).
+            (
+                NotFoundError("File", "org_1/case_xyz/2026-10-27/abc_app.log"),
+                "has no stored file to re-extract",
+            ),
+        ],
+    )
+    async def test_not_found_names_the_evidence_not_the_key(
+        self, tool, reclassifier, raised, reported
+    ):
+        reclassifier.reclassify_in_turn.side_effect = raised
+        with _enable_flag(True):
+            result = await tool.execute_with_context(
+                params={"evidence_id": "ev_abc", "data_type": "logs_and_errors"},
+                context=_ctx(),
+            )
+        assert result.error == f"Evidence ev_abc {reported}."
 
     @pytest.mark.asyncio
     async def test_the_in_flight_case_is_forwarded(self, tool, reclassifier):
