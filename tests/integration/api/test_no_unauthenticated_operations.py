@@ -863,93 +863,42 @@ def test_the_debug_router_in_production_is_an_explicit_opt_in():
 
 
 #: Operations that ARE gated but resolve a collaborator before the gate — the
-#: #1467 shape, carried rather than fixed. **#1494.**
+#: #1467 shape. **Closed by #1494**; no operation is carried.
 #:
 #: The predicate below is quantified over the WHOLE application, not over the
 #: five debug routes it was written for, because a rule applied to five routes
 #: out of 147 is a rule about five routes. Run app-wide it first reported 51
 #: operations, every one of them a SERVICE provider: an anonymous caller to
-#: ``GET /api/v1/knowledge/documents/{document_id}`` reaches
-#: ``get_knowledge_service`` before the gate, and whatever that provider does
-#: on a degraded deployment is what the caller gets in place of the 401 the
-#: route promises. Not a disclosure — the gate still runs if the provider
-#: succeeds — a wrong refusal, and the class #1447 was.
+#: ``GET /api/v1/knowledge/documents/{document_id}`` reached
+#: ``get_knowledge_service`` before the gate, and whatever that provider did
+#: on a degraded deployment was what the caller got in place of the 401 the
+#: route promises. Not a disclosure — the gate still ran if the provider
+#: succeeded — a wrong refusal, and the class #1447 was.
 #:
-#: **11 remain**, after two slices, each one blocker wide. Both moved the gate
-#: onto the decorator's ``dependencies=[...]``, ahead of every collaborator,
-#: keeping the ``current_user`` parameter where the handler reads the principal
-#: — FastAPI caches a dependency per request, so it still resolves once.
+#: Every slice moved the gate onto the decorator's ``dependencies=[...]``,
+#: ahead of every collaborator, keeping the ``current_user`` parameter where
+#: the handler reads the principal — FastAPI caches a dependency per request,
+#: so it still resolves once. 7 left with the knowledge-suggestion subsystem
+#: (#1897); the rest are driven against providers made to RAISE, so a 401 is
+#: reachable only if the gate ran first:
 #:
-#: * #1527 fixed the 22 behind ``_di_get_case_service_dependency``. Pinned by
-#:   ``tests/integration/security/test_unauthenticated_case_surface.py``, which
-#:   drives them against providers made to RAISE, because on that router a
-#:   service-less app is not a measurement: ``get_case_service`` returns
-#:   ``None`` rather than raising and ``check_case_service_available`` turned
-#:   that into a 401 of its own (a 503 since #2103), so 19 of the 22
+#: * the 22 behind ``_di_get_case_service_dependency`` (#1527) and
+#:   ``GET /api/v1/cases/{case_id}/uploaded-files`` behind
+#:   ``get_case_service``, by
+#:   ``tests/integration/security/test_unauthenticated_case_surface.py``. On
+#:   that router a service-less app is not a measurement: ``get_case_service``
+#:   returns ``None`` rather than raising, and ``check_case_service_available``
+#:   turned that into a 401 of its own (a 503 since #2103), so 19 of the 22
 #:   answered 401 with the defect fully present.
-#: * The second slice fixed the 11 behind ``_get_conversion_service``, pinned
-#:   by ``tests/integration/security/test_unauthenticated_knowledge_surface.py``
-#:   in the same shape. The knowledge module has NO equivalent masking 401 —
-#:   each of its providers raises a 503 of its own — so there the defect
-#:   was visible on a service-less app: 11 of 11 answered 503. The providers
-#:   are overridden to raise there anyway, so the battery does not depend on
-#:   which failure the provider happens to choose.
+#: * the 11 behind ``_get_conversion_service`` and the 9 behind
+#:   ``get_knowledge_service``, by
+#:   ``tests/integration/security/test_unauthenticated_knowledge_surface.py``.
+#:   Each knowledge provider raises a 503 of its own, so there the defect was
+#:   visible on a service-less app; the providers are overridden anyway, so
+#:   the battery does not depend on which failure a provider happens to choose.
 #:
-#: The remaining 11 — 9 under ``knowledge`` behind ``get_knowledge_service``
-#: and 2 under ``cases`` behind ``get_case_service`` /
-#: ``get_investigation_service`` — are still carried
-#: rather than fixed. They are carried the way ``PUBLIC_OPERATIONS`` carries
-#: its deferrals — with the issue that closes them — and the allowlist fails in
-#: BOTH directions, so the class cannot grow quietly and closing #1494 forces
-#: the entries out.
-#: The disposition for an operation that IS gated but resolves something else
-#: first. Its own word rather than ``_DEFERRED``, because the two say different
-#: things: ``_DEFERRED`` means "open although it should not be", and none of
-#: these is open — the gate runs, it just runs second.
-_MISORDERED = "misordered"
-
-MISORDERED_GATE_OPERATIONS: dict[tuple[str, str], tuple[str, str]] = {
-    ("DELETE", "/api/v1/knowledge/documents/{document_id}"): (
-        _MISORDERED,
-        "knowledge_service=get_knowledge_service resolves first. #1494.",
-    ),
-    ("GET", "/api/v1/cases/{case_id}/uploaded-files"): (
-        _MISORDERED,
-        "case_service=get_case_service resolves first. #1494.",
-    ),
-    ("GET", "/api/v1/knowledge/analytics/search"): (
-        _MISORDERED,
-        "knowledge_service=get_knowledge_service resolves first. #1494.",
-    ),
-    ("GET", "/api/v1/knowledge/documents/{document_id}"): (
-        _MISORDERED,
-        "knowledge_service=get_knowledge_service resolves first. #1494.",
-    ),
-    ("GET", "/api/v1/knowledge/documents/{document_id}/snippet"): (
-        _MISORDERED,
-        "knowledge_service=get_knowledge_service resolves first. #1494.",
-    ),
-    ("GET", "/api/v1/knowledge/stats"): (
-        _MISORDERED,
-        "knowledge_service=get_knowledge_service resolves first. #1494.",
-    ),
-    ("POST", "/api/v1/knowledge/documents"): (
-        _MISORDERED,
-        "knowledge_service=get_knowledge_service resolves first. #1494.",
-    ),
-    ("POST", "/api/v1/knowledge/documents/bulk-delete"): (
-        _MISORDERED,
-        "knowledge_service=get_knowledge_service resolves first. #1494.",
-    ),
-    ("POST", "/api/v1/knowledge/documents/bulk-update"): (
-        _MISORDERED,
-        "knowledge_service=get_knowledge_service resolves first. #1494.",
-    ),
-    ("PUT", "/api/v1/knowledge/documents/{document_id}"): (
-        _MISORDERED,
-        "knowledge_service=get_knowledge_service resolves first. #1494.",
-    ),
-}
+#: There is no allowlist: a gated operation that resolves a collaborator first
+#: fails :func:`test_no_gated_operation_resolves_a_collaborator_before_its_gate`.
 
 #: The four routes #1474 gated: the ones a bare anonymous GET can drive, which
 #: is what :func:`test_the_debug_routes_refuse_anonymous_and_non_operator_callers`
@@ -1060,12 +1009,11 @@ def _gate_failure(dependant) -> str | None:
     # measured difference — stated that way because the measurement says
     # otherwise and the honest version is the useful one.
     #
-    # Measured: on this application both give the same answer, 11 (51 before
-    # #1494's slices moved the 22 case-service and 11 conversion-service
-    # routes' gates onto their decorators, and before #1897 removed the 7
-    # knowledge-suggestion operations). The union's extra members are its
-    # four SERVICE PROVIDERS, and none of the three dependencies currently found
-    # ahead of a gate is one of them — the blockers are case/knowledge service
+    # Measured: on this application both give the same answer, 0 (51 before
+    # #1494's slices moved the gates onto their decorators and #1897 removed
+    # the 7 knowledge-suggestion operations). The union's extra members are its
+    # four SERVICE PROVIDERS, and none of the dependencies ever found ahead of
+    # a gate was one of them — the blockers were case/knowledge service
     # providers, which the sibling never listed because its own question was
     # about auth-module dependencies only.
     #
@@ -1592,18 +1540,11 @@ def test_no_gated_operation_resolves_a_collaborator_before_its_gate():
 
     #1467 found the rule on one route; #1474 wrote a reusable predicate for it
     and then quantified it over a five-element tuple, which is a rule about five
-    routes. Run app-wide it first reported 51 operations of the same shape. 33
-    of them are fixed, one blocker per slice — 22 on the
-    ``_di_get_case_service_dependency`` seam (#1527) and 11 on
-    ``_get_conversion_service`` — and 7 were removed with the
-    knowledge-suggestion subsystem (#1897). The remaining 11 are carried in
-    ``MISORDERED_GATE_OPERATIONS`` with the issue that closes them (#1494),
-    because they span two more seams and want their own review.
-
-    What this guard is FOR is that the class stops growing. It fails in both
-    directions, like ``PUBLIC_OPERATIONS``: a newly mis-ordered operation is not
-    in the allowlist and fails, and an entry that has since been fixed is stale
-    and fails too.
+    routes. Run app-wide it first reported 51 operations of the same shape.
+    7 were removed with the knowledge-suggestion subsystem (#1897) and the
+    rest were fixed one blocker per slice, the last of them by #1494, so the
+    class is closed and nothing is carried: any gated operation that resolves
+    a collaborator before its gate fails here.
 
     Scoped to operations that ARE gated. An operation with no auth dependency at
     all is a different finding and belongs to the two guards above, which is why
@@ -1649,29 +1590,11 @@ def test_no_gated_operation_resolves_a_collaborator_before_its_gate():
         "news) or the predicate stopped firing on the public surface"
     )
 
-    for (method, path), (disposition, reason) in MISORDERED_GATE_OPERATIONS.items():
-        assert (
-            disposition == _MISORDERED
-        ), f"{method} {path}: unknown disposition {disposition!r}"
-        assert (
-            len(reason.strip()) > 20
-        ), f"{method} {path}: a reason has to name what resolves ahead of the gate"
-        assert (
-            "#" in reason
-        ), f"{method} {path}: a carried defect must name the issue that tracks it"
-
-    new_offenders = misordered - set(MISORDERED_GATE_OPERATIONS)
-    assert not new_offenders, (
+    assert not misordered, (
         "these operations carry an auth gate but resolve something else "
         "FIRST, so an anonymous caller reaches that collaborator and gets its "
         "failure instead of the 401 (the #1467 shape). Declare the gate on the "
-        "decorator, ahead of every collaborator:\n" + _format(new_offenders)
-    )
-
-    fixed = set(MISORDERED_GATE_OPERATIONS) - misordered
-    assert not fixed, (
-        "these MISORDERED_GATE_OPERATIONS entries no longer name a "
-        "mis-ordered operation — #1494 is closing, remove them:\n" + _format(fixed)
+        "decorator, ahead of every collaborator:\n" + _format(misordered)
     )
 
 
@@ -1930,7 +1853,7 @@ def test_a_rate_limiter_ahead_of_the_gate_is_not_reported_as_misordered():
     ``dependencies=[Depends(require_oauth_rate_limit_authorize)]`` — the limiter
     FIRST, deliberately. A rate limiter answers 429 and has to apply to callers
     who never authenticate; that is what it is for. They were carried in
-    ``MISORDERED_GATE_OPERATIONS`` for one round, and the failure message told a
+    #1494's allowlist for one round, and the failure message told a
     maintainer to "declare the gate ahead of every collaborator". Following that
     on these two routes would have exempted every anonymous caller from the
     limit on an OAuth endpoint — the allowlist instructing a future round into a
@@ -1944,9 +1867,9 @@ def test_a_rate_limiter_ahead_of_the_gate_is_not_reported_as_misordered():
     The second half is about which set is imported. The excusal must NOT be the
     flat ``NON_MANDATORY_AUTH_DEPENDENCIES``: that union also contains the four
     service providers, and a service provider ahead of a gate IS the #1467
-    shape. Measured honestly — today both sets give the same answer (11),
-    because none of the three dependencies currently found ahead of a gate is
-    one of those four. So this is a guard against a future excusal, not a present
+    shape. Measured honestly — both sets have always given the same answer,
+    because no dependency found ahead of a gate has been one of those four.
+    So this is a guard against a future excusal, not a present
     difference, and it is asserted structurally (the groups stay disjoint)
     rather than by a count that would pass either way.
     """
@@ -2008,9 +1931,6 @@ def test_a_rate_limiter_ahead_of_the_gate_is_not_reported_as_misordered():
             "allowlist tells a maintainer to move the gate in front of the "
             "limiter, which removes rate limiting from anonymous callers"
         )
-        assert path not in {
-            key[1] for key in MISORDERED_GATE_OPERATIONS
-        }, f"{path} is back in MISORDERED_GATE_OPERATIONS; it is not a defect"
 
     # Structural, because a count would pass either way today.
     assert SERVICE_PROVIDER_DEPENDENCIES <= NON_MANDATORY_AUTH_DEPENDENCIES, (
@@ -2029,10 +1949,6 @@ def test_a_rate_limiter_ahead_of_the_gate_is_not_reported_as_misordered():
     assert SERVICE_PROVIDER_DEPENDENCIES, (
         "the service-provider group is empty, so the disjointness assertion "
         "above holds vacuously"
-    )
-    assert MISORDERED_GATE_OPERATIONS, (
-        "the carried set is empty: either #1494 closed, or the excusal widened "
-        "to the flat union and swallowed the remaining 11"
     )
 
 

@@ -405,16 +405,12 @@ SITES = {
         _surface_clone(_CASE_SURFACE, "_case_service_operations", "/pre/canary"),
         _surface_sees(_CASE_SURFACE, "_case_service_operations", "/pre/canary"),
     ),
-    "conversion-service surface (_conversion_service_operations)": Site(
+    "knowledge-service surface (_service_operations)": Site(
         "tests/integration/security/test_unauthenticated_knowledge_surface.py"
-        "::_conversion_service_operations",
+        "::_service_operations",
         _surface_app(_KNOWLEDGE_SURFACE),
-        _surface_clone(
-            _KNOWLEDGE_SURFACE, "_conversion_service_operations", "/pre/canary"
-        ),
-        _surface_sees(
-            _KNOWLEDGE_SURFACE, "_conversion_service_operations", "/pre/canary"
-        ),
+        _surface_clone(_KNOWLEDGE_SURFACE, "_service_operations", "/pre/canary"),
+        _surface_sees(_KNOWLEDGE_SURFACE, "_service_operations", "/pre/canary"),
     ),
     "no-unauthenticated-operations guard (_served_api_routes)": Site(
         "tests/integration/api/test_no_unauthenticated_operations.py"

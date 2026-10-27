@@ -146,6 +146,12 @@ async def get_knowledge_service(request: Request) -> KnowledgeService:
     return service
 
 
+# A route that requires a caller declares the gate on the decorator as well as
+# ``current_user``: FastAPI solves ``dependencies=[...]`` first, so an anonymous
+# caller gets a 401 rather than this provider's 503 (#1494). The parameter copy
+# is cached per request, so the gate still runs once.
+
+
 async def _resolve_team_ids(request: Request, user_id: Optional[str]) -> List[str]:
     """Resolve the caller's team memberships for read-visibility checks.
 
@@ -290,7 +296,9 @@ SUGGESTED_DOCUMENT_TYPES = {
 
 
 # (No legacy router paths)
-@router.post("/documents", status_code=201)
+@router.post(
+    "/documents", status_code=201, dependencies=[Depends(require_authentication)]
+)
 @trace("api_upload_document")
 async def upload_document(
     file: UploadFile = File(...),
@@ -590,7 +598,7 @@ async def list_documents(
         raise HTTPException(status_code=500, detail="Failed to list documents")
 
 
-@router.get("/documents/{document_id}")
+@router.get("/documents/{document_id}", dependencies=[Depends(require_authentication)])
 async def get_document(
     document_id: str,
     request: Request,
@@ -636,7 +644,9 @@ async def get_document(
         raise HTTPException(status_code=500, detail="Failed to retrieve document")
 
 
-@router.get("/documents/{document_id}/snippet")
+@router.get(
+    "/documents/{document_id}/snippet", dependencies=[Depends(require_authentication)]
+)
 @trace("api_get_document_snippet")
 async def get_document_snippet(
     document_id: str,
@@ -772,7 +782,11 @@ async def get_document_snippet(
         raise HTTPException(status_code=500, detail="Failed to get document snippet")
 
 
-@router.delete("/documents/{document_id}", status_code=204)
+@router.delete(
+    "/documents/{document_id}",
+    status_code=204,
+    dependencies=[Depends(require_authentication)],
+)
 async def delete_document(
     document_id: str,
     request: Request,
@@ -1052,7 +1066,7 @@ async def fulltext_search_documents(
         raise HTTPException(status_code=500, detail="Full-text search failed")
 
 
-@router.put("/documents/{document_id}")
+@router.put("/documents/{document_id}", dependencies=[Depends(require_authentication)])
 async def update_document(
     document_id: str,
     update_data: dict,
@@ -1165,7 +1179,7 @@ async def update_document(
         raise HTTPException(status_code=500, detail="Failed to update document")
 
 
-@router.post("/documents/bulk-update")
+@router.post("/documents/bulk-update", dependencies=[Depends(require_authentication)])
 async def bulk_update_documents(
     request: Request,
     payload: Dict[str, Any],
@@ -1217,7 +1231,7 @@ async def bulk_update_documents(
         raise HTTPException(status_code=500, detail="Bulk update failed")
 
 
-@router.post("/documents/bulk-delete")
+@router.post("/documents/bulk-delete", dependencies=[Depends(require_authentication)])
 async def bulk_delete_documents(
     request: Request,
     payload: Dict[str, List[str]],
@@ -1261,7 +1275,7 @@ async def bulk_delete_documents(
         raise HTTPException(status_code=500, detail="Bulk delete failed")
 
 
-@router.get("/stats")
+@router.get("/stats", dependencies=[Depends(require_authentication)])
 async def get_knowledge_stats(
     knowledge_service: KnowledgeService = Depends(get_knowledge_service),
     current_user: DevUser = Depends(require_authentication),
@@ -1284,7 +1298,7 @@ async def get_knowledge_stats(
         raise HTTPException(status_code=500, detail="Failed to get statistics")
 
 
-@router.get("/analytics/search")
+@router.get("/analytics/search", dependencies=[Depends(require_authentication)])
 async def get_search_analytics(
     knowledge_service: KnowledgeService = Depends(get_knowledge_service),
     current_user: DevUser = Depends(require_authentication),
