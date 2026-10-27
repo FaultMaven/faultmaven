@@ -65,10 +65,11 @@ jobs:
       # merge queue. A mistyped tag target is refused, not shipped.
       #
       # The moving tags (latest and the branch name) follow only the branch's
-      # current tip. CI runs finish out of order: on 2026-10-17, 68b4b0f,
-      # ca33237 and bb70258 finished newest-first, and publishing each one as
-      # it passed would have left :latest on the oldest. The sha- tag and the
-      # image queue (which orders itself, below) take every green commit.
+      # current tip, and move in the last step (#2347). CI runs finish out of
+      # order: on 2026-10-17, 68b4b0f, ca33237 and bb70258 finished
+      # newest-first, and publishing each one as it passed would have left
+      # :latest on the oldest. The sha- tag and the image queue (which orders
+      # itself, below) take every green commit.
       - name: Resolve the commit to publish
         id: target
         env:
@@ -85,21 +86,9 @@ jobs:
               exit 1
             fi
           fi
-          # A failed lookup leaves the moving tags where they are; it does not
-          # fail the publish.
-          moving=false
-          if [[ $GITHUB_REF == refs/heads/* ]]; then
-            tip="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${GITHUB_REF_NAME}" --jq .object.sha)" || tip=""
-            if [ "$tip" = "$SHA" ]; then
-              moving=true
-            else
-              echo "::notice::${GITHUB_REF_NAME} is at '${tip}', not ${SHA}; publishing the sha- tag only"
-            fi
-          fi
           {
             echo "sha=${SHA}"
             echo "short=${SHA:0:7}"
-            echo "moving=${moving}"
           } >> "$GITHUB_OUTPUT"
 
       - name: Checkout repository
@@ -126,20 +115,26 @@ jobs:
         with:
           images: |
             ${{ env.REGISTRY_GHCR }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}
-          # Not `type=sha`, and a revision label of our own: metadata-action
-          # reads both from github.sha, which is not the commit built on a
-          # workflow_run. A custom label replaces the generated one.
+          # Not `type=sha`, and a revision label and annotation of our own:
+          # metadata-action reads all three from github.sha, which is not the
+          # commit built on a workflow_run. A custom entry replaces the
+          # generated one. No build step passes the annotations output yet; the
+          # override keeps it right for when one does.
+          #
+          # The build pushes only the sha- tag and any semver tags. latest and
+          # the branch tag move in the last step, only while this commit is
+          # still the branch's tip (#2347).
           tags: |
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' && steps.target.outputs.moving == 'true' }}
-            type=ref,event=branch,enable=${{ steps.target.outputs.moving == 'true' }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=sha-${{ steps.target.outputs.short }}
           labels: |
             org.opencontainers.image.revision=${{ steps.target.outputs.sha }}
+          annotations: |
+            org.opencontainers.image.revision=${{ steps.target.outputs.sha }}
           # The default, latest=auto, adds `latest` to every non-prerelease
           # semver tag, so tagging an older green commit would move :latest
-          # back to it. `latest` comes only from the raw line above.
+          # back to it. `latest` moves only in the last step.
           flavor: |
             latest=false
 
@@ -190,8 +185,30 @@ jobs:
       # never reaches the action.
       - name: Update image queue
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && github.repository == 'FaultMaven/faultmaven'
-        uses: FaultMaven/ci-actions/update-image-queue@4b5989bc5f9e1fcd5eee69cf18cfa0854a6f2894 # v1.2.0
+        uses: FaultMaven/ci-actions/update-image-queue@d01fb8619a0df2b2f71ef8e7e807b9373561b722 # v1.3.0
         with:
           service: faultmaven
           sha: ${{ steps.target.outputs.sha }}
           token: ${{ steps.infra-token.outputs.token }}
+
+      # Points latest and the branch tag at the pushed digest, only while this
+      # commit is still the branch's tip (#2347). Read at job start, that
+      # answer went stale while the image built, and an older commit's push
+      # could then move both tags back over a newer one's: on 2026-10-25,
+      # :latest sat a commit behind main for 5 h 15 min. It runs whenever the
+      # build pushed, whatever the queue steps did.
+      #
+      # CD deploys sha- tags through the image queue; `latest` is what a local
+      # `docker compose` pulls by default (FM_IMAGE_TAG). A move that fails is
+      # retried, then left with a warning, not a red run (a re-run would push
+      # the queued sha- tag again under a new digest), so those pulls stay one
+      # build behind until the next publish at the tip. An invalid input fails
+      # the step: a wiring error, which no re-run fixes. ci-actions' README
+      # states the rule.
+      - name: Move latest and the branch tag
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        uses: FaultMaven/ci-actions/move-branch-tags@d01fb8619a0df2b2f71ef8e7e807b9373561b722 # v1.3.0
+        with:
+          image: ${{ env.REGISTRY_GHCR }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}
+          digest: ${{ steps.build.outputs.digest }}
+          sha: ${{ steps.target.outputs.sha }}
