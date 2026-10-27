@@ -98,6 +98,10 @@ fi
 # each other (the chromadb advisories, mako), pip-audit 2.10.1 keeps both, so
 # its "ignored" and "Found" counts can double-count; the ignores still
 # suppress each accepted advisory under every id.
+# Its "Fix Versions" column keeps only the LAST affected range's fix:
+# pip_audit/_service/osv.py reassigns fix_versions per affected entry. An
+# advisory with backport ranges can therefore look rc-only while final
+# releases carry the fix (GHSA-7hp6-4w63-5g45, #2363); read its ranges on OSV.
 # One bounded retry: a transient OSV error is otherwise indistinguishable from
 # a finding. Real findings fail twice.
 pip-audit --vulnerability-service osv --no-deps "${REQS[@]}" "${IGNORES[@]}" || {

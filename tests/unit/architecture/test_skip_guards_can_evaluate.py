@@ -6,7 +6,7 @@ The defect (#1257): ``TestS3StorageBackend`` carried
 
 for its whole life. ``condition=True`` evaluates nothing, so its five tests
 were skipped in every job — including Test Cloud, which installs
-``boto3==1.42.90`` and where the reason string was simply false — and none of
+``boto3`` and where the reason string was simply false — and none of
 them had ever run. Nothing reports this: a skipped test is green, and a reason
 string is prose that no one checks against reality. The same shape sat on three
 more tests in ``tests/health/test_docker_health.py``, so it was a class rather
