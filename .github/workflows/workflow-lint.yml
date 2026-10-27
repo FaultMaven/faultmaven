@@ -53,4 +53,4 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Run actionlint
-        uses: FaultMaven/ci-actions/lint-workflows@4b5989bc5f9e1fcd5eee69cf18cfa0854a6f2894 # v1.2.0
+        uses: FaultMaven/ci-actions/lint-workflows@6d03d98637a9a4ae9d0d57580408c3299f5d5c0f # v1.3.1
