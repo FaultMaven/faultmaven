@@ -185,7 +185,7 @@ jobs:
       # never reaches the action.
       - name: Update image queue
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && github.repository == 'FaultMaven/faultmaven'
-        uses: FaultMaven/ci-actions/update-image-queue@d01fb8619a0df2b2f71ef8e7e807b9373561b722 # v1.3.0
+        uses: FaultMaven/ci-actions/update-image-queue@6d03d98637a9a4ae9d0d57580408c3299f5d5c0f # v1.3.1
         with:
           service: faultmaven
           sha: ${{ steps.target.outputs.sha }}
@@ -207,7 +207,7 @@ jobs:
       # states the rule.
       - name: Move latest and the branch tag
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        uses: FaultMaven/ci-actions/move-branch-tags@d01fb8619a0df2b2f71ef8e7e807b9373561b722 # v1.3.0
+        uses: FaultMaven/ci-actions/move-branch-tags@6d03d98637a9a4ae9d0d57580408c3299f5d5c0f # v1.3.1
         with:
           image: ${{ env.REGISTRY_GHCR }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}
           digest: ${{ steps.build.outputs.digest }}
