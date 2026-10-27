@@ -173,7 +173,22 @@ class ReclassifyEvidenceTool(AgentTool):
                 data_type=data_type,
             )
         except NotFoundError as e:
-            return ToolResult(success=False, data=None, error=str(e))
+            # Not ``str(e)``: the storage read raises ``NotFoundError("File",
+            # <storage key>)``, an internal key (#2332). Named by the tool's
+            # own argument instead; the text goes to the log.
+            logger.warning("reclassify_evidence: not found for %s: %s", evidence_id, e)
+            missing = (
+                "was not found in this case"
+                if e.resource_type == "Evidence"
+                else "has no stored file to re-extract"
+            )
+            return ToolResult(
+                success=False, data=None, error=f"Evidence {evidence_id} {missing}."
+            )
+        # The arms below pass ``str(e)``: every raiser on this path writes its
+        # message for the caller (``investigation_service/reclassification.py``),
+        # and a storage or driver failure arrives as ``ServiceError``, which
+        # none of them catches.
         except AuthorizationError as e:
             return ToolResult(success=False, data=None, error=str(e))
         except ConflictError as e:

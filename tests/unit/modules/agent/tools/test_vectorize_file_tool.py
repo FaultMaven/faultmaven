@@ -195,19 +195,29 @@ class TestVectorization:
         assert "Structural index" in call_kwargs["structural_index"]
 
     @pytest.mark.asyncio
-    async def test_a_failed_store_names_its_class_not_its_text(
-        self, tool, context, mock_settings, caplog
+    async def test_a_failed_case_read_names_its_class_not_its_text(
+        self, tool, mock_settings, caplog
     ):
-        """#2332: the model reads the class; the server log, the text."""
-        with patch(
-            "faultmaven.core.preprocessing.vector_storage.store_in_vector_db_background",
-            new=AsyncMock(side_effect=leaky_error()),
-        ):
-            result = await tool.execute_with_context(
-                params={"evidence_id": "ev_abc"}, context=context
-            )
+        """#2332: the model reads the class and what it may conclude; the
+        server log, the text. Raised by the case read, which can fail in
+        production (the store catches everything itself)."""
+        repo = MagicMock()
+        repo.get = AsyncMock(side_effect=leaky_error())
+        context = ToolContext(
+            session_id="sess_1",
+            case_id="case_123",
+            enterprise_id="org_1",
+            user_id="user_1",
+            case_repository=repo,
+            redaction_ctx=disabled_redaction(),
+        )
+
+        result = await tool.execute_with_context(
+            params={"evidence_id": "ev_abc"}, context=context
+        )
 
         assert result.success is False
+        assert "says nothing about its contents" in result.error
         assert_reported_by_class(result.error, caplog.text)
 
     @pytest.mark.asyncio

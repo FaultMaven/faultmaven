@@ -29,6 +29,13 @@ from faultmaven.modules.agent.tools.base import AgentTool, ToolContext, tool_fai
 
 logger = logging.getLogger(__name__)
 
+#: What an empty ``case_evidence_search`` allows the model to conclude about a
+#: file this tool did not index: nothing (#943).
+_EMPTY_SEARCH_SAYS_NOTHING = (
+    "an empty result for this file says nothing about its contents. "
+    "Read it directly with search_file."
+)
+
 VECTORIZATION_MAX_SIZE_BYTES = 50_000_000  # 50MB hard cap
 
 #: What the investigating model is told when a file becomes searchable. This
@@ -304,7 +311,14 @@ class VectorizeFileTool(AgentTool):
 
         except Exception as e:
             logger.exception(f"vectorize_file failed for {evidence_id}: {e}")
-            return tool_failure("Vectorization failed", e)
+            return tool_failure(
+                "Vectorization failed",
+                e,
+                guidance=(
+                    "This file was NOT vectorized, so case_evidence_search "
+                    f"cannot find it — {_EMPTY_SEARCH_SAYS_NOTHING}"
+                ),
+            )
 
     @staticmethod
     def _not_indexed(outcome: Any, evidence_id: str, data_type_str: str) -> ToolResult:
@@ -348,7 +362,6 @@ class VectorizeFileTool(AgentTool):
             error=(
                 f"This file was NOT vectorized: {reason}. It is not in the "
                 f"case evidence index, so case_evidence_search cannot find it "
-                f"— an empty result for this file says nothing about its "
-                f"contents. Read it directly with search_file."
+                f"— {_EMPTY_SEARCH_SAYS_NOTHING}"
             ),
         )

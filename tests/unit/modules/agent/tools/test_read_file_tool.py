@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from faultmaven.modules.agent.tools import read_file_tool as read_file_tool_module
 from faultmaven.modules.agent.tools.base import ToolContext
 from faultmaven.modules.agent.tools.read_file_tool import (
     MAX_TEXT_SIZE,
@@ -432,10 +433,23 @@ class TestSyntheticFilenameNotReported:
 
 
 class _Undecodable(bytes):
-    """Stored bytes whose decode raises: the content readers' own catch-alls."""
+    """Stored bytes whose decode raises. Nothing realistic does: ``bytes``
+    decodes with a latin-1 fallback or ``errors="replace"``. Kept so the
+    content readers' catch-alls are held to the rule all the same."""
 
     def decode(self, *args, **kwargs):
         raise leaky_error()
+
+
+def _storage_backend(**retrieve):
+    """The backend under the real ``FileStorageService`` read_file builds."""
+    backend = MagicMock()
+    backend.get_storage_type.return_value.value = "local"
+    backend.retrieve_file = AsyncMock(**retrieve)
+    return patch(
+        "faultmaven.infrastructure.storage.factory.get_storage_backend",
+        return_value=backend,
+    )
 
 
 class TestFailureNamesItsClassNotItsText:
@@ -443,9 +457,33 @@ class TestFailureNamesItsClassNotItsText:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
+        "retrieve, cls",
+        [
+            # The service wraps the driver's error and logs its text.
+            ({"side_effect": leaky_error()}, "ServiceError"),
+            # NotFoundError("File", <storage key>).
+            ({"return_value": None}, "NotFoundError"),
+        ],
+    )
+    async def test_a_failed_storage_read(self, read_file_tool, retrieve, cls, caplog):
+        with _storage_backend(**retrieve):
+            result = await read_file_tool.execute_with_context(
+                params={"evidence_id": "ev_test123"}, context=_make_context()
+            )
+
+        assert result.error == f"Could not read evidence file ({cls})."
+        own = [r for r in caplog.records if r.name == read_file_tool_module.__name__]
+        assert [(r.levelname, r.exc_info) for r in own] == [("WARNING", None)]
+        message = own[0].getMessage()
+        assert "ev_test123" in message and cls in message
+        # Not repeated: the service logged the text, or there is none to log.
+        assert "hunter2" not in message and "evidence/case_test" not in message
+        assert ("hunter2" in caplog.text) is (cls == "ServiceError")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
         "site, reported",
         [
-            ("storage", "Could not read evidence file (RuntimeError)."),
             ("lookup", "Failed to read evidence (RuntimeError)."),
             ("text", "[Error reading file: RuntimeError]"),
             ("large", "bytes, error reading: RuntimeError]"),
@@ -455,18 +493,12 @@ class TestFailureNamesItsClassNotItsText:
         self, read_file_tool, site, reported, caplog
     ):
         context = _make_context()
-        retrieve = AsyncMock(return_value=b"line\n")
-        if site == "storage":
-            retrieve.side_effect = leaky_error()
-        elif site == "lookup":
+        stored = b"line\n"
+        if site == "lookup":
             context.in_memory_case.find_uploaded_file.side_effect = leaky_error()
         else:
-            size = MAX_TEXT_SIZE + 1 if site == "large" else 5
-            retrieve.return_value = _Undecodable(b"x" * size)
-        with patch(
-            "faultmaven.modules.evidence.domain.services.file_storage_service.FileStorageService.retrieve_file",
-            new=retrieve,
-        ):
+            stored = _Undecodable(b"x" * (MAX_TEXT_SIZE + 1 if site == "large" else 5))
+        with _patch_storage(stored):
             result = await read_file_tool.execute_with_context(
                 params={"evidence_id": "ev_test123"}, context=context
             )
@@ -474,6 +506,7 @@ class TestFailureNamesItsClassNotItsText:
         model_text = result.error or result.data["content"]
         assert reported in model_text
         assert_reported_by_class(model_text, caplog.text)
+        assert "ev_test123" in caplog.text  # the text is tied to its evidence
 
 
 class TestConstants:

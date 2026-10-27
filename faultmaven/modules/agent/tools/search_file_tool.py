@@ -24,7 +24,6 @@ from typing import Any
 
 from faultmaven.models.interfaces import ToolResult
 from faultmaven.modules.agent.tools.base import AgentTool, ToolContext, tool_failure
-from faultmaven.utils.exception_name import exception_class_name
 
 logger = logging.getLogger(__name__)
 
@@ -281,6 +280,8 @@ class SearchFileTool(AgentTool):
             # it. ``display_name`` is what goes in the result the LLM reads.
             if isinstance(resolved, str):
                 return ToolResult(success=False, data=None, error=resolved)
+            if isinstance(resolved, ToolResult):
+                return resolved
             content, filename, display_name, evidence_obj = resolved
 
             # Phase 2c — triage-to-escalation counter. Fires when this
@@ -487,6 +488,7 @@ class SearchFileTool(AgentTool):
             try:
                 regex = re.compile(query, re.IGNORECASE | re.MULTILINE)
             except re.error as e:
+                # The text describes the model's own pattern, not our system.
                 return [{"line": 0, "content": f"Invalid regex: {e}"}]
             return [
                 {"line": i + 1, "content": line}
@@ -508,7 +510,7 @@ class SearchFileTool(AgentTool):
         self,
         evidence_id: str,
         context: ToolContext,
-    ) -> tuple[str, str, str, Any] | str:
+    ) -> tuple[str, str, str, Any] | str | ToolResult:
         """Resolve evidence content from the case-embedded evidence list.
 
         Storage redesign 2026-04 phase 2 deleted the standalone
@@ -523,7 +525,9 @@ class SearchFileTool(AgentTool):
                 one, the LLM-facing result takes the display one.
             On failure: a human-readable error string. When other file-backed
             evidence exists in the case, the error enumerates those evidence_ids
-            so the LLM can retry against the correct one (ISS-025).
+            so the LLM can retry against the correct one (ISS-025). A failed
+            storage read is a ``tool_failure`` result instead, which records
+            whether the read timed out (#2332).
         """
         case = getattr(context, "in_memory_case", None)
         if case is None:
@@ -647,9 +651,10 @@ class SearchFileTool(AgentTool):
                     e,
                 )
                 alts = format_searchable_alternatives(all_evidence, evidence_id, case)
-                return (
-                    f"Evidence {evidence_id}: stored file could not be "
-                    f"retrieved ({exception_class_name(e)}).{alts}"
+                return tool_failure(
+                    f"Evidence {evidence_id}: stored file could not be retrieved",
+                    e,
+                    guidance=alts.strip(),
                 )
 
         logger.warning(
@@ -727,6 +732,7 @@ class SearchFileTool(AgentTool):
         try:
             regex = re.compile(pattern, re.IGNORECASE | re.MULTILINE)
         except re.error as e:
+            # The text describes the model's own pattern, not our system.
             return [{"error": f"Invalid regex pattern: {e}"}]
 
         lines = content.split("\n")

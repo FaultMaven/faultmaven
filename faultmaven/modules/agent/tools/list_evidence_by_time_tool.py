@@ -44,6 +44,7 @@ def _parse_iso_bound(
         # are always TZ-aware under PostgreSQL; SQLite is naive).
         return datetime.fromisoformat(value), None
     except (ValueError, TypeError) as e:
+        # The text describes the model's own timestamp, not our system.
         return (
             None,
             (

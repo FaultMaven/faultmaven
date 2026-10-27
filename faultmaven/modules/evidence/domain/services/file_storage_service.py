@@ -393,7 +393,9 @@ class FileStorageService(BaseService):
             if hasattr(e, "resource_type"):  # NotFoundError
                 raise
             self.log_error("retrieve_file", e, storage_key=storage_key)
-            raise ServiceError(f"Failed to retrieve file: {e}")
+            # ``from e``: a caller that reacts to the cause's class (a storage
+            # timeout, #2332) finds it on the cause chain.
+            raise ServiceError(f"Failed to retrieve file: {e}") from e
 
     async def delete_file(self, storage_key: str) -> bool:
         """Delete a file and its sidecar from storage.

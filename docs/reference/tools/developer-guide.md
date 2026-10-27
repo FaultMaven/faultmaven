@@ -49,6 +49,7 @@ touch faultmaven/tools/my_custom_tool.py
 import logging
 from typing import Any, Dict
 from faultmaven.models.interfaces import BaseTool, ToolResult
+from faultmaven.modules.agent.tools.base import tool_failure
 from faultmaven.tools.registry import register_tool
 
 @register_tool("my_custom_tool")
@@ -96,11 +97,14 @@ class MyCustomTool(BaseTool):
             )
 
         except Exception as e:
-            self.logger.error(f"Tool execution failed: {e}")
-            return ToolResult(
-                success=False,
-                data=None,
-                error=str(e)
+            # The exception's text goes to the server log, never into the
+            # result: the model reads the result and can repeat it into the
+            # answer every reader of the case is served (#2332).
+            self.logger.exception(f"Tool execution failed: {e}")
+            return tool_failure(
+                "Tool execution failed",
+                e,
+                guidance="Say here what the model can and cannot conclude.",
             )
 
     def get_schema(self) -> Dict[str, Any]:
@@ -654,15 +658,21 @@ async def execute(self, params):
     return ToolResult(success=True, data=result)
 ```
 
-### ✅ Do: Handle errors
+### ✅ Do: Handle errors, with the text in the log
 ```python
 async def execute(self, params):
     try:
         result = await external_api_call()
         return ToolResult(success=True, data=result)
     except Exception as e:
-        self.logger.error(f"API call failed: {e}")
-        return ToolResult(success=False, error=str(e))
+        self.logger.exception(f"API call failed: {e}")
+        # "API call failed (ReadTimeout). <guidance>": the class, never the
+        # text, which can carry a URL, a key or a host (#2332).
+        return tool_failure(
+            "API call failed",
+            e,
+            guidance="This says nothing about the data the API holds.",
+        )
 ```
 
 ## Getting Help

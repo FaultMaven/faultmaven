@@ -319,10 +319,12 @@ class EvidenceVectorizer:
             except (json.JSONDecodeError, TypeError, ValueError):
                 pass
 
-        # Track timeouts
+        # Track timeouts: by the class the tool recorded (``tool_failure``),
+        # never by the error's text, which holds no exception text (#2332).
+        # ``is True``, so a stand-in result that states nothing is no timeout.
         if (
             not tool_result.success
-            and "timed out" in (getattr(tool_result, "error", "") or "").lower()
+            and getattr(tool_result, "timed_out", False) is True
             and not already_vectorized
         ):
             result_text = await self._reactive_vectorize(
