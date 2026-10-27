@@ -1,21 +1,20 @@
-"""The knowledge conversion surface, driven with no credential.
+"""The knowledge surface, driven with no credential.
 
-#1494's shape, for the eleven operations behind ``_get_conversion_service``:
-the gate was declared as a trailing handler parameter while the conversion
-service was declared above it, and FastAPI solves a dependant's dependencies in
-DECLARATION ORDER — so an anonymous caller reached the provider first and got
-whatever it does on a degraded deployment instead of the 401 the route
-promises. The same finding as #1447 on the session router and #1527 on the case
-router, and closed the same way: the gate is a ROUTE-LEVEL dependency declared
+#1494's shape, for the eleven operations behind ``_get_conversion_service``
+and the nine behind ``get_knowledge_service``: the gate was declared as a
+trailing handler parameter while the service was declared above it, and
+FastAPI solves a dependant's dependencies in DECLARATION ORDER — so an
+anonymous caller reached the provider first and got whatever it does on a
+degraded deployment instead of the 401 the route promises. The same finding as
+#1447 on the session router and #1527 on the case router, and closed the same
+way: the gate is a ROUTE-LEVEL dependency declared
 on the decorator ahead of everything, with the ``current_user`` parameter kept
 where the handler needs the principal (FastAPI caches a dependency per request,
 so it still runs once).
 
 **This module is the knowledge-side twin of
 ``test_unauthenticated_case_surface.py``**, deliberately the same shape rather
-than a second invention. The remaining knowledge seam — ``get_knowledge_service``
-(9 operations) — belongs here too when its slice lands; ``_CONVERSION_SERVICE``
-and :data:`DRIVEN` are what would widen.
+than a second invention.
 
 **Why the provider is forced to raise here, rather than simply left unwired.**
 On the case router that distinction was load-bearing: ``get_case_service``
@@ -24,7 +23,7 @@ its own (a 503 since #2103), so nineteen of those twenty-two answered 401 with
 the defect fully present. The knowledge module has NO such masking — measured,
 both of its providers (``_get_conversion_service``, ``get_knowledge_service``)
 raise a 503 of their own — so on a service-less app
-all eleven of these answered **503** before the fix, and the defect was
+every one of these answered **503** before its fix, and the defect was
 visible. The provider is overridden to raise anyway, for the same reason the
 case module needed it: the battery must not depend on WHICH failure the
 provider happens to choose today. Overridden, a 401 is reachable only if the
@@ -35,7 +34,8 @@ header at all) and **rejected credential** (a header that does not
 authenticate) must both be refused before any collaborator resolves — and an
 **authenticated** caller must still reach the handler with a populated
 principal, because a route that refuses correctly and then 500s for a
-legitimate user is worse than the defect.
+legitimate user is worse than the defect. The third drives the conversion rows
+only: its recording service is shaped for those handlers.
 """
 
 import pytest
@@ -64,14 +64,17 @@ _SERVICE_PROVIDERS = (
 )
 
 #: The auth gate, named the way the guard module names it, so "is this route
-#: gated" is asked of the dependency tree rather than of the source text. The
-#: module under test imports it as ``_require_auth``; an alias does not change
-#: the qualified name.
+#: gated" is asked of the dependency tree rather than of the source text.
+#: ``conversion_routes`` imports it as ``_require_auth``; an alias does not
+#: change the qualified name.
 _GATE = "faultmaven.api.v1.auth_dependencies.require_authentication"
 
-#: The provider whose eleven routes this slice of #1494 was split on.
-_CONVERSION_SERVICE = (
-    "faultmaven.modules.knowledge.api.conversion_routes._get_conversion_service"
+#: The providers whose routes #1494 was split on here: eleven behind the
+#: conversion service (:data:`DRIVEN`), nine behind the knowledge service
+#: (:data:`KNOWLEDGE_DRIVEN`).
+_SERVICES = (
+    "faultmaven.modules.knowledge.api.conversion_routes._get_conversion_service",
+    "faultmaven.modules.knowledge.api.routes.get_knowledge_service",
 )
 
 #: The principal an authenticated caller presents in the third battery. A real
@@ -82,7 +85,7 @@ _USER_ID = "user-under-test"
 #: One concrete request per operation, because a route cannot be driven through
 #: its template. Hand-written, and then checked against the router below — a
 #: new conversion route missed here fails
-#: :func:`test_every_gated_conversion_service_route_is_driven` rather than
+#: :func:`test_every_gated_service_route_is_driven` rather than
 #: quietly going unmeasured.
 #:
 #: Every body is valid: a 422 from request validation would be a refusal this
@@ -139,6 +142,41 @@ DRIVEN: dict[tuple[str, str], dict] = {
     },
 }
 
+#: The ``get_knowledge_service`` rows, in :data:`DRIVEN`'s shape and under the
+#: same rule: every body is valid.
+KNOWLEDGE_DRIVEN: dict[tuple[str, str], dict] = {
+    ("DELETE", "/api/v1/knowledge/documents/{document_id}"): {
+        "url": "/api/v1/knowledge/documents/d1"
+    },
+    ("GET", "/api/v1/knowledge/analytics/search"): {
+        "url": "/api/v1/knowledge/analytics/search"
+    },
+    ("GET", "/api/v1/knowledge/documents/{document_id}"): {
+        "url": "/api/v1/knowledge/documents/d1"
+    },
+    ("GET", "/api/v1/knowledge/documents/{document_id}/snippet"): {
+        "url": "/api/v1/knowledge/documents/d1/snippet"
+    },
+    ("GET", "/api/v1/knowledge/stats"): {"url": "/api/v1/knowledge/stats"},
+    ("POST", "/api/v1/knowledge/documents"): {
+        "url": "/api/v1/knowledge/documents",
+        "data": {"title": "A note", "document_type": "runbook"},
+        "files": {"file": ("note.md", b"# anything", "text/markdown")},
+    },
+    ("POST", "/api/v1/knowledge/documents/bulk-delete"): {
+        "url": "/api/v1/knowledge/documents/bulk-delete",
+        "json": {"document_ids": ["d1"]},
+    },
+    ("POST", "/api/v1/knowledge/documents/bulk-update"): {
+        "url": "/api/v1/knowledge/documents/bulk-update",
+        "json": {"document_ids": ["d1"], "updates": {"category": "anything"}},
+    },
+    ("PUT", "/api/v1/knowledge/documents/{document_id}"): {
+        "url": "/api/v1/knowledge/documents/d1",
+        "json": {"title": "anything"},
+    },
+}
+
 
 def _explodes(name):
     async def _boom():
@@ -177,8 +215,8 @@ def _surface() -> FastAPI:
     return app
 
 
-def _conversion_service_operations(app: FastAPI) -> set[tuple[str, str]]:
-    """Gated operations on this surface whose tree holds the conversion service.
+def _service_operations(app: FastAPI) -> set[tuple[str, str]]:
+    """Gated operations on this surface whose tree holds one of :data:`_SERVICES`.
 
     Through ``route_enumeration`` rather than a flat ``app.routes`` scan: on
     FastAPI >= 0.139 ``include_router`` records a ``_IncludedRouter``
@@ -188,7 +226,7 @@ def _conversion_service_operations(app: FastAPI) -> set[tuple[str, str]]:
     found = set()
     for path, methods, dependant in route_enumeration.iter_served_routes(app):
         names = _dependency_names(dependant)
-        if _CONVERSION_SERVICE not in names or _GATE not in names:
+        if names.isdisjoint(_SERVICES) or _GATE not in names:
             continue
         for method in methods or ():
             if method in {"HEAD", "OPTIONS"}:
@@ -197,24 +235,25 @@ def _conversion_service_operations(app: FastAPI) -> set[tuple[str, str]]:
     return found
 
 
-def test_every_gated_conversion_service_route_is_driven():
-    """The hand-written map is checked against what the routers actually serve.
+def test_every_gated_service_route_is_driven():
+    """The hand-written maps are checked against what the routers actually serve.
 
     Without this the batteries below are a rule about the rows somebody
-    remembered: a conversion route added tomorrow would simply not appear, and
-    every assertion would still pass.
+    remembered: a gated route added tomorrow behind either service would
+    simply not appear, and every assertion would still pass.
     """
-    served = _conversion_service_operations(_surface())
+    served = _service_operations(_surface())
+    driven = set(DRIVEN) | set(KNOWLEDGE_DRIVEN)
 
     assert served, (
-        "no gated route on the knowledge surface resolves the conversion "
-        "service — the walk is not seeing the routers' dependency trees, and "
-        "the batteries below would be quantified over nothing"
+        "no gated route on the knowledge surface resolves a service — the walk "
+        "is not seeing the routers' dependency trees, and the batteries below "
+        "would be quantified over nothing"
     )
-    assert served == set(DRIVEN), (
+    assert served == driven, (
         "the driven set and the served set disagree.\n"
-        f"served but not driven: {sorted(served - set(DRIVEN))}\n"
-        f"driven but not served: {sorted(set(DRIVEN) - served)}"
+        f"served but not driven: {sorted(served - driven)}\n"
+        f"driven but not served: {sorted(driven - served)}"
     )
 
 
@@ -225,12 +264,12 @@ def test_every_gated_conversion_service_route_is_driven():
         ({"Authorization": "Bearer not-a-real-token"}, "a credential that fails"),
     ],
 )
-def test_no_conversion_route_resolves_a_service_for_an_unauthenticated_caller(
+def test_no_knowledge_route_resolves_a_service_for_an_unauthenticated_caller(
     headers, label
 ):
     """Every one of them answers 401, on an app where every provider raises.
 
-    If the gate were solved after the conversion service — the shape #1494
+    If the gate were solved after the service — the shape #1494
     carried — each row would be a 500 raised out of :func:`_explodes`, because
     the provider is reached before anything checks the caller. Unoverridden the
     same rows answered 503, which is the same defect wearing the provider's own
@@ -238,15 +277,18 @@ def test_no_conversion_route_resolves_a_service_for_an_unauthenticated_caller(
     """
     client = TestClient(_surface(), raise_server_exceptions=False)
 
+    shared = set(DRIVEN) & set(KNOWLEDGE_DRIVEN)
+    assert not shared, f"a row in both maps would be driven once: {shared}"
+
     answered = {}
-    for (method, template), request in sorted(DRIVEN.items()):
+    for (method, template), request in sorted({**DRIVEN, **KNOWLEDGE_DRIVEN}.items()):
         kwargs = {k: v for k, v in request.items() if k != "url"}
         response = client.request(method, request["url"], headers=headers, **kwargs)
         answered[f"{method} {template}"] = response.status_code
 
     not_refused = {k: v for k, v in answered.items() if v != 401}
     assert not not_refused, (
-        f"with {label}, these conversion operations answered something other "
+        f"with {label}, these knowledge operations answered something other "
         "than 401 although every service provider on the route was made to "
         "raise — so a collaborator resolved before the auth gate, and an "
         "anonymous caller gets its failure in place of the refusal (#1494): "

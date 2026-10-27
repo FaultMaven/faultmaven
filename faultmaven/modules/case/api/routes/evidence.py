@@ -54,6 +54,8 @@ logger = logging.getLogger(__name__)
     "/{case_id}/uploaded-files",
     response_model=UploadedFilesList,
     operation_id="list_uploaded_files",
+    # The gate resolves before ``get_case_service``, whatever it does (#1494).
+    dependencies=[Depends(require_authentication)],
 )
 @trace("api_list_uploaded_files")
 async def list_uploaded_files(
