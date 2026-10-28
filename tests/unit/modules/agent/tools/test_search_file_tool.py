@@ -1148,8 +1148,75 @@ class TestNonFileBackedEvidenceGuard:
         )
 
         assert result.success is False
-        assert "file_0000000000aa" not in result.error.split("in this case.", 1)[1]
+        assert "file_0000000000aa" not in result.error.split("retrieved", 1)[1]
         assert "ev_actual (system.log)" in result.error
+
+    @staticmethod
+    def _ctx(case):
+        return ToolContext(
+            session_id="sess_1",
+            case_id="case_123",
+            enterprise_id="org_1",
+            user_id="user_1",
+            in_memory_case=case,
+            redaction_ctx=disabled_redaction(),
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_failed_upload_read_is_not_reported_as_absent(self, tool, caplog):
+        """#2359: an upload no evidence row records is in the case even when its
+        read fails. The model is told the read failed, by the exception's class
+        as the evidence arm tells it, never that the file is not in the case."""
+        tool.storage_service.retrieve_file.side_effect = leaky_error()
+
+        result = await tool.execute_with_context(
+            params={"evidence_id": "file_0000000000aa", "query": "ERROR"},
+            context=self._ctx(self._case_with_unrecorded_uploads()),
+        )
+
+        assert result.error == (
+            "Evidence file_0000000000aa: stored file could not be retrieved "
+            "(RuntimeError). Available file-backed evidence in this case: "
+            "ev_actual (system.log)."
+        )
+        assert_reported_by_class(result.error, caplog.text)
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_upload_says_why(self, tool):
+        """#2359: an upload with no stored file, or no storage service to read
+        it from, gets the evidence arm's answer, not "not found"."""
+        ctx = self._ctx(self._case_with_unrecorded_uploads())
+
+        unstored = await tool.execute_with_context(
+            params={"evidence_id": "file_0000000000bb", "query": "ERROR"},
+            context=ctx,
+        )
+        no_storage = await SearchFileTool(storage_service=None).execute_with_context(
+            params={"evidence_id": "file_0000000000aa", "query": "ERROR"},
+            context=ctx,
+        )
+
+        assert unstored.error.startswith(
+            "Evidence file_0000000000bb has no stored file content. "
+        )
+        assert no_storage.error == (
+            "Evidence file_0000000000aa: storage service unavailable."
+        )
+        tool.storage_service.retrieve_file.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_read_upload_is_the_row_returned(self, tool):
+        """The matched upload is what the resolver hands back with the content."""
+        case = self._case_with_unrecorded_uploads()
+
+        resolved = await tool._resolve_evidence_content(
+            "file_0000000000aa", self._ctx(case)
+        )
+
+        upload = case.uploaded_files[-2]
+        assert resolved[1:] == ("notes.txt", "notes.txt", upload)
+        assert resolved[3] is upload
+        assert "ERROR timeout" in resolved[0]
 
 
 class TestSyntheticFilenameNotReported:

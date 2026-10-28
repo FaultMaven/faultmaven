@@ -555,7 +555,7 @@ class SearchFileTool(AgentTool):
             # so the LLM can keyword-search raw log files before the case
             # transitions to INVESTIGATING and evidence rows are created.
             uploaded_files = getattr(case, "uploaded_files", []) or []
-            matching_upload = next(
+            file_meta = next(
                 (
                     uf
                     for uf in uploaded_files
@@ -563,53 +563,25 @@ class SearchFileTool(AgentTool):
                 ),
                 None,
             )
-            if matching_upload is not None:
-                storage_ref = getattr(matching_upload, "storage_ref", None)
-                if (
-                    storage_ref
-                    and self.storage_service is not None
-                    and hasattr(self.storage_service, "retrieve_file")
-                ):
-                    try:
-                        file_data = await self.storage_service.retrieve_file(
-                            storage_ref
-                        )
-                        filename = (
-                            getattr(matching_upload, "filename", None) or evidence_id
-                        )
-                        display_name = (
-                            getattr(matching_upload, "display_name", None)
-                            or evidence_id
-                        )
-                        content = file_data.decode("utf-8", errors="replace")
-                        logger.debug(
-                            "search_file: resolved %s via uploaded_files (INQUIRY phase)",
-                            evidence_id,
-                        )
-                        return content, filename, display_name, matching_upload
-                    except Exception as e:
-                        logger.warning(
-                            "search_file: uploaded_file %s storage retrieval failed: %s",
-                            evidence_id,
-                            e,
-                        )
-
-            logger.warning(
-                "search_file: evidence %s not found in case %s (has %d evidence items)",
-                evidence_id,
-                context.case_id,
-                len(all_evidence),
-            )
-            alts = format_searchable_alternatives(all_evidence, evidence_id, case)
-            return f"Evidence {evidence_id} not found in this case.{alts}"
-
-        # Reject non-file-backed evidence forms BEFORE hitting storage.
-        # An engine inference (source_file_id IS NULL,
-        # source_type=ENGINE_INFERENCE) has no stored file behind it
-        # and cannot be searched. ISS-025: previously the LLM retried
-        # these against search_file and treated the failure as "the
-        # file is inaccessible", giving up on follow-up questions.
-        if getattr(case_evidence, "source_file_id", None) is None:
+            if file_meta is None:
+                logger.warning(
+                    "search_file: evidence %s not found in case %s (has %d evidence items)",
+                    evidence_id,
+                    context.case_id,
+                    len(all_evidence),
+                )
+                alts = format_searchable_alternatives(all_evidence, evidence_id, case)
+                return f"Evidence {evidence_id} not found in this case.{alts}"
+            # The matched upload takes the read below, so a failed read says
+            # what failed, never "not found" (#2359).
+            resolved_row = file_meta
+        elif getattr(case_evidence, "source_file_id", None) is None:
+            # Reject non-file-backed evidence forms BEFORE hitting storage.
+            # An engine inference (source_file_id IS NULL,
+            # source_type=ENGINE_INFERENCE) has no stored file behind it
+            # and cannot be searched. ISS-025: previously the LLM retried
+            # these against search_file and treated the failure as "the
+            # file is inaccessible", giving up on follow-up questions.
             alts = format_searchable_alternatives(all_evidence, evidence_id, case)
             logger.warning(
                 "search_file: evidence %s has no source file (engine inference); "
@@ -621,9 +593,11 @@ class SearchFileTool(AgentTool):
                 f"inference the engine recorded). Use a file-backed "
                 f'evidence_id (file_backed="true") for this search.{alts}'
             )
+        else:
+            file_meta = case.find_uploaded_file(case_evidence.source_file_id)
+            resolved_row = case_evidence
 
         # Read raw file via UploadedFile.storage_ref
-        file_meta = case.find_uploaded_file(case_evidence.source_file_id)
         storage_ref = file_meta.storage_ref if file_meta else None
         if not storage_ref:
             logger.warning(
@@ -643,7 +617,7 @@ class SearchFileTool(AgentTool):
                     file_meta.display_name if file_meta else None
                 ) or evidence_id
                 content = file_data.decode("utf-8", errors="replace")
-                return content, filename, display_name, case_evidence
+                return content, filename, display_name, resolved_row
             except Exception as e:
                 logger.warning(
                     "search_file: storage_service.retrieve_file failed for %s: %s",
