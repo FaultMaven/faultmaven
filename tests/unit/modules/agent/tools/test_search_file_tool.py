@@ -1240,6 +1240,35 @@ class TestNonFileBackedEvidenceGuard:
         )
 
     @pytest.mark.asyncio
+    async def test_a_failed_file_is_not_offered_back_under_a_sibling_row(self, tool):
+        """#2359 review: each extract of one upload mints its own row, so when
+        one row's read fails, another row on that file is the same file."""
+        first = _make_evidence(evidence_id="ev_first", filename="shared.log")
+        sibling = _make_evidence(evidence_id="ev_sibling")
+        sibling.source_file_id, sibling._uploaded_file = first.source_file_id, None
+        other = _make_evidence(
+            evidence_id="ev_other",
+            content_ref="evidence/case_123/other.log",
+            filename="other.log",
+        )
+        case = MagicMock()
+        case.case_id = "case_123"
+        case.evidence = [first, sibling, other]
+        _wire_case_lookup(case)
+        tool.storage_service.retrieve_file.side_effect = OSError("blob gone")
+
+        result = await tool.execute_with_context(
+            params={"evidence_id": "ev_first", "query": "ERROR"},
+            context=self._ctx(case),
+        )
+
+        assert result.error == (
+            "Evidence ev_first: stored file could not be retrieved (OSError). "
+            "Available file-backed evidence in this case: ev_other (other.log)."
+        )
+        assert first.source_file_id not in result.error
+
+    @pytest.mark.asyncio
     async def test_a_timed_out_upload_read_is_recorded_as_a_timeout(self, tool):
         """#2332 on the upload arm: the result records the timeout."""
         tool.storage_service.retrieve_file.side_effect = TimeoutError()
