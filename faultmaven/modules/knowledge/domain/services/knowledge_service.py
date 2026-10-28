@@ -1256,10 +1256,12 @@ class KnowledgeService:
         """Promote runbook content to a fully-published KnowledgeItem.
 
         Atomically maintains both stores by writing the relational source-of-
-        truth first, then the ChromaDB embeddings. On any failure after the row
-        is written (the team share, the vectors raising OR returning 0 chunks,
-        a cancellation), the vectors, the row and its shares are removed before
-        re-raising (#2365), so the two stores never diverge. The earlier "leave
+        truth first, then the ChromaDB embeddings. On any failure from the
+        row's INSERT on (its commit landing and then raising, the team share,
+        the vectors raising OR returning 0 chunks, a cancellation), what this
+        call wrote (its row, vectors and shares) is removed before re-raising
+        (#2365), so the two stores never diverge; a row another call created
+        under the same id is left whole (#2378). The earlier "leave
         the SQL row for a scan-and-recover re-embed" policy produced half-state
         rows that downstream scans mis-classified, so rollback is now the
         contract.
@@ -1372,7 +1374,7 @@ class KnowledgeService:
             tags = [str(tag) for tag in tags]
 
         # 1) SQL first — relational source-of-truth. If this fails, ChromaDB
-        # is never written. If ChromaDB later fails (step 2), the SQL row
+        # is never touched. If ChromaDB later fails (step 2), the SQL row
         # is rolled back before we raise (see lines below) — atomic across
         # both stores.
         item = KnowledgeItem(
@@ -1429,17 +1431,14 @@ class KnowledgeService:
         # fails or is cancelled (#2365). The prior "leave SQL for recovery"
         # policy produced half-state rows that downstream scans then
         # mis-classified. ``create`` commits before it refreshes, so a failure
-        # or cancel can land after the row has (#2378): the cleanup removes
-        # only the row stamped ``now``, and an "already exists" refusal runs
-        # none, since that row is another call's.
-        refused = False
+        # or cancel can land after the row has (#2378). The cleanup removes
+        # only what this call wrote: the row stamped ``now``, and the vectors
+        # once indexing began. An "already exists" refusal, whose row is
+        # another call's, therefore leaves that row whole.
+        indexing = False
         try:
             async with self._db_session_factory() as session:
-                try:
-                    await DatabaseKnowledgeItemRepository(session).create(item)
-                except ValueError:
-                    refused = True
-                    raise
+                await DatabaseKnowledgeItemRepository(session).create(item)
 
             # Team publish: record visibility in the share table (source of
             # truth, ADR-013 §D4). The scope enum stays 'team' ⟺ ≥1 share row.
@@ -1469,6 +1468,7 @@ class KnowledgeService:
                 updated_at=to_json_compatible(now),
             )
             # The value just written to the row's NOT NULL enterprise_id.
+            indexing = True
             chunks_created = await self._index_document_in_vector_store(
                 doc_model, prechunked=prechunked, enterprise_id=enterprise_id
             )
@@ -1480,8 +1480,9 @@ class KnowledgeService:
                     f"cleaned up."
                 )
         except (Exception, asyncio.CancelledError):
-            if not refused:
-                await self._delete_knowledge_item_row(document_id, created_at=now)
+            await self._delete_knowledge_item_row(
+                document_id, created_at=now, indexed=indexing
+            )
             raise
 
         return chunks_created
@@ -1675,60 +1676,66 @@ class KnowledgeService:
         return chunks
 
     async def _delete_knowledge_item_row(
-        self, item_id: str, *, created_at: datetime
+        self, item_id: str, *, created_at: datetime, indexed: bool
     ) -> None:
         """Best-effort cleanup of what a failed :meth:`ingest_runbook` wrote:
-        the item's vectors, its row, then its team share rows (#2365).
+        its row, its vectors, then its team share rows (#2365). It runs from
+        the row's INSERT on, so it removes only what that call wrote (#2378).
 
-        The vectors go first, by parent id: a store can fail after applying
-        part of a write. The row goes only if it carries ``created_at``, the
-        value that call stamped, so a row another call created under the same
-        id stays (#2378). The shares go only once the row's delete has
-        removed it, as in :meth:`delete_document`, so an item that survives
-        keeps the share that makes it a team item. Shielded from cancellation:
-        it runs on the path a cancellation takes, and an anyio scope (the one
-        ``BaseHTTPMiddleware`` runs a route in) cancels every await that is
-        not. Errors are logged, not raised: the caller re-raises its own.
+        The row goes only if it carries ``created_at``, the value that call
+        stamped: a row another call created under the same id stays (two
+        calls stamping the same microsecond are not told apart). The vectors
+        go, by parent id (a store can fail after applying part of a
+        write), only once that row is gone and only if the call began
+        indexing, so a peer's chunks under the same id stay. The shares go
+        unless a row with the id still stands, as in :meth:`delete_document`:
+        an item that survives keeps the share that makes it a team item.
+        Shielded from cancellation: it runs on the path a cancellation takes,
+        and an anyio scope (the one ``BaseHTTPMiddleware`` runs a route in)
+        cancels every await that is not. Errors are logged, not raised: the
+        caller re-raises its own.
         """
         from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
             DatabaseKnowledgeItemRepository,
         )
 
         with anyio.CancelScope(shield=True):
-            if self._vector_store:
-                try:
-                    await self._vector_store.delete_documents_by_parent_id(item_id)
-                except Exception as exc:
-                    logger.error(
-                        "ORPHANED KNOWLEDGE VECTORS %s: ingesting it failed, and "
-                        "removing the chunks it wrote failed too (%s). Any it "
-                        "wrote stay retrievable under an id with no row; remove "
-                        "them by hand.",
-                        item_id,
-                        exception_class_name(exc),
-                    )
             try:
                 async with self._db_session_factory() as session:
-                    deleted = await DatabaseKnowledgeItemRepository(session).delete(
-                        item_id, created_at=created_at
-                    )
+                    repo = DatabaseKnowledgeItemRepository(session)
+                    deleted = await repo.delete(item_id, created_at=created_at)
+                    standing = not deleted and await repo.get_by_id(item_id) is not None
             except Exception as cleanup_err:
                 logger.warning(
-                    "Failed to clean up orphaned knowledge_items row %s (%s); "
-                    "its team share rows are kept with it.",
+                    "Ingesting knowledge item %s failed, and removing the row it "
+                    "may have written failed too (%s); any such row stays, with "
+                    "its vectors and team share rows.",
                     item_id,
                     exception_class_name(cleanup_err),
                 )
                 return
-            if self._share_repo and deleted:
+            if deleted and indexed and self._vector_store:
+                try:
+                    await self._vector_store.delete_documents_by_parent_id(item_id)
+                except Exception as exc:
+                    logger.error(
+                        "ORPHANED KNOWLEDGE VECTORS %s: ingesting it failed and "
+                        "its row was removed, but removing the chunks it wrote "
+                        "failed (%s). Any it wrote stay retrievable under an id "
+                        "with no row; remove them by hand.",
+                        item_id,
+                        exception_class_name(exc),
+                    )
+            if self._share_repo and not standing:
                 try:
                     await self._share_repo.delete_for_resource(
                         "knowledge_item", item_id
                     )
                 except Exception as cleanup_err:
                     logger.warning(
-                        "Failed to clean up the team share rows of orphaned "
-                        "knowledge_items row %s (%s)",
+                        "Ingesting knowledge item %s failed, and removing its "
+                        "team share rows failed too (%s); any such rows name no "
+                        "item.",
                         item_id,
                         exception_class_name(cleanup_err),
                     )
