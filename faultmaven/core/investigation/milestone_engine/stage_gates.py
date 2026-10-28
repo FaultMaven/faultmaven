@@ -144,7 +144,8 @@ def _has_readable_upload(case: Case) -> bool:
     content (``UploadedFile.has_stored_content``, the test that marks it
     ``file_backed="true"``, #2375). Post-010, a fresh upload creates an
     ``UploadedFile`` and no Evidence row until the LLM extracts a slice, so on
-    the evidence-*delivering* turn this is the only material (#708).
+    an evidence-*delivering* turn of a case with no earlier row this is the
+    only material (#708).
     """
     return any(
         uf.has_stored_content and structural_index_is_searchable(uf.structural_index)
@@ -156,9 +157,10 @@ def _has_searchable_material(case: Case) -> bool:
     """True when the tool loop has case material to work over (routing).
 
     Any Evidence row counts, whether or not its file can be read:
-    ``case_evidence_search``, ``list_evidence`` and the entity tools work over
-    rows. An upload counts only through ``_has_readable_upload``: an upload
-    with nothing stored gives no tool anything to do (#2375).
+    ``case_evidence_search`` (given only with a case vector store) and the
+    entity tools (given only under ``FAULTMAVEN_ENTITY_REGISTRY``) work over
+    rows. An upload counts only through ``_has_readable_upload``: with no row,
+    an upload is material only to the tools that read its stored file (#2375).
     """
     if getattr(case, "evidence", None):
         return True
@@ -172,7 +174,7 @@ def _has_readable_material(case: Case) -> bool:
     file, and a row whose file has nothing stored gives ``search_file`` and
     ``deep_analysis`` nothing to read (#2375). An upload counts through
     ``_has_readable_upload``. This is the forced-tool gate's material test, so
-    a forced turn always has a ``file_backed="true"`` target.
+    a forced turn's case always holds a file a reading tool can open.
     """
     for ev in getattr(case, "evidence", None) or []:
         file_meta = case.find_uploaded_file(getattr(ev, "source_file_id", None))
