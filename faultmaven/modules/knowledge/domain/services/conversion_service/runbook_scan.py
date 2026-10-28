@@ -17,8 +17,7 @@ import logging
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
 from faultmaven.exceptions import (
     ConflictError,
@@ -40,6 +39,9 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
     SourceFileInfo,
     generate_conversion_id,
     generate_draft_id,
+)
+from faultmaven.modules.knowledge.domain.services.conversion_service.draft_retirement import (
+    release_live_case_key_if_drained,
 )
 from faultmaven.modules.knowledge.domain.services.conversion_service.job_persistence import (
     _persist_job,
@@ -155,10 +157,12 @@ async def _scan_for_runbooks_impl(
                     draft_model, "knowledge_item_id", None
                 ):
                     # A legacy half-state row from the pre-atomic verify_draft
-                    # path: the current verify_draft commits VERIFIED only after
-                    # successful ingestion. Warn loudly rather than silently
-                    # downgrading — a silent revert is what corrupted live data
-                    # in the incident this path was rewritten to prevent.
+                    # path, or from a delete before #2369: verify_draft commits
+                    # VERIFIED only after successful ingestion, and a delete
+                    # now discards the draft first. Warn loudly rather than
+                    # silently downgrading — a silent revert is what corrupted
+                    # live data in the incident this path was rewritten to
+                    # prevent.
                     logger.warning(
                         f"Draft {draft_model.id} has status=verified "
                         f"but no knowledge_item_id (legacy half-state). "
@@ -186,7 +190,7 @@ async def _scan_for_runbooks_impl(
                     released_job_ids.add(job_id)
                     job = await session.get(ConversionJobModel, job_id)
                     if job is not None:
-                        await _release_live_case_key_if_drained(session, job, draft_id)
+                        await release_live_case_key_if_drained(session, job, draft_id)
 
             await session.commit()
 
@@ -457,32 +461,3 @@ async def _scan_for_runbooks_impl(
         "notes": notes,
         "drafts": discovered,
     }
-
-
-async def _release_live_case_key_if_drained(
-    session: AsyncSession,
-    job: "ConversionJobModel",
-    discarded_draft_id: str,
-) -> None:
-    """Clear ``job.live_case_id`` once the job holds no more live drafts.
-
-    The unique-index slot on ``conversion_jobs.live_case_id`` is the case's
-    one live-conversion claim; it must be released in the same transaction
-    as the last live draft leaving so a later regeneration can take it. The
-    clearing is general (count the OTHER non-discarded drafts of this job) so
-    a job carrying more than one live draft keeps the key until the last one
-    is gone. No-op for jobs that never held the key (document jobs, failed
-    no-draft jobs)."""
-    if job.live_case_id is None:
-        return
-    remaining_live = await session.execute(
-        select(func.count())
-        .select_from(ConversionDraftModel)
-        .where(
-            ConversionDraftModel.conversion_id == job.id,
-            ConversionDraftModel.id != discarded_draft_id,
-            ConversionDraftModel.status != DraftStatus.DISCARDED.value,
-        )
-    )
-    if remaining_live.scalar_one() == 0:
-        job.live_case_id = None

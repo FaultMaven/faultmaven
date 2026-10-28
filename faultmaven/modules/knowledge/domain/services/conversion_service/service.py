@@ -71,6 +71,9 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
     generate_draft_id,
     generate_runbook_id,
 )
+from faultmaven.modules.knowledge.domain.services.conversion_service.draft_retirement import (
+    release_live_case_key_if_drained,
+)
 from faultmaven.modules.knowledge.domain.services.conversion_service.draft_slots import (
     _refuse_modes_whose_id_is_taken,
     claim_case_draft_slot,
@@ -98,7 +101,6 @@ from faultmaven.modules.knowledge.domain.services.conversion_service.prompts imp
 )
 from faultmaven.modules.knowledge.domain.services.conversion_service.runbook_scan import (
     QUALITY_WARNING_THRESHOLD,
-    _release_live_case_key_if_drained,
     _scan_for_runbooks_impl,
 )
 from faultmaven.modules.knowledge.domain.services.document_preprocessor import (
@@ -2409,42 +2411,6 @@ status: draft
                 sanitizer=self._sanitizer,
             )
 
-    async def discard_by_knowledge_item_id(self, knowledge_item_id: str) -> bool:
-        """Discard the draft that was activated into the given knowledge item.
-
-        Called by KnowledgeService when a verified runbook is deleted from
-        the KB. Clears knowledge_item_id and sets status to DISCARDED so
-        the draft no longer appears in the pending or verified list.
-
-        Args:
-            knowledge_item_id: The knowledge_item_id (or runbook_id) stored
-                               on the ConversionDraftModel row.
-
-        Returns:
-            True if a matching draft was found and discarded, False otherwise.
-        """
-        if not self._db_session_factory:
-            return False
-
-        async with self._db_session_factory() as session:
-            result = await session.execute(
-                select(ConversionDraftModel).where(
-                    (ConversionDraftModel.knowledge_item_id == knowledge_item_id)
-                    | (ConversionDraftModel.runbook_id == knowledge_item_id)
-                )
-            )
-            dm = result.scalar_one_or_none()
-            if not dm:
-                return False
-
-            dm.status = DraftStatus.DISCARDED.value
-            dm.knowledge_item_id = None
-            job = await session.get(ConversionJobModel, dm.conversion_id)
-            if job is not None:
-                await _release_live_case_key_if_drained(session, job, dm.id)
-            await session.commit()
-            return True
-
     async def delete_draft(
         self,
         conversion_id: str,
@@ -2492,7 +2458,7 @@ status: draft
 
             # Soft delete in database
             dm.status = DraftStatus.DISCARDED.value
-            await _release_live_case_key_if_drained(session, job, dm.id)
+            await release_live_case_key_if_drained(session, job, dm.id)
             await session.commit()
 
             return True

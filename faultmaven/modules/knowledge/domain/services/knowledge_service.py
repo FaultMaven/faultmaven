@@ -558,7 +558,8 @@ class KnowledgeService:
           so the vectors must be removed or the runbook stays queryable.
           The row is kept because the pack would resurrect a hard delete anyway.
         - **Authored** (UUID / ``kb_<16 hex>``) → **hard delete**: drop the
-          ``knowledge_items`` row and its vectors.
+          ``knowledge_items`` row and its vectors, and discard the drafts that
+          published it (their text kept, their slots freed, #2369).
 
         **Invariant (#1966): a document reported removed has no retrievable
         chunk**, now or after any later restart, reconcile, repair or kb_seed
@@ -596,7 +597,12 @@ class KnowledgeService:
         1. The row change is issued UNCOMMITTED: a ``DELETE``, or a targeted
            ``UPDATE ... SET is_published = false`` that writes no other column
            but ``updated_at`` (so it cannot revert a concurrent committed
-           edit). Zero rows
+           edit). Ahead of a ``DELETE``, in the same transaction, the drafts
+           naming the item are discarded (``discard_drafts_naming_item``):
+           their key to it is ``ON DELETE SET NULL``, so after the ``DELETE``
+           none names it, and a verified draft naming nothing would stay
+           listed. Every rollback below undoes the discard with the row
+           change. Zero rows
            matched — absent, deleted concurrently, or refused by an RLS write
            policy (a tenant session against a platform-tier row under multi,
            #770) — rolls back and reports not-removed WITHOUT touching the
@@ -648,6 +654,9 @@ class KnowledgeService:
             if not document_id or not document_id.strip():
                 raise ValueError("Document ID cannot be empty")
 
+            from faultmaven.modules.knowledge.domain.services.conversion_service.draft_retirement import (  # noqa: E501
+                discard_drafts_naming_item,
+            )
             from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (  # noqa: E501
                 DatabaseKnowledgeItemRepository,
             )
@@ -655,6 +664,7 @@ class KnowledgeService:
 
             try:
                 builtin = is_builtin_item_id(document_id)
+                discarded: List[str] = []
 
                 async with self._db_session_factory() as session:
                     repo = DatabaseKnowledgeItemRepository(session)
@@ -672,6 +682,11 @@ class KnowledgeService:
                         )
                         action = "unpublished"
                     else:
+                        # Before the DELETE: the drafts' key to the item is
+                        # ON DELETE SET NULL, so after it none names the item.
+                        discarded = await discard_drafts_naming_item(
+                            session, document_id
+                        )
                         removed = await repo.delete(document_id, commit=False)
                         action = "deleted"
 
@@ -770,6 +785,8 @@ class KnowledgeService:
                         )
 
                 logger.info(f"{action} document {document_id}")
+                if discarded:
+                    logger.info(f"Discarded drafts {discarded} of {document_id}")
                 return {
                     "success": True,
                     "document_id": document_id,

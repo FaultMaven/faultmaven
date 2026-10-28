@@ -32,7 +32,7 @@ In order, each step filling only rows the steps before it left empty:
    with no text cannot be shown, edited or verified. A case conversion whose
    last live draft this discards releases its ``conversion_jobs.live_case_id``
    in the same statement order the application uses
-   (``_release_live_case_key_if_drained``), so that case can be converted
+   (``release_live_case_key_if_drained``), so that case can be converted
    again. The ids and the count are logged.
 4. **Discarded drafts** get ``''``. Discard is a soft delete; nothing reads a
    discarded draft's text.
