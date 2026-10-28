@@ -75,7 +75,7 @@ class ToolResult(BaseModel):
 
     success: bool                    # Did execution succeed?
     data: Any                        # Tool output; required (None on a failure)
-    error: Optional[str] = None      # Fixed reason if failed, never an exception's text
+    error: Optional[str] = None      # Reason if failed; an unexpected exception's text is never put here (tool_failure)
     timed_out: bool = False          # The failure was a timeout, by exception class
 ```
 
@@ -85,7 +85,7 @@ class ToolResult(BaseModel):
 |-------|------|----------|-------------|
 | `success` | bool | Yes | Indicates if tool execution succeeded |
 | `data` | Any | Yes | Tool output data (None if failed) |
-| `error` | str | No | Fixed reason, never an exception's text (#2332); set when success=False |
+| `error` | str | No | Reason; an unexpected exception's text is never put here (`tool_failure`, #2332), but a tool may return a message written for the model; set when success=False |
 | `timed_out` | bool | No | Set by `tool_failure` from the exception class |
 
 **Success Response Example**:
@@ -249,9 +249,9 @@ Tools implement **only** the `AgentTool` interface:
 
 Tools receive dependencies via constructor:
 ```python
-def __init__(self, settings, sanitizer):
+def __init__(self, settings, llm_provider):
     self.settings = settings
-    self.sanitizer = sanitizer
+    self.llm_provider = llm_provider
 ```
 
 Benefits:
@@ -259,19 +259,9 @@ Benefits:
 - ✅ Configurable via settings
 - ✅ No hard-coded dependencies
 
-### 3. Privacy-First Invariant
+### 3. Redaction
 
-All tools must sanitize inputs:
-```python
-async def execute_with_context(self, params: Dict, context: ToolContext) -> ToolResult:
-    # ALWAYS sanitize user input
-    sanitized_query = self.sanitizer.sanitize(params['query'])
-
-    # Process with sanitized data
-    result = await self._process(sanitized_query)
-
-    return ToolResult(success=True, data=result)
-```
+The engine redacts every tool result before the model reads it (`case_redacted`, `faultmaven/core/investigation/milestone_engine/generation.py`). A tool that sends case content to a model itself (`kb_qa`, `case_evidence_search`, `deep_analysis`) passes `context.redaction_ctx` (`ToolContext`), so the values enter the case registry and the placeholders in its answer can be reversed in the reply the user reads. No tool sanitizes its own params. An unexpected exception goes through `tool_failure`, which names its class, never its text (#2332); a tool may still return a message written for the model on purpose (`reclassify_evidence` returns its typed domain errors' text, `search_file` the `re.error` text of the model's own pattern).
 
 ### 4. Graceful Degradation
 
@@ -301,7 +291,7 @@ async def execute_with_context(self, params: Dict, context: ToolContext) -> Tool
 - Fast execution
 - Full control
 
-**Examples**: `search_file`, `deep_analysis`
+**Examples**: `search_file`, `vectorize_file`
 
 **Interface Pattern**:
 ```python
@@ -372,7 +362,7 @@ class SystemTool(AgentTool):
         if params['command'] not in self.ALLOWED_COMMANDS:
             return ToolResult(success=False, data=None, error="Command not whitelisted")
 
-        # Execute with timeout and sanitization
+        # Execute with a timeout
         result = await self._safe_execute(params)
         return ToolResult(success=True, data=result)
 ```
@@ -397,6 +387,8 @@ tool_failure("Internal tool error", exc, guidance="See the server log.")
 
 ### Error Recovery
 
+The registry does not retry or fall back; the strategies below are guidance for a tool's own code.
+
 **Retry Strategy**:
 1. Transient errors: Retry with exponential backoff
 2. Rate limit errors: Wait and retry after cooldown
@@ -415,29 +407,9 @@ if not result.success:
 
 ## Security Requirements
 
-### Input Sanitization
+### Redaction
 
-**Required for all tools**:
-```python
-async def execute_with_context(self, params: Dict, context: ToolContext) -> ToolResult:
-    # Sanitize all user inputs
-    for key, value in params.items():
-        if isinstance(value, str):
-            params[key] = self.sanitizer.sanitize(value)
-```
-
-### Output Sanitization
-
-**Required for external tools**:
-```python
-async def execute_with_context(self, params: Dict, context: ToolContext) -> ToolResult:
-    result = await self._call_external_api(params)
-
-    # Sanitize output before returning
-    sanitized = self.sanitizer.sanitize(str(result))
-
-    return ToolResult(success=True, data=sanitized)
-```
+The registry does not sanitize params or results of a tool. The engine redacts each result before the model reads it, and a tool that calls a model with case content passes `context.redaction_ctx`; see Design Principles, Redaction.
 
 ### Access Control
 
@@ -493,7 +465,7 @@ Each tool must document:
 2. **When Used**: Which turns offer it
 3. **Parameters**: Input schema and examples
 4. **Returns**: Output format and examples
-5. **Configuration**: Required environment variables
+5. **Configuration**: Required settings (`faultmaven/config/settings.py`)
 6. **Limitations**: Known constraints
 
 ## Compliance Checklist
@@ -504,12 +476,11 @@ Before tool acceptance:
 - [ ] Registered in `_create_investigation_tools`
 - [ ] Returns a valid `ToolResult` (`data=` on every one; failures via `tool_failure`)
 - [ ] Provides a valid schema via `parameters_schema`
-- [ ] Sanitizes all inputs
+- [ ] Passes `context.redaction_ctx` wherever it sends case content to a model
 - [ ] Handles errors gracefully
 - [ ] Has timeout protection
 - [ ] Has unit tests (>80% coverage)
 - [ ] Has integration tests
 - [ ] Has documentation
-- [ ] Follows privacy-first invariant
 - [ ] Passes security review (if accessing external services)
 

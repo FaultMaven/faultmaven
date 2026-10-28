@@ -99,7 +99,7 @@ class MyCustomTool(AgentTool):
 
 1. Construct it in `register_tools` (`faultmaven/container/providers/tools.py`) and set it on the container, as `search_file_tool` is: `container.my_custom_tool = MyCustomTool(...)` and `container.tools.append(...)`.
 2. Give it to the model by adding it to `_create_investigation_tools` (`faultmaven/container/providers/services.py`), which builds the `AgentToolRegistry` for the engine: `registry.register(my_custom_tool)`. `register` raises `ValueError` on a duplicate name.
-3. A turn may offer only a subset of the registry: terminal Q&A turns offer only `TERMINAL_QA_TOOLS` (`faultmaven/core/investigation/milestone_engine/terminal_turns.py`), so add the tool there only if it is a read-only lookup. The prompts name only the tools the turn gives (`GivenTools`, derived from the registry and that filter).
+3. A turn may offer only a subset of the registry: terminal Q&A turns offer only `TERMINAL_QA_TOOLS` (`faultmaven/core/investigation/milestone_engine/terminal_turns.py`), so add the tool there only if it is a read-only lookup. The set is empty when the provider cannot call tools, and on single-shot turns, which pass no tools. The prompts name only the tools the turn gives (`GivenTools`, derived from the registry and that filter).
 
 ### 3. Test Your Tool
 
@@ -175,7 +175,7 @@ pytest tests/unit/modules/agent/tools/test_my_custom_tool.py -v
 - ✅ Full control
 - ✅ Easy testing
 
-**Example**: `search_file` (`search_file_tool.py`), `deep_analysis` (`deep_analysis_tool.py`). A tool reaches the model only when `_create_investigation_tools` registers it.
+**Example**: `search_file` (`search_file_tool.py`), `vectorize_file` (`vectorize_file_tool.py`). A tool reaches the model only when `_create_investigation_tools` registers it.
 
 ```python
 class PatternAnalyzerTool(AgentTool):
@@ -267,7 +267,7 @@ class MCPServerTool(AgentTool):
 **Security Requirements**:
 - ⚠️ Command whitelist required
 - ⚠️ User confirmation needed
-- ⚠️ Output sanitization mandatory
+- ⚠️ Treat output as untrusted before returning it
 - ⚠️ Timeout protection essential
 
 **Status**: design only. No system-command tool exists in the code. The sketch below shows the shape it would take as an `AgentTool`:
@@ -322,55 +322,15 @@ class SystemCommandTool(AgentTool):
             return tool_failure("Command execution timed out", e)
 ```
 
-## Privacy-First Development
+## Privacy and Redaction
 
-**Critical**: All tools MUST sanitize inputs before processing!
+The engine redacts every tool result before the model reads it (`case_redacted`, `faultmaven/core/investigation/milestone_engine/generation.py`). A tool that sends case content to a model itself (`kb_qa`, `case_evidence_search`, `deep_analysis`) passes `context.redaction_ctx` (`ToolContext`), so the values enter the case registry and the placeholders in its answer can be reversed in the reply the user reads. No tool sanitizes its own params. An unexpected exception goes through `tool_failure`, which names its class, never its text (#2332); a tool may still return a message written for the model on purpose (`reclassify_evidence` returns its typed domain errors' text, `search_file` the `re.error` text of the model's own pattern).
 
-### PII Sanitization Pattern
-
-Case content a tool sends to a model itself goes through `context.redaction_ctx` (`ToolContext`), so its placeholders can be reversed in the reply the user reads. For other text, `DataSanitizer.sanitize(data)` (`faultmaven/infrastructure/security/redaction.py`) is the sanitizer:
-
-```python
-from faultmaven.infrastructure.security.redaction import DataSanitizer
-
-class PrivacyAwareTool(AgentTool):
-    # name, description and parameters_schema as in the Quick Start
-    def __init__(self, sanitizer: DataSanitizer):
-        self.sanitizer = sanitizer
-
-    async def execute_with_context(self, params: Dict, context: ToolContext) -> ToolResult:
-        # ALWAYS sanitize user input
-        sanitized_query = self.sanitizer.sanitize(params['query'])
-
-        # Process with sanitized data
-        result = await self._process(sanitized_query)
-
-        # Sanitize output before returning
-        sanitized_result = self.sanitizer.sanitize(result)
-
-        return ToolResult(success=True, data=sanitized_result)
-```
-
-### External Tool Double Sanitization
-
-For tools calling external APIs (web search, MCP servers), sanitize TWICE:
-
-```python
-async def execute_with_context(self, params: Dict, context: ToolContext) -> ToolResult:
-    # Sanitization 1: Input from user
-    sanitized_input = self.sanitizer.sanitize(params['query'])
-
-    # Sanitization 2: Before external call
-    external_safe_input = self.sanitizer.sanitize(sanitized_input)
-
-    # Call external API
-    external_result = await self._call_external_api(external_safe_input)
-
-    # Sanitize result before returning
-    sanitized_output = self.sanitizer.sanitize(external_result)
-
-    return ToolResult(success=True, data=sanitized_output)
-```
+What this means when you write a tool:
+- Do not rely on the registry to sanitize your params; it does not.
+- Return nothing in a failure's `error` that you would not want the model to repeat. For an unexpected exception use `tool_failure`; build any other message yourself, from text written for the model.
+- If your tool calls a model with case content, pass `context.redaction_ctx` through (see `kb_tool_adapter.py`, which hands it to the wrapped tool).
+- `DataSanitizer.sanitize(data)` (`faultmaven/infrastructure/security/redaction.py`) exists for text outside a case; none of the given tools calls it on its params.
 
 ## Dependency Injection Integration
 
@@ -381,9 +341,9 @@ A tool receives its dependencies as constructor arguments, passed where `registe
 ```python
 class DIAwareTool(AgentTool):
     # name, description and parameters_schema as in the Quick Start
-    def __init__(self, settings, sanitizer):
+    def __init__(self, settings, llm_provider):
         self.settings = settings
-        self.sanitizer = sanitizer
+        self.llm_provider = llm_provider
 ```
 
 ### Common Dependencies
@@ -391,7 +351,6 @@ class DIAwareTool(AgentTool):
 | Dependency | Type | Use Case |
 |------------|------|----------|
 | `settings` | FaultMavenSettings | Read configuration |
-| `sanitizer` | DataSanitizer | PII redaction |
 | `llm_provider` | ILLMProvider | LLM access (rare) |
 
 ## Tool Configuration
@@ -453,7 +412,7 @@ def mock_dependencies():
     """Mock common dependencies"""
     return {
         'settings': Mock(),
-        'sanitizer': Mock(sanitize=lambda x: x),
+        'llm_provider': Mock(),
     }
 
 @pytest.mark.asyncio
@@ -472,12 +431,9 @@ async def test_tool_with_mocked_deps(mock_dependencies):
 async def test_tool_with_real_dependencies():
     """Test tool with real infrastructure"""
     from faultmaven.config.settings import get_settings
-    from faultmaven.infrastructure.security.redaction import DataSanitizer
 
     settings = get_settings()
-    sanitizer = DataSanitizer()
-
-    tool = MyTool(settings=settings, sanitizer=sanitizer)
+    tool = MyTool(settings=settings, llm_provider=llm_provider)
     result = await tool.execute_with_context({'param': 'value'}, make_context())
 
     assert result.success
@@ -554,7 +510,7 @@ Before submitting a new tool:
 - [ ] Failures go through `tool_failure`, or pass `data=None`
 - [ ] Tool has unit tests (>80% coverage)
 - [ ] Tool has integration tests
-- [ ] Tool sanitizes all inputs (if using external data)
+- [ ] Tool passes `context.redaction_ctx` wherever it sends case content to a model
 - [ ] Tool handles errors gracefully
 - [ ] Tool has timeout protection (if I/O intensive)
 - [ ] Tool configuration added to `settings.py`
@@ -599,17 +555,21 @@ class GoodTool(AgentTool):
         self.api_key = settings.tools.my_tool_api_key
 ```
 
-### ❌ Don't: Skip sanitization
+### ❌ Don't: Put an exception's text in the result
 ```python
-async def execute_with_context(self, params, context):
-    return ToolResult(success=True, data=params['raw_input'])  # Dangerous!
+try:
+    result = await external_api_call()
+except Exception as e:
+    return ToolResult(success=False, data=None, error=f"Failed: {e}")  # can carry a URI or host
 ```
 
-### ✅ Do: Always sanitize
+### ✅ Do: Use tool_failure
 ```python
-async def execute_with_context(self, params, context):
-    sanitized = self.sanitizer.sanitize(params['raw_input'])
-    return ToolResult(success=True, data=sanitized)
+try:
+    result = await external_api_call()
+except Exception as e:
+    logger.exception("failed: %s", e)
+    return tool_failure("Failed", e)
 ```
 
 ### ❌ Don't: Ignore errors

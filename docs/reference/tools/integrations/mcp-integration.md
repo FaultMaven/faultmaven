@@ -476,7 +476,8 @@ async def main():
     container.initialize()
 
     # Design gap: take the registry _create_investigation_tools builds
-    # (the set the model is given); container.tools is a wider list.
+    # (the set the model is given). container.tools is a different list: it holds
+    # the unwrapped Q&A tools, lacks the adapters, and adds list_evidence_by_time.
     tools = registry.get_all_tools()
 
     # Create and run MCP server
@@ -536,8 +537,8 @@ Claude: [calls MCP tool]
 
 ### For MCP Clients (Consuming External Servers)
 
-1. **Sanitize Inputs**: Always sanitize data before sending to external MCP servers
-2. **Validate Outputs**: Sanitize and validate data received from external servers
+1. **Sanitize Inputs**: Design intent: the registry does not sanitize, so the MCP client tool would have to before sending data to an external server
+2. **Validate Outputs**: Design intent: sanitize and validate data received from external servers
 3. **Command Validation**: Whitelist allowed MCP server commands
 4. **Environment Isolation**: Run MCP servers in sandboxed environments
 5. **Timeout Protection**: Set timeouts for MCP server calls (default: 30s)
@@ -548,7 +549,7 @@ Claude: [calls MCP tool]
 2. **Rate Limiting**: Limit requests per client
 3. **Tool Restrictions**: Only expose non-dangerous tools
 4. **Audit Logging**: Log all MCP tool executions
-5. **Data Sanitization**: Sanitize all tool outputs
+5. **Data Sanitization**: Design intent: sanitize all tool outputs
 
 ## Configuration Examples
 

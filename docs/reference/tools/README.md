@@ -45,7 +45,7 @@ The [Tool Catalog](./tool-catalog.md) lists them with their files and the condit
 
 ### 1. Privacy
 
-`AgentToolRegistry.execute_tool` does not sanitize a tool's inputs or outputs; that is the tool's job. Case content a tool sends to a model itself goes through `context.redaction_ctx` (`ToolContext`), so its placeholders can be reversed in the reply the user reads. A failure never carries an exception's text to the model: `tool_failure` names the exception class (#2332).
+The engine redacts every tool result before the model reads it (`case_redacted`, `faultmaven/core/investigation/milestone_engine/generation.py`). A tool that sends case content to a model itself (`kb_qa`, `case_evidence_search`, `deep_analysis`) passes `context.redaction_ctx` (`ToolContext`), so the values enter the case registry and the placeholders in its answer can be reversed in the reply the user reads. No tool sanitizes its own params. An unexpected exception goes through `tool_failure`, which names its class, never its text (#2332); a tool may still return a message written for the model on purpose (`reclassify_evidence` returns its typed domain errors' text, `search_file` the `re.error` text of the model's own pattern).
 
 ### 2. Registration is by hand
 
@@ -67,7 +67,7 @@ class CustomValidatorTool(AgentTool):
 class ToolResult(BaseModel):          # faultmaven/models/interfaces.py
     success: bool                     # Execution succeeded?
     data: Any                         # Tool output; required, None on a failure
-    error: Optional[str] = None       # Fixed reason if failed, never an exception's text
+    error: Optional[str] = None       # Reason if failed; an unexpected exception's text is never put here (tool_failure)
     timed_out: bool = False           # The failure was a timeout, by exception class
 ```
 
@@ -80,7 +80,7 @@ There is no discovery step. At startup:
 2. `_create_investigation_tools` registers the ones the model is given in an `AgentToolRegistry`
 3. The engine receives that registry
 
-The set: `search_file`, `deep_analysis` (unless `DEEP_ANALYSIS_BACKEND=disabled`), `web_search` (when enabled and configured), `kb_qa`, `vectorize_file` and `case_evidence_search` (both only with a case vector store), plus `find_entity` / `list_top_entities` and `reclassify_evidence` under their flags. The startup log line "DA tool registry: N tools registered" names the set.
+The set: `search_file`, `deep_analysis` (unless `DEEP_ANALYSIS_BACKEND=disabled`), `web_search` (when enabled and configured), `kb_qa` and `case_evidence_search` (both unless `SKIP_SERVICE_CHECKS`, which builds no vector store), `vectorize_file` (beside `case_evidence_search`), plus `find_entity` / `list_top_entities` and `reclassify_evidence` under their flags. The startup log line "DA tool registry: N tools registered" names the set.
 
 ## Configuration
 
@@ -94,4 +94,4 @@ WEB_SEARCH_ENGINE_ID=your_engine_id
 ENABLE_WEB_SEARCH=true
 ```
 
-`DEEP_ANALYSIS_BACKEND` is `local` (default) or `disabled`. Reference: `docs/development/environment-variables.md`.
+`DEEP_ANALYSIS_BACKEND` is `local` (default) or `disabled`. Settings are defined in `faultmaven/config/settings.py`; `.env.example` is the template.
