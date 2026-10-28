@@ -10,9 +10,9 @@ state introduced by an earlier ingestion bug.
 What it does
 ------------
 1. Deletes every row from ``knowledge_items`` (or filtered by scope).
-2. Deletes every row from ``conversion_drafts`` whose source is a
-   pre-deployed runbook (so case-generated drafts that users authored
-   are preserved). Use ``--all-drafts`` to nuke those too.
+2. Keeps ``conversion_drafts`` rows, discarding first the ones that
+   published a runbook it deletes (their text kept, #2369), so none stays
+   listed as verified naming nothing. Use ``--all-drafts`` to delete them all.
 3. Removes ChromaDB collections backing global/team/personal KB so
    they're recreated empty on next API start.
 4. Optionally invokes the bootstrap directly (``--rebuild``) for
@@ -301,6 +301,9 @@ async def reset_kb(
         ConversionDraftModel,
         KnowledgeItemModel,
     )
+    from faultmaven.modules.knowledge.domain.services.conversion_service.draft_retirement import (  # noqa: E501
+        discard_drafts_naming_any_item,
+    )
     from faultmaven.providers.tenancy.factory import (
         BUILTIN_MULTI,
         requested_tenant_provider,
@@ -399,6 +402,10 @@ async def reset_kb(
 
         # SQL wipe. Report the DELETEs' own rowcounts rather than the counts
         # read above, so the numbers printed are what the database actually did.
+        # The drafts that published these runbooks are discarded first: their
+        # key to the item is ON DELETE SET NULL, so after the DELETE each would
+        # stay listed as verified, naming nothing (#2369).
+        discarded = await discard_drafts_naming_any_item(session)
         deleted_items = (await session.execute(delete(KnowledgeItemModel))).rowcount
         if all_drafts:
             deleted_drafts = (
@@ -406,13 +413,13 @@ async def reset_kb(
             ).rowcount
             print(f"Deleted {deleted_drafts} conversion_drafts rows (--all-drafts).")
         else:
-            # Only delete drafts whose source_url marks them as bootstrap-generated.
-            # We don't currently mark these, so by default we conservatively
-            # KEEP all drafts. Operators with a known-clean drafts table can
+            # Drafts carry no mark of being bootstrap-generated, so by default
+            # every row is KEPT. Operators with a known-clean drafts table can
             # pass --all-drafts.
             print(
-                "Kept conversion_drafts rows (use --all-drafts to remove case-"
-                "generated drafts too)."
+                f"Kept conversion_drafts rows, discarding the {len(discarded)} "
+                "that published a deleted runbook (use --all-drafts to remove "
+                "case-generated drafts too)."
             )
         await session.commit()
     print(f"Deleted {deleted_items} knowledge_items rows.")

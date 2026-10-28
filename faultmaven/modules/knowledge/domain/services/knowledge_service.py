@@ -57,6 +57,9 @@ from faultmaven.models.interfaces import (
 )
 from faultmaven.models.vector_metadata import VectorMetadata
 from faultmaven.modules.knowledge.domain.item_title import sanitize_item_title
+from faultmaven.modules.knowledge.domain.services.conversion_service.draft_retirement import (
+    discard_drafts_naming_item,
+)
 from faultmaven.modules.knowledge.domain.services.runbook_validator import (
     RunbookQualityError,
     aenforce_runbook_quality,
@@ -597,12 +600,13 @@ class KnowledgeService:
         1. The row change is issued UNCOMMITTED: a ``DELETE``, or a targeted
            ``UPDATE ... SET is_published = false`` that writes no other column
            but ``updated_at`` (so it cannot revert a concurrent committed
-           edit). Ahead of a ``DELETE``, in the same transaction, the drafts
-           naming the item are discarded (``discard_drafts_naming_item``):
-           their key to it is ``ON DELETE SET NULL``, so after the ``DELETE``
-           none names it, and a verified draft naming nothing would stay
-           listed. Every rollback below undoes the discard with the row
-           change. Zero rows
+           edit). Ahead of a ``DELETE``, in the same transaction, the item row
+           is locked and the drafts naming it are discarded
+           (``discard_drafts_naming_item``, #2369): their key to it is ``ON
+           DELETE SET NULL``, so after the ``DELETE`` none names it, and a
+           verified draft naming nothing would stay listed. The lock waits for
+           a draft another transaction is still linking to the item. Every
+           rollback below undoes the discard with the row change. Zero rows
            matched — absent, deleted concurrently, or refused by an RLS write
            policy (a tenant session against a platform-tier row under multi,
            #770) — rolls back and reports not-removed WITHOUT touching the
@@ -654,9 +658,6 @@ class KnowledgeService:
             if not document_id or not document_id.strip():
                 raise ValueError("Document ID cannot be empty")
 
-            from faultmaven.modules.knowledge.domain.services.conversion_service.draft_retirement import (  # noqa: E501
-                discard_drafts_naming_item,
-            )
             from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (  # noqa: E501
                 DatabaseKnowledgeItemRepository,
             )
@@ -682,8 +683,9 @@ class KnowledgeService:
                         )
                         action = "unpublished"
                     else:
-                        # Before the DELETE: the drafts' key to the item is
-                        # ON DELETE SET NULL, so after it none names the item.
+                        # Before the DELETE, the row locked: the drafts' key
+                        # to the item is ON DELETE SET NULL, so after it none
+                        # names the item.
                         discarded = await discard_drafts_naming_item(
                             session, document_id
                         )
@@ -1737,9 +1739,10 @@ class KnowledgeService:
 
     async def withdraw_published_item(self, item_id: str, *, caller: str) -> bool:
         """Remove an item a caller published but could not record, through
-        :meth:`delete_document` (row, vectors, team shares). True when it is
-        gone; otherwise an ERROR, prefixed with ``caller``, names the orphaned
-        item, which stays live and deletable. Shielded from an anyio scope's
+        :meth:`delete_document` (row, vectors, team shares, and any draft
+        naming it, discarded). True when it is gone; otherwise an ERROR,
+        prefixed with ``caller``, names the orphaned item, which stays live
+        and deletable. Shielded from an anyio scope's
         cancellation, as :meth:`_delete_knowledge_item_row` is: every caller
         runs it on a failure path."""
         with anyio.CancelScope(shield=True):
@@ -1766,9 +1769,10 @@ class KnowledgeService:
         error.
 
         The rows go first, by id. A commit can land and still raise, or be
-        cancelled, and withdrawing the item under a landed draft would leave it
-        ``verified`` with a NULL ``knowledge_item_id`` (the key's ``SET NULL``),
-        which ``GET /knowledge/drafts`` lists. Draft, then job, then file: the
+        cancelled, and withdrawing the item under a landed draft would only
+        discard that draft (:meth:`delete_document` discards the drafts naming
+        what it deletes, #2369), leaving the upload's rows behind for an
+        upload its caller was told failed. Draft, then job, then file: the
         job's key to the file is ``RESTRICT``. Only once they are gone is the
         item withdrawn; if they cannot be removed, the item stays too, so the
         upload is whole or is only its item, and an ERROR names both.

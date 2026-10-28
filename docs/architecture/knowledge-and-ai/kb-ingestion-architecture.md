@@ -158,7 +158,7 @@ fm-reset-kb --yes --rebuild       # Wipe + immediate in-process rebuild
 fm-reset-kb --yes --all-drafts    # Also delete case-generated drafts
 ```
 
-Default behaviour is conservative: SQL `knowledge_items` are deleted, ChromaDB is removed, but `conversion_drafts` (which may contain case-generated work in progress) are preserved unless `--all-drafts` is passed.
+Default behaviour is conservative: SQL `knowledge_items` are deleted, ChromaDB is removed, but `conversion_drafts` (which may contain case-generated work in progress) are preserved unless `--all-drafts` is passed. A draft that published a deleted runbook is discarded first, its text kept, so it is not left listed as verified (#2369).
 
 The ChromaDB half is an `rmtree` of a **local** directory resolved from
 `CHROMADB_KB_PERSIST_DIR`, read exactly as `create_persistent_client` reads it
@@ -178,7 +178,7 @@ Operational detail:
 | Invariant | Where enforced |
 |-----------|----------------|
 | No row in `knowledge_items` without corresponding ChromaDB chunks | `KnowledgeService.ingest_runbook` rolls back SQL on 0-chunk result |
-| No draft with `status = VERIFIED` but `knowledge_item_id = NULL` | `ConversionService.verify_draft` commits status only after ingestion succeeds |
+| No draft with `status = VERIFIED` but `knowledge_item_id = NULL` | `ConversionService.verify_draft` commits status only after ingestion succeeds; `KnowledgeService.delete_document` and `fm-reset-kb` discard the drafts naming an item before deleting it (`draft_retirement`, #2369). Another deleter can still leave one (the key's `SET NULL`; #2385) |
 | Re-running bootstrap produces no churn for unchanged runbooks | `kb_init._ingest_pack_runbook` compares the pack's hash with `metadata.pack_content_hash` stamped at ingest |
 | No embedding model used to *ingest* the pack | Pack ships pre-computed vectors; `ingest_runbook(prechunked=...)` skips `model.encode` (the model still loads at boot for query-time search) |
 | Pre-deployed runbooks never appear in the user's "Drafts" UI | Bootstrap writes directly to `knowledge_items`, not `conversion_drafts` |

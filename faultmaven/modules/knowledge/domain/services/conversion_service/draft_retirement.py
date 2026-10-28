@@ -5,17 +5,19 @@ A published draft keeps its row, ``verified`` and naming its knowledge item
 through ``conversion_drafts.knowledge_item_id``. That key is ``ON DELETE SET
 NULL``, so a draft is discarded BEFORE its item's ``DELETE`` runs: afterwards
 no draft names the item, and a verified draft naming nothing would stay listed
-(#2369). Each helper writes in the caller's session and commits nothing, so the
-caller's rollback undoes it with the rest of its transaction."""
+(#2369). Both deleters do so: ``KnowledgeService.delete_document`` and
+``fm-reset-kb``. Each helper writes in the caller's session and commits
+nothing, so the caller's rollback undoes it with the rest of its transaction."""
 
-from typing import List
+from typing import Iterable, List, Tuple
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select, true, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from faultmaven.infrastructure.persistence.models import (
     ConversionDraftModel,
     ConversionJobModel,
+    KnowledgeItemModel,
 )
 from faultmaven.modules.knowledge.domain.models.conversion import DraftStatus
 
@@ -49,27 +51,60 @@ async def release_live_case_key_if_drained(
         job.live_case_id = None
 
 
-async def discard_drafts_naming_item(session: AsyncSession, item_id: str) -> List[str]:
-    """Discard every draft that names ``item_id``; return their ids.
+async def release_drained_case_keys(
+    session: AsyncSession, discarded: Iterable[Tuple[str, str]]
+) -> None:
+    """Release the live case key of each job left with no live draft.
 
-    Called by ``KnowledgeService.delete_document`` ahead of the item's
-    ``DELETE``, in its transaction. The text is kept, the draft leaves the
-    drafts list, and its ``runbook_id`` slot is freed. One statement, as no
-    unique key bounds the drafts naming one item, then one key release per job.
+    ``discarded`` holds the ``(draft_id, conversion_id)`` of the drafts this
+    session has just discarded. Flushed first, so the count sees every status
+    flipped even where one job lost several drafts; then one release per job.
     """
-    discarded = (
-        await session.execute(
-            update(ConversionDraftModel)
-            .where(ConversionDraftModel.knowledge_item_id == item_id)
-            .values(status=DraftStatus.DISCARDED.value, knowledge_item_id=None)
-            .returning(ConversionDraftModel.id, ConversionDraftModel.conversion_id)
-            .execution_options(synchronize_session=False)
-        )
-    ).all()
+    await session.flush()
     one_per_job = {job_id: draft_id for draft_id, job_id in discarded}
     for job_id, draft_id in one_per_job.items():
         job = await session.get(ConversionJobModel, job_id)
         if job is not None:
             await release_live_case_key_if_drained(session, job, draft_id)
+
+
+async def discard_drafts_naming_item(session: AsyncSession, item_id: str) -> List[str]:
+    """Discard the drafts naming ``item_id``, ahead of its ``DELETE``
+    (``KnowledgeService.delete_document``); return their ids."""
+    return await _discard_drafts_naming(session, KnowledgeItemModel.item_id == item_id)
+
+
+async def discard_drafts_naming_any_item(session: AsyncSession) -> List[str]:
+    """Discard every draft naming an item, ahead of deleting every item
+    (``fm-reset-kb``); return their ids."""
+    return await _discard_drafts_naming(session, true())
+
+
+async def _discard_drafts_naming(session: AsyncSession, items) -> List[str]:
+    """Discard every draft naming an item that ``items`` matches.
+
+    The items' rows are locked first (``FOR UPDATE``; SQLite has no row locks,
+    and its single writer already serialises). A transaction linking a draft
+    to one of them holds a key-share lock on its row until it commits, so the
+    lock waits for that link and this ``UPDATE`` then sees it. Unlocked, the
+    ``UPDATE`` missed it, the ``DELETE`` waited for it, and the key's ``SET
+    NULL`` left it verified, naming nothing.
+
+    The text is kept, the draft leaves the drafts list, and its ``runbook_id``
+    slot is freed. One statement, as no unique key bounds the drafts naming one
+    item, then one key release per job.
+    """
+    named = select(KnowledgeItemModel.item_id).where(items)
+    await session.execute(named.with_for_update())
+    discarded = (
+        await session.execute(
+            update(ConversionDraftModel)
+            .where(ConversionDraftModel.knowledge_item_id.in_(named))
+            .values(status=DraftStatus.DISCARDED.value, knowledge_item_id=None)
+            .returning(ConversionDraftModel.id, ConversionDraftModel.conversion_id)
+            .execution_options(synchronize_session=False)
+        )
+    ).all()
+    await release_drained_case_keys(session, discarded)
     await session.flush()
     return [draft_id for draft_id, _ in discarded]
