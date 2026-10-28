@@ -1300,6 +1300,16 @@ class KnowledgeService:
         * A peer that re-creates the id between the cleanup's check for a
           standing row and its vector and share deletes can lose its vectors
           and shares.
+        * A commit whose outcome this call does not know: the row's INSERT
+          commits inside ``create``, and a cancellation or command timeout
+          during that commit raises in this call while a COMMIT the server
+          had already received can still complete there (on PostgreSQL such
+          a command aborts the connection's transport and sends no
+          CancelRequest, ``pg_connection``). The cleanup's delete and check
+          run on a new session, so they can read the id before that COMMIT
+          completes, and this call's own row can then stand after the
+          cleanup, with no vectors (indexing never began) and no share (the
+          share step comes after ``create``) (#2394).
 
         The earlier "leave the SQL row for a scan-and-recover re-embed" policy
         produced half-state rows that downstream scans mis-classified, so
@@ -1362,8 +1372,8 @@ class KnowledgeService:
             Number of chunks indexed in ChromaDB (always > 0 on success): a
             successful return means both stores are populated. On failure the
             method raises after removing, best effort, what this call wrote,
-            except what the first exception above keeps; the other two
-            concern another call's writes.
+            except what the first and fourth exceptions above keep; the
+            second and third concern another call's writes.
 
         Raises:
             RunbookQualityError: a non-shipped body holds a secret or a
@@ -1475,8 +1485,9 @@ class KnowledgeService:
         # or cancel can land after the row has (#2378). The cleanup removes
         # the row stamped ``now``, then the id's vectors (once indexing began)
         # and shares only if no row stands under it, so it leaves what a live
-        # peer holds. An "already exists" refusal, whose row is another
-        # call's, therefore leaves that row whole.
+        # peer holds, but for the exceptions the docstring names. An "already
+        # exists" refusal leaves the row it met whole unless that row carries
+        # this call's stamp, the same-microsecond exception.
         indexing = False
         try:
             async with self._db_session_factory() as session:
