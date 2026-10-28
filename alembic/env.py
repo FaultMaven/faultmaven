@@ -55,6 +55,9 @@ if config.config_file_name is not None:
 # Target metadata for autogenerate - import from models
 from faultmaven.cli._database_gate import require_persistent_database_url_or_exit
 from faultmaven.infrastructure.persistence.models import Base
+from faultmaven.infrastructure.persistence.value_free_errors import (
+    install_value_free_errors,
+)
 
 target_metadata = Base.metadata
 
@@ -163,7 +166,10 @@ def run_migrations_online() -> None:
         configuration,
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        hide_parameters=True,
     )
+    # Data migrations write rows: a failed one's error names no values (#2377).
+    install_value_free_errors(connectable)
 
     with connectable.connect() as connection:
         context.configure(
