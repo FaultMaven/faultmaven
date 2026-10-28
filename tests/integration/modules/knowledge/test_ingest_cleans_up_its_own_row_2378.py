@@ -275,6 +275,41 @@ async def test_the_cleanup_leaves_what_a_peer_created(session_factory, fails_in)
     assert sorted(store.chunks) == ["peer-0", "peer-1", "peer-2"]
 
 
+async def test_a_failed_check_for_a_standing_row_keeps_what_a_peer_created(
+    session_factory, monkeypatch
+):
+    """A peer re-ingested the id after this call indexed, so the cleanup's row
+    delete matched nothing, and then its check for a standing row raised: the
+    cleanup removes nothing more, and the peer's row, chunks and share stay."""
+    store = _Chunks()
+    service = _indexing_into(
+        _knowledge(session_factory),
+        store,
+        then=partial(_a_peer_reingests, session_factory, store),
+    )
+    real_delete = DatabaseKnowledgeItemRepository.delete
+
+    async def read_failed(self, item_id):
+        raise RuntimeError("read failed")
+
+    async def delete_then_fail_reads(self, item_id, **kwargs):
+        matched = await real_delete(self, item_id, **kwargs)
+        monkeypatch.setattr(DatabaseKnowledgeItemRepository, "get_by_id", read_failed)
+        return matched
+
+    monkeypatch.setattr(
+        DatabaseKnowledgeItemRepository, "delete", delete_then_fail_reads
+    )
+
+    with pytest.raises(RuntimeError, match="after the write"):
+        await _ingest(service)
+
+    (created_at,) = await _created_at(session_factory)
+    assert created_at.replace(tzinfo=None) == PEER_CREATED_AT.replace(tzinfo=None)
+    assert await _rows(session_factory) == ONE_TEAM_ITEM
+    assert sorted(store.chunks) == ["peer-0", "peer-1", "peer-2"]
+
+
 async def test_a_share_whose_row_is_gone_is_removed(session_factory):
     """A peer's ``_delete_existing`` removed the id's chunks before this call
     wrote its own, then this call's row (not its share), and has not

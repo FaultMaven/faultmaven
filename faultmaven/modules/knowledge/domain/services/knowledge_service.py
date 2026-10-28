@@ -1263,13 +1263,17 @@ class KnowledgeService:
         (#2365), and what a live peer holds under the same id is left whole
         (#2378), with these exceptions:
 
-        * A peer's whole ``_delete_existing`` and re-ingest landing between
-          this call's INSERT commit and its indexing: this call's indexer
-          replaces the peer's chunks, and the cleanup keeps them, and any
-          team share this call recorded, under the peer's row (#2388).
+        * A peer's whole ``_delete_existing`` and re-ingest landing anywhere
+          after this call's INSERT commit and before the cleanup's check for
+          a standing row: the peer's row stands, so the cleanup keeps, under
+          it, any team share this call recorded and the id's chunks, which
+          are those of whichever indexer wrote last (this call's, if it wrote
+          after the peer) (#2388).
         * A row another call stamped in the same microsecond under the same
-          id is taken for this call's, and removed with its vectors and
-          shares.
+          id is taken for this call's: it is removed with its shares, and
+          with its vectors only if this call had begun indexing. A refused
+          INSERT ("already exists") never indexes, so that row's chunks stay
+          with no row.
         * A peer that re-creates the id between the cleanup's check for a
           standing row and its vector and share deletes can lose its vectors
           and shares.
