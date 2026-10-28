@@ -579,7 +579,7 @@ async def list_cases(
 @router.get("/health", response_model=Dict[str, Any])
 @trace("api_case_health")
 async def get_case_service_health(
-    case_service: ICaseService = Depends(_di_get_case_service_dependency),
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
 ) -> Dict[str, Any]:
     """
     Get case service health status

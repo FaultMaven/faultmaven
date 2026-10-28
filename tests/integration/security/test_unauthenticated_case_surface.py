@@ -28,11 +28,13 @@ Two batteries, because the ordering claim and the 401-with-a-credential claim
 are different claims: **anonymous** (no header at all) and **rejected
 credential** (a header that does not authenticate). Both must be refused before
 any collaborator resolves. A third drives the same rows **authenticated, with
-no case service**: each must answer 503, never the 500 of a handler that
-dereferenced the ``None`` its provider returned (#2358).
+no case service**: each but the evidence-reclassification row must answer 503
+"Case service unavailable", never the 500 of a handler that dereferenced the
+``None`` its provider returned (#2358); that row is driven on its own below.
 """
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import Depends, FastAPI
@@ -179,10 +181,13 @@ DRIVEN: dict[tuple[str, str], dict] = {
     },
 }
 
-#: Driven by the anonymous batteries but not held to 503 with no case service:
-#: the handler asks the case service only whether the caller reads the case
-#: (ADR-020 D2), and proceeds without it by design. Whether it can answer is
-#: the reclassifier's to say (#1941).
+#: Driven by the anonymous batteries but not held to 503 with no case service.
+#: Under the default flag (``FAULTMAVEN_RECLASSIFY_ENABLED`` off) the handler
+#: answers the flag's 404 before it reads the case service. With the flag on it
+#: asks the case service only whether the caller reads the case (ADR-020 D2)
+#: and proceeds without one by design, which
+#: :func:`test_with_no_case_service_reclassification_proceeds_as_a_non_reader`
+#: drives.
 _CASE_SERVICE_OPTIONAL = {
     ("PATCH", "/api/v1/cases/{case_id}/evidence/{evidence_id}/classification"),
 }
@@ -219,14 +224,45 @@ def _surface() -> FastAPI:
     return app
 
 
-def _answers(client: TestClient, headers: dict) -> dict[str, int]:
-    """Drive every row of :data:`DRIVEN` once; the status each answered."""
-    answered = {}
-    for (method, template), request in sorted(DRIVEN.items()):
-        kwargs = {k: v for k, v in request.items() if k != "url"}
-        response = client.request(method, request["url"], headers=headers, **kwargs)
-        answered[f"{method} {template}"] = response.status_code
-    return answered
+def _drive(client: TestClient, operation: tuple[str, str], headers: dict):
+    """Send one row of :data:`DRIVEN`."""
+    request = DRIVEN[operation]
+    kwargs = {k: v for k, v in request.items() if k != "url"}
+    return client.request(operation[0], request["url"], headers=headers, **kwargs)
+
+
+def _answers(client: TestClient, headers: dict) -> dict:
+    """Drive every row of :data:`DRIVEN` once; the response each answered."""
+    return {
+        f"{method} {template}": _drive(client, (method, template), headers)
+        for method, template in sorted(DRIVEN)
+    }
+
+
+def _service_less_surface() -> FastAPI:
+    """The case router, authenticated, with no case service composed.
+
+    The case-service providers are left unwired, so they return ``None`` as on
+    a deployment that composed none; every other collaborator is an inert
+    stand-in, so the case service is the only thing missing. The app's own
+    exception handlers map a domain exception to the status production sends.
+    """
+
+    async def _inert():
+        return object()
+
+    async def _caller():
+        return SimpleNamespace(user_id="u1")
+
+    app = _surface()
+    for exc_type, handler in get_exception_handlers().items():
+        app.add_exception_handler(exc_type, handler)
+    for provider in _SERVICE_PROVIDERS:
+        app.dependency_overrides[provider] = _inert
+    del app.dependency_overrides[_di_get_case_service_dependency]
+    del app.dependency_overrides[get_case_service]
+    app.dependency_overrides[require_authentication] = _caller
+    return app
 
 
 def _case_service_operations(app: FastAPI) -> set[tuple[str, str]]:
@@ -292,7 +328,9 @@ def test_no_case_service_route_resolves_a_service_for_an_unauthenticated_caller(
 
     answered = _answers(client, headers)
 
-    not_refused = {k: v for k, v in answered.items() if v != 401}
+    not_refused = {
+        k: r.status_code for k, r in answered.items() if r.status_code != 401
+    }
     assert not not_refused, (
         f"with {label}, these case operations answered something other than "
         "401 although every service provider on the route was made to raise — "
@@ -304,40 +342,65 @@ def test_no_case_service_route_resolves_a_service_for_an_unauthenticated_caller(
 def test_with_no_case_service_every_case_operation_answers_503():
     """An authenticated caller on an app with no case service gets 503, never 500.
 
-    The case-service providers are left unwired, so they return ``None`` as on
-    a deployment that composed none; every other collaborator is an inert
-    stand-in, so the case service is the only thing missing. A handler that
-    reads it without ``check_case_service_available`` dereferences that
-    ``None``, and its catch-all answers 500 (#2358).
+    A handler that reads the service without ``check_case_service_available``
+    dereferences the ``None`` its provider returned, and its catch-all answers
+    500 (#2358). The detail is asserted too: a 503 raised for some other
+    missing collaborator ahead of the check would otherwise pass for it.
     """
+    client = TestClient(_service_less_surface(), raise_server_exceptions=False)
 
-    async def _inert():
-        return object()
-
-    async def _caller():
-        return SimpleNamespace(user_id="u1")
-
-    app = _surface()
-    for exc_type, handler in get_exception_handlers().items():
-        app.add_exception_handler(exc_type, handler)
-    for provider in _SERVICE_PROVIDERS:
-        app.dependency_overrides[provider] = _inert
-    del app.dependency_overrides[_di_get_case_service_dependency]
-    del app.dependency_overrides[get_case_service]
-    app.dependency_overrides[require_authentication] = _caller
-
-    answered = _answers(TestClient(app, raise_server_exceptions=False), {})
+    answered = _answers(client, {})
 
     assert _CASE_SERVICE_OPTIONAL <= set(DRIVEN)
     exempt = {f"{method} {template}" for method, template in _CASE_SERVICE_OPTIONAL}
-    not_unavailable = {
-        k: v for k, v in answered.items() if v != 503 and k not in exempt
+    unavailable = (503, {"detail": "Case service unavailable"})
+    wrong = {
+        k: (r.status_code, r.text)
+        for k, r in answered.items()
+        if k not in exempt and (r.status_code, r.json()) != unavailable
     }
-    assert not not_unavailable, (
-        "with no case service composed, these case operations answered "
-        "something other than 503 to an authenticated caller — a 500 is a "
-        "handler that used the service without check_case_service_available: "
-        f"{not_unavailable}"
+    assert not wrong, (
+        "with no case service composed, these case operations did not answer "
+        "503 'Case service unavailable' to an authenticated caller — a 500 is "
+        "a handler that used the service without check_case_service_available: "
+        f"{wrong}"
+    )
+
+
+def test_with_no_case_service_reclassification_proceeds_as_a_non_reader(
+    monkeypatch,
+):
+    """The exempt row, driven past its flag with no case service.
+
+    The handler cannot learn whether the caller reads the case, so it must
+    tell the reclassifier they do not (ADR-020 D2): never assume they do, and
+    never dereference the missing service.
+    """
+    from faultmaven.config.settings import get_settings
+
+    monkeypatch.setattr(get_settings().preprocessing, "reclassify_enabled", True)
+    reclassifier = SimpleNamespace(
+        reclassify_out_of_band=AsyncMock(
+            return_value=SimpleNamespace(
+                evidence_id="e1", source_type="logs", summary="", metadata={}
+            )
+        )
+    )
+
+    async def _reclassifier():
+        return reclassifier
+
+    app = _service_less_surface()
+    app.dependency_overrides[get_evidence_reclassifier] = _reclassifier
+    (operation,) = _CASE_SERVICE_OPTIONAL
+
+    response = _drive(TestClient(app, raise_server_exceptions=False), operation, {})
+
+    assert response.status_code == 200, response.text
+    reclassifier.reclassify_out_of_band.assert_awaited_once()
+    assert (
+        reclassifier.reclassify_out_of_band.await_args.kwargs["caller_reads_case"]
+        is False
     )
 
 

@@ -10,6 +10,7 @@ authentication gate still answers an anonymous caller first.
 import pytest
 
 from faultmaven.api.v1.auth_dependencies import require_authentication
+from faultmaven.api.v1.dependencies import get_case_service
 from faultmaven.modules.case.api.routes.dependencies import (
     _di_get_case_service_dependency,
 )
@@ -36,10 +37,11 @@ async def test_an_authenticated_caller_gets_503_not_500(build_app, call_api):
 async def test_an_anonymous_caller_is_refused_before_the_case_service_resolves(
     build_app, call_api
 ):
-    """The real gate over a case-service provider that raises.
+    """The real gate over case-service providers that raise.
 
     A 401 is reachable only if the gate resolved first; solved after the
-    provider, the caller would get the provider's failure instead.
+    provider, the caller would get the provider's failure instead. Both
+    providers raise, so the test holds whichever one the route declares.
     """
     app = build_app()
     del app.dependency_overrides[require_authentication]
@@ -49,6 +51,7 @@ async def test_an_anonymous_caller_is_refused_before_the_case_service_resolves(
         raise RuntimeError("the case service resolved ahead of the auth gate")
 
     app.dependency_overrides[_di_get_case_service_dependency] = _resolved
+    app.dependency_overrides[get_case_service] = _resolved
 
     response = await call_api(app, "GET", PATH)
 
