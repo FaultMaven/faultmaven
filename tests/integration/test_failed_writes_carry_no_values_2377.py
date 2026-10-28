@@ -52,25 +52,28 @@ ENTERPRISE = f"{MARK}-{RUN}"
 SEED_EMAIL = f"{MARK}-{RUN}@example.com"
 SEED_ITEM = f"{MARK}-item-{RUN}"
 
-#: Each constraint case's (SQLSTATE, constraint name), as PostgreSQL reports them.
+#: Each constraint case's SQLSTATE and constraint name, as PostgreSQL reports
+#: them. Its message keeps that name there (only class 22 is hidden), or, for
+#: NOT NULL, the column it names.
 EXPECTED = {
-    "users FK": ("23503", "users_enterprise_id_fkey"),
-    "users UNIQUE": ("23505", "users_email_key"),
-    "users CHECK": ("23514", "users_display_name_not_empty"),
-    "users NOT NULL": ("23502", None),
-    "knowledge_items FK": ("23503", "knowledge_items_owner_id_fkey"),
-    "knowledge_items UNIQUE": ("23505", "knowledge_items_pkey"),
-    "knowledge_items CHECK": ("23514", "knowledge_items_item_type_check"),
-    "knowledge_items NOT NULL": ("23502", None),
+    "users FK": ("23503", "users_enterprise_id_fkey", None),
+    "users UNIQUE": ("23505", "users_email_key", None),
+    "users CHECK": ("23514", "users_display_name_not_empty", None),
+    "users NOT NULL": ("23502", None, 'column "username"'),
+    "knowledge_items FK": ("23503", "knowledge_items_owner_id_fkey", None),
+    "knowledge_items UNIQUE": ("23505", "knowledge_items_pkey", None),
+    "knowledge_items CHECK": ("23514", "knowledge_items_item_type_check", None),
+    "knowledge_items NOT NULL": ("23502", None, 'column "item_type"'),
 }
 
 #: Each input case's statement, refused value, SQLSTATE and the text that stays.
 #: The value is cast on the server, so both drivers get PostgreSQL's class 22,
-#: in shapes that quote it at the end, in the middle, or around ``: "``.
+#: in shapes that quote it at the end, in the middle, at the start, or around
+#: ``: "``. A value with a quote in it holds the marker after that quote.
 INPUTS = {
     "22P02": (
         "CAST(CAST(:v AS text) AS integer)",
-        f'{MARK} "q" x',
+        f'q" {MARK} x',
         "22P02",
         "type integer",
     ),
@@ -87,6 +90,12 @@ INPUTS = {
         "22003",
         "type integer",
     ),
+    "22003, leading quote": (
+        "CAST(CAST(:v AS text) AS double precision)",
+        "1e400",
+        "22003",
+        "type double precision",
+    ),
     "time zone": (
         "CAST(CAST(:v AS text) AS timestamptz)",
         f"2026-01-01 00:00 america/{MARK}zone",
@@ -95,7 +104,7 @@ INPUTS = {
     ),
     "time zone, colon and quote": (
         "timezone(CAST(:v AS text), now())",
-        f'{MARK}: "zone',
+        f'zone: "{MARK}',
         "22023",
         "not recognized",
     ),
@@ -207,9 +216,14 @@ def _texts(exc) -> dict:
 
 
 def _wrong(failures: dict, fields=None, inputs: dict | None = None) -> dict:
-    """Per case, what a logged ``{e}`` or traceback would leak, or what was lost."""
+    """Per case, what a logged ``{e}`` or traceback would leak, or what was lost.
+
+    ``fields`` reads a PostgreSQL error, whose constraint case keeps its name."""
     found = {}
-    cases = {c: (MARK, IntegrityError, f, None) for c, f in EXPECTED.items()}
+    cases = {
+        c: (MARK, IntegrityError, (s, n), (n or k) if fields else None)
+        for c, (s, n, k) in EXPECTED.items()
+    }
     cases |= {
         c: (MARK if MARK in v else v, DBAPIError, (s, None), k)
         for c, (_, v, s, k) in (inputs or {}).items()

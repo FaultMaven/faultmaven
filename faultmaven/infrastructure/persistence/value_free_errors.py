@@ -14,14 +14,14 @@ recognized``), and asyncpg's own encoding error repeats the argument
 :func:`strip_server_values` reduces the driver error to the fields it keeps,
 the primary message with its input hidden and the hint, in place, and puts that
 text where the full one stood. ``str()`` and a logged traceback then name no
-value, while the class, the SQLSTATE, the constraint name, the type and
-argument number, and the chain down to the driver error stay as they were
-(``db_errors`` reads them). A class-22 message is hidden from its first quote
-to its last, whatever its shape, so a quoted type or parameter name goes with
-the input. asyncpg's encoding error drops the codec's exception it was raised
-from, whose text repeats the value, and names its class instead. psycopg2's
-``pgerror``, ``diag`` and ``cursor.query`` keep the server's whole report: they
-are read-only, and nothing prints or reads them.
+value, while the class, the SQLSTATE, the constraint name, the argument number
+and the chain down to the driver error stay as they were (``db_errors`` reads
+them). A class-22 message is hidden from its first quote to its last, whatever
+its shape, so a quoted type or parameter name goes with the input. asyncpg's
+encoding error drops the codec's exception it was raised from, whose text
+repeats the value, and names its class instead. psycopg2's ``pgerror``,
+``diag`` and ``cursor.query`` keep the server's whole report: they are
+read-only, and nothing prints or reads them.
 
 A driver error is known by its class, looked up in ``sys.modules`` and never
 imported (``alembic/env.py`` runs where only SQLite is installed): an error of a
