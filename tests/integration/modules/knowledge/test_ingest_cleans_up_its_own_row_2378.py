@@ -122,17 +122,19 @@ def _indexing_into(service, store: _Chunks, *, then=None):
     return service
 
 
-async def _a_peer_reingests(factory, store: _Chunks, *, recreate: bool = True):
-    """``kb_init`` on another replica: ``_delete_existing`` (the id's chunks,
-    then its row), then its own ingest under the same id."""
-    await store.delete_documents_by_parent_id(DOC_ID)
+async def _delete_the_row(factory) -> None:
     async with factory() as session:
         await session.execute(
             delete(KnowledgeItemModel).where(KnowledgeItemModel.item_id == DOC_ID)
         )
         await session.commit()
-    if not recreate:
-        return
+
+
+async def _a_peer_reingests(factory, store: _Chunks):
+    """``kb_init`` on another replica: ``_delete_existing`` (the id's chunks,
+    then its row), then its own ingest under the same id."""
+    await store.delete_documents_by_parent_id(DOC_ID)
+    await _delete_the_row(factory)
     async with factory() as session:
         await DatabaseKnowledgeItemRepository(session).create(
             KnowledgeItem(
@@ -249,13 +251,15 @@ async def test_the_cleanup_leaves_what_a_peer_created(session_factory, fails_in)
 
 
 async def test_a_share_whose_row_is_gone_is_removed(session_factory):
-    """A peer's ``_delete_existing`` removed this call's chunks and row, not its
-    share, and has not re-created the row: no item stands, so the share goes."""
+    """A peer's ``_delete_existing`` removed the id's chunks before this call
+    wrote its own, then this call's row (not its share), and has not
+    re-created it: no item stands, so this call's chunks and share go."""
     store = _Chunks()
+    await store.delete_documents_by_parent_id(DOC_ID)
     service = _indexing_into(
         _knowledge(session_factory),
         store,
-        then=partial(_a_peer_reingests, session_factory, store, recreate=False),
+        then=partial(_delete_the_row, session_factory),
     )
 
     with pytest.raises(RuntimeError, match="after the write"):

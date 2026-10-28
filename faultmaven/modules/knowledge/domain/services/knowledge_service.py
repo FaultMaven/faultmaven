@@ -1261,10 +1261,13 @@ class KnowledgeService:
         the vectors raising OR returning 0 chunks, a cancellation), what this
         call wrote (its row, vectors and shares) is removed before re-raising
         (#2365), so the two stores never diverge; a row another call created
-        under the same id is left whole (#2378). The earlier "leave
-        the SQL row for a scan-and-recover re-embed" policy produced half-state
-        rows that downstream scans mis-classified, so rollback is now the
-        contract.
+        under the same id is left whole (#2378). Two residuals: a row another
+        call stamped in the same microsecond under the same id is taken for
+        this call's, and a peer that re-creates the id between the cleanup's
+        row check and its vector and share deletes loses its vectors and
+        shares. The earlier "leave the SQL row for a scan-and-recover
+        re-embed" policy produced half-state rows that downstream scans
+        mis-classified, so rollback is now the contract.
 
         Args:
             document_id: Stable id used for both the relational row and the
@@ -1321,8 +1324,9 @@ class KnowledgeService:
 
         Returns:
             Number of chunks indexed in ChromaDB (always > 0 on success). On
-            failure the method raises after removing what it wrote, so a
-            successful return always means both stores are populated.
+            failure the method raises after removing what it wrote, but for
+            the two residuals above, so a successful return always means both
+            stores are populated.
 
         Raises:
             RunbookQualityError: a non-shipped body holds a secret or a
@@ -1467,8 +1471,8 @@ class KnowledgeService:
                 created_at=to_json_compatible(now),
                 updated_at=to_json_compatible(now),
             )
-            # The value just written to the row's NOT NULL enterprise_id.
             indexing = True
+            # The value just written to the row's NOT NULL enterprise_id.
             chunks_created = await self._index_document_in_vector_store(
                 doc_model, prechunked=prechunked, enterprise_id=enterprise_id
             )
@@ -1684,12 +1688,13 @@ class KnowledgeService:
 
         The row goes only if it carries ``created_at``, the value that call
         stamped: a row another call created under the same id stays (two
-        calls stamping the same microsecond are not told apart). The vectors
-        go, by parent id (a store can fail after applying part of a
-        write), only once that row is gone and only if the call began
-        indexing, so a peer's chunks under the same id stay. The shares go
-        unless a row with the id still stands, as in :meth:`delete_document`:
-        an item that survives keeps the share that makes it a team item.
+        calls stamping the same microsecond are not told apart). Then the
+        vectors (by parent id: a store can fail after applying part of a
+        write) and the shares go unless a row with the id still stands, the
+        vectors only if the call began indexing. Every writer inserts its
+        row before it indexes, so chunks under an id with no row are no live
+        peer's; and, as in :meth:`delete_document`, an item that survives
+        keeps its vectors and the share that makes it a team item.
         Shielded from cancellation: it runs on the path a cancellation takes,
         and an anyio scope (the one ``BaseHTTPMiddleware`` runs a route in)
         cancels every await that is not. Errors are logged, not raised: the
@@ -1700,29 +1705,37 @@ class KnowledgeService:
         )
 
         with anyio.CancelScope(shield=True):
+            step = "row delete"
             try:
                 async with self._db_session_factory() as session:
                     repo = DatabaseKnowledgeItemRepository(session)
                     deleted = await repo.delete(item_id, created_at=created_at)
+                    step = "check for a row still standing"
                     standing = not deleted and await repo.get_by_id(item_id) is not None
             except Exception as cleanup_err:
                 logger.warning(
-                    "Ingesting knowledge item %s failed, and removing the row it "
-                    "may have written failed too (%s); any such row stays, with "
-                    "its vectors and team share rows.",
+                    "Ingesting knowledge item %s failed, and the cleanup's %s "
+                    "failed too (%s); %s",
                     item_id,
+                    step,
                     exception_class_name(cleanup_err),
+                    (
+                        "any row it wrote stays, with its vectors and team "
+                        "share rows."
+                        if step == "row delete"
+                        else "its vectors and team share rows are kept."
+                    ),
                 )
                 return
-            if deleted and indexed and self._vector_store:
+            if indexed and not standing and self._vector_store:
                 try:
                     await self._vector_store.delete_documents_by_parent_id(item_id)
                 except Exception as exc:
                     logger.error(
                         "ORPHANED KNOWLEDGE VECTORS %s: ingesting it failed and "
-                        "its row was removed, but removing the chunks it wrote "
-                        "failed (%s). Any it wrote stay retrievable under an id "
-                        "with no row; remove them by hand.",
+                        "no row stands under its id, but removing the chunks it "
+                        "wrote failed (%s). Any it wrote stay retrievable under "
+                        "an id with no row; remove them by hand.",
                         item_id,
                         exception_class_name(exc),
                     )
