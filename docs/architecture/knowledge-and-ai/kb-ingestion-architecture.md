@@ -158,7 +158,7 @@ fm-reset-kb --yes --rebuild       # Wipe + immediate in-process rebuild
 fm-reset-kb --yes --all-drafts    # Also delete case-generated drafts
 ```
 
-Default behaviour is conservative: SQL `knowledge_items` are deleted, ChromaDB is removed, but `conversion_drafts` (which may contain case-generated work in progress) are preserved unless `--all-drafts` is passed. A draft that published a deleted runbook is discarded first, its text kept, so it is not left listed as verified (#2369).
+Default behaviour is conservative: SQL `knowledge_items` are deleted, ChromaDB is removed, but `conversion_drafts` (which may contain case-generated work in progress) are preserved unless `--all-drafts` is passed. A draft that published a deleted runbook is discarded first, its text kept, so it is not left listed as verified (#2369). Only the items the reset locked are deleted; one a running API writes meanwhile is kept and reported.
 
 The ChromaDB half is an `rmtree` of a **local** directory resolved from
 `CHROMADB_KB_PERSIST_DIR`, read exactly as `create_persistent_client` reads it

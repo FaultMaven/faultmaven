@@ -9,7 +9,8 @@ state introduced by an earlier ingestion bug.
 
 What it does
 ------------
-1. Deletes every row from ``knowledge_items`` (or filtered by scope).
+1. Deletes every row from ``knowledge_items`` that it locks; a row written
+   while it runs (only a running API writes one) is kept and reported.
 2. Keeps ``conversion_drafts`` rows, discarding first the ones that
    published a runbook it deletes (their text kept, #2369), so none stays
    listed as verified naming nothing. Use ``--all-drafts`` to delete them all.
@@ -404,9 +405,16 @@ async def reset_kb(
         # read above, so the numbers printed are what the database actually did.
         # The drafts that published these runbooks are discarded first: their
         # key to the item is ON DELETE SET NULL, so after the DELETE each would
-        # stay listed as verified, naming nothing (#2369).
-        discarded = await discard_drafts_naming_any_item(session)
-        deleted_items = (await session.execute(delete(KnowledgeItemModel))).rowcount
+        # stay listed as verified, naming nothing (#2369). Only the items the
+        # discard locked are deleted: the drafts of one written since were not
+        # discarded.
+        locked, discarded = await discard_drafts_naming_any_item(session)
+        deleted_items = (
+            await session.execute(
+                delete(KnowledgeItemModel).where(KnowledgeItemModel.item_id.in_(locked))
+            )
+        ).rowcount
+        kept_items = await _count_rows(session, KnowledgeItemModel)
         if all_drafts:
             deleted_drafts = (
                 await session.execute(delete(ConversionDraftModel))
@@ -423,6 +431,12 @@ async def reset_kb(
             )
         await session.commit()
     print(f"Deleted {deleted_items} knowledge_items rows.")
+    if kept_items:
+        print(
+            f"Kept {kept_items} knowledge_items rows written while the reset ran, "
+            "so the API is still up: stop it first. If the vector store is "
+            "removed below, the API's startup repair re-indexes them."
+        )
 
     # ChromaDB wipe
     if keep_chroma and remote_knob:

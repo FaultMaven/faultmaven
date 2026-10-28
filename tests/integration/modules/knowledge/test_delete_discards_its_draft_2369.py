@@ -11,7 +11,8 @@ complete leaves the draft as it was.
 
 The SQLite tests run on the #2365 tests' database, which enforces foreign keys
 as the app's engine does, so a discard issued after the ``DELETE`` would match
-nothing. Two run on PostgreSQL, one of them racing a link against the delete.
+nothing. Three run on PostgreSQL: one races a link against the delete, and one
+lands an upload inside a reset, in a database of its own.
 """
 
 from __future__ import annotations
@@ -22,14 +23,16 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import delete, select, text, update
+from sqlalchemy import delete, make_url, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from faultmaven.cli import reset_kb
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.config.tenant_context import _current_enterprise_id
 from faultmaven.infrastructure.persistence import database
 from faultmaven.infrastructure.persistence.models import (
+    Base,
     ConversionDraftModel,
     ConversionJobModel,
     EnterpriseModel,
@@ -85,7 +88,7 @@ def _job(job_id: str, *, kind: str, key: str | None = None) -> list:
     ]
 
 
-def _draft(draft_id: str, job_id: str, *, item_id: str | None = None):
+def _draft(draft_id: str, job_id: str, *, item_id: str | None = None, status=None):
     return ConversionDraftModel(
         id=draft_id,
         enterprise_id=_current_enterprise_id.get(),
@@ -93,7 +96,7 @@ def _draft(draft_id: str, job_id: str, *, item_id: str | None = None):
         runbook_id=f"rb-{draft_id}",
         title="Redis Evictions",
         content=valid_runbook("Redis Evictions Under Memory Pressure"),
-        status="verified" if item_id else "draft",
+        status=status or ("verified" if item_id else "draft"),
         validation_passed=True,
         knowledge_item_id=item_id,
     )
@@ -182,6 +185,28 @@ async def test_each_job_keeps_its_key_while_it_has_a_live_draft(session_factory)
         assert (row.status, row.knowledge_item_id, held) == ("discarded", None, key)
 
 
+async def test_the_key_release_counts_discards_not_yet_flushed(session_factory):
+    """The scan's sweep flips statuses on loaded rows, and the app's sessions
+    do not autoflush (``database.get_engine``'s sessionmaker), so
+    ``release_drained_case_keys`` flushes before it counts."""
+    await _add(
+        session_factory,
+        *_job("conv_2369", kind="case", key=CASE_KEY),
+        _draft("a", "conv_2369"),
+        _draft("b", "conv_2369"),
+    )
+    async with session_factory(autoflush=False) as session:
+        drafts = [await session.get(ConversionDraftModel, d) for d in ("a", "b")]
+        for draft in drafts:
+            draft.status = "discarded"
+        await draft_retirement.release_drained_case_keys(
+            session, [(d.id, d.conversion_id) for d in drafts]
+        )
+        await session.commit()
+
+    assert (await _draft_and_key(session_factory, "a"))[1] is None
+
+
 @pytest.mark.parametrize("failure", ["zero_rows", "vectors", "commit", "cancelled"])
 async def test_a_delete_that_does_not_complete_keeps_its_draft(
     session_factory, monkeypatch, failure
@@ -237,10 +262,15 @@ async def test_a_kb_reset_discards_the_drafts_of_what_it_deletes(
     session_factory, monkeypatch, capsys
 ):
     """``fm-reset-kb`` deletes every item and by default keeps the drafts: the
-    ones that published those items are discarded first."""
+    ones that published those items are discarded first. One the scan already
+    discarded, which still names its item, is not counted again."""
     knowledge = _knowledge(session_factory)
-    _, case_draft = await _publish(session_factory, knowledge, "case")
+    item_id, case_draft = await _publish(session_factory, knowledge, "case")
     _, upload_draft = await _publish(session_factory, knowledge, "upload")
+    await _add(
+        session_factory,
+        _draft("old", "conv_2369", item_id=item_id, status="discarded"),
+    )
     monkeypatch.setattr(database, "get_db_session", session_factory)
 
     code = await reset_kb.reset_kb(
@@ -336,14 +366,81 @@ async def test_a_draft_linked_while_the_delete_runs_is_discarded(pg_factory):
             "SELECT count(*) FROM pg_locks "
             "WHERE NOT granted AND :pid = ANY(pg_blocking_pids(pid))"
         )
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 30
         while not deleting.done():
             blocked = (await probe.execute(waiting, {"pid": linker})).scalar()
             await probe.rollback()
             if blocked:
                 break
+            assert loop.time() < deadline, "the delete never waited on the link"
             await asyncio.sleep(0.01)
         await linking.commit()
         assert (await deleting)["success"] is True
 
     draft, _ = await _draft_and_key(pg_factory, "linked")
     assert (draft.status, draft.knowledge_item_id) == ("discarded", None)
+
+
+@pytest.fixture
+async def own_pg():
+    """A PostgreSQL database of the test's own, dropped after: a reset deletes
+    every item it can see, and the configured database is shared with every
+    other ``-m postgres`` test."""
+    url = make_url(os.environ["DATABASE_URL"])
+    name = f"fm2369_{uuid4().hex[:8]}"
+    admin = create_async_engine(url, isolation_level="AUTOCOMMIT", poolclass=NullPool)
+    async with admin.connect() as conn:
+        await conn.execute(text(f'CREATE DATABASE "{name}"'))
+    engine = create_async_engine(url.set(database=name), poolclass=NullPool)
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        factory = async_sessionmaker(
+            engine, class_=AsyncSession, expire_on_commit=False
+        )
+        async with factory() as session:
+            await seed_enterprises(session, [STANDALONE_ENTERPRISE_ID])
+            await seed_users(session, [OWNER], enterprise_id=STANDALONE_ENTERPRISE_ID)
+        yield factory
+    finally:
+        await engine.dispose()
+        async with admin.connect() as conn:
+            await conn.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
+        await admin.dispose()
+
+
+@pytest.mark.postgres
+@_needs_postgres
+async def test_a_runbook_published_during_a_kb_reset_is_kept_whole(
+    own_pg, monkeypatch, capsys
+):
+    """An upload lands between the reset's discard and its ``DELETE``. The
+    reset deletes only the items it locked, so the new runbook and its draft
+    stand together; a ``DELETE`` of every row would have left that draft
+    verified, naming nothing."""
+    knowledge = _knowledge(own_pg)
+    _, before = await _publish(own_pg, knowledge, "upload")
+    discard = draft_retirement.discard_drafts_naming_any_item
+    landed: dict[str, str] = {}
+
+    async def discard_then_upload(session):
+        retired = await discard(session)
+        landed["item"], landed["draft"] = await _publish(own_pg, knowledge, "upload")
+        return retired
+
+    monkeypatch.setattr(
+        draft_retirement, "discard_drafts_naming_any_item", discard_then_upload
+    )
+    monkeypatch.setattr(database, "get_db_session", own_pg)
+
+    code = await reset_kb.reset_kb(
+        dry_run=False, all_drafts=False, rebuild=False, keep_chroma=True
+    )
+
+    assert code == 0
+    draft, _ = await _draft_and_key(own_pg, before)
+    assert (draft.status, draft.knowledge_item_id) == ("discarded", None)
+    draft, _ = await _draft_and_key(own_pg, landed["draft"])
+    assert (draft.status, draft.knowledge_item_id) == ("verified", landed["item"])
+    assert "Kept 1 knowledge_items rows written while" in capsys.readouterr().out
