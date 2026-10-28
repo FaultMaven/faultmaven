@@ -60,6 +60,8 @@ def enumerate_readable_files(
     all_evidence: list[Any],
     excluded_evidence_id: str,
     case: Any,
+    *,
+    excluded_file_id: str | None = None,
 ) -> list[ReadableFile]:
     """Every file in this case the file tools read: the one source of the list.
 
@@ -77,7 +79,9 @@ def enumerate_readable_files(
     size floor is readable no other way. An upload with no stored file is left
     out of both lists, whether or not an evidence row records it: there is
     nothing to read, and naming it would send the model to a "no stored file
-    content" miss.
+    content" miss. ``excluded_file_id`` leaves a file out under every id that
+    names it, its rows' and its upload's: the file whose read just failed is
+    not offered back under another id (#2359).
     """
     files: list[ReadableFile] = []
     recorded_files = set()
@@ -88,7 +92,7 @@ def enumerate_readable_files(
         ev_id = getattr(ev, "evidence_id", None)
         if not ev_id or ev_id == excluded_evidence_id:
             continue
-        if source_file_id is None:
+        if source_file_id is None or source_file_id == excluded_file_id:
             continue
         file_meta = case.find_uploaded_file(source_file_id)
         if file_meta is None or not getattr(file_meta, "storage_ref", None):
@@ -104,7 +108,7 @@ def enumerate_readable_files(
         file_id = getattr(upload, "file_id", None)
         if (
             not file_id
-            or file_id == excluded_evidence_id
+            or file_id in (excluded_evidence_id, excluded_file_id)
             or file_id in recorded_files
             or not getattr(upload, "storage_ref", None)
         ):
@@ -117,6 +121,8 @@ def format_searchable_alternatives(
     all_evidence: list[Any],
     excluded_evidence_id: str,
     case: Any,
+    *,
+    excluded_file_id: str | None = None,
 ) -> str:
     """Build a redirect hint naming every file in this case this tool reads.
 
@@ -125,7 +131,9 @@ def format_searchable_alternatives(
     finds nothing (#1977); that caller excludes no id (``""``). Returns ``""``
     when the case has no file to read.
     """
-    files = enumerate_readable_files(all_evidence, excluded_evidence_id, case)
+    files = enumerate_readable_files(
+        all_evidence, excluded_evidence_id, case, excluded_file_id=excluded_file_id
+    )
     alternatives = [f"{f.id} ({f.filename})" for f in files if f.recorded]
     unrecorded = [f"{f.id} ({f.filename})" for f in files if not f.recorded]
 
@@ -269,7 +277,8 @@ class SearchFileTool(AgentTool):
                 context,
             )
             # ISS-025: helper now returns either a
-            # (content, filename, display_name, ev_obj) tuple on success or a
+            # (content, filename, display_name, row) tuple on success (the row
+            # is the evidence row, or the upload a file_id names) or a
             # human-readable error string on failure that already enumerates
             # file-backed alternatives the LLM should retry against. Surface
             # that string verbatim so the LLM can redirect.
@@ -519,7 +528,8 @@ class SearchFileTool(AgentTool):
         Case (`case.evidence`) with `content_ref` pointing to the stored file.
 
         Returns:
-            On success: (content_str, stored_filename, display_name, evidence_obj).
+            On success: (content_str, stored_filename, display_name, row), the
+                row being the evidence row, or the upload a ``file_id`` names.
                 The two names differ only for pasted/captured content — see
                 ``UploadedFile.display_name`` (#666). Logs take the stored
                 one, the LLM-facing result takes the display one.
@@ -550,19 +560,11 @@ class SearchFileTool(AgentTool):
                 break
 
         if case_evidence is None:
-            # During INQUIRY, evidence rows don't exist yet — files are stored
-            # as uploaded_files. Try to resolve the ID against uploaded_files
-            # so the LLM can keyword-search raw log files before the case
-            # transitions to INVESTIGATING and evidence rows are created.
-            uploaded_files = getattr(case, "uploaded_files", []) or []
-            file_meta = next(
-                (
-                    uf
-                    for uf in uploaded_files
-                    if getattr(uf, "file_id", None) == evidence_id
-                ),
-                None,
-            )
+            # No evidence row has this id, so it may be an upload's file_id
+            # (#1964): a file uploaded during INQUIRY, before any row exists, a
+            # paste no row named, or an upload passed by its file_id although
+            # a row records it.
+            file_meta = case.find_uploaded_file(evidence_id)
             if file_meta is None:
                 logger.warning(
                     "search_file: evidence %s not found in case %s (has %d evidence items)",
@@ -612,19 +614,21 @@ class SearchFileTool(AgentTool):
         ):
             try:
                 file_data = await self.storage_service.retrieve_file(storage_ref)
-                filename = (file_meta.filename if file_meta else None) or evidence_id
-                display_name = (
-                    file_meta.display_name if file_meta else None
-                ) or evidence_id
+                filename = file_meta.filename or evidence_id
+                display_name = file_meta.display_name or evidence_id
                 content = file_data.decode("utf-8", errors="replace")
                 return content, filename, display_name, resolved_row
             except Exception as e:
                 logger.warning(
-                    "search_file: storage_service.retrieve_file failed for %s: %s",
+                    "search_file: storage_service.retrieve_file failed for "
+                    "evidence %s (storage_ref=%s): %s",
+                    evidence_id,
                     storage_ref,
                     e,
                 )
-                alts = format_searchable_alternatives(all_evidence, evidence_id, case)
+                alts = format_searchable_alternatives(
+                    all_evidence, evidence_id, case, excluded_file_id=file_meta.file_id
+                )
                 return tool_failure(
                     f"Evidence {evidence_id}: stored file could not be retrieved",
                     e,

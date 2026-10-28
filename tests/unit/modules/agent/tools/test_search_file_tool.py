@@ -113,9 +113,11 @@ def _wire_case_lookup(case):
     case.uploaded_files = uploaded_files
 
     def _find(file_id):
+        # Read at call time, as ``Case.find_uploaded_file`` does: a test may
+        # add uploads after wiring.
         if not file_id:
             return None
-        return next((f for f in uploaded_files if f.file_id == file_id), None)
+        return next((f for f in case.uploaded_files if f.file_id == file_id), None)
 
     case.find_uploaded_file.side_effect = _find
 
@@ -1217,6 +1219,38 @@ class TestNonFileBackedEvidenceGuard:
         assert resolved[1:] == ("notes.txt", "notes.txt", upload)
         assert resolved[3] is upload
         assert "ERROR timeout" in resolved[0]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_file_is_not_offered_back_under_its_row(self, tool):
+        """#2359 review: an upload a row records, passed by its file_id, whose
+        read fails is not offered back as that row: it is the same file."""
+        case = self._case_with_unrecorded_uploads()
+        recorded_file = case.evidence[0].source_file_id
+        tool.storage_service.retrieve_file.side_effect = OSError("blob gone")
+
+        result = await tool.execute_with_context(
+            params={"evidence_id": recorded_file, "query": "ERROR"},
+            context=self._ctx(case),
+        )
+
+        assert result.error == (
+            f"Evidence {recorded_file}: stored file could not be retrieved "
+            "(OSError). Uploaded files with no evidence row (search them by "
+            "file_id): file_0000000000aa (notes.txt)."
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_timed_out_upload_read_is_recorded_as_a_timeout(self, tool):
+        """#2332 on the upload arm: the result records the timeout."""
+        tool.storage_service.retrieve_file.side_effect = TimeoutError()
+
+        result = await tool.execute_with_context(
+            params={"evidence_id": "file_0000000000aa", "query": "ERROR"},
+            context=self._ctx(self._case_with_unrecorded_uploads()),
+        )
+
+        assert result.timed_out is True
+        assert "could not be retrieved (TimeoutError)." in result.error
 
 
 class TestSyntheticFilenameNotReported:
