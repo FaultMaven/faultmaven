@@ -1372,7 +1372,7 @@ class KnowledgeService:
             tags = [str(tag) for tag in tags]
 
         # 1) SQL first — relational source-of-truth. If this fails, ChromaDB
-        # is never touched. If ChromaDB later fails (step 2), the SQL row
+        # is never written. If ChromaDB later fails (step 2), the SQL row
         # is rolled back before we raise (see lines below) — atomic across
         # both stores.
         item = KnowledgeItem(
@@ -1425,14 +1425,22 @@ class KnowledgeService:
                 {PACK_CONTENT_HASH_KEY: pack_content_hash} if pack_content_hash else {}
             ),
         )
-        async with self._db_session_factory() as session:
-            repo = DatabaseKnowledgeItemRepository(session)
-            await repo.create(item)
-
-        # Everything after the row is undone by one cleanup when it fails or
-        # is cancelled (#2365). The prior "leave SQL for recovery" policy
-        # produced half-state rows that downstream scans then mis-classified.
+        # Everything from the row's INSERT on is undone by one cleanup when it
+        # fails or is cancelled (#2365). The prior "leave SQL for recovery"
+        # policy produced half-state rows that downstream scans then
+        # mis-classified. ``create`` commits before it refreshes, so a failure
+        # or cancel can land after the row has (#2378): the cleanup removes
+        # only the row stamped ``now``, and an "already exists" refusal runs
+        # none, since that row is another call's.
+        refused = False
         try:
+            async with self._db_session_factory() as session:
+                try:
+                    await DatabaseKnowledgeItemRepository(session).create(item)
+                except ValueError:
+                    refused = True
+                    raise
+
             # Team publish: record visibility in the share table (source of
             # truth, ADR-013 §D4). The scope enum stays 'team' ⟺ ≥1 share row.
             # Cross-ENTERPRISE shares are impossible by construction — the share
@@ -1472,7 +1480,8 @@ class KnowledgeService:
                     f"cleaned up."
                 )
         except (Exception, asyncio.CancelledError):
-            await self._delete_knowledge_item_row(document_id)
+            if not refused:
+                await self._delete_knowledge_item_row(document_id, created_at=now)
             raise
 
         return chunks_created
@@ -1665,13 +1674,17 @@ class KnowledgeService:
                 return 0
         return chunks
 
-    async def _delete_knowledge_item_row(self, item_id: str) -> None:
+    async def _delete_knowledge_item_row(
+        self, item_id: str, *, created_at: datetime
+    ) -> None:
         """Best-effort cleanup of what a failed :meth:`ingest_runbook` wrote:
         the item's vectors, its row, then its team share rows (#2365).
 
         The vectors go first, by parent id: a store can fail after applying
-        part of a write. The shares go only once the row's delete has
-        committed, as in :meth:`delete_document`, so an item that survives
+        part of a write. The row goes only if it carries ``created_at``, the
+        value that call stamped, so a row another call created under the same
+        id stays (#2378). The shares go only once the row's delete has
+        removed it, as in :meth:`delete_document`, so an item that survives
         keeps the share that makes it a team item. Shielded from cancellation:
         it runs on the path a cancellation takes, and an anyio scope (the one
         ``BaseHTTPMiddleware`` runs a route in) cancels every await that is
@@ -1696,7 +1709,9 @@ class KnowledgeService:
                     )
             try:
                 async with self._db_session_factory() as session:
-                    await DatabaseKnowledgeItemRepository(session).delete(item_id)
+                    deleted = await DatabaseKnowledgeItemRepository(session).delete(
+                        item_id, created_at=created_at
+                    )
             except Exception as cleanup_err:
                 logger.warning(
                     "Failed to clean up orphaned knowledge_items row %s (%s); "
@@ -1705,7 +1720,7 @@ class KnowledgeService:
                     exception_class_name(cleanup_err),
                 )
                 return
-            if self._share_repo:
+            if self._share_repo and deleted:
                 try:
                     await self._share_repo.delete_for_resource(
                         "knowledge_item", item_id

@@ -379,6 +379,22 @@ class TestDeferredCommit:
         assert await repo.delete(ghost.item_id, commit=False) is False
 
 
+@pytest.mark.asyncio
+async def test_a_delete_guarded_by_created_at_spares_another_row(
+    deferring_repository,
+):
+    """A writer undoing its own INSERT removes only the row it stamped (#2378)."""
+    repo = deferring_repository
+    item = create_sample_item()
+    await repo.create(item)
+    other = item.created_at - timedelta(microseconds=1)
+
+    assert await repo.delete(item.item_id, created_at=other) is False
+    assert await repo.get_by_id(item.item_id) is not None
+    assert await repo.delete(item.item_id, created_at=item.created_at) is True
+    assert await repo.get_by_id(item.item_id) is None
+
+
 class TestTargetedWrite:
     """``update_fields`` writes only the fields it names (#1966): it cannot
     revert another writer's change to a column it does not name."""
