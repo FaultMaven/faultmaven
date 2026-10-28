@@ -24,7 +24,6 @@ from faultmaven.api.v1.auth_dependencies import (
     get_current_user_optional,
     require_authentication,
 )
-from faultmaven.api.v1.dependencies import get_case_service
 from faultmaven.modules.case.api.routes.dependencies import (
     _di_get_case_service_dependency,
     _di_get_session_service_dependency,
@@ -153,11 +152,7 @@ def build_app():
             return SimpleNamespace(user_id="user-1")
 
         app.dependency_overrides[_di_get_session_service_dependency] = _session_service
-        # Routes in this file reach the case service two ways: most via the
-        # module's runtime wrapper, list_uploaded_files via the shared
-        # dependency directly. Override both so either route shape is covered.
         app.dependency_overrides[_di_get_case_service_dependency] = _case_service
-        app.dependency_overrides[get_case_service] = _case_service
         app.dependency_overrides[get_current_user_optional] = _current_user_optional
         app.dependency_overrides[require_authentication] = _current_user
         return app

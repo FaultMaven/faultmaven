@@ -13,7 +13,6 @@ from typing import Optional, Sequence
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response
 
 from faultmaven.api.v1.auth_dependencies import require_authentication
-from faultmaven.api.v1.dependencies import get_case_service
 from faultmaven.exceptions import NotFoundError, PermissionDeniedException
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models.api_models import (
@@ -54,7 +53,7 @@ logger = logging.getLogger(__name__)
     "/{case_id}/uploaded-files",
     response_model=UploadedFilesList,
     operation_id="list_uploaded_files",
-    # The gate resolves before ``get_case_service``, whatever it does (#1494).
+    # The gate resolves before the case service, whatever it does (#1494).
     dependencies=[Depends(require_authentication)],
 )
 @trace("api_list_uploaded_files")
@@ -71,7 +70,7 @@ async def list_uploaded_files(
         "uploaded_at_turn", description="Sort field: uploaded_at_turn | filename | size"
     ),
     sort_order: str = Query("desc", description="Sort direction: asc | desc"),
-    case_service=Depends(get_case_service),
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     current_user: UserDTO = Depends(require_authentication),
 ):
     """
@@ -80,6 +79,8 @@ async def list_uploaded_files(
     Returns:
         Paginated list of file metadata with AI analysis status
     """
+    case_service = check_case_service_available(case_service)
+
     try:
         # Get case with access control
         case = await case_service.get_case(case_id, current_user.user_id)
