@@ -366,15 +366,18 @@ async def test_a_draft_linked_while_the_delete_runs_is_discarded(pg_factory):
             "SELECT count(*) FROM pg_locks "
             "WHERE NOT granted AND :pid = ANY(pg_blocking_pids(pid))"
         )
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + 30
-        while not deleting.done():
+        # A bounded number of polls, not a clock: the delete is waiting, or
+        # done, long before they run out.
+        for _ in range(600):
+            if deleting.done():
+                break
             blocked = (await probe.execute(waiting, {"pid": linker})).scalar()
             await probe.rollback()
             if blocked:
                 break
-            assert loop.time() < deadline, "the delete never waited on the link"
-            await asyncio.sleep(0.01)
+            await asyncio.sleep(0.05)
+        else:
+            pytest.fail("the delete never waited on the link")
         await linking.commit()
         assert (await deleting)["success"] is True
 
