@@ -23,6 +23,7 @@ import os
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
+import anyio
 import pytest
 from sqlalchemy import delete, event, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -30,6 +31,7 @@ from sqlalchemy.pool import NullPool
 
 from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.config.tenant_context import _current_enterprise_id
+from faultmaven.infrastructure import embedding_guard
 from faultmaven.infrastructure.persistence.models import (
     Base,
     ConversionDraftModel,
@@ -43,6 +45,7 @@ from faultmaven.infrastructure.persistence.models import (
 from faultmaven.infrastructure.persistence.share_repository import (
     PostgreSQLShareRepository,
 )
+from faultmaven.models.exceptions import KnowledgeBaseError
 from faultmaven.modules.knowledge.domain.services import knowledge_service
 from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
     ConversionService,
@@ -52,6 +55,9 @@ from faultmaven.modules.knowledge.domain.services.knowledge_service import (
 )
 from faultmaven.modules.knowledge.domain.services.runbook_validator import (
     RunbookQualityError,
+)
+from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
+    DatabaseKnowledgeItemRepository,
 )
 from tests.runbook_samples import valid_runbook
 from tests.utils import regex_only_sanitizer, seed_enterprises, seed_users
@@ -115,24 +121,32 @@ class _Shares:
             )
 
 
-class _FailingCommit:
-    """The session factory, whose first commit after ``armed`` raises ``error``,
-    before the commit lands or, with ``landed``, after it."""
+#: A commit that never returns until it is cancelled.
+PARK = None
 
-    def __init__(self, factory, error: BaseException, *, landed: bool) -> None:
-        self._factory, self._error, self._landed = factory, error, landed
-        self.armed = False
+
+class _FailingCommit:
+    """The session factory. Once ``armed``, each next session's commit takes one
+    ``(error, landed)``: it raises ``error`` before the commit lands or, with
+    ``landed``, after it; or, for ``PARK``, waits to be cancelled."""
+
+    def __init__(self, factory, *failures) -> None:
+        self._factory, self._failures = factory, list(failures)
+        self.armed, self.parked = False, asyncio.Event()
 
     def __call__(self):
         session = self._factory()
-        if self.armed:
-            self.armed = False
+        if self.armed and self._failures:
+            error, landed = self._failures.pop(0)
             real_commit = session.commit
 
             async def commit():
-                if self._landed:
+                if error is PARK:
+                    self.parked.set()
+                    await asyncio.Event().wait()
+                if landed:
                     await real_commit()
-                raise self._error
+                raise error
 
             session.commit = commit
         return session
@@ -190,19 +204,29 @@ async def _drafts(factory) -> list[dict]:
     ).list_all_drafts(OWNER)
 
 
-async def _assert_landed(factory, result) -> None:
+async def _assert_landed(factory, document_id: str) -> None:
+    """The upload's own rows, read by its ids: on PostgreSQL the database is
+    shared with every other ``-m postgres`` test."""
     async with factory() as session:
-        (draft,) = (await session.execute(select(ConversionDraftModel))).scalars()
-        item = await session.get(KnowledgeItemModel, result["document_id"])
-    assert item is not None
-    assert (draft.status, draft.knowledge_item_id) == ("verified", item.item_id)
-    assert [d["draft_id"] for d in await _drafts(factory)] == [draft.id]
+        (draft,) = (
+            await session.execute(
+                select(ConversionDraftModel).where(
+                    ConversionDraftModel.runbook_id == document_id
+                )
+            )
+        ).scalars()
+        job = await session.get(ConversionJobModel, draft.conversion_id)
+        upload = await session.get(UploadedFileModel, job.source_file_id)
+        item = await session.get(KnowledgeItemModel, document_id)
+    assert None not in (upload, item)
+    assert (draft.status, draft.knowledge_item_id) == ("verified", document_id)
+    assert draft.id in [d["draft_id"] for d in await _drafts(factory)]
 
 
 async def test_an_upload_lands_where_foreign_keys_are_enforced(session_factory):
     result = await _upload(_knowledge(session_factory))
 
-    await _assert_landed(session_factory, result)
+    await _assert_landed(session_factory, result["document_id"])
     assert await _rows(session_factory) == {
         **dict.fromkeys(NOTHING, 1),
         "resource_shares": 0,
@@ -264,7 +288,7 @@ async def test_a_failed_row_write_withdraws_the_item(session_factory, error, lan
     """A commit refused, or one that landed and still raised or was cancelled:
     no row remains, so withdrawing the item cannot leave a verified draft with a
     NULL item (the key's ``SET NULL``), and the item's vectors are removed."""
-    factory = _FailingCommit(session_factory, error, landed=landed)
+    factory = _FailingCommit(session_factory, (error, landed))
     service = _knowledge(factory)
     factory.arm_after_ingestion(service)
 
@@ -281,9 +305,7 @@ async def test_a_failed_row_write_withdraws_the_item(session_factory, error, lan
 
 
 async def test_a_failed_withdrawal_names_the_item(session_factory, caplog):
-    factory = _FailingCommit(
-        session_factory, RuntimeError("commit failed"), landed=False
-    )
+    factory = _FailingCommit(session_factory, (RuntimeError("commit failed"), False))
     service = _knowledge(factory)
     factory.arm_after_ingestion(service)
     service._vector_store.delete_documents_by_parent_id.side_effect = OSError("down")
@@ -301,9 +323,155 @@ async def test_a_failed_withdrawal_names_the_item(session_factory, caplog):
         and "withdraw" in r.getMessage()
         for r in caplog.records
     ), caplog.text
+    # The failure's class, never its text: a failed INSERT's carries its
+    # parameters, the document among them.
+    assert "Failed to upload document: RuntimeError" in caplog.text
+    assert "commit failed" not in caplog.text
     # What a crash between the two commits leaves too: the item, live and
     # deletable, and no upload, job or draft.
     assert await _rows(session_factory) == {**NOTHING, "knowledge_items": 1}
+    assert await _drafts(session_factory) == []
+
+
+async def test_rows_that_cannot_be_removed_keep_their_item(session_factory, caplog):
+    """The commit landed and raised, and removing the rows failed too. The item
+    stays, so the verified draft still names it (its withdrawal would have set
+    the draft's item to NULL, the key's ``SET NULL``)."""
+    factory = _FailingCommit(
+        session_factory,
+        (RuntimeError("commit failed"), True),
+        (RuntimeError("delete failed"), False),
+    )
+    service = _knowledge(factory)
+    factory.arm_after_ingestion(service)
+
+    with caplog.at_level(logging.ERROR), pytest.raises(RuntimeError, match="commit"):
+        await _upload(service)
+
+    document_id = service._index_document_in_vector_store.await_args.args[0].document_id
+    await _assert_landed(session_factory, document_id)
+    service._vector_store.delete_documents_by_parent_id.assert_not_awaited()
+    (draft,) = await _drafts(session_factory)
+    assert any(
+        draft["draft_id"] in r.getMessage() and document_id in r.getMessage()
+        for r in caplog.records
+        if r.levelno == logging.ERROR
+    ), caplog.text
+
+
+async def test_a_failed_share_write_leaves_nothing(session_factory):
+    service = _knowledge(session_factory)
+    service._share_repo.share = AsyncMock(side_effect=RuntimeError("share failed"))
+
+    with pytest.raises(RuntimeError, match="share failed"):
+        await _upload(service, scope="team")
+
+    assert await _rows(session_factory) == NOTHING
+
+
+async def test_an_item_row_that_survives_keeps_its_share(session_factory, monkeypatch):
+    """Ingestion's cleanup could not delete the item, so it keeps the share that
+    makes it a team item: shares go only after the item's delete commits."""
+    monkeypatch.setattr(
+        DatabaseKnowledgeItemRepository,
+        "delete",
+        AsyncMock(side_effect=RuntimeError("row delete failed")),
+    )
+    service = _knowledge(session_factory)
+    service._index_document_in_vector_store = AsyncMock(
+        side_effect=RuntimeError("embedder unavailable")
+    )
+
+    with pytest.raises(RuntimeError, match="embedder unavailable"):
+        await _upload(service, scope="team")
+
+    assert await _rows(session_factory) == {
+        **NOTHING,
+        "knowledge_items": 1,
+        "resource_shares": 1,
+    }
+
+
+class _AddsThenRaises:
+    """A vector store that applies ``add_documents`` and then raises, as a
+    remote store can inside the retry ladder."""
+
+    def __init__(self) -> None:
+        self.chunks: dict[str, str] = {}
+        self.added = 0
+
+    async def add_documents(self, documents, embeddings):
+        self.chunks.update(
+            {d["id"]: d["metadata"]["parent_document_id"] for d in documents}
+        )
+        self.added += len(documents)
+        raise RuntimeError("store failed after the write")
+
+    async def delete_documents_by_parent_id(self, parent_id, retries=2):
+        for chunk_id in [k for k, v in self.chunks.items() if v == parent_id]:
+            del self.chunks[chunk_id]
+
+
+async def test_vectors_a_failed_store_wrote_are_removed(session_factory, monkeypatch):
+    monkeypatch.setattr(
+        embedding_guard,
+        "embed_texts_or_raise",
+        AsyncMock(side_effect=lambda texts, **_: [[0.0] * 4 for _ in texts]),
+    )
+    service = _knowledge(session_factory)
+    del service._index_document_in_vector_store  # the real indexer
+    service._vector_store = vectors = _AddsThenRaises()
+
+    with pytest.raises(KnowledgeBaseError):
+        await _upload(service)
+
+    assert vectors.added > 0
+    assert vectors.chunks == {}
+    assert await _rows(session_factory) == NOTHING
+
+
+@pytest.mark.parametrize(
+    "during,how",
+    [
+        ("ingestion", "task_cancel"),
+        ("ingestion", "anyio_scope"),
+        ("row_write", "anyio_scope"),
+    ],
+)
+async def test_a_cancelled_upload_leaves_nothing(session_factory, during, how):
+    """Cancelled while it embeds or while its rows commit, by ``task.cancel()``
+    (a shutdown) or by an anyio scope, which cancels every await that is not
+    shielded: ``BaseHTTPMiddleware`` runs the route in one."""
+    factory = _FailingCommit(session_factory, (PARK, False))
+    service = _knowledge(factory)
+    parked = factory.parked
+    if during == "row_write":
+        factory.arm_after_ingestion(service)
+    else:
+
+        async def park(*_args, **_kwargs):
+            parked.set()
+            await asyncio.Event().wait()
+
+        service._index_document_in_vector_store = AsyncMock(side_effect=park)
+
+    async def run():
+        await _upload(service, scope="team")
+
+    if how == "task_cancel":
+        task = asyncio.create_task(run())
+        await parked.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    else:
+        async with anyio.create_task_group() as group:
+            group.start_soon(run)
+            await parked.wait()
+            group.cancel_scope.cancel()
+
+    service._vector_store.delete_documents_by_parent_id.assert_awaited()
+    assert await _rows(session_factory) == NOTHING
     assert await _drafts(session_factory) == []
 
 
@@ -325,7 +493,7 @@ async def test_an_upload_lands_on_postgresql():
 
         result = await _upload(_knowledge(factory))
 
-        await _assert_landed(factory, result)
+        await _assert_landed(factory, result["document_id"])
     finally:
         async with factory() as session:
             for model in (

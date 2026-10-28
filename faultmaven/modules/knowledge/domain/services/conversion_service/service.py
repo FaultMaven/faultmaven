@@ -1710,28 +1710,6 @@ class ConversionService:
             quality_warning=quality_warning,
         )
 
-    async def _withdraw_published_item(self, knowledge_item_id: str) -> bool:
-        """Remove what a verify published but could not record. True when the
-        item is gone; on failure an ERROR names the orphaned item for an
-        operator, and the caller says so instead of "nothing was published"."""
-        try:
-            outcome = await self._knowledge_service.delete_document(knowledge_item_id)
-        except Exception as exc:
-            logger.error(
-                "verify_draft: could not withdraw orphaned knowledge_item %s: %s",
-                knowledge_item_id,
-                exc,
-            )
-            return False
-        if not (outcome or {}).get("success"):
-            logger.error(
-                "verify_draft: could not withdraw orphaned knowledge_item %s: %s",
-                knowledge_item_id,
-                (outcome or {}).get("error", "no success reported"),
-            )
-            return False
-        return True
-
     async def _verifier_display_name(
         self, user_id: str, enterprise_id: Optional[str]
     ) -> str:
@@ -2175,7 +2153,11 @@ class ConversionService:
                 current_status,
                 knowledge_item_id,
             )
-            withdrawn = await self._withdraw_published_item(knowledge_item_id)
+            # On failure an ERROR names the orphaned item for an operator, and
+            # the 409 says so instead of "nothing was published".
+            withdrawn = await self._knowledge_service.withdraw_published_item(
+                knowledge_item_id, caller="verify_draft"
+            )
             raise _verification_lost(
                 draft_id, current_status, knowledge_item_id, withdrawn
             )
