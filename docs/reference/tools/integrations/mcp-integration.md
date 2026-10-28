@@ -537,7 +537,7 @@ Claude: [calls MCP tool]
 
 ### For MCP Clients (Consuming External Servers)
 
-1. **Sanitize Inputs**: Design intent: the registry does not sanitize, so the MCP client tool would have to before sending data to an external server
+1. **Sanitize Inputs**: Design intent: the registry does not sanitize, so the MCP client tool would have to sanitize before sending data to an external server
 2. **Validate Outputs**: Design intent: sanitize and validate data received from external servers
 3. **Command Validation**: Whitelist allowed MCP server commands
 4. **Environment Isolation**: Run MCP servers in sandboxed environments

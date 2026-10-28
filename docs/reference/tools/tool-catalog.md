@@ -39,7 +39,7 @@ Searches trusted technical sites (`TRUSTED_DOMAINS` in `web_search.py`) for erro
 Look up one entity value across the case's evidence (`find_entity`: required `entity_value`, optional `entity_type`), or tally the most-mentioned entities of a type (`list_top_entities`: required `entity_type`, optional `limit`).
 
 ### `reclassify_evidence`
-Re-extracts an evidence file under a different data type when the user corrects the classifier. Parameters: `evidence_id` and `data_type`, both required. It writes to the live case aggregate, so terminal Q&A turns do not offer it. Typed domain refusals (a closed case, no backing file) return their message, and the model is told not to retry a refusal.
+Re-extracts an evidence file under a different data type when the user corrects the classifier. Parameters: `evidence_id` and `data_type`, both required. It writes to the live case aggregate, so terminal Q&A turns do not offer it. A closed case returns its refusal followed by "Inform the user and do not retry.". Evidence with no stored raw file returns the `ConflictError` message as is, with no retry instruction.
 
 ## Not built
 

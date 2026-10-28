@@ -261,7 +261,7 @@ Benefits:
 
 ### 3. Redaction
 
-The engine redacts every tool result before the model reads it (`case_redacted`, `faultmaven/core/investigation/milestone_engine/generation.py`). A tool that sends case content to a model itself (`kb_qa`, `case_evidence_search`, `deep_analysis`) passes `context.redaction_ctx` (`ToolContext`), so the values enter the case registry and the placeholders in its answer can be reversed in the reply the user reads. No tool sanitizes its own params. An unexpected exception goes through `tool_failure`, which names its class, never its text (#2332); a tool may still return a message written for the model on purpose (`reclassify_evidence` returns its typed domain errors' text, `search_file` the `re.error` text of the model's own pattern).
+When `SANITIZE_PII` is on (`ProtectionSettings.sanitize_pii`, default off), the engine redacts every tool result before the model reads it (`case_redacted`, `faultmaven/core/investigation/milestone_engine/generation.py`); with it off, `case_redacted` passes the text through unchanged. A tool that calls a model with case content itself (`kb_qa`, `case_evidence_search`, `deep_analysis`) sends its messages through `case_redacted_messages(messages, context.redaction_ctx)` (`faultmaven/infrastructure/security/model_content.py`), which redacts under the same switch and mints the content the model boundary requires; unminted content raises `RawModelContentRefused`, which a tool re-raises and never turns into `tool_failure`. No tool sanitizes its own params. An unexpected exception goes through `tool_failure`, which names its class, never its text (#2332); a tool may still return a message written for the model on purpose (`reclassify_evidence` returns its typed domain errors' text, `search_file` the `re.error` text of the model's own pattern).
 
 ### 4. Graceful Degradation
 
@@ -409,7 +409,7 @@ if not result.success:
 
 ### Redaction
 
-The registry does not sanitize params or results of a tool. The engine redacts each result before the model reads it, and a tool that calls a model with case content passes `context.redaction_ctx`; see Design Principles, Redaction.
+The registry does not sanitize params or results of a tool. When `SANITIZE_PII` is on the engine redacts each result before the model reads it, and a tool that calls a model with case content sends its messages through `case_redacted_messages(messages, context.redaction_ctx)`, re-raising `RawModelContentRefused`; see Design Principles, Redaction.
 
 ### Access Control
 
@@ -476,7 +476,7 @@ Before tool acceptance:
 - [ ] Registered in `_create_investigation_tools`
 - [ ] Returns a valid `ToolResult` (`data=` on every one; failures via `tool_failure`)
 - [ ] Provides a valid schema via `parameters_schema`
-- [ ] Passes `context.redaction_ctx` wherever it sends case content to a model
+- [ ] Sends case content to a model only through `case_redacted_messages(messages, context.redaction_ctx)`, and re-raises `RawModelContentRefused`
 - [ ] Handles errors gracefully
 - [ ] Has timeout protection
 - [ ] Has unit tests (>80% coverage)

@@ -324,12 +324,12 @@ class SystemCommandTool(AgentTool):
 
 ## Privacy and Redaction
 
-The engine redacts every tool result before the model reads it (`case_redacted`, `faultmaven/core/investigation/milestone_engine/generation.py`). A tool that sends case content to a model itself (`kb_qa`, `case_evidence_search`, `deep_analysis`) passes `context.redaction_ctx` (`ToolContext`), so the values enter the case registry and the placeholders in its answer can be reversed in the reply the user reads. No tool sanitizes its own params. An unexpected exception goes through `tool_failure`, which names its class, never its text (#2332); a tool may still return a message written for the model on purpose (`reclassify_evidence` returns its typed domain errors' text, `search_file` the `re.error` text of the model's own pattern).
+When `SANITIZE_PII` is on (`ProtectionSettings.sanitize_pii`, default off), the engine redacts every tool result before the model reads it (`case_redacted`, `faultmaven/core/investigation/milestone_engine/generation.py`); with it off, `case_redacted` passes the text through unchanged. A tool that calls a model with case content itself (`kb_qa`, `case_evidence_search`, `deep_analysis`) sends its messages through `case_redacted_messages(messages, context.redaction_ctx)` (`faultmaven/infrastructure/security/model_content.py`), which redacts under the same switch and mints the content the model boundary requires; unminted content raises `RawModelContentRefused`, which a tool re-raises and never turns into `tool_failure`. No tool sanitizes its own params. An unexpected exception goes through `tool_failure`, which names its class, never its text (#2332); a tool may still return a message written for the model on purpose (`reclassify_evidence` returns its typed domain errors' text, `search_file` the `re.error` text of the model's own pattern).
 
 What this means when you write a tool:
 - Do not rely on the registry to sanitize your params; it does not.
 - Return nothing in a failure's `error` that you would not want the model to repeat. For an unexpected exception use `tool_failure`; build any other message yourself, from text written for the model.
-- If your tool calls a model with case content, pass `context.redaction_ctx` through (see `kb_tool_adapter.py`, which hands it to the wrapped tool).
+- If your tool calls a model with case content, build the messages through `case_redacted_messages(messages, context.redaction_ctx)`, as `document_qa_tool.py` and `core/preprocessing/tier2/local_service.py` do. Let `RawModelContentRefused` propagate: `except RawModelContentRefused: raise` before a broad `except Exception`.
 - `DataSanitizer.sanitize(data)` (`faultmaven/infrastructure/security/redaction.py`) exists for text outside a case; none of the given tools calls it on its params.
 
 ## Dependency Injection Integration
@@ -382,12 +382,13 @@ class ToolsSettings(BaseSettings):
     """Tools and external service configuration"""
 
     # Existing tools
-    web_search_api_key: Optional[SecretStr] = Field(default=None, env="WEB_SEARCH_API_KEY")
+    web_search_api_key: Optional[SecretStr] = Field(default=None)
 
-    # Your new tool
-    my_tool_api_key: Optional[SecretStr] = Field(default=None, env="MY_TOOL_API_KEY")
-    my_tool_endpoint: str = Field(default="https://api.example.com", env="MY_TOOL_ENDPOINT")
-    my_tool_timeout: int = Field(default=30, env="MY_TOOL_TIMEOUT")
+    # Your new tool. The class has env_prefix="", so a field is read from the
+    # environment variable of its upper-cased name (MY_TOOL_API_KEY, ...).
+    my_tool_api_key: Optional[SecretStr] = Field(default=None)
+    my_tool_endpoint: str = Field(default="https://api.example.com")
+    my_tool_timeout: int = Field(default=30)
 ```
 
 Then in `.env`:
@@ -428,12 +429,14 @@ async def test_tool_with_mocked_deps(mock_dependencies):
 ```python
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_tool_with_real_dependencies():
-    """Test tool with real infrastructure"""
+async def test_tool_with_real_settings():
+    """Test tool with real settings and a stubbed model (no test reaches a model server)"""
+    from unittest.mock import AsyncMock
+
     from faultmaven.config.settings import get_settings
 
     settings = get_settings()
-    tool = MyTool(settings=settings, llm_provider=llm_provider)
+    tool = MyTool(settings=settings, llm_provider=AsyncMock())
     result = await tool.execute_with_context({'param': 'value'}, make_context())
 
     assert result.success
@@ -510,7 +513,7 @@ Before submitting a new tool:
 - [ ] Failures go through `tool_failure`, or pass `data=None`
 - [ ] Tool has unit tests (>80% coverage)
 - [ ] Tool has integration tests
-- [ ] Tool passes `context.redaction_ctx` wherever it sends case content to a model
+- [ ] Tool sends case content to a model only through `case_redacted_messages`, and re-raises `RawModelContentRefused`
 - [ ] Tool handles errors gracefully
 - [ ] Tool has timeout protection (if I/O intensive)
 - [ ] Tool configuration added to `settings.py`
@@ -530,7 +533,7 @@ When either is exceeded, the engine keeps the head (system + base task) and re-a
 
 **Implications for tool developers**:
 
-1. **Your result is never rewritten.** A tool result is either passed to the LLM verbatim or elided entirely with the marker accounting for it. You do not need to defend against having your output thinned mid-body.
+1. **Your result can be rewritten.** A result over `TOOL_RESULT_MAX_CHARS` (8000) is cut by `_truncate_tool_result` (`generation.py`), which keeps the head, so what matters goes first; a `kb_qa` answer is trimmed earlier, in the middle, by `_format_tool_result`; and when `SANITIZE_PII` is on, redaction replaces values with placeholders. A whole tool-call group can also be elided, as below.
 2. **Recency wins, not position within your output.** The oldest tool calls are dropped first. On a long tool loop, an early result may vanish from a later iteration's context — so if a finding matters for the turn's conclusion, restate it in the result of the call that acts on it rather than assuming the earlier one is still visible.
 3. **Length costs the whole group.** A verbose result makes its group a bigger candidate for elision. Prefer dense output over padded output, but do not truncate to hit a line count — there is no line-based preservation rule to exploit.
 4. **Nothing keeps a copy.** An elided result is gone from that call's context and is not archived anywhere the agent or a debugger can reach it — `agent_tool_calls` has had no writer since the orchestration service was removed. Treat the result you return as the only record of it.
