@@ -347,7 +347,7 @@ params = {
     }
 }
 
-result = await mcp_client_tool.execute(params)
+result = await mcp_client_tool.execute_with_context(params, context)
 # Returns sanitized GitHub issues
 ```
 
@@ -475,8 +475,9 @@ async def main():
     # Initialize container
     container.initialize()
 
-    # Get the tools the model is given
-    tools = container.tools
+    # Design gap: take the registry _create_investigation_tools builds
+    # (the set the model is given); container.tools is a wider list.
+    tools = registry.get_all_tools()
 
     # Create and run MCP server
     server = FaultMavenMCPServer(tools, context)
@@ -628,10 +629,10 @@ LOG_LEVEL=DEBUG python -m faultmaven.server
 await mcp_tool.list_available_tools()
 
 # Test with minimal arguments
-result = await mcp_tool.execute_with_context({
-    'tool_name': 'test_tool',
-    'arguments': {}
-})
+result = await mcp_tool.execute_with_context(
+    {'tool_name': 'test_tool', 'arguments': {}},
+    context,
+)
 ```
 
 ## Future Enhancements
@@ -649,9 +650,3 @@ result = await mcp_tool.execute_with_context({
 - **MCP Servers**: https://github.com/modelcontextprotocol/servers
 - **Claude MCP Guide**: https://docs.anthropic.com/claude/docs/model-context-protocol
 
----
-
-**Last Updated**: 2025-10-12
-**Status**: 🔲 Not yet implemented (guide only)
-**Version**: 1.0
-**Maintainer**: Architecture Team

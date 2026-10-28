@@ -99,7 +99,7 @@ class MyCustomTool(AgentTool):
 
 1. Construct it in `register_tools` (`faultmaven/container/providers/tools.py`) and set it on the container, as `search_file_tool` is: `container.my_custom_tool = MyCustomTool(...)` and `container.tools.append(...)`.
 2. Give it to the model by adding it to `_create_investigation_tools` (`faultmaven/container/providers/services.py`), which builds the `AgentToolRegistry` for the engine: `registry.register(my_custom_tool)`. `register` raises `ValueError` on a duplicate name.
-3. A tool the prompts name must also be part of the per-turn set (`GivenTools`, `core/investigation/prompts/templates/tool_text.py`), so a prompt never names a tool the turn does not give.
+3. A turn may offer only a subset of the registry: terminal Q&A turns offer only `TERMINAL_QA_TOOLS` (`faultmaven/core/investigation/milestone_engine/terminal_turns.py`), so add the tool there only if it is a read-only lookup. The prompts name only the tools the turn gives (`GivenTools`, derived from the registry and that filter).
 
 ### 3. Test Your Tool
 
@@ -175,7 +175,7 @@ pytest tests/unit/modules/agent/tools/test_my_custom_tool.py -v
 - ✅ Full control
 - ✅ Easy testing
 
-**Example**: `search_file` (`search_file_tool.py`), `read_file` (`read_file_tool.py`)
+**Example**: `search_file` (`search_file_tool.py`), `deep_analysis` (`deep_analysis_tool.py`). A tool reaches the model only when `_create_investigation_tools` registers it.
 
 ```python
 class PatternAnalyzerTool(AgentTool):
@@ -492,7 +492,7 @@ Each tool must have documentation in `docs/reference/tools/`:
 
 Create `docs/reference/tools/my-custom-tool.md`:
 
-```markdown
+````markdown
 # My Custom Tool
 
 ## Overview
@@ -505,8 +505,7 @@ Create `docs/reference/tools/my-custom-tool.md`:
 [Clear description of what the tool does and why]
 
 ## When Used
-- Phase X: [Description]
-- Phase Y: [Description]
+- [When the model should call it]
 
 ## Capabilities
 - Feature 1
@@ -536,11 +535,6 @@ result = await tool.execute_with_context(params, context)
 ### get_schema()
 - **Returns**: Tool schema dictionary (`name`, `description`, `parameters`), built from `parameters_schema`
 
-## Performance
-- Latency: [typical latency]
-- Success Rate: [typical success rate]
-- Cache: [caching behavior]
-
 ## Security Considerations
 [Any security-relevant information]
 
@@ -549,7 +543,7 @@ result = await tool.execute_with_context(params, context)
 
 ## Future Enhancements
 [Planned improvements]
-```
+````
 
 ## Submission Checklist
 
@@ -647,10 +641,4 @@ async def execute_with_context(self, params, context):
 - **Architecture Questions**: See [Tool Architecture](./architecture/)
 - **Integration Patterns**: See [Integration Guide](./integrations/)
 - **Example Tools**: Study existing tools in `faultmaven/modules/agent/tools/`
-- **Community**: Discord channel #tool-development
 
----
-
-**Last Updated**: 2026-03-04
-**Version**: 1.1
-**Maintainer**: Architecture Team

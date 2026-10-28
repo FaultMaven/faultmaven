@@ -59,7 +59,7 @@ class AgentTool(BaseTool, ABC):
     def get_schema(self) -> Dict[str, Any]:
         """{"name", "description", "parameters"} built from the properties."""
 
-    def to_tool(self) -> "Tool": ...                       # the LLM wire shape
+    def to_tool(self) -> "Tool": ...                       # a domain Tool; the engine sends get_schema()
     def validate_params(self, params) -> Optional[str]: ...  # required keys and JSON types
 ```
 
@@ -194,23 +194,25 @@ container.tools.append(container.search_file_tool)
 ### 3. Discovery Phase
 
 ```python
-# Agent discovers tool capabilities
-for tool in self.tools:
-    schema = tool.get_schema()
-    self.tool_schemas[schema['name']] = schema
+# faultmaven/core/investigation/milestone_engine/generation.py, build_da_tool_schemas
+for agent_tool in self.deps.investigation_tools.get_all_tools():
+    schema = agent_tool.get_schema()
+    if allowed is not None and schema["name"] not in allowed:
+        continue
+    tools.append({"type": "function", "function": schema})
 ```
 
 **Process**:
-1. Agent receives tool list
-2. Calls `get_schema()` on each tool
-3. Builds tool capability map
-4. Makes tools available for invocation
+1. The engine holds the `AgentToolRegistry` built by `_create_investigation_tools`
+2. `build_da_tool_schemas` calls `get_schema()` on each registered tool
+3. A turn may offer a subset: terminal Q&A turns offer only `TERMINAL_QA_TOOLS` (`terminal_turns.py`)
+4. The schemas are sent with the model call
 
 ### 4. Execution Phase
 
 ```python
 # Agent invokes tool
-params = {"query": "Redis OOM solutions", "limit": 5}
+params = {"question": "How do I fix Redis OOM kills?"}
 result = await registry.execute_tool("kb_qa", params, context)
 
 if result.success:
@@ -299,7 +301,7 @@ async def execute_with_context(self, params: Dict, context: ToolContext) -> Tool
 - Fast execution
 - Full control
 
-**Examples**: `search_file`, `read_file`
+**Examples**: `search_file`, `deep_analysis`
 
 **Interface Pattern**:
 ```python
@@ -374,29 +376,6 @@ class SystemTool(AgentTool):
         result = await self._safe_execute(params)
         return ToolResult(success=True, data=result)
 ```
-
-## Performance Requirements
-
-### Latency Targets
-
-| Tool Category | Target Latency | Max Latency | Timeout |
-|---------------|----------------|-------------|---------|
-| Direct Implementation | < 500ms | 1s | 5s |
-| External API | < 2s | 3s | 10s |
-| MCP Protocol | < 1s | 3s | 10s |
-| System Command | < 1s | 2s | 30s |
-
-### Resource Limits
-
-**Memory**:
-- Tool instance: < 50MB
-- Tool execution: < 200MB
-- Total tools: < 1GB
-
-**Concurrency**:
-- Max concurrent executions: 10 per tool
-- Queue depth: 100 pending executions
-- Timeout: 30s default
 
 ## Error Handling
 
@@ -511,12 +490,11 @@ async def test_tool_integration():
 
 Each tool must document:
 1. **Purpose**: What the tool does
-2. **When Used**: Which investigation phases
+2. **When Used**: Which turns offer it
 3. **Parameters**: Input schema and examples
 4. **Returns**: Output format and examples
 5. **Configuration**: Required environment variables
 6. **Limitations**: Known constraints
-7. **Performance**: Typical latency and throughput
 
 ## Compliance Checklist
 
@@ -535,8 +513,3 @@ Before tool acceptance:
 - [ ] Follows privacy-first invariant
 - [ ] Passes security review (if accessing external services)
 
----
-
-**Last Updated**: 2025-10-12
-**Version**: 1.0
-**Maintainer**: Architecture Team
