@@ -2254,4 +2254,20 @@ asked to accept, and it belongs to a person.
 # when they adopt 14.7.0, and a fallback built without an answer from the
 # core must set it to `true`. The Dashboard's hand-declared
 # `MetaCapabilityFeatures` declares every field optional.
-API_CONTRACT_VERSION = "14.7.0"
+# 14.8.0 — MINOR. A user who declined a resolution can close the case (#2360).
+#
+# `closure_reason` gains the value `resolution_declined`: the fix was confirmed
+# to work and the user chose not to mark the case resolved. As with 11.1.0's
+# `closed_false_alarm`, the field is a plain string, so the schema does not
+# change, but every client that maps the values to labels needs the new one:
+# faultmaven-dashboard `closureReason.ts` (falls back to "Closed") and
+# faultmaven-copilot `case-service.ts` (falls back to "Other").
+#
+# `disposition_eligibility.closed` now reads `ready` on a resolvable case while
+# the user's decline of its resolution stands, so the status menu's Close
+# renders and closes the case. It reads `suggests_alternative` again while the
+# declined resolution is offered at the user's request, and once the state the
+# decline was given against changes (a new confirmation, solution or cause).
+# A description change, as 9.0.0's was for the same key; a client that renders
+# Close on `ready`, as both do, needs nothing more.
+API_CONTRACT_VERSION = "14.8.0"

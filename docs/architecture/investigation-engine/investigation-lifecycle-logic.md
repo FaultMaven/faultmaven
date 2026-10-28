@@ -444,7 +444,9 @@ ever produce "shall I mark this resolved?". The case has one terminal destinatio
 and the engine is already offering it. Once the user declines that resolution,
 `closed` reads `ready` and the menu shows Close again: choosing it closes the case
 (`closure_reason` `resolution_declined`), and the chip stays as the way back
-(#2360).
+(#2360). While the chip's resolve proposal is pending, Close is hidden again, so
+the two are never offered together; the decline lapses when the state it was
+given against changes (a new confirmation, solution or cause leg).
 
 **MULTIPLE SOLUTIONS HANDLING**:
 

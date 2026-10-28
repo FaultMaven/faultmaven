@@ -905,7 +905,6 @@ class ReportGenerationService:
         )
         duration = context.get("duration", "Unknown")
         hypotheses = self._list_hypotheses(case)
-        evidence_items = case.evidence or []
 
         parts = [
             f"# Resolution Summary: {title}\n",
@@ -998,6 +997,89 @@ class ReportGenerationService:
         if root_cause_stated:
             parts.extend(self._causal_map_block(case))
 
+        parts.extend(self._fix_and_confirming_evidence(case, ended="resolved"))
+
+        # Hypotheses Considered — what the prior section was actually showing,
+        # now correctly named. Group by status so the reader sees the
+        # validate/refute reasoning at a glance.
+        if hypotheses:
+            parts.append("## Hypotheses Considered\n")
+            buckets: Dict[str, List[Any]] = {
+                "validated": [],
+                "refuted": [],
+                "inconclusive": [],
+                "retired": [],
+                "other": [],
+            }
+            for h in hypotheses:
+                status = h.state.value if hasattr(h.state, "value") else str(h.state)
+                if status in buckets:
+                    buckets[status].append(h)
+                else:
+                    buckets["other"].append(h)
+
+            # RETIRED is its own bucket rather than falling into "Other". A
+            # retired hypothesis was set aside, not disproven, and most of them
+            # were never linked to any evidence — listing those unlabelled,
+            # beside validated and refuted ones and carrying a confidence
+            # percentage, reads as a candidate the investigation considered and
+            # dispatched. It states more than the record supports.
+            bucket_order = [
+                ("validated", "Validated"),
+                ("refuted", "Refuted"),
+                ("inconclusive", "Inconclusive"),
+                ("retired", "Set aside without a verdict"),
+                ("other", "Other"),
+            ]
+            for key, label in bucket_order:
+                if not buckets[key]:
+                    continue
+                # Trailing \n on the bold label so the join produces a
+                # blank line before the list (required by CommonMark for
+                # the bullets to render as a list).
+                parts.append(f"**{label}:**\n")
+                for h in buckets[key]:
+                    # No confidence figure on a hypothesis set aside without a
+                    # verdict. Anti-anchoring retirement never touches
+                    # likelihood, so the number is the decayed prior — it
+                    # reports no evidence, and printing it beside validated and
+                    # refuted entries is the overclaim this section exists to
+                    # avoid.
+                    if key == "retired":
+                        line = f"- {h.statement}"
+                    else:
+                        confidence = getattr(h, "likelihood", 0)
+                        line = f"- {h.statement} _(confidence: {confidence:.0%})_"
+                    if key == "refuted" and getattr(h, "refutation_reason", None):
+                        # Two trailing spaces before \n produce a hard
+                        # line break within the same list item.
+                        line += f"  \n  Refuted by: {_one_line(h.refutation_reason)}"
+                    elif key == "retired" and getattr(h, "retirement_reason", None):
+                        line += f"  \n  Set aside: {_one_line(h.retirement_reason)}"
+                    parts.append(line)
+                parts.append("")
+            # Trailing empty already appended per-group; no extra needed here.
+
+        # Timeline
+        parts.append("## Timeline\n")
+        parts.append(f"- **Created:** {created}")
+        parts.append(f"- **Resolved:** {resolved}")
+        parts.append(f"- **Duration:** {duration}")
+        parts.append(f"- **Turns:** {getattr(case, 'current_turn', 0)}\n")
+
+        return "\n".join(parts)
+
+    def _fix_and_confirming_evidence(self, case: Case, *, ended: str) -> List[str]:
+        """The fix and the evidence that confirmed it: the resolution summary's
+        Solution Applied (or Proposed Solution) and Confirming Evidence
+        sections. Also rendered for a close the user chose over a confirmed
+        resolution (``resolution_declined``, #2360), so that report names the
+        fix it says was confirmed. ``ended`` is the terminal state's verb.
+        """
+        rcc = case.root_cause_conclusion
+        evidence_items = case.evidence or []
+        parts: List[str] = []
+
         # Solution Applied — the fix the user actually executed, not every fix
         # the assistant proposed on the way there (see _solutions_by_outcome).
         # A case with no ProposedAction rows carries no execution signal at all,
@@ -1020,7 +1102,7 @@ class ReportGenerationService:
                 "executed._\n"
                 if applied_solutions
                 else "_No fix was recorded as executed; this was the standing "
-                "proposal when the case resolved._\n"
+                f"proposal when the case {ended}._\n"
             )
             for i, sol in enumerate(standing_solutions, 1):
                 parts.extend(self._format_solution_block(sol, i))
@@ -1096,75 +1178,7 @@ class ReportGenerationService:
                 )
             parts.append("")
 
-        # Hypotheses Considered — what the prior section was actually showing,
-        # now correctly named. Group by status so the reader sees the
-        # validate/refute reasoning at a glance.
-        if hypotheses:
-            parts.append("## Hypotheses Considered\n")
-            buckets: Dict[str, List[Any]] = {
-                "validated": [],
-                "refuted": [],
-                "inconclusive": [],
-                "retired": [],
-                "other": [],
-            }
-            for h in hypotheses:
-                status = h.state.value if hasattr(h.state, "value") else str(h.state)
-                if status in buckets:
-                    buckets[status].append(h)
-                else:
-                    buckets["other"].append(h)
-
-            # RETIRED is its own bucket rather than falling into "Other". A
-            # retired hypothesis was set aside, not disproven, and most of them
-            # were never linked to any evidence — listing those unlabelled,
-            # beside validated and refuted ones and carrying a confidence
-            # percentage, reads as a candidate the investigation considered and
-            # dispatched. It states more than the record supports.
-            bucket_order = [
-                ("validated", "Validated"),
-                ("refuted", "Refuted"),
-                ("inconclusive", "Inconclusive"),
-                ("retired", "Set aside without a verdict"),
-                ("other", "Other"),
-            ]
-            for key, label in bucket_order:
-                if not buckets[key]:
-                    continue
-                # Trailing \n on the bold label so the join produces a
-                # blank line before the list (required by CommonMark for
-                # the bullets to render as a list).
-                parts.append(f"**{label}:**\n")
-                for h in buckets[key]:
-                    # No confidence figure on a hypothesis set aside without a
-                    # verdict. Anti-anchoring retirement never touches
-                    # likelihood, so the number is the decayed prior — it
-                    # reports no evidence, and printing it beside validated and
-                    # refuted entries is the overclaim this section exists to
-                    # avoid.
-                    if key == "retired":
-                        line = f"- {h.statement}"
-                    else:
-                        confidence = getattr(h, "likelihood", 0)
-                        line = f"- {h.statement} _(confidence: {confidence:.0%})_"
-                    if key == "refuted" and getattr(h, "refutation_reason", None):
-                        # Two trailing spaces before \n produce a hard
-                        # line break within the same list item.
-                        line += f"  \n  Refuted by: {_one_line(h.refutation_reason)}"
-                    elif key == "retired" and getattr(h, "retirement_reason", None):
-                        line += f"  \n  Set aside: {_one_line(h.retirement_reason)}"
-                    parts.append(line)
-                parts.append("")
-            # Trailing empty already appended per-group; no extra needed here.
-
-        # Timeline
-        parts.append("## Timeline\n")
-        parts.append(f"- **Created:** {created}")
-        parts.append(f"- **Resolved:** {resolved}")
-        parts.append(f"- **Duration:** {duration}")
-        parts.append(f"- **Turns:** {getattr(case, 'current_turn', 0)}\n")
-
-        return "\n".join(parts)
+        return parts
 
     async def _generate_closure_summary(
         self, case: Case, context: Dict[str, Any]
@@ -1175,6 +1189,8 @@ class ReportGenerationService:
         - Problem Statement
         - Investigation State (milestone/evidence/hypothesis counts)
         - Closure Reason (with human label)
+        - Solution Applied and Confirming Evidence (resolution_declined: the
+          confirmed fix, rendered as the resolution summary renders it)
         - Leading Hypotheses (top 5 by confidence)
         - Mitigation Status (when a mitigation was inserted)
         - Timeline
@@ -1242,6 +1258,10 @@ class ReportGenerationService:
         # failure mode this whole fix exists to avoid.
         elif closure_reason_raw == "closed_restatement_held":
             parts.extend(self._restatement_held_boundary_block(case, hypotheses))
+        # #2360: the report says the fix was confirmed, so it names the fix and
+        # what confirmed it.
+        elif closure_reason_raw == "resolution_declined":
+            parts.extend(self._fix_and_confirming_evidence(case, ended="closed"))
 
         # Leading Hypotheses — top hypotheses at time of closure
         if hypotheses:
@@ -1280,7 +1300,8 @@ class ReportGenerationService:
         was_mitigated = (
             case.progress is not None and case.progress.mitigation is not None
         )
-        if solutions and was_mitigated:
+        # A resolution_declined close already rendered its solutions above.
+        if solutions and was_mitigated and closure_reason_raw != "resolution_declined":
             parts.append("## Mitigation Status\n")
             for i, sol in enumerate(solutions, 1):
                 parts.extend(self._format_solution_block(sol, i))

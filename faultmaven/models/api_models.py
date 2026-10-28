@@ -59,7 +59,7 @@ DISPOSITION_ELIGIBILITY_DESCRIPTION = (
     "cause / solution / confirmation the problem is gone). Resolve side only, "
     "and no control either way — the agent asks in conversation.\n"
     "- ``suggests_alternative`` — Close side only, and it means DO NOT RENDER "
-    "CLOSE. It is set exactly when the case confirms a resolution (a "
+    "CLOSE. It is set when the case confirms a resolution (a "
     "qualifying causal-absence row and a symptom-absence row at or after the "
     "fix) and the user has not declined that resolution, which is exactly when "
     "every close pivots back to a resolve proposal — so a Close control there "
@@ -67,7 +67,10 @@ DISPOSITION_ELIGIBILITY_DESCRIPTION = (
     "rendering is no status control at all: the case has one terminal "
     "destination and the agent is already offering it. Once the user declines "
     "the resolution, ``closed`` reads ``ready`` and a Close closes the case, "
-    "until a new confirmation that the fix held is recorded.\n"
+    "until the state the decline was given against changes: a new confirmation "
+    "that the fix held, a new solution, or the cause established differently. "
+    "While the declined resolution is offered again at the user's request, "
+    "``closed`` reads ``suggests_alternative``.\n"
     "- ``not_eligible`` — not available; render nothing.\n\n"
 )
 

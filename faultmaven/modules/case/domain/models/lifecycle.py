@@ -326,9 +326,9 @@ class InvestigationStrategy(str, Enum):
 #     window, another team) — `solution_feasible == DEFERRED` with a solution on
 #     record, the disposition `_maybe_propose_deferred_close` proposes. The most
 #     complete non-resolved outcome there is: nothing was missing, the fix
-#     simply was not applied this session. Ranked first among the INVESTIGATING
-#     reasons for that reason — where several hold, the one carrying the most
-#     established knowledge wins.
+#     simply was not applied this session. Ranked ahead of the remaining
+#     INVESTIGATING reasons for that reason — where several hold, the one
+#     carrying the most established knowledge wins.
 #   - closed_rca_infeasible: the cause is STRUCTURALLY unreachable — an
 #     uncontrollable external dependency, an EOL system, a known intractable
 #     condition — as declared by `problem_verification.rca_infeasible` WITH a
