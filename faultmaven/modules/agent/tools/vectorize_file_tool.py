@@ -26,6 +26,11 @@ from typing import Any, Dict
 from faultmaven.config.settings import get_settings
 from faultmaven.models.interfaces import ToolResult
 from faultmaven.modules.agent.tools.base import AgentTool, ToolContext, tool_failure
+from faultmaven.modules.agent.tools.search_file_tool import (
+    IdOutcome,
+    resolve_case_id,
+    upload_without_its_row,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -143,19 +148,28 @@ class VectorizeFileTool(AgentTool):
             if case is None and context.case_repository is not None:
                 case = await context.case_repository.get(context.case_id)
 
-            evidence = None
-            if case is not None:
-                for ev in getattr(case, "evidence", []) or []:
-                    if getattr(ev, "evidence_id", None) == evidence_id:
-                        evidence = ev
-                        break
-
-            if not evidence:
+            resolved_id = (
+                resolve_case_id(case, evidence_id) if case is not None else None
+            )
+            if resolved_id is None or resolved_id.outcome is IdOutcome.NOT_FOUND:
                 return ToolResult(
                     success=False,
                     data=None,
                     error=f"Evidence not found: {evidence_id}",
                 )
+            if resolved_id.outcome is not IdOutcome.FOUND:
+                why = (
+                    "has no stored file behind it (it's an inference the "
+                    "engine recorded) and cannot be vectorized"
+                    if resolved_id.outcome is IdOutcome.ENGINE_INFERENCE
+                    else "has no file reference for vectorization"
+                )
+                return ToolResult(
+                    success=False, data=None, error=f"Evidence {evidence_id} {why}."
+                )
+            evidence = resolved_id.row
+            if evidence is None:
+                return self._unrecorded_upload(case, resolved_id.file, context)
 
             if (
                 hasattr(evidence, "case_id")
@@ -169,7 +183,7 @@ class VectorizeFileTool(AgentTool):
                 )
 
             # Check size gates
-            file_meta = case.find_uploaded_file(evidence.source_file_id)
+            file_meta = resolved_id.file
             content_size = file_meta.size_bytes if file_meta else 0
             settings = get_settings()
             min_size = settings.agent.vectorization_min_size_bytes
@@ -319,6 +333,32 @@ class VectorizeFileTool(AgentTool):
                     f"cannot find it — {_EMPTY_SEARCH_SAYS_NOTHING}"
                 ),
             )
+
+    @staticmethod
+    def _unrecorded_upload(case: Any, upload: Any, context: ToolContext) -> ToolResult:
+        """Answer an upload passed by its ``file_id``: it is in the case (#2375).
+
+        Not indexed (owner ruling on #2375): chunks are keyed by an evidence
+        row, and the engine marks that row vectorized. An index under a
+        ``file_id`` would never be marked, so every trigger would rebuild it.
+        ``search_file`` is named only when the turn gives it (#1939) and there
+        is a stored file for it to read.
+        """
+        reader = (
+            " search_file can still read it by this file_id."
+            if "search_file" in context.given_tools and upload.has_stored_content
+            else ""
+        )
+        return ToolResult(
+            success=False,
+            data=None,
+            error=upload_without_its_row(
+                case,
+                upload.file_id,
+                "vectorize",
+                f", so it cannot be vectorized.{reader}",
+            ),
+        )
 
     @staticmethod
     def _not_indexed(outcome: Any, evidence_id: str, data_type_str: str) -> ToolResult:

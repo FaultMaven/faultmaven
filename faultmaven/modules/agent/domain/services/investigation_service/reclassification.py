@@ -428,7 +428,7 @@ async def _handle_file_reclassification(
         raise NotFoundError("UploadedFile", file_id)
     file_meta = case.uploaded_files[file_index]
 
-    if not file_meta.storage_ref:
+    if not file_meta.has_stored_content:
         raise ValidationException(
             f"Uploaded file {file_id} has no stored raw content — "
             "reclassification requires re-running the extractor over "
@@ -723,8 +723,7 @@ class EvidenceReclassifier:
         evidence = case.evidence[evidence_index]
         evidence_id = evidence.evidence_id
         file_meta = case.find_uploaded_file(evidence.source_file_id)
-        storage_ref = file_meta.storage_ref if file_meta else None
-        if not storage_ref:
+        if file_meta is None or not file_meta.has_stored_content:
             raise ConflictError(
                 f"Evidence {evidence_id} has no stored raw file — "
                 "reclassification requires re-running the extractor "
@@ -734,7 +733,7 @@ class EvidenceReclassifier:
                 resource_id=evidence_id,
                 conflict_reason="no_backing_file",
             )
-        # storage_ref non-None (checked above) implies file_meta is present.
+        # A stored file (checked above) implies file_meta is present.
         preprocessing_result, new_source_type = await _reextract_under_override(
             self.file_storage_service,
             self.preprocessing_service,

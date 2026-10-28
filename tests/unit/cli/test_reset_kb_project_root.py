@@ -26,11 +26,15 @@ Which store the CLI picks, and its refusals, live in
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
 from faultmaven.bootstrap import data_init
 from faultmaven.cli import reset_kb
+from faultmaven.modules.knowledge.domain.services.conversion_service import (
+    draft_retirement,
+)
 
 pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("shipped_data_defaults")]
 
@@ -73,6 +77,12 @@ def stub_db(monkeypatch):
         from faultmaven.infrastructure.persistence import database
 
         monkeypatch.setattr(database, "get_db_session", lambda: session)
+        # The draft discard ahead of the DELETE (#2369) is not a DELETE.
+        monkeypatch.setattr(
+            draft_retirement,
+            "discard_drafts_naming_any_item",
+            AsyncMock(return_value=([], [])),
+        )
         return session
 
     return _stub
