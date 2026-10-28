@@ -335,6 +335,20 @@ def _label_attr(uf, max_chars: Optional[int] = None) -> str:
     return _attr("label", name if max_chars is None else name[:max_chars])
 
 
+def _file_backed_attr(uf) -> str:
+    """`` file_backed="true"`` when the case holds the file's raw content.
+
+    Provenance, not capability (#1969): it does not depend on the turn's tools.
+    The tools that read a file read its ``storage_ref``, so a file with none
+    (no file storage was wired at upload) is not file-backed: the prompt and
+    every tool agree on which ids name a readable file (#2375). Every
+    ``<evidence>`` and ``<uploaded_file>`` render takes it from here.
+    """
+    if uf is None or not getattr(uf, "storage_ref", None):
+        return ""
+    return ' file_backed="true"'
+
+
 def _build_hash_first_seen(case) -> Dict[str, int]:
     """Map each ``content_hash`` to the earliest turn it appeared on.
 
@@ -777,7 +791,7 @@ def _render_orphan_file_block(
         "uploaded_file",
         f"{file_id_attr}{name_attr}"
         f"{data_type_attr}{fresh_attr}{observed_attr}{duplicate_attr}"
-        f' file_backed="true"',
+        f"{_file_backed_attr(uf)}",
     )
     entry += "\n"
     if summary_only:
@@ -1272,10 +1286,10 @@ def _render_evidence_block(
             file_id_attr = _attr("file_id", ev.source_file_id)
         # Post-010: file-backed evidence has source_file_id set and a
         # raw file behind it. ``file_backed`` is provenance only: this row's
-        # raw file is held. It says nothing about which tools the turn gives
-        # (#1969); the tool text, gated on the turn's tools, says that.
-        is_file_backed = ev.source_file_id is not None and ev_file_meta is not None
-        file_backed_attr = ' file_backed="true"' if is_file_backed else ""
+        # raw file is held (a stored file, #2375). It says nothing about which
+        # tools the turn gives (#1969); the tool text, gated on the turn's
+        # tools, says that.
+        file_backed_attr = _file_backed_attr(ev_file_meta)
         confidence_attr, confidence_advisory = _confidence_marker(ev)
         fresh_attr = _fresh_this_turn_attr(
             _evidence_data_turn(ev, ev_file_meta), case.current_turn
@@ -1370,8 +1384,7 @@ def _render_evidence_block(
         file_id_attr = ""
         if ev.source_file_id and ev_file_meta is not None:
             file_id_attr = _attr("file_id", ev.source_file_id)
-        is_file_backed = ev.source_file_id is not None and ev_file_meta is not None
-        file_backed_attr = ' file_backed="true"' if is_file_backed else ""
+        file_backed_attr = _file_backed_attr(ev_file_meta)
         confidence_attr, _ = _confidence_marker(ev)
         fresh_attr = _fresh_this_turn_attr(
             _evidence_data_turn(ev, ev_file_meta), case.current_turn

@@ -7,10 +7,15 @@ a capability the turn may lack. The marker is ``file_backed="true"``, rendered o
 exactly the rows that carried the old one, whatever the turn's tools:
 
 * ``<evidence>`` (Tier A and Tier B): the row's file is held —
-  ``source_file_id`` is set AND the case resolves it;
+  ``source_file_id`` is set AND the case resolves it AND it is stored
+  (``storage_ref``, #2375);
 * ``<evidence>`` Tier C (an engine inference, no file): never;
-* ``<uploaded_file>``: always, in the full, summary-only and fallback-stub
-  renders, with or without ``search_file`` given.
+* ``<uploaded_file>``: when its file is stored (#2375), in the full,
+  summary-only and fallback-stub renders, with or without ``search_file``
+  given.
+
+A file with no ``storage_ref`` is one no tool can read, so the prompt does not
+call it file-backed (#2375).
 
 Every instruction that keyed on the old attribute keys on the new one, and no
 prompt text or tool error string calls a row "searchable".
@@ -71,7 +76,7 @@ def _eid(i: int) -> str:
     return f"ev_{i:012x}"
 
 
-def _file(i: int, turn: int = 1) -> UploadedFile:
+def _file(i: int, turn: int = 1, stored: bool = True) -> UploadedFile:
     return UploadedFile(
         file_id=_fid(i),
         filename=f"app{i}.log",
@@ -79,7 +84,7 @@ def _file(i: int, turn: int = 1) -> UploadedFile:
         content_type="text/plain",
         uploaded_at_turn=turn,
         upload_source="file_upload",
-        storage_ref=f"evidence/case_1969/{i}.txt",
+        storage_ref=f"evidence/case_1969/{i}.txt" if stored else None,
         data_type="logs",
         summary="App log.",
         structural_index=f"2026-07-09 10:55:31 ERROR STRUCT-{i}\nline two\n",
@@ -180,6 +185,30 @@ class TestEvidenceRows:
             for i in range(1, 4):
                 assert FILE_BACKED in _open_tag(rendered, "evidence", id=_eid(i))
 
+    @pytest.mark.parametrize("with_older_rows", [False, True], ids=["tier_a", "tier_b"])
+    def test_a_row_whose_file_is_not_stored_is_not_file_backed(
+        self, given, with_older_rows
+    ):
+        # #2375: the case resolves the file but holds no stored copy of it, so
+        # no tool can read it. The ``file_id`` still renders; the marker not.
+        unstored = _evidence(9, _fid(9), turn=1)
+        held = [_evidence(i, _fid(i), turn=i + 1) for i in range(1, 4)]
+        files = [_file(i, turn=i + 1) for i in range(1, 4)]
+        case = _case(
+            [_file(9, turn=1, stored=False), *(files if with_older_rows else [])],
+            [unstored, *held] if with_older_rows else [unstored],
+        )
+
+        rendered = _build_evidence_context(case, given_tools=given)
+
+        tag = _open_tag(rendered, "evidence", id=_eid(9))
+        assert FILE_BACKED not in tag, tag
+        assert f'file_id="{_fid(9)}"' in tag, tag
+        assert ("STRUCT-9" in rendered) is not with_older_rows  # the tier is real
+        if with_older_rows:
+            for i in range(1, 4):
+                assert FILE_BACKED in _open_tag(rendered, "evidence", id=_eid(i))
+
     def test_an_engine_inference_is_never_file_backed(self, given):
         inference = _evidence(
             10, None, turn=2, source_type=EvidenceSourceType.ENGINE_INFERENCE
@@ -193,21 +222,24 @@ class TestEvidenceRows:
         assert FILE_BACKED in _open_tag(rendered, "evidence", id=_eid(1))
         assert FILE_BACKED not in _open_tag(rendered, "evidence", id=_eid(10))
 
-    def test_an_uploaded_file_is_always_file_backed(self, given):
+    @pytest.mark.parametrize("stored", [True, False], ids=["stored", "unstored"])
+    def test_an_uploaded_file_is_file_backed_when_stored(self, given, stored):
         # No Evidence row yet (INQUIRY, or an un-promoted upload).
         rendered = _build_evidence_context(
-            _case([_file(1, turn=8)], []), given_tools=given
+            _case([_file(1, turn=8, stored=stored)], []), given_tools=given
         )
 
-        assert FILE_BACKED in _open_tag(rendered, "uploaded_file", file_id=_fid(1))
+        tag = _open_tag(rendered, "uploaded_file", file_id=_fid(1))
+        assert (FILE_BACKED in tag) is stored, tag
         assert OLD_ATTRIBUTE not in rendered
 
+    @pytest.mark.parametrize("stored", [True, False], ids=["stored", "unstored"])
     @pytest.mark.parametrize(
         "summary_only", [False, True], ids=["full", "summary_only"]
     )
-    def test_both_orphan_renders_carry_it(self, given, summary_only):
+    def test_both_orphan_renders_carry_it(self, given, summary_only, stored):
         block = _render_orphan_file_block(
-            _file(1),
+            _file(1, stored=stored),
             {},
             1,
             summary_only=summary_only,
@@ -215,19 +247,23 @@ class TestEvidenceRows:
             given=given,
         )
 
-        assert FILE_BACKED in _open_tag(block, "uploaded_file", file_id=_fid(1))
+        tag = _open_tag(block, "uploaded_file", file_id=_fid(1))
+        assert (FILE_BACKED in tag) is stored, tag
         assert OLD_ATTRIBUTE not in block
 
 
+@pytest.mark.parametrize("stored", [True, False], ids=["stored", "unstored"])
 @pytest.mark.parametrize("given", GIVEN_SETS.values(), ids=GIVEN_SETS.keys())
-def test_the_fallback_stub_is_file_backed_whatever_the_tools(given):
+def test_the_fallback_stub_is_file_backed_whatever_the_tools(given, stored):
     """The fallback stub used to add ``searchable`` only when ``search_file`` was
-    given. Provenance does not depend on the turn's tools: it renders with none."""
-    case = _case([_file(1, turn=8)], [])
+    given. Provenance does not depend on the turn's tools: it renders with none.
+    It depends on the stored file (#2375)."""
+    case = _case([_file(1, turn=8, stored=stored)], [])
 
     prompt = get_fallback_prompt_for_case(case, _MSG, given_tools=given)
 
-    assert FILE_BACKED in _open_tag(prompt, "uploaded_file", file_id=_fid(1))
+    tag = _open_tag(prompt, "uploaded_file", file_id=_fid(1))
+    assert (FILE_BACKED in tag) is stored, tag
     assert OLD_ATTRIBUTE not in prompt
     # What the turn CAN do with the file is the heading's job, and it still
     # tells the truth for both columns.

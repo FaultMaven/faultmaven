@@ -69,8 +69,8 @@ KB_MAX_SOLUTION_CHARS = 800
 # target. This is the single source of truth: the context builder renders a
 # file as an ``<uploaded_file>`` in the main context only above this length.
 # The threshold decides whether that element renders at all, not what it says:
-# every ``<uploaded_file>`` carries ``file_backed="true"``, the fallback stub of
-# a shorter index included. The engine's force_tools guards
+# every ``<uploaded_file>`` with a stored file carries ``file_backed="true"``,
+# the fallback stub of a shorter index included. The engine's force_tools guards
 # (``_has_searchable_material`` / ``_turn_delivers_evidence_bearing_attachment``)
 # use the same rule — they must agree, or a forced Directed-Analysis turn could
 # have no rendered search target and the tool loop would crash for lack of one

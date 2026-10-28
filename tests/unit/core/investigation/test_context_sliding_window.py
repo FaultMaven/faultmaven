@@ -290,12 +290,16 @@ class TestInquiryUploadedFilesBlock:
         assert "line_count=2048" in result
 
     def test_marks_uploaded_file_file_backed(self):
-        """The block declares file_backed=\"true\": the case holds the raw
+        """The block declares file_backed=\"true\" when the case holds the raw
         file behind it, so the LLM can pass the file_id to search_file when
-        the turn gives that tool."""
-        case = _make_inquiry_case_with_uploaded_files([self._file()])
-        result = _build_evidence_context(case)
+        the turn gives that tool. With no stored file it does not (#2375)."""
+        stored = self._file(storage_ref="evidence/case_123/app.log")
+        result = _build_evidence_context(
+            _make_inquiry_case_with_uploaded_files([stored])
+        )
         assert 'file_backed="true"' in result
+        unstored = _make_inquiry_case_with_uploaded_files([self._file()])
+        assert 'file_backed="true"' not in _build_evidence_context(unstored)
 
     def test_truncates_long_extract_with_file_id_pointer(self):
         """Long file_extract → truncation note mentions file_id (not the
@@ -826,7 +830,11 @@ class TestTierDOrphanUploads:
             extract="Earlier file's structural index payload",
         )
         case = _make_case_with_evidence([ev])
-        case.uploaded_files.append(self._pending_file())
+        case.uploaded_files.append(
+            self._pending_file().model_copy(
+                update={"storage_ref": "evidence/case_aabb11223344/deployment.yaml"}
+            )
+        )
 
         result = _build_evidence_context(case)
 
@@ -835,7 +843,9 @@ class TestTierDOrphanUploads:
         assert "PENDING: deployment.yaml shows JAVA_OPTS" in result
         assert "[Source: deployment.yaml]" in result
         # The pending block must be marked file-backed so the LLM knows the
-        # file is held and can pass the file_id to search_file.
+        # file is held (stored, #2375) and can pass the file_id to search_file.
+        # The fixture's earlier row has no stored file, so the marker is this
+        # block's.
         assert 'file_backed="true"' in result
 
     def test_dedup_does_not_emit_orphan_block_for_already_referenced_file(

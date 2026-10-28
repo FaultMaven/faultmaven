@@ -20,6 +20,7 @@ import logging
 import re
 from collections import Counter
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any
 
 from faultmaven.models.interfaces import ToolResult
@@ -54,6 +55,51 @@ class ReadableFile:
     id: str
     filename: str
     recorded: bool
+
+
+class IdOutcome(Enum):
+    """What an id the model passes names in a case (#2375)."""
+
+    NOT_FOUND = "not_found"  # no evidence row and no upload has this id
+    ENGINE_INFERENCE = "engine_inference"  # a row with no source file
+    MISSING_FILE_RECORD = "missing_file_record"  # a row whose upload is not loaded
+    FOUND = "found"
+
+
+@dataclass(frozen=True)
+class ResolvedId:
+    """``resolve_case_id``'s answer. ``row`` is the evidence row the id names,
+    None for an upload passed by its ``file_id``; ``file`` is the upload, set
+    only when FOUND."""
+
+    outcome: IdOutcome
+    row: Any = None
+    file: Any = None
+
+
+def resolve_case_id(case: Any, id_: str) -> ResolvedId:
+    """Which file an id names in this case: decided here, once, for every file
+    tool (#2375).
+
+    An ``evidence_id`` first, then an upload's ``file_id`` (#1964). Whether the
+    file can be read is each tool's own test (``storage_ref`` for the readers,
+    the preprocessing artifacts for ``vectorize_file``), so only NOT_FOUND may
+    be answered "not found in this case".
+    """
+    for ev in getattr(case, "evidence", None) or []:
+        if getattr(ev, "evidence_id", None) != id_:
+            continue
+        source_file_id = getattr(ev, "source_file_id", None)
+        if source_file_id is None:
+            return ResolvedId(IdOutcome.ENGINE_INFERENCE, row=ev)
+        file_meta = case.find_uploaded_file(source_file_id)
+        if file_meta is None:
+            return ResolvedId(IdOutcome.MISSING_FILE_RECORD, row=ev)
+        return ResolvedId(IdOutcome.FOUND, row=ev, file=file_meta)
+    file_meta = case.find_uploaded_file(id_)
+    if file_meta is None:
+        return ResolvedId(IdOutcome.NOT_FOUND)
+    return ResolvedId(IdOutcome.FOUND, file=file_meta)
 
 
 def enumerate_readable_files(
@@ -552,32 +598,20 @@ class SearchFileTool(AgentTool):
 
         all_evidence = getattr(case, "evidence", []) or []
 
-        # Find evidence in the case's embedded list
-        case_evidence = None
-        for ev in all_evidence:
-            if getattr(ev, "evidence_id", None) == evidence_id:
-                case_evidence = ev
-                break
-
-        if case_evidence is None:
-            # No evidence row has this id, so it may be an upload's file_id
-            # (#1964): a file uploaded during INQUIRY, before any row exists, a
-            # paste no row named, or an upload passed by its file_id although
-            # a row records it.
-            file_meta = case.find_uploaded_file(evidence_id)
-            if file_meta is None:
-                logger.warning(
-                    "search_file: evidence %s not found in case %s (has %d evidence items)",
-                    evidence_id,
-                    context.case_id,
-                    len(all_evidence),
-                )
-                alts = format_searchable_alternatives(all_evidence, evidence_id, case)
-                return f"Evidence {evidence_id} not found in this case.{alts}"
-            # The matched upload takes the read below, so a failed read says
-            # what failed, never "not found" (#2359).
-            resolved_row = file_meta
-        elif getattr(case_evidence, "source_file_id", None) is None:
+        # An evidence row, or an upload's file_id (#1964): a file uploaded
+        # during INQUIRY, before any row exists, a paste no row named, or an
+        # upload passed by its file_id although a row records it.
+        resolved_id = resolve_case_id(case, evidence_id)
+        if resolved_id.outcome is IdOutcome.NOT_FOUND:
+            logger.warning(
+                "search_file: evidence %s not found in case %s (has %d evidence items)",
+                evidence_id,
+                context.case_id,
+                len(all_evidence),
+            )
+            alts = format_searchable_alternatives(all_evidence, evidence_id, case)
+            return f"Evidence {evidence_id} not found in this case.{alts}"
+        if resolved_id.outcome is IdOutcome.ENGINE_INFERENCE:
             # Reject non-file-backed evidence forms BEFORE hitting storage.
             # An engine inference (source_file_id IS NULL,
             # source_type=ENGINE_INFERENCE) has no stored file behind it
@@ -595,9 +629,11 @@ class SearchFileTool(AgentTool):
                 f"inference the engine recorded). Use a file-backed "
                 f'evidence_id (file_backed="true") for this search.{alts}'
             )
-        else:
-            file_meta = case.find_uploaded_file(case_evidence.source_file_id)
-            resolved_row = case_evidence
+        # A matched upload takes the read below as a row does, so a failed read
+        # says what failed, never "not found" (#2359). MISSING_FILE_RECORD has
+        # no file, and answers as a file with nothing stored.
+        file_meta = resolved_id.file
+        resolved_row = resolved_id.row if resolved_id.row is not None else file_meta
 
         # Read raw file via UploadedFile.storage_ref
         storage_ref = file_meta.storage_ref if file_meta else None
