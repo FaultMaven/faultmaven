@@ -38,8 +38,14 @@ from faultmaven.core.investigation.terminal_transitions import (
     propose_transition,
 )
 from faultmaven.infrastructure.observability import funnel_metrics
-from faultmaven.modules.case.contracts import CaseState
+from faultmaven.modules.case.contracts import CaseState, MitigationRecord
 from faultmaven.modules.case.domain.models.lifecycle import VALID_CLOSURE_REASONS
+from faultmaven.modules.case.domain.models.solution import (
+    InvestigationActionType,
+    ProposedAction,
+    Solution,
+    SolutionType,
+)
 from faultmaven.modules.report.domain.services.report_generation_service import (
     ReportGenerationService,
 )
@@ -259,6 +265,56 @@ class TestTheReason:
             start = resolution.index(heading)
             section = resolution[start : resolution.index("\n## ", start + 1)]
             assert section in summary
+
+    async def test_a_mitigated_case_lists_its_solution_once(self):
+        """Mitigation Status would repeat the solutions the fix section already
+        rendered; a ``mitigation_sufficient`` close of the same case keeps it."""
+        case = _confirmed_case()
+        case.progress.mitigation = MitigationRecord(
+            description="restarted the pods to stop the bleeding",
+            applied_at_turn=1,
+            accepted=True,
+            accepted_at_turn=1,
+            verified=True,
+            verified_at_turn=1,
+        )
+        svc = object.__new__(ReportGenerationService)
+        summary = await svc._generate_closure_summary(_closed_as(case, _REASON), {})
+        assert "## Mitigation Status" not in summary
+        assert "## Solution Applied" in summary
+        assert summary.count("**1. Correct the OIDC provider client ID**") == 1
+
+        control = _closed_as(case, "mitigation_sufficient")
+        assert "## Mitigation Status" in await svc._generate_closure_summary(
+            control, {}
+        )
+
+    async def test_an_unexecuted_fix_is_the_proposal_when_the_case_closed(self):
+        case = _confirmed_case()
+        fix = "Set the provider ClientIDList to sts.amazonaws.com."
+        case.solutions = [
+            Solution(
+                solution_type=SolutionType.CONFIG_CHANGE,
+                title="Correct the OIDC provider client ID",
+                immediate_action=fix,
+            )
+        ]
+        case.proposed_actions = [
+            ProposedAction(
+                case_id=case.case_id,
+                action_type=InvestigationActionType.SOLUTION,
+                description=fix,
+                proposed_in_turn=1,
+                state="pending",
+            )
+        ]
+        svc = object.__new__(ReportGenerationService)
+        summary = await svc._generate_closure_summary(_closed_as(case, _REASON), {})
+        assert "## Proposed Solution" in summary
+        assert (
+            "_No fix was recorded as executed; this was the standing proposal "
+            "when the case closed._"
+        ) in summary
 
 
 class TestEveryReasonTableIsTheVocabulary:
