@@ -1260,14 +1260,23 @@ class KnowledgeService:
         row's INSERT on (its commit landing and then raising, the team share,
         the vectors raising OR returning 0 chunks, a cancellation), what this
         call wrote (its row, vectors and shares) is removed before re-raising
-        (#2365), so the two stores never diverge; a row another call created
-        under the same id is left whole (#2378). Two residuals: a row another
-        call stamped in the same microsecond under the same id is taken for
-        this call's, and a peer that re-creates the id between the cleanup's
-        row check and its vector and share deletes loses its vectors and
-        shares. The earlier "leave the SQL row for a scan-and-recover
-        re-embed" policy produced half-state rows that downstream scans
-        mis-classified, so rollback is now the contract.
+        (#2365), and what a live peer holds under the same id is left whole
+        (#2378), with these exceptions:
+
+        * A peer's whole ``_delete_existing`` and re-ingest landing between
+          this call's INSERT commit and its indexing: this call's indexer
+          replaces the peer's chunks, and the cleanup keeps them, and any
+          team share this call recorded, under the peer's row (#2388).
+        * A row another call stamped in the same microsecond under the same
+          id is taken for this call's, and removed with its vectors and
+          shares.
+        * A peer that re-creates the id between the cleanup's check for a
+          standing row and its vector and share deletes can lose its vectors
+          and shares.
+
+        The earlier "leave the SQL row for a scan-and-recover re-embed" policy
+        produced half-state rows that downstream scans mis-classified, so
+        rollback is now the contract.
 
         Args:
             document_id: Stable id used for both the relational row and the
@@ -1323,10 +1332,11 @@ class KnowledgeService:
                 False: a caller that says nothing gets the scrub and the check.
 
         Returns:
-            Number of chunks indexed in ChromaDB (always > 0 on success). On
-            failure the method raises after removing what it wrote, but for
-            the two residuals above, so a successful return always means both
-            stores are populated.
+            Number of chunks indexed in ChromaDB (always > 0 on success): a
+            successful return means both stores are populated. On failure the
+            method raises after removing, best effort, what this call wrote,
+            except what the first exception above keeps; the other two
+            concern another call's writes.
 
         Raises:
             RunbookQualityError: a non-shipped body holds a secret or a
@@ -1436,9 +1446,10 @@ class KnowledgeService:
         # policy produced half-state rows that downstream scans then
         # mis-classified. ``create`` commits before it refreshes, so a failure
         # or cancel can land after the row has (#2378). The cleanup removes
-        # only what this call wrote: the row stamped ``now``, and the vectors
-        # once indexing began. An "already exists" refusal, whose row is
-        # another call's, therefore leaves that row whole.
+        # the row stamped ``now``, then the id's vectors (once indexing began)
+        # and shares only if no row stands under it, so it leaves what a live
+        # peer holds. An "already exists" refusal, whose row is another
+        # call's, therefore leaves that row whole.
         indexing = False
         try:
             async with self._db_session_factory() as session:
@@ -1684,49 +1695,65 @@ class KnowledgeService:
     ) -> None:
         """Best-effort cleanup of what a failed :meth:`ingest_runbook` wrote:
         its row, its vectors, then its team share rows (#2365). It runs from
-        the row's INSERT on, so it removes only what that call wrote (#2378).
+        the row's INSERT on, so it leaves what a live peer holds under the
+        same id (#2378), but for the exceptions :meth:`ingest_runbook` names.
 
         The row goes only if it carries ``created_at``, the value that call
-        stamped: a row another call created under the same id stays (two
-        calls stamping the same microsecond are not told apart). Then the
+        stamped: a row another call created under the same id stays. Then the
         vectors (by parent id: a store can fail after applying part of a
         write) and the shares go unless a row with the id still stands, the
         vectors only if the call began indexing. Every writer inserts its
         row before it indexes, so chunks under an id with no row are no live
         peer's; and, as in :meth:`delete_document`, an item that survives
-        keeps its vectors and the share that makes it a team item.
-        Shielded from cancellation: it runs on the path a cancellation takes,
-        and an anyio scope (the one ``BaseHTTPMiddleware`` runs a route in)
-        cancels every await that is not. Errors are logged, not raised: the
-        caller re-raises its own.
+        keeps its vectors and the share that makes it a team item. If the
+        row's delete or the check for a standing row fails, nothing more is
+        removed. Shielded from cancellation: it runs on the path a
+        cancellation takes, and an anyio scope (the one ``BaseHTTPMiddleware``
+        runs a route in) cancels every await that is not. Errors are logged,
+        not raised: the caller re-raises its own.
         """
         from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
             DatabaseKnowledgeItemRepository,
         )
 
         with anyio.CancelScope(shield=True):
-            step = "row delete"
+            deleted: Optional[bool] = None
+            standing: Optional[bool] = None
             try:
                 async with self._db_session_factory() as session:
                     repo = DatabaseKnowledgeItemRepository(session)
                     deleted = await repo.delete(item_id, created_at=created_at)
-                    step = "check for a row still standing"
                     standing = not deleted and await repo.get_by_id(item_id) is not None
             except Exception as cleanup_err:
+                if standing is None:
+                    logger.warning(
+                        "Ingesting knowledge item %s failed, and the cleanup's "
+                        "%s failed too (%s); %s",
+                        item_id,
+                        (
+                            "row delete"
+                            if deleted is None
+                            else "check for a row still standing"
+                        ),
+                        exception_class_name(cleanup_err),
+                        (
+                            "any row it wrote may still stand, and the id's "
+                            "vectors and team share rows are kept."
+                            if deleted is None
+                            else "its row was not matched, and the id's "
+                            "vectors and team share rows are kept."
+                        ),
+                    )
+                    return
+                # The row step completed (the delete commits before it
+                # returns); only closing its session failed.
                 logger.warning(
-                    "Ingesting knowledge item %s failed, and the cleanup's %s "
-                    "failed too (%s); %s",
+                    "Ingesting knowledge item %s failed, and closing its "
+                    "cleanup's session failed (%s) after the row step "
+                    "completed; the cleanup carries on.",
                     item_id,
-                    step,
                     exception_class_name(cleanup_err),
-                    (
-                        "any row it wrote stays, with its vectors and team "
-                        "share rows."
-                        if step == "row delete"
-                        else "its vectors and team share rows are kept."
-                    ),
                 )
-                return
             if indexed and not standing and self._vector_store:
                 try:
                     await self._vector_store.delete_documents_by_parent_id(item_id)

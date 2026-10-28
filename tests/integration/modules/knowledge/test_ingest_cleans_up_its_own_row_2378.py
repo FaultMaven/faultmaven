@@ -16,6 +16,7 @@ parent id and writer.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from datetime import datetime, timedelta, timezone
 from functools import partial
@@ -104,6 +105,30 @@ class _Chunks:
     async def delete_documents_by_parent_id(self, parent_id, retries=2):
         for chunk_id in [k for k, v in self.chunks.items() if v == parent_id]:
             del self.chunks[chunk_id]
+
+
+class _FailingClose:
+    """The session factory. Once armed, the next session's close raises after
+    it has closed."""
+
+    def __init__(self, factory) -> None:
+        self._factory, self.armed = factory, False
+
+    async def arm(self) -> None:
+        self.armed = True
+
+    def __call__(self):
+        session = self._factory()
+        if self.armed:
+            self.armed = False
+            real_close = session.close
+
+            async def close():
+                await real_close()
+                raise OSError("close failed")
+
+            session.close = close
+        return session
 
 
 def _indexing_into(service, store: _Chunks, *, then=None):
@@ -267,6 +292,27 @@ async def test_a_share_whose_row_is_gone_is_removed(session_factory):
 
     assert await _rows(session_factory) == NOTHING
     assert store.chunks == {}
+
+
+async def test_a_cleanup_session_that_fails_to_close_carries_on(
+    session_factory, caplog
+):
+    """The cleanup's row delete committed, and then closing its session raised:
+    the row is gone, so its chunks and share go too."""
+    factory = _FailingClose(session_factory)
+    store = _Chunks()
+    service = _indexing_into(_knowledge(factory), store, then=factory.arm)
+
+    with (
+        caplog.at_level(logging.WARNING),
+        pytest.raises(RuntimeError, match="after the write"),
+    ):
+        await _ingest(service)
+
+    assert await _rows(session_factory) == NOTHING
+    assert store.chunks == {}
+    assert "closing its cleanup's session failed (OSError)" in caplog.text
+    assert "check for a row" not in caplog.text
 
 
 @pytest.mark.postgres
