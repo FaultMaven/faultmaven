@@ -397,17 +397,12 @@ async def _database_revisions(database_url: str) -> frozenset[str]:
 
     from faultmaven.config.settings import get_settings
     from faultmaven.infrastructure.persistence.pg_connection import pg_connect_args
-    from faultmaven.infrastructure.persistence.value_free_errors import (
-        install_value_free_errors,
-    )
 
     engine = create_async_engine(
         database_url,
-        hide_parameters=True,  # as the app's engine (#2377)
         poolclass=NullPool,
         connect_args=pg_connect_args(database_url, get_settings().database),
     )
-    install_value_free_errors(engine.sync_engine)
     try:
         async with engine.connect() as conn:
             if not await conn.run_sync(

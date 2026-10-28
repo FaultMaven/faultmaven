@@ -1,14 +1,16 @@
 """A failed write's exception text carries none of its values (#2377).
 
-Two channels carried them into every handler that logs ``{e}`` or a traceback:
-SQLAlchemy's ``[parameters: (…)]`` suffix, on every dialect, and on PostgreSQL
-the server's DETAIL ("Failing row contains (…)", "Key (email)=(…)") and CONTEXT,
-held by the driver's text and SQLAlchemy's copy of it. Each case writes a row
-that fails one constraint (FK, UNIQUE, CHECK, NOT NULL) on ``users`` (no RLS)
-and on ``knowledge_items``, every bound value carrying ``MARK``. PostgreSQL runs
-as CI's superuser, the role the server tells the most, with CONTEXT's parameter
-list switched on. The class, SQLSTATE and constraint name stay: ``db_errors``
-reads them. The migration engine (psycopg2) is built as ``alembic/env.py`` does.
+Three channels carried them into every handler that logs ``{e}`` or a traceback:
+SQLAlchemy's ``[parameters: (…)]`` suffix, on every dialect; on PostgreSQL the
+server's DETAIL ("Failing row contains (…)", "Key (email)=(…)") and CONTEXT;
+and the primary message where it quotes its input, a class-22 error's on both
+drivers and asyncpg's own encoding error. Each constraint case writes a row that
+fails FK, UNIQUE, CHECK or NOT NULL on ``users`` (no RLS) and on
+``knowledge_items``, every bound value carrying ``MARK``. Each input case sends
+a value its type refuses. PostgreSQL runs as CI's superuser, the role the server
+tells the most, with CONTEXT's parameter list switched on. The class, SQLSTATE,
+constraint name and the refused type stay. The migration engine (psycopg2) is
+built as ``alembic/env.py`` does.
 """
 
 from __future__ import annotations
@@ -18,9 +20,9 @@ import traceback
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import create_engine, delete, engine_from_config, pool, text
+from sqlalchemy import delete, engine_from_config, pool, text
 from sqlalchemy.engine import make_url
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session
 
 from faultmaven.config.tenant_context import _current_enterprise_id
@@ -50,7 +52,7 @@ ENTERPRISE = f"{MARK}-{RUN}"
 SEED_EMAIL = f"{MARK}-{RUN}@example.com"
 SEED_ITEM = f"{MARK}-item-{RUN}"
 
-#: Each case's (SQLSTATE, constraint name), as PostgreSQL reports them.
+#: Each constraint case's (SQLSTATE, constraint name), as PostgreSQL reports them.
 EXPECTED = {
     "users FK": ("23503", "users_enterprise_id_fkey"),
     "users UNIQUE": ("23505", "users_email_key"),
@@ -61,6 +63,27 @@ EXPECTED = {
     "knowledge_items CHECK": ("23514", "knowledge_items_item_type_check"),
     "knowledge_items NOT NULL": ("23502", None),
 }
+
+#: Each input case's statement, refused value, SQLSTATE and the text that stays.
+#: The value is cast on the server, so both drivers get PostgreSQL's class 22.
+INPUTS = {
+    "22P02": ("CAST(CAST(:v AS text) AS integer)", f'{MARK} "q" x', "22P02", "integer"),
+    "22007": (
+        "CAST(CAST(:v AS text) AS timestamptz)",
+        f"{MARK} x",
+        "22007",
+        "time zone",
+    ),
+    "22008": ("CAST(CAST(:v AS text) AS date)", "2377-13-45", "22008", "out of range"),
+    "22003": (
+        "CAST(CAST(:v AS text) AS integer)",
+        "23772377237",
+        "22003",
+        "type integer",
+    ),
+}
+#: asyncpg encodes this argument itself, and refuses it before the server sees it.
+ARGUMENT = {"argument": ("CAST(:v AS uuid)", f"{MARK} x", "22000", "argument $1")}
 
 
 def _user(**fields) -> UserModel:
@@ -104,59 +127,72 @@ def _failing_rows() -> dict:
     }
 
 
-def _seed(sync_url: str) -> None:
-    engine = create_engine(sync_url, poolclass=pool.NullPool)
-    with Session(engine) as session, session.begin():
-        session.add_all(
-            [
-                EnterpriseModel(enterprise_id=ENTERPRISE, name=MARK, slug=ENTERPRISE),
-                _user(email=SEED_EMAIL),
-                _item(item_id=SEED_ITEM),
-            ]
-        )
-    engine.dispose()
+def _seed_rows() -> list:
+    return [
+        EnterpriseModel(enterprise_id=ENTERPRISE, name=MARK, slug=ENTERPRISE),
+        _user(email=SEED_EMAIL),
+        _item(item_id=SEED_ITEM),
+    ]
 
 
-def _clean_up(sync_url: str) -> None:
-    engine = create_engine(sync_url, poolclass=pool.NullPool)
-    with engine.begin() as conn:
-        for model in (KnowledgeItemModel, UserModel, EnterpriseModel):
-            conn.execute(delete(model).where(model.enterprise_id == ENTERPRISE))
-    engine.dispose()
+def _deletes() -> list:
+    models = (KnowledgeItemModel, UserModel, EnterpriseModel)
+    return [delete(m).where(m.enterprise_id == ENTERPRISE) for m in models]
 
 
-async def _app_engine_failures(url: str, *, context_params: bool = False) -> dict:
-    """Each failing row, written through the app's own ``get_db_session``."""
+async def _app_engine_failures(url: str, inputs: dict, *, context_params=False):
+    """Each failing row and input, written through the app's ``get_db_session``."""
+    async with database.get_db_session(url) as session:
+        session.add_all(_seed_rows())
     failures = {}
-    for case, row in _failing_rows().items():
-        try:
-            async with database.get_db_session(url) as session:
-                if context_params:
-                    await session.execute(
-                        text("SET LOCAL log_parameter_max_length_on_error = -1")
-                    )
-                session.add(row)
-        except Exception as exc:
-            failures[case] = exc
+    try:
+        writes = [(case, row, None) for case, row in _failing_rows().items()]
+        writes += [(case, None, spec) for case, spec in inputs.items()]
+        for case, row, spec in writes:
+            try:
+                async with database.get_db_session(url) as session:
+                    if context_params:
+                        await session.execute(
+                            text("SET LOCAL log_parameter_max_length_on_error = -1")
+                        )
+                    if row is not None:
+                        session.add(row)
+                    else:
+                        await session.execute(text(f"SELECT {spec[0]}"), {"v": spec[1]})
+            except Exception as exc:
+                failures[case] = exc
+    finally:
+        async with database.get_db_session(url) as session:
+            for statement in _deletes():
+                await session.execute(statement)
     return failures
 
 
-def _wrong(failures: dict, fields=None) -> dict:
+def _texts(exc) -> dict:
+    return {
+        "str(e)": str(exc),
+        "str(e.orig)": str(exc.orig),
+        "traceback": "".join(traceback.format_exception(exc)),
+    }
+
+
+def _wrong(failures: dict, fields=None, inputs: dict | None = None) -> dict:
     """Per case, what a logged ``{e}`` or traceback would leak, or what was lost."""
     found = {}
-    for case, expected in EXPECTED.items():
+    cases = {c: (MARK, IntegrityError, f, None) for c, f in EXPECTED.items()}
+    cases |= {
+        c: (v, DBAPIError, (s, None), k) for c, (_, v, s, k) in (inputs or {}).items()
+    }
+    for case, (secret, cls, expected, kept) in cases.items():
         exc = failures.get(case)
-        if not isinstance(exc, IntegrityError):
+        if not isinstance(exc, cls):
             found[case] = [f"raised {type(exc).__name__}"]
             continue
-        texts = {
-            "str(e)": str(exc),
-            "str(e.orig)": str(exc.orig),
-            "traceback": "".join(traceback.format_exception(exc)),
-        }
-        wrong = [name for name, value in texts.items() if MARK in value]
+        wrong = [name for name, value in _texts(exc).items() if secret in value]
         if fields is not None and fields(exc) != expected:
             wrong.append(f"{fields(exc)} != {expected}")
+        if kept is not None and kept not in str(exc):
+            wrong.append(f"lost {kept!r}")
         if wrong:
             found[case] = wrong
     return found
@@ -173,53 +209,53 @@ async def fresh_engine(monkeypatch):
 
 
 async def test_sqlite_failed_writes_carry_no_values(tmp_path, fresh_engine):
-    path = tmp_path / "app.db"
+    url = f"sqlite+aiosqlite:///{tmp_path / 'app.db'}"
     tables = [EnterpriseModel, OrganizationModel, UserModel, KnowledgeItemModel]
-    engine = create_engine(f"sqlite:///{path}")
-    Base.metadata.create_all(engine, tables=[model.__table__ for model in tables])
-    engine.dispose()
-    _seed(f"sqlite:///{path}")
+    async with database.get_engine(url).begin() as conn:
+        await conn.run_sync(
+            Base.metadata.create_all, tables=[model.__table__ for model in tables]
+        )
 
-    failures = await _app_engine_failures(f"sqlite+aiosqlite:///{path}")
+    failures = await _app_engine_failures(url, {})
 
     assert _wrong(failures) == {}
-
-
-def _sync_url() -> str:
-    url = make_url(os.environ["DATABASE_URL"]).set(drivername="postgresql+psycopg2")
-    return url.render_as_string(hide_password=False)
 
 
 @pytest.mark.postgres
 @requires_postgresql
 async def test_postgresql_failed_writes_carry_no_values(fresh_engine):
     token = _current_enterprise_id.set(ENTERPRISE)
-    _seed(_sync_url())
     try:
         failures = await _app_engine_failures(
-            os.environ["DATABASE_URL"], context_params=True
+            os.environ["DATABASE_URL"], INPUTS | ARGUMENT, context_params=True
         )
     finally:
-        _clean_up(_sync_url())
         _current_enterprise_id.reset(token)
 
-    fields = lambda e: (sqlstate(e), driver_error(e).constraint_name)
-    assert _wrong(failures, fields) == {}
+    def fields(exc):
+        return sqlstate(exc), getattr(driver_error(exc), "constraint_name", None)
+
+    assert _wrong(failures, fields, INPUTS | ARGUMENT) == {}
     # CONTEXT never reaches asyncpg's text; it is cleared from the error all the same.
-    assert [c for c, e in failures.items() if MARK in repr(vars(driver_error(e)))] == []
+    values = (MARK, *(spec[1] for spec in INPUTS.values()))
+    held = {c: repr(vars(driver_error(e))) for c, e in failures.items()}
+    assert [c for c, text_ in held.items() if any(v in text_ for v in values)] == []
 
 
 @pytest.mark.postgres
 @requires_postgresql
 def test_the_migration_engine_failed_writes_carry_no_values():
+    pytest.importorskip("psycopg2")
+    url = make_url(os.environ["DATABASE_URL"]).set(drivername="postgresql+psycopg2")
     engine = engine_from_config(
-        {"sqlalchemy.url": _sync_url()},
+        {"sqlalchemy.url": url.render_as_string(hide_password=False)},
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
         hide_parameters=True,
     )
     install_value_free_errors(engine)
-    _seed(_sync_url())
+    with Session(engine) as session, session.begin():
+        session.add_all(_seed_rows())
     failures = {}
     try:
         for case, row in _failing_rows().items():
@@ -228,9 +264,19 @@ def test_the_migration_engine_failed_writes_carry_no_values():
                     session.add(row)
             except Exception as exc:
                 failures[case] = exc
+        for case, (cast, value, _, _) in INPUTS.items():
+            try:
+                with engine.connect() as conn:
+                    conn.execute(text(f"SELECT {cast}"), {"v": value})
+            except Exception as exc:
+                failures[case] = exc
     finally:
-        _clean_up(_sync_url())
+        with engine.begin() as conn:
+            for statement in _deletes():
+                conn.execute(statement)
         engine.dispose()
 
-    fields = lambda e: (e.orig.pgcode, e.orig.diag.constraint_name)
-    assert _wrong(failures, fields) == {}
+    def fields(exc):
+        return exc.orig.pgcode, exc.orig.diag.constraint_name
+
+    assert _wrong(failures, fields, INPUTS) == {}

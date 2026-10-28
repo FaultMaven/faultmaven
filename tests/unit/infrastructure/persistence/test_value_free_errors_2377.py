@@ -1,4 +1,4 @@
-"""The value-free error listener never raises, and every app engine carries it (#2377).
+"""The value-free error listener: what it leaves alone, how it fails, where it runs (#2377).
 
 What it strips is measured on the real drivers in
 ``tests/integration/test_failed_writes_carry_no_values_2377.py``.
@@ -6,15 +6,15 @@ What it strips is measured on the real drivers in
 
 from __future__ import annotations
 
+import ast
+import logging
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
 
 import pytest
-from sqlalchemy import event
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.exc import StatementError
 
-from faultmaven.bootstrap import data_init
+from faultmaven.infrastructure.persistence import value_free_errors
 from faultmaven.infrastructure.persistence.value_free_errors import (
     strip_server_values,
 )
@@ -24,38 +24,54 @@ pytestmark = pytest.mark.unit
 ENV_PY = Path(__file__).resolve().parents[4] / "alembic" / "env.py"
 
 
-class _UnreadableError(Exception):
+def test_an_exception_of_no_driver_is_left_alone():
+    """A ``StatementError`` has a ``detail`` too: a list, which ``str()`` reads."""
+    error = StatementError("the bind failed", "SELECT 1", {"x": 1}, None)
+
+    strip_server_values(
+        SimpleNamespace(original_exception=error, sqlalchemy_exception=error)
+    )
+
+    assert error.detail == []
+    assert str(error).startswith("the bind failed")
+
+
+class _UnreadableContext:
     @property
-    def diag(self):
-        raise RuntimeError("a driver field that cannot be read")
+    def original_exception(self):
+        raise RuntimeError("a context that cannot be read")
 
 
-def test_the_listener_never_raises():
+def test_a_failed_strip_is_logged_and_never_raised(caplog):
     """A listener's exception would replace the error being handled."""
-    error = _UnreadableError("the database refused the write")
+    with caplog.at_level(logging.WARNING, logger=value_free_errors.__name__):
+        assert strip_server_values(_UnreadableContext()) is None
 
-    ctx = SimpleNamespace(original_exception=error, sqlalchemy_exception=None)
-
-    assert strip_server_values(ctx) is None
-    assert str(error) == "the database refused the write"
-
-
-async def test_the_migration_state_engine_hides_values(tmp_path):
-    built = []
-
-    def recording(*args, **kwargs):
-        built.append(create_async_engine(*args, **kwargs))
-        return built[-1]
-
-    with patch("sqlalchemy.ext.asyncio.create_async_engine", recording):
-        await data_init._database_revisions(f"sqlite+aiosqlite:///{tmp_path / 'm.db'}")
-
-    [engine] = built
-    assert engine.sync_engine.hide_parameters
-    assert event.contains(engine.sync_engine, "handle_error", strip_server_values)
+    assert [r.getMessage() for r in caplog.records] == [
+        "Could not strip values from a database error: RuntimeError"
+    ]
 
 
 def test_the_migration_engine_hides_values():
-    """``env.py`` runs migrations at import, so its engine is pinned by its source."""
-    pinned = ("hide_parameters=True,", "install_value_free_errors(connectable)")
-    assert all(line in ENV_PY.read_text() for line in pinned)
+    """``env.py`` runs migrations at import, so its online engine is read from source."""
+    tree = ast.parse(ENV_PY.read_text())
+    [online] = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "run_migrations_online"
+    ]
+    [build] = [
+        node
+        for node in ast.walk(online)
+        if isinstance(node, ast.Assign)
+        and isinstance(node.value, ast.Call)
+        and getattr(node.value.func, "id", None) == "engine_from_config"
+    ]
+    keywords = {k.arg: getattr(k.value, "value", None) for k in build.value.keywords}
+    calls = {
+        ast.unparse(node) for node in ast.walk(online) if isinstance(node, ast.Call)
+    }
+
+    assert [target.id for target in build.targets] == ["connectable"]
+    assert keywords.get("hide_parameters") is True
+    assert "install_value_free_errors(connectable)" in calls
