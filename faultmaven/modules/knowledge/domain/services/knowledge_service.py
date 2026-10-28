@@ -1282,16 +1282,16 @@ class KnowledgeService:
         (#2365), and what a live peer holds under the same id is left whole
         (#2378), with these exceptions:
 
-        * A peer's row standing at the cleanup's check for a standing row: a
-          peer's ``_delete_existing`` removed this call's row after its
-          INSERT committed, and the peer inserted its own row under the id
-          before the check. The cleanup then keeps, under that row, any team
-          share this call recorded and the id's chunks, which are those of
-          whichever indexer wrote last (this call's, if it wrote after the
-          peer) (#2388). If the peer's own ingest then fails before it
-          indexes, its cleanup removes its row and the id's shares but not the
-          chunks, since it had not begun indexing: the id's chunks are left
-          with no row.
+        * A row this call did not write, standing under the id at the
+          cleanup's check (its delete matches only a row carrying this call's
+          stamp, and the check reads the id's row only when that delete
+          matched nothing): the cleanup keeps any team share this call
+          recorded and the id's chunks, since it deletes shares only when no
+          row stands, and vectors only when no row stands and this call began
+          indexing (#2388). A cleanup deletes vectors only if its own call
+          began indexing: if that row's own call fails without having begun
+          indexing, its cleanup removes the row and no vectors, and the
+          chunks kept here can be left with no row.
         * A row another call stamped in the same microsecond under the same
           id is taken for this call's: it is removed with its shares, and
           with its vectors only if this call had begun indexing. A refused
