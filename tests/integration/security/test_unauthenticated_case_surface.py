@@ -1,8 +1,8 @@
 """The case router, driven with no credential against services that all fail.
 
-#1494's shape, for the twenty-three operations behind
-``_di_get_case_service_dependency`` (``GET /cases/{case_id}/uploaded-files``
-took the bare ``get_case_service`` until #2358): the gate was declared as a
+The twenty-nine gated operations on this router that resolve the case service,
+among them the twenty-two #1527 fixed and ``GET /cases/{case_id}/uploaded-files``,
+fixed by #2356. Those carried #1494's shape: the gate was declared as a
 trailing handler parameter while the case service was declared above it, and
 FastAPI solves a dependant's dependencies in DECLARATION ORDER — so an anonymous caller reached
 the provider first and got whatever the provider does on a degraded deployment
@@ -14,9 +14,9 @@ caches a dependency per request, so it still runs once).
 
 **Why the providers are forced to raise here, rather than simply left
 unwired.** That is the difference between a measurement and a restatement, and
-on this router the distinction bites. Measured on a service-less app before the
-fix, three of the twenty-two answered 500 and the other nineteen already
-answered 401 — not because the ordering was right, but because
+on this router the distinction bites. Measured on a service-less app before
+#1527, three of the twenty-two it fixed answered 500 and the other nineteen
+already answered 401 — not because the ordering was right, but because
 ``get_case_service`` is ``getattr(app.state, "case_service", None)`` and
 ``check_case_service_available`` turned that ``None`` into a 401 of its own (a
 503 since #2103). A probe that only dropped the services would therefore have
@@ -27,16 +27,23 @@ that accident: the ONLY way to answer 401 is for the gate to have run first.
 Two batteries, because the ordering claim and the 401-with-a-credential claim
 are different claims: **anonymous** (no header at all) and **rejected
 credential** (a header that does not authenticate). Both must be refused before
-any collaborator resolves.
+any collaborator resolves. A third drives the same rows **authenticated, with
+no case service**: each must answer 503, never the 500 of a handler that
+dereferenced the ``None`` its provider returned (#2358).
 """
+
+from types import SimpleNamespace
 
 import pytest
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
 from faultmaven.api import route_enumeration
+from faultmaven.api.exception_handlers import get_exception_handlers
+from faultmaven.api.v1.auth_dependencies import require_authentication
 from faultmaven.api.v1.dependencies import (
     get_case_repository,
+    get_case_service,
     get_evidence_reclassifier,
     get_investigation_service,
 )
@@ -60,16 +67,20 @@ _SERVICE_PROVIDERS = (
     get_investigation_service,
     get_evidence_reclassifier,
     get_case_repository,
+    get_case_service,
 )
 
 #: The auth gate, named the way the guard module names it, so "is this route
 #: gated" is asked of the dependency tree rather than of the source text.
 _GATE = "faultmaven.api.v1.auth_dependencies.require_authentication"
 
-#: The provider whose routes #1494 was split on, and the seam this module is
-#: about.
-_CASE_SERVICE = (
-    "faultmaven.modules.case.api.routes.dependencies._di_get_case_service_dependency"
+#: The case-service providers, and the seam this module is about: the DI wrapper
+#: every route here declares, and the bare provider it calls. The wrapper calls
+#: it outside the dependency tree, so a route declaring the bare provider — the
+#: shape #2358 removed — is collected only because it is named here.
+_CASE_SERVICES = (
+    "faultmaven.modules.case.api.routes.dependencies._di_get_case_service_dependency",
+    "faultmaven.api.v1.dependencies.get_case_service",
 )
 
 #: One concrete request per operation, because a route cannot be driven through
@@ -134,7 +145,7 @@ DRIVEN: dict[tuple[str, str], dict] = {
     },
     ("POST", "/api/v1/cases/{case_id}/reports"): {
         "url": "/api/v1/cases/c1/reports",
-        "json": {},
+        "json": {"report_types": ["resolution_summary"]},
     },
     ("POST", "/api/v1/cases/{case_id}/team-shares"): {
         "url": "/api/v1/cases/c1/team-shares",
@@ -166,6 +177,14 @@ DRIVEN: dict[tuple[str, str], dict] = {
         "url": "/api/v1/cases/c1/evidence/e1/classification",
         "json": {"data_type": "logs_and_errors"},
     },
+}
+
+#: Driven by the anonymous batteries but not held to 503 with no case service:
+#: the handler asks the case service only whether the caller reads the case
+#: (ADR-020 D2), and proceeds without it by design. Whether it can answer is
+#: the reclassifier's to say (#1941).
+_CASE_SERVICE_OPTIONAL = {
+    ("PATCH", "/api/v1/cases/{case_id}/evidence/{evidence_id}/classification"),
 }
 
 
@@ -200,8 +219,18 @@ def _surface() -> FastAPI:
     return app
 
 
+def _answers(client: TestClient, headers: dict) -> dict[str, int]:
+    """Drive every row of :data:`DRIVEN` once; the status each answered."""
+    answered = {}
+    for (method, template), request in sorted(DRIVEN.items()):
+        kwargs = {k: v for k, v in request.items() if k != "url"}
+        response = client.request(method, request["url"], headers=headers, **kwargs)
+        answered[f"{method} {template}"] = response.status_code
+    return answered
+
+
 def _case_service_operations(app: FastAPI) -> set[tuple[str, str]]:
-    """Gated operations on this router whose tree holds the case service.
+    """Gated operations on this router whose tree holds a case-service provider.
 
     Through ``route_enumeration`` rather than a flat ``app.routes`` scan. On
     the FastAPI this repository develops against (0.141.1) ``include_router``
@@ -213,7 +242,7 @@ def _case_service_operations(app: FastAPI) -> set[tuple[str, str]]:
     found = set()
     for path, methods, dependant in route_enumeration.iter_served_routes(app):
         names = _dependency_names(dependant)
-        if _CASE_SERVICE not in names or _GATE not in names:
+        if names.isdisjoint(_CASE_SERVICES) or _GATE not in names:
             continue
         for method in methods or ():
             if method in {"HEAD", "OPTIONS"}:
@@ -261,11 +290,7 @@ def test_no_case_service_route_resolves_a_service_for_an_unauthenticated_caller(
     """
     client = TestClient(_surface(), raise_server_exceptions=False)
 
-    answered = {}
-    for (method, template), request in sorted(DRIVEN.items()):
-        kwargs = {k: v for k, v in request.items() if k != "url"}
-        response = client.request(method, request["url"], headers=headers, **kwargs)
-        answered[f"{method} {template}"] = response.status_code
+    answered = _answers(client, headers)
 
     not_refused = {k: v for k, v in answered.items() if v != 401}
     assert not not_refused, (
@@ -273,6 +298,46 @@ def test_no_case_service_route_resolves_a_service_for_an_unauthenticated_caller(
         "401 although every service provider on the route was made to raise — "
         "so a collaborator resolved before the auth gate, and an anonymous "
         f"caller gets its failure in place of the refusal (#1494): {not_refused}"
+    )
+
+
+def test_with_no_case_service_every_case_operation_answers_503():
+    """An authenticated caller on an app with no case service gets 503, never 500.
+
+    The case-service providers are left unwired, so they return ``None`` as on
+    a deployment that composed none; every other collaborator is an inert
+    stand-in, so the case service is the only thing missing. A handler that
+    reads it without ``check_case_service_available`` dereferences that
+    ``None``, and its catch-all answers 500 (#2358).
+    """
+
+    async def _inert():
+        return object()
+
+    async def _caller():
+        return SimpleNamespace(user_id="u1")
+
+    app = _surface()
+    for exc_type, handler in get_exception_handlers().items():
+        app.add_exception_handler(exc_type, handler)
+    for provider in _SERVICE_PROVIDERS:
+        app.dependency_overrides[provider] = _inert
+    del app.dependency_overrides[_di_get_case_service_dependency]
+    del app.dependency_overrides[get_case_service]
+    app.dependency_overrides[require_authentication] = _caller
+
+    answered = _answers(TestClient(app, raise_server_exceptions=False), {})
+
+    assert _CASE_SERVICE_OPTIONAL <= set(DRIVEN)
+    exempt = {f"{method} {template}" for method, template in _CASE_SERVICE_OPTIONAL}
+    not_unavailable = {
+        k: v for k, v in answered.items() if v != 503 and k not in exempt
+    }
+    assert not not_unavailable, (
+        "with no case service composed, these case operations answered "
+        "something other than 503 to an authenticated caller — a 500 is a "
+        "handler that used the service without check_case_service_available: "
+        f"{not_unavailable}"
     )
 
 
@@ -284,8 +349,6 @@ def test_the_probe_bites_when_the_gate_is_declared_after_the_service():
     is the real ``require_authentication`` and the collaborator is the real
     overridden provider; only the DECLARATION ORDER differs.
     """
-    from faultmaven.api.v1.auth_dependencies import require_authentication
-
     app = FastAPI()
 
     @app.get("/gate-after-the-service")

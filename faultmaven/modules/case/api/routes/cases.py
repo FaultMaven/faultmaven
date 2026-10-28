@@ -587,6 +587,8 @@ async def get_case_service_health(
     Returns health information about the case persistence system,
     including connectivity and performance metrics.
     """
+    check_case_service_available(case_service)
+
     try:
         # Try to get basic health information
         # This would typically call a health method on the case service
@@ -630,6 +632,8 @@ async def get_case(
     Returns full case details with milestone progress, investigation stage,
     and completion percentage.
     """
+    case_service = check_case_service_available(case_service)
+
     # Prevent browser/extension caching to ensure title updates are visible immediately
     response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     response.headers["Pragma"] = "no-cache"
@@ -800,6 +804,8 @@ async def update_case(
     Only the case's DRIVER may update it (ADR-020 D2); any other reader gets
     the answer an absent case gets.
     """
+    case_service = check_case_service_available(case_service)
+
     try:
         # DRIVER only, at the route as well as in ``update_case`` (ADR-020
         # D2). Resolved through the driver so a reader who does not drive is
@@ -1104,6 +1110,8 @@ async def search_cases(
     Searches case titles, descriptions, and optionally message content
     for the specified query terms.
     """
+    case_service = check_case_service_available(case_service)
+
     try:
         cases = await case_service.search_cases(
             request, current_user.user_id if current_user else None
@@ -1137,6 +1145,8 @@ async def get_case_analytics(
     Returns analytics data including message counts, participant activity,
     resolution time, and other case metrics.
     """
+    case_service = check_case_service_available(case_service)
+
     try:
         # Verify user has access to the case
         case = await case_service.get_case(case_id, current_user.user_id)

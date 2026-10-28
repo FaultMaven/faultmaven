@@ -1004,6 +1004,22 @@ class TestCaseHealth:
         data = response.json()
         assert data["status"] == "healthy"
 
+    async def test_get_case_health_without_a_case_service_is_503(self, app, client):
+        """No case service composed is not healthy (#2358)."""
+        from faultmaven.modules.case.api.routes.dependencies import (
+            _di_get_case_service_dependency,
+        )
+
+        async def _no_case_service():
+            return None
+
+        app.dependency_overrides[_di_get_case_service_dependency] = _no_case_service
+
+        response = await client.get("/api/v1/cases/health")
+
+        assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+        assert response.json()["detail"] == "Case service unavailable"
+
 
 # ============================================================
 # Case Team-Sharing Endpoints (ADR-013 §D4)

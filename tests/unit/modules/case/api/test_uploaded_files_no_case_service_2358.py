@@ -7,35 +7,23 @@ sibling answers 503. The refusal sits in the handler body, so the
 authentication gate still answers an anonymous caller first.
 """
 
-from types import SimpleNamespace
-
 import pytest
-from fastapi import FastAPI
 
 from faultmaven.api.v1.auth_dependencies import require_authentication
-from faultmaven.modules.case.api.routes.router import router as case_router
+from faultmaven.modules.case.api.routes.dependencies import (
+    _di_get_case_service_dependency,
+)
 from tests.utils import uncomposed_auth_service
 
 PATH = "/api/v1/cases/case-1/uploaded-files"
 
 
-def _service_less_app() -> FastAPI:
-    """The case router with no ``app.state.case_service`` and no provider overridden."""
-    app = FastAPI()
-    app.include_router(case_router, prefix="/api/v1")
-    app.state.auth_service = uncomposed_auth_service()
-    return app
-
-
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_an_authenticated_caller_gets_503_not_500(call_api):
-    app = _service_less_app()
-
-    async def _user():
-        return SimpleNamespace(user_id="user-1")
-
-    app.dependency_overrides[require_authentication] = _user
+async def test_an_authenticated_caller_gets_503_not_500(build_app, call_api):
+    app = build_app()
+    # The real provider, over an ``app.state`` that holds no case service.
+    del app.dependency_overrides[_di_get_case_service_dependency]
 
     response = await call_api(app, "GET", PATH)
 
@@ -45,7 +33,23 @@ async def test_an_authenticated_caller_gets_503_not_500(call_api):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_an_anonymous_caller_is_refused_by_the_gate_first(call_api):
-    response = await call_api(_service_less_app(), "GET", PATH)
+async def test_an_anonymous_caller_is_refused_before_the_case_service_resolves(
+    build_app, call_api
+):
+    """The real gate over a case-service provider that raises.
+
+    A 401 is reachable only if the gate resolved first; solved after the
+    provider, the caller would get the provider's failure instead.
+    """
+    app = build_app()
+    del app.dependency_overrides[require_authentication]
+    app.state.auth_service = uncomposed_auth_service()
+
+    async def _resolved():
+        raise RuntimeError("the case service resolved ahead of the auth gate")
+
+    app.dependency_overrides[_di_get_case_service_dependency] = _resolved
+
+    response = await call_api(app, "GET", PATH)
 
     assert response.status_code == 401, response.text
