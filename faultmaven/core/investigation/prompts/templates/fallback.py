@@ -146,9 +146,10 @@ def _fallback_stub_block(
     The fallback fires at the tightest budget — precisely when a fresh upload
     must not be dropped. Renders just the addressable essentials (file_id +
     label + ``file_backed``), and the heading says to `search_file` it only when
-    ``given`` has that tool (#1939) and only a stored file (#2375). ``file_backed="true"`` is provenance — the
-    row's raw file is held — so it renders on every stub with a stored file,
-    whatever the turn's tools (#1969, #2375). Empty when no current-turn
+    ``given`` has that tool (#1939) and only a stored file (#2375).
+    ``file_backed="true"`` is provenance — the row's raw file is held — so it
+    renders on every stub with a stored file, whatever the turn's tools (#1969,
+    #2375). Empty when no current-turn
     upload exists. The label carries ``UploadedFile.display_name`` — the same
     citable name every other render uses (#666), so a stub the agent cites
     reads the same here as in a full-budget turn.

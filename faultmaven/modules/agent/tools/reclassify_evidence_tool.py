@@ -188,9 +188,14 @@ class ReclassifyEvidenceTool(AgentTool):
                 IdOutcome.FOUND
             ):
                 # No row has the id, yet the case holds it: an upload's file_id
-                # (#2375), answered as the other file tools answer it.
+                # (#2375), answered as the other file tools answer it. The
+                # upload itself is not refused: the user's own
+                # file_reclassification can reclassify it.
                 error = upload_without_its_row(
-                    in_flight_case, evidence_id, "reclassify", "reclassified"
+                    in_flight_case,
+                    evidence_id,
+                    "reclassify",
+                    ": reclassify_evidence reclassifies by evidence row.",
                 )
             else:
                 error = f"Evidence {evidence_id} was not found in this case."

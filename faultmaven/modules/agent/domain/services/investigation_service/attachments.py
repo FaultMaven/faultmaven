@@ -329,11 +329,11 @@ def _turn_delivers_evidence_bearing_attachment(
     ``classification_failed`` uploads (awaiting user clarification),
     empty/unanalyzable placeholders (no structural content to search) and
     uploads with no stored raw file (nothing a directed-analysis tool can
-    read, #2375). The two tests are the ones the engine's
-    ``_has_searchable_material`` applies, ``structural_index_is_searchable``
-    and ``UploadedFile.has_stored_content``, so this stays in lockstep with
-    the context builder's gate on rendering an ``<uploaded_file>`` and on
-    marking it ``file_backed="true"``.
+    read, #2375). The two tests are the ones the engine applies to an upload
+    (``_has_readable_upload``), ``structural_index_is_searchable`` and
+    ``UploadedFile.has_stored_content``, so this stays in lockstep with the
+    context builder's gate on rendering an ``<uploaded_file>`` and on marking
+    it ``file_backed="true"``.
     """
     for r in preprocess_results:
         if r.classification_failed:

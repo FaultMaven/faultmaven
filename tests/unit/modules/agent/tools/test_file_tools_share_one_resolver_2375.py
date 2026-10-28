@@ -251,8 +251,8 @@ async def test_vectorize_file_names_why_an_id_cannot_be_vectorized(id_, expected
     [
         (
             STORED,
-            f"Upload {STORED} has no evidence row recording it yet, so it cannot "
-            "be reclassified.",
+            f"Upload {STORED} has no evidence row recording it yet: "
+            "reclassify_evidence reclassifies by evidence row.",
         ),
         (
             RECORDED,

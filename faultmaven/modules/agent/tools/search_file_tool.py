@@ -102,14 +102,12 @@ def resolve_case_id(case: Any, id_: str) -> ResolvedId:
     return ResolvedId(IdOutcome.FOUND, file=file_meta)
 
 
-def upload_without_its_row(
-    case: Any, file_id: str, verb: str, done: str, unrecorded_note: str = ""
-) -> str:
+def upload_without_its_row(case: Any, file_id: str, verb: str, unrecorded: str) -> str:
     """What a tool that acts on an evidence row answers for an upload's
     ``file_id`` (#2375): the case holds it, so never "not found".
 
     Names the row that records the upload when one does (first wins), else
-    says no row records it yet and appends ``unrecorded_note``.
+    says no row records it yet, followed by the tool's own ``unrecorded``.
     """
     row = next(
         (
@@ -124,10 +122,7 @@ def upload_without_its_row(
             f"Upload {file_id} is recorded as evidence {row.evidence_id}: pass "
             f"that evidence_id to {verb} it."
         )
-    return (
-        f"Upload {file_id} has no evidence row recording it yet, so it cannot "
-        f"be {done}.{unrecorded_note}"
-    )
+    return f"Upload {file_id} has no evidence row recording it yet{unrecorded}"
 
 
 def enumerate_readable_files(

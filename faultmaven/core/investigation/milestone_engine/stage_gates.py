@@ -135,28 +135,50 @@ def _case_has_symptom_evidence(case: Case) -> bool:
     return any(e.category == EvidenceCategory.SYMPTOM_EVIDENCE for e in case.evidence)
 
 
-def _has_searchable_material(case: Case) -> bool:
-    """True when the case holds content the ``search_file`` tool can target.
+def _has_readable_upload(case: Case) -> bool:
+    """True when an upload renders and its raw file can be read.
 
-    Two sources: any Evidence row (existing claim-anchored evidence), or any
-    uploaded file with a stored raw file and a non-trivial structural index.
-    Post-010, a fresh upload creates an ``UploadedFile`` (not an Evidence row
-    until the LLM extracts a slice), so on the evidence-*delivering* turn the
-    searchable material lives on ``uploaded_files`` — ``bool(case.evidence)``
-    alone would be False and wrongly leave ``tool_choice=auto`` (#708). The
-    upload must render (the context builder's own
-    ``structural_index_is_searchable``, the threshold below which it renders
-    no ``<uploaded_file>`` at all) and be readable
-    (``UploadedFile.has_stored_content``, the test that marks it
-    ``file_backed="true"``, #2375), so a forced-DA turn is guaranteed a real
-    search target and the tool loop cannot crash for lack of one.
+    It renders when its structural index passes the context builder's own
+    ``structural_index_is_searchable`` (the threshold below which no
+    ``<uploaded_file>`` renders at all). It can be read when it has stored
+    content (``UploadedFile.has_stored_content``, the test that marks it
+    ``file_backed="true"``, #2375). Post-010, a fresh upload creates an
+    ``UploadedFile`` and no Evidence row until the LLM extracts a slice, so on
+    the evidence-*delivering* turn this is the only material (#708).
     """
-    if getattr(case, "evidence", None):
-        return True
     return any(
         uf.has_stored_content and structural_index_is_searchable(uf.structural_index)
         for uf in getattr(case, "uploaded_files", None) or []
     )
+
+
+def _has_searchable_material(case: Case) -> bool:
+    """True when the tool loop has case material to work over (routing).
+
+    Any Evidence row counts, whether or not its file can be read:
+    ``case_evidence_search``, ``list_evidence`` and the entity tools work over
+    rows. An upload counts only through ``_has_readable_upload``: an upload
+    with nothing stored gives no tool anything to do (#2375).
+    """
+    if getattr(case, "evidence", None):
+        return True
+    return _has_readable_upload(case)
+
+
+def _has_readable_material(case: Case) -> bool:
+    """True when the case holds a file a directed-analysis tool can read.
+
+    A row counts only when its file is stored: an engine inference has no
+    file, and a row whose file has nothing stored gives ``search_file`` and
+    ``deep_analysis`` nothing to read (#2375). An upload counts through
+    ``_has_readable_upload``. This is the forced-tool gate's material test, so
+    a forced turn always has a ``file_backed="true"`` target.
+    """
+    for ev in getattr(case, "evidence", None) or []:
+        file_meta = case.find_uploaded_file(getattr(ev, "source_file_id", None))
+        if file_meta is not None and file_meta.has_stored_content:
+            return True
+    return _has_readable_upload(case)
 
 
 def _should_force_tools(
@@ -165,21 +187,23 @@ def _should_force_tools(
     """Decide ``tool_choice=required`` for a generation turn.
 
     Force Directed-Analysis tools only when all three hold: (a) the turn is
-    classified ``directed_analysis``, (b) the case has searchable material for
-    the tool to target, and (c) the user is not mid-confirmation (a
-    ``pending_transition`` turn is a typed confirm/decline with nothing to
-    search — forcing tools would crash the loop). This is the linchpin of
-    #708: a fresh evidence-bearing upload reroutes to ``directed_analysis``
-    AND satisfies ``_has_searchable_material`` via its UploadedFile, so tools
-    are forced on the delivering turn instead of leaving it on
-    ``tool_choice=auto`` where the agent can reply in prose. Forcing requires
+    classified ``directed_analysis``, (b) the case holds a file a
+    directed-analysis tool can read (``_has_readable_material``: a row whose
+    file is stored, or a stored upload that renders, #2375), and (c) the user
+    is not mid-confirmation (a ``pending_transition`` turn is a typed
+    confirm/decline with nothing to search — forcing tools would crash the
+    loop). This is the linchpin of #708: a fresh evidence-bearing upload
+    reroutes to ``directed_analysis`` AND satisfies ``_has_readable_material``
+    via its stored UploadedFile, so tools are forced on the delivering turn
+    instead of leaving it on ``tool_choice=auto`` where the agent can reply in
+    prose. Forcing requires
     a call to any offered tool, the schema tool included, so it does not by
     itself guarantee evidence before the conclusion; what it rules out is the
     prose reply that would send the loop to its schema-only iteration.
     """
     return (
         processing_mode == "directed_analysis"
-        and _has_searchable_material(case)
+        and _has_readable_material(case)
         and not has_pending
     )
 
@@ -192,9 +216,10 @@ def _route_toolless_turn_single_shot(
     fm#1116: on gpt-5.x the provider must pin ``reasoning_effort: "none"``
     whenever function tools are attached, so a turn that runs the tool loop
     reasons at zero — and on a turn with NO searchable material (no evidence
-    rows, no indexed upload) the loop offers nothing to search anyway. Route
-    exactly those turns to the tool-less structured call, where the call site
-    can declare ``ReasoningIntent.INFERENCE`` and the provider honours it.
+    rows, no stored, indexed upload; ``_has_searchable_material``) the loop
+    offers nothing to search anyway. Route exactly those turns to the
+    tool-less structured call, where the call site can declare
+    ``ReasoningIntent.INFERENCE`` and the provider honours it.
 
     Measured on the replayed case_bf484a484a77 turn 9 (the ``df -h`` turn:
     no files, no evidence, ``force_tools`` False): a linked causal row

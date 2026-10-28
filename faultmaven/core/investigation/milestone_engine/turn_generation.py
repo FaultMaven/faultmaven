@@ -205,17 +205,17 @@ async def _generate_turn_response(
     # The LLM decides which tool to invoke based on the user's question.
     #
     # tool_choice varies by query mode:
-    # - directed_analysis + searchable material: "required" — LLM must
+    # - directed_analysis + a file a tool can read: "required" — LLM must
     #   search evidence
     # - all other turns: "auto" — LLM decides whether to use tools
     #
-    # Searchable material is Evidence rows OR fresh uploaded files with a
-    # stored raw file (post-010, a delivering turn has only an UploadedFile,
+    # The file is an Evidence row whose file is stored OR a fresh upload with
+    # a stored raw file (post-010, a delivering turn has only an UploadedFile,
     # not yet an Evidence row — ``bool(case.evidence)`` alone would leave the
     # evidence-delivering turn on tool_choice=auto and let the agent skip
-    # analysis, #708; an upload with nothing stored is no target, #2375).
-    # ``_has_searchable_material`` guarantees a real search target so
-    # forcing tools cannot crash the loop.
+    # analysis, #708; nothing stored is no target, #2375).
+    # ``_has_readable_material`` guarantees a real search target so forcing
+    # tools cannot crash the loop.
     #
     # Safety net: when a pending_transition exists, the user is in a
     # confirmation flow. Don't force tool_choice=required — the user's

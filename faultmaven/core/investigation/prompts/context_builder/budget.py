@@ -71,10 +71,12 @@ KB_MAX_SOLUTION_CHARS = 800
 # The threshold decides whether that element renders at all, not what it says:
 # ``file_backed="true"`` is decided by a stored file
 # (``UploadedFile.has_stored_content``), the fallback stub of a shorter index
-# included (#2375). The engine's force_tools guards (``_has_searchable_material``
-# / ``_turn_delivers_evidence_bearing_attachment``) apply both tests — they must
-# agree, or a forced Directed-Analysis turn could have no rendered, readable
-# search target and the tool loop would crash for lack of one (#708).
+# included (#2375). The engine applies both tests to an upload
+# (``_has_readable_upload``, under the force_tools guard
+# ``_has_readable_material``), and so does the reroute
+# (``_turn_delivers_evidence_bearing_attachment``). They must agree, or a forced
+# Directed-Analysis turn could have no rendered, readable search target and the
+# tool loop would crash for lack of one (#708).
 SEARCHABLE_STRUCTURAL_INDEX_MIN_CHARS = 10
 
 

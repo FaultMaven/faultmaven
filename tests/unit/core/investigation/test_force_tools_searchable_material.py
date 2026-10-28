@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 
 from faultmaven.core.investigation.milestone_engine.stage_gates import (
     _has_searchable_material,
+    _route_toolless_turn_single_shot,
     _should_force_tools,
 )
 from faultmaven.modules.case.domain.models.case import Case
@@ -41,20 +42,26 @@ def _make_case() -> Case:
     )
 
 
-def _make_evidence(idx: int = 1) -> Evidence:
+def _make_evidence(
+    idx: int = 1, source_file_id: str | None = "file_0123456789ab"
+) -> Evidence:
     return Evidence(
         evidence_id=f"ev_{idx:012d}",
         summary=f"Test evidence {idx}",
         content_ref=f"test_{idx}.log",
         category=EvidenceCategory.SYMPTOM_EVIDENCE,
-        source_type=EvidenceSourceType.LOGS,
+        source_type=(
+            EvidenceSourceType.LOGS
+            if source_file_id
+            else EvidenceSourceType.ENGINE_INFERENCE
+        ),
         collected_at=datetime.now(timezone.utc),
         collected_by="user_test",
         primary_purpose="Testing",
         preprocessed_content="content",
         content_size_bytes=100,
         preprocessing_method="manual",
-        source_file_id="file_0123456789ab",
+        source_file_id=source_file_id,
         collected_at_turn=1,
     )
 
@@ -171,3 +178,46 @@ class TestShouldForceTools:
         None mode must not force tools."""
         case = self._case_with_fresh_upload()
         assert _should_force_tools(None, case, has_pending=False) is False
+
+
+class TestForcingNeedsAFileAToolCanRead:
+    """#2375: a forced call needs a file a directed-analysis tool can read.
+    A row counts only when its file is stored. Routing still counts any row:
+    ``case_evidence_search``, ``list_evidence`` and the entity tools work over
+    rows, so a case with rows stays on the tool loop."""
+
+    @staticmethod
+    def _case(rows, uploads=()) -> Case:
+        case = _make_case()
+        case.evidence.extend(rows)
+        case.uploaded_files.extend(uploads)
+        return case
+
+    def test_an_inference_only_case_does_not_force(self):
+        case = self._case([_make_evidence(source_file_id=None)])
+
+        assert (
+            _should_force_tools("directed_analysis", case, has_pending=False) is False
+        )
+        assert (
+            _route_toolless_turn_single_shot("directed_analysis", case, False) is False
+        )
+
+    def test_a_case_whose_only_row_has_no_stored_file_does_not_force(self):
+        upload = _make_uploaded_file("timerange: 07:40\n503 x12", stored=False)
+        case = self._case([_make_evidence(source_file_id=upload.file_id)], [upload])
+
+        assert (
+            _should_force_tools("directed_analysis", case, has_pending=False) is False
+        )
+        assert (
+            _route_toolless_turn_single_shot("directed_analysis", case, False) is False
+        )
+
+    def test_a_row_whose_file_is_stored_forces(self):
+        # The upload's own index is too short to render, so only the row can
+        # make this material.
+        upload = _make_uploaded_file(None)
+        case = self._case([_make_evidence(source_file_id=upload.file_id)], [upload])
+
+        assert _should_force_tools("directed_analysis", case, has_pending=False) is True

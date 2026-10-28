@@ -353,7 +353,10 @@ class VectorizeFileTool(AgentTool):
             success=False,
             data=None,
             error=upload_without_its_row(
-                case, upload.file_id, "vectorize", "vectorized", reader
+                case,
+                upload.file_id,
+                "vectorize",
+                f", so it cannot be vectorized.{reader}",
             ),
         )
 
