@@ -9,10 +9,11 @@ state introduced by an earlier ingestion bug.
 
 What it does
 ------------
-1. Deletes every row from ``knowledge_items`` (or filtered by scope).
-2. Deletes every row from ``conversion_drafts`` whose source is a
-   pre-deployed runbook (so case-generated drafts that users authored
-   are preserved). Use ``--all-drafts`` to nuke those too.
+1. Deletes every row from ``knowledge_items`` that it locks; a row written
+   while it runs (only a running API writes one) is kept and reported.
+2. Keeps ``conversion_drafts`` rows, discarding first the ones that
+   published a runbook it deletes (their text kept, #2369), so none stays
+   listed as verified naming nothing. Use ``--all-drafts`` to delete them all.
 3. Removes ChromaDB collections backing global/team/personal KB so
    they're recreated empty on next API start.
 4. Optionally invokes the bootstrap directly (``--rebuild``) for
@@ -301,6 +302,9 @@ async def reset_kb(
         ConversionDraftModel,
         KnowledgeItemModel,
     )
+    from faultmaven.modules.knowledge.domain.services.conversion_service.draft_retirement import (  # noqa: E501
+        discard_drafts_naming_any_item,
+    )
     from faultmaven.providers.tenancy.factory import (
         BUILTIN_MULTI,
         requested_tenant_provider,
@@ -399,23 +403,40 @@ async def reset_kb(
 
         # SQL wipe. Report the DELETEs' own rowcounts rather than the counts
         # read above, so the numbers printed are what the database actually did.
-        deleted_items = (await session.execute(delete(KnowledgeItemModel))).rowcount
+        # The drafts that published these runbooks are discarded first: their
+        # key to the item is ON DELETE SET NULL, so after the DELETE each would
+        # stay listed as verified, naming nothing (#2369). Only the items the
+        # discard locked are deleted: the drafts of one written since were not
+        # discarded.
+        locked, discarded = await discard_drafts_naming_any_item(session)
+        deleted_items = (
+            await session.execute(
+                delete(KnowledgeItemModel).where(KnowledgeItemModel.item_id.in_(locked))
+            )
+        ).rowcount
+        kept_items = await _count_rows(session, KnowledgeItemModel)
         if all_drafts:
             deleted_drafts = (
                 await session.execute(delete(ConversionDraftModel))
             ).rowcount
             print(f"Deleted {deleted_drafts} conversion_drafts rows (--all-drafts).")
         else:
-            # Only delete drafts whose source_url marks them as bootstrap-generated.
-            # We don't currently mark these, so by default we conservatively
-            # KEEP all drafts. Operators with a known-clean drafts table can
+            # Drafts carry no mark of being bootstrap-generated, so by default
+            # every row is KEPT. Operators with a known-clean drafts table can
             # pass --all-drafts.
             print(
-                "Kept conversion_drafts rows (use --all-drafts to remove case-"
-                "generated drafts too)."
+                f"Kept conversion_drafts rows, discarding the {len(discarded)} "
+                "that published a deleted runbook (use --all-drafts to remove "
+                "case-generated drafts too)."
             )
         await session.commit()
     print(f"Deleted {deleted_items} knowledge_items rows.")
+    if kept_items:
+        print(
+            f"Kept {kept_items} knowledge_items rows written while the reset ran, "
+            "so the API is still up: stop it first. If the vector store is "
+            "removed below, the API's startup repair re-indexes them."
+        )
 
     # ChromaDB wipe
     if keep_chroma and remote_knob:

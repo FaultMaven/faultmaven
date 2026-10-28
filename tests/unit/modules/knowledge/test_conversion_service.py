@@ -1843,24 +1843,6 @@ class TestDiscardReleasesLiveCaseKey:
         assert job.live_case_id is None
 
     @pytest.mark.asyncio
-    async def test_discard_by_knowledge_item_id_clears_key(
-        self, live_case_session_factory
-    ):
-        await _insert_case_job(
-            live_case_session_factory,
-            conversion_id="conv-disc",
-            case_id="case-disc",
-            source_type="case",
-            live_case_id="case-disc",
-            draft_statuses=[DraftStatus.DRAFT],
-        )
-        svc = _make_live_case_service(live_case_session_factory)
-        ok = await svc.discard_by_knowledge_item_id("kb_conv-disc-d0")
-        assert ok is True
-        job = await _job_row(live_case_session_factory, "conv-disc")
-        assert job.live_case_id is None
-
-    @pytest.mark.asyncio
     async def test_discard_keeps_key_while_another_draft_is_live(
         self, live_case_session_factory
     ):

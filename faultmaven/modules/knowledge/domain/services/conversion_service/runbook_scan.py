@@ -17,15 +17,13 @@ import logging
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
 from faultmaven.exceptions import (
     ConflictError,
 )
 from faultmaven.infrastructure.persistence.models import (
     ConversionDraftModel,
-    ConversionJobModel,
     KnowledgeItemModel,
 )
 from faultmaven.modules.knowledge.domain.global_authoring import (
@@ -40,6 +38,9 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
     SourceFileInfo,
     generate_conversion_id,
     generate_draft_id,
+)
+from faultmaven.modules.knowledge.domain.services.conversion_service.draft_retirement import (
+    release_drained_case_keys,
 )
 from faultmaven.modules.knowledge.domain.services.conversion_service.job_persistence import (
     _persist_job,
@@ -108,7 +109,7 @@ async def _scan_for_runbooks_impl(
 
             # Database-only clean-up: drafts the database itself shows are
             # redundant. Nothing here looks at the disk.
-            discarded_ids: list[str] = []
+            discarded: list[tuple[str, str]] = []
 
             for draft_model in all_draft_models:
                 if draft_model.status == DraftStatus.DISCARDED.value:
@@ -124,7 +125,7 @@ async def _scan_for_runbooks_impl(
                     draft_model, "knowledge_item_id", None
                 ):
                     draft_model.status = DraftStatus.DISCARDED.value
-                    discarded_ids.append(draft_model.id)
+                    discarded.append((draft_model.id, draft_model.conversion_id))
                     logger.info(
                         f"Removed duplicate draft {draft_model.id} "
                         f"(already has knowledge_item_id)"
@@ -143,7 +144,7 @@ async def _scan_for_runbooks_impl(
                     in ingested_item_ids
                 ):
                     draft_model.status = DraftStatus.DISCARDED.value
-                    discarded_ids.append(draft_model.id)
+                    discarded.append((draft_model.id, draft_model.conversion_id))
                     logger.info(
                         f"Discarded phantom draft {draft_model.id} "
                         f"(runbook '{draft_model.runbook_id}' already "
@@ -154,11 +155,15 @@ async def _scan_for_runbooks_impl(
                 if draft_model.status == "verified" and not getattr(
                     draft_model, "knowledge_item_id", None
                 ):
-                    # A legacy half-state row from the pre-atomic verify_draft
-                    # path: the current verify_draft commits VERIFIED only after
-                    # successful ingestion. Warn loudly rather than silently
-                    # downgrading — a silent revert is what corrupted live data
-                    # in the incident this path was rewritten to prevent.
+                    # A legacy half-state row: verify_draft commits VERIFIED
+                    # only after successful ingestion, and the two deleters
+                    # (delete_document, fm-reset-kb) discard a draft before
+                    # deleting its item (#2369), so this is an older row, or
+                    # one whose item another path deleted (the key's SET
+                    # NULL; the schema guard is #2385). Warn loudly rather
+                    # than silently downgrading — a silent revert is what
+                    # corrupted live data in the incident this path was
+                    # rewritten to prevent.
                     logger.warning(
                         f"Draft {draft_model.id} has status=verified "
                         f"but no knowledge_item_id (legacy half-state). "
@@ -172,21 +177,9 @@ async def _scan_for_runbooks_impl(
             # live draft this sweep discarded — same transaction, same rule
             # as the explicit discard paths: a held unique slot on
             # conversion_jobs.live_case_id with no live draft behind it
-            # would block that case's regeneration forever. Flush first so
-            # the drained-count sees every status flipped above, even when
-            # one job lost several drafts in this sweep.
-            if discarded_ids:
-                await session.flush()
-                drafts_by_id = {d.id: d for d in all_draft_models}
-                released_job_ids: set[str] = set()
-                for draft_id in discarded_ids:
-                    job_id = drafts_by_id[draft_id].conversion_id
-                    if job_id in released_job_ids:
-                        continue
-                    released_job_ids.add(job_id)
-                    job = await session.get(ConversionJobModel, job_id)
-                    if job is not None:
-                        await _release_live_case_key_if_drained(session, job, draft_id)
+            # would block that case's regeneration forever.
+            if discarded:
+                await release_drained_case_keys(session, discarded)
 
             await session.commit()
 
@@ -457,32 +450,3 @@ async def _scan_for_runbooks_impl(
         "notes": notes,
         "drafts": discovered,
     }
-
-
-async def _release_live_case_key_if_drained(
-    session: AsyncSession,
-    job: "ConversionJobModel",
-    discarded_draft_id: str,
-) -> None:
-    """Clear ``job.live_case_id`` once the job holds no more live drafts.
-
-    The unique-index slot on ``conversion_jobs.live_case_id`` is the case's
-    one live-conversion claim; it must be released in the same transaction
-    as the last live draft leaving so a later regeneration can take it. The
-    clearing is general (count the OTHER non-discarded drafts of this job) so
-    a job carrying more than one live draft keeps the key until the last one
-    is gone. No-op for jobs that never held the key (document jobs, failed
-    no-draft jobs)."""
-    if job.live_case_id is None:
-        return
-    remaining_live = await session.execute(
-        select(func.count())
-        .select_from(ConversionDraftModel)
-        .where(
-            ConversionDraftModel.conversion_id == job.id,
-            ConversionDraftModel.id != discarded_draft_id,
-            ConversionDraftModel.status != DraftStatus.DISCARDED.value,
-        )
-    )
-    if remaining_live.scalar_one() == 0:
-        job.live_case_id = None
