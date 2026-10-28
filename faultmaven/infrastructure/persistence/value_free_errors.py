@@ -7,18 +7,21 @@ PostgreSQL's own report is the second: DETAIL ("Failing row contains (…)",
 ``log_parameter_max_length_on_error``) reach the client, and the driver error,
 SQLAlchemy's DBAPI wrapper and its exception each carry them. The third is the
 primary message itself: a class-22 error quotes its input
-(``invalid input syntax for type integer: "…"``), and asyncpg's own encoding
-error repeats the argument (``invalid input for query argument $1: '…'``).
+(``invalid input syntax for type integer: "…"``, ``time zone "…" not
+recognized``), and asyncpg's own encoding error repeats the argument
+(``invalid input for query argument $1: '…'``).
 
 :func:`strip_server_values` reduces the driver error to the fields it keeps,
 the primary message with its input hidden and the hint, in place, and puts that
 text where the full one stood. ``str()`` and a logged traceback then name no
 value, while the class, the SQLSTATE, the constraint name, the type and
 argument number, and the chain down to the driver error stay as they were
-(``db_errors`` reads them). asyncpg's encoding error drops the codec's
-exception it was raised from, whose text repeats the value, and names its class
-instead. psycopg2's ``pgerror``, ``diag`` and ``cursor.query`` keep the server's
-whole report: they are read-only, and nothing prints or reads them.
+(``db_errors`` reads them). A class-22 message is hidden from its first quote
+to its last, whatever its shape, so a quoted type or parameter name goes with
+the input. asyncpg's encoding error drops the codec's exception it was raised
+from, whose text repeats the value, and names its class instead. psycopg2's
+``pgerror``, ``diag`` and ``cursor.query`` keep the server's whole report: they
+are read-only, and nothing prints or reads them.
 
 A driver error is known by its class, looked up in ``sys.modules`` and never
 imported (``alembic/env.py`` runs where only SQLite is installed): an error of a
@@ -50,16 +53,6 @@ HIDDEN = "[value hidden]"
 _ARGUMENT = re.compile(
     r"(?s)^((?:invalid input for )?query argument \$\d+"
     r"(?: in element #\d+ of executemany\(\) sequence)?): "
-)
-
-#: Where a class-22 message quotes its input. PostgreSQL does not escape a quote
-#: inside the value, so each match runs to the last quote.
-_QUOTED_INPUT = (
-    (re.compile(r'(?s)^(.*?: )"(.*)"$'), rf"\g<1>{HIDDEN}"),
-    (
-        re.compile(r'(?s)^(value |)"(.*)"( is out of range for type .+)$'),
-        rf"\g<1>{HIDDEN}\g<3>",
-    ),
 )
 
 
@@ -119,15 +112,17 @@ def _keep_message_and_hint(error: BaseException) -> bool:
 
 
 def _hide_input(error: BaseException, message: str, sqlstate: str | None) -> str:
-    """``message`` with the input it quotes hidden, its type or argument kept."""
+    """``message`` with its input hidden, its argument number or unquoted text kept."""
     argument = _ARGUMENT.match(message)
     if argument:  # the codec's own error, its cause, says the value again
-        codec, error.__cause__ = error.__cause__, None
+        codec, error.__cause__, error.__context__ = error.__cause__, None, None
         named = f" ({type(codec).__name__})" if codec is not None else ""
         return f"{argument.group(1)}: {HIDDEN}{named}"
-    if (sqlstate or "").startswith("22"):
-        for pattern, replacement in _QUOTED_INPUT:
-            hidden, found = pattern.subn(replacement, message, count=1)
-            if found:
-                return hidden
+    first, last = message.find('"'), message.rfind('"')
+    if (sqlstate or "").startswith("22") and first >= 0:
+        # Fails closed: PostgreSQL quotes the input without escaping a quote in
+        # it, and the shapes vary, so everything from the first quote to the
+        # last goes (to the end, when only one is left).
+        end = last + 1 if last > first else len(message)
+        return f"{message[:first]}{HIDDEN}{message[end:]}"
     return message

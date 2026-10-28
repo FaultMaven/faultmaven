@@ -65,9 +65,15 @@ EXPECTED = {
 }
 
 #: Each input case's statement, refused value, SQLSTATE and the text that stays.
-#: The value is cast on the server, so both drivers get PostgreSQL's class 22.
+#: The value is cast on the server, so both drivers get PostgreSQL's class 22,
+#: in shapes that quote it at the end, in the middle, or around ``: "``.
 INPUTS = {
-    "22P02": ("CAST(CAST(:v AS text) AS integer)", f'{MARK} "q" x', "22P02", "integer"),
+    "22P02": (
+        "CAST(CAST(:v AS text) AS integer)",
+        f'{MARK} "q" x',
+        "22P02",
+        "type integer",
+    ),
     "22007": (
         "CAST(CAST(:v AS text) AS timestamptz)",
         f"{MARK} x",
@@ -80,6 +86,30 @@ INPUTS = {
         "23772377237",
         "22003",
         "type integer",
+    ),
+    "time zone": (
+        "CAST(CAST(:v AS text) AS timestamptz)",
+        f"2026-01-01 00:00 america/{MARK}zone",
+        "22023",
+        "not recognized",
+    ),
+    "time zone, colon and quote": (
+        "timezone(CAST(:v AS text), now())",
+        f'{MARK}: "zone',
+        "22023",
+        "not recognized",
+    ),
+    "unit": (
+        "date_trunc(CAST(:v AS text), now())",
+        f"{MARK}unit",
+        "22023",
+        "not recognized for type",
+    ),
+    "to_date": (
+        "to_date(CAST(:v AS text), 'DD Mon YYYY')",
+        f"01 {MARK} 2026",
+        "22007",
+        "invalid value",
     ),
 }
 #: asyncpg encodes this argument itself, and refuses it before the server sees it.
@@ -181,7 +211,8 @@ def _wrong(failures: dict, fields=None, inputs: dict | None = None) -> dict:
     found = {}
     cases = {c: (MARK, IntegrityError, f, None) for c, f in EXPECTED.items()}
     cases |= {
-        c: (v, DBAPIError, (s, None), k) for c, (_, v, s, k) in (inputs or {}).items()
+        c: (MARK if MARK in v else v, DBAPIError, (s, None), k)
+        for c, (_, v, s, k) in (inputs or {}).items()
     }
     for case, (secret, cls, expected, kept) in cases.items():
         exc = failures.get(case)
@@ -240,6 +271,9 @@ async def test_postgresql_failed_writes_carry_no_values(fresh_engine):
     values = (MARK, *(spec[1] for spec in INPUTS.values()))
     held = {c: repr(vars(driver_error(e))) for c, e in failures.items()}
     assert [c for c, text_ in held.items() if any(v in text_ for v in values)] == []
+    # Nor does the codec's own exception linger, on the cause or the context.
+    codec = driver_error(failures["argument"])
+    assert (codec.__cause__, codec.__context__) == (None, None)
 
 
 @pytest.mark.postgres
