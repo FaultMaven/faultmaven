@@ -720,8 +720,9 @@ class TransitionManager:
                 # user declined. While that decline stands (no confirmation
                 # recorded since), both are refused, with feedback and the
                 # "Mark it resolved" chip on the turn. The user's own close
-                # pick still pivots (``_close_on_explicit_intent``): this
-                # binds the model, never the user.
+                # pick closes while the decline stands
+                # (``_close_on_explicit_intent``, #2360): this binds the
+                # model, never the user.
                 model_resolves_ready = (
                     proposed.to_state == "resolved"
                     and effective_to_status == "resolved"

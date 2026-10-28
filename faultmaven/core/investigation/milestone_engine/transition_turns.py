@@ -177,7 +177,7 @@ RESOLVE_DECLINED_REPLY = (
 )
 
 
-def _decline_bare_reply(*, case, upload_report, user_message):
+def _decline_bare_reply(*, case, upload_report, user_message, declined_to_state):
     """Reply to a bare (non-substantive) decline of a pending transition, leaving the case open.
 
     On a false-alarm close the decline was just recorded on the finding, and
@@ -186,17 +186,23 @@ def _decline_bare_reply(*, case, upload_report, user_message):
     decline was just recorded against the confirmations on record, and the
     reply says what brings the offer back, with the "Mark it resolved" chip
     (``declined_resolve_card``) as its one follow-up (#1895).
+
+    Keyed on ``declined_to_state``, the target of the offer just declined: a
+    close the user declines while their resolve decline stands (#2360) gets
+    the plain reply, with the chip still attached.
     """
     follow_ups: list = []
     resolve_card = declined_resolve_card(case)
     if false_alarm_close_declined_at(case) is not None:
         agent_response = FALSE_ALARM_HOLD_REPLY
         follow_ups = [declined_close_card("false_alarm")]
-    elif resolve_card is not None:
+    elif resolve_card is not None and declined_to_state == "resolved":
         agent_response = RESOLVE_DECLINED_REPLY
         follow_ups = [resolve_card]
     else:
         agent_response = "Understood. The case remains open for further investigation."
+        if resolve_card is not None:
+            follow_ups = [resolve_card]
     turn_metadata = _finish_deterministic_turn(
         case,
         user_message or "",
@@ -336,12 +342,18 @@ def _close_on_explicit_intent(
     ):
         raise ValueError(f"Cannot transition to CLOSED from {case.state.value}")
 
+    from faultmaven.core.investigation.terminal_transitions import (
+        assess_close_summary,
+        close_pivots_to_resolve,
+    )
+
     # Use closure readiness for a meaningful summary, and
     # pivot to RESOLVED if the case has root cause + solution
     # on record (SUGGEST_RESOLVE — symmetric to the LLM-emit
-    # path's SUGGEST_CLOSE pivot for the opposite direction).
+    # path's SUGGEST_CLOSE pivot for the opposite direction),
+    # unless the user declined that resolution (#2360).
     closure = assess_closure_readiness(case)
-    if closure.verdict == closure.SUGGEST_RESOLVE:
+    if close_pivots_to_resolve(case, closure.verdict):
         # closure_reason auto-derives to None inside
         # propose_transition for RESOLVED — resolution itself
         # is the categorization. The user still confirms via
@@ -370,6 +382,10 @@ def _close_on_explicit_intent(
             "case_updated": case,
             "metadata": turn_metadata,
         }
+    if closure.verdict == closure.SUGGEST_RESOLVE:
+        # A resolve decline stands: the close closes, so it is asked about
+        # as a close, not with the pivot's "mark it resolved instead?".
+        closure = assess_close_summary(case)
 
     # Standard close — closure_reason derived inside
     # propose_transition from case state.

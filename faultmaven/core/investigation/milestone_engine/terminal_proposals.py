@@ -110,9 +110,11 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
     # Resolve preservation (INV-37), the SAME choice the other two disposition
     # paths already make: the LLM-proposal path pivots CLOSED->RESOLVED on
     # SUGGEST_RESOLVE, and the confirm-time guard pivots a pending CLOSE the
-    # same way. This proposer used to call propose_transition("closed")
-    # directly, so it was the one path that could offer "close this case
-    # without resolution" on a case its OWN eligibility scored resolvable.
+    # same way unless the user declined that resolution (#2360), which also
+    # silences this proposer (the covering check below). This proposer used to
+    # call propose_transition("closed") directly, so it was the one path that
+    # could offer "close this case without resolution" on a case its OWN
+    # eligibility scored resolvable.
     # Deferred implementation says WHEN the fix lands, not that the cause went
     # unfound, so it must not cost an attributable case its resolution.
     #

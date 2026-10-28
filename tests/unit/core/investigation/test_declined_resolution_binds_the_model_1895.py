@@ -449,9 +449,11 @@ class TestADeclinedResolutionBindsTheModel:
         assert case.state == CaseState.INVESTIGATING
         assert "this case has not been resolved or closed" in result["agent_response"]
 
-    async def test_the_users_own_close_still_pivots_to_the_offer(self):
-        """U1: the user's close is never refused. It pivots to the resolve
-        offer (INV-37), and the user confirms or declines that."""
+    async def test_the_users_own_close_proposes_the_close(self):
+        """U1, as ruled in #2360: the user's close is never refused, and after
+        a decline it is not pivoted back to the resolution they declined. It
+        proposes CLOSED with the close pair, and the chip stays off the turn
+        (an offer stands)."""
         engine, case, _ = await _offered_then_declined()
         result = await _turn(
             engine,
@@ -460,12 +462,13 @@ class TestADeclinedResolutionBindsTheModel:
             intent_type="status_transition",
             intent_data={"to_state": "closed", "from_state": "investigating"},
         )
-        assert case.pending_transition["to_state"] == "resolved"
+        assert case.pending_transition["to_state"] == "closed"
         assert "TRANSITION NOT PROPOSED" not in result["agent_response"]
         assert _labels(result) == [
-            "Yes, mark as resolved",
+            "Yes, close this case",
             "Not yet, continue investigating",
         ]
+        assert DECLINED_RESOLVE_CARD_LABEL not in _labels(result)
 
 
 # ---------------------------------------------------------------------------
@@ -858,9 +861,10 @@ class TestTheRefusalSitesAdmitOnlyTheCurrentKey:
 
 
 class TestRESOLVEDStaysUnselectable:
-    def test_the_menu_is_unchanged_and_empty_on_a_ready_declined_case(self):
+    def test_the_menu_lists_only_close_on_a_ready_declined_case(self):
         """B3: the chip is not a menu entry. The status menu still lists only
-        dispositions, and on a resolution-ready case it reads empty."""
+        dispositions, and once the resolution is declined it shows Close
+        (#2360)."""
         assert dict(USER_SELECTABLE_ACTIONS) == {
             CaseState.INQUIRY: (CaseState.CLOSED,),
             CaseState.INVESTIGATING: (CaseState.CLOSED,),
@@ -877,7 +881,7 @@ class TestRESOLVEDStaysUnselectable:
         ]
         assert derive_disposition_eligibility(case) == {
             "resolved": "ready",
-            "closed": "suggests_alternative",
+            "closed": "ready",
         }
 
 

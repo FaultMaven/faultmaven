@@ -316,14 +316,19 @@ class InvestigationStrategy(str, Enum):
 #     the INVESTIGATING reasons because it is decisive — no cause, fix or
 #     mitigation can stand on a problem that never existed. The one close the
 #     engine itself offers on a finding (problem_status.invalidate_problem).
+#   - resolution_declined: the fix was confirmed to work (the case qualifies
+#     for RESOLVED) and the user chose not to mark it resolved: a resolve
+#     decline stands (#1895), so their close closes instead of pivoting to
+#     resolve (#2360). Ahead of solution_deferred, which on such a case would
+#     say the fix was never applied.
 #   - solution_deferred: the cause is IDENTIFIED and a fix is documented, but
 #     implementation happens out-of-band (a change request, a maintenance
 #     window, another team) — `solution_feasible == DEFERRED` with a solution on
 #     record, the disposition `_maybe_propose_deferred_close` proposes. The most
 #     complete non-resolved outcome there is: nothing was missing, the fix
-#     simply was not applied this session. Ranked first among the INVESTIGATING
-#     reasons for that reason — where several hold, the one carrying the most
-#     established knowledge wins.
+#     simply was not applied this session. Ranked ahead of the remaining
+#     INVESTIGATING reasons for that reason — where several hold, the one
+#     carrying the most established knowledge wins.
 #   - closed_rca_infeasible: the cause is STRUCTURALLY unreachable — an
 #     uncontrollable external dependency, an EOL system, a known intractable
 #     condition — as declared by `problem_verification.rca_infeasible` WITH a
@@ -373,6 +378,7 @@ class InvestigationStrategy(str, Enum):
 VALID_CLOSURE_REASONS: set[str] = {
     "inquiry_only",
     "closed_false_alarm",
+    "resolution_declined",
     "solution_deferred",
     "closed_rca_infeasible",
     "mitigation_sufficient",

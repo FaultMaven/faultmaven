@@ -438,10 +438,15 @@ is **empty**, and that is correct rather than a gap. The reopen chip (#1895) doe
 not change that: it is a follow-up the engine attaches after a decline, not a
 menu entry, and `USER_SELECTABLE_ACTIONS` still lists only dispositions. `closed` reads
 `suggests_alternative` there, which holds exactly when the case confirms a
-resolution (both absence legs) — so INV-37 pivots any close back to
-a resolve proposal. A Close control on such a case could only ever produce "shall
-I mark this resolved?". The case has one terminal destination and the engine is
-already offering it.
+resolution (both absence legs) and no resolve decline stands — so INV-37 pivots
+any close back to a resolve proposal. A Close control on such a case could only
+ever produce "shall I mark this resolved?". The case has one terminal destination
+and the engine is already offering it. Once the user declines that resolution,
+`closed` reads `ready` and the menu shows Close again: choosing it closes the case
+(`closure_reason` `resolution_declined`), and the chip stays as the way back
+(#2360). While the chip's resolve proposal is pending, Close is hidden again, so
+the two are never offered together; the decline lapses when the state it was
+given against changes (a new confirmation, solution or cause leg).
 
 **MULTIPLE SOLUTIONS HANDLING**:
 
@@ -493,15 +498,15 @@ chance to see what was accomplished before committing to an irreversible action.
 
 **SUGGEST_CLOSE pivot for RESOLVED:** When resolution readiness returns `SUGGEST_CLOSE` (no root cause, no solution, no evidence), the LLM-emit path (the one way a RESOLVED proposal reaches the state machine besides the engine's own READY offer, INV-43) immediately pivots the pending proposal to CLOSED and present the close confirmation pair. The user sees the close prompt rather than a resolve prompt.
 
-**SUGGEST_RESOLVE pivot for CLOSED (symmetric):** When closure readiness returns `SUGGEST_RESOLVE` (the case confirms a resolution — a qualifying `causal_absence` and a `symptom_absence` at or after it: the root cause eliminated and the problem gone with it), both the UI-dropdown path and the LLM-emit path pivot the pending proposal to RESOLVED and present the resolve confirmation pair. Closing a resolution-grade case would discard the resolution attribution; the pivot reconciles loose user terminology ("close" vs "resolve") against actual case content. This is the close-side counterpart of the RESOLVED → SUGGEST_CLOSE pivot above — together they form a symmetric strategy: a thin case requested as resolved pivots to close; a rich case requested as closed pivots to resolve.
+**SUGGEST_RESOLVE pivot for CLOSED (symmetric):** When closure readiness returns `SUGGEST_RESOLVE` (the case confirms a resolution — a qualifying `causal_absence` and a `symptom_absence` at or after it: the root cause eliminated and the problem gone with it), both the UI-dropdown path and the LLM-emit path pivot the pending proposal to RESOLVED and present the resolve confirmation pair. Closing a resolution-grade case would discard the resolution attribution; the pivot reconciles loose user terminology ("close" vs "resolve") against actual case content. This is the close-side counterpart of the RESOLVED → SUGGEST_CLOSE pivot above — together they form a symmetric strategy: a thin case requested as resolved pivots to close; a rich case requested as closed pivots to resolve. The dropdown pivot does not fire while a resolve decline stands (#1895, #2360): close is the user's choice at any time, so once the user has declined the resolution their Close proposes CLOSED (`close_pivots_to_resolve`). The LLM-emit pivot still fires there, and the resolve it produces is refused against the decline.
 
-**Confirm-time resolve-preservation (INV-37, #656 P3.4).** The two pivots above fire at *proposal* time. But the confirmation can land *after* a close was proposed (the fix is confirmed effective between the close proposal and its confirmation), so the SUGGEST_RESOLVE pivot is also enforced at *confirm* time: `confirm_pending_transition` re-runs `assess_closure_readiness` at the single execution chokepoint immediately before a CLOSE commits, and on `SUGGEST_RESOLVE` replaces the pending close with a RESOLVED proposal instead of closing (returning `False` so the caller re-presents the resolve confirmation). The governing principle is "resolve = close *with* resolution; close = close *without* resolution" — it is **always safe to resolve a case that can be resolved**, whichever terminal the user asked for, and users have no incentive to close a case that qualifies for resolution. This makes "a resolvable case is never terminally recorded as closed-unresolved" a hard invariant at the terminal boundary, not only a proposal-time nicety. Scoped to `INVESTIGATING` (RESOLVED is not a valid edge from INQUIRY). There is no symmetric counterpart in the other direction — every case is closable, so closing is always a valid disposition and needs no readiness gate (see INV-37).
+**Confirm-time resolve-preservation (INV-37, #656 P3.4).** The two pivots above fire at *proposal* time. But the confirmation can land *after* a close was proposed (the fix is confirmed effective between the close proposal and its confirmation), so the SUGGEST_RESOLVE pivot is also enforced at *confirm* time: `confirm_pending_transition` re-runs `assess_closure_readiness` at the single execution chokepoint immediately before a CLOSE commits, and on `SUGGEST_RESOLVE` replaces the pending close with a RESOLVED proposal instead of closing (returning `False` so the caller re-presents the resolve confirmation). The governing principle is "resolve = close *with* resolution; close = close *without* resolution" — it is **always safe to resolve a case that can be resolved**, whichever terminal the user asked for, and users have no incentive to close a case that qualifies for resolution. This makes "a resolvable case is never terminally recorded as closed-unresolved" a hard invariant at the terminal boundary, not only a proposal-time nicety, with one exception: the user who declined the resolution. While that decline stands, a pending close confirmed now closes, whoever proposed it, and its reason is re-derived as `resolution_declined` (#2360). Scoped to `INVESTIGATING` (RESOLVED is not a valid edge from INQUIRY). There is no symmetric counterpart in the other direction — every case is closable, so closing is always a valid disposition and needs no readiness gate (see INV-37).
 
 **`disposition_eligibility` — denormalized read view for UI affordance gating.** The two pivots above kick in at *action time* (when the user has already requested a transition). The complementary preventive measure is to gate the affordances themselves: hide Resolve when the case isn't resolution-grade, and warn on Close when closing would silently discard a documented resolution. The per-case answer is computed by `derive_disposition_eligibility(case)` in `terminal_transitions.py` and persisted to the `cases.disposition_eligibility` column as `{"resolved": <verdict>, "closed": <verdict>}` where each verdict is one of:
 
 - `ready` — disposition is appropriate; render enabled with the default confirm UX.
 - `needs_info` — disposition is allowed but the case is partial; user must ADD information before transitioning. Currently only the Resolve side surfaces this.
-- `suggests_alternative` — disposition is allowed but the system recommends the OTHER disposition for this case (e.g., resolution-grade case clicked-to-close). User is asked to RE-DIRECT, not to add data. Currently only the Close side surfaces this.
+- `suggests_alternative` — disposition is allowed but the system recommends the OTHER disposition for this case (e.g., resolution-grade case clicked-to-close, while the user has not declined that resolution). User is asked to RE-DIRECT, not to add data. Currently only the Close side surfaces this.
 - `not_eligible` — disposition is not available; hide the affordance entirely.
 
 `needs_info` and `suggests_alternative` are kept as distinct values rather than overloading one label, because they drive different UX patterns (add-data vs reconsider-action). The column is maintained at the **single chokepoint `CaseRepository.save()`** (pattern P3) — every save calls the derive helper and rewrites the column, so the value can never drift from current case content without per-mutation-site update burden. The UI adapter passes the column through to all three `CaseUIResponse_*` variants; the frontend renders the dropdown menu against `disposition_eligibility`, not just `valid_next_states`. Distinction: `valid_next_states` answers *which actions the user may select*; `disposition_eligibility` answers *which of those make sense given current content*. (Neither is the legality graph — that is `LEGAL_TRANSITIONS`, §1.3.)
@@ -732,7 +737,7 @@ propose_transition(
     to_status="closed",
     summary=closure.message,
     # closure_reason derived by engine via derive_closure_reason():
-    # inquiry_only | closed_false_alarm | solution_deferred | closed_rca_infeasible | mitigation_sufficient | closed_restatement_held | closed_insufficient_evidence
+    # inquiry_only | closed_false_alarm | resolution_declined | solution_deferred | closed_rca_infeasible | mitigation_sufficient | closed_restatement_held | closed_insufficient_evidence
 )
 # User confirms → _execute_closed_transition(case, user_id, closure_reason)
 ```
@@ -2233,13 +2238,15 @@ The retrospective shape is **direct** vs **mitigated**, derived from
 
 `closure_reason` is `None` for all RESOLVED cases — resolution itself is the
 categorization. Only CLOSED cases carry a `closure_reason` value (`inquiry_only`,
-`closed_false_alarm`, `solution_deferred`, `closed_rca_infeasible`,
+`closed_false_alarm`, `resolution_declined`, `solution_deferred`, `closed_rca_infeasible`,
 `mitigation_sufficient`, `closed_restatement_held`, or
 `closed_insufficient_evidence`). `derive_closure_reason` (in
 `terminal_transitions.py`) picks the most specific reason first: `inquiry_only`
 when the case never left INQUIRY; `closed_false_alarm` when the evidence showed
 the reported symptom was never present (`problem_status` INVALIDATED —
 [§ Verifying the problem statement](#141-verifying-the-problem-statement-three-outcomes));
+`resolution_declined` when the fix was confirmed to work and the user declined to
+mark it resolved (a resolve decline stands, #2360);
 `solution_deferred`
 when a fix is documented but was never applied; `closed_rca_infeasible` when RCA
 was declared infeasible with a rationale; `mitigation_sufficient` when a

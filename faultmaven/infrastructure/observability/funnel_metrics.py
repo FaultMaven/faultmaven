@@ -12,8 +12,8 @@ Gauges (no-ops unless ``ENABLE_METRICS=true``; see ``shims/metrics.py``):
 
 - ``faultmaven_cases{state, closure_reason}`` -- the funnel: count of ONLINE
   cases by workflow state. ``closure_reason`` sub-classifies CLOSED
-  (``inquiry_only`` / ``closed_false_alarm`` / ``solution_deferred`` /
-  ``closed_rca_infeasible`` /
+  (``inquiry_only`` / ``closed_false_alarm`` / ``resolution_declined`` /
+  ``solution_deferred`` / ``closed_rca_infeasible`` /
   ``mitigation_sufficient`` / ``closed_restatement_held`` /
   ``closed_insufficient_evidence``
   / ``unknown`` for closes that reached terminal without a classified reason --
@@ -69,6 +69,7 @@ _OPEN_OR_RESOLVED = ("inquiry", "investigating", "resolved")
 _CLOSED_REASONS = (
     "inquiry_only",
     "closed_false_alarm",
+    "resolution_declined",
     "solution_deferred",
     "closed_rca_infeasible",
     "mitigation_sufficient",
@@ -83,6 +84,7 @@ _QUANTILES = (("0.5", 0.50), ("0.95", 0.95))
 _EFFORT_TO_STATES = (
     "resolved",
     "closed_false_alarm",
+    "resolution_declined",
     "solution_deferred",
     "closed_rca_infeasible",
     "mitigation_sufficient",
@@ -93,8 +95,8 @@ _EFFORT_TO_STATES = (
 cases_gauge = Gauge(
     "faultmaven_cases",
     "Online cases by workflow state; closure_reason sub-classifies CLOSED "
-    "(inquiry_only / closed_false_alarm / solution_deferred / "
-    "closed_rca_infeasible / "
+    "(inquiry_only / closed_false_alarm / resolution_declined / "
+    "solution_deferred / closed_rca_infeasible / "
     "mitigation_sufficient / closed_restatement_held / "
     "closed_insufficient_evidence / unknown).",
     labelnames=["state", "closure_reason"],
@@ -181,7 +183,7 @@ class FunnelMetricsCollector:
                         "closed_at FROM cases "
                         "WHERE (state = 'resolved' OR (state = 'closed' AND "
                         "closure_reason IN ('closed_false_alarm', "
-                        "'solution_deferred', "
+                        "'resolution_declined', 'solution_deferred', "
                         "'closed_rca_infeasible', 'mitigation_sufficient', "
                         "'closed_restatement_held', "
                         "'closed_insufficient_evidence'))) "
