@@ -38,6 +38,7 @@ def _upload(file_id, name, stored=True):
         filename=name,
         display_name=name,
         storage_ref=f"org/case/{name}" if stored else None,
+        has_stored_content=stored,
         data_type=None,
     )
 

@@ -31,6 +31,11 @@ from faultmaven.exceptions import (
 from faultmaven.models.api import DataType
 from faultmaven.models.interfaces import ToolResult
 from faultmaven.modules.agent.tools.base import AgentTool, ToolContext, tool_failure
+from faultmaven.modules.agent.tools.search_file_tool import (
+    IdOutcome,
+    resolve_case_id,
+    upload_without_its_row,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -177,14 +182,19 @@ class ReclassifyEvidenceTool(AgentTool):
             # <storage key>)``, an internal key (#2332). Named by the tool's
             # own argument instead; the text goes to the log.
             logger.warning("reclassify_evidence: not found for %s: %s", evidence_id, e)
-            missing = (
-                "was not found in this case"
-                if e.resource_type == "Evidence"
-                else "has no stored file to re-extract"
-            )
-            return ToolResult(
-                success=False, data=None, error=f"Evidence {evidence_id} {missing}."
-            )
+            if e.resource_type != "Evidence":
+                error = f"Evidence {evidence_id} has no stored file to re-extract."
+            elif resolve_case_id(in_flight_case, evidence_id).outcome is (
+                IdOutcome.FOUND
+            ):
+                # No row has the id, yet the case holds it: an upload's file_id
+                # (#2375), answered as the other file tools answer it.
+                error = upload_without_its_row(
+                    in_flight_case, evidence_id, "reclassify", "reclassified"
+                )
+            else:
+                error = f"Evidence {evidence_id} was not found in this case."
+            return ToolResult(success=False, data=None, error=error)
         # The arms below pass ``str(e)``: every raiser on this path writes its
         # message for the caller (``investigation_service/reclassification.py``),
         # and a storage or driver failure arrives as ``ServiceError``, which

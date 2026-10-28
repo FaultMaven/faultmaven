@@ -8,12 +8,18 @@ the file can be read stays each tool's own test, and only an id the case does
 not hold is "not found".
 """
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from faultmaven.modules.agent.domain.services.investigation_service.reclassification import (
+    EvidenceReclassifier,
+)
 from faultmaven.modules.agent.tools.base import ToolContext
 from faultmaven.modules.agent.tools.deep_analysis_tool import DeepAnalysisTool
+from faultmaven.modules.agent.tools.reclassify_evidence_tool import (
+    ReclassifyEvidenceTool,
+)
 from faultmaven.modules.agent.tools.search_file_tool import (
     IdOutcome,
     SearchFileTool,
@@ -238,3 +244,40 @@ async def test_vectorize_file_names_why_an_id_cannot_be_vectorized(id_, expected
 
     assert result.error == expected
     assert tool.case_vector_store.method_calls == []
+
+
+@pytest.mark.parametrize(
+    "id_,expected",
+    [
+        (
+            STORED,
+            f"Upload {STORED} has no evidence row recording it yet, so it cannot "
+            "be reclassified.",
+        ),
+        (
+            RECORDED,
+            f"Upload {RECORDED} is recorded as evidence {EV_RECORDED}: pass that "
+            "evidence_id to reclassify it.",
+        ),
+        (UNKNOWN, f"Evidence {UNKNOWN} was not found in this case."),
+    ],
+    ids=["upload", "recorded_upload", "unknown"],
+)
+async def test_reclassify_evidence_answers_an_upload_as_the_other_tools_do(
+    id_, expected
+):
+    """#2375 review: the reclassifier looks up evidence rows only, so an
+    upload's file_id the case holds was "not found in this case"."""
+    tool = ReclassifyEvidenceTool(reclassifier=EvidenceReclassifier(None, None, None))
+    settings = MagicMock()
+    settings.preprocessing.reclassify_enabled = True
+
+    with patch(
+        "faultmaven.modules.agent.tools.reclassify_evidence_tool.get_settings",
+        return_value=settings,
+    ):
+        result = await tool.execute_with_context(
+            {"evidence_id": id_, "data_type": "logs_and_errors"}, _ctx(_case())
+        )
+
+    assert result.error == expected

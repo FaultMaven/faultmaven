@@ -112,7 +112,8 @@ def _make_case_with_evidence(evidence_list: list) -> Case:
     attribute renders. Each unique ``ev.source_file_id`` gets one
     synthesized UploadedFile, with ``structural_index`` populated from
     the test fixture's ``extract`` parameter (which production routes
-    to the file row, not the evidence row).
+    to the file row, not the evidence row), and stored (a ``storage_ref``),
+    as an upload is wherever file storage is wired (#2375).
 
     The synthesized file's ``uploaded_at_turn`` is the EARLIEST
     ``collected_at_turn`` among the rows citing it: the data arrived on the
@@ -159,6 +160,7 @@ def _make_case_with_evidence(evidence_list: list) -> Case:
                     uploaded_at=datetime.now(UTC),
                     uploaded_by="user_123",
                     structural_index=structural_by_file.get(fid),
+                    storage_ref=f"evidence/case_aabb11223344/{fid}.log",
                 )
             )
     return Case(
@@ -844,9 +846,8 @@ class TestTierDOrphanUploads:
         assert "[Source: deployment.yaml]" in result
         # The pending block must be marked file-backed so the LLM knows the
         # file is held (stored, #2375) and can pass the file_id to search_file.
-        # The fixture's earlier row has no stored file, so the marker is this
-        # block's.
-        assert 'file_backed="true"' in result
+        pending_tag = result.split('file_id="file_aaaaaaaa0001"', 1)[1].split(">")[0]
+        assert 'file_backed="true"' in pending_tag
 
     def test_dedup_does_not_emit_orphan_block_for_already_referenced_file(
         self,

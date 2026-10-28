@@ -26,7 +26,11 @@ from typing import Any, Dict
 from faultmaven.config.settings import get_settings
 from faultmaven.models.interfaces import ToolResult
 from faultmaven.modules.agent.tools.base import AgentTool, ToolContext, tool_failure
-from faultmaven.modules.agent.tools.search_file_tool import IdOutcome, resolve_case_id
+from faultmaven.modules.agent.tools.search_file_tool import (
+    IdOutcome,
+    resolve_case_id,
+    upload_without_its_row,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -340,29 +344,18 @@ class VectorizeFileTool(AgentTool):
         ``search_file`` is named only when the turn gives it (#1939) and there
         is a stored file for it to read.
         """
-        recorder = next(
-            (
-                ev
-                for ev in getattr(case, "evidence", None) or []
-                if getattr(ev, "source_file_id", None) == upload.file_id
-            ),
-            None,
+        reader = (
+            " search_file can still read it by this file_id."
+            if "search_file" in context.given_tools and upload.has_stored_content
+            else ""
         )
-        if recorder is not None:
-            error = (
-                f"Upload {upload.file_id} is recorded as evidence "
-                f"{recorder.evidence_id}: pass that evidence_id to vectorize it."
-            )
-        else:
-            error = (
-                f"Upload {upload.file_id} has no evidence row recording it yet, "
-                "so it cannot be vectorized."
-            )
-            if "search_file" in context.given_tools and getattr(
-                upload, "storage_ref", None
-            ):
-                error += " search_file can still read it by this file_id."
-        return ToolResult(success=False, data=None, error=error)
+        return ToolResult(
+            success=False,
+            data=None,
+            error=upload_without_its_row(
+                case, upload.file_id, "vectorize", "vectorized", reader
+            ),
+        )
 
     @staticmethod
     def _not_indexed(outcome: Any, evidence_id: str, data_type_str: str) -> ToolResult:

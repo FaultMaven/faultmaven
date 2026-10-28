@@ -32,8 +32,8 @@ def _deep_analysis_alternatives(
 
     The list is ``enumerate_readable_files``'s, the one ``search_file`` and
     ``case_evidence_search`` phrase from. ``deep_analysis`` reads an upload no
-    evidence row records by its ``file_id`` (the fallback below), so it names
-    those too.
+    evidence row records by its ``file_id`` (``resolve_case_id`` resolves both
+    forms), so it names those too.
     """
     files = enumerate_readable_files(all_evidence, excluded_evidence_id, case)
     recorded = [f"{f.id} ({f.filename})" for f in files if f.recorded]
@@ -148,13 +148,6 @@ class DeepAnalysisTool(AgentTool):
                 unified_data_type_of,
             )
 
-            _TYPE_MAP = {
-                "logs": UnifiedDataType.LOGS,
-                "metrics": UnifiedDataType.METRICS,
-                "configuration": UnifiedDataType.CONFIGURATION,
-                "code": UnifiedDataType.CODE,
-            }
-
             all_evidence = getattr(case, "evidence", []) or []
             resolved_id = resolve_case_id(case, evidence_id)
             if resolved_id.outcome is IdOutcome.NOT_FOUND:
@@ -187,8 +180,7 @@ class DeepAnalysisTool(AgentTool):
             # upload with nothing stored is in the case: it says so, never
             # "not found" (#2375).
             file_meta = resolved_id.file
-            file_ref = getattr(file_meta, "storage_ref", None)
-            if not file_ref:
+            if file_meta is None or not file_meta.has_stored_content:
                 alts = _deep_analysis_alternatives(all_evidence, evidence_id, case)
                 return ToolResult(
                     success=False,
@@ -198,14 +190,28 @@ class DeepAnalysisTool(AgentTool):
                         f"deep analysis.{alts}"
                     ),
                 )
+            file_ref = file_meta.storage_ref
 
+            # The file's own type, on both arms, through the read boundary
+            # (#583): the column holds the fine-grained ``DataType`` on rows
+            # written since #583 and the 6-valued string on rows before. The
+            # evidence arm read the row's ``category`` (symptom, causal, ...),
+            # which names no data type, so it always sent TEXT (#2375).
+            data_type = (
+                unified_data_type_of(getattr(file_meta, "data_type", None))
+                or UnifiedDataType.TEXT
+            )
             evidence = resolved_id.row
-            data_type = UnifiedDataType.TEXT  # default
             if evidence is not None:
                 # Phase 2c — triage-to-escalation counter. Mirrors the
                 # equivalent wiring in search_file_tool. Fires when this
                 # deep analysis targets an evidence delivered in the same
                 # turn — signals the extractor's output was insufficient.
+                #
+                # Not emitted for an upload passed by its ``file_id`` (a file
+                # uploaded this turn has no Evidence row yet): the helper is
+                # Evidence-keyed (it reads the row's ``collected_at_turn``).
+                # File-keyed escalation telemetry is tracked separately.
                 try:
                     from faultmaven.infrastructure.observability.evidence_metrics import (
                         record_triage_escalation_if_same_turn,
@@ -218,36 +224,6 @@ class DeepAnalysisTool(AgentTool):
                     )
                 except Exception:
                     pass
-
-                # Determine data type from evidence category
-                category = getattr(evidence, "category", None)
-                if category:
-                    cat_value = (
-                        category.value if hasattr(category, "value") else str(category)
-                    )
-                    data_type = _TYPE_MAP.get(cat_value.lower(), UnifiedDataType.TEXT)
-            else:
-                # Dual-resolution: the id may be a bare ``file_…`` for a file
-                # uploaded this turn that has no Evidence row yet. Mirrors
-                # search_file's file-id fallback so a just-uploaded file is
-                # analyzable before the LLM creates Evidence for it — without
-                # this, the LLM reuses the nearest existing evidence_id and
-                # analyzes the WRONG file (the bug this fallback closes).
-                #
-                # Through the read boundary (#583): the column holds the
-                # fine-grained ``DataType`` on rows written since #583, which
-                # ``_TYPE_MAP`` (keyed on the 6-valued strings) never matches.
-                data_type = (
-                    unified_data_type_of(getattr(file_meta, "data_type", None))
-                    or UnifiedDataType.TEXT
-                )
-                # NOTE: the triage-to-escalation metric
-                # (record_triage_escalation_if_same_turn) is intentionally not
-                # emitted here. That helper is Evidence-keyed (it inspects the
-                # Evidence row's collected_at_turn); on this branch there is no
-                # Evidence row yet. A same-turn file_id deep-analysis is arguably
-                # also an escalation — wiring file-keyed escalation telemetry is
-                # tracked separately, not bundled into this fix.
 
             analysis_context = AnalysisContext(
                 case_id=context.case_id,

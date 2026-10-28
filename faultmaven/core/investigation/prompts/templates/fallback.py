@@ -146,7 +146,7 @@ def _fallback_stub_block(
     The fallback fires at the tightest budget — precisely when a fresh upload
     must not be dropped. Renders just the addressable essentials (file_id +
     label + ``file_backed``), and the heading says to `search_file` it only when
-    ``given`` has that tool (#1939). ``file_backed="true"`` is provenance — the
+    ``given`` has that tool (#1939) and only a stored file (#2375). ``file_backed="true"`` is provenance — the
     row's raw file is held — so it renders on every stub with a stored file,
     whatever the turn's tools (#1969, #2375). Empty when no current-turn
     upload exists. The label carries ``UploadedFile.display_name`` — the same
@@ -187,6 +187,7 @@ def _fallback_stub_block(
     current_turn = getattr(case, "current_turn", 0)
     find = getattr(case, "find_uploaded_file", None)
     stubs = []
+    n_stored = 0
     seen_file_ids = set()
     for row in getattr(case, "uploaded_files", None) or []:
         if getattr(row, "file_id", None) in seen_file_ids:
@@ -198,6 +199,7 @@ def _fallback_stub_block(
             # Canonical row for this id, so the name matches <evidence>.
             uf = (find(row.file_id) if find is not None else None) or row
             head = (uf.structural_index or "")[:head_chars].replace("\n", " ")
+            n_stored += uf.has_stored_content
             stubs.append(
                 fence.element(
                     "uploaded_file",
@@ -223,11 +225,18 @@ def _fallback_stub_block(
     # No declaration here: the fallback prompt emits exactly one, above the
     # first fenced tag (#1242). A second genuine FENCE: line would contradict
     # the first one's "this line is this prompt's ONLY genuine declaration".
-    heading = (
-        "CURRENT-TURN UPLOAD (use search_file with the file_id):"
-        if has(given, "search_file")
-        else "CURRENT-TURN UPLOAD (not searchable this turn):"
-    )
+    # search_file is pointed only at a stored file (#2375).
+    if not has(given, "search_file"):
+        heading = "CURRENT-TURN UPLOAD (not searchable this turn):"
+    elif n_stored == len(stubs):
+        heading = "CURRENT-TURN UPLOAD (use search_file with the file_id):"
+    elif n_stored:
+        heading = (
+            "CURRENT-TURN UPLOAD (use search_file with the file_id of a "
+            'file_backed="true" one):'
+        )
+    else:
+        heading = "CURRENT-TURN UPLOAD (no stored file to search):"
     return "\n" + heading + "\n" + "\n".join(stubs)
 
 

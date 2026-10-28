@@ -2,13 +2,14 @@
 
 Pins the rule that a Directed-Analysis turn forces ``tool_choice=required``
 whenever the case holds content ``search_file`` can target — either an
-existing Evidence row OR a fresh uploaded file with a non-trivial structural
-index. Post-010, an evidence-*delivering* turn has only an ``UploadedFile``
-(no Evidence row yet), so ``bool(case.evidence)`` alone left that turn on
-``tool_choice=auto`` and let the agent skip analysis. ``_has_searchable_material``
-closes that gap while guaranteeing a real search target (mirroring the
-context builder's ``file_backed="true"`` threshold) so forcing tools cannot
-crash the tool loop.
+existing Evidence row OR a fresh uploaded file with a stored raw file and a
+non-trivial structural index. Post-010, an evidence-*delivering* turn has only
+an ``UploadedFile`` (no Evidence row yet), so ``bool(case.evidence)`` alone left
+that turn on ``tool_choice=auto`` and let the agent skip analysis.
+``_has_searchable_material`` closes that gap while guaranteeing a real search
+target: the upload renders as an ``<uploaded_file>`` (the structural-index
+threshold) and is marked ``file_backed="true"`` (a stored file, #2375), so
+forcing tools cannot crash the tool loop or force a call nothing can answer.
 
 Pure predicate over case state — no LLM, no model variance.
 """
@@ -58,11 +59,14 @@ def _make_evidence(idx: int = 1) -> Evidence:
     )
 
 
-def _make_uploaded_file(structural_index: str | None, idx: int = 1) -> UploadedFile:
+def _make_uploaded_file(
+    structural_index: str | None, idx: int = 1, stored: bool = True
+) -> UploadedFile:
     uf = UploadedFile(
         filename=f"data_{idx}.log",
         size_bytes=1800,
         uploaded_at_turn=3,
+        storage_ref=f"org/case/data_{idx}.log" if stored else None,
     )
     uf.structural_index = structural_index
     return uf
@@ -90,6 +94,20 @@ class TestHasSearchableMaterial:
             _make_uploaded_file("timerange: 07:40-07:41\n503 x12\nSSLException x3")
         )
         assert _has_searchable_material(case) is True
+
+    def test_uploaded_file_with_no_stored_file_returns_false(self):
+        """#2375: an upload with no stored file renders without
+        ``file_backed`` and no reader can open it, so it forces nothing."""
+        case = _make_case()
+        case.uploaded_files.append(
+            _make_uploaded_file(
+                "timerange: 07:40-07:41\n503 x12\nSSLException x3", stored=False
+            )
+        )
+        assert _has_searchable_material(case) is False
+        assert (
+            _should_force_tools("directed_analysis", case, has_pending=False) is False
+        )
 
     def test_uploaded_file_without_index_returns_false(self):
         """A placeholder/unanalyzable upload with no structural content is not

@@ -139,21 +139,22 @@ def _has_searchable_material(case: Case) -> bool:
     """True when the case holds content the ``search_file`` tool can target.
 
     Two sources: any Evidence row (existing claim-anchored evidence), or any
-    uploaded file with a non-trivial structural index. Post-010, a fresh
-    upload creates an ``UploadedFile`` (not an Evidence row until the LLM
-    extracts a slice), so on the evidence-*delivering* turn the searchable
-    material lives on ``uploaded_files`` — ``bool(case.evidence)`` alone
-    would be False and wrongly leave ``tool_choice=auto`` (#708). The
-    searchability test is the context builder's own
-    ``structural_index_is_searchable`` (single source of truth for the
-    threshold below which the context builder renders no ``<uploaded_file>``
-    at all), so a forced-DA turn is guaranteed a
-    real search target and the tool loop cannot crash for lack of one.
+    uploaded file with a stored raw file and a non-trivial structural index.
+    Post-010, a fresh upload creates an ``UploadedFile`` (not an Evidence row
+    until the LLM extracts a slice), so on the evidence-*delivering* turn the
+    searchable material lives on ``uploaded_files`` — ``bool(case.evidence)``
+    alone would be False and wrongly leave ``tool_choice=auto`` (#708). The
+    upload must render (the context builder's own
+    ``structural_index_is_searchable``, the threshold below which it renders
+    no ``<uploaded_file>`` at all) and be readable
+    (``UploadedFile.has_stored_content``, the test that marks it
+    ``file_backed="true"``, #2375), so a forced-DA turn is guaranteed a real
+    search target and the tool loop cannot crash for lack of one.
     """
     if getattr(case, "evidence", None):
         return True
     return any(
-        structural_index_is_searchable(uf.structural_index)
+        uf.has_stored_content and structural_index_is_searchable(uf.structural_index)
         for uf in getattr(case, "uploaded_files", None) or []
     )
 

@@ -82,9 +82,9 @@ def resolve_case_id(case: Any, id_: str) -> ResolvedId:
     tool (#2375).
 
     An ``evidence_id`` first, then an upload's ``file_id`` (#1964). Whether the
-    file can be read is each tool's own test (``storage_ref`` for the readers,
-    the preprocessing artifacts for ``vectorize_file``), so only NOT_FOUND may
-    be answered "not found in this case".
+    file can be read is each tool's own test (``has_stored_content`` for the
+    readers, the preprocessing artifacts for ``vectorize_file``), so only
+    NOT_FOUND may be answered "not found in this case".
     """
     for ev in getattr(case, "evidence", None) or []:
         if getattr(ev, "evidence_id", None) != id_:
@@ -100,6 +100,34 @@ def resolve_case_id(case: Any, id_: str) -> ResolvedId:
     if file_meta is None:
         return ResolvedId(IdOutcome.NOT_FOUND)
     return ResolvedId(IdOutcome.FOUND, file=file_meta)
+
+
+def upload_without_its_row(
+    case: Any, file_id: str, verb: str, done: str, unrecorded_note: str = ""
+) -> str:
+    """What a tool that acts on an evidence row answers for an upload's
+    ``file_id`` (#2375): the case holds it, so never "not found".
+
+    Names the row that records the upload when one does (first wins), else
+    says no row records it yet and appends ``unrecorded_note``.
+    """
+    row = next(
+        (
+            ev
+            for ev in getattr(case, "evidence", None) or []
+            if getattr(ev, "source_file_id", None) == file_id
+        ),
+        None,
+    )
+    if row is not None:
+        return (
+            f"Upload {file_id} is recorded as evidence {row.evidence_id}: pass "
+            f"that evidence_id to {verb} it."
+        )
+    return (
+        f"Upload {file_id} has no evidence row recording it yet, so it cannot "
+        f"be {done}.{unrecorded_note}"
+    )
 
 
 def enumerate_readable_files(
@@ -141,7 +169,7 @@ def enumerate_readable_files(
         if source_file_id is None or source_file_id == excluded_file_id:
             continue
         file_meta = case.find_uploaded_file(source_file_id)
-        if file_meta is None or not getattr(file_meta, "storage_ref", None):
+        if file_meta is None or not file_meta.has_stored_content:
             # No stored file (``storage_ref`` is None when the deployment has
             # no file storage): there is nothing to read, so the row is not
             # offered, the same rule the uploads below follow.
@@ -156,7 +184,7 @@ def enumerate_readable_files(
             not file_id
             or file_id in (excluded_evidence_id, excluded_file_id)
             or file_id in recorded_files
-            or not getattr(upload, "storage_ref", None)
+            or not upload.has_stored_content
         ):
             continue
         files.append(ReadableFile(file_id, upload.display_name or "(unnamed)", False))
@@ -636,14 +664,14 @@ class SearchFileTool(AgentTool):
         resolved_row = resolved_id.row if resolved_id.row is not None else file_meta
 
         # Read raw file via UploadedFile.storage_ref
-        storage_ref = file_meta.storage_ref if file_meta else None
-        if not storage_ref:
+        if file_meta is None or not file_meta.has_stored_content:
             logger.warning(
                 "search_file: evidence %s has no backing file (file not stored)",
                 evidence_id,
             )
             alts = format_searchable_alternatives(all_evidence, evidence_id, case)
             return f"Evidence {evidence_id} has no stored file content.{alts}"
+        storage_ref = file_meta.storage_ref
 
         if self.storage_service is not None and hasattr(
             self.storage_service, "retrieve_file"

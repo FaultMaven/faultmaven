@@ -31,6 +31,9 @@ import pytest
 from faultmaven.core.investigation.milestone_engine.tool_messages import (
     _build_da_system_instruction,
 )
+from faultmaven.core.investigation.prompts.context_builder.budget import (
+    EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM,
+)
 from faultmaven.core.investigation.prompts.context_builder.evidence import (
     _build_evidence_context,
     _render_orphan_file_block,
@@ -266,11 +269,72 @@ def test_the_fallback_stub_is_file_backed_whatever_the_tools(given, stored):
     assert (FILE_BACKED in tag) is stored, tag
     assert OLD_ATTRIBUTE not in prompt
     # What the turn CAN do with the file is the heading's job, and it still
-    # tells the truth for both columns.
-    if "search_file" in given:
+    # tells the truth for every column: search_file is pointed only at a
+    # stored file (#2375).
+    if "search_file" in given and stored:
         assert "CURRENT-TURN UPLOAD (use search_file with the file_id):" in prompt
+    elif "search_file" in given:
+        assert "CURRENT-TURN UPLOAD (no stored file to search):" in prompt
+        assert "use search_file" not in prompt
     else:
         assert "CURRENT-TURN UPLOAD (not searchable this turn):" in prompt
+
+
+def test_the_fallback_heading_names_the_stored_uploads_when_some_are_not():
+    """#2375: with a stored and an unstored upload, the heading sends
+    search_file only to the file-backed one."""
+    case = _case([_file(1, turn=8), _file(2, turn=8, stored=False)], [])
+
+    prompt = get_fallback_prompt_for_case(case, _MSG, given_tools=DEFAULT_GIVEN)
+
+    assert (
+        f"CURRENT-TURN UPLOAD (use search_file with the file_id of a {FILE_BACKED} "
+        "one):" in prompt
+    )
+
+
+@pytest.mark.parametrize("stored", [True, False], ids=["stored", "unstored"])
+class TestSearchFileIsPointedOnlyAtAStoredFile:
+    """#2375 review: a text that sends the model to ``search_file`` for a file
+    with nothing stored is a dead end. An unstored file keeps its extract,
+    and no text points ``search_file`` at it."""
+
+    def test_directed_analysis_elides_only_a_stored_files_extract(self, stored):
+        # A Tier A row and a historical (Tier D) orphan, in index-only mode.
+        case = _case(
+            [_file(1, stored=stored), _file(2, turn=1, stored=stored)],
+            [_evidence(1, _fid(1))],
+        )
+
+        rendered = _build_evidence_context(
+            case, processing_mode="directed_analysis", given_tools=DEFAULT_GIVEN
+        )
+
+        for i in (1, 2):
+            assert (f"STRUCT-{i}" in rendered) is not stored, rendered
+        assert ('elided="directed_analysis"' in rendered) is stored
+
+    def test_a_truncated_extract_points_at_search_file_only_when_stored(self, stored):
+        big = "ERROR STRUCT\n" * (EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM // 10)
+        row_file = _file(1, stored=stored).model_copy(update={"structural_index": big})
+        rendered = _build_evidence_context(
+            _case([row_file], [_evidence(1, _fid(1))]), given_tools=DEFAULT_GIVEN
+        )
+        orphan = [
+            _render_orphan_file_block(
+                _file(2, stored=stored).model_copy(update={"structural_index": big}),
+                {},
+                1,
+                summary_only=summary_only,
+                fence=PromptFence(mint_token()),
+                given=DEFAULT_GIVEN,
+            )
+            for summary_only in (False, True)
+        ]
+
+        for text in (rendered, *orphan):
+            assert "[TRUNCATED:" in text or "omitted to fit budget" in text
+            assert ("search_file" in text) is stored, text
 
 
 class TestInstructionsKeyOnTheNewAttribute:
@@ -286,6 +350,9 @@ class TestInstructionsKeyOnTheNewAttribute:
 
         assert f'<evidence id="ev_..." {FILE_BACKED}>' in with_search
         assert f'<evidence id="ev_..." {FILE_BACKED}>' not in without
+        # An upload is searched by its file_id only when file-backed (#2375).
+        assert f'<uploaded_file file_id="file_..." {FILE_BACKED}>' in with_search
+        assert "Files are fully searchable" not in with_search
         assert OLD_ATTRIBUTE not in with_search + without
 
     def test_the_evidence_grounding_block_names_it_when_the_readers_are_given(self):

@@ -77,12 +77,23 @@ class TestRoutingPredicate:
 
     def test_searchable_upload_stays_on_the_tool_loop(self):
         case = _case()
-        uf = UploadedFile(filename="a.log", size_bytes=10, uploaded_at_turn=1)
+        uf = UploadedFile(
+            filename="a.log", size_bytes=10, uploaded_at_turn=1, storage_ref="o/c/a.log"
+        )
         uf.structural_index = "x" * 40
         case.uploaded_files.append(uf)
         assert (
             _route_toolless_turn_single_shot("directed_analysis", case, False) is False
         )
+
+    def test_an_upload_with_nothing_stored_is_no_material(self):
+        """#2375: the material test is the readers' (a stored file), so an
+        upload with nothing stored keeps a non-forced turn off the tool loop."""
+        case = _case()
+        uf = UploadedFile(filename="a.log", size_bytes=10, uploaded_at_turn=1)
+        uf.structural_index = "x" * 40
+        case.uploaded_files.append(uf)
+        assert _route_toolless_turn_single_shot("triage", case, False) is True
 
 
 def _engine_with_recording_provider():

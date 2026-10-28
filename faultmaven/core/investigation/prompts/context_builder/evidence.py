@@ -339,14 +339,22 @@ def _file_backed_attr(uf) -> str:
     """`` file_backed="true"`` when the case holds the file's raw content.
 
     Provenance, not capability (#1969): it does not depend on the turn's tools.
-    The tools that read a file read its ``storage_ref``, so a file with none
-    (no file storage was wired at upload) is not file-backed: the prompt and
+    A file with no stored raw content (``UploadedFile.has_stored_content``,
+    the test every reading tool applies) is not file-backed: the prompt and
     every tool agree on which ids name a readable file (#2375). Every
     ``<evidence>`` and ``<uploaded_file>`` render takes it from here.
     """
-    if uf is None or not getattr(uf, "storage_ref", None):
-        return ""
-    return ' file_backed="true"'
+    return ' file_backed="true"' if _is_stored(uf) else ""
+
+
+def _is_stored(uf) -> bool:
+    """A resolved file whose raw content is held: what ``search_file`` reads.
+
+    Every render that marks a file ``file_backed``, elides its extract in
+    favour of ``search_file``, or points ``search_file`` at it asks this, so
+    no text sends the model to a file no tool can read (#2375).
+    """
+    return uf is not None and uf.has_stored_content
 
 
 def _build_hash_first_seen(case) -> Dict[str, int]:
@@ -773,7 +781,9 @@ def _render_orphan_file_block(
     ``elide_extract=True`` (directed-analysis index+stub) drops only the
     ``file_extract`` body but KEEPS ``search_map`` + ``file_meta`` — the same
     render Evidence-backed Tier-A items get in that mode, so a not-yet-promoted
-    orphan gets identical navigation hints (search_map), not a bare stub.
+    orphan gets identical navigation hints (search_map), not a bare stub. A
+    file with nothing stored is never elided, and no text here points
+    ``search_file`` at it: that tool cannot read it (#2375).
 
     ``fence`` carries this render's nonce onto every delimiter (#1217): the
     ``file_extract`` / ``search_map`` / ``file_meta`` bodies below are the
@@ -781,6 +791,8 @@ def _render_orphan_file_block(
     body — are what has to be unforgeable.
     """
     file_extract, search_map, file_meta = _parse_extract(uf.structural_index or "")
+    # search_file is pointed at a stored file only (#2375).
+    readable = has(given, "search_file") and _is_stored(uf)
     file_id_attr = _attr("file_id", uf.file_id)
     name_attr = _label_attr(uf)
     data_type_attr = _attr("data_type", uf.data_type)
@@ -802,7 +814,7 @@ def _render_orphan_file_block(
                 (
                     "[Full content omitted to fit budget; "
                     "use search_file with the file_id above to read it.]"
-                    if has(given, "search_file")
+                    if readable
                     else "[Full content omitted to fit budget.]"
                 ),
                 indent="    ",
@@ -812,9 +824,10 @@ def _render_orphan_file_block(
         )
         entry += "  " + fence.close("uploaded_file") + "\n"
         return entry
-    if elide_extract and file_extract.strip():
+    if elide_extract and readable and file_extract.strip():
         # DA index+stub: drop the extract body, keep search_map (below). Same
-        # marker Evidence-backed items get, so navigation parity holds.
+        # marker Evidence-backed items get, so navigation parity holds. A file
+        # with nothing stored keeps its extract: search_file cannot read it.
         entry += (
             fence.element(
                 "file_extract",
@@ -834,7 +847,7 @@ def _render_orphan_file_block(
             truncation_note = (
                 f"\n[TRUNCATED: {remaining_chars:,} more characters not shown. "
                 "Use search_file with the file_id above for specific lookups.]"
-                if has(given, "search_file")
+                if readable
                 else f"\n[TRUNCATED: {remaining_chars:,} more characters not shown.]"
             )
         body = ""
@@ -1246,7 +1259,9 @@ def _render_evidence_block(
         # search_map only). Every row reaching this loop IS historical — a
         # current-turn upload has no Evidence row yet and renders through the
         # orphan floor above — so there is no current-turn row to exempt (#1603).
-        suppress_extract = da_index_only
+        # A row whose file has nothing stored keeps its extract: the elision
+        # sends the model to search_file, which cannot read it (#2375).
+        suppress_extract = da_index_only and _is_stored(ev_file_meta)
 
         # Per-item cap applies to file_extract (the orientation content)
         if (
@@ -1338,7 +1353,11 @@ def _render_evidence_block(
             if confidence_advisory:
                 body += f"{confidence_advisory}\n"
             body += file_extract
-            if truncated and has(given_tools, "search_file"):
+            if (
+                truncated
+                and has(given_tools, "search_file")
+                and _is_stored(ev_file_meta)
+            ):
                 body += f"\n[TRUNCATED: {remaining_chars:,} more characters not shown. Use search_file with the evidence id above to search for specific content in the raw file.]"
             elif truncated:
                 body += f"\n[TRUNCATED: {remaining_chars:,} more characters not shown.]"
@@ -1499,6 +1518,7 @@ def _render_evidence_block(
             # all historical — current-turn ones went through the floor above), so
             # a not-yet-promoted file is treated the same as an Evidence-backed one
             # (stub only, addressable via search_file) instead of dumped in full.
+            # The renderer keeps the extract of a file with nothing stored.
             entry = _render_orphan_file_block(
                 uf,
                 hash_first_seen,

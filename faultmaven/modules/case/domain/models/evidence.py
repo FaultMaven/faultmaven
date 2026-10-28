@@ -559,6 +559,19 @@ class UploadedFile(BaseModel):
         return None
 
     @property
+    def has_stored_content(self) -> bool:
+        """True when a storage backend holds this file's raw content.
+
+        The one test of "can the raw file be read" (#2375): the readers
+        (``search_file``, ``deep_analysis``) read ``storage_ref``, the prompt
+        marks a file ``file_backed="true"`` and points ``search_file`` at it,
+        and the engine forces a reading tool, only when this holds. False
+        while processing is pending, when no file storage was wired at upload,
+        and always on a KB conversion source.
+        """
+        return bool(self.storage_ref)
+
+    @property
     def is_pasted(self) -> bool:
         """True when the user pasted this content rather than choosing a file."""
         return self._minted_kind == "paste"
