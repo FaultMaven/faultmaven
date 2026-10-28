@@ -666,17 +666,21 @@ def derive_closure_reason(case: "Case") -> str:
 #       returns SUGGEST_RESOLVE, which holds exactly when the case confirms a
 #       resolution (a qualifying ``causal_absence_evidence`` row and a
 #       ``symptom_absence_evidence`` row at or after it) — the same predicate as
-#       resolution READY — and either no resolve decline stands or the
-#       declined resolution is re-offered (its proposal pending). On such a
-#       case INV-37 pivots every close to a resolve proposal, at the proposal
-#       boundary and again at the confirm boundary, so a Close control there is
-#       one that can only ever produce "shall I mark this resolved?". The
-#       honest rendering is no status control at all: the case has one
-#       terminal destination and the engine is already offering it. Once the
-#       user declines that offer (#1895), Close reads ``ready`` again and the
-#       user's close closes (#2360), until the state the decline was given
-#       against changes (a new confirmation, solution or cause leg) and the
-#       decline lapses.
+#       resolution READY — and either no resolve decline stands or a resolve
+#       offer is pending. On a resolvable case, by the state of the user's
+#       resolve decline (#1895, #2360):
+#       - None stands: ``suggests_alternative``. INV-37 pivots every close to
+#         a resolve proposal, at the proposal boundary and again at the
+#         confirm boundary, so a Close control could only ever produce "shall
+#         I mark this resolved?".
+#       - One stands: ``ready``. The user's close closes, with
+#         ``resolution_declined`` as its reason.
+#       - One stands and the declined resolution is re-offered at the user's
+#         request (the chip's proposal pending): ``suggests_alternative``, so
+#         Close is not offered beside that offer. A Close from a stale menu
+#         cancels the offer and closes, as under the decline.
+#       - It lapsed (the state it was given against changed: a new
+#         confirmation, solution or cause leg): as when none stands.
 #
 #   "not_eligible"
 #       Not a valid edge from the current status, or the readiness verdict
@@ -691,7 +695,8 @@ def derive_closure_reason(case: "Case") -> str:
 # the same argument applies to it. The consequence differs in kind, which is
 # why the two were not treated alike: a rendered Resolve produced a validation
 # ERROR, while a rendered Close produces a coherent REDIRECT — the engine
-# pivots it to "shall I mark this resolved?" and nothing is lost. Closing the
+# pivots it to "shall I mark this resolved?" and nothing is lost (or, while a
+# declined resolution is re-offered, it closes as the decline chose). Closing the
 # gap properly means making ``valid_next_states`` depend on case content, which
 # it deliberately does not today (a static dict lookup, no case read), and that
 # is a contract decision rather than a wording one.
@@ -735,9 +740,14 @@ def derive_disposition_eligibility(case: "Case") -> dict[str, str]:
       NEEDS_INFO → needs_info, SUGGEST_CLOSE → not_eligible) and drives the
       engine's own handshake rather than a control. Closed eligibility is
       ``ready`` by default; while ``close_pivots_to_resolve`` holds, closed →
-      ``suggests_alternative``, which means DO NOT RENDER: a qualifying
-      absence row is on the case and no resolve decline stands, which is
-      exactly when INV-37 pivots every close back to a resolve proposal.
+      ``suggests_alternative``, which means DO NOT RENDER. On a resolvable
+      case that is while no resolve decline stands (INV-37 then pivots every
+      close back to a resolve proposal) and while a declined resolution is
+      re-offered at the user's request (Close is not offered beside it; a
+      stale-menu Close cancels the offer and closes). While the decline
+      otherwise stands, closed → ``ready`` and the user's close closes
+      (``resolution_declined``); once it lapses, as when none stands. The
+      constants block above states each case.
 
     - Terminal (RESOLVED / CLOSED): no further actions. Returns all
       ``not_eligible``.
@@ -770,10 +780,12 @@ def derive_disposition_eligibility(case: "Case") -> dict[str, str]:
 
     closure = assess_closure_readiness(case)
     if close_pivots_to_resolve(case, closure.verdict):
-        # ``suggests_alternative`` means DO NOT RENDER CLOSE. This holds
-        # exactly when INV-37 pivots every close back to a resolve proposal —
-        # so a Close control here could only ever produce "shall I mark this
-        # resolved?". It does NOT mean "warn and offer anyway"; there is no
+        # ``suggests_alternative`` means DO NOT RENDER CLOSE. With no resolve
+        # decline standing, INV-37 pivots every close back to a resolve
+        # proposal, so a Close control could only ever produce "shall I mark
+        # this resolved?"; while a declined resolution is re-offered, Close is
+        # not offered beside it (a stale-menu Close cancels the offer and
+        # closes). It does NOT mean "warn and offer anyway"; there is no
         # alternative control to offer, because resolve is not one.
         closed_eligibility = DISPOSITION_ELIGIBILITY_SUGGESTS_ALTERNATIVE
     else:
@@ -897,8 +909,8 @@ def declined_resolve_entry(case: Case, verdict: Optional[str] = None) -> Optiona
 
 def close_pivots_to_resolve(case: Case, verdict: str) -> bool:
     """Whether a user's close on this case becomes a resolve proposal (INV-37),
-    given its closure ``verdict``: the verdict is SUGGEST_RESOLVE and no resolve
-    decline stands, or a resolve offer is pending (#2360).
+    given its closure ``verdict``: the verdict is SUGGEST_RESOLVE and either no
+    resolve decline stands or a resolve offer is pending (#2360).
 
     Close is the user's choice at any time. A resolvable case still pivots a
     close to the resolution it has earned, but once the user has declined that

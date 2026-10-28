@@ -271,12 +271,7 @@ class TestTheReason:
         rendered; a ``mitigation_sufficient`` close of the same case keeps it."""
         case = _confirmed_case()
         case.progress.mitigation = MitigationRecord(
-            description="restarted the pods to stop the bleeding",
-            applied_at_turn=1,
-            accepted=True,
-            accepted_at_turn=1,
-            verified=True,
-            verified_at_turn=1,
+            accepted=True, verified=True, completed_at_turn=1
         )
         svc = object.__new__(ReportGenerationService)
         summary = await svc._generate_closure_summary(_closed_as(case, _REASON), {})
