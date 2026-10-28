@@ -1275,13 +1275,45 @@ class KnowledgeService:
         """Promote runbook content to a fully-published KnowledgeItem.
 
         Atomically maintains both stores by writing the relational source-of-
-        truth first, then the ChromaDB embeddings. On any failure after the row
-        is written (the team share, the vectors raising OR returning 0 chunks,
-        a cancellation), the vectors, the row and its shares are removed before
-        re-raising (#2365), so the two stores never diverge. The earlier "leave
-        the SQL row for a scan-and-recover re-embed" policy produced half-state
-        rows that downstream scans mis-classified, so rollback is now the
-        contract.
+        truth first, then the ChromaDB embeddings. On any failure from the
+        row's INSERT on (its commit landing and then raising, the team share,
+        the vectors raising OR returning 0 chunks, a cancellation), what this
+        call wrote (its row, vectors and shares) is removed before re-raising
+        (#2365), and what a live peer holds under the same id is left whole
+        (#2378), with these exceptions:
+
+        * A row this call did not write, standing under the id at the
+          cleanup's check (its delete matches only a row carrying this call's
+          stamp, and the check reads the id's row only when that delete
+          matched nothing): the cleanup keeps any team share this call
+          recorded and the id's chunks, since it deletes shares only when no
+          row stands, and vectors only when no row stands and this call began
+          indexing (#2388). A cleanup deletes vectors only if its own call
+          began indexing: if that row's own call fails without having begun
+          indexing, its cleanup removes the row and no vectors, and the
+          chunks kept here can be left with no row.
+        * A row another call stamped in the same microsecond under the same
+          id is taken for this call's: it is removed with its shares, and
+          with its vectors only if this call had begun indexing. A refused
+          INSERT ("already exists") never indexes, so that row's chunks stay
+          with no row.
+        * A peer that re-creates the id between the cleanup's check for a
+          standing row and its vector and share deletes can lose its vectors
+          and shares.
+        * A commit whose outcome this call does not know: the row's INSERT
+          commits inside ``create``, and a cancellation or command timeout
+          during that commit raises in this call while a COMMIT the server
+          had already received can still complete there (on PostgreSQL such
+          a command aborts the connection's transport and sends no
+          CancelRequest, ``pg_connection``). The cleanup's delete and check
+          run on a new session, so they can read the id before that COMMIT
+          completes, and this call's own row can then stand after the
+          cleanup, with no vectors (indexing never began) and no share (the
+          share step comes after ``create``) (#2394).
+
+        The earlier "leave the SQL row for a scan-and-recover re-embed" policy
+        produced half-state rows that downstream scans mis-classified, so
+        rollback is now the contract.
 
         Args:
             document_id: Stable id used for both the relational row and the
@@ -1337,9 +1369,11 @@ class KnowledgeService:
                 False: a caller that says nothing gets the scrub and the check.
 
         Returns:
-            Number of chunks indexed in ChromaDB (always > 0 on success). On
-            failure the method raises after removing what it wrote, so a
-            successful return always means both stores are populated.
+            Number of chunks indexed in ChromaDB (always > 0 on success): a
+            successful return means both stores are populated. On failure the
+            method raises after removing, best effort, what this call wrote,
+            except what the first and fourth exceptions above keep; the
+            second and third concern another call's writes.
 
         Raises:
             RunbookQualityError: a non-shipped body holds a secret or a
@@ -1444,14 +1478,21 @@ class KnowledgeService:
                 {PACK_CONTENT_HASH_KEY: pack_content_hash} if pack_content_hash else {}
             ),
         )
-        async with self._db_session_factory() as session:
-            repo = DatabaseKnowledgeItemRepository(session)
-            await repo.create(item)
-
-        # Everything after the row is undone by one cleanup when it fails or
-        # is cancelled (#2365). The prior "leave SQL for recovery" policy
-        # produced half-state rows that downstream scans then mis-classified.
+        # Everything from the row's INSERT on is undone by one cleanup when it
+        # fails or is cancelled (#2365). The prior "leave SQL for recovery"
+        # policy produced half-state rows that downstream scans then
+        # mis-classified. ``create`` commits before it refreshes, so a failure
+        # or cancel can land after the row has (#2378). The cleanup removes
+        # the row stamped ``now``, then the id's vectors (once indexing began)
+        # and shares only if no row stands under it, so it leaves what a live
+        # peer holds, but for the exceptions the docstring names. An "already
+        # exists" refusal leaves the row it met whole unless that row carries
+        # this call's stamp, the same-microsecond exception.
+        indexing = False
         try:
+            async with self._db_session_factory() as session:
+                await DatabaseKnowledgeItemRepository(session).create(item)
+
             # Team publish: record visibility in the share table (source of
             # truth, ADR-013 §D4). The scope enum stays 'team' ⟺ ≥1 share row.
             # Cross-ENTERPRISE shares are impossible by construction — the share
@@ -1479,6 +1520,7 @@ class KnowledgeService:
                 created_at=to_json_compatible(now),
                 updated_at=to_json_compatible(now),
             )
+            indexing = True
             # The value just written to the row's NOT NULL enterprise_id.
             chunks_created = await self._index_document_in_vector_store(
                 doc_model, prechunked=prechunked, enterprise_id=enterprise_id
@@ -1491,7 +1533,9 @@ class KnowledgeService:
                     f"cleaned up."
                 )
         except (Exception, asyncio.CancelledError):
-            await self._delete_knowledge_item_row(document_id)
+            await self._delete_knowledge_item_row(
+                document_id, created_at=now, indexed=indexing
+            )
             raise
 
         return chunks_created
@@ -1684,55 +1728,92 @@ class KnowledgeService:
                 return 0
         return chunks
 
-    async def _delete_knowledge_item_row(self, item_id: str) -> None:
+    async def _delete_knowledge_item_row(
+        self, item_id: str, *, created_at: datetime, indexed: bool
+    ) -> None:
         """Best-effort cleanup of what a failed :meth:`ingest_runbook` wrote:
-        the item's vectors, its row, then its team share rows (#2365).
+        its row, its vectors, then its team share rows (#2365). It runs from
+        the row's INSERT on, so it leaves what a live peer holds under the
+        same id (#2378), but for the exceptions :meth:`ingest_runbook` names.
 
-        The vectors go first, by parent id: a store can fail after applying
-        part of a write. The shares go only once the row's delete has
-        committed, as in :meth:`delete_document`, so an item that survives
-        keeps the share that makes it a team item. Shielded from cancellation:
-        it runs on the path a cancellation takes, and an anyio scope (the one
-        ``BaseHTTPMiddleware`` runs a route in) cancels every await that is
-        not. Errors are logged, not raised: the caller re-raises its own.
+        The row goes only if it carries ``created_at``, the value that call
+        stamped: a row another call created under the same id stays. Then the
+        vectors (by parent id: a store can fail after applying part of a
+        write) and the shares go unless a row with the id still stands, the
+        vectors only if the call began indexing. Every writer inserts its
+        row before it indexes, so chunks under an id with no row are no live
+        peer's; and, as in :meth:`delete_document`, an item that survives
+        keeps its vectors and the share that makes it a team item. If the
+        row's delete or the check for a standing row fails, nothing more is
+        removed. Shielded from cancellation: it runs on the path a
+        cancellation takes, and an anyio scope (the one ``BaseHTTPMiddleware``
+        runs a route in) cancels every await that is not. Errors are logged,
+        not raised: the caller re-raises its own.
         """
         from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
             DatabaseKnowledgeItemRepository,
         )
 
         with anyio.CancelScope(shield=True):
-            if self._vector_store:
+            deleted: Optional[bool] = None
+            standing: Optional[bool] = None
+            try:
+                async with self._db_session_factory() as session:
+                    repo = DatabaseKnowledgeItemRepository(session)
+                    deleted = await repo.delete(item_id, created_at=created_at)
+                    standing = not deleted and await repo.get_by_id(item_id) is not None
+            except Exception as cleanup_err:
+                if standing is None:
+                    logger.warning(
+                        "Ingesting knowledge item %s failed, and the cleanup's "
+                        "%s failed too (%s); %s",
+                        item_id,
+                        (
+                            "row delete"
+                            if deleted is None
+                            else "check for a row still standing"
+                        ),
+                        exception_class_name(cleanup_err),
+                        (
+                            "any row it wrote may still stand, and the id's "
+                            "vectors and team share rows are kept."
+                            if deleted is None
+                            else "its row was not matched, and the id's "
+                            "vectors and team share rows are kept."
+                        ),
+                    )
+                    return
+                # The row step completed (the delete commits before it
+                # returns); only closing its session failed.
+                logger.warning(
+                    "Ingesting knowledge item %s failed, and closing its "
+                    "cleanup's session failed (%s) after the row step "
+                    "completed; the cleanup carries on.",
+                    item_id,
+                    exception_class_name(cleanup_err),
+                )
+            if indexed and not standing and self._vector_store:
                 try:
                     await self._vector_store.delete_documents_by_parent_id(item_id)
                 except Exception as exc:
                     logger.error(
-                        "ORPHANED KNOWLEDGE VECTORS %s: ingesting it failed, and "
-                        "removing the chunks it wrote failed too (%s). Any it "
-                        "wrote stay retrievable under an id with no row; remove "
-                        "them by hand.",
+                        "ORPHANED KNOWLEDGE VECTORS %s: ingesting it failed and "
+                        "no row stands under its id, but removing the chunks it "
+                        "wrote failed (%s). Any it wrote stay retrievable under "
+                        "an id with no row; remove them by hand.",
                         item_id,
                         exception_class_name(exc),
                     )
-            try:
-                async with self._db_session_factory() as session:
-                    await DatabaseKnowledgeItemRepository(session).delete(item_id)
-            except Exception as cleanup_err:
-                logger.warning(
-                    "Failed to clean up orphaned knowledge_items row %s (%s); "
-                    "its team share rows are kept with it.",
-                    item_id,
-                    exception_class_name(cleanup_err),
-                )
-                return
-            if self._share_repo:
+            if self._share_repo and not standing:
                 try:
                     await self._share_repo.delete_for_resource(
                         "knowledge_item", item_id
                     )
                 except Exception as cleanup_err:
                     logger.warning(
-                        "Failed to clean up the team share rows of orphaned "
-                        "knowledge_items row %s (%s)",
+                        "Ingesting knowledge item %s failed, and removing its "
+                        "team share rows failed too (%s); any such rows name no "
+                        "item.",
                         item_id,
                         exception_class_name(cleanup_err),
                     )

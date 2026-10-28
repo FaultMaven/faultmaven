@@ -379,6 +379,42 @@ class TestDeferredCommit:
         assert await repo.delete(ghost.item_id, commit=False) is False
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "zone",
+    [timezone.utc, timezone(timedelta(hours=5, minutes=30)), None],
+    ids=["utc", "+05:30", "naive-utc"],
+)
+async def test_a_delete_guarded_by_created_at_spares_another_row(
+    deferring_repository, zone
+):
+    """A writer undoing its own INSERT removes only the row it stamped, the
+    instant it stamped in whatever zone it is named (#2378)."""
+    repo = deferring_repository
+    item = create_sample_item()
+    await repo.create(item)
+    stamped = item.created_at.astimezone(timezone.utc)
+    same = stamped.replace(tzinfo=None) if zone is None else stamped.astimezone(zone)
+
+    other = stamped - timedelta(microseconds=1)
+    assert await repo.delete(item.item_id, created_at=other) is False
+    assert await repo.get_by_id(item.item_id) is not None
+    assert await repo.delete(item.item_id, created_at=same) is True
+    assert await repo.get_by_id(item.item_id) is None
+
+
+@pytest.mark.asyncio
+async def test_a_delete_drops_a_deferred_update_to_its_row(deferring_repository):
+    repo = deferring_repository
+    item = await repo.create(create_sample_item())
+
+    await repo.update_fields(item.item_id, {"is_published": False}, commit=False)
+    assert await repo.delete(item.item_id) is True
+    await repo.commit()
+
+    assert await repo.get_by_id(item.item_id) is None
+
+
 class TestTargetedWrite:
     """``update_fields`` writes only the fields it names (#1966): it cannot
     revert another writer's change to a column it does not name."""

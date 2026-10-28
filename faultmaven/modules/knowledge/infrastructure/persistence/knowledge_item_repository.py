@@ -117,6 +117,16 @@ def _column_values(fields: Dict[str, Any]) -> Dict[str, Any]:
     return dict(_TARGETED_FIELDS[name](value) for name, value in fields.items())
 
 
+def _as_utc(value: datetime) -> datetime:
+    """``value`` as a UTC instant, the form ``created_at`` is stored in: an
+    aware value is converted, a naive one is read as UTC. SQLite keeps only
+    the wall clock, so without this the same instant in another zone would
+    match on PostgreSQL and not on SQLite (#2378)."""
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 class KnowledgeItemRepository(ABC):
     """Abstract base class for knowledge item repositories."""
 
@@ -196,17 +206,28 @@ class KnowledgeItemRepository(ABC):
         pass
 
     @abstractmethod
-    async def delete(self, item_id: str, *, commit: bool = True) -> bool:
+    async def delete(
+        self,
+        item_id: str,
+        *,
+        commit: bool = True,
+        created_at: Optional[datetime] = None,
+    ) -> bool:
         """Delete knowledge item by ID.
 
         Args:
             item_id: Item identifier
             commit: ``False`` leaves the delete uncommitted in the open
                 transaction, for :meth:`commit` or :meth:`rollback` to settle.
+            created_at: Delete the row only if it carries this ``created_at``
+                (compared as a UTC instant), so a writer undoing its own INSERT
+                never removes a row another call created under the same id
+                (#2378).
 
         Returns:
             True if a row matched (deleted, or deleted pending the commit),
-            False if none did: absent, or refused by an RLS write policy.
+            False if none did: absent, another ``created_at``, or refused by
+            an RLS write policy.
         """
         pass
 
@@ -539,12 +560,20 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
                 f"Failed to update knowledge item {item_id}: {e}"
             ) from e
 
-    async def delete(self, item_id: str, *, commit: bool = True) -> bool:
-        """Delete knowledge item by ID (see the base class for ``commit``)."""
+    async def delete(
+        self,
+        item_id: str,
+        *,
+        commit: bool = True,
+        created_at: Optional[datetime] = None,
+    ) -> bool:
+        """Delete knowledge item by ID (see the base class for the keywords)."""
         try:
             stmt = delete(KnowledgeItemModel).where(
                 KnowledgeItemModel.item_id == item_id
             )
+            if created_at is not None:
+                stmt = stmt.where(KnowledgeItemModel.created_at == _as_utc(created_at))
             result = await self.db.execute(stmt)
             if commit:
                 await self.db.commit()
@@ -1065,12 +1094,25 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
             self._pending[item_id] = target
         return True
 
-    async def delete(self, item_id: str, *, commit: bool = True) -> bool:
-        """Delete knowledge item by ID (see the base class for ``commit``)."""
+    async def delete(
+        self,
+        item_id: str,
+        *,
+        commit: bool = True,
+        created_at: Optional[datetime] = None,
+    ) -> bool:
+        """Delete knowledge item by ID (see the base class for the keywords)."""
         if not self._exists(item_id):
+            return False
+        current = self._pending.get(item_id) or self._items[item_id]
+        if created_at is not None and (
+            _as_utc(current.created_at) != _as_utc(created_at)
+        ):
             return False
         if commit:
             del self._items[item_id]
+            # A deferred update a later ``commit`` would otherwise bring back.
+            self._pending.pop(item_id, None)
         else:
             self._pending[item_id] = None
         return True
