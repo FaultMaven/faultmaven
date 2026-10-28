@@ -276,7 +276,7 @@ async def test_the_cleanup_leaves_what_a_peer_created(session_factory, fails_in)
 
 
 async def test_a_failed_check_for_a_standing_row_keeps_what_a_peer_created(
-    session_factory, monkeypatch
+    session_factory, monkeypatch, caplog
 ):
     """A peer re-ingested the id after this call indexed, so the cleanup's row
     delete matched nothing, and then its check for a standing row raised: the
@@ -301,9 +301,13 @@ async def test_a_failed_check_for_a_standing_row_keeps_what_a_peer_created(
         DatabaseKnowledgeItemRepository, "delete", delete_then_fail_reads
     )
 
-    with pytest.raises(RuntimeError, match="after the write"):
+    with (
+        caplog.at_level(logging.WARNING),
+        pytest.raises(RuntimeError, match="after the write"),
+    ):
         await _ingest(service)
 
+    assert "check for a row still standing failed too (RuntimeError)" in caplog.text
     (created_at,) = await _created_at(session_factory)
     assert created_at.replace(tzinfo=None) == PEER_CREATED_AT.replace(tzinfo=None)
     assert await _rows(session_factory) == ONE_TEAM_ITEM
