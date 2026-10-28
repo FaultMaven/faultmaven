@@ -14,7 +14,11 @@ from faultmaven.core.preprocessing.tier2.local_service import LocalTier2Service
 from faultmaven.exceptions import RawModelContentRefused
 from faultmaven.models.interfaces import ToolResult
 from faultmaven.modules.agent.tools.base import AgentTool, ToolContext, tool_failure
-from faultmaven.modules.agent.tools.search_file_tool import enumerate_readable_files
+from faultmaven.modules.agent.tools.search_file_tool import (
+    IdOutcome,
+    enumerate_readable_files,
+    resolve_case_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -28,8 +32,8 @@ def _deep_analysis_alternatives(
 
     The list is ``enumerate_readable_files``'s, the one ``search_file`` and
     ``case_evidence_search`` phrase from. ``deep_analysis`` reads an upload no
-    evidence row records by its ``file_id`` (the fallback below), so it names
-    those too.
+    evidence row records by its ``file_id`` (``resolve_case_id`` resolves both
+    forms), so it names those too.
     """
     files = enumerate_readable_files(all_evidence, excluded_evidence_id, case)
     recorded = [f"{f.id} ({f.filename})" for f in files if f.recorded]
@@ -144,61 +148,70 @@ class DeepAnalysisTool(AgentTool):
                 unified_data_type_of,
             )
 
-            _TYPE_MAP = {
-                "logs": UnifiedDataType.LOGS,
-                "metrics": UnifiedDataType.METRICS,
-                "configuration": UnifiedDataType.CONFIGURATION,
-                "code": UnifiedDataType.CODE,
-            }
-
             all_evidence = getattr(case, "evidence", []) or []
-            evidence = None
-            for ev in all_evidence:
-                if getattr(ev, "evidence_id", None) == evidence_id:
-                    evidence = ev
-                    break
-
-            file_ref = None
-            data_type = UnifiedDataType.TEXT  # default
-
-            if evidence is not None:
+            resolved_id = resolve_case_id(case, evidence_id)
+            if resolved_id.outcome is IdOutcome.NOT_FOUND:
+                alts = _deep_analysis_alternatives(all_evidence, evidence_id, case)
+                return ToolResult(
+                    success=False,
+                    data=None,
+                    error=f"Evidence {evidence_id} not found in this case.{alts}",
+                )
+            if resolved_id.outcome is IdOutcome.ENGINE_INFERENCE:
                 # Reject non-file-backed evidence BEFORE hitting storage.
                 # An engine inference has source_file_id IS NULL and
                 # cannot be deep-analyzed (no stored bytes to
                 # analyze). Without this guard the LLM would pass those
                 # evidence_ids to deep_analysis, get an opaque storage
                 # error, and give up on follow-up questions.
-                if getattr(evidence, "source_file_id", None) is None:
-                    alts = _deep_analysis_alternatives(all_evidence, evidence_id, case)
-                    return ToolResult(
-                        success=False,
-                        data=None,
-                        error=(
-                            f"Evidence {evidence_id} has no stored file behind it "
-                            f"(it's an inference the engine recorded) "
-                            f"and cannot be analyzed. Use a file-backed evidence_id "
-                            f'(file_backed="true") for deep_analysis.{alts}'
-                        ),
-                    )
+                alts = _deep_analysis_alternatives(all_evidence, evidence_id, case)
+                return ToolResult(
+                    success=False,
+                    data=None,
+                    error=(
+                        f"Evidence {evidence_id} has no stored file behind it "
+                        f"(it's an inference the engine recorded) "
+                        f"and cannot be analyzed. Use a file-backed evidence_id "
+                        f'(file_backed="true") for deep_analysis.{alts}'
+                    ),
+                )
 
-                # Get file reference (storage_ref via UploadedFile)
-                file_meta = case.find_uploaded_file(evidence.source_file_id)
-                file_ref = file_meta.storage_ref if file_meta else None
-                if not file_ref:
-                    alts = _deep_analysis_alternatives(all_evidence, evidence_id, case)
-                    return ToolResult(
-                        success=False,
-                        data=None,
-                        error=(
-                            f"Evidence {evidence_id} has no file reference for "
-                            f"deep analysis.{alts}"
-                        ),
-                    )
+            # Get file reference (storage_ref via UploadedFile). A row or an
+            # upload with nothing stored is in the case: it says so, never
+            # "not found" (#2375).
+            file_meta = resolved_id.file
+            if file_meta is None or not file_meta.has_stored_content:
+                alts = _deep_analysis_alternatives(all_evidence, evidence_id, case)
+                return ToolResult(
+                    success=False,
+                    data=None,
+                    error=(
+                        f"Evidence {evidence_id} has no file reference for "
+                        f"deep analysis.{alts}"
+                    ),
+                )
+            file_ref = file_meta.storage_ref
 
+            # The file's own type, on both arms, through the read boundary
+            # (#583): the column holds the fine-grained ``DataType`` on rows
+            # written since #583 and the 6-valued string on rows before. The
+            # evidence arm read the row's ``category`` (symptom, causal, ...),
+            # which names no data type, so it always sent TEXT (#2375).
+            data_type = (
+                unified_data_type_of(getattr(file_meta, "data_type", None))
+                or UnifiedDataType.TEXT
+            )
+            evidence = resolved_id.row
+            if evidence is not None:
                 # Phase 2c — triage-to-escalation counter. Mirrors the
                 # equivalent wiring in search_file_tool. Fires when this
                 # deep analysis targets an evidence delivered in the same
                 # turn — signals the extractor's output was insufficient.
+                #
+                # Not emitted for an upload passed by its ``file_id`` (a file
+                # uploaded this turn has no Evidence row yet): the helper is
+                # Evidence-keyed (it reads the row's ``collected_at_turn``).
+                # File-keyed escalation telemetry is tracked separately.
                 try:
                     from faultmaven.infrastructure.observability.evidence_metrics import (
                         record_triage_escalation_if_same_turn,
@@ -211,44 +224,6 @@ class DeepAnalysisTool(AgentTool):
                     )
                 except Exception:
                     pass
-
-                # Determine data type from evidence category
-                category = getattr(evidence, "category", None)
-                if category:
-                    cat_value = (
-                        category.value if hasattr(category, "value") else str(category)
-                    )
-                    data_type = _TYPE_MAP.get(cat_value.lower(), UnifiedDataType.TEXT)
-            else:
-                # Dual-resolution: the id may be a bare ``file_…`` for a file
-                # uploaded this turn that has no Evidence row yet. Mirrors
-                # search_file's file-id fallback so a just-uploaded file is
-                # analyzable before the LLM creates Evidence for it — without
-                # this, the LLM reuses the nearest existing evidence_id and
-                # analyzes the WRONG file (the bug this fallback closes).
-                file_meta = case.find_uploaded_file(evidence_id)
-                if file_meta is None or not getattr(file_meta, "storage_ref", None):
-                    alts = _deep_analysis_alternatives(all_evidence, evidence_id, case)
-                    return ToolResult(
-                        success=False,
-                        data=None,
-                        error=f"Evidence {evidence_id} not found in this case.{alts}",
-                    )
-                file_ref = file_meta.storage_ref
-                # Through the read boundary (#583): the column holds the
-                # fine-grained ``DataType`` on rows written since #583, which
-                # ``_TYPE_MAP`` (keyed on the 6-valued strings) never matches.
-                data_type = (
-                    unified_data_type_of(getattr(file_meta, "data_type", None))
-                    or UnifiedDataType.TEXT
-                )
-                # NOTE: the triage-to-escalation metric
-                # (record_triage_escalation_if_same_turn) is intentionally not
-                # emitted here. That helper is Evidence-keyed (it inspects the
-                # Evidence row's collected_at_turn); on this branch there is no
-                # Evidence row yet. A same-turn file_id deep-analysis is arguably
-                # also an escalation — wiring file-keyed escalation telemetry is
-                # tracked separately, not bundled into this fix.
 
             analysis_context = AnalysisContext(
                 case_id=context.case_id,

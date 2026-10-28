@@ -57,8 +57,10 @@ floored at one `max_chars_per_item`):
   is **always present**: rendered in full (structural index, per-item capped)
   while the reserve has room — the *first* is guaranteed full even if it alone
   exceeds the reserve — and otherwise as a **summary stub** (the `<uploaded_file>`
-  tag with `file_id`/`file_backed` and a "use search_file" note, no body). They
-  are marked handled so the historical tiers neither re-render nor drop them.
+  tag with `file_id`, `file_backed` when its file is stored, and a "use
+  search_file" note when the turn gives `search_file` and the file is stored; no
+  body, #2375). They are marked handled so the historical tiers neither
+  re-render nor drop them.
 
 The guarantee is therefore: a current-turn item is **always present** (full
 within the reserve, summary beyond), never evicted by historical evidence, and

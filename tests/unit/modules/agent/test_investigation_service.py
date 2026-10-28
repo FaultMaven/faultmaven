@@ -73,11 +73,15 @@ class TestEvidenceBearingRerouteToEngine:
         preprocessing.classify_and_extract = AsyncMock(
             return_value=make_preprocessing_result()
         )
+        # A stored upload: one with nothing stored has no file a
+        # directed-analysis tool can read, and is not rerouted (#2375).
+        storage = AsyncMock()
+        storage.store_file = AsyncMock(return_value={"storage_key": "blob/abc123"})
         service = InvestigationService(
             milestone_engine=engine,
             case_repository=MockCaseRepository(),
             preprocessing_service=preprocessing,
-            file_storage_service=None,
+            file_storage_service=storage,
         )
         return service, engine
 

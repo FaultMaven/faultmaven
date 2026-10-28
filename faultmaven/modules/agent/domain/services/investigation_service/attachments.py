@@ -326,16 +326,22 @@ def _turn_delivers_evidence_bearing_attachment(
     string, so the entity-free cover note routes to TRIAGE and lets the
     agent skip evidence analysis (#708). The strong signals live in the
     file, which the preprocessor already characterized. Excludes
-    ``classification_failed`` uploads (awaiting user clarification) and
-    empty/unanalyzable placeholders (no structural content to search); the
-    searchability test is the context builder's own
-    ``structural_index_is_searchable`` so this stays in lockstep with the
-    context builder's gate on rendering an ``<uploaded_file>`` at all.
+    ``classification_failed`` uploads (awaiting user clarification),
+    empty/unanalyzable placeholders (no structural content to search) and
+    uploads with no stored raw file (nothing a directed-analysis tool can
+    read, #2375). The two tests are the ones the engine applies to an upload
+    (``_has_readable_upload``), ``structural_index_is_searchable`` and
+    ``UploadedFile.has_stored_content``, so this stays in lockstep with the
+    context builder's gate on rendering an ``<uploaded_file>`` and on marking
+    it ``file_backed="true"``.
     """
     for r in preprocess_results:
         if r.classification_failed:
             continue
-        if structural_index_is_searchable(r.uploaded_file.structural_index):
+        uf = r.uploaded_file
+        if uf.has_stored_content and structural_index_is_searchable(
+            uf.structural_index
+        ):
             return True
     return False
 

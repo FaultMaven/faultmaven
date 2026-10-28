@@ -56,7 +56,13 @@ def _ctx(in_memory_case=_UNSET):
     shape ``_build_tool_context`` produces; pass ``None`` to drive the
     refusal.
     """
-    case = SimpleNamespace(case_id="case_xyz") if in_memory_case is _UNSET else None
+    case = (
+        SimpleNamespace(
+            case_id="case_xyz", evidence=[], find_uploaded_file=lambda _id: None
+        )
+        if in_memory_case is _UNSET
+        else None
+    )
     return ToolContext(
         session_id="sess_1",
         case_id="case_xyz",

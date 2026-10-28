@@ -22,11 +22,13 @@ def _preprocessed(
     *,
     classification_failed: bool = False,
     idx: int = 1,
+    stored: bool = True,
 ) -> _PreprocessedAttachment:
     uf = UploadedFile(
         filename=f"data_{idx}.log",
         size_bytes=1800,
         uploaded_at_turn=3,
+        storage_ref=f"org/case/data_{idx}.log" if stored else None,
     )
     uf.structural_index = structural_index
     return _PreprocessedAttachment(
@@ -50,6 +52,13 @@ class TestTurnDeliversEvidenceBearingAttachment:
             _preprocessed(
                 "some content here that is long enough", classification_failed=True
             )
+        ]
+        assert _turn_delivers_evidence_bearing_attachment(results) is False
+
+    def test_an_attachment_with_no_stored_file_returns_false(self):
+        """#2375: nothing stored, nothing a directed-analysis tool can read."""
+        results = [
+            _preprocessed("timerange: 07:40\n503 x12\nSSLException x3", stored=False)
         ]
         assert _turn_delivers_evidence_bearing_attachment(results) is False
 

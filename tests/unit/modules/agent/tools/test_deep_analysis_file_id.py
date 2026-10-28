@@ -18,6 +18,9 @@ from faultmaven.modules.agent.tools.base import ToolContext
 from faultmaven.modules.agent.tools.deep_analysis_tool import DeepAnalysisTool
 from faultmaven.modules.case.contracts import (
     CaseState,
+    Evidence,
+    EvidenceCategory,
+    EvidenceSourceType,
     InquiryData,
     UploadedFile,
 )
@@ -158,6 +161,42 @@ async def test_deep_analysis_reads_both_stored_vocabularies(stored, expected):
     result = await tool.execute_with_context(
         {"evidence_id": "file_fa0e00000001", "query": "anything"},
         _ctx(case),
+    )
+
+    assert result.success, result.error
+    assert tier2.analyze.await_args.kwargs["data_type"] is UnifiedDataType(expected)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stored,expected",
+    [("logs_and_errors", "logs"), ("structured_config", "configuration")],
+    ids=["logs", "config"],
+)
+async def test_the_evidence_arm_reads_the_files_type_too(stored, expected):
+    """#2375 review: the evidence arm mapped the row's ``category`` (symptom,
+    causal, ...) through a table keyed on data types, which never matched, so
+    every evidence id reached Tier 2 as TEXT. Both arms read the file's type."""
+    from faultmaven.core.preprocessing.models import UnifiedDataType
+
+    tier2 = _fake_tier2()
+    case = _case_with_orphan_file()
+    case.uploaded_files[0].data_type = stored
+    case.evidence.append(
+        Evidence(
+            evidence_id="ev_fa0e00000001",
+            source_file_id="file_fa0e00000001",
+            summary="s",
+            category=EvidenceCategory.SYMPTOM_EVIDENCE,
+            source_type=EvidenceSourceType.LOGS,
+            primary_purpose="Test",
+            collected_by="user_123",
+            collected_at_turn=8,
+        )
+    )
+
+    result = await DeepAnalysisTool(tier2_service=tier2).execute_with_context(
+        {"evidence_id": "ev_fa0e00000001", "query": "anything"}, _ctx(case)
     )
 
     assert result.success, result.error

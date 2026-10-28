@@ -112,7 +112,8 @@ def _make_case_with_evidence(evidence_list: list) -> Case:
     attribute renders. Each unique ``ev.source_file_id`` gets one
     synthesized UploadedFile, with ``structural_index`` populated from
     the test fixture's ``extract`` parameter (which production routes
-    to the file row, not the evidence row).
+    to the file row, not the evidence row), and stored (a ``storage_ref``),
+    as an upload is wherever file storage is wired (#2375).
 
     The synthesized file's ``uploaded_at_turn`` is the EARLIEST
     ``collected_at_turn`` among the rows citing it: the data arrived on the
@@ -159,6 +160,7 @@ def _make_case_with_evidence(evidence_list: list) -> Case:
                     uploaded_at=datetime.now(UTC),
                     uploaded_by="user_123",
                     structural_index=structural_by_file.get(fid),
+                    storage_ref=f"evidence/case_aabb11223344/{fid}.log",
                 )
             )
     return Case(
@@ -290,12 +292,16 @@ class TestInquiryUploadedFilesBlock:
         assert "line_count=2048" in result
 
     def test_marks_uploaded_file_file_backed(self):
-        """The block declares file_backed=\"true\": the case holds the raw
+        """The block declares file_backed=\"true\" when the case holds the raw
         file behind it, so the LLM can pass the file_id to search_file when
-        the turn gives that tool."""
-        case = _make_inquiry_case_with_uploaded_files([self._file()])
-        result = _build_evidence_context(case)
+        the turn gives that tool. With no stored file it does not (#2375)."""
+        stored = self._file(storage_ref="evidence/case_123/app.log")
+        result = _build_evidence_context(
+            _make_inquiry_case_with_uploaded_files([stored])
+        )
         assert 'file_backed="true"' in result
+        unstored = _make_inquiry_case_with_uploaded_files([self._file()])
+        assert 'file_backed="true"' not in _build_evidence_context(unstored)
 
     def test_truncates_long_extract_with_file_id_pointer(self):
         """Long file_extract → truncation note mentions file_id (not the
@@ -826,7 +832,11 @@ class TestTierDOrphanUploads:
             extract="Earlier file's structural index payload",
         )
         case = _make_case_with_evidence([ev])
-        case.uploaded_files.append(self._pending_file())
+        case.uploaded_files.append(
+            self._pending_file().model_copy(
+                update={"storage_ref": "evidence/case_aabb11223344/deployment.yaml"}
+            )
+        )
 
         result = _build_evidence_context(case)
 
@@ -835,8 +845,9 @@ class TestTierDOrphanUploads:
         assert "PENDING: deployment.yaml shows JAVA_OPTS" in result
         assert "[Source: deployment.yaml]" in result
         # The pending block must be marked file-backed so the LLM knows the
-        # file is held and can pass the file_id to search_file.
-        assert 'file_backed="true"' in result
+        # file is held (stored, #2375) and can pass the file_id to search_file.
+        pending_tag = result.split('file_id="file_aaaaaaaa0001"', 1)[1].split(">")[0]
+        assert 'file_backed="true"' in pending_tag
 
     def test_dedup_does_not_emit_orphan_block_for_already_referenced_file(
         self,

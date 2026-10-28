@@ -108,7 +108,13 @@ def _case(state: CaseState) -> Case:
 
 def _case_with_searchable_material() -> Case:
     case = _case(CaseState.INVESTIGATING)
-    uf = UploadedFile(filename="dmesg.log", size_bytes=4096, uploaded_at_turn=2)
+    # Stored: forcing a call needs a file a reading tool can open (#2375).
+    uf = UploadedFile(
+        filename="dmesg.log",
+        size_bytes=4096,
+        uploaded_at_turn=2,
+        storage_ref="org_123/case_aabb11223344/dmesg.log",
+    )
     uf.structural_index = "oom-killer x3"
     case.uploaded_files = [uf]
     case.evidence = [
