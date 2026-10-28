@@ -226,7 +226,9 @@ def _record_deferred_disposition_decline(
     # this same turn — so recording "the user refused resolve" would log
     # "not re-proposing until the justifying state changes" and then re-propose
     # in the next breath, while permanently poisoning the signature the
-    # backstop keys on. Nothing was settled, so nothing is recorded.
+    # backstop keys on. Nothing was settled, so nothing is recorded. (While a
+    # resolve decline already stands the close is not pivoted and closes,
+    # #2360; the decline it would record is the one already on the list.)
     if (
         superseded_by == CaseState.CLOSED.value
         and pending.get("to_state") == CaseState.RESOLVED.value

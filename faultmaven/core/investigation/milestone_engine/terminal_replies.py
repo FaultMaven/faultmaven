@@ -133,6 +133,11 @@ def _terminal_confirmation_response(case) -> str:
             "stated distinctly from the problem. The candidates and what the "
             "cause still needs are preserved in the closure summary."
         )
+    if closure_reason == "resolution_declined":
+        return (
+            "Case closed — the fix was confirmed to work; you chose not to "
+            "mark it resolved."
+        )
     if closure_reason == "solution_deferred":
         return (
             "Case closed — cause identified and fix documented; implementation "

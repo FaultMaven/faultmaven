@@ -827,7 +827,9 @@ class MilestoneEngine:
                         )
                     elif verdict == "decline":
                         # Record the refusal BEFORE cancelling: the cancel is
-                        # what erases the provenance this reads (fm#1122).
+                        # what erases the provenance this reads (fm#1122), and
+                        # the target the bare reply is keyed on (#2360).
+                        declined_to_state = case.pending_transition.get("to_state")
                         _record_deferred_disposition_decline(case, metadata=metadata)
                         _note_engine_disposition_withdrawn(case, metadata)
                         cancel_pending_transition(case)
@@ -852,6 +854,7 @@ class MilestoneEngine:
                                 case=case,
                                 upload_report=upload_report,
                                 user_message=user_message,
+                                declined_to_state=declined_to_state,
                             )
                     else:
                         # ``reask`` (consent-shaped but not bare, text and

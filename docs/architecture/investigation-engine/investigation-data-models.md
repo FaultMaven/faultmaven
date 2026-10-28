@@ -97,7 +97,7 @@ class CaseState(str, Enum):
     DISPOSITION: Case closed WITHOUT solution.
     Investigation completed without a verified fix, or inquiry-only.
 
-    closure_reason = inquiry_only | closed_false_alarm | solution_deferred | closed_rca_infeasible | mitigation_sufficient | closed_restatement_held | closed_insufficient_evidence
+    closure_reason = inquiry_only | closed_false_alarm | resolution_declined | solution_deferred | closed_rca_infeasible | mitigation_sufficient | closed_restatement_held | closed_insufficient_evidence
     Engine-derived via derive_closure_reason(). Never authored by the LLM.
     Note: a case stabilized by a verified mitigation closes as "mitigation_sufficient"
     (the former "mitigation_sufficient" reason was folded in — the documented
@@ -543,7 +543,7 @@ class Case(BaseModel):
 
     closure_reason: Optional[str] = Field(
         default=None,
-        description="None for RESOLVED. For CLOSED: inquiry_only | closed_false_alarm | solution_deferred | closed_rca_infeasible | mitigation_sufficient | closed_restatement_held | closed_insufficient_evidence. Engine-derived via derive_closure_reason(); never set by the LLM."
+        description="None for RESOLVED. For CLOSED: inquiry_only | closed_false_alarm | resolution_declined | solution_deferred | closed_rca_infeasible | mitigation_sufficient | closed_restatement_held | closed_insufficient_evidence. Engine-derived via derive_closure_reason(); never set by the LLM."
     )
 
     # ============================================================

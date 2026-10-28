@@ -457,6 +457,10 @@ class ReportGenerationService:
         "closed_false_alarm": (
             "Closed — false alarm: the reported problem was not present"
         ),
+        "resolution_declined": (
+            "Closed — the fix was confirmed to work; the user chose not to mark "
+            "it resolved"
+        ),
         "solution_deferred": (
             "Closed — cause identified and fix documented, implementation deferred"
         ),
