@@ -21,7 +21,7 @@ FaultMaven implements a **pluggable tool system**:
 
 ```mermaid
 graph TB
-    Agent[AI Agent] --> Registry[Tool Registry]
+    Agent[AI Agent] --> Registry[AgentToolRegistry]
     Registry --> Interface[AgentTool Interface]
 
     Interface --> SearchFile[Search File Tool]
@@ -43,9 +43,9 @@ graph TB
 ```
 
 **Key Features**:
-- ✅ **Pluggable**: Add tools via decorator without modifying agent code
-- ✅ **Interface-Based**: All tools implement `BaseTool` interface
-- ✅ **Registry Pattern**: Tools self-register using `@register_tool("name")`
+- ✅ **Pluggable**: A tool is a class in `faultmaven/modules/agent/tools/`, registered by hand in `_create_investigation_tools`; no decorator or auto-discovery
+- ✅ **Interface-Based**: All tools subclass `AgentTool` (a `BaseTool`)
+- ✅ **Registry Pattern**: `AgentToolRegistry.register(tool)` (`faultmaven/modules/agent/tools/base.py`) holds the set the model is given
 - ✅ **Dependency Injection**: Tools receive configuration and services
 - ✅ **Privacy-First**: All tool inputs/outputs pass through PII sanitization
 - ✅ **Extensible**: Support for direct tools, MCP servers, and external APIs
@@ -101,7 +101,7 @@ Tools for connecting to external systems and protocols.
 
 ### For Developers
 - **[Contributing Guidelines](../CONTRIBUTING.md)** - How to create new tools
-- **[Tool Interface Specification](./architecture/tool-interface-spec.md)** - BaseTool interface details
+- **[Tool Interface Specification](./architecture/tool-interface-spec.md)** - `AgentTool` interface details
 - **[Tool Registry Design](./architecture/tool-registry-design.md)** - Registry pattern and discovery
 - **[Tool Integration Patterns](./architecture/tool-integration-guide.md)** - Integration best practices
 
@@ -120,21 +120,19 @@ User Input → PII Sanitization → Tool Execution → Output Sanitization → U
 External tools (web search, MCP servers) receive **double-sanitized** data to protect sensitive information.
 
 ### 2. Pluggable Architecture
-Tools are **self-registering** and **auto-discovered**:
+A tool is a class, constructed explicitly and registered by hand. Nothing self-registers or is auto-discovered:
 
 ```python
-@register_tool("custom_validator")
-class CustomValidatorTool(BaseTool):
-    async def execute(self, params: Dict[str, Any]) -> ToolResult:
+class CustomValidatorTool(AgentTool):
+    # name, description and parameters_schema properties
+    async def execute_with_context(
+        self, params: Dict[str, Any], context: ToolContext
+    ) -> ToolResult:
         # Implementation
-        pass
-
-    def get_schema(self) -> Dict[str, Any]:
-        # Schema definition
         pass
 ```
 
-No changes to agent code required - tool is automatically available.
+Construct it in `register_tools` (`faultmaven/container/providers/tools.py`) and add it to `_create_investigation_tools` (`faultmaven/container/providers/services.py`); the [Developer Guide](./developer-guide.md) walks through it.
 
 ### 3. Phase-Aware Invocation
 Tools are recommended based on investigation phase:
@@ -153,28 +151,23 @@ Tools are recommended based on investigation phase:
 All tools return `ToolResult` with consistent structure:
 
 ```python
-@dataclass
-class ToolResult:
-    success: bool           # Execution succeeded?
-    data: Any              # Tool output
-    error: Optional[str]   # Error message if failed
+class ToolResult(BaseModel):          # faultmaven/models/interfaces.py
+    success: bool                     # Execution succeeded?
+    data: Any                         # Tool output; required, None on a failure
+    error: Optional[str] = None       # Fixed reason if failed, never an exception's text
+    timed_out: bool = False           # The failure was a timeout, by exception class
 ```
+
+A failure is built with `tool_failure(reason, exc, *, guidance="")` (`faultmaven/modules/agent/tools/base.py`).
 
 ## Tool Discovery
 
-At startup, FaultMaven:
-1. Scans `faultmaven/tools/` directory
-2. Loads all modules with `@register_tool` decorators
-3. Validates tools implement `BaseTool` interface
-4. Registers tools in `ToolRegistry`
-5. Makes tools available to agent via dependency injection
+There is no scan or discovery step. At startup:
+1. `register_tools` (`faultmaven/container/providers/tools.py`) constructs each tool and sets it on the container
+2. `_create_investigation_tools` (`faultmaven/container/providers/services.py`) registers the ones the model is given in an `AgentToolRegistry`
+3. The engine receives that registry
 
-**Current Registered Tools**:
-```bash
-# Check available tools
-python -c "from faultmaven.tools.registry import tool_registry; print(tool_registry.list_tools())"
-# Output: ['knowledge_base', 'knowledge_base_filtered', 'web_search']
-```
+**Current Registered Tools**: `search_file`, `deep_analysis` (unless `DEEP_ANALYSIS_BACKEND=disabled`), `web_search` (when enabled and configured), `kb_qa`, `vectorize_file` and `case_evidence_search` (both only with a case vector store), plus `find_entity` / `list_top_entities` and `reclassify_evidence` under their flags. The startup log line "DA tool registry: N tools registered" names the set.
 
 ## Extensibility Patterns
 

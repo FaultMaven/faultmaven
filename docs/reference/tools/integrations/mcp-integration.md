@@ -1,8 +1,10 @@
 # MCP (Model Context Protocol) Integration Guide
 
 > **Not implemented.** This page describes a design. The modules it imports
-> (`faultmaven.tools`, `faultmaven.infrastructure.mcp`), the `MCP_SERVER_ENV`
-> setting and the `mcp` package are not in this repository.
+> (`faultmaven.infrastructure.mcp`, `faultmaven/modules/agent/tools/mcp_client_tool.py`),
+> the `MCP_SERVER_ENV` setting and the `mcp` package are not in this repository.
+> The tool API it builds on is real: `AgentTool`, `AgentToolRegistry` and
+> `tool_failure` in `faultmaven/modules/agent/tools/base.py`.
 
 How to integrate Model Context Protocol servers with FaultMaven's tool ecosystem.
 
@@ -42,7 +44,7 @@ MCP standardizes how AI assistants connect to:
          │ MCPClientTool
          ▼
 ┌─────────────────┐
-│ MCPClientTool   │  ← Implements BaseTool
+│ MCPClientTool   │  ← Implements AgentTool
 │ (FaultMaven)    │
 └────────┬────────┘
          │
@@ -108,7 +110,7 @@ pip install mcp
 
 **Step 2**: Create MCP Client Tool
 
-Create `faultmaven/tools/mcp_client_tool.py`:
+Create `faultmaven/modules/agent/tools/mcp_client_tool.py`:
 
 ```python
 """MCP Client Tool - Consume external MCP servers"""
@@ -118,13 +120,11 @@ from typing import Any, Dict, List, Optional
 from mcp import ClientSession, StdioServerParameters
 from mcp.types import Tool as MCPTool
 
-from faultmaven.models.interfaces import BaseTool, ToolResult
-from faultmaven.modules.agent.tools.base import tool_failure
-from faultmaven.tools.registry import register_tool
+from faultmaven.models.interfaces import ToolResult
+from faultmaven.modules.agent.tools.base import AgentTool, ToolContext, tool_failure
 
 
-@register_tool("mcp_client")
-class MCPClientTool(BaseTool):
+class MCPClientTool(AgentTool):
     """
     Tool for connecting to external MCP servers.
 
@@ -137,7 +137,6 @@ class MCPClientTool(BaseTool):
         server_command: List[str],
         server_env: Optional[Dict[str, str]] = None,
         sanitizer=None,
-        **kwargs
     ):
         """
         Initialize MCP client tool.
@@ -156,7 +155,9 @@ class MCPClientTool(BaseTool):
         self.sanitizer = sanitizer
         self._available_tools: Dict[str, MCPTool] = {}
 
-    async def execute(self, params: Dict[str, Any]) -> ToolResult:
+    async def execute_with_context(
+        self, params: Dict[str, Any], context: ToolContext
+    ) -> ToolResult:
         """
         Execute a tool on the MCP server.
 
@@ -175,6 +176,7 @@ class MCPClientTool(BaseTool):
             if not tool_name:
                 return ToolResult(
                     success=False,
+                    data=None,
                     error="Missing required parameter: tool_name"
                 )
 
@@ -203,6 +205,7 @@ class MCPClientTool(BaseTool):
                 if tool_name not in self._available_tools:
                     return ToolResult(
                         success=False,
+                        data=None,
                         error=f"Tool '{tool_name}' not found on MCP server. Available: {list(self._available_tools.keys())}"
                     )
 
@@ -214,9 +217,12 @@ class MCPClientTool(BaseTool):
 
                 # Check for errors
                 if result.isError:
+                    # The server's content is not forwarded: it can carry
+                    # hosts, paths or credentials (#2332).
                     return ToolResult(
                         success=False,
-                        error=f"MCP tool error: {result.content}"
+                        data=None,
+                        error="MCP tool reported an error"
                     )
 
                 # Sanitize output before returning
@@ -240,25 +246,29 @@ class MCPClientTool(BaseTool):
                 guidance="This says nothing about what the MCP server holds.",
             )
 
-    def get_schema(self) -> Dict[str, Any]:
-        """Return schema for MCP client tool"""
+    @property
+    def name(self) -> str:
+        return "mcp_client"
+
+    @property
+    def description(self) -> str:
+        return "Execute tools from external MCP servers"
+
+    @property
+    def parameters_schema(self) -> Dict[str, Any]:
         return {
-            "name": "mcp_client",
-            "description": "Execute tools from external MCP servers",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "tool_name": {
-                        "type": "string",
-                        "description": "Name of the MCP tool to call"
-                    },
-                    "arguments": {
-                        "type": "object",
-                        "description": "Arguments to pass to the MCP tool"
-                    }
+            "type": "object",
+            "properties": {
+                "tool_name": {
+                    "type": "string",
+                    "description": "Name of the MCP tool to call"
                 },
-                "required": ["tool_name"]
-            }
+                "arguments": {
+                    "type": "object",
+                    "description": "Arguments to pass to the MCP tool"
+                }
+            },
+            "required": ["tool_name"]
         }
 
     async def list_available_tools(self) -> List[str]:
@@ -305,29 +315,23 @@ MCP_SERVER_ENV={"GITHUB_TOKEN":"your_github_token"}
 
 **Step 5**: Register in Container
 
-Edit `faultmaven/container.py` to conditionally create MCP tool:
+Construct the tool in `register_tools` (`faultmaven/container/providers/tools.py`), then register it in `_create_investigation_tools` (`faultmaven/container/providers/services.py`), as the existing tools are:
 
 ```python
-def _create_tools(self) -> List[BaseTool]:
-    """Create and return list of tools"""
-    tools = []
+# register_tools: construct it when enabled
+if settings.tools.mcp_enabled:
+    mcp_server_cmd = settings.tools.mcp_server_command.split(',')
+    container.mcp_client_tool = MCPClientTool(
+        server_command=mcp_server_cmd,
+        server_env=settings.tools.mcp_server_env,
+        sanitizer=sanitizer,
+    )
+    container.tools.append(container.mcp_client_tool)
 
-    # Existing tools
-    tools.append(KnowledgeBaseTool(...))
-    tools.append(WebSearchTool(...))
-
-    # MCP Client Tool (if enabled)
-    if self._settings.tools.mcp_enabled:
-        mcp_server_cmd = self._settings.tools.mcp_server_command.split(',')
-        mcp_tool = MCPClientTool(
-            server_command=mcp_server_cmd,
-            server_env=self._settings.tools.mcp_server_env,
-            sanitizer=self.get_data_sanitizer()
-        )
-        tools.append(mcp_tool)
-        self.logger.info("✅ MCP Client Tool registered")
-
-    return tools
+# _create_investigation_tools: give it to the model
+mcp_client_tool = getattr(container, "mcp_client_tool", None)
+if mcp_client_tool:
+    registry.register(mcp_client_tool)
 ```
 
 ### Usage Example
@@ -377,8 +381,7 @@ from typing import List, Optional
 from mcp.server import Server
 from mcp.types import Tool, TextContent
 
-from faultmaven.tools.registry import tool_registry
-from faultmaven.models.interfaces import BaseTool
+from faultmaven.modules.agent.tools.base import AgentTool, ToolContext
 
 
 class FaultMavenMCPServer:
@@ -389,9 +392,12 @@ class FaultMavenMCPServer:
     troubleshooting tools via the Model Context Protocol.
     """
 
-    def __init__(self, tools: List[BaseTool]):
+    def __init__(self, tools: List[AgentTool], context: ToolContext):
+        # Design gap: MCP callers have no case, so what ToolContext carries
+        # (case_id, enterprise_id, redaction_ctx) has to be decided.
+        self.context = context
         self.logger = logging.getLogger(__name__)
-        self.tools = {tool.get_schema()['name']: tool for tool in tools}
+        self.tools = {tool.name: tool for tool in tools}
         self.server = Server("faultmaven-tools")
         self._register_handlers()
 
@@ -419,7 +425,7 @@ class FaultMavenMCPServer:
             tool = self.tools[name]
 
             try:
-                result = await tool.execute(arguments)
+                result = await tool.execute_with_context(arguments, self.context)
 
                 if result.success:
                     return [TextContent(
@@ -469,11 +475,11 @@ async def main():
     # Initialize container
     container.initialize()
 
-    # Get tools
-    tools = container.get_tools()
+    # Get the tools the model is given
+    tools = container.tools
 
     # Create and run MCP server
-    server = FaultMavenMCPServer(tools)
+    server = FaultMavenMCPServer(tools, context)
     await server.run()
 
 
@@ -573,7 +579,7 @@ MCP_SERVER_ENV={"POSTGRES_CONNECTION":"postgresql://user:pass@localhost/db"}
 
 ```python
 import pytest
-from faultmaven.tools.mcp_client_tool import MCPClientTool
+from faultmaven.modules.agent.tools.mcp_client_tool import MCPClientTool
 
 @pytest.mark.asyncio
 @pytest.mark.integration
@@ -589,10 +595,10 @@ async def test_mcp_client_tool():
     assert 'read_file' in tools
 
     # Test calling a tool
-    result = await tool.execute({
-        'tool_name': 'list_directory',
-        'arguments': {'path': '/tmp'}
-    })
+    result = await tool.execute_with_context(
+        {'tool_name': 'list_directory', 'arguments': {'path': '/tmp'}},
+        context,
+    )
 
     assert result.success
     assert result.data is not None
@@ -612,15 +618,17 @@ tail -f logs/faultmaven.log | grep MCP
 
 ### MCP Tool Execution Fails
 
-```python
+```bash
 # Enable debug logging
 LOG_LEVEL=DEBUG python -m faultmaven.server
+```
 
+```python
 # Check available tools
 await mcp_tool.list_available_tools()
 
 # Test with minimal arguments
-result = await mcp_tool.execute({
+result = await mcp_tool.execute_with_context({
     'tool_name': 'test_tool',
     'arguments': {}
 })

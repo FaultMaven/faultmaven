@@ -5,8 +5,8 @@ Complete catalog of available tools for troubleshooting sessions.
 ## Implemented Tools ✅
 
 ### Knowledge Base Search Tool
-**Status**: ✅ Production
-**File**: `faultmaven/tools/knowledge_base.py`
+**Status**: ✅ Production, as the model-facing tool `kb_qa`
+**File**: `faultmaven/modules/agent/tools/kb_qa.py` (the `AgentTool` wrapper is `kb_tool_adapter.py`). The earlier `knowledge_base.py` tool was deleted, not wired (#943); there is one `kb_qa`, scoped by filters.
 **Type**: Direct Implementation
 
 **Purpose**: Search team's internal runbooks, documentation, and historical incident resolutions.
@@ -308,7 +308,7 @@ SEARCH_FILE_CONTEXT_LINES=20
 
 ### Document Generator Tool
 **Status**: 🟡 Prompts configured, storage layer incomplete
-**Planned File**: `faultmaven/tools/document_generator.py`
+**Planned File**: `faultmaven/modules/agent/tools/document_generator.py` (no code yet)
 **Type**: Direct Implementation (LLM-based)
 
 **Purpose**: Generate structured runbooks, post-mortems, and session summaries from resolved cases.
@@ -341,7 +341,7 @@ SEARCH_FILE_CONTEXT_LINES=20
 
 ### Metrics Analyzer Tool
 **Status**: 🔲 Designed, not implemented
-**Planned File**: `faultmaven/tools/metrics_analyzer.py`
+**Planned File**: `faultmaven/modules/agent/tools/metrics_analyzer.py` (no code yet)
 **Type**: Direct Implementation
 
 **Purpose**: Analyze time-series metrics data from Prometheus, Grafana, CloudWatch, etc.
@@ -358,7 +358,7 @@ SEARCH_FILE_CONTEXT_LINES=20
 
 ### Trace Analyzer Tool
 **Status**: 🔲 Concept
-**Planned File**: `faultmaven/tools/trace_analyzer.py`
+**Planned File**: `faultmaven/modules/agent/tools/trace_analyzer.py` (no code yet)
 **Type**: Direct Implementation
 
 **Purpose**: Analyze distributed traces to identify latency issues and service dependencies.
@@ -375,7 +375,7 @@ SEARCH_FILE_CONTEXT_LINES=20
 
 ### System Commands Tool
 **Status**: 🔲 Designed, security concerns
-**Planned File**: `faultmaven/tools/system_commands.py`
+**Planned File**: `faultmaven/modules/agent/tools/system_commands.py` (no code yet)
 **Type**: System Integration (requires sandboxing)
 
 **Purpose**: Execute diagnostic commands like kubectl, curl, grep for validation.
@@ -399,7 +399,7 @@ SEARCH_FILE_CONTEXT_LINES=20
 
 ### Configuration Validator Tool
 **Status**: 🔲 Concept
-**Planned File**: `faultmaven/tools/config_validator.py`
+**Planned File**: `faultmaven/modules/agent/tools/config_validator.py` (no code yet)
 **Type**: Direct Implementation
 
 **Purpose**: Validate YAML/JSON configuration files for syntax and best practices.
@@ -443,16 +443,18 @@ SEARCH_FILE_CONTEXT_LINES=20
 
 **Integration Pattern**:
 ```python
-@register_tool("custom_api")
-class CustomAPITool(BaseTool):
+class CustomAPITool(AgentTool):
+    # name, description and parameters_schema as in the Developer Guide
     def __init__(self, api_url: str, api_key: str):
         self.api_url = api_url
         self.api_key = api_key
 
-    async def execute(self, params: Dict) -> ToolResult:
-        # Make API call with sanitized params
+    async def execute_with_context(self, params: Dict, context: ToolContext) -> ToolResult:
+        # Make API call with sanitized params; report a failure with tool_failure
         pass
 ```
+
+Registration is by hand in `_create_investigation_tools`; see the [Developer Guide](./developer-guide.md).
 
 **See**: [Custom API Tools Guide](./integrations/custom-api-tools.md)
 

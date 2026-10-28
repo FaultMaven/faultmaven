@@ -1,155 +1,127 @@
 # Tool Developer Guide
 
-How to create, test, and integrate new tools into FaultMaven's pluggable tool architecture.
+How to create, test, and register a new agent tool. The code is in `faultmaven/modules/agent/tools/`; there is no decorator, no self-registration and no auto-discovery. A tool is constructed explicitly and registered by hand in the container.
 
 ## Quick Start
 
 ### 1. Understand the Tool Interface
 
-All tools must implement the `BaseTool` interface from `faultmaven/models/interfaces.py`:
+A tool subclasses `AgentTool` (`faultmaven/modules/agent/tools/base.py`), which extends `BaseTool` (`faultmaven/models/interfaces.py`). It implements four members: `name`, `description`, `parameters_schema` (JSON Schema) and `execute_with_context(params, context)`. The result is a `ToolResult`:
 
 ```python
-from abc import ABC, abstractmethod
-from typing import Any, Dict
+from typing import Any, Optional
 from pydantic import BaseModel
 
 class ToolResult(BaseModel):
-    """Standardized tool execution result"""
     success: bool
-    data: Any
+    data: Any                      # required: pass data=None on a failure
     error: Optional[str] = None
-
-class BaseTool(ABC):
-    """Base interface for all agent tools"""
-
-    @abstractmethod
-    async def execute(self, params: Dict[str, Any]) -> ToolResult:
-        """Execute the tool with given parameters"""
-        pass
-
-    @abstractmethod
-    def get_schema(self) -> Dict[str, Any]:
-        """Return tool schema for agent discovery"""
-        pass
+    timed_out: bool = False        # set by tool_failure, from the exception class
 ```
+
+`data` has no default, so `ToolResult(success=False, error="...")` raises `ValidationError: data Field required`. Every failure passes `data=None`, or goes through `tool_failure` (below).
 
 ### 2. Create a New Tool
 
-**Step 1**: Create file in `faultmaven/tools/`
+**Step 1**: Create the file in `faultmaven/modules/agent/tools/`.
 
 ```bash
-touch faultmaven/tools/my_custom_tool.py
+touch faultmaven/modules/agent/tools/my_custom_tool.py
 ```
 
-**Step 2**: Implement the tool
+**Step 2**: Implement the tool.
 
 ```python
 """my_custom_tool.py - Custom tool implementation"""
 
 import logging
 from typing import Any, Dict
-from faultmaven.models.interfaces import BaseTool, ToolResult
-from faultmaven.modules.agent.tools.base import tool_failure
-from faultmaven.tools.registry import register_tool
 
-@register_tool("my_custom_tool")
-class MyCustomTool(BaseTool):
-    """
-    Custom tool for [specific purpose].
+from faultmaven.models.interfaces import ToolResult
+from faultmaven.modules.agent.tools.base import AgentTool, ToolContext, tool_failure
 
-    This tool [description of what it does and when to use it].
-    """
+logger = logging.getLogger(__name__)
 
-    def __init__(self, config: Optional[Dict] = None, **kwargs):
-        """Initialize the tool with configuration"""
-        self.logger = logging.getLogger(__name__)
-        self.config = config or {}
-        # Accept and ignore other parameters from tool registry
 
-    async def execute(self, params: Dict[str, Any]) -> ToolResult:
-        """
-        Execute the tool.
+class MyCustomTool(AgentTool):
+    """Custom tool for [specific purpose]."""
 
-        Args:
-            params: Dictionary containing:
-                - param1: Description
-                - param2: Description
+    @property
+    def name(self) -> str:
+        return "my_custom_tool"
 
-        Returns:
-            ToolResult with success status, data, and optional error
-        """
-        try:
-            # Validate required parameters
-            if 'required_param' not in params:
-                return ToolResult(
-                    success=False,
-                    data=None,
-                    error="Missing required parameter: required_param"
-                )
+    @property
+    def description(self) -> str:
+        return "Description of what this tool does"
 
-            # Execute tool logic
-            result_data = self._do_work(params)
+    @property
+    def parameters_schema(self) -> Dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "required_param": {
+                    "type": "string",
+                    "description": "Parameter description",
+                },
+            },
+            "required": ["required_param"],
+        }
 
+    async def execute_with_context(
+        self, params: Dict[str, Any], context: ToolContext
+    ) -> ToolResult:
+        if "required_param" not in params:
             return ToolResult(
-                success=True,
-                data=result_data,
-                error=None
+                success=False,
+                data=None,
+                error="Missing required parameter: required_param",
             )
-
+        try:
+            return ToolResult(success=True, data=self._do_work(params))
         except Exception as e:
             # The exception's text goes to the server log, never into the
             # result: the model reads the result and can repeat it into the
             # answer every reader of the case is served (#2332).
-            self.logger.exception(f"Tool execution failed: {e}")
+            logger.exception("Tool execution failed: %s", e)
             return tool_failure(
                 "Tool execution failed",
                 e,
                 guidance="Say here what the model can and cannot conclude.",
             )
 
-    def get_schema(self) -> Dict[str, Any]:
-        """Return tool schema for agent"""
-        return {
-            "name": "my_custom_tool",
-            "description": "Description of what this tool does",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "required_param": {
-                        "type": "string",
-                        "description": "Parameter description"
-                    },
-                    "optional_param": {
-                        "type": "integer",
-                        "description": "Optional parameter description"
-                    }
-                },
-                "required": ["required_param"]
-            }
-        }
-
     def _do_work(self, params: Dict[str, Any]) -> Any:
-        """Private method for actual tool logic"""
-        # Implementation
         return {"result": "data"}
 ```
 
-**Step 3**: Tool is automatically discovered!
+`tool_failure(reason, exc, *, guidance="")` returns a failed `ToolResult` whose `error` is `"<reason> (<ExceptionClass>). <guidance>"` and whose `timed_out` is decided by exception class.
 
-```python
-# That's it! The @register_tool decorator handles:
-# - Registration in ToolRegistry
-# - Auto-discovery at startup
-# - Availability to agent via DI container
-```
+**Step 3**: Register it by hand. Nothing discovers the file.
+
+1. Construct it in `register_tools` (`faultmaven/container/providers/tools.py`) and set it on the container, as `search_file_tool` is: `container.my_custom_tool = MyCustomTool(...)` and `container.tools.append(...)`.
+2. Give it to the model by adding it to `_create_investigation_tools` (`faultmaven/container/providers/services.py`), which builds the `AgentToolRegistry` for the engine: `registry.register(my_custom_tool)`. `register` raises `ValueError` on a duplicate name.
+3. A tool the prompts name must also be part of the per-turn set (`GivenTools`, `core/investigation/prompts/templates/tool_text.py`), so a prompt never names a tool the turn does not give.
 
 ### 3. Test Your Tool
 
-Create test file in `tests/unit/tools/test_my_custom_tool.py`:
+Create a test file in `tests/unit/modules/agent/tools/test_my_custom_tool.py`. A tool runs through `execute_with_context`, so the test builds a `ToolContext` (`redaction_ctx` is required, by keyword; use the helpers in that directory's tests):
 
 ```python
 import pytest
-from faultmaven.tools.my_custom_tool import MyCustomTool
+
+from faultmaven.modules.agent.tools.base import ToolContext
+from faultmaven.modules.agent.tools.my_custom_tool import MyCustomTool
+from tests.model_content import disabled_redaction
+
+
+def make_context() -> ToolContext:
+    return ToolContext(
+        session_id="sess_1",
+        case_id="case_abc",
+        enterprise_id="org_1",
+        user_id="user_1",
+        redaction_ctx=disabled_redaction(),
+    )
+
 
 @pytest.mark.asyncio
 async def test_my_custom_tool_success():
@@ -157,7 +129,7 @@ async def test_my_custom_tool_success():
     tool = MyCustomTool()
 
     params = {"required_param": "test_value"}
-    result = await tool.execute(params)
+    result = await tool.execute_with_context(params, make_context())
 
     assert result.success is True
     assert result.error is None
@@ -169,7 +141,7 @@ async def test_my_custom_tool_missing_param():
     tool = MyCustomTool()
 
     params = {}  # Missing required_param
-    result = await tool.execute(params)
+    result = await tool.execute_with_context(params, make_context())
 
     assert result.success is False
     assert "required parameter" in result.error.lower()
@@ -188,7 +160,7 @@ async def test_tool_schema():
 
 Run tests:
 ```bash
-pytest tests/unit/tools/test_my_custom_tool.py -v
+pytest tests/unit/modules/agent/tools/test_my_custom_tool.py -v
 ```
 
 ## Architecture Patterns
@@ -203,12 +175,12 @@ pytest tests/unit/tools/test_my_custom_tool.py -v
 - ✅ Full control
 - ✅ Easy testing
 
-**Example**: Log Analyzer, Data Classifier
+**Example**: `search_file` (`search_file_tool.py`), `read_file` (`read_file_tool.py`)
 
 ```python
-@register_tool("pattern_analyzer")
-class PatternAnalyzerTool(BaseTool):
-    async def execute(self, params: Dict) -> ToolResult:
+class PatternAnalyzerTool(AgentTool):
+    # name, description and parameters_schema as in the Quick Start
+    async def execute_with_context(self, params: Dict, context: ToolContext) -> ToolResult:
         # Pure Python logic, no external calls
         patterns = self._analyze_patterns(params['data'])
         return ToolResult(success=True, data=patterns)
@@ -224,26 +196,27 @@ class PatternAnalyzerTool(BaseTool):
 - ⚠️ Requires API authentication
 - ⚠️ Network latency
 
-**Example**: Web Search Tool
+**Example**: Web Search Tool (`web_search.py`)
 
 ```python
-@register_tool("external_api")
-class ExternalAPITool(BaseTool):
-    def __init__(self, api_key: str, api_url: str, **kwargs):
+class ExternalAPITool(AgentTool):
+    # name, description and parameters_schema as in the Quick Start
+    def __init__(self, api_key: str, api_url: str):
         self.api_key = api_key
         self.api_url = api_url
 
-    async def execute(self, params: Dict) -> ToolResult:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                self.api_url,
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                json=params
-            )
-            return ToolResult(
-                success=response.status_code == 200,
-                data=response.json()
-            )
+    async def execute_with_context(self, params: Dict, context: ToolContext) -> ToolResult:
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    self.api_url,
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    json=params,
+                )
+                response.raise_for_status()
+                return ToolResult(success=True, data=response.json())
+        except httpx.HTTPError as e:
+            return tool_failure("The API call failed", e)
 ```
 
 ### Pattern 3: MCP Server Integration
@@ -256,20 +229,20 @@ class ExternalAPITool(BaseTool):
 - ✅ Tool + resource exposure
 - ⚠️ Requires MCP server setup
 
-**Example**: MCP Client Tool
+**Status**: design only. There is no MCP client tool in the code (see the banner on the MCP page). The sketch below shows the shape it would take as an `AgentTool`:
 
 ```python
 from mcp import ClientSession, StdioServerParameters
 
-@register_tool("mcp_server")
-class MCPServerTool(BaseTool):
-    def __init__(self, server_command: List[str], **kwargs):
+class MCPServerTool(AgentTool):
+    # name, description and parameters_schema as in the Quick Start
+    def __init__(self, server_command: List[str]):
         self.server_params = StdioServerParameters(
             command=server_command[0],
             args=server_command[1:]
         )
 
-    async def execute(self, params: Dict) -> ToolResult:
+    async def execute_with_context(self, params: Dict, context: ToolContext) -> ToolResult:
         async with ClientSession(*self.server_params) as session:
             await session.initialize()
 
@@ -297,18 +270,18 @@ class MCPServerTool(BaseTool):
 - ⚠️ Output sanitization mandatory
 - ⚠️ Timeout protection essential
 
-**Example**: System Command Tool
+**Status**: design only. No system-command tool exists in the code. The sketch below shows the shape it would take as an `AgentTool`:
 
 ```python
 import asyncio
 import shlex
 
-@register_tool("system_command")
-class SystemCommandTool(BaseTool):
+class SystemCommandTool(AgentTool):
+    # name, description and parameters_schema as in the Quick Start
     # Whitelist of allowed commands
     ALLOWED_COMMANDS = ['kubectl', 'curl', 'nslookup', 'dig']
 
-    async def execute(self, params: Dict) -> ToolResult:
+    async def execute_with_context(self, params: Dict, context: ToolContext) -> ToolResult:
         command = params['command']
         args = params.get('args', [])
 
@@ -316,6 +289,7 @@ class SystemCommandTool(BaseTool):
         if command not in self.ALLOWED_COMMANDS:
             return ToolResult(
                 success=False,
+                data=None,
                 error=f"Command '{command}' not in whitelist"
             )
 
@@ -344,11 +318,8 @@ class SystemCommandTool(BaseTool):
                 }
             )
 
-        except asyncio.TimeoutError:
-            return ToolResult(
-                success=False,
-                error="Command execution timeout"
-            )
+        except asyncio.TimeoutError as e:
+            return tool_failure("Command execution timed out", e)
 ```
 
 ## Privacy-First Development
@@ -357,15 +328,17 @@ class SystemCommandTool(BaseTool):
 
 ### PII Sanitization Pattern
 
+Case content a tool sends to a model itself goes through `context.redaction_ctx` (`ToolContext`), so its placeholders can be reversed in the reply the user reads. For other text, `DataSanitizer.sanitize(data)` (`faultmaven/infrastructure/security/redaction.py`) is the sanitizer:
+
 ```python
 from faultmaven.infrastructure.security.redaction import DataSanitizer
 
-@register_tool("privacy_aware_tool")
-class PrivacyAwareTool(BaseTool):
-    def __init__(self, sanitizer: DataSanitizer = None, **kwargs):
-        self.sanitizer = sanitizer or DataSanitizer()
+class PrivacyAwareTool(AgentTool):
+    # name, description and parameters_schema as in the Quick Start
+    def __init__(self, sanitizer: DataSanitizer):
+        self.sanitizer = sanitizer
 
-    async def execute(self, params: Dict) -> ToolResult:
+    async def execute_with_context(self, params: Dict, context: ToolContext) -> ToolResult:
         # ALWAYS sanitize user input
         sanitized_query = self.sanitizer.sanitize(params['query'])
 
@@ -383,15 +356,12 @@ class PrivacyAwareTool(BaseTool):
 For tools calling external APIs (web search, MCP servers), sanitize TWICE:
 
 ```python
-async def execute(self, params: Dict) -> ToolResult:
+async def execute_with_context(self, params: Dict, context: ToolContext) -> ToolResult:
     # Sanitization 1: Input from user
     sanitized_input = self.sanitizer.sanitize(params['query'])
 
     # Sanitization 2: Before external call
-    external_safe_input = self.sanitizer.sanitize(
-        sanitized_input,
-        context={"external_api": True}
-    )
+    external_safe_input = self.sanitizer.sanitize(sanitized_input)
 
     # Call external API
     external_result = await self._call_external_api(external_safe_input)
@@ -404,22 +374,16 @@ async def execute(self, params: Dict) -> ToolResult:
 
 ## Dependency Injection Integration
 
-Tools receive dependencies through DI container:
+A tool receives its dependencies as constructor arguments, passed where `register_tools` (`faultmaven/container/providers/tools.py`) constructs it from the container. There is no registry that injects them.
 
 ### Accessing Dependencies
 
 ```python
-@register_tool("di_aware_tool")
-class DIAwareTool(BaseTool):
-    def __init__(
-        self,
-        settings=None,            # Optional settings
-        sanitizer=None,          # Optional sanitizer
-        **kwargs                 # Accept other DI params
-    ):
+class DIAwareTool(AgentTool):
+    # name, description and parameters_schema as in the Quick Start
+    def __init__(self, settings, sanitizer):
         self.settings = settings
         self.sanitizer = sanitizer
-        # Ignore other kwargs from registry
 ```
 
 ### Common Dependencies
@@ -437,8 +401,8 @@ class DIAwareTool(BaseTool):
 Tools should read config from `settings` object:
 
 ```python
-class ConfigurableTool(BaseTool):
-    def __init__(self, settings=None, **kwargs):
+class ConfigurableTool(AgentTool):
+    def __init__(self, settings=None):
         if settings:
             self.api_key = settings.tools.my_tool_api_key
             self.endpoint = settings.tools.my_tool_endpoint
@@ -482,6 +446,8 @@ MY_TOOL_TIMEOUT=30
 import pytest
 from unittest.mock import Mock, AsyncMock
 
+# make_context() is the helper defined under "Test Your Tool" above
+
 @pytest.fixture
 def mock_dependencies():
     """Mock common dependencies"""
@@ -494,7 +460,7 @@ def mock_dependencies():
 async def test_tool_with_mocked_deps(mock_dependencies):
     """Test tool with mocked dependencies"""
     tool = MyTool(**mock_dependencies)
-    result = await tool.execute({'param': 'value'})
+    result = await tool.execute_with_context({'param': 'value'}, make_context())
     assert result.success
 ```
 
@@ -509,10 +475,10 @@ async def test_tool_with_real_dependencies():
     from faultmaven.infrastructure.security.redaction import DataSanitizer
 
     settings = get_settings()
-    sanitizer = DataSanitizer(settings)
+    sanitizer = DataSanitizer()
 
     tool = MyTool(settings=settings, sanitizer=sanitizer)
-    result = await tool.execute({'param': 'value'})
+    result = await tool.execute_with_context({'param': 'value'}, make_context())
 
     assert result.success
     assert result.data is not None
@@ -520,20 +486,20 @@ async def test_tool_with_real_dependencies():
 
 ## Documentation Requirements
 
-Each tool must have documentation in `docs/tools/implemented/` or `docs/tools/planned/`:
+Each tool must have documentation in `docs/reference/tools/`:
 
 ### Documentation Template
 
-Create `docs/tools/implemented/my-custom-tool.md`:
+Create `docs/reference/tools/my-custom-tool.md`:
 
 ```markdown
 # My Custom Tool
 
 ## Overview
-- **File**: `faultmaven/tools/my_custom_tool.py`
+- **File**: `faultmaven/modules/agent/tools/my_custom_tool.py`
 - **Status**: ✅ Production / 🟡 Partial / 🔲 Planned
 - **Type**: Direct / External API / MCP / System Command
-- **Interface**: `BaseTool`
+- **Interface**: `AgentTool`
 
 ## Purpose
 [Clear description of what the tool does and why]
@@ -548,27 +514,27 @@ Create `docs/tools/implemented/my-custom-tool.md`:
 - Feature 3
 
 ## Configuration
-\`\`\`env
+```env
 MY_TOOL_API_KEY=your_key
 MY_TOOL_ENDPOINT=https://api.example.com
-\`\`\`
+```
 
 ## Usage Examples
-\`\`\`python
+```python
 # Example invocation
 params = {"query": "test"}
-result = await tool.execute(params)
-\`\`\`
+result = await tool.execute_with_context(params, context)
+```
 
 ## API Reference
-### execute(params)
+### execute_with_context(params, context)
 - **Parameters**:
   - `param1` (str): Description
   - `param2` (int, optional): Description
 - **Returns**: `ToolResult`
 
 ### get_schema()
-- **Returns**: Tool schema dictionary
+- **Returns**: Tool schema dictionary (`name`, `description`, `parameters`), built from `parameters_schema`
 
 ## Performance
 - Latency: [typical latency]
@@ -589,16 +555,17 @@ result = await tool.execute(params)
 
 Before submitting a new tool:
 
-- [ ] Tool implements `BaseTool` interface
-- [ ] Tool uses `@register_tool("name")` decorator
+- [ ] Tool subclasses `AgentTool` and implements `execute_with_context`
+- [ ] Tool is registered in `_create_investigation_tools` (`faultmaven/container/providers/services.py`)
+- [ ] Failures go through `tool_failure`, or pass `data=None`
 - [ ] Tool has unit tests (>80% coverage)
 - [ ] Tool has integration tests
 - [ ] Tool sanitizes all inputs (if using external data)
 - [ ] Tool handles errors gracefully
 - [ ] Tool has timeout protection (if I/O intensive)
 - [ ] Tool configuration added to `settings.py`
-- [ ] Tool documentation created in `docs/tools/`
-- [ ] Tool added to catalog (`docs/tools/tool-catalog.md`)
+- [ ] Tool documentation created in `docs/reference/tools/`
+- [ ] Tool added to catalog (`docs/reference/tools/tool-catalog.md`)
 - [ ] Code follows FaultMaven style guide
 - [ ] All tests pass (`pytest`)
 - [ ] No linter errors (`ruff check`)
@@ -627,45 +594,45 @@ When either is exceeded, the engine keeps the head (system + base task) and re-a
 
 ### ❌ Don't: Hard-code configuration
 ```python
-class BadTool(BaseTool):
+class BadTool(AgentTool):
     API_KEY = "hardcoded_key"  # Never do this!
 ```
 
 ### ✅ Do: Use settings
 ```python
-class GoodTool(BaseTool):
-    def __init__(self, settings=None, **kwargs):
+class GoodTool(AgentTool):
+    def __init__(self, settings):
         self.api_key = settings.tools.my_tool_api_key
 ```
 
 ### ❌ Don't: Skip sanitization
 ```python
-async def execute(self, params):
+async def execute_with_context(self, params, context):
     return ToolResult(success=True, data=params['raw_input'])  # Dangerous!
 ```
 
 ### ✅ Do: Always sanitize
 ```python
-async def execute(self, params):
+async def execute_with_context(self, params, context):
     sanitized = self.sanitizer.sanitize(params['raw_input'])
     return ToolResult(success=True, data=sanitized)
 ```
 
 ### ❌ Don't: Ignore errors
 ```python
-async def execute(self, params):
+async def execute_with_context(self, params, context):
     result = await external_api_call()  # What if this fails?
     return ToolResult(success=True, data=result)
 ```
 
 ### ✅ Do: Handle errors, with the text in the log
 ```python
-async def execute(self, params):
+async def execute_with_context(self, params, context):
     try:
         result = await external_api_call()
         return ToolResult(success=True, data=result)
     except Exception as e:
-        self.logger.exception(f"API call failed: {e}")
+        logger.exception("API call failed: %s", e)
         # "API call failed (ReadTimeout). <guidance>": the class, never the
         # text, which can carry a URL, a key or a host (#2332).
         return tool_failure(
@@ -679,7 +646,7 @@ async def execute(self, params):
 
 - **Architecture Questions**: See [Tool Architecture](./architecture/)
 - **Integration Patterns**: See [Integration Guide](./integrations/)
-- **Example Tools**: Study existing tools in `faultmaven/tools/`
+- **Example Tools**: Study existing tools in `faultmaven/modules/agent/tools/`
 - **Community**: Discord channel #tool-development
 
 ---

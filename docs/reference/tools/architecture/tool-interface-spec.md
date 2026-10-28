@@ -1,6 +1,6 @@
 # Tool Interface Specification
 
-Technical specification for the `BaseTool` interface and tool architecture.
+Technical specification for the `AgentTool` / `BaseTool` interface and tool architecture.
 
 ## Overview
 
@@ -20,61 +20,63 @@ from pydantic import BaseModel
 class ToolResult(BaseModel):
     """Standardized tool execution result"""
     success: bool
-    data: Any
+    data: Any                       # required: pass data=None on a failure
     error: Optional[str] = None
+    timed_out: bool = False
 
 class BaseTool(ABC):
-    """
-    Base interface for all agent tools.
-
-    This interface defines the contract that all tools must implement
-    to be used within the FaultMaven agent system.
-    """
+    """Base interface (faultmaven/models/interfaces.py): one abstract method."""
 
     @abstractmethod
-    async def execute(self, params: Dict[str, Any]) -> ToolResult:
-        """
-        Execute the tool with the given parameters.
-
-        Args:
-            params: Dictionary of parameters for tool execution
-
-        Returns:
-            ToolResult containing success status, data, and optional error
-
-        Raises:
-            ToolExecutionException: When tool execution fails critically
-            ValidationException: When parameters don't match schema
-            TimeoutException: When execution exceeds configured timeout
-        """
-        pass
-
-    @abstractmethod
-    def get_schema(self) -> Dict[str, Any]:
-        """
-        Return the tool's schema for agent discovery.
-
-        Returns:
-            Dictionary containing:
-                - name: Tool identifier
-                - description: What the tool does
-                - parameters: JSON Schema for parameters
-        """
-        pass
+    async def execute(self, params: Dict[str, Any]) -> ToolResult: ...
 ```
+
+The interface an agent tool is written against is `AgentTool` (`faultmaven/modules/agent/tools/base.py`), which extends `BaseTool`:
+
+```python
+class AgentTool(BaseTool, ABC):
+    @property
+    @abstractmethod
+    def name(self) -> str: ...
+
+    @property
+    @abstractmethod
+    def description(self) -> str: ...
+
+    @property
+    @abstractmethod
+    def parameters_schema(self) -> Dict[str, Any]: ...
+
+    @abstractmethod
+    async def execute_with_context(
+        self, params: Dict[str, Any], context: "ToolContext"
+    ) -> ToolResult:
+        """Execute the tool; a failure is returned as a ToolResult."""
+
+    async def execute(self, params: Dict[str, Any]) -> ToolResult:
+        """Default: a failed result saying the tool requires context."""
+
+    def get_schema(self) -> Dict[str, Any]:
+        """{"name", "description", "parameters"} built from the properties."""
+
+    def to_tool(self) -> "Tool": ...                       # the LLM wire shape
+    def validate_params(self, params) -> Optional[str]: ...  # required keys and JSON types
+```
+
+The engine runs a tool through `AgentToolRegistry.execute_tool(name, params, context)`, which calls `validate_params`, then `execute_with_context`, and turns an exception the tool did not catch into a `tool_failure`.
 
 ## Tool Result Schema
 
 ### ToolResult Model
 
 ```python
-@dataclass
-class ToolResult:
+class ToolResult(BaseModel):
     """Result of a tool execution"""
 
     success: bool                    # Did execution succeed?
-    data: Any                       # Tool output (any JSON-serializable type)
-    error: Optional[str] = None     # Error message if failed
+    data: Any                        # Tool output; required (None on a failure)
+    error: Optional[str] = None      # Fixed reason if failed, never an exception's text
+    timed_out: bool = False          # The failure was a timeout, by exception class
 ```
 
 **Field Specifications**:
@@ -83,7 +85,8 @@ class ToolResult:
 |-------|------|----------|-------------|
 | `success` | bool | Yes | Indicates if tool execution succeeded |
 | `data` | Any | Yes | Tool output data (None if failed) |
-| `error` | str | No | Error message (required if success=False) |
+| `error` | str | No | Fixed reason, never an exception's text (#2332); set when success=False |
+| `timed_out` | bool | No | Set by `tool_failure` from the exception class |
 
 **Success Response Example**:
 ```python
@@ -100,11 +103,12 @@ ToolResult(
 
 **Failure Response Example**:
 ```python
-ToolResult(
-    success=False,
-    data=None,
-    error="API rate limit exceeded. Retry after 60 seconds."
+tool_failure(
+    "The API rate limit was exceeded",
+    exc,
+    guidance="Retry after 60 seconds.",
 )
+# error == "The API rate limit was exceeded (HTTPStatusError). Retry after 60 seconds."
 ```
 
 ## Tool Schema Specification
@@ -157,46 +161,35 @@ Supported JSON Schema types:
 - ✅ `parameters` - Must be valid JSON Schema
 
 **Optional Fields**:
-- `examples` - Example parameter sets
-- `context_aware` - Whether tool uses phase context
-- `requires_confirmation` - Whether execution requires user approval
+No optional fields are read: `get_schema()` returns only `name`, `description` and `parameters`. Fields such as `examples`, `context_aware` and `requires_confirmation` have no code behind them.
 
 ## Tool Lifecycle
 
 ### 1. Registration Phase
 
 ```python
-@register_tool("my_tool")
-class MyTool(BaseTool):
-    pass
+# faultmaven/container/providers/services.py, _create_investigation_tools
+registry = AgentToolRegistry()
+registry.register(search_file_tool)   # ValueError if the name is already registered
 ```
 
 **Process**:
-1. Module imported at startup
-2. `@register_tool` decorator executes
-3. Tool class registered in `ToolRegistry._tools`
-4. Tool becomes available for instantiation
+1. `register_tools` (`faultmaven/container/providers/tools.py`) constructs each tool and sets it on the container
+2. `_create_investigation_tools` registers, by hand, the tools the model is given this deployment (flag-gated tools only when their flag is on)
+3. There is no decorator, no scan and no auto-discovery
 
 ### 2. Instantiation Phase
 
 ```python
-# In container.py
-def _create_tools(self) -> List[BaseTool]:
-    tools = []
-    for name, tool_class in tool_registry._tools.items():
-        tool = tool_class(
-            settings=self._settings,
-            sanitizer=self.get_data_sanitizer(),
-        )
-        tools.append(tool)
-    return tools
+# faultmaven/container/providers/tools.py, register_tools
+container.search_file_tool = SearchFileTool(...)
+container.tools.append(container.search_file_tool)
 ```
 
 **Process**:
-1. DI container requests tools
-2. Registry iterates registered tool classes
-3. Each tool instantiated with dependencies
-4. Tool list provided to agent
+1. `register_tools` runs once, from the composition root
+2. Each tool is constructed with its dependencies as constructor arguments
+3. The tool is set on the container, ready for `_create_investigation_tools`
 
 ### 3. Discovery Phase
 
@@ -218,7 +211,7 @@ for tool in self.tools:
 ```python
 # Agent invokes tool
 params = {"query": "Redis OOM solutions", "limit": 5}
-result = await tool.execute(params)
+result = await registry.execute_tool("kb_qa", params, context)
 
 if result.success:
     # Process tool output
@@ -231,7 +224,7 @@ else:
 **Process**:
 1. Agent selects appropriate tool
 2. Prepares parameters matching schema
-3. Calls `execute()` asynchronously
+3. Calls `execute_with_context()` asynchronously via `AgentToolRegistry.execute_tool`
 4. Processes `ToolResult`
 
 ### 5. Cleanup Phase
@@ -245,7 +238,7 @@ Tools are garbage collected when:
 
 ### 1. Interface Segregation
 
-Tools implement **only** the `BaseTool` interface:
+Tools implement **only** the `AgentTool` interface:
 - ✅ Small, focused interface
 - ✅ Easy to implement
 - ✅ No unnecessary dependencies
@@ -254,10 +247,9 @@ Tools implement **only** the `BaseTool` interface:
 
 Tools receive dependencies via constructor:
 ```python
-def __init__(self, settings=None, sanitizer=None, **kwargs):
+def __init__(self, settings, sanitizer):
     self.settings = settings
     self.sanitizer = sanitizer
-    # Accept and ignore other DI parameters
 ```
 
 Benefits:
@@ -269,7 +261,7 @@ Benefits:
 
 All tools must sanitize inputs:
 ```python
-async def execute(self, params: Dict) -> ToolResult:
+async def execute_with_context(self, params: Dict, context: ToolContext) -> ToolResult:
     # ALWAYS sanitize user input
     sanitized_query = self.sanitizer.sanitize(params['query'])
 
@@ -285,7 +277,7 @@ Tools must handle errors gracefully:
 ```python
 from faultmaven.modules.agent.tools.base import tool_failure
 
-async def execute(self, params: Dict) -> ToolResult:
+async def execute_with_context(self, params: Dict, context: ToolContext) -> ToolResult:
     try:
         result = await self._do_work(params)
         return ToolResult(success=True, data=result)
@@ -293,8 +285,8 @@ async def execute(self, params: Dict) -> ToolResult:
         # Records timed_out, which the engine reads (#2332).
         return tool_failure("Operation timed out", e)
     except Exception as e:
-        self.logger.error(f"Unexpected error: {e}")
-        return ToolResult(success=False, error="Internal tool error")
+        logger.error("Unexpected error: %s", e)
+        return tool_failure("Internal tool error", e)
 ```
 
 ## Tool Categories
@@ -307,13 +299,12 @@ async def execute(self, params: Dict) -> ToolResult:
 - Fast execution
 - Full control
 
-**Examples**: Log Analyzer, Data Classifier
+**Examples**: `search_file`, `read_file`
 
 **Interface Pattern**:
 ```python
-@register_tool("direct_tool")
-class DirectTool(BaseTool):
-    async def execute(self, params: Dict) -> ToolResult:
+class DirectTool(AgentTool):
+    async def execute_with_context(self, params: Dict, context: ToolContext) -> ToolResult:
         # Pure Python logic
         result = self._analyze_locally(params)
         return ToolResult(success=True, data=result)
@@ -331,9 +322,8 @@ class DirectTool(BaseTool):
 
 **Interface Pattern**:
 ```python
-@register_tool("api_tool")
-class APITool(BaseTool):
-    async def execute(self, params: Dict) -> ToolResult:
+class APITool(AgentTool):
+    async def execute_with_context(self, params: Dict, context: ToolContext) -> ToolResult:
         async with httpx.AsyncClient() as client:
             response = await client.post(self.api_url, json=params)
             return ToolResult(success=True, data=response.json())
@@ -347,13 +337,12 @@ class APITool(BaseTool):
 - Can be local or remote
 - Growing ecosystem
 
-**Examples**: MCP Client Tool
+**Examples**: MCP Client Tool (design only; no code)
 
 **Interface Pattern**:
 ```python
-@register_tool("mcp_tool")
-class MCPTool(BaseTool):
-    async def execute(self, params: Dict) -> ToolResult:
+class MCPTool(AgentTool):
+    async def execute_with_context(self, params: Dict, context: ToolContext) -> ToolResult:
         async with mcp.ClientSession(self.server_params) as session:
             result = await session.call_tool(
                 name=params['tool_name'],
@@ -374,13 +363,12 @@ class MCPTool(BaseTool):
 
 **Interface Pattern**:
 ```python
-@register_tool("system_tool")
-class SystemTool(BaseTool):
+class SystemTool(AgentTool):
     ALLOWED_COMMANDS = ['kubectl', 'curl', 'nslookup']
 
-    async def execute(self, params: Dict) -> ToolResult:
+    async def execute_with_context(self, params: Dict, context: ToolContext) -> ToolResult:
         if params['command'] not in self.ALLOWED_COMMANDS:
-            return ToolResult(success=False, error="Command not whitelisted")
+            return ToolResult(success=False, data=None, error="Command not whitelisted")
 
         # Execute with timeout and sanitization
         result = await self._safe_execute(params)
@@ -416,16 +404,16 @@ class SystemTool(BaseTool):
 
 ```python
 # Parameter validation errors
-ToolResult(success=False, error="Missing required parameter: query")
+ToolResult(success=False, data=None, error="Missing required parameter: query")
 
-# External service errors
-ToolResult(success=False, error="API rate limit exceeded. Retry after 60s")
+# External service errors: the class goes in, never the exception's text
+tool_failure("The API rate limit was exceeded", exc, guidance="Retry after 60s.")
 
 # Timeout errors: "Operation timed out (TimeoutError).", with timed_out set
 tool_failure("Operation timed out", exc)
 
-# Internal errors
-ToolResult(success=False, error="Internal tool error. See logs for details")
+# Internal errors: the text goes to the log
+tool_failure("Internal tool error", exc, guidance="See the server log.")
 ```
 
 ### Error Recovery
@@ -439,11 +427,11 @@ ToolResult(success=False, error="Internal tool error. See logs for details")
 **Fallback Strategy**:
 ```python
 # Try primary tool
-result = await primary_tool.execute(params)
+result = await primary_tool.execute_with_context(params, context)
 
 if not result.success:
     # Fall back to secondary tool
-    result = await fallback_tool.execute(params)
+    result = await fallback_tool.execute_with_context(params, context)
 ```
 
 ## Security Requirements
@@ -452,7 +440,7 @@ if not result.success:
 
 **Required for all tools**:
 ```python
-async def execute(self, params: Dict) -> ToolResult:
+async def execute_with_context(self, params: Dict, context: ToolContext) -> ToolResult:
     # Sanitize all user inputs
     for key, value in params.items():
         if isinstance(value, str):
@@ -463,7 +451,7 @@ async def execute(self, params: Dict) -> ToolResult:
 
 **Required for external tools**:
 ```python
-async def execute(self, params: Dict) -> ToolResult:
+async def execute_with_context(self, params: Dict, context: ToolContext) -> ToolResult:
     result = await self._call_external_api(params)
 
     # Sanitize output before returning
@@ -476,11 +464,10 @@ async def execute(self, params: Dict) -> ToolResult:
 
 **Dangerous tools must be flagged**:
 ```python
-class DangerousTool(BaseTool):
-    REQUIRES_CONFIRMATION = True
+class DangerousTool(AgentTool):
+    REQUIRES_CONFIRMATION = True   # not read anywhere; no confirmation step exists in the tool path
 
-    async def execute(self, params: Dict) -> ToolResult:
-        # Agent will request user confirmation before executing
+    async def execute_with_context(self, params: Dict, context: ToolContext) -> ToolResult:
         pass
 ```
 
@@ -499,7 +486,7 @@ class DangerousTool(BaseTool):
 @pytest.mark.asyncio
 async def test_tool_success():
     tool = MyTool()
-    result = await tool.execute({"param": "value"})
+    result = await tool.execute_with_context({"param": "value"}, context)
     assert result.success
 ```
 
@@ -516,7 +503,7 @@ async def test_tool_success():
 @pytest.mark.asyncio
 async def test_tool_integration():
     tool = MyTool(settings=real_settings)
-    result = await tool.execute({"param": "value"})
+    result = await tool.execute_with_context({"param": "value"}, context)
     assert result.success
 ```
 
@@ -535,10 +522,10 @@ Each tool must document:
 
 Before tool acceptance:
 
-- [ ] Implements `BaseTool` interface
-- [ ] Uses `@register_tool` decorator
-- [ ] Returns valid `ToolResult`
-- [ ] Provides valid schema via `get_schema()`
+- [ ] Subclasses `AgentTool` and implements `execute_with_context`
+- [ ] Registered in `_create_investigation_tools`
+- [ ] Returns a valid `ToolResult` (`data=` on every one; failures via `tool_failure`)
+- [ ] Provides a valid schema via `parameters_schema`
 - [ ] Sanitizes all inputs
 - [ ] Handles errors gracefully
 - [ ] Has timeout protection
