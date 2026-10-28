@@ -20,6 +20,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from sqlalchemy import create_engine
 
 from faultmaven.bootstrap import data_init
 from tests.integration.test_alembic_migrations import (
@@ -251,6 +252,7 @@ async def test_a_read_whose_cancellation_hangs_still_runs_the_subprocess_at_the_
 async def test_the_engine_is_disposed_when_the_read_is_cancelled():
     class HangingEngine:
         disposed = False
+        sync_engine = create_engine("sqlite://")  # takes the error listener (#2377)
 
         def connect(self):
             return self

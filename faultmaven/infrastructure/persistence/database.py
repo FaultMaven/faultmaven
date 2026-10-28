@@ -46,6 +46,9 @@ from faultmaven.infrastructure.persistence.pg_connection import (
     pg_bounds,
     pg_connect_args,
 )
+from faultmaven.infrastructure.persistence.value_free_errors import (
+    install_value_free_errors,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +140,10 @@ def get_engine(database_url: Optional[str] = None) -> AsyncEngine:
         f"Creating async engine for: {url.split('@')[-1] if '@' in url else url}"
     )
 
-    # Configure engine based on database type
+    # Configure engine based on database type. Both hide bound parameters, and
+    # PostgreSQL's also drops the server's DETAIL and CONTEXT (#2377): a failed
+    # statement's exception text would otherwise carry the row's values, a
+    # document's body included, into every handler that logs ``{e}``.
     if is_sqlite(url):
         # SQLite: Use NullPool (doesn't support connection pooling).
         # pool_pre_ping is intentionally NOT set — it's a no-op on NullPool
@@ -147,6 +153,7 @@ def get_engine(database_url: Optional[str] = None) -> AsyncEngine:
         _engine = create_async_engine(
             url,
             echo=db_config.database_echo,
+            hide_parameters=True,
             poolclass=NullPool,
             connect_args={"check_same_thread": False},
         )
@@ -213,6 +220,7 @@ def get_engine(database_url: Optional[str] = None) -> AsyncEngine:
         _engine = create_async_engine(
             url,
             echo=db_config.database_echo,
+            hide_parameters=True,
             pool_pre_ping=True,  # Check connection health before use
             pool_size=db_config.database_pool_size,
             max_overflow=db_config.database_max_overflow,
@@ -222,6 +230,7 @@ def get_engine(database_url: Optional[str] = None) -> AsyncEngine:
         )
         _engine_bounds = pg_bounds(url, db_config)
         event.listen(_engine.sync_engine, "connect", enable_tcp_liveness)
+        install_value_free_errors(_engine.sync_engine)
         _begin_statement = _transaction_settings_statement(_engine_bounds)
         _begin_params = _transaction_settings_params(_engine_bounds)
 
