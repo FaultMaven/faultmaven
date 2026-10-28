@@ -365,9 +365,9 @@ class TestIngestRunbook:
 
 
 class TestUploadDocument:
-    """``upload_document`` writes the upload row and the draft row from the
-    title BEFORE ``ingest_runbook`` runs, so it scrubs first, and the copies
-    must be one string.
+    """``upload_document`` writes the upload row, the draft row and the
+    response from its own copy of the title, not ``ingest_runbook``'s, so it
+    scrubs first, and the copies must be one string.
 
     Mutation: delete the ``sanitize_item_title`` call in ``upload_document``, or
     run it only for the personal tier. ``upload_document``'s own rows and
@@ -1427,9 +1427,9 @@ class TestAMalformedAnalysisLogsNoTitle:
 class TestTheColumnCutComesAfterTheScrub:
     """A secret that straddles a column's length is cut into a FRAGMENT no
     pattern matches (the first 21 characters of a 32-character key), so cutting
-    before scrubbing publishes it. And a title the item's column cannot hold must
-    not fail AFTER the draft, job and upload rows are committed, stranding a
-    verified draft with no item listed to everyone at global scope.
+    before scrubbing publishes it. And a title the item's column cannot hold is
+    cut once, so the draft, the upload and the response name what the item
+    stores.
 
     Mutation: cut before the scrub inside ``sanitize_item_title``; drop the
     item-column cut from ``ingest_runbook`` or from ``upload_document``.

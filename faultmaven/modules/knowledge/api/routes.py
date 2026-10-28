@@ -71,6 +71,7 @@ from faultmaven.modules.knowledge.taxonomy import (
     render_vocabulary,
     vocabulary,
 )
+from faultmaven.utils.exception_name import exception_class_name
 from faultmaven.utils.line_endings import decode_text
 
 router = APIRouter(prefix="/knowledge", tags=["knowledge_base"])
@@ -527,7 +528,9 @@ async def upload_document(
         # dependency, so the global handler's generic 503, not the blanket 500.
         raise
     except Exception as e:
-        logger.error(f"Document upload failed: {e}")
+        # The class, never the text: a failed row write's text carries its
+        # INSERT parameters, the document's content among them (#2365).
+        logger.error("Document upload failed: %s", exception_class_name(e))
         # No str(e) in the response — the rule for every 500 in this module
         # (#866). A DB driver raises with the connection URI in its message, so
         # echoing exception text hands a caller credentials. Each `except` logs

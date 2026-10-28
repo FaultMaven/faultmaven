@@ -90,10 +90,12 @@ is only the standalone import source `/knowledge/scan` reads; authored and conve
 
 ### Atomicity
 
-`ingest_runbook` now treats a 0-chunk result as a failure and rolls back its just-created SQL row (see [`knowledge_service.py: _delete_knowledge_item_row`](../../../faultmaven/modules/knowledge/domain/services/knowledge_service.py)). The combined invariant: **on any failure, no half-state remains in either store.** Callers can rely on:
+`ingest_runbook` writes the `knowledge_items` row first, then the team share (`resource_shares`, team scope only), then the vectors. Any failure after the row — the share write, the vector write raising or yielding 0 chunks, or a cancellation — runs one cleanup before re-raising ([`knowledge_service.py: _delete_knowledge_item_row`](../../../faultmaven/modules/knowledge/domain/services/knowledge_service.py), #2365): it deletes the vectors by parent id (a store can fail after applying part of a write), then the row, then the shares, and the shares only once the row's delete has committed. The cleanup is shielded from an anyio scope's cancellation (`anyio.CancelScope(shield=True)`), because under `BaseHTTPMiddleware` a cancelled request's anyio scope cancels every unshielded await. It is best effort: a step that fails is logged, and the caller still gets its original error. The combined invariant: **on any failure, no half-state remains in either store.** Callers can rely on:
 
-- Exception raised → nothing persisted.
+- Exception raised → nothing persisted, unless a cleanup step failed too. That is logged at ERROR for vectors and at WARNING for the row, and an item whose row survives keeps its share.
 - Normal return → both stores updated; `chunks_created > 0`.
+
+`KnowledgeService.upload_document` calls `ingest_runbook` first and writes its `uploaded_files`, `conversion_jobs` and verified `conversion_drafts` rows only after it succeeds, because the draft's `knowledge_item_id` is a foreign key to the item. If those rows fail to write, it removes them by id and then withdraws the item through `delete_document` (`withdraw_published_item`, which `verify_draft` uses too). If the rows cannot be removed, the item is left as well, so the draft never names a missing item. A crash between the two commits leaves only the item, which is live and deletable.
 
 ### Idempotency
 

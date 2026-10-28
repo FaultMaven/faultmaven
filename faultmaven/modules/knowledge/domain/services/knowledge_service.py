@@ -27,6 +27,8 @@ import re
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
 
+import anyio
+
 if TYPE_CHECKING:
     # Type-only import; the runtime import stays lazy inside ingest_runbook
     # to avoid the service↔persistence cycle. This satisfies the forward-ref
@@ -64,6 +66,7 @@ from faultmaven.modules.knowledge.domain.write_scope import (
     metadata_scope_floor,
     require_write_scope,
 )
+from faultmaven.utils.exception_name import exception_class_name
 from faultmaven.utils.line_endings import normalize_line_endings
 from faultmaven.utils.serialization import decode_json_blob, to_json_compatible
 
@@ -1253,11 +1256,13 @@ class KnowledgeService:
         """Promote runbook content to a fully-published KnowledgeItem.
 
         Atomically maintains both stores by writing the relational source-of-
-        truth first, then the ChromaDB embeddings. On ChromaDB failure (raise
-        OR 0 chunks): delete the just-written SQL row before re-raising, so
-        the two stores never diverge. The earlier "leave the SQL row for a
-        scan-and-recover re-embed" policy produced half-state rows that
-        downstream scans mis-classified, so rollback is now the contract.
+        truth first, then the ChromaDB embeddings. On any failure after the row
+        is written (the team share, the vectors raising OR returning 0 chunks,
+        a cancellation), the vectors, the row and its shares are removed before
+        re-raising (#2365), so the two stores never diverge. The earlier "leave
+        the SQL row for a scan-and-recover re-embed" policy produced half-state
+        rows that downstream scans mis-classified, so rollback is now the
+        contract.
 
         Args:
             document_id: Stable id used for both the relational row and the
@@ -1314,8 +1319,8 @@ class KnowledgeService:
 
         Returns:
             Number of chunks indexed in ChromaDB (always > 0 on success). On
-            ChromaDB failure the method raises after deleting the SQL row, so
-            a successful return always means both stores are populated.
+            failure the method raises after removing what it wrote, so a
+            successful return always means both stores are populated.
 
         Raises:
             RunbookQualityError: a non-shipped body holds a secret or a
@@ -1424,52 +1429,51 @@ class KnowledgeService:
             repo = DatabaseKnowledgeItemRepository(session)
             await repo.create(item)
 
-        # Team publish: record visibility in the share table (source of truth,
-        # ADR-013 §D4). The scope enum stays 'team' ⟺ ≥1 share row.
-        # Cross-ENTERPRISE shares are impossible by construction — the share
-        # carries the item's own enterprise_id, and a team belongs to exactly one
-        # enterprise. Cross-organization shares inside it are the point.
-        if scope == KnowledgeScope.TEAM.value and team_id:
-            await self._create_team_share(
-                resource_type="knowledge_item",
-                resource_id=document_id,
-                team_id=team_id,
-                enterprise_id=enterprise_id,
-                created_by=owner_id or verified_by,
-            )
-
-        # 2) ChromaDB second — chunks + embeddings. On failure (raises OR
-        # returns 0 chunks), delete the SQL row before raising. The prior
-        # "leave SQL for recovery" policy produced half-state rows that
-        # downstream scans then mis-classified.
-        doc_model = KnowledgeBaseDocument(
-            document_id=document_id,
-            title=title,
-            content=content,
-            document_type=document_type,
-            tags=tags or [],
-            source_url=source_url,
-            scope=scope,
-            owner_id=owner_id,
-            created_at=to_json_compatible(now),
-            updated_at=to_json_compatible(now),
-        )
+        # Everything after the row is undone by one cleanup when it fails or
+        # is cancelled (#2365). The prior "leave SQL for recovery" policy
+        # produced half-state rows that downstream scans then mis-classified.
         try:
+            # Team publish: record visibility in the share table (source of
+            # truth, ADR-013 §D4). The scope enum stays 'team' ⟺ ≥1 share row.
+            # Cross-ENTERPRISE shares are impossible by construction — the share
+            # carries the item's own enterprise_id, and a team belongs to exactly
+            # one enterprise. Cross-organization shares inside it are the point.
+            if scope == KnowledgeScope.TEAM.value and team_id:
+                await self._create_team_share(
+                    resource_type="knowledge_item",
+                    resource_id=document_id,
+                    team_id=team_id,
+                    enterprise_id=enterprise_id,
+                    created_by=owner_id or verified_by,
+                )
+
+            # 2) ChromaDB second — chunks + embeddings.
+            doc_model = KnowledgeBaseDocument(
+                document_id=document_id,
+                title=title,
+                content=content,
+                document_type=document_type,
+                tags=tags or [],
+                source_url=source_url,
+                scope=scope,
+                owner_id=owner_id,
+                created_at=to_json_compatible(now),
+                updated_at=to_json_compatible(now),
+            )
             # The value just written to the row's NOT NULL enterprise_id.
             chunks_created = await self._index_document_in_vector_store(
                 doc_model, prechunked=prechunked, enterprise_id=enterprise_id
             )
-        except Exception:
+            if chunks_created <= 0:
+                raise RuntimeError(
+                    f"Vector indexing produced 0 chunks for {document_id}. "
+                    f"Common causes: BGE-M3 model unavailable, ChromaDB "
+                    f"unreachable, or chunker produced no output. SQL row "
+                    f"cleaned up."
+                )
+        except (Exception, asyncio.CancelledError):
             await self._delete_knowledge_item_row(document_id)
             raise
-
-        if chunks_created <= 0:
-            await self._delete_knowledge_item_row(document_id)
-            raise RuntimeError(
-                f"Vector indexing produced 0 chunks for {document_id}. "
-                f"Common causes: BGE-M3 model unavailable, ChromaDB unreachable, "
-                f"or chunker produced no output. SQL row cleaned up."
-            )
 
         return chunks_created
 
@@ -1662,25 +1666,136 @@ class KnowledgeService:
         return chunks
 
     async def _delete_knowledge_item_row(self, item_id: str) -> None:
-        """Best-effort cleanup of an orphaned knowledge_items row.
+        """Best-effort cleanup of what a failed :meth:`ingest_runbook` wrote:
+        the item's vectors, its row, then its team share rows (#2365).
 
-        Used by `ingest_runbook` when vector indexing fails — guarantees no
-        half-state remains. Errors are logged but suppressed since the
-        caller is already on a failure path and will raise its own error.
+        The vectors go first, by parent id: a store can fail after applying
+        part of a write. The shares go only once the row's delete has
+        committed, as in :meth:`delete_document`, so an item that survives
+        keeps the share that makes it a team item. Shielded from cancellation:
+        it runs on the path a cancellation takes, and an anyio scope (the one
+        ``BaseHTTPMiddleware`` runs a route in) cancels every await that is
+        not. Errors are logged, not raised: the caller re-raises its own.
         """
         from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
             DatabaseKnowledgeItemRepository,
         )
 
-        try:
-            async with self._db_session_factory() as session:
-                repo = DatabaseKnowledgeItemRepository(session)
-                await repo.delete(item_id)
-        except Exception as cleanup_err:
-            logger.warning(
-                f"Failed to clean up orphaned knowledge_items row {item_id}: "
-                f"{cleanup_err}"
-            )
+        with anyio.CancelScope(shield=True):
+            if self._vector_store:
+                try:
+                    await self._vector_store.delete_documents_by_parent_id(item_id)
+                except Exception as exc:
+                    logger.error(
+                        "ORPHANED KNOWLEDGE VECTORS %s: ingesting it failed, and "
+                        "removing the chunks it wrote failed too (%s). Any it "
+                        "wrote stay retrievable under an id with no row; remove "
+                        "them by hand.",
+                        item_id,
+                        exception_class_name(exc),
+                    )
+            try:
+                async with self._db_session_factory() as session:
+                    await DatabaseKnowledgeItemRepository(session).delete(item_id)
+            except Exception as cleanup_err:
+                logger.warning(
+                    "Failed to clean up orphaned knowledge_items row %s (%s); "
+                    "its team share rows are kept with it.",
+                    item_id,
+                    exception_class_name(cleanup_err),
+                )
+                return
+            if self._share_repo:
+                try:
+                    await self._share_repo.delete_for_resource(
+                        "knowledge_item", item_id
+                    )
+                except Exception as cleanup_err:
+                    logger.warning(
+                        "Failed to clean up the team share rows of orphaned "
+                        "knowledge_items row %s (%s)",
+                        item_id,
+                        exception_class_name(cleanup_err),
+                    )
+
+    async def withdraw_published_item(self, item_id: str, *, caller: str) -> bool:
+        """Remove an item a caller published but could not record, through
+        :meth:`delete_document` (row, vectors, team shares). True when it is
+        gone; otherwise an ERROR, prefixed with ``caller``, names the orphaned
+        item, which stays live and deletable. Shielded from an anyio scope's
+        cancellation, as :meth:`_delete_knowledge_item_row` is: every caller
+        runs it on a failure path."""
+        with anyio.CancelScope(shield=True):
+            try:
+                outcome = await self.delete_document(item_id)
+            except Exception as exc:
+                outcome = {"error": exception_class_name(exc)}
+        if (outcome or {}).get("success"):
+            return True
+        logger.error(
+            "%s: could not withdraw orphaned knowledge_item %s: %s",
+            caller,
+            item_id,
+            (outcome or {}).get("error", "no success reported"),
+        )
+        return False
+
+    async def _withdraw_failed_upload(
+        self, document_id: str, *, draft_id: str, conversion_id: str, file_id: str
+    ) -> None:
+        """Undo an upload whose item was published but whose upload, job and
+        draft rows did not write (#2365). Best effort, and shielded as
+        :meth:`_delete_knowledge_item_row` is: the caller re-raises its own
+        error.
+
+        The rows go first, by id. A commit can land and still raise, or be
+        cancelled, and withdrawing the item under a landed draft would leave it
+        ``verified`` with a NULL ``knowledge_item_id`` (the key's ``SET NULL``),
+        which ``GET /knowledge/drafts`` lists. Draft, then job, then file: the
+        job's key to the file is ``RESTRICT``. Only once they are gone is the
+        item withdrawn; if they cannot be removed, the item stays too, so the
+        upload is whole or is only its item, and an ERROR names both.
+        """
+        from sqlalchemy import delete
+
+        from faultmaven.infrastructure.persistence.models import (
+            ConversionDraftModel,
+            ConversionJobModel,
+            UploadedFileModel,
+        )
+
+        with anyio.CancelScope(shield=True):
+            try:
+                async with self._db_session_factory() as session:
+                    await session.execute(
+                        delete(ConversionDraftModel).where(
+                            ConversionDraftModel.id == draft_id
+                        )
+                    )
+                    await session.execute(
+                        delete(ConversionJobModel).where(
+                            ConversionJobModel.id == conversion_id
+                        )
+                    )
+                    await session.execute(
+                        delete(UploadedFileModel).where(
+                            UploadedFileModel.file_id == file_id
+                        )
+                    )
+                    await session.commit()
+            except Exception as exc:
+                logger.error(
+                    "upload_document: could not remove the rows of failed upload "
+                    "%s (draft %s, job %s, file %s): %s. The item is left "
+                    "published, so a draft that landed still names it.",
+                    document_id,
+                    draft_id,
+                    conversion_id,
+                    file_id,
+                    exception_class_name(exc),
+                )
+                return
+            await self.withdraw_published_item(document_id, caller="upload_document")
 
     # API-compatible methods that match the router expectations
     async def upload_document(
@@ -1696,7 +1811,8 @@ class KnowledgeService:
         owner_id: Optional[str] = None,
         team_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Upload document: create SQLite record + ingest into ChromaDB.
+        """Upload document: publish it through :meth:`ingest_runbook`, then
+        record its upload, conversion job and verified draft rows.
 
         Everything this publishes becomes a ``KnowledgeItemType.RUNBOOK`` (see
         :meth:`ingest_runbook`) and the ``ConversionDraftModel`` written below
@@ -1704,6 +1820,14 @@ class KnowledgeService:
         (#1214), before the first side effect, not at the route, so every caller
         gets it and the ``validation_passed`` claim is one this method has
         actually checked.
+
+        The rows are written after the item they name, never before (#2365):
+        the draft's ``knowledge_item_id`` is a foreign key, enforced on every
+        deployment. A completed call leaves all of it (the item, its vectors
+        and the upload, job and draft rows) or none of it: a failed ingestion
+        undoes its own writes, and a failed row write withdraws the published
+        item. A crash between the two commits leaves only the item, which is
+        live and deletable (``DELETE /knowledge/documents/{id}``).
 
         Args:
             title: Redacted with the sanitizer before it is written anywhere
@@ -1715,9 +1839,10 @@ class KnowledgeService:
                 :meth:`ingest_runbook`, which this delegates to.
 
         Raises:
-            RunbookQualityError: the content fails the runbook quality gate
-                (422 at the API boundary). Raised before any row is
-                created, so a refusal leaves nothing behind and needs no
+            RunbookQualityError: the content fails the runbook quality gate,
+                or its body holds a credential (``ingest_runbook``, #2012); 422
+                at the API boundary. Either is raised before any row is
+                written, so a refusal leaves nothing behind and needs no
                 compensation.
         """
         try:
@@ -1770,18 +1895,15 @@ class KnowledgeService:
                 UploadedFileModel,
             )
 
-            # The title, once, before the first row: the upload row's
-            # ``filename`` and the draft row's ``title`` below are written from
-            # it BEFORE ``ingest_runbook`` runs, so they would otherwise hold
-            # the text the ``knowledge_items`` row does not (#1981). Still
-            # nothing written, so a title that cannot be scrubbed leaves
-            # nothing behind.
+            # The title, once, before the first write: the upload row's
+            # ``filename``, the draft row's ``title`` and the response are
+            # written from it, not from the copy ``ingest_runbook`` scrubs for
+            # its own row, so they would otherwise hold the text the
+            # ``knowledge_items`` row does not (#1981). Still nothing written,
+            # so a title that cannot be scrubbed leaves nothing behind.
             #
-            # Cut to the item's column in the same breath (``String(512)``):
-            # the upload, job and draft rows below are COMMITTED before
-            # ``ingest_runbook`` writes the item, so a title the item cannot
-            # hold would fail there and strand a verified draft with no item,
-            # listed to everyone at global scope.
+            # Cut to the item's column in the same breath (``String(512)``), so
+            # every copy and the response name the title the item stores.
             title = await sanitize_item_title(
                 self._sanitizer, title, KnowledgeItemModel.title
             )
@@ -1809,8 +1931,8 @@ class KnowledgeService:
 
             # Both conversion_jobs / uploaded_files / knowledge_items require
             # enterprise_id NOT NULL — fall back to the single-tenant default
-            # when no explicit enterprise is in scope. Resolved before the
-            # session block because ingest_runbook below needs it too.
+            # when no explicit enterprise is in scope. Resolved once, because
+            # ingest_runbook and the rows below both need it.
             # The enterprise the SESSION is bound to, never a hardcoded
             # sentinel (#1143). This path used to be unreachable under
             # TENANT_PROVIDER=multi — the route refused every upload with the
@@ -1824,73 +1946,18 @@ class KnowledgeService:
             # write the row into a foreign tenant instead.
             enterprise_id = writable_enterprise_id(None)
 
-            # Create SQLite record (synthetic draft, immediately verified)
+            # The rows' ids, minted up front so that a failed row write can
+            # remove them by id (synthetic draft, immediately verified).
             conversion_id = f"conv_{_uuid.uuid4().hex[:12]}"
             draft_id = f"draft_{_uuid.uuid4().hex[:12]}"
+            source_file_id = f"file_{_uuid.uuid4().hex[:12]}"
 
-            async with self._db_session_factory() as session:
-                # ``conversion_jobs.source_file_id`` is a FK to
-                # ``uploaded_files``. Create the upload row first.
-                source_file_id = f"file_{_uuid.uuid4().hex[:12]}"
-                upload = UploadedFileModel(
-                    file_id=source_file_id,
-                    enterprise_id=enterprise_id,
-                    case_id=None,  # KB-bound, not case-bound
-                    uploaded_by=owner_id,
-                    # The title, which is what this upload has for a name:
-                    # nothing is written to a file (#1950).
-                    filename=filename,
-                    size_bytes=len(content.encode()),
-                    content_type="text/markdown",
-                    # A storage-backend key or NULL, never a path: the text is
-                    # in the draft row below and in ``knowledge_items``, not
-                    # in a backend, so there is no key to store (#836).
-                    storage_ref=None,
-                    upload_source="conversion_source",
-                    uploaded_at_turn=0,
-                )
-                session.add(upload)
-                await session.flush()
-
-                job = ConversionJobModel(
-                    id=conversion_id,
-                    user_id=owner_id,  # NULL if anonymous; FK SET NULL
-                    enterprise_id=enterprise_id,
-                    scope=scope,
-                    status="completed",
-                    source_file_id=source_file_id,
-                    source_type="document",
-                    failure_modes_detected=0,
-                    analysis_result={},
-                    created_at=created_at,
-                    completed_at=created_at,
-                )
-                session.add(job)
-
-                draft = ConversionDraftModel(
-                    id=draft_id,
-                    enterprise_id=enterprise_id,
-                    conversion_id=conversion_id,
-                    runbook_id=document_id,
-                    title=draft_title,
-                    content=content,
-                    status="verified",
-                    source_type="document",
-                    validation_passed=True,
-                    knowledge_item_id=document_id,
-                    domain=fm_meta.get("domain"),
-                    service=fm_meta.get("service"),
-                    severity=fm_meta.get("severity"),
-                    tags=tags_list,
-                    document_type=document_type,
-                    created_at=created_at,
-                    verified_at=created_at,
-                    verified_by=owner_id,  # NULL if anonymous; FK SET NULL
-                )
-                session.add(draft)
-                await session.commit()
-
-            # Ingest both relationally and into ChromaDB.
+            # Publish first, as ``verify_draft`` does (#2365): the draft row below
+            # names the item, through a foreign key enforced on every
+            # deployment, so it can only be written once the item exists. A
+            # failed ingestion undoes its own writes, and nothing else has been
+            # written yet.
+            #
             # upload_document is called by anonymous / non-verified upload
             # paths, so verified_by is None (verification_level defaults to
             # EXPERIMENTAL inside ingest_runbook).
@@ -1907,6 +1974,80 @@ class KnowledgeService:
                 team_id=team_id,
                 verified_by=None,
             )
+
+            # Then the upload, job and verified draft rows, in one transaction.
+            # Only this write is undone here: if it fails, or is cancelled, the
+            # item just published is withdrawn too, so a failed upload leaves
+            # nothing behind.
+            try:
+                async with self._db_session_factory() as session:
+                    # ``conversion_jobs.source_file_id`` is a FK to
+                    # ``uploaded_files``. Create the upload row first.
+                    upload = UploadedFileModel(
+                        file_id=source_file_id,
+                        enterprise_id=enterprise_id,
+                        case_id=None,  # KB-bound, not case-bound
+                        uploaded_by=owner_id,
+                        # The title, which is what this upload has for a name:
+                        # nothing is written to a file (#1950).
+                        filename=filename,
+                        size_bytes=len(content.encode()),
+                        content_type="text/markdown",
+                        # A storage-backend key or NULL, never a path: the text is
+                        # in the draft row below and in ``knowledge_items``, not
+                        # in a backend, so there is no key to store (#836).
+                        storage_ref=None,
+                        upload_source="conversion_source",
+                        uploaded_at_turn=0,
+                    )
+                    session.add(upload)
+                    await session.flush()
+
+                    job = ConversionJobModel(
+                        id=conversion_id,
+                        user_id=owner_id,  # NULL if anonymous; FK SET NULL
+                        enterprise_id=enterprise_id,
+                        scope=scope,
+                        status="completed",
+                        source_file_id=source_file_id,
+                        source_type="document",
+                        failure_modes_detected=0,
+                        analysis_result={},
+                        created_at=created_at,
+                        completed_at=created_at,
+                    )
+                    session.add(job)
+
+                    draft = ConversionDraftModel(
+                        id=draft_id,
+                        enterprise_id=enterprise_id,
+                        conversion_id=conversion_id,
+                        runbook_id=document_id,
+                        title=draft_title,
+                        content=content,
+                        status="verified",
+                        source_type="document",
+                        validation_passed=True,
+                        knowledge_item_id=document_id,
+                        domain=fm_meta.get("domain"),
+                        service=fm_meta.get("service"),
+                        severity=fm_meta.get("severity"),
+                        tags=tags_list,
+                        document_type=document_type,
+                        created_at=created_at,
+                        verified_at=created_at,
+                        verified_by=owner_id,  # NULL if anonymous; FK SET NULL
+                    )
+                    session.add(draft)
+                    await session.commit()
+            except (Exception, asyncio.CancelledError):
+                await self._withdraw_failed_upload(
+                    document_id,
+                    draft_id=draft_id,
+                    conversion_id=conversion_id,
+                    file_id=source_file_id,
+                )
+                raise
 
             logger.info(
                 f"Uploaded document {document_id}: {chunks_created} chunks indexed"
@@ -1931,7 +2072,9 @@ class KnowledgeService:
             # otherwise make every rejected paste look like an outage.
             raise
         except Exception as e:
-            logger.error(f"Failed to upload document: {e}")
+            # The class, never the text: a failed INSERT's text carries its
+            # parameters, the document's content among them.
+            logger.error("Failed to upload document: %s", exception_class_name(e))
             raise
 
     async def list_documents(
