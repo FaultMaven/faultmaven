@@ -1,10 +1,10 @@
 """The case router, driven with no credential against services that all fail.
 
-#1494's shape, for the twenty-two operations behind
-``_di_get_case_service_dependency`` and the one behind ``get_case_service``
-(``GET /cases/{case_id}/uploaded-files``): the gate was declared as a trailing
-handler parameter while the case service was declared above it, and FastAPI
-solves a dependant's dependencies in DECLARATION ORDER — so an anonymous caller reached
+#1494's shape, for the twenty-three operations behind
+``_di_get_case_service_dependency`` (``GET /cases/{case_id}/uploaded-files``
+took the bare ``get_case_service`` until #2358): the gate was declared as a
+trailing handler parameter while the case service was declared above it, and
+FastAPI solves a dependant's dependencies in DECLARATION ORDER — so an anonymous caller reached
 the provider first and got whatever the provider does on a degraded deployment
 instead of the 401 the route promises. The same finding as #1447 on the session
 router, one module over, and closed the same way: the gate is a ROUTE-LEVEL
@@ -37,7 +37,6 @@ from fastapi.testclient import TestClient
 from faultmaven.api import route_enumeration
 from faultmaven.api.v1.dependencies import (
     get_case_repository,
-    get_case_service,
     get_evidence_reclassifier,
     get_investigation_service,
 )
@@ -61,20 +60,16 @@ _SERVICE_PROVIDERS = (
     get_investigation_service,
     get_evidence_reclassifier,
     get_case_repository,
-    get_case_service,
 )
 
 #: The auth gate, named the way the guard module names it, so "is this route
 #: gated" is asked of the dependency tree rather than of the source text.
 _GATE = "faultmaven.api.v1.auth_dependencies.require_authentication"
 
-#: The case-service providers #1494 was split on, and the seam this module is
-#: about: the DI wrapper behind twenty-two routes, and the bare provider
-#: ``list_uploaded_files`` declares (the wrapper calls it, but not as a
-#: dependency, so the trees differ).
-_CASE_SERVICES = (
-    "faultmaven.modules.case.api.routes.dependencies._di_get_case_service_dependency",
-    "faultmaven.api.v1.dependencies.get_case_service",
+#: The provider whose routes #1494 was split on, and the seam this module is
+#: about.
+_CASE_SERVICE = (
+    "faultmaven.modules.case.api.routes.dependencies._di_get_case_service_dependency"
 )
 
 #: One concrete request per operation, because a route cannot be driven through
@@ -206,7 +201,7 @@ def _surface() -> FastAPI:
 
 
 def _case_service_operations(app: FastAPI) -> set[tuple[str, str]]:
-    """Gated operations on this router whose tree holds a case-service provider.
+    """Gated operations on this router whose tree holds the case service.
 
     Through ``route_enumeration`` rather than a flat ``app.routes`` scan. On
     the FastAPI this repository develops against (0.141.1) ``include_router``
@@ -218,7 +213,7 @@ def _case_service_operations(app: FastAPI) -> set[tuple[str, str]]:
     found = set()
     for path, methods, dependant in route_enumeration.iter_served_routes(app):
         names = _dependency_names(dependant)
-        if names.isdisjoint(_CASE_SERVICES) or _GATE not in names:
+        if _CASE_SERVICE not in names or _GATE not in names:
             continue
         for method in methods or ():
             if method in {"HEAD", "OPTIONS"}:

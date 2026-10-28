@@ -883,8 +883,8 @@ def test_the_debug_router_in_production_is_an_explicit_opt_in():
 #: reachable only if the gate ran first:
 #:
 #: * the 22 behind ``_di_get_case_service_dependency`` (#1527) and
-#:   ``GET /api/v1/cases/{case_id}/uploaded-files`` behind
-#:   ``get_case_service``, by
+#:   ``GET /api/v1/cases/{case_id}/uploaded-files``, behind it too since
+#:   #2358, by
 #:   ``tests/integration/security/test_unauthenticated_case_surface.py``. On
 #:   that router a service-less app is not a measurement: ``get_case_service``
 #:   returns ``None`` rather than raising, and ``check_case_service_available``
