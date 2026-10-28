@@ -1722,11 +1722,14 @@ class KnowledgeService:
         """Remove an item a caller published but could not record, through
         :meth:`delete_document` (row, vectors, team shares). True when it is
         gone; otherwise an ERROR, prefixed with ``caller``, names the orphaned
-        item, which stays live and deletable."""
-        try:
-            outcome = await self.delete_document(item_id)
-        except Exception as exc:
-            outcome = {"error": exception_class_name(exc)}
+        item, which stays live and deletable. Shielded from an anyio scope's
+        cancellation, as :meth:`_delete_knowledge_item_row` is: every caller
+        runs it on a failure path."""
+        with anyio.CancelScope(shield=True):
+            try:
+                outcome = await self.delete_document(item_id)
+            except Exception as exc:
+                outcome = {"error": exception_class_name(exc)}
         if (outcome or {}).get("success"):
             return True
         logger.error(

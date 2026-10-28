@@ -20,17 +20,22 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import anyio
 import pytest
-from sqlalchemy import delete, event, func, select, text
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from sqlalchemy import delete, event, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from faultmaven.api.v1.auth_dependencies import require_authentication
 from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.config.tenant_context import _current_enterprise_id
+from faultmaven.exceptions import ConflictError
 from faultmaven.infrastructure import embedding_guard
 from faultmaven.infrastructure.persistence.models import (
     Base,
@@ -46,6 +51,8 @@ from faultmaven.infrastructure.persistence.share_repository import (
     PostgreSQLShareRepository,
 )
 from faultmaven.models.exceptions import KnowledgeBaseError
+from faultmaven.modules.knowledge.api.routes import get_knowledge_service
+from faultmaven.modules.knowledge.api.routes import router as knowledge_router
 from faultmaven.modules.knowledge.domain.services import knowledge_service
 from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
     ConversionService,
@@ -473,6 +480,113 @@ async def test_a_cancelled_upload_leaves_nothing(session_factory, during, how):
     service._vector_store.delete_documents_by_parent_id.assert_awaited()
     assert await _rows(session_factory) == NOTHING
     assert await _drafts(session_factory) == []
+
+
+def test_the_upload_route_logs_the_class_not_the_text(caplog):
+    """A failed row write's text carries its INSERT parameters, the document's
+    content among them."""
+    app = FastAPI()
+    app.include_router(knowledge_router, prefix="/api/v1")
+    app.state.team_service = None
+    failing = AsyncMock(side_effect=RuntimeError("INSERT params: BODY-2365"))
+    app.dependency_overrides[get_knowledge_service] = lambda: SimpleNamespace(
+        upload_document=failing
+    )
+    app.dependency_overrides[require_authentication] = lambda: SimpleNamespace(
+        user_id=OWNER, enterprise_id=STANDALONE_ENTERPRISE_ID, organization_id=None
+    )
+
+    with caplog.at_level(logging.ERROR):
+        response = TestClient(app, raise_server_exceptions=False).post(
+            "/api/v1/knowledge/documents",
+            data={"title": "T", "document_type": "runbook", "scope": "personal"},
+            files={"file": ("rb.md", b"# A runbook\n", "text/markdown")},
+        )
+
+    assert response.status_code == 500, response.text
+    failing.assert_awaited_once()
+    assert "Document upload failed: RuntimeError" in caplog.text
+    assert "BODY-2365" not in caplog.text
+
+
+async def test_verify_drafts_withdrawal_survives_an_anyio_cancel(session_factory):
+    """``verify_draft`` lost its swap (the draft was discarded during ingestion)
+    and is withdrawing what it published when the request's anyio scope is
+    cancelled: the withdrawal still completes."""
+    service = _knowledge(session_factory)
+    async with session_factory() as session:
+        session.add(
+            UploadedFileModel(
+                file_id="file_v",
+                enterprise_id=STANDALONE_ENTERPRISE_ID,
+                filename="f",
+                size_bytes=1,
+            )
+        )
+        await session.flush()
+        session.add(
+            ConversionJobModel(
+                id="conv_v",
+                user_id=OWNER,
+                enterprise_id=STANDALONE_ENTERPRISE_ID,
+                scope="personal",
+                status="completed",
+                source_file_id="file_v",
+                source_type="document",
+            )
+        )
+        session.add(
+            ConversionDraftModel(
+                id="draft_v",
+                enterprise_id=STANDALONE_ENTERPRISE_ID,
+                conversion_id="conv_v",
+                runbook_id="rb-v",
+                title="Redis Evictions",
+                content=valid_runbook("Redis Evictions Under Memory Pressure"),
+                status="draft",
+                validation_passed=True,
+            )
+        )
+        await session.commit()
+    ingest = service.ingest_runbook
+
+    async def ingest_then_discard(**kwargs):
+        chunks = await ingest(**kwargs)
+        async with session_factory() as session:
+            await session.execute(
+                update(ConversionDraftModel).values(status="discarded")
+            )
+            await session.commit()
+        return chunks
+
+    service.ingest_runbook = ingest_then_discard
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def vector_delete(*_args, **_kwargs):
+        entered.set()
+        await release.wait()
+        return 3
+
+    service._vector_store.delete_documents_by_parent_id.side_effect = vector_delete
+    conversion = ConversionService(
+        sanitizer=regex_only_sanitizer(),
+        llm_router=AsyncMock(),
+        settings=MagicMock(),
+        db_session_factory=session_factory,
+        knowledge_service=service,
+    )
+
+    async def run():
+        with pytest.raises(ConflictError, match="nothing was published"):
+            await conversion.verify_draft("conv_v", "draft_v", OWNER)
+
+    async with anyio.create_task_group() as group:
+        group.start_soon(run)
+        await entered.wait()
+        group.cancel_scope.cancel()
+        release.set()
+
+    assert (await _rows(session_factory))["knowledge_items"] == 0
 
 
 @pytest.mark.postgres
