@@ -182,7 +182,6 @@ Operational detail:
 
 | Invariant | Where enforced |
 |-----------|----------------|
-| What a failed ingest can leave in either store | The residual list in `KnowledgeService.ingest_runbook`'s docstring |
 | No draft with `status = VERIFIED` but `knowledge_item_id = NULL` | `ConversionService.verify_draft` commits status only after ingestion succeeds; `KnowledgeService.delete_document` and `fm-reset-kb` discard the drafts naming an item before deleting it (`draft_retirement`, #2369). Another deleter can still leave one (the key's `SET NULL`; #2385) |
 | Re-running bootstrap produces no churn for unchanged runbooks | `kb_init._ingest_pack_runbook` compares the pack's hash with `metadata.pack_content_hash` stamped at ingest |
 | No embedding model used to *ingest* the pack | Pack ships pre-computed vectors; `ingest_runbook(prechunked=...)` skips `model.encode` (the model still loads at boot for query-time search) |

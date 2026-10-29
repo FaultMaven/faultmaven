@@ -1471,9 +1471,8 @@ class KnowledgeService:
             tags = [str(tag) for tag in tags]
 
         # 1) SQL first — relational source-of-truth. If this fails, ChromaDB
-        # is never touched. If ChromaDB later fails (step 2), the SQL row
-        # is rolled back before we raise (see lines below) — atomic across
-        # both stores.
+        # is never touched. If ChromaDB later fails (step 2), the cleanup below
+        # runs before we raise.
         item = KnowledgeItem(
             item_id=document_id,
             # Isolation is not optional for any tier (ADR-017 D1): every row
@@ -1535,8 +1534,8 @@ class KnowledgeService:
         # carries the item's own enterprise_id, and a team belongs to exactly
         # one enterprise. Cross-organization shares inside it are the point.
         share_team = team_id if scope == KnowledgeScope.TEAM.value else None
-        # Everything from the row's INSERT on is undone by one cleanup when it
-        # fails or is cancelled (#2365). The prior "leave SQL for recovery"
+        # A failure or a cancellation from the row's INSERT on runs one cleanup
+        # (#2365). The prior "leave SQL for recovery"
         # policy produced half-state rows that downstream scans then
         # mis-classified. ``create`` commits before it refreshes, so a failure
         # or cancel can land after the row has (#2378). The cleanup removes
@@ -1584,8 +1583,7 @@ class KnowledgeService:
                 raise RuntimeError(
                     f"Vector indexing produced 0 chunks for {document_id}. "
                     f"Common causes: BGE-M3 model unavailable, ChromaDB "
-                    f"unreachable, or chunker produced no output. SQL row "
-                    f"cleaned up."
+                    f"unreachable, or chunker produced no output."
                 )
             if not shipped:
                 await self._complete_authored_ingest(
@@ -2189,8 +2187,8 @@ class KnowledgeService:
             # Publish first, as ``verify_draft`` does (#2365): the draft row below
             # names the item, through a foreign key enforced on every
             # deployment, so it can only be written once the item exists. A
-            # failed ingestion undoes its own writes, and nothing else has been
-            # written yet.
+            # failed ingestion has run its own cleanup (see ``ingest_runbook``'s
+            # docstring).
             #
             # upload_document is called by anonymous / non-verified upload
             # paths, so verified_by is None (verification_level defaults to
@@ -2210,9 +2208,8 @@ class KnowledgeService:
             )
 
             # Then the upload, job and verified draft rows, in one transaction.
-            # Only this write is undone here: if it fails, or is cancelled, the
-            # item just published is withdrawn too, so a failed upload leaves
-            # nothing behind.
+            # If it fails, or is cancelled, ``_withdraw_failed_upload`` runs; its
+            # docstring states what it removes.
             try:
                 async with self._db_session_factory() as session:
                     # ``conversion_jobs.source_file_id`` is a FK to

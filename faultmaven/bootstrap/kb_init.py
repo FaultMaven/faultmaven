@@ -1,4 +1,4 @@
-"""Knowledge Base Bootstrap — atomic, idempotent ingestion of the shipped KB pack.
+"""Knowledge Base Bootstrap — idempotent ingestion of the shipped KB pack.
 
 Runs at application startup after the DI container has wired up the
 ``KnowledgeService``. Loads the **KB pack** (a self-contained bundle of shipped
@@ -26,7 +26,7 @@ Why a separate flow from ``conversion_drafts``?
 
 Per runbook
     ``_ingest_pack_runbook`` ingests one runbook:
-      1. Compute the deterministic ``item_id`` (carried by the pack).
+      1. Take the deterministic ``item_id`` the pack carries.
       2. Check ``knowledge_items`` — if present AND it was ingested from this
          pack version (the pack hash stamped on the row), skip.
       3. Call ``KnowledgeService.ingest_runbook(prechunked=...)`` — SQL row
@@ -36,8 +36,8 @@ Per runbook
          and on it calls ``_delete_existing`` and raises. ``bootstrap_kb``
          catches an ``Exception`` from ``_ingest_pack_runbook``, logs it at
          ERROR and records the runbook in ``BootstrapResult.failed``. What a
-         failure can leave is listed in ``KnowledgeService.ingest_runbook``'s
-         docstring.
+         failed ``KnowledgeService.ingest_runbook`` call can leave is listed in
+         its docstring.
 
 Idempotency
     Re-running is safe. Runbooks whose pack version is unchanged (the pack's
@@ -446,7 +446,7 @@ async def _ingest_pack_runbook(
         await _delete_existing(runbook.item_id, knowledge_service, db_session_factory)
         raise RuntimeError(
             f"Vector indexing produced 0 chunks for {runbook.relpath} "
-            f"(pack supplied {len(prechunked)} chunks). SQL row cleaned up."
+            f"(pack supplied {len(prechunked)} chunks)."
         )
 
     logger.info(

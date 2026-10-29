@@ -33,7 +33,7 @@ async def _bootstrap_kb_step(app: FastAPI) -> None:
 
     Never raises. A failure is logged and startup continues.
     """
-    # KB Bootstrap: atomic, idempotent ingestion of shipped runbooks.
+    # KB Bootstrap: idempotent ingestion of shipped runbooks.
     # The KB pack (`KB_PACK_DIR`, default `resources/knowledge/pack`) is
     # ingested directly into knowledge_items + ChromaDB without passing through
     # the conversion_drafts table. Idempotent: runbooks whose content hash is

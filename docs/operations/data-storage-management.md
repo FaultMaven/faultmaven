@@ -69,7 +69,7 @@ Separating them into two ChromaDB instances (`chroma-kb/` and `chroma-evidence/`
 ### Relationship between the KB pack, knowledge/, evidence/, and the two ChromaDB instances
 
 ```text
-KB pack (resources/knowledge/pack/ or KB_PACK_DIR)  →  startup bootstrap (atomic, idempotent)  →  knowledge_items + chroma-kb/ (faultmaven_kb collection)
+KB pack (resources/knowledge/pack/ or KB_PACK_DIR)  →  startup bootstrap (idempotent)  →  knowledge_items + chroma-kb/ (faultmaven_kb collection)
 Dashboard / API conversion  →  draft row  →  verify  →  knowledge_items + chroma-kb/
 Dashboard / API upload  →  draft row verified on the spot  →  knowledge_items + chroma-kb/
 knowledge/*.md  →  POST /knowledge/scan (standalone, manual)  →  draft row  →  verify  →  knowledge_items + chroma-kb/
@@ -77,7 +77,7 @@ knowledge/*.md  →  POST /knowledge/scan (standalone, manual)  →  draft row  
 evidence/<organization_id>/<case_id>/<date>/<uuid>_<file>  →  background vectorization  →  chroma-evidence/ (case_{id} collection)
 ```
 
-- `resources/knowledge/pack/` (or `KB_PACK_DIR`) holds the **KB pack** — pre-deployed runbooks + build-time vectors. The startup bootstrap (`faultmaven/bootstrap/kb_init.py`) ingests it with **no embedding model**: it writes the pack's chunk texts + pre-computed vectors atomically into `knowledge_items` + `chroma-kb/`. Content-hash idempotency makes restarts free for unchanged runbooks; removed runbooks are pruned. The pack is built/owned by `faultmaven-kb-toolkit` — see [`kb-pack-architecture.md`](../architecture/knowledge-and-ai/kb-pack-architecture.md).
+- `resources/knowledge/pack/` (or `KB_PACK_DIR`) holds the **KB pack** — pre-deployed runbooks + build-time vectors. The startup bootstrap (`faultmaven/bootstrap/kb_init.py`) ingests it with **no embedding model**: it writes the pack's chunk texts + pre-computed vectors into `knowledge_items` + `chroma-kb/`. Content-hash idempotency makes restarts free for unchanged runbooks; removed runbooks are pruned. The pack is built/owned by `faultmaven-kb-toolkit` — see [`kb-pack-architecture.md`](../architecture/knowledge-and-ai/kb-pack-architecture.md).
 - `knowledge/` is the **standalone import directory** `/knowledge/scan` reads: hand-placed runbook files become drafts holding their text. Nothing writes here; authored and converted drafts live in `conversion_drafts.content` (#1950), and the pre-deployed built-ins come from the pack. See [`document-to-runbook-conversion.md`](../architecture/knowledge-and-ai/document-to-runbook-conversion.md) §9.5.
 - `evidence/` holds **raw uploaded files**. After the upload API returns a response, a background task vectorizes the content into a `case_{case_id}` collection in `chroma-evidence/`.
 - Each ChromaDB instance is independent — they share no files.
@@ -139,7 +139,7 @@ directory until `KB_PACK_DIR` is unset. Pick the row that matches the deployment
 
 The bootstrap is **idempotent**: it compares the pack's `content_hash` against the
 existing `knowledge_items.content` row and skips unchanged runbooks. Changed
-runbooks trigger an atomic delete-then-reingest; new runbooks are added; runbooks
+runbooks are deleted and re-ingested; new runbooks are added; runbooks
 removed from the pack are pruned.
 
 The bootstrap ingests **each runbook separately**. `_ingest_pack_runbook` refuses

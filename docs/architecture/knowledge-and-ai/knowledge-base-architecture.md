@@ -202,7 +202,7 @@ Live (during investigation):
 | Embedding model | BGE-M3 via sentence-transformers (1024 dims, multilingual) |
 | Chunking | Structure-aware splitting on markdown headers (3000-char max, 100-char min, sentence-boundary fallback) |
 | Supported formats | Markdown, TXT, PDF, DOCX, CSV, JSON, YAML |
-| Ingestion entry point | `KnowledgeService.ingest_runbook()` (atomic: SQL row + ChromaDB chunks or neither) |
+| Ingestion entry point | `KnowledgeService.ingest_runbook()` |
 | Pre-deployed runbooks | Startup bootstrap — `faultmaven/bootstrap/kb_init.py` ingests the **KB pack** (pre-chunked + pre-embedded; no model) via `ingest_runbook(prechunked=...)`, idempotent on the pack content hash stamped on the row |
 | Case-generated drafts | `conversion_drafts` → `ConversionService.verify_draft()` (atomic: status flips to VERIFIED only after successful ingestion) |
 | Architecture detail | [`kb-ingestion-architecture.md`](./kb-ingestion-architecture.md) |
@@ -418,7 +418,7 @@ Global-tier ingestion runs automatically at API startup via the **KB bootstrap**
 
 Tier-1-specific notes: Global runbooks are written by the platform admin and apply across all organizations. The 91 built-in runbooks ship pre-chunked and pre-embedded in the **KB pack** (`resources/knowledge/pack`, or `KB_PACK_DIR`); on startup the bootstrap ingests them directly — no separate "verify" step is needed because the platform vendor / admin is the verifier for pre-deployed content. The verify-via-Dashboard flow is reserved for case-generated and document-converted drafts that need a human gate.
 
-The **conversion-drafts path** (case-generated / document-converted content, not the pack) is the one that triggers YAML frontmatter parsing, structural validation (per [runbook-content-architecture.md §4 Quality Gates](./runbook-content-architecture.md#4-quality-gates)), chunking, and embedding on ingest; both paths finish with an atomic write to both stores — see [`kb-ingestion-architecture.md`](./kb-ingestion-architecture.md) for the atomicity contract.
+The **conversion-drafts path** (case-generated / document-converted content, not the pack) is the one that triggers YAML frontmatter parsing, structural validation (per [runbook-content-architecture.md §4 Quality Gates](./runbook-content-architecture.md#4-quality-gates)), chunking, and embedding on ingest; both paths finish in `KnowledgeService.ingest_runbook()` — see [`kb-ingestion-architecture.md`](./kb-ingestion-architecture.md) for its write order and failure handling.
 
 ### Files
 
