@@ -1,4 +1,4 @@
-"""The version of the API contract, moved by hand.
+r"""The version of the API contract, moved by hand.
 
 ``docs/reference/api/openapi.json`` is the contract between this API and its
 clients — faultmaven-copilot, faultmaven-dashboard and faultmaven-slack-agent.
@@ -22,6 +22,11 @@ Bump this in the same PR as the change it describes:
   Not required for one: a reworded description is not something a client can
   break on, and demanding a bump for prose would train people to bump without
   reading.
+
+Each version's entry below is headed ``# X.Y.Z — MAJOR. …`` (or ``MINOR.`` /
+``PATCH.``), the form faultmaven-copilot's and faultmaven-dashboard's
+``scripts/report-contract-hop.mjs`` finds with
+``/^#\s+(\d+\.\d+\.\d+)\s+[—-]\s/`` to list the entries a pin bump crosses.
 
 ``scripts/check_contract_version.py`` fails a pull request whose structural
 surface differs from the base branch while this stays put, so a surface change
@@ -1590,7 +1595,7 @@ asked to accept, and it belongs to a person.
 # and absent must read as "no": a client treating a missing value as
 # unknown-therefore-fine renders the dead control again, which is the whole
 # failure being closed.
-# 9.0.0 — RESOLVED is no longer a user-selectable case action.
+# 9.0.0 — MAJOR. RESOLVED is no longer a user-selectable case action.
 #
 # MAJOR on two counts. ``valid_next_states`` loses a value it published on
 # every INVESTIGATING case, and a ``status_transition`` request naming

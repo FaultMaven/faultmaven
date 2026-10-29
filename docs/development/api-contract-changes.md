@@ -73,7 +73,11 @@ be using it" is not evidence.
 2. Decide what it is. **MINOR** if every existing client survives it; **MAJOR**
    if one can break. This judgement is what the clients are being asked to
    accept, so it is a person's call, not a script's.
-3. Bump `API_CONTRACT_VERSION` in `faultmaven/api/contract_version.py`.
+3. Bump `API_CONTRACT_VERSION` in `faultmaven/api/contract_version.py`. Head
+   the version's entry there `# X.Y.Z — MAJOR. …` (or `MINOR.` / `PATCH.`), the
+   form faultmaven-copilot's and faultmaven-dashboard's
+   `scripts/report-contract-hop.mjs` finds with
+   `/^#\s+(\d+\.\d+\.\d+)\s+[—-]\s/` to list the entries a pin bump crosses.
 4. Regenerate, with the lockfile installed — the document depends on FastAPI's
    and Pydantic's versions as well as on the code, so an ambient environment
    produces a valid-looking artifact CI rejects:
