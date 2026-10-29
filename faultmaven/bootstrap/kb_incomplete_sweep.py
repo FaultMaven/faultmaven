@@ -2,12 +2,8 @@
 
 An authored ingest (``KnowledgeService.ingest_runbook`` without ``shipped``)
 inserts its row with ``ingest_complete`` false and sets it true once its vectors
-are written. A row that stays false is never listed and never re-embedded, but
-it and any vectors its ingest wrote stay until something removes them: the
-ingest's own cleanup, or this sweep where the cleanup could not (the row's
-INSERT committed after the cleanup ran, or a cleanup step failed). Retrieval
-queries the vector store and never reads the row, so such vectors are served
-until they go.
+are written. Retrieval queries the vector store and reads no row, so an
+incomplete row's vectors are served while the vector store holds them.
 
 A row is swept once its ``created_at`` is older than
 ``KB_INCOMPLETE_INGEST_MAX_AGE_HOURS`` (default 24); a younger one may be an
@@ -22,7 +18,7 @@ whose guarded delete matches nothing is counted ``spared``. No share is deleted:
 an authored row gets its share in the transaction that completes it.
 
 ``bootstrap_kb`` calls this before ``KbPack.load``, so it runs whether or not a
-pack loads. Nothing else deletes an incomplete row.
+pack loads.
 
 Modes, ``kb_orphan_sweep``'s gate: the web startup passes ``armed``; ``kb_seed``
 passes :func:`resolve_incomplete_sweep_mode`, report-only until an operator arms

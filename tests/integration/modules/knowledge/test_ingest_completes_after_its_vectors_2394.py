@@ -467,7 +467,7 @@ async def test_the_sweep_removes_only_stale_incomplete_rows(session_factory, mod
     else:
         assert result.would_delete == [STALE]
     if mode == SWEEP_ARMED:
-        assert result.deleted == [STALE]
+        assert (result.deleted, result.spared) == ([STALE], 0)
         assert await _ids(session_factory) == {YOUNG, DONE}
         assert set(store.chunks.values()) == {YOUNG, DONE}
     else:

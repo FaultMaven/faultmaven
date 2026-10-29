@@ -1305,10 +1305,14 @@ class KnowledgeService:
         * An INSERT whose COMMIT is in doubt. ``create`` commits, and a
           COMMIT the server received can complete after ``create`` raised (on
           PostgreSQL a cancelled or timed-out command aborts its transport and
-          sends no CancelRequest, ``pg_connection``). The ``created_at`` guard
-          matches no uncommitted row, so the row stands with no vectors and no
-          share. With ``shipped`` false it stands with ``ingest_complete``
-          false: the ``ingest_complete`` predicate of
+          sends no CancelRequest, ``pg_connection``). On PostgreSQL the
+          ``created_at``-guarded delete in ``_delete_knowledge_item_row``
+          matches no uncommitted row and takes no lock on it, so the row can
+          stand with no vectors and no share. On SQLite the INSERT's open
+          transaction holds the database's writer lock, which that delete
+          waits on within ``busy_timeout``; past it, ``repo.delete`` raises and
+          the cleanup deletes nothing. With ``shipped`` false a row that stands
+          has ``ingest_complete`` false: the ``ingest_complete`` predicate of
           ``_inventory_visibility_clause`` keeps it out of every listing,
           ``published_ids`` in ``kb_init._reconcile_vectors`` keeps it out of
           the repair, :meth:`reindex_missing_vectors` refuses it, and
@@ -1316,15 +1320,16 @@ class KnowledgeService:
           ``created_at`` is older than ``KB_INCOMPLETE_INGEST_MAX_AGE_HOURS``.
           With ``shipped`` true it stands complete, and ``published_ids``
           includes it for the repair.
-        * When the sweep runs. ``bootstrap_kb`` calls
-          ``sweep_incomplete_ingests``, armed on the web startup and, under
-          ``kb_seed``, armed only when ``resolve_incomplete_sweep_mode``
-          answers ``armed``. No other call deletes an incomplete row, and the
-          web lifespan skips ``bootstrap_kb`` under ``TENANT_PROVIDER=multi``.
+        * When the sweep runs. ``sweep_incomplete_ingests`` selects the rows
+          with ``ingest_complete`` false and a ``created_at`` older than
+          ``KB_INCOMPLETE_INGEST_MAX_AGE_HOURS``. ``bootstrap_kb`` calls it with
+          ``mode=incomplete_sweep_mode``: ``armed`` on the web startup and,
+          under ``kb_seed``, ``armed`` when ``resolve_incomplete_sweep_mode``
+          answers ``armed``. The web lifespan skips ``bootstrap_kb`` under
+          ``TENANT_PROVIDER=multi``.
         * An incomplete row's vectors are served. ``search_knowledge`` queries
           the vector store and reads no row, so the chunks under an incomplete
-          row's id are retrievable until ``_delete_knowledge_item_row`` or
-          ``sweep_incomplete_ingests`` deletes them.
+          row's id are retrievable while the vector store holds them.
         * A pack share's COMMIT in doubt. :meth:`_create_team_share` commits in
           its own session (``SessionlessShareRepository.share``), and a COMMIT
           that completes after ``delete_for_resource`` in
@@ -1338,11 +1343,15 @@ class KnowledgeService:
           row.
         * A caller told "failed" whose item is complete (#2396). The item
           completes in :meth:`_complete_authored_ingest`'s transaction, not in
-          the caller's. A caller's write after this method returns
-          (``upload_document``'s rows, ``verify_draft``'s draft swap) that
-          fails calls :meth:`withdraw_published_item`, which can return False.
-          And ``repo.delete`` in ``_delete_knowledge_item_row`` raises when it
-          waits on the completion's lock past its bound (see
+          the caller's. ``verify_draft`` calls :meth:`withdraw_published_item`
+          when ``swapped.rowcount != 1``, and an exception from the swap's
+          ``execute`` or ``commit`` propagates without it.
+          ``upload_document``'s ``_withdraw_failed_upload`` calls it after its
+          deletes of the draft, job and file rows commit, and returns without
+          it when they raise. :meth:`withdraw_published_item` returns False
+          when :meth:`delete_document` does not report success. ``repo.delete``
+          in ``_delete_knowledge_item_row`` raises when it waits on the
+          completion's lock past its bound (see
           :meth:`_complete_authored_ingest`): the cleanup returns while
           ``deleted is None`` and deletes nothing, and a completion COMMIT that
           lands leaves the row complete, with its vectors and its share.
@@ -1628,9 +1637,10 @@ class KnowledgeService:
         timeout is 0), and on SQLite until ``busy_timeout`` (5000 ms). Within
         that bound the delete matches the row whether the flip committed or
         rolled back. Past it ``repo.delete`` raises and the cleanup deletes
-        nothing (the #2396 residual of :meth:`ingest_runbook`). An uncommitted
-        INSERT holds no lock that delete waits on, and the delete does not
-        match it.
+        nothing (the #2396 residual of :meth:`ingest_runbook`). On PostgreSQL
+        that delete matches no uncommitted INSERT's row and takes no lock on
+        it. On SQLite an open INSERT's transaction holds the database's writer
+        lock, which that delete waits on within ``busy_timeout``.
         """
         from faultmaven.infrastructure.persistence.share_repository import (
             PostgreSQLShareRepository,
@@ -3180,8 +3190,8 @@ class KnowledgeService:
                 logger.warning(f"Document {document_id} not found for update")
                 return None
             if not item.ingest_complete:
-                # Not a document yet (#2394): its ingest is in flight or failed,
-                # and only that ingest or the sweep may change it.
+                # ``ingest_complete`` is false (#2394): refused before anything
+                # is embedded.
                 logger.warning(
                     f"Document {document_id} is an incomplete ingest; not updated"
                 )
