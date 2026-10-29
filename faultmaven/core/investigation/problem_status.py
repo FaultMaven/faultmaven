@@ -325,8 +325,9 @@ def as_revision_cancelled(case: Case) -> Case:
     """The case as ``cancel_revision`` would leave it, for a read: with a
     revision pending, a copy at the revision's ``prior_status`` and with no
     pending revision; otherwise ``case`` itself. The copy carries its own
-    ``progress`` and ``problem_verification``, so ``case`` is not written to,
-    and no transition is logged."""
+    ``progress`` and ``problem_verification``, so building it assigns no field
+    of ``case`` and logs no transition. The returned case is read-only: with no
+    revision pending it is ``case``, so a write to it lands on ``case``."""
     pv = case.problem_verification
     pending = pv.pending_revision if pv else None
     if pending is None:
