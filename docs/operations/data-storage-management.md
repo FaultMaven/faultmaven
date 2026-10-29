@@ -145,11 +145,10 @@ removed from the pack are pruned.
 The bootstrap ingests **each runbook separately**. `_ingest_pack_runbook` refuses
 a runbook with no chunks in the pack before any lookup or delete. A failure in
 `ingest_runbook` from its row's INSERT on (ChromaDB unreachable, for example)
-runs its cleanup, `_delete_knowledge_item_row`, before it raises, and what that
-cleanup can leave is the residual list in `ingest_runbook`'s docstring.
-Per-runbook failures don't abort the rest of the bootstrap; check
-the API logs for `KB bootstrap failed for ...` warnings after restart. Full
-build + delivery detail: [`kb-pack-architecture.md`](../architecture/knowledge-and-ai/kb-pack-architecture.md).
+runs `_delete_knowledge_item_row` before it raises, and what can remain is
+listed in `ingest_runbook`'s docstring. Per-runbook failures don't abort the
+rest of the bootstrap; check the API logs for `KB bootstrap failed for ...`
+warnings after restart. Full build + delivery detail: [`kb-pack-architecture.md`](../architecture/knowledge-and-ai/kb-pack-architecture.md).
 
 ### Reset / hot-rebuild
 

@@ -1343,18 +1343,19 @@ class KnowledgeService:
           row.
         * A caller told "failed" whose item is complete (#2396). The item
           completes in :meth:`_complete_authored_ingest`'s transaction, not in
-          the caller's. ``verify_draft`` calls :meth:`withdraw_published_item`
-          when ``swapped.rowcount != 1``, and an exception from the swap's
-          ``execute`` or ``commit`` propagates without it.
-          ``upload_document``'s ``_withdraw_failed_upload`` calls it after its
-          deletes of the draft, job and file rows commit, and returns without
-          it when they raise. :meth:`withdraw_published_item` returns False
-          when :meth:`delete_document` does not report success. ``repo.delete``
+          the caller's. ``verify_draft`` and ``upload_document`` (through
+          ``_withdraw_failed_upload``) call :meth:`withdraw_published_item` on
+          some of their failure paths after this method returns, and not on
+          others; :meth:`withdraw_published_item` returns False when
+          :meth:`delete_document` does not report success. ``repo.delete``
           in ``_delete_knowledge_item_row`` raises when it waits on the
           completion's lock past its bound (see
           :meth:`_complete_authored_ingest`): the cleanup returns while
           ``deleted is None`` and deletes nothing, and a completion COMMIT that
           lands leaves the row complete, with its vectors and its share.
+        * A cleanup step that fails. :meth:`_delete_knowledge_item_row`'s
+          docstring states the outcome when its row delete or its check for a
+          standing row fails.
 
         The earlier "leave the SQL row for a scan-and-recover re-embed" policy
         produced half-state rows that downstream scans mis-classified, so
@@ -1616,11 +1617,7 @@ class KnowledgeService:
 
         ``mark_ingest_complete`` matches the id's row only while it carries
         ``created_at`` and ``ingest_complete`` is false, and any other result
-        raises into :meth:`ingest_runbook`'s cleanup. A row deleted by
-        ``_delete_knowledge_item_row``, :meth:`delete_document` or
-        ``sweep_incomplete_ingests``, or re-created under the id with another
-        ``created_at``, is never completed here, and the cleanup deletes this
-        call's vectors when no row stands.
+        raises into :meth:`ingest_runbook`'s cleanup.
 
         ``PostgreSQLShareRepository.share``, bound to this session, commits the
         flip together with the share. With no share (``team_id`` unset, or no
@@ -1634,13 +1631,10 @@ class KnowledgeService:
         ``get_engine``'s ``begin`` listener sets per transaction
         (``DATABASE_COMMAND_TIMEOUT_SECONDS`` less
         ``DATABASE_STATEMENT_TIMEOUT_MARGIN_SECONDS``, unset when the command
-        timeout is 0), and on SQLite until ``busy_timeout`` (5000 ms). Within
-        that bound the delete matches the row whether the flip committed or
-        rolled back. Past it ``repo.delete`` raises and the cleanup deletes
-        nothing (the #2396 residual of :meth:`ingest_runbook`). On PostgreSQL
-        that delete matches no uncommitted INSERT's row and takes no lock on
-        it. On SQLite an open INSERT's transaction holds the database's writer
-        lock, which that delete waits on within ``busy_timeout``.
+        timeout is 0), and on SQLite until ``busy_timeout`` (5000 ms).
+
+        What a failure can leave is listed in :meth:`ingest_runbook`'s
+        docstring.
         """
         from faultmaven.infrastructure.persistence.share_repository import (
             PostgreSQLShareRepository,
