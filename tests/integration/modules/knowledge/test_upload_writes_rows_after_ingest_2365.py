@@ -397,10 +397,15 @@ async def test_a_failed_share_write_leaves_nothing(session_factory, monkeypatch)
     service._vector_store.delete_documents_by_parent_id.assert_awaited_once()
 
 
-async def test_an_item_row_that_survives_keeps_its_share(session_factory, monkeypatch):
-    """The completing commit, flip and share, landed and then raised, and the
-    cleanup could not delete the item, so it keeps the share that makes it a
-    team item: shares go only after the item's delete commits."""
+async def test_an_item_row_that_survives_keeps_its_share(
+    session_factory, monkeypatch, caplog
+):
+    """The commit of ``_complete_authored_ingest`` (the flip and the share)
+    landed and then raised, and the cleanup's ``repo.delete`` raised, so the
+    item keeps the share that makes it a team item: shares go only after the
+    item's delete commits. The raising commit is the completion's: the item is
+    complete, and ``upload_document`` never reached its own row write, whose
+    failure would withdraw the item."""
     monkeypatch.setattr(
         DatabaseKnowledgeItemRepository,
         "delete",
@@ -410,14 +415,21 @@ async def test_an_item_row_that_survives_keeps_its_share(session_factory, monkey
     service = _knowledge(factory)
     factory.arm_at_completion(service)
 
-    with pytest.raises(RuntimeError, match="commit failed"):
+    with (
+        caplog.at_level(logging.WARNING),
+        pytest.raises(RuntimeError, match="commit failed"),
+    ):
         await _upload(service, scope="team")
 
+    assert "withdraw" not in caplog.text
+    assert "the cleanup's row delete failed too" in caplog.text
     assert await _rows(session_factory) == {
         **NOTHING,
         "knowledge_items": 1,
         "resource_shares": 1,
     }
+    async with session_factory() as session:
+        assert await session.scalar(select(KnowledgeItemModel.ingest_complete))
 
 
 class _AddsThenRaises:

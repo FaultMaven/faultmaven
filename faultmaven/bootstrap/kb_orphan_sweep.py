@@ -138,14 +138,25 @@ def resolve_sweep_mode(dry_run: Optional[bool] = None) -> str:
     otherwise — ``--no-dry-run`` asks for deletion but cannot grant it.
     Settings that cannot be read leave the sweep report-only.
     """
+    return read_sweep_gate(
+        "kb_orphan_sweep_enabled", "kb_orphan_sweep_dry_run", dry_run
+    )
+
+
+def read_sweep_gate(
+    enabled_field: str, dry_run_field: str, dry_run: Optional[bool]
+) -> str:
+    """:func:`gate_sweep_mode` over the two named ``DatabaseSettings`` fields,
+    ``dry_run`` the run's override; report-only when settings cannot be read.
+    The one settings read of both KB sweeps' gates."""
     try:
         from faultmaven.config.settings import get_settings
 
         db = get_settings().database
-        enabled = bool(db.kb_orphan_sweep_enabled)
-        configured_dry_run = bool(db.kb_orphan_sweep_dry_run)
+        enabled = bool(getattr(db, enabled_field))
+        configured_dry_run = bool(getattr(db, dry_run_field))
     except Exception as exc:  # settings unavailable in some test contexts
-        logger.debug(f"KB authored-orphan sweep: settings unreadable ({exc})")
+        logger.debug(f"KB sweep gate: settings unreadable ({exc})")
         return SWEEP_REPORT_ONLY
     return gate_sweep_mode(enabled, configured_dry_run, dry_run)
 

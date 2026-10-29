@@ -357,10 +357,13 @@ goes), with its vectors, once the row is older than
 `KB_INCOMPLETE_INGEST_SWEEP_ENABLED` (default `false`) and
 `KB_INCOMPLETE_INGEST_SWEEP_DRY_RUN` (default `true`), and the same
 `--dry-run` / `--no-dry-run`. Under the maintenance role it deletes through
-the role's `DELETE ON knowledge_items` grant and issues no UPDATE. It rides
-the `BootstrapResult(...)` line as `incomplete_ingests_mode` /
-`_would_delete` / `_deleted` / `_unremoved`, and the `kb_seed` result as
-`incomplete_ingests` (with `would_delete_documents`). Design:
+the role's `DELETE ON knowledge_items` grant and issues no UPDATE. It runs
+first in the pass, before the pack is loaded. It rides the
+`BootstrapResult(...)` line as `incomplete_ingests_mode` / `_would_delete` /
+`_deleted` / `_unremoved` / `_spared` (rows that completed or went since the
+read) / `_skipped` (`disabled`, `no_vector_store` or `error` when it did not
+run), and the `kb_seed` result as `incomplete_ingests` (with
+`would_delete_documents`). Design:
 [ingestion step 6](../architecture/knowledge-and-ai/kb-ingestion-architecture.md#algorithm).
 
 ### 1c. KB Vector Enterprise Backfill (`kb_vector_enterprise_backfill`, #1777)

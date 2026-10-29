@@ -17,8 +17,12 @@ carrying that ingest's stamp) and removes its own vectors.
 
 Per row, in ``delete_document``'s order: the row's DELETE, guarded on its stamp
 and on ``ingest_complete`` false, uncommitted; one vector delete by parent id;
-commit. A failed vector delete rolls the row back for the next run. No share is
-deleted: an authored row gets its share in the transaction that completes it.
+commit. A failed vector delete rolls the row back for the next run, and a row
+whose guarded delete matches nothing is counted ``spared``. No share is deleted:
+an authored row gets its share in the transaction that completes it.
+
+``bootstrap_kb`` calls this before ``KbPack.load``, so it runs whether or not a
+pack loads. Nothing else deletes an incomplete row.
 
 Modes, ``kb_orphan_sweep``'s gate: the web startup passes ``armed``; ``kb_seed``
 passes :func:`resolve_incomplete_sweep_mode`, report-only until an operator arms
@@ -39,13 +43,13 @@ from faultmaven.bootstrap.kb_orphan_sweep import (
     SWEEP_ARMED,
     SWEEP_OFF,
     SWEEP_REPORT_ONLY,
-    gate_sweep_mode,
+    read_sweep_gate,
 )
 
 logger = logging.getLogger(__name__)
 
-#: The age bound when settings cannot be read (some test contexts).
-DEFAULT_MAX_AGE_HOURS = 24
+#: The ``DatabaseSettings`` field holding the age bound.
+MAX_AGE_FIELD = "kb_incomplete_ingest_max_age_hours"
 
 
 @dataclass
@@ -55,11 +59,14 @@ class IncompleteSweepResult:
     #: ``off`` / ``report_only`` / ``armed``.
     mode: str = SWEEP_REPORT_ONLY
     #: The age bound this run applied.
-    max_age_hours: float = DEFAULT_MAX_AGE_HOURS
+    max_age_hours: float = 0.0
     #: Incomplete rows past the bound: what an armed run deletes.
     would_delete: List[str] = field(default_factory=list)
     #: Rows deleted with their vectors (armed runs only).
     deleted: List[str] = field(default_factory=list)
+    #: Rows whose guarded delete matched nothing: completed, deleted or
+    #: re-created under the id since the read. Nothing was deleted for them.
+    spared: int = 0
     #: Rows whose removal raised: left for the next run.
     unremoved: int = 0
     #: Why the sweep stopped early, when it did.
@@ -73,34 +80,32 @@ class IncompleteSweepResult:
             "max_age_hours": self.max_age_hours,
             "would_delete": len(self.would_delete),
             "deleted": len(self.deleted),
+            "spared": self.spared,
             "unremoved": self.unremoved,
             "would_delete_documents": list(self.would_delete),
         }
 
 
 def resolve_incomplete_sweep_mode(dry_run: Optional[bool] = None) -> str:
-    """``kb_seed``'s mode: the ``KB_INCOMPLETE_INGEST_SWEEP_*`` gate, with
-    ``dry_run`` as the run's override. Unreadable settings: report-only."""
-    try:
-        from faultmaven.config.settings import get_settings
-
-        db = get_settings().database
-        enabled = bool(db.kb_incomplete_ingest_sweep_enabled)
-        configured_dry_run = bool(db.kb_incomplete_ingest_sweep_dry_run)
-    except Exception as exc:  # settings unavailable in some test contexts
-        logger.debug(f"KB incomplete-ingest sweep: settings unreadable ({exc})")
-        return SWEEP_REPORT_ONLY
-    return gate_sweep_mode(enabled, configured_dry_run, dry_run)
+    """``kb_seed``'s mode: :func:`read_sweep_gate` over the
+    ``KB_INCOMPLETE_INGEST_SWEEP_*`` settings, ``dry_run`` the run's override."""
+    return read_sweep_gate(
+        "kb_incomplete_ingest_sweep_enabled",
+        "kb_incomplete_ingest_sweep_dry_run",
+        dry_run,
+    )
 
 
 def _resolve_max_age() -> timedelta:
-    try:
-        from faultmaven.config.settings import get_settings
+    """``KB_INCOMPLETE_INGEST_MAX_AGE_HOURS``; the field's own default when
+    settings cannot be read."""
+    from faultmaven.config.settings import DatabaseSettings, get_settings
 
-        hours = get_settings().database.kb_incomplete_ingest_max_age_hours
+    try:
+        hours = getattr(get_settings().database, MAX_AGE_FIELD)
     except Exception as exc:  # settings unavailable in some test contexts
         logger.debug(f"KB incomplete-ingest sweep: settings unreadable ({exc})")
-        hours = DEFAULT_MAX_AGE_HOURS
+        hours = DatabaseSettings.model_fields[MAX_AGE_FIELD].default
     return timedelta(hours=hours)
 
 
@@ -146,6 +151,8 @@ async def sweep_incomplete_ingests(
         try:
             if await _remove(store, db_session_factory, item_id, stamp):
                 result.deleted.append(item_id)
+            else:
+                result.spared += 1
         except Exception as exc:
             result.unremoved += 1
             logger.warning(
@@ -164,12 +171,17 @@ async def _read_stale(
     db_session_factory: Callable[[], Awaitable[Any]], cutoff: datetime
 ) -> List[Tuple[str, datetime]]:
     from faultmaven.infrastructure.persistence.models import KnowledgeItemModel
+    from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (  # noqa: E501
+        _as_utc,
+    )
 
+    # ``_as_utc``: the rule of the ``created_at`` guard in
+    # ``DatabaseKnowledgeItemRepository.delete``, a naive value read as UTC.
     query = (
         select(KnowledgeItemModel.item_id, KnowledgeItemModel.created_at)
         .where(
             KnowledgeItemModel.ingest_complete == False,  # noqa: E712
-            KnowledgeItemModel.created_at < cutoff.astimezone(timezone.utc),
+            KnowledgeItemModel.created_at < _as_utc(cutoff),
         )
         .order_by(KnowledgeItemModel.created_at)
     )
@@ -183,8 +195,9 @@ async def _remove(
     item_id: str,
     stamp: datetime,
 ) -> bool:
-    """True when the row and its vectors went; False when the row completed or
-    went since it was read. Raises with the row change rolled back."""
+    """True when the row and its vectors went; False when the guarded delete
+    matched nothing (the row completed, went or was re-created since it was
+    read). Raises with the row change rolled back."""
     from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (  # noqa: E501
         DatabaseKnowledgeItemRepository,
     )

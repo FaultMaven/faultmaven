@@ -1274,66 +1274,78 @@ class KnowledgeService:
     ) -> int:
         """Promote runbook content to a fully-published KnowledgeItem.
 
-        Writes the relational source of truth first, then the ChromaDB
-        embeddings. An authored row (every caller but the pack bootstrap) is
-        inserted with ``ingest_complete`` false, and completed once its vectors
-        exist by :meth:`_complete_authored_ingest`, which writes its team share
-        in the same transaction; until then no reader lists it and the repair
-        never re-embeds it (#2394). A pack row (``shipped``) is inserted
-        complete and its share precedes its vectors, since under
-        ``TENANT_PROVIDER=multi`` the ``kb_seed`` role may not UPDATE the table.
-        On any failure from the row's INSERT on (its commit landing and then
-        raising, the share, the vectors raising OR returning 0 chunks, the
-        completion, a cancellation), what this call wrote (its row, vectors and
-        shares) is removed before re-raising (#2365), and what a live peer holds
-        under the same id is left whole (#2378). The residuals, as the
-        predicates that decide them (``R`` is
-        ``modules/knowledge/infrastructure/persistence/knowledge_item_repository.py``,
-        ``S`` this file):
+        Writes the row, then the vectors. With ``shipped`` false the row is
+        inserted with ``ingest_complete`` false and completed by
+        :meth:`_complete_authored_ingest`, which also writes its team share.
+        With ``shipped`` true the row is inserted complete and
+        :meth:`_create_team_share` writes its share before
+        :meth:`_index_document_in_vector_store`: the ``kb_seed`` maintenance
+        role holds no UPDATE (``may_update``) (#2394). An exception or a
+        cancellation from ``create`` on runs :meth:`_delete_knowledge_item_row`,
+        which deletes the row carrying this call's ``created_at`` and, when no
+        row stands under the id, its shares and, when ``indexed``, its vectors
+        (#2365, #2378). The residuals, by the predicates that decide them:
 
-        * Another call's row under the id. The cleanup deletes vectors and
-          shares only when ``not standing`` (``S:1903``, ``S:1915``),
-          ``standing`` being "the stamp-guarded delete (``R:599``) matched
-          nothing and ``get_by_id`` found a row" (``S:1872``), and
-          vectors only when ``indexed``. So this call's chunks and share stay
-          beside such a row (#2388), and stay with no row once that row's own
-          cleanup runs with ``indexed`` false.
-        * The same stamp. ``R:599`` compares ``created_at`` to the
-          microsecond, so another call's row stamped with this call's instant
-          is deleted as this call's, with its shares, and with its vectors only
-          when ``indexed``; a refused INSERT ("already exists") has ``indexed``
-          false, so that row's chunks stay with no row.
-        * A peer re-creating the id after ``standing`` is read (``S:1872``)
-          and before the vector and share deletes (``S:1903``,
-          ``S:1915``): no lock spans them, so it loses its vectors and
-          shares.
-        * An INSERT whose COMMIT is in doubt. ``create`` commits
-          (``R:508``), and on PostgreSQL a cancelled or timed-out command
-          aborts its transport and sends no CancelRequest (``pg_connection``), so
-          the COMMIT can complete after ``R:599`` matched nothing: the row
-          stands with no vectors and no share. An authored row stands with
-          ``ingest_complete`` false, so ``R:749`` keeps it from every
-          listing, ``kb_init.py:640`` from the repair, ``S:1744``
-          refuses it, and ``kb_incomplete_sweep.py:172`` deletes it with
-          its vectors once older than ``KB_INCOMPLETE_INGEST_MAX_AGE_HOURS``. A
-          pack row stands complete, and ``kb_init.py:640`` lists it
-          for the repair, as before. (The completion's own COMMIT is not in
-          doubt this way; see :meth:`_complete_authored_ingest`.)
-        * An incomplete row's vectors are served: retrieval queries the vector
-          store and never reads the row (``S:477``), so chunks this call
-          wrote are retrievable until the cleanup (``S:1903``) or the
-          sweep (``kb_incomplete_sweep.py:200``) deletes them.
-        * The HTTP ChromaDB client's late write (#2397): with ``CHROMADB_URL``
-          set, ``add_documents`` runs in ``CHROMA_EXECUTOR``
-          (``infrastructure/chroma_client.py:88``), and a cancellation ends the
-          await, not the thread, so the add can land after ``S:1903``:
-          chunks under an id with no row.
-        * A caller told "failed" whose item is complete (#2396): the item
-          completes in this call's transaction, not in its caller's. A caller's
-          later write (``upload_document``'s rows, ``verify_draft``'s draft swap)
-          that fails withdraws it through :meth:`delete_document`
-          (``S:1929``), which can fail too; and the cleanup's delete
-          (``S:1871``) can raise after the completion's COMMIT landed.
+        * Another call's row under the id. ``_delete_knowledge_item_row``
+          deletes vectors and shares only while ``standing`` is false, and
+          ``standing`` is true when the ``created_at`` guard of
+          ``DatabaseKnowledgeItemRepository.delete`` matched nothing and
+          ``get_by_id`` found a row; it deletes vectors only when ``indexed``.
+          This call's chunks and shares therefore stay beside such a row
+          (#2388), and stay with no row when that row's own cleanup runs with
+          ``indexed`` false.
+        * The same stamp. The ``created_at`` guard compares to the
+          microsecond, so another call's row carrying this call's
+          ``created_at`` matches it and is deleted with its shares, and with
+          its vectors when ``indexed``. ``create`` raising "already exists"
+          leaves ``indexed`` false, so that row's chunks stay with no row.
+        * A peer re-creating the id. No lock spans the read of ``standing``
+          and the vector and share deletes in ``_delete_knowledge_item_row``,
+          so a row created between them loses its vectors and shares.
+        * An INSERT whose COMMIT is in doubt. ``create`` commits, and a
+          COMMIT the server received can complete after ``create`` raised (on
+          PostgreSQL a cancelled or timed-out command aborts its transport and
+          sends no CancelRequest, ``pg_connection``). The ``created_at`` guard
+          matches no uncommitted row, so the row stands with no vectors and no
+          share. With ``shipped`` false it stands with ``ingest_complete``
+          false: the ``ingest_complete`` predicate of
+          ``_inventory_visibility_clause`` keeps it out of every listing,
+          ``published_ids`` in ``kb_init._reconcile_vectors`` keeps it out of
+          the repair, :meth:`reindex_missing_vectors` refuses it, and
+          ``sweep_incomplete_ingests`` deletes it with its vectors once its
+          ``created_at`` is older than ``KB_INCOMPLETE_INGEST_MAX_AGE_HOURS``.
+          With ``shipped`` true it stands complete, and ``published_ids``
+          includes it for the repair.
+        * When the sweep runs. ``bootstrap_kb`` calls
+          ``sweep_incomplete_ingests``, armed on the web startup and, under
+          ``kb_seed``, armed only when ``resolve_incomplete_sweep_mode``
+          answers ``armed``. No other call deletes an incomplete row, and the
+          web lifespan skips ``bootstrap_kb`` under ``TENANT_PROVIDER=multi``.
+        * An incomplete row's vectors are served. ``search_knowledge`` queries
+          the vector store and reads no row, so the chunks under an incomplete
+          row's id are retrievable until ``_delete_knowledge_item_row`` or
+          ``sweep_incomplete_ingests`` deletes them.
+        * A pack share's COMMIT in doubt. :meth:`_create_team_share` commits in
+          its own session (``SessionlessShareRepository.share``), and a COMMIT
+          that completes after ``delete_for_resource`` in
+          ``_delete_knowledge_item_row`` leaves a ``resource_shares`` row whose
+          item row is gone.
+        * The HTTP ChromaDB client's late write (#2397). With ``CHROMADB_URL``
+          set, ``add_documents`` runs on ``CHROMA_EXECUTOR``, and a
+          cancellation ends the await, not the thread, so an add can complete
+          after ``delete_documents_by_parent_id`` in
+          ``_delete_knowledge_item_row`` and leave chunks under an id with no
+          row.
+        * A caller told "failed" whose item is complete (#2396). The item
+          completes in :meth:`_complete_authored_ingest`'s transaction, not in
+          the caller's. A caller's write after this method returns
+          (``upload_document``'s rows, ``verify_draft``'s draft swap) that
+          fails calls :meth:`withdraw_published_item`, which can return False.
+          And ``repo.delete`` in ``_delete_knowledge_item_row`` raises when it
+          waits on the completion's lock past its bound (see
+          :meth:`_complete_authored_ingest`): the cleanup returns while
+          ``deleted is None`` and deletes nothing, and a completion COMMIT that
+          lands leaves the row complete, with its vectors and its share.
 
         The earlier "leave the SQL row for a scan-and-recover re-embed" policy
         produced half-state rows that downstream scans mis-classified, so
@@ -1590,27 +1602,35 @@ class KnowledgeService:
         enterprise_id: str,
         created_by: Optional[str],
     ) -> None:
-        """Mark an authored ingest's row complete, with its team share, in one
-        committed transaction (#2394). Raises, into :meth:`ingest_runbook`'s
-        cleanup, unless the guarded UPDATE matched exactly one row: the id's
-        row carrying this call's ``created_at`` stamp and not yet complete. A
-        row a cleanup, a delete or the stray sweep removed, or one another call
-        re-created under the id, is never completed by this call; so a sweep
-        that removed a slow ingest's row costs only that ingest, which fails
-        here and removes its own vectors.
+        """Set ``ingest_complete`` on this call's row and write its team share,
+        in one transaction (#2394).
 
-        Why this closes the in-doubt outcome an INSERT leaves open: a cleanup's
-        guarded DELETE of the row waits on the row lock this UPDATE holds until
-        its transaction ends (PostgreSQL), or on the database's writer lock
-        (SQLite). It therefore runs after the flip's outcome is decided,
-        committed or not, and removes the row either way, and the share after
-        it. An INSERT that has not committed holds nothing a DELETE waits on:
-        the DELETE does not see the row, so it cannot be serialized against.
+        ``mark_ingest_complete`` matches the id's row only while it carries
+        ``created_at`` and ``ingest_complete`` is false, and any other result
+        raises into :meth:`ingest_runbook`'s cleanup. A row deleted by
+        ``_delete_knowledge_item_row``, :meth:`delete_document` or
+        ``sweep_incomplete_ingests``, or re-created under the id with another
+        ``created_at``, is never completed here, and the cleanup deletes this
+        call's vectors when no row stands.
 
-        The share is written through a share repository bound to this session,
-        whose ``share`` commits the transaction, the flip with it. As with
-        :meth:`_create_team_share`, there is none when no share repository is
-        wired.
+        ``PostgreSQLShareRepository.share``, bound to this session, commits the
+        flip together with the share. With no share (``team_id`` unset, or no
+        ``_share_repo`` wired, as in :meth:`_create_team_share`), the trailing
+        ``repo.commit()`` commits the flip.
+
+        Until this transaction ends, the UPDATE holds the row's lock
+        (PostgreSQL) or the database's writer lock (SQLite). The ``created_at``
+        guarded delete in ``_delete_knowledge_item_row`` waits on it while its
+        statement may run: on PostgreSQL until the ``statement_timeout`` that
+        ``get_engine``'s ``begin`` listener sets per transaction
+        (``DATABASE_COMMAND_TIMEOUT_SECONDS`` less
+        ``DATABASE_STATEMENT_TIMEOUT_MARGIN_SECONDS``, unset when the command
+        timeout is 0), and on SQLite until ``busy_timeout`` (5000 ms). Within
+        that bound the delete matches the row whether the flip committed or
+        rolled back. Past it ``repo.delete`` raises and the cleanup deletes
+        nothing (the #2396 residual of :meth:`ingest_runbook`). An uncommitted
+        INSERT holds no lock that delete waits on, and the delete does not
+        match it.
         """
         from faultmaven.infrastructure.persistence.share_repository import (
             PostgreSQLShareRepository,

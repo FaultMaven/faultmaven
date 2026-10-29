@@ -85,7 +85,8 @@ async def run(
           unremoved, the documents an armed run deletes, and the count of
           chunks no listed enterprise's stamp attributes
         - incomplete_ingests: the incomplete-ingest sweep (#2394) — its mode,
-          age bound, and counts would_delete / deleted / unremoved
+          ``skipped`` reason, age bound, and counts would_delete / deleted /
+          spared / unremoved
         - failures: list of (runbook relpath, reason) for failed runbooks
         - error: Error message if the whole pass failed
     """

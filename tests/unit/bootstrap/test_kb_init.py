@@ -122,21 +122,24 @@ def _make_session_factory(existing_row=None):
     return factory
 
 
+@pytest.mark.parametrize("pack", ["loads", "does_not_load"])
 @pytest.mark.asyncio
 async def test_the_bootstrap_runs_the_incomplete_ingest_sweep_armed_by_default(
-    tmp_path: Path,
+    tmp_path: Path, pack
 ):
-    """#2394: every bootstrap pass runs the incomplete-ingest sweep, deleting
-    unless told otherwise (the web startup tells it nothing; ``kb_seed`` passes
-    its gate), and reports it on the result and the line CD keeps."""
+    """#2394: every bootstrap pass calls ``sweep_incomplete_ingests``, armed
+    unless told otherwise (the web startup tells it nothing; ``kb_seed``
+    passes its gate), whether or not ``KbPack.load`` returns a pack, and the
+    sweep's counts and ``skipped`` ride the line CD keeps."""
     from faultmaven.bootstrap.kb_incomplete_sweep import IncompleteSweepResult
     from faultmaven.bootstrap.kb_orphan_sweep import SWEEP_ARMED
 
     knowledge_service = MagicMock()
     knowledge_service.ingest_runbook = AsyncMock(return_value=2)
     swept = IncompleteSweepResult(
-        mode=SWEEP_ARMED, would_delete=["kb_x"], deleted=["kb_x"]
+        mode=SWEEP_ARMED, would_delete=["kb_x", "kb_y"], deleted=["kb_x"], spared=1
     )
+    pack_dir = _write_pack(tmp_path) if pack == "loads" else tmp_path / "no-pack"
     with patch.object(
         kb_init, "sweep_incomplete_ingests", AsyncMock(return_value=swept)
     ) as sweep:
@@ -145,12 +148,18 @@ async def test_the_bootstrap_runs_the_incomplete_ingest_sweep_armed_by_default(
             db_session_factory=_make_session_factory(existing_row=None),
             enterprise_id="ent-test",
             project_root=tmp_path,
-            pack_dir=_write_pack(tmp_path),
+            pack_dir=pack_dir,
         )
 
     assert sweep.await_args.kwargs["mode"] == SWEEP_ARMED
     assert result.incomplete_ingests is swept
-    assert "incomplete_ingests_deleted=1, " in repr(result)
+    assert len(result.ingested) == (1 if pack == "loads" else 0)
+    line = repr(result)
+    assert "incomplete_ingests_deleted=1, " in line
+    assert "incomplete_ingests_spared=1, " in line
+    assert "incomplete_ingests_skipped=None, " in line
+    swept.skipped = "no_vector_store"
+    assert "incomplete_ingests_skipped=no_vector_store, " in repr(result)
 
 
 @pytest.mark.asyncio

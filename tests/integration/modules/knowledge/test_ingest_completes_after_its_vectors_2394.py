@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -51,6 +52,7 @@ from tests.integration.modules.knowledge.test_ingest_cleans_up_its_own_row_2378 
     DOC_ID,
     ONE_TEAM_ITEM,
     PEER_CREATED_AT,
+    _a_peer_reingests,
     _Chunks,
     _created_at,
     _delete_the_row,
@@ -508,9 +510,121 @@ async def test_a_row_that_completed_since_the_read_is_not_swept(
         service, session_factory, mode=SWEEP_ARMED, max_age=timedelta(hours=24), now=NOW
     )
 
-    assert (result.would_delete, result.deleted) == ([DONE], [])
+    assert (result.would_delete, result.deleted, result.spared) == ([DONE], [], 1)
     assert DONE in await _ids(session_factory)
     assert DONE in store.chunks.values()
+
+
+@pytest.fixture
+def india_clock(monkeypatch):
+    """The process's local zone at +05:30, where reading a naive value as
+    local time and reading it as UTC part by 5.5 h."""
+    monkeypatch.setenv("TZ", "Asia/Kolkata")
+    time.tzset()
+    yield
+    monkeypatch.undo()
+    time.tzset()
+
+
+@pytest.mark.skipif(not hasattr(time, "tzset"), reason="time.tzset is POSIX-only")
+async def test_a_naive_clock_is_read_as_utc_as_the_stamp_guard_reads_it(
+    session_factory, india_clock
+):
+    """The cutoff takes the ``created_at`` guard's rule (``_as_utc``): a naive
+    ``now`` is UTC, not local time."""
+    store = await _sweep_fixture(session_factory)
+    service = _knowledge(session_factory)
+    service._vector_store = store
+
+    result = await sweep_incomplete_ingests(
+        service,
+        session_factory,
+        mode=SWEEP_REPORT_ONLY,
+        max_age=timedelta(hours=24),
+        now=NOW.replace(tzinfo=None),
+    )
+
+    assert result.would_delete == [STALE]
+
+
+# ---------------------------------------------------------------------------
+# The pack path's cleanup (``shipped=True``): its row is complete from the
+# INSERT and its share precedes its vectors, and a failure still runs
+# ``_delete_knowledge_item_row``.
+# ---------------------------------------------------------------------------
+
+
+async def _ingest_shipped(service):
+    return await service.ingest_runbook(
+        document_id=DOC_ID,
+        title="Shipped Runbook",
+        content=valid_runbook("Shipped Runbook For The Pack"),
+        enterprise_id=STANDALONE_ENTERPRISE_ID,
+        scope="team",
+        owner_id=OWNER,
+        team_id=TEAM_ID,
+        shipped=True,
+    )
+
+
+async def test_a_pack_ingest_whose_share_fails_leaves_nothing(session_factory):
+    store = _Index()
+    service = _service(session_factory, store)
+    service._share_repo.share = AsyncMock(side_effect=RuntimeError("share failed"))
+
+    with pytest.raises(RuntimeError, match="share failed"):
+        await _ingest_shipped(service)
+
+    assert await _rows(session_factory) == NOTHING
+    assert store.chunks == {}
+
+
+async def test_a_pack_ingest_whose_vectors_fail_leaves_nothing(session_factory):
+    store = _Index()
+
+    async def the_store_fails_after_the_write():
+        raise RuntimeError("store failed after the write")
+
+    service = _service(session_factory, store, then=the_store_fails_after_the_write)
+
+    with pytest.raises(RuntimeError, match="after the write"):
+        await _ingest_shipped(service)
+
+    assert await _rows(session_factory) == NOTHING
+    assert store.chunks == {}
+
+
+@pytest.mark.parametrize("peer", ["live", "gone"])
+async def test_a_pack_cleanup_spares_a_live_peer_and_clears_when_none_stands(
+    session_factory, peer
+):
+    """This pack ingest's store raised after writing its chunks, once the id's
+    row was deleted (``gone``) or deleted and re-created by a ``kb_init`` peer
+    with another ``created_at``, its share and its chunks (``live``).
+    ``live``: ``standing`` is true, and the peer's row, share and chunks
+    stay. ``gone``: no row stands, and this ingest's share and chunks go."""
+    store = _Index()
+
+    async def a_peer_then_the_store_fails():
+        if peer == "live":
+            await _a_peer_reingests(session_factory, store)
+        else:
+            await _delete_the_row(session_factory)
+        raise RuntimeError("store failed after the write")
+
+    service = _service(session_factory, store, then=a_peer_then_the_store_fails)
+
+    with pytest.raises(RuntimeError, match="after the write"):
+        await _ingest_shipped(service)
+
+    if peer == "live":
+        (created_at,) = await _created_at(session_factory)
+        assert created_at.replace(tzinfo=None) == PEER_CREATED_AT.replace(tzinfo=None)
+        assert await _rows(session_factory) == ONE_TEAM_ITEM
+        assert sorted(store.chunks) == ["peer-0", "peer-1", "peer-2"]
+    else:
+        assert await _rows(session_factory) == NOTHING
+        assert store.chunks == {}
 
 
 # ---------------------------------------------------------------------------
@@ -524,11 +638,12 @@ async def test_a_row_that_completed_since_the_read_is_not_swept(
     reason="PostgreSQL-only; set DATABASE_URL to a PG instance to run.",
 )
 @pytest.mark.parametrize("flip", ["commits", "rolls_back"])
-async def test_a_cleanup_waits_for_the_flip_and_removes_the_row_either_way(flip):
-    """The flip holds the row's lock while its transaction is open; the
-    cleanup's guarded DELETE, started then, waits on it, and once the flip
-    commits (or rolls back) removes the row all the same. This is why the
-    flip's own commit cannot leave a row in doubt as the INSERT's can."""
+async def test_a_cleanup_waits_on_the_flip_and_then_matches_the_row(flip):
+    """``mark_ingest_complete`` holds the row's lock until its transaction
+    ends, and the ``created_at``-guarded delete of
+    ``_delete_knowledge_item_row`` waits on it: this engine sets no
+    ``statement_timeout``, so the wait is unbounded here. Once the flip
+    commits or rolls back, the delete matches the row."""
     enterprise, owner = f"ent_2394_{uuid4().hex[:8]}", f"user-2394-{uuid4().hex[:8]}"
     engine = create_async_engine(os.environ["DATABASE_URL"])
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)

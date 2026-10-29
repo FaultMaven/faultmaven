@@ -522,6 +522,20 @@ def test_the_shipped_settings_are_report_only(setting):
     assert fields[f"{setting}_dry_run"].default is True
 
 
+def test_the_incomplete_sweep_bound_falls_back_to_the_settings_default(monkeypatch):
+    """#2394: with settings unreadable, the age bound is the
+    ``KB_INCOMPLETE_INGEST_MAX_AGE_HOURS`` field's own default, not a copy."""
+    from datetime import timedelta
+
+    from faultmaven.bootstrap.kb_incomplete_sweep import _resolve_max_age
+
+    def unreadable():
+        raise RuntimeError("no settings")
+
+    monkeypatch.setattr("faultmaven.config.settings.get_settings", unreadable)
+    assert _resolve_max_age() == timedelta(hours=24)
+
+
 async def test_a_report_only_sweep_deletes_nothing_and_lists_what_it_would(world):
     result = await world.sweep(mode=SWEEP_REPORT_ONLY)
 

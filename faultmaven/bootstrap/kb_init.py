@@ -115,6 +115,8 @@ class BootstrapResult:
             f"{len(self.incomplete_ingests.would_delete)}, "
             f"incomplete_ingests_deleted={len(self.incomplete_ingests.deleted)}, "
             f"incomplete_ingests_unremoved={self.incomplete_ingests.unremoved}, "
+            f"incomplete_ingests_spared={self.incomplete_ingests.spared}, "
+            f"incomplete_ingests_skipped={self.incomplete_ingests.skipped}, "
             f"repaired_rows={len(self.repaired_rows)}, "
             f"orphaned_rows={len(self.orphaned_rows)})"
         )
@@ -168,6 +170,12 @@ async def bootstrap_kb(
     from faultmaven.bootstrap.kb_pack import KbPack, resolve_pack_dir
 
     result = BootstrapResult()
+    # ``sweep_incomplete_ingests`` reads no pack, so it is called before
+    # ``KbPack.load``: a pack that does not load, and every later step of this
+    # pass, leave it run (#2394).
+    result.incomplete_ingests = await sweep_incomplete_ingests(
+        knowledge_service, db_session_factory, mode=incomplete_sweep_mode
+    )
     root = project_root or get_project_root()
 
     if pack_dir is None:
@@ -233,12 +241,6 @@ async def bootstrap_kb(
     # its frontmatter ``id`` changed). Keyed off the pack's item_ids.
     result.pruned = await _prune_orphan_builtins(
         pack.item_ids, knowledge_service, db_session_factory
-    )
-
-    # Rows an authored ingest left incomplete (#2394), past the age bound, go
-    # with their vectors, before the reconcile reads the rows.
-    result.incomplete_ingests = await sweep_incomplete_ingests(
-        knowledge_service, db_session_factory, mode=incomplete_sweep_mode
     )
 
     # Reconcile the vector index against knowledge_items (the source of truth).

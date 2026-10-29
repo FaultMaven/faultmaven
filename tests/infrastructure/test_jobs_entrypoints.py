@@ -397,6 +397,8 @@ class TestKbSeedJob:
         assert result["authored_orphans"]["proven"] is True
         assert result["authored_orphans"]["deleted"] == 0
         assert result["incomplete_ingests"]["deleted"] == 0
+        assert result["incomplete_ingests"]["spared"] == 0
+        assert "skipped" in result["incomplete_ingests"]
         assert result["status"] == "completed"
 
     @pytest.mark.asyncio
