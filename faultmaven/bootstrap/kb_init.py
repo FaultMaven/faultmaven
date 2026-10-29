@@ -24,15 +24,20 @@ Why a separate flow from ``conversion_drafts``?
     content the platform vendor (or admin) already approved. ``conversion_drafts``
     is reserved for case-generated / document-converted drafts that need review.
 
-Atomicity
-    Each runbook's ingestion is all-or-nothing:
+Per runbook
+    ``_ingest_pack_runbook`` ingests one runbook:
       1. Compute the deterministic ``item_id`` (carried by the pack).
       2. Check ``knowledge_items`` — if present AND it was ingested from this
          pack version (the pack hash stamped on the row), skip.
       3. Call ``KnowledgeService.ingest_runbook(prechunked=...)`` — SQL row
          first, ChromaDB chunks (pack vectors) second.
-      4. Validate ``chunks_created > 0``; on failure, surface loudly and clean
-         up — never leave half-state.
+      4. ``ingest_runbook`` raises when indexing returns 0 chunks, after its
+         cleanup; ``_ingest_pack_runbook`` also checks ``chunks_created <= 0``,
+         and on it calls ``_delete_existing`` and raises. ``bootstrap_kb``
+         catches an ``Exception`` from ``_ingest_pack_runbook``, logs it at
+         ERROR and records the runbook in ``BootstrapResult.failed``. What a
+         failure can leave is listed in ``KnowledgeService.ingest_runbook``'s
+         docstring.
 
 Idempotency
     Re-running is safe. Runbooks whose pack version is unchanged (the pack's

@@ -133,7 +133,7 @@ User uploads a document via the Dashboard. `ConversionService.convert_document()
 1. Validate the draft is in `DRAFT` state and has passed validation.
 2. Update frontmatter on disk (`status: draft` → `status: verified`).
 3. **Attempt ingestion** via `KnowledgeService.ingest_runbook(verified_by=<user_id>, ...)`. The title is redacted here, and the draft row's own title is rewritten to match (#1981), so a draft that predates the scrub is not left listed with its raw title after publication.
-    - On exception → re-raise. Draft stays in `DRAFT` state. SQL row from a partial ingest (if any) was already cleaned up by `ingest_runbook` itself, or, where its INSERT landed after that cleanup, is incomplete and swept (#2394).
+    - On exception → re-raise. Draft stays in `DRAFT` state. What the failed ingest can leave is listed in `ingest_runbook`'s docstring.
     - On `chunks_created <= 0` (now turned into an exception by `ingest_runbook`) → same handling.
 4. **Only after ingestion succeeds**: set `status = VERIFIED`, `verified_at = now`, `verified_by = <user_id>`, `knowledge_item_id = <id>`. Commit.
 
@@ -182,7 +182,7 @@ Operational detail:
 
 | Invariant | Where enforced |
 |-----------|----------------|
-| No row in `knowledge_items` without corresponding ChromaDB chunks | `KnowledgeService.ingest_runbook` rolls back SQL on 0-chunk result |
+| What a failed ingest can leave in either store | The residual list in `KnowledgeService.ingest_runbook`'s docstring |
 | No draft with `status = VERIFIED` but `knowledge_item_id = NULL` | `ConversionService.verify_draft` commits status only after ingestion succeeds; `KnowledgeService.delete_document` and `fm-reset-kb` discard the drafts naming an item before deleting it (`draft_retirement`, #2369). Another deleter can still leave one (the key's `SET NULL`; #2385) |
 | Re-running bootstrap produces no churn for unchanged runbooks | `kb_init._ingest_pack_runbook` compares the pack's hash with `metadata.pack_content_hash` stamped at ingest |
 | No embedding model used to *ingest* the pack | Pack ships pre-computed vectors; `ingest_runbook(prechunked=...)` skips `model.encode` (the model still loads at boot for query-time search) |

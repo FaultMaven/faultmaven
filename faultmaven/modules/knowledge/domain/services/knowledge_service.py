@@ -2057,11 +2057,11 @@ class KnowledgeService:
 
         The rows are written after the item they name, never before (#2365):
         the draft's ``knowledge_item_id`` is a foreign key, enforced on every
-        deployment. A completed call leaves all of it (the item, its vectors
-        and the upload, job and draft rows) or none of it: a failed ingestion
-        undoes its own writes, and a failed row write withdraws the published
-        item. A crash between the two commits leaves only the item, which is
-        live and deletable (``DELETE /knowledge/documents/{id}``).
+        deployment. A failure in :meth:`ingest_runbook` leaves what its
+        docstring lists, and a failed row write calls
+        :meth:`_withdraw_failed_upload`, whose docstring states what it
+        removes. A crash between the two commits leaves only the item, which
+        is live and deletable (``DELETE /knowledge/documents/{id}``).
 
         Args:
             title: Redacted with the sanitizer before it is written anywhere
