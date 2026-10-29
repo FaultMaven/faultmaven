@@ -448,6 +448,27 @@ and the engine is already offering it. Once the user declines that resolution,
 the two are never offered together; the decline lapses when the state it was
 given against changes (a new confirmation, solution or cause leg).
 
+Two more states set the menu (#2379):
+
+- **A problem-statement revision awaiting the user** (§1.4.1). Under it
+  `cause_identification_leg` returns `None` where it would return `rcc` or
+  `working_conclusion`, since both need a verified symptom, so the decline's
+  signature would not match. The user's close cancels the revision first, so
+  `close_pivots_to_resolve` reads the decline on the case as that close finds
+  it (`as_revision_cancelled`: a copy, so the case itself is not written to).
+  After a decline, `closed` reads `ready`, and the menu close cancels the
+  revision and proposes CLOSED with `resolution_declined`. With no decline,
+  the menu stays empty: `closed` reads `suggests_alternative`, the revision's
+  confirm/clarify pair is on screen, and a Close from a stale menu cancels the
+  revision and pivots to a resolve proposal.
+- **A `needs_info` resolve offer** (the model's `resolved` on a NEEDS_INFO
+  case, stored with `needs_info=True`). `closed` reads `suggests_alternative`
+  beside it, and `ready` again once the offer is answered. The offer's message
+  points at the chat ("say so and I'll propose closing the case instead"), and
+  any reply that leaves the case short of READY gets a close proposal. A
+  stale-menu Close cancels the offer and proposes CLOSED: the case is not
+  resolvable, so `close_pivots_to_resolve` stays False there.
+
 **MULTIPLE SOLUTIONS HANDLING**:
 
 If multiple solutions exist, the agent proposes resolution when AT LEAST ONE
@@ -506,7 +527,7 @@ chance to see what was accomplished before committing to an irreversible action.
 
 - `ready` — disposition is appropriate; render enabled with the default confirm UX.
 - `needs_info` — disposition is allowed but the case is partial; user must ADD information before transitioning. Currently only the Resolve side surfaces this.
-- `suggests_alternative` — disposition is allowed but the system recommends the OTHER disposition for this case (e.g., resolution-grade case clicked-to-close, while the user has not declined that resolution). User is asked to RE-DIRECT, not to add data. Currently only the Close side surfaces this.
+- `suggests_alternative` — disposition is allowed but the system recommends the OTHER disposition for this case (e.g., resolution-grade case clicked-to-close, while the user has not declined that resolution, or a `needs_info` resolve offer pending, #2379). User is asked to RE-DIRECT, not to add data. Currently only the Close side surfaces this.
 - `not_eligible` — disposition is not available; hide the affordance entirely.
 
 `needs_info` and `suggests_alternative` are kept as distinct values rather than overloading one label, because they drive different UX patterns (add-data vs reconsider-action). The column is maintained at the **single chokepoint `CaseRepository.save()`** (pattern P3) — every save calls the derive helper and rewrites the column, so the value can never drift from current case content without per-mutation-site update burden. The UI adapter passes the column through to all three `CaseUIResponse_*` variants; the frontend renders the dropdown menu against `disposition_eligibility`, not just `valid_next_states`. Distinction: `valid_next_states` answers *which actions the user may select*; `disposition_eligibility` answers *which of those make sense given current content*. (Neither is the legality graph — that is `LEGAL_TRANSITIONS`, §1.3.)

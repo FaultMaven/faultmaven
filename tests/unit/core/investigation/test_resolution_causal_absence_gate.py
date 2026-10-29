@@ -68,9 +68,11 @@ class TestResolutionGate:
         )
         assert r.verdict == ResolutionReadiness.NEEDS_INFO
         # asks the user to fill the documentation gap (confirmation it's
-        # resolved) and offers Close as the fallback for a stabilized case
+        # resolved) and offers closing, through the chat, as the fallback for a
+        # stabilized case: the menu hides Close beside the offer (#2379)
         assert "confirmation the problem is now resolved" in r.missing
-        assert "close" in r.message.lower()
+        assert "say so and I'll propose **closing** the case" in r.message
+        assert "you can **close**" not in r.message
 
     def test_solution_row_without_absence_is_not_ready(self):
         # A solution on record but no causal_absence must NOT resolve (the old

@@ -661,14 +661,28 @@ def derive_closure_reason(case: "Case") -> str:
 #       asks for the missing pieces in conversation.
 #
 #   "suggests_alternative"
-#       Close side only, and it means DO NOT RENDER CLOSE. It is set exactly
-#       when ``close_pivots_to_resolve`` holds: ``assess_closure_readiness``
+#       Close side only, and it means DO NOT RENDER CLOSE: the agent is
+#       offering a resolution, and Close is not offered beside it. It is set
+#       exactly when one of two holds.
+#
+#       1. A ``needs_info`` resolve offer is pending (the model's ``resolved``
+#       on a NEEDS_INFO case, ``pending_transition["needs_info"]``, #2379).
+#       ``close_pivots_to_resolve`` is False there, since the closure verdict
+#       is not SUGGEST_RESOLVE, so a menu close cancels the offer and closes.
+#       Once the offer is answered, Close reads ``ready`` again.
+#
+#       2. ``close_pivots_to_resolve`` holds: ``assess_closure_readiness``
 #       returns SUGGEST_RESOLVE, which holds exactly when the case confirms a
 #       resolution (a qualifying ``causal_absence_evidence`` row and a
 #       ``symptom_absence_evidence`` row at or after it) — the same predicate as
 #       resolution READY — and either no resolve decline stands or a resolve
-#       offer is pending. On a resolvable case, by the state of the user's
-#       resolve decline (#1895, #2360):
+#       offer is pending. The decline is read on the case as the user's close
+#       finds it, after that close cancels a pending problem-statement revision
+#       (``as_revision_cancelled``, #2379). Under the revision
+#       ``cause_identification_leg`` returns None in place of ``rcc`` or
+#       ``working_conclusion``, which need a verified symptom, so the decline's
+#       signature would not match. On a resolvable case, by the state of the
+#       user's resolve decline (#1895, #2360):
 #       - None stands: ``suggests_alternative``. INV-37 pivots every close to
 #         a resolve proposal, at the proposal boundary and again at the
 #         confirm boundary, so a Close control could only ever produce "shall
@@ -696,7 +710,8 @@ def derive_closure_reason(case: "Case") -> str:
 # why the two were not treated alike: a rendered Resolve produced a validation
 # ERROR, while a rendered Close produces a coherent REDIRECT — the engine
 # pivots it to "shall I mark this resolved?" and nothing is lost (or, while a
-# declined resolution is re-offered, it closes as the decline chose). Closing the
+# declined resolution is re-offered, it closes as the decline chose; beside a
+# ``needs_info`` resolve offer, it cancels the offer and closes). Closing the
 # gap properly means making ``valid_next_states`` depend on case content, which
 # it deliberately does not today (a static dict lookup, no case read), and that
 # is a contract decision rather than a wording one.
@@ -739,15 +754,19 @@ def derive_disposition_eligibility(case: "Case") -> dict[str, str]:
       derives from ``assess_resolution_readiness`` (READY → ready,
       NEEDS_INFO → needs_info, SUGGEST_CLOSE → not_eligible) and drives the
       engine's own handshake rather than a control. Closed eligibility is
-      ``ready`` by default; while ``close_pivots_to_resolve`` holds, closed →
+      ``ready`` by default; while ``close_pivots_to_resolve`` holds, or a
+      ``needs_info`` resolve offer is pending, closed →
       ``suggests_alternative``, which means DO NOT RENDER. On a resolvable
-      case that is while no resolve decline stands (INV-37 then pivots every
-      close back to a resolve proposal) and while a declined resolution is
-      re-offered at the user's request (Close is not offered beside it; a
+      case the pivot holds while no resolve decline stands (INV-37 then pivots
+      every close back to a resolve proposal) and while a declined resolution
+      is re-offered at the user's request (Close is not offered beside it; a
       stale-menu Close cancels the offer and closes). While the decline
       otherwise stands, closed → ``ready`` and the user's close closes
-      (``resolution_declined``); once it lapses, as when none stands. The
-      constants block above states each case.
+      (``resolution_declined``), a pending problem-statement revision
+      included, since that close cancels it first; once the decline lapses,
+      as when none stands. Beside a ``needs_info`` offer a stale-menu Close
+      cancels the offer and closes. The constants block above states each
+      case.
 
     - Terminal (RESOLVED / CLOSED): no further actions. Returns all
       ``not_eligible``.
@@ -779,14 +798,19 @@ def derive_disposition_eligibility(case: "Case") -> dict[str, str]:
         resolved_eligibility = DISPOSITION_ELIGIBILITY_NOT_ELIGIBLE
 
     closure = assess_closure_readiness(case)
-    if close_pivots_to_resolve(case, closure.verdict):
+    pending = getattr(case, "pending_transition", None) or {}
+    needs_info_offer = pending.get("to_state") == CaseState.RESOLVED.value and bool(
+        pending.get("needs_info")
+    )
+    if close_pivots_to_resolve(case, closure.verdict) or needs_info_offer:
         # ``suggests_alternative`` means DO NOT RENDER CLOSE. With no resolve
         # decline standing, INV-37 pivots every close back to a resolve
         # proposal, so a Close control could only ever produce "shall I mark
-        # this resolved?"; while a declined resolution is re-offered, Close is
-        # not offered beside it (a stale-menu Close cancels the offer and
-        # closes). It does NOT mean "warn and offer anyway"; there is no
-        # alternative control to offer, because resolve is not one.
+        # this resolved?"; while a declined resolution is re-offered, or a
+        # ``needs_info`` resolve offer is pending (#2379), Close is not offered
+        # beside it (a stale-menu Close cancels the offer and closes). It does
+        # NOT mean "warn and offer anyway"; there is no alternative control to
+        # offer, because resolve is not one.
         closed_eligibility = DISPOSITION_ELIGIBILITY_SUGGESTS_ALTERNATIVE
     else:
         # HAS_SUBSTANCE or TRIVIAL, or a resolvable case whose resolution the
@@ -918,20 +942,29 @@ def close_pivots_to_resolve(case: Case, verdict: str) -> bool:
     closes, with ``resolution_declined`` as its reason. Close and Resolve are
     never offered together, so while the chip's resolve proposal is pending
     the menu shows no Close (``declined_resolve_card`` stands down on the same
-    pending). The ONE read for the three places that decide this: the status
-    menu's Close (``derive_disposition_eligibility``), the menu close itself
-    (``_close_on_explicit_intent``) and the confirm-time guard
-    (``confirm_pending_transition``); the last two never see a resolve
-    pending (a menu close cancels it first, and a confirm is of a close). The
-    model's close does not read it: it still pivots, and is refused against
-    the decline (chat is unchanged).
+    pending).
+
+    The decline is read on the case as the user's close finds it: that close
+    cancels a pending problem-statement revision first, so the read goes
+    through ``as_revision_cancelled`` (#2379). Three places read this
+    predicate: the status menu's Close (``derive_disposition_eligibility``,
+    which also hides Close beside a pending ``needs_info`` resolve offer, where
+    this returns False because the verdict is not SUGGEST_RESOLVE), the menu
+    close itself (``_close_on_explicit_intent``) and the confirm-time guard
+    (``confirm_pending_transition``). The last two never see a resolve or a
+    revision pending (a menu close cancels both first, and a confirm is of a
+    close, which no revision stands beside, INV-45). The model's close does
+    not read it: it still pivots, and is refused against the decline (chat is
+    unchanged).
     """
     if verdict != ClosureReadiness.SUGGEST_RESOLVE:
         return False
     pending = getattr(case, "pending_transition", None) or {}
     if pending.get("to_state") == CaseState.RESOLVED.value:
         return True
-    return declined_resolve_entry(case, verdict) is None
+    from faultmaven.core.investigation.problem_status import as_revision_cancelled
+
+    return declined_resolve_entry(as_revision_cancelled(case), verdict) is None
 
 
 #: What binds the model while a resolve decline stands (#1895): the ONE rule the
@@ -1390,8 +1423,10 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
     # cause gone and the problem gone with it. This is the documentation-gap-fill
     # ask (common out of band, or mid-stream) — collect what's needed to document a
     # resolution AND confirm the fix actually worked. A stabilized/deferred account
-    # never confirms it and converges to Close. Close is offered up front as the
-    # alternative.
+    # never confirms it and converges to Close. Closing is offered up front as the
+    # alternative, through the chat: a reply that leaves the case short of READY
+    # gets a close proposal, and the status menu hides Close beside a
+    # ``needs_info`` offer (#2379).
     missing = ["confirmation the problem is now resolved"]
     if not has_cause:
         missing.append("root cause")
@@ -1432,9 +1467,9 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
                 "showing the cause gone and the original problem gone with it, "
                 "as data (pasted or attached, not typed into your message).\n\n"
                 "If the problem is only quiet for now (a restart, a failover or "
-                "another workaround), or the real fix is **deferred**, you can "
-                "**close** the case instead — that keeps the investigation on "
-                "record without claiming the fix worked."
+                "another workaround), or the real fix is **deferred**, say so "
+                "and I'll propose **closing** the case instead — that keeps the "
+                "investigation on record without claiming the fix worked."
             ),
             missing=["a new fix after the one that did not hold", *missing],
         )
@@ -1487,10 +1522,10 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
             "session, the same applies, and I'll document it.\n\n"
             "If it was only **stabilized** (a workaround/failover while the root "
             "cause is still pending) or the real fix is **deferred** (a change "
-            "window, hardware RMA, another team), you can **close** the case "
-            "instead — that keeps the investigation and the documented (or "
-            "deferred) solution on record without claiming it's permanently "
-            "fixed."
+            "window, hardware RMA, another team), say so and I'll propose "
+            "**closing** the case instead — that keeps the investigation and "
+            "the documented (or deferred) solution on record without claiming "
+            "it's permanently fixed."
         ),
         missing=missing,
     )

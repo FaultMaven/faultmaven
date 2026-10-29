@@ -1010,6 +1010,8 @@ def test_after_a_failure_the_gate_asks_for_a_new_fix_not_a_confirmation():
     assert readiness.missing[0] == "a new fix after the one that did not hold"
     assert "didn't hold" in readiness.message
     assert "just tell me" not in readiness.message
+    assert "say so and I'll propose **closing** the case" in readiness.message
+    assert "you can **close**" not in readiness.message
 
 
 def test_an_absence_row_inside_a_failed_window_tells_the_model_to_record_a_fix():

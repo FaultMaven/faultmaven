@@ -321,6 +321,26 @@ def cancel_revision(case: Case) -> PendingRevision | None:
     return _drop_pending(case, via="revision_cancelled")
 
 
+def as_revision_cancelled(case: Case) -> Case:
+    """The case as ``cancel_revision`` would leave it, for a read: with a
+    revision pending, a copy at the revision's ``prior_status`` and with no
+    pending revision; otherwise ``case`` itself. The copy carries its own
+    ``progress`` and ``problem_verification``, so ``case`` is not written to,
+    and no transition is logged."""
+    pv = case.problem_verification
+    pending = pv.pending_revision if pv else None
+    if pending is None:
+        return case
+    return case.model_copy(
+        update={
+            "progress": case.progress.model_copy(
+                update={"problem_status": pending.prior_status}
+            ),
+            "problem_verification": pv.model_copy(update={"pending_revision": None}),
+        }
+    )
+
+
 def invalidate_problem(case: Case, *, evidence_ids: list[str], basis: str) -> None:
     """The evidence shows the reported symptom was never present."""
     pv = case.problem_verification
