@@ -158,11 +158,11 @@ warnings after restart. Full build + delivery detail: [`kb-pack-architecture.md`
 fm-reset-kb --dry-run             # See counts; no changes
 fm-reset-kb --yes                 # Wipe; bootstrap reruns on API restart
 fm-reset-kb --yes --rebuild       # Wipe + immediate in-process rebuild
-fm-reset-kb --yes --all-drafts    # Also delete case-generated drafts
+fm-reset-kb --yes --all-drafts    # Also delete every draft (upload, document, case)
 fm-reset-kb --yes --keep-chroma   # Wipe SQL only; keep ChromaDB collections
 ```
 
-Defaults are conservative — `conversion_drafts` (case-generated work in progress) is preserved unless `--all-drafts` is passed. A draft that published a deleted runbook is discarded, its text kept, so it leaves the Drafts list (#2369). Only the items the reset locked are deleted; one a running API writes meanwhile is kept and reported.
+Defaults are conservative — `conversion_drafts` is preserved unless `--all-drafts` is passed. A draft that published a deleted runbook is discarded, its text kept, so it leaves the Drafts list (#2369). `--all-drafts` deletes every draft instead (upload, document and case drafts alike; for an authored runbook whose item the reset deletes, its draft holds the last copy of its text). On either path the reset then releases each case key held by a conversion job with no live draft left, so that case can be converted again (#2387). Only the items the reset locked are deleted; one a running API writes meanwhile is kept and reported.
 
 `fm-reset-kb` is a console entrypoint shipped with the installed package (`faultmaven/cli/reset_kb.py`), so it is available both in a local checkout (after `pip install -e .`) and inside the API pod.
 

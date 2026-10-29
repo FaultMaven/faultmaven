@@ -69,6 +69,30 @@ async def release_drained_case_keys(
             await release_live_case_key_if_drained(session, job, draft_id)
 
 
+async def release_case_keys_without_a_live_draft(session: AsyncSession) -> int:
+    """Clear ``live_case_id`` on each job that holds one with no non-discarded
+    draft, in one ``UPDATE``; return how many it cleared.
+
+    ``fm-reset-kb`` runs it after its draft step, on either path, so a key an
+    earlier reset left with no draft behind it is released too (#2387).
+    """
+    live_draft = (
+        select(ConversionDraftModel.id)
+        .where(
+            ConversionDraftModel.conversion_id == ConversionJobModel.id,
+            ConversionDraftModel.status != DraftStatus.DISCARDED.value,
+        )
+        .exists()
+    )
+    result = await session.execute(
+        update(ConversionJobModel)
+        .where(ConversionJobModel.live_case_id.is_not(None), ~live_draft)
+        .values(live_case_id=None)
+        .execution_options(synchronize_session=False)
+    )
+    return result.rowcount
+
+
 async def discard_drafts_naming_item(session: AsyncSession, item_id: str) -> List[str]:
     """Discard the drafts naming ``item_id``, ahead of its ``DELETE``
     (``KnowledgeService.delete_document``); return their ids."""

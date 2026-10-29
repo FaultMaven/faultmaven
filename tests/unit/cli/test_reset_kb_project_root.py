@@ -40,14 +40,10 @@ pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("shipped_data_defaults")
 
 
 class _FakeResult:
-    """Stands in for a DELETE result: the CLI reads ``.rowcount``, or the
-    ``(id, conversion_id)`` rows of the drafts' ``RETURNING`` through ``.all()``."""
+    """Stands in for a DELETE result: the CLI reads ``.rowcount``."""
 
     def __init__(self, rowcount):
         self.rowcount = rowcount
-
-    def all(self):
-        return [("draft", "job")] * self.rowcount
 
 
 class _FakeSession:
@@ -82,13 +78,18 @@ def stub_db(monkeypatch):
 
         monkeypatch.setattr(database, "get_db_session", lambda: session)
         # The draft discard ahead of the DELETE (#2369) is not a DELETE, and
-        # neither is the key release after the drafts' DELETE (#2387).
+        # neither is the key release after the draft step (#2387).
         monkeypatch.setattr(
             draft_retirement,
             "discard_drafts_naming_any_item",
             AsyncMock(return_value=([], [])),
         )
-        monkeypatch.setattr(draft_retirement, "release_drained_case_keys", AsyncMock())
+        # A count unlike the DELETEs' rowcount, so a printed release count
+        # equal to it came from this return.
+        session.release = AsyncMock(return_value=rows // 2)
+        monkeypatch.setattr(
+            draft_retirement, "release_case_keys_without_a_live_draft", session.release
+        )
         return session
 
     return _stub
@@ -172,18 +173,20 @@ async def test_keep_chroma_names_the_store_it_kept(
 async def test_the_deleted_count_is_the_databases_rowcount(
     tmp_path, monkeypatch, capsys, stub_db
 ):
-    """Reported counts come from the DELETEs themselves (the items' rowcount,
-    the drafts' returned rows), so the number an operator reads is what the
-    database did — not a pre-count that a concurrent writer could have made
-    stale."""
+    """Reported counts come from the statements themselves (the DELETEs'
+    rowcounts, the key release's return), so the number an operator reads is
+    what the database did — not a pre-count that a concurrent writer could have
+    made stale."""
     monkeypatch.chdir(tmp_path)
     (tmp_path / "data" / "chroma-kb").mkdir(parents=True)
-    stub_db(rows=42)
+    session = stub_db(rows=42)
 
     await reset_kb.reset_kb(
         dry_run=False, all_drafts=True, rebuild=False, keep_chroma=True
     )
 
+    session.release.assert_awaited_once_with(session)
     out = capsys.readouterr().out
     assert "Deleted 42 knowledge_items rows." in out
     assert "Deleted 42 conversion_drafts rows (--all-drafts)." in out
+    assert "Released 21 case conversion keys held with no live draft." in out

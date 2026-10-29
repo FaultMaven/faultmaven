@@ -106,11 +106,17 @@ def stub_db(monkeypatch):
         from faultmaven.infrastructure.persistence import database
 
         monkeypatch.setattr(database, "get_db_session", lambda: session)
-        # The draft discard ahead of the DELETE (#2369) is not a DELETE.
+        # The draft discard ahead of the DELETE (#2369) is not a DELETE, and
+        # neither is the key release after the draft step (#2387).
         monkeypatch.setattr(
             draft_retirement,
             "discard_drafts_naming_any_item",
             AsyncMock(return_value=([], [])),
+        )
+        monkeypatch.setattr(
+            draft_retirement,
+            "release_case_keys_without_a_live_draft",
+            AsyncMock(return_value=0),
         )
         return session
 

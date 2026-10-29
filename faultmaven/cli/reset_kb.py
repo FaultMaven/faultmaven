@@ -14,7 +14,9 @@ What it does
 2. Keeps ``conversion_drafts`` rows, discarding first the ones that
    published a runbook it deletes (their text kept, #2369), so none stays
    listed as verified naming nothing. ``--all-drafts`` deletes every draft
-   instead, and releases the case keys those drafts held (#2387).
+   instead: upload, document and case drafts alike. On either path it then
+   releases each case key held by a conversion job with no live draft left,
+   so that case can be converted again (#2387).
 3. Removes ChromaDB collections backing global/team/personal KB so
    they're recreated empty on next API start.
 4. Optionally invokes the bootstrap directly (``--rebuild``) for
@@ -305,7 +307,7 @@ async def reset_kb(
     )
     from faultmaven.modules.knowledge.domain.services.conversion_service.draft_retirement import (  # noqa: E501
         discard_drafts_naming_any_item,
-        release_drained_case_keys,
+        release_case_keys_without_a_live_draft,
     )
     from faultmaven.providers.tenancy.factory import (
         BUILTIN_MULTI,
@@ -417,32 +419,29 @@ async def reset_kb(
             )
         ).rowcount
         kept_items = await _count_rows(session, KnowledgeItemModel)
-        if all_drafts:
-            # ``release_drained_case_keys`` clears the ``live_case_id`` of each
-            # job these drafts belonged to that has no live draft left, in this
-            # transaction, so its case can be converted again (#2387).
-            deleted_drafts = (
-                await session.execute(
-                    delete(ConversionDraftModel).returning(
-                        ConversionDraftModel.id, ConversionDraftModel.conversion_id
-                    )
-                )
-            ).all()
-            await release_drained_case_keys(session, deleted_drafts)
-            print(
-                f"Deleted {len(deleted_drafts)} conversion_drafts rows (--all-drafts)."
-            )
-        else:
-            # Drafts carry no mark of being bootstrap-generated, so by default
-            # every row is KEPT. Operators with a known-clean drafts table can
-            # pass --all-drafts.
-            print(
-                f"Kept conversion_drafts rows, discarding the {len(discarded)} "
-                "that published a deleted runbook (use --all-drafts to remove "
-                "case-generated drafts too)."
-            )
+        # Drafts carry no mark of being bootstrap-generated, so by default
+        # every row is KEPT. ``--all-drafts`` deletes every row, with no WHERE.
+        deleted_drafts = (
+            (await session.execute(delete(ConversionDraftModel))).rowcount
+            if all_drafts
+            else None
+        )
+        # After the draft step on either path, so a key whose drafts this run
+        # or an earlier one deleted is released (#2387).
+        released_keys = await release_case_keys_without_a_live_draft(session)
         await session.commit()
+    # Printed after the commit, so a reset that rolled back reports no deletion
+    # and no release.
     print(f"Deleted {deleted_items} knowledge_items rows.")
+    if all_drafts:
+        print(f"Deleted {deleted_drafts} conversion_drafts rows (--all-drafts).")
+    else:
+        print(
+            f"Kept conversion_drafts rows, discarding the {len(discarded)} "
+            "that published a deleted runbook (use --all-drafts to delete "
+            "every draft)."
+        )
+    print(f"Released {released_keys} case conversion keys held with no live draft.")
     if kept_items:
         print(
             f"Kept {kept_items} knowledge_items rows written while the reset ran, "
@@ -542,7 +541,11 @@ def main() -> None:
     parser.add_argument(
         "--all-drafts",
         action="store_true",
-        help="Also delete case-generated conversion_drafts (default: keep).",
+        help=(
+            "Delete every conversion_drafts row: upload, document and case "
+            "drafts (default: keep them). Either way, the reset releases the "
+            "case keys left without a live draft."
+        ),
     )
     parser.add_argument(
         "--rebuild",
