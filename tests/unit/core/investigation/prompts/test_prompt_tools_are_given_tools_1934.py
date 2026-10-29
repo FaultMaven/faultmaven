@@ -6,10 +6,10 @@ registry the model's tool list is built from. They named ``case_evidence_qa``
 
 The given set comes from the real ``_create_investigation_tools`` fed bare
 ``AgentTool`` doubles (``.name`` is a constant property, so no dependencies are
-needed). The vocabulary is every ``AgentTool`` subclass name plus retired
-spellings. Model-facing strings are collected by AST from the prompt package,
-the DA instruction / vectorization modules and the given tools' own modules
-(docstrings excluded: they are for developers).
+needed). The vocabulary is the name of every ``AgentTool`` subclass the tools
+package defines, plus retired spellings. Model-facing strings are collected by
+AST from the prompt package, the DA instruction / vectorization modules and the
+given tools' own modules (docstrings excluded: they are for developers).
 
 Flag-gated text is paired with its flag explicitly: the entity tools are given
 only under FAULTMAVEN_ENTITY_REGISTRY and ``reclassify_evidence`` only under
@@ -194,16 +194,26 @@ def _subclasses(cls):
         yield from _subclasses(sub)
 
 
-def vocabulary() -> set[str]:
+def tool_class_names() -> set[str]:
+    """The name of every ``AgentTool`` subclass the tools package defines."""
     for mod in pkgutil.iter_modules(tools_pkg.__path__):
         importlib.import_module(f"{tools_pkg.__name__}.{mod.name}")
     names = set()
     for cls in _subclasses(AgentTool):
+        # The package's classes, not a test's: a double such as
+        # ``test_tool_registry``'s ``FailingTool`` stays a subclass for as long
+        # as it is alive in this process.
+        if not cls.__module__.startswith(f"{tools_pkg.__name__}."):
+            continue
         try:
             names.add(_bare(cls).name)
         except Exception:  # abstract / non-constant name
             pass
-    return names | _RETIRED
+    return names
+
+
+def vocabulary() -> set[str]:
+    return tool_class_names() | _RETIRED
 
 
 def strings(path: Path):
@@ -261,6 +271,18 @@ def test_default_registry_is_the_six() -> None:
     }
 
 
+def test_every_tool_class_is_given_with_every_flag_on() -> None:
+    """A tool class nothing gives the model is dead code that reads as live:
+    ``KnowledgeBaseTool`` (#943), ``reclassify_evidence`` built and never
+    registered (#1941), and four tools #2376 deleted. With every flag on, the
+    registry ``_create_investigation_tools`` builds holds every tool class the
+    tools package defines. Compared without ``_RETIRED``, so a class revived
+    under a retired name is held to the same rule."""
+    assert tool_class_names() == given(
+        {**_DEFAULT_TOOLS, **_ENTITY_TOOLS, **_RECLASSIFY_TOOLS}
+    )
+
+
 def test_entity_tools_are_given_only_under_their_flag() -> None:
     assert ENTITY_FLAG_NAMES <= given({**_DEFAULT_TOOLS, **_ENTITY_TOOLS})
     assert not ENTITY_FLAG_NAMES & given(_DEFAULT_TOOLS)
@@ -302,6 +324,10 @@ def _scan_text(tmp_path: Path, text: str) -> list[Path]:
     [
         ("call case_evidence_qa on it", "not_given"),
         ("call global_kb_qa on it", "not_given"),
+        ("call read_file on it", "not_given"),
+        ("call list_evidence on it", "not_given"),
+        ("call list_evidence_by_time on it", "not_given"),
+        ("call search_knowledge on it", "not_given"),
         ("call search_files on it", "near"),
         ("call deep_analyze on it", "near"),
     ],

@@ -92,7 +92,7 @@ is no self-registering tool registry. The model is given the tools that
 `FindEntityTool`, `ListTopEntitiesTool` and `ReclassifyEvidenceTool` are built,
 and so given, only under their feature flags.
 
-**Evidence tools** (read through the Evidence module):
+**Evidence tools** (work on the case's evidence rows and uploaded files):
 
 - `ListTopEntitiesTool` — most-referenced entities across the case
 - `FindEntityTool` — locate a named entity in case evidence
@@ -126,8 +126,8 @@ and so given, only under their feature flags.
 | `core/investigation/` | Milestone engine, hypothesis manager, intent resolver |
 | `infrastructure/llm/` | LLM provider abstractions and routing |
 | `modules/case/contracts` | `Case`, `ICaseRepository`, and the Case-owned execution models |
-| `modules/evidence/` | Evidence retrieval for tools |
-| `modules/knowledge/` | Knowledge base and vector search for tools |
+| `modules/evidence/` | `FileStorageService`, which the orphan-file sweep (`jobs/storage_cleanup.py`) builds |
+| `modules/knowledge/contracts` | `describe_troubleshooting_domains` / `describe_troubleshooting_scope`, for the orientation and out-of-band prompts |
 
 ### What imports the Agent module
 
@@ -159,8 +159,9 @@ every module that calls them rather than inside one.
 
 Tools stay in `modules/agent/tools/` rather than being distributed to the
 modules whose data they read. One location means one place to look and one
-construction path; the dependency on Evidence and Knowledge is explicit in the
-imports.
+construction path. The tools import neither the Evidence nor the Knowledge
+module: `container/providers/tools.py` passes in what they read (file storage,
+the case repository, the KB and case vector stores, the deep-analysis service).
 
 ---
 

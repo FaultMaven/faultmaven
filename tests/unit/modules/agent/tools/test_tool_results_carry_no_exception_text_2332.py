@@ -16,6 +16,7 @@ on the sites it exists for.
 
 import ast
 import pathlib
+import textwrap
 
 import pytest
 
@@ -144,17 +145,59 @@ def _keys(
     return keys
 
 
+#: The tool modules ``test_reverting_any_fixed_site_is_reported`` reverts a
+#: site in: the ten fixed sites, ``tool_failure``'s rendering (``base.py``) and
+#: the two fixed-error handlers (``reclassify_evidence_tool.py``,
+#: ``web_search.py``).
+_FIXED_SITE_HOMES = {
+    "base.py",
+    "deep_analysis_tool.py",
+    "find_entity_tool.py",
+    "kb_tool_adapter.py",
+    "list_top_entities_tool.py",
+    "reclassify_evidence_tool.py",
+    "search_file_tool.py",
+    "vectorize_file_tool.py",
+    "web_search.py",
+}
+
+
 @pytest.mark.unit
 def test_the_scan_reaches_every_tool():
-    """Not vacuous: tools that hold the ten fixed sites are scanned."""
+    """Not vacuous: every tool module that holds a reverted site is scanned,
+    and ``_FIXED_SITE_HOMES`` names exactly those modules."""
     scanned = {p.name for p, returns in _scanned() if returns}
-    assert {
-        "base.py",
-        "kb_tool_adapter.py",
-        "search_file_tool.py",
-        "vectorize_file_tool.py",
-        "web_search.py",
-    } <= scanned
+    assert _FIXED_SITE_HOMES <= scanned
+
+    homes = set()
+    for path in _TOOLS.rglob("*.py"):
+        counter = _Revert(-1)
+        counter.visit(ast.parse(path.read_text(encoding="utf-8")))
+        if counter.count:
+            homes.add(path.name)
+    assert homes == _FIXED_SITE_HOMES
+
+
+#: A tool helper whose returned string carries the caught exception's text: a
+#: site only when returned values are read as a tool's (``returns=True``).
+_RETURNED_TEXT = textwrap.dedent("""\
+    def _read(path):
+        try:
+            return open(path).read()
+        except OSError as e:
+            return f"[Error reading file: {e}]"
+    """)
+
+
+@pytest.mark.unit
+def test_a_returned_string_carrying_the_text_is_a_site_under_returns(tmp_path):
+    """The ``returns`` arm: a helper that returns the text is reported with
+    ``returns=True`` and not with ``returns=False``."""
+    path = tmp_path / "helper.py"
+    path.write_text(_RETURNED_TEXT, encoding="utf-8")
+
+    assert tool_result_leak_sites(path, returns=True) == ["helper.py:5"]
+    assert tool_result_leak_sites(path, returns=False) == []
 
 
 @pytest.mark.unit

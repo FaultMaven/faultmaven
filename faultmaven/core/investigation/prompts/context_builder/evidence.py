@@ -121,8 +121,8 @@ def _extract_time_window_from_query(
 
 def _coverage_overlaps_window(ev, window: tuple[datetime, datetime]) -> bool:
     """Return True when the evidence's coverage span intersects the
-    window. NULL coverage → False (timeless evidence isn't time-
-    windowable, consistent with the repository query's semantics)."""
+    window. NULL coverage → False: timeless evidence isn't
+    time-windowable."""
     start_ts = getattr(ev, "coverage_start_ts", None)
     end_ts = getattr(ev, "coverage_end_ts", None)
     if start_ts is None or end_ts is None:

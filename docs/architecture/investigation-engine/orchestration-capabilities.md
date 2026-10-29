@@ -68,7 +68,7 @@ Human-in-the-Loop (HIL) is enforced via **Design Pattern** rather than explicit 
 
 ### 3.1 The "Read-Only" Agent
 
-- **Current State**: The Agent has **zero autonomy** to execute destructive actions (e.g., restarting servers, modifying code, deleting data). The tools it is given (`_create_investigation_tools`: `search_file`, `deep_analysis`, `web_search`, `kb_qa`, `vectorize_file`, `case_evidence_search`, and under their flags `find_entity`, `list_top_entities` and `reclassify_evidence`) act on nothing outside FaultMaven: `vectorize_file` writes the case's vector index, `reclassify_evidence` reclassifies an uploaded file and the evidence rows extracted from it, and the rest read.
+- **Current State**: The Agent has **zero autonomy** to execute destructive actions (e.g., restarting servers, modifying code, deleting data). The tools it is given (`_create_investigation_tools`: `search_file`, `deep_analysis`, `web_search`, `kb_qa`, `vectorize_file`, `case_evidence_search`, and under their flags `find_entity`, `list_top_entities` and `reclassify_evidence`) take no destructive action: `vectorize_file` writes the case's vector index, `reclassify_evidence` reclassifies an uploaded file and the evidence rows extracted from it, `web_search` sends the query the model writes, which can carry investigation text, to a third-party search provider (Tavily or Google Custom Search), and the rest read.
 - **Future Remediation**: When write-capable remediation tools are added, the **"Recommend-Verify-Act"** pattern (Section 3.2) becomes the primary safety enforcement mechanism. Prompt engineering must strictly enforce this pattern to prevent autonomous destructive actions.
 
 ### 3.2 The "Recommend-Verify-Act" Workflow

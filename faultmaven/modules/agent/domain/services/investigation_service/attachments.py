@@ -620,17 +620,16 @@ async def _preprocess_attachment(
             preprocessing_result.extraction_metadata.get("suggested_types") or []
         )
 
-    # No commit here (#1878). The row rides the turn's one commit (#1882) —
-    # the same transaction that writes the turn's ``current_turn``, its user
+    # No commit here (#1878). The row rides the turn's one commit (#1882) — the
+    # same transaction that writes the turn's ``current_turn``, its user
     # message and its reply — so it exists only once the turn that carried it
     # exists. The file-reading tools (``search_file``, ``deep_analysis``,
     # ``vectorize_file``) and the file list resolve through
     # ``case.uploaded_files``, so a file is listed, searchable and attributed
     # to a committed turn together, or none of these. A turn that fails at any
-    # point, its commit included (a version conflict there), leaves no row:
-    # the user is told the turn failed and sends the file again, and that
-    # retry is a fresh upload rather than a "duplicate" of its own failed
-    # attempt.
+    # point, its commit included (a version conflict there), leaves no row: the
+    # user is told the turn failed and sends the file again, and that retry is
+    # a fresh upload rather than a "duplicate" of its own failed attempt.
     #
     # A scoped commit used to live here (#1013): ``mark_linked`` ran at intake,
     # BEFORE any row existed, so a failed turn left stored bytes exempt from
