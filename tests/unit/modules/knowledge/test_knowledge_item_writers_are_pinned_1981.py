@@ -311,6 +311,9 @@ class TestOneCreatorOfAKnowledgeItem:
         # The one targeted UPDATE (``update_fields``); WHICH fields it is handed
         # is pinned by ``TestTheOnlyTitleUpdaterIsUpdateDocumentMetadata``.
         (REPOSITORY, "update_fields", "update()"),
+        # The completing flip of an authored ingest (#2394): ``ingest_complete``
+        # only, ``updated_at`` set to itself; no title.
+        (REPOSITORY, "mark_ingest_complete", "update()"),
         # A no-op UPDATE (``is_published`` and ``updated_at`` set to themselves)
         # that takes SQLite's writer lock before a read (#1966); no title.
         (REPOSITORY, "read_is_published", "update()"),

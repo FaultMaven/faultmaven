@@ -2886,6 +2886,12 @@ class KnowledgeItemModel(Base):
     not_helpful_count = Column(Integer, nullable=False, server_default="0")
     last_retrieved_at = Column(DateTime(timezone=True), nullable=True, index=True)
     is_published = Column(Boolean, nullable=False, server_default="1", index=True)
+    # False from an authored ingest's INSERT until its vectors are written
+    # (#2394): such a row is never listed or re-embedded, and the KB bootstrap
+    # sweeps it with its vectors once stale. The default is true, so a pack
+    # INSERT and every row older than the column are complete; an authored
+    # INSERT names false explicitly.
+    ingest_complete = Column(Boolean, nullable=False, server_default="1")
 
     knowledge_metadata = Column(
         "metadata", JsonBlob, nullable=False, server_default="{}"

@@ -35,6 +35,7 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from faultmaven.bootstrap import kb_init, kb_orphan_sweep
+from faultmaven.bootstrap.kb_incomplete_sweep import resolve_incomplete_sweep_mode
 from faultmaven.bootstrap.kb_orphan_sweep import (
     SWEEP_ARMED,
     SWEEP_OFF,
@@ -490,25 +491,35 @@ async def test_the_store_deletes_the_intersection_of_ids_and_stamp(world):
         (False, True, False, SWEEP_OFF),  # --no-dry-run cannot grant deletion
     ],
 )
+@pytest.mark.parametrize(
+    "resolve, setting",
+    [
+        (kb_orphan_sweep.resolve_sweep_mode, "kb_orphan_sweep"),
+        # kb_seed's mode for the incomplete-ingest sweep (#2394): the same gate.
+        (resolve_incomplete_sweep_mode, "kb_incomplete_ingest_sweep"),
+    ],
+    ids=["authored_orphans", "incomplete_ingests"],
+)
 def test_the_sweep_mode_is_the_storage_cleanup_gate(
-    monkeypatch, enabled, configured_dry_run, override, expected
+    monkeypatch, resolve, setting, enabled, configured_dry_run, override, expected
 ):
     database = SimpleNamespace(
-        kb_orphan_sweep_enabled=enabled, kb_orphan_sweep_dry_run=configured_dry_run
+        **{f"{setting}_enabled": enabled, f"{setting}_dry_run": configured_dry_run}
     )
     monkeypatch.setattr(
         "faultmaven.config.settings.get_settings",
         lambda: SimpleNamespace(database=database),
     )
-    assert kb_orphan_sweep.resolve_sweep_mode(override) == expected
+    assert resolve(override) == expected
 
 
-def test_the_shipped_settings_are_report_only():
+@pytest.mark.parametrize("setting", ["kb_orphan_sweep", "kb_incomplete_ingest_sweep"])
+def test_the_shipped_settings_are_report_only(setting):
     from faultmaven.config.settings import DatabaseSettings
 
     fields = DatabaseSettings.model_fields
-    assert fields["kb_orphan_sweep_enabled"].default is False
-    assert fields["kb_orphan_sweep_dry_run"].default is True
+    assert fields[f"{setting}_enabled"].default is False
+    assert fields[f"{setting}_dry_run"].default is True
 
 
 async def test_a_report_only_sweep_deletes_nothing_and_lists_what_it_would(world):

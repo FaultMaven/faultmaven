@@ -464,6 +464,24 @@ packets are lost while it sits idle in the pool is found dead. These are fixed,
 not settings. They do nothing for a frozen server or behind a pooler such as
 PgBouncer; the command timeout covers those.
 
+## KB Incomplete-Ingest Sweep
+
+`DatabaseSettings` fields (`settings.database`), read by the KB bootstrap
+(`faultmaven/bootstrap/kb_incomplete_sweep.py`, #2394). An authored runbook's
+`knowledge_items` row is incomplete from its INSERT until its vectors are
+written; one left incomplete by a failed ingest is never listed or re-embedded,
+and the sweep removes it with its vectors once it is older than the bound. The
+web-startup bootstrap always deletes; `kb_seed` applies the two gate settings,
+like the authored-orphan sweep, and `--dry-run` / `--no-dry-run` override the
+dry run for one run. The counts are on the `BootstrapResult(...)` line
+(`incomplete_ingests_*`) and in the `kb_seed` result's `incomplete_ingests`.
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `KB_INCOMPLETE_INGEST_MAX_AGE_HOURS` | int (>= 1) | 24 | Hours after its `created_at` before an incomplete row is removed. A younger one may be an ingest still running; a slower ingest whose row is removed fails and removes its own vectors |
+| `KB_INCOMPLETE_INGEST_SWEEP_ENABLED` | bool | false | `kb_seed` deletes only when this is true and the run is not a dry run |
+| `KB_INCOMPLETE_INGEST_SWEEP_DRY_RUN` | bool | true | `kb_seed` reports the rows an armed run would delete and deletes nothing |
+
 ## API Server Keep-Alive
 
 `ServerSettings.timeout_keep_alive` (`settings.server`), passed to `uvicorn.run`

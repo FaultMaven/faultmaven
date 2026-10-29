@@ -21,6 +21,13 @@ names the bucket of chunks no listed enterprise's stamp names). The counts are
 the result's ``authored_orphans`` and ride on the ``BootstrapResult(...)`` line.
 See ``faultmaven/bootstrap/kb_orphan_sweep.py``.
 
+It also finds rows whose authored ingest never completed, past
+``KB_INCOMPLETE_INGEST_MAX_AGE_HOURS`` (#2394), and removes them with their
+vectors only once armed the same way (``KB_INCOMPLETE_INGEST_SWEEP_ENABLED``
+and a run that is not a dry run; the same ``--dry-run`` / ``--no-dry-run``
+overrides ``KB_INCOMPLETE_INGEST_SWEEP_DRY_RUN``). The counts are the result's
+``incomplete_ingests``. See ``faultmaven/bootstrap/kb_incomplete_sweep.py``.
+
 Tenant scope: **cross_tenant**. Global-scope pack rows are the org-free
 platform tier (#770): they are readable by EVERY tenant (RLS read exemption +
 org-free vector path), and the RLS write policies bar the tenant-bound app
@@ -53,9 +60,9 @@ async def run(
     Args:
         settings: FaultMaven settings instance
         container: DI container with initialized services
-        dry_run: The authored-orphan sweep's dry-run override for this run
+        dry_run: The dry-run override for this run of both sweeps
             (``--dry-run`` / ``--no-dry-run``); None defers to
-            ``KB_ORPHAN_SWEEP_DRY_RUN``. ``--no-dry-run`` asks for deletion but
+            ``KB_ORPHAN_SWEEP_DRY_RUN`` and ``KB_INCOMPLETE_INGEST_SWEEP_DRY_RUN``. ``--no-dry-run`` asks for deletion but
             cannot grant it: with ``KB_ORPHAN_SWEEP_ENABLED=false`` the sweep
             is off. Seeding is unaffected either way.
         allow_disjoint_enterprises: The buckets (enterprise ids, or
@@ -77,6 +84,8 @@ async def run(
           would_delete / deleted / unproven / disjoint / capped / misstamped /
           unremoved, the documents an armed run deletes, and the count of
           chunks no listed enterprise's stamp attributes
+        - incomplete_ingests: the incomplete-ingest sweep (#2394) — its mode,
+          age bound, and counts would_delete / deleted / unremoved
         - failures: list of (runbook relpath, reason) for failed runbooks
         - error: Error message if the whole pass failed
     """
@@ -103,6 +112,9 @@ async def run(
             result["reason"] = "knowledge_service_unavailable"
             return result
 
+        from faultmaven.bootstrap.kb_incomplete_sweep import (
+            resolve_incomplete_sweep_mode,
+        )
         from faultmaven.bootstrap.kb_init import bootstrap_kb
         from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
         from faultmaven.infrastructure.persistence.database import get_db_session
@@ -116,6 +128,7 @@ async def run(
             enterprise_id=STANDALONE_ENTERPRISE_ID,
             sweep_dry_run=dry_run,
             allow_disjoint_enterprises=tuple(allow_disjoint_enterprises),
+            incomplete_sweep_mode=resolve_incomplete_sweep_mode(dry_run),
         )
 
         result["ingested"] = len(bootstrap_result.ingested)
@@ -128,6 +141,7 @@ async def run(
             bootstrap_result.unpublished_vectors_cleaned
         )
         result["authored_orphans"] = bootstrap_result.authored_orphans.summary()
+        result["incomplete_ingests"] = bootstrap_result.incomplete_ingests.summary()
         result["repaired_rows"] = len(bootstrap_result.repaired_rows)
         result["orphaned_rows"] = len(bootstrap_result.orphaned_rows)
         result["failures"] = list(bootstrap_result.failed)

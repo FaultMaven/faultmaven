@@ -415,6 +415,95 @@ async def test_a_delete_drops_a_deferred_update_to_its_row(deferring_repository)
     assert await repo.get_by_id(item.item_id) is None
 
 
+class TestIncompleteIngest:
+    """A row whose ingest has not completed (#2394), on both implementations:
+    every listing and visibility reader hides it from everyone, its owner
+    included; the trusted reads return it; it completes only through the
+    guarded flip, and the sweep's delete takes it only while incomplete."""
+
+    @staticmethod
+    async def _two(repo):
+        """A complete and an incomplete item, alike in all else: one owner and
+        enterprise (the owner arm is the one both implementations model),
+        tagged, unembedded and with enough feedback for every reader below."""
+        enterprise = generate_org_id()
+        items = []
+        for complete in (True, False):
+            item = create_sample_item(
+                enterprise_id=enterprise, tags=["t"], helpful_count=3
+            )
+            item.owner_id = "owner-2394"
+            item.ingest_complete = complete
+            items.append(await repo.create(item))
+        return items
+
+    @pytest.mark.asyncio
+    async def test_every_listing_hides_it_and_the_trusted_reads_return_it(
+        self, deferring_repository
+    ):
+        repo = deferring_repository
+        done, pending = await self._two(repo)
+        enterprise = done.enterprise_id
+        who = dict(enterprise_id=enterprise, user_id="owner-2394")
+
+        listed = await repo.list_for_inventory(**who)
+        assert [i.item_id for i in listed] == [done.item_id]
+        assert await repo.get_visible_by_id(pending.item_id, **who) is None
+        assert await repo.get_visible_by_id(done.item_id, **who) is not None
+        assert await repo.visible_item_ids([done.item_id, pending.item_id], **who) == {
+            done.item_id
+        }
+        for found in (
+            await repo.search_by_tags(enterprise, ["t"]),
+            await repo.get_items_without_embeddings(enterprise),
+            await repo.get_most_helpful(enterprise),
+        ):
+            assert [i.item_id for i in found] == [done.item_id]
+
+        assert (await repo.get_by_id(pending.item_id)).ingest_complete is False
+        assert await repo.read_is_published(pending.item_id, lock=False) is True
+
+    @pytest.mark.asyncio
+    async def test_the_flip_is_guarded_by_the_stamp_and_lands_on_commit(
+        self, deferring_repository
+    ):
+        repo = deferring_repository
+        item = create_sample_item()
+        item.ingest_complete = False
+        await repo.create(item)
+        other = item.created_at - timedelta(microseconds=1)
+
+        assert await repo.mark_ingest_complete(item.item_id, created_at=other) is False
+        assert await repo.mark_ingest_complete(item.item_id, created_at=item.created_at)
+        await repo.rollback()
+        assert (await repo.get_by_id(item.item_id)).ingest_complete is False
+
+        assert await repo.mark_ingest_complete(item.item_id, created_at=item.created_at)
+        await repo.commit()
+        assert (await repo.get_by_id(item.item_id)).ingest_complete is True
+        assert (
+            await repo.mark_ingest_complete(item.item_id, created_at=item.created_at)
+            is False
+        )
+        assert (
+            await repo.mark_ingest_complete("ki_absent", created_at=item.created_at)
+            is False
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_sweeps_delete_spares_a_complete_row(self, deferring_repository):
+        repo = deferring_repository
+        done, pending = await self._two(repo)
+
+        for item in (done, pending):
+            assert await repo.delete(
+                item.item_id, created_at=item.created_at, only_incomplete=True
+            ) is (item is pending)
+
+        assert await repo.get_by_id(done.item_id) is not None
+        assert await repo.get_by_id(pending.item_id) is None
+
+
 class TestTargetedWrite:
     """``update_fields`` writes only the fields it names (#1966): it cannot
     revert another writer's change to a column it does not name."""

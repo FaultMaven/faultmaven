@@ -147,8 +147,16 @@ def resolve_sweep_mode(dry_run: Optional[bool] = None) -> str:
     except Exception as exc:  # settings unavailable in some test contexts
         logger.debug(f"KB authored-orphan sweep: settings unreadable ({exc})")
         return SWEEP_REPORT_ONLY
-    effective_dry_run = configured_dry_run if dry_run is None else dry_run
-    if effective_dry_run:
+    return gate_sweep_mode(enabled, configured_dry_run, dry_run)
+
+
+def gate_sweep_mode(
+    enabled: bool, configured_dry_run: bool, dry_run: Optional[bool]
+) -> str:
+    """The gate itself: a run's ``dry_run`` override, else
+    ``configured_dry_run``, makes it report-only; otherwise it deletes when
+    ``enabled`` and is off when not."""
+    if configured_dry_run if dry_run is None else dry_run:
         return SWEEP_REPORT_ONLY
     return SWEEP_ARMED if enabled else SWEEP_OFF
 

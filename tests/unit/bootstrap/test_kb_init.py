@@ -123,6 +123,37 @@ def _make_session_factory(existing_row=None):
 
 
 @pytest.mark.asyncio
+async def test_the_bootstrap_runs_the_incomplete_ingest_sweep_armed_by_default(
+    tmp_path: Path,
+):
+    """#2394: every bootstrap pass runs the incomplete-ingest sweep, deleting
+    unless told otherwise (the web startup tells it nothing; ``kb_seed`` passes
+    its gate), and reports it on the result and the line CD keeps."""
+    from faultmaven.bootstrap.kb_incomplete_sweep import IncompleteSweepResult
+    from faultmaven.bootstrap.kb_orphan_sweep import SWEEP_ARMED
+
+    knowledge_service = MagicMock()
+    knowledge_service.ingest_runbook = AsyncMock(return_value=2)
+    swept = IncompleteSweepResult(
+        mode=SWEEP_ARMED, would_delete=["kb_x"], deleted=["kb_x"]
+    )
+    with patch.object(
+        kb_init, "sweep_incomplete_ingests", AsyncMock(return_value=swept)
+    ) as sweep:
+        result = await kb_init.bootstrap_kb(
+            knowledge_service=knowledge_service,
+            db_session_factory=_make_session_factory(existing_row=None),
+            enterprise_id="ent-test",
+            project_root=tmp_path,
+            pack_dir=_write_pack(tmp_path),
+        )
+
+    assert sweep.await_args.kwargs["mode"] == SWEEP_ARMED
+    assert result.incomplete_ingests is swept
+    assert "incomplete_ingests_deleted=1, " in repr(result)
+
+
+@pytest.mark.asyncio
 async def test_bootstrap_ingests_new_runbook(tmp_path: Path):
     """A fresh pack runbook (no DB row) is ingested, with the pack's pre-chunked
     text + vectors passed straight through to ingest_runbook."""
@@ -800,8 +831,9 @@ class TestReconcileVectors:
         return svc
 
     @staticmethod
-    def _factory(db_ids, unpublished=()):
-        """Rows as the reconcile query reads them: ``(item_id, is_published)``."""
+    def _factory(db_ids, unpublished=(), incomplete=()):
+        """Rows as the reconcile query reads them:
+        ``(item_id, is_published, ingest_complete)``."""
 
         class _Session:
             async def __aenter__(self):
@@ -812,7 +844,9 @@ class TestReconcileVectors:
 
             async def execute(self, _stmt):
                 return MagicMock(
-                    all=lambda: [(i, i not in unpublished) for i in db_ids]
+                    all=lambda: [
+                        (i, i not in unpublished, i not in incomplete) for i in db_ids
+                    ]
                 )
 
         return lambda: _Session()
@@ -933,6 +967,27 @@ class TestReconcileVectors:
         assert result.unpublished_vectors_cleaned == [unpublished_builtin]
         assert result.orphaned_rows == []
         assert delete_batches == [[ghost_builtin, unpublished_builtin]]  # ONE call
+
+    @pytest.mark.asyncio
+    async def test_an_incomplete_row_is_neither_repaired_nor_stripped(self):
+        """#2394: a row whose ingest has not completed has a row, so its
+        vectors are no orphans; it is no unpublished built-in, so they are not
+        deleted (an ingest may still be writing them, and the built-in-shaped
+        id is what would let them be); and with no vectors it is no orphaned
+        row, so the repair never re-embeds it."""
+        delete_batches: list[list[str]] = []
+        with_vectors, without = "kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb"
+        svc = self._service(
+            chroma_parents={with_vectors}, delete_batches=delete_batches
+        )
+
+        result = await kb_init._reconcile_vectors(
+            svc,
+            self._factory({with_vectors, without}, incomplete={with_vectors, without}),
+        )
+
+        assert tuple(result) == ([], [], [])
+        assert delete_batches == []
 
     @pytest.mark.asyncio
     async def test_consistent_index_is_noop(self):

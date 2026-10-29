@@ -391,8 +391,12 @@ class TestKbSeedJob:
         kwargs = bootstrap.await_args.kwargs
         assert kwargs["sweep_dry_run"] is False
         assert kwargs["allow_disjoint_enterprises"] == ("ent-a", "unattributed")
+        # --no-dry-run asks the incomplete-ingest sweep (#2394) too, and with
+        # KB_INCOMPLETE_INGEST_SWEEP_ENABLED at its default it is off.
+        assert kwargs["incomplete_sweep_mode"] == "off"
         assert result["authored_orphans"]["proven"] is True
         assert result["authored_orphans"]["deleted"] == 0
+        assert result["incomplete_ingests"]["deleted"] == 0
         assert result["status"] == "completed"
 
     @pytest.mark.asyncio
@@ -411,6 +415,8 @@ class TestKbSeedJob:
         kwargs = bootstrap.await_args.kwargs
         assert kwargs["sweep_dry_run"] is None  # defer to KB_ORPHAN_SWEEP_DRY_RUN
         assert kwargs["allow_disjoint_enterprises"] == ()
+        # The incomplete-ingest sweep is report-only under kb_seed until armed.
+        assert kwargs["incomplete_sweep_mode"] == "report_only"
 
     def test_kb_seed_is_cross_tenant(self):
         """kb_seed writes the org-free global platform tier served to ALL

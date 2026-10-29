@@ -1,0 +1,592 @@
+"""An authored runbook row is incomplete until its vectors exist (#2394).
+
+``ingest_runbook`` used to insert a published row before writing its vectors,
+and the startup repair re-embeds every published row with no vectors, so a row
+any failed ingest left behind went live at the next boot. One such row is
+beyond every cleanup: the INSERT's COMMIT completing on the server after the
+caller gave up on it. An authored row now carries ``ingest_complete`` false from
+its INSERT until one guarded UPDATE, with its team share, after its vectors are
+written: until then it is listed to no one and never re-embedded, and the KB
+bootstrap sweeps it with its vectors once stale. A pack row is complete from its
+INSERT. Driven through the real service on SQLite with foreign keys enforced,
+reusing the #2365 / #2378 helpers.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock
+from uuid import uuid4
+
+import pytest
+from sqlalchemy import delete, event, func, select, text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+from faultmaven.bootstrap import kb_init
+from faultmaven.bootstrap.kb_incomplete_sweep import sweep_incomplete_ingests
+from faultmaven.bootstrap.kb_orphan_sweep import (
+    SWEEP_ARMED,
+    SWEEP_OFF,
+    SWEEP_REPORT_ONLY,
+)
+from faultmaven.bootstrap.kb_pack import PackChunk, PackRunbook
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
+from faultmaven.infrastructure.persistence.models import (
+    EnterpriseModel,
+    KnowledgeItemModel,
+    UserModel,
+)
+from faultmaven.modules.knowledge.domain.models.knowledge_item import (
+    KnowledgeItem,
+    KnowledgeItemType,
+)
+from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
+    DatabaseKnowledgeItemRepository,
+    KnowledgeItemRepositoryException,
+)
+from faultmaven.modules.knowledge.taxonomy import KnowledgeScope
+from tests.integration.modules.knowledge.test_ingest_cleans_up_its_own_row_2378 import (
+    DOC_ID,
+    ONE_TEAM_ITEM,
+    PEER_CREATED_AT,
+    _Chunks,
+    _created_at,
+    _delete_the_row,
+    _ingest,
+)
+from tests.integration.modules.knowledge.test_upload_writes_rows_after_ingest_2365 import (  # noqa: F401
+    NOTHING,
+    OWNER,
+    TEAM_ID,
+    _knowledge,
+    _rows,
+    session_factory,
+)
+from tests.runbook_samples import valid_runbook
+from tests.utils import seed_enterprises, seed_users
+
+pytestmark = [pytest.mark.integration, pytest.mark.knowledge_base]
+
+THIS_CHUNKS = ["this-0", "this-1", "this-2"]
+
+
+class _Index(_Chunks):
+    """``_Chunks`` with the listing and observed-id delete the reconcile uses."""
+
+    async def list_all_chunk_ids_by_parent(self):
+        by_parent: dict[str, list[str]] = {}
+        for chunk_id, parent in self.chunks.items():
+            by_parent.setdefault(parent, []).append(chunk_id)
+        return by_parent
+
+    async def delete_observed_chunk_ids(self, chunk_ids):
+        return [c for c in chunk_ids if self.chunks.pop(c, None) is not None]
+
+
+def _service(factory, store, *, before=None, then=None):
+    """The service indexing into ``store``. Its first indexing is this call's:
+    ``before`` runs while it embeds, then it writes ``this`` chunks, then
+    ``then`` runs, before the ingest completes. Every later one (a repair's)
+    writes ``repair`` chunks."""
+    service = _knowledge(factory)
+    service._vector_store = store
+    calls: list[str] = []
+
+    async def index(document, prechunked=None, enterprise_id=None):
+        writer = "repair" if calls else "this"
+        calls.append(writer)
+        if writer == "this" and before:
+            await before()
+        store.index(document.document_id, writer)
+        if writer == "this" and then:
+            await then()
+        return 3
+
+    service._index_document_in_vector_store = index
+    return service
+
+
+async def _complete(factory, item_id=DOC_ID):
+    async with factory() as session:
+        return await session.scalar(
+            select(KnowledgeItemModel.ingest_complete).where(
+                KnowledgeItemModel.item_id == item_id
+            )
+        )
+
+
+async def _visible(factory) -> dict[str, bool]:
+    """Whether each listing and visibility read shows the row to its owner, a
+    member of its team."""
+    who = dict(enterprise_id=STANDALONE_ENTERPRISE_ID, user_id=OWNER)
+    who["team_ids"] = [TEAM_ID]
+    async with factory() as session:
+        repo = DatabaseKnowledgeItemRepository(session)
+        listed = await repo.list_for_inventory(**who)
+        return {
+            "listed": DOC_ID in [i.item_id for i in listed],
+            "by_id": await repo.get_visible_by_id(DOC_ID, **who) is not None,
+            "ids": DOC_ID in await repo.visible_item_ids([DOC_ID], **who),
+        }
+
+
+SHOWN = dict.fromkeys(("listed", "by_id", "ids"), True)
+HIDDEN = dict.fromkeys(SHOWN, False)
+
+
+async def _repair(service, factory):
+    """The startup reconcile and repair, in ``bootstrap_kb``'s order."""
+    _, _, orphaned = await kb_init._reconcile_vectors(service, factory)
+    repaired, _ = await kb_init._repair_orphaned_rows(
+        orphaned, service, role_may_update=True
+    )
+    return orphaned, repaired
+
+
+def _incomplete_row(item_id=DOC_ID, *, created_at=None) -> KnowledgeItem:
+    stamp = created_at or datetime.now(timezone.utc)
+    return KnowledgeItem(
+        item_id=item_id,
+        enterprise_id=STANDALONE_ENTERPRISE_ID,
+        title="Stray",
+        content=valid_runbook("Stray Runbook Left By A Failed Ingest"),
+        item_type=KnowledgeItemType.RUNBOOK,
+        scope=KnowledgeScope.PERSONAL,
+        owner_id=OWNER,
+        created_at=stamp,
+        updated_at=stamp,
+        ingest_complete=False,
+    )
+
+
+async def _insert(factory, item: KnowledgeItem) -> None:
+    async with factory() as session:
+        await DatabaseKnowledgeItemRepository(session).create(item)
+
+
+async def test_an_authored_row_is_incomplete_unlisted_and_unrepaired_until_its_vectors_exist(
+    session_factory,
+):
+    """Mid-ingest, before and after its chunks are written, a concurrent
+    listing does not show the row, and a concurrent reconcile neither repairs
+    it nor deletes its chunks; it has no share. Then it completes, with its
+    share, and is listed. On ``main`` the row is published from its INSERT:
+    listed, and re-embedded by the repair while the embed runs."""
+    store = _Index()
+    seen: dict = {}
+
+    async def while_it_embeds():
+        seen["visible"] = await _visible(session_factory)
+        seen["before_vectors"] = await _repair(service, session_factory)
+        seen["rows"] = await _rows(session_factory)
+        seen["complete"] = await _complete(session_factory)
+
+    async def once_its_vectors_exist():
+        seen["after_vectors"] = await _repair(service, session_factory)
+
+    service = _service(
+        session_factory, store, before=while_it_embeds, then=once_its_vectors_exist
+    )
+
+    assert await _ingest(service) == 3
+
+    assert seen["visible"] == HIDDEN
+    assert seen["before_vectors"] == ([], [])
+    assert seen["after_vectors"] == ([], [])
+    assert seen["rows"] == {**NOTHING, "knowledge_items": 1}
+    assert seen["complete"] is False
+    assert sorted(store.chunks) == THIS_CHUNKS
+    assert await _complete(session_factory) is True
+    assert await _rows(session_factory) == ONE_TEAM_ITEM
+    assert await _visible(session_factory) == SHOWN
+
+
+async def test_a_pack_row_is_complete_from_its_insert_and_issues_no_update(
+    session_factory,
+):
+    """Under ``kb_seed`` the maintenance role may not UPDATE ``knowledge_items``
+    (``role_may_update=False``): a pack ingest inserts its row complete, with
+    its share, and issues no UPDATE. A pin: ``main`` issues none either."""
+    statements: list[str] = []
+    engine = session_factory.kw["bind"].sync_engine
+
+    def record(_conn, _cursor, statement, *_args):
+        statements.append(statement.lstrip().upper())
+
+    event.listen(engine, "before_cursor_execute", record)
+    store = _Index()
+    seen = {}
+
+    async def mid_ingest():
+        seen["complete"] = await _complete(session_factory, "kb_aaaaaaaaaaaa")
+
+    service = _knowledge(session_factory)
+    service._vector_store = store
+
+    async def index(document, prechunked=None, enterprise_id=None):
+        store.index(document.document_id, "pack")
+        await mid_ingest()
+        return len(prechunked)
+
+    service._index_document_in_vector_store = index
+    runbook = PackRunbook(
+        item_id="kb_aaaaaaaaaaaa",
+        content_hash="h1",
+        title="Shipped Runbook",
+        scope="team",
+        relpath="team/shipped.md",
+        content=valid_runbook("Shipped Runbook For The Pack"),
+        tags=[],
+        source_url=None,
+        owner_id=OWNER,
+        team_id=TEAM_ID,
+        chunks=[PackChunk(chunk_index=0, text="t", embedding=[0.0] * 4)],
+    )
+    try:
+        outcome = await kb_init._ingest_pack_runbook(
+            runbook=runbook,
+            knowledge_service=service,
+            db_session_factory=session_factory,
+            enterprise_id=STANDALONE_ENTERPRISE_ID,
+            role_may_update=False,
+        )
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
+
+    assert outcome == "ingested"
+    assert seen["complete"] is True
+    assert await _complete(session_factory, "kb_aaaaaaaaaaaa") is True
+    assert await _rows(session_factory) == ONE_TEAM_ITEM
+    assert [s for s in statements if s.startswith("UPDATE")] == []
+    assert any(s.startswith("INSERT INTO KNOWLEDGE_ITEMS") for s in statements)
+
+
+REAL_CREATE = DatabaseKnowledgeItemRepository.create
+REAL_DELETE = DatabaseKnowledgeItemRepository.delete
+REAL_GET = DatabaseKnowledgeItemRepository.get_by_id
+
+
+@pytest.mark.parametrize("lands", ["between_delete_and_check", "after_check"])
+@pytest.mark.parametrize("failure", ["cancel", "command_timeout"])
+async def test_an_insert_that_commits_after_its_cleanup_is_never_listed_or_repaired(
+    session_factory, monkeypatch, lands, failure
+):
+    """#2381's probe P7. Under ``AbortOnCancelConnection`` (#2280) a cancelled
+    or timed-out command aborts the transport and sends no CancelRequest, so a
+    COMMIT the server already received completes after the caller's cleanup
+    ran on another connection: modelled by withholding the row and writing it,
+    with this call's stamp, at a chosen point of the cleanup. The row stands
+    with no vectors and no share. It is listed to no one, the startup repair
+    does not re-embed it, and the sweep removes it once stale. On ``main`` it
+    stood published, and the repair re-embedded it."""
+    store = _Index()
+    service = _service(session_factory, store)
+    held = {}
+
+    async def land():
+        item = held.pop("item", None)
+        if item is not None:
+            async with session_factory() as s:
+                await REAL_CREATE(DatabaseKnowledgeItemRepository(s), item)
+
+    async def create(self, item):
+        held["item"] = item
+        if failure == "cancel":
+            raise asyncio.CancelledError()
+        raise KnowledgeItemRepositoryException("Failed to create: aborted")
+
+    async def cleanup_delete(self, item_id, **kwargs):
+        matched = await REAL_DELETE(self, item_id, **kwargs)
+        if lands == "between_delete_and_check":
+            await land()
+        return matched
+
+    async def cleanup_check(self, item_id):
+        row = await REAL_GET(self, item_id)
+        if lands == "after_check":
+            await land()
+        return row
+
+    monkeypatch.setattr(DatabaseKnowledgeItemRepository, "create", create)
+    monkeypatch.setattr(DatabaseKnowledgeItemRepository, "delete", cleanup_delete)
+    monkeypatch.setattr(DatabaseKnowledgeItemRepository, "get_by_id", cleanup_check)
+    expected = (
+        asyncio.CancelledError
+        if failure == "cancel"
+        else KnowledgeItemRepositoryException
+    )
+    with pytest.raises(expected):
+        await _ingest(service)
+    monkeypatch.undo()
+
+    assert await _rows(session_factory) == {**NOTHING, "knowledge_items": 1}
+    assert await _visible(session_factory) == HIDDEN
+    assert await _repair(service, session_factory) == ([], [])
+    assert await service.reindex_missing_vectors(DOC_ID, role_may_update=True) == 0
+    assert store.chunks == {}
+    assert await _complete(session_factory) is False
+
+    (stamp,) = await _created_at(session_factory)
+    stale = stamp.replace(tzinfo=timezone.utc) + timedelta(hours=25)
+    swept = await sweep_incomplete_ingests(
+        service,
+        session_factory,
+        mode=SWEEP_ARMED,
+        max_age=timedelta(hours=24),
+        now=stale,
+    )
+    assert swept.deleted == [DOC_ID]
+    assert await _rows(session_factory) == NOTHING
+
+
+async def test_a_completed_row_that_loses_its_vectors_is_still_repaired(
+    session_factory,
+):
+    """What the repair exists for: crash recovery, a wiped collection. A pin:
+    ``main`` repairs it too."""
+    store = _Index()
+    service = _service(session_factory, store)
+    await _ingest(service)
+    store.chunks.clear()
+
+    assert await _repair(service, session_factory) == ([DOC_ID], [DOC_ID])
+    assert sorted(store.chunks) == ["repair-0", "repair-1", "repair-2"]
+
+
+async def test_the_flip_leaves_a_peer_row_alone(session_factory):
+    """Another call re-created the id, incomplete, with its own stamp, while
+    this call embedded: this call's flip matches no row, so it raises, and the
+    peer's row stays incomplete and standing, with the chunks under its id. On
+    ``main`` this call returns success over the peer's row."""
+    store = _Index()
+
+    async def a_peer_starts_its_ingest():
+        await _delete_the_row(session_factory)
+        await _insert(session_factory, _incomplete_row(created_at=PEER_CREATED_AT))
+
+    service = _service(session_factory, store, then=a_peer_starts_its_ingest)
+
+    with pytest.raises(RuntimeError, match="not marked complete"):
+        await _ingest(service)
+
+    (created_at,) = await _created_at(session_factory)
+    assert created_at.replace(tzinfo=None) == PEER_CREATED_AT.replace(tzinfo=None)
+    assert await _complete(session_factory) is False
+    assert sorted(store.chunks) == THIS_CHUNKS
+
+
+async def test_a_flip_that_matches_no_row_raises_into_the_cleanup(session_factory):
+    """This call's row was removed while it embedded (a delete, or the sweep of
+    a slow ingest): the flip matches no row and raises, and the cleanup
+    removes this call's chunks. On ``main`` the call reported success with no
+    row and its chunks stayed."""
+    store = _Index()
+    service = _service(
+        session_factory, store, then=lambda: _delete_the_row(session_factory)
+    )
+
+    with pytest.raises(RuntimeError, match="not marked complete"):
+        await _ingest(service)
+
+    assert await _rows(session_factory) == NOTHING
+    assert store.chunks == {}
+
+
+async def test_an_incomplete_row_is_read_and_deleted_but_never_edited_or_reindexed(
+    session_factory,
+):
+    """The trusted read still returns the row, and ``delete_document`` removes
+    it; ``update_document_metadata`` and ``reindex_missing_vectors`` refuse it
+    before embedding anything."""
+    await _insert(session_factory, _incomplete_row())
+    store = _Index()
+    service = _service(session_factory, store)
+    service._index_document_in_vector_store = AsyncMock(return_value=3)
+
+    assert (
+        await service.update_document_metadata(
+            DOC_ID, content=valid_runbook("An Edit Of The Stray Runbook")
+        )
+        is None
+    )
+    assert await service.reindex_missing_vectors(DOC_ID, role_may_update=True) == 0
+    service._index_document_in_vector_store.assert_not_awaited()
+    assert (await service.get_document(DOC_ID))["title"] == "Stray"
+
+    outcome = await service.delete_document(DOC_ID)
+
+    assert outcome["success"] is True
+    assert await _rows(session_factory) == NOTHING
+
+
+# ---------------------------------------------------------------------------
+# The stray sweep
+# ---------------------------------------------------------------------------
+
+NOW = datetime(2026, 10, 29, 12, 0, tzinfo=timezone.utc)
+STALE, YOUNG, DONE = (f"kb_{c * 16}" for c in "abc")
+
+
+async def _sweep_fixture(factory) -> _Index:
+    """A stale and a young incomplete row and an old complete one, each with
+    chunks."""
+    store = _Index()
+    for item_id, age, complete in (
+        (STALE, 25, False),
+        (YOUNG, 23, False),
+        (DONE, 48, True),
+    ):
+        row = _incomplete_row(item_id, created_at=NOW - timedelta(hours=age))
+        row.ingest_complete = complete
+        await _insert(factory, row)
+        store.index(item_id, item_id)
+    return store
+
+
+async def _ids(factory) -> set[str]:
+    async with factory() as session:
+        return set(await session.scalars(select(KnowledgeItemModel.item_id)))
+
+
+@pytest.mark.parametrize("mode", [SWEEP_ARMED, SWEEP_REPORT_ONLY, SWEEP_OFF])
+async def test_the_sweep_removes_only_stale_incomplete_rows(session_factory, mode):
+    store = await _sweep_fixture(session_factory)
+    service = _knowledge(session_factory)
+    service._vector_store = store
+
+    result = await sweep_incomplete_ingests(
+        service, session_factory, mode=mode, max_age=timedelta(hours=24), now=NOW
+    )
+
+    if mode == SWEEP_OFF:
+        assert (result.skipped, result.would_delete) == ("disabled", [])
+    else:
+        assert result.would_delete == [STALE]
+    if mode == SWEEP_ARMED:
+        assert result.deleted == [STALE]
+        assert await _ids(session_factory) == {YOUNG, DONE}
+        assert set(store.chunks.values()) == {YOUNG, DONE}
+    else:
+        assert result.deleted == []
+        assert await _ids(session_factory) == {STALE, YOUNG, DONE}
+        assert set(store.chunks.values()) == {STALE, YOUNG, DONE}
+
+
+async def test_a_failed_vector_delete_keeps_the_row_for_the_next_run(
+    session_factory,
+):
+    store = await _sweep_fixture(session_factory)
+    store.delete_documents_by_parent_id = AsyncMock(side_effect=OSError("down"))
+    service = _knowledge(session_factory)
+    service._vector_store = store
+
+    result = await sweep_incomplete_ingests(
+        service, session_factory, mode=SWEEP_ARMED, max_age=timedelta(hours=24), now=NOW
+    )
+
+    assert (result.deleted, result.unremoved) == ([], 1)
+    assert STALE in await _ids(session_factory)
+
+
+async def test_a_row_that_completed_since_the_read_is_not_swept(
+    session_factory, monkeypatch
+):
+    """The delete is guarded on the row still being incomplete."""
+    from faultmaven.bootstrap import kb_incomplete_sweep
+
+    store = await _sweep_fixture(session_factory)
+    service = _knowledge(session_factory)
+    service._vector_store = store
+    done_at = NOW - timedelta(hours=48)
+    monkeypatch.setattr(
+        kb_incomplete_sweep, "_read_stale", AsyncMock(return_value=[(DONE, done_at)])
+    )
+
+    result = await sweep_incomplete_ingests(
+        service, session_factory, mode=SWEEP_ARMED, max_age=timedelta(hours=24), now=NOW
+    )
+
+    assert (result.would_delete, result.deleted) == ([DONE], [])
+    assert DONE in await _ids(session_factory)
+    assert DONE in store.chunks.values()
+
+
+# ---------------------------------------------------------------------------
+# PostgreSQL: the cleanup's DELETE waits for the flip
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.postgres
+@pytest.mark.skipif(
+    not os.environ.get("DATABASE_URL", "").startswith("postgresql"),
+    reason="PostgreSQL-only; set DATABASE_URL to a PG instance to run.",
+)
+@pytest.mark.parametrize("flip", ["commits", "rolls_back"])
+async def test_a_cleanup_waits_for_the_flip_and_removes_the_row_either_way(flip):
+    """The flip holds the row's lock while its transaction is open; the
+    cleanup's guarded DELETE, started then, waits on it, and once the flip
+    commits (or rolls back) removes the row all the same. This is why the
+    flip's own commit cannot leave a row in doubt as the INSERT's can."""
+    enterprise, owner = f"ent_2394_{uuid4().hex[:8]}", f"user-2394-{uuid4().hex[:8]}"
+    engine = create_async_engine(os.environ["DATABASE_URL"])
+    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    stamp = datetime.now(timezone.utc)
+    item = _incomplete_row(f"kb_{uuid4().hex[:16]}", created_at=stamp)
+    item.enterprise_id, item.owner_id = enterprise, owner
+    service = _knowledge(factory)
+    try:
+        async with factory() as session:
+            await seed_enterprises(session, [enterprise])
+            await seed_users(session, [owner], enterprise_id=enterprise)
+        await _insert(factory, item)
+
+        async with factory() as flipping:
+            repo = DatabaseKnowledgeItemRepository(flipping)
+            assert await repo.mark_ingest_complete(item.item_id, created_at=stamp)
+            backend = await flipping.scalar(select(func.pg_backend_pid()))
+            cleanup = asyncio.create_task(
+                service._delete_knowledge_item_row(
+                    item.item_id, created_at=stamp, indexed=True
+                )
+            )
+            await _until_blocked_by(factory, backend)
+            assert not cleanup.done()
+            if flip == "commits":
+                await repo.commit()
+            else:
+                await repo.rollback()
+        await cleanup
+
+        async with factory() as session:
+            assert await session.get(KnowledgeItemModel, item.item_id) is None
+        service._vector_store.delete_documents_by_parent_id.assert_awaited_once_with(
+            item.item_id
+        )
+    finally:
+        async with factory() as session:
+            for model in (KnowledgeItemModel, UserModel, EnterpriseModel):
+                await session.execute(
+                    delete(model).where(model.enterprise_id == enterprise)
+                )
+            await session.commit()
+        await engine.dispose()
+
+
+async def _until_blocked_by(factory, backend: int) -> None:
+    """Poll ``pg_blocking_pids`` until a session waits on ``backend``'s lock
+    (a condition, not a timing: bounded only so a defect fails, not hangs)."""
+    for _ in range(500):
+        async with factory() as session:
+            waiting = await session.scalar(
+                text(
+                    "SELECT count(*) FROM pg_stat_activity "
+                    "WHERE :pid = ANY(pg_blocking_pids(pid))"
+                ),
+                {"pid": backend},
+            )
+        if waiting:
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("the cleanup's DELETE never waited on the flip's lock")
