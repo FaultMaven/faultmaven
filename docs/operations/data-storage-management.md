@@ -142,9 +142,12 @@ existing `knowledge_items.content` row and skips unchanged runbooks. Changed
 runbooks trigger an atomic delete-then-reingest; new runbooks are added; runbooks
 removed from the pack are pruned.
 
-The bootstrap is **atomic per runbook**: a failure (ChromaDB unreachable, 0 chunks
-in the pack) cleans up any partial SQL row before raising — no half-state remains
-in either store. Per-runbook failures don't abort the rest of the bootstrap; check
+The bootstrap ingests **each runbook separately**. `_ingest_pack_runbook` refuses
+a runbook with no chunks in the pack before any lookup or delete. A failure in
+`ingest_runbook` from its row's INSERT on (ChromaDB unreachable, for example)
+runs its cleanup, `_delete_knowledge_item_row`, before it raises, and what that
+cleanup can leave is the residual list in `ingest_runbook`'s docstring.
+Per-runbook failures don't abort the rest of the bootstrap; check
 the API logs for `KB bootstrap failed for ...` warnings after restart. Full
 build + delivery detail: [`kb-pack-architecture.md`](../architecture/knowledge-and-ai/kb-pack-architecture.md).
 
