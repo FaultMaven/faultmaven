@@ -418,7 +418,7 @@ Global-tier ingestion runs automatically at API startup via the **KB bootstrap**
 
 Tier-1-specific notes: Global runbooks are written by the platform admin and apply across all organizations. The 91 built-in runbooks ship pre-chunked and pre-embedded in the **KB pack** (`resources/knowledge/pack`, or `KB_PACK_DIR`); on startup the bootstrap ingests them directly — no separate "verify" step is needed because the platform vendor / admin is the verifier for pre-deployed content. The verify-via-Dashboard flow is reserved for case-generated and document-converted drafts that need a human gate.
 
-The **conversion-drafts path** (case-generated / document-converted content, not the pack) is the one that triggers YAML frontmatter parsing, structural validation (per [runbook-content-architecture.md §4 Quality Gates](./runbook-content-architecture.md#4-quality-gates)), chunking, and embedding on ingest; both paths finish in `KnowledgeService.ingest_runbook()` — see [`kb-ingestion-architecture.md`](./kb-ingestion-architecture.md) for its write order and failure handling.
+The **conversion-drafts path** (case-generated / document-converted content, not the pack) is the one that triggers YAML frontmatter parsing, structural validation (per [runbook-content-architecture.md §4 Quality Gates](./runbook-content-architecture.md#4-quality-gates)), chunking, and embedding on ingest; both paths publish through `KnowledgeService.ingest_runbook()` — see [`kb-ingestion-architecture.md`](./kb-ingestion-architecture.md) for its write order and failure handling.
 
 ### Files
 

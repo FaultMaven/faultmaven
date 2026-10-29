@@ -2186,9 +2186,9 @@ class KnowledgeService:
 
             # Publish first, as ``verify_draft`` does (#2365): the draft row below
             # names the item, through a foreign key enforced on every
-            # deployment, so it can only be written once the item exists. A
-            # failed ingestion has run its own cleanup (see ``ingest_runbook``'s
-            # docstring).
+            # deployment, so it can only be written once the item exists. What
+            # a failed ingestion can leave is listed in ``ingest_runbook``'s
+            # docstring.
             #
             # upload_document is called by anonymous / non-verified upload
             # paths, so verified_by is None (verification_level defaults to
