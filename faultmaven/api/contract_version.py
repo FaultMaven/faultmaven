@@ -1494,7 +1494,7 @@ asked to accept, and it belongs to a person.
 # says about a response that never varied. Found by the advisory
 # breaking-change report on its first real run, and by nothing else.
 #
-# 2.0.0 — MAJOR, and it publishes a change that already shipped. #1152 moved
+# 2.0.0 — MAJOR. It publishes a change that already shipped. #1152 moved
 # `invalid_grant` from 401 to 400, replaced `{"detail": ...}` with the RFC 6749
 # §5.2 error object, and dropped `TokenRequest`/`RevokeRequest` from
 # `components` on POST /auth/oauth/token and /auth/oauth/revoke. It merged
