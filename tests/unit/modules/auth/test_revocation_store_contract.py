@@ -236,13 +236,6 @@ class TestEntriesStopRevokingAtTheirDeadline:
     async def test_both_arms_expire(self, store):
         import asyncio
 
-        # fakeredis's ``SETEX`` truncates ``now + ttl`` to a whole second, so a
-        # ``ttl=1`` entry expires at the next second boundary, and a read after
-        # that boundary missed an entry written late in the second before it
-        # (#2400). The writes start 50 ms after a boundary, which leaves each
-        # entry about a second on fakeredis, a real Redis and the SQL store's
-        # ``expires_at``.
-        await asyncio.sleep(1 - time.time() % 1 + 0.05)
         now = time.time()
         await store.add_revoked_token(JTI, ttl=1)
         await store.revoke_user_tokens_before(USER_ID, now, ttl=1)
