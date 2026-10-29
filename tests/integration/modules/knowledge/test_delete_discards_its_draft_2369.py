@@ -9,16 +9,21 @@ item rows locked: the text is kept, the draft leaves the list, and a case job's
 live key is released once its last live draft goes. A delete that does not
 complete leaves the draft as it was.
 
+``fm-reset-kb --all-drafts`` deletes the drafts instead, and releases the
+live key of each case job left with none, so a case whose pending draft it
+deleted can be converted again (#2387).
+
 The SQLite tests run on the #2365 tests' database, which enforces foreign keys
 as the app's engine does, so a discard issued after the ``DELETE`` would match
-nothing. Three run on PostgreSQL: one races a link against the delete, and one
-lands an upload inside a reset, in a database of its own.
+nothing. Four run on PostgreSQL: one races a link against the delete, and two
+run a reset, in a database of their own.
 """
 
 from __future__ import annotations
 
 import asyncio
 import os
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -33,6 +38,7 @@ from faultmaven.config.tenant_context import _current_enterprise_id
 from faultmaven.infrastructure.persistence import database
 from faultmaven.infrastructure.persistence.models import (
     Base,
+    CaseModel,
     ConversionDraftModel,
     ConversionJobModel,
     EnterpriseModel,
@@ -42,8 +48,15 @@ from faultmaven.infrastructure.persistence.models import (
     UserModel,
 )
 from faultmaven.models.exceptions import KnowledgeBaseError
+from faultmaven.modules.knowledge.domain.models.conversion import (
+    ConversionStatus,
+    SourceFileInfo,
+)
 from faultmaven.modules.knowledge.domain.services.conversion_service import (
     draft_retirement,
+)
+from faultmaven.modules.knowledge.domain.services.conversion_service.job_persistence import (
+    _persist_job,
 )
 from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
     ConversionService,
@@ -60,6 +73,10 @@ from tests.integration.modules.knowledge.test_upload_writes_rows_after_ingest_23
     session_factory,
 )
 from tests.runbook_samples import valid_runbook
+from tests.unit.modules.knowledge.test_conversion_service import (
+    _case_analysis,
+    _make_case_draft,
+)
 from tests.utils import regex_only_sanitizer, seed_enterprises, seed_users
 
 pytestmark = [pytest.mark.integration, pytest.mark.knowledge_base]
@@ -144,6 +161,36 @@ async def _draft_and_key(factory, draft_id: str):
         draft = await session.get(ConversionDraftModel, draft_id)
         job = await session.get(ConversionJobModel, draft.conversion_id)
     return draft, job.live_case_id
+
+
+async def _open_case(factory) -> None:
+    """The case ``CASE_KEY`` names: ``conversion_jobs.case_id`` is its key."""
+    enterprise = _current_enterprise_id.get()
+    await _add(
+        factory, CaseModel(case_id=CASE_KEY, enterprise_id=enterprise, title="t")
+    )
+
+
+async def _convert_case(factory, job_id: str, *draft_ids: str) -> None:
+    """Write a case conversion's job and pending drafts through
+    ``_persist_job``, as ``convert_from_case`` does."""
+    await _persist_job(
+        factory,
+        None,
+        conversion_id=job_id,
+        user_id=OWNER,
+        enterprise_id=_current_enterprise_id.get(),
+        scope="personal",
+        team_id=None,
+        status=ConversionStatus.COMPLETED,
+        source_file=SourceFileInfo(filename="case", size_bytes=1, content_type="x"),
+        analysis=_case_analysis(),
+        drafts=[_make_case_draft(draft_id=draft_id) for draft_id in draft_ids],
+        created_at=datetime.now(timezone.utc),
+        source_type="case",
+        case_id=CASE_KEY,
+        sanitizer=regex_only_sanitizer(),
+    )
 
 
 @pytest.mark.parametrize("kind", ["document", "case", "upload"])
@@ -283,6 +330,58 @@ async def test_a_kb_reset_discards_the_drafts_of_what_it_deletes(
         draft, key = await _draft_and_key(session_factory, draft_id)
         assert (draft.status, draft.knowledge_item_id, key) == ("discarded", None, None)
     assert "discarding the 2 that published" in capsys.readouterr().out
+
+
+async def _reset_every_draft_then_convert_again(factory, monkeypatch) -> None:
+    """A case's conversion is pending. ``fm-reset-kb --all-drafts`` deletes its
+    draft and releases its job's key, so converting the case again commits:
+    with the key held, ``uq_conversion_jobs_live_case_id`` refused it."""
+    await _open_case(factory)
+    await _convert_case(factory, "conv_before", "pending")
+    assert (await _draft_and_key(factory, "pending"))[1] == CASE_KEY
+    monkeypatch.setattr(database, "get_db_session", factory)
+
+    code = await reset_kb.reset_kb(
+        dry_run=False, all_drafts=True, rebuild=False, keep_chroma=True
+    )
+
+    assert code == 0
+    async with factory() as session:
+        assert await session.get(ConversionDraftModel, "pending") is None
+    await _convert_case(factory, "conv_after", "regenerated")
+    assert (await _draft_and_key(factory, "regenerated"))[1] == CASE_KEY
+
+
+async def test_a_reset_of_every_draft_frees_their_cases(session_factory, monkeypatch):
+    await _reset_every_draft_then_convert_again(session_factory, monkeypatch)
+
+
+async def test_a_job_losing_two_drafts_to_a_reset_is_released_once(
+    session_factory, monkeypatch, capsys
+):
+    await _open_case(session_factory)
+    await _convert_case(session_factory, "conv_two", "first", "second")
+    release = draft_retirement.release_live_case_key_if_drained
+    released: list[str] = []
+
+    async def count_then_release(session, job, draft_id):
+        released.append(job.id)
+        await release(session, job, draft_id)
+
+    monkeypatch.setattr(
+        draft_retirement, "release_live_case_key_if_drained", count_then_release
+    )
+    monkeypatch.setattr(database, "get_db_session", session_factory)
+
+    await reset_kb.reset_kb(
+        dry_run=False, all_drafts=True, rebuild=False, keep_chroma=True
+    )
+
+    assert released == ["conv_two"]
+    async with session_factory() as session:
+        job = await session.get(ConversionJobModel, "conv_two")
+    assert job.live_case_id is None
+    assert "Deleted 2 conversion_drafts rows (--all-drafts)." in capsys.readouterr().out
 
 
 _needs_postgres = pytest.mark.skipif(
@@ -447,3 +546,11 @@ async def test_a_runbook_published_during_a_kb_reset_is_kept_whole(
     draft, _ = await _draft_and_key(own_pg, landed["draft"])
     assert (draft.status, draft.knowledge_item_id) == ("verified", landed["item"])
     assert "Kept 1 knowledge_items rows written while" in capsys.readouterr().out
+
+
+@pytest.mark.postgres
+@_needs_postgres
+async def test_a_reset_of_every_draft_frees_their_cases_on_postgresql(
+    own_pg, monkeypatch
+):
+    await _reset_every_draft_then_convert_again(own_pg, monkeypatch)

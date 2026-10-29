@@ -13,7 +13,8 @@ What it does
    while it runs (only a running API writes one) is kept and reported.
 2. Keeps ``conversion_drafts`` rows, discarding first the ones that
    published a runbook it deletes (their text kept, #2369), so none stays
-   listed as verified naming nothing. Use ``--all-drafts`` to delete them all.
+   listed as verified naming nothing. ``--all-drafts`` deletes every draft
+   instead, and releases the case keys those drafts held (#2387).
 3. Removes ChromaDB collections backing global/team/personal KB so
    they're recreated empty on next API start.
 4. Optionally invokes the bootstrap directly (``--rebuild``) for
@@ -304,6 +305,7 @@ async def reset_kb(
     )
     from faultmaven.modules.knowledge.domain.services.conversion_service.draft_retirement import (  # noqa: E501
         discard_drafts_naming_any_item,
+        release_drained_case_keys,
     )
     from faultmaven.providers.tenancy.factory import (
         BUILTIN_MULTI,
@@ -416,10 +418,20 @@ async def reset_kb(
         ).rowcount
         kept_items = await _count_rows(session, KnowledgeItemModel)
         if all_drafts:
+            # ``release_drained_case_keys`` clears the ``live_case_id`` of each
+            # job these drafts belonged to that has no live draft left, in this
+            # transaction, so its case can be converted again (#2387).
             deleted_drafts = (
-                await session.execute(delete(ConversionDraftModel))
-            ).rowcount
-            print(f"Deleted {deleted_drafts} conversion_drafts rows (--all-drafts).")
+                await session.execute(
+                    delete(ConversionDraftModel).returning(
+                        ConversionDraftModel.id, ConversionDraftModel.conversion_id
+                    )
+                )
+            ).all()
+            await release_drained_case_keys(session, deleted_drafts)
+            print(
+                f"Deleted {len(deleted_drafts)} conversion_drafts rows (--all-drafts)."
+            )
         else:
             # Drafts carry no mark of being bootstrap-generated, so by default
             # every row is KEPT. Operators with a known-clean drafts table can

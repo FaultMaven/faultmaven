@@ -40,10 +40,14 @@ pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("shipped_data_defaults")
 
 
 class _FakeResult:
-    """Stands in for a DELETE result: the CLI reads ``.rowcount``."""
+    """Stands in for a DELETE result: the CLI reads ``.rowcount``, or the
+    ``(id, conversion_id)`` rows of the drafts' ``RETURNING`` through ``.all()``."""
 
     def __init__(self, rowcount):
         self.rowcount = rowcount
+
+    def all(self):
+        return [("draft", "job")] * self.rowcount
 
 
 class _FakeSession:
@@ -77,12 +81,14 @@ def stub_db(monkeypatch):
         from faultmaven.infrastructure.persistence import database
 
         monkeypatch.setattr(database, "get_db_session", lambda: session)
-        # The draft discard ahead of the DELETE (#2369) is not a DELETE.
+        # The draft discard ahead of the DELETE (#2369) is not a DELETE, and
+        # neither is the key release after the drafts' DELETE (#2387).
         monkeypatch.setattr(
             draft_retirement,
             "discard_drafts_naming_any_item",
             AsyncMock(return_value=([], [])),
         )
+        monkeypatch.setattr(draft_retirement, "release_drained_case_keys", AsyncMock())
         return session
 
     return _stub
@@ -166,9 +172,10 @@ async def test_keep_chroma_names_the_store_it_kept(
 async def test_the_deleted_count_is_the_databases_rowcount(
     tmp_path, monkeypatch, capsys, stub_db
 ):
-    """Reported counts come from the DELETE's own rowcount, so the number an
-    operator reads is what the database did — not a pre-count that a concurrent
-    writer could have made stale."""
+    """Reported counts come from the DELETEs themselves (the items' rowcount,
+    the drafts' returned rows), so the number an operator reads is what the
+    database did — not a pre-count that a concurrent writer could have made
+    stale."""
     monkeypatch.chdir(tmp_path)
     (tmp_path / "data" / "chroma-kb").mkdir(parents=True)
     stub_db(rows=42)
