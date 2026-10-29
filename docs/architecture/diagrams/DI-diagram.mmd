@@ -43,7 +43,7 @@ flowchart TB
     subgraph TOOLS["🧰 Tools Provider &middot; providers/tools.py"]
         direction TB
         Tools_QA["<b>Agent QA tools</b><br/>create_document_qa_tools()<br/>→ answer_from_kb (unified)<br/>→ answer_from_case_evidence (via adapter)"]
-        Tools_Registry["<b>Tool registry</b><br/>create_registry_tools()<br/>→ search_file · deep_analysis<br/>→ web_search (Tavily) · list_evidence · read_file"]
+        Tools_Registry["<b>Tool registry</b><br/>create_registry_tools()<br/>→ search_file · deep_analysis<br/>→ web_search (Tavily) · vectorize_file"]
     end
 
     %% ============================================================

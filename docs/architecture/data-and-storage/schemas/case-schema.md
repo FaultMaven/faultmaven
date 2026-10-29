@@ -670,7 +670,7 @@ class EvidenceMetadata(BaseModel):
 | `classification` | `PreprocessingService` | `context_builder` (low-confidence marker) | Phase 1 |
 | `extractor` | `PreprocessingService` | observability only (no agent-visible effect) | Phase 1 (minimal) / Phase 2 (full `attempts`) |
 | `entities` | `PreprocessingService` (on cap overflow) | agent tool `find_entity` reads the row-level table; overflow marker tells the agent "not all entities are indexed" | Phase 4 |
-| `coverage` | `PreprocessingService` | context builder (rerank); `list_evidence_by_time` tool | Phase 3 |
+| `coverage` | `PreprocessingService` | context builder (rerank) | Phase 3 |
 
 **Backward compatibility.** Every key is optional; every existing row has `metadata = NULL` or a shape without these keys. Readers must tolerate missing keys and missing fields within each key without raising.
 

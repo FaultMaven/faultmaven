@@ -35,7 +35,6 @@ from faultmaven.modules.case.domain.models.driver import (
 from faultmaven.modules.case.domain.models.evidence import (
     CaseEntity,
     EntityType,
-    Evidence,
     UploadedFile,
 )
 from faultmaven.modules.case.domain.models.lifecycle import (
@@ -63,7 +62,6 @@ from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.lo
 from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.rows import (
     _as_datetime,
     _cast,
-    _row_to_evidence,
     _row_to_report,
 )
 from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.saving import (
@@ -885,65 +883,6 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         except Exception as e:
             await self.db.rollback()
             raise RepositoryException(f"Failed to delete case {case_id}: {e}") from e
-
-    async def list_evidence_by_time_window(
-        self,
-        case_id: str,
-        start: Optional[datetime] = None,
-        end: Optional[datetime] = None,
-    ) -> List[Evidence]:
-        """Return evidence whose coverage overlaps ``[start, end]``.
-
-        Overlap: ``coverage_start_ts <= end AND coverage_end_ts >= start``.
-        NULL coverage timestamps exclude the row from results —
-        timeless evidence isn't time-windowable. Uses the
-        ``idx_evidence_coverage`` index for the case_id + range filter.
-        """
-        try:
-            where_clauses = [
-                "case_id = :case_id",
-                "coverage_start_ts IS NOT NULL",
-                "coverage_end_ts IS NOT NULL",
-            ]
-            params: Dict[str, Any] = {"case_id": case_id}
-
-            if end is not None:
-                where_clauses.append("coverage_start_ts <= :end_ts")
-                params["end_ts"] = end
-            if start is not None:
-                where_clauses.append("coverage_end_ts >= :start_ts")
-                params["start_ts"] = start
-
-            query = text(f"""
-                SELECT
-                    evidence_id, category, source_type,
-                    summary, extract,
-                    is_primary, reliability_score, tags,
-                    collected_at_turn, source_file_id, vectorized,
-                    coverage_start_ts, coverage_end_ts,
-                    metadata, created_at,
-                    primary_purpose, analysis, processing_mode,
-                    advances_milestones, collected_by,
-                    coverage_source
-                FROM evidence
-                WHERE {' AND '.join(where_clauses)}
-                ORDER BY coverage_start_ts ASC
-                LIMIT 1000
-                """)
-            result = await self.db.execute(query, params)
-            rows = result.fetchall()
-
-            evidence_list: List[Evidence] = []
-            for row in rows:
-                ev = _row_to_evidence(row)
-                if ev is not None:
-                    evidence_list.append(ev)
-
-            return evidence_list
-        except Exception as e:
-            raise RepositoryException(
-                f"Failed to list evidence by time window for case {case_id}: {e}"
-            ) from e
 
     async def upsert_case_entities(
         self,

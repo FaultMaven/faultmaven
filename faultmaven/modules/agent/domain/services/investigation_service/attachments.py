@@ -623,8 +623,8 @@ async def _preprocess_attachment(
     # No commit here (#1878). The row rides the turn's one commit (#1882) —
     # the same transaction that writes the turn's ``current_turn``, its user
     # message and its reply — so it exists only once the turn that carried it
-    # exists. Every file-reading tool (``search_file``, ``read_file``,
-    # ``deep_analysis``, ``vectorize_file``) and the file list resolve through
+    # exists. The file-reading tools (``search_file``, ``deep_analysis``,
+    # ``vectorize_file``) and the file list resolve through
     # ``case.uploaded_files``, so a file is listed, searchable and attributed
     # to a committed turn together, or none of these. A turn that fails at any
     # point, its commit included (a version conflict there), leaves no row:

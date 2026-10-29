@@ -42,7 +42,7 @@
 > | `agent_tool_calls` v1 ORM model (`AgentToolCallModel`) and `CaseModel.tool_calls` relationship | **DELETED** | Zero functional usage. v2 (`agent_tool_calls_v2`) is renamed to canonical `agent_tool_calls`. |
 > | `EvidenceStorageAdapter.store_file()` fake-`standalone-{uuid}` case_id path | **DELETED** | Was scaffolding for the deleted standalone API. |
 >
-> **What stays**: the case-tied data submission path (`POST /api/v1/cases/{case_id}/turns`) is unaffected. It writes through the milestone engine to the `evidence` table directly via `case.evidence` (no `EvidenceService` involvement). Agent tools (`search_file`, `read_file`, `list_evidence`, `vectorize_file`) keep their **Path 2** code (case-embedded evidence lookup); the **Path 1** standalone fallback is removed.
+> **What stays**: the case-tied data submission path (`POST /api/v1/cases/{case_id}/turns`) is unaffected. It writes through the milestone engine to the `evidence` table directly via `case.evidence` (no `EvidenceService` involvement). Agent tools (`search_file`, `vectorize_file`) keep their **Path 2** code (case-embedded evidence lookup); the **Path 1** standalone fallback is removed.
 
 ---
 

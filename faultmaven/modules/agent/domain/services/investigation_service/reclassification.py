@@ -284,9 +284,8 @@ def _reclassified_collections(
         # when the file span is a single instant, so a row born that way
         # asserts an instant the reclassified file no longer supports —
         # ``symptom_currency`` reads ``ev.coverage_end_ts`` with
-        # ``is_vouched(ev.coverage_source)`` for staleness, and
-        # ``list_evidence_by_time_tool`` publishes it beside the now-empty
-        # file span. The same argument that clears the file window applies
+        # ``is_vouched(ev.coverage_source)`` for staleness. The same argument
+        # that clears the file window applies
         # verbatim: a window nothing supports any more is worse than none.
         #
         # ONLY a row that INHERITED its span from the file follows the file.

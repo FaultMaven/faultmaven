@@ -162,7 +162,18 @@ _RECLASSIFY_TOOLS = dict(reclassify_evidence_tool=ReclassifyEvidenceTool)
 # only when it is given, and blocks.py names it only when it is given (#1939).
 RECLASSIFY_FLAG_NAMES = {"reclassify_evidence"}
 _RECLASSIFY_HOMES = {"blocks.py", "reclassify_evidence_tool.py"}
-_RETIRED = {"case_evidence_qa", "global_kb_qa", "user_kb_qa"}
+# Spellings of tools that no longer exist: a prompt naming one is ``not_given``.
+_RETIRED = {
+    "case_evidence_qa",
+    "global_kb_qa",
+    "user_kb_qa",
+    # Deleted by #2376: built, or only registered into a registry nothing read,
+    # and never given to the model.
+    "list_evidence",
+    "list_evidence_by_time",
+    "read_file",
+    "search_knowledge",
+}
 _NOT_TOOLS = {"directed_analysis"}
 _TOKEN = re.compile(r"(?<![\w.])[a-z]+(?:_[a-z]+)+(?![\w(]*\.)")
 

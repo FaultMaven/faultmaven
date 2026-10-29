@@ -41,12 +41,9 @@ faultmaven/modules/agent/
 ├── jobs/
 │   └── storage_cleanup.py      # TTL-based orphan-file sweep
 ├── tools/
-│   ├── base.py                 # AgentTool base class, ToolContext, Tool
-│   ├── list_evidence_tool.py
-│   ├── list_evidence_by_time_tool.py
+│   ├── base.py                 # AgentTool base class, ToolContext, Tool, AgentToolRegistry
 │   ├── list_top_entities_tool.py
 │   ├── find_entity_tool.py
-│   ├── read_file_tool.py
 │   ├── reclassify_evidence_tool.py
 │   ├── vectorize_file_tool.py
 │   ├── case_evidence_qa.py     # Case-scoped evidence Q&A
@@ -90,18 +87,19 @@ Deterministic and LLM-free, so it is cheap enough to run on every turn.
 ## Tools
 
 Tools are constructed explicitly via DI during container initialization; there
-is no self-registering tool registry.
+is no self-registering tool registry. The model is given the tools that
+`_create_investigation_tools` (`container/providers/services.py`) registers;
+`FindEntityTool`, `ListTopEntitiesTool` and `ReclassifyEvidenceTool` are built,
+and so given, only under their feature flags.
 
 **Evidence tools** (read through the Evidence module):
 
-- `ListEvidenceTool` — list available evidence artifacts
-- `ListEvidenceByTimeTool` — evidence within a time window
 - `ListTopEntitiesTool` — most-referenced entities across the case
 - `FindEntityTool` — locate a named entity in case evidence
-- `ReadFileTool` — read evidence file contents
 - `ReclassifyEvidenceTool` — correct an evidence classification
 - `VectorizeFileTool` — vectorize a file into the case vector store
-- `CaseEvidenceQATool` — Q&A over case evidence
+- `AnswerFromCaseEvidence` (via `CaseEvidenceQAAdapter`, tool name
+  `case_evidence_search`) — Q&A over case evidence
 - `SearchFileTool` — Tier 2 mechanical search (keyword/regex/extractor), with
   two-pass keyword matching and zero-result vocabulary recovery
 - `DeepAnalysisTool` — Tier 3 deep LLM analysis with pluggable backends

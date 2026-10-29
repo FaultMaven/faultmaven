@@ -821,7 +821,6 @@ The `search_file` agent tool is a standalone implementation that coexists with o
 
 | Existing Component | Role | Relationship to `search_file` |
 | --- | --- | --- |
-| `ReadFileTool` (`read_file`) | Read file content by evidence ID | Remains for reading; `search_file` adds search |
 | Domain extractors (Tier 1) | Single-use at upload | Made re-runnable via `search_file` extractor mode |
 | `DeepAnalysisTool` (`deep_analysis`) | LLM-powered analysis (backed by `LocalTier2Service` through the LLM router; absent when `DEEP_ANALYSIS_BACKEND=disabled`) | Tier 3 interpreted search; orthogonal to `search_file` |
 

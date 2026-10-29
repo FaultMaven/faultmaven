@@ -91,10 +91,9 @@ class FilesystemStorageBackend(IFileStorageBackend):
 
         **The raised message is REDACTED, deliberately.** ``PathEscape``'s
         message carries resolved absolute paths and its docstring says that must
-        never reach a client — but this backend's exceptions do:
+        never reach a client — and this backend's exceptions travel:
         ``FileStorageService.retrieve_file`` re-wraps them into a ``ServiceError``
-        and ``read_file_tool`` puts that string in a ``ToolResult``, which enters
-        the LLM context and the case transcript. So the detail is logged
+        whose message carries theirs. So the detail is logged
         server-side and the exception names only the key, which the caller
         supplied and already has. The runbook tree keeps its detailed message
         because it translates at its service seams instead.

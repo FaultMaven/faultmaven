@@ -824,9 +824,8 @@ class Evidence(BaseModel):
     is_primary: bool = Field(
         default=False,
         description=(
-            "True for the principal evidence row in this case (the one "
-            "that anchors the investigation summary). list_evidence_tool "
-            "uses this for surface-level dashboards."
+            "Stored and loaded with the row by the case repositories, which "
+            "are its only readers; no code sets it to True."
         ),
     )
 

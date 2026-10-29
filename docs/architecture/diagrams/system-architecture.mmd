@@ -76,7 +76,7 @@ flowchart TB
         KbQa["answer_from_kb<br/><i>(unified · all scopes)</i>"]
         CaseEvQa["answer_from_case_evidence<br/><i>(case_evidence_search)</i>"]
         SearchFile["search_file<br/>deep_analysis"]
-        ReadFile["read_file · list_evidence<br/>vectorize_file"]
+        VectorizeFile["vectorize_file"]
         WebSearchT["web_search"]
     end
 
@@ -224,7 +224,7 @@ flowchart TB
     class AuthMod,CaseMod,KnowledgeMod vertical
     class AgentMod,EvidenceMod,PreprocessMod,ReportMod domain
     class Milestone,HypMgr,ProgMon,IntentRes,Prompts engine
-    class KbQa,CaseEvQa,SearchFile,ReadFile,WebSearchT tools
+    class KbQa,CaseEvQa,SearchFile,VectorizeFile,WebSearchT tools
     class LLMRouter,LLMCache,Sanitizer,TokenRevocation,Observability infra
     class SQLite,Postgres,CaseRepo,KBClient,EvClient,KBStore,RunbookKB,EvStore,Redis,FakeRedis,SessionStore,LocalFS,S3Back storage
     class Root root
