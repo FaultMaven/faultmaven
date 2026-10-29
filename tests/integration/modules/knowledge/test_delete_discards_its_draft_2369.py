@@ -392,7 +392,10 @@ async def test_a_kb_reset_discards_the_drafts_of_what_it_deletes(
     for draft_id in (case_draft, upload_draft):
         draft, key = await _draft_and_key(session_factory, draft_id)
         assert (draft.status, draft.knowledge_item_id, key) == ("discarded", None, None)
-    assert "discarding the 2 that published" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "discarding the 2 that published" in out
+    # The case job's key, released by the discard ahead of the DELETE.
+    assert "Released 1 case conversion keys held with no live draft." in out
 
 
 async def _reset_every_draft_then_convert_again(factory, monkeypatch) -> None:
@@ -463,6 +466,66 @@ async def test_a_dry_run_with_all_drafts_changes_nothing(
     assert (draft.status, key) == ("draft", CASE_KEY)
     assert await _key_of(session_factory, orphan_job) == "case-2387-orphan"
     assert "(dry-run) No changes made." in capsys.readouterr().out
+
+
+async def test_a_default_reset_releases_the_dead_keys_and_keeps_the_live_one(
+    session_factory, monkeypatch, capsys
+):
+    """A pending case conversion, a key with no draft left, a key whose drafts
+    are all discarded, and a document job with no key: the reset releases the
+    two dead keys, keeps the live one, and the helper's ``UPDATE`` matches those
+    two jobs."""
+    for case_id in (CASE_KEY, "case-2387-orphan"):
+        await _open_case(session_factory, case_id)
+    live = (await _convert(session_factory)).conversion_id
+    orphaned = await _orphan_a_key(session_factory, "case-2387-orphan")
+    await _add(
+        session_factory,
+        *_job("conv_discarded", kind="case", key="case-2387-discarded"),
+        _draft("gone", "conv_discarded", status="discarded"),
+        *_job("conv_document", kind="document"),
+    )
+    release = draft_retirement.release_case_keys_without_a_live_draft
+    matched: list[int] = []
+
+    async def record(session):
+        matched.append(await release(session))
+        return matched[-1]
+
+    monkeypatch.setattr(
+        draft_retirement, "release_case_keys_without_a_live_draft", record
+    )
+
+    assert await _reset(session_factory, monkeypatch, all_drafts=False) == 0
+
+    jobs = (live, orphaned, "conv_discarded", "conv_document")
+    assert [await _key_of(session_factory, job) for job in jobs] == [
+        CASE_KEY,
+        None,
+        None,
+        None,
+    ]
+    assert matched == [2]
+    out = capsys.readouterr().out
+    assert "Released 2 case conversion keys held with no live draft." in out
+
+
+async def test_a_reset_whose_commit_fails_prints_no_count_and_keeps_the_key(
+    session_factory, monkeypatch, capsys
+):
+    await _open_case(session_factory)
+    job_id = await _orphan_a_key(session_factory)
+    failing = _FailingCommit(session_factory, (RuntimeError("commit failed"), False))
+    failing.armed = True
+    capsys.readouterr()
+
+    with pytest.raises(RuntimeError):
+        await _reset(failing, monkeypatch, all_drafts=True)
+
+    assert await _key_of(session_factory, job_id) == CASE_KEY
+    out = capsys.readouterr().out
+    assert "Released" not in out
+    assert "Deleted" not in out
 
 
 _needs_postgres = pytest.mark.skipif(

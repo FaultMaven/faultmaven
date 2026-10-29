@@ -58,7 +58,9 @@ class _FakeSession:
         return False
 
     async def scalar(self, _stmt):
-        return self._rows
+        # A count unlike the DELETEs' rowcount, so a printed count equal to
+        # the rowcount did not come from here.
+        return self._rows + 1
 
     async def execute(self, _stmt):
         self.deletes += 1
@@ -84,9 +86,7 @@ def stub_db(monkeypatch):
             "discard_drafts_naming_any_item",
             AsyncMock(return_value=([], [])),
         )
-        # A count unlike the DELETEs' rowcount, so a printed release count
-        # equal to it came from this return.
-        session.release = AsyncMock(return_value=rows // 2)
+        session.release = AsyncMock(return_value=0)
         monkeypatch.setattr(
             draft_retirement, "release_case_keys_without_a_live_draft", session.release
         )
@@ -173,10 +173,9 @@ async def test_keep_chroma_names_the_store_it_kept(
 async def test_the_deleted_count_is_the_databases_rowcount(
     tmp_path, monkeypatch, capsys, stub_db
 ):
-    """Reported counts come from the statements themselves (the DELETEs'
-    rowcounts, the key release's return), so the number an operator reads is
-    what the database did — not a pre-count that a concurrent writer could have
-    made stale."""
+    """The deleted counts come from the DELETEs' own rowcounts, so the number
+    an operator reads is what the database did — not a pre-count that a
+    concurrent writer could have made stale."""
     monkeypatch.chdir(tmp_path)
     (tmp_path / "data" / "chroma-kb").mkdir(parents=True)
     session = stub_db(rows=42)
@@ -189,4 +188,3 @@ async def test_the_deleted_count_is_the_databases_rowcount(
     out = capsys.readouterr().out
     assert "Deleted 42 knowledge_items rows." in out
     assert "Deleted 42 conversion_drafts rows (--all-drafts)." in out
-    assert "Released 21 case conversion keys held with no live draft." in out

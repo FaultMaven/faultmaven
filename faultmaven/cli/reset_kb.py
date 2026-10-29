@@ -145,6 +145,12 @@ async def _count_rows(session, model) -> int:
     return await session.scalar(select(func.count()).select_from(model)) or 0
 
 
+async def _count_held_case_keys(session, job_model) -> int:
+    """How many conversion jobs hold a ``live_case_id``."""
+    held = select(func.count()).select_from(job_model)
+    return await session.scalar(held.where(job_model.live_case_id.is_not(None))) or 0
+
+
 def _remote_chroma_refusal(knob: str) -> str:
     """Why a remotely-backed KB cannot be reset by this command.
 
@@ -303,6 +309,7 @@ async def reset_kb(
     from faultmaven.infrastructure.persistence.database import get_db_session
     from faultmaven.infrastructure.persistence.models import (
         ConversionDraftModel,
+        ConversionJobModel,
         KnowledgeItemModel,
     )
     from faultmaven.modules.knowledge.domain.services.conversion_service.draft_retirement import (  # noqa: E501
@@ -412,6 +419,11 @@ async def reset_kb(
         # stay listed as verified, naming nothing (#2369). Only the items the
         # discard locked are deleted: the drafts of one written since were not
         # discarded.
+        #
+        # The released-key count is the jobs holding a ``live_case_id`` here
+        # less those holding one before the commit, so the keys the discard
+        # releases are counted with the ones released after the draft step.
+        held_keys = await _count_held_case_keys(session, ConversionJobModel)
         locked, discarded = await discard_drafts_naming_any_item(session)
         deleted_items = (
             await session.execute(
@@ -428,7 +440,10 @@ async def reset_kb(
         )
         # After the draft step on either path, so a key whose drafts this run
         # or an earlier one deleted is released (#2387).
-        released_keys = await release_case_keys_without_a_live_draft(session)
+        await release_case_keys_without_a_live_draft(session)
+        released_keys = held_keys - await _count_held_case_keys(
+            session, ConversionJobModel
+        )
         await session.commit()
     # Printed after the commit, so a reset that rolled back reports no deletion
     # and no release.
