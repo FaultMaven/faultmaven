@@ -2083,9 +2083,9 @@ class ConversionService:
             # (422), so not logged as an ingestion failure.
             raise
         except Exception as e:
-            # `ingest_runbook` cleaned up its own SQL row before raising. The
-            # draft stays in DRAFT state; the caller gets a 500 and can retry.
-            # No half-state in either store.
+            # `ingest_runbook` ran its cleanup before raising, and what that
+            # cleanup keeps is the residual list in its docstring. The draft
+            # stays in DRAFT state; the caller gets a 500 and can retry.
             logger.error(f"Ingestion failed for draft {draft_id}: {e}")
             raise
 

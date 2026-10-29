@@ -246,10 +246,14 @@ async def test_an_already_exists_refusal_leaves_the_row_whole(session_factory):
     assert sorted(store.chunks) == ["this-0", "this-1", "this-2"]
 
 
-@pytest.mark.parametrize("fails_in", ["refresh", "share", "indexing"])
-async def test_the_cleanup_leaves_what_a_peer_created(session_factory, fails_in):
+@pytest.mark.parametrize("fails_in", ["refresh", "completion", "indexing"])
+async def test_the_cleanup_leaves_what_a_peer_created(
+    session_factory, monkeypatch, fails_in
+):
     """A peer re-ingested the id, and then this call failed: before its own
-    indexing (in the item's refresh or its share write) or after it."""
+    indexing (in the item's refresh), in it, or at its completion, whose
+    guarded flip matches no row of this call's (#2394; the share is written
+    there, so this is where #2378's share-write failure now lands)."""
     store = _Chunks()
     peer = partial(_a_peer_reingests, session_factory, store)
     factory = session_factory
@@ -258,13 +262,16 @@ async def test_the_cleanup_leaves_what_a_peer_created(session_factory, fails_in)
     service = _indexing_into(
         _knowledge(factory), store, then=peer if fails_in == "indexing" else None
     )
-    if fails_in == "share":
+    if fails_in == "completion":
+        flip = DatabaseKnowledgeItemRepository.mark_ingest_complete
 
-        async def share(**_kwargs):
+        async def peer_then_flip(self, item_id, **kwargs):
             await peer()
-            raise RuntimeError("share failed")
+            return await flip(self, item_id, **kwargs)
 
-        service._share_repo.share = share
+        monkeypatch.setattr(
+            DatabaseKnowledgeItemRepository, "mark_ingest_complete", peer_then_flip
+        )
 
     with pytest.raises((KnowledgeItemRepositoryException, RuntimeError)):
         await _ingest(service)

@@ -1276,6 +1276,37 @@ class DatabaseSettings(BaseSettings):
         ),
     )
 
+    # Incomplete-ingest sweep (#2394): rows an authored ingest left incomplete.
+    # The web startup always deletes; kb_seed applies the gate below, the
+    # authored-orphan sweep's (kb_seed --dry-run/--no-dry-run overrides DRY_RUN).
+    kb_incomplete_ingest_max_age_hours: int = Field(
+        default=24,
+        ge=1,
+        validation_alias="KB_INCOMPLETE_INGEST_MAX_AGE_HOURS",
+        description=(
+            "Hours after its created_at before the KB bootstrap removes a "
+            "knowledge_items row whose authored ingest never completed, with "
+            "its vectors. A younger row may be an ingest still running."
+        ),
+    )
+    kb_incomplete_ingest_sweep_enabled: bool = Field(
+        default=False,
+        validation_alias="KB_INCOMPLETE_INGEST_SWEEP_ENABLED",
+        description=(
+            "When True, kb_seed may DELETE those rows and their vectors, if "
+            "KB_INCOMPLETE_INGEST_SWEEP_DRY_RUN is also off. The web startup "
+            "deletes them regardless."
+        ),
+    )
+    kb_incomplete_ingest_sweep_dry_run: bool = Field(
+        default=True,
+        validation_alias="KB_INCOMPLETE_INGEST_SWEEP_DRY_RUN",
+        description=(
+            "When True (default), kb_seed reports the rows an armed run would "
+            "delete and deletes nothing."
+        ),
+    )
+
     # Vector Database Settings
     embedding_model: str = Field(default="BAAI/bge-m3")
     similarity_threshold: float = Field(default=0.7)

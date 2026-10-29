@@ -641,10 +641,11 @@ Examples:
             "--dry-run logs 'would delete' without "
             "deleting; --no-dry-run asks for real deletion. Omit to defer to "
             "ORPHAN_CLEANUP_DRY_RUN (storage_cleanup) or KB_ORPHAN_SWEEP_DRY_RUN "
-            "(kb_seed, where it governs only the authored-orphan sweep: "
-            "seeding always runs). --no-dry-run is not an enabler: with "
-            "ORPHAN_CLEANUP_ENABLED / KB_ORPHAN_SWEEP_ENABLED false nothing is "
-            "deleted. kb_vector_enterprise_backfill writes its stamps only "
+            "and KB_INCOMPLETE_INGEST_SWEEP_DRY_RUN (kb_seed, where it governs "
+            "only its two sweeps: seeding always runs). --no-dry-run is not an "
+            "enabler: with ORPHAN_CLEANUP_ENABLED / KB_ORPHAN_SWEEP_ENABLED / "
+            "KB_INCOMPLETE_INGEST_SWEEP_ENABLED false nothing is deleted. "
+            "kb_vector_enterprise_backfill writes its stamps only "
             "with --no-dry-run; omitted is a dry run."
         ),
     )

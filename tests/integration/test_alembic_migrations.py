@@ -43,8 +43,8 @@ TEST_DB = os.path.join(os.environ[TEST_DATA_ROOT_ENV], "test_migration.db")
 # the 001-053 chain) plus additive revisions on top of it, so the seed
 # assertions below reverse the whole schema with "downgrade base" and each
 # additive revision is stepped over on its own.
-#: 020_org_permissions_are_management_only
-HEAD_REVISION = "596f06c52909"  # pragma: allowlist secret
+#: 021_knowledge_item_ingest_complete
+HEAD_REVISION = "d0eb318ce3e0"  # pragma: allowlist secret
 #: The baseline, which every additive revision parents onto.
 BASELINE_REVISION = "a1e0c17bd001"  # 001_enterprise_baseline
 #: The first additive revision.
@@ -100,6 +100,9 @@ VERIFIED_BY_DISPLAY_NAME_REVISION = "82bc95a1c02f"  # pragma: allowlist secret
 #: ``evidence:*`` permissions and their grants are deleted; organization roles
 #: carry only ``org:manage_users`` / ``org:manage_settings`` (#1040).
 ORG_PERMISSIONS_MANAGEMENT_ONLY_REVISION = "596f06c52909"  # pragma: allowlist secret
+#: ``021_knowledge_item_ingest_complete``: ``knowledge_items.ingest_complete``,
+#: false while an authored ingest has not written its vectors (#2394).
+INGEST_COMPLETE_REVISION = "d0eb318ce3e0"  # pragma: allowlist secret
 #: The tables 002_llm_usage_ledger adds (#640).
 LLM_USAGE_TABLES = ["llm_turn_spend", "llm_usage_daily"]
 
@@ -3643,6 +3646,75 @@ class TestOrgPermissionsAreManagementOnlyRevision:
         assert sql.count("UPDATE roles SET description=") == 3
         for _, description in self.BASELINE_DESCRIPTIONS:
             assert f"description='{description}'" in sql
+
+
+class TestKnowledgeItemIngestCompleteRevision:
+    """021 adds ``knowledge_items.ingest_complete`` (#2394): NOT NULL, default
+    true, so every row the parent held reads complete; the downgrade removes
+    the column and nothing else."""
+
+    @staticmethod
+    def _columns() -> list:
+        return query_rows(TEST_DB, 'PRAGMA table_info("knowledge_items")')
+
+    def test_upgrade_reads_existing_rows_complete_and_downgrade_removes_only_it(
+        self, clean_database, database_url
+    ):
+        prepare_database(ORG_PERMISSIONS_MANAGEMENT_ONLY_REVISION, database_url)
+        conn = sqlite3.connect(TEST_DB)
+        try:
+            enterprise = conn.execute(
+                "SELECT enterprise_id FROM enterprises LIMIT 1"
+            ).fetchone()[0]
+            conn.execute(
+                "INSERT INTO knowledge_items (item_id, enterprise_id, title, "
+                "content, item_type) VALUES ('kb_aaaaaaaaaaaa', ?, 't', 'c', "
+                "'runbook')",
+                (enterprise,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        parent = self._columns()
+        rows = query_rows(TEST_DB, "SELECT * FROM knowledge_items")
+
+        result = run_alembic(f"upgrade {INGEST_COMPLETE_REVISION}", database_url)
+        assert result.returncode == 0, result.stderr
+        added = [c for c in self._columns() if c not in parent]
+        assert [c[1:] for c in added] == [("ingest_complete", "BOOLEAN", 1, "'1'", 0)]
+        assert query_rows(
+            TEST_DB, "SELECT item_id, ingest_complete FROM knowledge_items"
+        ) == [("kb_aaaaaaaaaaaa", 1)]
+
+        result = run_alembic(
+            f"downgrade {ORG_PERMISSIONS_MANAGEMENT_ONLY_REVISION}", database_url
+        )
+        assert result.returncode == 0, result.stderr
+        assert self._columns() == parent
+        assert query_rows(TEST_DB, "SELECT * FROM knowledge_items") == rows
+
+    def test_the_postgresql_script_adds_and_drops_the_column_alone(self):
+        pg = "postgresql://offline@localhost/offline"
+        up = run_alembic(
+            f"upgrade {ORG_PERMISSIONS_MANAGEMENT_ONLY_REVISION}:"
+            f"{INGEST_COMPLETE_REVISION} --sql",
+            pg,
+        )
+        assert up.returncode == 0, up.stderr
+        assert (
+            "ALTER TABLE knowledge_items ADD COLUMN ingest_complete BOOLEAN "
+            "DEFAULT '1' NOT NULL;"
+        ) in up.stdout
+        # Already enrolled in row-level security, whose policies are per row.
+        assert "POLICY" not in up.stdout and "ROW LEVEL SECURITY" not in up.stdout
+
+        down = run_alembic(
+            f"downgrade {INGEST_COMPLETE_REVISION}:"
+            f"{ORG_PERMISSIONS_MANAGEMENT_ONLY_REVISION} --sql",
+            pg,
+        )
+        assert down.returncode == 0, down.stderr
+        assert "ALTER TABLE knowledge_items DROP COLUMN ingest_complete;" in down.stdout
 
 
 class TestRbacSeed:

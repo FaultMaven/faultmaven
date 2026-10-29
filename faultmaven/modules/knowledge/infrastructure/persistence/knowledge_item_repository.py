@@ -212,6 +212,7 @@ class KnowledgeItemRepository(ABC):
         *,
         commit: bool = True,
         created_at: Optional[datetime] = None,
+        only_incomplete: bool = False,
     ) -> bool:
         """Delete knowledge item by ID.
 
@@ -223,11 +224,27 @@ class KnowledgeItemRepository(ABC):
                 (compared as a UTC instant), so a writer undoing its own INSERT
                 never removes a row another call created under the same id
                 (#2378).
+            only_incomplete: Delete the row only while its ``ingest_complete``
+                is false (#2394), so a sweep never removes a row whose ingest
+                completed after the sweep read it.
 
         Returns:
             True if a row matched (deleted, or deleted pending the commit),
-            False if none did: absent, another ``created_at``, or refused by
-            an RLS write policy.
+            False if none did: absent, another ``created_at``, complete under
+            ``only_incomplete``, or refused by an RLS write policy.
+        """
+        pass
+
+    @abstractmethod
+    async def mark_ingest_complete(self, item_id: str, *, created_at: datetime) -> bool:
+        """Set ``ingest_complete`` on the row ``item_id`` that carries
+        ``created_at`` and is not complete yet, uncommitted (#2394).
+
+        True when exactly that row matched. False when none did: deleted (by a
+        cleanup or the sweep), re-created under the id by another call, already
+        complete, or refused by an RLS write policy. A writer still holding the
+        row (a delete issued but not committed) is waited for, and the
+        statement then applies to the row as that writer left it.
         """
         pass
 
@@ -299,7 +316,9 @@ class KnowledgeItemRepository(ABC):
         Returns the full RBAC-visible set (ordered created_at DESC); the
         service applies tag/scope filtering and pagination over this already
         tenant-isolated set. RBAC lives here, NOT in a post-fetch Python
-        filter, so a personal/team item can never leak across tenants.
+        filter, so a personal/team item can never leak across tenants. A row
+        whose ingest has not completed is listed to no one (#2394), as by every
+        reader below but :meth:`get_by_id` and :meth:`read_is_published`.
         """
         pass
 
@@ -470,6 +489,9 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
                 not_helpful_count=item.not_helpful_count,
                 last_retrieved_at=item.last_retrieved_at,
                 is_published=item.is_published,
+                # Named on every INSERT: the column's server default is true, so
+                # an authored row that left it out would be complete (#2394).
+                ingest_complete=item.ingest_complete,
                 # Verification metadata. Coerce IntEnum → int for the column;
                 # the IntEnum compares equal to its value but SQLAlchemy
                 # serializes the int form more predictably across dialects.
@@ -566,6 +588,7 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
         *,
         commit: bool = True,
         created_at: Optional[datetime] = None,
+        only_incomplete: bool = False,
     ) -> bool:
         """Delete knowledge item by ID (see the base class for the keywords)."""
         try:
@@ -574,6 +597,8 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
             )
             if created_at is not None:
                 stmt = stmt.where(KnowledgeItemModel.created_at == _as_utc(created_at))
+            if only_incomplete:
+                stmt = stmt.where(KnowledgeItemModel.ingest_complete.is_(False))
             result = await self.db.execute(stmt)
             if commit:
                 await self.db.commit()
@@ -589,6 +614,21 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
             raise KnowledgeItemRepositoryException(
                 f"Failed to delete knowledge item {item_id}: {e}"
             ) from e
+
+    async def mark_ingest_complete(self, item_id: str, *, created_at: datetime) -> bool:
+        """The guarded flip (see the base class); ``updated_at`` is kept, since
+        completing an ingest is not an edit."""
+        result = await self.db.execute(
+            update(KnowledgeItemModel)
+            .where(
+                KnowledgeItemModel.item_id == item_id,
+                KnowledgeItemModel.created_at == _as_utc(created_at),
+                KnowledgeItemModel.ingest_complete == False,  # noqa: E712
+            )
+            .values(ingest_complete=True, updated_at=KnowledgeItemModel.updated_at)
+            .execution_options(synchronize_session=False)
+        )
+        return result.rowcount == 1
 
     async def commit(self) -> None:
         """Commit the session's open transaction."""
@@ -676,6 +716,9 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
         added only when the requester has a user_id / team memberships, so an
         anonymous caller sees global content only. The share table is the single
         source of truth for team visibility (ADR-013 §D4 / ADR-011 D3).
+
+        A row whose ingest has not completed (``ingest_complete`` false, #2394)
+        is not a document yet: it is visible to no one, its owner included.
         """
         tenant_owned = []
         if user_id:
@@ -702,7 +745,10 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
                     or_(*tenant_owned),
                 )
             )
-        return or_(*visibility)
+        return and_(
+            KnowledgeItemModel.ingest_complete == True,  # noqa: E712
+            or_(*visibility),
+        )
 
     async def list_for_inventory(
         self,
@@ -840,6 +886,7 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
                     and_(
                         KnowledgeItemModel.enterprise_id == enterprise_id,
                         KnowledgeItemModel.is_published == True,
+                        KnowledgeItemModel.ingest_complete == True,
                     )
                 )
                 .order_by(KnowledgeItemModel.created_at.desc())
@@ -885,6 +932,7 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
                     and_(
                         KnowledgeItemModel.enterprise_id == enterprise_id,
                         KnowledgeItemModel.is_published == True,
+                        KnowledgeItemModel.ingest_complete == True,
                         or_(
                             KnowledgeItemModel.embedding_vector == None,
                             KnowledgeItemModel.embedding_vector == "",
@@ -924,6 +972,7 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
                 and_(
                     KnowledgeItemModel.enterprise_id == enterprise_id,
                     KnowledgeItemModel.is_published == True,
+                    KnowledgeItemModel.ingest_complete == True,
                     (
                         KnowledgeItemModel.helpful_count
                         + KnowledgeItemModel.not_helpful_count
@@ -988,6 +1037,7 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
             not_helpful_count=model.not_helpful_count,
             last_retrieved_at=self._ensure_tz_aware(model.last_retrieved_at),
             is_published=model.is_published,
+            ingest_complete=model.ingest_complete,
             verification_level=model.verification_level,
             verification_reason=model.verification_reason,
             verified_by=model.verified_by,
@@ -1100,6 +1150,7 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
         *,
         commit: bool = True,
         created_at: Optional[datetime] = None,
+        only_incomplete: bool = False,
     ) -> bool:
         """Delete knowledge item by ID (see the base class for the keywords)."""
         if not self._exists(item_id):
@@ -1109,12 +1160,28 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
             _as_utc(current.created_at) != _as_utc(created_at)
         ):
             return False
+        if only_incomplete and current.ingest_complete:
+            return False
         if commit:
             del self._items[item_id]
             # A deferred update a later ``commit`` would otherwise bring back.
             self._pending.pop(item_id, None)
         else:
             self._pending[item_id] = None
+        return True
+
+    async def mark_ingest_complete(self, item_id: str, *, created_at: datetime) -> bool:
+        """The guarded flip (see the base class), pending until :meth:`commit`."""
+        if not self._exists(item_id):
+            return False
+        current = self._pending.get(item_id) or self._items[item_id]
+        if current.ingest_complete or (
+            _as_utc(current.created_at) != _as_utc(created_at)
+        ):
+            return False
+        target = deepcopy(current)
+        target.ingest_complete = True
+        self._pending[item_id] = target
         return True
 
     async def commit(self) -> None:
@@ -1145,6 +1212,8 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
 
     @staticmethod
     def _inventory_visible(item, enterprise_id, user_id) -> bool:
+        if not item.ingest_complete:
+            return False  # not a document yet (#2394), as in the SQL clause
         scope = item.scope.value if hasattr(item.scope, "value") else str(item.scope)
         if scope == "global":
             # Org-free platform tier (#770) — visible regardless of caller org.
@@ -1235,6 +1304,8 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
         for item in self._items.values():
             if item.enterprise_id != enterprise_id or not item.is_published:
                 continue
+            if not item.ingest_complete:
+                continue
 
             if match_all:
                 if item.has_all_tags(tags):
@@ -1260,6 +1331,7 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
             if (
                 i.enterprise_id == enterprise_id
                 and i.is_published
+                and i.ingest_complete
                 and not i.has_embedding()
             )
         ]
@@ -1281,6 +1353,7 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
             if (
                 i.enterprise_id == enterprise_id
                 and i.is_published
+                and i.ingest_complete
                 and i.get_total_feedback() >= self.MIN_FEEDBACK_THRESHOLD
             )
         ]

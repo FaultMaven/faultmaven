@@ -136,6 +136,9 @@ class KnowledgeItem:
 
     # Lifecycle
     is_published: bool = True
+    # False while an authored ingest has not written its vectors (#2394); see
+    # ``KnowledgeItemModel.ingest_complete``.
+    ingest_complete: bool = True
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     metadata: Optional[Dict[str, Any]] = None

@@ -1274,42 +1274,88 @@ class KnowledgeService:
     ) -> int:
         """Promote runbook content to a fully-published KnowledgeItem.
 
-        Atomically maintains both stores by writing the relational source-of-
-        truth first, then the ChromaDB embeddings. On any failure from the
-        row's INSERT on (its commit landing and then raising, the team share,
-        the vectors raising OR returning 0 chunks, a cancellation), what this
-        call wrote (its row, vectors and shares) is removed before re-raising
-        (#2365), and what a live peer holds under the same id is left whole
-        (#2378), with these exceptions:
+        Writes the row, then the vectors. With ``shipped`` false the row is
+        inserted with ``ingest_complete`` false and completed by
+        :meth:`_complete_authored_ingest`, which also writes its team share.
+        With ``shipped`` true the row is inserted complete and
+        :meth:`_create_team_share` writes its share before
+        :meth:`_index_document_in_vector_store`: the ``kb_seed`` maintenance
+        role holds no UPDATE (``may_update``) (#2394). An exception or a
+        cancellation from ``create`` on runs :meth:`_delete_knowledge_item_row`,
+        which deletes the row carrying this call's ``created_at`` and, when no
+        row stands under the id, its shares and, when ``indexed``, its vectors
+        (#2365, #2378). The residuals, by the predicates that decide them:
 
-        * A row this call did not write, standing under the id at the
-          cleanup's check (its delete matches only a row carrying this call's
-          stamp, and the check reads the id's row only when that delete
-          matched nothing): the cleanup keeps any team share this call
-          recorded and the id's chunks, since it deletes shares only when no
-          row stands, and vectors only when no row stands and this call began
-          indexing (#2388). A cleanup deletes vectors only if its own call
-          began indexing: if that row's own call fails without having begun
-          indexing, its cleanup removes the row and no vectors, and the
-          chunks kept here can be left with no row.
-        * A row another call stamped in the same microsecond under the same
-          id is taken for this call's: it is removed with its shares, and
-          with its vectors only if this call had begun indexing. A refused
-          INSERT ("already exists") never indexes, so that row's chunks stay
-          with no row.
-        * A peer that re-creates the id between the cleanup's check for a
-          standing row and its vector and share deletes can lose its vectors
-          and shares.
-        * A commit whose outcome this call does not know: the row's INSERT
-          commits inside ``create``, and a cancellation or command timeout
-          during that commit raises in this call while a COMMIT the server
-          had already received can still complete there (on PostgreSQL such
-          a command aborts the connection's transport and sends no
-          CancelRequest, ``pg_connection``). The cleanup's delete and check
-          run on a new session, so they can read the id before that COMMIT
-          completes, and this call's own row can then stand after the
-          cleanup, with no vectors (indexing never began) and no share (the
-          share step comes after ``create``) (#2394).
+        * Another call's row under the id. ``_delete_knowledge_item_row``
+          deletes vectors and shares only while ``standing`` is false, and
+          ``standing`` is true when the ``created_at`` guard of
+          ``DatabaseKnowledgeItemRepository.delete`` matched nothing and
+          ``get_by_id`` found a row; it deletes vectors only when ``indexed``.
+          This call's chunks and shares therefore stay beside such a row
+          (#2388), and stay with no row when that row's own cleanup runs with
+          ``indexed`` false.
+        * The same stamp. The ``created_at`` guard compares to the
+          microsecond, so another call's row carrying this call's
+          ``created_at`` matches it and is deleted with its shares, and with
+          its vectors when ``indexed``. ``create`` raising "already exists"
+          leaves ``indexed`` false, so that row's chunks stay with no row.
+        * A peer re-creating the id. No lock spans the read of ``standing``
+          and the vector and share deletes in ``_delete_knowledge_item_row``,
+          so a row created between them loses its vectors and shares.
+        * An INSERT whose COMMIT is in doubt. ``create`` commits, and a
+          COMMIT the server received can complete after ``create`` raised (on
+          PostgreSQL a cancelled or timed-out command aborts its transport and
+          sends no CancelRequest, ``pg_connection``). On PostgreSQL the
+          ``created_at``-guarded delete in ``_delete_knowledge_item_row``
+          matches no uncommitted row and takes no lock on it, so the row can
+          stand with no vectors and no share. On SQLite the INSERT's open
+          transaction holds the database's writer lock, which that delete
+          waits on within ``busy_timeout``; past it, ``repo.delete`` raises and
+          the cleanup deletes nothing. With ``shipped`` false a row that stands
+          has ``ingest_complete`` false: the ``ingest_complete`` predicate of
+          ``_inventory_visibility_clause`` keeps it out of every listing,
+          ``published_ids`` in ``kb_init._reconcile_vectors`` keeps it out of
+          the repair, :meth:`reindex_missing_vectors` refuses it, and
+          ``sweep_incomplete_ingests`` deletes it with its vectors once its
+          ``created_at`` is older than ``KB_INCOMPLETE_INGEST_MAX_AGE_HOURS``.
+          With ``shipped`` true it stands complete, and ``published_ids``
+          includes it for the repair.
+        * When the sweep runs. ``sweep_incomplete_ingests`` selects the rows
+          with ``ingest_complete`` false and a ``created_at`` older than
+          ``KB_INCOMPLETE_INGEST_MAX_AGE_HOURS``. ``bootstrap_kb`` calls it with
+          ``mode=incomplete_sweep_mode``: ``armed`` on the web startup and,
+          under ``kb_seed``, ``armed`` when ``resolve_incomplete_sweep_mode``
+          answers ``armed``. The web lifespan skips ``bootstrap_kb`` under
+          ``TENANT_PROVIDER=multi``.
+        * An incomplete row's vectors are served. ``search_knowledge`` queries
+          the vector store and reads no row, so the chunks under an incomplete
+          row's id are retrievable while the vector store holds them.
+        * A pack share's COMMIT in doubt. :meth:`_create_team_share` commits in
+          its own session (``SessionlessShareRepository.share``), and a COMMIT
+          that completes after ``delete_for_resource`` in
+          ``_delete_knowledge_item_row`` leaves a ``resource_shares`` row whose
+          item row is gone.
+        * The HTTP ChromaDB client's late write (#2397). With ``CHROMADB_URL``
+          set, ``add_documents`` runs on ``CHROMA_EXECUTOR``, and a
+          cancellation ends the await, not the thread, so an add can complete
+          after ``delete_documents_by_parent_id`` in
+          ``_delete_knowledge_item_row`` and leave chunks under an id with no
+          row.
+        * A caller told "failed" whose item is complete (#2396). The item
+          completes in :meth:`_complete_authored_ingest`'s transaction, not in
+          the caller's. ``verify_draft`` and ``upload_document`` (through
+          ``_withdraw_failed_upload``) call :meth:`withdraw_published_item` on
+          some of their failure paths after this method returns, and not on
+          others; :meth:`withdraw_published_item` returns False when
+          :meth:`delete_document` does not report success. ``repo.delete``
+          in ``_delete_knowledge_item_row`` raises when it waits on the
+          completion's lock past its bound (see
+          :meth:`_complete_authored_ingest`): the cleanup returns while
+          ``deleted is None`` and deletes nothing, and a completion COMMIT that
+          lands leaves the row complete, with its vectors and its share.
+        * A cleanup step that fails. :meth:`_delete_knowledge_item_row`'s
+          docstring states the outcome when its row delete or its check for a
+          standing row fails.
 
         The earlier "leave the SQL row for a scan-and-recover re-embed" policy
         produced half-state rows that downstream scans mis-classified, so
@@ -1370,10 +1416,10 @@ class KnowledgeService:
 
         Returns:
             Number of chunks indexed in ChromaDB (always > 0 on success): a
-            successful return means both stores are populated. On failure the
-            method raises after removing, best effort, what this call wrote,
-            except what the first and fourth exceptions above keep; the
-            second and third concern another call's writes.
+            successful return means both stores are populated and the row is
+            complete. On failure the method raises after removing, best
+            effort, what this call wrote, except what the residuals above
+            keep.
 
         Raises:
             RunbookQualityError: a non-shipped body holds a secret or a
@@ -1425,9 +1471,8 @@ class KnowledgeService:
             tags = [str(tag) for tag in tags]
 
         # 1) SQL first — relational source-of-truth. If this fails, ChromaDB
-        # is never touched. If ChromaDB later fails (step 2), the SQL row
-        # is rolled back before we raise (see lines below) — atomic across
-        # both stores.
+        # is never touched. If ChromaDB later fails (step 2), the cleanup below
+        # runs before we raise.
         item = KnowledgeItem(
             item_id=document_id,
             # Isolation is not optional for any tier (ADR-017 D1): every row
@@ -1474,12 +1519,23 @@ class KnowledgeService:
             verified_at=now if verified_by else None,
             created_at=now,
             updated_at=now,
+            # An authored row is not complete until its vectors are written:
+            # never listed or re-embedded meanwhile (#2394). A pack row is
+            # complete from its INSERT, since the ``kb_seed`` maintenance role
+            # may not UPDATE the table.
+            ingest_complete=shipped,
             metadata=(
                 {PACK_CONTENT_HASH_KEY: pack_content_hash} if pack_content_hash else {}
             ),
         )
-        # Everything from the row's INSERT on is undone by one cleanup when it
-        # fails or is cancelled (#2365). The prior "leave SQL for recovery"
+        # Team publish: record visibility in the share table (source of truth,
+        # ADR-013 §D4). The scope enum stays 'team' ⟺ ≥1 share row.
+        # Cross-ENTERPRISE shares are impossible by construction — the share
+        # carries the item's own enterprise_id, and a team belongs to exactly
+        # one enterprise. Cross-organization shares inside it are the point.
+        share_team = team_id if scope == KnowledgeScope.TEAM.value else None
+        # A failure or a cancellation from the row's INSERT on runs one cleanup
+        # (#2365). The prior "leave SQL for recovery"
         # policy produced half-state rows that downstream scans then
         # mis-classified. ``create`` commits before it refreshes, so a failure
         # or cancel can land after the row has (#2378). The cleanup removes
@@ -1493,12 +1549,10 @@ class KnowledgeService:
             async with self._db_session_factory() as session:
                 await DatabaseKnowledgeItemRepository(session).create(item)
 
-            # Team publish: record visibility in the share table (source of
-            # truth, ADR-013 §D4). The scope enum stays 'team' ⟺ ≥1 share row.
-            # Cross-ENTERPRISE shares are impossible by construction — the share
-            # carries the item's own enterprise_id, and a team belongs to exactly
-            # one enterprise. Cross-organization shares inside it are the point.
-            if scope == KnowledgeScope.TEAM.value and team_id:
+            # A pack row's share is written before its vectors, as it always
+            # was. An authored row's is written in its completing transaction
+            # (below), so a row that never completes carries none.
+            if shipped and share_team:
                 await self._create_team_share(
                     resource_type="knowledge_item",
                     resource_id=document_id,
@@ -1529,8 +1583,15 @@ class KnowledgeService:
                 raise RuntimeError(
                     f"Vector indexing produced 0 chunks for {document_id}. "
                     f"Common causes: BGE-M3 model unavailable, ChromaDB "
-                    f"unreachable, or chunker produced no output. SQL row "
-                    f"cleaned up."
+                    f"unreachable, or chunker produced no output."
+                )
+            if not shipped:
+                await self._complete_authored_ingest(
+                    document_id,
+                    created_at=now,
+                    team_id=share_team,
+                    enterprise_id=enterprise_id,
+                    created_by=owner_id or verified_by,
                 )
         except (Exception, asyncio.CancelledError):
             await self._delete_knowledge_item_row(
@@ -1540,17 +1601,77 @@ class KnowledgeService:
 
         return chunks_created
 
+    async def _complete_authored_ingest(
+        self,
+        item_id: str,
+        *,
+        created_at: datetime,
+        team_id: Optional[str],
+        enterprise_id: str,
+        created_by: Optional[str],
+    ) -> None:
+        """Set ``ingest_complete`` on this call's row and write its team share,
+        in one transaction (#2394).
+
+        ``mark_ingest_complete`` matches the id's row only while it carries
+        ``created_at`` and ``ingest_complete`` is false, and any other result
+        raises into :meth:`ingest_runbook`'s cleanup.
+
+        ``PostgreSQLShareRepository.share``, bound to this session, commits the
+        flip together with the share. With no share (``team_id`` unset, or no
+        ``_share_repo`` wired, as in :meth:`_create_team_share`), the trailing
+        ``repo.commit()`` commits the flip.
+
+        Until this transaction ends, the UPDATE holds the row's lock
+        (PostgreSQL) or the database's writer lock (SQLite). The ``created_at``
+        guarded delete in ``_delete_knowledge_item_row`` waits on it while its
+        statement may run: on PostgreSQL until the ``statement_timeout`` that
+        ``get_engine``'s ``begin`` listener sets per transaction
+        (``DATABASE_COMMAND_TIMEOUT_SECONDS`` less
+        ``DATABASE_STATEMENT_TIMEOUT_MARGIN_SECONDS``, unset when the command
+        timeout is 0), and on SQLite until ``busy_timeout`` (5000 ms).
+
+        What a failure can leave is listed in :meth:`ingest_runbook`'s
+        docstring.
+        """
+        from faultmaven.infrastructure.persistence.share_repository import (
+            PostgreSQLShareRepository,
+        )
+        from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (  # noqa: E501
+            DatabaseKnowledgeItemRepository,
+        )
+
+        async with self._db_session_factory() as session:
+            repo = DatabaseKnowledgeItemRepository(session)
+            if not await repo.mark_ingest_complete(item_id, created_at=created_at):
+                await repo.rollback()
+                raise RuntimeError(
+                    f"Knowledge item {item_id} was not marked complete: no row "
+                    "with this ingest's stamp awaited completion"
+                )
+            if team_id and self._share_repo:
+                await PostgreSQLShareRepository(session).share(
+                    resource_type="knowledge_item",
+                    resource_id=item_id,
+                    scope_type="team",
+                    scope_id=team_id,
+                    enterprise_id=enterprise_id,
+                    created_by=created_by,
+                )
+            await repo.commit()
+
     async def reindex_missing_vectors(
         self, item_id: str, *, role_may_update: bool
     ) -> int:
         """Re-chunk + re-embed an existing row's chunks into the vector store.
 
-        Cross-store repair for an ORPHANED row — a ``knowledge_items`` row whose
-        ChromaDB chunks are missing (a crash between the SQL commit and the
-        vector write in :meth:`ingest_runbook` leaves exactly this half-state,
-        as does a :meth:`delete_document` whose commit failed after its vector
-        delete; the KB bootstrap reconcile pass can detect it but cannot fix it
-        without the embedding model). This re-derives the vectors from the row's
+        Cross-store repair for an ORPHANED row — a complete ``knowledge_items``
+        row whose ChromaDB chunks are missing (a pack ingest that died between
+        its SQL commit and its vector write leaves exactly this half-state, as
+        does a :meth:`delete_document` whose commit failed after its vector
+        delete, while an authored ingest that died leaves an incomplete row,
+        which is no orphan, #2394; the KB bootstrap reconcile pass can detect
+        it but cannot fix it without the embedding model). This re-derives the vectors from the row's
         persisted ``content`` using the runtime chunker + BGE-M3 and writes them
         under the row's ``item_id`` — the SQL row itself is NEVER touched (it is
         the source of truth and already correct). Per-chunk RAG metadata
@@ -1589,8 +1710,9 @@ class KnowledgeService:
         delete and its commit.
 
         Returns the number of chunks indexed. Fail-safe 0 (no raise) when the
-        row is absent or unpublished (before or after the embed), no vector
-        store is wired, the embedding
+        row is absent or unpublished (before or after the embed), its ingest
+        never completed (#2394: not an orphan, which the reconcile does not
+        list either), no vector store is wired, the embedding
         model is unavailable, or the row names no usable tenant (the indexer's
         #1168 ``ValueError``, logged at ERROR with the item id) — leaving the
         row orphaned for a later boot to repair, which the caller counts as a
@@ -1637,6 +1759,14 @@ class KnowledgeService:
                 "reindex_missing_vectors: %s is unpublished, and an unpublished "
                 "row has no vectors by design (that is how it was removed from "
                 "retrieval) — refusing to re-index it",
+                item_id,
+            )
+            return 0
+
+        if not row.ingest_complete:
+            logger.warning(
+                "reindex_missing_vectors: %s is an ingest that never completed "
+                "(#2394) — refusing to re-index it; the KB bootstrap sweeps it",
                 item_id,
             )
             return 0
@@ -1925,11 +2055,11 @@ class KnowledgeService:
 
         The rows are written after the item they name, never before (#2365):
         the draft's ``knowledge_item_id`` is a foreign key, enforced on every
-        deployment. A completed call leaves all of it (the item, its vectors
-        and the upload, job and draft rows) or none of it: a failed ingestion
-        undoes its own writes, and a failed row write withdraws the published
-        item. A crash between the two commits leaves only the item, which is
-        live and deletable (``DELETE /knowledge/documents/{id}``).
+        deployment. A failure in :meth:`ingest_runbook` leaves what its
+        docstring lists, and a failed row write calls
+        :meth:`_withdraw_failed_upload`, whose docstring states what it
+        removes. A crash between the two commits leaves only the item, which
+        is live and deletable (``DELETE /knowledge/documents/{id}``).
 
         Args:
             title: Redacted with the sanitizer before it is written anywhere
@@ -2056,9 +2186,9 @@ class KnowledgeService:
 
             # Publish first, as ``verify_draft`` does (#2365): the draft row below
             # names the item, through a foreign key enforced on every
-            # deployment, so it can only be written once the item exists. A
-            # failed ingestion undoes its own writes, and nothing else has been
-            # written yet.
+            # deployment, so it can only be written once the item exists. What
+            # a failed ingestion can leave is listed in ``ingest_runbook``'s
+            # docstring.
             #
             # upload_document is called by anonymous / non-verified upload
             # paths, so verified_by is None (verification_level defaults to
@@ -2078,9 +2208,8 @@ class KnowledgeService:
             )
 
             # Then the upload, job and verified draft rows, in one transaction.
-            # Only this write is undone here: if it fails, or is cancelled, the
-            # item just published is withdrawn too, so a failed upload leaves
-            # nothing behind.
+            # If it fails, or is cancelled, ``_withdraw_failed_upload`` runs; its
+            # docstring states what it removes.
             try:
                 async with self._db_session_factory() as session:
                     # ``conversion_jobs.source_file_id`` is a FK to
@@ -2955,7 +3084,8 @@ class KnowledgeService:
         Loads the row (source of truth), applies title/content/tags/category/
         document_type/version updates, re-indexes ChromaDB when content
         changed, and only then persists the row. Returns the updated DTO, or
-        ``None`` when the document is not found.
+        ``None`` when the document is not found or its ingest never completed
+        (#2394), before anything is embedded.
 
         A new ``content`` is stored as sent, line endings normalised, and is
         refused with ``RunbookQualityError`` (422) before anything is written
@@ -3049,6 +3179,13 @@ class KnowledgeService:
 
             if item is None:
                 logger.warning(f"Document {document_id} not found for update")
+                return None
+            if not item.ingest_complete:
+                # ``ingest_complete`` is false (#2394): refused before anything
+                # is embedded.
+                logger.warning(
+                    f"Document {document_id} is an incomplete ingest; not updated"
+                )
                 return None
 
             # Gated on a wired vector store as well as on the content change:

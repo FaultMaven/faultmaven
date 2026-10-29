@@ -35,6 +35,7 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from faultmaven.bootstrap import kb_init, kb_orphan_sweep
+from faultmaven.bootstrap.kb_incomplete_sweep import resolve_incomplete_sweep_mode
 from faultmaven.bootstrap.kb_orphan_sweep import (
     SWEEP_ARMED,
     SWEEP_OFF,
@@ -490,25 +491,52 @@ async def test_the_store_deletes_the_intersection_of_ids_and_stamp(world):
         (False, True, False, SWEEP_OFF),  # --no-dry-run cannot grant deletion
     ],
 )
+@pytest.mark.parametrize(
+    "resolve, setting",
+    [
+        (kb_orphan_sweep.resolve_sweep_mode, "kb_orphan_sweep"),
+        # kb_seed's mode for the incomplete-ingest sweep (#2394): the same gate.
+        (resolve_incomplete_sweep_mode, "kb_incomplete_ingest_sweep"),
+    ],
+    ids=["authored_orphans", "incomplete_ingests"],
+)
 def test_the_sweep_mode_is_the_storage_cleanup_gate(
-    monkeypatch, enabled, configured_dry_run, override, expected
+    monkeypatch, resolve, setting, enabled, configured_dry_run, override, expected
 ):
     database = SimpleNamespace(
-        kb_orphan_sweep_enabled=enabled, kb_orphan_sweep_dry_run=configured_dry_run
+        **{f"{setting}_enabled": enabled, f"{setting}_dry_run": configured_dry_run}
     )
     monkeypatch.setattr(
         "faultmaven.config.settings.get_settings",
         lambda: SimpleNamespace(database=database),
     )
-    assert kb_orphan_sweep.resolve_sweep_mode(override) == expected
+    assert resolve(override) == expected
 
 
-def test_the_shipped_settings_are_report_only():
+@pytest.mark.parametrize("setting", ["kb_orphan_sweep", "kb_incomplete_ingest_sweep"])
+def test_the_shipped_settings_are_report_only(setting):
     from faultmaven.config.settings import DatabaseSettings
 
     fields = DatabaseSettings.model_fields
-    assert fields["kb_orphan_sweep_enabled"].default is False
-    assert fields["kb_orphan_sweep_dry_run"].default is True
+    assert fields[f"{setting}_enabled"].default is False
+    assert fields[f"{setting}_dry_run"].default is True
+
+
+def test_the_incomplete_sweep_bound_falls_back_to_the_settings_default(monkeypatch):
+    """#2394: with settings unreadable, the age bound is the
+    ``KB_INCOMPLETE_INGEST_MAX_AGE_HOURS`` field's own default, not a copy:
+    a changed field default is the bound."""
+    from datetime import timedelta
+
+    from faultmaven.bootstrap.kb_incomplete_sweep import MAX_AGE_FIELD, _resolve_max_age
+    from faultmaven.config.settings import DatabaseSettings
+
+    def unreadable():
+        raise RuntimeError("no settings")
+
+    monkeypatch.setattr("faultmaven.config.settings.get_settings", unreadable)
+    monkeypatch.setattr(DatabaseSettings.model_fields[MAX_AGE_FIELD], "default", 7)
+    assert _resolve_max_age() == timedelta(hours=7)
 
 
 async def test_a_report_only_sweep_deletes_nothing_and_lists_what_it_would(world):

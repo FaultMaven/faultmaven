@@ -378,7 +378,7 @@ The ChromaDB vector store holds chunk embeddings for fast semantic search. The r
 
 > **`verified_by` contract**: FK to `users.user_id` — a real user or `NULL`, **never a sentinel string**. Platform/built-in trust is carried by `verification_level` (COMMUNITY), not a fake verifier.
 
-**Key columns** (see `KnowledgeItemModel` in `models.py`, 28 columns total):
+**Key columns** (see `KnowledgeItemModel` in `models.py`, 29 columns total):
 
 | Column | Type | Notes |
 | --- | --- | --- |
@@ -407,6 +407,7 @@ The ChromaDB vector store holds chunk embeddings for fast semantic search. The r
 | `not_helpful_count` | INTEGER | Feedback counter; CHECK >= 0 |
 | `last_retrieved_at` | TIMESTAMPTZ nullable | Updated on each retrieval |
 | `is_published` | BOOLEAN | False = draft/hidden from search |
+| `ingest_complete` | BOOLEAN NOT NULL, default true | False from an authored ingest's INSERT (upload, `verify_draft`) until its vectors are written and one guarded UPDATE, which also writes its team share, sets it (#2394, migration 021). A false row is listed by no reader (`list_for_inventory`, `get_visible_by_id`, `visible_item_ids`), never re-embedded by the startup repair, refused by `update_document_metadata` and `reindex_missing_vectors`, and removed with its vectors by the KB bootstrap once older than `KB_INCOMPLETE_INGEST_MAX_AGE_HOURS`. `get_by_id` and `delete_document` still read and remove it. A pack row is inserted true and never updated (the `kb_seed` maintenance role holds no UPDATE) |
 | `metadata` | TEXT (JSON) | Stored as `knowledge_metadata` Python attribute |
 
 **Applicability**: Both deployments (✅ Both). Cross-reference the unified ChromaDB `faultmaven_kb` collection — chunk embeddings in ChromaDB are derived from `knowledge_items.content`; the `item_id` is stored in ChromaDB chunk metadata as the source document reference.

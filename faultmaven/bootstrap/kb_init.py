@@ -1,4 +1,4 @@
-"""Knowledge Base Bootstrap — atomic, idempotent ingestion of the shipped KB pack.
+"""Knowledge Base Bootstrap — idempotent ingestion of the shipped KB pack.
 
 Runs at application startup after the DI container has wired up the
 ``KnowledgeService``. Loads the **KB pack** (a self-contained bundle of shipped
@@ -24,15 +24,20 @@ Why a separate flow from ``conversion_drafts``?
     content the platform vendor (or admin) already approved. ``conversion_drafts``
     is reserved for case-generated / document-converted drafts that need review.
 
-Atomicity
-    Each runbook's ingestion is all-or-nothing:
-      1. Compute the deterministic ``item_id`` (carried by the pack).
+Per runbook
+    ``_ingest_pack_runbook`` ingests one runbook:
+      1. Take the deterministic ``item_id`` the pack carries.
       2. Check ``knowledge_items`` — if present AND it was ingested from this
          pack version (the pack hash stamped on the row), skip.
       3. Call ``KnowledgeService.ingest_runbook(prechunked=...)`` — SQL row
          first, ChromaDB chunks (pack vectors) second.
-      4. Validate ``chunks_created > 0``; on failure, surface loudly and clean
-         up — never leave half-state.
+      4. ``ingest_runbook`` raises when indexing returns 0 chunks, after its
+         cleanup; ``_ingest_pack_runbook`` also checks ``chunks_created <= 0``,
+         and on it calls ``_delete_existing`` and raises. ``bootstrap_kb``
+         catches an ``Exception`` from ``_ingest_pack_runbook``, logs it at
+         ERROR and records the runbook in ``BootstrapResult.failed``. What a
+         failed ``KnowledgeService.ingest_runbook`` call can leave is listed in
+         its docstring.
 
 Idempotency
     Re-running is safe. Runbooks whose pack version is unchanged (the pack's
@@ -52,7 +57,12 @@ from typing import Any, Awaitable, Callable, Collection, NamedTuple, Optional
 
 from sqlalchemy import select
 
+from faultmaven.bootstrap.kb_incomplete_sweep import (
+    IncompleteSweepResult,
+    sweep_incomplete_ingests,
+)
 from faultmaven.bootstrap.kb_orphan_sweep import (
+    SWEEP_ARMED,
     AuthoredSweepResult,
     resolve_sweep_mode,
     sweep_authored_orphans,
@@ -78,6 +88,8 @@ class BootstrapResult:
         # deletes (report-only by default), what was deleted, and per
         # enterprise what was left and why.
         self.authored_orphans: AuthoredSweepResult = AuthoredSweepResult()
+        # Rows whose ingest never completed, past the age bound (#2394).
+        self.incomplete_ingests: IncompleteSweepResult = IncompleteSweepResult()
         self.repaired_rows: list[str] = []  # DB rows re-embedded this boot
         self.orphaned_rows: list[str] = []  # DB rows still w/o vectors after repair
 
@@ -103,6 +115,13 @@ class BootstrapResult:
             f"authored_orphans_unproven={sweep['unproven']}, "
             f"authored_orphans_misstamped={sweep['misstamped']}, "
             f"authored_orphans_unremoved={sweep['unremoved']}, "
+            f"incomplete_ingests_mode={self.incomplete_ingests.mode}, "
+            "incomplete_ingests_would_delete="
+            f"{len(self.incomplete_ingests.would_delete)}, "
+            f"incomplete_ingests_deleted={len(self.incomplete_ingests.deleted)}, "
+            f"incomplete_ingests_unremoved={self.incomplete_ingests.unremoved}, "
+            f"incomplete_ingests_spared={self.incomplete_ingests.spared}, "
+            f"incomplete_ingests_skipped={self.incomplete_ingests.skipped}, "
             f"repaired_rows={len(self.repaired_rows)}, "
             f"orphaned_rows={len(self.orphaned_rows)})"
         )
@@ -116,6 +135,7 @@ async def bootstrap_kb(
     pack_dir: Optional[Path] = None,
     sweep_dry_run: Optional[bool] = None,
     allow_disjoint_enterprises: Collection[str] = (),
+    incomplete_sweep_mode: str = SWEEP_ARMED,
 ) -> BootstrapResult:
     """Run the KB ingestion bootstrap from the shipped pack.
 
@@ -138,6 +158,11 @@ async def bootstrap_kb(
             --allow-disjoint-enterprise``) as genuinely holding only orphans.
             Every other bucket none of whose authored vectors has a row is
             skipped.
+        incomplete_sweep_mode: The stray-ingest sweep's mode
+            (:mod:`faultmaven.bootstrap.kb_incomplete_sweep`): ``armed`` (the
+            default, the web startup's) deletes; ``kb_seed`` passes the
+            ``KB_INCOMPLETE_INGEST_SWEEP_*`` gate's answer, report-only until
+            an operator arms it.
 
     Returns:
         BootstrapResult — per-runbook outcomes (counts + failure reasons).
@@ -150,6 +175,12 @@ async def bootstrap_kb(
     from faultmaven.bootstrap.kb_pack import KbPack, resolve_pack_dir
 
     result = BootstrapResult()
+    # ``sweep_incomplete_ingests`` reads no pack, so it is called before
+    # ``KbPack.load``: a pack that does not load, and every later step of this
+    # pass, leave it run (#2394).
+    result.incomplete_ingests = await sweep_incomplete_ingests(
+        knowledge_service, db_session_factory, mode=incomplete_sweep_mode
+    )
     root = project_root or get_project_root()
 
     if pack_dir is None:
@@ -244,8 +275,8 @@ async def bootstrap_kb(
         allow_disjoint=allow_disjoint_enterprises,
     )
 
-    # Cross-store repair: an orphaned row (SQL row with no vectors — the
-    # half-state a crash between the SQL commit and the Chroma write leaves) is
+    # Cross-store repair: an orphaned row (a complete SQL row with no vectors —
+    # lost after its ingest, or a pack row whose ingest died after its INSERT) is
     # silently non-retrievable. Reconcile can only warn; here we re-chunk +
     # re-embed a BOUNDED number of them so a rare crash self-heals on the next
     # boot. Bounded because repair loads the embedding model the pack path
@@ -270,6 +301,9 @@ async def bootstrap_kb(
         f"{len(result.authored_orphans.deleted)} authored orphans swept "
         f"({result.authored_orphans.mode}: "
         f"{len(result.authored_orphans.would_delete)} would be), "
+        f"{len(result.incomplete_ingests.deleted)} incomplete ingests swept "
+        f"({result.incomplete_ingests.mode}: "
+        f"{len(result.incomplete_ingests.would_delete)} would be), "
         f"{len(result.repaired_rows)} rows repaired, "
         f"{len(result.orphaned_rows)} orphaned rows"
     )
@@ -412,7 +446,7 @@ async def _ingest_pack_runbook(
         await _delete_existing(runbook.item_id, knowledge_service, db_session_factory)
         raise RuntimeError(
             f"Vector indexing produced 0 chunks for {runbook.relpath} "
-            f"(pack supplied {len(prechunked)} chunks). SQL row cleaned up."
+            f"(pack supplied {len(prechunked)} chunks)."
         )
 
     logger.info(
@@ -550,7 +584,9 @@ async def _reconcile_vectors(
         ``delete_document`` drops the vectors when it unpublishes, so these
         are what an older version's repair re-embedded (it listed unpublished
         rows as orphaned) or a write that raced the unpublish left behind.
-      * **orphaned rows** — a PUBLISHED row with no vectors. Can't be repaired
+      * **orphaned rows** — a PUBLISHED, complete row with no vectors (an
+        incomplete one is an authored ingest in flight or failed, #2394, which
+        the incomplete-ingest sweep owns). Can't be repaired
         here (no embedding model at startup), so it is WARNED, not touched, and
         returned for :func:`_repair_orphaned_rows`. An unpublished row is never
         listed: having no vectors is its intended state. Listing it would hand
@@ -597,11 +633,21 @@ async def _reconcile_vectors(
     async with db_session_factory() as session:
         rows = (
             await session.execute(
-                select(KnowledgeItemModel.item_id, KnowledgeItemModel.is_published)
+                select(
+                    KnowledgeItemModel.item_id,
+                    KnowledgeItemModel.is_published,
+                    KnowledgeItemModel.ingest_complete,
+                )
             )
         ).all()
-    db_ids = {item_id for item_id, _published in rows}
-    published_ids = {item_id for item_id, published in rows if published}
+    # A row whose ingest never completed (#2394) has a row, so its vectors are
+    # no orphans; it is neither repaired nor stripped of its vectors here,
+    # which may be an ingest still writing them. The stray sweep owns it.
+    db_ids = {item_id for item_id, _published, _complete in rows}
+    published_ids = {i for i, published, complete in rows if published and complete}
+    unpublished_ids = {
+        i for i, published, complete in rows if complete and not published
+    }
 
     # Empty source of truth = anomaly, not a wipe signal. Guard FIRST, before any
     # delete or per-row warning (with no rows there is nothing meaningful to say).
@@ -629,9 +675,7 @@ async def _reconcile_vectors(
         p for p in (chroma_parents - db_ids) if _BUILTIN_ITEM_ID_RE.match(p)
     )
     unpublished_with_vectors = sorted(
-        p
-        for p in (chroma_parents & (db_ids - published_ids))
-        if _BUILTIN_ITEM_ID_RE.match(p)
+        p for p in (chroma_parents & unpublished_ids) if _BUILTIN_ITEM_ID_RE.match(p)
     )
     if not orphaned_vectors and not unpublished_with_vectors:
         return ReconcileResult([], [], orphaned_rows)
@@ -752,7 +796,9 @@ async def _repair_orphaned_rows(
     deletion CAN cross tenants (the authored sweep deletes only behind a proof
     that its row read is unfiltered); addition cannot, so every orphaned PUBLISHED
     row is eligible — a lost authored runbook is repaired the same as a
-    shipped one. An unpublished row is not an orphan (it has no vectors by
+    shipped one. A row whose authored ingest never completed is no orphan
+    (#2394): reconcile does not list it, and ``reindex_missing_vectors``
+    refuses it. An unpublished row is not an orphan (it has no vectors by
     design, #1966): reconcile does not list it, and
     ``reindex_missing_vectors`` refuses it if handed one anyway.
 

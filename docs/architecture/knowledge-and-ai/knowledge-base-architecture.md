@@ -202,7 +202,7 @@ Live (during investigation):
 | Embedding model | BGE-M3 via sentence-transformers (1024 dims, multilingual) |
 | Chunking | Structure-aware splitting on markdown headers (3000-char max, 100-char min, sentence-boundary fallback) |
 | Supported formats | Markdown, TXT, PDF, DOCX, CSV, JSON, YAML |
-| Ingestion entry point | `KnowledgeService.ingest_runbook()` (atomic: SQL row + ChromaDB chunks or neither) |
+| Ingestion entry point | `KnowledgeService.ingest_runbook()` |
 | Pre-deployed runbooks | Startup bootstrap — `faultmaven/bootstrap/kb_init.py` ingests the **KB pack** (pre-chunked + pre-embedded; no model) via `ingest_runbook(prechunked=...)`, idempotent on the pack content hash stamped on the row |
 | Case-generated drafts | `conversion_drafts` → `ConversionService.verify_draft()` (atomic: status flips to VERIFIED only after successful ingestion) |
 | Architecture detail | [`kb-ingestion-architecture.md`](./kb-ingestion-architecture.md) |
@@ -418,7 +418,7 @@ Global-tier ingestion runs automatically at API startup via the **KB bootstrap**
 
 Tier-1-specific notes: Global runbooks are written by the platform admin and apply across all organizations. The 91 built-in runbooks ship pre-chunked and pre-embedded in the **KB pack** (`resources/knowledge/pack`, or `KB_PACK_DIR`); on startup the bootstrap ingests them directly — no separate "verify" step is needed because the platform vendor / admin is the verifier for pre-deployed content. The verify-via-Dashboard flow is reserved for case-generated and document-converted drafts that need a human gate.
 
-The **conversion-drafts path** (case-generated / document-converted content, not the pack) is the one that triggers YAML frontmatter parsing, structural validation (per [runbook-content-architecture.md §4 Quality Gates](./runbook-content-architecture.md#4-quality-gates)), chunking, and embedding on ingest; both paths finish with an atomic write to both stores — see [`kb-ingestion-architecture.md`](./kb-ingestion-architecture.md) for the atomicity contract.
+The **conversion-drafts path** (case-generated / document-converted content, not the pack) is the one that triggers YAML frontmatter parsing, structural validation (per [runbook-content-architecture.md §4 Quality Gates](./runbook-content-architecture.md#4-quality-gates)), chunking, and embedding on ingest; both paths publish through `KnowledgeService.ingest_runbook()` — see [`kb-ingestion-architecture.md`](./kb-ingestion-architecture.md) for its write order and failure handling.
 
 ### Files
 
@@ -495,7 +495,7 @@ In Standalone, the Personal and Global scopes are available (Team is Cloud-only)
 
 ### Storage Architecture
 
-**Write path**: `upload_document()` and `verify_draft()` → `ingest_runbook()`, which writes the relational `knowledge_items` row first (source-of-truth) and then the ChromaDB chunks + embeddings. Both stores receive the same `kb_<uuid>` id; on a ChromaDB-side failure (raise OR 0 chunks) `ingest_runbook()` deletes the just-written SQL row before re-raising, so the two stores never diverge (the earlier "leave the SQL row for scan-and-recover" policy produced half-state rows that downstream scans mis-classified — see `kb-ingestion-architecture.md`). Conversion-bookkeeping rows (`uploaded_files`, `conversion_jobs`, `conversion_drafts`) are written in addition for the upload-flow audit trail, after `ingest_runbook()` succeeds, because the draft's `knowledge_item_id` is a foreign key to the item; if they fail to write, `upload_document()` removes them and withdraws the item (#2365).
+**Write path**: `upload_document()` and `verify_draft()` → `ingest_runbook()`, which writes the relational `knowledge_items` row first (source-of-truth) and then the ChromaDB chunks + embeddings. Both stores receive the same `kb_<uuid>` id; a failure from the row's INSERT on runs `ingest_runbook()`'s cleanup before the re-raise, and what it can leave is listed in its docstring (the earlier "leave the SQL row for scan-and-recover" policy produced half-state rows that downstream scans mis-classified — see `kb-ingestion-architecture.md`). Conversion-bookkeeping rows (`uploaded_files`, `conversion_jobs`, `conversion_drafts`) are written in addition for the upload-flow audit trail, after `ingest_runbook()` succeeds, because the draft's `knowledge_item_id` is a foreign key to the item; if they fail to write, `upload_document()` calls `_withdraw_failed_upload` (#2365).
 
 **Read path**: `list_documents()` and `get_document()` read from **`knowledge_items`** — the source of truth for the published inventory (both bootstrap built-ins and `verify_draft` promotions land there). Content comes from the stored `knowledge_items.content` row, not disk. RBAC (org tenancy + personal-owner / team-member isolation) is enforced **in-query** by the repository (`list_for_inventory`); tag/scope filtering and pagination are applied over that already tenant-isolated set. `conversion_drafts` is **only** the review queue (the Drafts tab = `status='draft'`); it is no longer the document inventory. ChromaDB is not queried for listing or retrieval.
 

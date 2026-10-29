@@ -159,6 +159,21 @@ class _FailingCommit:
         return session
 
     def arm_after_ingestion(self, service: KnowledgeService) -> None:
+        """Arm once ``ingest_runbook`` has returned: the next session is the
+        upload's own row write."""
+        ingest = service.ingest_runbook
+
+        async def ingest_then_arm(**kwargs):
+            chunks = await ingest(**kwargs)
+            self.armed = True
+            return chunks
+
+        service.ingest_runbook = ingest_then_arm
+
+    def arm_at_completion(self, service: KnowledgeService) -> None:
+        """Arm once the vectors are written: the next session is the ingest's
+        completing transaction, its flip and its share (#2394)."""
+
         async def index_then_arm(*_args, **_kwargs):
             self.armed = True
             return 3
@@ -274,13 +289,11 @@ async def test_a_vector_failure_leaves_nothing(session_factory, scope, caplog):
 
     # Ingestion undid its own writes; the upload withdraws nothing more.
     assert "withdraw" not in caplog.text
-    # What ingestion had written when the vectors failed: its item, and at team
-    # scope its share. Neither outlives the failure (the share did, #2365).
-    assert at_failure == {
-        **NOTHING,
-        "knowledge_items": 1,
-        "resource_shares": int(scope == "team"),
-    }
+    # What ingestion had written when the vectors failed: its incomplete item
+    # and, at either scope, no share: an authored item's share is written in
+    # the transaction that completes it (#2394). The item does not outlive the
+    # failure.
+    assert at_failure == {**NOTHING, "knowledge_items": 1}
     assert await _rows(session_factory) == NOTHING
     assert await _drafts(session_factory) == []
 
@@ -366,37 +379,57 @@ async def test_rows_that_cannot_be_removed_keep_their_item(session_factory, capl
     ), caplog.text
 
 
-async def test_a_failed_share_write_leaves_nothing(session_factory):
+async def test_a_failed_share_write_leaves_nothing(session_factory, monkeypatch):
+    """The share is written in the ingest's completing transaction (#2394), so
+    its failure takes the completion with it, and the cleanup removes the
+    row and the vectors."""
+    monkeypatch.setattr(
+        PostgreSQLShareRepository,
+        "share",
+        AsyncMock(side_effect=RuntimeError("share failed")),
+    )
     service = _knowledge(session_factory)
-    service._share_repo.share = AsyncMock(side_effect=RuntimeError("share failed"))
 
     with pytest.raises(RuntimeError, match="share failed"):
         await _upload(service, scope="team")
 
     assert await _rows(session_factory) == NOTHING
+    service._vector_store.delete_documents_by_parent_id.assert_awaited_once()
 
 
-async def test_an_item_row_that_survives_keeps_its_share(session_factory, monkeypatch):
-    """Ingestion's cleanup could not delete the item, so it keeps the share that
-    makes it a team item: shares go only after the item's delete commits."""
+async def test_an_item_row_that_survives_keeps_its_share(
+    session_factory, monkeypatch, caplog
+):
+    """The commit of ``_complete_authored_ingest`` (the flip and the share)
+    landed and then raised, and the cleanup's ``repo.delete`` raised, so the
+    item keeps the share that makes it a team item: shares go only after the
+    item's delete commits. The raising commit is the completion's: the item is
+    complete, and ``upload_document`` never reached its own row write, whose
+    failure would withdraw the item."""
     monkeypatch.setattr(
         DatabaseKnowledgeItemRepository,
         "delete",
         AsyncMock(side_effect=RuntimeError("row delete failed")),
     )
-    service = _knowledge(session_factory)
-    service._index_document_in_vector_store = AsyncMock(
-        side_effect=RuntimeError("embedder unavailable")
-    )
+    factory = _FailingCommit(session_factory, (RuntimeError("commit failed"), True))
+    service = _knowledge(factory)
+    factory.arm_at_completion(service)
 
-    with pytest.raises(RuntimeError, match="embedder unavailable"):
+    with (
+        caplog.at_level(logging.WARNING),
+        pytest.raises(RuntimeError, match="commit failed"),
+    ):
         await _upload(service, scope="team")
 
+    assert "withdraw" not in caplog.text
+    assert "the cleanup's row delete failed too" in caplog.text
     assert await _rows(session_factory) == {
         **NOTHING,
         "knowledge_items": 1,
         "resource_shares": 1,
     }
+    async with session_factory() as session:
+        assert await session.scalar(select(KnowledgeItemModel.ingest_complete))
 
 
 class _AddsThenRaises:

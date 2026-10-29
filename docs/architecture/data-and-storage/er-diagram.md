@@ -1,6 +1,6 @@
 # FaultMaven Database ER Diagram
 
-> **Auto-generated** from SQLAlchemy models on 2026-10-12 17:10 UTC.
+> **Auto-generated** from SQLAlchemy models on 2026-10-29 06:02 UTC.
 > Do not edit manually — run `python scripts/generate_er_diagram.py --update` to regenerate.
 > Render with any Mermaid-compatible viewer (GitHub, VS Code, Mermaid Live Editor).
 
@@ -27,7 +27,7 @@
 | `evidence_needs` | 17 | `need_id` | cases, enterprises, organizations |
 | `hypotheses` | 26 | `hypothesis_id` | cases, causal_nodes, enterprises, organizations, users |
 | `hypothesis_evidence` | 9 | `hypothesis_id, evidence_id` | enterprises, evidence, hypotheses, organizations, users |
-| `knowledge_items` | 28 | `item_id` | enterprises, organizations, users |
+| `knowledge_items` | 29 | `item_id` | enterprises, organizations, users |
 | `llm_turn_spend` | 17 | `enterprise_id, case_id, turn_number` | cases, enterprises |
 | `llm_usage_daily` | 15 | `enterprise_id, usage_date, billing_subject_kind, billing_subject_id, actor_user_id, provider, model, outcome` | enterprises |
 | `oauth_authorization_codes` | 8 | `code` | users |
@@ -361,6 +361,7 @@ erDiagram
         INTEGER not_helpful_count
         DATETIME last_retrieved_at
         BOOLEAN is_published
+        BOOLEAN ingest_complete
         TEXT metadata
         DATETIME created_at
         DATETIME updated_at

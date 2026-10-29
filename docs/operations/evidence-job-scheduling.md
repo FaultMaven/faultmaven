@@ -348,6 +348,24 @@ in the `kb_seed` result's `authored_orphans`.
 The job's status stays `completed` for every sweep outcome. The seeding
 succeeded, and these counts are the report.
 
+**The incomplete-ingest sweep (#2394)** runs in the same pass. It removes a
+`knowledge_items` row whose authored ingest never completed (no reader lists
+it and the repair never re-embeds it, but its chunks stay retrievable until it
+goes), with its vectors, once the row is older than
+`KB_INCOMPLETE_INGEST_MAX_AGE_HOURS` (default 24). The web startup deletes. In
+`kb_seed` the gate above applies with its own settings,
+`KB_INCOMPLETE_INGEST_SWEEP_ENABLED` (default `false`) and
+`KB_INCOMPLETE_INGEST_SWEEP_DRY_RUN` (default `true`), and the same
+`--dry-run` / `--no-dry-run`. Under the maintenance role it deletes through
+the role's `DELETE ON knowledge_items` grant and issues no UPDATE. It runs
+first in the pass, before the pack is loaded. It rides the
+`BootstrapResult(...)` line as `incomplete_ingests_mode` / `_would_delete` /
+`_deleted` / `_unremoved` / `_spared` (rows that completed or went since the
+read) / `_skipped` (`disabled`, `no_vector_store` or `error` when it did not
+run), and the `kb_seed` result as `incomplete_ingests` (with
+`would_delete_documents`). Design:
+[ingestion step 6](../architecture/knowledge-and-ai/kb-ingestion-architecture.md#algorithm).
+
 ### 1c. KB Vector Enterprise Backfill (`kb_vector_enterprise_backfill`, #1777)
 
 **Purpose:** Stamp every KB chunk whose parent has a `knowledge_items` row with
