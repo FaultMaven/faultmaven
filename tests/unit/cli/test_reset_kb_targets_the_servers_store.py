@@ -111,7 +111,7 @@ def stub_db(monkeypatch):
         monkeypatch.setattr(
             draft_retirement,
             "discard_drafts_naming_any_item",
-            AsyncMock(return_value=([], [])),
+            AsyncMock(return_value=([], [], 0)),
         )
         monkeypatch.setattr(
             draft_retirement,

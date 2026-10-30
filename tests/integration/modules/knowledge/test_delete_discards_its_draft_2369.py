@@ -12,11 +12,13 @@ complete leaves the draft as it was.
 ``fm-reset-kb --all-drafts`` deletes the drafts instead. On either path the
 reset then releases the live key of each case job left with no live draft, so a
 case whose pending draft this reset or an earlier one deleted converts again
-through ``convert_from_case`` (#2387). A dry run releases no key.
+through ``convert_from_case`` (#2387). The count it prints is the keys it
+released, also when another session converts a case meanwhile. A dry run
+releases no key.
 
 The SQLite tests run on the #2365 tests' database, which enforces foreign keys
 as the app's engine does, so a discard issued after the ``DELETE`` would match
-nothing. Four run on PostgreSQL: one races a link against the delete, and two
+nothing. Five run on PostgreSQL: one races a link against the delete, and three
 run a reset, in a database of their own.
 """
 
@@ -690,6 +692,79 @@ async def test_a_runbook_published_during_a_kb_reset_is_kept_whole(
     draft, _ = await _draft_and_key(own_pg, landed["draft"])
     assert (draft.status, draft.knowledge_item_id) == ("verified", landed["item"])
     assert "Kept 1 knowledge_items rows written while" in capsys.readouterr().out
+
+
+_A_CASE_CONVERTS_DURING_THE_RESET = pytest.mark.parametrize(
+    ("orphan", "all_drafts", "released"),
+    [(True, False, 1), (False, False, 0), (True, True, 2)],
+    ids=["orphaned-key", "nothing-to-release", "all-drafts"],
+)
+
+
+async def _reset_while_a_case_converts(
+    factory, monkeypatch, capsys, *, orphan, all_drafts, released
+) -> None:
+    """Another session converts a case and commits while the reset's session is
+    open, ahead of its draft step. The count printed is the keys this reset
+    released: the draft step's plus the helper's ``UPDATE``'s. Taken as the jobs
+    holding a key before less those holding one after, the new job's key skewed
+    it: ``Released 0`` for 1, ``Released -1`` for 0 and, under ``--all-drafts``,
+    ``Released 1`` for 2."""
+    await _open_case(factory, "case-concurrent")
+    orphaned = None
+    if orphan:
+        await _open_case(factory)
+        orphaned = await _orphan_a_key(factory)
+    discard = draft_retirement.discard_drafts_naming_any_item
+    landed: list[str] = []
+
+    async def convert_then_discard(session):
+        landed.append((await _convert(factory, "case-concurrent")).conversion_id)
+        return await discard(session)
+
+    monkeypatch.setattr(
+        draft_retirement, "discard_drafts_naming_any_item", convert_then_discard
+    )
+    capsys.readouterr()
+
+    assert await _reset(factory, monkeypatch, all_drafts=all_drafts) == 0
+
+    assert orphaned is None or await _key_of(factory, orphaned) is None
+    # ``--all-drafts`` deleted the new job's draft as well, and so its key.
+    held = None if all_drafts else "case-concurrent"
+    assert await _key_of(factory, landed[0]) == held
+    out = capsys.readouterr().out
+    assert f"Released {released} case conversion keys held with no live draft." in out
+
+
+@_A_CASE_CONVERTS_DURING_THE_RESET
+async def test_a_reset_counts_only_the_keys_it_released(
+    session_factory, monkeypatch, capsys, orphan, all_drafts, released
+):
+    await _reset_while_a_case_converts(
+        session_factory,
+        monkeypatch,
+        capsys,
+        orphan=orphan,
+        all_drafts=all_drafts,
+        released=released,
+    )
+
+
+@pytest.mark.postgres
+@_needs_postgres
+@_A_CASE_CONVERTS_DURING_THE_RESET
+async def test_a_reset_counts_only_the_keys_it_released_on_postgresql(
+    own_pg, monkeypatch, capsys, orphan, all_drafts, released
+):
+    await _reset_while_a_case_converts(
+        own_pg,
+        monkeypatch,
+        capsys,
+        orphan=orphan,
+        all_drafts=all_drafts,
+        released=released,
+    )
 
 
 @pytest.mark.postgres

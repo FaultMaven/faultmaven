@@ -27,7 +27,7 @@ async def release_live_case_key_if_drained(
     session: AsyncSession,
     job: "ConversionJobModel",
     discarded_draft_id: str,
-) -> None:
+) -> bool:
     """Clear ``job.live_case_id`` once the job holds no more live drafts.
 
     The unique-index slot on ``conversion_jobs.live_case_id`` is the case's
@@ -36,9 +36,9 @@ async def release_live_case_key_if_drained(
     clearing is general (count the OTHER non-discarded drafts of this job) so
     a job carrying more than one live draft keeps the key until the last one
     is gone. No-op for jobs that never held the key (document jobs, failed
-    no-draft jobs)."""
+    no-draft jobs). Return whether it cleared the key."""
     if job.live_case_id is None:
-        return
+        return False
     remaining_live = await session.execute(
         select(func.count())
         .select_from(ConversionDraftModel)
@@ -50,12 +50,15 @@ async def release_live_case_key_if_drained(
     )
     if remaining_live.scalar_one() == 0:
         job.live_case_id = None
+        return True
+    return False
 
 
 async def release_drained_case_keys(
     session: AsyncSession, discarded: Iterable[Tuple[str, str]]
-) -> None:
-    """Release the live case key of each job left with no live draft.
+) -> int:
+    """Release the live case key of each job left with no live draft; return
+    how many it released.
 
     ``discarded`` holds the ``(draft_id, conversion_id)`` of the drafts this
     session has just discarded. Flushed first, so the count sees every status
@@ -63,10 +66,12 @@ async def release_drained_case_keys(
     """
     await session.flush()
     one_per_job = {job_id: draft_id for draft_id, job_id in discarded}
+    released = 0
     for job_id, draft_id in one_per_job.items():
         job = await session.get(ConversionJobModel, job_id)
         if job is not None:
-            await release_live_case_key_if_drained(session, job, draft_id)
+            released += await release_live_case_key_if_drained(session, job, draft_id)
+    return released
 
 
 async def release_case_keys_without_a_live_draft(session: AsyncSession) -> int:
@@ -96,7 +101,7 @@ async def release_case_keys_without_a_live_draft(session: AsyncSession) -> int:
 async def discard_drafts_naming_item(session: AsyncSession, item_id: str) -> List[str]:
     """Discard the drafts naming ``item_id``, ahead of its ``DELETE``
     (``KnowledgeService.delete_document``); return their ids."""
-    _, discarded = await _discard_drafts_naming(
+    _, discarded, _ = await _discard_drafts_naming(
         session, KnowledgeItemModel.item_id == item_id
     )
     return discarded
@@ -104,20 +109,21 @@ async def discard_drafts_naming_item(session: AsyncSession, item_id: str) -> Lis
 
 async def discard_drafts_naming_any_item(
     session: AsyncSession,
-) -> Tuple[List[str], List[str]]:
+) -> Tuple[List[str], List[str], int]:
     """Lock every item and discard the drafts naming one, ahead of deleting
-    them (``fm-reset-kb``); return the locked item ids and the discarded draft
-    ids. The caller deletes exactly those items: an item written after the
-    lock was not locked and its drafts were not discarded, so deleting it
-    would orphan them."""
+    them (``fm-reset-kb``); return the locked item ids, the discarded draft
+    ids and how many case keys the discard released. The caller deletes
+    exactly those items: an item written after the lock was not locked and
+    its drafts were not discarded, so deleting it would orphan them."""
     return await _discard_drafts_naming(session, true())
 
 
 async def _discard_drafts_naming(
     session: AsyncSession, items
-) -> Tuple[List[str], List[str]]:
+) -> Tuple[List[str], List[str], int]:
     """Lock the items ``items`` matches and discard the live drafts naming
-    them; return the locked item ids and the discarded draft ids.
+    them; return the locked item ids, the discarded draft ids and how many
+    case keys their discard released.
 
     The items' rows are locked first (``FOR UPDATE``; SQLite has no row locks,
     and its single writer already serialises). A transaction linking a draft
@@ -139,7 +145,7 @@ async def _discard_drafts_naming(
         ).scalars()
     )
     if not locked:
-        return [], []
+        return [], [], 0
     discarded = (
         await session.execute(
             update(ConversionDraftModel)
@@ -152,6 +158,6 @@ async def _discard_drafts_naming(
             .execution_options(synchronize_session=False)
         )
     ).all()
-    await release_drained_case_keys(session, discarded)
+    released = await release_drained_case_keys(session, discarded)
     await session.flush()
-    return locked, [draft_id for draft_id, _ in discarded]
+    return locked, [draft_id for draft_id, _ in discarded], released
