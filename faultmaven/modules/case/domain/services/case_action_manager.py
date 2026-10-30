@@ -249,9 +249,6 @@ class CaseActionManager:
             "reason": reason,
         }
 
-    # Backward compatibility alias
-    build_status_change_record = build_action_record
-
     @staticmethod
     def get_disposition_fields(new_status: CaseState, user_id: str) -> Dict[str, Any]:
         """
@@ -295,6 +292,3 @@ class CaseActionManager:
             SelectableNextState(target.value)
             for target in CaseActionManager.get_allowed_actions(current_status)
         ]
-
-
-# Backward compatibility alias

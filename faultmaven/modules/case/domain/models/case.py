@@ -1113,13 +1113,20 @@ class Case(BaseModel):
         ``Case``: every field's type and validators, every model validator, and
         every nested model's after-validators (nested instances pass through
         as they are, so their own field constraints are not re-checked here;
-        each repository's save validates the whole dumped aggregate). Only when
-        that passes are the updated fields copied onto this case.
+        the SQLite and PostgreSQL saves validate the whole dumped aggregate,
+        the in-memory repository's does not). Only when that passes are the
+        updated fields copied onto this case.
+
+        The merged state shares the case's own nested instances, so a nested
+        after-validator that repairs in place applies even when the update is
+        refused: ``InquiryData`` stamps a missing ``problem_statement_confirmed_at``
+        and ``EvidenceNeed`` resets ``obtainability`` to UNKNOWN on a terminal
+        or non-causal need. Both are idempotent repairs a reload makes anyway.
 
         Raises:
-            TypeError: A key is not a ``Case`` field. Nothing is written.
+            TypeError: A key is not a ``Case`` field. No field is written.
             pydantic.ValidationError: The merged state is not a valid case (a
-                ``ValueError``). Nothing is written.
+                ``ValueError``). No updated field is written.
         """
         unknown = sorted(set(updates) - set(type(self).model_fields))
         if unknown:

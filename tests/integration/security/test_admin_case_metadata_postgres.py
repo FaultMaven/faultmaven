@@ -998,6 +998,11 @@ _MALFORMED = {
 }
 
 
+#: A case whose stored ``closure_reason`` is not a ``ClosureReason`` value: it is
+#: served with the reason null and named in the warning (#2416).
+_REASON_OUT_OF_VOCABULARY = "closure_reason_out_of_vocabulary"
+
+
 @pytest.fixture
 async def malformed_world(limited_role_env):
     """One enterprise of cases whose stored JSON is malformed in one way each,
@@ -1041,7 +1046,7 @@ async def malformed_world(limited_role_env):
                 ],
                 current_turn=1,
             )
-            for label in [*_MALFORMED, "control"]
+            for label in [*_MALFORMED, _REASON_OUT_OF_VOCABULARY, "control"]
         }
         set_current_enterprise_id(enterprise)
         repository = SessionlessCaseRepository()
@@ -1059,6 +1064,13 @@ async def malformed_world(limited_role_env):
                 value=value,
                 c=cases[label].case_id,
             )
+        # A column, not JSON: nothing in the database constrains it.
+        await _as_owner(
+            owner,
+            "UPDATE cases SET closure_reason = 'closed_after_investigation' "
+            "WHERE case_id = :c",
+            c=cases[_REASON_OUT_OF_VOCABULARY].case_id,
+        )
         yield SimpleNamespace(enterprise=enterprise, cases=cases)
     finally:
         await _as_owner(
@@ -1101,6 +1113,18 @@ async def test_a_malformed_case_is_served_not_dropped_and_not_fatal(
         assert (row.stage, row.investigation_turn) == (stage, turn), label
         if None in (stage, turn):
             assert case_id in caplog.text and malformed_world.enterprise in caplog.text
+
+    reason_case = cases[_REASON_OUT_OF_VOCABULARY].case_id
+    row = rows[reason_case]
+    assert (row.closure_reason, row.stage, row.investigation_turn) == (
+        None,
+        "diagnosis",
+        1,
+    )
+    assert any(
+        reason_case in record.getMessage() and "closure_reason" in record.getMessage()
+        for record in caplog.records
+    )
 
 
 # =============================================================================

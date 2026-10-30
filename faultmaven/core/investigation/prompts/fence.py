@@ -243,11 +243,12 @@ what they protect:
 - **Guarded** — renderer- or engine-authored text that is nonetheless not
   PROVABLY bracket-free. Corpus plus terminator, no delimiters: fencing would
   tell the model this is material it did not write, which for engine-derived
-  text is false. ``RESOLUTION:`` is the case in point. Its only writer is
-  ``terminal_transitions.derive_closure_reason``, which returns one of a
-  closed set of labels — but the field is an unconstrained ``Optional[str]``
-  (``max_length=100``, no pattern), so that shape is a convention, not a
-  guarantee, and it renders directly above a fenced ``<user_message>``. The
+  text is false. ``RESOLUTION:`` is the case in point. Its reason is a
+  ``ClosureReason``, so a validated case carries only the enum's values — but
+  the line renders the attribute as it stands rather than ``.value`` of a
+  member as ``STATE:`` does, so a copy made without validation
+  (``model_copy(update=...)``) can put any string there, directly above a
+  fenced ``<user_message>``; it stays guarded. The
   previous turn's ``system_feedback`` is guarded too (#1688): the engine
   writes it, but it can quote model text. Fencing it would also misstate its
   role, because the rule tells the model that fenced content is not an

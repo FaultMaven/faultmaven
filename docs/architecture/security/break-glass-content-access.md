@@ -240,8 +240,9 @@ argument or caller that makes it return content, because it has no column to
 return it in. Of the three strings, `state` is a closed vocabulary the database
 enforces (`cases_state_check`). `source` and `closure_reason` are closed
 vocabularies too, but the application's writers enforce them — the `Case` model's
-`Literal` for `source` and its closure-reason validator — not the column type,
-which carries no CHECK. `tests/integration/security/test_admin_case_metadata_postgres.py`
+`Literal` for `source` and its `ClosureReason` type for `closure_reason` — not the
+column type, which carries no CHECK. A stored `closure_reason` outside the type is
+served null, with the `case_metadata_unreadable` warning naming the case. `tests/integration/security/test_admin_case_metadata_postgres.py`
 asserts the declared result columns against the catalog, so adding one fails
 until a person classifies it.
 

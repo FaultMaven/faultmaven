@@ -284,7 +284,7 @@ class Case(BaseModel):
     organization_id: Optional[str]     # Billing attribution only (ADR-017) — never a visibility predicate
     source: Literal["copilot", "slack", "api"]  # Case origin (ADR-012), stamped at creation
     state: CaseState                 # INQUIRY | INVESTIGATING | RESOLVED | CLOSED
-    closure_reason: Optional[str]      # Sub-categorizes a CLOSED disposition (e.g. inquiry_only)
+    closure_reason: Optional[ClosureReason]  # Sub-categorizes a CLOSED disposition (e.g. inquiry_only)
     created_at: datetime               # UTC datetime
     updated_at: datetime               # UTC datetime (note: field is `updated_at`, not `last_updated`)
     # Severity is NOT a first-class Case field — it lives as a string on ProblemVerification / in metadata

@@ -5247,11 +5247,11 @@ Why a CLOSED case ended: the most specific reason that holds when it is closed. 
 - `inquiry_only` — Closed during inquiry, before any investigation started.
 - `closed_false_alarm` — The evidence showed the reported problem was not present where and when it was reported, so there was nothing to fix.
 - `resolution_declined` — The fix was confirmed to work, and the user chose not to mark the case resolved.
-- `solution_deferred` — The cause was identified and a fix documented, but no fix was confirmed to work in this case.
+- `solution_deferred` — The cause was identified and a fix documented, and the case was closed without being resolved.
 - `closed_rca_infeasible` — The root cause was declared structurally unreachable, with a rationale (for example an uncontrollable external dependency or an end-of-life system).
 - `mitigation_sufficient` — A verified mitigation relieved the symptom, and root-cause analysis was not pursued further.
 - `closed_restatement_held` — The evidence supported a cause, but its statement never said more than the problem itself, so no root cause was established.
-- `closed_insufficient_evidence` — What was needed was never established: the problem could not be verified, or no cause could be grounded in the evidence.
+- `closed_insufficient_evidence` — No more specific reason held: the problem could not be verified, no cause could be grounded in the evidence, or a cause was identified with no fix or verified mitigation on record.
 
 ---
 

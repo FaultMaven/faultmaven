@@ -442,17 +442,30 @@ def test_a_null_activity_column_loads_as_the_model_default():
 
 @pytest.mark.parametrize(
     "stored",
-    [
-        pytest.param({"state": "abandoned"}, id="state"),
-        pytest.param({"state": "closed", "closure_reason": "abandoned"}, id="reason"),
-    ],
+    [pytest.param({"state": "abandoned"}, id="state")],
 )
 def test_a_column_outside_its_vocabulary_fails_the_read(stored):
-    """A column is served as stored, and the read refuses one its type does not
-    hold rather than serving it as a label: no write path stores such a value
-    (#1795), so the row was edited by hand. ``state`` is the control."""
+    """``state`` is constrained by the database (``cases_state_check``), so a
+    value outside it cannot be stored, and the read refuses one."""
     with pytest.raises(ValueError, match="abandoned"):
         CaseMetadata.from_stored(**_stored(closed_at=_NOW, **stored))
+
+
+def test_a_reason_outside_the_vocabulary_is_served_null_and_warned(caplog):
+    """Nothing in the database constrains ``closure_reason``. One the type does
+    not hold is served null and named in the warning, not fatal: the operator
+    list is how such a case gets found (a case load still refuses it)."""
+    with caplog.at_level("WARNING"):
+        metadata = CaseMetadata.from_stored(
+            **_stored(
+                state="closed",
+                closed_at=_NOW,
+                closure_reason="closed_after_investigation",
+            )
+        )
+    assert metadata.closure_reason is None
+    assert "case_metadata_unreadable" in caplog.text
+    assert "closure_reason" in caplog.text and "case_000000000001" in caplog.text
 
 
 def test_a_stored_reason_is_served_as_the_enum():

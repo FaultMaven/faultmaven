@@ -323,7 +323,7 @@ class InvestigationStrategy(str, Enum):
 #     existed. The one close the engine itself offers on a finding
 #     (problem_status.invalidate_problem).
 #   - resolution_declined ahead of solution_deferred, which on such a case would
-#     say the fix was never confirmed (#2360).
+#     not say the fix was confirmed to work (#2360).
 #   - solution_deferred ahead of the remaining reasons: where several hold, the
 #     one carrying the most established knowledge wins.
 #   - closed_rca_infeasible ABOVE mitigation_sufficient, because the engine's
@@ -426,8 +426,8 @@ _CLOSURE_REASON_MEANINGS: Mapping[ClosureReason, str] = closure_reason_table(
             "case resolved."
         ),
         ClosureReason.SOLUTION_DEFERRED: (
-            "The cause was identified and a fix documented, but no fix was "
-            "confirmed to work in this case."
+            "The cause was identified and a fix documented, and the case was "
+            "closed without being resolved."
         ),
         ClosureReason.CLOSED_RCA_INFEASIBLE: (
             "The root cause was declared structurally unreachable, with a "
@@ -443,8 +443,9 @@ _CLOSURE_REASON_MEANINGS: Mapping[ClosureReason, str] = closure_reason_table(
             "than the problem itself, so no root cause was established."
         ),
         ClosureReason.CLOSED_INSUFFICIENT_EVIDENCE: (
-            "What was needed was never established: the problem could not be "
-            "verified, or no cause could be grounded in the evidence."
+            "No more specific reason held: the problem could not be verified, no "
+            "cause could be grounded in the evidence, or a cause was identified "
+            "with no fix or verified mitigation on record."
         ),
     }
 )
