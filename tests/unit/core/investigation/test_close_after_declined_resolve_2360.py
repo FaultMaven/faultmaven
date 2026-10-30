@@ -38,8 +38,11 @@ from faultmaven.core.investigation.terminal_transitions import (
     propose_transition,
 )
 from faultmaven.infrastructure.observability import funnel_metrics
-from faultmaven.modules.case.contracts import CaseState, MitigationRecord
-from faultmaven.modules.case.domain.models.lifecycle import VALID_CLOSURE_REASONS
+from faultmaven.modules.case.contracts import (
+    CaseState,
+    ClosureReason,
+    MitigationRecord,
+)
 from faultmaven.modules.case.domain.models.solution import (
     InvestigationActionType,
     ProposedAction,
@@ -314,22 +317,18 @@ class TestTheReason:
 
 class TestEveryReasonTableIsTheVocabulary:
     def test_the_report_labels_and_the_funnel_labels(self):
-        assert set(ReportGenerationService._CLOSURE_REASON_LABELS) == (
-            VALID_CLOSURE_REASONS
-        )
-        assert set(funnel_metrics._CLOSED_REASONS) == VALID_CLOSURE_REASONS | {
-            "unknown"
-        }
+        assert set(ReportGenerationService._CLOSURE_REASON_LABELS) == set(ClosureReason)
+        assert set(funnel_metrics._CLOSED_REASONS) == set(ClosureReason) | {"unknown"}
         assert set(funnel_metrics._EFFORT_TO_STATES) == (
-            VALID_CLOSURE_REASONS - {"inquiry_only"}
+            set(ClosureReason) - {ClosureReason.INQUIRY_ONLY}
         ) | {"resolved"}
 
     def test_every_reason_has_its_own_terminal_reply(self):
         replies = {
             _terminal_confirmation_response(_closed_as(_confirmed_case(), reason))
-            for reason in VALID_CLOSURE_REASONS
+            for reason in ClosureReason
         }
-        assert len(replies) == len(VALID_CLOSURE_REASONS)
+        assert len(replies) == len(ClosureReason)
         assert "Case closed." not in replies
 
     async def test_the_effort_query_admits_every_close_but_inquiry_only(self):
@@ -337,14 +336,14 @@ class TestEveryReasonTableIsTheVocabulary:
         try:
             async with engine.begin() as conn:
                 await conn.exec_driver_sql(_CREATE_CASES)
-                for reason in VALID_CLOSURE_REASONS:
+                for reason in ClosureReason:
                     closed = _NOW - timedelta(hours=1)
                     await conn.execute(
                         _INSERT_CASE,
                         {
-                            "id": reason,
+                            "id": reason.value,
                             "st": "closed",
-                            "cr": reason,
+                            "cr": reason.value,
                             "t": 3,
                             "c": (closed - timedelta(hours=1)).isoformat(" "),
                             "e": closed.isoformat(" "),
@@ -356,5 +355,5 @@ class TestEveryReasonTableIsTheVocabulary:
         finally:
             await engine.dispose()
         assert {row[1] for row in refreshed.fetched} == (
-            VALID_CLOSURE_REASONS - {"inquiry_only"}
+            set(ClosureReason) - {ClosureReason.INQUIRY_ONLY}
         )

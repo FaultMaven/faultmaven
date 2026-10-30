@@ -16,11 +16,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from faultmaven.models.api import CaseMessagesResponse, Source
 from faultmaven.modules.case.domain.models.case import Case
-from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.models.lifecycle import CaseState, ClosureReason
 from faultmaven.modules.case.domain.models.metadata import CaseMetadata
 from faultmaven.modules.case.domain.models.problem import InvestigationStage
 from faultmaven.modules.case.domain.services.case_action_manager import (
     CaseActionManager,
+    SelectableNextState,
 )
 
 # ============================================================
@@ -176,7 +177,7 @@ class CaseSummary(BaseModel):
     #: account that owns the case. Never a visibility input.
     organization_id: Optional[str] = None
     source: str = "copilot"  # Case origin (ADR-012): copilot | slack | api
-    closure_reason: Optional[str]
+    closure_reason: Optional[ClosureReason]
 
     # Progress indicators.
     #
@@ -220,7 +221,7 @@ class CaseSummary(BaseModel):
     shared_team_ids: List[str] = Field(default_factory=list)
 
     # Status transitions
-    valid_next_states: List[str] = Field(
+    valid_next_states: List[SelectableNextState] = Field(
         default_factory=list,
         description=VALID_NEXT_STATES_DESCRIPTION,
     )
@@ -249,10 +250,7 @@ class CaseSummary(BaseModel):
             stage=case.current_stage,
             turns_without_progress=case.turns_without_progress,
             is_terminal=case.is_terminal,
-            valid_next_states=[
-                status.value
-                for status in CaseActionManager.get_allowed_transitions(case.state)
-            ],
+            valid_next_states=CaseActionManager.selectable_next_states(case.state),
         )
 
 
@@ -288,7 +286,7 @@ class CaseDetail(BaseModel):
     #: account that owns the case. Never a visibility input.
     organization_id: Optional[str] = None
     source: str = "copilot"  # Case origin (ADR-012): copilot | slack | api
-    closure_reason: Optional[str]
+    closure_reason: Optional[ClosureReason]
 
     # Progress
     current_turn: int = Field(
@@ -334,7 +332,7 @@ class CaseDetail(BaseModel):
     shared_team_ids: List[str] = Field(default_factory=list)
 
     # Status transitions
-    valid_next_states: List[str] = Field(
+    valid_next_states: List[SelectableNextState] = Field(
         default_factory=list,
         description=VALID_NEXT_STATES_DESCRIPTION,
     )
@@ -371,10 +369,7 @@ class CaseDetail(BaseModel):
             escalated=(
                 case.escalation_state.is_active if case.escalation_state else False
             ),
-            valid_next_states=[
-                status.value
-                for status in CaseActionManager.get_allowed_transitions(case.state)
-            ],
+            valid_next_states=CaseActionManager.selectable_next_states(case.state),
         )
 
 
@@ -652,7 +647,7 @@ class AdminCaseMetadata(BaseModel):
     #: account that owns the case. Never a visibility input.
     organization_id: Optional[str] = None
     source: str = "copilot"  # Case origin (ADR-012): copilot | slack | api
-    closure_reason: Optional[str]
+    closure_reason: Optional[ClosureReason]
 
     # Progress indicators. Both are metadata under the rule above: ``stage`` is a
     # 3-value enum derived from action-compliance gates, and

@@ -58,6 +58,7 @@ from faultmaven.modules.case.contracts import (
     CaseAction,
     CaseState,
     CauseState,
+    ClosureReason,
     EvidenceCategory,
     InvestigationActionType,
     ProblemStatus,
@@ -533,7 +534,7 @@ def _restatement_held_close(case: "Case") -> bool:
     return restatement_hold_governs(case) is not None
 
 
-def derive_closure_reason(case: "Case") -> str:
+def derive_closure_reason(case: "Case") -> ClosureReason:
     """Engine-only derivation of closure_reason from case state.
 
     Every close carries a REASON — why the case ended, never merely when.
@@ -600,27 +601,27 @@ def derive_closure_reason(case: "Case") -> str:
     structured case state.
     """
     if case.state == CaseState.INQUIRY:
-        return "inquiry_only"
+        return ClosureReason.INQUIRY_ONLY
 
     if case.progress.problem_status == ProblemStatus.INVALIDATED:
-        return "closed_false_alarm"
+        return ClosureReason.CLOSED_FALSE_ALARM
 
     if declined_resolve_entry(case) is not None:
-        return "resolution_declined"
+        return ClosureReason.RESOLUTION_DECLINED
 
     if _fix_documented_not_applied(case):
-        return "solution_deferred"
+        return ClosureReason.SOLUTION_DEFERRED
 
     if _rca_declared_infeasible(case):
-        return "closed_rca_infeasible"
+        return ClosureReason.CLOSED_RCA_INFEASIBLE
 
     if _mitigation_verified(case):
-        return "mitigation_sufficient"
+        return ClosureReason.MITIGATION_SUFFICIENT
 
     if _restatement_held_close(case):
-        return "closed_restatement_held"
+        return ClosureReason.CLOSED_RESTATEMENT_HELD
 
-    return "closed_insufficient_evidence"
+    return ClosureReason.CLOSED_INSUFFICIENT_EVIDENCE
 
 
 # ============================================================
@@ -1086,7 +1087,7 @@ def confirm_pending_transition(case: Case, user_id: str) -> bool:
             return False
         if (
             closure.verdict == ClosureReadiness.SUGGEST_RESOLVE
-            or pending.get("closure_reason") == "resolution_declined"
+            or pending.get("closure_reason") == ClosureReason.RESOLUTION_DECLINED
         ):
             # Re-derived: the stored reason may describe a state that no
             # longer holds. A close proposed before the case became resolvable
@@ -1098,7 +1099,10 @@ def confirm_pending_transition(case: Case, user_id: str) -> bool:
     if to_state == "resolved":
         _execute_resolved_transition(case, user_id)
     elif to_state == "closed":
-        _execute_closed_transition(case, user_id, pending["closure_reason"])
+        # A JSON string once the case has been reloaded; a value outside the
+        # vocabulary is refused here, before the case moves.
+        reason = ClosureReason(pending["closure_reason"])
+        _execute_closed_transition(case, user_id, reason)
     else:
         logger.error(f"Unknown pending transition target: {to_state}")
         case.pending_transition = None
@@ -1198,13 +1202,15 @@ def _execute_resolved_transition(case: Case, user_id: str):
     logger.info(f"Case {case.case_id} transitioned to RESOLVED (terminal state)")
 
 
-def _execute_closed_transition(case: Case, user_id: str, closure_reason: str):
+def _execute_closed_transition(
+    case: Case, user_id: str, closure_reason: ClosureReason
+) -> None:
     """Execute → CLOSED after user confirmation.
 
-    closure_reason is the engine-derived enum value (one of
-    VALID_CLOSURE_REASONS). Caller is `confirm_pending_transition`,
-    which reads it from pending_transition where `propose_transition`
-    placed it via `derive_closure_reason`.
+    closure_reason is the engine-derived reason. Callers are
+    `confirm_pending_transition`, which reads it from pending_transition
+    where `propose_transition` placed it via `derive_closure_reason`, and
+    `execute_user_closure`, which derives it.
 
     Raises:
         ValueError: If case is not in INVESTIGATING or INQUIRY status.
@@ -1249,7 +1255,7 @@ def _execute_closed_transition(case: Case, user_id: str, closure_reason: str):
     logger.info(f"Case {case.case_id} transitioned to CLOSED (terminal state)")
 
 
-def execute_user_closure(case: Case, user_id: str) -> str:
+def execute_user_closure(case: Case, user_id: str) -> ClosureReason:
     """Close a case outside the chat confirmation flow (REST close, #915).
 
     The API call itself is the user's confirmation — there is no pending

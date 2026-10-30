@@ -11,13 +11,10 @@ the earlier counter instrumentation.
 Gauges (no-ops unless ``ENABLE_METRICS=true``; see ``shims/metrics.py``):
 
 - ``faultmaven_cases{state, closure_reason}`` -- the funnel: count of ONLINE
-  cases by workflow state. ``closure_reason`` sub-classifies CLOSED
-  (``inquiry_only`` / ``closed_false_alarm`` / ``resolution_declined`` /
-  ``solution_deferred`` / ``closed_rca_infeasible`` /
-  ``mitigation_sufficient`` / ``closed_restatement_held`` /
-  ``closed_insufficient_evidence``
-  / ``unknown`` for closes that reached terminal without a classified reason --
-  the integrity gap D4 closes). ``none`` for non-closed states.
+  cases by workflow state. ``closure_reason`` sub-classifies CLOSED by
+  ``ClosureReason`` (``unknown`` for closes that reached terminal without a
+  classified reason -- the integrity gap D4 closes). ``none`` for non-closed
+  states.
 - ``faultmaven_case_resolution_turns_quantile_7d{to_state, quantile}`` -- p50/p95
   of turns-to-terminal over the investigation population (resolved +
   every close except inquiry_only; inquiry_only is
@@ -52,6 +49,7 @@ from typing import Optional
 from sqlalchemy import DateTime, bindparam, text
 
 from faultmaven.infrastructure.shims.metrics import Gauge
+from faultmaven.modules.case.contracts import ClosureReason
 from faultmaven.utils.datetime import parse_utc_timestamp
 
 logger = logging.getLogger(__name__)
@@ -66,47 +64,29 @@ _PREFILTER_MARGIN = timedelta(days=1)
 # Bounded label domains, enumerated each refresh so a combination that drops to
 # zero is reset (a gauge otherwise retains its last value for vanished series).
 _OPEN_OR_RESOLVED = ("inquiry", "investigating", "resolved")
-_CLOSED_REASONS = (
-    "inquiry_only",
-    "closed_false_alarm",
-    "resolution_declined",
-    "solution_deferred",
-    "closed_rca_infeasible",
-    "mitigation_sufficient",
-    "closed_restatement_held",
-    "closed_insufficient_evidence",
-    "unknown",
-)
+_CLOSED_REASONS = (*ClosureReason, "unknown")
 _QUANTILES = (("0.5", 0.50), ("0.95", 0.95))
 # Terminal outcomes that represent real diagnostic effort (turns-to-terminal).
 # Only inquiry_only is excluded — no investigation ran, so there is no effort to
 # measure. Every other close did the work, whatever it ended up establishing.
-_EFFORT_TO_STATES = (
-    "resolved",
-    "closed_false_alarm",
-    "resolution_declined",
-    "solution_deferred",
-    "closed_rca_infeasible",
-    "mitigation_sufficient",
-    "closed_restatement_held",
-    "closed_insufficient_evidence",
+_EFFORT_CLOSE_REASONS = tuple(
+    reason for reason in ClosureReason if reason is not ClosureReason.INQUIRY_ONLY
 )
+_EFFORT_TO_STATES = ("resolved", *_EFFORT_CLOSE_REASONS)
 
-cases_gauge = Gauge(
-    "faultmaven_cases",
+_CASES_HELP = (
     "Online cases by workflow state; closure_reason sub-classifies CLOSED "
-    "(inquiry_only / closed_false_alarm / resolution_declined / "
-    "solution_deferred / closed_rca_infeasible / "
-    "mitigation_sufficient / closed_restatement_held / "
-    "closed_insufficient_evidence / unknown).",
-    labelnames=["state", "closure_reason"],
+    f"({' / '.join(_CLOSED_REASONS)})."
+)
+cases_gauge = Gauge(
+    "faultmaven_cases", _CASES_HELP, labelnames=["state", "closure_reason"]
 )
 
 resolution_turns_quantile_7d = Gauge(
     "faultmaven_case_resolution_turns_quantile_7d",
     "Turns-to-terminal quantiles over the investigation population (every "
-    "terminal outcome except inquiry_only, which ran no investigation) closed "
-    "in the trailing 7 days (closed_at); NaN when none. "
+    f"terminal outcome except {ClosureReason.INQUIRY_ONLY}, which ran no "
+    "investigation) closed in the trailing 7 days (closed_at); NaN when none. "
     "Effort, not wall-clock.",
     labelnames=["to_state", "quantile"],
 )
@@ -115,8 +95,8 @@ duration_seconds_quantile_7d = Gauge(
     "faultmaven_case_duration_seconds_quantile_7d",
     "Wall-clock seconds from creation to the terminal transition "
     "(closed_at - created_at), quantiles over the investigation population "
-    "(every terminal outcome except inquiry_only) closed in the trailing 7 days "
-    "(closed_at); NaN when none.",
+    f"(every terminal outcome except {ClosureReason.INQUIRY_ONLY}) closed in the "
+    "trailing 7 days (closed_at); NaN when none.",
     labelnames=["to_state", "quantile"],
 )
 
@@ -182,14 +162,16 @@ class FunnelMetricsCollector:
                         "SELECT state, closure_reason, current_turn, created_at, "
                         "closed_at FROM cases "
                         "WHERE (state = 'resolved' OR (state = 'closed' AND "
-                        "closure_reason IN ('closed_false_alarm', "
-                        "'resolution_declined', 'solution_deferred', "
-                        "'closed_rca_infeasible', 'mitigation_sufficient', "
-                        "'closed_restatement_held', "
-                        "'closed_insufficient_evidence'))) "
+                        "closure_reason IN :effort_reasons)) "
                         "AND closed_at >= :floor"
-                    ).bindparams(bindparam("floor", type_=DateTime(timezone=True))),
-                    {"floor": cutoff - _PREFILTER_MARGIN},
+                    ).bindparams(
+                        bindparam("floor", type_=DateTime(timezone=True)),
+                        bindparam("effort_reasons", expanding=True),
+                    ),
+                    {
+                        "floor": cutoff - _PREFILTER_MARGIN,
+                        "effort_reasons": [r.value for r in _EFFORT_CLOSE_REASONS],
+                    },
                 )
             ).all()
             # Exact cut: the SQL floor is only a coarse over-selecting prefilter.

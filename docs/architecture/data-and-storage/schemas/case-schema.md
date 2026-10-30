@@ -276,7 +276,7 @@ class Case(BaseModel):
     # ============================================================
     state: CaseState              # inquiry | investigating | resolved | closed
     # action_history (CaseAction) is persisted to the case_actions table.
-    closure_reason: Optional[str]
+    closure_reason: Optional[ClosureReason]  # None unless CLOSED
 
     # ============================================================
     # Investigation State (first-class columns — drive milestone engine)

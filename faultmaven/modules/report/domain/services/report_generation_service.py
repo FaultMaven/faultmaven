@@ -36,6 +36,7 @@ from faultmaven.modules.case.contracts import (
     CaseReport,
     CaseState,
     CauseAssuranceGrade,
+    ClosureReason,
     ICaseRepository,
     InvestigationActionType,
     NeedObtainability,
@@ -46,6 +47,7 @@ from faultmaven.modules.case.contracts import (
     ReportType,
     SolutionOutcome,
     classify_solution_outcome,
+    closure_reason_table,
     established_by_for_display,
     mechanism_for_display,
 )
@@ -452,34 +454,38 @@ class ReportGenerationService:
     # Shared formatters
     # ============================================================
 
-    _CLOSURE_REASON_LABELS = {
-        "inquiry_only": "Inquiry only — no investigation started",
-        "closed_false_alarm": (
-            "Closed — false alarm: the reported problem was not present"
-        ),
-        "resolution_declined": (
-            "Closed — the fix was confirmed to work; the user chose not to mark "
-            "it resolved"
-        ),
-        "solution_deferred": (
-            "Closed — cause identified and fix documented, implementation deferred"
-        ),
-        "closed_rca_infeasible": (
-            "Closed — root cause structurally unreachable; mitigation is the "
-            "accepted strategy"
-        ),
-        "mitigation_sufficient": (
-            "Closed — stabilized by a verified mitigation, root-cause analysis "
-            "deferred"
-        ),
-        "closed_restatement_held": (
-            "Closed — a cause was supported by the evidence but never stated "
-            "distinctly from the problem"
-        ),
-        "closed_insufficient_evidence": (
-            "Closed — insufficient evidence to establish the problem or its cause"
-        ),
-    }
+    _CLOSURE_REASON_LABELS: Mapping[ClosureReason, str] = closure_reason_table(
+        {
+            ClosureReason.INQUIRY_ONLY: "Inquiry only — no investigation started",
+            ClosureReason.CLOSED_FALSE_ALARM: (
+                "Closed — false alarm: the reported problem was not present"
+            ),
+            ClosureReason.RESOLUTION_DECLINED: (
+                "Closed — the fix was confirmed to work; the user chose not to "
+                "mark it resolved"
+            ),
+            ClosureReason.SOLUTION_DEFERRED: (
+                "Closed — cause identified and fix documented, implementation "
+                "deferred"
+            ),
+            ClosureReason.CLOSED_RCA_INFEASIBLE: (
+                "Closed — root cause structurally unreachable; mitigation is the "
+                "accepted strategy"
+            ),
+            ClosureReason.MITIGATION_SUFFICIENT: (
+                "Closed — stabilized by a verified mitigation, root-cause "
+                "analysis deferred"
+            ),
+            ClosureReason.CLOSED_RESTATEMENT_HELD: (
+                "Closed — a cause was supported by the evidence but never stated "
+                "distinctly from the problem"
+            ),
+            ClosureReason.CLOSED_INSUFFICIENT_EVIDENCE: (
+                "Closed — insufficient evidence to establish the problem or its "
+                "cause"
+            ),
+        }
+    )
 
     @staticmethod
     def _problem_statement_section(case: Case) -> List[str]:
@@ -513,11 +519,11 @@ class ReportGenerationService:
             block.append("")
         return block
 
-    def _format_closure_reason_label(self, reason: Optional[str]) -> str:
-        """Map a closure_reason enum string to a human label."""
-        if not reason:
+    def _format_closure_reason_label(self, reason: Optional[ClosureReason]) -> str:
+        """Map a closure_reason to a human label."""
+        if reason is None:
             return "Not specified"
-        return self._CLOSURE_REASON_LABELS.get(reason, reason)
+        return self._CLOSURE_REASON_LABELS[reason]
 
     def _restatement_held_boundary_block(
         self, case: Case, hypotheses: List[Any]
@@ -1248,19 +1254,19 @@ class ReportGenerationService:
         # honest partial: what could NOT be resolved, and why. This is the
         # flywheel/calibration signal (§5.4); it is rendered from persisted case
         # state, so no separate snapshot column is needed.
-        if closure_reason_raw == "closed_false_alarm":
+        if closure_reason_raw == ClosureReason.CLOSED_FALSE_ALARM:
             parts.extend(self._false_alarm_finding_block(case))
-        elif closure_reason_raw == "closed_insufficient_evidence":
+        elif closure_reason_raw == ClosureReason.CLOSED_INSUFFICIENT_EVIDENCE:
             parts.extend(self._insufficient_evidence_boundary_block(case, hypotheses))
         # #1195: the same capture obligation, the opposite finding. Without its
         # own block a restatement-held close would render no boundary section at
         # all — silent where the case it replaced was merely wrong, which is the
         # failure mode this whole fix exists to avoid.
-        elif closure_reason_raw == "closed_restatement_held":
+        elif closure_reason_raw == ClosureReason.CLOSED_RESTATEMENT_HELD:
             parts.extend(self._restatement_held_boundary_block(case, hypotheses))
         # #2360: the report says the fix was confirmed, so it names the fix and
         # what confirmed it.
-        elif closure_reason_raw == "resolution_declined":
+        elif closure_reason_raw == ClosureReason.RESOLUTION_DECLINED:
             parts.extend(self._fix_and_confirming_evidence(case, ended="closed"))
 
         # Leading Hypotheses — top hypotheses at time of closure
@@ -1301,7 +1307,11 @@ class ReportGenerationService:
             case.progress is not None and case.progress.mitigation is not None
         )
         # A resolution_declined close already rendered its solutions above.
-        if solutions and was_mitigated and closure_reason_raw != "resolution_declined":
+        if (
+            solutions
+            and was_mitigated
+            and closure_reason_raw != ClosureReason.RESOLUTION_DECLINED
+        ):
             parts.append("## Mitigation Status\n")
             for i, sol in enumerate(solutions, 1):
                 parts.extend(self._format_solution_block(sol, i))
@@ -1316,7 +1326,7 @@ class ReportGenerationService:
 
         # Recommendation — fires when investigation ran but didn't conclude.
         # The prior "escalated"/"abandoned" guard was dead code: those
-        # values are not in VALID_CLOSURE_REASONS.
+        # values are not closure reasons.
         # Two closes leave an open lead worth naming, and they need OPPOSITE
         # advice: insufficient-evidence has a lead worth resuming from, while a
         # restatement-held close has the lead already and needs it STATED (#1195
@@ -1324,14 +1334,14 @@ class ReportGenerationService:
         # repeats the move that did not work). A deferred fix, an unreachable
         # cause, and a sufficient mitigation each already carry their own next
         # step, so a "start here next time" block would misdescribe them.
-        if closure_reason_raw == "closed_false_alarm":
+        if closure_reason_raw == ClosureReason.CLOSED_FALSE_ALARM:
             parts.append("## Recommendation\n")
             parts.append(
                 "Review the signal that raised this report — the alert "
                 "threshold, the dashboard query, or the system it was read "
                 "from — so it does not raise the same false alarm again.\n"
             )
-        elif closure_reason_raw == "closed_restatement_held":
+        elif closure_reason_raw == ClosureReason.CLOSED_RESTATEMENT_HELD:
             # #1195: the lead is not in doubt here — its WORDING is. Pointing a
             # follow-up at "start from the most promising lead" would repeat the
             # move that did not work.
@@ -1341,7 +1351,7 @@ class ReportGenerationService:
                 "leading explanation — what specifically was misconfigured, "
                 "exhausted, or failing — rather than by gathering more data.\n"
             )
-        elif closure_reason_raw == "closed_insufficient_evidence":
+        elif closure_reason_raw == ClosureReason.CLOSED_INSUFFICIENT_EVIDENCE:
             parts.append("## Recommendation\n")
             # Only a hypothesis still in play can be a lead. REFUTED ones are
             # disproven and RETIRED ones were set aside without a verdict —

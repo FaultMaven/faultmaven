@@ -18,7 +18,10 @@ ref they pin.
 stripped before comparing: no client breaks on a reworded docstring, and
 demanding a bump for prose would teach people to bump without reading the
 diff. What remains — paths, operations, parameters, request bodies, response
-codes, schemas — is what a client is written against.
+codes, schemas — is what a client is written against. One kind of text is
+structure by ruling (contract 14.9.0): an enum's per-value meanings in
+``x-enum-descriptions``, which a client's label table is written against, so
+editing one needs a bump.
 
 **It does not judge MINOR versus MAJOR.** Whether a change is one a client
 survives is the question the clients are being asked, and a script that
@@ -49,7 +52,9 @@ SPEC_RELPATH = "docs/reference/api/openapi.json"
 SPEC_PATH = PROJECT_ROOT / SPEC_RELPATH
 
 #: Keys carrying prose or illustration rather than structure. A client is not
-#: written against any of them.
+#: written against any of them. ``x-enum-descriptions`` is deliberately absent:
+#: an enum's per-value meanings are structure by ruling (contract 14.9.0), so
+#: editing one is a surface change that needs a version bump.
 _PROSE_KEYS = frozenset(
     {"description", "summary", "title", "example", "examples", "externalDocs"}
 )

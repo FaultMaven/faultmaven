@@ -6,7 +6,9 @@ bound one, and the one path that spans them all returns primitives only — ids,
 timestamps, counters, booleans, id arrays and three closed-vocabulary strings —
 and no column sourced from a title, a description or anything else a user
 typed. Of those strings the database enforces ``state``; ``source`` and
-``closure_reason`` are closed by the ``Case`` model that writes them.
+``closure_reason`` are closed by the ``Case`` model that writes them, and a
+stored ``closure_reason`` that is not a :class:`~.lifecycle.ClosureReason` is
+served null, with a warning, as an input that cannot be read.
 
 Two of the fields an operator sees are not columns. ``stage`` is derived from
 four gate milestones inside the ``progress`` blob, and ``investigation_turn``
@@ -20,7 +22,8 @@ gap reads back renumbered, and the clock with it, so reading the raw numbers
 would disagree with a loaded case on exactly those rows.
 
 A case whose stored inputs are malformed — a gate that is not a boolean, a turn
-history that is not a list of well-formed turns — is still served, with the
+history that is not a list of well-formed turns, a closure reason outside the
+vocabulary — is still served, with the
 fields that cannot be derived left null and a warning naming it. The operator
 list is how a broken case gets found, so it neither fails the page nor drops
 the row. That is the one divergence from the single-tenant list, which cannot
@@ -39,7 +42,7 @@ from .case import (
     reconcile_turn_numbers,
     stage_while_investigating,
 )
-from .lifecycle import CaseState
+from .lifecycle import CaseState, ClosureReason
 from .problem import InvestigationStage
 from .progress import investigation_stage
 
@@ -94,7 +97,7 @@ class CaseMetadata(BaseModel):
     driver_id: Optional[str]
     state: CaseState
     source: str
-    closure_reason: Optional[str]
+    closure_reason: Optional[ClosureReason]
     created_at: datetime
     updated_at: datetime
     last_activity_at: datetime
@@ -148,11 +151,21 @@ class CaseMetadata(BaseModel):
         inside its own guard, and a field that cannot be derived is ``None``,
         logged with the case and its enterprise. The columns themselves are
         served as stored — they are typed and constrained by the schema
-        (NOT NULL, ``cases_state_check``), so they always build the row.
+        (NOT NULL, ``cases_state_check``), so they always build the row —
+        except ``closure_reason``, which nothing in the database constrains:
+        one that is not a ``ClosureReason`` is served ``None`` and logged the
+        same way. (A case load still refuses it.)
         """
         lifecycle_state = CaseState(state)
         clock = current_turn or 0
         unreadable: List[str] = []
+
+        stored_reason: Optional[ClosureReason] = None
+        if closure_reason is not None:
+            try:
+                stored_reason = ClosureReason(closure_reason)
+            except ValueError:
+                unreadable.append("closure_reason (not a closure reason)")
 
         investigation_turn: Optional[int] = None
         try:
@@ -201,7 +214,7 @@ class CaseMetadata(BaseModel):
             driver_id=driver_id,
             state=lifecycle_state,
             source=source,
-            closure_reason=closure_reason,
+            closure_reason=stored_reason,
             created_at=created_at,
             updated_at=updated_at,
             # A NULL column loads as the model's default on a full case read,

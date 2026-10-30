@@ -254,7 +254,7 @@ class TestINV03_DispositionHandshake:
 #      currently agree but have no single source of truth.
 #   c. ``CaseActionManager.validate_action`` has zero production callers —
 #      effectively dead code. The ALLOWED_ACTIONS dict is used by the UI
-#      adapter (get_allowed_transitions) to populate dropdown options; it
+#      adapter (selectable_next_states) to populate dropdown options; it
 #      informs the affordance surface, not enforcement.
 
 

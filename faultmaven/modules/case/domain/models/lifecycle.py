@@ -1,9 +1,17 @@
 from datetime import datetime, timezone
-from enum import Enum
+from enum import Enum, StrEnum
 from types import MappingProxyType
-from typing import Mapping
+from typing import Mapping, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    GetJsonSchemaHandler,
+    model_validator,
+)
+from pydantic.json_schema import JsonSchemaValue
+from pydantic_core import CoreSchema
 
 # ============================================================
 # Status & Lifecycle Models (Section 2)
@@ -76,8 +84,8 @@ class CaseState(str, Enum):
 
     Characteristics:
     - Inquiry-only (no investigation), OR any close from INVESTIGATING
-    - closure_reason is one of VALID_CLOSURE_REASONS (defined below in this
-      module), set by derive_closure_reason
+    - closure_reason is a ClosureReason (defined below in this module), set
+      by derive_closure_reason
     - No further case actions allowed
 
     Disposition: Terminal (permanent)
@@ -297,71 +305,47 @@ class InvestigationStrategy(str, Enum):
 
 
 # ============================================================
-# Closure Reason Enum
+# Closure Reason
 # ============================================================
 #
-# Sub-categorization of CLOSED state. Engine-derived from case state at
-# transition time. None for non-terminal and RESOLVED cases.
+# Sub-categorization of the CLOSED state, derived by the engine from the state
+# the case was closed from (``derive_closure_reason``). Every close carries a
+# REASON: why the case ended, never merely when. What each value means is
+# contract text, published as the enum's ``x-enum-descriptions`` from
+# ``_CLOSURE_REASON_MEANINGS`` below: changing one moves the contract version.
 #
-# All values are programmatic — derived from the state the case was closed from
-# (unified opportunistic flow, no path fork). Every close carries a REASON: a
-# closure_reason must say why the case ended, never merely when. Derived in the
-# order below, most specific first:
+# The members are declared in derivation order, most specific first; where
+# several hold, the first wins:
 #
-#   - inquiry_only: INQUIRY → CLOSED (no investigation started)
-#   - closed_false_alarm: the evidence showed the reported symptom was never
-#     present where and when it was reported (``problem_status`` INVALIDATED,
-#     with the absence evidence cited). A FINDING, not a failure: the
-#     investigation succeeded in showing there was nothing to fix. First among
-#     the INVESTIGATING reasons because it is decisive — no cause, fix or
-#     mitigation can stand on a problem that never existed. The one close the
-#     engine itself offers on a finding (problem_status.invalidate_problem).
-#   - resolution_declined: the fix was confirmed to work (the case qualifies
-#     for RESOLVED) and the user chose not to mark it resolved: a resolve
-#     decline stands (#1895), so their close closes instead of pivoting to
-#     resolve (#2360). Ahead of solution_deferred, which on such a case would
-#     say the fix was never applied.
-#   - solution_deferred: the cause is IDENTIFIED and a fix is documented, but
-#     implementation happens out-of-band (a change request, a maintenance
-#     window, another team) — `solution_feasible == DEFERRED` with a solution on
-#     record, the disposition `_maybe_propose_deferred_close` proposes. The most
-#     complete non-resolved outcome there is: nothing was missing, the fix
-#     simply was not applied this session. Ranked ahead of the remaining
-#     INVESTIGATING reasons for that reason — where several hold, the one
-#     carrying the most established knowledge wins.
-#   - closed_rca_infeasible: the cause is STRUCTURALLY unreachable — an
-#     uncontrollable external dependency, an EOL system, a known intractable
-#     condition — as declared by `problem_verification.rca_infeasible` WITH a
-#     rationale. Distinct from insufficient evidence, which is contingent: there
-#     the evidence may well exist and someone with more access could get it, so
-#     it is a signal to improve observability. Here nothing can be improved and
-#     the right artefact is a documented workaround; a future reader should know
-#     not to re-open this expecting to find a cause. Ranked ABOVE
-#     mitigation_sufficient because the engine's only path to it fires on
-#     `mitigation_verified` (milestone_engine, "propose closure as stabilized
-#     rather than push RCA"), so both hold on essentially every such close and
-#     the more informative label must win — it already implies a verified
-#     mitigation AND explains why RCA stopped.
-#   - mitigation_sufficient: a verified mitigation on record; the symptom is
-#     relieved and RCA was deferred BY CHOICE, with the cause still reachable if
-#     anyone returns to it. This is the one closure in the set that is not a
-#     failure of any kind, which is why it is not folded into a generic bucket.
-#   - closed_restatement_held: the evidence DID support a cause, and the §7.1
-#     restatement guard held every unsettled root because its statement never
-#     added anything over the problem — so the case ended with a cause it could
-#     not promote for want of a distinct MECHANISM, not for want of data
-#     (#1195). Ranked immediately above the generic bucket, which it only ever
-#     displaces: routing it there would head the closure summary "insufficient
-#     evidence to establish the problem or its cause" over a case that gathered
-#     enough, and would bucket it with genuine data walls in the flywheel.
+#   - inquiry_only: the one reason a close from INQUIRY has.
+#   - closed_false_alarm first among the INVESTIGATING reasons, because it is
+#     decisive: no cause, fix or mitigation can stand on a problem that never
+#     existed. The one close the engine itself offers on a finding
+#     (problem_status.invalidate_problem).
+#   - resolution_declined ahead of solution_deferred, which on such a case would
+#     not say the fix was confirmed to work (#2360).
+#   - solution_deferred ahead of the remaining reasons: where several hold, the
+#     one carrying the most established knowledge wins.
+#   - closed_rca_infeasible ABOVE mitigation_sufficient, because the engine's
+#     only path to it fires on `mitigation_verified` (milestone_engine, "propose
+#     closure as stabilized rather than push RCA"), so both hold on essentially
+#     every such close and the more informative label must win. It holds only
+#     WITH a rationale. Distinct from insufficient evidence, which is contingent
+#     (someone with more access could get it): here a future reader should know
+#     not to re-open the case expecting to find a cause.
+#   - mitigation_sufficient: the one closure in the set that is not a failure of
+#     any kind, which is why it is not folded into a generic bucket.
+#   - closed_restatement_held immediately above the generic bucket, which it
+#     only ever displaces (#1195): routing it there would head the closure
+#     summary "insufficient evidence to establish the problem or its cause" over
+#     a case that gathered enough, and would bucket it with genuine data walls
+#     in the flywheel.
 #   - closed_insufficient_evidence: the default for any other close from
-#     INVESTIGATING — what was needed was never established, whether at the
-#     SYMPTOM level (the problem could not be verified) or at the CAUSE level
-#     (verified, but no cause could be grounded). Capture-on-close only: the
-#     honest partial (residual candidates + the specific unmet/unobtainable
-#     need, already persisted on the case) is signal for calibration and the
-#     flywheel. The engine never nudges toward this close (no SUGGEST_CLOSE);
-#     see insufficient-evidence-handling.md §5.4.
+#     INVESTIGATING. Capture-on-close only: the honest partial (residual
+#     candidates + the specific unmet need, already persisted on the case) is
+#     signal for calibration and the flywheel, and the engine never nudges
+#     toward this close (no SUGGEST_CLOSE); see
+#     insufficient-evidence-handling.md §5.4.
 #
 # REMOVED: closed_after_investigation. It named the state a case closed FROM
 # rather than why it ended, and covered four unrelated situations at once — a
@@ -374,14 +358,94 @@ class InvestigationStrategy(str, Enum):
 #
 # The LLM does NOT emit closure_reason; user-motivation context (e.g., "we're
 # escalating") lives in the LLM-authored persistent Report's free-form summary.
+#
+# A ``StrEnum``, not the ``(str, Enum)`` of the other enums here: the value is
+# persisted and compared as text (``pending_transition["justifying_signature"]``
+# is ``f"{reason}|{turn}"``) and interpolated into prompts and the action
+# history, and ``str()`` of a ``(str, Enum)`` member renders its NAME.
 
-VALID_CLOSURE_REASONS: set[str] = {
-    "inquiry_only",
-    "closed_false_alarm",
-    "resolution_declined",
-    "solution_deferred",
-    "closed_rca_infeasible",
-    "mitigation_sufficient",
-    "closed_restatement_held",
-    "closed_insufficient_evidence",
-}
+
+class ClosureReason(StrEnum):
+    """Why a CLOSED case ended: the most specific reason that holds when it is closed. Null for any case that is not CLOSED."""
+
+    INQUIRY_ONLY = "inquiry_only"
+    CLOSED_FALSE_ALARM = "closed_false_alarm"
+    RESOLUTION_DECLINED = "resolution_declined"
+    SOLUTION_DEFERRED = "solution_deferred"
+    CLOSED_RCA_INFEASIBLE = "closed_rca_infeasible"
+    MITIGATION_SUFFICIENT = "mitigation_sufficient"
+    CLOSED_RESTATEMENT_HELD = "closed_restatement_held"
+    CLOSED_INSUFFICIENT_EVIDENCE = "closed_insufficient_evidence"
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, core_schema: CoreSchema, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        schema = handler.resolve_ref_schema(handler(core_schema))
+        schema["x-enum-descriptions"] = [_CLOSURE_REASON_MEANINGS[m] for m in cls]
+        return schema
+
+
+_T = TypeVar("_T")
+
+
+def closure_reason_table(
+    mapping: Mapping[ClosureReason, _T],
+) -> Mapping[ClosureReason, _T]:
+    """``mapping`` as a read-only table with exactly one entry per closure reason.
+
+    Raises ``ValueError`` naming every member it lacks and every key that is not
+    a member. A ``dict[ClosureReason, …]`` is tied to the vocabulary by type but
+    not complete, and completeness is what a hand-kept copy loses when a value
+    is added.
+    """
+    members = set(ClosureReason)
+    missing = [member.value for member in ClosureReason if member not in mapping]
+    extra = [repr(key) for key in mapping if key not in members]
+    if missing or extra:
+        raise ValueError(
+            "a closure-reason table needs one entry per ClosureReason: "
+            f"missing {missing or 'none'}, not a member {extra or 'none'}"
+        )
+    return MappingProxyType({member: mapping[member] for member in ClosureReason})
+
+
+#: Each value's meaning, published as the enum's ``x-enum-descriptions``.
+#: Contract text: editing an entry moves the contract version.
+_CLOSURE_REASON_MEANINGS: Mapping[ClosureReason, str] = closure_reason_table(
+    {
+        ClosureReason.INQUIRY_ONLY: (
+            "Closed during inquiry, before any investigation started."
+        ),
+        ClosureReason.CLOSED_FALSE_ALARM: (
+            "The evidence showed the reported problem was not present where and "
+            "when it was reported, so there was nothing to fix."
+        ),
+        ClosureReason.RESOLUTION_DECLINED: (
+            "The fix was confirmed to work, and the user chose not to mark the "
+            "case resolved."
+        ),
+        ClosureReason.SOLUTION_DEFERRED: (
+            "The cause was identified and a fix documented, and the case was "
+            "closed without being resolved."
+        ),
+        ClosureReason.CLOSED_RCA_INFEASIBLE: (
+            "The root cause was declared structurally unreachable, with a "
+            "rationale (for example an uncontrollable external dependency or an "
+            "end-of-life system)."
+        ),
+        ClosureReason.MITIGATION_SUFFICIENT: (
+            "A verified mitigation relieved the symptom, and root-cause analysis "
+            "was not pursued further."
+        ),
+        ClosureReason.CLOSED_RESTATEMENT_HELD: (
+            "The evidence supported a cause, but its statement never said more "
+            "than the problem itself, so no root cause was established."
+        ),
+        ClosureReason.CLOSED_INSUFFICIENT_EVIDENCE: (
+            "No more specific reason held: the problem could not be verified, no "
+            "cause could be grounded in the evidence, or a cause was identified "
+            "with no fix or verified mitigation on record."
+        ),
+    }
+)

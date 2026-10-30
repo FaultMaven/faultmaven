@@ -93,6 +93,7 @@ from faultmaven.modules.case.domain.models.evidence import (
 from faultmaven.modules.case.domain.services.case_action_manager import (
     USER_SELECTABLE_ACTIONS,
     CaseActionManager,
+    SelectableNextState,
 )
 from tests.model_content import disabled_redaction
 from tests.unit.core.investigation.test_deferred_disposition_turn import (
@@ -876,8 +877,8 @@ class TestRESOLVEDStaysUnselectable:
             deferred_disposition_signature(case, _SR)
         ]
         assert declined_resolve_card(case) is not None
-        assert CaseActionManager.get_allowed_transitions(case.state) == [
-            CaseState.CLOSED
+        assert CaseActionManager.selectable_next_states(case.state) == [
+            SelectableNextState.CLOSED
         ]
         assert derive_disposition_eligibility(case) == {
             "resolved": "ready",

@@ -155,3 +155,16 @@ def test_a_terminal_state_is_built_with_its_stamps():
         last_activity_at=_FIXED,
     )
     assert case.state is CaseState.RESOLVED
+
+
+@pytest.mark.parametrize("after_build", [False, True])
+def test_a_case_given_no_statement_confirms_its_description(after_build):
+    """A confirmed statement is never empty (``InquiryData``'s validator), so a
+    case built without ``statement=`` confirms its description, which is where
+    production copies the confirmed statement. It used to confirm nothing, an
+    inquiry no load would accept (#1795)."""
+    case = investigating_case(
+        description="Checkout 502s", confirm_after_build=after_build
+    )
+    assert case.inquiry.proposed_problem_statement == "Checkout 502s"
+    InquiryData.model_validate(case.inquiry.model_dump())
