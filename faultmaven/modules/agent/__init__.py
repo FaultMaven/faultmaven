@@ -10,8 +10,8 @@ Public API:
     From domain.services (import directly):
         - InvestigationService
 
-    From tools:
-        - tool_registry, AgentTool, ToolContext
+    From tools.base:
+        - AgentTool, AgentToolRegistry, ToolContext
 
 Usage:
     from faultmaven.modules.case.contracts import AgentType

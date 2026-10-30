@@ -653,7 +653,12 @@ class EntitiesMetadata(BaseModel):
 
 class CoverageMetadata(BaseModel):
     """Extractor time-range details beyond the promoted columns (Phase 3).
-    The coverage_start_ts / coverage_end_ts columns are the queryable projection."""
+    The span is on the coverage_start_ts / coverage_end_ts columns and the pattern
+    on coverage_source, which context_builder and symptom_currency read. Intake
+    does not store this object: an upload writes no evidence row, and a row the
+    model records later is written without it. Only the row an evidence
+    reclassification addresses carries it, lifted from the re-extraction;
+    nothing reads it back."""
     source: Optional[str] = None    # which timestamp pattern matched (iso8601, syslog_bsd, epoch_s, ...)
 
 class EvidenceMetadata(BaseModel):
@@ -670,11 +675,11 @@ class EvidenceMetadata(BaseModel):
 | `classification` | `PreprocessingService` | `context_builder` (low-confidence marker) | Phase 1 |
 | `extractor` | `PreprocessingService` | observability only (no agent-visible effect) | Phase 1 (minimal) / Phase 2 (full `attempts`) |
 | `entities` | `PreprocessingService` (on cap overflow) | agent tool `find_entity` reads the row-level table; overflow marker tells the agent "not all entities are indexed" | Phase 4 |
-| `coverage` | `PreprocessingService` | context builder (rerank); `list_evidence_by_time` tool | Phase 3 |
+| `coverage` | `PreprocessingService` | none: the context builder and `symptom_currency` read the `coverage_*_ts` and `coverage_source` columns, not this key | Phase 3 |
 
 **Backward compatibility.** Every key is optional; every existing row has `metadata = NULL` or a shape without these keys. Readers must tolerate missing keys and missing fields within each key without raising.
 
-**Why JSON and not columns.** Classifier confidence, extractor attempts, and overflow markers are **diagnostic signals** attached to an evidence row — they are not queried on their own, they are read alongside the evidence. Promoting any of these to a column would buy indexing we don't need. The `coverage_*_ts` columns are the one exception: they support indexed time-window queries and earn their column status.
+**Why JSON and not columns.** Classifier confidence, extractor attempts, and overflow markers are **diagnostic signals** attached to an evidence row — they are not queried on their own, they are read alongside the evidence. Promoting any of these to a column would buy indexing we don't need. The coverage span is the exception: it lives in the `coverage_start_ts` / `coverage_end_ts` columns, which Python code reads off the loaded row (for example the context builder's time-window rerank and `observed_through` attribute, and `symptom_currency`); no query filters on them by a time window. Their index, `ix_evidence_coverage`, has no query to serve; dropping it is #2405.
 
 ### 4.4 hypotheses (High-Cardinality Table)
 

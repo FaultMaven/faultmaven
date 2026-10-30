@@ -10,16 +10,24 @@ live key is released once its last live draft goes. A delete that does not
 complete leaves the draft as it was; one whose vector delete fails after its
 commit has completed (#2397), and discards it.
 
+``fm-reset-kb --all-drafts`` deletes the drafts instead. On either path the
+reset then releases the live key of each case job left with no live draft, so a
+case whose pending draft this reset or an earlier one deleted converts again
+through ``convert_from_case`` (#2387). The count it prints is the keys it
+released, also when another session converts a case meanwhile. A dry run
+releases no key.
+
 The SQLite tests run on the #2365 tests' database, which enforces foreign keys
 as the app's engine does, so a discard issued after the ``DELETE`` would match
-nothing. Three run on PostgreSQL: one races a link against the delete, and one
-lands an upload inside a reset, in a database of its own.
+nothing. Five run on PostgreSQL: one races a link against the delete, and three
+run a reset, in a database of their own.
 """
 
 from __future__ import annotations
 
 import asyncio
 import os
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -31,9 +39,11 @@ from sqlalchemy.pool import NullPool
 from faultmaven.cli import reset_kb
 from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.config.tenant_context import _current_enterprise_id
+from faultmaven.infrastructure.llm.providers import LLMResponse, StopReason
 from faultmaven.infrastructure.persistence import database
 from faultmaven.infrastructure.persistence.models import (
     Base,
+    CaseModel,
     ConversionDraftModel,
     ConversionJobModel,
     EnterpriseModel,
@@ -43,8 +53,17 @@ from faultmaven.infrastructure.persistence.models import (
     UserModel,
 )
 from faultmaven.models.exceptions import KnowledgeBaseError
+from faultmaven.modules.knowledge.domain.models.conversion import (
+    CaseConversionRequest,
+    ConversionResponse,
+    ConversionStatus,
+    SourceFileInfo,
+)
 from faultmaven.modules.knowledge.domain.services.conversion_service import (
     draft_retirement,
+)
+from faultmaven.modules.knowledge.domain.services.conversion_service.job_persistence import (
+    _persist_job,
 )
 from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
     ConversionService,
@@ -61,6 +80,10 @@ from tests.integration.modules.knowledge.test_upload_writes_rows_after_ingest_23
     session_factory,
 )
 from tests.runbook_samples import valid_runbook
+from tests.unit.modules.knowledge.test_conversion_service import (
+    _case_analysis,
+    _make_case_draft,
+)
 from tests.utils import regex_only_sanitizer, seed_enterprises, seed_users
 
 pytestmark = [pytest.mark.integration, pytest.mark.knowledge_base]
@@ -145,6 +168,95 @@ async def _draft_and_key(factory, draft_id: str):
         draft = await session.get(ConversionDraftModel, draft_id)
         job = await session.get(ConversionJobModel, draft.conversion_id)
     return draft, job.live_case_id
+
+
+async def _open_case(factory, case_id: str = CASE_KEY) -> None:
+    """The case row ``conversion_jobs.case_id`` keys on."""
+    enterprise = _current_enterprise_id.get()
+    await _add(factory, CaseModel(case_id=case_id, enterprise_id=enterprise, title="t"))
+
+
+async def _convert(factory, case_id: str = CASE_KEY) -> ConversionResponse:
+    """Convert the case through ``convert_from_case``, its model mocked to
+    write a valid runbook."""
+    router = AsyncMock()
+    router.route.return_value = LLMResponse(
+        content=valid_runbook("Redis Evictions Under Memory Pressure"),
+        confidence=0.9,
+        provider="test",
+        model="test-model",
+        tokens_used=100,
+        response_time_ms=10,
+        stop_reason=StopReason.STOP,
+    )
+    settings = MagicMock()
+    settings.llm.get_knowledge_model.return_value = "test-model"
+    converter = ConversionService(
+        sanitizer=regex_only_sanitizer(),
+        llm_router=router,
+        settings=settings,
+        db_session_factory=factory,
+        knowledge_service=None,
+    )
+    return await converter.convert_from_case(
+        CaseConversionRequest(
+            case_id=case_id,
+            title="Redis evictions",
+            description="Keys are evicted under memory pressure.",
+            root_cause="maxmemory is set below the working set",
+        ),
+        user_id=OWNER,
+        enterprise_id=_current_enterprise_id.get(),
+    )
+
+
+async def _key_of(factory, job_id: str):
+    async with factory() as session:
+        return (await session.get(ConversionJobModel, job_id)).live_case_id
+
+
+async def _reset(factory, monkeypatch, *, all_drafts: bool, dry_run=False) -> int:
+    monkeypatch.setattr(database, "get_db_session", factory)
+    return await reset_kb.reset_kb(
+        dry_run=dry_run, all_drafts=all_drafts, rebuild=False, keep_chroma=True
+    )
+
+
+async def _orphan_a_key(factory, case_id: str = CASE_KEY) -> str:
+    """Convert the case, then delete its drafts as ``--all-drafts`` did
+    before #2387, keeping its job's key; return the job's id."""
+    job_id = (await _convert(factory, case_id)).conversion_id
+    async with factory() as session:
+        await session.execute(
+            delete(ConversionDraftModel).where(
+                ConversionDraftModel.conversion_id == job_id
+            )
+        )
+        await session.commit()
+    assert await _key_of(factory, job_id) == case_id
+    return job_id
+
+
+async def _persist_case_job(factory, job_id: str, *draft_ids: str) -> None:
+    """Write a case job with several pending drafts through ``_persist_job``:
+    ``convert_from_case`` writes one draft per job."""
+    await _persist_job(
+        factory,
+        None,
+        conversion_id=job_id,
+        user_id=OWNER,
+        enterprise_id=_current_enterprise_id.get(),
+        scope="personal",
+        team_id=None,
+        status=ConversionStatus.COMPLETED,
+        source_file=SourceFileInfo(filename="case", size_bytes=1, content_type="x"),
+        analysis=_case_analysis(),
+        drafts=[_make_case_draft(draft_id=draft_id) for draft_id in draft_ids],
+        created_at=datetime.now(timezone.utc),
+        source_type="case",
+        case_id=CASE_KEY,
+        sanitizer=regex_only_sanitizer(),
+    )
 
 
 @pytest.mark.parametrize("kind", ["document", "case", "upload"])
@@ -296,7 +408,140 @@ async def test_a_kb_reset_discards_the_drafts_of_what_it_deletes(
     for draft_id in (case_draft, upload_draft):
         draft, key = await _draft_and_key(session_factory, draft_id)
         assert (draft.status, draft.knowledge_item_id, key) == ("discarded", None, None)
-    assert "discarding the 2 that published" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "discarding the 2 that published" in out
+    # The case job's key, released by the discard ahead of the DELETE.
+    assert "Released 1 case conversion keys held with no live draft." in out
+
+
+async def _reset_every_draft_then_convert_again(factory, monkeypatch) -> None:
+    """A case's conversion is pending. ``fm-reset-kb --all-drafts`` deletes its
+    draft and releases its job's key, so converting the case again completes:
+    with the key held, ``uq_conversion_jobs_live_case_id`` refused it."""
+    await _open_case(factory)
+    before = await _convert(factory)
+    (pending,) = before.drafts
+    assert await _key_of(factory, before.conversion_id) == CASE_KEY
+
+    assert await _reset(factory, monkeypatch, all_drafts=True) == 0
+
+    async with factory() as session:
+        assert await session.get(ConversionDraftModel, pending.draft_id) is None
+    after = await _convert(factory)
+    assert after.status == ConversionStatus.COMPLETED
+    assert await _key_of(factory, after.conversion_id) == CASE_KEY
+
+
+async def test_a_reset_of_every_draft_frees_their_cases(session_factory, monkeypatch):
+    await _reset_every_draft_then_convert_again(session_factory, monkeypatch)
+
+
+async def test_a_job_losing_two_drafts_to_a_reset_is_released_once(
+    session_factory, monkeypatch, capsys
+):
+    await _open_case(session_factory)
+    await _persist_case_job(session_factory, "conv_two", "first", "second")
+
+    await _reset(session_factory, monkeypatch, all_drafts=True)
+
+    assert await _key_of(session_factory, "conv_two") is None
+    out = capsys.readouterr().out
+    assert "Deleted 2 conversion_drafts rows (--all-drafts)." in out
+    assert "Released 1 case conversion keys held with no live draft." in out
+
+
+@pytest.mark.parametrize("all_drafts", [False, True])
+async def test_a_reset_releases_a_key_an_earlier_reset_left_without_a_draft(
+    session_factory, monkeypatch, capsys, all_drafts
+):
+    await _open_case(session_factory)
+    job_id = await _orphan_a_key(session_factory)
+
+    assert await _reset(session_factory, monkeypatch, all_drafts=all_drafts) == 0
+
+    assert await _key_of(session_factory, job_id) is None
+    out = capsys.readouterr().out
+    assert "Released 1 case conversion keys held with no live draft." in out
+    assert (await _convert(session_factory)).status == ConversionStatus.COMPLETED
+
+
+async def test_a_dry_run_with_all_drafts_changes_nothing(
+    session_factory, monkeypatch, capsys
+):
+    """One case's conversion is pending and another's key has no draft left:
+    ``--dry-run --all-drafts`` deletes no draft and releases no key."""
+    await _open_case(session_factory)
+    await _open_case(session_factory, "case-2387-orphan")
+    (pending,) = (await _convert(session_factory)).drafts
+    orphan_job = await _orphan_a_key(session_factory, "case-2387-orphan")
+
+    code = await _reset(session_factory, monkeypatch, all_drafts=True, dry_run=True)
+
+    assert code == 0
+    draft, key = await _draft_and_key(session_factory, pending.draft_id)
+    assert (draft.status, key) == ("draft", CASE_KEY)
+    assert await _key_of(session_factory, orphan_job) == "case-2387-orphan"
+    assert "(dry-run) No changes made." in capsys.readouterr().out
+
+
+async def test_a_default_reset_releases_the_dead_keys_and_keeps_the_live_one(
+    session_factory, monkeypatch, capsys
+):
+    """A pending case conversion, a key with no draft left, a key whose drafts
+    are all discarded, and a document job with no key: the reset releases the
+    two dead keys, keeps the live one, and the helper's ``UPDATE`` matches those
+    two jobs."""
+    for case_id in (CASE_KEY, "case-2387-orphan"):
+        await _open_case(session_factory, case_id)
+    live = (await _convert(session_factory)).conversion_id
+    orphaned = await _orphan_a_key(session_factory, "case-2387-orphan")
+    await _add(
+        session_factory,
+        *_job("conv_discarded", kind="case", key="case-2387-discarded"),
+        _draft("gone", "conv_discarded", status="discarded"),
+        *_job("conv_document", kind="document"),
+    )
+    release = draft_retirement.release_case_keys_without_a_live_draft
+    matched: list[int] = []
+
+    async def record(session):
+        matched.append(await release(session))
+        return matched[-1]
+
+    monkeypatch.setattr(
+        draft_retirement, "release_case_keys_without_a_live_draft", record
+    )
+
+    assert await _reset(session_factory, monkeypatch, all_drafts=False) == 0
+
+    jobs = (live, orphaned, "conv_discarded", "conv_document")
+    assert [await _key_of(session_factory, job) for job in jobs] == [
+        CASE_KEY,
+        None,
+        None,
+        None,
+    ]
+    assert matched == [2]
+    out = capsys.readouterr().out
+    assert "Released 2 case conversion keys held with no live draft." in out
+
+
+async def test_a_reset_whose_commit_fails_prints_no_count_and_keeps_the_key(
+    session_factory, monkeypatch, capsys
+):
+    await _open_case(session_factory)
+    job_id = await _orphan_a_key(session_factory)
+    failing = _FailingCommit(session_factory, (RuntimeError("commit failed"), False))
+    failing.armed = True
+    capsys.readouterr()
+
+    with pytest.raises(RuntimeError):
+        await _reset(failing, monkeypatch, all_drafts=True)
+
+    assert await _key_of(session_factory, job_id) == CASE_KEY
+    out = capsys.readouterr().out
+    assert "Released" not in out
+    assert "Deleted" not in out
 
 
 _needs_postgres = pytest.mark.skipif(
@@ -461,3 +706,84 @@ async def test_a_runbook_published_during_a_kb_reset_is_kept_whole(
     draft, _ = await _draft_and_key(own_pg, landed["draft"])
     assert (draft.status, draft.knowledge_item_id) == ("verified", landed["item"])
     assert "Kept 1 knowledge_items rows written while" in capsys.readouterr().out
+
+
+_A_CASE_CONVERTS_DURING_THE_RESET = pytest.mark.parametrize(
+    ("orphan", "all_drafts", "released"),
+    [(True, False, 1), (False, False, 0), (True, True, 2)],
+    ids=["orphaned-key", "nothing-to-release", "all-drafts"],
+)
+
+
+async def _reset_while_a_case_converts(
+    factory, monkeypatch, capsys, *, orphan, all_drafts, released
+) -> None:
+    """Another session converts a case and commits while the reset's session is
+    open, ahead of its draft step. The count printed is the keys this reset
+    released: the draft step's plus the helper's ``UPDATE``'s. Taken as the jobs
+    holding a key before less those holding one after, the new job's key skewed
+    it: ``Released 0`` for 1, ``Released -1`` for 0 and, under ``--all-drafts``,
+    ``Released 1`` for 2."""
+    await _open_case(factory, "case-concurrent")
+    orphaned = None
+    if orphan:
+        await _open_case(factory)
+        orphaned = await _orphan_a_key(factory)
+    discard = draft_retirement.discard_drafts_naming_any_item
+    landed: list[str] = []
+
+    async def convert_then_discard(session):
+        landed.append((await _convert(factory, "case-concurrent")).conversion_id)
+        return await discard(session)
+
+    monkeypatch.setattr(
+        draft_retirement, "discard_drafts_naming_any_item", convert_then_discard
+    )
+    capsys.readouterr()
+
+    assert await _reset(factory, monkeypatch, all_drafts=all_drafts) == 0
+
+    assert orphaned is None or await _key_of(factory, orphaned) is None
+    # ``--all-drafts`` deleted the new job's draft as well, and so its key.
+    held = None if all_drafts else "case-concurrent"
+    assert await _key_of(factory, landed[0]) == held
+    out = capsys.readouterr().out
+    assert f"Released {released} case conversion keys held with no live draft." in out
+
+
+@_A_CASE_CONVERTS_DURING_THE_RESET
+async def test_a_reset_counts_only_the_keys_it_released(
+    session_factory, monkeypatch, capsys, orphan, all_drafts, released
+):
+    await _reset_while_a_case_converts(
+        session_factory,
+        monkeypatch,
+        capsys,
+        orphan=orphan,
+        all_drafts=all_drafts,
+        released=released,
+    )
+
+
+@pytest.mark.postgres
+@_needs_postgres
+@_A_CASE_CONVERTS_DURING_THE_RESET
+async def test_a_reset_counts_only_the_keys_it_released_on_postgresql(
+    own_pg, monkeypatch, capsys, orphan, all_drafts, released
+):
+    await _reset_while_a_case_converts(
+        own_pg,
+        monkeypatch,
+        capsys,
+        orphan=orphan,
+        all_drafts=all_drafts,
+        released=released,
+    )
+
+
+@pytest.mark.postgres
+@_needs_postgres
+async def test_a_reset_of_every_draft_frees_their_cases_on_postgresql(
+    own_pg, monkeypatch
+):
+    await _reset_every_draft_then_convert_again(own_pg, monkeypatch)

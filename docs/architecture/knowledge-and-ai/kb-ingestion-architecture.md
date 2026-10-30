@@ -167,10 +167,10 @@ source .venv/bin/activate
 fm-reset-kb --dry-run             # See counts; no changes
 fm-reset-kb --yes                 # Wipe; bootstrap reruns on API restart
 fm-reset-kb --yes --rebuild       # Wipe + immediate in-process rebuild
-fm-reset-kb --yes --all-drafts    # Also delete case-generated drafts
+fm-reset-kb --yes --all-drafts    # Also delete every draft (upload, document, case)
 ```
 
-Default behaviour is conservative: SQL `knowledge_items` are deleted, ChromaDB is removed, but `conversion_drafts` (which may contain case-generated work in progress) are preserved unless `--all-drafts` is passed. A draft that published a deleted runbook is discarded first, its text kept, so it is not left listed as verified (#2369). Only the items the reset locked are deleted; one a running API writes meanwhile is kept and reported.
+Default behaviour is conservative: SQL `knowledge_items` are deleted, ChromaDB is removed, but `conversion_drafts` are preserved unless `--all-drafts` is passed. A draft that published a deleted runbook is discarded first, its text kept, so it is not left listed as verified (#2369). `--all-drafts` deletes every draft instead (upload, document and case drafts alike; for an authored runbook whose item the reset deletes, its draft holds the last copy of its text). On either path the reset then releases each case key held by a conversion job with no live draft left, so that case can be converted again (#2387). Only the items the reset locked are deleted; one a running API writes meanwhile is kept and reported.
 
 The ChromaDB half is an `rmtree` of a **local** directory resolved from
 `CHROMADB_KB_PERSIST_DIR`, read exactly as `create_persistent_client` reads it

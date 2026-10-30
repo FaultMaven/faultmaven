@@ -505,10 +505,8 @@ def extract_time_range_ts(
             break
 
     # Meaningful coverage span requires both bounds. A single head
-    # timestamp without a tail bound collapses to (ts, None, source) —
-    # the Phase 3 repository query handles this by treating single-point
-    # evidence as covering [ts, ts]; callers who need a strict range
-    # check the end_ts for None.
+    # timestamp without a tail bound collapses to (ts, None, source);
+    # callers who need a strict range check the end_ts for None.
     return first_ts, last_ts, source
 
 

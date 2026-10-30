@@ -1,10 +1,11 @@
-"""Agent Tool Infrastructure (TASK-015)
+"""Agent tool base class, context and registry.
 
-This module provides the base classes and context for agent tool execution.
-Tools are invoked by the LLM during agent execution to perform actions
-like reading files, searching knowledge bases, and listing evidence.
-
-Design Reference: docs/architecture/TASK-015-agent-orchestration-design.md
+``AgentTool`` is the base class of the tools the model can call, ``ToolContext``
+the case and turn a tool runs for, and ``AgentToolRegistry`` the registry the
+milestone engine looks a tool call up in and runs it through. The model is
+given the tools in the registry that ``_create_investigation_tools``
+(``container/providers/services.py``) builds; this module holds no registry
+instance.
 """
 
 import logging
@@ -296,13 +297,11 @@ def tool_failure(reason: str, exc: BaseException, *, guidance: str = "") -> Tool
 
 
 class AgentToolRegistry(IAgentToolRegistry):
-    """Registry for agent-specific tools.
+    """Registry for agent tools: lookup by name, schema generation and
+    execution.
 
-    Manages available tools for agent execution and provides
-    methods for tool lookup and schema generation.
-
-    This is separate from the global ToolRegistry to allow
-    for agent-specific tool registration and configuration.
+    ``_create_investigation_tools`` builds the instance the milestone engine
+    gives the model and runs its tool calls through.
     """
 
     def __init__(self) -> None:
@@ -395,7 +394,3 @@ class AgentToolRegistry(IAgentToolRegistry):
     def clear(self) -> None:
         """Clear all registered tools (useful for testing)."""
         self._tools.clear()
-
-
-# Global agent tool registry instance
-tool_registry = AgentToolRegistry()
