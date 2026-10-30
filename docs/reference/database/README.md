@@ -20,13 +20,13 @@ alembic downgrade -1          # Revert last migration
 
 **User domain:** `users`, `organizations`, `organization_members`, `roles`, `permissions`, `role_permissions`, `teams`, `team_members`, `team_invitations`, `user_audit_log`, `oauth_authorization_codes`, `token_revocations`
 
-**Case domain:** `cases`, `case_messages`, `case_actions`, `case_tags`, `case_entities`, `evidence`, `hypotheses`, `hypothesis_evidence`, `solutions`, `uploaded_files`, `reports`, `conversion_jobs`, `conversion_drafts`; the causal graph and evidence needs: `causal_nodes`, `causal_edges`, `causal_node_evidence`, `evidence_needs`, `evidence_need_fulfillment`
+**Case domain:** `cases`, `case_messages`, `case_actions`, `case_tags`, `case_entities`, `evidence`, `hypotheses`, `hypothesis_evidence`, `solutions`, `uploaded_files`, `reports`; the causal graph and evidence needs: `causal_nodes`, `causal_edges`, `causal_node_evidence`, `evidence_needs`, `evidence_need_fulfillment`
 
 Investigation activity is recorded in `case_messages` and `case_actions`. `agent_executions` / `agent_tool_calls` are gone, together with their ORM models and the `ICaseRepository` read/write methods (#1350) — the case read path no longer accepts `include_executions`. The table that sat above them, one row per case-nested session with counters nothing wrote, was retired with its routes in #1935 (revision `017`): per-period grouping lives in `turn_history`, `case_messages` and `turn_receipts`, token spend in `llm_turn_spend` / `llm_usage_daily`.
 
 **Turn receipts (#1888):** `turn_receipts` — one row per committed turn that carried an `Idempotency-Key`: the key, the submitting user, a sha256 fingerprint of the turn's inputs (form fields and each file's content), the turn number it committed at, and the `TurnResponse` the client was sent (`json`, not `jsonb`, on PostgreSQL, so a replay is byte-identical). Written in the turn's one transaction by `ICaseRepository.save(case, reports=..., receipt=...)`, so a receipt exists exactly when its turn committed; a retry with the key is answered from it (`.claude/rules/api-contract.md`, the turns row). Keyed on `(enterprise_id, case_id, author_id, idempotency_key)`, the enterprise first because RLS scopes on it. Lifecycle: deleted with its case (`ON DELETE CASCADE`) and with its enterprise (a wipe is `DROP DATABASE`); no retention job — one small row per keyed turn, living as long as the messages it acknowledges.
 
-**Knowledge domain (case-adjacent):** `knowledge_items`
+**Knowledge domain (case-adjacent):** `knowledge_items`, `conversion_jobs`, `conversion_drafts`
 
 **Tenancy, sharing and usage:** `enterprises`, `sso_org_mappings`, `sso_personal_enterprises`, `resource_shares`, `turn_usage` — semantics in `.claude/rules/data-model.md` and [sso-org-mapping.md](../../architecture/security/sso-org-mapping.md)
 

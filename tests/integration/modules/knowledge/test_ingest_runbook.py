@@ -56,7 +56,7 @@ from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     KnowledgeService,
 )
 from faultmaven.modules.knowledge.taxonomy import KnowledgeScope
-from tests.utils import regex_only_sanitizer
+from tests.utils import record_nothing, regex_only_sanitizer
 
 # =============================================================================
 # Fixtures
@@ -172,6 +172,7 @@ class TestIngestRunbookDualWrite:
             scope="global",
             owner_id="user-1",
             verified_by="user-1",
+            record=record_nothing,
         )
 
         assert chunks == 7
@@ -222,6 +223,7 @@ class TestIngestRunbookDualWrite:
             scope="personal",
             owner_id="user-2",
             verified_by=None,
+            record=record_nothing,
         )
 
         async with seeded_session_factory() as session:
@@ -255,6 +257,7 @@ class TestIngestRunbookDualWrite:
                 enterprise_id=DEFAULT_ENTERPRISE_ID,
                 scope="global",
                 verified_by="user-3",
+                record=record_nothing,
             )
 
         async with seeded_session_factory() as session:
@@ -288,6 +291,7 @@ class TestIngestRunbookDualWrite:
                 enterprise_id=DEFAULT_ENTERPRISE_ID,
                 scope="global",
                 verified_by="user-4",
+                record=record_nothing,
             )
 
         async with seeded_session_factory() as session:
@@ -318,6 +322,7 @@ class TestIngestRunbookDualWrite:
             content="c",
             enterprise_id=DEFAULT_ENTERPRISE_ID,
             scope="global",
+            record=record_nothing,
         )
         first_chroma_count = service._index_document_in_vector_store.await_count
 
@@ -331,6 +336,7 @@ class TestIngestRunbookDualWrite:
                 content="c2",
                 enterprise_id=DEFAULT_ENTERPRISE_ID,
                 scope="global",
+                record=record_nothing,
             )
 
         assert service._index_document_in_vector_store.await_count == first_chroma_count

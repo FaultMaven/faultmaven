@@ -161,6 +161,47 @@ class IndexingError(KnowledgeException):
         )
 
 
+class IngestNotRecorded(KnowledgeException):
+    """An authored ingest's caller did not record it: its ``record`` callback
+    returned False (#2396).
+
+    Raised inside the completing transaction, so the completion rolled back
+    with the caller's record, and ``ingest_runbook``'s cleanup removed the row:
+    nothing was published.
+    """
+
+    def __init__(self, item_id: str) -> None:
+        self.item_id = item_id
+        super().__init__(f"Knowledge item {item_id} was not recorded by its caller")
+
+
+#: The ``x-error-code`` of the 500 for an :class:`IngestOutcomeUnknown`.
+KB_INGEST_OUTCOME_UNKNOWN = "KB_INGEST_OUTCOME_UNKNOWN"
+
+#: What the caller is told: the runbook may be live, so a blind retry could
+#: publish it twice.
+INGEST_OUTCOME_UNKNOWN_DETAIL = (
+    "The runbook may have been published. Check the knowledge base before retrying."
+)
+
+
+class IngestOutcomeUnknown(KnowledgeException):
+    """An authored ingest's completing transaction raised, and whether its
+    COMMIT landed could not be learned: the cleanup's delete raised too
+    (#2396).
+
+    The runbook and its caller's record are one transaction, so the state is
+    consistent either way: both, or neither, the row then incomplete and never
+    served. Answered 500 with ``x-error-code: KB_INGEST_OUTCOME_UNKNOWN`` and no
+    ``Retry-After`` by ``api.exception_handlers``. Not a 503, which in this API
+    says nothing was saved.
+    """
+
+    def __init__(self, item_id: str) -> None:
+        self.item_id = item_id
+        super().__init__(INGEST_OUTCOME_UNKNOWN_DETAIL)
+
+
 class ItemTitleScrubUnavailable(ServiceUnavailableException):
     """The check that keeps sensitive text out of a knowledge item's title could
     not run, so nothing was written (#1981).

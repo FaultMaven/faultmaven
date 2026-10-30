@@ -104,7 +104,7 @@ from faultmaven.modules.knowledge.domain.services.knowledge_service import (
 )
 from faultmaven.modules.knowledge.exceptions import ItemTitleScrubUnavailable
 from tests.runbook_samples import valid_runbook
-from tests.utils import regex_only_sanitizer
+from tests.utils import record_nothing, regex_only_sanitizer
 
 pytestmark = [pytest.mark.unit, pytest.mark.knowledge_base]
 
@@ -285,6 +285,7 @@ def _ingest_args(scope: str, **override) -> dict:
         scope=scope,
         owner_id="u1",
         team_id=TEAM_ID if scope == "team" else None,
+        record=None if override.get("shipped") else record_nothing,
     )
     args.update(override)
     return args

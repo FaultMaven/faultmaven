@@ -23,7 +23,7 @@ from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repo
     DatabaseKnowledgeItemRepository,
 )
 from faultmaven.utils.runbook_id import item_id_from_runbook_id
-from tests.utils import regex_only_sanitizer
+from tests.utils import record_nothing, regex_only_sanitizer
 
 RUNBOOK_MD = """---
 id: example-runbook
@@ -621,6 +621,7 @@ async def test_ingest_runbook_succeeds_with_fk_enforced_fresh_install(
         scope="global",
         verified_by=None,
         verification_level=VerificationLevel.COMMUNITY,
+        record=record_nothing,
     )
     assert chunks == 3
 
@@ -654,6 +655,7 @@ async def test_ingest_runbook_writes_empty_metadata(fk_on_ingest_service):
         enterprise_id="ent-1",
         scope="global",
         verified_by=None,
+        record=record_nothing,
     )
     async with factory() as session:
         row = (
@@ -684,6 +686,7 @@ async def test_ingest_runbook_with_sentinel_verified_by_fails_fk(
             enterprise_id="ent-1",
             scope="global",
             verified_by="system",  # no such users row → FK violation
+            record=record_nothing,
         )
     assert "foreign key" in str(exc_info.value).lower()
 
@@ -718,6 +721,7 @@ async def test_ingest_runbook_coerces_numeric_tags_for_both_models(
         tags=["istio", 503, "envoy"],
         verified_by=None,
         verification_level=VerificationLevel.COMMUNITY,
+        record=record_nothing,
     )
     assert chunks == 3
 
@@ -1117,6 +1121,7 @@ async def test_reindex_missing_vectors_re_embeds_from_persisted_row(
         tags=["postgres"],
         verified_by=None,
         verification_level=VerificationLevel.COMMUNITY,
+        record=record_nothing,
     )
     svc._index_document_in_vector_store.reset_mock()
     svc._index_document_in_vector_store.return_value = 4

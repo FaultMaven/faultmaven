@@ -320,10 +320,10 @@ oauth_authorization_codes
 -- Case module (case domain — owns evidence, reports, agent audit data)
 cases, case_messages, case_actions, case_tags,
 evidence, hypotheses, solutions, uploaded_files,
-reports, conversion_jobs, conversion_drafts
+reports
 
--- Knowledge module
-knowledge_items
+-- Knowledge module (conversion jobs and drafts by the #2396 ruling)
+knowledge_items, conversion_jobs, conversion_drafts
 
 -- Infrastructure-layer (not a domain module)
 config_overrides

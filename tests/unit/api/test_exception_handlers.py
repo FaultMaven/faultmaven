@@ -42,7 +42,10 @@ from faultmaven.exceptions import (
 )
 from faultmaven.models.exceptions import OAuthProtocolError
 from faultmaven.modules.auth.exceptions import TeamOperationRefused
-from faultmaven.modules.knowledge.exceptions import ItemTitleScrubUnavailable
+from faultmaven.modules.knowledge.exceptions import (
+    IngestOutcomeUnknown,
+    ItemTitleScrubUnavailable,
+)
 
 
 @pytest.fixture
@@ -413,6 +416,7 @@ class TestGetExceptionHandlers:
             ConflictError,
             TeamOperationRefused,
             ItemTitleScrubUnavailable,
+            IngestOutcomeUnknown,
             ServiceError,
             ServiceException,
             LLMException,

@@ -64,6 +64,7 @@ from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repo
     DatabaseKnowledgeItemRepository,
 )
 from faultmaven.utils.runbook_id import item_id_from_runbook_id
+from tests.utils import record_nothing
 
 pytestmark = pytest.mark.integration
 
@@ -233,6 +234,7 @@ async def test_an_authored_runbook_is_stamped_with_its_rows_enterprise(
             enterprise_id=author_enterprise,
             scope="personal",
             owner_id=owner,
+            record=record_nothing,
         )
 
     assert chunks >= 1

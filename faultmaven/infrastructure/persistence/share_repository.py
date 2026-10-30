@@ -86,6 +86,10 @@ class PostgreSQLShareRepository(IShareRepository):
         in no organization still resolves to ``None``, which is the ordinary
         answer, and a caller that genuinely knows better still wins by passing a
         value.
+
+        Never commits (#2396): the write joins the caller's transaction, so a
+        share lands in the same commit as the resource it makes a team item.
+        ``SessionlessShareRepository`` commits on its session's exit.
         """
         if organization_id is None:
             organization_id = get_current_billing_organization_id()
@@ -103,7 +107,6 @@ class PostgreSQLShareRepository(IShareRepository):
             index_elements=["resource_type", "resource_id", "scope_type", "scope_id"],
         )
         await self.db.execute(stmt)
-        await self.db.commit()
 
         # Return the row (the one just created, or the pre-existing one on
         # conflict). The unique key guarantees exactly one.

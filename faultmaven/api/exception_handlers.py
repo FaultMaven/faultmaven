@@ -75,7 +75,12 @@ from faultmaven.exceptions import (
 )
 from faultmaven.models.exceptions import OAuthProtocolError
 from faultmaven.modules.auth.exceptions import TeamOperationRefused
-from faultmaven.modules.knowledge.exceptions import ItemTitleScrubUnavailable
+from faultmaven.modules.knowledge.exceptions import (
+    INGEST_OUTCOME_UNKNOWN_DETAIL,
+    KB_INGEST_OUTCOME_UNKNOWN,
+    IngestOutcomeUnknown,
+    ItemTitleScrubUnavailable,
+)
 from faultmaven.utils.serialization import to_json_safe
 
 logger = logging.getLogger(__name__)
@@ -521,6 +526,36 @@ async def item_title_scrub_unavailable_handler(
                 "The sensitive-data check on titles is temporarily unavailable. "
                 "Nothing was saved; retry later."
             ),
+        ),
+    )
+
+
+async def ingest_outcome_unknown_handler(
+    request: Request,
+    exc: IngestOutcomeUnknown,
+) -> JSONResponse:
+    """Answer an ``IngestOutcomeUnknown`` 500 (#2396).
+
+    An authored runbook's completing COMMIT raised and its outcome could not be
+    learned, so the runbook may be live. **500, not 503**: a 503 here says
+    nothing was saved, and a client honouring its ``Retry-After`` would
+    publish the upload twice. So no ``Retry-After``; the body tells the caller
+    to look before retrying.
+    """
+    cause = exc.__cause__
+    logger.error(
+        "Authored ingest outcome unknown: %s %s - knowledge item %s (%s)",
+        request.method,
+        request.url.path,
+        exc.item_id,
+        type(cause).__name__ if cause is not None else type(exc).__name__,
+    )
+    return await http_exception_handler(
+        request,
+        HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=INGEST_OUTCOME_UNKNOWN_DETAIL,
+            headers={"x-error-code": KB_INGEST_OUTCOME_UNKNOWN},
         ),
     )
 
@@ -1120,6 +1155,7 @@ def get_exception_handlers() -> dict[Type[Exception], Callable]:
         ConflictError: conflict_exception_handler,
         TeamOperationRefused: team_operation_refused_handler,
         ItemTitleScrubUnavailable: item_title_scrub_unavailable_handler,
+        IngestOutcomeUnknown: ingest_outcome_unknown_handler,
         ServiceError: service_error_handler,
         ServiceException: service_exception_handler,
         LLMException: service_exception_handler,

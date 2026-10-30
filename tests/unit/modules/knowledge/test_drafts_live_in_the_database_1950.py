@@ -45,7 +45,7 @@ from faultmaven.modules.knowledge.domain.services.knowledge_service import (
 from faultmaven.modules.knowledge.draft_content import DRAFT_CONTENT_MAX_CHARS
 from faultmaven.providers.tenancy.factory import BUILTIN_MULTI
 from tests.runbook_samples import valid_runbook
-from tests.utils import regex_only_sanitizer
+from tests.utils import recording_ingest, regex_only_sanitizer
 
 pytestmark = [pytest.mark.unit, pytest.mark.knowledge_base]
 
@@ -122,9 +122,10 @@ async def _row(session_factory, draft_id: str) -> ConversionDraftModel:
         return await session.get(ConversionDraftModel, draft_id)
 
 
-def _ingesting() -> MagicMock:
+def _ingesting(session_factory) -> MagicMock:
+    """A knowledge service whose ingest runs the verify's ``record`` (#2396)."""
     knowledge = MagicMock()
-    knowledge.ingest_runbook = AsyncMock(return_value=4)
+    knowledge.ingest_runbook = recording_ingest(session_factory, chunks=4)
     return knowledge
 
 
@@ -133,7 +134,9 @@ class TestTheOtherReplicaServesTheDraft:
         self, session_factory, tmp_path, monkeypatch
     ):
         pod_a = _Replica(tmp_path / "pod-a", session_factory)
-        pod_b = _Replica(tmp_path / "pod-b", session_factory, _ingesting())
+        pod_b = _Replica(
+            tmp_path / "pod-b", session_factory, _ingesting(session_factory)
+        )
 
         monkeypatch.chdir(pod_a.root)
         created = await pod_a.service.create_runbook_from_template(**TEMPLATE)
@@ -630,7 +633,7 @@ class TestTheEditBound:
         it is exempt, so the user is never refused a verify of a draft they
         were allowed to save."""
         monkeypatch.chdir(tmp_path)
-        pod = _Replica(tmp_path, session_factory, _ingesting())
+        pod = _Replica(tmp_path, session_factory, _ingesting(session_factory))
         created = await pod.service.create_runbook_from_template(**TEMPLATE)
         cid, did = created["conversion_id"], created["draft"].draft_id
         at_bound = _at_length("Pool Exhausted At The Bound", DRAFT_CONTENT_MAX_CHARS)
@@ -682,13 +685,15 @@ class TestEditAndVerifyDoNotLoseEachOther:
         row = await _row(factory, did)
         assert (row.status, row.content) == ("draft", edit)
         assert await _published_items(factory) == []
-        knowledge._vector_store.delete_documents_by_parent_id.assert_awaited_once()
+        # The swap is the completing transaction's record (#2396): its miss
+        # published nothing, so nothing is withdrawn.
+        knowledge._vector_store.delete_documents_by_parent_id.assert_not_awaited()
 
     async def test_a_verified_draft_is_not_edited(
         self, session_factory, tmp_path, monkeypatch
     ):
         monkeypatch.chdir(tmp_path)
-        pod = _Replica(tmp_path, session_factory, _ingesting())
+        pod = _Replica(tmp_path, session_factory, _ingesting(session_factory))
         created = await pod.service.create_runbook_from_template(**TEMPLATE)
         cid, did = created["conversion_id"], created["draft"].draft_id
         async with session_factory() as session:
@@ -714,7 +719,7 @@ class TestEditAndVerifyDoNotLoseEachOther:
         """The edit's second session re-checks: a verify that finished during
         the gate stands."""
         monkeypatch.chdir(tmp_path)
-        pod = _Replica(tmp_path, session_factory, _ingesting())
+        pod = _Replica(tmp_path, session_factory, _ingesting(session_factory))
         created = await pod.service.create_runbook_from_template(**TEMPLATE)
         cid, did = created["conversion_id"], created["draft"].draft_id
         async with session_factory() as session:
@@ -939,8 +944,9 @@ class TestEditAndVerifyRaceOnBothDialects:
             await resume.wait()
 
         knowledge = _knowledge(factory)
+        # The swap commits in the knowledge service's completing transaction.
+        knowledge._db_session_factory = _hooked(factory, before_commit=hold_commit)
         verifier = _Replica(tmp_path / "a", factory, knowledge).service
-        verifier._db_session_factory = _hooked(factory, before_commit=hold_commit)
         editor = _Replica(tmp_path / "b", factory).service
 
         verifying = asyncio.create_task(verifier.verify_draft(cid, did, "u1"))
@@ -1025,21 +1031,17 @@ class TestEditAndVerifyRaceOnBothDialects:
         assert await _published(factory) == {}
 
 
-class TestAWithdrawalThatFailsIsReportedTruthfully:
-    @pytest.mark.parametrize("failure", ["raises", "reports_no_success"])
-    async def test_the_orphan_is_named_and_the_409_does_not_claim_nothing_published(
-        self, file_session_factory, tmp_path, monkeypatch, caplog, failure
+class TestALostSwapHasNothingToWithdraw:
+    async def test_an_edit_during_verify_publishes_nothing_and_deletes_nothing(
+        self, file_session_factory, tmp_path, monkeypatch, caplog
     ):
+        """The swap lost to an edit. It is the completing transaction's record
+        (#2396), so nothing was published, and the 409 says so. Replaces the
+        test of a withdrawal that failed, whose withdrawal is gone."""
         monkeypatch.chdir(tmp_path)
         factory = file_session_factory
         cid, did = await _verifiable_draft(factory, tmp_path)
         knowledge = _knowledge(factory)
-        if failure == "raises":
-            knowledge.delete_document = AsyncMock(side_effect=RuntimeError("db gone"))
-        else:
-            knowledge.delete_document = AsyncMock(
-                return_value={"success": False, "error": "not deleted"}
-            )
         entered, release = asyncio.Event(), asyncio.Event()
         real_index = knowledge._index_document_in_vector_store
 
@@ -1059,11 +1061,7 @@ class TestAWithdrawalThatFailsIsReportedTruthfully:
         with caplog.at_level("ERROR"), pytest.raises(ConflictError) as lost:
             await verifying
 
-        (orphan,) = await _published(factory)
         assert lost.value.conflict_reason == "changed_during_verification"
-        assert "nothing was published" not in str(lost.value)
-        assert f"knowledge item {orphan}" in str(lost.value)
-        assert "could not be withdrawn" in str(lost.value)
-        assert any(
-            r.levelname == "ERROR" and orphan in r.getMessage() for r in caplog.records
-        )
+        assert "nothing was published by this request" in str(lost.value)
+        assert await _published(factory) == {}
+        assert not [r for r in caplog.records if r.levelname == "ERROR"]

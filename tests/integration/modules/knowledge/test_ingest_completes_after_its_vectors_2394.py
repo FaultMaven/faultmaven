@@ -26,6 +26,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import delete, event, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
 from faultmaven.bootstrap import kb_init
 from faultmaven.bootstrap.kb_incomplete_sweep import sweep_incomplete_ingests
@@ -37,6 +38,7 @@ from faultmaven.bootstrap.kb_orphan_sweep import (
 from faultmaven.bootstrap.kb_pack import PackChunk, PackRunbook
 from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.infrastructure.persistence.models import (
+    Base,
     EnterpriseModel,
     KnowledgeItemModel,
     UserModel,
@@ -48,6 +50,7 @@ from faultmaven.modules.knowledge.domain.models.knowledge_item import (
     KnowledgeItem,
     KnowledgeItemType,
 )
+from faultmaven.modules.knowledge.domain.services import knowledge_service
 from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
     DatabaseKnowledgeItemRepository,
     KnowledgeItemRepositoryException,
@@ -273,10 +276,9 @@ async def test_a_pack_row_is_complete_from_its_insert_and_issues_no_update(
 
 REAL_CREATE = DatabaseKnowledgeItemRepository.create
 REAL_DELETE = DatabaseKnowledgeItemRepository.delete
-REAL_GET = DatabaseKnowledgeItemRepository.get_by_id
 
 
-@pytest.mark.parametrize("lands", ["between_delete_and_check", "after_check"])
+@pytest.mark.parametrize("lands", ["between_delete_and_read", "after_read"])
 @pytest.mark.parametrize("failure", ["cancel", "command_timeout"])
 async def test_an_insert_that_commits_after_its_cleanup_is_never_listed_or_repaired(
     session_factory, monkeypatch, lands, failure
@@ -307,19 +309,22 @@ async def test_an_insert_that_commits_after_its_cleanup_is_never_listed_or_repai
 
     async def cleanup_delete(self, item_id, **kwargs):
         matched = await REAL_DELETE(self, item_id, **kwargs)
-        if lands == "between_delete_and_check":
+        if lands == "between_delete_and_read":
             await land()
-        return matched
+            return matched
+        # The cleanup's read of the row, after its delete, is the session's.
+        real_read = self.db.scalar
 
-    async def cleanup_check(self, item_id):
-        row = await REAL_GET(self, item_id)
-        if lands == "after_check":
+        async def read_then_land(*args, **read_kwargs):
+            found = await real_read(*args, **read_kwargs)
             await land()
-        return row
+            return found
+
+        self.db.scalar = read_then_land
+        return matched
 
     monkeypatch.setattr(DatabaseKnowledgeItemRepository, "create", create)
     monkeypatch.setattr(DatabaseKnowledgeItemRepository, "delete", cleanup_delete)
-    monkeypatch.setattr(DatabaseKnowledgeItemRepository, "get_by_id", cleanup_check)
     expected = (
         asyncio.CancelledError
         if failure == "cancel"
@@ -657,14 +662,14 @@ async def test_a_failed_pack_ingest_leaves_a_live_peer_whole(session_factory, pe
     reason="PostgreSQL-only; set DATABASE_URL to a PG instance to run.",
 )
 @pytest.mark.parametrize("flip", ["commits", "rolls_back"])
-async def test_a_cleanup_waits_on_the_flip_and_then_matches_the_row(flip):
+async def test_a_cleanup_waits_on_the_flip_and_never_deletes_a_completed_row(flip):
     """``mark_ingest_complete`` holds the row's lock until its transaction
-    ends, and the ``created_at``-guarded delete of
-    ``_delete_knowledge_item_row`` waits on it: this engine sets no
-    ``statement_timeout``, so the wait is unbounded here. Once the flip
-    commits or rolls back, the delete matches the row. Committed, the row was
-    complete: the cleanup still removes it, so a caller told "failed" is not
-    left with a live item (#2397 critique B2), and it deletes no vector."""
+    ends, and the incomplete-only delete of ``_delete_knowledge_item_row``
+    waits on it: this engine sets no ``statement_timeout``, so the wait is
+    unbounded here. Then the delete re-checks the row (EvalPlanQual): a
+    committed flip's row is complete and stands, and the cleanup reports that
+    its completion landed (#2396); a rolled-back one's is deleted. No vector is
+    deleted. Before #2396 the committed row was deleted too."""
     enterprise, owner = f"ent_2394_{uuid4().hex[:8]}", f"user-2394-{uuid4().hex[:8]}"
     engine = create_async_engine(os.environ["DATABASE_URL"])
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
@@ -691,10 +696,16 @@ async def test_a_cleanup_waits_on_the_flip_and_then_matches_the_row(flip):
                 await repo.commit()
             else:
                 await repo.rollback()
-        await cleanup
+        found = await cleanup
 
         async with factory() as session:
-            assert await session.get(KnowledgeItemModel, item.item_id) is None
+            row = await session.get(KnowledgeItemModel, item.item_id)
+        if flip == "commits":
+            assert found == knowledge_service._COMPLETED
+            assert row is not None and row.ingest_complete
+        else:
+            assert found == knowledge_service._DELETED
+            assert row is None
         service._vector_store.delete_documents_by_parent_id.assert_not_awaited()
     finally:
         async with factory() as session:
@@ -704,6 +715,99 @@ async def test_a_cleanup_waits_on_the_flip_and_then_matches_the_row(flip):
                 )
             await session.commit()
         await engine.dispose()
+
+
+@pytest.fixture
+async def wal_factory(tmp_path):
+    """SQLite as the app's engine opens it (``database.get_engine``): WAL,
+    ``busy_timeout=5000``, foreign keys on. Concurrent sessions are separate
+    connections."""
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{tmp_path / 'wal.db'}", poolclass=NullPool
+    )
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _pragmas(dbapi_conn, _record):
+        cursor = dbapi_conn.cursor()
+        for pragma in ("journal_mode=WAL", "busy_timeout=5000", "foreign_keys=ON"):
+            cursor.execute(f"PRAGMA {pragma}")
+        cursor.close()
+
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with factory() as session:
+        await seed_enterprises(session, [STANDALONE_ENTERPRISE_ID])
+        await seed_users(session, [OWNER], enterprise_id=STANDALONE_ENTERPRISE_ID)
+    yield factory
+    await engine.dispose()
+
+
+@pytest.mark.parametrize("flip", ["commits", "rolls_back"])
+async def test_on_sqlite_the_cleanup_deletes_first_and_reads_after(wal_factory, flip):
+    """The SQLite half of the same rule (#2396, the design critique's probe
+    S2). A flip holds the writer lock. A read of the row does not wait for it
+    and sees the row incomplete, so it cannot tell whether the flip lands. The
+    cleanup's delete, its session's first statement, waits on the lock
+    (``busy_timeout``), and only then is the row read: a committed flip's row
+    is complete and stands; a rolled-back one's is deleted."""
+    stamp = datetime.now(timezone.utc)
+    await _insert(wal_factory, _incomplete_row(created_at=stamp))
+    service = _knowledge(wal_factory)
+    engine = wal_factory.kw["bind"].sync_engine
+    deleting = asyncio.Event()
+
+    def on_statement(_conn, _cursor, statement, *_args):
+        if statement.lstrip().upper().startswith("DELETE FROM KNOWLEDGE_ITEMS"):
+            deleting.set()
+
+    event.listen(engine, "before_cursor_execute", on_statement)
+    try:
+        async with wal_factory() as flipping:
+            repo = DatabaseKnowledgeItemRepository(flipping)
+            assert await repo.mark_ingest_complete(DOC_ID, created_at=stamp)
+            # A read while the flip is open: answered at once, pre-flip.
+            assert await _complete(wal_factory) is False
+            cleanup = asyncio.create_task(
+                service._delete_knowledge_item_row(DOC_ID, created_at=stamp)
+            )
+            # The delete is issued, or the cleanup ended without one (a defect
+            # the assertions below then report, rather than a hang).
+            waiting = asyncio.ensure_future(deleting.wait())
+            await asyncio.wait({waiting, cleanup}, return_when=asyncio.FIRST_COMPLETED)
+            waiting.cancel()
+            if flip == "commits":
+                await repo.commit()
+            else:
+                await repo.rollback()
+        found = await cleanup
+    finally:
+        event.remove(engine, "before_cursor_execute", on_statement)
+
+    if flip == "commits":
+        assert found == knowledge_service._COMPLETED
+        assert await _complete(wal_factory) is True
+    else:
+        assert found == knowledge_service._DELETED
+        assert await _rows(wal_factory) == NOTHING
+
+
+async def test_the_cleanup_reads_its_stamp_as_an_instant(session_factory):
+    """The cleanup's read matches the stamp as its delete and the flip do
+    (``_as_utc``): the same instant in another zone still finds this call's
+    row complete, so a landed completion is never reported absent (#2396)."""
+    stamp = datetime.now(timezone.utc)
+    row = _incomplete_row(created_at=stamp)
+    row.ingest_complete = True
+    await _insert(session_factory, row)
+    ist = timezone(timedelta(hours=5, minutes=30))
+
+    found = await _knowledge(session_factory)._delete_knowledge_item_row(
+        DOC_ID, created_at=stamp.astimezone(ist)
+    )
+
+    assert found == knowledge_service._COMPLETED
+    assert await _complete(session_factory) is True
 
 
 async def _until_blocked_by(factory, backend: int) -> None:

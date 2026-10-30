@@ -370,9 +370,8 @@ async def _apply(
 
         # Idempotent by the share table's own unique key, so a re-run after a
         # rollback does not accumulate duplicates. Written with the session's own
-        # INSERT rather than through ShareRepository.share(), which commits
-        # internally — that would break this transaction into pieces and let a
-        # later failure leave shares behind for an owner swap that rolled back.
+        # INSERT, in this transaction, so a later failure leaves no share behind
+        # for an owner swap that rolled back.
         for case_id in case_ids:
             for team_id in team_ids:
                 await session.execute(

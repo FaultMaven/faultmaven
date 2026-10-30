@@ -65,7 +65,10 @@ from faultmaven.modules.knowledge.domain.services.knowledge_service import (
 from faultmaven.modules.knowledge.domain.services.runbook_validator import (
     RunbookQualityError,
 )
-from faultmaven.modules.knowledge.exceptions import ItemTitleScrubUnavailable
+from faultmaven.modules.knowledge.exceptions import (
+    IngestOutcomeUnknown,
+    ItemTitleScrubUnavailable,
+)
 from faultmaven.modules.knowledge.taxonomy import (
     KnowledgeScope,
     render_vocabulary,
@@ -526,6 +529,11 @@ async def upload_document(
     except ItemTitleScrubUnavailable:
         # The title's redaction (#1981) could not run: a server-side
         # dependency, so the global handler's generic 503, not the blanket 500.
+        raise
+    except IngestOutcomeUnknown:
+        # The upload may have been published (#2396): the global handler's 500
+        # with ``KB_INGEST_OUTCOME_UNKNOWN``, which tells the client to look
+        # before retrying.
         raise
     except Exception as e:
         # The class, never the text: a failed row write's text carries its

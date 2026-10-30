@@ -366,6 +366,7 @@ class TestInventoryServiceDB:
                 enterprise_id="ent-1",
                 created_by="user-1",
             )
+            await session.commit()
 
         member = await svc.list_documents(
             user=SimpleNamespace(user_id="user-2", enterprise_id="ent-1"),

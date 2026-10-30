@@ -116,6 +116,11 @@ from faultmaven.modules.knowledge.draft_content import (
     draft_content_too_long_message,
     ensure_draft_content_within_bound,
 )
+from faultmaven.modules.knowledge.exceptions import (
+    INGEST_OUTCOME_UNKNOWN_DETAIL,
+    IngestNotRecorded,
+    IngestOutcomeUnknown,
+)
 from faultmaven.modules.knowledge.taxonomy import RunbookSeverity, render_vocabulary
 from faultmaven.providers.tenancy.factory import (
     BUILTIN_MULTI,
@@ -148,18 +153,13 @@ def _already_verified(draft_id: str) -> ConflictError:
     )
 
 
-def _verification_lost(
-    draft_id: str,
-    current_status: Optional[str],
-    knowledge_item_id: str,
-    withdrawn: bool,
-) -> ConflictError:
+def _verification_lost(draft_id: str, current_status: Optional[str]) -> ConflictError:
     """The 409 for a verify whose compare-and-swap missed, naming what won.
 
     ``already_verified`` — another verify won (``verify_batch`` records this
     one as skipped); ``discarded`` — a delete won; otherwise the text was
-    edited during ingestion. When the item this verify published could not be
-    withdrawn, the sentence says so rather than claiming nothing was published.
+    edited during ingestion. The swap is the completing transaction's own
+    record, so its miss published nothing (#2396).
     """
     if current_status == DraftStatus.VERIFIED.value:
         reason, sentence = (
@@ -176,19 +176,9 @@ def _verification_lost(
             "changed_during_verification",
             "This draft changed while it was being verified",
         )
-    if withdrawn:
-        outcome = (
-            "; nothing was published by this request. Review the latest version "
-            "and verify again if needed."
-        )
-    else:
-        outcome = (
-            f"; the copy this request published (knowledge item "
-            f"{knowledge_item_id}) could not be withdrawn and must be removed by "
-            "an operator."
-        )
     return ConflictError(
-        sentence + outcome,
+        sentence + "; nothing was published by this request. Review the latest "
+        "version and verify again if needed.",
         resource_type="draft",
         resource_id=draft_id,
         conflict_reason=reason,
@@ -1749,13 +1739,15 @@ class ConversionService:
         ``is_platform_admin`` is threaded into each :meth:`verify_draft` so the global-tier
         authoring gate applies per item: a global draft the caller may not author
         is recorded ``forbidden`` (never published) while the rest of the batch
-        proceeds (#770, R4).
+        proceeds (#770, R4). A draft whose publication may or may not have
+        committed is recorded ``unknown``, never ``failed`` (#2396).
         """
         results = []
         verified = 0
         failed = 0
         skipped = 0
         forbidden = 0
+        unknown = 0
 
         for conversion_id, draft_id in draft_refs:
             try:
@@ -1839,6 +1831,27 @@ class ConversionService:
                     }
                 )
                 failed += 1
+            except IngestOutcomeUnknown as e:
+                # Whether the publication's COMMIT landed is unknown (#2396):
+                # the draft may be verified and its runbook live, so this is
+                # not ``failed``, which a client may retry blindly. The id is
+                # what to look for first.
+                logger.error(
+                    "Batch verify of %s: whether knowledge item %s was published "
+                    "is unknown",
+                    draft_id,
+                    e.item_id,
+                )
+                results.append(
+                    {
+                        "conversion_id": conversion_id,
+                        "draft_id": draft_id,
+                        "status": "unknown",
+                        "error": INGEST_OUTCOME_UNKNOWN_DETAIL,
+                        "knowledge_item_id": e.item_id,
+                    }
+                )
+                unknown += 1
             except Exception as e:
                 # The exception's CLASS, never its text (#836). The typed arms
                 # above — AuthorizationError, ConflictError, NotFoundError,
@@ -1865,6 +1878,7 @@ class ConversionService:
             "failed": failed,
             "skipped": skipped,
             "forbidden": forbidden,
+            "unknown": unknown,
             "results": results,
         }
 
@@ -2014,9 +2028,9 @@ class ConversionService:
                 pass
 
         # Ingest into ChromaDB (chunk + embed + store). The verified status is
-        # committed ONLY after ingestion succeeds — verifying without indexed
-        # embeddings is the bug history this guards against. The previous
-        # half-state (status=verified, knowledge_item_id=NULL) was then
+        # committed ONLY with the ingestion's completion (#2396) — verifying
+        # without indexed embeddings is the bug history this guards against.
+        # The previous half-state (status=verified, knowledge_item_id=NULL) was then
         # "repaired" by a subsequent KB-page scan that downgraded the row back
         # to draft on every visit, corrupting user-verified runbooks. All KB
         # writes land in the single shared collection, regardless of scope —
@@ -2064,52 +2078,20 @@ class ConversionService:
             raise AuthorizationError(
                 "You can only publish a runbook to a team you belong to"
             )
-        try:
-            chunks_created = await self._knowledge_service.ingest_runbook(
-                document_id=knowledge_item_id,
-                title=title,
-                content=content,
-                enterprise_id=enterprise_id,
-                document_type="runbook",
-                source_url=f"conversion:{conversion_id}",
-                scope=scope,
-                owner_id=user_id,
-                team_id=team_id,
-                verified_by=user_id,
-            )
-        except RunbookQualityError:
-            # The body holds a credential (#2012): refused before anything was
-            # written, and the draft stays a draft. A client-side outcome
-            # (422), so not logged as an ingestion failure.
-            raise
-        except Exception as e:
-            # `ingest_runbook` ran its cleanup before raising: its row is gone,
-            # and any vectors it wrote are under an id no row admits, so no KB
-            # door serves them; its docstring states the failure contract. The
-            # draft stays in DRAFT state; the caller gets a 500 and can retry,
-            # which mints a fresh id.
-            logger.error(f"Ingestion failed for draft {draft_id}: {e}")
-            raise
-
-        if chunks_created <= 0:
-            # Defence-in-depth: `ingest_runbook` should raise on 0-chunk
-            # results. If it doesn't, treat this as a contract violation and
-            # refuse to mark the draft verified.
-            raise RuntimeError(
-                f"Vector indexing produced 0 chunks for draft {draft_id}. "
-                f"Draft remains in DRAFT state."
-            )
-
-        # Ingestion succeeded — NOW commit the verified text and status, as a
-        # COMPARE-AND-SWAP on the text that was published: only if the row is
-        # still a draft holding exactly ``read_content``. An edit committed
-        # during ingestion changed the text (and its verdict), so publishing
-        # the pre-edit text over it would lose the edit while the row kept the
-        # edit's verdict. Then nothing is verified: the published item is
-        # removed the way a failed ingestion leaves none, and the caller hears
-        # that the draft changed.
+        # The verified text and status, committed with the publication: this
+        # COMPARE-AND-SWAP is ``ingest_runbook``'s ``record``, run in the one
+        # transaction that completes the item (#2396), and it matches only if
+        # the row is still a draft holding exactly ``read_content``. An edit
+        # committed during ingestion changed the text (and its verdict), so
+        # publishing the pre-edit text over it would lose the edit while the
+        # row kept the edit's verdict. Then the swap misses, the completion
+        # rolls back with it, nothing is published, and the caller hears that
+        # the draft changed.
         now = datetime.now(timezone.utc)
-        async with self._db_session_factory() as session:
+
+        async def record(session) -> bool:
+            nonlocal now
+            now = datetime.now(timezone.utc)
             swapped = await session.execute(
                 update(ConversionDraftModel)
                 .where(
@@ -2133,13 +2115,31 @@ class ConversionService:
                 )
                 .execution_options(synchronize_session=False)
             )
-            if swapped.rowcount == 1:
-                await session.commit()
-                current_status = DraftStatus.VERIFIED.value
-            else:
-                await session.rollback()
-                # Why the swap missed: another verify won, a delete won, or an
-                # edit changed the text.
+            return swapped.rowcount == 1
+
+        try:
+            chunks_created = await self._knowledge_service.ingest_runbook(
+                document_id=knowledge_item_id,
+                title=title,
+                content=content,
+                enterprise_id=enterprise_id,
+                document_type="runbook",
+                source_url=f"conversion:{conversion_id}",
+                scope=scope,
+                owner_id=user_id,
+                team_id=team_id,
+                verified_by=user_id,
+                record=record,
+            )
+        except RunbookQualityError:
+            # The body holds a credential (#2012): refused before anything was
+            # written, and the draft stays a draft. A client-side outcome
+            # (422), so not logged as an ingestion failure.
+            raise
+        except IngestNotRecorded:
+            # The swap missed: another verify won, a delete won, or an edit
+            # changed the text. Nothing was published.
+            async with self._db_session_factory() as session:
                 current_status = (
                     await session.execute(
                         select(ConversionDraftModel.status).where(
@@ -2148,23 +2148,21 @@ class ConversionService:
                         )
                     )
                 ).scalar_one_or_none()
-
-        if swapped.rowcount != 1:
             logger.warning(
-                "verify_draft: draft %s is no longer the draft that was published "
-                "(status now %s); withdrawing published item %s",
+                "verify_draft: draft %s is no longer the draft that was read "
+                "(status now %s); nothing was published",
                 draft_id,
                 current_status,
-                knowledge_item_id,
             )
-            # On failure an ERROR names the orphaned item for an operator, and
-            # the 409 says so instead of "nothing was published".
-            withdrawn = await self._knowledge_service.withdraw_published_item(
-                knowledge_item_id, caller="verify_draft"
-            )
-            raise _verification_lost(
-                draft_id, current_status, knowledge_item_id, withdrawn
-            )
+            raise _verification_lost(draft_id, current_status) from None
+        except Exception as e:
+            # `ingest_runbook` ran its cleanup before raising: the draft stays
+            # in DRAFT state and nothing a KB door serves is left; its
+            # docstring states the failure contract. The caller gets a 500 and
+            # can retry, which mints a fresh id; an `IngestOutcomeUnknown`
+            # tells it to look first.
+            logger.error(f"Ingestion failed for draft {draft_id}: {e}")
+            raise
 
         return VerifyResponse(
             draft_id=draft_id,

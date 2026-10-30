@@ -26,7 +26,17 @@ import logging
 import re
 import time
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Set
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Awaitable,
+    Callable,
+    Dict,
+    List,
+    Optional,
+    Sequence,
+    Set,
+)
 
 import anyio
 
@@ -35,6 +45,8 @@ if TYPE_CHECKING:
     # to avoid the service↔persistence cycle. This satisfies the forward-ref
     # annotation on ``verification_level`` for ruff/mypy without importing at
     # module load.
+    from sqlalchemy.ext.asyncio import AsyncSession
+
     from faultmaven.modules.knowledge.domain.models.knowledge_item import (
         VerificationLevel,
     )
@@ -71,11 +83,57 @@ from faultmaven.modules.knowledge.domain.write_scope import (
     metadata_scope_floor,
     require_write_scope,
 )
+from faultmaven.modules.knowledge.exceptions import (
+    IngestNotRecorded,
+    IngestOutcomeUnknown,
+)
 from faultmaven.utils.exception_name import exception_class_name
 from faultmaven.utils.line_endings import normalize_line_endings
 from faultmaven.utils.serialization import decode_json_blob, to_json_compatible
 
 logger = logging.getLogger(__name__)
+
+#: What a failed authored ingest's cleanup found (``_delete_knowledge_item_row``).
+_DELETED, _COMPLETED, _ABSENT = "deleted", "completed", "absent"
+
+
+class _CommitState:
+    """Whether an authored ingest's completing COMMIT has been issued (#2396).
+
+    Set just before the COMMIT: a failure from then on (the COMMIT, or its
+    session's exit after it) may have landed, and the cleanup decides what the
+    caller is told. One before it (the flip, the share, ``record``, a session
+    that never opened) landed nothing, and is re-raised as itself.
+    """
+
+    issued = False
+
+
+def _arrived_cancelled(failure: BaseException) -> bool:
+    """Whether ``failure`` is a cancellation (#2396). A bare
+    ``CancelledError`` always is. One on its ``__cause__``/``__context__``
+    chain counts only while the current task is being cancelled
+    (``cancelling() > 0``): a close or a rollback that raises while a
+    cancellation propagates replaces it, keeping it as ``__context__``, but
+    ``asyncio.timeout()`` and ``wait_for()`` chain the ``CancelledError`` they
+    turned into a ``TimeoutError`` with no cancellation pending, and that
+    failure is an exception."""
+    if isinstance(failure, asyncio.CancelledError):
+        return True
+    task = asyncio.current_task()
+    if task is None or task.cancelling() == 0:
+        return False
+    pending: List[Optional[BaseException]] = [failure]
+    seen: Set[int] = set()
+    while pending:
+        current = pending.pop()
+        if current is None or id(current) in seen:
+            continue
+        if isinstance(current, asyncio.CancelledError):
+            return True
+        seen.add(id(current))
+        pending += [current.__cause__, current.__context__]
+    return False
 
 
 def _read_total_chunks(chunk_metadata: Optional[Dict[str, Any]]) -> Optional[int]:
@@ -1027,6 +1085,7 @@ class KnowledgeService:
         pack_content_hash: Optional[str] = None,
         shipped: bool = False,
         replaces_generation: Optional[str] = None,
+        record: "Optional[Callable[[AsyncSession], Awaitable[bool]]]" = None,
     ) -> int:
         """Promote runbook content to a fully-published KnowledgeItem.
 
@@ -1036,8 +1095,10 @@ class KnowledgeService:
         to have landed (:meth:`_delete_replaced_generation`, ruling (i)).
 
         * **Authored** (``shipped`` false): the row first, ``ingest_complete``
-          false, then the vectors, then :meth:`_complete_authored_ingest`,
-          which also writes its team share (#2394).
+          false, then the vectors, then :meth:`_complete_authored_ingest`: one
+          transaction that completes the row, writes its team share and runs
+          the caller's ``record`` (#2394, #2396). The runbook is ready only in
+          the commit that records its caller's success.
         * **Pack** (``shipped`` true): the vectors first, then
           :meth:`_insert_pack_row`, one transaction that deletes the row it
           replaces (``replaces_generation``, guarded on that generation),
@@ -1078,28 +1139,47 @@ class KnowledgeService:
           deletes the generation it replaced; the loser's chunks are left for
           the sweep.
         * **Authored.** An exception or a cancellation from ``create`` on runs
-          one cleanup: :meth:`_delete_knowledge_item_row`, SQL only, deletes
-          the row carrying this call's ``created_at`` and, when no row stands
-          under the id, its team shares (#2365, #2378). Then the method
-          re-raises. A row the cleanup could not remove (its delete or its
-          check for a standing row raised, or waited on a lock past its bound)
-          is one that never completed, which stays incomplete: never served or
-          listed, refused by :meth:`reindex_missing_vectors`, and deleted with
-          its vectors by ``sweep_incomplete_ingests`` once its ``created_at``
-          is older than ``KB_INCOMPLETE_INGEST_MAX_AGE_HOURS`` (armed on the
-          web startup; under ``kb_seed`` only when
-          ``resolve_incomplete_sweep_mode`` answers ``armed``); or one that
-          completed (the raise came after :meth:`_complete_authored_ingest`
-          committed, or its COMMIT landed after it raised), which stays live,
-          with its vectors and share, while its caller was told "failed"
-          (#2396). An INSERT whose COMMIT is in doubt can stand the same way:
-          a COMMIT the server received can complete after ``create`` raised
-          (on PostgreSQL a cancelled or timed-out command aborts its transport
-          and sends no CancelRequest, ``pg_connection``), and the
-          ``created_at``-guarded delete then matches nothing. Another call's
-          row under the id stays, with its shares, unless it carries this
-          call's exact stamp; a peer re-creating the id between the cleanup's
-          check for a standing row and its share delete loses its shares.
+          one SQL-only cleanup, :meth:`_delete_knowledge_item_row`: it deletes
+          the row carrying this call's ``created_at`` only while that row is
+          still incomplete, so it never deletes a completed row (#2365, #2378,
+          #2396). No share needs deleting: one is written only in the
+          transaction that completes its row. Then:
+
+          - A failure before the completing COMMIT is issued (the INSERT, the
+            vectors, the flip, the share, ``record``, or a session that never
+            opened) made nothing ready, and is re-raised as itself, whatever
+            the cleanup found. A row the cleanup could not remove never completed
+            and stays incomplete: never served or listed, refused by
+            :meth:`reindex_missing_vectors`, and deleted with its vectors by
+            ``sweep_incomplete_ingests`` once its ``created_at`` is older than
+            ``KB_INCOMPLETE_INGEST_MAX_AGE_HOURS`` (armed on the web startup;
+            under ``kb_seed`` only when ``resolve_incomplete_sweep_mode``
+            answers ``armed``).
+          - A failure from that COMMIT on (the COMMIT, or its session's exit
+            after it) is decided by the cleanup's delete, which waits for the
+            transaction's lock. It matched the row: the COMMIT did not land,
+            and the error is re-raised. It matched nothing and the row under
+            this stamp is complete: the COMMIT landed with the caller's
+            record, and an exception becomes this call's success. It matched
+            nothing and no such row stands: the error. It raised:
+            :class:`IngestOutcomeUnknown`, the row then complete with the
+            caller's record, or incomplete and left for the sweep where it is
+            armed.
+          - A cancellation is always re-raised as it arrived, whatever the
+            delete found: the state is consistent either way. While the task
+            is being cancelled (``cancelling() > 0``), a failure carrying a
+            ``CancelledError`` on its ``__cause__`` or ``__context__`` chain
+            is one too, so it is never answered as a success or as
+            :class:`IngestOutcomeUnknown`. A ``TimeoutError`` from
+            ``asyncio.timeout()`` chains one with no cancellation pending, and
+            is an exception.
+
+          An INSERT whose COMMIT is in doubt can stand too: a COMMIT the server
+          received can complete after ``create`` raised (on PostgreSQL a
+          cancelled or timed-out command aborts its transport and sends no
+          CancelRequest, ``pg_connection``), and the guarded delete then
+          matches nothing. That row is incomplete, for the sweep. Another
+          call's row under the id never carries this call's stamp, so it stays.
           Chunks this call wrote are never admitted with another call's row:
           their generation is this call's.
 
@@ -1159,6 +1239,11 @@ class KnowledgeService:
                 under ``document_id`` the caller observed, which the pack
                 transaction deletes, guarded on it. None when it observed no
                 row.
+            record: The caller's own write, run in the completing transaction
+                after the flip and the share (#2396). Required for an authored
+                ingest, refused for ``shipped``. True records the caller's
+                success and the transaction commits; False, or a raise, rolls
+                the completion back with it. It must not commit.
 
         Returns:
             Number of chunks indexed in ChromaDB (always > 0 on success): a
@@ -1170,7 +1255,12 @@ class KnowledgeService:
         Raises:
             RunbookQualityError: a non-shipped body holds a secret or a
                 destructive command (422). Nothing has been written.
-            ValueError: ``replaces_generation`` without ``shipped``.
+            IngestNotRecorded: ``record`` returned False. Nothing was
+                published.
+            IngestOutcomeUnknown: the completing COMMIT raised, and whether
+                it landed could not be learned.
+            ValueError: ``replaces_generation`` without ``shipped``; ``record``
+                missing for an authored ingest, or given for ``shipped``.
         """
         # Lazy imports keep this method self-contained against the knowledge
         # vertical (avoids top-level cycles between service and persistence).
@@ -1187,6 +1277,10 @@ class KnowledgeService:
 
         if replaces_generation is not None and not shipped:
             raise ValueError("replaces_generation is the pack path's alone")
+        if shipped == (record is not None):
+            raise ValueError(
+                "record is required for an authored ingest, and only there"
+            )
         now = datetime.now(timezone.utc)
 
         if not shipped:
@@ -1324,11 +1418,12 @@ class KnowledgeService:
         # A failure or a cancellation from the row's INSERT on runs one SQL
         # cleanup (#2365): ``create`` commits before it refreshes, so a failure
         # or cancel can land after the row has (#2378). It removes the row
-        # stamped ``now``, and the id's shares only if no row stands under it,
-        # so it leaves what a live peer holds; an "already exists" refusal
-        # leaves the row it met whole unless that row carries this call's
-        # stamp. It never touches the vectors: without the row, none is
-        # admitted (#2397). The docstring states what is left.
+        # stamped ``now`` only while it is incomplete, so it leaves what a live
+        # peer holds and a row this call completed (#2396). It never touches
+        # the vectors: without the row, none is admitted (#2397). A failure
+        # from the completing COMMIT on is decided by what the cleanup found;
+        # the docstring states what is left.
+        commit_state = _CommitState()
         try:
             async with self._db_session_factory() as session:
                 await DatabaseKnowledgeItemRepository(session).create(item)
@@ -1339,9 +1434,29 @@ class KnowledgeService:
                 team_id=share_team,
                 enterprise_id=enterprise_id,
                 created_by=owner_id or verified_by,
+                record=record,
+                commit_state=commit_state,
             )
-        except (Exception, asyncio.CancelledError):
-            await self._delete_knowledge_item_row(document_id, created_at=now)
+        except (Exception, asyncio.CancelledError) as failure:
+            cleanup = await self._delete_knowledge_item_row(document_id, created_at=now)
+            if commit_state.issued:
+                cancelled = _arrived_cancelled(failure)
+                if cleanup == _COMPLETED:
+                    logger.warning(
+                        "Completing knowledge item %s raised (%s), and its commit "
+                        "landed with its caller's record: %s",
+                        document_id,
+                        exception_class_name(failure),
+                        (
+                            "the cancellation is re-raised"
+                            if cancelled
+                            else "it succeeded"
+                        ),
+                    )
+                    if not cancelled:
+                        return chunks_created
+                elif cleanup is None and not cancelled:
+                    raise IngestOutcomeUnknown(document_id) from failure
             raise
 
         return chunks_created
@@ -1362,7 +1477,7 @@ class KnowledgeService:
         The INSERT is issued before the share write, so a duplicate id raises
         there and rolls the whole transaction back, the guarded DELETE
         included. ``PostgreSQLShareRepository.share``, bound to this session,
-        commits it with the share; with none, ``repo.commit()`` does. Anything
+        never commits; ``repo.commit()`` commits the transaction. Anything
         that raises leaves the transaction uncommitted, and closing the
         session rolls it back.
 
@@ -1395,8 +1510,7 @@ class KnowledgeService:
                     enterprise_id=item.enterprise_id,
                     created_by=created_by,
                 )
-            else:
-                await repo.commit()
+            await repo.commit()
         if replaced:
             await self._delete_replaced_generation(item.item_id, replaces_generation)
 
@@ -1433,22 +1547,35 @@ class KnowledgeService:
         team_id: Optional[str],
         enterprise_id: str,
         created_by: Optional[str],
+        record: "Callable[[AsyncSession], Awaitable[bool]]",
+        commit_state: _CommitState,
     ) -> None:
-        """Set ``ingest_complete`` on this call's row and write its team share,
-        in one transaction (#2394).
+        """Complete this call's row and record its caller, in ONE transaction
+        (#2394, #2396): the guarded flip of ``ingest_complete``, the team
+        share, ``record(session)`` (the caller's own write), then one COMMIT.
+        So the runbook is ready only in the commit that records its caller's
+        success, and a share stands only beside a complete row.
 
         ``mark_ingest_complete`` matches the id's row only while it carries
         ``created_at`` and ``ingest_complete`` is false, and any other result
-        raises into :meth:`ingest_runbook`'s cleanup.
+        raises into :meth:`ingest_runbook`'s cleanup. A False ``record``
+        raises :class:`IngestNotRecorded` from inside the session block, never
+        a return: ``get_db_session`` commits on a normal exit.
+        ``commit_state.issued`` is set just before the COMMIT, the first point
+        from which a failure may have landed.
 
-        ``PostgreSQLShareRepository.share``, bound to this session, commits the
-        flip together with the share. With no share (``team_id`` unset, or no
-        ``_share_repo`` wired, which leaves team publishing inert), the
-        trailing ``repo.commit()`` commits the flip.
+        ``PostgreSQLShareRepository.share``, bound to this session, never
+        commits. With no share (``team_id`` unset, or no ``_share_repo`` wired,
+        which leaves team publishing inert) the flip and the record commit
+        alone.
 
-        Until this transaction ends, the UPDATE holds the row's lock
-        (PostgreSQL) or the database's writer lock (SQLite). The ``created_at``
-        guarded delete in ``_delete_knowledge_item_row`` waits on it while its
+        **Locks.** Until this transaction ends, the UPDATE holds the row's lock
+        (PostgreSQL) or the database's writer lock (SQLite). It takes
+        ``knowledge_items`` and then ``conversion_drafts`` (``verify_draft``'s
+        compare-and-swap), the order ``delete_document`` takes them in
+        (``draft_retirement``), so the two form no deadlock pair; an upload's
+        record only inserts new rows. The cleanup's guarded delete in
+        :meth:`_delete_knowledge_item_row` waits on the lock while its
         statement may run: on PostgreSQL until the ``statement_timeout`` that
         ``get_engine``'s ``begin`` listener sets per transaction
         (``DATABASE_COMMAND_TIMEOUT_SECONDS`` less
@@ -1482,6 +1609,10 @@ class KnowledgeService:
                     enterprise_id=enterprise_id,
                     created_by=created_by,
                 )
+            if not await record(session):
+                await repo.rollback()
+                raise IngestNotRecorded(item_id)
+            commit_state.issued = True
             await repo.commit()
 
     async def reindex_missing_vectors(self, item_id: str) -> int:
@@ -1632,24 +1763,39 @@ class KnowledgeService:
 
     async def _delete_knowledge_item_row(
         self, item_id: str, *, created_at: datetime
-    ) -> None:
-        """Best-effort SQL cleanup of what a failed :meth:`ingest_runbook`
-        wrote: its row, then its team share rows (#2365). Never its vectors:
-        without the row no KB door admits them (#2397), so there is no
-        in-process vector delete to race a write still in flight. It runs from
-        the row's INSERT on, so it leaves what a live peer holds under the
-        same id (#2378), but for the exceptions :meth:`ingest_runbook` names.
+    ) -> Optional[str]:
+        """SQL cleanup of a failed authored :meth:`ingest_runbook`: delete the
+        row it inserted, only while that row is still incomplete (#2365, #2378,
+        #2396), and say what it found. Never its vectors: without the row no
+        KB door admits them (#2397). Never a share: one is written only in the
+        transaction that completes its row, so an incomplete row has none.
 
-        The row goes only if it carries ``created_at``, the value that call
-        stamped: a row another call created under the same id stays, and so
-        do the id's shares while a row with the id still stands (as in
-        :meth:`delete_document`, an item that survives keeps the share that
-        makes it a team item). If the row's delete or the check for a
-        standing row fails, nothing more is removed. Shielded from
+        The DELETE matches only the row carrying ``created_at``, the value
+        that call stamped, with ``ingest_complete`` false: a row another call
+        created under the id stays, and so does a row this call completed. A
+        completing transaction still open holds the row's lock (PostgreSQL) or
+        the writer lock (SQLite), which the DELETE waits for; it then matches
+        the row only if that transaction did not commit. So it decides an
+        in-doubt completion:
+
+        * ``_DELETED``: it matched the row; no completion of it landed.
+        * ``_COMPLETED``: it matched nothing, and the row carrying the stamp is
+          complete: the completion landed, with its caller's record.
+        * ``_ABSENT``: it matched nothing, and no complete row carries the
+          stamp.
+        * ``None``: the DELETE, or the read after it, raised.
+
+        The DELETE is its session's first statement, and the read of the
+        row's completion follows it: the DELETE is what waits for the
+        completing transaction to end, and a read does not (a WAL reader, or a
+        READ COMMITTED one, never blocks on a writer), so a read first would
+        see the row as it stood before that transaction. A fresh session, so
+        the failed transaction's connection is not reused;
+        ``AbortOnCancelConnection`` invalidates a broken one. Shielded from
         cancellation: it runs on the path a cancellation takes, and an anyio
         scope (the one ``BaseHTTPMiddleware`` runs a route in) cancels every
-        await that is not. Errors are logged, not raised: the caller re-raises
-        its own.
+        await that is not. Errors are logged, not raised: the caller decides
+        what to raise.
         """
         from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
             DatabaseKnowledgeItemRepository,
@@ -1657,136 +1803,45 @@ class KnowledgeService:
 
         with anyio.CancelScope(shield=True):
             deleted: Optional[bool] = None
-            standing: Optional[bool] = None
+            complete: Optional[bool] = None
             try:
                 async with self._db_session_factory() as session:
                     repo = DatabaseKnowledgeItemRepository(session)
-                    deleted = await repo.delete(item_id, created_at=created_at)
-                    standing = not deleted and await repo.get_by_id(item_id) is not None
+                    deleted = await repo.delete(
+                        item_id, created_at=created_at, only_incomplete=True
+                    )
+                    if not deleted:
+                        complete = await repo.is_ingest_complete(
+                            item_id, created_at=created_at
+                        )
             except Exception as cleanup_err:
-                if standing is None:
+                if deleted is None or (not deleted and complete is None):
                     logger.warning(
                         "Ingesting knowledge item %s failed, and the cleanup's "
                         "%s failed too (%s); %s",
                         item_id,
-                        (
-                            "row delete"
-                            if deleted is None
-                            else "check for a row still standing"
-                        ),
+                        "row delete" if deleted is None else "read of the row",
                         exception_class_name(cleanup_err),
                         (
-                            "any row it wrote may still stand, and the id's "
-                            "team share rows are kept."
+                            "any incomplete row it wrote may still stand."
                             if deleted is None
-                            else "its row was not matched, and the id's "
-                            "team share rows are kept."
+                            else "its row was not matched, and whether its "
+                            "completion landed is unknown."
                         ),
                     )
-                    return
+                    return None
                 # The row step completed (the delete commits before it
                 # returns); only closing its session failed.
                 logger.warning(
                     "Ingesting knowledge item %s failed, and closing its "
                     "cleanup's session failed (%s) after the row step "
-                    "completed; the cleanup carries on.",
+                    "completed.",
                     item_id,
                     exception_class_name(cleanup_err),
                 )
-            if self._share_repo and not standing:
-                try:
-                    await self._share_repo.delete_for_resource(
-                        "knowledge_item", item_id
-                    )
-                except Exception as cleanup_err:
-                    logger.warning(
-                        "Ingesting knowledge item %s failed, and removing its "
-                        "team share rows failed too (%s); any such rows name no "
-                        "item.",
-                        item_id,
-                        exception_class_name(cleanup_err),
-                    )
-
-    async def withdraw_published_item(self, item_id: str, *, caller: str) -> bool:
-        """Remove an item a caller published but could not record, through
-        :meth:`delete_document` (row, team shares and any draft naming it, and
-        its vectors best effort). True when it is gone; otherwise an ERROR,
-        prefixed with ``caller``, names the orphaned item, which stays live
-        and deletable. Shielded from an anyio scope's
-        cancellation, as :meth:`_delete_knowledge_item_row` is: every caller
-        runs it on a failure path."""
-        with anyio.CancelScope(shield=True):
-            try:
-                outcome = await self.delete_document(item_id)
-            except Exception as exc:
-                outcome = {"error": exception_class_name(exc)}
-        if (outcome or {}).get("success"):
-            return True
-        logger.error(
-            "%s: could not withdraw orphaned knowledge_item %s: %s",
-            caller,
-            item_id,
-            (outcome or {}).get("error", "no success reported"),
-        )
-        return False
-
-    async def _withdraw_failed_upload(
-        self, document_id: str, *, draft_id: str, conversion_id: str, file_id: str
-    ) -> None:
-        """Undo an upload whose item was published but whose upload, job and
-        draft rows did not write (#2365). Best effort, and shielded as
-        :meth:`_delete_knowledge_item_row` is: the caller re-raises its own
-        error.
-
-        The rows go first, by id. A commit can land and still raise, or be
-        cancelled, and withdrawing the item under a landed draft would only
-        discard that draft (:meth:`delete_document` discards the drafts naming
-        what it deletes, #2369), leaving the upload's rows behind for an
-        upload its caller was told failed. Draft, then job, then file: the
-        job's key to the file is ``RESTRICT``. Only once they are gone is the
-        item withdrawn; if they cannot be removed, the item stays too, so the
-        upload is whole or is only its item, and an ERROR names both.
-        """
-        from sqlalchemy import delete
-
-        from faultmaven.infrastructure.persistence.models import (
-            ConversionDraftModel,
-            ConversionJobModel,
-            UploadedFileModel,
-        )
-
-        with anyio.CancelScope(shield=True):
-            try:
-                async with self._db_session_factory() as session:
-                    await session.execute(
-                        delete(ConversionDraftModel).where(
-                            ConversionDraftModel.id == draft_id
-                        )
-                    )
-                    await session.execute(
-                        delete(ConversionJobModel).where(
-                            ConversionJobModel.id == conversion_id
-                        )
-                    )
-                    await session.execute(
-                        delete(UploadedFileModel).where(
-                            UploadedFileModel.file_id == file_id
-                        )
-                    )
-                    await session.commit()
-            except Exception as exc:
-                logger.error(
-                    "upload_document: could not remove the rows of failed upload "
-                    "%s (draft %s, job %s, file %s): %s. The item is left "
-                    "published, so a draft that landed still names it.",
-                    document_id,
-                    draft_id,
-                    conversion_id,
-                    file_id,
-                    exception_class_name(exc),
-                )
-                return
-            await self.withdraw_published_item(document_id, caller="upload_document")
+        if deleted:
+            return _DELETED
+        return _COMPLETED if complete else _ABSENT
 
     # API-compatible methods that match the router expectations
     async def upload_document(
@@ -1802,8 +1857,9 @@ class KnowledgeService:
         owner_id: Optional[str] = None,
         team_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Upload document: publish it through :meth:`ingest_runbook`, then
-        record its upload, conversion job and verified draft rows.
+        """Upload document: publish it through :meth:`ingest_runbook`, whose
+        completing transaction also writes its upload, conversion job and
+        verified draft rows.
 
         Everything this publishes becomes a ``KnowledgeItemType.RUNBOOK`` (see
         :meth:`ingest_runbook`) and the ``ConversionDraftModel`` written below
@@ -1812,13 +1868,12 @@ class KnowledgeService:
         gets it and the ``validation_passed`` claim is one this method has
         actually checked.
 
-        The rows are written after the item they name, never before (#2365):
-        the draft's ``knowledge_item_id`` is a foreign key, enforced on every
-        deployment. A failure in :meth:`ingest_runbook` leaves what its
-        docstring lists, and a failed row write calls
-        :meth:`_withdraw_failed_upload`, whose docstring states what it
-        removes. A crash between the two commits leaves only the item, which
-        is live and deletable (``DELETE /knowledge/documents/{id}``).
+        The rows are written after the item they name exists, never before
+        (#2365): the draft's ``knowledge_item_id`` is a foreign key, enforced on
+        every deployment. They are the ``record`` of :meth:`ingest_runbook`, in
+        the one transaction that completes the item (#2396), so the upload is
+        the item with its rows, or neither; a failure leaves what that
+        method's docstring lists.
 
         Args:
             title: Redacted with the sanitizer before it is written anywhere
@@ -1937,44 +1992,18 @@ class KnowledgeService:
             # write the row into a foreign tenant instead.
             enterprise_id = writable_enterprise_id(None)
 
-            # The rows' ids, minted up front so that a failed row write can
-            # remove them by id (synthetic draft, immediately verified).
+            # The rows' ids (synthetic draft, immediately verified).
             conversion_id = f"conv_{_uuid.uuid4().hex[:12]}"
             draft_id = f"draft_{_uuid.uuid4().hex[:12]}"
             source_file_id = f"file_{_uuid.uuid4().hex[:12]}"
 
-            # Publish first, as ``verify_draft`` does (#2365): the draft row below
-            # names the item, through a foreign key enforced on every
-            # deployment, so it can only be written once the item exists. A
-            # failed ingestion removes its row and leaves vectors no row
-            # admits; ``ingest_runbook``'s docstring lists what else it can
-            # leave.
-            #
-            # upload_document is called by anonymous / non-verified upload
-            # paths, so verified_by is None (verification_level defaults to
-            # EXPERIMENTAL inside ingest_runbook).
-            chunks_created = await self.ingest_runbook(
-                document_id=document_id,
-                title=title,
-                content=content,
-                enterprise_id=enterprise_id,
-                document_type=document_type,
-                tags=tags,
-                source_url=source_url,
-                scope=scope,
-                owner_id=owner_id,
-                team_id=team_id,
-                verified_by=None,
-            )
-
-            # Then the upload, job and verified draft rows, in one transaction.
-            # If it fails, or is cancelled, ``_withdraw_failed_upload`` runs; its
-            # docstring states what it removes.
-            try:
-                async with self._db_session_factory() as session:
-                    # ``conversion_jobs.source_file_id`` is a FK to
-                    # ``uploaded_files``. Create the upload row first.
-                    upload = UploadedFileModel(
+            async def record(session) -> bool:
+                """The upload, job and verified draft rows, in the transaction
+                that completes the item they name (#2396)."""
+                # ``conversion_jobs.source_file_id`` is a FK to
+                # ``uploaded_files``. Create the upload row first.
+                session.add(
+                    UploadedFileModel(
                         file_id=source_file_id,
                         enterprise_id=enterprise_id,
                         case_id=None,  # KB-bound, not case-bound
@@ -1991,10 +2020,10 @@ class KnowledgeService:
                         upload_source="conversion_source",
                         uploaded_at_turn=0,
                     )
-                    session.add(upload)
-                    await session.flush()
-
-                    job = ConversionJobModel(
+                )
+                await session.flush()
+                session.add(
+                    ConversionJobModel(
                         id=conversion_id,
                         user_id=owner_id,  # NULL if anonymous; FK SET NULL
                         enterprise_id=enterprise_id,
@@ -2007,9 +2036,9 @@ class KnowledgeService:
                         created_at=created_at,
                         completed_at=created_at,
                     )
-                    session.add(job)
-
-                    draft = ConversionDraftModel(
+                )
+                session.add(
+                    ConversionDraftModel(
                         id=draft_id,
                         enterprise_id=enterprise_id,
                         conversion_id=conversion_id,
@@ -2029,16 +2058,34 @@ class KnowledgeService:
                         verified_at=created_at,
                         verified_by=owner_id,  # NULL if anonymous; FK SET NULL
                     )
-                    session.add(draft)
-                    await session.commit()
-            except (Exception, asyncio.CancelledError):
-                await self._withdraw_failed_upload(
-                    document_id,
-                    draft_id=draft_id,
-                    conversion_id=conversion_id,
-                    file_id=source_file_id,
                 )
-                raise
+                await session.flush()
+                return True
+
+            # Published and recorded in one transaction (#2396): the draft row
+            # names the item through a foreign key enforced on every
+            # deployment (#2365), so ``record`` runs once the item's row
+            # exists, and the item is ready only in the commit that writes
+            # these rows. ``ingest_runbook``'s docstring lists what a failure
+            # leaves.
+            #
+            # upload_document is called by anonymous / non-verified upload
+            # paths, so verified_by is None (verification_level defaults to
+            # EXPERIMENTAL inside ingest_runbook).
+            chunks_created = await self.ingest_runbook(
+                document_id=document_id,
+                title=title,
+                content=content,
+                enterprise_id=enterprise_id,
+                document_type=document_type,
+                tags=tags,
+                source_url=source_url,
+                scope=scope,
+                owner_id=owner_id,
+                team_id=team_id,
+                verified_by=None,
+                record=record,
+            )
 
             logger.info(
                 f"Uploaded document {document_id}: {chunks_created} chunks indexed"

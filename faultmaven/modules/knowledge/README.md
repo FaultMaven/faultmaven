@@ -61,7 +61,11 @@ imported from the module that defines it. Other modules import from
 #### KnowledgeService
 High-level knowledge base management — search (`search_knowledge()`,
 `search_documents()`), `upload_document()`, `list_documents()`,
-`ingest_runbook()` and the document reads and deletes:
+`ingest_runbook()` and the document reads and deletes. An authored
+`ingest_runbook()` takes its caller's `record`, run in the one transaction that
+completes the item, so a runbook is ready only in the commit that records its
+caller's success: `upload_document()`'s upload, job and draft rows, and
+`verify_draft()`'s swap of the draft (#2396).
 
 ```python
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
