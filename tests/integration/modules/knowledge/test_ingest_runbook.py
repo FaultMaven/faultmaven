@@ -10,7 +10,10 @@ a non-zero return means "fully ingested in both stores"; an exception means
 the call removed its row, best effort, and deleted no vector — whatever it
 wrote is under an id no row admits and never served (a built-in's vectors are
 removed by the next pack-loading bootstrap's reconcile, an authored document's
-only by the authored-orphan sweep once an operator arms it).
+only by the authored-orphan sweep once an operator arms it). An authored row
+the cleanup could not remove, or whose INSERT committed after the call gave
+up, stays incomplete: it is never served either, and the incomplete-ingest
+sweep removes it with its vectors.
 
 This test pins four invariants:
 

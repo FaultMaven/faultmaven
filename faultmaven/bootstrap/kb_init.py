@@ -253,8 +253,9 @@ async def bootstrap_kb(
     # ChromaDB chunks whose built-in parent has no row (orphaned vectors) or an
     # unpublished row (#1966) — both deleted — and published rows with no
     # chunks (orphaned rows — warned; an unpublished row has none by design).
-    # This is the safety net that keeps retrieval from landing on a ghost
-    # vector with no row behind it, or on a runbook that was retired.
+    # Retrieval no longer depends on it: every KB read admits a chunk only when
+    # its row is complete and published (#2397). It removes what admission
+    # already hides.
     (
         result.orphaned_vectors_cleaned,
         result.unpublished_vectors_cleaned,
@@ -262,10 +263,11 @@ async def bootstrap_kb(
     ) = await _reconcile_vectors(knowledge_service, db_session_factory)
 
     # The authored half of the same drift (#1982): an authored chunk whose row
-    # is gone (a vector delete that failed before #1966) is retrievable for
-    # good. Report-only unless an operator arms it; deleted only where the row
-    # read is proven unfiltered by RLS, per enterprise stamp, behind the
-    # reference-set check and the cap — see kb_orphan_sweep.
+    # is gone (a vector delete that failed, or a best-effort one after #2397)
+    # is never served, but stays until this sweep removes it. Report-only
+    # unless an operator arms it; deleted only where the row read is proven
+    # unfiltered by RLS, per enterprise stamp, behind the reference-set check
+    # and the cap — see kb_orphan_sweep.
     max_rows, max_chunks = _resolve_repair_bounds()
     result.authored_orphans = await sweep_authored_orphans(
         knowledge_service,

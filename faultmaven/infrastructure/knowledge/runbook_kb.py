@@ -236,8 +236,10 @@ class RunbookKnowledgeBase(BaseExternalClient):
                 was supplied, ``RUNBOOK_SEARCH_FAILED`` if the vector query
                 itself failed, ``RUNBOOK_RESULTS_UNREADABLE`` if rows matched
                 but the best of them carried no usable identity, or (#2397)
-                ``KNOWLEDGE_ADMISSION_UNAVAILABLE`` / ``RUNBOOK_SEARCH_INCOMPLETE``
-                when admission could not run or left no runbook. None may be
+                ``KNOWLEDGE_ADMISSION_UNAVAILABLE`` when admission could not
+                run, or ``RUNBOOK_SEARCH_INCOMPLETE`` when the deepest page it
+                reads is still full of unpublished documents' chunks and kept
+                no runbook. None may be
                 rendered as "no similar runbooks found": callers turn an empty
                 list into "generate a new runbook", so a search that could not
                 be completed or could not be read must not answer as one that

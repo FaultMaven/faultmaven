@@ -5,9 +5,11 @@ The owner's ruling (#2397, 2026-10-30): one knowledge-owned check,
 has a complete, published ``knowledge_items`` row, and every read door applies
 it — the investigation pre-fetch (push), ``search_documents``, the ``kb_qa``
 pull and runbook dedup. Writers no longer delete vectors in-process: what a
-failed or cancelled write leaves is never served; a built-in's vectors are
-removed by the next pack-loading bootstrap's reconcile, an authored document's
-only by the authored-orphan sweep once an operator arms it.
+failed or cancelled write leaves is never served; a stale incomplete row and
+its vectors are removed by the incomplete-ingest sweep, a built-in's leftover
+vectors by the next pack-loading bootstrap's reconcile, and an authored
+document's vectors with no row only by the authored-orphan sweep once an
+operator arms it.
 
 Everything here is real but the embedder: an on-disk ChromaDB of the test's
 own, FK-on SQLite, the production ``KnowledgeVectorStore``, ``KnowledgeService``
