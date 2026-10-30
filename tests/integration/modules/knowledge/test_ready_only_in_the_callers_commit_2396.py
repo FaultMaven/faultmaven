@@ -368,40 +368,70 @@ async def test_a_flip_miss_is_its_own_error_even_when_the_cleanup_fails(
     assert await _rows(session_factory) == NOTHING
 
 
-class _CloseFailsToo(_FailingCommit):
-    """As ``_FailingCommit``; the armed session's close then raises too, after
-    it has closed."""
+class _LandsThenParks(_FailingCommit):
+    """The armed session's commit lands, then waits to be cancelled; its close
+    then raises too, after it has closed."""
 
     def __call__(self):
-        armed = self.armed and bool(self._failures)
-        session = super().__call__()
-        if armed:
-            real_close = session.close
+        session = self._factory()
+        if self.armed and self._failures:
+            self._failures.pop(0)
+            real_commit, real_close = session.commit, session.close
+
+            async def commit():
+                await real_commit()
+                self.parked.set()
+                await asyncio.Event().wait()
 
             async def close():
                 await real_close()
                 raise OSError("close failed")
 
-            session.close = close
+            session.commit, session.close = commit, close
         return session
 
 
 async def test_a_cancellation_replaced_by_a_close_failure_is_never_a_success(
     session_factory,
 ):
-    """The completing COMMIT landed and then raised ``CancelledError``, and the
-    session's close raised while it propagated: the ``OSError`` that arrives
-    carries the cancellation only as its ``__context__``. It is a cancellation
-    all the same, so it is re-raised as it arrived and never answered as a
-    success. The upload is whole: its COMMIT landed."""
-    factory = _CloseFailsToo(session_factory, (asyncio.CancelledError(), True))
+    """The completing COMMIT landed and the task was then cancelled, and the
+    session's close raised while the cancellation propagated: the ``OSError``
+    that arrives carries it only as its ``__context__``. The task is being
+    cancelled, so it is a cancellation all the same: re-raised as it arrived
+    and never answered as a success. The upload is whole: its COMMIT landed."""
+    factory = _LandsThenParks(session_factory, (PARK, True))
     service = _knowledge(factory)
     factory.arm_at_completion(service)
 
+    task = asyncio.create_task(_upload(service, scope="team"))
+    await factory.parked.wait()
+    task.cancel()
     with pytest.raises(OSError, match="close failed") as raised:
-        await _upload(service, scope="team")
+        await task
 
     assert isinstance(raised.value.__context__, asyncio.CancelledError)
+    assert await _rows(session_factory) == dict.fromkeys(NOTHING, 1)
+
+
+async def test_a_landed_commit_that_raised_a_timeout_succeeds(session_factory):
+    """The completing COMMIT landed and then raised the ``TimeoutError`` of an
+    ``asyncio.timeout()``, which chains the ``CancelledError`` it converted
+    while no cancellation of the task is pending. That is an exception, not a
+    cancellation: the landed COMMIT is the upload's success, and every row is
+    written."""
+    try:
+        async with asyncio.timeout(0):
+            await asyncio.Event().wait()
+    except TimeoutError as timed_out:
+        error = timed_out
+    assert isinstance(error.__cause__, asyncio.CancelledError)
+    factory = _FailingCommit(session_factory, (error, True))
+    service = _knowledge(factory)
+    factory.arm_at_completion(service)
+
+    result = await _upload(service, scope="team")
+
+    assert result["status"] == "completed"
     assert await _rows(session_factory) == dict.fromkeys(NOTHING, 1)
 
 

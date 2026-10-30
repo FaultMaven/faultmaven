@@ -110,10 +110,19 @@ class _CommitState:
 
 
 def _arrived_cancelled(failure: BaseException) -> bool:
-    """Whether ``failure`` is a cancellation, or carries one on its
-    ``__cause__``/``__context__`` chain (#2396): a close or a rollback that
-    raises while a ``CancelledError`` propagates replaces it, keeping it only
-    as the new exception's ``__context__``."""
+    """Whether ``failure`` is a cancellation (#2396). A bare
+    ``CancelledError`` always is. One on its ``__cause__``/``__context__``
+    chain counts only while the current task is being cancelled
+    (``cancelling() > 0``): a close or a rollback that raises while a
+    cancellation propagates replaces it, keeping it as ``__context__``, but
+    ``asyncio.timeout()`` and ``wait_for()`` chain the ``CancelledError`` they
+    turned into a ``TimeoutError`` with no cancellation pending, and that
+    failure is an exception."""
+    if isinstance(failure, asyncio.CancelledError):
+        return True
+    task = asyncio.current_task()
+    if task is None or task.cancelling() == 0:
+        return False
     pending: List[Optional[BaseException]] = [failure]
     seen: Set[int] = set()
     while pending:
@@ -1138,8 +1147,8 @@ class KnowledgeService:
 
           - A failure before the completing COMMIT is issued (the INSERT, the
             vectors, the flip, the share, ``record``, or a session that never
-            opened) landed nothing, and is re-raised as itself, whatever the
-            cleanup found. A row the cleanup could not remove never completed
+            opened) made nothing ready, and is re-raised as itself, whatever
+            the cleanup found. A row the cleanup could not remove never completed
             and stays incomplete: never served or listed, refused by
             :meth:`reindex_missing_vectors`, and deleted with its vectors by
             ``sweep_incomplete_ingests`` once its ``created_at`` is older than
@@ -1157,10 +1166,13 @@ class KnowledgeService:
             caller's record, or incomplete and left for the sweep where it is
             armed.
           - A cancellation is always re-raised as it arrived, whatever the
-            delete found: the state is consistent either way. A failure
-            carrying a ``CancelledError`` on its ``__cause__`` or
-            ``__context__`` chain is one, so it is never answered as a
-            success or as :class:`IngestOutcomeUnknown`.
+            delete found: the state is consistent either way. While the task
+            is being cancelled (``cancelling() > 0``), a failure carrying a
+            ``CancelledError`` on its ``__cause__`` or ``__context__`` chain
+            is one too, so it is never answered as a success or as
+            :class:`IngestOutcomeUnknown`. A ``TimeoutError`` from
+            ``asyncio.timeout()`` chains one with no cancellation pending, and
+            is an exception.
 
           An INSERT whose COMMIT is in doubt can stand too: a COMMIT the server
           received can complete after ``create`` raised (on PostgreSQL a
