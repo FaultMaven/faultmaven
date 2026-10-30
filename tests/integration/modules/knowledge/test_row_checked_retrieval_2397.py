@@ -5,7 +5,9 @@ The owner's ruling (#2397, 2026-10-30): one knowledge-owned check,
 has a complete, published ``knowledge_items`` row, and every read door applies
 it — the investigation pre-fetch (push), ``search_documents``, the ``kb_qa``
 pull and runbook dedup. Writers no longer delete vectors in-process: what a
-failed or cancelled write leaves is never served, and is collected later.
+failed or cancelled write leaves is never served; a built-in's vectors are
+removed by the next pack-loading bootstrap's reconcile, an authored document's
+only by the authored-orphan sweep once an operator arms it.
 
 Everything here is real but the embedder: an on-disk ChromaDB of the test's
 own, FK-on SQLite, the production ``KnowledgeVectorStore``, ``KnowledgeService``
@@ -632,10 +634,23 @@ CROWD_RETIRED = item_id_from_runbook_id("crowd-unpublished")
 CROWD_CHUNKS = 16
 
 
-async def _crowd(factory, tmp_path, retired_chunks: int):
-    """A published runbook, and a built-in whose ``retired_chunks`` chunks all
-    outrank it, unpublished by the real delete (a SQL-only flip, so its
-    vectors stay until the next pack-loading bootstrap)."""
+def _at_cosine(c: float) -> List[float]:
+    return _unit(c, math.sqrt(1 - c * c))
+
+
+async def _crowd(
+    factory,
+    tmp_path,
+    retired_chunks: int,
+    *,
+    published_chunks: int = 1,
+    published_vector: List[float] = REAL_VECTORS[0],
+    retired_vector: List[float] = Q,
+):
+    """A published runbook of ``published_chunks`` chunks, and a built-in
+    whose ``retired_chunks`` chunks outrank it (none when 0), unpublished by
+    the real delete (a SQL-only flip, so its vectors stay until the next
+    pack-loading bootstrap)."""
     chroma = chromadb.PersistentClient(
         path=str(tmp_path / "chroma"),
         settings=ChromaSettings(anonymized_telemetry=False, allow_reset=False),
@@ -647,20 +662,28 @@ async def _crowd(factory, tmp_path, retired_chunks: int):
         vector_store=store,
         db_session_factory=factory,
     )
-    await _ingest_shipped(service, CROWD_PUBLISHED, "crowd-published", REAL_VECTORS[0])
-    await service.ingest_runbook(
-        document_id=CROWD_RETIRED,
-        title="Runbook crowd-unpublished",
-        content=_text("crowd-unpublished"),
-        enterprise_id=STANDALONE_ENTERPRISE_ID,
-        scope="global",
-        prechunked=[
-            (f"{_text('crowd-unpublished')} part {i}", list(Q))
-            for i in range(retired_chunks)
-        ],
-        shipped=True,
-    )
-    assert (await service.delete_document(CROWD_RETIRED))["action"] == "unpublished"
+    for item_id, marker, chunks, vector in (
+        (CROWD_PUBLISHED, "crowd-published", published_chunks, published_vector),
+        (CROWD_RETIRED, "crowd-unpublished", retired_chunks, retired_vector),
+    ):
+        if chunks:
+            await service.ingest_runbook(
+                document_id=item_id,
+                title=f"Runbook {marker}",
+                content=_text(marker),
+                enterprise_id=STANDALONE_ENTERPRISE_ID,
+                scope="global",
+                # Each chunk a hair apart: identical vectors make ChromaDB's
+                # approximate search drop rows from a page.
+                prechunked=[
+                    (f"{_text(marker)} part {i}", _unit(*vector[:2], 1e-3 * i))
+                    for i in range(chunks)
+                ],
+                shipped=True,
+            )
+    if retired_chunks:
+        retired = await service.delete_document(CROWD_RETIRED)
+        assert retired["action"] == "unpublished"
     return SimpleNamespace(chroma=chroma, store=store, service=service)
 
 
@@ -703,6 +726,74 @@ async def test_dedup_refuses_when_still_crowded_at_the_deepest_page(factory, tmp
         await _dedup_kb(kb).search_by_text(QUERY, scope_filter=SCOPE, top_k=3)
 
     assert raised.value.error_code == "RUNBOOK_SEARCH_INCOMPLETE"
+
+
+async def test_both_hybrid_arms_read_deeper_on_a_crowded_page(crowded):
+    store = crowded.store
+    with (
+        patch.object(store, "_recall", wraps=store._recall) as recall,
+        patch.object(
+            store,
+            "_keyword_constrained_search",
+            wraps=store._keyword_constrained_search,
+        ) as keyword,
+    ):
+        assert await _push(crowded) == [CROWD_PUBLISHED]
+
+    assert [c.kwargs["k"] for c in recall.call_args_list][:2] == [15, 30]
+    assert [c.kwargs["k"] for c in keyword.call_args_list][:2] == [6, 12]
+
+
+def _dedup_pages(kb):
+    """The dedup reader, and a spy counting the pages it reads."""
+    reader = _dedup_kb(kb)
+    query = reader.vector_store.query_by_embedding
+    return reader, patch.object(reader.vector_store, "query_by_embedding", wraps=query)
+
+
+@pytest.mark.parametrize("top_k", [3, 5])
+async def test_dedup_at_the_cap_still_answers_with_the_runbook_it_holds(
+    factory, tmp_path, top_k
+):
+    """One unpublished chunk on top of a published runbook with more chunks
+    above the floor than the deepest page holds: every unread row ranks below
+    the page's last, and core reads only the top match."""
+    kb = await _crowd(
+        factory, tmp_path, 1, published_chunks=top_k * 3 * MAX_DEEPENING + 10
+    )
+    matches = await _dedup_kb(kb).search_by_text(QUERY, scope_filter=SCOPE, top_k=top_k)
+    assert [m.item_id for m in matches] == [CROWD_PUBLISHED]
+
+
+async def test_dedup_reads_one_page_when_admission_drops_nothing(factory, tmp_path):
+    """One long published runbook and no stray: the page is full and holds
+    fewer than ``top_k`` runbooks, but nothing was dropped, so nothing is read
+    again and nothing raises."""
+    kb = await _crowd(factory, tmp_path, 0, published_chunks=3 * 3 * MAX_DEEPENING + 10)
+    reader, pages = _dedup_pages(kb)
+    with pages as query:
+        matches = await reader.search_by_text(QUERY, scope_filter=SCOPE, top_k=3)
+    assert [m.item_id for m in matches] == [CROWD_PUBLISHED]
+    assert query.await_count == 1
+
+
+async def test_dedup_reads_one_page_when_its_last_row_is_below_the_floor(
+    factory, tmp_path
+):
+    """Strays at cosine 0.35 over a runbook at 0.30, under the 0.65 floor: no
+    deeper row could qualify, so the answer is [] and nothing raises."""
+    kb = await _crowd(
+        factory,
+        tmp_path,
+        3 * 3 * MAX_DEEPENING,
+        published_vector=_at_cosine(0.30),
+        retired_vector=_at_cosine(0.35),
+    )
+    reader, pages = _dedup_pages(kb)
+    with pages as query:
+        matches = await reader.search_by_text(QUERY, scope_filter=SCOPE, top_k=3)
+    assert matches == []
+    assert query.await_count == 1
 
 
 # --- the check itself -------------------------------------------------------

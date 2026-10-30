@@ -474,7 +474,8 @@ async def test_vectors_a_failed_store_wrote_are_never_served(
 ):
     """#2063: the write may have landed. Nothing deletes it in-process (the
     indexer's pre-delete ran before the add); the row goes, so no KB door
-    admits the chunks, and the orphan sweep collects them."""
+    admits the chunks, and only the authored-orphan sweep, once an operator
+    arms it, removes them."""
     monkeypatch.setattr(
         embedding_guard,
         "embed_texts_or_raise",

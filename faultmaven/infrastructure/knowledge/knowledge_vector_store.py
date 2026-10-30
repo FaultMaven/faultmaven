@@ -791,7 +791,7 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
                 document that was retrieved perfectly well. A floor is an
                 admission criterion, so it belongs at admission.
             admit: The admission check (:data:`AdmitParents`, #2397), awaited
-                once with the distinct parents of both arms' candidates after
+                once per page read, with the parents of both arms' candidates after
                 the score floor. A candidate whose parent it does not return
                 is dropped before the rerank and the top-k cut, so a stray
                 chunk never takes an admitted hit's place in the window. When

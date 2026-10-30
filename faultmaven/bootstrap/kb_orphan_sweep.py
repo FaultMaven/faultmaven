@@ -5,7 +5,7 @@ when its parent has a complete, published row, #2397), and no writer deletes
 vectors in-process: a failed ingest, a delete whose best-effort vector delete
 failed, or an update or repair that raced a delete leaves AUTHORED chunks
 under an id with no row. They are inert, never served and never reused, and
-this module is what collects them. The reconcile in
+this module, once an operator arms it, removes them. The reconcile in
 :mod:`faultmaven.bootstrap.kb_init` deletes no-row vectors for built-in
 ``kb_<12 hex>`` parents only. This module is the authored half.
 

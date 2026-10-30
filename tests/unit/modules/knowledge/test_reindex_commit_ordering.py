@@ -353,7 +353,8 @@ async def test_a_concurrent_unpublish_is_not_resurrected_by_the_commit():
 async def test_a_row_deleted_mid_update_leaves_no_admitted_vector():
     """Deleted while we embedded. The update reports not-found and makes no
     vector delete of its own (#2397): the chunks it wrote sit under an id with
-    no row, which no KB door admits, and the orphan sweep collects."""
+    no row, which no KB door admits; only the authored-orphan sweep, once an
+    operator arms it, removes them."""
     state = _state()
     service, repo, calls = _service(state)
 

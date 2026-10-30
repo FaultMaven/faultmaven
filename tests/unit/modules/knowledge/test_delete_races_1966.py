@@ -276,7 +276,7 @@ async def test_a_delete_during_the_repair_embed_leaves_nothing_admitted(
     await asyncio.wait_for(repairing, 10)
 
     assert removed["success"] is True
-    assert race.store.parents[item_id] == 3  # left for collection
+    assert race.store.parents[item_id] == 3  # left in the store, never served
     assert not await race.admitted(item_id)
     # The authored delete's own best-effort vector delete ran before the
     # repair's late write; nothing deleted vectors after it.

@@ -5,7 +5,7 @@ inserts its row with ``ingest_complete`` false and sets it true once its vectors
 are written. No KB door serves an incomplete row's vectors (every door admits a
 chunk only when its row is complete and published, #2397), so such a row is
 garbage, never a leak: one whose ingest failed and whose row cleanup failed
-too, or whose INSERT committed after the ingest raised. This sweep collects it.
+too, or whose INSERT committed after the ingest raised. This sweep, where armed, removes it.
 
 A row is swept once its ``created_at`` is older than
 ``KB_INCOMPLETE_INGEST_MAX_AGE_HOURS`` (default 24); a younger one may be an

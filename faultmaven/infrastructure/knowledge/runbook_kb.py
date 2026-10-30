@@ -144,7 +144,7 @@ class RunbookKnowledgeBase(BaseExternalClient):
                 :meth:`search_runbooks` raises, which this method delegates to
                 and does not catch (``RUNBOOK_SEARCH_UNSCOPED``,
                 ``RUNBOOK_SEARCH_FAILED``, ``RUNBOOK_RESULTS_UNREADABLE``,
-                ``KNOWLEDGE_ADMISSION_UNAVAILABLE``). The
+                ``KNOWLEDGE_ADMISSION_UNAVAILABLE``, ``RUNBOOK_SEARCH_INCOMPLETE``). The
                 caller must NOT render any of them as "no similar runbooks
                 found" — that is the affirmative negative this method exists to
                 end.
@@ -237,7 +237,7 @@ class RunbookKnowledgeBase(BaseExternalClient):
                 itself failed, ``RUNBOOK_RESULTS_UNREADABLE`` if rows matched
                 but the best of them carried no usable identity, or (#2397)
                 ``KNOWLEDGE_ADMISSION_UNAVAILABLE`` / ``RUNBOOK_SEARCH_INCOMPLETE``
-                when admission could not run or left it short. None may be
+                when admission could not run or left no runbook. None may be
                 rendered as "no similar runbooks found": callers turn an empty
                 list into "generate a new runbook", so a search that could not
                 be completed or could not be read must not answer as one that
@@ -308,12 +308,11 @@ class RunbookKnowledgeBase(BaseExternalClient):
             judge,
             fetch_k,
         )
-        if short:
+        if short and not results["ids"][0]:
             # "Nothing similar" here would be a claim not established (#944).
             raise KnowledgeBaseError(
-                "Runbook similarity search could not reach "
-                f"{top_k} published runbooks: the closest chunks belong to "
-                "documents that are not published",
+                "Runbook similarity search could not reach a published runbook: "
+                "the closest chunks belong to documents that are not published",
                 error_code="RUNBOOK_SEARCH_INCOMPLETE",
             )
 

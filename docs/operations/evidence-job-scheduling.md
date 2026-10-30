@@ -249,7 +249,7 @@ described above, so treat it as the intended rule rather than a live one.
 once an operator arms it, delete them. No writer deletes vectors in-process
 (#2397): a failed ingest, a delete whose best-effort vector delete failed, and an
 update or repair that raced a delete leave them. No KB door serves a chunk whose
-row is gone, so they are inert garbage until collected. The sweep runs inside every KB
+row is gone, so they are inert garbage until this sweep, once armed, removes them. The sweep runs inside every KB
 bootstrap pass: at web startup under a single-tenant provider, and in `kb_seed`,
 which is the only path under `TENANT_PROVIDER=multi`, where CD runs it after
 every deploy. Design: [ingestion step 6](../architecture/knowledge-and-ai/kb-ingestion-architecture.md#algorithm).

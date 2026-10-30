@@ -5,7 +5,7 @@ A KB chunk is served only when its parent document has a complete, published
 (``IKnowledgeService.admitted_document_ids``) and hands it to every KB reader
 as an ``admit`` callback (:data:`faultmaven.models.interfaces.AdmitParents`).
 The readers never read ``knowledge_items`` themselves: they name each hit's
-parent by the one rule below, await ``admit`` once per query, and drop every
+parent by the one rule below, await ``admit`` once per page read, and drop every
 hit whose parent it does not return.
 """
 

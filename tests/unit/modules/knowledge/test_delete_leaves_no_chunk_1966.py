@@ -7,9 +7,10 @@ when its parent's row is complete and published at query time
 (``KnowledgeService.admitted_document_ids``), so the delete commits the row
 change first and is done: an unpublish is a SQL-only flip, and an authored
 delete removes its vectors afterwards, best effort. A vector delete that fails
-or times out is not a failed delete (#2063). What it leaves is never served,
-and is collected later: an unpublished built-in's vectors by the next boot's
-reconcile, an authored document's by the authored-orphan sweep.
+or times out is not a failed delete (#2063). What it leaves is never served:
+an unpublished built-in's vectors are removed by the next pack-loading
+bootstrap's reconcile, an authored document's only by the authored-orphan
+sweep once an operator arms it.
 
 Before #1966 the row was committed first and the vector delete's failure was
 swallowed, with retrieval reading the vector store alone, so a chunk outliving

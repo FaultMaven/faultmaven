@@ -8,7 +8,9 @@ serves a chunk only when its parent's row is complete and published (#2397).
 So the failure contract (kb-ingestion-architecture.md, "Failure contract") is:
 a non-zero return means "fully ingested in both stores"; an exception means
 the call removed its row, best effort, and deleted no vector — whatever it
-wrote is under an id no row admits, never served, and collected later.
+wrote is under an id no row admits and never served (a built-in's vectors are
+removed by the next pack-loading bootstrap's reconcile, an authored document's
+only by the authored-orphan sweep once an operator arms it).
 
 This test pins four invariants:
 
