@@ -58,7 +58,9 @@ class _FakeSession:
         return False
 
     async def scalar(self, _stmt):
-        return self._rows
+        # A count unlike the DELETEs' rowcount, so a printed count equal to
+        # the rowcount did not come from here.
+        return self._rows + 1
 
     async def execute(self, _stmt):
         self.deletes += 1
@@ -77,11 +79,16 @@ def stub_db(monkeypatch):
         from faultmaven.infrastructure.persistence import database
 
         monkeypatch.setattr(database, "get_db_session", lambda: session)
-        # The draft discard ahead of the DELETE (#2369) is not a DELETE.
+        # The draft discard ahead of the DELETE (#2369) is not a DELETE, and
+        # neither is the key release after the draft step (#2387).
         monkeypatch.setattr(
             draft_retirement,
             "discard_drafts_naming_any_item",
-            AsyncMock(return_value=([], [])),
+            AsyncMock(return_value=([], [], 0)),
+        )
+        session.release = AsyncMock(return_value=0)
+        monkeypatch.setattr(
+            draft_retirement, "release_case_keys_without_a_live_draft", session.release
         )
         return session
 
@@ -166,17 +173,18 @@ async def test_keep_chroma_names_the_store_it_kept(
 async def test_the_deleted_count_is_the_databases_rowcount(
     tmp_path, monkeypatch, capsys, stub_db
 ):
-    """Reported counts come from the DELETE's own rowcount, so the number an
-    operator reads is what the database did — not a pre-count that a concurrent
-    writer could have made stale."""
+    """The deleted counts come from the DELETEs' own rowcounts, so the number
+    an operator reads is what the database did — not a pre-count that a
+    concurrent writer could have made stale."""
     monkeypatch.chdir(tmp_path)
     (tmp_path / "data" / "chroma-kb").mkdir(parents=True)
-    stub_db(rows=42)
+    session = stub_db(rows=42)
 
     await reset_kb.reset_kb(
         dry_run=False, all_drafts=True, rebuild=False, keep_chroma=True
     )
 
+    session.release.assert_awaited_once_with(session)
     out = capsys.readouterr().out
     assert "Deleted 42 knowledge_items rows." in out
     assert "Deleted 42 conversion_drafts rows (--all-drafts)." in out
