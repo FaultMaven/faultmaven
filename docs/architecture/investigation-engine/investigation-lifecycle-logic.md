@@ -949,13 +949,12 @@ def force_close_investigation(case: Case, user_id: str, reason: str):
         raise ValueError("Can only force-close from INVESTIGATING status")
 
     case.atomic_update(
-        status=CaseState.CLOSED,
+        state=CaseState.CLOSED,
         closed_at=datetime.now(UTC),
         closure_reason=reason,  # engine-derived; see derive_closure_reason()
     )
-    # Note: a case stabilized by a verified mitigation closes as "mitigation_sufficient"
-    # (the former "mitigation_sufficient" reason was folded in). The documented
-    # mitigation is preserved on the closed case.
+    # Note: a case stabilized by a verified mitigation closes as "mitigation_sufficient".
+    # The documented mitigation is preserved on the closed case.
     case.action_history.append(CaseAction(
         from_state=CaseState.INVESTIGATING,
         to_state=CaseState.CLOSED,
@@ -979,9 +978,9 @@ def close_from_inquiry(case: Case, user_id: str):
         raise ValueError("Can only close-from-inquiry when in INQUIRY status")
 
     case.atomic_update(
-        status=CaseState.CLOSED,
+        state=CaseState.CLOSED,
         closed_at=datetime.now(UTC),
-        closure_reason="inquiry_only",
+        closure_reason=ClosureReason.INQUIRY_ONLY,
     )
     case.action_history.append(CaseAction(
         from_state=CaseState.INQUIRY,

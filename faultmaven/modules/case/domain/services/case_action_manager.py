@@ -36,8 +36,13 @@ The full legality graph is ``LEGAL_TRANSITIONS`` in
 """
 
 from datetime import datetime, timezone
+from enum import StrEnum
 from types import MappingProxyType
 from typing import Any, Dict, Mapping, Optional
+
+from pydantic import GetJsonSchemaHandler
+from pydantic.json_schema import JsonSchemaValue
+from pydantic_core import CoreSchema
 
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.utils.serialization import to_json_compatible
@@ -94,6 +99,53 @@ USER_SELECTABLE_ACTIONS: Mapping[CaseState, tuple[CaseState, ...]] = MappingProx
         CaseState.CLOSED: (),
     }
 )
+
+
+#: The targets ``USER_SELECTABLE_ACTIONS`` lists, as the contract publishes them
+#: (``valid_next_states``). Declared rather than derived from the table, so the
+#: class can carry its schema hook and each value's meaning; the table stays
+#: typed by ``CaseState`` for the guards that read it, and
+#: :func:`_require_declared_selectable_states` ties the two at import.
+class SelectableNextState(StrEnum):
+    CLOSED = CaseState.CLOSED.value
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, core_schema: CoreSchema, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        schema = handler.resolve_ref_schema(handler(core_schema))
+        schema["x-enum-descriptions"] = [_SELECTABLE_STATE_MEANINGS[m] for m in cls]
+        return schema
+
+
+#: Each value's meaning, published as ``x-enum-descriptions``. Contract text:
+#: editing an entry moves the contract version.
+_SELECTABLE_STATE_MEANINGS: Mapping[SelectableNextState, str] = MappingProxyType(
+    {
+        SelectableNextState.CLOSED: (
+            "Close the case: the one case action that needs no precondition."
+        ),
+    }
+)
+
+
+def _require_declared_selectable_states(
+    table: Mapping[CaseState, tuple[CaseState, ...]],
+) -> None:
+    """Raise ``ValueError`` unless ``SelectableNextState`` declares exactly the
+    states ``table`` lists, naming each one on one side only."""
+    listed = {target.value for targets in table.values() for target in targets}
+    declared = {member.value for member in SelectableNextState}
+    if listed != declared:
+        raise ValueError(
+            "SelectableNextState must declare exactly the states "
+            "USER_SELECTABLE_ACTIONS lists: listed but not declared "
+            f"{sorted(listed - declared)}, declared but not listed "
+            f"{sorted(declared - listed)}"
+        )
+
+
+_require_declared_selectable_states(USER_SELECTABLE_ACTIONS)
 
 
 #: Why each earned edge is not requestable, for the refusal message. Keyed by
@@ -227,9 +279,6 @@ class CaseActionManager:
 
         return {}
 
-    # Backward compatibility alias
-    get_terminal_state_fields = get_disposition_fields
-
     @staticmethod
     def get_allowed_actions(current_status: CaseState) -> list[CaseState]:
         """The case actions a user may pick from the status menu.
@@ -238,8 +287,14 @@ class CaseActionManager:
         """
         return list(USER_SELECTABLE_ACTIONS.get(current_status, ()))
 
-    # Backward compatibility alias
-    get_allowed_transitions = get_allowed_actions
+    @staticmethod
+    def selectable_next_states(current_status: CaseState) -> list[SelectableNextState]:
+        """``get_allowed_actions`` as the contract publishes it: the
+        ``valid_next_states`` of a case in ``current_status``."""
+        return [
+            SelectableNextState(target.value)
+            for target in CaseActionManager.get_allowed_actions(current_status)
+        ]
 
 
 # Backward compatibility alias

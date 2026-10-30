@@ -567,7 +567,9 @@ from faultmaven.modules.case.domain.models.lifecycle import (
     CaseAction,
     CaseSeverity,
     CaseState,
+    ClosureReason,
     InvestigationStrategy,
+    closure_reason_table,
 )
 from faultmaven.modules.case.domain.models.metadata import (
     CaseMetadata,
@@ -818,6 +820,8 @@ __all__ = [
     "CaseMetadata",
     "CaseSeverity",
     "CaseState",
+    "ClosureReason",
+    "closure_reason_table",
     "CausalEdge",
     "CausalNode",
     "CauseAssuranceGrade",

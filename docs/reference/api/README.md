@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 14.8.0
+**Version:** 14.9.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -5238,6 +5238,23 @@ Request to update an existing case.
 
 ---
 
+### ClosureReason
+
+Why a CLOSED case ended: the most specific reason that holds when it is closed. Null for any case that is not CLOSED.
+
+**Values:**
+
+- `inquiry_only` — Closed during inquiry, before any investigation started.
+- `closed_false_alarm` — The evidence showed the reported problem was not present where and when it was reported, so there was nothing to fix.
+- `resolution_declined` — The fix was confirmed to work, and the user chose not to mark the case resolved.
+- `solution_deferred` — The cause was identified and a fix documented, but no fix was confirmed to work in this case.
+- `closed_rca_infeasible` — The root cause was declared structurally unreachable, with a rationale (for example an uncontrollable external dependency or an end-of-life system).
+- `mitigation_sufficient` — A verified mitigation relieved the symptom, and root-cause analysis was not pursued further.
+- `closed_restatement_held` — The evidence supported a cause, but its statement never said more than the problem itself, so no root cause was established.
+- `closed_insufficient_evidence` — What was needed was never established: the problem could not be verified, or no cause could be grounded in the evidence.
+
+---
+
 ### DatabaseTimeoutsStatus
 
 The bounds in force on a database that stops answering (#2280).
@@ -6257,6 +6274,14 @@ Request model for knowledge base search
 - `rank_by` (object, optional) — Field to rank results by (e.g., priority)
 - `similarity_threshold` (object, optional) — Minimum similarity score threshold (0.0-1.0)
 - `tags` (object, optional) — Filter by tags (comma-separated)
+
+---
+
+### SelectableNextState
+
+**Values:**
+
+- `closed` — Close the case: the one case action that needs no precondition.
 
 ---
 

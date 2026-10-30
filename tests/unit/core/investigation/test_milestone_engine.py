@@ -1679,7 +1679,7 @@ class TestReadinessAssessments:
 
     # test_summary_guardrail_skips_duplicates removed — the 'duplicate'
     # short-circuit was deleted when closure_reason was simplified to the
-    # engine-derived VALID_CLOSURE_REASONS. Duplicate-tracking, if
+    # engine-derived ClosureReason. Duplicate-tracking, if
     # reintroduced, will use a separate field rather than an enum value the
     # engine can't reliably assign.
 

@@ -985,11 +985,9 @@ class TestRestatementHeldClosure:
         assert "never stated distinctly" in line
 
     def test_the_reason_is_in_the_valid_vocabulary(self):
-        from faultmaven.modules.case.domain.models.lifecycle import (
-            VALID_CLOSURE_REASONS,
-        )
+        from faultmaven.modules.case.domain.models.lifecycle import ClosureReason
 
-        assert "closed_restatement_held" in VALID_CLOSURE_REASONS
+        assert "closed_restatement_held" in set(ClosureReason)
 
     @pytest.mark.asyncio
     async def test_the_closure_summary_does_not_claim_an_evidence_boundary(self):

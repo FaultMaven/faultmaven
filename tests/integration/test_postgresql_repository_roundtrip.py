@@ -1027,6 +1027,30 @@ async def test_the_save_refuses_what_it_cannot_know(pg_repo):
 
 
 @pytest.mark.asyncio
+async def test_the_save_refuses_a_case_it_could_not_load(pg_repo):
+    """#1795: the SQLite save re-validates the whole aggregate before writing,
+    and this one did not, so a case holding an invalid nested model was stored
+    and then refused by every load. Refused before any write now."""
+    session = pg_repo.db
+    enterprise_id = f"ent_{uuid4().hex[:8]}"
+    user_id = f"user_{uuid4().hex[:8]}"
+    await seed_enterprises(session, [enterprise_id])
+    await seed_users(session, [user_id])
+
+    case = _make_case(enterprise_id, user_id)
+    # Confirmed and then emptied: ``InquiryData`` refuses that, and has no
+    # ``validate_assignment`` to refuse it at the assignment.
+    case.inquiry.proposed_problem_statement = ""
+    with pytest.raises(Exception, match="proposed_problem_statement"):
+        await pg_repo.save(case)
+
+    stored = await session.execute(
+        text("SELECT count(*) FROM cases WHERE case_id = :c"), {"c": case.case_id}
+    )
+    assert stored.scalar() == 0
+
+
+@pytest.mark.asyncio
 async def test_search_state_is_a_where_clause_not_a_post_filter(pg_repo):
     """``search(state=...)`` narrows in SQL, ahead of the LIMIT (#1416).
 

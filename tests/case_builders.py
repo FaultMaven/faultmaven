@@ -58,10 +58,22 @@ def inquiry_case(*, statement: Optional[str] = None, **fields: Any) -> Case:
 
 
 def _confirm(
-    inquiry: InquiryData, statement: Optional[str], confirmed_at: Optional[datetime]
+    inquiry: InquiryData,
+    statement: Optional[str],
+    confirmed_at: Optional[datetime],
+    description: str,
 ) -> None:
+    """Confirm ``statement``, else the statement already proposed, else the
+    case's ``description``: production copies the confirmed statement into the
+    description. ``InquiryData`` refuses a confirmed statement that is empty."""
     if statement is not None:
         inquiry.proposed_problem_statement = statement
+    elif not inquiry.proposed_problem_statement:
+        inquiry.proposed_problem_statement = description
+    if not inquiry.proposed_problem_statement:
+        raise ValueError(
+            "a confirmed problem statement needs a statement or description"
+        )
     inquiry.problem_statement_confirmed = True
     if confirmed_at is not None:
         inquiry.problem_statement_confirmed_at = confirmed_at
@@ -85,7 +97,8 @@ def investigating_case(
 ) -> Case:
     """A case whose problem statement is confirmed, in ``state``.
 
-    ``statement`` becomes the proposed statement and ``confirmed_at`` the
+    ``statement`` becomes the proposed statement (the one the inquiry already
+    proposes, else ``description``, when not given) and ``confirmed_at`` the
     confirmation time (now, unless given or already set). The statement is
     confirmed on the inquiry before the case is built, so the confirmation
     precedes the case's own timestamps. With ``confirm_after_build`` the case
@@ -110,11 +123,11 @@ def investigating_case(
         if inquiry is not None:
             fields["inquiry"] = inquiry
         case = make_case(description=description, **fields)
-        _confirm(case.inquiry, statement, confirmed_at)
+        _confirm(case.inquiry, statement, confirmed_at, description)
         case.state = state
     else:
         inquiry = InquiryData() if inquiry is None else inquiry
-        _confirm(inquiry, statement, confirmed_at)
+        _confirm(inquiry, statement, confirmed_at, description)
         case = make_case(
             description=description, state=state, inquiry=inquiry, **fields
         )

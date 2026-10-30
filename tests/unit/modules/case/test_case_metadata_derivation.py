@@ -23,7 +23,7 @@ from faultmaven.modules.case.domain.models.case import (
     reconcile_turn_numbers,
     stage_while_investigating,
 )
-from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.models.lifecycle import CaseState, ClosureReason
 from faultmaven.modules.case.domain.models.metadata import CaseMetadata
 from faultmaven.modules.case.domain.models.problem import InvestigationStage
 from faultmaven.modules.case.domain.models.progress import (
@@ -440,10 +440,32 @@ def test_a_null_activity_column_loads_as_the_model_default():
     assert metadata.last_activity_at.tzinfo is not None
 
 
+@pytest.mark.parametrize(
+    "stored",
+    [
+        pytest.param({"state": "abandoned"}, id="state"),
+        pytest.param({"state": "closed", "closure_reason": "abandoned"}, id="reason"),
+    ],
+)
+def test_a_column_outside_its_vocabulary_fails_the_read(stored):
+    """A column is served as stored, and the read refuses one its type does not
+    hold rather than serving it as a label: no write path stores such a value
+    (#1795), so the row was edited by hand. ``state`` is the control."""
+    with pytest.raises(ValueError, match="abandoned"):
+        CaseMetadata.from_stored(**_stored(closed_at=_NOW, **stored))
+
+
+def test_a_stored_reason_is_served_as_the_enum():
+    metadata = CaseMetadata.from_stored(
+        **_stored(state="closed", closed_at=_NOW, closure_reason="inquiry_only")
+    )
+    assert metadata.closure_reason is ClosureReason.INQUIRY_ONLY
+
+
 def test_metadata_has_no_field_that_can_hold_user_text():
     """``CaseMetadata`` is the domain half of the bound: every string field is a
     system id or a closed vocabulary. A new ``str`` field fails here until it is
-    classified."""
+    classified. ``closure_reason`` is a ``ClosureReason``, closed by its type."""
     string_fields = {
         name
         for name, field in CaseMetadata.model_fields.items()
@@ -457,7 +479,6 @@ def test_metadata_has_no_field_that_can_hold_user_text():
         # The effective driver's id (#1926): a system id, never a name.
         "driver_id",
         "source",
-        "closure_reason",
         "shared_team_ids",
     }
 

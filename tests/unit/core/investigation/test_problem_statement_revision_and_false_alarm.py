@@ -35,7 +35,6 @@ from faultmaven.core.investigation.milestone_engine.transition_consent import (
 )
 from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommitPlan
 from faultmaven.core.investigation.problem_status import (
-    FALSE_ALARM_CLOSURE_REASON,
     cancel_revision,
     commit_revision,
     decline_revision,
@@ -80,6 +79,7 @@ from faultmaven.modules.case.contracts import (
     CaseState,
     CausalNode,
     CauseState,
+    ClosureReason,
     Evidence,
     EvidenceCategory,
     EvidenceNeed,
@@ -465,7 +465,7 @@ class TestTransitions:
         assert case.progress.problem_status == ProblemStatus.UNVERIFIED
         assert case.problem_verification.invalidation is None
         assert case.pending_transition is None
-        assert derive_closure_reason(case) != FALSE_ALARM_CLOSURE_REASON
+        assert derive_closure_reason(case) != ClosureReason.CLOSED_FALSE_ALARM
 
     def test_an_edit_on_a_case_missing_its_verification_record_creates_it(self):
         case = _case(ProblemStatus.VERIFIED)
@@ -597,7 +597,7 @@ class TestApplyStep:
         assert case.progress.problem_status == ProblemStatus.INVALIDATED
         pending = case.pending_transition
         assert pending["to_state"] == "closed"
-        assert pending["closure_reason"] == FALSE_ALARM_CLOSURE_REASON
+        assert pending["closure_reason"] == ClosureReason.CLOSED_FALSE_ALARM
         assert "justifying_signature" in pending
         assert "false alarm" in meta["false_alarm_closure_message"]
         readiness = assess_resolution_readiness(case)
@@ -1511,7 +1511,7 @@ class TestTerminalCaseRead:
         case = _case()
         absent = _with(case, _evidence(EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE, "a"))
         invalidate_problem(case, evidence_ids=absent, basis="the alert misfired")
-        assert execute_user_closure(case, "u") == FALSE_ALARM_CLOSURE_REASON
+        assert execute_user_closure(case, "u") == ClosureReason.CLOSED_FALSE_ALARM
 
         result = transform_case_for_ui(case)
 
@@ -1620,7 +1620,7 @@ def _false_alarm_case(*, model_close: bool) -> Case:
     propose_transition(case, to_state="closed", summary="close?")
     if not model_close:
         case.pending_transition["justifying_signature"] = "sig"
-    assert case.pending_transition["closure_reason"] == FALSE_ALARM_CLOSURE_REASON
+    assert case.pending_transition["closure_reason"] == ClosureReason.CLOSED_FALSE_ALARM
     return case
 
 
@@ -1706,7 +1706,7 @@ class TestFalseAlarmCloseFollowsItsFinding:
             redaction_ctx=None,
         )
         pending = case.pending_transition
-        assert pending["closure_reason"] == FALSE_ALARM_CLOSURE_REASON
+        assert pending["closure_reason"] == ClosureReason.CLOSED_FALSE_ALARM
         assert "justifying_signature" not in pending
         edit_statement(case, "The checkout page returns 502 at peak")
         assert case.pending_transition is None
@@ -1724,7 +1724,7 @@ class TestFalseAlarmCloseFollowsItsFinding:
         assert updated.state != CaseState.CLOSED
         reason = (updated.pending_transition or {}).get("closure_reason")
         assert not (
-            reason == FALSE_ALARM_CLOSURE_REASON
+            reason == ClosureReason.CLOSED_FALSE_ALARM
             and updated.progress.problem_status != ProblemStatus.INVALIDATED
         )
 
@@ -1784,8 +1784,8 @@ class TestTheEnginesFalseAlarmOfferStands:
         _, case, result = await _finding_turn(model_proposes=model_proposes)
         pending = case.pending_transition
         assert pending["to_state"] == "closed"
-        assert pending["closure_reason"] == FALSE_ALARM_CLOSURE_REASON
-        assert pending[_SIGNED] == f"{FALSE_ALARM_CLOSURE_REASON}|4"
+        assert pending["closure_reason"] == ClosureReason.CLOSED_FALSE_ALARM
+        assert pending[_SIGNED] == "closed_false_alarm|4"
         # The card the user is shown names the offer that is standing.
         keys = {
             (f.get("intent") or {}).get("proposal_id")
@@ -1876,7 +1876,7 @@ class TestTheEnginesFalseAlarmOfferStands:
 
     async def test_without_a_model_proposal_the_offer_is_signed(self):
         _, case, _ = await _finding_turn(model_proposes=None)
-        assert case.pending_transition[_SIGNED] == f"{FALSE_ALARM_CLOSURE_REASON}|4"
+        assert case.pending_transition[_SIGNED] == "closed_false_alarm|4"
 
     async def test_with_no_engine_offer_the_models_proposal_lands(self):
         """Negative control: the rule is about the engine's SAME-turn offer,

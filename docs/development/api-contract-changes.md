@@ -98,7 +98,11 @@ be using it" is not evidence.
 while `info.version` stayed put, so step 3 cannot be skipped by accident. It
 compares structure only — a reworded description is not something a client can
 break on, and demanding a bump for prose would train people to bump without
-reading.
+reading. One kind of text is structure by ruling (contract 14.9.0): an enum's
+per-value meanings in `x-enum-descriptions`, which a client keys its label
+table on. Editing one bumps the version, and so does each value added later,
+with the client label first. A change to what a published value means cannot
+ship as a description change alone.
 
 ## Adopting a change (client side)
 

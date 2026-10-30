@@ -251,10 +251,7 @@ def _transform_inquiry(case: Case) -> CaseUIResponse_Inquiry:
         updated_at=case.updated_at,
         uploaded_files_count=len(case.uploaded_files),
         inquiry=inquiry_data,
-        valid_next_states=[
-            status.value
-            for status in CaseActionManager.get_allowed_transitions(case.state)
-        ],
+        valid_next_states=CaseActionManager.selectable_next_states(case.state),
         disposition_eligibility=case.disposition_eligibility,
     )
 
@@ -392,10 +389,7 @@ def _transform_investigating(case: Case) -> CaseUIResponse_Investigating:
         agent_status=agent_status,
         problem_verification=problem_verification_data,
         progress_transparency=transparency_info,
-        valid_next_states=[
-            status.value
-            for status in CaseActionManager.get_allowed_transitions(case.state)
-        ],
+        valid_next_states=CaseActionManager.selectable_next_states(case.state),
         disposition_eligibility=case.disposition_eligibility,
     )
 
@@ -596,9 +590,6 @@ def _transform_resolved(case: Case) -> CaseUIResponse_Resolved:
             if case.problem_verification is not None
             else None
         ),
-        valid_next_states=[
-            status.value
-            for status in CaseActionManager.get_allowed_transitions(case.state)
-        ],
+        valid_next_states=CaseActionManager.selectable_next_states(case.state),
         disposition_eligibility=case.disposition_eligibility,
     )

@@ -22,6 +22,7 @@ from faultmaven.infrastructure.observability.funnel_metrics import (
     _as_utc,
     _percentile,
 )
+from faultmaven.modules.case.contracts import ClosureReason
 
 
 @pytest.mark.unit
@@ -645,3 +646,45 @@ class TestQuantileWindowAgainstRealSqlite:
         }
         assert counted[("resolved", "none")] == 1
         assert counted[("closed", "mitigation_sufficient")] == 1
+
+
+@pytest.mark.unit
+class TestTheLabelDomainIsClosureReason:
+    """The funnel's reasons are the enum's members, not a copy of them (#1798)."""
+
+    async def test_a_closed_case_per_reason_is_counted_under_its_own_label(self):
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text(_CREATE_CASES))
+                for reason in ClosureReason:
+                    closed = _NOW - timedelta(hours=1)
+                    await conn.execute(
+                        _INSERT_CASE,
+                        {
+                            "id": reason.value,
+                            "st": "closed",
+                            "cr": reason.value,
+                            "t": 3,
+                            "c": (closed - timedelta(hours=1)).isoformat(" "),
+                            "e": closed.isoformat(" "),
+                        },
+                    )
+            refreshed = await _refresh_on(
+                async_sessionmaker(engine, expire_on_commit=False), _NOW
+            )
+        finally:
+            await engine.dispose()
+        g = refreshed.cases_g
+        closed_counts = {
+            c.kwargs["closure_reason"]: v.args[0]
+            for c, v in zip(
+                g.labels.call_args_list, g.labels.return_value.set.call_args_list
+            )
+            if c.kwargs["state"] == "closed"
+        }
+        assert closed_counts == {**{r: 1 for r in ClosureReason}, "unknown": 0}
+
+    def test_the_help_names_every_reason(self):
+        for reason in ClosureReason:
+            assert reason.value in funnel_metrics._CASES_HELP

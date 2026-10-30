@@ -130,13 +130,12 @@
           "closure_reason": {
             "anyOf": [
               {
-                "type": "string"
+                "$ref": "#/components/schemas/ClosureReason"
               },
               {
                 "type": "null"
               }
-            ],
-            "title": "Closure Reason"
+            ]
           },
           "created_at": {
             "format": "date-time",
@@ -1476,13 +1475,12 @@
           "closure_reason": {
             "anyOf": [
               {
-                "type": "string"
+                "$ref": "#/components/schemas/ClosureReason"
               },
               {
                 "type": "null"
               }
-            ],
-            "title": "Closure Reason"
+            ]
           },
           "created_at": {
             "format": "date-time",
@@ -1654,7 +1652,7 @@
           "valid_next_states": {
             "description": "Case actions the USER may select from the status menu \u2014 selectability, not legality. Only CLOSED is ever listed, because closing is the one decision that needs no precondition. The two legal edges that never appear here are earned from case content and offered by the agent through a confirmation handshake: INQUIRY \u2192 INVESTIGATING by a confirmed problem statement (Gate 1), and INVESTIGATING \u2192 RESOLVED by a confirmed root-cause elimination. Requesting either is refused.",
             "items": {
-              "type": "string"
+              "$ref": "#/components/schemas/SelectableNextState"
             },
             "title": "Valid Next States",
             "type": "array"
@@ -2072,13 +2070,12 @@
           "closure_reason": {
             "anyOf": [
               {
-                "type": "string"
+                "$ref": "#/components/schemas/ClosureReason"
               },
               {
                 "type": "null"
               }
-            ],
-            "title": "Closure Reason"
+            ]
           },
           "created_at": {
             "format": "date-time",
@@ -2220,7 +2217,7 @@
           "valid_next_states": {
             "description": "Case actions the USER may select from the status menu \u2014 selectability, not legality. Only CLOSED is ever listed, because closing is the one decision that needs no precondition. The two legal edges that never appear here are earned from case content and offered by the agent through a confirmation handshake: INQUIRY \u2192 INVESTIGATING by a confirmed problem statement (Gate 1), and INVESTIGATING \u2192 RESOLVED by a confirmed root-cause elimination. Requesting either is refused.",
             "items": {
-              "type": "string"
+              "$ref": "#/components/schemas/SelectableNextState"
             },
             "title": "Valid Next States",
             "type": "array"
@@ -2327,7 +2324,7 @@
           "valid_next_states": {
             "description": "Case actions the USER may select from the status menu \u2014 selectability, not legality. Only CLOSED is ever listed, because closing is the one decision that needs no precondition. The two legal edges that never appear here are earned from case content and offered by the agent through a confirmation handshake: INQUIRY \u2192 INVESTIGATING by a confirmed problem statement (Gate 1), and INVESTIGATING \u2192 RESOLVED by a confirmed root-cause elimination. Requesting either is refused.",
             "items": {
-              "type": "string"
+              "$ref": "#/components/schemas/SelectableNextState"
             },
             "title": "Valid Next States",
             "type": "array"
@@ -2490,7 +2487,7 @@
           "valid_next_states": {
             "description": "Case actions the USER may select from the status menu \u2014 selectability, not legality. Only CLOSED is ever listed, because closing is the one decision that needs no precondition. The two legal edges that never appear here are earned from case content and offered by the agent through a confirmation handshake: INQUIRY \u2192 INVESTIGATING by a confirmed problem statement (Gate 1), and INVESTIGATING \u2192 RESOLVED by a confirmed root-cause elimination. Requesting either is refused.",
             "items": {
-              "type": "string"
+              "$ref": "#/components/schemas/SelectableNextState"
             },
             "title": "Valid Next States",
             "type": "array"
@@ -2647,7 +2644,7 @@
           "valid_next_states": {
             "description": "Case actions the USER may select from the status menu \u2014 selectability, not legality. Only CLOSED is ever listed, because closing is the one decision that needs no precondition. The two legal edges that never appear here are earned from case content and offered by the agent through a confirmation handshake: INQUIRY \u2192 INVESTIGATING by a confirmed problem statement (Gate 1), and INVESTIGATING \u2192 RESOLVED by a confirmed root-cause elimination. Requesting either is refused.",
             "items": {
-              "type": "string"
+              "$ref": "#/components/schemas/SelectableNextState"
             },
             "title": "Valid Next States",
             "type": "array"
@@ -2716,6 +2713,31 @@
         },
         "title": "CaseUpdateRequest",
         "type": "object"
+      },
+      "ClosureReason": {
+        "description": "Why a CLOSED case ended: the most specific reason that holds when it is closed. Null for any case that is not CLOSED.",
+        "enum": [
+          "inquiry_only",
+          "closed_false_alarm",
+          "resolution_declined",
+          "solution_deferred",
+          "closed_rca_infeasible",
+          "mitigation_sufficient",
+          "closed_restatement_held",
+          "closed_insufficient_evidence"
+        ],
+        "title": "ClosureReason",
+        "type": "string",
+        "x-enum-descriptions": [
+          "Closed during inquiry, before any investigation started.",
+          "The evidence showed the reported problem was not present where and when it was reported, so there was nothing to fix.",
+          "The fix was confirmed to work, and the user chose not to mark the case resolved.",
+          "The cause was identified and a fix documented, but no fix was confirmed to work in this case.",
+          "The root cause was declared structurally unreachable, with a rationale (for example an uncontrollable external dependency or an end-of-life system).",
+          "A verified mitigation relieved the symptom, and root-cause analysis was not pursued further.",
+          "The evidence supported a cause, but its statement never said more than the problem itself, so no root cause was established.",
+          "What was needed was never established: the problem could not be verified, or no cause could be grounded in the evidence."
+        ]
       },
       "DatabaseTimeoutsStatus": {
         "description": "The bounds in force on a database that stops answering (#2280).\n\nRead from what the running process built \u2014 the database engine and the\ntoken-revocation store \u2014 not from settings. Each value is in seconds;\n``null`` means no bound is set: the setting is ``0``, or the bound does not\napply to this deployment (the four PostgreSQL bounds on a SQLite engine,\nthe revocation read on the Redis store).",
@@ -5740,6 +5762,16 @@
         "title": "SearchRequest",
         "type": "object"
       },
+      "SelectableNextState": {
+        "enum": [
+          "closed"
+        ],
+        "title": "SelectableNextState",
+        "type": "string",
+        "x-enum-descriptions": [
+          "Close the case: the one case action that needs no precondition."
+        ]
+      },
       "SessionResponse": {
         "description": "Response payload for auth session operations - API spec compliance.",
         "properties": {
@@ -7077,7 +7109,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "14.8.0"
+    "version": "14.9.0"
   },
   "openapi": "3.1.0",
   "paths": {

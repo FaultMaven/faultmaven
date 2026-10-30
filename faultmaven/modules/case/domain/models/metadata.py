@@ -5,8 +5,9 @@ The cross-enterprise operator list reads cases it may not load: under
 bound one, and the one path that spans them all returns primitives only — ids,
 timestamps, counters, booleans, id arrays and three closed-vocabulary strings —
 and no column sourced from a title, a description or anything else a user
-typed. Of those strings the database enforces ``state``; ``source`` and
-``closure_reason`` are closed by the ``Case`` model that writes them.
+typed. Of those strings the database enforces ``state``, ``closure_reason`` is
+refused outside :class:`~.lifecycle.ClosureReason` as a case load refuses it,
+and ``source`` is closed by the ``Case`` model that writes it.
 
 Two of the fields an operator sees are not columns. ``stage`` is derived from
 four gate milestones inside the ``progress`` blob, and ``investigation_turn``
@@ -39,7 +40,7 @@ from .case import (
     reconcile_turn_numbers,
     stage_while_investigating,
 )
-from .lifecycle import CaseState
+from .lifecycle import CaseState, ClosureReason
 from .problem import InvestigationStage
 from .progress import investigation_stage
 
@@ -94,7 +95,7 @@ class CaseMetadata(BaseModel):
     driver_id: Optional[str]
     state: CaseState
     source: str
-    closure_reason: Optional[str]
+    closure_reason: Optional[ClosureReason]
     created_at: datetime
     updated_at: datetime
     last_activity_at: datetime
@@ -148,9 +149,15 @@ class CaseMetadata(BaseModel):
         inside its own guard, and a field that cannot be derived is ``None``,
         logged with the case and its enterprise. The columns themselves are
         served as stored — they are typed and constrained by the schema
-        (NOT NULL, ``cases_state_check``), so they always build the row.
+        (NOT NULL, ``cases_state_check``), so they always build the row. The
+        one the schema leaves unconstrained, ``closure_reason``, is refused
+        outside ``ClosureReason`` as a bad ``state`` is: no write path stores
+        one, so such a row was edited by hand.
         """
         lifecycle_state = CaseState(state)
+        stored_reason = (
+            None if closure_reason is None else ClosureReason(closure_reason)
+        )
         clock = current_turn or 0
         unreadable: List[str] = []
 
@@ -201,7 +208,7 @@ class CaseMetadata(BaseModel):
             driver_id=driver_id,
             state=lifecycle_state,
             source=source,
-            closure_reason=closure_reason,
+            closure_reason=stored_reason,
             created_at=created_at,
             updated_at=updated_at,
             # A NULL column loads as the model's default on a full case read,
