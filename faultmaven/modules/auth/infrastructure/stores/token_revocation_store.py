@@ -176,7 +176,8 @@ class RedisTokenRevocationStore(SequentialRevocationState, ITokenRevocationStore
 
     async def add_revoked_token(self, jti: str, ttl: int) -> None:
         key = self._make_key(jti)
-        await self.redis.setex(key, ttl, "revoked")
+        # SET EX, not SETEX: fakeredis floors a SETEX deadline to the second (#2400).
+        await self.redis.set(key, "revoked", ex=ttl)
 
     async def is_revoked(self, jti: str) -> bool:
         key = self._make_key(jti)
@@ -191,7 +192,8 @@ class RedisTokenRevocationStore(SequentialRevocationState, ITokenRevocationStore
         # this held an int — the fraction exists only for
         # `clear_user_revocation_if_before`, which has to order this instant
         # against a caller's capture and cannot do that at second granularity.
-        await self.redis.setex(key, ttl, str(revoked_at))
+        # SET EX, not SETEX: fakeredis floors a SETEX deadline to the second (#2400).
+        await self.redis.set(key, str(revoked_at), ex=ttl)
 
     async def is_user_revoked(self, user_id: str, issued_at: int) -> bool:
         key = self._make_user_key(user_id)

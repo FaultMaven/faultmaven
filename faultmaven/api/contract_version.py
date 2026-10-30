@@ -1,4 +1,4 @@
-"""The version of the API contract, moved by hand.
+r"""The version of the API contract, moved by hand.
 
 ``docs/reference/api/openapi.json`` is the contract between this API and its
 clients — faultmaven-copilot, faultmaven-dashboard and faultmaven-slack-agent.
@@ -22,6 +22,11 @@ Bump this in the same PR as the change it describes:
   Not required for one: a reworded description is not something a client can
   break on, and demanding a bump for prose would train people to bump without
   reading.
+
+Each version's entry below is headed ``# X.Y.Z — MAJOR. …`` (or ``MINOR.`` /
+``PATCH.``), the form faultmaven-copilot's and faultmaven-dashboard's
+``scripts/report-contract-hop.mjs`` finds with
+``/^#\s+(\d+\.\d+\.\d+)\s+[—-]\s/`` to list the entries a pin bump crosses.
 
 ``scripts/check_contract_version.py`` fails a pull request whose structural
 surface differs from the base branch while this stays put, so a surface change
@@ -1489,7 +1494,7 @@ asked to accept, and it belongs to a person.
 # says about a response that never varied. Found by the advisory
 # breaking-change report on its first real run, and by nothing else.
 #
-# 2.0.0 — MAJOR, and it publishes a change that already shipped. #1152 moved
+# 2.0.0 — MAJOR. It publishes a change that already shipped. #1152 moved
 # `invalid_grant` from 401 to 400, replaced `{"detail": ...}` with the RFC 6749
 # §5.2 error object, and dropped `TokenRequest`/`RevokeRequest` from
 # `components` on POST /auth/oauth/token and /auth/oauth/revoke. It merged
@@ -1590,7 +1595,7 @@ asked to accept, and it belongs to a person.
 # and absent must read as "no": a client treating a missing value as
 # unknown-therefore-fine renders the dead control again, which is the whole
 # failure being closed.
-# 9.0.0 — RESOLVED is no longer a user-selectable case action.
+# 9.0.0 — MAJOR. RESOLVED is no longer a user-selectable case action.
 #
 # MAJOR on two counts. ``valid_next_states`` loses a value it published on
 # every INVESTIGATING case, and a ``status_transition`` request naming
@@ -2108,15 +2113,16 @@ asked to accept, and it belongs to a person.
 # is invisible to a generated type, and a client already shows a 409's or a
 # 422's detail.
 #
-# 14.2.0: `POST /cases/{case_id}/reports` declares its body (`ReportGenerationRequest`,
-# `report_types`: 1-3 of the report types), so the contract carries the shape a
-# client sends and a malformed body (a missing `report_types`, an unknown type,
-# an empty or longer-than-3 list, a bare string, a body that is not an object)
-# answers 422 naming the field where it answered 500. A 422 on this route now
-# comes before the case lookup, for every authenticated caller alike, so it says
-# nothing about whether the case exists; an anonymous caller is still 401. MINOR
-# because every request that worked still works and the only change for the rest
-# is an error moving from 500 to 422 (#2005).
+# 14.2.0 — MINOR. `POST /cases/{case_id}/reports` declares its body
+# (`ReportGenerationRequest`, `report_types`: 1-3 of the report types), so the
+# contract carries the shape a client sends and a malformed body (a missing
+# `report_types`, an unknown type, an empty or longer-than-3 list, a bare
+# string, a body that is not an object) answers 422 naming the field where it
+# answered 500. A 422 on this route now comes before the case lookup, for
+# every authenticated caller alike, so it says nothing about whether the case
+# exists; an anonymous caller is still 401. MINOR because every request that
+# worked still works and the only change for the rest is an error moving from
+# 500 to 422 (#2005).
 #
 # 14.3.0 — MINOR. A runbook body is refused, never rewritten, when it holds a
 # credential (#2012). `PUT /api/v1/knowledge/documents/{document_id}` used to
