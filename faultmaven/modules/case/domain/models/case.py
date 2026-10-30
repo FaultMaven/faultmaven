@@ -1119,9 +1119,11 @@ class Case(BaseModel):
 
         The merged state shares the case's own nested instances, so a nested
         after-validator that repairs in place applies even when the update is
-        refused: ``InquiryData`` stamps a missing ``problem_statement_confirmed_at``
-        and ``EvidenceNeed`` resets ``obtainability`` to UNKNOWN on a terminal
-        or non-causal need. Both are idempotent repairs a reload makes anyway.
+        refused: ``InquiryData`` stamps a missing ``problem_statement_confirmed_at``,
+        ``EvidenceNeed`` resets ``obtainability`` to UNKNOWN on a terminal or
+        non-causal need, and ``ChatDataOffer`` derives missing ``block_keys``
+        from its ``blocks``. All three are idempotent repairs a reload makes
+        anyway.
 
         Raises:
             TypeError: A key is not a ``Case`` field. No field is written.
