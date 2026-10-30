@@ -136,7 +136,7 @@ def _indexing_into(service, store: _Chunks, *, then=None):
     """``service`` indexing into ``store``; with ``then``, it runs ``then`` once
     its chunks are written and raises, as a store failing after the write."""
 
-    async def index(document, prechunked=None, enterprise_id=None):
+    async def index(document, prechunked=None, enterprise_id=None, generation=None):
         store.index(document.document_id, "this")
         if then:
             await then()
@@ -157,9 +157,8 @@ async def _delete_the_row(factory) -> None:
 
 
 async def _a_peer_reingests(factory, store: _Chunks):
-    """``kb_init`` on another replica: ``_delete_existing`` (the id's chunks,
-    then its row), then its own ingest under the same id."""
-    await store.delete_documents_by_parent_id(DOC_ID)
+    """Another call replacing the id: it deletes the row (never a chunk,
+    #2388), creates its own under the same id, and writes its own chunks."""
     await _delete_the_row(factory)
     async with factory() as session:
         await DatabaseKnowledgeItemRepository(session).create(
@@ -280,7 +279,11 @@ async def test_the_cleanup_leaves_what_a_peer_created(
     (created_at,) = await _created_at(session_factory)
     assert created_at.replace(tzinfo=None) == PEER_CREATED_AT.replace(tzinfo=None)
     assert await _rows(session_factory) == ONE_TEAM_ITEM
-    assert sorted(store.chunks) == ["peer-0", "peer-1", "peer-2"]
+    # No writer deleted a chunk (#2388): the peer's, and this call's when it
+    # got to index.
+    peer_chunks = ["peer-0", "peer-1", "peer-2"]
+    this_chunks = [] if fails_in == "refresh" else ["this-0", "this-1", "this-2"]
+    assert sorted(store.chunks) == peer_chunks + this_chunks
 
 
 async def test_a_failed_check_for_a_standing_row_keeps_what_a_peer_created(
@@ -319,16 +322,22 @@ async def test_a_failed_check_for_a_standing_row_keeps_what_a_peer_created(
     (created_at,) = await _created_at(session_factory)
     assert created_at.replace(tzinfo=None) == PEER_CREATED_AT.replace(tzinfo=None)
     assert await _rows(session_factory) == ONE_TEAM_ITEM
-    assert sorted(store.chunks) == ["peer-0", "peer-1", "peer-2"]
+    assert sorted(store.chunks) == [
+        "peer-0",
+        "peer-1",
+        "peer-2",
+        "this-0",
+        "this-1",
+        "this-2",
+    ]
 
 
 async def test_a_share_whose_row_is_gone_is_removed(session_factory):
-    """A peer's ``_delete_existing`` removed the id's chunks before this call
-    wrote its own, then this call's row (not its share), and has not
-    re-created it: no item stands, so this call's share goes, and its chunks
-    stay under an id no row admits (#2397)."""
+    """Another call deleted this call's row (not its share) after this call
+    wrote its chunks, and has not re-created it: no item stands, so this
+    call's share goes, and its chunks stay under an id no row admits
+    (#2397)."""
     store = _Chunks()
-    await store.delete_documents_by_parent_id(DOC_ID)
     service = _indexing_into(
         _knowledge(session_factory),
         store,
@@ -340,7 +349,7 @@ async def test_a_share_whose_row_is_gone_is_removed(session_factory):
 
     assert await _rows(session_factory) == NOTHING
     assert sorted(store.chunks) == ["this-0", "this-1", "this-2"]
-    assert await service.admitted_document_ids([DOC_ID]) == set()
+    assert await service.admitted_generations([DOC_ID]) == {}
 
 
 async def test_a_cleanup_session_that_fails_to_close_carries_on(
@@ -360,7 +369,7 @@ async def test_a_cleanup_session_that_fails_to_close_carries_on(
 
     assert await _rows(session_factory) == NOTHING
     assert sorted(store.chunks) == ["this-0", "this-1", "this-2"]
-    assert await service.admitted_document_ids([DOC_ID]) == set()
+    assert await service.admitted_generations([DOC_ID]) == {}
     assert "closing its cleanup's session failed (OSError)" in caplog.text
     assert "check for a row" not in caplog.text
 

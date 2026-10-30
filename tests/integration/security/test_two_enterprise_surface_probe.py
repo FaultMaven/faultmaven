@@ -1436,9 +1436,9 @@ async def _seed_case_with_content(
 _KB_INSERT = text("""
     INSERT INTO knowledge_items
         (item_id, enterprise_id, organization_id, scope, owner_id, title, content,
-         item_type, tags, is_published, metadata)
+         item_type, tags, is_published, metadata, vector_generation)
     VALUES (:item_id, :enterprise, :org, :scope, :owner, :title, :content,
-            'runbook', ARRAY['probe']::varchar[], true, '{}'::jsonb)
+            'runbook', ARRAY['probe']::varchar[], true, '{}'::jsonb, 'gen-test')
     """)
 
 _SHARE_INSERT = text("""
@@ -1636,6 +1636,8 @@ async def _seed_kb_chunks(chroma_store, rows_spec) -> None:
                 "enterprise_id": enterprise_id,
                 "domain": "database",
                 "service": "postgres",
+                # The generation every probe row is inserted with (#2388).
+                "vector_generation": "gen-test",
             },
         }
         for item_id, title, owner_id, enterprise_id in rows_spec

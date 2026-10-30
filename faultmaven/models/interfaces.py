@@ -10,9 +10,9 @@ from typing import (
     Dict,
     Iterable,
     List,
+    Mapping,
     Optional,
     Sequence,
-    Set,
 )
 
 from pydantic import BaseModel, Field
@@ -477,9 +477,12 @@ class ISanitizer(ABC):
 
 
 #: The KB admission check (#2397): of the parent ids a query's chunks name, the
-#: ones whose ``knowledge_items`` row is complete and published. Supplied by
-#: ``IKnowledgeService.admitted_document_ids``; it raises when it cannot answer.
-AdmitParents = Callable[[Sequence[str]], Awaitable[Set[str]]]
+#: ones whose ``knowledge_items`` row is complete and published, each mapped to
+#: the ``vector_generation`` that row carries (#2388); a reader keeps a chunk
+#: only when it carries its parent's value (``admission.chunk_admitted``).
+#: Supplied by ``IKnowledgeService.admitted_generations``; it raises when it
+#: cannot answer.
+AdmitParents = Callable[[Sequence[str]], Awaitable[Mapping[str, str]]]
 
 
 def require_admit(admit: Any, *, reader: str) -> None:
@@ -617,6 +620,21 @@ class IKnowledgeVectorStore(ABC):
 
         Returns:
             The number of chunks deleted; 0 when the document has none.
+        """
+        pass
+
+    @abstractmethod
+    async def delete_generation(
+        self, parent_document_id: str, generation: str
+    ) -> List[str]:
+        """Delete one parent's chunks of one ``vector_generation`` and nothing
+        else; never by parent alone (#2388).
+
+        Returns:
+            The chunk ids deleted.
+
+        Raises:
+            ValueError: An empty parent or generation.
         """
         pass
 

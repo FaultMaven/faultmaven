@@ -35,6 +35,7 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from faultmaven.bootstrap import kb_init, kb_orphan_sweep
+from faultmaven.bootstrap.kb_generation_sweep import resolve_generation_sweep_mode
 from faultmaven.bootstrap.kb_incomplete_sweep import resolve_incomplete_sweep_mode
 from faultmaven.bootstrap.kb_orphan_sweep import (
     SWEEP_ARMED,
@@ -210,7 +211,7 @@ async def test_a_live_documents_misstamped_chunk_is_reported_and_kept(tmp_path):
     try:
         collection = world.client.get_or_create_collection(sc.COLLECTION)
         collection.update(
-            ids=[f"{mixed.item_id}_chunk_0"],
+            ids=[f"{mixed.item_id}_chunk_0_{sc.GENERATION}"],
             metadatas=[
                 {
                     "parent_document_id": mixed.item_id,
@@ -237,7 +238,7 @@ async def test_a_chunk_restamped_after_the_listing_is_not_deleted(world, monkeyp
     """The delete is the observed ids AND the stamp they were observed under.
     A chunk rewritten under another enterprise's stamp after the listing (its
     document re-indexed by its owner) no longer matches, and stays."""
-    restamped = f"{sc.E1_ORPHAN.item_id}_chunk_0"
+    restamped = f"{sc.E1_ORPHAN.item_id}_chunk_0_{sc.GENERATION}"
     real_read = kb_orphan_sweep.read_rows_if_complete
 
     async def read_then_restamp(factory):
@@ -260,7 +261,7 @@ async def test_a_chunk_restamped_after_the_listing_is_not_deleted(world, monkeyp
 
     present = world.present()
     assert restamped in present
-    assert f"{sc.E1_ORPHAN.item_id}_chunk_1" not in present
+    assert f"{sc.E1_ORPHAN.item_id}_chunk_1_{sc.GENERATION}" not in present
     assert result.enterprises[sc.E1].deleted == [sc.E1_ORPHAN.item_id]
 
 
@@ -497,8 +498,10 @@ async def test_the_store_deletes_the_intersection_of_ids_and_stamp(world):
         (kb_orphan_sweep.resolve_sweep_mode, "kb_orphan_sweep"),
         # kb_seed's mode for the incomplete-ingest sweep (#2394): the same gate.
         (resolve_incomplete_sweep_mode, "kb_incomplete_ingest_sweep"),
+        # ...and for the generation sweep (#2388), over its own settings.
+        (resolve_generation_sweep_mode, "kb_generation_sweep"),
     ],
-    ids=["authored_orphans", "incomplete_ingests"],
+    ids=["authored_orphans", "incomplete_ingests", "generations"],
 )
 def test_the_sweep_mode_is_the_storage_cleanup_gate(
     monkeypatch, resolve, setting, enabled, configured_dry_run, override, expected
@@ -513,7 +516,9 @@ def test_the_sweep_mode_is_the_storage_cleanup_gate(
     assert resolve(override) == expected
 
 
-@pytest.mark.parametrize("setting", ["kb_orphan_sweep", "kb_incomplete_ingest_sweep"])
+@pytest.mark.parametrize(
+    "setting", ["kb_orphan_sweep", "kb_incomplete_ingest_sweep", "kb_generation_sweep"]
+)
 def test_the_shipped_settings_are_report_only(setting):
     from faultmaven.config.settings import DatabaseSettings
 
@@ -522,13 +527,31 @@ def test_the_shipped_settings_are_report_only(setting):
     assert fields[f"{setting}_dry_run"].default is True
 
 
+def test_arming_the_incomplete_sweep_does_not_arm_the_generation_sweep(monkeypatch):
+    """Their preconditions differ: the generation sweep's one false positive is
+    a ChromaDB shared by two databases, which the incomplete sweep is safe on."""
+    database = SimpleNamespace(
+        kb_incomplete_ingest_sweep_enabled=True,
+        kb_incomplete_ingest_sweep_dry_run=False,
+        kb_generation_sweep_enabled=False,
+        kb_generation_sweep_dry_run=True,
+    )
+    monkeypatch.setattr(
+        "faultmaven.config.settings.get_settings",
+        lambda: SimpleNamespace(database=database),
+    )
+    assert resolve_incomplete_sweep_mode(False) == SWEEP_ARMED
+    assert resolve_generation_sweep_mode(False) == SWEEP_OFF
+    assert resolve_generation_sweep_mode(None) == SWEEP_REPORT_ONLY
+
+
 def test_the_incomplete_sweep_bound_falls_back_to_the_settings_default(monkeypatch):
     """#2394: with settings unreadable, the age bound is the
     ``KB_INCOMPLETE_INGEST_MAX_AGE_HOURS`` field's own default, not a copy:
     a changed field default is the bound."""
     from datetime import timedelta
 
-    from faultmaven.bootstrap.kb_incomplete_sweep import MAX_AGE_FIELD, _resolve_max_age
+    from faultmaven.bootstrap.kb_incomplete_sweep import MAX_AGE_FIELD, resolve_max_age
     from faultmaven.config.settings import DatabaseSettings
 
     def unreadable():
@@ -536,7 +559,7 @@ def test_the_incomplete_sweep_bound_falls_back_to_the_settings_default(monkeypat
 
     monkeypatch.setattr("faultmaven.config.settings.get_settings", unreadable)
     monkeypatch.setattr(DatabaseSettings.model_fields[MAX_AGE_FIELD], "default", 7)
-    assert _resolve_max_age() == timedelta(hours=7)
+    assert resolve_max_age() == timedelta(hours=7)
 
 
 async def test_a_report_only_sweep_deletes_nothing_and_lists_what_it_would(world):
@@ -563,7 +586,7 @@ async def test_a_dry_runs_would_delete_set_is_what_the_armed_run_then_deletes(
         async with world.engine.begin() as conn:
             await sc.insert_enterprises(conn, [E3])
         world.client.get_or_create_collection(sc.COLLECTION).update(
-            ids=[f"{mixed.item_id}_chunk_0"],
+            ids=[f"{mixed.item_id}_chunk_0_{sc.GENERATION}"],
             metadatas=[
                 {
                     "parent_document_id": mixed.item_id,

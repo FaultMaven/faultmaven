@@ -7,7 +7,7 @@ ADR-017 isolation key on WRITE; slice 2 (#1775) conjuncts it on read, and the
 backfill of chunks written before this slice is #1777.
 
 There is ONE live KB vector writer, ``KnowledgeService._index_document_in_vector_store``,
-and it takes the owning enterprise as a required keyword from each of its four
+and it takes the owning enterprise as a required keyword from each of its three
 callers. The stamp must be **the persisted row's own value** — never the ambient
 request tenant — so every test here binds the ambient context to a DIFFERENT
 enterprise than the row's. A caller that stamped ``get_current_enterprise_id()``
@@ -20,7 +20,6 @@ indexer caller (knowledge_service.py)       test
 suggestion acceptance, the pack)            enterprises) and ``test_a_pack_ingested_...``
 ``reindex_missing_vectors``                 ``test_a_repaired_row_is_restamped_...``
 ``update_document_metadata``                ``test_a_content_update_restamps_...``
-``_resynchronise_after_failed_commit``      ``test_a_failed_commit_realigns_...``
 ==========================================  ==============================================
 
 Everything below the service is real: SQLite rows written through the real
@@ -54,6 +53,9 @@ from faultmaven.infrastructure.persistence.models import (
     Base,
     EnterpriseModel,
     KnowledgeItemModel,
+)
+from faultmaven.modules.knowledge.domain.models.knowledge_item import (
+    mint_vector_generation,
 )
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     KnowledgeService,
@@ -195,6 +197,7 @@ async def _write_row(
                 scope="personal",
                 owner_id=USER_B,
                 is_published=True,
+                vector_generation=mint_vector_generation(),
             )
         )
         await session.commit()
@@ -364,52 +367,17 @@ async def test_a_content_update_restamps_from_the_row(service, chroma, session_f
 
 
 # =============================================================================
-# _resynchronise_after_failed_commit — realigning vectors to the observed row
+# A failed commit deletes no vector (#2397, #2388)
 # =============================================================================
-
-
-@pytest.mark.asyncio
-async def test_a_failed_commit_realigns_the_vectors_stamped_from_the_observed_row(
-    service, chroma, session_factory
-):
-    """Driven through the path that runs it: the update re-indexes, its commit
-    fails, and the compensation re-reads the row (still the previous content)
-    and re-indexes it AS OBSERVED — stamping the observed row's enterprise."""
-    await _write_row(
-        session_factory,
-        item_id="kb_realigned",
-        enterprise_id=ENTERPRISE_B,
-        content=_BODY,
-    )
-    edited = _BODY + "\n\n## Verification\n\nThe queue drains within a minute."
-
-    with (
-        _ambient_enterprise(ENTERPRISE_A),
-        patch.object(
-            DatabaseKnowledgeItemRepository,
-            "update_fields",
-            side_effect=RuntimeError("commit failed"),
-        ),
-    ):
-        with pytest.raises(RuntimeError, match="commit failed"):
-            await service.update_document_metadata("kb_realigned", content=edited)
-
-    chunks = _chunks(chroma, "kb_realigned")
-    assert chunks, "the compensation left the document with no vectors"
-    # Realigned to the row as observed (the edit never committed) ...
-    assert not any("queue drains" in document for _, document in chunks.values())
-    # ... and stamped from that observed row.
-    assert _stamps(chroma, "kb_realigned") == {ENTERPRISE_B}
 
 
 @pytest.mark.asyncio
 async def test_a_failed_commit_on_a_row_deleted_meanwhile_deletes_no_vector(
     service, chroma, session_factory
 ):
-    """The vanished-row path of the same compensation (#2397): the row is
-    deleted while the update commits, the commit fails, and the re-read finds
-    no row. Nothing deletes the chunks the update wrote; they stay stamped
-    from the row they were written for, and no KB door admits them."""
+    """The row is deleted while the update commits, and the commit fails.
+    Nothing deletes the chunks the update wrote; they stay stamped from the row
+    they were written for, and no KB door admits them."""
     await _write_row(
         session_factory,
         item_id="kb_vanished",
@@ -439,9 +407,9 @@ async def test_a_failed_commit_on_a_row_deleted_meanwhile_deletes_no_vector(
         with pytest.raises(RuntimeError, match="commit failed"):
             await service.update_document_metadata("kb_vanished", content=edited)
 
-    # The swap's own pre-delete, and no discard after it.
-    assert vector_delete.await_count == 1
+    # No pre-delete and no discard (#2388).
+    assert vector_delete.await_count == 0
     chunks = _chunks(chroma, "kb_vanished")
     assert any("queue drains" in document for _, document in chunks.values())
     assert _stamps(chroma, "kb_vanished") == {ENTERPRISE_B}
-    assert await service.admitted_document_ids(["kb_vanished"]) == set()
+    assert await service.admitted_generations(["kb_vanished"]) == {}

@@ -473,7 +473,7 @@ async def test_vectors_a_failed_store_wrote_are_never_served(
     session_factory, monkeypatch, error
 ):
     """#2063: the write may have landed. Nothing deletes it in-process (the
-    indexer's pre-delete ran before the add); the row goes, so no KB door
+    indexer has no pre-delete either, #2388); the row goes, so no KB door
     admits the chunks, and only the authored-orphan sweep, once an operator
     arms it, removes them."""
     monkeypatch.setattr(
@@ -491,10 +491,9 @@ async def test_vectors_a_failed_store_wrote_are_never_served(
     assert vectors.added > 0
     parents = sorted(set(vectors.chunks.values()))
     assert len(parents) == 1, vectors.chunks
-    # One delete: the indexer's own pre-delete, before its add.
-    assert vectors.deleted == parents
+    assert vectors.deleted == []
     assert await _rows(session_factory) == NOTHING
-    assert await service.admitted_document_ids(parents) == set()
+    assert await service.admitted_generations(parents) == {}
 
 
 @pytest.mark.parametrize(

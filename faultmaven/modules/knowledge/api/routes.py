@@ -1123,34 +1123,17 @@ async def update_document(
         ) from quality_error
     except KnowledgeBaseError as e:
         # Re-indexing failed, so the edit was NOT saved: the row is committed
-        # only after the vectors are in place (#952), which is what lets this
-        # response promise the document is unchanged rather than describing
-        # which half landed.
+        # only after the new chunks are in place (#952), which is what lets
+        # this response promise the document is unchanged rather than
+        # describing which half landed.
         #
-        # Searchability is the one part that still varies, and the response
-        # must not assert more than is known: the pre-delete failures (no
-        # embedder, embedder timeout, no chunks) leave the previous vectors
-        # intact, but KNOWLEDGE_INDEXING_FAILED can fire from add_documents
-        # AFTER the delete, leaving the document with none. Recovering that is
-        # a retry of this same request — NOT something the caller can be told
-        # will happen on its own, since the boot reconcile pass that repairs
-        # chunkless rows is skipped entirely under TENANT_PROVIDER=multi.
+        # And search is unchanged with it, whatever the error code: the new
+        # chunks are written under a new generation and nothing is deleted
+        # before the row moves (#2388), so the chunks the row served before
+        # the update are still the ones served.
         logger.error(f"Failed to re-index document {document_id}: {e}")
         searchable_state = (
-            (
-                "The document is unchanged and still searchable on its "
-                "current content."
-            )
-            if getattr(e, "error_code", None)
-            in (
-                "KNOWLEDGE_EMBEDDER_UNAVAILABLE",
-                "KNOWLEDGE_EMBEDDER_TIMEOUT",
-                "KNOWLEDGE_NO_CHUNKS",
-            )
-            else (
-                "The document is unchanged, but it may not be searchable until "
-                "the update succeeds."
-            )
+            "The document is unchanged, and so is what search serves for it."
         )
         raise HTTPException(
             status_code=503,

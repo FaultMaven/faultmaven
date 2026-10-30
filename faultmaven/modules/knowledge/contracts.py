@@ -34,21 +34,25 @@ class IKnowledgeService(Protocol):
 
     Every KB read door — the investigation pre-fetch (push), the ``kb_qa``
     tool (pull), ``POST /knowledge/search`` and runbook dedup — admits a
-    chunk only through :meth:`admitted_document_ids` (#2397): the stores
+    chunk only through :meth:`admitted_generations` (#2397, #2388): the stores
     apply it as their ``admit`` callback and never read ``knowledge_items``
     themselves. Which rows a caller may read stays the vector filter's
     decision (``build_kb_scope_filter``, carried to the tool on
     ``ToolContext``).
     """
 
-    async def admitted_document_ids(self, document_ids: Sequence[str]) -> "Set[str]":
-        """The subset of ``document_ids`` whose row is complete and published.
+    async def admitted_generations(
+        self, document_ids: Sequence[str]
+    ) -> "Dict[str, str]":
+        """Of ``document_ids``, each whose row is complete and published,
+        mapped to the ``vector_generation`` that row carries.
 
         The one KB retrieval admission check (#2397), in ONE query: a chunk is
-        served only when its parent is in the answer, so an incomplete
-        ingest's row, an unpublished built-in and vectors with no row at all
-        are never served. No caller identity — visibility is the vector
-        filter's. Raises ``KnowledgeBaseError``
+        served only when its parent is in the answer and the chunk carries its
+        parent's generation (#2388), so an incomplete ingest's row, an
+        unpublished built-in, vectors with no row at all and another lifetime's
+        chunks under a live id are never served. No caller identity —
+        visibility is the vector filter's. Raises ``KnowledgeBaseError``
         (``KNOWLEDGE_ADMISSION_UNAVAILABLE``) when the check cannot run, and
         never answers the empty set for a failure: each door then fails as it
         does on a store error (#943, #944).

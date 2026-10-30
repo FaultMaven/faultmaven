@@ -108,7 +108,7 @@ structured JSON, one object per line (uvicorn's own lines included); you'll see,
 abridged:
 
 ```
-{"event": "KB bootstrap complete: 0 ingested, 59 unchanged, 0 failed, 0 pruned, 0 orphaned vectors cleaned, 0 unpublished built-ins' vectors cleaned, 0 authored orphans swept (report_only: 0 would be), 0 rows repaired, 0 orphaned rows", "logger": "faultmaven.bootstrap.kb_init", "level": "info", ...}
+{"event": "KB bootstrap complete: 0 ingested, 59 unchanged, 0 failed, 0 pruned, 0 orphaned vectors cleaned, 0 unpublished built-ins' vectors cleaned, 0 authored orphans swept (report_only: 0 would be), 0 incomplete ingests swept (armed: 0 would be), 0 superseded chunks swept (armed: 0 would be), 0 rows repaired, 0 rows serving nothing", "logger": "faultmaven.bootstrap.kb_init", "level": "info", ...}
 {"event": "🚀 FaultMaven API server startup COMPLETE - ready to serve fast requests!", "logger": "faultmaven.bootstrap.lifespan", "level": "info", ...}
 {"event": "Uvicorn running on http://0.0.0.0:8090 (Press CTRL+C to quit)", "logger": "uvicorn.error", "level": "info", ...}
 ```

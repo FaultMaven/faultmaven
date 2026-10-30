@@ -554,8 +554,8 @@ async def test_no_policy_reads_the_retired_organization_binding(superuser_engine
 
 _KI_INSERT = text(
     "INSERT INTO knowledge_items "
-    "(item_id, enterprise_id, organization_id, scope, title, content, item_type) "
-    "VALUES (:i, :e, :org, :s, :t, :c, 'runbook')"
+    "(item_id, enterprise_id, organization_id, scope, title, content, item_type, "
+    "vector_generation) VALUES (:i, :e, :org, :s, :t, :c, 'runbook', 'gen-test')"
 )
 _KI_DELETE = text("DELETE FROM knowledge_items WHERE item_id = :i")
 

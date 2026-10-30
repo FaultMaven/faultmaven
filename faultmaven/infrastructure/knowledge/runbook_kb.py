@@ -11,7 +11,8 @@ This class queries those rows directly: ``document_type == "runbook"`` is the
 artifact discriminator and the caller-supplied KB scope filter (built with
 ``build_kb_scope_filter``) is the visibility predicate. A chunk counts only when
 the knowledge module's admission check (``admit``, taken at construction)
-returns its parent: a complete, published ``knowledge_items`` row (#2397).
+returns its parent, a complete, published ``knowledge_items`` row (#2397), with
+the chunk's own ``vector_generation`` (#2388).
 
 Until fm#1030 this class filtered on ``report_type == "runbook"``, a key that
 only its own — dead — write half stamped. No live writer wrote it, so every
@@ -28,6 +29,7 @@ from typing import Any, Dict, List
 from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.infrastructure.embedding_guard import embed_query_or_raise
 from faultmaven.infrastructure.knowledge.admission import (
+    chunk_admitted,
     chunk_parent_id,
     read_deepening,
 )
@@ -338,20 +340,30 @@ class RunbookKnowledgeBase(BaseExternalClient):
         return len({md.get("parent_document_id") for md in metadatas}) < top_k
 
     async def _admitted(self, results: Any) -> Any:
-        """The raw query result less the chunks whose parent is not admitted:
-        one ``admit`` call, none when nothing matched; what it raises propagates."""
+        """The raw query result less the chunks :func:`chunk_admitted` refuses
+        (another generation than its row's, or none, included, #2388): one
+        ``admit`` call, none when nothing matched; what it raises propagates."""
         if not results or not results.get("ids") or not results["ids"][0]:
             return results
         ids = results["ids"][0]
         metadatas = (results.get("metadatas") or [[]])[0] or []
         distances = (results.get("distances") or [[]])[0] or []
-        parents = [
-            chunk_parent_id(chunk_id, metadatas[i] if i < len(metadatas) else None)
-            for i, chunk_id in enumerate(ids)
+        chunk_metadata = [
+            metadatas[i] if i < len(metadatas) else None for i in range(len(ids))
         ]
-        wanted = sorted({parent for parent in parents if parent})
-        admitted = await self._admit(wanted) if wanted else set()
-        keep = [i for i, parent in enumerate(parents) if parent in admitted]
+        wanted = sorted(
+            {
+                parent
+                for chunk_id, md in zip(ids, chunk_metadata)
+                if (parent := chunk_parent_id(chunk_id, md))
+            }
+        )
+        admitted = await self._admit(wanted) if wanted else {}
+        keep = [
+            i
+            for i, chunk_id in enumerate(ids)
+            if chunk_admitted(chunk_id, chunk_metadata[i], admitted)
+        ]
         # Index-aligned, a missing entry read as :meth:`_parse` reads it.
         return {
             "ids": [[ids[i] for i in keep]],

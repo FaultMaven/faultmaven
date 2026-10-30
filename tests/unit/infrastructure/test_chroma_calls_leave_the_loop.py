@@ -193,6 +193,11 @@ _TABLE: List[Tuple[str, Callable[[Any], Any], StoreCall]] = [
         lambda s: s.delete_documents_by_parent_id("parent-1"),
     ),
     (
+        "kb.delete_generation",
+        KnowledgeVectorStore,
+        lambda s: s.delete_generation("parent-1", "generation-1"),
+    ),
+    (
         "kb.list_all_chunk_ids_by_parent",
         KnowledgeVectorStore,
         lambda s: s.list_all_chunk_ids_by_parent(),
@@ -245,6 +250,7 @@ _PUBLIC_METHODS = {
         "add_documents",
         "get_document_count",
         "delete_documents_by_parent_id",
+        "delete_generation",
         "list_all_chunk_ids_by_parent",
         "list_chunk_ids_by_parent",
         "delete_chunk_ids",

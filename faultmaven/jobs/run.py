@@ -57,7 +57,7 @@ Most flags configure the *runner* and apply to whatever job is named
 (``--verbose``, ``--enterprise-id``, ``--cross-tenant-maintenance``). A few
 configure ONE job: ``--ttl-hours`` belongs to ``storage_cleanup``,
 ``--allow-disjoint-enterprise`` to ``kb_seed``, and ``--dry-run``/``--no-dry-run``
-to both (for ``kb_seed`` it governs only the authored-orphan sweep) and to
+to both (for ``kb_seed`` it governs only its three sweeps) and to
 ``kb_vector_enterprise_backfill`` (a dry run unless ``--no-dry-run``). A job
 accepts a job-specific flag only by declaring it as an explicit parameter of
 its ``run()``; passing one to a job that merely
@@ -640,11 +640,12 @@ Examples:
             "storage_cleanup / kb_seed / kb_vector_enterprise_backfill. "
             "--dry-run logs 'would delete' without "
             "deleting; --no-dry-run asks for real deletion. Omit to defer to "
-            "ORPHAN_CLEANUP_DRY_RUN (storage_cleanup) or KB_ORPHAN_SWEEP_DRY_RUN "
-            "and KB_INCOMPLETE_INGEST_SWEEP_DRY_RUN (kb_seed, where it governs "
-            "only its two sweeps: seeding always runs). --no-dry-run is not an "
-            "enabler: with ORPHAN_CLEANUP_ENABLED / KB_ORPHAN_SWEEP_ENABLED / "
-            "KB_INCOMPLETE_INGEST_SWEEP_ENABLED false nothing is deleted. "
+            "ORPHAN_CLEANUP_DRY_RUN (storage_cleanup) or KB_ORPHAN_SWEEP_DRY_RUN, "
+            "KB_INCOMPLETE_INGEST_SWEEP_DRY_RUN and KB_GENERATION_SWEEP_DRY_RUN "
+            "(kb_seed, where it governs only its three sweeps: seeding always "
+            "runs). --no-dry-run is not an enabler: with ORPHAN_CLEANUP_ENABLED "
+            "/ KB_ORPHAN_SWEEP_ENABLED / KB_INCOMPLETE_INGEST_SWEEP_ENABLED / "
+            "KB_GENERATION_SWEEP_ENABLED false nothing is deleted. "
             "kb_vector_enterprise_backfill writes its stamps only "
             "with --no-dry-run; omitted is a dry run."
         ),

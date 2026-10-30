@@ -244,7 +244,8 @@ def _tokenize(text: str) -> List[str]:
 
 
 def _group_chunk_ids_by_parent(chunk_ids: Iterable[Any]) -> Dict[str, List[str]]:
-    """Group chunk ids by the parent their id names (``{item_id}_chunk_{N}``)."""
+    """Group chunk ids by the parent their id names: the part before its last
+    ``_chunk_`` (``{item_id}_chunk_{N}_{generation}``, #2388)."""
     by_parent: Dict[str, List[str]] = {}
     for chunk_id in chunk_ids:
         if isinstance(chunk_id, str):
@@ -1590,10 +1591,9 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
         """Delete all chunks of a parent document from a KB collection.
 
         The KB write path (``add_documents``) tags every chunk with
-        ``metadata.parent_document_id``; this is its inverse — the delete half of
-        the document lifecycle. Without it the re-ingest/prune paths in
-        ``bootstrap.kb_init`` could only drop the SQL row, leaving the vectors
-        orphaned in ChromaDB (the index drift the reconcile pass cleans up).
+        ``metadata.parent_document_id``; this is its inverse, for an id whose
+        row is gone or incomplete. No writer calls it to replace a document's
+        chunks (#2388): a chunk is served only under its row's generation.
 
         ``retries`` is the number of further attempts after a failed one, with
         backoff sleeps between them. ``KnowledgeService.delete_document`` calls
@@ -1641,6 +1641,72 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
             retry_delay=1.0,
         )
 
+    async def delete_generation(
+        self,
+        parent_document_id: str,
+        generation: str,
+        collection_name: str = KB_COLLECTION,
+    ) -> List[str]:
+        """Delete one parent's chunks of one ``vector_generation``, and nothing
+        else (#2388, ruling (i)).
+
+        The one in-process delete a writer makes: after the commit that switched
+        a row away from ``generation`` is known to have landed, that
+        generation's chunks are never served again. The ``where`` names both
+        keys, so another generation of the parent, another parent's chunks of
+        the generation and a chunk with no generation stay (measured on chromadb
+        1.5.8; a generation with no chunks is a no-op). It never deletes by
+        parent alone: both arguments must be non-empty strings. An id-only
+        ``get`` reads what matched, so the return is what was deleted.
+
+        Returns the chunk ids deleted.
+        """
+        for name, value in (
+            ("parent_document_id", parent_document_id),
+            ("generation", generation),
+        ):
+            if not (isinstance(value, str) and value):
+                raise ValueError(
+                    f"delete_generation requires a non-empty {name}: it never "
+                    "deletes by parent alone"
+                )
+        where = {
+            "$and": [
+                {"parent_document_id": parent_document_id},
+                {"vector_generation": generation},
+            ]
+        }
+
+        def _delete_wrapper() -> List[str]:
+            try:
+                collection = self.client.get_collection(name=collection_name)
+            except NotFoundError:
+                return []
+            matched = list(collection.get(where=where, include=[]).get("ids") or [])
+            if not matched:
+                return []
+            try:
+                collection.delete(ids=matched, where=where)
+            finally:
+                # As the other deletes do (see _invalidate_term_stats).
+                self._invalidate_term_stats(collection_name)
+            self.logger.info(
+                f"Deleted {len(matched)} chunk(s) of generation {generation} of "
+                f"{parent_document_id} from KB collection '{collection_name}'"
+            )
+            return matched
+
+        self._invalidate_term_stats(collection_name)
+
+        return await self.call_external(
+            operation_name="delete_generation",
+            call_func=_delete_wrapper,
+            # A write: awaited to its end (#2056).
+            timeout=None,
+            retries=1,
+            retry_delay=1.0,
+        )
+
     async def list_all_chunk_ids_by_parent(
         self,
         collection_name: str = KB_COLLECTION,
@@ -1654,7 +1720,7 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
         the values are the chunk ids observed for each, so the caller deletes
         exactly what it saw (#2017).
 
-        Derives the parent from each chunk **id** (``{item_id}_chunk_{N}``) rather
+        Derives the parent from each chunk **id** (``{item_id}_chunk_{N}_{gen}``) rather
         than pulling every chunk's full metadata payload — ``include=[]`` returns
         only ids, so the per-boot cost scales with id count, not metadata size, and
         a chunk missing the ``parent_document_id`` metadata key is still resolved
@@ -1694,7 +1760,7 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
         crosses a tenant boundary. Never unfiltered: a missing ``where`` is
         refused rather than read as "every chunk".
 
-        The parent is derived from the id (``{item_id}_chunk_{N}``) for the
+        The parent is derived from the id (``{item_id}_chunk_{N}_{gen}``) for the
         same reason :meth:`list_all_chunk_ids_by_parent` derives it: a chunk
         missing the ``parent_document_id`` key still resolves. The chunk ids
         are kept so the caller deletes exactly what it observed.

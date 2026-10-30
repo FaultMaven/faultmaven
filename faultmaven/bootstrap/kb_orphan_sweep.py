@@ -2,9 +2,9 @@
 
 No KB door serves a chunk whose row is gone (every door admits a chunk only
 when its parent has a complete, published row, #2397), and no writer deletes
-vectors in-process: a failed ingest, a delete whose best-effort vector delete
-failed, or an update or repair that raced a delete leaves AUTHORED chunks
-under an id with no row. They are inert, never served and never reused, and
+vectors in-process but the generation a known-landed switch replaced (#2388):
+a failed ingest, a delete whose best-effort vector delete failed, or an update
+or repair that raced a delete leaves AUTHORED chunks under an id with no row. They are inert, never served and never reused, and
 this module, once an operator arms it, removes them. The reconcile in
 :mod:`faultmaven.bootstrap.kb_init` deletes no-row vectors for built-in
 ``kb_<12 hex>`` parents only. This module is the authored half.
@@ -54,7 +54,7 @@ unproven read, a disjoint enterprise, the cap or a failed delete leaves behind
 is counted per enterprise and reported, never swept.
 
 A wrongful delete is healable only partly: repair re-embeds a published row
-with NO vectors, and only while the pass's orphaned rows stay within
+with no chunk of its generation, and only while the pass's unserved rows stay within
 ``KB_REPAIR_MAX_ROWS`` and the embedding model is available. The cap keeps one
 run's own deletes inside that bound; it does not make every wrongful delete
 recoverable.

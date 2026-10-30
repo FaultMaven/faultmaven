@@ -4,7 +4,7 @@ Invariant: a document ``delete_document`` reports removed (deleted or
 unpublished) has no chunk retrievable through a KB door — now, and after any
 later restart, reconcile, repair or kb_seed run. Every door admits a chunk only
 when its parent's row is complete and published at query time
-(``KnowledgeService.admitted_document_ids``), so the delete commits the row
+(``KnowledgeService.admitted_generations``), so the delete commits the row
 change first and is done: an unpublish is a SQL-only flip, and an authored
 delete removes its vectors afterwards, best effort. A vector delete that fails
 or times out is not a failed delete (#2063). What it leaves is never served:
@@ -103,6 +103,8 @@ class _KbStore:
 
     def __init__(self) -> None:
         self.parents: dict[str, int] = {}
+        #: The generation each parent's chunks carry (#2388).
+        self.generations: dict[str, str] = {}
         self.fail_for: dict[str, Exception] = {}
         self.delete_calls: list[tuple[str, int]] = []
 
@@ -121,8 +123,12 @@ class _KbStore:
 
     async def list_all_chunk_ids_by_parent(self) -> dict:
         return {
-            p: [f"{p}_chunk_{n}" for n in range(c)] for p, c in self.parents.items()
+            p: [f"{p}_chunk_{n}_{self.generations[p]}" for n in range(c)]
+            for p, c in self.parents.items()
         }
+
+    async def list_chunk_ids_by_parent(self, where) -> dict:
+        return {}  # the age floor's read: every chunk here is old
 
     async def delete_observed_chunk_ids(self, chunk_ids, collection_name=None):
         ids = list(chunk_ids)
@@ -202,11 +208,12 @@ async def kb():
     store = _KbStore()
     indexed: list[str] = []
 
-    async def _index(document, prechunked=None, enterprise_id=None):
+    async def _index(document, prechunked=None, enterprise_id=None, generation=None):
         # The embedder is the only stubbed step: whatever is indexed lands in
         # the store, so a re-index is observable as the parent coming back.
         indexed.append(document.document_id)
         store.parents[document.document_id] = 3
+        store.generations[document.document_id] = generation
         return 3
 
     svc = KnowledgeService.__new__(KnowledgeService)
@@ -228,6 +235,7 @@ async def kb():
             await DatabaseKnowledgeItemRepository(session).create(item)
         if chunks:
             store.parents[item.item_id] = chunks
+            store.generations[item.item_id] = item.vector_generation
 
     async def row(item_id):
         async with factory() as session:
@@ -247,8 +255,12 @@ async def kb():
 
     async def admitted(item_id):
         """Whether a KB door would serve this document's chunks: the real
-        admission check, over the real rows."""
-        return item_id in await svc.admitted_document_ids([item_id])
+        admission check, over the real rows, against the generation its
+        chunks carry."""
+        admitted = await svc.admitted_generations([item_id])
+        return item_id in store.parents and admitted.get(
+            item_id
+        ) == store.generations.get(item_id)
 
     async def listed(item_id):
         async with factory() as session:
@@ -262,7 +274,7 @@ async def kb():
         _cleaned, _unpublished, orphaned = await kb_init._reconcile_vectors(
             svc, factory
         )
-        repaired, _still = await kb_init._repair_orphaned_rows(orphaned, svc)
+        repaired, _still = await kb_init._repair_unserved_rows(orphaned, svc)
         return orphaned, repaired
 
     async def boot(tmp_path, pack_dir):
@@ -460,7 +472,7 @@ async def test_t5_an_unpublished_builtin_is_not_re_embedded_by_the_next_boot(
     )
 
     assert second.skipped_unchanged == ["global/example.md"], second
-    assert shipped_id not in second.orphaned_rows + second.repaired_rows
+    assert shipped_id not in second.unserved_rows + second.repaired_rows
     assert second.unpublished_vectors_cleaned == [shipped_id]
     assert shipped_id not in kb.store.parents, "the unpublish was undone"
     assert kb.indexed == [OTHER_AUTHORED_ID]

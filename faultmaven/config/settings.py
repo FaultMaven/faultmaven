@@ -1286,7 +1286,10 @@ class DatabaseSettings(BaseSettings):
         description=(
             "Hours after its created_at before the KB bootstrap removes a "
             "knowledge_items row whose authored ingest never completed, with "
-            "its vectors. A younger row may be an ingest still running."
+            "its vectors. A younger row may be an ingest still running. Also "
+            "the age of the youngest chunk any KB collector may delete: a "
+            "younger one may be a pack ingest's or an update's, written "
+            "before its row."
         ),
     )
     kb_incomplete_ingest_sweep_enabled: bool = Field(
@@ -1304,6 +1307,28 @@ class DatabaseSettings(BaseSettings):
         description=(
             "When True (default), kb_seed reports the rows an armed run would "
             "delete and deletes nothing."
+        ),
+    )
+
+    # Generation sweep (#2388): chunks of a generation no row serves, past the
+    # incomplete-ingest age bound. The standalone web startup deletes only on a
+    # local PersistentClient; kb_seed applies this gate (--dry-run/--no-dry-run
+    # overrides DRY_RUN).
+    kb_generation_sweep_enabled: bool = Field(
+        default=False,
+        validation_alias="KB_GENERATION_SWEEP_ENABLED",
+        description=(
+            "When True, kb_seed may DELETE superseded KB chunks, if "
+            "KB_GENERATION_SWEEP_DRY_RUN is also off. Arm only with one "
+            "ChromaDB per database."
+        ),
+    )
+    kb_generation_sweep_dry_run: bool = Field(
+        default=True,
+        validation_alias="KB_GENERATION_SWEEP_DRY_RUN",
+        description=(
+            "When True (default), kb_seed reports the superseded chunks an "
+            "armed run would delete and deletes nothing."
         ),
     )
 

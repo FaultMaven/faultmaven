@@ -141,14 +141,20 @@ The bootstrap is **idempotent**: it compares the pack's `content_hash` against t
 hash stamped on the existing row when the pack last ingested it
 (`knowledge_items.metadata.pack_content_hash`), not against the row's current
 content, so an operator's edit is never mistaken for a new pack version, and skips
-unchanged runbooks. Changed runbooks are deleted and re-ingested; new runbooks are
-added; runbooks removed from the pack are pruned.
+unchanged runbooks whose row is served. A changed runbook, or one no chunk of
+whose `vector_generation` exists (#2388), is re-ingested: its vectors first, then
+one transaction that replaces the row it observed; once that commits, the
+replaced generation's chunks are deleted (best effort; the generation sweep is
+the backstop). An unserved built-in an operator edited is re-embedded as it
+stands instead (the capped repair). New runbooks are
+added; runbooks removed from the pack have their rows pruned.
 
 The bootstrap ingests **each runbook separately**. `_ingest_pack_runbook` refuses
-a runbook with no chunks in the pack before any lookup or delete. A failure in
-`ingest_runbook` from its row's INSERT on (ChromaDB unreachable, for example)
-runs `_delete_knowledge_item_row` before it raises: it removes the row, never the
-vectors, which no row then admits and the next bootstrap's reconcile collects
+a runbook with no chunks in the pack before any lookup or write. A failure in
+`ingest_runbook` (ChromaDB unreachable, for example) writes no row, or leaves the
+row it would have replaced as it was: the vectors it wrote carry a generation no
+row holds, so no door serves them, and the next bootstrap's collectors remove
+them once older than `KB_INCOMPLETE_INGEST_MAX_AGE_HOURS`
 (the failure contract: [`kb-ingestion-architecture.md`](../architecture/knowledge-and-ai/kb-ingestion-architecture.md#failure-contract)). Per-runbook failures don't abort the
 rest of the bootstrap; check the API logs for `KB bootstrap failed for ...`
 warnings after restart. Full build + delivery detail: [`kb-pack-architecture.md`](../architecture/knowledge-and-ai/kb-pack-architecture.md).

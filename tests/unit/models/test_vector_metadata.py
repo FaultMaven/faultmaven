@@ -168,6 +168,8 @@ class TestTheSchemaIsAnAllowlist:
             "chunk_index": 0,
             "total_chunks": 3,
             "parent_document_id": "parentdoc-99",
+            "vector_generation": "generation-7",
+            "indexed_at": 1767225600,
         }
 
         values = [str(v) for v in sample.values()]

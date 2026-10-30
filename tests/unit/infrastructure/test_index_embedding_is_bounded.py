@@ -200,7 +200,9 @@ async def test_the_indexing_path_is_bounded_by_default():
             with patch.object(embedding_guard, "EMBED_BATCH_PER_TEXT_SECONDS", 0.0):
                 with pytest.raises(KnowledgeBaseError) as excinfo:
                     await service._index_document_in_vector_store(
-                        _document(), enterprise_id=STANDALONE_ENTERPRISE_ID
+                        _document(),
+                        enterprise_id=STANDALONE_ENTERPRISE_ID,
+                        generation="1f" * 16,
                     )
 
     assert excinfo.value.error_code == "KNOWLEDGE_EMBEDDER_TIMEOUT"
@@ -233,6 +235,7 @@ async def test_boot_repair_is_bounded_too_so_a_hang_cannot_crashloop_the_pod():
     row.owner_id = None
     row.created_at = "2026-01-01T00:00:00Z"
     row.updated_at = "2026-01-01T00:00:00Z"
+    row.vector_generation = "1f" * 16
 
     result = MagicMock()
     result.scalar_one_or_none = MagicMock(return_value=row)

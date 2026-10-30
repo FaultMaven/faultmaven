@@ -476,11 +476,37 @@ like the authored-orphan sweep, and `--dry-run` / `--no-dry-run` override the
 dry run for one run. The counts are on the `BootstrapResult(...)` line
 (`incomplete_ingests_*`) and in the `kb_seed` result's `incomplete_ingests`.
 
+The max age is also the youngest chunk any KB collector may delete, the
+generation sweep's included (below).
+
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
-| `KB_INCOMPLETE_INGEST_MAX_AGE_HOURS` | int (>= 1) | 24 | Hours after its `created_at` before an incomplete row is removed. A younger one may be an ingest still running; a slower ingest whose row is removed fails and removes its own vectors |
+| `KB_INCOMPLETE_INGEST_MAX_AGE_HOURS` | int (>= 1) | 24 | Hours after its `created_at` before an incomplete row is removed. A younger one may be an ingest still running; a slower ingest whose row is removed fails, and its vectors stay unadmitted. Also the age of the youngest chunk any KB collector may delete (the reconcile's no-row and unpublished built-in chunks, the generation sweep): a younger one may be a pack ingest's or an update's, written before its row |
 | `KB_INCOMPLETE_INGEST_SWEEP_ENABLED` | bool | false | `kb_seed` deletes only when this is true and the run is not a dry run |
 | `KB_INCOMPLETE_INGEST_SWEEP_DRY_RUN` | bool | true | `kb_seed` reports the rows an armed run would delete and deletes nothing |
+
+## KB Generation Sweep
+
+`DatabaseSettings` fields (`settings.database`), read by `kb_seed`
+(`faultmaven/bootstrap/kb_generation_sweep.py`, #2388). Every KB chunk carries
+its row's `vector_generation`, and a door serves only the row's generation. The
+writer that switches a row's generation (a content update, a pack replacement)
+deletes the generation it replaced once its commit has landed, best effort.
+This sweep removes the rest once older than `KB_INCOMPLETE_INGEST_MAX_AGE_HOURS`:
+a writer's delete that failed, a failed write's chunks, the generation a racing
+update overwrote, and every chunk written before migration 022. The standalone
+web startup deletes only when the store is a local `PersistentClient`, and only
+reports under an external `CHROMADB_URL`; these settings do not change that.
+`kb_seed` deletes only when armed here, whatever the incomplete-ingest sweep's
+settings say, and `--dry-run` / `--no-dry-run` override the dry run for one run.
+Arm it only with one ChromaDB per database. The counts are
+`generation_sweep_*` on the `BootstrapResult(...)` line and the `kb_seed`
+result's `generation_sweep`.
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `KB_GENERATION_SWEEP_ENABLED` | bool | false | `kb_seed` deletes superseded chunks only when this is true and the run is not a dry run |
+| `KB_GENERATION_SWEEP_DRY_RUN` | bool | true | `kb_seed` reports the superseded chunks an armed run would delete and deletes nothing |
 
 ## API Server Keep-Alive
 

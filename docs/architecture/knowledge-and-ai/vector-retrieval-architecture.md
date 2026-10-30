@@ -202,7 +202,7 @@ The full list of fields stored on each chunk is canonical in [knowledge-base-arc
 | Field | Used by | Purpose |
 | ----- | ------- | ------- |
 | `scope`, `owner_id`, `parent_document_id` | `where` clause | Scope filter (built by `build_kb_scope_filter`; team arm is a `parent_document_id` `$in` allowlist resolved from `resource_shares`, not a `team_id` metadata match) |
-| `parent_document_id` (else the chunk id before its last `_chunk_`) | Admission check, after the recall | Names the hit's `knowledge_items` row. Every door (push, `kb_qa`, `search_documents`, dedup) keeps a hit only when that row is complete and published at query time (`IKnowledgeService.admitted_document_ids`, #2397); `hybrid_search` drops the others before its rerank and top-k cut, so a chunk with no live row never takes a real hit's place. The store applies the check as an `admit` callback and never reads `knowledge_items` itself |
+| `parent_document_id` (else the chunk id before its last `_chunk_`) | Admission check, after the recall | Names the hit's `knowledge_items` row. Every door (push, `kb_qa`, `search_documents`, dedup) keeps a hit only when that row is complete and published at query time and carries the hit's `vector_generation` (`IKnowledgeService.admitted_generations`, #2397, #2388); `hybrid_search` drops the others before its rerank and top-k cut, so a chunk with no live row never takes a real hit's place. The store applies the check as an `admit` callback and never reads `knowledge_items` itself |
 | `enterprise_id` | Nothing yet | Stamped on every KB chunk since #1168 (the row's tenant; `add_documents` refuses a KB chunk without it). #1775 conjuncts it onto the scope filter, outside the `$or`, once the backfill (#1777) reports no unstamped chunk |
 | `domain`, `service` | Reranker metadata-match signal + hard pre-filter (`filter_mode="hard"`); both mechanism only | Matched against `context_metadata`, which no live caller supplies: the case-derived boost was removed (#1880), and the copilot page context is not built |
 | `symptom_class`, `severity` | Reranker metadata-match signal | Boost chunks whose taxonomy aligns with the query's failure-mode classification |
@@ -248,7 +248,7 @@ Agent calls: answer_from_kb(question)
   ├── KBToolAdapter.execute_with_context()
   │     Reads kb_scope_filter from ToolContext: the case driver's scope,
   │     built by case_retrieval_scope (#1919); refuses when it is None.
-  │     Holds admit = knowledge_service.admitted_document_ids, bound when
+  │     Holds admit = knowledge_service.admitted_generations, bound when
   │     _create_investigation_tools builds it (#2397)
   │
   ├── AnswerFromKB._arun(question, scope_filter, admit=...)  # kb_qa.py

@@ -112,7 +112,7 @@ class TestHybridDispatch:
         kwargs = store.hybrid_search.call_args.kwargs
         assert kwargs["min_score"] == 0.5
         # Row-checked (#2397): the service's own admission check.
-        assert kwargs["admit"] == service.admitted_document_ids
+        assert kwargs["admit"] == service.admitted_generations
 
     @pytest.mark.asyncio
     async def test_there_is_no_pure_vector_path(self):

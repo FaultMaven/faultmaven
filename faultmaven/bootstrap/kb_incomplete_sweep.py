@@ -95,9 +95,10 @@ def resolve_incomplete_sweep_mode(dry_run: Optional[bool] = None) -> str:
     )
 
 
-def _resolve_max_age() -> timedelta:
+def resolve_max_age() -> timedelta:
     """``KB_INCOMPLETE_INGEST_MAX_AGE_HOURS``; the field's own default when
-    settings cannot be read."""
+    settings cannot be read. Also the age floor below which no collector
+    deletes a chunk (#2388)."""
     from faultmaven.config.settings import DatabaseSettings, get_settings
 
     try:
@@ -119,7 +120,7 @@ async def sweep_incomplete_ingests(
     """Find the incomplete rows older than ``max_age`` (default: the setting)
     at ``now`` (default: the clock) and, when ``mode`` is ``armed``, delete
     each with its vectors. Never raises."""
-    max_age = _resolve_max_age() if max_age is None else max_age
+    max_age = resolve_max_age() if max_age is None else max_age
     now = datetime.now(timezone.utc) if now is None else now
     result = IncompleteSweepResult(
         mode=mode, max_age_hours=max_age.total_seconds() / 3600

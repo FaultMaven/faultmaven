@@ -2892,6 +2892,11 @@ class KnowledgeItemModel(Base):
     # INSERT and every row older than the column are complete; an authored
     # INSERT names false explicitly.
     ingest_complete = Column(Boolean, nullable=False, server_default="1")
+    # The generation every chunk this row serves carries in its id and its
+    # ``vector_generation`` key (#2388): minted at each INSERT and each content
+    # change (``mint_vector_generation``), never defaulted. KB admission serves
+    # a chunk only when it carries its row's generation.
+    vector_generation = Column(String(32), nullable=False)
 
     knowledge_metadata = Column(
         "metadata", JsonBlob, nullable=False, server_default="{}"

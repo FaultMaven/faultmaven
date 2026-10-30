@@ -28,6 +28,13 @@ and a run that is not a dry run; the same ``--dry-run`` / ``--no-dry-run``
 overrides ``KB_INCOMPLETE_INGEST_SWEEP_DRY_RUN``). The counts are the result's
 ``incomplete_ingests``. See ``faultmaven/bootstrap/kb_incomplete_sweep.py``.
 
+The generation sweep (#2388) removes chunks of a generation no row serves,
+past the same age, once armed with its own gate (``KB_GENERATION_SWEEP_ENABLED``
+and a run that is not a dry run; the same ``--dry-run`` / ``--no-dry-run``
+overrides ``KB_GENERATION_SWEEP_DRY_RUN``). Arm it only with one ChromaDB per
+database. Its counts are the result's ``generation_sweep``. See
+``faultmaven/bootstrap/kb_generation_sweep.py``.
+
 Tenant scope: **cross_tenant**. Global-scope pack rows are the org-free
 platform tier (#770): they are readable by EVERY tenant (RLS read exemption +
 org-free vector path), and the RLS write policies bar the tenant-bound app
@@ -60,10 +67,11 @@ async def run(
     Args:
         settings: FaultMaven settings instance
         container: DI container with initialized services
-        dry_run: The dry-run override for this run of both sweeps
-            (``--dry-run`` / ``--no-dry-run``); None defers to
-            ``KB_ORPHAN_SWEEP_DRY_RUN`` and ``KB_INCOMPLETE_INGEST_SWEEP_DRY_RUN``. ``--no-dry-run`` asks for deletion but
-            cannot grant it: with ``KB_ORPHAN_SWEEP_ENABLED=false`` the sweep
+        dry_run: The dry-run override for this run of all three sweeps
+            (``--dry-run`` / ``--no-dry-run``); None defers to each sweep's
+            own ``KB_ORPHAN_SWEEP_DRY_RUN``, ``KB_INCOMPLETE_INGEST_SWEEP_DRY_RUN``
+            and ``KB_GENERATION_SWEEP_DRY_RUN``. ``--no-dry-run`` asks for
+            deletion but cannot grant it: a sweep whose ``*_ENABLED`` is false
             is off. Seeding is unaffected either way.
         allow_disjoint_enterprises: The buckets (enterprise ids, or
             ``unattributed``) the operator asserts genuinely hold only orphans
@@ -75,9 +83,10 @@ async def run(
         Job result dictionary with:
         - status: "completed", "skipped", or "failed"
         - ingested / skipped_unchanged / pruned / orphaned_vectors_cleaned /
-          unpublished_vectors_cleaned / repaired_rows / orphaned_rows: counts
-          from the bootstrap pass (orphaned_rows is the residual AFTER the
-          cross-store repair)
+          unpublished_vectors_cleaned / repaired_rows / unserved_rows: counts
+          from the bootstrap pass (unserved_rows is the residual AFTER the
+          pack re-ingest and the cross-store repair: the complete rows this
+          deployment serves nothing for)
         - authored_orphans: the authored-orphan sweep (#1982) — its mode
           (off / report_only / armed), whether the row read was proven
           unfiltered, the cap, totals and per-enterprise counts of documents
@@ -87,6 +96,9 @@ async def run(
         - incomplete_ingests: the incomplete-ingest sweep (#2394) — its mode,
           ``skipped`` reason, age bound, and counts would_delete / deleted /
           spared / unremoved
+        - generation_sweep: the superseded-chunk sweep (#2388) — its mode,
+          ``skipped`` reason, and chunk counts would_delete / deleted /
+          unremoved, with the documents they belong to
         - failures: list of (runbook relpath, reason) for failed runbooks
         - error: Error message if the whole pass failed
     """
@@ -113,6 +125,9 @@ async def run(
             result["reason"] = "knowledge_service_unavailable"
             return result
 
+        from faultmaven.bootstrap.kb_generation_sweep import (
+            resolve_generation_sweep_mode,
+        )
         from faultmaven.bootstrap.kb_incomplete_sweep import (
             resolve_incomplete_sweep_mode,
         )
@@ -130,6 +145,7 @@ async def run(
             sweep_dry_run=dry_run,
             allow_disjoint_enterprises=tuple(allow_disjoint_enterprises),
             incomplete_sweep_mode=resolve_incomplete_sweep_mode(dry_run),
+            generation_sweep_mode=resolve_generation_sweep_mode(dry_run),
         )
 
         result["ingested"] = len(bootstrap_result.ingested)
@@ -143,8 +159,9 @@ async def run(
         )
         result["authored_orphans"] = bootstrap_result.authored_orphans.summary()
         result["incomplete_ingests"] = bootstrap_result.incomplete_ingests.summary()
+        result["generation_sweep"] = bootstrap_result.generation_sweep.summary()
         result["repaired_rows"] = len(bootstrap_result.repaired_rows)
-        result["orphaned_rows"] = len(bootstrap_result.orphaned_rows)
+        result["unserved_rows"] = len(bootstrap_result.unserved_rows)
         result["failures"] = list(bootstrap_result.failed)
 
         if bootstrap_result.failed:

@@ -367,7 +367,8 @@ INSERT INTO users (user_id, enterprise_id, username, email, display_name)
 INSERT INTO cases (case_id, enterprise_id, user_id, title) VALUES
   ('case_a', 'e', 'u', 'a'), ('case_b', 'e', 'u', 'b');
 INSERT INTO knowledge_items (item_id, enterprise_id, scope, owner_id, title,
-  content, item_type) VALUES ('ki', 'e', 'personal', 'u', 't', 'c', 'runbook');
+  content, item_type, vector_generation) VALUES ('ki', 'e', 'personal', 'u', 't',
+  'c', 'runbook', 'gen-test');
 INSERT INTO uploaded_files (file_id, enterprise_id, filename, size_bytes,
   upload_source) VALUES ('src_a', 'e', 'Case', 1, 'conversion_source'),
   ('src_b', 'e', 'Case', 1, 'conversion_source'),

@@ -38,6 +38,9 @@ from faultmaven.infrastructure.persistence.models import (
 from faultmaven.infrastructure.persistence.value_free_errors import (
     install_value_free_errors,
 )
+from faultmaven.modules.knowledge.domain.models.knowledge_item import (
+    mint_vector_generation,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -148,6 +151,7 @@ def _item(**fields) -> KnowledgeItemModel:
             "title": f"{MARK} title",
             "content": f"---\n{MARK} body\nsecond line",
             "item_type": "runbook",
+            "vector_generation": mint_vector_generation(),
             **fields,
         }
     )

@@ -330,7 +330,7 @@ async def test_a_delete_whose_vectors_fail_still_discards_its_draft(session_fact
     result = await knowledge.delete_document(item_id)
 
     assert result["action"] == "deleted"
-    assert await knowledge.admitted_document_ids([item_id]) == set()
+    assert await knowledge.admitted_generations([item_id]) == {}
     draft, key = await _draft_and_key(session_factory, draft_id)
     assert (draft.status, draft.knowledge_item_id, key) == ("discarded", None, None)
     assert await _drafts(session_factory) == []
