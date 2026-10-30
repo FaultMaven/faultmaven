@@ -6,10 +6,10 @@ registry the model's tool list is built from. They named ``case_evidence_qa``
 
 The given set comes from the real ``_create_investigation_tools`` fed bare
 ``AgentTool`` doubles (``.name`` is a constant property, so no dependencies are
-needed). The vocabulary is every ``AgentTool`` subclass name plus retired
-spellings. Model-facing strings are collected by AST from the prompt package,
-the DA instruction / vectorization modules and the given tools' own modules
-(docstrings excluded: they are for developers).
+needed). The vocabulary is the name of every ``BaseTool`` subclass the tools
+package defines, plus retired spellings. Model-facing strings are collected by
+AST from the prompt package, the DA instruction / vectorization modules and the
+given tools' own modules (docstrings excluded: they are for developers).
 
 Flag-gated text is paired with its flag explicitly: the entity tools are given
 only under FAULTMAVEN_ENTITY_REGISTRY and ``reclassify_evidence`` only under
@@ -34,6 +34,7 @@ import asyncio
 import difflib
 import hashlib
 import importlib
+import inspect
 import pkgutil
 import re
 import uuid
@@ -85,7 +86,7 @@ from faultmaven.core.investigation.prompts.templates.fallback import (
 )
 from faultmaven.core.investigation.prompts.templates.tool_text import tools_line
 from faultmaven.infrastructure.persistence.case_vector_store import CaseVectorStore
-from faultmaven.models.interfaces import ToolResult
+from faultmaven.models.interfaces import BaseTool, ToolResult
 from faultmaven.modules.agent.tools.base import AgentTool, ToolContext
 from faultmaven.modules.agent.tools.case_evidence_qa import AnswerFromCaseEvidence
 from faultmaven.modules.agent.tools.deep_analysis_tool import DeepAnalysisTool
@@ -162,7 +163,18 @@ _RECLASSIFY_TOOLS = dict(reclassify_evidence_tool=ReclassifyEvidenceTool)
 # only when it is given, and blocks.py names it only when it is given (#1939).
 RECLASSIFY_FLAG_NAMES = {"reclassify_evidence"}
 _RECLASSIFY_HOMES = {"blocks.py", "reclassify_evidence_tool.py"}
-_RETIRED = {"case_evidence_qa", "global_kb_qa", "user_kb_qa"}
+# Spellings of tools that no longer exist: a prompt naming one is ``not_given``.
+_RETIRED = {
+    "case_evidence_qa",
+    "global_kb_qa",
+    "user_kb_qa",
+    # Deleted by #2376: built, or only registered into a registry nothing read,
+    # and never given to the model.
+    "list_evidence",
+    "list_evidence_by_time",
+    "read_file",
+    "search_knowledge",
+}
 _NOT_TOOLS = {"directed_analysis"}
 _TOKEN = re.compile(r"(?<![\w.])[a-z]+(?:_[a-z]+)+(?![\w(]*\.)")
 
@@ -183,16 +195,31 @@ def _subclasses(cls):
         yield from _subclasses(sub)
 
 
-def vocabulary() -> set[str]:
-    for mod in pkgutil.iter_modules(tools_pkg.__path__):
-        importlib.import_module(f"{tools_pkg.__name__}.{mod.name}")
+def tool_class_names() -> set[str]:
+    """The name of every ``BaseTool`` subclass the tools package, subpackages
+    included, defines. #943's ``KnowledgeBaseTool`` was a ``BaseTool``, not an
+    ``AgentTool``. A concrete class whose name is not a constant reports a
+    sentinel, which no registry gives, so it fails the comparison."""
+    for mod in pkgutil.walk_packages(tools_pkg.__path__, f"{tools_pkg.__name__}."):
+        importlib.import_module(mod.name)
     names = set()
-    for cls in _subclasses(AgentTool):
+    for cls in _subclasses(BaseTool):
+        # The package's classes, not a test's: a double such as
+        # ``test_tool_registry``'s ``FailingTool`` stays a subclass for as long
+        # as it is alive in this process.
+        if not cls.__module__.startswith(f"{tools_pkg.__name__}."):
+            continue
+        if inspect.isabstract(cls):
+            continue
         try:
             names.add(_bare(cls).name)
-        except Exception:  # abstract / non-constant name
-            pass
-    return names | _RETIRED
+        except Exception:
+            names.add(f"<{cls.__qualname__}: no constant name>")
+    return names
+
+
+def vocabulary() -> set[str]:
+    return tool_class_names() | _RETIRED
 
 
 def strings(path: Path):
@@ -250,6 +277,18 @@ def test_default_registry_is_the_six() -> None:
     }
 
 
+def test_every_tool_class_is_given_with_every_flag_on() -> None:
+    """A tool class nothing gives the model is dead code that reads as live:
+    ``KnowledgeBaseTool`` (#943), ``reclassify_evidence`` built and never
+    registered (#1941), and four tools #2376 deleted. With every flag on, the
+    registry ``_create_investigation_tools`` builds holds every tool class the
+    tools package defines. Compared without ``_RETIRED``, so a class revived
+    under a retired name is held to the same rule."""
+    assert tool_class_names() == given(
+        {**_DEFAULT_TOOLS, **_ENTITY_TOOLS, **_RECLASSIFY_TOOLS}
+    )
+
+
 def test_entity_tools_are_given_only_under_their_flag() -> None:
     assert ENTITY_FLAG_NAMES <= given({**_DEFAULT_TOOLS, **_ENTITY_TOOLS})
     assert not ENTITY_FLAG_NAMES & given(_DEFAULT_TOOLS)
@@ -291,6 +330,10 @@ def _scan_text(tmp_path: Path, text: str) -> list[Path]:
     [
         ("call case_evidence_qa on it", "not_given"),
         ("call global_kb_qa on it", "not_given"),
+        ("call read_file on it", "not_given"),
+        ("call list_evidence on it", "not_given"),
+        ("call list_evidence_by_time on it", "not_given"),
+        ("call search_knowledge on it", "not_given"),
         ("call search_files on it", "near"),
         ("call deep_analyze on it", "near"),
     ],

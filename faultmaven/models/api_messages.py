@@ -62,7 +62,7 @@ class MessageResponse(BaseModel):
                     "execution_id": "exec-abc123",
                     "token_usage": {"input": 150, "output": 320, "total": 470},
                     "agent_type": "investigator",
-                    "tool_calls": ["list_evidence", "read_file"],
+                    "tool_calls": ["search_file", "kb_qa"],
                 },
             }
         },
@@ -111,7 +111,7 @@ class MessageListResponse(BaseModel):
                             "execution_id": "exec-001",
                             "token_usage": {"input": 150, "output": 320, "total": 470},
                             "agent_type": "investigator",
-                            "tool_calls": ["list_evidence", "read_file"],
+                            "tool_calls": ["search_file", "kb_qa"],
                         },
                     },
                 ],
@@ -195,7 +195,7 @@ class ChatResponse(BaseModel):
                     "timestamp": "2026-01-01T10:00:05Z",
                 },
                 "token_usage": {"input": 150, "output": 320, "total": 470},
-                "tool_calls": ["list_evidence", "read_file"],
+                "tool_calls": ["search_file", "kb_qa"],
                 "duration_ms": 5234,
             }
         },

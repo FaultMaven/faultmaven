@@ -686,9 +686,9 @@ class TestBackendDelegation:
     def test_default_backend_comes_from_the_configured_factory(self, temp_storage_dir):
         """No injected backend → whatever STORAGE_BACKEND resolves to.
 
-        This is what makes the on-demand construction sites (read_file_tool,
-        agent_orchestration_service) honour the setting without each having to
-        plumb a backend through.
+        This is what makes the on-demand construction site
+        (``storage_cleanup.run``) honour the setting without plumbing a backend
+        through.
         """
         sentinel = FilesystemStorageBackend(storage_root=temp_storage_dir)
         with patch(

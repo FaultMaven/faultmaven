@@ -620,7 +620,7 @@ Every `PreprocessingResult` carries `coverage_start_ts` / `coverage_end_ts` — 
 
 - Implementation: `extract_time_range_ts(content)` in `extractors/utils.py` returns `(start_ts, end_ts, source)`. It walks the first `_HEAD_SCAN_LINES=10` lines and back-walks the trailing `_TAIL_SCAN_LINES=100` lines (the tail window walks backwards rather than slicing the last 10 to survive trailing whitespace — ISS-036). The first matching pattern wins; no fuzzy parsing.
 - Pattern vocabulary (priority order): `iso8601_t`, `iso8601`, `healthapp` (`YYYYMMDD-H:M:S:ms`, ISS-017), `syslog_bsd`, `yymmdd` (Hadoop/HDFS compact), `yy_slash_mmdd` (Spark/log4j, ISS-027), `epoch_ms`, `epoch_s`.
-- Persistence: `attachments._preprocess_attachment` lifts both timestamps onto the `UploadedFile` row (`uploaded_files.coverage_start_ts` / `coverage_end_ts`) at intake. The matched pattern name (`coverage.source`) is computed and surfaces in `PreprocessingResult.extraction_metadata["evidence_metadata"].coverage.source` for in-process consumers (e.g., context_builder, agent tools holding the result); persistence of the preprocessor's JSON diagnostics block onto `uploaded_files.metadata` is a tracked follow-up. The head pattern wins because a single file emits a single timestamp format in practice; when the head window is empty, the tail's pattern is used as fallback.
+- Persistence: `attachments._preprocess_attachment` lifts both timestamps onto the `UploadedFile` row (`uploaded_files.coverage_start_ts` / `coverage_end_ts`) at intake. The matched pattern name is persisted as `uploaded_files.coverage_source`; the context builder reads it there and on the evidence rows' `coverage_source`, as `symptom_currency` does. It is also recorded in `PreprocessingResult.extraction_metadata["evidence_metadata"].coverage.source`, which nothing reads back; persistence of the preprocessor's JSON diagnostics block onto `uploaded_files.metadata` is a tracked follow-up. The head pattern wins because a single file emits a single timestamp format in practice; when the head window is empty, the tail's pattern is used as fallback.
 - Use sites:
   - The entity registry uses the file's coverage timestamps to populate `case_entities.first_seen_ts` (entity-registry.md) — lets the registry answer "did this IP appear before or after the outage?" without re-opening the evidence.
   - Orchestration's coverage-gap detection (R3, §6.1) uses the time range to flag user queries that target timestamps outside what any data in the case actually covers.
@@ -821,7 +821,6 @@ The `search_file` agent tool is a standalone implementation that coexists with o
 
 | Existing Component | Role | Relationship to `search_file` |
 | --- | --- | --- |
-| `ReadFileTool` (`read_file`) | Read file content by evidence ID | Remains for reading; `search_file` adds search |
 | Domain extractors (Tier 1) | Single-use at upload | Made re-runnable via `search_file` extractor mode |
 | `DeepAnalysisTool` (`deep_analysis`) | LLM-powered analysis (backed by `LocalTier2Service` through the LLM router; absent when `DEEP_ANALYSIS_BACKEND=disabled`) | Tier 3 interpreted search; orthogonal to `search_file` |
 

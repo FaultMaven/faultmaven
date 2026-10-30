@@ -3,10 +3,11 @@
 A tool's result goes into the model's context, and the model can repeat it into
 the stored answer every reader of the case is served. The class of leak has come
 back after each fix: HTTP 500s (#866), ``debug_info`` (#2072), ``web_search``,
-then sixteen agent-tool catch-alls. So this guards the class with the shared
-analysis the HTTP guards use (``tests/error_text_ast``): a ``ToolResult`` whose
-``error`` carries the text, anywhere in the package, and anything a function
-under ``modules/agent/tools/`` returns carrying it.
+then the agent tools' catch-alls, ten of them in the tools that exist today. So
+this guards the class with the shared analysis the HTTP guards use
+(``tests/error_text_ast``): a ``ToolResult`` whose ``error`` carries the text,
+anywhere in the package, and anything a function under ``modules/agent/tools/``
+returns carrying it.
 
 ``test_reverting_any_fixed_site_is_reported`` puts the text back at each fixed
 site in turn and asserts the analysis reports it, so the guard is shown to bite
@@ -15,6 +16,7 @@ on the sites it exists for.
 
 import ast
 import pathlib
+import textwrap
 
 import pytest
 
@@ -44,13 +46,6 @@ _SEARCH_FILE = "faultmaven/modules/agent/tools/search_file_tool.py"
 #: comment at the site. The last part is in the key so that new text under an
 #: allowed arm is a new site, not a covered one.
 _ALLOWED: dict[tuple[str, str, str, str], str] = {
-    (
-        "faultmaven/modules/agent/tools/list_evidence_by_time_tool.py",
-        "_parse_iso_bound",
-        "(ValueError, TypeError)",
-        "(None, f'Invalid ISO-8601 timestamp for {bound_name}: {value!r}. "
-        "Expected format: YYYY-MM-DDTHH:MM:SS[+00:00]. Error: {e}')",
-    ): _MODEL_ARGUMENT,
     (
         _SEARCH_FILE,
         "_count_search",
@@ -150,18 +145,59 @@ def _keys(
     return keys
 
 
+#: The tool modules ``test_reverting_any_fixed_site_is_reported`` reverts a
+#: site in: the ten fixed sites, ``tool_failure``'s rendering (``base.py``) and
+#: the two fixed-error handlers (``reclassify_evidence_tool.py``,
+#: ``web_search.py``).
+_FIXED_SITE_HOMES = {
+    "base.py",
+    "deep_analysis_tool.py",
+    "find_entity_tool.py",
+    "kb_tool_adapter.py",
+    "list_top_entities_tool.py",
+    "reclassify_evidence_tool.py",
+    "search_file_tool.py",
+    "vectorize_file_tool.py",
+    "web_search.py",
+}
+
+
 @pytest.mark.unit
 def test_the_scan_reaches_every_tool():
-    """Not vacuous: the tools the sixteen fixed sites live in are scanned."""
+    """Not vacuous: every tool module that holds a reverted site is scanned,
+    and ``_FIXED_SITE_HOMES`` names exactly those modules."""
     scanned = {p.name for p, returns in _scanned() if returns}
-    assert {
-        "base.py",
-        "kb_tool_adapter.py",
-        "read_file_tool.py",
-        "search_file_tool.py",
-        "vectorize_file_tool.py",
-        "web_search.py",
-    } <= scanned
+    assert _FIXED_SITE_HOMES <= scanned
+
+    homes = set()
+    for path in _TOOLS.rglob("*.py"):
+        counter = _Revert(-1)
+        counter.visit(ast.parse(path.read_text(encoding="utf-8")))
+        if counter.count:
+            homes.add(path.name)
+    assert homes == _FIXED_SITE_HOMES
+
+
+#: A tool helper whose returned string carries the caught exception's text: a
+#: site only when returned values are read as a tool's (``returns=True``).
+_RETURNED_TEXT = textwrap.dedent("""\
+    def _read(path):
+        try:
+            return open(path).read()
+        except OSError as e:
+            return f"[Error reading file: {e}]"
+    """)
+
+
+@pytest.mark.unit
+def test_a_returned_string_carrying_the_text_is_a_site_under_returns(tmp_path):
+    """The ``returns`` arm: a helper that returns the text is reported with
+    ``returns=True`` and not with ``returns=False``."""
+    path = tmp_path / "helper.py"
+    path.write_text(_RETURNED_TEXT, encoding="utf-8")
+
+    assert tool_result_leak_sites(path, returns=True) == ["helper.py:5"]
+    assert tool_result_leak_sites(path, returns=False) == []
 
 
 @pytest.mark.unit
@@ -294,6 +330,6 @@ def test_reverting_any_fixed_site_is_reported(tmp_path):
             assert after > before, f"{path.name}: reverting site {target} passed"
             reverted += 1
 
-    # The 16 sites, tool_failure's own rendering, and the fixed-error handlers
+    # The 10 sites, tool_failure's own rendering, and the fixed-error handlers
     # (reclassify's NotFoundError arm, web_search's catch-all).
-    assert reverted == 19
+    assert reverted == 13

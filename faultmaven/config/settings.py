@@ -2748,9 +2748,7 @@ class PreprocessingSettings(BaseSettings):
     # ``coverage_*_ts`` intersects the window. Pure reordering — no
     # evidence is dropped, no new evidence is fetched. When OFF, the
     # Tier A ranking matches Phase 2 behaviour (recency-scored). Default
-    # OFF — ships dark; enable explicitly after the Phase 3b tool has
-    # produced a week of production data on what time patterns users
-    # actually ask about.
+    # OFF — ships dark, and is enabled explicitly.
     timeline_rerank_enabled: bool = Field(
         default=False,
         validation_alias="FAULTMAVEN_TIMELINE_RERANK",

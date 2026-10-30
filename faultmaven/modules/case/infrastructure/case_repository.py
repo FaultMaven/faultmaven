@@ -29,7 +29,6 @@ from faultmaven.modules.case.domain.models.driver import (
 from faultmaven.modules.case.domain.models.evidence import (
     CaseEntity,
     EntityType,
-    Evidence,
     UploadedFile,
 )
 from faultmaven.modules.case.domain.models.hypothesis import Hypothesis
@@ -547,47 +546,6 @@ class CaseRepository(ABC):
 
         Raises:
             RepositoryException: If the query fails.
-        """
-        pass
-
-    @abstractmethod
-    async def list_evidence_by_time_window(
-        self,
-        case_id: str,
-        start: Optional[datetime] = None,
-        end: Optional[datetime] = None,
-    ) -> List[Evidence]:
-        """
-        Return evidence whose coverage overlaps ``[start, end]``.
-
-        Phase 3 — case-level timeline query. Overlap semantics:
-        an evidence row overlaps the window when
-        ``coverage_start_ts <= end AND coverage_end_ts >= start``.
-        Evidence with NULL coverage timestamps (timeless content —
-        configs, code, screenshots, short pastes) is excluded from
-        results; the caller who wants all evidence regardless of
-        time should use ``get(case_id).evidence`` instead.
-
-        Both bounds are optional:
-        - ``start=None, end=None`` → all evidence in the case with
-          non-NULL coverage, ordered by coverage_start_ts ascending.
-        - ``start=None`` → evidence ending before ``end``.
-        - ``end=None`` → evidence starting on or after ``start``.
-
-        Args:
-            case_id: Case to search within.
-            start: Lower bound of the time window (inclusive). None
-                means no lower bound.
-            end: Upper bound of the time window (inclusive). None
-                means no upper bound.
-
-        Returns:
-            Evidence rows ordered by coverage_start_ts ascending.
-            Empty list when no evidence matches or the case doesn't
-            exist.
-
-        Raises:
-            RepositoryException: If lookup fails
         """
         pass
 
@@ -1324,35 +1282,6 @@ class InMemoryCaseRepository(CaseRepository):
             self.deletions.append(deletion)
             return True
         return False
-
-    async def list_evidence_by_time_window(
-        self,
-        case_id: str,
-        start: Optional[datetime] = None,
-        end: Optional[datetime] = None,
-    ) -> List[Evidence]:
-        """In-memory impl of Phase 3b timeline query.
-
-        Filters the case's evidence list in Python — same overlap
-        semantics as the SQL implementations. Unsuitable for production
-        volume but perfectly fine for tests that don't need a real DB.
-        """
-        case = self._cases.get(case_id)
-        if case is None:
-            return []
-        matches: List[Evidence] = []
-        for ev in case.evidence or []:
-            ev_start = getattr(ev, "coverage_start_ts", None)
-            ev_end = getattr(ev, "coverage_end_ts", None)
-            if ev_start is None or ev_end is None:
-                continue
-            if end is not None and ev_start > end:
-                continue
-            if start is not None and ev_end < start:
-                continue
-            matches.append(ev)
-        matches.sort(key=lambda ev: ev.coverage_start_ts)
-        return matches
 
     async def upsert_case_entities(
         self,

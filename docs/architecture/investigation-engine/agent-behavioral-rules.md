@@ -301,7 +301,7 @@ and state what specific data or input would unblock you.
 
 ```text
 **KNOWLEDGE & RUNBOOK AUTHORITY (CRITICAL INSTRUCTION — Zone 2 only):**
-□ MUST search KB (`kb_qa` / `search_knowledge`) for the symptom ONCE at the start of
+□ MUST search KB (`kb_qa`) for the symptom ONCE at the start of
   Zone 2 (after symptom_verified=True, before forming hypotheses independently).
   Do NOT call kb_qa in Zone 1 — it contains procedures, not incident facts.
 ```

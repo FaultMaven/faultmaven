@@ -11,9 +11,9 @@ Covers:
 - ``EvidenceMetadata.coverage`` block is populated only when a
   start timestamp was parsed — absent for timeless evidence.
 
-The Phase 3b repository query + agent tool depend on these fields
-being populated, so this test pack pins the producer side before the
-consumer side lands.
+The context builder (``_coverage_overlaps_window``, ``_observed_attr``)
+and ``symptom_currency`` read the columns these fields populate, so this
+test pack pins the producer side.
 """
 
 from datetime import datetime, timezone
