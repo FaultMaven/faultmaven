@@ -74,11 +74,11 @@ Scope and ownership come from the joined `conversion_jobs` table (`scope`, `user
   2. Content comes from the stored `knowledge_items.content` row (not disk)
 
 - **Delete** (DELETE `/api/v1/knowledge/documents/{id}`) — provenance-gated:
-  1. **Built-in** (`kb_<12 hex>` id) → unpublish: set `is_published=False` AND delete ChromaDB vectors (retrieval ignores `is_published`, so the vectors must go; the row is kept because the pack still carries the runbook, so a hard delete would be resurrected by the next bootstrap)
-  2. **Authored** (UUID id) → hard delete the `knowledge_items` row + its ChromaDB vectors
+  1. **Built-in** (`kb_<12 hex>` id) → unpublish: a SQL-only flip of `is_published` to false (no KB door serves an unpublished row's chunks, and the next pack-loading bootstrap's reconcile removes its vectors; the row is kept because the pack still carries the runbook, so a hard delete would be resurrected by the next bootstrap)
+  2. **Authored** (UUID id) → hard delete the `knowledge_items` row, then its ChromaDB vectors, best effort (a failure is logged, never served, and collected by the authored-orphan sweep)
 
 - **Search** (RAG during investigations)
-  1. `KnowledgeVectorStore.hybrid_search()` — two-stage: vector + keyword recall, then 4-signal reranker
+  1. `KnowledgeVectorStore.hybrid_search()` — two-stage: vector + keyword recall, then 4-signal reranker; a hit is kept only when its `knowledge_items` row is complete and published (`IKnowledgeService.admitted_document_ids`, #2397)
   2. All queries use explicit BGE-M3 embeddings (`query_embeddings`), not ChromaDB defaults
 
 ### Configuration
@@ -89,7 +89,7 @@ Scope and ownership come from the joined `conversion_jobs` table (`scope`, `user
 
 ### Failure Modes
 
-- SQLite unavailable: document CRUD fails, search still works via ChromaDB
+- SQLite unavailable: document CRUD fails, and so does search: no hit is served without its row's admission check, which answers "unavailable", never "no results"
 - ChromaDB unavailable: search fails, document CRUD still works via SQLite
 - Embedding model unavailable: ingestion fails (chunks not stored), existing search works
 

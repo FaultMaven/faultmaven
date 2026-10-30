@@ -246,9 +246,10 @@ described above, so treat it as the intended rule rather than a live one.
 ### 1b. KB Authored-Orphan Sweep (`kb_seed` and the KB bootstrap, #1982)
 
 **Purpose:** Find authored KB vectors whose `knowledge_items` row is gone and,
-once an operator arms it, delete them. Typically these were stranded by a
-vector delete that failed before #1966. Retrieval never checks for a row, so
-such a chunk stays searchable for good. The sweep runs inside every KB
+once an operator arms it, delete them. No writer deletes vectors in-process
+(#2397): a failed ingest, a delete whose best-effort vector delete failed, and an
+update or repair that raced a delete leave them. No KB door serves a chunk whose
+row is gone, so they are inert garbage until collected. The sweep runs inside every KB
 bootstrap pass: at web startup under a single-tenant provider, and in `kb_seed`,
 which is the only path under `TENANT_PROVIDER=multi`, where CD runs it after
 every deploy. Design: [ingestion step 6](../architecture/knowledge-and-ai/kb-ingestion-architecture.md#algorithm).
