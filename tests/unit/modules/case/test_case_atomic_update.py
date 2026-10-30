@@ -166,8 +166,9 @@ class TestAnInvalidFinalStateWritesNothing:
         assert case.title == "Test Case"
 
     def test_an_unknown_key_is_refused_before_any_field_is_written(self):
-        """``status`` is not a field: it used to become an arbitrary attribute,
-        and the documented example passed it."""
+        """``status`` is not a field, and the documented example passed it. It
+        is named before the merged state is validated, which would ignore it,
+        and before any field is copied."""
         case = _make_investigating_case()
         with pytest.raises(TypeError, match="status"):
             case.atomic_update(title="Renamed", status=CaseState.CLOSED)

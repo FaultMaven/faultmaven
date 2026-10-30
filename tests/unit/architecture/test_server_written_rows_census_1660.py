@@ -167,10 +167,12 @@ OTHER_READERS: dict[tuple[str, str], tuple[int, str]] = {
         "faultmaven/modules/case/infrastructure/case_repository.py",
         "InMemoryCaseRepository.save",
     ): (1, _PERSISTENCE),
+    # The rows it writes, and the whole-case re-validation before the write
+    # (#1795), as the SQLite save below.
     (
         "faultmaven/modules/case/infrastructure/postgresql_hybrid_case_repository/repository.py",
         "PostgreSQLHybridCaseRepository.save",
-    ): (1, _PERSISTENCE),
+    ): (2, _PERSISTENCE),
     (
         "faultmaven/modules/case/infrastructure/sessionless_case_repository.py",
         "SessionlessCaseRepository.get_messages",
