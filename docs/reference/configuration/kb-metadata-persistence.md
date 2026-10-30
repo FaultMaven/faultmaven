@@ -75,7 +75,7 @@ Scope and ownership come from the joined `conversion_jobs` table (`scope`, `user
 
 - **Delete** (DELETE `/api/v1/knowledge/documents/{id}`) — provenance-gated:
   1. **Built-in** (`kb_<12 hex>` id) → unpublish: a SQL-only flip of `is_published` to false (no KB door serves an unpublished row's chunks, and the next pack-loading bootstrap's reconcile removes its vectors; the row is kept because the pack still carries the runbook, so a hard delete would be resurrected by the next bootstrap)
-  2. **Authored** (UUID id) → hard delete the `knowledge_items` row, then its ChromaDB vectors, best effort (a failure is logged, never served, and collected by the authored-orphan sweep)
+  2. **Authored** (UUID id) → hard delete the `knowledge_items` row, then its ChromaDB vectors, best effort (what a failure leaves is logged and never served; only the authored-orphan sweep, once an operator arms it, removes it)
 
 - **Search** (RAG during investigations)
   1. `KnowledgeVectorStore.hybrid_search()` — two-stage: vector + keyword recall, then 4-signal reranker; a hit is kept only when its `knowledge_items` row is complete and published (`IKnowledgeService.admitted_document_ids`, #2397)

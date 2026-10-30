@@ -476,24 +476,15 @@ class ISanitizer(ABC):
         pass
 
 
-#: The admission check a KB read applies to its hits (#2397): given the parent
-#: document ids of the chunks a query matched, the subset whose
-#: ``knowledge_items`` row is complete and published. The knowledge module
-#: supplies it (``IKnowledgeService.admitted_document_ids``); a store applies
-#: it and never reads ``knowledge_items`` itself. It raises when it cannot
-#: answer, and the read fails as it does on a store error, never as "nothing
-#: found".
+#: The KB admission check (#2397): of the parent ids a query's chunks name, the
+#: ones whose ``knowledge_items`` row is complete and published. Supplied by
+#: ``IKnowledgeService.admitted_document_ids``; it raises when it cannot answer.
 AdmitParents = Callable[[Sequence[str]], Awaitable[Set[str]]]
 
 
 def require_admit(admit: Any, *, reader: str) -> None:
-    """Refuse a KB reader built or called without an admission check.
-
-    A required keyword stops a caller from leaving ``admit`` out; this stops
-    one from passing ``None`` (or anything else that cannot be called), so no
-    KB door can serve a chunk without asking whether its row admits it.
-    Raised before any store call.
-    """
+    """Refuse a KB reader built or called with no callable admission check
+    (``None`` included), before any store call."""
     if not callable(admit):
         raise TypeError(
             f"{reader} requires an admit callback (AdmitParents), got "
@@ -542,17 +533,15 @@ class IKnowledgeVectorStore(ABC):
         Args:
             collection_name: The collection, named exactly.
             query: Search text, embedded by the store.
-            k: Number of chunks recalled. The hits whose parent ``admit``
-                refuses are dropped after the recall, so fewer than ``k`` can
-                come back: a caller that needs ``k`` asks for more.
+            k: Number of hits to return.
             where: ChromaDB metadata filter. Required on the KB collection,
                 where it must name a scope key.
-            admit: The admission check, awaited once with the distinct
-                parents of the recalled hits.
+            admit: The admission check; an admission-thinned page is read
+                again deeper.
 
         Returns:
-            Admitted hits ordered by similarity, each ``{"id", "content",
-            "metadata", "score"}``; ``score`` is the cosine similarity.
+            Hits ordered by similarity, each ``{"id", "content", "metadata",
+            "score"}``; ``score`` is the cosine similarity.
 
         Raises:
             TypeError: ``admit`` is not callable, before any store call.
@@ -585,10 +574,10 @@ class IKnowledgeVectorStore(ABC):
                 recall arms before the rerank and the top-``k`` cut.
 
         Returns:
-            The top ``k`` admitted hits in rerank order, each as
-            :meth:`search` returns it plus ``rerank_score``, the blend that
-            decided the order. That blend is relative to this candidate set;
-            ``score`` stays the absolute cosine.
+            The top ``k`` hits in rerank order, each as :meth:`search` returns
+            it plus ``rerank_score``, the blend that decided the order. That
+            blend is relative to this candidate set; ``score`` stays the
+            absolute cosine.
 
         Raises:
             As :meth:`search`.

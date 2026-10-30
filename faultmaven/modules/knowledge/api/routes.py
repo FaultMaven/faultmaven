@@ -808,8 +808,8 @@ async def delete_document(
     base search, investigation retrieval or runbook dedup (#1966, #2397):
     every one of them serves a chunk only while its document is published,
     and the delete has committed. Its search-index entries are removed
-    afterwards, best effort; any left behind are never served, and are
-    cleaned up later. An excerpt already in a case's conversation context
+    afterwards, best effort; any left behind are never served. An excerpt
+    already in a case's conversation context
     stays there until that case next searches the knowledge base.
 
     Args:

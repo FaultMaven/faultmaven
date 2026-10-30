@@ -55,7 +55,7 @@ from chromadb.errors import NotFoundError
 from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.infrastructure.chroma_client import blocking_executor_for
 from faultmaven.infrastructure.embedding_guard import embed_query_or_raise
-from faultmaven.infrastructure.knowledge.admission import admitted_hits
+from faultmaven.infrastructure.knowledge.admission import admitted_hits, read_deepening
 from faultmaven.infrastructure.vector_similarity import (
     cosine_from_chroma_distance,
 )
@@ -609,8 +609,9 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
 
         :meth:`_recall` of ``k`` chunks, then the hits whose parent ``admit``
         does not return are dropped (#2397). The check runs here, after the
-        ChromaDB call returns and outside its executor and retry, so fewer
-        than ``k`` hits can come back: a caller that needs ``k`` over-fetches.
+        ChromaDB call returns and outside its executor and retry. A full page
+        that admission left short of ``k`` is read again deeper
+        (:func:`read_deepening`); past that, fewer than ``k`` can come back.
 
         Args:
             collection_name: Exact ChromaDB collection name (no prefix added).
@@ -635,14 +636,23 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
             Whatever ``admit`` raises.
         """
         require_admit(admit, reader="KnowledgeVectorStore.search")
-        hits = await self._recall(
-            collection_name=collection_name,
-            query=query,
-            k=k,
-            where=where,
-            query_embedding=query_embedding,
+
+        async def judge(hits, size):
+            kept = await admitted_hits(hits, admit)
+            return kept[:k], len(hits) >= size and len(kept) < k
+
+        kept, _short = await read_deepening(
+            lambda size: self._recall(
+                collection_name=collection_name,
+                query=query,
+                k=size,
+                where=where,
+                query_embedding=query_embedding,
+            ),
+            judge,
+            k,
         )
-        return await admitted_hits(hits, admit)
+        return kept
 
     async def _recall(
         self,
@@ -784,7 +794,9 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
                 once with the distinct parents of both arms' candidates after
                 the score floor. A candidate whose parent it does not return
                 is dropped before the rerank and the top-k cut, so a stray
-                chunk never takes an admitted hit's place in the window.
+                chunk never takes an admitted hit's place in the window. When
+                an arm's page came back full and admission left fewer than
+                ``k``, both arms are read again deeper (:func:`read_deepening`).
 
         Returns:
             Top-k admitted results sorted by reranked score.
@@ -810,43 +822,59 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
         # model call (~1.2-2.3s each on CPU) and dominated Stage-1 latency.
         query_embedding = await self._embed_query_or_raise(query, "hybrid search")
 
-        vector_results = await self._recall(
-            collection_name=collection_name,
-            query=query,
-            k=recall_k,
-            where=where,
-            query_embedding=query_embedding,
-        )
+        lexicon: Dict[str, Any] = {}
+        counts: Dict[str, int] = {}
 
-        # Corpus statistics for both stages that read them: which query terms
-        # are rare enough to be worth an exact-match probe (Stage 1), and how
-        # much each one weighs when scoring overlap (Stage 2). Fetched AFTER
-        # the vector search, beside their first consumer: a search that raises,
-        # the circuit breaker open included, spends no worker on them.
-        # ``None`` is a supported state.
-        stats = await self._term_stats_for(collection_name)
+        async def judge(vector_results, size):
+            if not lexicon:
+                # Corpus statistics for both stages that read them: which query
+                # terms are rare enough to be worth an exact-match probe (Stage
+                # 1), and how much each one weighs when scoring overlap (Stage
+                # 2). Fetched AFTER the first vector search, beside their first
+                # consumer: a search that raises, the circuit breaker open
+                # included, spends no worker on them. ``None`` is a supported
+                # state.
+                lexicon["stats"] = stats = await self._term_stats_for(collection_name)
+                lexicon["keywords"] = self._extract_search_keywords(query, stats=stats)
+            # Keyword-constrained retrieval for identifier-heavy queries, as
+            # deep as the vector arm.
+            keyword_k = k * 2 * size // recall_k
+            keyword_results: List[Dict[str, Any]] = []
+            if lexicon["keywords"]:
+                keyword_results = await self._keyword_constrained_search(
+                    collection_name=collection_name,
+                    query_embedding=query_embedding,
+                    keywords=lexicon["keywords"],
+                    k=keyword_k,
+                    where=where,
+                )
+            counts.update(vector=len(vector_results), keyword=len(keyword_results))
 
-        # Keyword-constrained retrieval for identifier-heavy queries
-        keywords = self._extract_search_keywords(query, stats=stats)
-        keyword_results: List[Dict[str, Any]] = []
-        if keywords:
-            keyword_results = await self._keyword_constrained_search(
+            # Deduplicate: merge keyword results into vector results (keep
+            # higher score)
+            candidates = self._deduplicate_candidates(vector_results, keyword_results)
+            if min_score is not None:
+                candidates = [c for c in candidates if c.get("score", 0.0) >= min_score]
+
+            # Row-checked (#2397): before the rerank and the cut, so the window
+            # is filled from admitted candidates only.
+            admitted = await admitted_hits(candidates, admit)
+            full = len(vector_results) >= size or len(keyword_results) >= keyword_k
+            thinned = len(admitted) < min(k, len(candidates))
+            return admitted, full and thinned
+
+        candidates, _short = await read_deepening(
+            lambda size: self._recall(
                 collection_name=collection_name,
-                query_embedding=query_embedding,
-                keywords=keywords,
-                k=k * 2,
+                query=query,
+                k=size,
                 where=where,
-            )
-
-        # Deduplicate: merge keyword results into vector results (keep higher score)
-        candidates = self._deduplicate_candidates(vector_results, keyword_results)
-
-        if min_score is not None:
-            candidates = [c for c in candidates if c.get("score", 0.0) >= min_score]
-
-        # Row-checked (#2397): before the rerank and the cut, so the window is
-        # filled from admitted candidates only.
-        candidates = await admitted_hits(candidates, admit)
+                query_embedding=query_embedding,
+            ),
+            judge,
+            recall_k,
+        )
+        stats = lexicon.get("stats")
 
         if not candidates:
             return []
@@ -864,13 +892,13 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
         top_k = reranked[:k]
 
         self.logger.debug(
-            f"Hybrid search: {len(vector_results)} vector + "
-            f"{len(keyword_results)} keyword → {len(candidates)} candidates "
+            f"Hybrid search: {counts['vector']} vector + "
+            f"{counts['keyword']} keyword → {len(candidates)} candidates "
             f"→ {len(top_k)} reranked",
             extra={
                 "collection": collection_name,
-                "vector_count": len(vector_results),
-                "keyword_count": len(keyword_results),
+                "vector_count": counts["vector"],
+                "keyword_count": counts["keyword"],
                 "candidate_count": len(candidates),
                 "final_count": len(top_k),
             },
@@ -1569,14 +1597,12 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
 
         ``retries`` is the number of further attempts after a failed one, with
         backoff sleeps between them. ``KnowledgeService.delete_document`` calls
-        this while holding its row change uncommitted and passes 0: on SQLite
-        that hold is the database's single writer lock, so it must stay one
-        attempt long, and the caller's 503 makes its own caller the retry loop.
-        (No ``call_external`` timeout bounds the hold either: this is a write,
-        so it passes none and is awaited to its end, and the 503 is never sent
-        while the delete is still landing. On the ``HttpClient`` arm the
-        client's per-phase timeout bounds each request; on a local
-        ``PersistentClient`` the calls run on the loop thread, as before.)
+        this after its row change commits, best effort, with the default
+        retries: a failure is logged, not raised, because no KB door serves a
+        chunk whose row is gone (#2397). No ``call_external`` timeout bounds it:
+        this is a write, so it passes none and is awaited to its end. On the
+        ``HttpClient`` arm the client's per-phase timeout bounds each request;
+        on a local ``PersistentClient`` the calls run on the loop thread.
 
         Returns the number of chunks deleted (0 if the parent has no chunks).
         """

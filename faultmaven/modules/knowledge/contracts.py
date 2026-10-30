@@ -63,7 +63,7 @@ class IKnowledgeService(Protocol):
         from then on no chunk of the document is retrievable through a KB door,
         because no door admits a chunk whose row is gone or unpublished. Its
         vectors are removed afterwards, best effort (an authored document's
-        only); what is left is never served and is collected later. Returns
+        only); what is left is never served. Returns
         ``{"success": False, "error"}`` when the document is absent or no row
         could be changed. An excerpt a case's prompt already carries stays
         there until that case's next KB fetch.

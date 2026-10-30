@@ -411,14 +411,9 @@ class KnowledgeService:
         filters: Optional[Dict[str, Any]] = None,
         min_score: Optional[float] = None,
     ) -> List[SearchResult]:
-        """Search the knowledge base: the investigation pre-fetch's door (push).
-
-        Retrieves through the store's hybrid pipeline (vector plus
-        keyword-constrained recall, then a rerank), because the terms that
-        identify an incident are exactly the ones an embedding smooths away.
-        Row-checked (#2397): the store keeps a candidate only when
-        :meth:`admitted_document_ids` returns its parent, before its top-k
-        cut, so a stray chunk never takes a real hit's place.
+        """Search the knowledge base through the store's hybrid pipeline (the
+        investigation pre-fetch's door), row-checked by
+        :meth:`admitted_document_ids` before the store's top-k cut (#2397).
 
         Args:
             query: Search query text
@@ -577,7 +572,7 @@ class KnowledgeService:
            #770) — rolls back and reports not-removed WITHOUT touching the
            vector store. The shared ChromaDB collection holds every tenant's
            chunks, so a vector delete is only ever issued for a row this
-           session proved it may delete.
+           session proved it may change.
         2. Commit. A commit that fails raises (``RuntimeError``) and touches no
            vector; if it landed regardless, the document is gone and its
            vectors are unadmitted, never served.
@@ -587,10 +582,10 @@ class KnowledgeService:
            with the id and never raised: the chunks it leaves are never
            served. A cancellation here is logged and re-raised; the delete has
            committed.
-        4. Team share rows, best effort. A share row for a resource with no
-           row grants nothing (visibility is computed from rows), so a failure
-           here is logged and the delete still succeeds. Unpublish keeps the
-           row, so keeps its shares.
+        4. Team share rows, after the commit and best effort. A share row for
+           a resource with no row grants nothing (visibility is computed from
+           rows), so a failure here is logged and the delete still succeeds.
+           Unpublish keeps the row, so keeps its shares.
 
         Returns ``{success, document_id, action}`` where action is
         "unpublished" or "deleted", or ``{success: False, error}`` when the
@@ -652,60 +647,62 @@ class KnowledgeService:
                     # Step 2: commit. From here no door admits the document.
                     await repo.commit()
 
+                # Step 3: an authored document's vectors, best effort.
+                store = self._vector_store
+                if action == "deleted" and store:
+                    try:
+                        count = await store.delete_documents_by_parent_id(document_id)
+                    except asyncio.CancelledError:
+                        logger.warning(
+                            "Deleted document %s; removing its vectors was "
+                            "cancelled. No KB door serves them; only the "
+                            "authored-orphan sweep, once armed, removes them.",
+                            document_id,
+                        )
+                        raise
+                    except Exception as vector_error:
+                        logger.warning(
+                            "Deleted document %s; removing its vectors failed "
+                            "(%s). No KB door serves them; only the "
+                            "authored-orphan sweep, once armed, removes them.",
+                            document_id,
+                            exception_class_name(vector_error),
+                        )
+                    else:
+                        logger.info(
+                            f"Removed {count} chunks for document {document_id}"
+                        )
+
+                # Step 4: team shares, after the commit, best effort.
+                if action == "deleted" and self._share_repo:
+                    try:
+                        await self._share_repo.delete_for_resource(
+                            "knowledge_item", document_id
+                        )
+                    except Exception as share_error:
+                        logger.error(
+                            "Deleted document %s, but removing its team share "
+                            "rows failed (%s). They grant nothing — visibility "
+                            "is computed from knowledge_items rows — but remain "
+                            "in resource_shares until removed by hand.",
+                            document_id,
+                            share_error,
+                        )
+
+                logger.info(f"{action} document {document_id}")
+                if discarded:
+                    logger.info(f"Discarded drafts {discarded} of {document_id}")
+                return {
+                    "success": True,
+                    "document_id": document_id,
+                    "action": action,
+                }
+
             except ValidationException:
                 raise
             except Exception as e:
                 logger.error(f"Failed to remove document {document_id}: {e}")
                 raise RuntimeError(f"Document removal failed: {str(e)}") from e
-
-            # Step 3: an authored document's vectors, best effort.
-            if action == "deleted" and self._vector_store:
-                try:
-                    count = await self._vector_store.delete_documents_by_parent_id(
-                        document_id
-                    )
-                    logger.info(f"Removed {count} chunks for document {document_id}")
-                except asyncio.CancelledError:
-                    logger.warning(
-                        "Deleted document %s; removing its vectors was "
-                        "cancelled. No KB door serves them, and the "
-                        "authored-orphan sweep collects them.",
-                        document_id,
-                    )
-                    raise
-                except Exception as vector_error:
-                    logger.warning(
-                        "Deleted document %s; removing its vectors failed (%s). "
-                        "No KB door serves them, and the authored-orphan sweep "
-                        "collects them.",
-                        document_id,
-                        exception_class_name(vector_error),
-                    )
-
-            # Step 4: team shares, best effort.
-            if action == "deleted" and self._share_repo:
-                try:
-                    await self._share_repo.delete_for_resource(
-                        "knowledge_item", document_id
-                    )
-                except Exception as share_error:
-                    logger.error(
-                        "Deleted document %s, but removing its team share "
-                        "rows failed (%s). They grant nothing — visibility "
-                        "is computed from knowledge_items rows — but remain "
-                        "in resource_shares until removed by hand.",
-                        document_id,
-                        share_error,
-                    )
-
-            logger.info(f"{action} document {document_id}")
-            if discarded:
-                logger.info(f"Discarded drafts {discarded} of {document_id}")
-            return {
-                "success": True,
-                "document_id": document_id,
-                "action": action,
-            }
 
     async def get_document_statistics(self) -> Dict[str, Any]:
         """Get knowledge base statistics from SQLite."""
@@ -1024,8 +1021,7 @@ class KnowledgeService:
 
         * row gone or unpublished → write nothing. No KB door admits a chunk
           whose row is gone or unpublished (#2397), so the vectors just
-          written are never served; they are collected later, never deleted
-          in-process.
+          written are never served, and never deleted in-process.
         * row holds the attempted content → the commit landed; leave the
           vectors alone, they already match
         * row holds anything else → re-index it AS OBSERVED
@@ -1077,7 +1073,7 @@ class KnowledgeService:
         if observed is None or not observed.is_published:
             logger.warning(
                 "Update of document %s failed (%s), and its row is %s; the "
-                "vectors it wrote are left for collection. No KB door serves "
+                "vectors it wrote are left in place, and no KB door serves "
                 "them.",
                 document_id,
                 commit_error,
@@ -1553,7 +1549,7 @@ class KnowledgeService:
         refusal (logged, nothing written) is the second line, for any caller
         that does not. A delete or unpublish that lands while the vectors are
         written leaves them under a row no door admits: they are never served,
-        and are collected later, never discarded here.
+        and never discarded here.
 
         Returns the number of chunks indexed. Fail-safe 0 (no raise) when the
         row is absent or unpublished, its ingest
@@ -2423,23 +2419,15 @@ class KnowledgeService:
             return set()
 
     async def admitted_document_ids(self, document_ids: Sequence[str]) -> Set[str]:
-        """The subset of ``document_ids`` whose row is complete and published.
-
-        The KB retrieval admission check (#2397): every door hands it to its
-        store as the ``admit`` callback, and a chunk is served only when its
-        parent is in the answer. One SELECT
-        (``KnowledgeItemRepository.admitted_item_ids``), with no caller
-        identity: which rows a caller may read is the vector filter's
-        decision. Under PostgreSQL RLS the session reads its own enterprise's
-        rows and the global tier, a superset of what any door's filter admits,
-        so the policy can only narrow the answer.
+        """The subset of ``document_ids`` whose row is complete and published:
+        the KB retrieval admission check every door applies (#2397), in one
+        SELECT with no caller identity (under RLS the session's read policy
+        can only narrow it).
 
         Unlike :meth:`visible_document_ids` it never answers a failure with
-        the empty set: an empty answer would read as "nothing found" (#943,
-        #944). Every ``Exception`` — ``DatabaseTimeout`` and a repository
-        error included — is raised as ``KnowledgeBaseError``
-        (``KNOWLEDGE_ADMISSION_UNAVAILABLE``), so each door takes its
-        store-error branch; a cancellation passes through.
+        the empty set, which would read as "nothing found" (#943, #944): every
+        ``Exception`` is raised as ``KnowledgeBaseError``
+        (``KNOWLEDGE_ADMISSION_UNAVAILABLE``); a cancellation passes through.
         """
         ids = [d for d in document_ids if d]
         if not ids:
@@ -2969,7 +2957,7 @@ class KnowledgeService:
         commits the row is read once more, for the answer. A row deleted or
         unpublished while this update embedded keeps the vectors it wrote, and
         they are never served: no KB door admits a chunk whose row is gone or
-        unpublished (#2397). They are collected later, never discarded here.
+        unpublished (#2397). They are never discarded here.
 
         Residuals, stated rather than papered over:
 

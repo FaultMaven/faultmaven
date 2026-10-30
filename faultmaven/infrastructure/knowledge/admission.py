@@ -9,9 +9,26 @@ parent by the one rule below, await ``admit`` once per query, and drop every
 hit whose parent it does not return.
 """
 
-from typing import Any, Dict, List, Mapping, Optional
+from typing import (
+    Any,
+    Awaitable,
+    Callable,
+    Dict,
+    List,
+    Mapping,
+    Optional,
+    Tuple,
+    TypeVar,
+)
 
 from faultmaven.models.interfaces import AdmitParents
+
+#: A reader deepens a thinned page by doubling its fetch, up to this many times
+#: the first.
+MAX_DEEPENING = 8
+
+R = TypeVar("R")
+K = TypeVar("K")
 
 #: Chunk ids are minted as ``f"{parent_document_id}_chunk_{i}"``
 #: (``KnowledgeService._index_document_in_vector_store``).
@@ -55,3 +72,25 @@ async def admitted_hits(
         for hit in hits
         if chunk_parent_id(hit.get("id"), hit.get("metadata")) in admitted
     ]
+
+
+async def read_deepening(
+    read: Callable[[int], Awaitable[R]],
+    judge: Callable[[R, int], Awaitable[Tuple[K, bool]]],
+    first: int,
+) -> Tuple[K, bool]:
+    """Read a page of ``first`` rows, and again with the fetch doubled while
+    admission leaves it short, up to :data:`MAX_DEEPENING` times ``first``: an
+    unpublished built-in keeps its vectors until the next pack-loading
+    bootstrap, and they can fill a whole page.
+
+    ``judge(page, size)`` answers what the reader keeps, and whether the page
+    came back full and admission left fewer than the reader needs (still true
+    only at the cap).
+    """
+    size = first
+    while True:
+        kept, short = await judge(await read(size), size)
+        if not short or size >= first * MAX_DEEPENING:
+            return kept, short
+        size *= 2

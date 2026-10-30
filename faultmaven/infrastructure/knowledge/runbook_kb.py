@@ -27,7 +27,10 @@ from typing import Any, Dict, List
 
 from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.infrastructure.embedding_guard import embed_query_or_raise
-from faultmaven.infrastructure.knowledge.admission import chunk_parent_id
+from faultmaven.infrastructure.knowledge.admission import (
+    chunk_parent_id,
+    read_deepening,
+)
 from faultmaven.infrastructure.persistence.chromadb_store import ChromaDBVectorStore
 from faultmaven.infrastructure.vector_similarity import cosine_from_chroma_distance
 from faultmaven.models.exceptions import KnowledgeBaseError
@@ -232,9 +235,9 @@ class RunbookKnowledgeBase(BaseExternalClient):
             KnowledgeBaseError: ``RUNBOOK_SEARCH_UNSCOPED`` if no scope filter
                 was supplied, ``RUNBOOK_SEARCH_FAILED`` if the vector query
                 itself failed, ``RUNBOOK_RESULTS_UNREADABLE`` if rows matched
-                but the best of them carried no usable identity, or what the
-                admission check raises when it could not run
-                (``KNOWLEDGE_ADMISSION_UNAVAILABLE``). None may be
+                but the best of them carried no usable identity, or (#2397)
+                ``KNOWLEDGE_ADMISSION_UNAVAILABLE`` / ``RUNBOOK_SEARCH_INCOMPLETE``
+                when admission could not run or left it short. None may be
                 rendered as "no similar runbooks found": callers turn an empty
                 list into "generate a new runbook", so a search that could not
                 be completed or could not be read must not answer as one that
@@ -254,7 +257,7 @@ class RunbookKnowledgeBase(BaseExternalClient):
             "$and": [{"document_type": "runbook"}, scope_filter]
         }
 
-        async def _query():
+        async def _query(fetch: int):
             """The external call, and ONLY the external call.
 
             Result parsing used to live in here too. It must not: parsing is
@@ -275,7 +278,7 @@ class RunbookKnowledgeBase(BaseExternalClient):
                 results = await self.vector_store.query_by_embedding(
                     query_embedding=query_embedding,
                     where=where_clause,
-                    top_k=fetch_k,
+                    top_k=fetch,
                 )
             except Exception as e:
                 logger.error(f"ChromaDB runbook query failed: {e}")
@@ -286,25 +289,56 @@ class RunbookKnowledgeBase(BaseExternalClient):
 
             return results
 
-        results = await self.call_external(
-            operation_name="search_runbooks",
-            call_func=_query,
-            timeout=5.0,  # 5 seconds for vector search
-            retries=2,
-        )
+        # Row-checked (#2397) outside ``call_external``'s retry and breaker:
+        # the check is a database read, and its failure is not ChromaDB's (#912).
+        async def judge(results, fetch):
+            kept = await self._admitted(results)
+            return kept, self._short_of_runbooks(
+                results, kept, fetch=fetch, top_k=top_k, min_similarity=min_similarity
+            )
 
-        # Row-checked (#2397), outside the retry and the breaker above: the
-        # check is a database read, and its failure is not ChromaDB's (#912).
-        results = await self._admitted(results)
+        results, short = await read_deepening(
+            lambda fetch: self.call_external(
+                operation_name="search_runbooks",
+                call_func=_query,
+                fetch=fetch,
+                timeout=5.0,  # 5 seconds for vector search
+                retries=2,
+            ),
+            judge,
+            fetch_k,
+        )
+        if short:
+            # "Nothing similar" here would be a claim not established (#944).
+            raise KnowledgeBaseError(
+                "Runbook similarity search could not reach "
+                f"{top_k} published runbooks: the closest chunks belong to "
+                "documents that are not published",
+                error_code="RUNBOOK_SEARCH_INCOMPLETE",
+            )
 
         return self._parse(results, top_k=top_k, min_similarity=min_similarity)
 
-    async def _admitted(self, results: Any) -> Any:
-        """The raw query result, less the chunks whose parent is not admitted.
+    @staticmethod
+    def _short_of_runbooks(
+        results: Any, kept: Any, *, fetch: int, top_k: int, min_similarity: float
+    ) -> bool:
+        """Whether a deeper page could add a runbook this one lacks: it came
+        back full, admission dropped part of it, its least similar row still
+        meets the floor, and fewer than ``top_k`` distinct runbooks were kept."""
+        raw = ((results or {}).get("ids") or [[]])[0]
+        rows = ((kept or {}).get("ids") or [[]])[0]
+        if len(raw) < fetch or len(rows) == len(raw):
+            return False
+        distances = ((results.get("distances") or [[]])[0]) or [1.0]
+        if cosine_from_chroma_distance(distances[-1]) < min_similarity:
+            return False
+        metadatas = ((kept.get("metadatas") or [[]])[0]) or []
+        return len({md.get("parent_document_id") for md in metadatas}) < top_k
 
-        One ``admit`` call for the distinct parents of the query's rows, none
-        when nothing matched. Whatever ``admit`` raises propagates.
-        """
+    async def _admitted(self, results: Any) -> Any:
+        """The raw query result less the chunks whose parent is not admitted:
+        one ``admit`` call, none when nothing matched; what it raises propagates."""
         if not results or not results.get("ids") or not results["ids"][0]:
             return results
         ids = results["ids"][0]

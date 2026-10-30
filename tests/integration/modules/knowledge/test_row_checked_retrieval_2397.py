@@ -43,6 +43,7 @@ from faultmaven.core.investigation import terminal_transitions as tt
 from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.milestone_engine.kb_prefetch import KbPrefetcher
 from faultmaven.exceptions import DatabaseTimeout
+from faultmaven.infrastructure.knowledge.admission import MAX_DEEPENING
 from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
     KB_COLLECTION,
     KnowledgeVectorStore,
@@ -620,6 +621,88 @@ async def test_a_delete_whose_vector_delete_times_out_leaves_nothing_served(kb):
     assert result["success"] is True
     assert AUTHORED_LATE in _chunk_parents(kb)  # the store kept them
     await _no_door_serves(kb, AUTHORED_LATE)
+
+
+# --- crowding: an unpublished built-in fills a door's first page --------------
+
+CROWD_PUBLISHED = item_id_from_runbook_id("crowd-published")
+CROWD_RETIRED = item_id_from_runbook_id("crowd-unpublished")
+#: At least every door's first fetch: the push's and the pull's 15-chunk
+#: recall, ``search_documents``' ``limit * 3`` and dedup's ``top_k * 3``.
+CROWD_CHUNKS = 16
+
+
+async def _crowd(factory, tmp_path, retired_chunks: int):
+    """A published runbook, and a built-in whose ``retired_chunks`` chunks all
+    outrank it, unpublished by the real delete (a SQL-only flip, so its
+    vectors stay until the next pack-loading bootstrap)."""
+    chroma = chromadb.PersistentClient(
+        path=str(tmp_path / "chroma"),
+        settings=ChromaSettings(anonymized_telemetry=False, allow_reset=False),
+    )
+    store = KnowledgeVectorStore(chroma)
+    service = KnowledgeService(
+        sanitizer=regex_only_sanitizer(),
+        tracer=MagicMock(),
+        vector_store=store,
+        db_session_factory=factory,
+    )
+    await _ingest_shipped(service, CROWD_PUBLISHED, "crowd-published", REAL_VECTORS[0])
+    await service.ingest_runbook(
+        document_id=CROWD_RETIRED,
+        title="Runbook crowd-unpublished",
+        content=_text("crowd-unpublished"),
+        enterprise_id=STANDALONE_ENTERPRISE_ID,
+        scope="global",
+        prechunked=[
+            (f"{_text('crowd-unpublished')} part {i}", list(Q))
+            for i in range(retired_chunks)
+        ],
+        shipped=True,
+    )
+    assert (await service.delete_document(CROWD_RETIRED))["action"] == "unpublished"
+    return SimpleNamespace(chroma=chroma, store=store, service=service)
+
+
+@pytest.fixture
+async def crowded(factory, tmp_path):
+    kb = await _crowd(factory, tmp_path, CROWD_CHUNKS)
+    assert _raw_top(kb, 15) == {CROWD_RETIRED}  # control: it fills the window
+    return kb
+
+
+async def test_the_push_reads_past_an_unpublished_builtins_chunks(crowded):
+    assert await _push(crowded) == [CROWD_PUBLISHED]
+
+
+async def test_search_documents_reads_past_an_unpublished_builtins_chunks(crowded):
+    assert await _documents(crowded) == [CROWD_PUBLISHED]
+
+
+async def test_kb_qa_reads_past_an_unpublished_builtins_chunks(crowded):
+    seen = await _pull(crowded)
+    assert "MARKER::crowd-published::" in seen
+    assert "MARKER::crowd-unpublished::" not in seen
+
+
+async def test_dedup_reads_past_an_unpublished_builtins_chunks(crowded):
+    """Core dedup's own call (``top_k=3``): an empty answer here reads as
+    "checked, nothing similar" and offers a duplicate."""
+    matches = await _dedup_kb(crowded).search_by_text(
+        QUERY, scope_filter=SCOPE, top_k=3
+    )
+    assert [m.item_id for m in matches] == [CROWD_PUBLISHED]
+
+
+async def test_dedup_refuses_when_still_crowded_at_the_deepest_page(factory, tmp_path):
+    """``top_k=3`` reads 9 chunks first and 72 at the cap: an unpublished
+    built-in with 72 that outrank everything leaves the search unestablished."""
+    kb = await _crowd(factory, tmp_path, 3 * 3 * MAX_DEEPENING)
+
+    with pytest.raises(KnowledgeBaseError) as raised:
+        await _dedup_kb(kb).search_by_text(QUERY, scope_filter=SCOPE, top_k=3)
+
+    assert raised.value.error_code == "RUNBOOK_SEARCH_INCOMPLETE"
 
 
 # --- the check itself -------------------------------------------------------
