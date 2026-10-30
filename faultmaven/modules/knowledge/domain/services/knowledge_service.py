@@ -97,6 +97,36 @@ logger = logging.getLogger(__name__)
 _DELETED, _COMPLETED, _ABSENT = "deleted", "completed", "absent"
 
 
+class _CommitState:
+    """Whether an authored ingest's completing COMMIT has been issued (#2396).
+
+    Set just before the COMMIT: a failure from then on (the COMMIT, or its
+    session's exit after it) may have landed, and the cleanup decides what the
+    caller is told. One before it (the flip, the share, ``record``, a session
+    that never opened) landed nothing, and is re-raised as itself.
+    """
+
+    issued = False
+
+
+def _arrived_cancelled(failure: BaseException) -> bool:
+    """Whether ``failure`` is a cancellation, or carries one on its
+    ``__cause__``/``__context__`` chain (#2396): a close or a rollback that
+    raises while a ``CancelledError`` propagates replaces it, keeping it only
+    as the new exception's ``__context__``."""
+    pending: List[Optional[BaseException]] = [failure]
+    seen: Set[int] = set()
+    while pending:
+        current = pending.pop()
+        if current is None or id(current) in seen:
+            continue
+        if isinstance(current, asyncio.CancelledError):
+            return True
+        seen.add(id(current))
+        pending += [current.__cause__, current.__context__]
+    return False
+
+
 def _read_total_chunks(chunk_metadata: Optional[Dict[str, Any]]) -> Optional[int]:
     """How many chunks this hit's parent document was split into, or None.
 
@@ -1106,24 +1136,31 @@ class KnowledgeService:
           #2396). No share needs deleting: one is written only in the
           transaction that completes its row. Then:
 
-          - A failure before the completion re-raises. A row the cleanup could
-            not remove never completed and stays incomplete: never served or
-            listed, refused by :meth:`reindex_missing_vectors`, and deleted
-            with its vectors by ``sweep_incomplete_ingests`` once its
-            ``created_at`` is older than ``KB_INCOMPLETE_INGEST_MAX_AGE_HOURS``
-            (armed on the web startup; under ``kb_seed`` only when
-            ``resolve_incomplete_sweep_mode`` answers ``armed``).
-          - A failure of the completing transaction is decided by the
-            cleanup's delete, which waits for that transaction's lock. It
-            matched the row: the COMMIT did not land, and the error is
-            re-raised. It matched nothing and the row under this stamp is
-            complete: the COMMIT landed with the caller's record, and an
-            exception becomes this call's success. It matched nothing and no
-            such row stands: the error. It raised: :class:`IngestOutcomeUnknown`,
-            the row then complete with the caller's record, or incomplete and
-            left for the sweep where it is armed.
-          - A cancellation is always re-raised, whatever the delete found: the
-            state is consistent either way.
+          - A failure before the completing COMMIT is issued (the INSERT, the
+            vectors, the flip, the share, ``record``, or a session that never
+            opened) landed nothing, and is re-raised as itself, whatever the
+            cleanup found. A row the cleanup could not remove never completed
+            and stays incomplete: never served or listed, refused by
+            :meth:`reindex_missing_vectors`, and deleted with its vectors by
+            ``sweep_incomplete_ingests`` once its ``created_at`` is older than
+            ``KB_INCOMPLETE_INGEST_MAX_AGE_HOURS`` (armed on the web startup;
+            under ``kb_seed`` only when ``resolve_incomplete_sweep_mode``
+            answers ``armed``).
+          - A failure from that COMMIT on (the COMMIT, or its session's exit
+            after it) is decided by the cleanup's delete, which waits for the
+            transaction's lock. It matched the row: the COMMIT did not land,
+            and the error is re-raised. It matched nothing and the row under
+            this stamp is complete: the COMMIT landed with the caller's
+            record, and an exception becomes this call's success. It matched
+            nothing and no such row stands: the error. It raised:
+            :class:`IngestOutcomeUnknown`, the row then complete with the
+            caller's record, or incomplete and left for the sweep where it is
+            armed.
+          - A cancellation is always re-raised as it arrived, whatever the
+            delete found: the state is consistent either way. A failure
+            carrying a ``CancelledError`` on its ``__cause__`` or
+            ``__context__`` chain is one, so it is never answered as a
+            success or as :class:`IngestOutcomeUnknown`.
 
           An INSERT whose COMMIT is in doubt can stand too: a COMMIT the server
           received can complete after ``create`` raised (on PostgreSQL a
@@ -1208,8 +1245,8 @@ class KnowledgeService:
                 destructive command (422). Nothing has been written.
             IngestNotRecorded: ``record`` returned False. Nothing was
                 published.
-            IngestOutcomeUnknown: the completing transaction raised, and
-                whether its COMMIT landed could not be learned.
+            IngestOutcomeUnknown: the completing COMMIT raised, and whether
+                it landed could not be learned.
             ValueError: ``replaces_generation`` without ``shipped``; ``record``
                 missing for an authored ingest, or given for ``shipped``.
         """
@@ -1371,15 +1408,14 @@ class KnowledgeService:
         # or cancel can land after the row has (#2378). It removes the row
         # stamped ``now`` only while it is incomplete, so it leaves what a live
         # peer holds and a row this call completed (#2396). It never touches
-        # the vectors: without the row, none is admitted (#2397). A failed
-        # completion is decided by what the cleanup found; the docstring
-        # states what is left.
-        completing = False
+        # the vectors: without the row, none is admitted (#2397). A failure
+        # from the completing COMMIT on is decided by what the cleanup found;
+        # the docstring states what is left.
+        commit_state = _CommitState()
         try:
             async with self._db_session_factory() as session:
                 await DatabaseKnowledgeItemRepository(session).create(item)
             chunks_created = await index()
-            completing = True
             await self._complete_authored_ingest(
                 document_id,
                 created_at=now,
@@ -1387,22 +1423,28 @@ class KnowledgeService:
                 enterprise_id=enterprise_id,
                 created_by=owner_id or verified_by,
                 record=record,
+                commit_state=commit_state,
             )
         except (Exception, asyncio.CancelledError) as failure:
             cleanup = await self._delete_knowledge_item_row(document_id, created_at=now)
-            if completing and cleanup == _COMPLETED:
-                cancelled = not isinstance(failure, Exception)
-                logger.warning(
-                    "Completing knowledge item %s raised (%s), and its commit "
-                    "landed with its caller's record: %s",
-                    document_id,
-                    exception_class_name(failure),
-                    "the cancellation is re-raised" if cancelled else "it succeeded",
-                )
-                if not cancelled:
-                    return chunks_created
-            if completing and cleanup is None and isinstance(failure, Exception):
-                raise IngestOutcomeUnknown(document_id) from failure
+            if commit_state.issued:
+                cancelled = _arrived_cancelled(failure)
+                if cleanup == _COMPLETED:
+                    logger.warning(
+                        "Completing knowledge item %s raised (%s), and its commit "
+                        "landed with its caller's record: %s",
+                        document_id,
+                        exception_class_name(failure),
+                        (
+                            "the cancellation is re-raised"
+                            if cancelled
+                            else "it succeeded"
+                        ),
+                    )
+                    if not cancelled:
+                        return chunks_created
+                elif cleanup is None and not cancelled:
+                    raise IngestOutcomeUnknown(document_id) from failure
             raise
 
         return chunks_created
@@ -1494,6 +1536,7 @@ class KnowledgeService:
         enterprise_id: str,
         created_by: Optional[str],
         record: "Callable[[AsyncSession], Awaitable[bool]]",
+        commit_state: _CommitState,
     ) -> None:
         """Complete this call's row and record its caller, in ONE transaction
         (#2394, #2396): the guarded flip of ``ingest_complete``, the team
@@ -1506,6 +1549,8 @@ class KnowledgeService:
         raises into :meth:`ingest_runbook`'s cleanup. A False ``record``
         raises :class:`IngestNotRecorded` from inside the session block, never
         a return: ``get_db_session`` commits on a normal exit.
+        ``commit_state.issued`` is set just before the COMMIT, the first point
+        from which a failure may have landed.
 
         ``PostgreSQLShareRepository.share``, bound to this session, never
         commits. With no share (``team_id`` unset, or no ``_share_repo`` wired,
@@ -1555,6 +1600,7 @@ class KnowledgeService:
             if not await record(session):
                 await repo.rollback()
                 raise IngestNotRecorded(item_id)
+            commit_state.issued = True
             await repo.commit()
 
     async def reindex_missing_vectors(self, item_id: str) -> int:
@@ -1739,9 +1785,6 @@ class KnowledgeService:
         await that is not. Errors are logged, not raised: the caller decides
         what to raise.
         """
-        from sqlalchemy import select as _select
-
-        from faultmaven.infrastructure.persistence.models import KnowledgeItemModel
         from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
             DatabaseKnowledgeItemRepository,
         )
@@ -1751,18 +1794,13 @@ class KnowledgeService:
             complete: Optional[bool] = None
             try:
                 async with self._db_session_factory() as session:
-                    deleted = await DatabaseKnowledgeItemRepository(session).delete(
+                    repo = DatabaseKnowledgeItemRepository(session)
+                    deleted = await repo.delete(
                         item_id, created_at=created_at, only_incomplete=True
                     )
                     if not deleted:
-                        # ``created_at`` is this call's own UTC instant.
-                        complete = bool(
-                            await session.scalar(
-                                _select(KnowledgeItemModel.ingest_complete).where(
-                                    KnowledgeItemModel.item_id == item_id,
-                                    KnowledgeItemModel.created_at == created_at,
-                                )
-                            )
+                        complete = await repo.is_ingest_complete(
+                            item_id, created_at=created_at
                         )
             except Exception as cleanup_err:
                 if deleted is None or (not deleted and complete is None):

@@ -792,6 +792,24 @@ async def test_on_sqlite_the_cleanup_deletes_first_and_reads_after(wal_factory, 
         assert await _rows(wal_factory) == NOTHING
 
 
+async def test_the_cleanup_reads_its_stamp_as_an_instant(session_factory):
+    """The cleanup's read matches the stamp as its delete and the flip do
+    (``_as_utc``): the same instant in another zone still finds this call's
+    row complete, so a landed completion is never reported absent (#2396)."""
+    stamp = datetime.now(timezone.utc)
+    row = _incomplete_row(created_at=stamp)
+    row.ingest_complete = True
+    await _insert(session_factory, row)
+    ist = timezone(timedelta(hours=5, minutes=30))
+
+    found = await _knowledge(session_factory)._delete_knowledge_item_row(
+        DOC_ID, created_at=stamp.astimezone(ist)
+    )
+
+    assert found == knowledge_service._COMPLETED
+    assert await _complete(session_factory) is True
+
+
 async def _until_blocked_by(factory, backend: int) -> None:
     """Poll ``pg_blocking_pids`` until a session waits on ``backend``'s lock
     (a condition, not a timing: bounded only so a defect fails, not hangs)."""

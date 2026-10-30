@@ -262,6 +262,14 @@ class KnowledgeItemRepository(ABC):
         pass
 
     @abstractmethod
+    async def is_ingest_complete(self, item_id: str, *, created_at: datetime) -> bool:
+        """Whether the row ``item_id`` that carries ``created_at`` is complete
+        (#2396): the stamp compared as a UTC instant, as :meth:`delete` and
+        :meth:`mark_ingest_complete` match it. False when no such row stands.
+        A read: it never waits for a writer."""
+        pass
+
+    @abstractmethod
     async def commit(self) -> None:
         """Make the writes issued with ``commit=False`` durable.
 
@@ -657,6 +665,17 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
             .execution_options(synchronize_session=False)
         )
         return result.rowcount == 1
+
+    async def is_ingest_complete(self, item_id: str, *, created_at: datetime) -> bool:
+        """The stamp-matched read (see the base class)."""
+        return bool(
+            await self.db.scalar(
+                select(KnowledgeItemModel.ingest_complete).where(
+                    KnowledgeItemModel.item_id == item_id,
+                    KnowledgeItemModel.created_at == _as_utc(created_at),
+                )
+            )
+        )
 
     async def commit(self) -> None:
         """Commit the session's open transaction."""
@@ -1220,6 +1239,15 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
         target.ingest_complete = True
         self._pending[item_id] = target
         return True
+
+    async def is_ingest_complete(self, item_id: str, *, created_at: datetime) -> bool:
+        """The stamp-matched read (see the base class)."""
+        if not self._exists(item_id):
+            return False
+        current = self._pending.get(item_id) or self._items[item_id]
+        return bool(current.ingest_complete) and (
+            _as_utc(current.created_at) == _as_utc(created_at)
+        )
 
     async def commit(self) -> None:
         """Apply the writes issued with ``commit=False``."""

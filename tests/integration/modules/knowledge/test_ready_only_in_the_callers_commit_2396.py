@@ -26,11 +26,12 @@ import anyio
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import delete, select, update
 
 from faultmaven.api.exception_handlers import get_exception_handlers
 from faultmaven.api.v1.auth_dependencies import require_authentication
 from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
+from faultmaven.exceptions import ConflictError
 from faultmaven.infrastructure.persistence.models import (
     ConversionDraftModel,
     ConversionJobModel,
@@ -280,6 +281,128 @@ async def test_an_unknown_outcome_is_reported_unknown_never_failed(
         assert status == VERIFIED and _verified(items)
     else:
         assert (status, list(items.values())) == ("draft", [(False, False)])
+
+
+# ---------------------------------------------------------------------------
+# Only a failure from the completing COMMIT on is in doubt
+# ---------------------------------------------------------------------------
+#
+# Each failure below is paired with a cleanup DELETE that raises, which leaves
+# the cleanup unable to tell whether a COMMIT landed. Before the COMMIT is
+# issued nothing can have landed, so the failure is re-raised as itself. A
+# COMMIT that raised with such a cleanup is ``IngestOutcomeUnknown``: pinned by
+# ``test_an_unknown_outcome_is_reported_unknown_never_failed`` above.
+
+
+def _cleanup_delete_raises(monkeypatch) -> None:
+    monkeypatch.setattr(
+        DatabaseKnowledgeItemRepository,
+        "delete",
+        AsyncMock(side_effect=OSError("down")),
+    )
+
+
+@pytest.mark.parametrize("via", ["verify", "batch"])
+async def test_a_lost_swap_is_a_conflict_even_when_the_cleanup_fails(
+    session_factory, monkeypatch, via
+):
+    """The draft was edited during ingestion: the swap missed, and the
+    completion rolled back before any COMMIT. The outcome is known, so
+    ``verify_draft`` answers its 409 ``changed_during_verification`` and
+    ``verify_batch`` records ``failed``, never ``unknown``. The draft is still
+    a draft, and the row the cleanup could not remove is incomplete."""
+    await _verifiable_draft(session_factory)
+    knowledge = _knowledge(session_factory)
+    edited = valid_runbook("Redis Evictions Edited During Verify")
+
+    async def index_while_edited(*_args, **_kwargs):
+        async with session_factory() as session:
+            await session.execute(update(ConversionDraftModel).values(content=edited))
+            await session.commit()
+        return 3
+
+    knowledge._index_document_in_vector_store = AsyncMock(
+        side_effect=index_while_edited
+    )
+    _cleanup_delete_raises(monkeypatch)
+    conversion = _conversion(session_factory, knowledge)
+
+    if via == "verify":
+        with pytest.raises(ConflictError) as lost:
+            await conversion.verify_draft(CONVERSION, DRAFT, OWNER)
+        assert lost.value.conflict_reason == "changed_during_verification"
+    else:
+        summary = await conversion.verify_batch([(CONVERSION, DRAFT)], OWNER)
+        (result,) = summary["results"]
+        assert result["status"] == "failed"
+        assert (summary["failed"], summary["unknown"]) == (1, 0)
+
+    status, items = await _state(session_factory)
+    assert (status, list(items.values())) == ("draft", [(False, False)])
+
+
+async def test_a_flip_miss_is_its_own_error_even_when_the_cleanup_fails(
+    session_factory, monkeypatch
+):
+    """The row was removed while the vectors were written, so the flip matched
+    nothing and no COMMIT was issued: the upload raises the flip's own error,
+    never ``IngestOutcomeUnknown``."""
+    service = _knowledge(session_factory)
+
+    async def index_while_removed(document, *_args, **_kwargs):
+        async with session_factory() as session:
+            await session.execute(
+                delete(KnowledgeItemModel).where(
+                    KnowledgeItemModel.item_id == document.document_id
+                )
+            )
+            await session.commit()
+        return 3
+
+    service._index_document_in_vector_store = AsyncMock(side_effect=index_while_removed)
+    _cleanup_delete_raises(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="not marked complete"):
+        await _upload(service)
+
+    assert await _rows(session_factory) == NOTHING
+
+
+class _CloseFailsToo(_FailingCommit):
+    """As ``_FailingCommit``; the armed session's close then raises too, after
+    it has closed."""
+
+    def __call__(self):
+        armed = self.armed and bool(self._failures)
+        session = super().__call__()
+        if armed:
+            real_close = session.close
+
+            async def close():
+                await real_close()
+                raise OSError("close failed")
+
+            session.close = close
+        return session
+
+
+async def test_a_cancellation_replaced_by_a_close_failure_is_never_a_success(
+    session_factory,
+):
+    """The completing COMMIT landed and then raised ``CancelledError``, and the
+    session's close raised while it propagated: the ``OSError`` that arrives
+    carries the cancellation only as its ``__context__``. It is a cancellation
+    all the same, so it is re-raised as it arrived and never answered as a
+    success. The upload is whole: its COMMIT landed."""
+    factory = _CloseFailsToo(session_factory, (asyncio.CancelledError(), True))
+    service = _knowledge(factory)
+    factory.arm_at_completion(service)
+
+    with pytest.raises(OSError, match="close failed") as raised:
+        await _upload(service, scope="team")
+
+    assert isinstance(raised.value.__context__, asyncio.CancelledError)
+    assert await _rows(session_factory) == dict.fromkeys(NOTHING, 1)
 
 
 # ---------------------------------------------------------------------------

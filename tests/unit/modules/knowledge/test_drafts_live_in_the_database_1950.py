@@ -1036,15 +1036,12 @@ class TestALostSwapHasNothingToWithdraw:
         self, file_session_factory, tmp_path, monkeypatch, caplog
     ):
         """The swap lost to an edit. It is the completing transaction's record
-        (#2396), so nothing was published and nothing is withdrawn: a delete
-        that would fail is never called, and the 409 says nothing was
-        published. Replaces the test of a withdrawal that failed, whose
-        withdrawal is gone."""
+        (#2396), so nothing was published, and the 409 says so. Replaces the
+        test of a withdrawal that failed, whose withdrawal is gone."""
         monkeypatch.chdir(tmp_path)
         factory = file_session_factory
         cid, did = await _verifiable_draft(factory, tmp_path)
         knowledge = _knowledge(factory)
-        knowledge.delete_document = AsyncMock(side_effect=RuntimeError("db gone"))
         entered, release = asyncio.Event(), asyncio.Event()
         real_index = knowledge._index_document_in_vector_store
 
@@ -1067,5 +1064,4 @@ class TestALostSwapHasNothingToWithdraw:
         assert lost.value.conflict_reason == "changed_during_verification"
         assert "nothing was published by this request" in str(lost.value)
         assert await _published(factory) == {}
-        knowledge.delete_document.assert_not_awaited()
         assert not [r for r in caplog.records if r.levelname == "ERROR"]
