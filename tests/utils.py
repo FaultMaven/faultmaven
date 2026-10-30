@@ -1102,11 +1102,28 @@ def log_field(record, name):
     return record.__dict__.get(name)
 
 
-async def admit_every_parent(parent_ids) -> set:
-    """A KB ``admit`` callback (``AdmitParents``) that admits every parent.
+class _AnyGeneration:
+    """Equal to every non-empty generation: what :func:`admit_every_parent`
+    maps each parent to."""
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, str) and bool(other)
+
+    def __hash__(self) -> int:
+        return 0
+
+
+#: The generation a fixture chunk carries when the test is not about it (#2388).
+TEST_GENERATION = "7e57" * 8
+
+
+async def admit_every_parent(parent_ids) -> dict:
+    """A KB ``admit`` callback (``AdmitParents``) that admits every parent, at
+    whatever generation its chunk carries (a chunk with none is still dropped).
 
     For a test of something other than row-checked retrieval (#2397): a filter,
     a ranking, an embedder fault. The admission check itself is pinned by
-    ``tests/integration/modules/knowledge/test_row_checked_retrieval_2397.py``.
+    ``tests/integration/modules/knowledge/test_row_checked_retrieval_2397.py``
+    and ``test_vector_generation_2388.py``.
     """
-    return set(parent_ids)
+    return {parent: _AnyGeneration() for parent in parent_ids}

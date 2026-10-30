@@ -20,7 +20,7 @@ from faultmaven.infrastructure.knowledge.runbook_kb import (
 )
 from faultmaven.models.exceptions import KnowledgeBaseError
 from faultmaven.models.report import RunbookMatch
-from tests.utils import admit_every_parent
+from tests.utils import TEST_GENERATION, admit_every_parent
 
 pytestmark = [pytest.mark.unit, pytest.mark.knowledge_base]
 
@@ -41,6 +41,7 @@ def _chunk_meta(parent: str, title: str, scope: str = "global") -> dict:
         "parent_document_id": parent,
         "chunk_index": 0,
         "total_chunks": 1,
+        "vector_generation": TEST_GENERATION,
     }
 
 
@@ -243,6 +244,7 @@ async def test_a_matched_chunk_without_a_title_is_unreadable_and_can_refuse():
     meta_no_title = {
         "document_type": "runbook",
         "scope": "global",
+        "vector_generation": TEST_GENERATION,
         "parent_document_id": "kb-untitled",
         "chunk_index": 0,
         "total_chunks": 1,
@@ -266,6 +268,7 @@ async def test_an_unreadable_chunk_below_the_best_readable_match_does_not_refuse
     meta_no_title = {
         "document_type": "runbook",
         "scope": "global",
+        "vector_generation": TEST_GENERATION,
         "parent_document_id": "kb-untitled",
     }
     kb = _kb(
@@ -288,6 +291,7 @@ async def test_a_tie_between_unreadable_and_readable_is_not_a_refusal():
     meta_no_title = {
         "document_type": "runbook",
         "scope": "global",
+        "vector_generation": TEST_GENERATION,
         "parent_document_id": "kb-untitled",
     }
     kb = _kb(
@@ -310,6 +314,7 @@ async def test_a_dissimilar_unreadable_chunk_is_not_counted_at_all():
     meta_no_title = {
         "document_type": "runbook",
         "scope": "global",
+        "vector_generation": TEST_GENERATION,
         "parent_document_id": "kb-untitled",
     }
     kb = _kb(
@@ -329,6 +334,7 @@ async def test_an_entirely_unreadable_result_set_refuses():
     meta_no_title = {
         "document_type": "runbook",
         "scope": "global",
+        "vector_generation": TEST_GENERATION,
         "parent_document_id": "kb-untitled",
     }
     kb = _kb([("kb-untitled_chunk_0", 0.10, meta_no_title)])
@@ -347,6 +353,7 @@ async def test_the_unreadable_refusal_is_not_retried():
     meta_no_title = {
         "document_type": "runbook",
         "scope": "global",
+        "vector_generation": TEST_GENERATION,
         "parent_document_id": "kb-untitled",
     }
     kb = _kb([("kb-untitled_chunk_0", 0.10, meta_no_title)])

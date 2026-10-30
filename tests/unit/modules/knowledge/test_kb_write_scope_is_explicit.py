@@ -198,7 +198,9 @@ async def test_the_live_indexer_refuses_a_document_with_no_tier(scope):
     ):
         with pytest.raises(KnowledgeBaseError) as exc:
             await service._index_document_in_vector_store(
-                _tierless_document(scope), enterprise_id=STANDALONE_ENTERPRISE_ID
+                _tierless_document(scope),
+                enterprise_id=STANDALONE_ENTERPRISE_ID,
+                generation="1f" * 16,
             )
 
     assert exc.value.error_code == "KNOWLEDGE_SCOPE_REQUIRED"
@@ -219,7 +221,9 @@ async def test_the_indexer_refuses_before_it_looks_for_a_vector_store():
 
     with pytest.raises(KnowledgeBaseError) as exc:
         await service._index_document_in_vector_store(
-            _tierless_document(), enterprise_id=STANDALONE_ENTERPRISE_ID
+            _tierless_document(),
+            enterprise_id=STANDALONE_ENTERPRISE_ID,
+            generation="1f" * 16,
         )
     assert exc.value.error_code == "KNOWLEDGE_SCOPE_REQUIRED"
 
@@ -291,7 +295,7 @@ async def test_the_stamp_comes_from_the_value_that_was_validated():
         new=_embed,
     ):
         await service._index_document_in_vector_store(
-            _TwoFaced(), enterprise_id=STANDALONE_ENTERPRISE_ID
+            _TwoFaced(), enterprise_id=STANDALONE_ENTERPRISE_ID, generation="1f" * 16
         )
 
     assert added[0][0]["metadata"]["scope"] == "personal", (
@@ -334,7 +338,7 @@ async def test_a_stated_tier_is_stamped_exactly_as_before(stated, stamped):
         new=_embed,
     ):
         chunks = await service._index_document_in_vector_store(
-            document, enterprise_id=STANDALONE_ENTERPRISE_ID
+            document, enterprise_id=STANDALONE_ENTERPRISE_ID, generation="1f" * 16
         )
 
     assert chunks == 1

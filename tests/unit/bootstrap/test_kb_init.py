@@ -19,6 +19,9 @@ import pytest
 
 from faultmaven.bootstrap import kb_init
 from faultmaven.models.interfaces import IKnowledgeVectorStore
+from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (  # noqa: E501
+    DatabaseKnowledgeItemRepository,
+)
 from faultmaven.utils.runbook_id import item_id_from_runbook_id
 from tests.utils import regex_only_sanitizer
 
@@ -253,7 +256,8 @@ async def test_bootstrap_skips_unchanged_runbook(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_bootstrap_re_ingests_changed_runbook(tmp_path: Path):
-    """Content drift (existing row != pack content) triggers delete + re-create."""
+    """Content drift (existing row != pack content) re-ingests, replacing the
+    observed row by its generation and deleting no vector (#2388)."""
     pack_dir = _write_pack(tmp_path)
     knowledge_service = MagicMock()
     knowledge_service.ingest_runbook = AsyncMock(return_value=2)
@@ -262,6 +266,7 @@ async def test_bootstrap_re_ingests_changed_runbook(tmp_path: Path):
 
     existing = MagicMock()
     existing.content = "STALE CONTENT — does not match the pack"
+    existing.vector_generation = "observed-generation"
 
     result = await kb_init.bootstrap_kb(
         knowledge_service=knowledge_service,
@@ -274,8 +279,11 @@ async def test_bootstrap_re_ingests_changed_runbook(tmp_path: Path):
     assert result.ingested == ["global/example.md"]
     assert result.skipped_unchanged == []
     knowledge_service.ingest_runbook.assert_awaited_once()
-    # Stale chunks cleaned out of ChromaDB before re-ingest.
-    knowledge_service._vector_store.delete_documents_by_parent_id.assert_awaited()
+    assert (
+        knowledge_service.ingest_runbook.await_args.kwargs["replaces_generation"]
+        == "observed-generation"
+    )
+    knowledge_service._vector_store.delete_documents_by_parent_id.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -315,31 +323,6 @@ async def test_second_bootstrap_over_real_sqlite_skips_everything(
     assert second.skipped_unchanged == ["global/example.md"], second
     assert second.ingested == []
     assert second.pruned == []
-
-
-@pytest.mark.asyncio
-async def test_bootstrap_raises_on_zero_chunks(tmp_path: Path):
-    """If ingest_runbook reports 0 chunks, the runbook is recorded as failed
-    and the orphan-cleanup path runs."""
-    pack_dir = _write_pack(tmp_path)
-    knowledge_service = MagicMock()
-    knowledge_service.ingest_runbook = AsyncMock(return_value=0)
-    knowledge_service._vector_store = MagicMock()
-    knowledge_service._vector_store.delete_documents_by_parent_id = AsyncMock()
-
-    result = await kb_init.bootstrap_kb(
-        knowledge_service=knowledge_service,
-        db_session_factory=_make_session_factory(existing_row=None),
-        enterprise_id="ent-test",
-        project_root=tmp_path,
-        pack_dir=pack_dir,
-    )
-
-    assert result.ingested == []
-    assert len(result.failed) == 1
-    failed_file, reason = result.failed[0]
-    assert failed_file == "global/example.md"
-    assert "0 chunks" in reason
 
 
 @pytest.mark.parametrize(
@@ -759,10 +742,12 @@ class TestPruneOrphanBuiltins:
 
     @pytest.mark.asyncio
     async def test_prunes_builtin_orphan_not_on_disk(self):
+        """The row only: the reconcile collects its vectors (#2388)."""
         deleted: list[str] = []
 
-        async def fake_delete(item_id, _svc, _factory):
+        async def fake_delete(_repo, item_id, **_kwargs):
             deleted.append(item_id)
+            return True
 
         keep = {"kb_aaaaaaaaaaaa"}  # the one current on-disk runbook
         all_ids = [
@@ -781,11 +766,12 @@ class TestPruneOrphanBuiltins:
             async def execute(self, _stmt):
                 return MagicMock(all=lambda: [(i,) for i in all_ids])
 
-        with patch.object(kb_init, "_delete_existing", side_effect=fake_delete):
+        with patch.object(
+            DatabaseKnowledgeItemRepository, "delete", autospec=True
+        ) as del_mock:
+            del_mock.side_effect = fake_delete
             pruned = await kb_init._prune_orphan_builtins(
-                keep,
-                knowledge_service=MagicMock(),
-                db_session_factory=lambda: _Session(),
+                keep, db_session_factory=lambda: _Session()
             )
 
         assert pruned == ["kb_bbbbbbbbbbbb"]
@@ -794,9 +780,9 @@ class TestPruneOrphanBuiltins:
     @pytest.mark.asyncio
     async def test_empty_keepset_prunes_nothing(self):
         """Safety guard: empty keep-set (disk/parse anomaly) removes nothing."""
-        with patch.object(kb_init, "_delete_existing") as del_mock:
+        with patch.object(DatabaseKnowledgeItemRepository, "delete") as del_mock:
             pruned = await kb_init._prune_orphan_builtins(
-                set(), knowledge_service=MagicMock(), db_session_factory=MagicMock()
+                set(), db_session_factory=MagicMock()
             )
         assert pruned == []
         del_mock.assert_not_called()
@@ -812,9 +798,14 @@ class TestReconcileVectors:
     This pass compares both sides and cleans the index.
     """
 
-    @staticmethod
-    def _service(*, chroma_parents, delete_batches):
-        index = {p: [f"{p}_chunk_{n}" for n in range(3)] for p in chroma_parents}
+    #: Every row's generation, and the one its chunks carry (#2388).
+    GEN = "0a" * 16
+
+    @classmethod
+    def _service(cls, *, chroma_parents, delete_batches):
+        index = {
+            p: [f"{p}_chunk_{n}_{cls.GEN}" for n in range(3)] for p in chroma_parents
+        }
 
         async def _list():
             return {p: list(c) for p, c in index.items() if c}
@@ -835,14 +826,16 @@ class TestReconcileVectors:
         vector_store = create_autospec(IKnowledgeVectorStore, instance=True)
         vector_store.list_all_chunk_ids_by_parent.side_effect = _list
         vector_store.delete_observed_chunk_ids.side_effect = _delete_observed
+        # The age floor's read: no chunk is younger than it.
+        vector_store.list_chunk_ids_by_parent.return_value = {}
         svc = MagicMock()
         svc._vector_store = vector_store
         return svc
 
-    @staticmethod
-    def _factory(db_ids, unpublished=(), incomplete=()):
+    @classmethod
+    def _factory(cls, db_ids, unpublished=(), incomplete=()):
         """Rows as the reconcile query reads them:
-        ``(item_id, is_published, ingest_complete)``."""
+        ``(item_id, is_published, ingest_complete, vector_generation)``."""
 
         class _Session:
             async def __aenter__(self):
@@ -854,7 +847,8 @@ class TestReconcileVectors:
             async def execute(self, _stmt):
                 return MagicMock(
                     all=lambda: [
-                        (i, i not in unpublished, i not in incomplete) for i in db_ids
+                        (i, i not in unpublished, i not in incomplete, cls.GEN)
+                        for i in db_ids
                     ]
                 )
 
@@ -869,13 +863,13 @@ class TestReconcileVectors:
             delete_batches=delete_batches,
         )
         # DB has only a and b → c is an orphaned built-in vector.
-        cleaned, unpublished_cleaned, orphaned_rows = await kb_init._reconcile_vectors(
+        cleaned, unpublished_cleaned, unserved_rows = await kb_init._reconcile_vectors(
             svc, self._factory({"kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb"})
         )
         assert cleaned == ["kb_cccccccccccc"]
         assert unpublished_cleaned == []
         assert delete_batches == [["kb_cccccccccccc"]]  # ONE batched call
-        assert orphaned_rows == []
+        assert unserved_rows == []
 
     @pytest.mark.asyncio
     async def test_never_deletes_non_builtin_orphans(self):
@@ -892,28 +886,28 @@ class TestReconcileVectors:
             },
             delete_batches=delete_batches,
         )
-        cleaned, unpublished_cleaned, orphaned_rows = await kb_init._reconcile_vectors(
+        cleaned, unpublished_cleaned, unserved_rows = await kb_init._reconcile_vectors(
             svc, self._factory({"kb_aaaaaaaaaaaa"})
         )
         assert cleaned == []
         assert unpublished_cleaned == []
         assert delete_batches == []  # nothing deleted — blast radius bounded
-        assert orphaned_rows == []
+        assert unserved_rows == []
 
     @pytest.mark.asyncio
-    async def test_warns_orphaned_rows_without_deleting(self):
+    async def test_warns_unserved_rows_without_deleting(self):
         """A DB row with no vectors is reported, never deleted (can't re-embed here)."""
         delete_batches: list[list[str]] = []
         svc = self._service(
             chroma_parents={"kb_aaaaaaaaaaaa"}, delete_batches=delete_batches
         )
-        cleaned, unpublished_cleaned, orphaned_rows = await kb_init._reconcile_vectors(
+        cleaned, unpublished_cleaned, unserved_rows = await kb_init._reconcile_vectors(
             svc, self._factory({"kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb"})
         )
         assert cleaned == []
         assert unpublished_cleaned == []
         assert delete_batches == []
-        assert orphaned_rows == ["kb_bbbbbbbbbbbb"]
+        assert unserved_rows == ["kb_bbbbbbbbbbbb"]
 
     @pytest.mark.asyncio
     async def test_an_unpublished_row_without_vectors_is_not_an_orphan(self):
@@ -925,14 +919,14 @@ class TestReconcileVectors:
         svc = self._service(
             chroma_parents={"kb_cccccccccccc"}, delete_batches=delete_batches
         )
-        cleaned, unpublished_cleaned, orphaned_rows = await kb_init._reconcile_vectors(
+        cleaned, unpublished_cleaned, unserved_rows = await kb_init._reconcile_vectors(
             svc,
             self._factory(
                 {"kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb", "kb_cccccccccccc"},
                 unpublished={"kb_bbbbbbbbbbbb"},
             ),
         )
-        assert orphaned_rows == ["kb_aaaaaaaaaaaa"]
+        assert unserved_rows == ["kb_aaaaaaaaaaaa"]
         assert cleaned == []
         assert unpublished_cleaned == []
         assert delete_batches == []
@@ -974,7 +968,7 @@ class TestReconcileVectors:
         )
         assert result.orphaned_vectors_cleaned == [ghost_builtin]
         assert result.unpublished_vectors_cleaned == [unpublished_builtin]
-        assert result.orphaned_rows == []
+        assert result.unserved_rows == []
         assert delete_batches == [[ghost_builtin, unpublished_builtin]]  # ONE call
 
     @pytest.mark.asyncio
@@ -1005,12 +999,12 @@ class TestReconcileVectors:
             chroma_parents={"kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb"},
             delete_batches=delete_batches,
         )
-        cleaned, unpublished_cleaned, orphaned_rows = await kb_init._reconcile_vectors(
+        cleaned, unpublished_cleaned, unserved_rows = await kb_init._reconcile_vectors(
             svc, self._factory({"kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb"})
         )
         assert cleaned == []
         assert unpublished_cleaned == []
-        assert orphaned_rows == []
+        assert unserved_rows == []
         assert delete_batches == []
 
     @pytest.mark.asyncio
@@ -1022,13 +1016,13 @@ class TestReconcileVectors:
             chroma_parents={"kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb"},
             delete_batches=delete_batches,
         )
-        cleaned, unpublished_cleaned, orphaned_rows = await kb_init._reconcile_vectors(
+        cleaned, unpublished_cleaned, unserved_rows = await kb_init._reconcile_vectors(
             svc, self._factory(set())
         )
         assert cleaned == []
         assert unpublished_cleaned == []
         assert delete_batches == []  # the safety guard held
-        assert orphaned_rows == []
+        assert unserved_rows == []
 
 
 # ---------------------------------------------------------------------------
@@ -1270,7 +1264,11 @@ class TestCrossStoreRepairSeam:
 
         async def _list():
             # Only 'a' has vectors; 'b's Chroma write crashed mid-ingest.
-            return {"kb_aaaaaaaaaaaa": ["kb_aaaaaaaaaaaa_chunk_0"]}
+            return {
+                "kb_aaaaaaaaaaaa": [
+                    f"kb_aaaaaaaaaaaa_chunk_0_{TestReconcileVectors.GEN}"
+                ]
+            }
 
         vector_store = create_autospec(IKnowledgeVectorStore, instance=True)
         vector_store.list_all_chunk_ids_by_parent.side_effect = _list

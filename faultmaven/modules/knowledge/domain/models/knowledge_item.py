@@ -7,6 +7,7 @@ supporting case deflection and agent augmentation.
 Design Reference: TASK-009 Knowledge Item Repository Pattern
 """
 
+import secrets
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum, IntEnum
@@ -22,6 +23,15 @@ EMBEDDING_DIMENSIONS = 1024
 #: runbook whose pack hash equals it, so an edit of the row is never mistaken
 #: for a new pack version, while a new pack version still re-ingests.
 PACK_CONTENT_HASH_KEY = "pack_content_hash"
+
+
+def mint_vector_generation() -> str:
+    """A new ``vector_generation`` (#2388): 32 random hex digits, minted for
+    every row INSERT and every content change, never reused. Each chunk id
+    carries its row's generation, so a chunk is served only while its row
+    still holds that value. Hex holds no ``_``, so the id's parent rule (the
+    part before its last ``_chunk_``) still names the row."""
+    return secrets.token_hex(16)
 
 
 class VerificationLevel(IntEnum):
@@ -87,6 +97,8 @@ class KnowledgeItem:
         not_helpful_count: Number of times marked as not helpful
         last_retrieved_at: Timestamp of last retrieval
         is_published: Whether item is visible for retrieval
+        vector_generation: The generation the row's served chunks carry
+            (#2388); a chunk of any other generation is never admitted.
         created_at: Record creation timestamp
         updated_at: Record update timestamp
         metadata: Additional item-specific metadata (JSON)
@@ -139,6 +151,8 @@ class KnowledgeItem:
     # False while an authored ingest has not written its vectors (#2394); see
     # ``KnowledgeItemModel.ingest_complete``.
     ingest_complete: bool = True
+    # Minted for every new item; see ``mint_vector_generation``.
+    vector_generation: str = field(default_factory=mint_vector_generation)
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     metadata: Optional[Dict[str, Any]] = None
@@ -151,6 +165,8 @@ class KnowledgeItem:
             raise ValueError("title is required")
         if not self.content:
             raise ValueError("content is required")
+        if not (isinstance(self.vector_generation, str) and self.vector_generation):
+            raise ValueError("vector_generation must be a non-empty string")
         if not isinstance(self.item_type, KnowledgeItemType):
             raise ValueError(
                 f"item_type must be a KnowledgeItemType, got {type(self.item_type)}"

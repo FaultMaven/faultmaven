@@ -41,6 +41,9 @@ from faultmaven.infrastructure.persistence.models import (
     KnowledgeItemModel,
     UserModel,
 )
+from faultmaven.infrastructure.persistence.share_repository import (
+    PostgreSQLShareRepository,
+)
 from faultmaven.modules.knowledge.domain.models.knowledge_item import (
     KnowledgeItem,
     KnowledgeItemType,
@@ -98,7 +101,7 @@ def _service(factory, store, *, before=None, then=None):
     service._vector_store = store
     calls: list[str] = []
 
-    async def index(document, prechunked=None, enterprise_id=None):
+    async def index(document, prechunked=None, enterprise_id=None, generation=None):
         writer = "repair" if calls else "this"
         calls.append(writer)
         if writer == "this" and before:
@@ -134,7 +137,7 @@ async def _visible(factory) -> dict[str, bool]:
             "by_id": await repo.get_visible_by_id(DOC_ID, **who) is not None,
             "ids": DOC_ID in await repo.visible_item_ids([DOC_ID], **who),
             # Whether a KB door serves its chunks (#2397).
-            "admitted": DOC_ID in await repo.admitted_item_ids([DOC_ID]),
+            "admitted": DOC_ID in await repo.admitted_generations([DOC_ID]),
         }
 
 
@@ -211,8 +214,9 @@ async def test_a_pack_row_is_complete_from_its_insert_and_issues_no_update(
     session_factory,
 ):
     """Under ``kb_seed`` the maintenance role may not UPDATE ``knowledge_items``
-    (``role_may_update=False``): a pack ingest inserts its row complete, with
-    its share, and issues no UPDATE. A pin: ``main`` issues none either."""
+    (``role_may_update=False``): a pack ingest writes its vectors before any
+    row exists (#2388), then inserts its row complete, with its share, and
+    issues no UPDATE."""
     statements: list[str] = []
     engine = session_factory.kw["bind"].sync_engine
 
@@ -229,7 +233,7 @@ async def test_a_pack_row_is_complete_from_its_insert_and_issues_no_update(
     service = _knowledge(session_factory)
     service._vector_store = store
 
-    async def index(document, prechunked=None, enterprise_id=None):
+    async def index(document, prechunked=None, enterprise_id=None, generation=None):
         store.index(document.document_id, "pack")
         await mid_ingest()
         return len(prechunked)
@@ -260,7 +264,7 @@ async def test_a_pack_row_is_complete_from_its_insert_and_issues_no_update(
         event.remove(engine, "before_cursor_execute", record)
 
     assert outcome == "ingested"
-    assert seen["complete"] is True
+    assert seen["complete"] is None, "a row existed while the vectors were written"
     assert await _complete(session_factory, "kb_aaaaaaaaaaaa") is True
     assert await _rows(session_factory) == ONE_TEAM_ITEM
     assert [s for s in statements if s.startswith("UPDATE")] == []
@@ -396,7 +400,7 @@ async def test_a_flip_that_matches_no_row_raises_into_the_cleanup(session_factor
 
     assert await _rows(session_factory) == NOTHING
     assert sorted(store.chunks) == THIS_CHUNKS
-    assert await service.admitted_document_ids([DOC_ID]) == set()
+    assert await service.admitted_generations([DOC_ID]) == {}
 
 
 async def test_an_incomplete_row_is_read_and_deleted_but_never_edited_or_reindexed(
@@ -551,9 +555,9 @@ async def test_a_naive_clock_is_read_as_utc_as_the_stamp_guard_reads_it(
 
 
 # ---------------------------------------------------------------------------
-# The pack path's cleanup (``shipped=True``): its row is complete from the
-# INSERT and its share precedes its vectors, and a failure still runs
-# ``_delete_knowledge_item_row``.
+# The pack path (``shipped=True``): its vectors first, then one transaction
+# that inserts its row complete with its share (#2388). A failure writes no
+# row, and its chunks stay unadmitted.
 # ---------------------------------------------------------------------------
 
 
@@ -570,23 +574,32 @@ async def _ingest_shipped(service):
     )
 
 
-async def test_a_pack_ingest_whose_share_fails_leaves_nothing(session_factory):
+async def test_a_pack_ingest_whose_share_fails_leaves_no_row(
+    session_factory, monkeypatch
+):
+    """The share is written in the row's transaction, so its failure rolls the
+    INSERT back: no row, no share, and the chunks unadmitted."""
     store = _Index()
     service = _service(session_factory, store)
-    service._share_repo.share = AsyncMock(side_effect=RuntimeError("share failed"))
+    monkeypatch.setattr(
+        PostgreSQLShareRepository,
+        "share",
+        AsyncMock(side_effect=RuntimeError("share failed")),
+    )
 
     with pytest.raises(RuntimeError, match="share failed"):
         await _ingest_shipped(service)
 
     assert await _rows(session_factory) == NOTHING
-    assert store.chunks == {}
+    assert sorted(store.chunks) == THIS_CHUNKS
+    assert await service.admitted_generations([DOC_ID]) == {}
 
 
 async def test_a_pack_ingest_whose_vectors_fail_leaves_no_admitted_chunk(
     session_factory,
 ):
-    """The row goes and the chunks the store wrote stay, unadmitted (#2397),
-    for the next pack-loading bootstrap to collect."""
+    """No row is written and the chunks the store wrote stay, unadmitted
+    (#2397), for the next pack-loading bootstrap to collect."""
     store = _Index()
 
     async def the_store_fails_after_the_write():
@@ -599,19 +612,15 @@ async def test_a_pack_ingest_whose_vectors_fail_leaves_no_admitted_chunk(
 
     assert await _rows(session_factory) == NOTHING
     assert sorted(store.chunks) == THIS_CHUNKS
-    assert await service.admitted_document_ids([DOC_ID]) == set()
+    assert await service.admitted_generations([DOC_ID]) == {}
 
 
 @pytest.mark.parametrize("peer", ["live", "gone"])
-async def test_a_pack_cleanup_spares_a_live_peer_and_clears_when_none_stands(
-    session_factory, peer
-):
+async def test_a_failed_pack_ingest_leaves_a_live_peer_whole(session_factory, peer):
     """This pack ingest's store raised after writing its chunks, once the id's
-    row was deleted (``gone``) or deleted and re-created by a ``kb_init`` peer
-    with another ``created_at``, its share and its chunks (``live``).
-    ``live``: ``standing`` is true, and the peer's row, share and chunks
-    stay. ``gone``: no row stands, and this ingest's share goes; its chunks
-    stay under an id no row admits (#2397)."""
+    row was deleted (``gone``) or deleted and re-created by a peer with its
+    share and its chunks (``live``). It wrote no row, so the peer's row, share
+    and chunks stay; its own chunks stay under an id no row admits (#2397)."""
     store = _Index()
 
     async def a_peer_then_the_store_fails():
@@ -630,11 +639,11 @@ async def test_a_pack_cleanup_spares_a_live_peer_and_clears_when_none_stands(
         (created_at,) = await _created_at(session_factory)
         assert created_at.replace(tzinfo=None) == PEER_CREATED_AT.replace(tzinfo=None)
         assert await _rows(session_factory) == ONE_TEAM_ITEM
-        assert sorted(store.chunks) == ["peer-0", "peer-1", "peer-2"]
+        assert sorted(store.chunks) == ["peer-0", "peer-1", "peer-2", *THIS_CHUNKS]
     else:
         assert await _rows(session_factory) == NOTHING
         assert sorted(store.chunks) == THIS_CHUNKS
-        assert await service.admitted_document_ids([DOC_ID]) == set()
+        assert await service.admitted_generations([DOC_ID]) == {}
 
 
 # ---------------------------------------------------------------------------

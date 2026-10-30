@@ -26,11 +26,12 @@ from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
     KnowledgeVectorStore,
     _tokenize,
 )
-from tests.utils import admit_every_parent
+from tests.utils import TEST_GENERATION, admit_every_parent
 
 
 def _hit(cid, score, content="", **meta):
     meta.setdefault("scope", "global")
+    meta.setdefault("vector_generation", TEST_GENERATION)
     return {
         "id": cid,
         "content": content or f"content {cid}",

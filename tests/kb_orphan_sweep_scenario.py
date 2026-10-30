@@ -39,6 +39,9 @@ E2 = "e2000000-0000-0000-0000-00000000e002"
 ENTERPRISES = (ST, E1, E2)
 COLLECTION = "faultmaven_kb"
 DIM = 8
+#: Every row's ``vector_generation``, and the one its chunks carry (#2388): so
+#: the generation sweep a bootstrap runs finds nothing superseded here.
+GENERATION = "5ce9a710" * 4
 
 
 @dataclass(frozen=True)
@@ -52,7 +55,7 @@ class Doc:
     chunks: int = 2
 
     def chunk_ids(self) -> list[str]:
-        return [f"{self.item_id}_chunk_{n}" for n in range(self.chunks)]
+        return [f"{self.item_id}_chunk_{n}_{GENERATION}" for n in range(self.chunks)]
 
 
 ST_LIVE_GLOBAL = Doc("5a000000-0000-4000-8000-0000000000a1", ST, ST, scope="global")
@@ -146,10 +149,10 @@ async def insert_rows(conn: Any, docs: Iterable[Doc]) -> None:
         await conn.execute(
             text(
                 "INSERT INTO knowledge_items (item_id, enterprise_id, scope, "
-                "title, content, item_type, metadata) "
-                "VALUES (:i, :e, :s, 't', 'body', 'runbook', '{}')"
+                "title, content, item_type, metadata, vector_generation) "
+                "VALUES (:i, :e, :s, 't', 'body', 'runbook', '{}', :g)"
             ),
-            {"i": doc.item_id, "e": doc.row, "s": doc.scope},
+            {"i": doc.item_id, "e": doc.row, "s": doc.scope, "g": GENERATION},
         )
 
 

@@ -217,8 +217,9 @@ async def db(tmp_path, monkeypatch):
             await conn.execute(
                 text(
                     "INSERT INTO knowledge_items "
-                    "(item_id, enterprise_id, title, content, item_type, scope) "
-                    "VALUES (:i, :e, 'runbook', 'body', 'runbook', 'personal')"
+                    "(item_id, enterprise_id, title, content, item_type, scope, "
+                    "vector_generation) VALUES (:i, :e, 'runbook', 'body', "
+                    "'runbook', 'personal', 'gen-test')"
                 ),
                 {"i": item, "e": ent},
             )

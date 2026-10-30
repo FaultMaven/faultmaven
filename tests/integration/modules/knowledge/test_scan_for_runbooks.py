@@ -38,6 +38,9 @@ from faultmaven.infrastructure.persistence.models import (
     OrganizationModel,
     UploadedFileModel,
 )
+from faultmaven.modules.knowledge.domain.models.knowledge_item import (
+    mint_vector_generation,
+)
 from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
     ConversionService,
 )
@@ -442,6 +445,7 @@ class TestScanSkipsBootstrapIngestedRunbooks:
                     title=runbook_id,
                     content="published by bootstrap",
                     item_type="runbook",
+                    vector_generation=mint_vector_generation(),
                 )
             )
             await session.commit()

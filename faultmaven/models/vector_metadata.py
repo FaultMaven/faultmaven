@@ -72,14 +72,20 @@ class VectorMetadata(BaseModel):
     chunk_index: Optional[int] = None
     total_chunks: Optional[int] = None
     parent_document_id: Optional[str] = None
+    # The ``vector_generation`` of the row the chunk was written for (#2388),
+    # also the last part of its id: KB admission serves a chunk only while its
+    # row carries this value. ``indexed_at`` is when the indexer wrote it
+    # (epoch seconds), the age floor every collector reads.
+    vector_generation: Optional[str] = None
+    indexed_at: Optional[int] = None
     # A ``cause_letters`` stamp (fm#1108) rode here for the KB cause seeder's
     # join and went with it (fm#1295). This allowlist is enforced on WRITE
     # only — reads hand back raw chunk metadata — so a chunk written before
     # the removal still carries the key, and nothing reads it. That residue is
     # inert rather than scrubbed: every ``reject_undeclared_keys`` site guards
     # metadata built fresh by ``to_chroma_metadata()``, none round-trips stored
-    # metadata, and re-ingesting a document deletes its chunks and rewrites
-    # them. A boot-time scrub would need an unfiltered metadata read of every
+    # metadata, and a chunk that old carries no generation, so no KB door
+    # admits it and the generation sweep collects it (#2388). A boot-time scrub would need an unfiltered metadata read of every
     # tenant's chunks, which ``test_kb_tenant_isolation_probe`` forbids.
 
     @classmethod
@@ -164,6 +170,7 @@ class VectorMetadata(BaseModel):
         "severity",
         "symptom_class",
         "parent_document_id",
+        "vector_generation",
         mode="before",
     )
     @classmethod
@@ -210,4 +217,8 @@ class VectorMetadata(BaseModel):
             data["total_chunks"] = self.total_chunks
         if self.parent_document_id:
             data["parent_document_id"] = self.parent_document_id
+        if self.vector_generation:
+            data["vector_generation"] = self.vector_generation
+        if self.indexed_at is not None:
+            data["indexed_at"] = self.indexed_at
         return data

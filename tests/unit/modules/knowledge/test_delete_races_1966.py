@@ -13,7 +13,7 @@ The writer that loses such a race writes vectors under a row that is gone or
 unpublished. No writer deletes them in-process any more (#2397): no KB door
 admits a chunk whose row is not complete and published, so the outcome each
 test pins is that the document is not admitted
-(``KnowledgeService.admitted_document_ids``, the real query), whatever the
+(``KnowledgeService.admitted_generations``, the real query), whatever the
 store holds. The delete's hold (row change issued, not committed) is widened by
 gating its ``commit`` on an event, standing in for the commit round trip or
 another replica's timing. Built from the review round's probes on PR #1992.
@@ -161,7 +161,7 @@ async def _world(engine, dialect):
 
     svc._sanitizer.asanitize = _same
 
-    async def _index(document, prechunked=None, enterprise_id=None):
+    async def _index(document, prechunked=None, enterprise_id=None, generation=None):
         await asyncio.sleep(0.05)  # the embed
         store.parents[document.document_id] = 3
         return 3
@@ -190,7 +190,7 @@ async def _world(engine, dialect):
             return await DatabaseKnowledgeItemRepository(session).get_by_id(item_id)
 
     async def admitted(item_id):
-        return item_id in await svc.admitted_document_ids([item_id])
+        return item_id in await svc.admitted_generations([item_id])
 
     try:
         yield SimpleNamespace(
@@ -261,7 +261,9 @@ async def test_a_delete_during_the_repair_embed_leaves_nothing_admitted(
     await race.seed(item_id, scope, chunks=0)  # published, vectors missing
     entered, release = asyncio.Event(), asyncio.Event()
 
-    async def gated_index(document, prechunked=None, enterprise_id=None):
+    async def gated_index(
+        document, prechunked=None, enterprise_id=None, generation=None
+    ):
         entered.set()
         await release.wait()
         race.store.parents[document.document_id] = 3

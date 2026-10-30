@@ -78,7 +78,7 @@ Scope and ownership come from the joined `conversion_jobs` table (`scope`, `user
   2. **Authored** (UUID id) → hard delete the `knowledge_items` row, then its ChromaDB vectors, best effort (what a failure leaves is logged and never served; only the authored-orphan sweep, once an operator arms it, removes it)
 
 - **Search** (RAG during investigations)
-  1. `KnowledgeVectorStore.hybrid_search()` — two-stage: vector + keyword recall, then 4-signal reranker; a hit is kept only when its `knowledge_items` row is complete and published (`IKnowledgeService.admitted_document_ids`, #2397)
+  1. `KnowledgeVectorStore.hybrid_search()` — two-stage: vector + keyword recall, then 4-signal reranker; a hit is kept only when its `knowledge_items` row is complete and published and carries the hit's `vector_generation` (`IKnowledgeService.admitted_generations`, #2397, #2388)
   2. All queries use explicit BGE-M3 embeddings (`query_embeddings`), not ChromaDB defaults
 
 ### Configuration

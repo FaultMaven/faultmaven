@@ -454,8 +454,8 @@ class TestIncompleteIngest:
             done.item_id
         }
         # Nor does KB retrieval admit its chunks (#2397).
-        assert await repo.admitted_item_ids([done.item_id, pending.item_id]) == {
-            done.item_id
+        assert await repo.admitted_generations([done.item_id, pending.item_id]) == {
+            done.item_id: done.vector_generation
         }
         for found in (
             await repo.search_by_tags(enterprise, ["t"]),
@@ -546,20 +546,21 @@ class TestTargetedWrite:
     async def test_admitted_ids_are_the_complete_published_rows(
         self, deferring_repository
     ):
-        """``admitted_item_ids``, the KB retrieval admission rule (#2397): a
-        complete, published row is admitted; an unpublished one and an absent
-        id are not; no id asks nothing. SQLite has no roles, so
-        ``may_update`` is always true."""
+        """``admitted_generations``, the KB retrieval admission rule (#2397): a
+        complete, published row is admitted with the generation it carries
+        (#2388); an unpublished one and an absent id are not; no id asks
+        nothing. SQLite has no roles, so ``may_update`` is always true."""
         repo = deferring_repository
         live = await repo.create(create_sample_item())
         retired = await repo.create(create_sample_item())
         await repo.update_fields(retired.item_id, {"is_published": False})
 
         assert await repo.may_update() is True
-        assert await repo.admitted_item_ids(
+        assert await repo.admitted_generations(
             [live.item_id, retired.item_id, "ki_absent", ""]
-        ) == {live.item_id}
-        assert await repo.admitted_item_ids([]) == set()
+        ) == {live.item_id: live.vector_generation}
+        assert len(live.vector_generation) == 32
+        assert await repo.admitted_generations([]) == {}
 
     @pytest.mark.asyncio
     async def test_an_unknown_field_is_refused(self, deferring_repository):

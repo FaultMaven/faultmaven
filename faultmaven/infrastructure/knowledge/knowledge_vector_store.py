@@ -244,7 +244,8 @@ def _tokenize(text: str) -> List[str]:
 
 
 def _group_chunk_ids_by_parent(chunk_ids: Iterable[Any]) -> Dict[str, List[str]]:
-    """Group chunk ids by the parent their id names (``{item_id}_chunk_{N}``)."""
+    """Group chunk ids by the parent their id names: the part before its last
+    ``_chunk_`` (``{item_id}_chunk_{N}_{generation}``, #2388)."""
     by_parent: Dict[str, List[str]] = {}
     for chunk_id in chunk_ids:
         if isinstance(chunk_id, str):
@@ -1590,10 +1591,9 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
         """Delete all chunks of a parent document from a KB collection.
 
         The KB write path (``add_documents``) tags every chunk with
-        ``metadata.parent_document_id``; this is its inverse — the delete half of
-        the document lifecycle. Without it the re-ingest/prune paths in
-        ``bootstrap.kb_init`` could only drop the SQL row, leaving the vectors
-        orphaned in ChromaDB (the index drift the reconcile pass cleans up).
+        ``metadata.parent_document_id``; this is its inverse, for an id whose
+        row is gone or incomplete. No writer calls it to replace a document's
+        chunks (#2388): a chunk is served only under its row's generation.
 
         ``retries`` is the number of further attempts after a failed one, with
         backoff sleeps between them. ``KnowledgeService.delete_document`` calls
@@ -1654,7 +1654,7 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
         the values are the chunk ids observed for each, so the caller deletes
         exactly what it saw (#2017).
 
-        Derives the parent from each chunk **id** (``{item_id}_chunk_{N}``) rather
+        Derives the parent from each chunk **id** (``{item_id}_chunk_{N}_{gen}``) rather
         than pulling every chunk's full metadata payload — ``include=[]`` returns
         only ids, so the per-boot cost scales with id count, not metadata size, and
         a chunk missing the ``parent_document_id`` metadata key is still resolved
@@ -1694,7 +1694,7 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
         crosses a tenant boundary. Never unfiltered: a missing ``where`` is
         refused rather than read as "every chunk".
 
-        The parent is derived from the id (``{item_id}_chunk_{N}``) for the
+        The parent is derived from the id (``{item_id}_chunk_{N}_{gen}``) for the
         same reason :meth:`list_all_chunk_ids_by_parent` derives it: a chunk
         missing the ``parent_document_id`` key still resolves. The chunk ids
         are kept so the caller deletes exactly what it observed.

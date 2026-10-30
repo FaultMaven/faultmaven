@@ -88,6 +88,7 @@ from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     KnowledgeService,
 )
 from tests.model_content import disabled_redaction
+from tests.utils import TEST_GENERATION
 
 pytestmark = [pytest.mark.integration, pytest.mark.security]
 
@@ -159,11 +160,12 @@ def _chunk(parent: str) -> Dict[str, Any]:
         "total_chunks": 1,
         "domain": "database",
         "service": "postgres",
+        "vector_generation": TEST_GENERATION,
     }
     if owner is not None:
         metadata["owner_id"] = owner
     return {
-        "id": f"{parent}_chunk_0",
+        "id": f"{parent}_chunk_0_{TEST_GENERATION}",
         "content": (
             f"# Runbook {parent}\nMARKER::{parent}::\n"
             "Connection pool exhausted; queries time out under load."
@@ -260,6 +262,7 @@ async def world():
                 scope=scope,
                 owner_id=owner,
                 is_published=True,
+                vector_generation=TEST_GENERATION,
             )
         )
     await session.commit()
@@ -396,7 +399,7 @@ async def _pull(kb_client, world: _World, case: Case) -> Set[str]:
     router = _CapturingRouter()
     adapter = KBToolAdapter(
         AnswerFromKB(vector_store=KnowledgeVectorStore(kb_client), llm_router=router),
-        admit=world.knowledge.admitted_document_ids,
+        admit=world.knowledge.admitted_generations,
     )
     with patch.object(kvs_module, "embed_query_or_raise", new=_fixed_embedding):
         result = await adapter.execute_with_context(
@@ -411,7 +414,7 @@ async def _dedup(kb_client, world: _World, case: Case) -> Set[str]:
     3 matches, so the scope it searched is recorded and evaluated by the same
     ChromaDB at full depth; what it returned must sit inside that set."""
     kb = RunbookKnowledgeBase.over_kb_collection(
-        kb_client, admit=world.knowledge.admitted_document_ids
+        kb_client, admit=world.knowledge.admitted_generations
     )
     returned: Set[str] = set()
     scopes: List[Dict[str, Any]] = []
@@ -442,7 +445,7 @@ async def _dedup(kb_client, world: _World, case: Case) -> Set[str]:
             "connection pool exhausted",
             k=25,
             where=scopes[0],
-            admit=world.knowledge.admitted_document_ids,
+            admit=world.knowledge.admitted_generations,
         )
     searched = {hit["metadata"]["parent_document_id"] for hit in hits}
     assert returned and returned <= searched, (returned, searched)

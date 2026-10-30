@@ -1182,8 +1182,7 @@ class CaseService(CaseDriverMixin, ICaseService):
     ) -> None:
         """Record a team share for a case (idempotent) — the write counterpart of
         the U9 read allowlist and the source of truth for team visibility
-        (ADR-013 §D4), mirroring the KB write path
-        (``KnowledgeService._create_team_share``).
+        (ADR-013 §D4), mirroring the KB write path's team share.
 
         No-ops when no share repository is wired. Cross-ENTERPRISE sharing is
         structurally impossible: the share carries the case's own

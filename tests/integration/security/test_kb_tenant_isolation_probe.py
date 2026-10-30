@@ -174,7 +174,7 @@ from faultmaven.modules.knowledge.domain.services.knowledge_service import (
 )
 from faultmaven.providers.tenancy.factory import BUILTIN_MULTI, BUILTIN_SINGLE
 from tests.model_content import disabled_redaction
-from tests.utils import admit_every_parent
+from tests.utils import TEST_GENERATION, admit_every_parent
 
 pytestmark = [pytest.mark.integration, pytest.mark.security]
 
@@ -273,8 +273,8 @@ def _chunk(
 
     Mirrors ``KnowledgeService._index_document_in_vector_store``: the immutable
     scope floor (never ``team``), ``owner_id``, the owning tenant's
-    ``enterprise_id`` (#1168), ``parent_document_id``, chunk tracking, and the
-    frontmatter-derived RAG fields. ``add_documents`` refuses any key
+    ``enterprise_id`` (#1168), ``parent_document_id``, chunk tracking, the
+    ``vector_generation`` (#2388), and the frontmatter-derived RAG fields. ``add_documents`` refuses any key
     ``VectorMetadata`` does not declare, and a KB chunk with no
     ``enterprise_id``, so a dict that drifts from the production stamp fails
     here rather than seeding a row production could never write.
@@ -289,6 +289,7 @@ def _chunk(
         "total_chunks": 1,
         "domain": domain,
         "service": service,
+        "vector_generation": TEST_GENERATION,
     }
     if owner_id is not None:
         metadata["owner_id"] = owner_id
@@ -952,6 +953,7 @@ async def test_what_each_stated_tier_means_to_a_tenant_that_did_not_author_it(
                     if stated_tier == "global"
                     else ENTERPRISE_A
                 ),
+                generation="1f" * 16,
             )
             == 1
         )

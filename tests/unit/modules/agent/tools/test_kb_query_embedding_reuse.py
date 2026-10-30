@@ -17,7 +17,7 @@ import pytest
 from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
     KnowledgeVectorStore,
 )
-from tests.utils import admit_every_parent
+from tests.utils import TEST_GENERATION, admit_every_parent
 
 pytestmark = [pytest.mark.unit]
 
@@ -30,7 +30,12 @@ def _collection_with_hits(n: int = 5) -> MagicMock:
         return_value={
             "ids": [[f"id-{i}" for i in range(n)]],
             "documents": [[f"content-{i}" for i in range(n)]],
-            "metadatas": [[{"title": f"Runbook {i}"} for i in range(n)]],
+            "metadatas": [
+                [
+                    {"title": f"Runbook {i}", "vector_generation": TEST_GENERATION}
+                    for i in range(n)
+                ]
+            ],
             "distances": [[0.30 + i * 0.01 for i in range(n)]],
         }
     )

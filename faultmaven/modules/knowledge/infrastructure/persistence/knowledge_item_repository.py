@@ -96,6 +96,8 @@ _TARGETED_FIELDS = {
     "tags": lambda v: ("tags", list(v) if v else None),
     "item_type": lambda v: ("item_type", KnowledgeItemType(v).value),
     "is_published": lambda v: ("is_published", bool(v)),
+    # Written with ``content`` by a content update (#2388), never alone.
+    "vector_generation": lambda v: ("vector_generation", str(v)),
     "metadata": lambda v: ("knowledge_metadata", json.dumps(v) if v else "{}"),
     "embedding_vector": lambda v: ("embedding_vector", json.dumps(v) if v else None),
     "embedding_model": lambda v: ("embedding_model", v),
@@ -135,11 +137,17 @@ class KnowledgeItemRepository(ABC):
     # =========================================================================
 
     @abstractmethod
-    async def create(self, item: KnowledgeItem) -> KnowledgeItem:
+    async def create(
+        self, item: KnowledgeItem, *, commit: bool = True
+    ) -> KnowledgeItem:
         """Create a new knowledge item.
 
         Args:
             item: Knowledge item to create
+            commit: ``False`` leaves the INSERT uncommitted in the open
+                transaction (issued, so a duplicate id raises here), for
+                :meth:`commit` or :meth:`rollback` to settle. A duplicate rolls
+                the whole transaction back, writes issued before it included.
 
         Returns:
             Created knowledge item with timestamps
@@ -213,6 +221,7 @@ class KnowledgeItemRepository(ABC):
         commit: bool = True,
         created_at: Optional[datetime] = None,
         only_incomplete: bool = False,
+        vector_generation: Optional[str] = None,
     ) -> bool:
         """Delete knowledge item by ID.
 
@@ -227,11 +236,15 @@ class KnowledgeItemRepository(ABC):
             only_incomplete: Delete the row only while its ``ingest_complete``
                 is false (#2394), so a sweep never removes a row whose ingest
                 completed after the sweep read it.
+            vector_generation: Delete the row only while it carries this
+                generation (#2388), so a pack replacement never removes a row
+                a peer replaced first.
 
         Returns:
             True if a row matched (deleted, or deleted pending the commit),
-            False if none did: absent, another ``created_at``, complete under
-            ``only_incomplete``, or refused by an RLS write policy.
+            False if none did: absent, another ``created_at`` or generation,
+            complete under ``only_incomplete``, or refused by an RLS write
+            policy.
         """
         pass
 
@@ -328,7 +341,7 @@ class KnowledgeItemRepository(ABC):
         a built-in global runbook, unpublish IS the delete semantics
         (``KnowledgeService.delete_document`` keeps the row and clears
         ``is_published``, which retrieval honours through
-        :meth:`admitted_item_ids`), so serving an unpublished row by id would
+        :meth:`admitted_generations`), so serving an unpublished row by id would
         hand deleted content to any authenticated caller. The owner exemption
         keeps an author's own unpublished draft reachable by id.
         """
@@ -354,11 +367,13 @@ class KnowledgeItemRepository(ABC):
         pass
 
     @abstractmethod
-    async def admitted_item_ids(self, item_ids: Sequence[str]) -> Set[str]:
-        """The subset of ``item_ids`` whose row is complete and published (#2397).
+    async def admitted_generations(self, item_ids: Sequence[str]) -> Dict[str, str]:
+        """Of ``item_ids``, each whose row is complete and published (#2397),
+        mapped to the ``vector_generation`` that row carries (#2388).
 
         The KB retrieval admission rule, in ONE query: a chunk is served only
-        when its parent's row is in this set. It has no caller identity —
+        when its parent is a key here and the chunk carries that key's
+        generation. It has no caller identity —
         which rows a caller may read is the vector filter's decision, and
         under PostgreSQL RLS the session's own read policy can only narrow the
         answer. Absent ids are left out. Raises
@@ -454,8 +469,11 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
     # CRUD Operations
     # =========================================================================
 
-    async def create(self, item: KnowledgeItem) -> KnowledgeItem:
-        """Create new knowledge item record in the database."""
+    async def create(
+        self, item: KnowledgeItem, *, commit: bool = True
+    ) -> KnowledgeItem:
+        """Create new knowledge item record in the database (``commit``: see
+        the base class)."""
         try:
             # Convert domain model to ORM model. The TagsArray TypeDecorator
             # on `tags` handles cross-dialect serialization (list[str] →
@@ -493,6 +511,7 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
                 # Named on every INSERT: the column's server default is true, so
                 # an authored row that left it out would be complete (#2394).
                 ingest_complete=item.ingest_complete,
+                vector_generation=item.vector_generation,
                 # Verification metadata. Coerce IntEnum → int for the column;
                 # the IntEnum compares equal to its value but SQLAlchemy
                 # serializes the int form more predictably across dialects.
@@ -506,6 +525,9 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
             )
 
             self.db.add(item_model)
+            if not commit:
+                await self.db.flush()
+                return item
             await self.db.commit()
             await self.db.refresh(item_model)
 
@@ -590,6 +612,7 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
         commit: bool = True,
         created_at: Optional[datetime] = None,
         only_incomplete: bool = False,
+        vector_generation: Optional[str] = None,
     ) -> bool:
         """Delete knowledge item by ID (see the base class for the keywords)."""
         try:
@@ -600,6 +623,10 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
                 stmt = stmt.where(KnowledgeItemModel.created_at == _as_utc(created_at))
             if only_incomplete:
                 stmt = stmt.where(KnowledgeItemModel.ingest_complete.is_(False))
+            if vector_generation is not None:
+                stmt = stmt.where(
+                    KnowledgeItemModel.vector_generation == vector_generation
+                )
             result = await self.db.execute(stmt)
             if commit:
                 await self.db.commit()
@@ -835,13 +862,15 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
                 f"Failed to resolve visible knowledge item ids: {e}"
             ) from e
 
-    async def admitted_item_ids(self, item_ids: Sequence[str]) -> Set[str]:
-        """One SELECT of the ids whose row is complete and published."""
+    async def admitted_generations(self, item_ids: Sequence[str]) -> Dict[str, str]:
+        """One SELECT of each complete, published row's id and generation."""
         ids = sorted({i for i in item_ids if i})
         if not ids:
-            return set()
+            return {}
         try:
-            stmt = select(KnowledgeItemModel.item_id).where(
+            stmt = select(
+                KnowledgeItemModel.item_id, KnowledgeItemModel.vector_generation
+            ).where(
                 and_(
                     KnowledgeItemModel.item_id.in_(ids),
                     KnowledgeItemModel.ingest_complete == True,  # noqa: E712
@@ -849,7 +878,7 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
                 )
             )
             result = await self.db.execute(stmt)
-            return set(result.scalars().all())
+            return {item_id: generation for item_id, generation in result.all()}
 
         except Exception as e:
             logger.error(f"Failed to resolve admitted knowledge item ids: {e}")
@@ -1032,6 +1061,7 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
             last_retrieved_at=self._ensure_tz_aware(model.last_retrieved_at),
             is_published=model.is_published,
             ingest_complete=model.ingest_complete,
+            vector_generation=model.vector_generation,
             verification_level=model.verification_level,
             verification_reason=model.verification_reason,
             verified_by=model.verified_by,
@@ -1096,13 +1126,21 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
     # CRUD Operations
     # =========================================================================
 
-    async def create(self, item: KnowledgeItem) -> KnowledgeItem:
-        """Create new knowledge item record in memory."""
-        if item.item_id in self._items:
+    async def create(
+        self, item: KnowledgeItem, *, commit: bool = True
+    ) -> KnowledgeItem:
+        """Create new knowledge item record in memory (``commit``: see the
+        base class)."""
+        if self._exists(item.item_id):
+            # As a duplicate key does on a database: the transaction rolls back.
+            self._pending.clear()
             raise ValueError(f"Knowledge item {item.item_id} already exists")
 
         # Store a deep copy to prevent mutation
-        self._items[item.item_id] = deepcopy(item)
+        if commit:
+            self._items[item.item_id] = deepcopy(item)
+        else:
+            self._pending[item.item_id] = deepcopy(item)
         return deepcopy(item)
 
     async def get_by_id(self, item_id: str) -> Optional[KnowledgeItem]:
@@ -1145,6 +1183,7 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
         commit: bool = True,
         created_at: Optional[datetime] = None,
         only_incomplete: bool = False,
+        vector_generation: Optional[str] = None,
     ) -> bool:
         """Delete knowledge item by ID (see the base class for the keywords)."""
         if not self._exists(item_id):
@@ -1155,6 +1194,10 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
         ):
             return False
         if only_incomplete and current.ingest_complete:
+            return False
+        if vector_generation is not None and (
+            current.vector_generation != vector_generation
+        ):
             return False
         if commit:
             del self._items[item_id]
@@ -1278,10 +1321,10 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
                 visible.add(item_id)
         return visible
 
-    async def admitted_item_ids(self, item_ids: Sequence[str]) -> Set[str]:
-        """The ids whose committed row is complete and published."""
+    async def admitted_generations(self, item_ids: Sequence[str]) -> Dict[str, str]:
+        """Each committed complete, published row's id and generation."""
         return {
-            item_id
+            item_id: item.vector_generation
             for item_id in {i for i in item_ids if i}
             if (item := self._items.get(item_id)) is not None
             and item.ingest_complete

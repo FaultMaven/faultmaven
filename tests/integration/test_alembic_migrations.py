@@ -17,6 +17,7 @@ Usage:
 
 import json
 import os
+import re
 import shlex
 import shutil
 import sqlite3
@@ -43,8 +44,8 @@ TEST_DB = os.path.join(os.environ[TEST_DATA_ROOT_ENV], "test_migration.db")
 # the 001-053 chain) plus additive revisions on top of it, so the seed
 # assertions below reverse the whole schema with "downgrade base" and each
 # additive revision is stepped over on its own.
-#: 021_knowledge_item_ingest_complete
-HEAD_REVISION = "d0eb318ce3e0"  # pragma: allowlist secret
+#: 022_knowledge_item_vector_generation
+HEAD_REVISION = "03f93180f630"  # pragma: allowlist secret
 #: The baseline, which every additive revision parents onto.
 BASELINE_REVISION = "a1e0c17bd001"  # 001_enterprise_baseline
 #: The first additive revision.
@@ -103,6 +104,9 @@ ORG_PERMISSIONS_MANAGEMENT_ONLY_REVISION = "596f06c52909"  # pragma: allowlist s
 #: ``021_knowledge_item_ingest_complete``: ``knowledge_items.ingest_complete``,
 #: false while an authored ingest has not written its vectors (#2394).
 INGEST_COMPLETE_REVISION = "d0eb318ce3e0"  # pragma: allowlist secret
+#: ``022_knowledge_item_vector_generation``: ``knowledge_items.vector_generation``,
+#: the generation a row's served chunks carry (#2388).
+VECTOR_GENERATION_REVISION = "03f93180f630"  # pragma: allowlist secret
 #: The tables 002_llm_usage_ledger adds (#640).
 LLM_USAGE_TABLES = ["llm_turn_spend", "llm_usage_daily"]
 
@@ -3715,6 +3719,114 @@ class TestKnowledgeItemIngestCompleteRevision:
         )
         assert down.returncode == 0, down.stderr
         assert "ALTER TABLE knowledge_items DROP COLUMN ingest_complete;" in down.stdout
+
+
+class TestKnowledgeItemVectorGenerationRevision:
+    """022 adds ``knowledge_items.vector_generation`` (#2388), the owner's
+    ruling (c): every existing row is given its own random 32-hex generation,
+    no chunk carries any of them, and the column is then NOT NULL with no
+    default; the downgrade removes the column and nothing else."""
+
+    @staticmethod
+    def _columns() -> list:
+        return query_rows(TEST_DB, 'PRAGMA table_info("knowledge_items")')
+
+    @staticmethod
+    def _schema() -> list:
+        """Every index, constraint and the table body but the new column."""
+        return query_rows(
+            TEST_DB,
+            "SELECT type, name, sql FROM sqlite_master "
+            "WHERE tbl_name = 'knowledge_items' ORDER BY type, name",
+        )
+
+    def test_upgrade_fills_each_row_and_downgrade_removes_only_it(
+        self, clean_database, database_url
+    ):
+        prepare_database(INGEST_COMPLETE_REVISION, database_url)
+        conn = sqlite3.connect(TEST_DB)
+        try:
+            enterprise = conn.execute(
+                "SELECT enterprise_id FROM enterprises LIMIT 1"
+            ).fetchone()[0]
+            for item_id in ("kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb"):
+                conn.execute(
+                    "INSERT INTO knowledge_items (item_id, enterprise_id, title, "
+                    "content, item_type) VALUES (?, ?, 't', 'c', 'runbook')",
+                    (item_id, enterprise),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+        parent, parent_schema = self._columns(), self._schema()
+        rows = query_rows(TEST_DB, "SELECT * FROM knowledge_items ORDER BY item_id")
+
+        result = run_alembic(f"upgrade {VECTOR_GENERATION_REVISION}", database_url)
+        assert result.returncode == 0, result.stderr
+        added = [c for c in self._columns() if c[1] not in {p[1] for p in parent}]
+        assert [c[1:] for c in added] == [
+            ("vector_generation", "VARCHAR(32)", 1, None, 0)
+        ]
+        generations = [
+            g
+            for (g,) in query_rows(
+                TEST_DB, "SELECT vector_generation FROM knowledge_items"
+            )
+        ]
+        assert len(set(generations)) == 2
+        assert all(re.fullmatch(r"[0-9a-f]{32}", g) for g in generations)
+        # The rebuild kept every index and constraint (the body differs by the
+        # column).
+        assert [r[:2] for r in self._schema()] == [r[:2] for r in parent_schema]
+        with sqlite3.connect(TEST_DB) as conn, pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO knowledge_items (item_id, enterprise_id, title, "
+                "content, item_type) VALUES ('kb_cccccccccccc', ?, 't', 'c', "
+                "'runbook')",
+                (enterprise,),
+            )
+
+        result = run_alembic(f"downgrade {INGEST_COMPLETE_REVISION}", database_url)
+        assert result.returncode == 0, result.stderr
+        assert self._columns() == parent
+        assert (
+            query_rows(TEST_DB, "SELECT * FROM knowledge_items ORDER BY item_id")
+            == rows
+        )
+
+    def test_the_postgresql_script_fills_under_row_security_off_then_sets_not_null(
+        self,
+    ):
+        pg = "postgresql://offline@localhost/offline"
+        up = run_alembic(
+            f"upgrade {INGEST_COMPLETE_REVISION}:{VECTOR_GENERATION_REVISION} --sql",
+            pg,
+        )
+        assert up.returncode == 0, up.stderr
+        sql = up.stdout
+        add = sql.index(
+            "ALTER TABLE knowledge_items ADD COLUMN vector_generation VARCHAR(32);"
+        )
+        off = sql.index("SET LOCAL row_security = off;")
+        fill = sql.index(
+            "UPDATE knowledge_items SET vector_generation = "
+            "md5(random()::text || item_id);"
+        )
+        restored = sql.index("SET LOCAL row_security TO DEFAULT;")
+        not_null = sql.index(
+            "ALTER TABLE knowledge_items ALTER COLUMN vector_generation SET NOT NULL;"
+        )
+        assert add < off < fill < restored < not_null
+        assert "POLICY" not in sql and "ROW LEVEL SECURITY" not in sql
+
+        down = run_alembic(
+            f"downgrade {VECTOR_GENERATION_REVISION}:{INGEST_COMPLETE_REVISION} --sql",
+            pg,
+        )
+        assert down.returncode == 0, down.stderr
+        assert (
+            "ALTER TABLE knowledge_items DROP COLUMN vector_generation;" in down.stdout
+        )
 
 
 class TestRbacSeed:

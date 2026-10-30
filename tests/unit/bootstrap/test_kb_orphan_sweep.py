@@ -210,7 +210,7 @@ async def test_a_live_documents_misstamped_chunk_is_reported_and_kept(tmp_path):
     try:
         collection = world.client.get_or_create_collection(sc.COLLECTION)
         collection.update(
-            ids=[f"{mixed.item_id}_chunk_0"],
+            ids=[f"{mixed.item_id}_chunk_0_{sc.GENERATION}"],
             metadatas=[
                 {
                     "parent_document_id": mixed.item_id,
@@ -237,7 +237,7 @@ async def test_a_chunk_restamped_after_the_listing_is_not_deleted(world, monkeyp
     """The delete is the observed ids AND the stamp they were observed under.
     A chunk rewritten under another enterprise's stamp after the listing (its
     document re-indexed by its owner) no longer matches, and stays."""
-    restamped = f"{sc.E1_ORPHAN.item_id}_chunk_0"
+    restamped = f"{sc.E1_ORPHAN.item_id}_chunk_0_{sc.GENERATION}"
     real_read = kb_orphan_sweep.read_rows_if_complete
 
     async def read_then_restamp(factory):
@@ -260,7 +260,7 @@ async def test_a_chunk_restamped_after_the_listing_is_not_deleted(world, monkeyp
 
     present = world.present()
     assert restamped in present
-    assert f"{sc.E1_ORPHAN.item_id}_chunk_1" not in present
+    assert f"{sc.E1_ORPHAN.item_id}_chunk_1_{sc.GENERATION}" not in present
     assert result.enterprises[sc.E1].deleted == [sc.E1_ORPHAN.item_id]
 
 
@@ -528,7 +528,7 @@ def test_the_incomplete_sweep_bound_falls_back_to_the_settings_default(monkeypat
     a changed field default is the bound."""
     from datetime import timedelta
 
-    from faultmaven.bootstrap.kb_incomplete_sweep import MAX_AGE_FIELD, _resolve_max_age
+    from faultmaven.bootstrap.kb_incomplete_sweep import MAX_AGE_FIELD, resolve_max_age
     from faultmaven.config.settings import DatabaseSettings
 
     def unreadable():
@@ -536,7 +536,7 @@ def test_the_incomplete_sweep_bound_falls_back_to_the_settings_default(monkeypat
 
     monkeypatch.setattr("faultmaven.config.settings.get_settings", unreadable)
     monkeypatch.setattr(DatabaseSettings.model_fields[MAX_AGE_FIELD], "default", 7)
-    assert _resolve_max_age() == timedelta(hours=7)
+    assert resolve_max_age() == timedelta(hours=7)
 
 
 async def test_a_report_only_sweep_deletes_nothing_and_lists_what_it_would(world):
@@ -563,7 +563,7 @@ async def test_a_dry_runs_would_delete_set_is_what_the_armed_run_then_deletes(
         async with world.engine.begin() as conn:
             await sc.insert_enterprises(conn, [E3])
         world.client.get_or_create_collection(sc.COLLECTION).update(
-            ids=[f"{mixed.item_id}_chunk_0"],
+            ids=[f"{mixed.item_id}_chunk_0_{sc.GENERATION}"],
             metadatas=[
                 {
                     "parent_document_id": mixed.item_id,

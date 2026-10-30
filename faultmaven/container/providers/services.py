@@ -143,8 +143,9 @@ def create_runbook_dedup_kb(
     """Create the runbook-dedup reader, bound to the KB WRITER's collection.
 
     ``admit`` is the knowledge service's admission check
-    (``admitted_document_ids``): the reader serves a chunk only when its
-    parent has a complete, published row (#2397).
+    (``admitted_generations``): the reader serves a chunk only when its
+    parent has a complete, published row carrying its generation (#2397,
+    #2388).
 
     ``KnowledgeService`` writes through ``knowledge_vector_store`` and nothing
     else (see the knowledge-service wiring below). The dedup reader must land
@@ -267,7 +268,7 @@ def _create_investigation_tools(
     - reclassify_evidence: evidence reclassification (FAULTMAVEN_RECLASSIFY_ENABLED)
 
     The ``kb_qa`` adapter is built here, around ``container.kb_qa_tool``, with
-    ``knowledge_service.admitted_document_ids`` bound as its admission check
+    ``knowledge_service.admitted_generations`` bound as its admission check
     (#2397): the tool is built before the knowledge service exists, and this
     runs after it.
 
@@ -301,7 +302,7 @@ def _create_investigation_tools(
         registry.register(
             KBToolAdapter(
                 wrapped_tool=kb_qa_tool,
-                admit=knowledge_service.admitted_document_ids,
+                admit=knowledge_service.admitted_generations,
             )
         )
         tool_count += 1
@@ -1684,7 +1685,7 @@ def register_services(container: BaseDIContainer) -> None:
     runbook_kb = create_runbook_dedup_kb(
         knowledge_vector_store=getattr(container, "knowledge_vector_store", None),
         kb_chromadb_client=getattr(container, "kb_chromadb_client", None),
-        admit=knowledge_service.admitted_document_ids,
+        admit=knowledge_service.admitted_generations,
     )
     container.runbook_kb = runbook_kb
     if runbook_kb:

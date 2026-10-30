@@ -201,14 +201,21 @@ class PostgreSQLShareRepository(IShareRepository):
         rows = (await self.db.execute(stmt)).scalars().all()
         return list(rows)
 
-    async def delete_for_resource(self, resource_type: str, resource_id: str) -> int:
-        """Delete all shares of a resource (resource-delete cascade)."""
+    async def delete_for_resource(
+        self, resource_type: str, resource_id: str, *, commit: bool = True
+    ) -> int:
+        """Delete all shares of a resource (resource-delete cascade).
+
+        ``commit=False`` leaves the delete in the session's open transaction,
+        for the caller's commit (the KB pack row's replacement, #2388).
+        """
         stmt = delete(ResourceShareModel).where(
             ResourceShareModel.resource_type == resource_type,
             ResourceShareModel.resource_id == resource_id,
         )
         result = await self.db.execute(stmt)
-        await self.db.commit()
+        if commit:
+            await self.db.commit()
         return result.rowcount or 0
 
     async def delete_for_scope(self, scope_type: str, scope_id: str) -> int:

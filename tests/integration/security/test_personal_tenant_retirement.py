@@ -200,7 +200,8 @@ async def _seed_content(url: str, enterprise_id: str, tag: str) -> None:
     await _as_owner_write(
         url,
         "INSERT INTO knowledge_items (item_id, enterprise_id, title, content, "
-        "item_type, scope) VALUES (:i, :e, 'runbook', 'body', 'runbook', 'personal')",
+        "item_type, scope, vector_generation) VALUES (:i, :e, 'runbook', 'body', "
+        "'runbook', 'personal', 'gen-test')",
         i=f"kb_{tag}",
         e=enterprise_id,
     )

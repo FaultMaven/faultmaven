@@ -78,7 +78,7 @@ async def test_search_knowledge_runs_on_interface_mocks() -> None:
         k=3,
         where={"scope": "global"},
         min_score=0.3,
-        admit=service.admitted_document_ids,
+        admit=service.admitted_generations,
     )
     vector_store.search.assert_not_awaited()
     assert [(r.title, r.parent_document_id) for r in results] == [
@@ -88,7 +88,8 @@ async def test_search_knowledge_runs_on_interface_mocks() -> None:
 
 
 async def test_index_path_writes_through_the_store_interface() -> None:
-    """The write path's two store calls bind on the interface mock too."""
+    """The write path's one store call binds on the interface mock too, and no
+    delete is made (#2388)."""
     vector_store = create_autospec(IKnowledgeVectorStore, instance=True)
     service = _service(
         _sanitizer(), create_autospec(ITracer, instance=True), vector_store
@@ -107,13 +108,14 @@ async def test_index_path_writes_through_the_store_interface() -> None:
         document,
         prechunked=[("Raise the connection pool size.", [0.1, 0.2])],
         enterprise_id="ent-1",
+        generation="1f" * 16,
     )
 
     assert indexed == 1
-    vector_store.delete_documents_by_parent_id.assert_awaited_once_with("kb_pool")
+    vector_store.delete_documents_by_parent_id.assert_not_awaited()
     (written,), kwargs = vector_store.add_documents.await_args
     assert kwargs == {"embeddings": [[0.1, 0.2]]}
-    assert [d["id"] for d in written] == ["kb_pool_chunk_0"]
+    assert [d["id"] for d in written] == [f"kb_pool_chunk_0_{'1f' * 16}"]
     assert written[0]["metadata"]["enterprise_id"] == "ent-1"
 
 

@@ -222,7 +222,7 @@ and no `report_type` key (fm#1030). See
 
 **Manual Upload Flow**:
 
-`POST /api/v1/knowledge/documents` → `KnowledgeService.upload_document` validates the document and publishes it through `ingest_runbook`, which writes the `knowledge_items` row first. Only then does the indexer, `KnowledgeService._index_document_in_vector_store`, chunk the content, embed it in-process with BGE-M3, stamp every chunk with `scope`, `owner_id` and the row's `enterprise_id` (never `team_id`), and write the chunks and their embeddings through `KnowledgeVectorStore.add_documents`. The document id is returned to the client.
+`POST /api/v1/knowledge/documents` → `KnowledgeService.upload_document` validates the document and publishes it through `ingest_runbook`, which writes the `knowledge_items` row first. Only then does the indexer, `KnowledgeService._index_document_in_vector_store`, chunk the content, embed it in-process with BGE-M3, stamp every chunk with `scope`, `owner_id`, the row's `enterprise_id` (never `team_id`) and the row's `vector_generation` (also the last part of the chunk id, `{item_id}_chunk_{i}_{generation}`, #2388), and write the chunks and their embeddings through `KnowledgeVectorStore.add_documents`, deleting nothing. The document id is returned to the client.
 
 **Metadata**: the indexer builds each chunk's dict as `VectorMetadata(...).to_chroma_metadata()`. `VectorMetadata` declares the visibility floor (`scope`, `owner_id`) and the tenant (`enterprise_id`) — **not** `team_id`. Tags are serialized as comma-joined strings (ChromaDB rejects list values in metadata).
 
@@ -566,11 +566,12 @@ chromadb-backup.sh --collection faultmaven_kb --destination s3://faultmaven-back
 chromadb-restore.sh --collection faultmaven_kb --source s3://faultmaven-backups/chromadb/2025-01-22/
 
 # Verify integrity: start the API and read the bootstrap summary,
-# `KB bootstrap complete: ... N orphaned rows` (rows with no vectors) and the
-# `orphaned vectors cleaned` / `authored orphans swept` counts (`kb_seed` Job
-# log under multi). Restores at different points in time disagree in BOTH
-# directions: an index OLDER than the database lacks vectors for newer rows
-# (orphaned rows, repaired within KB_REPAIR_MAX_ROWS), and a database OLDER
+# `KB bootstrap complete: ... N rows serving nothing` (rows no chunk of their
+# generation serves) and the `orphaned vectors cleaned` / `authored orphans
+# swept` counts (`kb_seed` Job log under multi). Restores at different points
+# in time disagree in BOTH directions: an index OLDER than the database lacks
+# vectors for newer rows (unserved rows: a built-in is re-ingested from the
+# pack, an authored one repaired within KB_REPAIR_MAX_ROWS), and a database OLDER
 # than the index (PostgreSQL restored to an earlier snapshot) lacks rows for
 # documents whose vectors remain, so they read as authored orphans. Keep the
 # authored-orphan sweep report-only (KB_ORPHAN_SWEEP_DRY_RUN=true, the

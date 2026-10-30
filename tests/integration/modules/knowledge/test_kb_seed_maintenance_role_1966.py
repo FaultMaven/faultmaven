@@ -50,6 +50,8 @@ ORPHAN_ID = "0f0f0f0f-1111-2222-3333-444444444444"
 class _KbStore:
     def __init__(self) -> None:
         self.parents: dict[str, int] = {}
+        #: The generation each parent's chunks carry (#2388).
+        self.generations: dict[str, str] = {}
 
     async def delete_documents_by_parent_id(
         self, parent_document_id, collection_name=None, *, retries=2
@@ -58,7 +60,8 @@ class _KbStore:
 
     async def list_all_chunk_ids_by_parent(self):
         return {
-            p: [f"{p}_chunk_{n}" for n in range(c)] for p, c in self.parents.items()
+            p: [f"{p}_chunk_{n}_{self.generations[p]}" for n in range(c)]
+            for p, c in self.parents.items()
         }
 
     async def delete_observed_chunk_ids(self, chunk_ids, collection_name=None):
@@ -68,7 +71,8 @@ class _KbStore:
         return ids
 
     # The authored-orphan sweep's listing (#1982): this index holds no
-    # authored chunk when the sweep runs (repair writes ORPHAN_ID's after it).
+    # authored chunk when the sweep runs (repair writes ORPHAN_ID's after it),
+    # and the age floor's: no chunk here is young.
     async def list_chunk_ids_by_parent(self, where, collection_name=None):
         return {}
 
@@ -108,8 +112,9 @@ async def test_kb_seed_under_the_maintenance_role_repairs_and_never_updates(
                     await conn.execute(
                         text(
                             "INSERT INTO knowledge_items (item_id, enterprise_id, "
-                            "scope, title, content, item_type, metadata) "
-                            "VALUES (:i, :e, 'global', 't', :c, 'runbook', '{}')"
+                            "scope, title, content, item_type, metadata, "
+                            "vector_generation) VALUES (:i, :e, 'global', 't', "
+                            ":c, 'runbook', '{}', 'gen-test')"
                         ),
                         {"i": item_id, "e": STANDALONE_ENTERPRISE_ID, "c": content},
                     )
@@ -144,14 +149,18 @@ async def test_kb_seed_under_the_maintenance_role_repairs_and_never_updates(
             )
             store = _KbStore()
             store.parents[shipped] = 2
+            store.generations[shipped] = "gen-test"
             svc = KnowledgeService.__new__(KnowledgeService)
             svc._db_session_factory = factory
             svc._vector_store = store
             svc._tracer = MagicMock()
             svc._share_repo = None
 
-            async def _index(document, prechunked=None, enterprise_id=None):
+            async def _index(
+                document, prechunked=None, enterprise_id=None, generation=None
+            ):
                 store.parents[document.document_id] = 3
+                store.generations[document.document_id] = generation
                 return 3
 
             svc._index_document_in_vector_store = _index
@@ -191,7 +200,7 @@ async def test_kb_seed_under_the_maintenance_role_repairs_and_never_updates(
             # orphan, which is what sends it to repair. Anything else at
             # WARNING or above is the regression (a refused FOR SHARE re-read
             # logs an ERROR and discards; a refused stamp logs a WARNING).
-            detection = f"KB consistency: knowledge_item {ORPHAN_ID} has no vectors"
+            detection = f"KB consistency: no chunk carries knowledge_item {ORPHAN_ID}'s"
             noise = [
                 f"{r.levelname} {r.name}: {r.getMessage()}"
                 for r in caplog.records

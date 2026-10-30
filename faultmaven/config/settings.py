@@ -1286,7 +1286,10 @@ class DatabaseSettings(BaseSettings):
         description=(
             "Hours after its created_at before the KB bootstrap removes a "
             "knowledge_items row whose authored ingest never completed, with "
-            "its vectors. A younger row may be an ingest still running."
+            "its vectors. A younger row may be an ingest still running. Also "
+            "the age of the youngest chunk any KB collector may delete: a "
+            "younger one may be a pack ingest's or an update's, written "
+            "before its row."
         ),
     )
     kb_incomplete_ingest_sweep_enabled: bool = Field(

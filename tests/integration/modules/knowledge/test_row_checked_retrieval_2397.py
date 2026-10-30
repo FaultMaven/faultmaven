@@ -1,7 +1,7 @@
 """Row-checked KB retrieval: no door serves a chunk without a complete, published row (#2397, #2063).
 
 The owner's ruling (#2397, 2026-10-30): one knowledge-owned check,
-``IKnowledgeService.admitted_document_ids``, admits a KB hit only when its parent
+``IKnowledgeService.admitted_generations``, admits a KB hit only when its parent
 has a complete, published ``knowledge_items`` row, and every read door applies
 it — the investigation pre-fetch (push), ``search_documents``, the ``kb_qa``
 pull and runbook dedup. Writers no longer delete vectors in-process: what a
@@ -26,7 +26,7 @@ import asyncio
 import math
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import List
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -196,6 +196,7 @@ async def _index_with_no_ingest(service, item_id, marker):
         ),
         prechunked=[(_text(marker), list(Q))],
         enterprise_id=STANDALONE_ENTERPRISE_ID,
+        generation="1f" * 16,
     )
 
 
@@ -315,7 +316,7 @@ async def _pull(kb) -> str:
 
 def _dedup_kb(kb) -> RunbookKnowledgeBase:
     return RunbookKnowledgeBase.over_kb_collection(
-        kb.chroma, admit=kb.service.admitted_document_ids
+        kb.chroma, admit=kb.service.admitted_generations
     )
 
 
@@ -357,7 +358,7 @@ def check_down():
     """The admission check's query raises as ``get_db_session`` does on a
     database timeout."""
     failing = AsyncMock(side_effect=DatabaseTimeout("the database did not answer"))
-    with patch.object(DatabaseKnowledgeItemRepository, "admitted_item_ids", failing):
+    with patch.object(DatabaseKnowledgeItemRepository, "admitted_generations", failing):
         yield failing
 
 
@@ -501,7 +502,7 @@ async def _cancelled_mid_add(kb, item_id: str, *, shipped: bool) -> int:
             )
         )
         await asyncio.wait_for(late.started.wait(), 10)
-        before = vector_delete.await_count  # the indexer's own pre-delete
+        before = vector_delete.await_count
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -547,14 +548,23 @@ async def test_a_write_that_lands_after_a_cancelled_ingest_is_never_served(
 
 
 async def test_the_next_boot_collects_a_late_pack_write(kb):
-    """A built-in id's no-row vectors are the reconcile's. ``knowledge_items``
+    """A built-in id's no-row vectors are the reconcile's, once older than the
+    age floor: a pack ingest writes its vectors before its row (#2388), so a
+    young chunk with no row may be one about to get it. ``knowledge_items``
     holds the real runbooks, so the reconcile runs (it refuses on an empty
     table)."""
     await _cancelled_mid_add(kb, PACK_LATE, shipped=True)
     assert PACK_LATE in _chunk_parents(kb)
 
-    orphaned, _unpublished, _rows = await kb_init._reconcile_vectors(
+    young, _unpublished, _rows = await kb_init._reconcile_vectors(
         kb.service, kb.factory
+    )
+    assert PACK_LATE not in young
+    assert PACK_LATE in _chunk_parents(kb), "a chunk younger than the floor went"
+
+    past_the_floor = datetime.now(timezone.utc) + timedelta(hours=25)
+    orphaned, _unpublished, _rows = await kb_init._reconcile_vectors(
+        kb.service, kb.factory, now=past_the_floor
     )
 
     assert PACK_LATE in orphaned
@@ -590,7 +600,7 @@ async def test_an_authored_raise_after_completion_removes_the_row_and_no_vector(
                 prechunked=[(_text("after-completion"), list(Q))],
             )
 
-    assert vector_delete.await_count == 1  # the indexer's pre-delete, before its add
+    assert vector_delete.await_count == 0  # nothing deletes a vector (#2388)
     async with kb.factory() as session:
         assert (
             await DatabaseKnowledgeItemRepository(session).get_by_id(AUTHORED_LATE)
@@ -803,8 +813,8 @@ async def test_dedup_reads_one_page_when_its_last_row_is_below_the_floor(
 
 async def test_the_check_admits_only_complete_published_rows(kb):
     asked = [*REALS, *STRAYS, "kb_absent"]
-    assert await kb.service.admitted_document_ids(asked) == set(REALS)
-    assert await kb.service.admitted_document_ids([]) == set()
+    assert set(await kb.service.admitted_generations(asked)) == set(REALS)
+    assert await kb.service.admitted_generations([]) == {}
 
 
 class _RaisingSession:
@@ -829,7 +839,7 @@ async def test_the_check_raises_rather_than_answering_empty(kb, error):
     kb.service._db_session_factory = lambda: _RaisingSession(error)
 
     with pytest.raises(KnowledgeBaseError) as raised:
-        await kb.service.admitted_document_ids(REALS)
+        await kb.service.admitted_generations(REALS)
 
     assert raised.value.error_code == "KNOWLEDGE_ADMISSION_UNAVAILABLE"
     assert raised.value.__cause__ is error
@@ -839,7 +849,7 @@ async def test_the_check_lets_a_cancellation_through(kb):
     kb.service._db_session_factory = lambda: _RaisingSession(asyncio.CancelledError())
 
     with pytest.raises(asyncio.CancelledError):
-        await kb.service.admitted_document_ids(REALS)
+        await kb.service.admitted_generations(REALS)
 
 
 # --- no reader can skip it --------------------------------------------------
@@ -915,8 +925,8 @@ async def test_the_check_under_rls_admits_own_and_global_rows_only():
                 await conn.execute(
                     text(
                         "INSERT INTO knowledge_items (item_id, enterprise_id, title, "
-                        "content, item_type, scope) VALUES "
-                        "(:k, :e, 't', 'c', 'runbook', :s)"
+                        "content, item_type, scope, vector_generation) VALUES "
+                        "(:k, :e, 't', 'c', 'runbook', :s, 'gen-test')"
                     ),
                     {"k": item_id, "e": enterprise, "s": scope},
                 )
@@ -925,9 +935,9 @@ async def test_the_check_under_rls_admits_own_and_global_rows_only():
             limited, class_=AsyncSession, expire_on_commit=False
         )
 
-        admitted = await service.admitted_document_ids([own, foreign, platform])
+        admitted = await service.admitted_generations([own, foreign, platform])
 
-        assert admitted == {own, platform}
+        assert set(admitted) == {own, platform}
     finally:
         await limited.dispose()
         async with admin.begin() as conn:

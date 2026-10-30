@@ -45,7 +45,7 @@ from faultmaven.models.vector_metadata import VectorMetadata
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     build_kb_scope_filter,
 )
-from tests.utils import admit_every_parent
+from tests.utils import TEST_GENERATION, admit_every_parent
 
 pytestmark = [pytest.mark.knowledge_base]
 
@@ -145,7 +145,8 @@ def _chunk_metadata(
     Mirrors ``_index_document_in_vector_store``: ``document_type``, ``scope``
     (immutable floor only — never team), ``owner_id``, the owning tenant's
     ``enterprise_id`` (#1168: Standalone for the global tier, the row's tenant
-    otherwise), ``title``, ``parent_document_id``, chunk tracking.
+    otherwise), ``title``, ``parent_document_id``, chunk tracking and the
+    ``vector_generation`` (#2388).
     ``seed`` refuses any key ``VectorMetadata`` does not declare, and a row
     with no ``enterprise_id``, as ``KnowledgeVectorStore.add_documents`` does
     for the KB collection, so a hand-seeded dict that drifts from the
@@ -162,6 +163,7 @@ def _chunk_metadata(
         "parent_document_id": parent,
         "chunk_index": chunk_index,
         "total_chunks": total_chunks,
+        "vector_generation": TEST_GENERATION,
     }
     if owner_id is not None:
         md["owner_id"] = owner_id

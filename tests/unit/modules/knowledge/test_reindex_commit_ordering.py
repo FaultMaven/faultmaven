@@ -28,19 +28,23 @@ that read would revert whatever another writer changed meanwhile — including
 at commit time, and (#1966) a targeted write of only the changed fields,
 followed by a read of the row as committed.
 
-What none of this does any more is delete vectors in-process (#2397). A row
-deleted or unpublished while the update embedded keeps the vectors the update
-wrote, and they are never served: every KB door admits a chunk only when its
-row is complete and published (``admitted_document_ids``, which the fake below
-answers from the row it models).
+What none of this does any more is delete vectors (#2397, #2388). The update
+writes its chunks under a new ``vector_generation`` and then writes the content
+and that generation in one UPDATE, so the row and the chunks it serves always
+describe the same text: a failed commit leaves the old content served, a commit
+that landed despite raising serves the new, and two racing updates serve
+whichever committed last. Every KB door admits a chunk only when its row is
+complete and published and carries the chunk's generation
+(``admitted_generations``, which the fake below answers from the row it
+models).
 
 The fake below models the ROW, not a single mock object: reads return a fresh
 view of current state and a successful commit is what changes it. That is what
 lets these tests tell "the commit failed" apart from "the commit landed but
-raised" — a distinction the compensation now turns on, and which a
-single-shared-mock fake silently collapses.
+raised", which a single-shared-mock fake silently collapses.
 """
 
+import asyncio
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -62,10 +66,13 @@ _REPO = (
 COMMITTED_AT = datetime(2026, 6, 1, tzinfo=timezone.utc)
 OLD_CONTENT = "# Draining a node\n\nCordon, then drain."
 NEW_CONTENT = "# Draining a node\n\nCordon, drain, then uncordon."
+OTHER_CONTENT = "# Draining a node\n\nCordon, drain, verify, uncordon."
+OLD_GENERATION = "00" * 16
 
 
 def _state():
-    """The persisted row, as a plain dict — the source of truth for the fake."""
+    """The persisted row, as a plain dict — the source of truth for the fake —
+    and the chunks in the store, as ``(content, generation)``."""
     return {
         "present": True,
         "title": "Draining a node",
@@ -73,7 +80,19 @@ def _state():
         "tags": [],
         "is_published": True,
         "updated_at": datetime(2026, 1, 1, tzinfo=timezone.utc),
+        "generation": OLD_GENERATION,
+        "chunks": [(OLD_CONTENT, OLD_GENERATION)],
     }
+
+
+async def _served(service, state, repo):
+    """What a KB door serves for the document: the chunks the real admission
+    check admits, over the modelled row."""
+    with patch(_REPO, return_value=repo):
+        admitted = (await service.admitted_generations(["doc-1"])).get("doc-1")
+    return [
+        content for content, generation in state["chunks"] if generation == admitted
+    ]
 
 
 def _row_from(state):
@@ -97,6 +116,7 @@ def _row_from(state):
     row.created_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
     row.updated_at = state["updated_at"]
     row.metadata = {}
+    row.vector_generation = state["generation"]
     return row
 
 
@@ -118,10 +138,12 @@ def _service(state, *, commit_raises=None, commit_lands=True):
         return 1
 
     async def _add(doc_dicts, embeddings=None):
-        # Record what the vectors DESCRIBE, not merely that a write happened —
-        # the compensation tests turn on which content was written back.
+        # Record what the vectors DESCRIBE, not merely that a write happened.
         calls.append(("vector_add", doc_dicts[0]["content"]))
         calls.append(("chunk_updated_at", doc_dicts[0]["metadata"].get("updated_at")))
+        state["chunks"].append(
+            (doc_dicts[0]["content"], doc_dicts[0]["metadata"]["vector_generation"])
+        )
 
     vector_store.delete_documents_by_parent_id = AsyncMock(side_effect=_delete)
     vector_store.add_documents = AsyncMock(side_effect=_add)
@@ -135,9 +157,9 @@ def _service(state, *, commit_raises=None, commit_lands=True):
     repo.get_by_id = AsyncMock(side_effect=lambda _id: _row_from(state))
     # The admission check's query, over the modelled row: complete is implied
     # (an update refuses an incomplete row before it starts).
-    repo.admitted_item_ids = AsyncMock(
+    repo.admitted_generations = AsyncMock(
         side_effect=lambda ids: {
-            i
+            i: state["generation"]
             for i in ids
             if i == "doc-1" and state["present"] and state["is_published"]
         }
@@ -153,6 +175,8 @@ def _service(state, *, commit_raises=None, commit_lands=True):
             for name in ("title", "content", "tags"):
                 if name in fields:
                     state[name] = fields[name]
+            if "vector_generation" in fields:
+                state["generation"] = fields["vector_generation"]
             if touch:
                 state["updated_at"] = COMMITTED_AT
         if commit_raises is not None:
@@ -237,11 +261,11 @@ async def test_vectors_are_written_before_the_row_commits():
             )
 
     assert result["content"] == NEW_CONTENT
-    assert _kinds(calls) == ["vector_delete", "vector_add", "sql_commit"], (
-        "the SQL commit must be the LAST store write, so no failure before it "
-        f"can leave the row ahead of the vectors: {_kinds(calls)}"
+    assert _kinds(calls) == ["vector_add", "sql_commit"], (
+        "the SQL commit must be the LAST store write, and no vector is "
+        f"deleted: {_kinds(calls)}"
     )
-    assert ("vector_add", NEW_CONTENT) in calls
+    assert await _served(service, state, repo) == [NEW_CONTENT]
 
 
 @pytest.mark.asyncio
@@ -367,24 +391,24 @@ async def test_a_row_deleted_mid_update_leaves_no_admitted_vector():
             result = await service.update_document_metadata(
                 document_id="doc-1", content=NEW_CONTENT
             )
-        admitted = await service.admitted_document_ids(["doc-1"])
+        admitted = await service.admitted_generations(["doc-1"])
 
     assert result is None, "a document deleted mid-update must report not-found"
-    # The swap's own delete-then-add, and nothing after it.
-    assert _kinds(calls) == ["vector_delete", "vector_add"], _kinds(calls)
-    assert admitted == set()
+    # The update's own add, and nothing after it.
+    assert _kinds(calls) == ["vector_add"], _kinds(calls)
+    assert admitted == {}
 
 
 # ---------------------------------------------------------------------------
-# The residual: vectors written, commit failed
+# Vectors written, then the commit: what is served is what the row holds
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_a_failed_commit_puts_the_previous_vectors_back():
-    """The one window the ordering cannot close on its own. If the row fails to
-    commit after the swap, the vectors are ahead of it — the undetectable kind
-    of mispairing — so it is compensated rather than tolerated."""
+async def test_a_failed_commit_serves_the_previous_content():
+    """The row keeps its content and generation, so its old chunks are still
+    the served ones and the new chunks are superseded (#2388): nothing is
+    restored, and nothing is deleted."""
     state = _state()
     service, repo, calls = _service(
         state, commit_raises=RuntimeError("database gone"), commit_lands=False
@@ -397,23 +421,15 @@ async def test_a_failed_commit_puts_the_previous_vectors_back():
                     document_id="doc-1", content=NEW_CONTENT
                 )
 
-    adds = [content for kind, content in calls if kind == "vector_add"]
-    assert adds == [NEW_CONTENT, OLD_CONTENT], (
-        "after the commit failed the vectors must be restored to the content "
-        f"the row still holds: {adds}"
-    )
+    assert _kinds(calls) == ["vector_add", "sql_commit"], _kinds(calls)
+    assert await _served(service, state, repo) == [OLD_CONTENT]
 
 
 @pytest.mark.asyncio
-async def test_a_commit_that_landed_but_raised_is_not_rolled_back():
+async def test_a_commit_that_landed_but_raised_serves_the_new_content():
     """A raised commit does NOT prove the write failed — a connection dropped
-    after the server committed raises here with the new content durably stored.
-
-    Restoring the previous content on that signal alone would re-index
-    superseded text under an updated row: the compensation would manufacture
-    the exact mispairing #952 exists to prevent. So the row is re-read and the
-    OBSERVED state decides.
-    """
+    after the server committed raises here with the new content durably stored,
+    and with it the generation its chunks carry."""
     state = _state()
     service, repo, calls = _service(
         state, commit_raises=RuntimeError("connection lost"), commit_lands=True
@@ -426,46 +442,47 @@ async def test_a_commit_that_landed_but_raised_is_not_rolled_back():
                     document_id="doc-1", content=NEW_CONTENT
                 )
 
-    adds = [content for kind, content in calls if kind == "vector_add"]
-    assert adds == [NEW_CONTENT], (
-        "the compensation re-indexed the OLD content over a row that actually "
-        f"holds the new content — it created the mispairing: {adds}"
-    )
+    assert _kinds(calls) == ["vector_add", "sql_commit"], _kinds(calls)
+    assert await _served(service, state, repo) == [NEW_CONTENT]
 
 
 @pytest.mark.asyncio
-async def test_a_failed_restore_names_the_state_and_tells_the_operator_what_to_do():
-    """If the compensation fails too, nothing downstream can find the state —
-    the row has vectors and looks healthy. The log is the only signal, so it
-    must both name the condition and carry the recovery step; a bare marker
-    with no remedy leaves the operator with a greppable word and no action."""
+@pytest.mark.parametrize("last", [NEW_CONTENT, OTHER_CONTENT], ids=["first", "second"])
+async def test_two_racing_updates_serve_the_content_that_committed(last):
+    """Both updates write their chunks, then their UPDATEs land in either order:
+    the row ends on the content and the generation of the same call, so the
+    content served is the content committed, whichever call it was."""
     state = _state()
-    service, repo, calls = _service(
-        state, commit_raises=RuntimeError("database gone"), commit_lands=False
-    )
-    service._vector_store.add_documents = AsyncMock(
-        side_effect=[None, RuntimeError("chromadb gone too")]
-    )
+    service, repo, calls = _service(state)
+    gates = {NEW_CONTENT: asyncio.Event(), OTHER_CONTENT: asyncio.Event()}
+    write = repo.update_fields.side_effect
+
+    async def in_order(item_id, fields, **kwargs):
+        await gates[fields["content"]].wait()
+        return await write(item_id, fields, **kwargs)
+
+    repo.update_fields = AsyncMock(side_effect=in_order)
+    first = OTHER_CONTENT if last == NEW_CONTENT else NEW_CONTENT
 
     with patch(_REPO, return_value=repo):
         with patch(_EMBED_TEXTS, new=AsyncMock(return_value=[[0.1] * 1024])):
-            with patch(
-                "faultmaven.modules.knowledge.domain.services."
-                "knowledge_service.logger"
-            ) as log:
-                with pytest.raises(RuntimeError):
-                    await service.update_document_metadata(
-                        document_id="doc-1", content=NEW_CONTENT
-                    )
+            updates = [
+                asyncio.create_task(
+                    service.update_document_metadata(document_id="doc-1", content=c)
+                )
+                for c in (NEW_CONTENT, OTHER_CONTENT)
+            ]
+            while _kinds(calls).count("vector_add") < 2:
+                await asyncio.sleep(0)
+            gates[first].set()
+            while "sql_commit" not in _kinds(calls):
+                await asyncio.sleep(0)
+            gates[last].set()
+            await asyncio.gather(*updates)
 
-    logged = " ".join(
-        str(arg) for call in log.error.call_args_list for arg in call.args
-    )
-    assert "MISPAIRED" in logged, "the state is not named"
-    assert "doc-1" in logged, "the affected document is not identified"
-    assert (
-        "re-save" in logged.lower()
-    ), "the operator is told a bad thing happened but not what to do about it"
+    assert state["content"] == last
+    assert await _served(service, state, repo) == [last]
+    assert "vector_delete" not in _kinds(calls)
 
 
 # ---------------------------------------------------------------------------
@@ -490,18 +507,17 @@ async def test_a_concurrent_unpublish_leaves_the_vectors_we_added_unadmitted():
             await service.update_document_metadata(
                 document_id="doc-1", content=NEW_CONTENT
             )
-        admitted = await service.admitted_document_ids(["doc-1"])
+        admitted = await service.admitted_generations(["doc-1"])
 
     assert state["is_published"] is False, "the retirement was reverted in SQL"
-    assert _kinds(calls) == ["vector_delete", "vector_add", "sql_commit"], _kinds(calls)
-    assert admitted == set()
+    assert _kinds(calls) == ["vector_add", "sql_commit"], _kinds(calls)
+    assert admitted == {}
 
 
 @pytest.mark.asyncio
 async def test_a_failed_commit_on_a_row_unpublished_meanwhile_writes_nothing_more():
-    """The resynchronisation re-reads the row after a failed commit. One that
-    was unpublished meanwhile gets no restore and no vector delete (#2397):
-    its vectors are never served."""
+    """A row unpublished meanwhile, whose update then fails to commit, gets no
+    further write and no vector delete (#2397): its vectors are never served."""
     state = _state()
     service, repo, calls = _service(
         state, commit_raises=RuntimeError("database gone"), commit_lands=False
@@ -517,10 +533,10 @@ async def test_a_failed_commit_on_a_row_unpublished_meanwhile_writes_nothing_mor
                 await service.update_document_metadata(
                     document_id="doc-1", content=NEW_CONTENT
                 )
-        admitted = await service.admitted_document_ids(["doc-1"])
+        admitted = await service.admitted_generations(["doc-1"])
 
-    assert _kinds(calls) == ["vector_delete", "vector_add", "sql_commit"], _kinds(calls)
-    assert admitted == set()
+    assert _kinds(calls) == ["vector_add", "sql_commit"], _kinds(calls)
+    assert admitted == {}
 
 
 @pytest.mark.asyncio
@@ -550,11 +566,9 @@ async def test_the_response_describes_the_committed_row_not_the_snapshot():
 
 
 @pytest.mark.asyncio
-async def test_a_failing_re_read_is_compensated_like_a_failing_commit():
-    """The vectors are already ahead of the row once the swap succeeds, so
-    everything after it has to be compensated — not just the write. A
-    re-read that raises would otherwise leave the mispairing with no repair
-    and no log."""
+async def test_a_failing_re_read_leaves_the_previous_content_served():
+    """A re-read that raises after the chunks are written fails the update with
+    the row unchanged, so its old chunks are still the served ones."""
     state = _state()
     service, repo, calls = _service(state)
 
@@ -575,8 +589,5 @@ async def test_a_failing_re_read_is_compensated_like_a_failing_commit():
                     document_id="doc-1", content=NEW_CONTENT
                 )
 
-    adds = [content for kind, content in calls if kind == "vector_add"]
-    assert adds == [NEW_CONTENT, OLD_CONTENT], (
-        "a failure before the commit left the vectors holding content the row "
-        f"never got: {adds}"
-    )
+    assert _kinds(calls) == ["vector_add"], _kinds(calls)
+    assert await _served(service, state, repo) == [OLD_CONTENT]

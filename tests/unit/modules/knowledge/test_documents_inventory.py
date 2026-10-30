@@ -410,7 +410,7 @@ class TestInventoryServiceDB:
 
         # A SQL-only flip (#2397): retrieval admits no chunk of an unpublished
         # row, and the boot reconcile collects its vectors.
-        assert await svc.admitted_document_ids([BUILTIN_ID]) == set()
+        assert await svc.admitted_generations([BUILTIN_ID]) == {}
         svc._vector_store.delete_documents_by_parent_id.assert_not_awaited()
 
     async def test_delete_refused_rows_never_touch_vectors(self, inventory_service):

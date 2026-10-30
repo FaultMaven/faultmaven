@@ -31,6 +31,8 @@ from faultmaven.modules.knowledge.domain.services.knowledge_service import (
 pytestmark = [pytest.mark.unit]
 
 _EMBED_TEXTS = "faultmaven.infrastructure.model_cache.model_cache.aembed_texts"
+#: The generation the indexer writes under (#2388).
+GEN = "9e" * 16
 
 
 def _service() -> KnowledgeService:
@@ -73,7 +75,7 @@ async def test_old_vectors_survive_when_embedding_fails():
     with patch(_EMBED_TEXTS, new=AsyncMock(return_value=None)):
         with pytest.raises(KnowledgeBaseError):
             await service._index_document_in_vector_store(
-                _document(), enterprise_id=STANDALONE_ENTERPRISE_ID
+                _document(), enterprise_id=STANDALONE_ENTERPRISE_ID, generation=GEN
             )
 
     assert service._vector_store.delete_documents_by_parent_id.await_count == 0, (
@@ -92,26 +94,32 @@ async def test_unchunkable_content_also_deletes_nothing():
     with patch(_EMBED_TEXTS, new=AsyncMock(return_value=[[0.1] * 1024])):
         with pytest.raises(KnowledgeBaseError):
             await service._index_document_in_vector_store(
-                document, enterprise_id=STANDALONE_ENTERPRISE_ID
+                document, enterprise_id=STANDALONE_ENTERPRISE_ID, generation=GEN
             )
 
     assert service._vector_store.delete_documents_by_parent_id.await_count == 0
 
 
 @pytest.mark.asyncio
-async def test_the_swap_still_happens_on_the_success_path():
-    """The gate must be able to pass: a healthy re-index still replaces the
-    old vectors, or this "fix" would simply have disabled re-indexing."""
+async def test_the_success_path_adds_its_generation_and_deletes_nothing():
+    """The gate must be able to pass: a healthy re-index writes its chunks, under
+    its generation, and deletes none (#2388): the row's generation decides which
+    chunks are served."""
     service = _service()
 
     with patch(_EMBED_TEXTS, new=AsyncMock(return_value=[[0.1] * 1024])):
         chunks = await service._index_document_in_vector_store(
-            _document(), enterprise_id=STANDALONE_ENTERPRISE_ID
+            _document(), enterprise_id=STANDALONE_ENTERPRISE_ID, generation=GEN
         )
 
     assert chunks >= 1
-    assert service._vector_store.delete_documents_by_parent_id.await_count == 1
-    assert service._vector_store.add_documents.await_count == 1
+    assert service._vector_store.delete_documents_by_parent_id.await_count == 0
+    (documents,), _ = service._vector_store.add_documents.await_args
+    assert [d["id"] for d in documents] == [
+        f"doc-1_chunk_{i}_{GEN}" for i in range(chunks)
+    ]
+    assert {d["metadata"]["vector_generation"] for d in documents} == {GEN}
+    assert all(isinstance(d["metadata"]["indexed_at"], int) for d in documents)
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +134,7 @@ async def test_indexing_failure_raises_rather_than_returning_zero():
     with patch(_EMBED_TEXTS, new=AsyncMock(return_value=None)):
         with pytest.raises(KnowledgeBaseError) as excinfo:
             await service._index_document_in_vector_store(
-                _document(), enterprise_id=STANDALONE_ENTERPRISE_ID
+                _document(), enterprise_id=STANDALONE_ENTERPRISE_ID, generation=GEN
             )
 
     assert excinfo.value.error_code == "KNOWLEDGE_EMBEDDER_UNAVAILABLE"
@@ -146,7 +154,7 @@ async def test_the_trailing_blanket_handler_does_not_restore_the_sentinel():
         result = None
         try:
             result = await service._index_document_in_vector_store(
-                _document(), enterprise_id=STANDALONE_ENTERPRISE_ID
+                _document(), enterprise_id=STANDALONE_ENTERPRISE_ID, generation=GEN
             )
         except KnowledgeBaseError:
             pass
@@ -226,6 +234,7 @@ async def test_boot_repair_still_tolerates_an_unavailable_embedder():
     row.owner_id = None
     row.created_at = "2026-01-01T00:00:00Z"
     row.updated_at = "2026-01-01T00:00:00Z"
+    row.vector_generation = GEN
 
     result = MagicMock()
     result.scalar_one_or_none = MagicMock(return_value=row)
@@ -269,6 +278,7 @@ async def test_boot_repair_counts_a_row_with_no_tenant_as_a_failed_repair(
     row.owner_id = None
     row.created_at = "2026-01-01T00:00:00Z"
     row.updated_at = "2026-01-01T00:00:00Z"
+    row.vector_generation = GEN
 
     result = MagicMock()
     result.scalar_one_or_none = MagicMock(return_value=row)
@@ -356,7 +366,7 @@ async def test_no_tenant_is_refused_before_the_embedder_is_awaited(enterprise_id
     with patch(_EMBED_TEXTS, new=embed):
         with pytest.raises(ValueError, match="carries no enterprise_id"):
             await service._index_document_in_vector_store(
-                _document(), enterprise_id=enterprise_id
+                _document(), enterprise_id=enterprise_id, generation=GEN
             )
 
     embed.assert_not_awaited()
@@ -375,7 +385,7 @@ async def test_no_tenant_is_refused_even_with_no_vector_store_wired(enterprise_i
 
     with pytest.raises(ValueError, match="carries no enterprise_id"):
         await service._index_document_in_vector_store(
-            _document(), enterprise_id=enterprise_id
+            _document(), enterprise_id=enterprise_id, generation=GEN
         )
 
 
@@ -387,7 +397,7 @@ async def test_a_named_tenant_with_no_store_is_still_the_quiet_zero():
 
     assert (
         await service._index_document_in_vector_store(
-            _document(), enterprise_id="ent-given"
+            _document(), enterprise_id="ent-given", generation=GEN
         )
         == 0
     )
@@ -399,7 +409,7 @@ async def test_every_chunk_carries_the_enterprise_it_was_given():
 
     with patch(_EMBED_TEXTS, new=AsyncMock(return_value=[[0.1] * 1024])):
         await service._index_document_in_vector_store(
-            _document(), enterprise_id="ent-given"
+            _document(), enterprise_id="ent-given", generation=GEN
         )
 
     (documents,), _ = service._vector_store.add_documents.await_args

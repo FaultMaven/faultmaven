@@ -188,7 +188,7 @@ def given(present: dict) -> set[str]:
     container = SimpleNamespace(**{k: _bare(c) for k, c in present.items()})
     registry = _create_investigation_tools(
         container,
-        knowledge_service=SimpleNamespace(admitted_document_ids=admit_every_parent),
+        knowledge_service=SimpleNamespace(admitted_generations=admit_every_parent),
     )
     return {t.name for t in registry.get_all_tools()} if registry else set()
 

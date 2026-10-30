@@ -270,7 +270,7 @@ class TestIngestRunbookDualWrite:
                 "(failure contract — see kb-ingestion-architecture.md)"
             )
         service._vector_store.delete_documents_by_parent_id.assert_not_called()
-        assert await service.admitted_document_ids([item_id]) == set()
+        assert await service.admitted_generations([item_id]) == {}
 
     @pytest.mark.asyncio
     async def test_zero_chunks_returns_rolls_back_sql_row(self, seeded_session_factory):

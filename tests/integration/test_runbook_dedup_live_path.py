@@ -198,7 +198,7 @@ async def test_a_published_runbook_is_found_by_dedup_and_only_within_its_scope(
     # The reader the container builds: bound BY CONSTRUCTION to the writer's
     # collection constant, not to the settings-derived name.
     kb = RunbookKnowledgeBase.over_kb_collection(
-        client, admit=service.admitted_document_ids
+        client, admit=service.admitted_generations
     )
     assert kb.vector_store.collection_name == KB_COLLECTION
 
@@ -292,7 +292,7 @@ async def test_the_dedup_reader_binds_the_writers_collection_not_the_settings_on
         vector_store=ChromaDBVectorStore(
             client=client, collection_name="custom_kb_from_settings"
         ),
-        admit=service.admitted_document_ids,
+        admit=service.admitted_generations,
     )
     assert (
         await misbound.search_runbooks(
@@ -303,7 +303,7 @@ async def test_the_dedup_reader_binds_the_writers_collection_not_the_settings_on
 
     # The container's binding.
     bound = RunbookKnowledgeBase.over_kb_collection(
-        client, admit=service.admitted_document_ids
+        client, admit=service.admitted_generations
     )
     matches = await bound.search_runbooks(
         query_embedding=list(_TOY_EMBEDDING), scope_filter=scope
@@ -345,7 +345,7 @@ async def test_a_pack_published_global_runbook_is_found_by_every_principal(
     assert chunks_created == 2
 
     kb = RunbookKnowledgeBase.over_kb_collection(
-        client, admit=service.admitted_document_ids
+        client, admit=service.admitted_generations
     )
 
     for principal in ("user-a", None):
