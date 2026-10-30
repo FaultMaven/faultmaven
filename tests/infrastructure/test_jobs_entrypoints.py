@@ -11,6 +11,7 @@ import contextlib
 import os
 import sys
 import types
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import pytest
@@ -394,7 +395,8 @@ class TestKbSeedJob:
         # --no-dry-run asks the incomplete-ingest sweep (#2394) too, and with
         # KB_INCOMPLETE_INGEST_SWEEP_ENABLED at its default it is off.
         assert kwargs["incomplete_sweep_mode"] == "off"
-        # The generation sweep (#2388) runs under the same gate.
+        # So does the generation sweep (#2388), under its own gate:
+        # KB_GENERATION_SWEEP_ENABLED is at its default too.
         assert kwargs["generation_sweep_mode"] == "off"
         assert result["authored_orphans"]["proven"] is True
         assert result["authored_orphans"]["deleted"] == 0
@@ -422,9 +424,40 @@ class TestKbSeedJob:
         assert kwargs["sweep_dry_run"] is None  # defer to KB_ORPHAN_SWEEP_DRY_RUN
         assert kwargs["allow_disjoint_enterprises"] == ()
         # The incomplete-ingest sweep is report-only under kb_seed until armed,
-        # and the generation sweep with it (#2388).
+        # and so, under its own settings, is the generation sweep (#2388).
         assert kwargs["incomplete_sweep_mode"] == "report_only"
         assert kwargs["generation_sweep_mode"] == "report_only"
+
+    @pytest.mark.asyncio
+    async def test_arming_the_incomplete_sweep_leaves_the_generation_sweep_off(
+        self, mock_container, mock_settings, monkeypatch
+    ):
+        """#2388: the two sweeps have their own gates. With
+        KB_INCOMPLETE_INGEST_SWEEP_ENABLED=true and --no-dry-run the
+        incomplete-ingest sweep is armed, and the generation sweep, whose
+        KB_GENERATION_SWEEP_ENABLED is at its default, is off."""
+        from faultmaven.jobs.kb_seed import run
+
+        database = SimpleNamespace(
+            kb_incomplete_ingest_sweep_enabled=True,
+            kb_incomplete_ingest_sweep_dry_run=True,
+            kb_generation_sweep_enabled=False,
+            kb_generation_sweep_dry_run=True,
+        )
+        monkeypatch.setattr(
+            "faultmaven.config.settings.get_settings",
+            lambda: SimpleNamespace(database=database),
+        )
+        mock_container.get_knowledge_service = MagicMock(return_value=MagicMock())
+        with patch(
+            "faultmaven.bootstrap.kb_init.bootstrap_kb",
+            new=AsyncMock(return_value=_bootstrap_result()),
+        ) as bootstrap:
+            await run(settings=mock_settings, container=mock_container, dry_run=False)
+
+        kwargs = bootstrap.await_args.kwargs
+        assert kwargs["incomplete_sweep_mode"] == "armed"
+        assert kwargs["generation_sweep_mode"] == "off"
 
     def test_kb_seed_is_cross_tenant(self):
         """kb_seed writes the org-free global platform tier served to ALL

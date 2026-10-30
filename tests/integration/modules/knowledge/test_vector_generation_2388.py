@@ -1,4 +1,5 @@
-"""A chunk is served only under its row's generation, and no writer deletes one (#2388).
+"""A chunk is served only under its row's generation, and a writer deletes only
+the generation its landed commit replaced (#2388).
 
 Two ``kb_init`` runs seeding different pack versions of one id used to strip
 each other's chunks: the indexer deleted every chunk under the parent before it
@@ -39,7 +40,10 @@ from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
     KnowledgeVectorStore,
 )
 from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
-from faultmaven.infrastructure.persistence.models import KnowledgeItemModel
+from faultmaven.infrastructure.persistence.models import (
+    KnowledgeItemModel,
+    ResourceShareModel,
+)
 from faultmaven.models.api import KnowledgeBaseDocument
 from faultmaven.models.exceptions import KnowledgeBaseError
 from faultmaven.modules.knowledge.domain.models.knowledge_item import (
@@ -68,6 +72,14 @@ from tests.integration.modules.knowledge.test_row_checked_retrieval_2397 import 
     _registered_kb_qa,
     _unit,
     factory,  # noqa: F401 - the FK-on SQLite world
+)
+from tests.integration.modules.knowledge.test_upload_writes_rows_after_ingest_2365 import (  # noqa: E501
+    OWNER as TEAM_OWNER,
+)
+from tests.integration.modules.knowledge.test_upload_writes_rows_after_ingest_2365 import (  # noqa: E501
+    TEAM_ID,
+    _Shares,
+    session_factory,  # noqa: F401 - FK-on SQLite with the team owner seeded
 )
 from tests.integration.security.conftest import alembic_on, database_of_its_own
 from tests.utils import regex_only_sanitizer, seed_enterprises
@@ -303,6 +315,54 @@ async def test_a_pack_replacement_leaves_only_the_new_generation(
     assert {chunk_generation_from_id(c): m for c, m in _chunks(world).items()} == {
         row.vector_generation: "vA"
     }
+
+
+async def test_a_pack_replacement_keeps_every_share_and_writes_its_own_once(
+    session_factory, tmp_path  # noqa: F811
+):
+    """A team-scoped pack row carries its own team share, and an operator added
+    one for a second team. A new pack version replaces the row: both shares
+    stay, and the pack's own is not written twice."""
+    other_team = "22222222-2222-4222-8222-222222222222"
+    world = _world(session_factory, tmp_path)
+    shares = _Shares(session_factory)
+    world.service._share_repo = shares
+
+    def team_pack(version: str, vector: List[float]) -> PackRunbook:
+        runbook = _pack(version, vector)
+        runbook.scope, runbook.owner_id, runbook.team_id = "team", TEAM_OWNER, TEAM_ID
+        return runbook
+
+    await _seed(world, team_pack("v0", REAL_VECTORS[0]))
+    old = (await _row(world)).vector_generation
+    await shares.share(
+        resource_type="knowledge_item",
+        resource_id=DOC,
+        scope_type="team",
+        scope_id=other_team,
+        enterprise_id=STANDALONE_ENTERPRISE_ID,
+    )
+    real = KnowledgeService._insert_pack_row
+    replacing: List[Optional[str]] = []
+
+    async def spy(self, item, **kwargs):
+        replacing.append(kwargs["replaces_generation"])
+        return await real(self, item, **kwargs)
+
+    with patch.object(KnowledgeService, "_insert_pack_row", spy):
+        assert await _seed(world, team_pack("vA", REAL_VECTORS[1])) == "ingested"
+
+    assert replacing == [old]
+    assert (await _row(world)).vector_generation != old
+    async with session_factory() as session:
+        rows = (
+            await session.execute(
+                select(ResourceShareModel.scope_type, ResourceShareModel.scope_id)
+                .where(ResourceShareModel.resource_id == DOC)
+                .order_by(ResourceShareModel.scope_id)
+            )
+        ).all()
+    assert [tuple(r) for r in rows] == [("team", TEAM_ID), ("team", other_team)]
 
 
 async def test_a_failed_generation_delete_is_logged_and_the_replacement_stands(

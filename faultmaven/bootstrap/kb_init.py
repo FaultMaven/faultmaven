@@ -681,7 +681,9 @@ async def _read_rows(
     item_ids: Optional[List[str]] = None,
 ) -> List[Any]:
     """``(item_id, is_published, ingest_complete, vector_generation)`` of every
-    row, or of ``item_ids``."""
+    row, or of ``item_ids``. ``item_ids`` filters the rows read, not the query:
+    an ``IN`` of every candidate would bind one parameter per id, and
+    PostgreSQL through asyncpg refuses more than 32,767."""
     from faultmaven.infrastructure.persistence.models import KnowledgeItemModel
 
     query = select(
@@ -690,8 +692,6 @@ async def _read_rows(
         KnowledgeItemModel.ingest_complete,
         KnowledgeItemModel.vector_generation,
     )
-    if item_ids is not None:
-        query = query.where(KnowledgeItemModel.item_id.in_(item_ids))
     async with db_session_factory() as session:
         rows = (await session.execute(query)).all()
     wanted = None if item_ids is None else set(item_ids)

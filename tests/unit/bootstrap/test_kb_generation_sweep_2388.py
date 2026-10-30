@@ -174,8 +174,9 @@ async def test_an_off_sweep_reads_nothing(corpus):
 
 
 async def test_more_parents_than_the_repair_cap_are_still_swept(world):
-    """No document cap: superseded chunks are the normal product of a pack
-    update, of far more than ``KB_REPAIR_MAX_ROWS`` runbooks."""
+    """No document cap: after the 022 upgrade every chunk written before it is
+    superseded at once, across far more than ``KB_REPAIR_MAX_ROWS`` runbooks
+    (the writers delete only the generations their own switches replace)."""
     parents = [f"kb_{n:012x}" for n in range(kb_init.KB_REPAIR_MAX_ROWS + 1)]
     for parent in parents:
         await world.row(parent, _gen(1))

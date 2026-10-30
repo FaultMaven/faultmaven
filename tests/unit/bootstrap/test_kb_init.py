@@ -1036,6 +1036,41 @@ class TestReconcileVectors:
         assert "kb_bbbbbbbbbbbb still has chunk(s)" not in caplog.text
 
     @pytest.mark.asyncio
+    async def test_the_candidate_re_read_binds_no_parameter_per_row(self):
+        """More unserved candidates than PostgreSQL's 32,767 bind parameters
+        (asyncpg refuses past that): both row reads are one parameter-free
+        SELECT, filtered in Python, and every candidate is still reported."""
+        n = 32_768
+        ids = [f"kb_{i:012x}" for i in range(n)]
+        gen = self.GEN
+        statements: list = []
+
+        class _Session:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return None
+
+            async def execute(self, stmt):
+                statements.append(stmt)
+                return MagicMock(all=lambda: [(i, True, True, gen) for i in ids])
+
+        svc = self._service(chroma_parents={ids[0]}, delete_batches=[])
+        svc._vector_store.list_all_chunk_ids_by_parent.side_effect = None
+        svc._vector_store.list_all_chunk_ids_by_parent.return_value = {
+            ids[0]: [f"{ids[0]}_chunk_0_other"]
+        }
+
+        _cleaned, _unpublished, unserved = await kb_init._reconcile_vectors(
+            svc, lambda: _Session()
+        )
+
+        assert len(statements) == 2, "the candidates were not read again"
+        assert [stmt.compile().params for stmt in statements] == [{}, {}]
+        assert len(unserved) == n
+
+    @pytest.mark.asyncio
     async def test_empty_db_refuses_to_delete_vectors(self):
         """Zero rows + non-empty index = transient row-write failure, NOT a wipe
         signal. Refuse to delete (mirrors the prune's empty-keepset guard)."""
