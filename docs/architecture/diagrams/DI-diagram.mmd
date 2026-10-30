@@ -44,7 +44,7 @@ flowchart TB
         direction TB
         Tools_QA["<b>Agent QA tools</b><br/>create_document_qa_tools()<br/>→ answer_from_kb (unified)<br/>→ answer_from_case_evidence (via adapter)"]
         Tools_Web["<b>Web search</b><br/>create_registry_tools()<br/>→ web_search, when ENABLE_WEB_SEARCH is on<br/>and a search provider is configured"]
-        Tools_Investigation["<b>Investigation tools</b><br/>register_tools()<br/>→ search_file · deep_analysis · vectorize_file<br/>→ find_entity · list_top_entities · reclassify_evidence (flag-gated)"]
+        Tools_Investigation["<b>Investigation tools</b><br/>register_tools()<br/>→ search_file · vectorize_file<br/>→ deep_analysis, unless DEEP_ANALYSIS_BACKEND=disabled<br/>→ find_entity · list_top_entities · reclassify_evidence (flag-gated)"]
     end
 
     %% ============================================================

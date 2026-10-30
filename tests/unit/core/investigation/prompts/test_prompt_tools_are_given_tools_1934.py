@@ -6,7 +6,7 @@ registry the model's tool list is built from. They named ``case_evidence_qa``
 
 The given set comes from the real ``_create_investigation_tools`` fed bare
 ``AgentTool`` doubles (``.name`` is a constant property, so no dependencies are
-needed). The vocabulary is the name of every ``AgentTool`` subclass the tools
+needed). The vocabulary is the name of every ``BaseTool`` subclass the tools
 package defines, plus retired spellings. Model-facing strings are collected by
 AST from the prompt package, the DA instruction / vectorization modules and the
 given tools' own modules (docstrings excluded: they are for developers).
@@ -34,6 +34,7 @@ import asyncio
 import difflib
 import hashlib
 import importlib
+import inspect
 import pkgutil
 import re
 import uuid
@@ -85,7 +86,7 @@ from faultmaven.core.investigation.prompts.templates.fallback import (
 )
 from faultmaven.core.investigation.prompts.templates.tool_text import tools_line
 from faultmaven.infrastructure.persistence.case_vector_store import CaseVectorStore
-from faultmaven.models.interfaces import ToolResult
+from faultmaven.models.interfaces import BaseTool, ToolResult
 from faultmaven.modules.agent.tools.base import AgentTool, ToolContext
 from faultmaven.modules.agent.tools.case_evidence_qa import AnswerFromCaseEvidence
 from faultmaven.modules.agent.tools.deep_analysis_tool import DeepAnalysisTool
@@ -195,20 +196,25 @@ def _subclasses(cls):
 
 
 def tool_class_names() -> set[str]:
-    """The name of every ``AgentTool`` subclass the tools package defines."""
-    for mod in pkgutil.iter_modules(tools_pkg.__path__):
-        importlib.import_module(f"{tools_pkg.__name__}.{mod.name}")
+    """The name of every ``BaseTool`` subclass the tools package, subpackages
+    included, defines. #943's ``KnowledgeBaseTool`` was a ``BaseTool``, not an
+    ``AgentTool``. A concrete class whose name is not a constant reports a
+    sentinel, which no registry gives, so it fails the comparison."""
+    for mod in pkgutil.walk_packages(tools_pkg.__path__, f"{tools_pkg.__name__}."):
+        importlib.import_module(mod.name)
     names = set()
-    for cls in _subclasses(AgentTool):
+    for cls in _subclasses(BaseTool):
         # The package's classes, not a test's: a double such as
         # ``test_tool_registry``'s ``FailingTool`` stays a subclass for as long
         # as it is alive in this process.
         if not cls.__module__.startswith(f"{tools_pkg.__name__}."):
             continue
+        if inspect.isabstract(cls):
+            continue
         try:
             names.add(_bare(cls).name)
-        except Exception:  # abstract / non-constant name
-            pass
+        except Exception:
+            names.add(f"<{cls.__qualname__}: no constant name>")
     return names
 
 

@@ -102,8 +102,9 @@ and so given, only under their feature flags.
   `case_evidence_search`) — Q&A over case evidence
 - `SearchFileTool` — Tier 2 mechanical search (keyword/regex/extractor), with
   two-pass keyword matching and zero-result vocabulary recovery
-- `DeepAnalysisTool` — Tier 3 deep LLM analysis with pluggable backends
-  (external, local, basic)
+- `DeepAnalysisTool` — Tier 3 deep LLM analysis. `DEEP_ANALYSIS_BACKEND` is
+  `local` (the one implementation, through the LLM router) or `disabled`
+  (the tool is not built)
 
 **Knowledge tools**:
 

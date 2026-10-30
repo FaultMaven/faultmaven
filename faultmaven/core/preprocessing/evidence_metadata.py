@@ -107,8 +107,11 @@ class CoverageMetadata(BaseModel):
 
     The span is on the ``evidence.coverage_start_ts`` / ``coverage_end_ts``
     columns and the matched pattern on ``coverage_source``, which
-    ``context_builder`` and ``symptom_currency`` read. This object records
-    the pattern inside ``evidence.metadata`` as well; nothing reads it back.
+    ``context_builder`` and ``symptom_currency`` read. Intake does not store
+    this object: an upload writes no evidence row, and a row the model
+    records later is written without it. Only the row an evidence
+    reclassification addresses carries it in ``evidence.metadata``, lifted
+    from the re-extraction; nothing reads it back.
     """
 
     model_config = ConfigDict(extra="ignore")

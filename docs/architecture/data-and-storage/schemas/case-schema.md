@@ -653,7 +653,12 @@ class EntitiesMetadata(BaseModel):
 
 class CoverageMetadata(BaseModel):
     """Extractor time-range details beyond the promoted columns (Phase 3).
-    The coverage_start_ts / coverage_end_ts columns are the queryable projection."""
+    The span is on the coverage_start_ts / coverage_end_ts columns and the pattern
+    on coverage_source, which context_builder and symptom_currency read. Intake
+    does not store this object: an upload writes no evidence row, and a row the
+    model records later is written without it. Only the row an evidence
+    reclassification addresses carries it, lifted from the re-extraction;
+    nothing reads it back."""
     source: Optional[str] = None    # which timestamp pattern matched (iso8601, syslog_bsd, epoch_s, ...)
 
 class EvidenceMetadata(BaseModel):
