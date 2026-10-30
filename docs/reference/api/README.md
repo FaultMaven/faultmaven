@@ -3178,10 +3178,13 @@ document; global-scope deletion is platform-corpus authoring (operator
 only, per the global-tier policy). A refusal over a document the caller
 cannot even see answers 404 rather than 403 (#867).
 
-A 204 means the document has no retrievable chunk left (#1966). When its
-search-index entries cannot be removed the answer is 503: the delete did
-not complete, the document is still in the knowledge base, and retrying
-the request once the knowledge base is available finishes it.
+A 204 means no chunk of the document is retrievable through a knowledge
+base search, investigation retrieval or runbook dedup (#1966, #2397):
+every one of them serves a chunk only while its document is published,
+and the delete has committed. Its search-index entries are removed
+afterwards, best effort; any left behind are never served, and are
+cleaned up later. An excerpt already in a case's conversation context
+stays there until that case next searches the knowledge base.
 
 Args:
     document_id: Document identifier

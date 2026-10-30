@@ -58,40 +58,33 @@ def _service(sanitizer, tracer, vector_store) -> KnowledgeService:
     )
 
 
-@pytest.mark.parametrize("use_hybrid", [False, True], ids=["vector", "hybrid"])
-async def test_search_knowledge_runs_on_interface_mocks(use_hybrid: bool) -> None:
+async def test_search_knowledge_runs_on_interface_mocks() -> None:
     sanitizer = _sanitizer()
     tracer = create_autospec(ITracer, instance=True)
     vector_store = create_autospec(IKnowledgeVectorStore, instance=True)
-    vector_store.search.return_value = [_HIT]
     vector_store.hybrid_search.return_value = [{**_HIT, "rerank_score": 0.7}]
     service = _service(sanitizer, tracer, vector_store)
 
-    results = await service.search_knowledge(
-        "database timeout", limit=3, use_hybrid=use_hybrid, min_score=0.3
-    )
+    results = await service.search_knowledge("database timeout", limit=3, min_score=0.3)
 
     sanitizer.asanitize.assert_awaited_once_with("database timeout")
     assert tracer.trace.call_args_list == [
         call("knowledge_service_search"),
         call("knowledge_vector_search"),
     ]
-    expected = dict(
+    vector_store.hybrid_search.assert_awaited_once_with(
         collection_name=KB_COLLECTION,
         query="database timeout",
         k=3,
         where={"scope": "global"},
+        min_score=0.3,
+        admit=service.admitted_document_ids,
     )
-    if use_hybrid:
-        vector_store.hybrid_search.assert_awaited_once_with(**expected, min_score=0.3)
-        vector_store.search.assert_not_awaited()
-    else:
-        vector_store.search.assert_awaited_once_with(**expected)
-        vector_store.hybrid_search.assert_not_awaited()
+    vector_store.search.assert_not_awaited()
     assert [(r.title, r.parent_document_id) for r in results] == [
         ("Database pool exhaustion", "kb_pool")
     ]
-    assert results[0].rerank_score == (0.7 if use_hybrid else None)
+    assert results[0].rerank_score == 0.7
 
 
 async def test_index_path_writes_through_the_store_interface() -> None:

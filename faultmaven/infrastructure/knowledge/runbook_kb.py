@@ -9,7 +9,9 @@ the case-conversion flywheel (``ConversionService``) — reaches ChromaDB throug
 ``document_type``, ``scope``, ``owner_id``, ``title``, ``parent_document_id``.
 This class queries those rows directly: ``document_type == "runbook"`` is the
 artifact discriminator and the caller-supplied KB scope filter (built with
-``build_kb_scope_filter``) is the visibility predicate.
+``build_kb_scope_filter``) is the visibility predicate. A chunk counts only when
+the knowledge module's admission check (``admit``, taken at construction)
+returns its parent: a complete, published ``knowledge_items`` row (#2397).
 
 Until fm#1030 this class filtered on ``report_type == "runbook"``, a key that
 only its own — dead — write half stamped. No live writer wrote it, so every
@@ -25,9 +27,11 @@ from typing import Any, Dict, List
 
 from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.infrastructure.embedding_guard import embed_query_or_raise
+from faultmaven.infrastructure.knowledge.admission import chunk_parent_id
 from faultmaven.infrastructure.persistence.chromadb_store import ChromaDBVectorStore
 from faultmaven.infrastructure.vector_similarity import cosine_from_chroma_distance
 from faultmaven.models.exceptions import KnowledgeBaseError
+from faultmaven.models.interfaces import AdmitParents, require_admit
 from faultmaven.models.report import RunbookMatch
 
 logger = logging.getLogger(__name__)
@@ -57,7 +61,7 @@ class RunbookKnowledgeBase(BaseExternalClient):
     #: deeper, then collapse to distinct runbooks.
     CHUNK_FETCH_MULTIPLIER = 3
 
-    def __init__(self, vector_store: ChromaDBVectorStore):
+    def __init__(self, vector_store: ChromaDBVectorStore, *, admit: AdmitParents):
         """
         Initialize runbook knowledge base.
 
@@ -65,7 +69,11 @@ class RunbookKnowledgeBase(BaseExternalClient):
             vector_store: The KB vector store (``faultmaven_kb`` collection —
                 the same collection the live writer populates; runbooks have
                 no collection of their own).
+            admit: The knowledge module's admission check (#2397). Required
+                and refused when not callable (``TypeError``), so no dedup
+                read can skip it.
         """
+        require_admit(admit, reader="RunbookKnowledgeBase")
         super().__init__(
             client_name="runbook_knowledge_base",
             service_name="RunbookKB",
@@ -75,9 +83,12 @@ class RunbookKnowledgeBase(BaseExternalClient):
         )
 
         self.vector_store = vector_store
+        self._admit = admit
 
     @classmethod
-    def over_kb_collection(cls, kb_chromadb_client: Any) -> "RunbookKnowledgeBase":
+    def over_kb_collection(
+        cls, kb_chromadb_client: Any, *, admit: AdmitParents
+    ) -> "RunbookKnowledgeBase":
         """A dedup reader bound BY CONSTRUCTION to the KB writer's collection.
 
         The production KB writer is ``KnowledgeVectorStore.add_documents``,
@@ -97,7 +108,8 @@ class RunbookKnowledgeBase(BaseExternalClient):
         return cls(
             vector_store=ChromaDBVectorStore(
                 client=kb_chromadb_client, collection_name=KB_COLLECTION
-            )
+            ),
+            admit=admit,
         )
 
     async def search_by_text(
@@ -128,7 +140,8 @@ class RunbookKnowledgeBase(BaseExternalClient):
                 load exceeds ``EMBED_TIMEOUT_SECONDS``; also anything
                 :meth:`search_runbooks` raises, which this method delegates to
                 and does not catch (``RUNBOOK_SEARCH_UNSCOPED``,
-                ``RUNBOOK_SEARCH_FAILED``, ``RUNBOOK_RESULTS_UNREADABLE``). The
+                ``RUNBOOK_SEARCH_FAILED``, ``RUNBOOK_RESULTS_UNREADABLE``,
+                ``KNOWLEDGE_ADMISSION_UNAVAILABLE``). The
                 caller must NOT render any of them as "no similar runbooks
                 found" — that is the affirmative negative this method exists to
                 end.
@@ -199,8 +212,9 @@ class RunbookKnowledgeBase(BaseExternalClient):
         Search published runbooks by semantic similarity, within a scope.
 
         Queries the live KB chunk rows (``document_type == "runbook"`` under
-        ``scope_filter``), then collapses chunks to distinct runbooks: one
-        runbook is N chunk rows, so results are grouped by
+        ``scope_filter``), drops every chunk whose parent the admission check
+        does not return (#2397), then collapses chunks to distinct runbooks:
+        one runbook is N chunk rows, so results are grouped by
         ``parent_document_id`` taking the MAX chunk similarity per runbook,
         sorted descending, truncated to ``top_k``.
 
@@ -217,8 +231,10 @@ class RunbookKnowledgeBase(BaseExternalClient):
         Raises:
             KnowledgeBaseError: ``RUNBOOK_SEARCH_UNSCOPED`` if no scope filter
                 was supplied, ``RUNBOOK_SEARCH_FAILED`` if the vector query
-                itself failed, or ``RUNBOOK_RESULTS_UNREADABLE`` if rows matched
-                but the best of them carried no usable identity. None may be
+                itself failed, ``RUNBOOK_RESULTS_UNREADABLE`` if rows matched
+                but the best of them carried no usable identity, or what the
+                admission check raises when it could not run
+                (``KNOWLEDGE_ADMISSION_UNAVAILABLE``). None may be
                 rendered as "no similar runbooks found": callers turn an empty
                 list into "generate a new runbook", so a search that could not
                 be completed or could not be read must not answer as one that
@@ -277,7 +293,36 @@ class RunbookKnowledgeBase(BaseExternalClient):
             retries=2,
         )
 
+        # Row-checked (#2397), outside the retry and the breaker above: the
+        # check is a database read, and its failure is not ChromaDB's (#912).
+        results = await self._admitted(results)
+
         return self._parse(results, top_k=top_k, min_similarity=min_similarity)
+
+    async def _admitted(self, results: Any) -> Any:
+        """The raw query result, less the chunks whose parent is not admitted.
+
+        One ``admit`` call for the distinct parents of the query's rows, none
+        when nothing matched. Whatever ``admit`` raises propagates.
+        """
+        if not results or not results.get("ids") or not results["ids"][0]:
+            return results
+        ids = results["ids"][0]
+        metadatas = (results.get("metadatas") or [[]])[0] or []
+        distances = (results.get("distances") or [[]])[0] or []
+        parents = [
+            chunk_parent_id(chunk_id, metadatas[i] if i < len(metadatas) else None)
+            for i, chunk_id in enumerate(ids)
+        ]
+        wanted = sorted({parent for parent in parents if parent})
+        admitted = await self._admit(wanted) if wanted else set()
+        keep = [i for i, parent in enumerate(parents) if parent in admitted]
+        # Index-aligned, a missing entry read as :meth:`_parse` reads it.
+        return {
+            "ids": [[ids[i] for i in keep]],
+            "metadatas": [[metadatas[i] if i < len(metadatas) else {} for i in keep]],
+            "distances": [[distances[i] if i < len(distances) else 1.0 for i in keep]],
+        }
 
     def _parse(
         self, results: Any, *, top_k: int, min_similarity: float

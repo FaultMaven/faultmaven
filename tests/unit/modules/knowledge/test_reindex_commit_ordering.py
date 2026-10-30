@@ -28,6 +28,12 @@ that read would revert whatever another writer changed meanwhile — including
 at commit time, and (#1966) a targeted write of only the changed fields,
 followed by a read of the row as committed.
 
+What none of this does any more is delete vectors in-process (#2397). A row
+deleted or unpublished while the update embedded keeps the vectors the update
+wrote, and they are never served: every KB door admits a chunk only when its
+row is complete and published (``admitted_document_ids``, which the fake below
+answers from the row it models).
+
 The fake below models the ROW, not a single mock object: reads return a fresh
 view of current state and a successful commit is what changes it. That is what
 lets these tests tell "the commit failed" apart from "the commit landed but
@@ -127,6 +133,15 @@ def _service(state, *, commit_raises=None, commit_lands=True):
 
     repo = MagicMock()
     repo.get_by_id = AsyncMock(side_effect=lambda _id: _row_from(state))
+    # The admission check's query, over the modelled row: complete is implied
+    # (an update refuses an incomplete row before it starts).
+    repo.admitted_item_ids = AsyncMock(
+        side_effect=lambda ids: {
+            i
+            for i in ids
+            if i == "doc-1" and state["present"] and state["is_published"]
+        }
+    )
 
     async def _update_fields(item_id, fields, *, commit=True, touch=True):
         # The targeted write (#1966): only the named fields move, so a column
@@ -335,11 +350,10 @@ async def test_a_concurrent_unpublish_is_not_resurrected_by_the_commit():
 
 
 @pytest.mark.asyncio
-async def test_vectors_are_discarded_when_the_row_was_deleted_mid_update():
-    """Deleted while we embedded. Restoring "the previous content" would leave
-    chunks for a row that no longer exists, and orphan pruning only covers
-    built-in pack ids — an authored document would stay searchable after
-    deletion. Undo our own write instead, and report not-found."""
+async def test_a_row_deleted_mid_update_leaves_no_admitted_vector():
+    """Deleted while we embedded. The update reports not-found and makes no
+    vector delete of its own (#2397): the chunks it wrote sit under an id with
+    no row, which no KB door admits, and the orphan sweep collects."""
     state = _state()
     service, repo, calls = _service(state)
 
@@ -352,16 +366,12 @@ async def test_vectors_are_discarded_when_the_row_was_deleted_mid_update():
             result = await service.update_document_metadata(
                 document_id="doc-1", content=NEW_CONTENT
             )
+        admitted = await service.admitted_document_ids(["doc-1"])
 
     assert result is None, "a document deleted mid-update must report not-found"
-    # Counted, not merely "a delete happened": the swap itself deletes once
-    # before it adds, so `await_count >= 1` is satisfied by the swap and would
-    # pass with no compensation at all.
-    assert _kinds(calls) == [
-        "vector_delete",
-        "vector_add",
-        "vector_delete",
-    ], f"chunks for a deleted row were left behind: {_kinds(calls)}"
+    # The swap's own delete-then-add, and nothing after it.
+    assert _kinds(calls) == ["vector_delete", "vector_add"], _kinds(calls)
+    assert admitted == set()
 
 
 # ---------------------------------------------------------------------------
@@ -463,12 +473,10 @@ async def test_a_failed_restore_names_the_state_and_tells_the_operator_what_to_d
 
 
 @pytest.mark.asyncio
-async def test_a_concurrent_unpublish_also_drops_the_vectors_we_re_added():
-    """Re-reading fixes the SQL half of a retirement. It does not undo the
-    chunks this update already re-added — and retrieval does not honour
-    `is_published` (which is exactly why `delete_document` deletes vectors
-    rather than only clearing the flag). Leaving them keeps a retired runbook
-    queryable through chunks we wrote."""
+async def test_a_concurrent_unpublish_leaves_the_vectors_we_added_unadmitted():
+    """Re-reading fixes the SQL half of a retirement. The chunks this update
+    already re-added stay, and are never served: no KB door admits a chunk
+    whose row is unpublished (#2397), so nothing is deleted in-process."""
     state = _state()
     service, repo, calls = _service(state)
 
@@ -481,17 +489,37 @@ async def test_a_concurrent_unpublish_also_drops_the_vectors_we_re_added():
             await service.update_document_metadata(
                 document_id="doc-1", content=NEW_CONTENT
             )
+        admitted = await service.admitted_document_ids(["doc-1"])
 
     assert state["is_published"] is False, "the retirement was reverted in SQL"
-    assert _kinds(calls) == [
-        "vector_delete",
-        "vector_add",
-        "sql_commit",
-        "vector_delete",
-    ], (
-        "a retired runbook kept the vectors this update wrote, so it stays "
-        f"retrievable despite being unpublished: {_kinds(calls)}"
+    assert _kinds(calls) == ["vector_delete", "vector_add", "sql_commit"], _kinds(calls)
+    assert admitted == set()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_commit_on_a_row_unpublished_meanwhile_writes_nothing_more():
+    """The resynchronisation re-reads the row after a failed commit. One that
+    was unpublished meanwhile gets no restore and no vector delete (#2397):
+    its vectors are never served."""
+    state = _state()
+    service, repo, calls = _service(
+        state, commit_raises=RuntimeError("database gone"), commit_lands=False
     )
+
+    async def _embed_then_someone_unpublishes(texts):
+        state["is_published"] = False
+        return [[0.1] * 1024 for _ in texts]
+
+    with patch(_REPO, return_value=repo):
+        with patch(_EMBED_TEXTS, new=_embed_then_someone_unpublishes):
+            with pytest.raises(RuntimeError):
+                await service.update_document_metadata(
+                    document_id="doc-1", content=NEW_CONTENT
+                )
+        admitted = await service.admitted_document_ids(["doc-1"])
+
+    assert _kinds(calls) == ["vector_delete", "vector_add", "sql_commit"], _kinds(calls)
+    assert admitted == set()
 
 
 @pytest.mark.asyncio

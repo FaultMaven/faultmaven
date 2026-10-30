@@ -7,7 +7,8 @@ A published draft keeps its row: ``verified``, naming its item through
 now discard it in their own transaction, before their ``DELETE`` runs, with the
 item rows locked: the text is kept, the draft leaves the list, and a case job's
 live key is released once its last live draft goes. A delete that does not
-complete leaves the draft as it was.
+complete leaves the draft as it was; one whose vector delete fails after its
+commit has completed (#2397), and discards it.
 
 The SQLite tests run on the #2365 tests' database, which enforces foreign keys
 as the app's engine does, so a discard issued after the ``DELETE`` would match
@@ -207,14 +208,30 @@ async def test_the_key_release_counts_discards_not_yet_flushed(session_factory):
     assert (await _draft_and_key(session_factory, "a"))[1] is None
 
 
-@pytest.mark.parametrize("failure", ["zero_rows", "vectors", "commit", "cancelled"])
+async def test_a_delete_whose_vectors_fail_still_discards_its_draft(session_factory):
+    """The vector delete runs after the commit (#2397): its failure is logged,
+    the delete completes, and the draft is discarded with the row."""
+    knowledge = _knowledge(session_factory)
+    item_id, draft_id = await _publish(session_factory, knowledge, "case")
+    knowledge._vector_store.delete_documents_by_parent_id.side_effect = OSError()
+
+    result = await knowledge.delete_document(item_id)
+
+    assert result["action"] == "deleted"
+    assert await knowledge.admitted_document_ids([item_id]) == set()
+    draft, key = await _draft_and_key(session_factory, draft_id)
+    assert (draft.status, draft.knowledge_item_id, key) == ("discarded", None, None)
+    assert await _drafts(session_factory) == []
+
+
+@pytest.mark.parametrize("failure", ["zero_rows", "commit", "cancelled"])
 async def test_a_delete_that_does_not_complete_keeps_its_draft(
     session_factory, monkeypatch, failure
 ):
-    """No row matched, the vector delete failed, the commit failed, or the task
-    was cancelled inside the discard: the discard rolls back with the row
-    change. These pass where nothing discards; they pin that the discard is
-    the delete's own, so it is never applied without the delete."""
+    """No row matched, the commit failed, or the task was cancelled inside the
+    discard: the discard rolls back with the row change. These pass where
+    nothing discards; they pin that the discard is the delete's own, so it is
+    never applied without the delete."""
     factory = _FailingCommit(session_factory, (RuntimeError("commit failed"), False))
     knowledge = _knowledge(factory)
     item_id, draft_id = await _publish(session_factory, knowledge, "case")
@@ -228,8 +245,6 @@ async def test_a_delete_that_does_not_complete_keeps_its_draft(
         monkeypatch.setattr(
             DatabaseKnowledgeItemRepository, "delete", AsyncMock(return_value=False)
         )
-    elif failure == "vectors":
-        knowledge._vector_store.delete_documents_by_parent_id.side_effect = OSError()
     elif failure == "commit":
         factory.armed = True
     else:
@@ -243,7 +258,6 @@ async def test_a_delete_that_does_not_complete_keeps_its_draft(
 
     expected = {
         "zero_rows": dict,
-        "vectors": KnowledgeBaseError,
         "commit": RuntimeError,
         "cancelled": asyncio.CancelledError,
     }[failure]

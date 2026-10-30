@@ -55,11 +55,16 @@ from chromadb.errors import NotFoundError
 from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.infrastructure.chroma_client import blocking_executor_for
 from faultmaven.infrastructure.embedding_guard import embed_query_or_raise
+from faultmaven.infrastructure.knowledge.admission import admitted_hits
 from faultmaven.infrastructure.vector_similarity import (
     cosine_from_chroma_distance,
 )
 from faultmaven.models.exceptions import KnowledgeBaseError
-from faultmaven.models.interfaces import IKnowledgeVectorStore
+from faultmaven.models.interfaces import (
+    AdmitParents,
+    IKnowledgeVectorStore,
+    require_admit,
+)
 from faultmaven.models.vector_metadata import VectorMetadata
 from faultmaven.modules.knowledge.taxonomy import RunbookStatus
 
@@ -597,29 +602,62 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
         k: int = 5,
         where: Optional[Dict[str, Any]] = None,
         query_embedding: Optional[List[float]] = None,
+        *,
+        admit: AdmitParents,
     ) -> List[Dict[str, Any]]:
-        """Search for similar documents in a KB collection.
+        """Search for similar documents in a KB collection, row-checked.
+
+        :meth:`_recall` of ``k`` chunks, then the hits whose parent ``admit``
+        does not return are dropped (#2397). The check runs here, after the
+        ChromaDB call returns and outside its executor and retry, so fewer
+        than ``k`` hits can come back: a caller that needs ``k`` over-fetches.
 
         Args:
             collection_name: Exact ChromaDB collection name (no prefix added).
             query: Search query text.
-            k: Number of results to return.
+            k: Number of chunks recalled.
             where: ChromaDB metadata filters. **Required** for faultmaven_kb
                    collection (must include a SCOPE_FILTER_KEYS filter).
-            query_embedding: Precomputed vector for ``query``. Supplied by
-                   callers that already embedded the same text (see
-                   :meth:`hybrid_search`) so one query is not embedded twice.
-                   When None the query is embedded here, as before.
+            query_embedding: Precomputed vector for ``query``; when None the
+                   query is embedded here.
+            admit: The admission check (:data:`AdmitParents`).
 
         Returns:
-            List of matching documents with content, metadata, and scores.
+            Admitted matching documents with content, metadata, and scores.
 
         Raises:
+            TypeError: ``admit`` is not callable, before any ChromaDB call.
             ValueError: If a faultmaven_kb query's `where` clause names no
                 key from ``SCOPE_FILTER_KEYS`` — a presence check, not a
                 tenant check (see :meth:`_require_kb_filter_present`).
             KnowledgeBaseError: If the embedding model is unavailable. NOT an
                 empty result — see :meth:`_embed_query_or_raise`.
+            Whatever ``admit`` raises.
+        """
+        require_admit(admit, reader="KnowledgeVectorStore.search")
+        hits = await self._recall(
+            collection_name=collection_name,
+            query=query,
+            k=k,
+            where=where,
+            query_embedding=query_embedding,
+        )
+        return await admitted_hits(hits, admit)
+
+    async def _recall(
+        self,
+        collection_name: str,
+        query: str,
+        k: int = 5,
+        where: Optional[Dict[str, Any]] = None,
+        query_embedding: Optional[List[float]] = None,
+    ) -> List[Dict[str, Any]]:
+        """The vector recall: ``k`` chunks by similarity, NOT row-checked.
+
+        Private, and only ever reached through :meth:`search` and
+        :meth:`hybrid_search`, which apply ``admit`` to what it returns.
+        ``query_embedding`` is supplied by a caller that already embedded the
+        same text (:meth:`hybrid_search`), so one query is not embedded twice.
         """
         self._require_kb_filter_present(collection_name, where)
 
@@ -701,6 +739,8 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
         context_metadata: Optional[Dict[str, str]] = None,
         filter_mode: str = "soft",
         min_score: Optional[float] = None,
+        *,
+        admit: AdmitParents,
     ) -> List[Dict[str, Any]]:
         """Two-stage hybrid search: broad recall followed by reranking.
 
@@ -740,10 +780,20 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
                 ten — enough to fail a downstream corroboration guard on a
                 document that was retrieved perfectly well. A floor is an
                 admission criterion, so it belongs at admission.
+            admit: The admission check (:data:`AdmitParents`, #2397), awaited
+                once with the distinct parents of both arms' candidates after
+                the score floor. A candidate whose parent it does not return
+                is dropped before the rerank and the top-k cut, so a stray
+                chunk never takes an admitted hit's place in the window.
 
         Returns:
-            Top-k results sorted by reranked score.
+            Top-k admitted results sorted by reranked score.
+
+        Raises:
+            TypeError: ``admit`` is not callable, before any ChromaDB call.
+            Whatever :meth:`search` and ``admit`` raise.
         """
+        require_admit(admit, reader="KnowledgeVectorStore.hybrid_search")
         self._require_kb_filter_present(collection_name, where)
 
         # Hard filter mode: inject context_metadata into the where clause
@@ -760,7 +810,7 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
         # model call (~1.2-2.3s each on CPU) and dominated Stage-1 latency.
         query_embedding = await self._embed_query_or_raise(query, "hybrid search")
 
-        vector_results = await self.search(
+        vector_results = await self._recall(
             collection_name=collection_name,
             query=query,
             k=recall_k,
@@ -793,6 +843,10 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
 
         if min_score is not None:
             candidates = [c for c in candidates if c.get("score", 0.0) >= min_score]
+
+        # Row-checked (#2397): before the rerank and the cut, so the window is
+        # filled from admitted candidates only.
+        candidates = await admitted_hits(candidates, admit)
 
         if not candidates:
             return []

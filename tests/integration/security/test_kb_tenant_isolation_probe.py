@@ -174,6 +174,7 @@ from faultmaven.modules.knowledge.domain.services.knowledge_service import (
 )
 from faultmaven.providers.tenancy.factory import BUILTIN_MULTI, BUILTIN_SINGLE
 from tests.model_content import disabled_redaction
+from tests.utils import admit_every_parent
 
 pytestmark = [pytest.mark.integration, pytest.mark.security]
 
@@ -378,9 +379,12 @@ async def _ids(
                 where=where,
                 context_metadata=context_metadata,
                 filter_mode=filter_mode,
+                admit=admit_every_parent,
             )
         else:
-            results = await store.search(KB_COLLECTION, query, k=25, where=where)
+            results = await store.search(
+                KB_COLLECTION, query, k=25, where=where, admit=admit_every_parent
+            )
     return {r["id"] for r in results}
 
 
@@ -499,7 +503,13 @@ class _CapturingRouter:
 
 def _kb_tool(store: KnowledgeVectorStore) -> tuple:
     router = _CapturingRouter(prompts=[])
-    return KBToolAdapter(AnswerFromKB(vector_store=store, llm_router=router)), router
+    return (
+        KBToolAdapter(
+            AnswerFromKB(vector_store=store, llm_router=router),
+            admit=admit_every_parent,
+        ),
+        router,
+    )
 
 
 def _tool_context(**overrides) -> ToolContext:
@@ -547,7 +557,8 @@ async def test_a_prompt_injected_question_cannot_move_the_filter(store):
     An injected instruction is therefore just text — this pins that it stays
     text, and that the schema offers no lever to promote it.
     """
-    assert set(KBToolAdapter(None).parameters_schema["properties"]) == {"question"}, (
+    adapter = KBToolAdapter(None, admit=admit_every_parent)
+    assert set(adapter.parameters_schema["properties"]) == {"question"}, (
         "the KB tool exposes a parameter beyond `question` — anything the "
         "model can set is a candidate for moving the tenant boundary"
     )
@@ -997,6 +1008,9 @@ _SOURCE_ROOT = pathlib.Path(__file__).resolve().parents[3] / "faultmaven"
 _KB_READ_METHODS = {
     "search",
     "hybrid_search",
+    # The store's private recall, behind ``search`` and ``hybrid_search``
+    # (#2397): it reads ChromaDB with the filter it is handed.
+    "_recall",
     "query_by_embedding",
     "search_by_text",
     "search_runbooks",
@@ -1017,6 +1031,7 @@ _FILTER_KWARGS = {"where", "scope_filter", "filters"}
 _FILTER_POSITIONS = {
     "search": 3,  # (collection_name, query, k, where)
     "hybrid_search": 3,  # (collection_name, query, k, where)
+    "_recall": 3,  # (collection_name, query, k, where)
     "query_by_embedding": 1,  # (query_embedding, where)
     "search_knowledge": 2,  # (query, limit, filters)
 }
@@ -1024,7 +1039,7 @@ _FILTER_POSITIONS = {
 #: ``search`` is a common method name — the case repository has one too, called
 #: with four positionals. For the two collection-addressed readers, a positional
 #: filter therefore only counts when the call names the KB collection.
-_COLLECTION_ADDRESSED = {"search", "hybrid_search"}
+_COLLECTION_ADDRESSED = {"search", "hybrid_search", "_recall"}
 
 
 def _names_kb_collection(node: ast.AST) -> bool:
@@ -1072,7 +1087,8 @@ _FILTER_ORIGINS = {
 #: except ``search_knowledge``, whose no-filter fallback is the platform tier
 #: alone (``{"scope": "global"}``), which is narrower than any caller's scope.
 _KB_READ_SITES = {
-    # store internals: forward their own `where` parameter
+    # store internals: forward their own `where` parameter to `_recall`
+    ("infrastructure/knowledge/knowledge_vector_store.py", "search"),
     ("infrastructure/knowledge/knowledge_vector_store.py", "hybrid_search"),
     ("infrastructure/knowledge/runbook_kb.py", "search_by_text"),
     ("infrastructure/knowledge/runbook_kb.py", "search_runbooks._query"),

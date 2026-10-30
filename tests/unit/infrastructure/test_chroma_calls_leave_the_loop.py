@@ -33,6 +33,7 @@ from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
 )
 from faultmaven.infrastructure.persistence.case_vector_store import CaseVectorStore
 from faultmaven.infrastructure.persistence.chromadb_store import ChromaDBVectorStore
+from tests.utils import admit_every_parent
 
 pytestmark = [pytest.mark.unit]
 
@@ -159,13 +160,19 @@ _TABLE: List[Tuple[str, Callable[[Any], Any], StoreCall]] = [
         "kb.search",
         KnowledgeVectorStore,
         lambda s: s.search(
-            KB_COLLECTION, "disk full", where=_KB_WHERE, query_embedding=_EMBEDDING
+            KB_COLLECTION,
+            "disk full",
+            where=_KB_WHERE,
+            query_embedding=_EMBEDDING,
+            admit=admit_every_parent,
         ),
     ),
     (
         "kb.hybrid_search",
         KnowledgeVectorStore,
-        lambda s: s.hybrid_search(KB_COLLECTION, "ENOSPC disk full", where=_KB_WHERE),
+        lambda s: s.hybrid_search(
+            KB_COLLECTION, "ENOSPC disk full", where=_KB_WHERE, admit=admit_every_parent
+        ),
     ),
     (
         "kb.add_documents",

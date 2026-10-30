@@ -90,7 +90,7 @@ class TestHitIdentity:
         assert result.rerank_score == pytest.approx(0.71)
 
     @pytest.mark.asyncio
-    async def test_pure_vector_hits_carry_no_rerank_score(self):
+    async def test_a_hit_with_no_rerank_score_carries_none(self):
         """Absent, not defaulted — a consumer must be able to tell 'unknown'."""
         hit = {k: v for k, v in _HIT.items() if k != "rerank_score"}
         service = _service(_store([hit]))
@@ -100,19 +100,26 @@ class TestHitIdentity:
 
 class TestHybridDispatch:
     @pytest.mark.asyncio
-    async def test_use_hybrid_routes_to_hybrid_search_with_the_floor(self):
+    async def test_the_push_routes_to_hybrid_search_with_the_floor_and_the_check(
+        self,
+    ):
         store = _store([_HIT])
         service = _service(store)
         await service.search_knowledge(
-            "q", limit=10, filters={"scope": "global"}, use_hybrid=True, min_score=0.5
+            "q", limit=10, filters={"scope": "global"}, min_score=0.5
         )
         store.search.assert_not_called()
-        assert store.hybrid_search.call_args.kwargs["min_score"] == 0.5
+        kwargs = store.hybrid_search.call_args.kwargs
+        assert kwargs["min_score"] == 0.5
+        # Row-checked (#2397): the service's own admission check.
+        assert kwargs["admit"] == service.admitted_document_ids
 
     @pytest.mark.asyncio
-    async def test_default_is_unchanged_pure_vector(self):
+    async def test_there_is_no_pure_vector_path(self):
+        """The pure-vector branch had no production caller and, under the
+        admission filter, would under-fill by asking for exactly ``limit``."""
         store = _store([_HIT])
         service = _service(store)
         await service.search_knowledge("q", filters={"scope": "global"})
-        store.hybrid_search.assert_not_called()
-        store.search.assert_called_once()
+        store.search.assert_not_called()
+        store.hybrid_search.assert_called_once()

@@ -2083,9 +2083,11 @@ class ConversionService:
             # (422), so not logged as an ingestion failure.
             raise
         except Exception as e:
-            # `ingest_runbook` ran its cleanup before raising, and what that
-            # cleanup keeps is the residual list in its docstring. The draft
-            # stays in DRAFT state; the caller gets a 500 and can retry.
+            # `ingest_runbook` ran its cleanup before raising: its row is gone,
+            # and any vectors it wrote are under an id no row admits, so no KB
+            # door serves them; its docstring states the failure contract. The
+            # draft stays in DRAFT state; the caller gets a 500 and can retry,
+            # which mints a fresh id.
             logger.error(f"Ingestion failed for draft {draft_id}: {e}")
             raise
 

@@ -63,10 +63,8 @@ def _make_mock_container(
     else:
         container.web_search_tool = None
 
-    if has_kb:
-        container.kb_adapter = _make_mock_tool("kb_qa")
-    else:
-        container.kb_adapter = None
+    # The wrapped kb_qa tool; the registry builds its adapter (#2397).
+    container.kb_qa_tool = MagicMock() if has_kb else None
 
     # Ensure remaining tool attributes are explicitly None to avoid MagicMock auto-attributes
     container.vectorize_file_tool = None
@@ -94,7 +92,7 @@ class TestCreateInvestigationTools:
             has_deep_analysis=True,
         )
 
-        registry = _create_investigation_tools(container)
+        registry = _create_investigation_tools(container, knowledge_service=MagicMock())
 
         assert registry is not None
         tool_names = registry.list_tools()
@@ -109,7 +107,7 @@ class TestCreateInvestigationTools:
             has_deep_analysis=False,
         )
 
-        registry = _create_investigation_tools(container)
+        registry = _create_investigation_tools(container, knowledge_service=MagicMock())
 
         assert registry is not None
         tool_names = registry.list_tools()
@@ -123,7 +121,7 @@ class TestCreateInvestigationTools:
             has_deep_analysis=True,
         )
 
-        registry = _create_investigation_tools(container)
+        registry = _create_investigation_tools(container, knowledge_service=MagicMock())
 
         assert registry is not None
         tool_names = registry.list_tools()
@@ -137,7 +135,7 @@ class TestCreateInvestigationTools:
             has_deep_analysis=False,
         )
 
-        registry = _create_investigation_tools(container)
+        registry = _create_investigation_tools(container, knowledge_service=MagicMock())
 
         assert registry is None
 
@@ -148,7 +146,7 @@ class TestCreateInvestigationTools:
             has_deep_analysis=True,
         )
 
-        registry = _create_investigation_tools(container)
+        registry = _create_investigation_tools(container, knowledge_service=MagicMock())
 
         tool_names = registry.list_tools()
         assert sorted(tool_names) == ["deep_analysis", "search_file"]

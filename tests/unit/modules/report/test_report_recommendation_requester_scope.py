@@ -28,6 +28,7 @@ from faultmaven.modules.report.domain.services.report_recommendation_service imp
     ReportRecommendationService,
 )
 from tests.case_builders import investigating_case
+from tests.utils import admit_every_parent
 
 pytestmark = [pytest.mark.unit]
 
@@ -46,7 +47,7 @@ class _RecordingRunbookKB(RunbookKnowledgeBase):
     """
 
     def __init__(self) -> None:
-        super().__init__(vector_store=MagicMock())
+        super().__init__(vector_store=MagicMock(), admit=admit_every_parent)
         self.scopes: List[Optional[Dict[str, Any]]] = []
 
     async def search_runbooks(

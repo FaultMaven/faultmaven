@@ -35,6 +35,7 @@ async def test_the_kb_tool_runs_hybrid_search_on_the_kb_store_interface() -> Non
         {"scope": "global"},
         redaction_ctx=sentinel.redaction_ctx,
         empty_result="nothing",
+        admit=sentinel.admit,
     )
 
     assert result["answer"] == "nothing"
@@ -43,6 +44,7 @@ async def test_the_kb_tool_runs_hybrid_search_on_the_kb_store_interface() -> Non
         query="pool exhausted",
         k=5,
         where={"scope": "global"},
+        admit=sentinel.admit,
     )
     store.search.assert_not_awaited()
     assert router.mock_calls == []

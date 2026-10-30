@@ -9,8 +9,13 @@ disk with the production PRAGMAs (WAL, busy_timeout), or a fresh PostgreSQL
 database — because an in-memory engine shares one connection and would let
 every interleaving through.
 
-The delete's hold (row change uncommitted, vectors already deleted) is widened
-by gating its ``commit`` on an event, standing in for the commit round trip or
+The writer that loses such a race writes vectors under a row that is gone or
+unpublished. No writer deletes them in-process any more (#2397): no KB door
+admits a chunk whose row is not complete and published, so the outcome each
+test pins is that the document is not admitted
+(``KnowledgeService.admitted_document_ids``, the real query), whatever the
+store holds. The delete's hold (row change issued, not committed) is widened by
+gating its ``commit`` on an event, standing in for the commit round trip or
 another replica's timing. Built from the review round's probes on PR #1992.
 """
 
@@ -61,6 +66,7 @@ class _KbStore:
 
     def __init__(self) -> None:
         self.parents: dict[str, int] = {}
+        self.deleted: list[str] = []
 
     async def delete_documents_by_parent_id(
         self,
@@ -69,6 +75,7 @@ class _KbStore:
         *,
         retries: int = 2,
     ) -> int:
+        self.deleted.append(parent_document_id)
         return self.parents.pop(parent_document_id, 0)
 
     async def list_all_chunk_ids_by_parent(self) -> dict:
@@ -182,17 +189,27 @@ async def _world(engine, dialect):
         async with factory() as session:
             return await DatabaseKnowledgeItemRepository(session).get_by_id(item_id)
 
+    async def admitted(item_id):
+        return item_id in await svc.admitted_document_ids([item_id])
+
     try:
         yield SimpleNamespace(
-            dialect=dialect, svc=svc, store=store, seed=seed, row=row, factory=factory
+            dialect=dialect,
+            svc=svc,
+            store=store,
+            seed=seed,
+            row=row,
+            admitted=admitted,
+            factory=factory,
         )
     finally:
         await engine.dispose()
 
 
 class _HeldDelete:
-    """``delete_document`` stopped at its commit: the row change is issued and
-    the vectors are gone, but nothing is committed until ``release``."""
+    """``delete_document`` stopped at its commit: the row change is issued,
+    holding the row (PostgreSQL) or the writer lock (SQLite), but nothing is
+    committed until ``release``."""
 
     def __init__(self, svc, item_id):
         self._svc, self._item_id = svc, item_id
@@ -229,17 +246,18 @@ class _HeldDelete:
 
 
 # ---------------------------------------------------------------------------
-# Item 1: a repair racing a delete must not bring the chunks back
+# Item 1: a repair racing a delete never makes the document servable again
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(("item_id", "scope"), ARMS)
-async def test_a_delete_during_the_repair_embed_leaves_no_chunk(race, item_id, scope):
-    """The split state's repair is embedding when the user's retried delete
-    lands and commits. The repair read the row before the embed; without the
-    re-read after writing, its vectors outlive the row (authored: a chunk with
-    no row, for good) or the unpublish (built-in: a retired runbook
-    retrievable)."""
+async def test_a_delete_during_the_repair_embed_leaves_nothing_admitted(
+    race, item_id, scope
+):
+    """The repair is embedding when the user's delete lands and commits. Its
+    vectors land under a row that is gone (authored) or unpublished
+    (built-in); the repair makes no vector delete for them, and no door admits
+    them (#2397)."""
     await race.seed(item_id, scope, chunks=0)  # published, vectors missing
     entered, release = asyncio.Event(), asyncio.Event()
 
@@ -250,44 +268,40 @@ async def test_a_delete_during_the_repair_embed_leaves_no_chunk(race, item_id, s
         return 3
 
     race.svc._index_document_in_vector_store = gated_index
-    repairing = asyncio.create_task(
-        race.svc.reindex_missing_vectors(item_id, role_may_update=True)
-    )
+    repairing = asyncio.create_task(race.svc.reindex_missing_vectors(item_id))
     await asyncio.wait_for(entered.wait(), 10)
 
     removed = await race.svc.delete_document(item_id)
     release.set()
-    chunks = await asyncio.wait_for(repairing, 10)
+    await asyncio.wait_for(repairing, 10)
 
     assert removed["success"] is True
-    assert chunks == 0
-    assert item_id not in race.store.parents
+    assert race.store.parents[item_id] == 3  # left for collection
+    assert not await race.admitted(item_id)
+    # The authored delete's own best-effort vector delete ran before the
+    # repair's late write; nothing deleted vectors after it.
+    expected = [item_id] if scope == KnowledgeScope.PERSONAL else []
+    assert race.store.deleted == expected
     row = await race.row(item_id)
     assert row is None if scope == KnowledgeScope.PERSONAL else not row.is_published
 
 
 @pytest.mark.parametrize(("item_id", "scope"), ARMS)
-async def test_a_repair_during_the_delete_hold_waits_for_it(race, item_id, scope):
-    """The other order: the delete has removed the vectors and holds its row
-    change while a repair embeds and writes. The repair's locked re-read waits
-    for the delete and then sees it — ``FOR SHARE`` on PostgreSQL; on SQLite,
-    which ignores that clause and lets a reader see the last committed state,
-    a no-op write that must first take the writer lock. A plain re-read kept
-    the vectors on SQLite: an authored chunk with no row, for good (review
-    probe R3).
-    """
+async def test_a_repair_during_the_delete_hold_leaves_nothing_admitted(
+    race, item_id, scope
+):
+    """The other order: the delete holds its row change while a repair embeds
+    and writes. Whichever order they finish in, once the delete commits the
+    document is not admitted, and the repair never deleted a vector."""
     await race.seed(item_id, scope)
     async with _HeldDelete(race.svc, item_id) as held:
-        repairing = asyncio.create_task(
-            race.svc.reindex_missing_vectors(item_id, role_may_update=True)
-        )
-        await asyncio.sleep(0.5)
-        assert not repairing.done(), "the re-read did not wait for the held delete"
-    chunks = await asyncio.wait_for(repairing, 10)
+        repairing = asyncio.create_task(race.svc.reindex_missing_vectors(item_id))
+        await asyncio.sleep(0.2)
+    await asyncio.wait_for(repairing, 10)
 
     assert (await held.task)["success"] is True
-    assert chunks == 0
-    assert item_id not in race.store.parents
+    assert not await race.admitted(item_id)
+    assert race.store.deleted == ([item_id] if scope == KnowledgeScope.PERSONAL else [])
 
 
 # ---------------------------------------------------------------------------
@@ -295,12 +309,11 @@ async def test_a_repair_during_the_delete_hold_waits_for_it(race, item_id, scope
 # ---------------------------------------------------------------------------
 
 
-async def test_an_edit_racing_an_unpublish_neither_reverts_it_nor_keeps_vectors(race):
+async def test_an_edit_racing_an_unpublish_neither_reverts_it_nor_serves_it(race):
     """R5: the unpublish holds while a content edit re-indexes and writes. A
-    full-row write from the edit's re-read put ``is_published`` back to true
-    and kept the vectors it wrote. The targeted write waits for the unpublish
-    (row lock / writer lock), leaves the flag alone, and the read after its
-    commit drops the vectors."""
+    full-row write from the edit's re-read put ``is_published`` back to true.
+    The targeted write waits for the unpublish (row lock / writer lock) and
+    leaves the flag alone, so the vectors the edit wrote are never served."""
     await race.seed(BUILTIN_ID, KnowledgeScope.GLOBAL)
     async with _HeldDelete(race.svc, BUILTIN_ID) as held:
         editing = asyncio.create_task(
@@ -313,7 +326,8 @@ async def test_an_edit_racing_an_unpublish_neither_reverts_it_nor_keeps_vectors(
     assert edited is not None and edited["content"] == "# edited\nbody2"
     row = await race.row(BUILTIN_ID)
     assert row.is_published is False, "the edit republished the retired runbook"
-    assert BUILTIN_ID not in race.store.parents
+    assert not await race.admitted(BUILTIN_ID)
+    assert race.store.deleted == []  # the edit's discard is gone (#2397)
 
 
 # ---------------------------------------------------------------------------

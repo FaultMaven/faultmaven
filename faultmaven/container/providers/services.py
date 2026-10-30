@@ -19,7 +19,11 @@ from faultmaven.container.errors import RequiredServiceConstructionError
 if TYPE_CHECKING:
     from faultmaven.config.settings import FaultMavenSettings
     from faultmaven.container.base import BaseDIContainer
-    from faultmaven.models.interfaces import IAgentToolRegistry, IKnowledgeVectorStore
+    from faultmaven.models.interfaces import (
+        AdmitParents,
+        IAgentToolRegistry,
+        IKnowledgeVectorStore,
+    )
     from faultmaven.modules.auth.domain.services.jwt_token_generator import (
         OrganizationResolver,
     )
@@ -133,8 +137,14 @@ def create_case_service(
 def create_runbook_dedup_kb(
     knowledge_vector_store: IKnowledgeVectorStore | None,
     kb_chromadb_client: Any | None,
+    *,
+    admit: AdmitParents,
 ) -> Any | None:
     """Create the runbook-dedup reader, bound to the KB WRITER's collection.
+
+    ``admit`` is the knowledge service's admission check
+    (``admitted_document_ids``): the reader serves a chunk only when its
+    parent has a complete, published row (#2397).
 
     ``KnowledgeService`` writes through ``knowledge_vector_store`` and nothing
     else (see the knowledge-service wiring below). The dedup reader must land
@@ -171,7 +181,7 @@ def create_runbook_dedup_kb(
         return None
     from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
 
-    return RunbookKnowledgeBase.over_kb_collection(kb_chromadb_client)
+    return RunbookKnowledgeBase.over_kb_collection(kb_chromadb_client, admit=admit)
 
 
 def create_milestone_engine(
@@ -241,6 +251,8 @@ def create_milestone_engine(
 
 def _create_investigation_tools(
     container: "BaseDIContainer",
+    *,
+    knowledge_service: Any,
 ) -> IAgentToolRegistry | None:
     """Create an AgentToolRegistry with investigation tools for MilestoneEngine.
 
@@ -253,6 +265,11 @@ def _create_investigation_tools(
       semantic search, given together or not at all
     - find_entity / list_top_entities: entity registry (FAULTMAVEN_ENTITY_REGISTRY)
     - reclassify_evidence: evidence reclassification (FAULTMAVEN_RECLASSIFY_ENABLED)
+
+    The ``kb_qa`` adapter is built here, around ``container.kb_qa_tool``, with
+    ``knowledge_service.admitted_document_ids`` bound as its admission check
+    (#2397): the tool is built before the knowledge service exists, and this
+    runs after it.
 
     Returns:
         AgentToolRegistry with investigation tools, or None if no tools available.
@@ -277,13 +294,20 @@ def _create_investigation_tools(
         registry.register(web_search_tool)
         tool_count += 1
 
-    kb_adapter = getattr(container, "kb_adapter", None)
-    if kb_adapter:
-        registry.register(kb_adapter)
+    kb_qa_tool = getattr(container, "kb_qa_tool", None)
+    if kb_qa_tool:
+        from faultmaven.modules.agent.tools.kb_tool_adapter import KBToolAdapter
+
+        registry.register(
+            KBToolAdapter(
+                wrapped_tool=kb_qa_tool,
+                admit=knowledge_service.admitted_document_ids,
+            )
+        )
         tool_count += 1
     else:
         logger.warning(
-            "kb_adapter not available — KB runbook search disabled for investigations"
+            "kb_qa tool not available — KB runbook search disabled for investigations"
         )
 
     # ``vectorize_file`` is given only beside ``case_evidence_search`` (#1939):
@@ -1638,7 +1662,9 @@ def register_services(container: BaseDIContainer) -> None:
     # Milestone Engine (with investigation tools for evidence searching).
     # Agent tools read evidence directly from case.evidence via case_repository.
     llm_provider = container.get_service("llm_provider")
-    investigation_tools = _create_investigation_tools(container)
+    investigation_tools = _create_investigation_tools(
+        container, knowledge_service=knowledge_service
+    )
 
     # Dedicated DA provider for directed analysis tool loop (DA_PROVIDER in .env)
     from faultmaven.container.providers.infrastructure import create_da_provider
@@ -1658,6 +1684,7 @@ def register_services(container: BaseDIContainer) -> None:
     runbook_kb = create_runbook_dedup_kb(
         knowledge_vector_store=getattr(container, "knowledge_vector_store", None),
         kb_chromadb_client=getattr(container, "kb_chromadb_client", None),
+        admit=knowledge_service.admitted_document_ids,
     )
     container.runbook_kb = runbook_kb
     if runbook_kb:

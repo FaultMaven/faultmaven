@@ -453,6 +453,10 @@ class TestIncompleteIngest:
         assert await repo.visible_item_ids([done.item_id, pending.item_id], **who) == {
             done.item_id
         }
+        # Nor does KB retrieval admit its chunks (#2397).
+        assert await repo.admitted_item_ids([done.item_id, pending.item_id]) == {
+            done.item_id
+        }
         for found in (
             await repo.search_by_tags(enterprise, ["t"]),
             await repo.get_items_without_embeddings(enterprise),
@@ -461,7 +465,6 @@ class TestIncompleteIngest:
             assert [i.item_id for i in found] == [done.item_id]
 
         assert (await repo.get_by_id(pending.item_id)).ingest_complete is False
-        assert await repo.read_is_published(pending.item_id, lock=False) is True
 
     @pytest.mark.asyncio
     async def test_the_flip_is_guarded_by_the_stamp_and_lands_on_commit(
@@ -540,28 +543,23 @@ class TestTargetedWrite:
         assert stored.updated_at == before
 
     @pytest.mark.asyncio
-    async def test_the_locked_read_reports_publication_and_writes_nothing(
+    async def test_admitted_ids_are_the_complete_published_rows(
         self, deferring_repository
     ):
-        """``read_is_published``: None for no row, the flag otherwise, locked
-        or not. Locked on SQLite it takes the writer lock with a no-op write,
-        which must leave the row exactly as it was once the caller rolls
-        back. SQLite has no roles, so ``may_update`` is always true."""
+        """``admitted_item_ids``, the KB retrieval admission rule (#2397): a
+        complete, published row is admitted; an unpublished one and an absent
+        id are not; no id asks nothing. SQLite has no roles, so
+        ``may_update`` is always true."""
         repo = deferring_repository
-        item = await repo.create(create_sample_item())
-        before = await repo.get_by_id(item.item_id)
+        live = await repo.create(create_sample_item())
+        retired = await repo.create(create_sample_item())
+        await repo.update_fields(retired.item_id, {"is_published": False})
 
         assert await repo.may_update() is True
-        for lock in (True, False):
-            assert await repo.read_is_published("ki_absent", lock=lock) is None
-            assert await repo.read_is_published(item.item_id, lock=lock) is True
-            await repo.rollback()
-        await repo.update_fields(item.item_id, {"is_published": False})
-        assert await repo.read_is_published(item.item_id, lock=True) is False
-        await repo.rollback()
-
-        after = await repo.get_by_id(item.item_id)
-        assert after.title == before.title and after.content == before.content
+        assert await repo.admitted_item_ids(
+            [live.item_id, retired.item_id, "ki_absent", ""]
+        ) == {live.item_id}
+        assert await repo.admitted_item_ids([]) == set()
 
     @pytest.mark.asyncio
     async def test_an_unknown_field_is_refused(self, deferring_repository):

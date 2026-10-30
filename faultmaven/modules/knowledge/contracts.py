@@ -32,21 +32,41 @@ if TYPE_CHECKING:
 class IKnowledgeService(Protocol):
     """Service interface for Knowledge business logic.
 
-    KB retrieval during investigation is handled by the kb_qa tool
-    (via the tool-augmented generation loop), not by this interface.
-    The tool path provides proper scope filtering via ToolContext.
-    See: modules/agent/tools/kb_qa.py, kb_tool_adapter.py.
+    Every KB read door — the investigation pre-fetch (push), the ``kb_qa``
+    tool (pull), ``POST /knowledge/search`` and runbook dedup — admits a
+    chunk only through :meth:`admitted_document_ids` (#2397): the stores
+    apply it as their ``admit`` callback and never read ``knowledge_items``
+    themselves. Which rows a caller may read stays the vector filter's
+    decision (``build_kb_scope_filter``, carried to the tool on
+    ``ToolContext``).
     """
+
+    async def admitted_document_ids(self, document_ids: Sequence[str]) -> "Set[str]":
+        """The subset of ``document_ids`` whose row is complete and published.
+
+        The one KB retrieval admission check (#2397), in ONE query: a chunk is
+        served only when its parent is in the answer, so an incomplete
+        ingest's row, an unpublished built-in and vectors with no row at all
+        are never served. No caller identity — visibility is the vector
+        filter's. Raises ``KnowledgeBaseError``
+        (``KNOWLEDGE_ADMISSION_UNAVAILABLE``) when the check cannot run, and
+        never answers the empty set for a failure: each door then fails as it
+        does on a store error (#943, #944).
+        """
+        ...
 
     async def delete_document(self, document_id: str) -> Dict[str, Any]:
         """Remove a document: hard-delete an authored one, unpublish a built-in.
 
         Returns ``{"success": True, "document_id", "action"}`` (action
-        ``"deleted"`` or ``"unpublished"``) once the document has no
-        retrievable chunk, or ``{"success": False, "error"}`` when it is absent
-        or no row could be changed. Raises ``KnowledgeBaseError`` when its
-        vectors could not be removed — the row change is then rolled back, the
-        document is still listed, and a retry completes the delete (#1966).
+        ``"deleted"`` or ``"unpublished"``) once the row change has committed:
+        from then on no chunk of the document is retrievable through a KB door,
+        because no door admits a chunk whose row is gone or unpublished. Its
+        vectors are removed afterwards, best effort (an authored document's
+        only); what is left is never served and is collected later. Returns
+        ``{"success": False, "error"}`` when the document is absent or no row
+        could be changed. An excerpt a case's prompt already carries stays
+        there until that case's next KB fetch.
         """
         ...
 

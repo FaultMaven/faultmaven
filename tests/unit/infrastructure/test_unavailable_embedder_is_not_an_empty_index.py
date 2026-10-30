@@ -44,6 +44,7 @@ from faultmaven.modules.agent.tools.base import ToolContext
 from faultmaven.modules.agent.tools.case_evidence_qa import AnswerFromCaseEvidence
 from faultmaven.modules.agent.tools.kb_tool_adapter import CaseEvidenceQAAdapter
 from tests.model_content import disabled_redaction
+from tests.utils import admit_every_parent
 
 pytestmark = [pytest.mark.unit]
 
@@ -98,6 +99,7 @@ _STORES = [
             collection_name="faultmaven_kb",
             query="how do I drain a node?",
             where={"scope": "global"},
+            admit=admit_every_parent,
         ),
         id="knowledge_vector_store",
     ),
@@ -118,7 +120,7 @@ _STORES = [
     # on the strength of the timeout and circuit-breaker cases, not the refusal.
     pytest.param(
         lambda client: RunbookKnowledgeBase(
-            vector_store=ChromaDBVectorStore(client=client)
+            vector_store=ChromaDBVectorStore(client=client), admit=admit_every_parent
         ),
         lambda store: store.search_by_text(
             query_text="disk pressure on the payment node",

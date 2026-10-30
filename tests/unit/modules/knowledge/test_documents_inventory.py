@@ -391,7 +391,7 @@ class TestInventoryServiceDB:
         svc, _ = inventory_service
         assert await svc.get_document("nope") is None
 
-    async def test_delete_builtin_unpublishes_and_drops_vectors(
+    async def test_delete_builtin_unpublishes_with_no_vector_call(
         self, inventory_service
     ):
         svc, factory = inventory_service
@@ -408,11 +408,10 @@ class TestInventoryServiceDB:
         assert item is not None
         assert item.is_published is False
 
-        # Gotcha lock: vectors MUST be deleted (retrieval ignores is_published).
-        # One attempt: the row change is held open across this call (#1966).
-        svc._vector_store.delete_documents_by_parent_id.assert_awaited_once_with(
-            BUILTIN_ID, retries=0
-        )
+        # A SQL-only flip (#2397): retrieval admits no chunk of an unpublished
+        # row, and the boot reconcile collects its vectors.
+        assert await svc.admitted_document_ids([BUILTIN_ID]) == set()
+        svc._vector_store.delete_documents_by_parent_id.assert_not_awaited()
 
     async def test_delete_refused_rows_never_touch_vectors(self, inventory_service):
         """When the SQL delete matches zero rows (RLS refusal under multi, or a
@@ -452,8 +451,10 @@ class TestInventoryServiceDB:
             repo = DatabaseKnowledgeItemRepository(session)
             assert await repo.get_by_id(AUTHORED_ID) is None
 
+        # After the commit, best effort (#2397): no transaction is held, so
+        # the store's own retries apply.
         svc._vector_store.delete_documents_by_parent_id.assert_awaited_once_with(
-            AUTHORED_ID, retries=0
+            AUTHORED_ID
         )
 
     async def test_delete_missing_document_returns_failure(self, inventory_service):

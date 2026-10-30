@@ -14,7 +14,7 @@ import logging
 from typing import Any, Dict
 
 from faultmaven.exceptions import RawModelContentRefused
-from faultmaven.models.interfaces import ToolResult
+from faultmaven.models.interfaces import AdmitParents, ToolResult, require_admit
 from faultmaven.modules.agent.tools.base import AgentTool, ToolContext, tool_failure
 from faultmaven.modules.agent.tools.kb_configs.case_evidence_config import (
     CaseEvidenceConfig,
@@ -33,10 +33,18 @@ class KBToolAdapter(AgentTool):
     procedures, under the case's scope filter from ``ToolContext`` (the case
     driver's knowledge, #1919). Never under anything the model supplies: the
     only parameter is the question.
+
+    ``admit`` is the knowledge module's admission check, bound when the
+    adapter is built (``_create_investigation_tools``): every search the tool
+    runs serves only chunks whose parent has a complete, published row
+    (#2397). Required, and refused when not callable, so a ``kb_qa`` that
+    could skip the check cannot be built.
     """
 
-    def __init__(self, wrapped_tool: Any):
+    def __init__(self, wrapped_tool: Any, *, admit: AdmitParents):
+        require_admit(admit, reader="KBToolAdapter")
         self._wrapped = wrapped_tool
+        self._admit = admit
 
     @property
     def name(self) -> str:
@@ -98,6 +106,7 @@ class KBToolAdapter(AgentTool):
                 scope_filter=context.kb_scope_filter,
                 k=5,
                 redaction_ctx=context.redaction_ctx,
+                admit=self._admit,
             )
             return ToolResult(success=True, data=result, error=None)
         except RawModelContentRefused:

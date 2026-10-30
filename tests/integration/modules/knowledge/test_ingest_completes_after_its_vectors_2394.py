@@ -6,10 +6,12 @@ any failed ingest left behind went live at the next boot. One such row is
 beyond every cleanup: the INSERT's COMMIT completing on the server after the
 caller gave up on it. An authored row now carries ``ingest_complete`` false from
 its INSERT until one guarded UPDATE, with its team share, after its vectors are
-written: until then it is listed to no one and never re-embedded, and the KB
-bootstrap sweeps it with its vectors once stale. A pack row is complete from its
-INSERT. Driven through the real service on SQLite with foreign keys enforced,
-reusing the #2365 / #2378 helpers.
+written: until then it is listed to no one, never re-embedded and no KB door
+admits its chunks (#2397), and the KB bootstrap sweeps it with its vectors once
+stale. A pack row is complete from its INSERT. A failed ingest's cleanup removes
+its row and never its vectors: they are left under an id no row admits. Driven
+through the real service on SQLite with foreign keys enforced, reusing the
+#2365 / #2378 helpers.
 """
 
 from __future__ import annotations
@@ -131,19 +133,19 @@ async def _visible(factory) -> dict[str, bool]:
             "listed": DOC_ID in [i.item_id for i in listed],
             "by_id": await repo.get_visible_by_id(DOC_ID, **who) is not None,
             "ids": DOC_ID in await repo.visible_item_ids([DOC_ID], **who),
+            # Whether a KB door serves its chunks (#2397).
+            "admitted": DOC_ID in await repo.admitted_item_ids([DOC_ID]),
         }
 
 
-SHOWN = dict.fromkeys(("listed", "by_id", "ids"), True)
+SHOWN = dict.fromkeys(("listed", "by_id", "ids", "admitted"), True)
 HIDDEN = dict.fromkeys(SHOWN, False)
 
 
 async def _repair(service, factory):
     """The startup reconcile and repair, in ``bootstrap_kb``'s order."""
     _, _, orphaned = await kb_init._reconcile_vectors(service, factory)
-    repaired, _ = await kb_init._repair_orphaned_rows(
-        orphaned, service, role_may_update=True
-    )
+    repaired, _ = await kb_init._repair_orphaned_rows(orphaned, service)
     return orphaned, repaired
 
 
@@ -326,7 +328,7 @@ async def test_an_insert_that_commits_after_its_cleanup_is_never_listed_or_repai
     assert await _rows(session_factory) == {**NOTHING, "knowledge_items": 1}
     assert await _visible(session_factory) == HIDDEN
     assert await _repair(service, session_factory) == ([], [])
-    assert await service.reindex_missing_vectors(DOC_ID, role_may_update=True) == 0
+    assert await service.reindex_missing_vectors(DOC_ID) == 0
     assert store.chunks == {}
     assert await _complete(session_factory) is False
 
@@ -381,9 +383,9 @@ async def test_the_flip_leaves_a_peer_row_alone(session_factory):
 
 async def test_a_flip_that_matches_no_row_raises_into_the_cleanup(session_factory):
     """This call's row was removed while it embedded (a delete, or the sweep of
-    a slow ingest): the flip matches no row and raises, and the cleanup
-    removes this call's chunks. On ``main`` the call reported success with no
-    row and its chunks stayed."""
+    a slow ingest): the flip matches no row and raises. The cleanup deletes no
+    vector (#2397): this call's chunks stay under an id with no row, which no
+    KB door admits. Before #2394 the call reported success with no row."""
     store = _Index()
     service = _service(
         session_factory, store, then=lambda: _delete_the_row(session_factory)
@@ -393,7 +395,8 @@ async def test_a_flip_that_matches_no_row_raises_into_the_cleanup(session_factor
         await _ingest(service)
 
     assert await _rows(session_factory) == NOTHING
-    assert store.chunks == {}
+    assert sorted(store.chunks) == THIS_CHUNKS
+    assert await service.admitted_document_ids([DOC_ID]) == set()
 
 
 async def test_an_incomplete_row_is_read_and_deleted_but_never_edited_or_reindexed(
@@ -413,7 +416,7 @@ async def test_an_incomplete_row_is_read_and_deleted_but_never_edited_or_reindex
         )
         is None
     )
-    assert await service.reindex_missing_vectors(DOC_ID, role_may_update=True) == 0
+    assert await service.reindex_missing_vectors(DOC_ID) == 0
     service._index_document_in_vector_store.assert_not_awaited()
     assert (await service.get_document(DOC_ID))["title"] == "Stray"
 
@@ -579,7 +582,11 @@ async def test_a_pack_ingest_whose_share_fails_leaves_nothing(session_factory):
     assert store.chunks == {}
 
 
-async def test_a_pack_ingest_whose_vectors_fail_leaves_nothing(session_factory):
+async def test_a_pack_ingest_whose_vectors_fail_leaves_no_admitted_chunk(
+    session_factory,
+):
+    """The row goes and the chunks the store wrote stay, unadmitted (#2397),
+    for the next pack-loading bootstrap to collect."""
     store = _Index()
 
     async def the_store_fails_after_the_write():
@@ -591,7 +598,8 @@ async def test_a_pack_ingest_whose_vectors_fail_leaves_nothing(session_factory):
         await _ingest_shipped(service)
 
     assert await _rows(session_factory) == NOTHING
-    assert store.chunks == {}
+    assert sorted(store.chunks) == THIS_CHUNKS
+    assert await service.admitted_document_ids([DOC_ID]) == set()
 
 
 @pytest.mark.parametrize("peer", ["live", "gone"])
@@ -602,7 +610,8 @@ async def test_a_pack_cleanup_spares_a_live_peer_and_clears_when_none_stands(
     row was deleted (``gone``) or deleted and re-created by a ``kb_init`` peer
     with another ``created_at``, its share and its chunks (``live``).
     ``live``: ``standing`` is true, and the peer's row, share and chunks
-    stay. ``gone``: no row stands, and this ingest's share and chunks go."""
+    stay. ``gone``: no row stands, and this ingest's share goes; its chunks
+    stay under an id no row admits (#2397)."""
     store = _Index()
 
     async def a_peer_then_the_store_fails():
@@ -624,7 +633,8 @@ async def test_a_pack_cleanup_spares_a_live_peer_and_clears_when_none_stands(
         assert sorted(store.chunks) == ["peer-0", "peer-1", "peer-2"]
     else:
         assert await _rows(session_factory) == NOTHING
-        assert store.chunks == {}
+        assert sorted(store.chunks) == THIS_CHUNKS
+        assert await service.admitted_document_ids([DOC_ID]) == set()
 
 
 # ---------------------------------------------------------------------------
@@ -643,7 +653,9 @@ async def test_a_cleanup_waits_on_the_flip_and_then_matches_the_row(flip):
     ends, and the ``created_at``-guarded delete of
     ``_delete_knowledge_item_row`` waits on it: this engine sets no
     ``statement_timeout``, so the wait is unbounded here. Once the flip
-    commits or rolls back, the delete matches the row."""
+    commits or rolls back, the delete matches the row. Committed, the row was
+    complete: the cleanup still removes it, so a caller told "failed" is not
+    left with a live item (#2397 critique B2), and it deletes no vector."""
     enterprise, owner = f"ent_2394_{uuid4().hex[:8]}", f"user-2394-{uuid4().hex[:8]}"
     engine = create_async_engine(os.environ["DATABASE_URL"])
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
@@ -662,9 +674,7 @@ async def test_a_cleanup_waits_on_the_flip_and_then_matches_the_row(flip):
             assert await repo.mark_ingest_complete(item.item_id, created_at=stamp)
             backend = await flipping.scalar(select(func.pg_backend_pid()))
             cleanup = asyncio.create_task(
-                service._delete_knowledge_item_row(
-                    item.item_id, created_at=stamp, indexed=True
-                )
+                service._delete_knowledge_item_row(item.item_id, created_at=stamp)
             )
             await _until_blocked_by(factory, backend)
             assert not cleanup.done()
@@ -676,9 +686,7 @@ async def test_a_cleanup_waits_on_the_flip_and_then_matches_the_row(flip):
 
         async with factory() as session:
             assert await session.get(KnowledgeItemModel, item.item_id) is None
-        service._vector_store.delete_documents_by_parent_id.assert_awaited_once_with(
-            item.item_id
-        )
+        service._vector_store.delete_documents_by_parent_id.assert_not_awaited()
     finally:
         async with factory() as session:
             for model in (KnowledgeItemModel, UserModel, EnterpriseModel):

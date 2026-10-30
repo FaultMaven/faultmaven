@@ -307,7 +307,8 @@ async def test_a_vector_failure_leaves_nothing(session_factory, scope, caplog):
 async def test_a_failed_row_write_withdraws_the_item(session_factory, error, landed):
     """A commit refused, or one that landed and still raised or was cancelled:
     no row remains, so withdrawing the item cannot leave a verified draft with a
-    NULL item (the key's ``SET NULL``), and the item's vectors are removed."""
+    NULL item (the key's ``SET NULL``). The item's vectors are removed best
+    effort, after its row (#2397)."""
     factory = _FailingCommit(session_factory, (error, landed))
     service = _knowledge(factory)
     factory.arm_after_ingestion(service)
@@ -318,17 +319,24 @@ async def test_a_failed_row_write_withdraws_the_item(session_factory, error, lan
     assert raised.value is error
     document_id = service._index_document_in_vector_store.await_args.args[0].document_id
     service._vector_store.delete_documents_by_parent_id.assert_awaited_once_with(
-        document_id, retries=0
+        document_id
     )
     assert await _rows(session_factory) == NOTHING
     assert await _drafts(session_factory) == []
 
 
-async def test_a_failed_withdrawal_names_the_item(session_factory, caplog):
+async def test_a_failed_withdrawal_names_the_item(session_factory, caplog, monkeypatch):
+    """The withdrawal's delete cannot remove the item row. (A vector failure
+    no longer fails it: the delete completes once its row change commits,
+    #2397.)"""
     factory = _FailingCommit(session_factory, (RuntimeError("commit failed"), False))
     service = _knowledge(factory)
     factory.arm_after_ingestion(service)
-    service._vector_store.delete_documents_by_parent_id.side_effect = OSError("down")
+    monkeypatch.setattr(
+        DatabaseKnowledgeItemRepository,
+        "delete",
+        AsyncMock(side_effect=OSError("down")),
+    )
 
     with (
         caplog.at_level(logging.ERROR),
@@ -382,7 +390,7 @@ async def test_rows_that_cannot_be_removed_keep_their_item(session_factory, capl
 async def test_a_failed_share_write_leaves_nothing(session_factory, monkeypatch):
     """The share is written in the ingest's completing transaction (#2394), so
     its failure takes the completion with it, and the cleanup removes the
-    row and the vectors."""
+    row; never the vectors, which no row then admits (#2397)."""
     monkeypatch.setattr(
         PostgreSQLShareRepository,
         "share",
@@ -394,7 +402,7 @@ async def test_a_failed_share_write_leaves_nothing(session_factory, monkeypatch)
         await _upload(service, scope="team")
 
     assert await _rows(session_factory) == NOTHING
-    service._vector_store.delete_documents_by_parent_id.assert_awaited_once()
+    service._vector_store.delete_documents_by_parent_id.assert_not_awaited()
 
 
 async def test_an_item_row_that_survives_keeps_its_share(
@@ -434,25 +442,39 @@ async def test_an_item_row_that_survives_keeps_its_share(
 
 class _AddsThenRaises:
     """A vector store that applies ``add_documents`` and then raises, as a
-    remote store can inside the retry ladder."""
+    remote store can inside the retry ladder, or a call that timed out after
+    the server applied it (#2063)."""
 
-    def __init__(self) -> None:
+    def __init__(self, error: Exception) -> None:
+        self.error = error
         self.chunks: dict[str, str] = {}
         self.added = 0
+        self.deleted: list[str] = []
 
     async def add_documents(self, documents, embeddings):
         self.chunks.update(
             {d["id"]: d["metadata"]["parent_document_id"] for d in documents}
         )
         self.added += len(documents)
-        raise RuntimeError("store failed after the write")
+        raise self.error
 
     async def delete_documents_by_parent_id(self, parent_id, retries=2):
+        self.deleted.append(parent_id)
         for chunk_id in [k for k, v in self.chunks.items() if v == parent_id]:
             del self.chunks[chunk_id]
 
 
-async def test_vectors_a_failed_store_wrote_are_removed(session_factory, monkeypatch):
+@pytest.mark.parametrize(
+    "error",
+    [RuntimeError("store failed after the write"), TimeoutError("add timed out")],
+    ids=["raised", "timed-out"],
+)
+async def test_vectors_a_failed_store_wrote_are_never_served(
+    session_factory, monkeypatch, error
+):
+    """#2063: the write may have landed. Nothing deletes it in-process (the
+    indexer's pre-delete ran before the add); the row goes, so no KB door
+    admits the chunks, and the orphan sweep collects them."""
     monkeypatch.setattr(
         embedding_guard,
         "embed_texts_or_raise",
@@ -460,14 +482,18 @@ async def test_vectors_a_failed_store_wrote_are_removed(session_factory, monkeyp
     )
     service = _knowledge(session_factory)
     del service._index_document_in_vector_store  # the real indexer
-    service._vector_store = vectors = _AddsThenRaises()
+    service._vector_store = vectors = _AddsThenRaises(error)
 
     with pytest.raises(KnowledgeBaseError):
         await _upload(service)
 
     assert vectors.added > 0
-    assert vectors.chunks == {}
+    parents = sorted(set(vectors.chunks.values()))
+    assert len(parents) == 1, vectors.chunks
+    # One delete: the indexer's own pre-delete, before its add.
+    assert vectors.deleted == parents
     assert await _rows(session_factory) == NOTHING
+    assert await service.admitted_document_ids(parents) == set()
 
 
 @pytest.mark.parametrize(
@@ -510,7 +536,13 @@ async def test_a_cancelled_upload_leaves_nothing(session_factory, during, how):
             await parked.wait()
             group.cancel_scope.cancel()
 
-    service._vector_store.delete_documents_by_parent_id.assert_awaited()
+    # Cancelled in the ingest: its cleanup is SQL only (#2397). Cancelled at
+    # the row write: the withdrawal's delete removes the vectors best effort.
+    vector_delete = service._vector_store.delete_documents_by_parent_id
+    if during == "row_write":
+        vector_delete.assert_awaited()
+    else:
+        vector_delete.assert_not_awaited()
     assert await _rows(session_factory) == NOTHING
     assert await _drafts(session_factory) == []
 

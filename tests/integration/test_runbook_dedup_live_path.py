@@ -197,7 +197,9 @@ async def test_a_published_runbook_is_found_by_dedup_and_only_within_its_scope(
 
     # The reader the container builds: bound BY CONSTRUCTION to the writer's
     # collection constant, not to the settings-derived name.
-    kb = RunbookKnowledgeBase.over_kb_collection(client)
+    kb = RunbookKnowledgeBase.over_kb_collection(
+        client, admit=service.admitted_document_ids
+    )
     assert kb.vector_store.collection_name == KB_COLLECTION
 
     with patch(
@@ -289,7 +291,8 @@ async def test_the_dedup_reader_binds_the_writers_collection_not_the_settings_on
     misbound = RunbookKnowledgeBase(
         vector_store=ChromaDBVectorStore(
             client=client, collection_name="custom_kb_from_settings"
-        )
+        ),
+        admit=service.admitted_document_ids,
     )
     assert (
         await misbound.search_runbooks(
@@ -299,7 +302,9 @@ async def test_the_dedup_reader_binds_the_writers_collection_not_the_settings_on
     ), "precondition failed: the collection split is not observable"
 
     # The container's binding.
-    bound = RunbookKnowledgeBase.over_kb_collection(client)
+    bound = RunbookKnowledgeBase.over_kb_collection(
+        client, admit=service.admitted_document_ids
+    )
     matches = await bound.search_runbooks(
         query_embedding=list(_TOY_EMBEDDING), scope_filter=scope
     )
@@ -339,7 +344,9 @@ async def test_a_pack_published_global_runbook_is_found_by_every_principal(
     )
     assert chunks_created == 2
 
-    kb = RunbookKnowledgeBase.over_kb_collection(client)
+    kb = RunbookKnowledgeBase.over_kb_collection(
+        client, admit=service.admitted_document_ids
+    )
 
     for principal in ("user-a", None):
         matches = await kb.search_runbooks(

@@ -90,10 +90,8 @@ from faultmaven.modules.agent.tools.base import AgentTool, ToolContext
 from faultmaven.modules.agent.tools.case_evidence_qa import AnswerFromCaseEvidence
 from faultmaven.modules.agent.tools.deep_analysis_tool import DeepAnalysisTool
 from faultmaven.modules.agent.tools.find_entity_tool import FindEntityTool
-from faultmaven.modules.agent.tools.kb_tool_adapter import (
-    CaseEvidenceQAAdapter,
-    KBToolAdapter,
-)
+from faultmaven.modules.agent.tools.kb_qa import AnswerFromKB
+from faultmaven.modules.agent.tools.kb_tool_adapter import CaseEvidenceQAAdapter
 from faultmaven.modules.agent.tools.list_top_entities_tool import ListTopEntitiesTool
 from faultmaven.modules.agent.tools.reclassify_evidence_tool import (
     ReclassifyEvidenceTool,
@@ -115,6 +113,7 @@ from faultmaven.modules.case.contracts import (
 )
 from faultmaven.modules.case.domain.models.progress import MitigationRecord
 from tests.model_content import disabled_redaction
+from tests.utils import admit_every_parent
 
 pytestmark = pytest.mark.unit
 
@@ -147,7 +146,9 @@ _DEFAULT_TOOLS = dict(
     search_file_tool=SearchFileTool,
     deep_analysis_tool=DeepAnalysisTool,
     web_search_tool=WebSearchTool,
-    kb_adapter=KBToolAdapter,
+    # The wrapped tool: the registry builds the ``kb_qa`` adapter around it,
+    # bound to the knowledge service's admission check (#2397).
+    kb_qa_tool=AnswerFromKB,
     vectorize_file_tool=VectorizeFileTool,
     case_evidence_qa_adapter=CaseEvidenceQAAdapter,
 )
@@ -173,7 +174,10 @@ def _bare(cls):
 
 def given(present: dict) -> set[str]:
     container = SimpleNamespace(**{k: _bare(c) for k, c in present.items()})
-    registry = _create_investigation_tools(container)
+    registry = _create_investigation_tools(
+        container,
+        knowledge_service=SimpleNamespace(admitted_document_ids=admit_every_parent),
+    )
     return {t.name for t in registry.get_all_tools()} if registry else set()
 
 
@@ -368,14 +372,14 @@ def _minus(*attrs: str) -> dict:
 #: ``ToolCallingUnsupportedError`` fallback, the #662 retry).
 ROWS: dict[str, frozenset[str]] = {
     "six": frozenset(given(_DEFAULT_TOOLS)),
-    "no_kb": frozenset(given(_minus("kb_adapter"))),
+    "no_kb": frozenset(given(_minus("kb_qa_tool"))),
     "no_deep_analysis": frozenset(given(_minus("deep_analysis_tool"))),
     "no_web_search": frozenset(given(_minus("web_search_tool"))),
     # SKIP_SERVICE_CHECKS, or no vector stores: neither QA adapter is built,
     # while the container still builds vectorize_file_tool — the registry is
     # what keeps it from being given alone.
     "no_vector_stores": frozenset(
-        given(_minus("kb_adapter", "case_evidence_qa_adapter"))
+        given(_minus("kb_qa_tool", "case_evidence_qa_adapter"))
     ),
     "entity": frozenset(given({**_DEFAULT_TOOLS, **_ENTITY_TOOLS})),
     "reclassify": frozenset(given({**_DEFAULT_TOOLS, **_RECLASSIFY_TOOLS})),

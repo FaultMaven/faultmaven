@@ -219,27 +219,26 @@ class KbPrefetcher:
             # pool, see the constant — and render only the top
             # KB_CONTEXT_MAX_ENTRIES into the prompt.
             #
-            # HYBRID, not pure vector (#1272). An operator writes what they
-            # SAW — "cannot write its PID file", "qemu failed to start" — and
-            # those words are precisely what an embedding smooths into the
-            # neighbourhood of every other "process won't start" runbook. On
-            # the shipped pack that put the runbook covering the failure at
-            # rank 70 of 91 while the top ten were all Kubernetes. Adding the
-            # keyword-constrained arm and the IDF-weighted reranker moves it to
-            # rank 1 for the same query, and pure vector search cannot: the
-            # fetch limit is applied to CHUNKS before any floor, so no
-            # threshold value can admit a chunk ranked 369th.
+            # HYBRID, not pure vector (#1272): ``search_knowledge`` retrieves
+            # through the store's hybrid pipeline only. An operator writes
+            # what they SAW — "cannot write its PID file", "qemu failed to
+            # start" — and those words are precisely what an embedding smooths
+            # into the neighbourhood of every other "process won't start"
+            # runbook. On the shipped pack that put the runbook covering the
+            # failure at rank 70 of 91 while the top ten were all Kubernetes.
+            # Adding the keyword-constrained arm and the IDF-weighted reranker
+            # moves it to rank 1 for the same query, and pure vector search
+            # cannot: the fetch limit is applied to CHUNKS before any floor, so
+            # no threshold value can admit a chunk ranked 369th.
             results = await self.deps.knowledge_service.search_knowledge(
                 query=query,
                 limit=KB_PREFETCH_FETCH_LIMIT,
                 filters=scope_filter,
-                use_hybrid=True,
                 # The floor goes in at ADMISSION, not after ranking. Hybrid
                 # results are ordered by the reranker's blend, so the filter
                 # below would thin this window from the middle: on a measured
                 # query it left 2 hits where 10 were asked for. The filter
-                # below stays as the
-                # authority (and still governs the pure-vector fallback).
+                # below stays as the authority.
                 min_score=KB_PREFETCH_RELEVANCE_THRESHOLD,
             )
             relevant = [

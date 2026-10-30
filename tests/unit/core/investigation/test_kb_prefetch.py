@@ -49,15 +49,11 @@ class _SearchRecordingStub:
         self.results = results
         self.filters_seen = []
         self.limits_seen = []
-        self.hybrid_seen = []
         self.min_score_seen = []
 
-    async def search_knowledge(
-        self, query, limit=10, filters=None, use_hybrid=False, min_score=None
-    ):
+    async def search_knowledge(self, query, limit=10, filters=None, min_score=None):
         self.filters_seen.append(filters)
         self.limits_seen.append(limit)
-        self.hybrid_seen.append(use_hybrid)
         self.min_score_seen.append(min_score)
         return self.results
 
@@ -74,17 +70,17 @@ def _search_hit(score=0.9, parent_id="rb1"):
 
 class TestPrefetchUsesHybridRetrieval:
     @pytest.mark.asyncio
-    async def test_prefetch_asks_for_hybrid_and_floors_at_admission(self):
+    async def test_prefetch_floors_at_admission(self):
+        """The pre-fetch hands its floor to the store's admission; that
+        ``search_knowledge`` is hybrid-only (pure vector put the runbook
+        covering #1272's incident at rank 70 of 91) is pinned in
+        ``test_search_result_identity_1272.py``."""
         service = MagicMock()
         service.search_knowledge = AsyncMock(return_value=[])
         engine = _engine(service)
         await engine.kb_prefetcher.prefetch_kb_context(_case(), "disk full", "symptom")
         kwargs = service.search_knowledge.call_args.kwargs
-        assert kwargs["use_hybrid"] is True, (
-            "pure vector search puts the runbook covering #1272's incident at "
-            "rank 70 of 91; no floor value can rescue a chunk ranked 369th "
-            "because the fetch limit is applied to chunks before any floor"
-        )
+        assert "use_hybrid" not in kwargs
         assert kwargs["min_score"] == KB_PREFETCH_RELEVANCE_THRESHOLD
         assert kwargs["limit"] == KB_PREFETCH_FETCH_LIMIT
 

@@ -57,7 +57,7 @@ import logging
 from abc import ABC, abstractmethod
 from copy import deepcopy
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Sequence, Set
 
 from sqlalchemy import and_, delete, func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
@@ -277,20 +277,6 @@ class KnowledgeItemRepository(ABC):
         """
         pass
 
-    @abstractmethod
-    async def read_is_published(self, item_id: str, *, lock: bool) -> Optional[bool]:
-        """Whether ``item_id`` is published (``None``: no such row) (#1966).
-
-        For a caller that has just written vectors for a row read earlier and
-        must know whether a delete or unpublish landed meanwhile. ``lock=True``
-        reads AFTER any writer still holding the row has finished — including
-        one whose row change is issued but not yet committed — and needs a
-        role that :meth:`may_update`; the caller rolls its session back
-        afterwards, which releases the lock. ``lock=False`` is a plain read of
-        the last committed state.
-        """
-        pass
-
     # =========================================================================
     # Query Operations
     # =========================================================================
@@ -318,7 +304,7 @@ class KnowledgeItemRepository(ABC):
         tenant-isolated set. RBAC lives here, NOT in a post-fetch Python
         filter, so a personal/team item can never leak across tenants. A row
         whose ingest has not completed is listed to no one (#2394), as by every
-        reader below but :meth:`get_by_id` and :meth:`read_is_published`.
+        reader below but :meth:`get_by_id`.
         """
         pass
 
@@ -340,10 +326,11 @@ class KnowledgeItemRepository(ABC):
 
         Additionally the row must be **published or the requester's own**: for
         a built-in global runbook, unpublish IS the delete semantics
-        (``KnowledgeService.delete_document`` keeps the row and drops the
-        vectors), so serving an unpublished row by id would hand deleted
-        content to any authenticated caller. The owner exemption keeps an
-        author's own unpublished draft reachable by id.
+        (``KnowledgeService.delete_document`` keeps the row and clears
+        ``is_published``, which retrieval honours through
+        :meth:`admitted_item_ids`), so serving an unpublished row by id would
+        hand deleted content to any authenticated caller. The owner exemption
+        keeps an author's own unpublished draft reachable by id.
         """
         pass
 
@@ -363,6 +350,20 @@ class KnowledgeItemRepository(ABC):
         its row. Absent ids and invisible ids are both left out. Backs the
         per-viewer gate on stored runbook excerpts (``gate_kb_sources``), which
         checks a whole response's ids at once.
+        """
+        pass
+
+    @abstractmethod
+    async def admitted_item_ids(self, item_ids: Sequence[str]) -> Set[str]:
+        """The subset of ``item_ids`` whose row is complete and published (#2397).
+
+        The KB retrieval admission rule, in ONE query: a chunk is served only
+        when its parent's row is in this set. It has no caller identity —
+        which rows a caller may read is the vector filter's decision, and
+        under PostgreSQL RLS the session's own read policy can only narrow the
+        answer. Absent ids are left out. Raises
+        ``KnowledgeItemRepositoryException`` when the read fails: a caller
+        must never read a failure as "nothing admitted".
         """
         pass
 
@@ -657,35 +658,6 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
             ).scalar()
         )
 
-    async def read_is_published(self, item_id: str, *, lock: bool) -> Optional[bool]:
-        """Read of ``is_published`` (see the base class).
-
-        With ``lock``: PostgreSQL ``SELECT ... FOR SHARE`` waits for an
-        uncommitted ``UPDATE``/``DELETE`` of the row, then reads its outcome
-        (it needs UPDATE privilege). SQLite ignores that clause, and under WAL
-        a reader sees the last committed state while a writer still holds its
-        lock, so the read is preceded by a no-op write of the row: it must take
-        the database's writer lock first, which waits (``busy_timeout``) for
-        the held change to commit. The no-op write changes nothing
-        (``updated_at`` included) and is discarded by the caller's rollback.
-        """
-        where = KnowledgeItemModel.item_id == item_id
-        query = select(KnowledgeItemModel.is_published).where(where)
-        if lock:
-            if self.db.get_bind().dialect.name == "sqlite":
-                await self.db.execute(
-                    update(KnowledgeItemModel)
-                    .where(where)
-                    .values(
-                        is_published=KnowledgeItemModel.is_published,
-                        updated_at=KnowledgeItemModel.updated_at,
-                    )
-                    .execution_options(synchronize_session=False)
-                )
-            query = query.with_for_update(read=True)
-        found = (await self.db.execute(query)).first()
-        return None if found is None else bool(found[0])
-
     # =========================================================================
     # Query Operations
     # =========================================================================
@@ -861,6 +833,28 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
             logger.error(f"Failed to resolve visible knowledge item ids: {e}")
             raise KnowledgeItemRepositoryException(
                 f"Failed to resolve visible knowledge item ids: {e}"
+            ) from e
+
+    async def admitted_item_ids(self, item_ids: Sequence[str]) -> Set[str]:
+        """One SELECT of the ids whose row is complete and published."""
+        ids = sorted({i for i in item_ids if i})
+        if not ids:
+            return set()
+        try:
+            stmt = select(KnowledgeItemModel.item_id).where(
+                and_(
+                    KnowledgeItemModel.item_id.in_(ids),
+                    KnowledgeItemModel.ingest_complete == True,  # noqa: E712
+                    KnowledgeItemModel.is_published == True,  # noqa: E712
+                )
+            )
+            result = await self.db.execute(stmt)
+            return set(result.scalars().all())
+
+        except Exception as e:
+            logger.error(f"Failed to resolve admitted knowledge item ids: {e}")
+            raise KnowledgeItemRepositoryException(
+                f"Failed to resolve admitted knowledge item ids: {e}"
             ) from e
 
     async def search_by_tags(
@@ -1201,11 +1195,6 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
         """No roles in memory."""
         return True
 
-    async def read_is_published(self, item_id: str, *, lock: bool) -> Optional[bool]:
-        """Committed ``is_published`` (no concurrent writers to wait for)."""
-        item = self._items.get(item_id)
-        return None if item is None else bool(item.is_published)
-
     # =========================================================================
     # Query Operations
     # =========================================================================
@@ -1288,6 +1277,16 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
             if await self.get_visible_by_id(item_id, enterprise_id, user_id, team_ids):
                 visible.add(item_id)
         return visible
+
+    async def admitted_item_ids(self, item_ids: Sequence[str]) -> Set[str]:
+        """The ids whose committed row is complete and published."""
+        return {
+            item_id
+            for item_id in {i for i in item_ids if i}
+            if (item := self._items.get(item_id)) is not None
+            and item.ingest_complete
+            and item.is_published
+        }
 
     async def search_by_tags(
         self,

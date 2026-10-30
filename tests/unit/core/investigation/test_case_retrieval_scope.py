@@ -25,6 +25,7 @@ from faultmaven.core.investigation.milestone_engine.retrieval_scope import (
 )
 from faultmaven.core.investigation.prompts.templates.tool_text import NO_TOOLS
 from tests.model_content import disabled_redaction
+from tests.utils import admit_every_parent
 
 pytestmark = [pytest.mark.unit, pytest.mark.security]
 
@@ -190,9 +191,7 @@ class _SearchRecorder:
     def __init__(self) -> None:
         self.filters_seen: List[Optional[Dict[str, Any]]] = []
 
-    async def search_knowledge(
-        self, query, limit=10, filters=None, use_hybrid=False, min_score=None
-    ):
+    async def search_knowledge(self, query, limit=10, filters=None, min_score=None):
         self.filters_seen.append(filters)
         return [
             SimpleNamespace(
@@ -277,13 +276,17 @@ async def test_pull_the_kb_tool_searches_exactly_the_context_scope():
     wrapped = MagicMock()
     wrapped._arun = AsyncMock(return_value="answer")
 
-    result = await KBToolAdapter(wrapped).execute_with_context(
-        {"question": "q"}, context
-    )
+    result = await KBToolAdapter(
+        wrapped, admit=admit_every_parent
+    ).execute_with_context({"question": "q"}, context)
 
     assert result.success, result.error
     wrapped._arun.assert_awaited_once_with(
-        question="q", scope_filter=DRIVER_SCOPE, k=5, redaction_ctx=redaction
+        question="q",
+        scope_filter=DRIVER_SCOPE,
+        k=5,
+        redaction_ctx=redaction,
+        admit=admit_every_parent,
     )
 
 

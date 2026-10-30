@@ -159,7 +159,7 @@ class _RecordingVectorStore:
     def __init__(self):
         self.wheres = []
 
-    async def search(self, collection_name, query, k=5, where=None):
+    async def search(self, collection_name, query, k=5, where=None, *, admit):
         self.wheres.append(where)
         return []
 

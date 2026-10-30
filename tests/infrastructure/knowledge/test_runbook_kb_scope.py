@@ -45,6 +45,7 @@ from faultmaven.models.vector_metadata import VectorMetadata
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     build_kb_scope_filter,
 )
+from tests.utils import admit_every_parent
 
 pytestmark = [pytest.mark.knowledge_base]
 
@@ -176,7 +177,7 @@ def store(request) -> _ChromaBackedStore:
 
 @pytest.fixture()
 def kb(store) -> RunbookKnowledgeBase:
-    return RunbookKnowledgeBase(vector_store=store)
+    return RunbookKnowledgeBase(vector_store=store, admit=admit_every_parent)
 
 
 # ---------------------------------------------------------------------------

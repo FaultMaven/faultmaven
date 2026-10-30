@@ -63,9 +63,7 @@ class _Knowledge:
         self.calls = []
         self.filters = []
 
-    async def search_knowledge(
-        self, query, limit=10, filters=None, use_hybrid=False, min_score=None
-    ):
+    async def search_knowledge(self, query, limit=10, filters=None, min_score=None):
         self.calls.append(query)
         self.filters.append(filters)
         if self.fail:

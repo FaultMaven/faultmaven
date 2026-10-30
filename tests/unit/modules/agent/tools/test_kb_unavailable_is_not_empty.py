@@ -36,6 +36,7 @@ from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     build_kb_scope_filter,
 )
 from tests.model_content import disabled_redaction
+from tests.utils import admit_every_parent
 
 pytestmark = [pytest.mark.unit]
 
@@ -78,7 +79,7 @@ def _adapter(store: KnowledgeVectorStore) -> KBToolAdapter:
     tool._llm_router = MagicMock()
     tool._kb_config = UnifiedKBConfig()
     tool._settings = MagicMock()
-    return KBToolAdapter(tool)
+    return KBToolAdapter(tool, admit=admit_every_parent)
 
 
 def _context() -> ToolContext:
@@ -105,6 +106,7 @@ async def test_store_search_raises_when_the_embedder_is_unavailable():
                 collection_name="faultmaven_kb",
                 query="how do I drain a node?",
                 where={"scope": "global"},
+                admit=admit_every_parent,
             )
 
 
@@ -126,6 +128,7 @@ async def test_keyword_arm_does_not_swallow_the_availability_error():
                 query="CrashLoopBackOff on payment-svc",
                 k=5,
                 where={"scope": "global"},
+                admit=admit_every_parent,
             )
 
 
@@ -265,6 +268,7 @@ async def test_a_hanging_embedder_fails_closed_instead_of_hanging_the_turn():
                     collection_name="faultmaven_kb",
                     query="how do I drain a node?",
                     where={"scope": "global"},
+                    admit=admit_every_parent,
                 )
 
     assert excinfo.value.error_code == "KNOWLEDGE_EMBEDDER_TIMEOUT"

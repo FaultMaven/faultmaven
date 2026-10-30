@@ -28,6 +28,7 @@ from faultmaven.modules.agent.tools.kb_configs.unified_kb_config import (
     UnifiedKBConfig,
 )
 from tests.model_content import disabled_redaction
+from tests.utils import admit_every_parent
 
 pytestmark = [pytest.mark.unit]
 
@@ -97,6 +98,7 @@ async def test_the_kb_tool_sends_no_context_metadata_to_hybrid_search():
         k=5,
         filters={"$or": [{"scope": "global"}]},
         redaction_ctx=disabled_redaction(),
+        admit=admit_every_parent,
     )
 
     kwargs = vector_store.hybrid_search.await_args.kwargs

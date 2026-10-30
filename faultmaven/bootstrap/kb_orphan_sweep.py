@@ -1,11 +1,13 @@
 """Sweep authored KB vectors whose ``knowledge_items`` row is gone (#1982).
 
-Retrieval never checks that a chunk's row exists, so an AUTHORED chunk left
-behind by a vector delete that failed in the past (before #1966 ordered
-``delete_document``) is retrievable for good: a global one by everyone, a
-personal one by its owner. The reconcile in :mod:`faultmaven.bootstrap.kb_init`
-deletes no-row vectors for built-in ``kb_<12 hex>`` parents only. This module is
-the authored half.
+No KB door serves a chunk whose row is gone (every door admits a chunk only
+when its parent has a complete, published row, #2397), and no writer deletes
+vectors in-process: a failed ingest, a delete whose best-effort vector delete
+failed, or an update or repair that raced a delete leaves AUTHORED chunks
+under an id with no row. They are inert, never served and never reused, and
+this module is what collects them. The reconcile in
+:mod:`faultmaven.bootstrap.kb_init` deletes no-row vectors for built-in
+``kb_<12 hex>`` parents only. This module is the authored half.
 
 **Report-only unless an operator arms it** — the ``storage_cleanup`` gate,
 exactly: ``KB_ORPHAN_SWEEP_ENABLED`` (default false) and
