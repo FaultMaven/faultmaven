@@ -44,10 +44,10 @@ Consumers depend on `FileStorageService`. Nothing outside
 `get_storage_backend()` (`infrastructure/storage/factory.py`) resolves
 `STORAGE_BACKEND` to a singleton backend instance and is the single
 construction point. `FileStorageService` accepts a backend by injection and
-falls back to the factory when none is supplied, so every construction site —
-the DI container, the request-scoped service factory, and the on-demand sites
-in `read_file_tool` and the `storage_cleanup` job — honours the configured
-backend without each having to plumb one through.
+falls back to the factory when none is supplied, so both construction sites —
+the DI container (`register_infrastructure`) and the on-demand site in the
+`storage_cleanup` job's `run` — honour the configured backend without either
+having to plumb one through.
 
 | Setting | Backend | Deployment |
 |---------|---------|------------|

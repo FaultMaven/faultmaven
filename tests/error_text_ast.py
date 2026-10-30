@@ -1429,9 +1429,8 @@ def tool_result_leak_sites(path: pathlib.Path, *, returns: bool) -> list[str]:
 
     * a ``ToolResult(...)`` whose ``error`` or ``data`` carries the text;
     * with ``returns``, any ``return`` carrying it. A tool's helpers hand back
-      strings that become its result: ``read_file``'s content readers,
-      ``search_file``'s resolver. Asked of ``modules/agent/tools/`` only,
-      where a returned value is a tool's.
+      strings that become its result: ``search_file``'s resolver. Asked of
+      ``modules/agent/tools/`` only, where a returned value is a tool's.
 
     Carried inside the handler, or after it through a local the handler
     tainted, as the returned-body pass does; or from an exception PARAMETER

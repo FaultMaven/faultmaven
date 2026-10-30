@@ -679,7 +679,7 @@ _ALLOWED_USES: dict[str, str] = {
     "call:warning": "logged",
     "call:append": (
         "appended to a list another function reads (stated limit): the "
-        "repositories' rows, list_evidence_by_time's result rows"
+        "repositories' rows"
     ),
     "call:execute": "bound as a SQL parameter: the column written back verbatim",
     "kw:ToolResult.data": "a tool result's data, rendered for the model verbatim",
@@ -769,7 +769,7 @@ _EXPECTED: dict[tuple[str, str, str, str], tuple[str, int]] = {
         "boundary",
         1,
     ),
-    # --- UploadedFile.data_type, opaque string (5 functions) ---------------
+    # --- UploadedFile.data_type, opaque string (4 functions) ---------------
     # The ``<uploaded_file data_type=…>`` attribute in the prompt.
     (_CB, "_render_orphan_file_block", "attr", "uf"): ("opaque", 1),
     # The referent check: equality against the value's own snapshot
@@ -783,13 +783,6 @@ _EXPECTED: dict[tuple[str, str, str, str], tuple[str, int]] = {
         "opaque",
         1,
     ),
-    # A row in the ``list_evidence_by_time`` tool result.
-    (
-        "modules/agent/tools/list_evidence_by_time_tool.py",
-        "_format_unpromoted_files",
-        "attr",
-        "uf",
-    ): ("opaque", 1),
     # The engine attachment dict's ``data_type`` key. No engine code reads it
     # (``turn_uploads`` reads ``file_id`` / ``is_novel``).
     (_ATTACHMENTS, "_engine_attachment_metadata", "attr", "uf"): ("opaque", 1),
@@ -994,18 +987,20 @@ _EXPECTED: dict[tuple[str, str, str, str], tuple[str, int]] = {
     ): ("other", 1),
 }
 
-#: Functions that read ``UploadedFile.data_type``: 4 boundary + 5 opaque +
+#: Functions that read ``UploadedFile.data_type``: 4 boundary + 4 opaque +
 #: 7 repository pass-through. Stated here so a change to it is a decision.
 #: (Was 18 with 9 pass-throughs; #1878 removed both repositories'
-#: ``find_uploaded_file_by_content_hash`` — dedup reads the loaded case.)
-_N_COLUMN_READERS = 16
+#: ``find_uploaded_file_by_content_hash`` — dedup reads the loaded case.
+#: Was 16 with 5 opaque; #2376 deleted a tool that was never given to the
+#: model, and its opaque read with it.)
+_N_COLUMN_READERS = 15
 
 
 def test_every_reader_of_uploaded_file_data_type_is_classified():
     """State N: every read SITE of ``data_type`` in the package, and what it is.
 
-    **N = 16 functions read ``UploadedFile.data_type``**: 4 need the 6-valued
-    type and go through the boundary, 5 use it as an opaque string, 7 are
+    **N = 15 functions read ``UploadedFile.data_type``**: 4 need the 6-valued
+    type and go through the boundary, 4 use it as an opaque string, 7 are
     repository pass-throughs (SQL text, positional row reads, keyword and
     ``**`` construction of ``UploadedFile``). Every other ``data_type`` read
     in the package is listed as ``other`` with its reason. Two readers parsed
@@ -1080,9 +1075,9 @@ def test_every_reader_of_uploaded_file_data_type_is_classified():
     - a reader in ANOTHER function. The value leaves by ``return`` in 3
       functions (``suggestion_liveness.file_data_types``,
       ``_engine_attachment_metadata``, ``_published_source_type``'s
-      fallback), in a list ``append``-ed for a caller in 3
-      (``_format_unpromoted_files`` and SQLite's two ``_load_uploaded_files*``),
-      and into a log line in 1 (``vectorize_file``); a parse in that caller,
+      fallback), in a list ``append``-ed for a caller in 2 (SQLite's two
+      ``_load_uploaded_files*``), and into a log line in 1
+      (``vectorize_file``); a parse in that caller,
       or in a helper the value is passed to, is unchecked;
     - allowed callees are trusted by NAME: ``call:append`` is any
       ``….append(x)``, ``call:info`` any ``….info(x)`` — so a list appended

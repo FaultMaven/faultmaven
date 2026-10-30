@@ -17,7 +17,6 @@ from faultmaven.modules.agent.tools.base import (
     AgentToolRegistry,
     Tool,
     ToolContext,
-    tool_registry,
 )
 from tests.model_content import disabled_redaction
 from tests.unit.modules.agent.tools.leaky_failure import (
@@ -416,24 +415,3 @@ class TestToolRegistry:
         fresh_registry.clear()
 
         assert len(fresh_registry.list_tools()) == 0
-
-
-# =============================================================================
-# Test: Global Registry
-# =============================================================================
-
-
-class TestGlobalRegistry:
-    """Tests for the global tool_registry."""
-
-    def test_global_registry_exists(self):
-        """Test that global registry exists."""
-        assert tool_registry is not None
-        assert isinstance(tool_registry, AgentToolRegistry)
-
-    def test_global_registry_has_methods(self):
-        """Test that global registry has expected methods."""
-        assert hasattr(tool_registry, "register")
-        assert hasattr(tool_registry, "get")
-        assert hasattr(tool_registry, "list_tools")
-        assert hasattr(tool_registry, "execute_tool")

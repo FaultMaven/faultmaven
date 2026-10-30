@@ -773,8 +773,7 @@ class TestTheEvidenceRowsInheritedCoverageMovesToo:
     provenance onto an Evidence row at creation when the file span is a
     single instant. Refreshing only the file row therefore left the Evidence
     row asserting an instant nothing supports — read as fact by
-    ``symptom_currency`` (``coverage_end_ts`` + ``is_vouched``) and published
-    to the model by ``list_evidence_by_time_tool``.
+    ``symptom_currency`` (``coverage_end_ts`` + ``is_vouched``).
     """
 
     @pytest.mark.asyncio

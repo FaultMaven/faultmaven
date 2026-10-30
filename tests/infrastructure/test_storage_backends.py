@@ -489,9 +489,8 @@ class TestFilesystemPathContainment:
     ):
         """``PathEscape``'s message names resolved absolute paths, and its own
         docstring says that must never reach a client. This backend's exception
-        does reach one: ``FileStorageService.retrieve_file`` re-wraps it into a
-        ``ServiceError`` and ``read_file_tool`` puts that string into a
-        ``ToolResult``, which enters the LLM context and the case transcript.
+        travels: ``FileStorageService.retrieve_file`` re-wraps it into a
+        ``ServiceError`` whose message carries its own.
 
         So the message names only the key, and the detail goes to the log.
         """

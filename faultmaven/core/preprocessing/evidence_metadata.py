@@ -11,7 +11,9 @@ Ownership (see docs/architecture/data-and-storage/schemas/case-schema.md §4.3
     classification  — PreprocessingService writes; context_builder reads.
     extractor       — PreprocessingService writes; observability only.
     entities        — PreprocessingService writes on cap overflow.
-    coverage        — PreprocessingService writes; context_builder + tool reads.
+    coverage        — PreprocessingService writes; nothing reads it back.
+                      The prompt reads the ``coverage_*_ts`` and
+                      ``coverage_source`` columns instead.
 
 All top-level keys are Optional; existing rows predate each key. Readers
 must treat missing keys and missing fields as "not populated", not as a
@@ -103,10 +105,13 @@ class EntitiesMetadata(BaseModel):
 class CoverageMetadata(BaseModel):
     """Extractor time-range details beyond the promoted columns.
 
-    The ``evidence.coverage_start_ts`` / ``coverage_end_ts`` columns are
-    the queryable projection; this object carries the auxiliary signal
-    ("which pattern matched the timestamp format") that the agent tool
-    surfaces but the DB doesn't index.
+    The span is on the ``evidence.coverage_start_ts`` / ``coverage_end_ts``
+    columns and the matched pattern on ``coverage_source``, which
+    ``context_builder`` and ``symptom_currency`` read. Intake does not store
+    this object: an upload writes no evidence row, and a row the model
+    records later is written without it. Only the row an evidence
+    reclassification addresses carries it in ``evidence.metadata``, lifted
+    from the re-extraction; nothing reads it back.
     """
 
     model_config = ConfigDict(extra="ignore")

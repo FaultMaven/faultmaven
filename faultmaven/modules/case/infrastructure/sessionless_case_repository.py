@@ -309,22 +309,6 @@ class SessionlessCaseRepository(CaseRepository):
             repo = get_repository_for_session(session)
             return await repo.delete(case_id, deletion=deletion)
 
-    async def list_evidence_by_time_window(
-        self,
-        case_id: str,
-        start: Optional[datetime] = None,
-        end: Optional[datetime] = None,
-    ) -> list[Evidence]:
-        """Return evidence whose coverage overlaps ``[start, end]``.
-
-        Phase 3 — see ``CaseRepository.list_evidence_by_time_window``.
-        Delegates to the dialect-specific repository under a fresh
-        session, consistent with the other methods on this wrapper.
-        """
-        async with get_db_session() as session:
-            repo = get_repository_for_session(session)
-            return await repo.list_evidence_by_time_window(case_id, start, end)
-
     async def upsert_case_entities(
         self,
         case_id: str,
