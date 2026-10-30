@@ -624,6 +624,21 @@ class IKnowledgeVectorStore(ABC):
         pass
 
     @abstractmethod
+    async def delete_generation(
+        self, parent_document_id: str, generation: str
+    ) -> List[str]:
+        """Delete one parent's chunks of one ``vector_generation`` and nothing
+        else; never by parent alone (#2388).
+
+        Returns:
+            The chunk ids deleted.
+
+        Raises:
+            ValueError: An empty parent or generation.
+        """
+        pass
+
+    @abstractmethod
     async def list_all_chunk_ids_by_parent(self) -> Dict[str, List[str]]:
         """Every chunk id in the KB collection, keyed by the parent its id names.
 

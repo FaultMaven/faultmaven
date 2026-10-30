@@ -1310,6 +1310,28 @@ class DatabaseSettings(BaseSettings):
         ),
     )
 
+    # Generation sweep (#2388): chunks of a generation no row serves, past the
+    # incomplete-ingest age bound. The standalone web startup deletes only on a
+    # local PersistentClient; kb_seed applies this gate (--dry-run/--no-dry-run
+    # overrides DRY_RUN).
+    kb_generation_sweep_enabled: bool = Field(
+        default=False,
+        validation_alias="KB_GENERATION_SWEEP_ENABLED",
+        description=(
+            "When True, kb_seed may DELETE superseded KB chunks, if "
+            "KB_GENERATION_SWEEP_DRY_RUN is also off. Arm only with one "
+            "ChromaDB per database."
+        ),
+    )
+    kb_generation_sweep_dry_run: bool = Field(
+        default=True,
+        validation_alias="KB_GENERATION_SWEEP_DRY_RUN",
+        description=(
+            "When True (default), kb_seed reports the superseded chunks an "
+            "armed run would delete and deletes nothing."
+        ),
+    )
+
     # Vector Database Settings
     embedding_model: str = Field(default="BAAI/bge-m3")
     similarity_threshold: float = Field(default=0.7)

@@ -145,7 +145,15 @@ def _service(state, *, commit_raises=None, commit_lands=True):
             (doc_dicts[0]["content"], doc_dicts[0]["metadata"]["vector_generation"])
         )
 
+    async def _delete_generation(parent_id, generation):
+        # The writer's one delete, after a committed switch (ruling (i)).
+        calls.append(("generation_delete", generation))
+        gone = [c for c in state["chunks"] if c[1] == generation]
+        state["chunks"] = [c for c in state["chunks"] if c[1] != generation]
+        return gone
+
     vector_store.delete_documents_by_parent_id = AsyncMock(side_effect=_delete)
+    vector_store.delete_generation = AsyncMock(side_effect=_delete_generation)
     vector_store.add_documents = AsyncMock(side_effect=_add)
     service._vector_store = vector_store
     service._extract_frontmatter_for_rag = staticmethod(lambda content: {})
@@ -261,11 +269,14 @@ async def test_vectors_are_written_before_the_row_commits():
             )
 
     assert result["content"] == NEW_CONTENT
-    assert _kinds(calls) == ["vector_add", "sql_commit"], (
-        "the SQL commit must be the LAST store write, and no vector is "
-        f"deleted: {_kinds(calls)}"
+    assert _kinds(calls) == ["vector_add", "sql_commit", "generation_delete"], (
+        "the chunks first, then the commit, then — and only then — the delete "
+        f"of the generation the commit replaced: {_kinds(calls)}"
     )
+    assert ("generation_delete", OLD_GENERATION) in calls
     assert await _served(service, state, repo) == [NEW_CONTENT]
+    # Only the new generation's chunks are left.
+    assert [content for content, _ in state["chunks"]] == [NEW_CONTENT]
 
 
 @pytest.mark.asyncio
@@ -483,6 +494,9 @@ async def test_two_racing_updates_serve_the_content_that_committed(last):
     assert state["content"] == last
     assert await _served(service, state, repo) == [last]
     assert "vector_delete" not in _kinds(calls)
+    # Each landed update deletes only the generation it read before its write;
+    # neither deletes a generation the row serves.
+    assert {g for kind, g in calls if kind == "generation_delete"} == {OLD_GENERATION}
 
 
 # ---------------------------------------------------------------------------
@@ -510,7 +524,7 @@ async def test_a_concurrent_unpublish_leaves_the_vectors_we_added_unadmitted():
         admitted = await service.admitted_generations(["doc-1"])
 
     assert state["is_published"] is False, "the retirement was reverted in SQL"
-    assert _kinds(calls) == ["vector_add", "sql_commit"], _kinds(calls)
+    assert _kinds(calls) == ["vector_add", "sql_commit", "generation_delete"]
     assert admitted == {}
 
 
@@ -537,6 +551,28 @@ async def test_a_failed_commit_on_a_row_unpublished_meanwhile_writes_nothing_mor
 
     assert _kinds(calls) == ["vector_add", "sql_commit"], _kinds(calls)
     assert admitted == {}
+
+
+@pytest.mark.asyncio
+async def test_a_failed_generation_delete_is_logged_and_the_update_stands(caplog):
+    """The writer's delete is best effort: a store that refuses it leaves the
+    replaced generation to the generation sweep, and the update succeeds."""
+    state = _state()
+    service, repo, calls = _service(state)
+    service._vector_store.delete_generation = AsyncMock(
+        side_effect=OSError("chromadb gone")
+    )
+
+    with patch(_REPO, return_value=repo):
+        with patch(_EMBED_TEXTS, new=AsyncMock(return_value=[[0.1] * 1024])):
+            result = await service.update_document_metadata(
+                document_id="doc-1", content=NEW_CONTENT
+            )
+
+    assert result["content"] == NEW_CONTENT
+    assert await _served(service, state, repo) == [NEW_CONTENT]
+    assert "Could not delete the replaced generation" in caplog.text
+    assert OLD_GENERATION in caplog.text
 
 
 @pytest.mark.asyncio

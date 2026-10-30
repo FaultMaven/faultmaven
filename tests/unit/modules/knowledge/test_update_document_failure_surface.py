@@ -12,15 +12,10 @@ survived — and all 544 knowledge tests still passed. The route is the layer
 that RENDERS the guarantee; pinning the service alone pins the half nobody
 reads.
 
-The distinction being pinned is not cosmetic. It tells an operator whether
-search still works while they retry:
-
-* embedder unavailable / embedder timeout / no chunks — all raised BEFORE the
-  destructive delete, so the previous vectors are intact and the document is
-  still searchable on its current content.
-* indexing failed — can fire from `add_documents` AFTER the delete, so the
-  vectors may be gone until someone re-saves or (single-tenant only) the boot
-  reconcile pass rebuilds them.
+It also tells an operator what search serves while they retry: since #2388 the
+new chunks are written under a new generation and nothing is deleted before the
+row moves, so whichever indexing step failed, the chunks the row served before
+the update are still the ones served. One answer, for every error code.
 """
 
 from __future__ import annotations
@@ -37,14 +32,13 @@ from faultmaven.providers.tenancy.factory import BUILTIN_SINGLE
 
 pytestmark = [pytest.mark.unit]
 
-# Raised before the delete → the old vectors survive.
-INTACT_CODES = [
+#: Every indexing failure the update path raises.
+CODES = [
     "KNOWLEDGE_EMBEDDER_UNAVAILABLE",
     "KNOWLEDGE_EMBEDDER_TIMEOUT",
     "KNOWLEDGE_NO_CHUNKS",
+    "KNOWLEDGE_INDEXING_FAILED",
 ]
-# Can fire after the delete → searchability is not guaranteed.
-AT_RISK_CODES = ["KNOWLEDGE_INDEXING_FAILED"]
 
 
 def _user(*, user_id="u1", roles=("user",)) -> DevUser:
@@ -113,7 +107,7 @@ def _put(monkeypatch, error):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("code", INTACT_CODES + AT_RISK_CODES)
+@pytest.mark.parametrize("code", CODES)
 def test_a_reindex_failure_never_reports_the_edit_as_saved(monkeypatch, code):
     """The pre-#952 response opened with "Document saved, but re-indexing for
     search failed". Under commit-last that is false for every one of these."""
@@ -126,60 +120,20 @@ def test_a_reindex_failure_never_reports_the_edit_as_saved(monkeypatch, code):
 
 
 # ---------------------------------------------------------------------------
-# ...and must describe searchability according to WHERE it failed
+# ...and says search is unchanged too, whatever failed
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("code", INTACT_CODES)
-def test_pre_delete_failures_say_the_document_is_still_searchable(monkeypatch, code):
-    """These raise before `delete_documents_by_parent_id`, so the previous
-    vectors are still there and the operator can be told so."""
+@pytest.mark.parametrize("code", [*CODES, "KNOWLEDGE_NEW"])
+def test_every_indexing_failure_says_search_is_unchanged(monkeypatch, code):
+    """No indexing step deletes a chunk (#2388), so a failure at any of them,
+    a code this route has never seen included, leaves what search serves as
+    it was."""
     resp = _put(monkeypatch, KnowledgeBaseError("boom", error_code=code))
 
     detail = resp.json()["detail"].lower()
-    assert "still searchable" in detail, (
-        f"{code} is raised before the delete, so the previous vectors survive; "
-        f"the response does not say so: {detail!r}"
-    )
+    assert "unchanged, and so is what search serves for it" in detail, detail
     assert "may not be searchable" not in detail
-
-
-@pytest.mark.parametrize("code", AT_RISK_CODES)
-def test_post_delete_failures_do_not_promise_searchability(monkeypatch, code):
-    """`add_documents` can fail AFTER the delete. Claiming the document is
-    still searchable here would assert something the route cannot know."""
-    resp = _put(monkeypatch, KnowledgeBaseError("boom", error_code=code))
-
-    detail = resp.json()["detail"].lower()
-    assert (
-        "may not be searchable" in detail
-    ), f"{code} can fire after the delete; the response overclaims: {detail!r}"
-    assert "still searchable" not in detail
-
-
-def test_an_unknown_error_code_gets_the_cautious_answer(monkeypatch):
-    """A code this mapping has never seen must fall to the side that promises
-    LESS. Fail-open here would invent a searchability guarantee for a failure
-    nobody has classified."""
-    resp = _put(monkeypatch, KnowledgeBaseError("boom", error_code="KNOWLEDGE_NEW"))
-
-    detail = resp.json()["detail"].lower()
-    assert "may not be searchable" in detail
-    assert "still searchable" not in detail
-
-
-def test_the_two_buckets_are_actually_distinguishable(monkeypatch):
-    """Guard against the mapping collapsing to one message. If both buckets
-    rendered identically, every assertion above could pass while the caller
-    learned nothing about which failure they hit."""
-    intact = _put(
-        monkeypatch, KnowledgeBaseError("boom", error_code=INTACT_CODES[0])
-    ).json()["detail"]
-    at_risk = _put(
-        monkeypatch, KnowledgeBaseError("boom", error_code=AT_RISK_CODES[0])
-    ).json()["detail"]
-
-    assert intact != at_risk
 
 
 # ---------------------------------------------------------------------------

@@ -28,9 +28,12 @@ and a run that is not a dry run; the same ``--dry-run`` / ``--no-dry-run``
 overrides ``KB_INCOMPLETE_INGEST_SWEEP_DRY_RUN``). The counts are the result's
 ``incomplete_ingests``. See ``faultmaven/bootstrap/kb_incomplete_sweep.py``.
 
-The same gate arms the generation sweep (#2388), which removes chunks of a
-generation no row serves, past the same age; its counts are the result's
-``generation_sweep``. See ``faultmaven/bootstrap/kb_generation_sweep.py``.
+The generation sweep (#2388) removes chunks of a generation no row serves,
+past the same age, once armed with its own gate (``KB_GENERATION_SWEEP_ENABLED``
+and a run that is not a dry run; the same ``--dry-run`` / ``--no-dry-run``
+overrides ``KB_GENERATION_SWEEP_DRY_RUN``). Arm it only with one ChromaDB per
+database. Its counts are the result's ``generation_sweep``. See
+``faultmaven/bootstrap/kb_generation_sweep.py``.
 
 Tenant scope: **cross_tenant**. Global-scope pack rows are the org-free
 platform tier (#770): they are readable by EVERY tenant (RLS read exemption +
@@ -64,10 +67,11 @@ async def run(
     Args:
         settings: FaultMaven settings instance
         container: DI container with initialized services
-        dry_run: The dry-run override for this run of both sweeps
-            (``--dry-run`` / ``--no-dry-run``); None defers to
-            ``KB_ORPHAN_SWEEP_DRY_RUN`` and ``KB_INCOMPLETE_INGEST_SWEEP_DRY_RUN``. ``--no-dry-run`` asks for deletion but
-            cannot grant it: with ``KB_ORPHAN_SWEEP_ENABLED=false`` the sweep
+        dry_run: The dry-run override for this run of all three sweeps
+            (``--dry-run`` / ``--no-dry-run``); None defers to each sweep's
+            own ``KB_ORPHAN_SWEEP_DRY_RUN``, ``KB_INCOMPLETE_INGEST_SWEEP_DRY_RUN``
+            and ``KB_GENERATION_SWEEP_DRY_RUN``. ``--no-dry-run`` asks for
+            deletion but cannot grant it: a sweep whose ``*_ENABLED`` is false
             is off. Seeding is unaffected either way.
         allow_disjoint_enterprises: The buckets (enterprise ids, or
             ``unattributed``) the operator asserts genuinely hold only orphans
@@ -121,6 +125,9 @@ async def run(
             result["reason"] = "knowledge_service_unavailable"
             return result
 
+        from faultmaven.bootstrap.kb_generation_sweep import (
+            resolve_generation_sweep_mode,
+        )
         from faultmaven.bootstrap.kb_incomplete_sweep import (
             resolve_incomplete_sweep_mode,
         )
@@ -128,7 +135,6 @@ async def run(
         from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
         from faultmaven.infrastructure.persistence.database import get_db_session
 
-        incomplete_mode = resolve_incomplete_sweep_mode(dry_run)
         # organization_id applies only to org-owned (personal/team) pack rows —
         # the shipped pack is all-global, and global rows are stored org-free
         # (ingest_runbook derives organization_id=None for global scope, #770).
@@ -138,8 +144,8 @@ async def run(
             enterprise_id=STANDALONE_ENTERPRISE_ID,
             sweep_dry_run=dry_run,
             allow_disjoint_enterprises=tuple(allow_disjoint_enterprises),
-            incomplete_sweep_mode=incomplete_mode,
-            generation_sweep_mode=incomplete_mode,
+            incomplete_sweep_mode=resolve_incomplete_sweep_mode(dry_run),
+            generation_sweep_mode=resolve_generation_sweep_mode(dry_run),
         )
 
         result["ingested"] = len(bootstrap_result.ingested)

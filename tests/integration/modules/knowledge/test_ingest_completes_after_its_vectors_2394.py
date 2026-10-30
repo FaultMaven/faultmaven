@@ -148,7 +148,7 @@ HIDDEN = dict.fromkeys(SHOWN, False)
 async def _repair(service, factory):
     """The startup reconcile and repair, in ``bootstrap_kb``'s order."""
     _, _, orphaned = await kb_init._reconcile_vectors(service, factory)
-    repaired, _ = await kb_init._repair_orphaned_rows(orphaned, service)
+    repaired, _ = await kb_init._repair_unserved_rows(orphaned, service)
     return orphaned, repaired
 
 

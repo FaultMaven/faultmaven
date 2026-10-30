@@ -177,8 +177,9 @@ ORDERS = ["old_row_a_commits_first", "old_row_b_commits_first", "no_row"]
 async def _race(world, order: str):
     """Seed v0 (unless ``no_row``), then ingest vA and vB of the same id at
     once: both read the row and write their vectors, then their row
-    transactions run in ``order``. Returns ``(winner, loser, old generation,
-    the loser's error)``."""
+    transactions run in ``order``, with each writer's delete of the generation
+    it replaced on (ruling (i)). Returns ``(winner, loser, old generation, the
+    loser's error)``."""
     old = None
     if order != "no_row":
         await _seed(world, _pack("v0", _unit(0.8, 0.6)))
@@ -205,6 +206,9 @@ async def _race(world, order: str):
         patch.object(
             store, "delete_observed_chunk_ids", wraps=store.delete_observed_chunk_ids
         ) as by_id,
+        patch.object(
+            store, "delete_generation", wraps=store.delete_generation
+        ) as by_generation,
     ):
         tasks = {rb.content: asyncio.create_task(_seed(world, rb)) for rb in (a, b)}
         while len(arrived) < 2:
@@ -214,7 +218,14 @@ async def _race(world, order: str):
         gates[second.content].set()
         with pytest.raises(ValueError, match="already exists") as lost:
             await tasks[second.content]
-    assert by_parent.await_count == by_id.await_count == 0, "an ingest deleted a chunk"
+    assert (
+        by_parent.await_count == by_id.await_count == 0
+    ), "an ingest deleted by parent"
+    # The winner deletes only the generation its guarded DELETE replaced; the
+    # loser, whose transaction did not commit, deletes nothing.
+    assert [c.args for c in by_generation.await_args_list] == (
+        [] if old is None else [(DOC, old)]
+    )
     return first, second, old, lost.value
 
 
@@ -223,10 +234,9 @@ async def _assert_only_the_winner_is_served(world, winner, loser, old):
     meta = decode_json_blob(row.knowledge_metadata)
     assert meta[PACK_CONTENT_HASH_KEY] == winner.content_hash
     chunks = _chunks(world)
-    # No ingest deleted a chunk: v0's (if seeded), the winner's and the loser's.
-    assert sorted(chunks.values()) == sorted(
-        ["vA", "vB"] + ([] if old is None else ["v0"])
-    )
+    # The winner's and the loser's: v0's went with the winner's commit, and
+    # the loser's are left, never served, for the sweep.
+    assert sorted(chunks.values()) == ["vA", "vB"]
     by_marker = {m: chunk_generation_from_id(c) for c, m in chunks.items()}
     winner_marker = _markers(winner.content).pop()
     assert row.vector_generation == by_marker[winner_marker]
@@ -275,6 +285,99 @@ async def test_a_failed_insert_rolls_back_the_guarded_delete(
 
     assert (await _row(world)).vector_generation == old.vector_generation
     assert await _served(world) == {"v0"}
+    assert sorted(_chunks(world).values()) == ["v0"], "a failed switch deleted"
+
+
+# --- the writer deletes the generation it replaced (ruling (i)) --------------
+
+
+async def test_a_pack_replacement_leaves_only_the_new_generation(
+    factory, tmp_path
+):  # noqa: F811
+    world = _world(factory, tmp_path)
+    await _seed(world, _pack("v0", REAL_VECTORS[0]))
+
+    assert await _seed(world, _pack("vA", REAL_VECTORS[1])) == "ingested"
+
+    row = await _row(world)
+    assert {chunk_generation_from_id(c): m for c, m in _chunks(world).items()} == {
+        row.vector_generation: "vA"
+    }
+
+
+async def test_a_failed_generation_delete_is_logged_and_the_replacement_stands(
+    factory, tmp_path, caplog  # noqa: F811
+):
+    world = _world(factory, tmp_path)
+    await _seed(world, _pack("v0", REAL_VECTORS[0]))
+    old = (await _row(world)).vector_generation
+
+    with patch.object(
+        world.store, "delete_generation", side_effect=OSError("chromadb gone")
+    ):
+        assert await _seed(world, _pack("vA", REAL_VECTORS[1])) == "ingested"
+
+    assert await _served(world) == {"vA"}
+    assert sorted(_chunks(world).values()) == ["v0", "vA"]
+    assert f"Could not delete the replaced generation {old}" in caplog.text
+
+
+async def test_an_update_leaves_only_the_new_generation(
+    factory, tmp_path, monkeypatch  # noqa: F811
+):
+    world = _world(factory, tmp_path)
+    authored = "kb_" + "6" * 16
+    await _authored(world, authored)
+    _embedder(monkeypatch)
+    await world.service.reindex_missing_vectors(authored)
+    before = (await _row(world, authored)).vector_generation
+
+    await world.service.update_document_metadata(
+        authored, content="# Authored\n\nRaise the pool size, then restart."
+    )
+
+    after = (await _row(world, authored)).vector_generation
+    assert after != before
+    assert {chunk_generation_from_id(c) for c in _all_chunk_ids(world, authored)} == {
+        after
+    }
+
+
+async def test_the_store_deletes_one_parents_one_generation_and_nothing_else(
+    factory, tmp_path  # noqa: F811
+):
+    """The probe behind ruling (i), on the store itself (chromadb 1.5.8)."""
+    world = _world(factory, tmp_path)
+    other = item_id_from_runbook_id("generation-2388-other")
+
+    def chunk(chunk_id, parent, generation=None):
+        metadata = {
+            "scope": "global",
+            "enterprise_id": STANDALONE_ENTERPRISE_ID,
+            "parent_document_id": parent,
+        }
+        if generation:
+            metadata["vector_generation"] = generation
+        return {"id": chunk_id, "content": chunk_id, "metadata": metadata}
+
+    rows = [
+        chunk(f"{DOC}_chunk_0_g1", DOC, "g1"),
+        chunk(f"{DOC}_chunk_1_g1", DOC, "g1"),
+        chunk(f"{DOC}_chunk_0_g2", DOC, "g2"),
+        chunk(f"{other}_chunk_0_g1", other, "g1"),
+        chunk(f"{DOC}_chunk_0", DOC),
+    ]
+    await world.store.add_documents(rows, embeddings=[list(Q) for _ in rows])
+
+    deleted = await world.store.delete_generation(DOC, "g1")
+
+    assert sorted(deleted) == [f"{DOC}_chunk_0_g1", f"{DOC}_chunk_1_g1"]
+    assert set(_all_chunk_ids(world, DOC)) == {f"{DOC}_chunk_0_g2", f"{DOC}_chunk_0"}
+    assert _all_chunk_ids(world, other) == [f"{other}_chunk_0_g1"]
+    assert await world.store.delete_generation(DOC, "no-such-generation") == []
+    for parent, generation in ((DOC, ""), ("", "g2"), (DOC, None)):
+        with pytest.raises(ValueError, match="never deletes by parent alone"):
+            await world.store.delete_generation(parent, generation)
 
 
 async def test_a_pack_write_of_no_chunks_raises_before_any_row(
@@ -483,6 +586,82 @@ async def test_an_authored_row_no_chunk_serves_goes_to_repair_or_is_counted(
         assert result.repaired_rows == []
         assert result.unserved_rows == [authored]
         assert "unserved_rows=1)" in repr(result)
+
+
+async def test_an_edited_built_in_no_chunk_serves_is_repaired_not_re_ingested(
+    factory, tmp_path, pack_dir, monkeypatch  # noqa: F811
+):
+    """Re-ingesting it from the pack would replace the operator's edit with the
+    pack's text (#1966): the repair re-embeds the row as it stands."""
+    world = _world(factory, tmp_path)
+    await _boot(world, pack_dir)
+    (shipped,) = [p for p in _chunk_parents(world) if p.startswith("kb_")]
+    edited = "# Edited by an operator\n\nRestart the pool, then verify."
+    async with world.factory() as session:
+        await session.execute(
+            update(KnowledgeItemModel)
+            .where(KnowledgeItemModel.item_id == shipped)
+            .values(content=edited)
+        )
+        await session.commit()
+    await _forget_the_generation(world, shipped)
+    _embedder(monkeypatch)
+
+    result = await _boot(world, pack_dir)
+
+    assert result.ingested == [] and result.skipped_unchanged == ["global/example.md"]
+    assert result.repaired_rows == [shipped] and result.unserved_rows == []
+    row = await _row(world, shipped)
+    assert row.content == edited and row.vector_generation == "0f" * 16
+    got = world.chroma.get_collection(KB_COLLECTION).get(
+        ids=_all_chunk_ids(world, shipped), include=["documents"]
+    )
+    served = [
+        document
+        for chunk_id, document in zip(got["ids"], got["documents"])
+        if chunk_generation_from_id(chunk_id) == row.vector_generation
+    ]
+    assert served and all("Edited by an operator" in d for d in served)
+
+
+async def test_an_update_between_the_row_read_and_the_listing_is_not_unserved(
+    factory, tmp_path, monkeypatch  # noqa: F811
+):
+    """The reconcile reads the rows, then lists the chunks. An update that
+    commits between the two, and deletes the generation it replaced, leaves no
+    chunk of the generation the first read saw; the re-read sees the new one,
+    so the row is not reported unserved (and not re-embedded)."""
+    world = _world(factory, tmp_path)
+    authored = "kb_" + "5" * 16
+    await _authored(world, authored)
+    _embedder(monkeypatch)
+    await world.service.reindex_missing_vectors(authored)
+    real_list = world.store.list_all_chunk_ids_by_parent
+    real_read = kb_init._read_rows
+    reads: List[Optional[List[str]]] = []
+
+    async def read(factory_, item_ids=None):
+        reads.append(item_ids)
+        return await real_read(factory_, item_ids)
+
+    async def an_update_lands_then_list():
+        await world.service.update_document_metadata(
+            authored, content="# Authored\n\nRaise the pool size, then restart."
+        )
+        return await real_list()
+
+    with (
+        patch.object(kb_init, "_read_rows", read),
+        patch.object(
+            world.store,
+            "list_all_chunk_ids_by_parent",
+            side_effect=an_update_lands_then_list,
+        ),
+    ):
+        result = await kb_init._reconcile_vectors(world.service, world.factory)
+
+    assert reads == [None, [authored]], "the row was never a candidate"
+    assert result.unserved_rows == []
 
 
 async def test_a_repair_re_run_under_the_same_generation_is_idempotent(

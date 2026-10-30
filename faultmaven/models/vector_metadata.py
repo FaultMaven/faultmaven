@@ -85,8 +85,9 @@ class VectorMetadata(BaseModel):
     # inert rather than scrubbed: every ``reject_undeclared_keys`` site guards
     # metadata built fresh by ``to_chroma_metadata()``, none round-trips stored
     # metadata, and a chunk that old carries no generation, so no KB door
-    # admits it and the generation sweep collects it (#2388). A boot-time scrub would need an unfiltered metadata read of every
-    # tenant's chunks, which ``test_kb_tenant_isolation_probe`` forbids.
+    # admits it and the generation sweep collects it (#2388). A boot-time
+    # scrub would need an unfiltered metadata read of every tenant's chunks,
+    # which ``test_kb_tenant_isolation_probe`` forbids.
 
     @classmethod
     def reject_undeclared_keys(cls, md: Optional[Dict[str, Any]]) -> None:

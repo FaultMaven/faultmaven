@@ -203,7 +203,8 @@ async def bootstrap_kb(
             startup's and ``fm-reset-kb``'s) is
             :func:`web_startup_generation_mode`: ``armed`` on a local
             ``PersistentClient``, report-only under an external
-            ``CHROMADB_URL``; ``kb_seed`` passes its incomplete-sweep mode.
+            ``CHROMADB_URL``; ``kb_seed`` passes the
+            ``KB_GENERATION_SWEEP_*`` gate's answer.
 
     Returns:
         BootstrapResult — per-runbook outcomes (counts + failure reasons).
@@ -333,22 +334,21 @@ async def bootstrap_kb(
         allow_disjoint=allow_disjoint_enterprises,
     )
 
-    # Cross-store repair: an unserved AUTHORED row (a complete row no chunk of
-    # its generation serves — its vectors lost, or never written under the
+    # Cross-store repair: an unserved row (a complete row no chunk of its
+    # generation serves — its vectors lost, or never written under the
     # generation migration 022 filled in) is silently non-retrievable.
     # Reconcile can only warn; here we re-chunk + re-embed a BOUNDED number of
-    # them. Bounded because repair loads the embedding model the pack path
-    # deliberately skips. A pack row was re-ingested from the pack above; one
-    # still unserved (its re-ingest failed) is counted, and the next pass
-    # re-ingests it.
-    builtin_unserved = [i for i in unserved_rows if _BUILTIN_ITEM_ID_RE.match(i)]
-    result.repaired_rows, still_unserved = await _repair_orphaned_rows(
-        [i for i in unserved_rows if not _BUILTIN_ITEM_ID_RE.match(i)],
+    # them from the row as it stands. Bounded because repair loads the
+    # embedding model the pack path deliberately skips. An unedited built-in
+    # was re-ingested from the pack above, so what reaches the repair is an
+    # authored row, an edited built-in (#1966), or a built-in whose re-ingest
+    # failed. What it leaves is counted.
+    result.repaired_rows, result.unserved_rows = await _repair_unserved_rows(
+        unserved_rows,
         knowledge_service,
         max_rows=max_rows,
         max_chunks=max_chunks,
     )
-    result.unserved_rows = sorted(builtin_unserved + still_unserved)
 
     logger.info(
         f"KB bootstrap complete: {len(result.ingested)} ingested, "
@@ -403,10 +403,12 @@ async def _ingest_pack_runbook(
 
     A complete, published row that ``served`` (each parent's generations in
     the store, read once per pass) holds no chunk of its generation for is
-    re-ingested from the pack even when its hash matches (#2388): that is how
-    a row whose chunks were lost, or every row migration 022 gave a generation
-    no chunk carries, is served again. ``served`` None (the listing failed)
-    re-ingests on a hash change only. A re-ingest passes the observed row's
+    re-ingested from the pack even when its stamped hash matches (#2388), if
+    its stored content still hashes to the pack's: that is how a row whose
+    chunks were lost, or every unedited row migration 022 gave a generation no
+    chunk carries, is served again. An edited one is left to the repair, which
+    re-embeds the row as it stands (#1966). ``served`` None (the listing
+    failed) re-ingests on a hash change only. A re-ingest passes the observed row's
     generation as ``replaces_generation``, so the transaction that replaces
     it deletes only that row: a peer that replaced it first wins, and this
     ingest fails.
@@ -475,10 +477,9 @@ async def _ingest_pack_runbook(
             if not existing_row.is_published:
                 pack_unchanged = True
             else:
-                existing_hash = hashlib.sha256(
-                    existing_row.content.encode("utf-8")
-                ).hexdigest()
-                pack_unchanged = existing_hash == runbook.content_hash
+                pack_unchanged = (
+                    _content_hash(existing_row.content) == runbook.content_hash
+                )
             if pack_unchanged and role_may_update:
                 await _stamp_pack_hash(
                     runbook.item_id,
@@ -487,6 +488,18 @@ async def _ingest_pack_runbook(
                 )
         if pack_unchanged and not unserved:
             logger.debug(f"Skipping {runbook.relpath}: unchanged")
+            return "skipped"
+        if pack_unchanged and _content_hash(existing_row.content) != (
+            runbook.content_hash
+        ):
+            # Unserved, but edited since the pack ingested it: re-ingesting
+            # would replace the edit with the pack's text (#1966). The repair
+            # re-embeds the row as it stands.
+            logger.info(
+                f"{runbook.relpath}: no chunk carries its row's generation, and "
+                "the row was edited since the pack ingested it — left to the "
+                "repair, which keeps the edit"
+            )
             return "skipped"
         logger.info(
             f"{runbook.relpath}: "
@@ -529,6 +542,11 @@ async def _ingest_pack_runbook(
         f"Ingested {runbook.relpath} ({chunks_created} chunks, scope={runbook.scope})"
     )
     return "ingested"
+
+
+def _content_hash(content: str) -> str:
+    """The hash a pack runbook's ``content_hash`` is of."""
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
 async def _role_may_update(db_session_factory: Callable[[], Awaitable[Any]]) -> bool:
@@ -658,6 +676,28 @@ def _generations_by_parent(
     }
 
 
+async def _read_rows(
+    db_session_factory: Callable[[], Awaitable[Any]],
+    item_ids: Optional[List[str]] = None,
+) -> List[Any]:
+    """``(item_id, is_published, ingest_complete, vector_generation)`` of every
+    row, or of ``item_ids``."""
+    from faultmaven.infrastructure.persistence.models import KnowledgeItemModel
+
+    query = select(
+        KnowledgeItemModel.item_id,
+        KnowledgeItemModel.is_published,
+        KnowledgeItemModel.ingest_complete,
+        KnowledgeItemModel.vector_generation,
+    )
+    if item_ids is not None:
+        query = query.where(KnowledgeItemModel.item_id.in_(item_ids))
+    async with db_session_factory() as session:
+        rows = (await session.execute(query)).all()
+    wanted = None if item_ids is None else set(item_ids)
+    return [row for row in rows if wanted is None or row[0] in wanted]
+
+
 class ReconcileResult(NamedTuple):
     """What :func:`_reconcile_vectors` deleted and what it found unrepaired."""
 
@@ -704,7 +744,7 @@ async def _reconcile_vectors(
         (#2388; an incomplete row is an authored ingest in flight or failed,
         #2394, which the incomplete-ingest sweep owns). Can't be repaired
         here (no embedding model at startup), so it is WARNED, not touched, and
-        returned for :func:`_repair_orphaned_rows`. An unpublished row is never
+        returned for :func:`_repair_unserved_rows`. An unpublished row is never
         listed: having no vectors is its intended state. Listing it would hand
         it to repair, which would re-embed it and silently undo the unpublish
         at the next boot (#1966).
@@ -727,9 +767,21 @@ async def _reconcile_vectors(
     state, e.g. ingest fully failed this boot) we do NOT delete any vectors — that
     would wipe the pack's valid vectors on a transient row-write failure. We leave
     the index intact for the next boot to repair.
-    """
-    from faultmaven.infrastructure.persistence.models import KnowledgeItemModel
 
+    **Order — the rows are read BEFORE the chunks are listed** (#2388). Each
+    predicate stays safe in that order:
+
+      * unserved: the generation a row carried at the read had its chunks in
+        the store by then (every writer writes them before the commit that
+        puts the generation on the row). They leave only through the writer
+        that switches the row away from it and then deletes them, so each
+        candidate's generation is read again after the listing, and a row
+        whose generation changed is not reported.
+      * orphaned and unpublished vectors: a built-in row inserted or replaced
+        after the read wrote its vectors before its transaction, so they are
+        younger than the age floor and spared; a chunk of a generation an
+        unpublished row carried is never served again.
+    """
     nothing = ReconcileResult([], [], [])
     vector_store: Optional[IKnowledgeVectorStore] = getattr(
         knowledge_service, "_vector_store", None
@@ -738,6 +790,7 @@ async def _reconcile_vectors(
         logger.debug("Reconcile skipped: no vector store wired.")
         return nothing
 
+    rows = await _read_rows(db_session_factory)
     try:
         chunk_ids_by_parent = await vector_store.list_all_chunk_ids_by_parent()
     except Exception as exc:
@@ -745,28 +798,27 @@ async def _reconcile_vectors(
         return nothing
 
     chroma_parents = set(chunk_ids_by_parent)
-
-    async with db_session_factory() as session:
-        rows = (
-            await session.execute(
-                select(
-                    KnowledgeItemModel.item_id,
-                    KnowledgeItemModel.is_published,
-                    KnowledgeItemModel.ingest_complete,
-                    KnowledgeItemModel.vector_generation,
-                )
-            )
-        ).all()
     # A row whose ingest never completed (#2394) has a row, so its vectors are
     # no orphans; it is neither repaired nor stripped of its vectors here,
     # which may be an ingest still writing them. The stray sweep owns it.
     db_ids = {row[0] for row in rows}
     generations = _generations_by_parent(chunk_ids_by_parent)
-    unserved_rows = sorted(
-        item_id
+    read_as = {
+        item_id: generation
         for item_id, published, complete, generation in rows
         if published and complete and generation not in generations.get(item_id, ())
-    )
+    }
+    if read_as:
+        # Read again: a switch that committed since the first read (and may
+        # have deleted the generation it replaced) is not an unserved row.
+        again = await _read_rows(db_session_factory, list(read_as))
+        unserved_rows = sorted(
+            item_id
+            for item_id, _published, _complete, generation in again
+            if read_as.get(item_id) == generation
+        )
+    else:
+        unserved_rows = []
     unpublished_ids = {
         item_id
         for item_id, published, complete, _gen in rows
@@ -844,7 +896,7 @@ async def _reconcile_vectors(
         except Exception as exc:
             logger.warning(f"Reconcile: could not re-list after delete: {exc}")
             return ReconcileResult([], [], unserved_rows)
-        survivors = {p for p in targeted if remaining.get(p)}
+        survivors = {p for p in targeted if p not in spared and remaining.get(p)}
         for parent in sorted(survivors):
             logger.warning(
                 f"KB consistency: built-in {parent} still has chunk(s) after the "
@@ -911,8 +963,8 @@ def _resolve_repair_bounds() -> tuple[int, int]:
         return KB_REPAIR_MAX_ROWS, KB_REPAIR_MAX_CHUNKS
 
 
-async def _repair_orphaned_rows(
-    orphaned_rows: list[str],
+async def _repair_unserved_rows(
+    unserved_rows: list[str],
     knowledge_service: Any,
     *,
     max_rows: int = KB_REPAIR_MAX_ROWS,
@@ -935,11 +987,11 @@ async def _repair_orphaned_rows(
     cross-tenant ``kb_seed`` job seeding the org-free global tier). Contrast
     reconcile's DELETE side, restricted to built-in ids precisely because
     deletion CAN cross tenants (the authored sweep deletes only behind a proof
-    that its row read is unfiltered); addition cannot, so every orphaned PUBLISHED
+    that its row read is unfiltered); addition cannot, so every unserved PUBLISHED
     row is eligible — a lost authored runbook is repaired the same as a
-    shipped one. A row whose authored ingest never completed is no orphan
+    shipped one. A row whose authored ingest never completed is not unserved
     (#2394): reconcile does not list it, and ``reindex_missing_vectors``
-    refuses it. An unpublished row is not an orphan (it has no vectors by
+    refuses it. An unpublished row is not unserved (it has no vectors by
     design, #1966): reconcile does not list it, and
     ``reindex_missing_vectors`` refuses it if handed one anyway.
 
@@ -948,46 +1000,46 @@ async def _repair_orphaned_rows(
     embedding work per boot (deferring the rest to the next boot) so startup
     readiness is never gated on an unbounded re-embed.
     """
-    if not orphaned_rows:
+    if not unserved_rows:
         return [], []
 
-    if len(orphaned_rows) > max_rows:
+    if len(unserved_rows) > max_rows:
         logger.warning(
-            "KB repair skipped: %d orphaned rows exceed the repair cap (%d) — "
+            "KB repair skipped: %d unserved rows exceed the repair cap (%d) — "
             "treating as a bulk-loss anomaly (e.g. the vector collection was wiped), "
             "not the crash recovery this pass handles. Re-embedding all of them on "
             "the boot path would reintroduce the on-pod embedding timeout. Rows left "
             "unretrievable; recover by re-provisioning the KB (fm-reset-kb, or the "
             "deployment wipe under multi), or raise KB_REPAIR_MAX_ROWS.",
-            len(orphaned_rows),
+            len(unserved_rows),
             max_rows,
         )
-        return [], orphaned_rows
+        return [], unserved_rows
 
     # Surface the EFFECTIVE bounds in the log whenever repair actually acts, so an
     # operator can confirm what a KB_REPAIR_MAX_* override resolved to (the values
     # are otherwise only visible in settings, not at runtime).
     logger.info(
-        "KB repair: %d orphaned row(s) within bounds (max_rows=%d, max_chunks=%d) "
+        "KB repair: %d unserved row(s) within bounds (max_rows=%d, max_chunks=%d) "
         "— re-embedding with BGE-M3.",
-        len(orphaned_rows),
+        len(unserved_rows),
         max_rows,
         max_chunks,
     )
 
     repaired: list[str] = []
-    still_orphaned: list[str] = []
+    still_unserved: list[str] = []
     chunks_embedded = 0
-    for i, item_id in enumerate(orphaned_rows):
+    for i, item_id in enumerate(unserved_rows):
         # Work budget: stop before starting a row once this boot's chunk budget is
         # spent. Overshoot is bounded by one runbook's chunk count (the row in
         # flight always finishes); the deferred rows self-heal on a later boot.
         if chunks_embedded >= max_chunks:
-            deferred = orphaned_rows[i:]
-            still_orphaned.extend(deferred)
+            deferred = unserved_rows[i:]
+            still_unserved.extend(deferred)
             logger.warning(
                 "KB repair: per-boot chunk budget (%d) reached after %d row(s) — "
-                "deferring %d orphaned row(s) to the next boot (repair is "
+                "deferring %d unserved row(s) to the next boot (repair is "
                 "incremental to keep startup readiness off the embedding path).",
                 max_chunks,
                 len(repaired),
@@ -998,23 +1050,23 @@ async def _repair_orphaned_rows(
             chunks = await knowledge_service.reindex_missing_vectors(item_id)
         except Exception as exc:
             logger.warning(f"KB repair failed for {item_id}: {exc}")
-            still_orphaned.append(item_id)
+            still_unserved.append(item_id)
             continue
         if chunks > 0:
             repaired.append(item_id)
             chunks_embedded += chunks
             logger.info(
-                f"KB repair: re-embedded {chunks} chunk(s) for orphaned row {item_id}"
+                f"KB repair: re-embedded {chunks} chunk(s) for unserved row {item_id}"
             )
         else:
             # 0 chunks = embedding model unavailable / empty content. Fail-safe:
             # leave the row for a later boot (mirrors reconcile's warn-only prior),
             # never raise on the startup path.
-            still_orphaned.append(item_id)
+            still_unserved.append(item_id)
             logger.warning(
                 f"KB repair produced 0 chunks for {item_id} (embedding model "
                 "unavailable, or the row is gone, unpublished or incomplete — "
                 "see the line before) — if the row is still live it stays "
                 "unretrievable until a later boot retries it."
             )
-    return repaired, still_orphaned
+    return repaired, still_unserved

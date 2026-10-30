@@ -1008,6 +1008,34 @@ class TestReconcileVectors:
         assert delete_batches == []
 
     @pytest.mark.asyncio
+    async def test_a_parent_spared_by_the_age_floor_is_neither_cleaned_nor_warned(
+        self, caplog
+    ):
+        """``kb_bbbbbbbbbbbb`` has no row and only young chunks (a pack ingest
+        whose row is coming): spared, not reported cleaned, and not warned
+        about as "written since the listing" when the re-list after
+        ``kb_cccccccccccc``'s delete still finds it."""
+        delete_batches: list[list[str]] = []
+        svc = self._service(
+            chroma_parents={"kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb", "kb_cccccccccccc"},
+            delete_batches=delete_batches,
+        )
+        svc._vector_store.list_chunk_ids_by_parent.return_value = {
+            "kb_bbbbbbbbbbbb": [
+                f"kb_bbbbbbbbbbbb_chunk_{n}_{self.GEN}" for n in range(3)
+            ]
+        }
+
+        with caplog.at_level("WARNING"):
+            cleaned, _unpublished, _unserved = await kb_init._reconcile_vectors(
+                svc, self._factory({"kb_aaaaaaaaaaaa"})
+            )
+
+        assert cleaned == ["kb_cccccccccccc"]
+        assert delete_batches == [["kb_cccccccccccc"]]
+        assert "kb_bbbbbbbbbbbb still has chunk(s)" not in caplog.text
+
+    @pytest.mark.asyncio
     async def test_empty_db_refuses_to_delete_vectors(self):
         """Zero rows + non-empty index = transient row-write failure, NOT a wipe
         signal. Refuse to delete (mirrors the prune's empty-keepset guard)."""
@@ -1106,7 +1134,7 @@ class TestRepairOrphanedRows:
     @pytest.mark.asyncio
     async def test_empty_is_noop(self):
         svc = self._service(AsyncMock(return_value=3))
-        repaired, still = await kb_init._repair_orphaned_rows([], svc)
+        repaired, still = await kb_init._repair_unserved_rows([], svc)
         assert repaired == []
         assert still == []
         svc.reindex_missing_vectors.assert_not_awaited()
@@ -1114,7 +1142,7 @@ class TestRepairOrphanedRows:
     @pytest.mark.asyncio
     async def test_re_embeds_all_orphaned_rows(self):
         svc = self._service(AsyncMock(return_value=3))
-        repaired, still = await kb_init._repair_orphaned_rows(
+        repaired, still = await kb_init._repair_unserved_rows(
             ["kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb"], svc
         )
         assert repaired == ["kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb"]
@@ -1127,7 +1155,7 @@ class TestRepairOrphanedRows:
         """Embedding model unavailable → 0 chunks → fail-safe: NOT repaired,
         left for a later boot rather than reported as healed."""
         svc = self._service(AsyncMock(return_value=0))
-        repaired, still = await kb_init._repair_orphaned_rows(["kb_aaaaaaaaaaaa"], svc)
+        repaired, still = await kb_init._repair_unserved_rows(["kb_aaaaaaaaaaaa"], svc)
         assert repaired == []
         assert still == ["kb_aaaaaaaaaaaa"]
 
@@ -1135,7 +1163,7 @@ class TestRepairOrphanedRows:
     async def test_exception_leaves_row_orphaned(self):
         """A repair error (e.g. ChromaDB down) never aborts the boot path."""
         svc = self._service(AsyncMock(side_effect=RuntimeError("chroma down")))
-        repaired, still = await kb_init._repair_orphaned_rows(["kb_aaaaaaaaaaaa"], svc)
+        repaired, still = await kb_init._repair_unserved_rows(["kb_aaaaaaaaaaaa"], svc)
         assert repaired == []
         assert still == ["kb_aaaaaaaaaaaa"]
 
@@ -1145,7 +1173,7 @@ class TestRepairOrphanedRows:
             return 3 if item_id == "kb_aaaaaaaaaaaa" else 0
 
         svc = self._service(AsyncMock(side_effect=_reindex))
-        repaired, still = await kb_init._repair_orphaned_rows(
+        repaired, still = await kb_init._repair_unserved_rows(
             ["kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb"], svc
         )
         assert repaired == ["kb_aaaaaaaaaaaa"]
@@ -1157,7 +1185,7 @@ class TestRepairOrphanedRows:
         handles — repair nothing (fast boot preserved), leave all warned."""
         svc = self._service(AsyncMock(return_value=1))
         rows = [f"kb_{i:012x}" for i in range(kb_init.KB_REPAIR_MAX_ROWS + 1)]
-        repaired, still = await kb_init._repair_orphaned_rows(rows, svc)
+        repaired, still = await kb_init._repair_unserved_rows(rows, svc)
         assert repaired == []
         assert still == rows
         svc.reindex_missing_vectors.assert_not_awaited()
@@ -1170,7 +1198,7 @@ class TestRepairOrphanedRows:
         assert kb_init.KB_REPAIR_MAX_ROWS <= kb_init.KB_REPAIR_MAX_CHUNKS
         svc = self._service(AsyncMock(return_value=1))
         rows = [f"kb_{i:012x}" for i in range(kb_init.KB_REPAIR_MAX_ROWS)]
-        repaired, still = await kb_init._repair_orphaned_rows(rows, svc)
+        repaired, still = await kb_init._repair_unserved_rows(rows, svc)
         assert repaired == rows
         assert still == []
 
@@ -1181,7 +1209,7 @@ class TestRepairOrphanedRows:
         the startup path. Here the first row alone spends the whole budget."""
         svc = self._service(AsyncMock(return_value=kb_init.KB_REPAIR_MAX_CHUNKS))
         rows = ["kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb", "kb_cccccccccccc"]
-        repaired, still = await kb_init._repair_orphaned_rows(rows, svc)
+        repaired, still = await kb_init._repair_unserved_rows(rows, svc)
         assert repaired == ["kb_aaaaaaaaaaaa"]
         assert still == ["kb_bbbbbbbbbbbb", "kb_cccccccccccc"]
         # The deferred rows are never embedded this boot.
@@ -1192,7 +1220,7 @@ class TestRepairOrphanedRows:
         """The row cap is a parameter (deployment-configurable), not hardcoded."""
         svc = self._service(AsyncMock(return_value=1))
         rows = ["kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb", "kb_cccccccccccc"]
-        repaired, still = await kb_init._repair_orphaned_rows(rows, svc, max_rows=2)
+        repaired, still = await kb_init._repair_unserved_rows(rows, svc, max_rows=2)
         assert repaired == []  # 3 > cap 2 → bulk-loss, repair nothing
         assert still == rows
         svc.reindex_missing_vectors.assert_not_awaited()
@@ -1202,7 +1230,7 @@ class TestRepairOrphanedRows:
         """The chunk budget is a parameter (deployment-configurable)."""
         svc = self._service(AsyncMock(return_value=5))
         rows = ["kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb", "kb_cccccccccccc"]
-        repaired, still = await kb_init._repair_orphaned_rows(
+        repaired, still = await kb_init._repair_unserved_rows(
             rows, svc, max_rows=10, max_chunks=5
         )
         # First row embeds 5 chunks (== budget) → the rest defer.
@@ -1286,7 +1314,7 @@ class TestCrossStoreRepairSeam:
         assert orphaned == ["kb_bbbbbbbbbbbb"]
 
         # Step 2 — repair HEALS it by re-embedding from its persisted SQL row.
-        repaired, still = await kb_init._repair_orphaned_rows(orphaned, svc)
+        repaired, still = await kb_init._repair_unserved_rows(orphaned, svc)
         assert repaired == ["kb_bbbbbbbbbbbb"]
         assert still == []
         assert reindexed == ["kb_bbbbbbbbbbbb"]

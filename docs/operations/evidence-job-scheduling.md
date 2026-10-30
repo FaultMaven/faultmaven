@@ -247,8 +247,10 @@ described above, so treat it as the intended rule rather than a live one.
 
 **Purpose:** Find authored KB vectors whose `knowledge_items` row is gone and,
 once an operator arms it, delete them. No writer deletes vectors in-process
-(#2397): a failed ingest, a delete whose best-effort vector delete failed, and an
-update or repair that raced a delete leave them. No KB door serves a chunk whose
+(#2397) but a content update's or pack replacement's delete of the generation it
+replaced, once its commit has landed (#2388): a failed
+ingest, a delete whose best-effort vector delete failed, and an update or repair
+that raced a delete leave them. No KB door serves a chunk whose
 row is gone, so they are inert garbage until this sweep, once armed, removes them. The sweep runs inside every KB
 bootstrap pass: at web startup under a single-tenant provider, and in `kb_seed`,
 which is the only path under `TENANT_PROVIDER=multi`, where CD runs it after
@@ -264,8 +266,9 @@ every deploy. Design: [ingestion step 6](../architecture/knowledge-and-ai/kb-ing
 | `false` | `false` | off (nothing listed) |
 
 The effective dry run is `kb_seed --dry-run` / `--no-dry-run` when given, else
-`KB_ORPHAN_SWEEP_DRY_RUN`. For `kb_seed` the flag governs only the sweep:
-seeding always runs. `--no-dry-run` asks for deletion but cannot grant it.
+`KB_ORPHAN_SWEEP_DRY_RUN`. For `kb_seed` the flag governs only its sweeps (this
+one, the incomplete-ingest sweep and the generation sweep, each against its own
+settings): seeding always runs. `--no-dry-run` asks for deletion but cannot grant it.
 
 > **⛔ Hard precondition for arming: one ChromaDB per database.** The
 > `faultmaven_kb` collection is not deployment-scoped. If two databases (a
@@ -366,6 +369,23 @@ read) / `_skipped` (`disabled`, `no_vector_store` or `error` when it did not
 run), and the `kb_seed` result as `incomplete_ingests` (with
 `would_delete_documents`). Design:
 [ingestion step 6](../architecture/knowledge-and-ai/kb-ingestion-architecture.md#algorithm).
+
+**The generation sweep (#2388)** runs in the same pass, right after it. It
+removes KB chunks of a generation no row serves, once older than
+`KB_INCOMPLETE_INGEST_MAX_AGE_HOURS`: what a content update's or pack
+replacement's own delete of the replaced generation did not remove (that delete
+is best effort), a failed write's chunks, and every chunk written before
+migration 022. The standalone web startup deletes on a local ChromaDB
+(`PersistentClient`) and only reports under an external `CHROMADB_URL`. In
+`kb_seed` the gate above applies with its own settings,
+`KB_GENERATION_SWEEP_ENABLED` (default `false`) and `KB_GENERATION_SWEEP_DRY_RUN`
+(default `true`), and the same `--dry-run` / `--no-dry-run`; arming the
+incomplete-ingest sweep does not arm it. **The same hard precondition as the
+authored-orphan sweep applies: one ChromaDB per database** (another database's
+built-ins carry other generations under the same ids). It rides the
+`BootstrapResult(...)` line as `generation_sweep_mode` / `_would_delete` /
+`_deleted` / `_unremoved` / `_skipped` (chunks), and the `kb_seed` result as
+`generation_sweep`.
 
 ### 1c. KB Vector Enterprise Backfill (`kb_vector_enterprise_backfill`, #1777)
 

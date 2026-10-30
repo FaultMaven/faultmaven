@@ -143,8 +143,10 @@ hash stamped on the existing row when the pack last ingested it
 content, so an operator's edit is never mistaken for a new pack version, and skips
 unchanged runbooks whose row is served. A changed runbook, or one no chunk of
 whose `vector_generation` exists (#2388), is re-ingested: its vectors first, then
-one transaction that replaces the row it observed; no vector is deleted, and the
-old generation's chunks are collected by the generation sweep. New runbooks are
+one transaction that replaces the row it observed; once that commits, the
+replaced generation's chunks are deleted (best effort; the generation sweep is
+the backstop). An unserved built-in an operator edited is re-embedded as it
+stands instead (the capped repair). New runbooks are
 added; runbooks removed from the pack have their rows pruned.
 
 The bootstrap ingests **each runbook separately**. `_ingest_pack_runbook` refuses

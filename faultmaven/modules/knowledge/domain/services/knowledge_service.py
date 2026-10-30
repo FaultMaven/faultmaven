@@ -808,9 +808,11 @@ class KnowledgeService:
         Each chunk's id is ``{document_id}_chunk_{i}_{generation}``, and its
         metadata carries ``vector_generation`` and ``indexed_at`` (epoch
         seconds). A chunk is served only while its row carries ``generation``,
-        so a writer never removes a peer's chunks to replace its own: chunks of
-        a generation no row holds are left to the collectors (the generation
-        sweep, the reconcile). A re-run under the same generation is idempotent:
+        so a writer never removes a peer's chunks to replace its own. The
+        writer that then switches a row's generation deletes the one it
+        replaced once its commit has landed (:meth:`_delete_replaced_generation`);
+        the collectors (the generation sweep, the reconcile) take what that
+        leaves. A re-run under the same generation is idempotent:
         ChromaDB's ``add`` keeps the chunk already stored under an id and adds
         the rest (measured on chromadb 1.5.8).
 
@@ -1029,7 +1031,9 @@ class KnowledgeService:
         """Promote runbook content to a fully-published KnowledgeItem.
 
         The row is inserted under a new ``vector_generation`` (#2388), and the
-        vectors are written under it; no path deletes a vector.
+        vectors are written under it. The one vector delete is a pack
+        replacement's, of the generation it replaced, once its commit is known
+        to have landed (:meth:`_delete_replaced_generation`, ruling (i)).
 
         * **Authored** (``shipped`` false): the row first, ``ingest_complete``
           false, then the vectors, then :meth:`_complete_authored_ingest`,
@@ -1037,16 +1041,17 @@ class KnowledgeService:
         * **Pack** (``shipped`` true): the vectors first, then
           :meth:`_insert_pack_row`, one transaction that deletes the row it
           replaces (``replaces_generation``, guarded on that generation),
-          INSERTs this one complete, writes a team scope's share, and commits.
-          The ``kb_seed`` maintenance role holds INSERT and DELETE on
-          ``knowledge_items`` and no UPDATE, and nothing on ``resource_shares``,
-          so the shipped (all-global) pack issues no share write.
+          INSERTs this one complete, ensures a team scope's own share (an
+          idempotent add), and commits. The ``kb_seed`` maintenance role holds
+          INSERT and DELETE on ``knowledge_items`` and no UPDATE, and nothing on
+          ``resource_shares``, so the shipped (all-global) pack issues no share
+          write.
 
         **The failure contract (#2397, #2063, #2388).** The two stores cannot
         commit together, and no KB door needs them to: every door admits a
         chunk only when its parent's row is complete and published at query
         time and carries the chunk's generation (:meth:`admitted_generations`).
-        So this method never deletes vectors. What a failure leaves:
+        So a failure deletes no vector. What it leaves:
 
         * Vectors no row admits: whatever the indexer wrote, all, part, or an
           ``add_documents`` that lands after the cancel (on the HTTP ChromaDB
@@ -1069,8 +1074,9 @@ class KnowledgeService:
           decides again. A COMMIT in doubt that landed leaves this call's row
           with this call's chunks, served. Two live replicas on different pack
           versions therefore alternate the row at each other's boots: only the
-          surviving row's generation is served, and each alternation leaves
-          one generation for the sweep.
+          surviving row's generation is served, and each alternation's winner
+          deletes the generation it replaced; the loser's chunks are left for
+          the sweep.
         * **Authored.** An exception or a cancellation from ``create`` on runs
           one cleanup: :meth:`_delete_knowledge_item_row`, SQL only, deletes
           the row carrying this call's ``created_at`` and, when no row stands
@@ -1350,14 +1356,20 @@ class KnowledgeService:
     ) -> None:
         """A pack row's one transaction (#2388): DELETE the row it replaces,
         guarded on ``replaces_generation``; INSERT ``item``; at team scope,
-        replace the id's shares; COMMIT.
+        ensure the pack's own team share (an idempotent add, which leaves every
+        other share of the id); COMMIT.
 
-        The INSERT is issued before the share writes, so a duplicate id raises
+        The INSERT is issued before the share write, so a duplicate id raises
         there and rolls the whole transaction back, the guarded DELETE
         included. ``PostgreSQLShareRepository.share``, bound to this session,
         commits it with the share; with none, ``repo.commit()`` does. Anything
         that raises leaves the transaction uncommitted, and closing the
         session rolls it back.
+
+        Once the transaction is known to have committed with its guarded
+        DELETE matched, the replaced generation's chunks are never served
+        again, and :meth:`_delete_replaced_generation` deletes them, best
+        effort (ruling (i) on #2388).
         """
         from faultmaven.infrastructure.persistence.share_repository import (
             PostgreSQLShareRepository,
@@ -1366,28 +1378,51 @@ class KnowledgeService:
             DatabaseKnowledgeItemRepository,
         )
 
+        replaced = False
         async with self._db_session_factory() as session:
             repo = DatabaseKnowledgeItemRepository(session)
             if replaces_generation is not None:
-                await repo.delete(
+                replaced = await repo.delete(
                     item.item_id, commit=False, vector_generation=replaces_generation
                 )
             await repo.create(item, commit=False)
-            if not (team_id and self._share_repo):
-                await repo.commit()
-                return
-            shares = PostgreSQLShareRepository(session)
-            if replaces_generation is not None:
-                await shares.delete_for_resource(
-                    "knowledge_item", item.item_id, commit=False
+            if team_id and self._share_repo:
+                await PostgreSQLShareRepository(session).share(
+                    resource_type="knowledge_item",
+                    resource_id=item.item_id,
+                    scope_type="team",
+                    scope_id=team_id,
+                    enterprise_id=item.enterprise_id,
+                    created_by=created_by,
                 )
-            await shares.share(
-                resource_type="knowledge_item",
-                resource_id=item.item_id,
-                scope_type="team",
-                scope_id=team_id,
-                enterprise_id=item.enterprise_id,
-                created_by=created_by,
+            else:
+                await repo.commit()
+        if replaced:
+            await self._delete_replaced_generation(item.item_id, replaces_generation)
+
+    async def _delete_replaced_generation(self, item_id: str, generation: str) -> None:
+        """Delete ``item_id``'s chunks of ``generation``, a generation its row
+        no longer carries (ruling (i) on #2388).
+
+        The one in-process vector delete a writer makes, and only after the
+        commit that switched the row away from ``generation`` is KNOWN to have
+        landed: generations are never reused, so no row serves those chunks
+        again. Never on a failed or in-doubt commit. Best effort: a failure is
+        logged and the chunks are left to the generation sweep; nothing is
+        raised into the write.
+        """
+        if not self._vector_store:
+            return
+        try:
+            await self._vector_store.delete_generation(item_id, generation)
+        except Exception as exc:
+            logger.warning(
+                "Could not delete the replaced generation %s of knowledge item %s "
+                "(%s); its chunks are never served, and the generation sweep "
+                "collects them.",
+                generation,
+                item_id,
+                exception_class_name(exc),
             )
 
     async def _complete_authored_ingest(
@@ -2873,8 +2908,12 @@ class KnowledgeService:
         * two updates race: whichever UPDATE lands last leaves the content and
           the generation of the same call.
 
-        Superseded chunks are never served, and the generation sweep collects
-        them once older than ``KB_INCOMPLETE_INGEST_MAX_AGE_HOURS``.
+        Superseded chunks are never served. Once the UPDATE is known to have
+        committed, the generation it replaced is deleted, best effort
+        (:meth:`_delete_replaced_generation`, ruling (i) on #2388); a failed or
+        in-doubt commit deletes nothing, and what is left (the new chunks of a
+        failed update, the generation a racing update overwrote, a delete that
+        failed) is the generation sweep's.
 
         The read and the write are deliberately SEPARATE sessions, rather than
         one transaction held open across the re-index (the other way to order
@@ -3021,6 +3060,7 @@ class KnowledgeService:
                     generation=updates["vector_generation"],
                 )
 
+            switched_from: Optional[str] = None
             async with self._db_session_factory() as session:
                 repo = DatabaseKnowledgeItemRepository(session)
 
@@ -3060,6 +3100,10 @@ class KnowledgeService:
                         "update; the update was abandoned"
                     )
                     return None
+                # The UPDATE committed: the generation the row carried before
+                # it is never served again (ruling (i) on #2388).
+                if "vector_generation" in fields:
+                    switched_from = current.vector_generation
 
                 # The row AS COMMITTED, after our write, for the answer.
                 # If it was unpublished meanwhile, the vectors this update
@@ -3070,6 +3114,8 @@ class KnowledgeService:
                     _apply(current)
                     committed = current
 
+            if switched_from:
+                await self._delete_replaced_generation(document_id, switched_from)
             logger.info(f"Successfully updated document {document_id}")
 
             # Built from the COMMITTED row, not the pre-embed snapshot: the

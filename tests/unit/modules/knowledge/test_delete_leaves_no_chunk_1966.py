@@ -274,7 +274,7 @@ async def kb():
         _cleaned, _unpublished, orphaned = await kb_init._reconcile_vectors(
             svc, factory
         )
-        repaired, _still = await kb_init._repair_orphaned_rows(orphaned, svc)
+        repaired, _still = await kb_init._repair_unserved_rows(orphaned, svc)
         return orphaned, repaired
 
     async def boot(tmp_path, pack_dir):

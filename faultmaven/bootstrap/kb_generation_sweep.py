@@ -2,9 +2,13 @@
 
 Every chunk id ends in the ``vector_generation`` of the row it was written for
 (``{parent}_chunk_{i}_{generation}``), and a KB door serves a chunk only while
-its row still carries that generation. No writer deletes a chunk: a pack
-re-ingest, a content update and a failed write each leave the chunks of a
-generation no row holds. They are never served; this sweep removes them.
+its row still carries that generation. The writer that switches a row's
+generation (a content update, a pack replacement) deletes the generation it
+replaced once its commit is known to have landed (ruling (i) on #2388), best
+effort. This sweep is the backstop for what that leaves: a writer's delete that
+failed, the generation a racing update overwrote, a failed write's chunks, and
+every chunk written before #2388, which carries no generation. They are never
+served; this sweep removes them.
 
 A chunk is SUPERSEDED when its parent has a complete row that this pass's read
 sees, and the generation its id names is absent (written before #2388) or
@@ -15,7 +19,7 @@ before its row; an update its chunks before its UPDATE). A chunk whose parent
 has no row is the built-in reconcile's or the authored-orphan sweep's, and one
 whose row is incomplete is the incomplete-ingest sweep's: this sweep leaves
 both. The served generation is never touched, so there is no document cap:
-superseded chunks are the normal product of every pack update.
+after the 022 upgrade every pre-#2388 chunk is superseded at once.
 
 **Reads.** Id-only: ``list_all_chunk_ids_by_parent``, the rows'
 ``(item_id, vector_generation)``, and :func:`young_chunk_ids`, one filtered,
@@ -31,11 +35,13 @@ removes a live document's served chunks. Precondition for arming, as for the
 authored-orphan sweep: **one ChromaDB per database.** A row RLS hides can only
 spare a chunk, never condemn one.
 
-**Gate**, the incomplete-ingest sweep's (no knobs of its own):
-:func:`web_startup_generation_mode` on the standalone web startup, which
-deletes only on a local ``PersistentClient`` and is report-only under an
-external ``CHROMADB_URL``; ``kb_seed`` passes
-``resolve_incomplete_sweep_mode``, report-only until an operator arms it.
+**Gate**, its own: :func:`web_startup_generation_mode` on the standalone web
+startup, which deletes only on a local ``PersistentClient`` and is report-only
+under an external ``CHROMADB_URL``; ``kb_seed`` passes
+:func:`resolve_generation_sweep_mode`, report-only until an operator arms it
+(``KB_GENERATION_SWEEP_ENABLED`` and a run that is not a dry run; ``--dry-run``
+/ ``--no-dry-run`` override ``KB_GENERATION_SWEEP_DRY_RUN``). Arming the
+incomplete-ingest sweep does not arm it: its precondition is not that sweep's.
 """
 
 from __future__ import annotations
@@ -52,6 +58,7 @@ from faultmaven.bootstrap.kb_orphan_sweep import (
     SWEEP_ARMED,
     SWEEP_OFF,
     SWEEP_REPORT_ONLY,
+    read_sweep_gate,
 )
 from faultmaven.infrastructure.knowledge.admission import chunk_generation_from_id
 
@@ -88,6 +95,14 @@ class GenerationSweepResult:
             "unremoved": self.unremoved,
             "would_delete_documents": list(self.documents),
         }
+
+
+def resolve_generation_sweep_mode(dry_run: Optional[bool] = None) -> str:
+    """``kb_seed``'s mode: :func:`read_sweep_gate` over the
+    ``KB_GENERATION_SWEEP_*`` settings, ``dry_run`` the run's override."""
+    return read_sweep_gate(
+        "kb_generation_sweep_enabled", "kb_generation_sweep_dry_run", dry_run
+    )
 
 
 def web_startup_generation_mode() -> str:
