@@ -23,7 +23,7 @@ from faultmaven.infrastructure.llm.truncation import (
 )
 from faultmaven.infrastructure.persistence.case_vector_store import CaseVectorStore
 from faultmaven.infrastructure.security.model_content import case_redacted_messages
-from faultmaven.models.interfaces import IKnowledgeVectorStore
+from faultmaven.models.interfaces import AdmitParents, IKnowledgeVectorStore
 from faultmaven.modules.agent.tools.kb_config import KBConfig
 
 logger = logging.getLogger(__name__)
@@ -165,6 +165,7 @@ class DocumentQATool:
         *,
         redaction_ctx: Any,
         empty_result: Optional[str] = None,
+        admit: Optional[AdmitParents] = None,
     ) -> str:
         """
         Answer factual question from documents (KB-neutral).
@@ -180,6 +181,9 @@ class DocumentQATool:
                 nothing, for a caller that knows more than the KB config (the
                 tools this turn offers, the case's files, #1977). ``None``
                 answers with the config's own ``empty_result_message``.
+            admit: The KB admission check (#2397), handed to the store's
+                search. The KB store refuses a search without one; the case
+                evidence store takes none.
 
         Returns:
             Formatted answer with citations
@@ -193,6 +197,7 @@ class DocumentQATool:
             filters,
             redaction_ctx=redaction_ctx,
             empty_result=empty_result,
+            admit=admit,
         )
 
         # Delegate response formatting to KB config
@@ -212,6 +217,7 @@ class DocumentQATool:
         *,
         redaction_ctx: Any,
         empty_result: Optional[str] = None,
+        admit: Optional[AdmitParents] = None,
     ) -> Dict[str, Any]:
         """
         Core Q&A logic (KB-neutral).
@@ -249,7 +255,7 @@ class DocumentQATool:
         # rendered as a substantive finding (#943). Letting it propagate is
         # what lets the adapter report success=False. A store-level fix alone
         # would merge inert against this handler.
-        chunks = await self._dispatch_search(collection, question, k, filters)
+        chunks = await self._dispatch_search(collection, question, k, filters, admit)
 
         if not chunks:
             logger.info(f"No chunks found in collection: {collection}")
@@ -479,6 +485,7 @@ Answer:"""
         question: str,
         k: int,
         filters: Optional[Dict[str, Any]],
+        admit: Optional[AdmitParents],
     ) -> list:
         """Retrieve chunks per the KB config's search mode.
 
@@ -487,6 +494,10 @@ Answer:"""
         pure vector search. Raises on store error, and that error is
         NOT caught upstream: it propagates to the tool boundary so the adapter
         renders ``success=False`` rather than an answer (#943).
+
+        ``admit`` goes to the KB store's search, which refuses a missing one
+        (``TypeError``) and serves only admitted chunks (#2397). The case
+        evidence store's search takes none, and is handed none.
 
         No ``context_metadata`` reaches the reranker from here (#1880): the
         case supplies no technology for its metadata signal to match.
@@ -499,9 +510,11 @@ Answer:"""
                 query=question,
                 k=k,
                 where=filters,
+                admit=admit,
             )
+        admission = {} if admit is None else {"admit": admit}
         return await self._vector_store.search(
-            collection_name=collection, query=question, k=k, where=filters
+            collection_name=collection, query=question, k=k, where=filters, **admission
         )
 
     def _build_context_from_chunks(self, chunks: list) -> str:

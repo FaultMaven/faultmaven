@@ -32,7 +32,7 @@ FaultMaven's browser extension provides rich implicit context that most RAG syst
 
 **Pre-retrieval filtering on this context should be the default path, not an optimization.** Every design decision should be evaluated through the lens of "does this exploit the context we uniquely have access to?" The `context_metadata` parameter in `hybrid_search()` exists for this purpose. Its designed source (#188) is the copilot's page context (copilot page-comprehension → API request body → `ToolContext` → `KBToolAdapter`). That source would justify the **hard** pre-filter (`filter_mode="hard"`) as well as the soft boost, and its cross-repo wiring is deferred. No live caller passes `context_metadata` today. A case-derived soft boost (#709) read `ProblemVerification.affected_services`. It never fired, because nothing wrote that field, and it would not have matched if it had: the field recorded the user's own service ("checkout"), while a runbook's `service` is the technology ("postgresql"). It was removed in #1880, along with `ToolContext.kb_context_metadata` and its pass-through. The copilot path wires the agent side when it is built.
 
-Neither live hybrid caller passes `context_metadata`. The agent QA tools path (`kb_qa`) and the engine's own KB pre-fetch (`_prefetch_kb_context`, through `KnowledgeService.search_knowledge(use_hybrid=True)`) take the same two-stage hybrid route (keyword recall + IDF reranker, #1272). Both get the reranker's vector/term/status/freshness blend, and the metadata signal scores lifecycle status alone.
+Neither live hybrid caller passes `context_metadata`. The agent QA tools path (`kb_qa`) and the engine's own KB pre-fetch (`_prefetch_kb_context`, through `KnowledgeService.search_knowledge`, which is hybrid-only) take the same two-stage hybrid route (keyword recall + IDF reranker, #1272). Both get the reranker's vector/term/status/freshness blend, and the metadata signal scores lifecycle status alone.
 
 ```text
 ChromaDB Instance
@@ -202,6 +202,7 @@ The full list of fields stored on each chunk is canonical in [knowledge-base-arc
 | Field | Used by | Purpose |
 | ----- | ------- | ------- |
 | `scope`, `owner_id`, `parent_document_id` | `where` clause | Scope filter (built by `build_kb_scope_filter`; team arm is a `parent_document_id` `$in` allowlist resolved from `resource_shares`, not a `team_id` metadata match) |
+| `parent_document_id` (else the chunk id before its last `_chunk_`) | Admission check, after the recall | Names the hit's `knowledge_items` row. Every door (push, `kb_qa`, `search_documents`, dedup) keeps a hit only when that row is complete and published at query time (`IKnowledgeService.admitted_document_ids`, #2397); `hybrid_search` drops the others before its rerank and top-k cut, so a chunk with no live row never takes a real hit's place. The store applies the check as an `admit` callback and never reads `knowledge_items` itself |
 | `enterprise_id` | Nothing yet | Stamped on every KB chunk since #1168 (the row's tenant; `add_documents` refuses a KB chunk without it). #1775 conjuncts it onto the scope filter, outside the `$or`, once the backfill (#1777) reports no unstamped chunk |
 | `domain`, `service` | Reranker metadata-match signal + hard pre-filter (`filter_mode="hard"`); both mechanism only | Matched against `context_metadata`, which no live caller supplies: the case-derived boost was removed (#1880), and the copilot page context is not built |
 | `symptom_class`, `severity` | Reranker metadata-match signal | Boost chunks whose taxonomy aligns with the query's failure-mode classification |
@@ -246,15 +247,20 @@ Agent calls: answer_from_kb(question)
   │
   ├── KBToolAdapter.execute_with_context()
   │     Reads kb_scope_filter from ToolContext: the case driver's scope,
-  │     built by case_retrieval_scope (#1919); refuses when it is None
+  │     built by case_retrieval_scope (#1919); refuses when it is None.
+  │     Holds admit = knowledge_service.admitted_document_ids, bound when
+  │     _create_investigation_tools builds it (#2397)
   │
-  ├── AnswerFromKB._arun(question, scope_filter)  # kb_qa.py
+  ├── AnswerFromKB._arun(question, scope_filter, admit=...)  # kb_qa.py
   │
   ├── DocumentQATool.answer_question(...)
   │     Detects search_mode="hybrid" from UnifiedKBConfig
   │
-  ├── KnowledgeVectorStore.hybrid_search(where=scope filter)
+  ├── KnowledgeVectorStore.hybrid_search(where=scope filter, admit=...)
   │     Stage 1: vector + keyword recall
+  │     Admission: drop every candidate whose parent row is not complete
+  │       and published (one SELECT); a check that cannot run raises,
+  │       and the adapter reports a tool failure (#943)
   │     Stage 2: rerank with 4-signal scoring (no context: metadata scores status)
   │
   ├── Relevance gate: refuse synthesis if max chunk score < 0.5 (cosine)
@@ -269,7 +275,7 @@ Agent calls: answer_from_kb(question)
         Returns answer with source citations
 ```
 
-**Engine pre-fetch path (hybrid, no context boost).** `_prefetch_kb_context` — the symptom-verification KB pull and the cause_state→IDENTIFIED remediation pull — reaches `hybrid_search()` through `search_knowledge(use_hybrid=True)` since #1272 (before that it was single-pass pure vector, which put the runbook covering #1272's incident at rank 70 of 91). Like the tool path, it passes no `context_metadata`, so its metadata signal scores lifecycle status alone, and it applies its admission floor (`KB_PREFETCH_RELEVANCE_THRESHOLD`) on the raw cosine `score`, never on `rerank_score`.
+**Engine pre-fetch path (hybrid, no context boost).** `_prefetch_kb_context` — the symptom-verification KB pull and the cause_state→IDENTIFIED remediation pull — reaches `hybrid_search()` through `search_knowledge` since #1272 (before that it was single-pass pure vector, which put the runbook covering #1272's incident at rank 70 of 91). Like the tool path, it passes no `context_metadata`, so its metadata signal scores lifecycle status alone, and it applies its admission floor (`KB_PREFETCH_RELEVANCE_THRESHOLD`) on the raw cosine `score`, never on `rerank_score`. It is row-checked like every door; a check that cannot run leaves the turn going on without KB.
 
 **Admission is runbook-aware (#1379).** The ranked pool is not sliced flat. A chunk is a `### Cause` and a runbook carries 3-10 of them, so a flat `relevant[:KB_CONTEXT_MAX_ENTRIES]` routinely rendered several causes of ONE runbook while a *different* runbook the query also needed sat in the pool unrendered. Measured over `tests/eval/kb_retrieval/`: the median query drew **7 of 10** pool slots from a single runbook, 5 of 16 drew all 10, and **22 of 23 expected runbooks reached the pool while only 17 reached the prompt** — a selection failure, not a retrieval one.
 
@@ -465,7 +471,7 @@ This maps onto FaultMaven's existing hypothesis lifecycle (ACTIVE → VALIDATED/
 | Four-signal reranker | **Implemented** | Vector, term overlap, metadata match, freshness. Blend returned as `rerank_score` beside the cosine (#1272) |
 | Corpus IDF (term index) | **Implemented** | `CorpusTermStats` — per-collection inverted index; weights term overlap, orders keyword probes, and decides query specificity (#1272) |
 | Dynamic hybrid weights | **Implemented** | Queries naming something rare (`IDENTIFIER_DF_RATIO`, 2% of chunks) shift term overlap to 40%, vector to 25% |
-| Hybrid on the seeding path | **Implemented** | `search_knowledge(use_hybrid=True, min_score=…)` from `_prefetch_kb_context`; the floor is applied at admission, before the top-k cut (#1272) |
+| Hybrid on the seeding path | **Implemented** | `search_knowledge(min_score=…)` (hybrid-only) from `_prefetch_kb_context`; the floor is applied at admission, before the top-k cut (#1272) |
 | Seeding grounding gate | **Removed** (fm#1295) | Grounded a runbook before the KB cause seeder could assert its cause as a candidate root cause; went with the seeder. The measurement it rested on is in `docs/archive/2026/09/kb-cause-seeder/`. |
 | Hard pre-filter mode | **Implemented (mechanism only)** | `filter_mode="hard"` injects domain/service into the ChromaDB where clause (`_apply_hard_metadata_filter`). Not yet invoked end-to-end — see "Extension context → KB metadata filters" below. |
 | Fast search mode | **Not done** | Declared in the `search_mode` property docstring, but no config returns `"fast"` and nothing dispatches it. Planned low-latency path (§3 Dual Retrieval Paths). |

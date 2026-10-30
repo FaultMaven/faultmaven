@@ -40,6 +40,7 @@ from faultmaven.modules.case.contracts import (
     SolutionType,
 )
 from tests.case_builders import investigating_case
+from tests.utils import admit_every_parent
 
 pytestmark = [pytest.mark.unit]
 
@@ -58,7 +59,7 @@ class _RecordingKB(RunbookKnowledgeBase):
     """
 
     def __init__(self) -> None:
-        super().__init__(vector_store=MagicMock())
+        super().__init__(vector_store=MagicMock(), admit=admit_every_parent)
         self.scopes: List[Optional[Dict[str, Any]]] = []
 
     async def search_runbooks(

@@ -213,12 +213,12 @@ async def bootstrap_kb(
     # runs as the maintenance role: INSERT and DELETE on knowledge_items,
     # deliberately no UPDATE. What this pass issues is shaped by the answer,
     # rather than issuing statements the role is refused: the pack-hash stamp
-    # is skipped, and repair re-reads plainly instead of FOR SHARE.
+    # is skipped.
     role_may_update = await _role_may_update(db_session_factory)
     if not role_may_update:
         logger.debug(
             "KB bootstrap: this role may not UPDATE knowledge_items — pack-hash "
-            "stamps are skipped and repair re-reads are unlocked this pass."
+            "stamps are skipped this pass."
         )
 
     for runbook in pack.runbooks:
@@ -253,8 +253,9 @@ async def bootstrap_kb(
     # ChromaDB chunks whose built-in parent has no row (orphaned vectors) or an
     # unpublished row (#1966) — both deleted — and published rows with no
     # chunks (orphaned rows — warned; an unpublished row has none by design).
-    # This is the safety net that keeps retrieval from landing on a ghost
-    # vector with no row behind it, or on a runbook that was retired.
+    # Retrieval no longer depends on it: every KB read admits a chunk only when
+    # its row is complete and published (#2397). It removes what admission
+    # already hides.
     (
         result.orphaned_vectors_cleaned,
         result.unpublished_vectors_cleaned,
@@ -262,10 +263,11 @@ async def bootstrap_kb(
     ) = await _reconcile_vectors(knowledge_service, db_session_factory)
 
     # The authored half of the same drift (#1982): an authored chunk whose row
-    # is gone (a vector delete that failed before #1966) is retrievable for
-    # good. Report-only unless an operator arms it; deleted only where the row
-    # read is proven unfiltered by RLS, per enterprise stamp, behind the
-    # reference-set check and the cap — see kb_orphan_sweep.
+    # is gone (a vector delete that failed, or a best-effort one after #2397)
+    # is never served, but stays until this sweep removes it. Report-only
+    # unless an operator arms it; deleted only where the row read is proven
+    # unfiltered by RLS, per enterprise stamp, behind the reference-set check
+    # and the cap — see kb_orphan_sweep.
     max_rows, max_chunks = _resolve_repair_bounds()
     result.authored_orphans = await sweep_authored_orphans(
         knowledge_service,
@@ -285,7 +287,6 @@ async def bootstrap_kb(
     result.repaired_rows, result.orphaned_rows = await _repair_orphaned_rows(
         orphaned_rows,
         knowledge_service,
-        role_may_update=role_may_update,
         max_rows=max_rows,
         max_chunks=max_chunks,
     )
@@ -503,9 +504,9 @@ async def _stamp_pack_hash(
 
 
 # Built-in rows carry a deterministic ``kb_<12 hex>`` item_id (see
-# ``_item_id_from_runbook_id``). User/authored items use random UUIDs, so this
-# pattern NEVER matches them — the prune below is structurally incapable of
-# touching authored content.
+# ``utils.runbook_id.item_id_from_runbook_id``). User/authored items use random
+# ids that never match this pattern, so the prune below is structurally
+# incapable of touching authored content.
 _BUILTIN_ITEM_ID_RE = re.compile(r"^kb_[0-9a-f]{12}$")
 
 
@@ -579,11 +580,11 @@ async def _reconcile_vectors(
         retrieved-then-resolved — and a single such ghost landing as the top KB
         hit silently kills a runbook-cause match.
       * **unpublished vectors** — a built-in parent whose row exists but is
-        UNPUBLISHED (#1966). Deleted: an unpublished runbook must not be
-        retrievable, and retrieval does not honour ``is_published``.
-        ``delete_document`` drops the vectors when it unpublishes, so these
-        are what an older version's repair re-embedded (it listed unpublished
-        rows as orphaned) or a write that raced the unpublish left behind.
+        UNPUBLISHED (#1966). Deleted: every unpublish leaves them, because
+        ``delete_document`` unpublishes a built-in with a SQL-only flip and no
+        vector call (#2397). No KB door serves them meanwhile, since every
+        door admits a chunk only when its row is complete and published; this
+        pass is what removes them.
       * **orphaned rows** — a PUBLISHED, complete row with no vectors (an
         incomplete one is an authored ingest in flight or failed, #2394, which
         the incomplete-ingest sweep owns). Can't be repaired
@@ -775,7 +776,6 @@ async def _repair_orphaned_rows(
     orphaned_rows: list[str],
     knowledge_service: Any,
     *,
-    role_may_update: bool,
     max_rows: int = KB_REPAIR_MAX_ROWS,
     max_chunks: int = KB_REPAIR_MAX_CHUNKS,
 ) -> tuple[list[str], list[str]]:
@@ -801,10 +801,6 @@ async def _repair_orphaned_rows(
     refuses it. An unpublished row is not an orphan (it has no vectors by
     design, #1966): reconcile does not list it, and
     ``reindex_missing_vectors`` refuses it if handed one anyway.
-
-    ``role_may_update`` is the pass's one capability answer: it decides whether
-    each repair's re-read after writing is locked (see
-    ``KnowledgeService.reindex_missing_vectors``).
 
     Bounded twice (``max_rows`` / ``max_chunks``, deployment-configurable):
     ``max_rows`` skips a bulk-loss anomaly entirely, and ``max_chunks`` caps the
@@ -857,9 +853,7 @@ async def _repair_orphaned_rows(
             )
             break
         try:
-            chunks = await knowledge_service.reindex_missing_vectors(
-                item_id, role_may_update=role_may_update
-            )
+            chunks = await knowledge_service.reindex_missing_vectors(item_id)
         except Exception as exc:
             logger.warning(f"KB repair failed for {item_id}: {exc}")
             still_orphaned.append(item_id)
@@ -877,9 +871,9 @@ async def _repair_orphaned_rows(
             still_orphaned.append(item_id)
             logger.warning(
                 f"KB repair produced 0 chunks for {item_id} (embedding model "
-                "unavailable, or the row was deleted or unpublished during the "
-                "repair — see the line before) — if the row is still live it "
-                "stays unretrievable until a later boot retries it."
+                "unavailable, or the row is gone, unpublished or incomplete — "
+                "see the line before) — if the row is still live it stays "
+                "unretrievable until a later boot retries it."
             )
     return repaired, still_orphaned
 
@@ -918,14 +912,3 @@ async def _delete_existing(
                 await session.commit()
     except Exception as e:
         logger.warning(f"Failed to delete SQL row for {item_id}: {e}")
-
-
-def _item_id_from_runbook_id(runbook_id: str) -> str:
-    """Stable item_id derived from the runbook's frontmatter ``id``.
-
-    Thin wrapper over :func:`faultmaven.utils.runbook_id.item_id_from_runbook_id`
-    so the pack builder and bootstrap derive the same id.
-    """
-    from faultmaven.utils.runbook_id import item_id_from_runbook_id
-
-    return item_id_from_runbook_id(runbook_id)

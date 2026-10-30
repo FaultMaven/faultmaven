@@ -33,6 +33,7 @@ from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
     KB_COLLECTION,
     KnowledgeVectorStore,
 )
+from tests.utils import admit_every_parent
 
 pytestmark = [pytest.mark.unit]
 
@@ -212,7 +213,7 @@ async def test_concurrent_misses_share_one_build() -> None:
 async def test_a_search_that_raises_spends_nothing_on_the_index() -> None:
     store = KnowledgeVectorStore(MagicMock())
     store._embed_query_or_raise = AsyncMock(return_value=[0.1])
-    store.search = AsyncMock(
+    store._recall = AsyncMock(
         side_effect=CircuitBreakerError(
             "Circuit breaker is open for KnowledgeVectorStore",
             service="KnowledgeVectorStore",
@@ -222,7 +223,10 @@ async def test_a_search_that_raises_spends_nothing_on_the_index() -> None:
 
     with pytest.raises(CircuitBreakerError):
         await store.hybrid_search(
-            KB_COLLECTION, "ENOSPC disk full", where={"scope": "global"}
+            KB_COLLECTION,
+            "ENOSPC disk full",
+            where={"scope": "global"},
+            admit=admit_every_parent,
         )
 
     store._corpus_term_stats.assert_not_called()

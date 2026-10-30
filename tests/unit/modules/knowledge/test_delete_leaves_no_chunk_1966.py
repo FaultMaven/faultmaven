@@ -1,22 +1,30 @@
-"""A removed knowledge document leaves no retrievable chunk (#1966).
+"""A removed knowledge document leaves no retrievable chunk (#1966, #2397).
 
 Invariant: a document ``delete_document`` reports removed (deleted or
-unpublished) has no retrievable chunk — now, and after any later restart,
-reconcile, repair or kb_seed run. When it cannot guarantee that it reports
-failure and leaves the document as it was, or in the one recoverable split
-state (row present, vectors missing), which reconcile repairs only for a
-published row. It never leaves a chunk whose row is gone.
+unpublished) has no chunk retrievable through a KB door — now, and after any
+later restart, reconcile, repair or kb_seed run. Every door admits a chunk only
+when its parent's row is complete and published at query time
+(``KnowledgeService.admitted_document_ids``), so the delete commits the row
+change first and is done: an unpublish is a SQL-only flip, and an authored
+delete removes its vectors afterwards, best effort. A vector delete that fails
+or times out is not a failed delete (#2063). What it leaves is never served:
+an unpublished built-in's vectors are removed by the next pack-loading
+bootstrap's reconcile, an authored document's only by the authored-orphan
+sweep once an operator arms it.
 
-Retrieval never checks that a chunk's row exists, and the boot reconcile only
-deletes built-in orphans, so a chunk outliving its row stays searchable for
-good. Before this change the row was committed first and the vector delete ran
-last with its failure swallowed; and the reconcile/repair pass re-embedded an
-unpublished built-in at the next boot, undoing the unpublish.
+Before #1966 the row was committed first and the vector delete's failure was
+swallowed, with retrieval reading the vector store alone, so a chunk outliving
+its row stayed searchable for good; #1966 then held the row change across the
+vector delete and rolled it back on a failure, which treated a timed-out delete
+as one that never happened (#2063). The reconcile/repair pass also re-embedded
+an unpublished built-in at the next boot, undoing the unpublish.
 
 Everything relational here is real (FK-on SQLite, the real repository and the
-real ``KnowledgeService``); the vector store is an in-memory double that keeps
-chunk counts by parent id, so "retrievable" is observable as "the store holds
-the parent".
+real ``KnowledgeService``, so the admission check runs its real query); the
+vector store is an in-memory double that keeps chunk counts by parent id, so
+"the store still holds it" and "a door would serve it" are separately
+observable. That every door applies the check is pinned over a real ChromaDB in
+``tests/integration/modules/knowledge/test_row_checked_retrieval_2397.py``.
 
 T9 (a verify-race withdrawal whose delete fails answers a 409 that says the
 copy could not be withdrawn) is pinned by
@@ -81,6 +89,8 @@ VECTOR_FAILURES = [
         CircuitBreakerError("Circuit breaker is open for chromadb", service="kb"),
         id="breaker-open",
     ),
+    # #2063: the store may have applied a delete whose call timed out.
+    pytest.param(TimeoutError("vector delete timed out"), id="timeout"),
 ]
 
 
@@ -235,14 +245,24 @@ async def kb():
     async def shares(item_id):
         return await svc._share_repo.list_scopes_for_resource("knowledge_item", item_id)
 
+    async def admitted(item_id):
+        """Whether a KB door would serve this document's chunks: the real
+        admission check, over the real rows."""
+        return item_id in await svc.admitted_document_ids([item_id])
+
+    async def listed(item_id):
+        async with factory() as session:
+            items = await DatabaseKnowledgeItemRepository(session).list_for_inventory(
+                "ent-1", user_id="user-1"
+            )
+        return item_id in {i.item_id for i in items}
+
     async def boot_repair():
         """The reconcile + repair pair exactly as ``bootstrap_kb`` runs it."""
         _cleaned, _unpublished, orphaned = await kb_init._reconcile_vectors(
             svc, factory
         )
-        repaired, _still = await kb_init._repair_orphaned_rows(
-            orphaned, svc, role_may_update=True
-        )
+        repaired, _still = await kb_init._repair_orphaned_rows(orphaned, svc)
         return orphaned, repaired
 
     async def boot(tmp_path, pack_dir):
@@ -264,6 +284,8 @@ async def kb():
         row=row,
         share_to_team=share_to_team,
         shares=shares,
+        admitted=admitted,
+        listed=listed,
         boot_repair=boot_repair,
         boot=boot,
     )
@@ -271,7 +293,7 @@ async def kb():
 
 
 # ---------------------------------------------------------------------------
-# T3 / success arms: removed means no chunk, and one vector attempt
+# T3 / success arms: removed means no admitted chunk
 # ---------------------------------------------------------------------------
 
 
@@ -284,61 +306,76 @@ def test_the_ids_take_the_arms_they_are_named_for():
 async def test_t3_an_authored_delete_removes_row_vectors_and_shares(kb):
     await kb.seed(_item(AUTHORED_ID))
     await kb.share_to_team(AUTHORED_ID)
+    assert await kb.admitted(AUTHORED_ID)  # control: a live document is served
 
     result = await kb.svc.delete_document(AUTHORED_ID)
 
     assert result == {"success": True, "document_id": AUTHORED_ID, "action": "deleted"}
     assert await kb.row(AUTHORED_ID) is None
+    assert not await kb.admitted(AUTHORED_ID)
     assert AUTHORED_ID not in kb.store.parents
     assert await kb.shares(AUTHORED_ID) == []
-    # ONE attempt: the row change is held uncommitted across this call, and on
-    # SQLite that hold is the single writer lock — retries would extend it.
-    assert kb.store.delete_calls == [(AUTHORED_ID, 0)]
+    # The vector delete runs after the commit, so no transaction (on SQLite
+    # the writer lock) is held across it.
+    assert [parent for parent, _ in kb.store.delete_calls] == [AUTHORED_ID]
 
 
-async def test_a_builtin_unpublish_keeps_the_row_and_drops_the_vectors(kb):
+async def test_a_builtin_unpublish_is_a_sql_only_flip(kb):
+    """#2397: an unpublish makes no vector call. Its chunks stay in the store,
+    unadmitted, until the next boot's reconcile collects them (T5)."""
     await kb.seed(_builtin())
 
     result = await kb.svc.delete_document(BUILTIN_ID)
 
     assert result["success"] is True and result["action"] == "unpublished"
     assert (await kb.row(BUILTIN_ID)).is_published is False
-    assert BUILTIN_ID not in kb.store.parents
-    assert kb.store.delete_calls == [(BUILTIN_ID, 0)]
+    assert kb.store.delete_calls == []
+    assert kb.store.parents[BUILTIN_ID] == 3
+    assert not await kb.admitted(BUILTIN_ID)
 
 
 # ---------------------------------------------------------------------------
-# T1 / T4: the vector store fails → nothing changes, and the caller is told
+# T1 / T4: the vector store fails → the delete still completes (#2063)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("failure", VECTOR_FAILURES)
-async def test_t1_an_authored_delete_whose_vectors_fail_changes_nothing(kb, failure):
+async def test_t1_an_authored_delete_whose_vectors_fail_still_completes(
+    kb, caplog, failure
+):
+    """The row change committed before the vector delete, so its failure — a
+    timeout included, which may have applied — is logged and not raised: no
+    door admits the chunks it leaves, and nothing rolls the delete back."""
     await kb.seed(_item(AUTHORED_ID))
     await kb.share_to_team(AUTHORED_ID)
     kb.store.fail_for[AUTHORED_ID] = failure
 
-    with pytest.raises(KnowledgeBaseError) as raised:
-        await kb.svc.delete_document(AUTHORED_ID)
+    with caplog.at_level(logging.WARNING):
+        result = await kb.svc.delete_document(AUTHORED_ID)
 
-    assert raised.value.error_code == "KNOWLEDGE_VECTOR_DELETE_FAILED"
-    # The row change was rolled back, not committed: the document is intact.
-    assert await kb.row(AUTHORED_ID) is not None
-    assert kb.store.parents[AUTHORED_ID] == 3
-    assert len(await kb.shares(AUTHORED_ID)) == 1
-    assert kb.store.delete_calls == [(AUTHORED_ID, 0)]
+    assert result == {"success": True, "document_id": AUTHORED_ID, "action": "deleted"}
+    assert await kb.row(AUTHORED_ID) is None
+    assert not await kb.admitted(AUTHORED_ID)
+    assert not await kb.listed(AUTHORED_ID)
+    assert await kb.shares(AUTHORED_ID) == []
+    assert kb.store.parents[AUTHORED_ID] == 3  # left for the orphan sweep
+    assert [parent for parent, _ in kb.store.delete_calls] == [AUTHORED_ID]
+    logged = [r.getMessage() for r in caplog.records if AUTHORED_ID in r.getMessage()]
+    assert any("removing its vectors failed" in m for m in logged), logged
+    assert not any(DRIVER_TEXT in m for m in logged)
 
 
 @pytest.mark.parametrize("failure", VECTOR_FAILURES)
-async def test_t4_a_builtin_unpublish_whose_vectors_fail_stays_published(kb, failure):
+async def test_t4_a_builtin_unpublish_never_reaches_a_failing_store(kb, failure):
     await kb.seed(_builtin())
     kb.store.fail_for[BUILTIN_ID] = failure
 
-    with pytest.raises(KnowledgeBaseError):
-        await kb.svc.delete_document(BUILTIN_ID)
+    result = await kb.svc.delete_document(BUILTIN_ID)
 
-    assert (await kb.row(BUILTIN_ID)).is_published is True
-    assert kb.store.parents[BUILTIN_ID] == 3
+    assert result["success"] is True and result["action"] == "unpublished"
+    assert (await kb.row(BUILTIN_ID)).is_published is False
+    assert not await kb.admitted(BUILTIN_ID)
+    assert kb.store.delete_calls == []
 
 
 # ---------------------------------------------------------------------------
@@ -395,7 +432,7 @@ async def test_t5_an_unpublished_builtin_is_not_re_embedded_by_the_next_boot(
     is excluded, not because repair never ran.
     """
     pack_dir = _write_pack(tmp_path)
-    shipped_id = kb_init._item_id_from_runbook_id("example-runbook")
+    shipped_id = item_id_from_runbook_id("example-runbook")
 
     first = await kb_init.bootstrap_kb(
         knowledge_service=kb.svc,
@@ -408,7 +445,9 @@ async def test_t5_an_unpublished_builtin_is_not_re_embedded_by_the_next_boot(
     assert shipped_id in kb.store.parents
 
     assert (await kb.svc.delete_document(shipped_id))["action"] == "unpublished"
-    assert shipped_id not in kb.store.parents
+    # A SQL-only flip: its chunks stay, unadmitted, for the reconcile below.
+    assert shipped_id in kb.store.parents
+    assert not await kb.admitted(shipped_id)
     await kb.seed(_item(OTHER_AUTHORED_ID), chunks=0)  # published, vectors lost
     kb.indexed.clear()
 
@@ -422,6 +461,7 @@ async def test_t5_an_unpublished_builtin_is_not_re_embedded_by_the_next_boot(
 
     assert second.skipped_unchanged == ["global/example.md"], second
     assert shipped_id not in second.orphaned_rows + second.repaired_rows
+    assert second.unpublished_vectors_cleaned == [shipped_id]
     assert shipped_id not in kb.store.parents, "the unpublish was undone"
     assert kb.indexed == [OTHER_AUTHORED_ID]
     assert second.repaired_rows == [OTHER_AUTHORED_ID]
@@ -434,9 +474,7 @@ async def test_t10_reindex_missing_vectors_refuses_an_unpublished_row(kb, caplog
     await kb.seed(_builtin(published=False), chunks=0)
 
     with caplog.at_level(logging.WARNING):
-        assert (
-            await kb.svc.reindex_missing_vectors(BUILTIN_ID, role_may_update=True) == 0
-        )
+        assert await kb.svc.reindex_missing_vectors(BUILTIN_ID) == 0
 
     assert kb.indexed == []
     assert BUILTIN_ID not in kb.store.parents
@@ -447,50 +485,36 @@ async def test_t10_reindex_missing_vectors_refuses_an_unpublished_row(kb, caplog
 
 
 # ---------------------------------------------------------------------------
-# T6: the commit fails after the vectors are gone → the recoverable split
+# T6: the commit fails → nothing changed, and no vector was touched
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    ("item_id", "make", "action"),
+    ("item_id", "make"),
     [
-        pytest.param(AUTHORED_ID, lambda: _item(AUTHORED_ID), "deleted", id="authored"),
-        pytest.param(BUILTIN_ID, _builtin, "unpublished", id="builtin"),
+        pytest.param(AUTHORED_ID, lambda: _item(AUTHORED_ID), id="authored"),
+        pytest.param(BUILTIN_ID, _builtin, id="builtin"),
     ],
 )
-async def test_t6_a_failed_commit_leaves_a_live_row_that_reconcile_repairs(
-    kb, caplog, item_id, make, action
+async def test_t6_a_failed_commit_changes_nothing_and_touches_no_vector(
+    kb, item_id, make
 ):
+    """The vector delete comes after the commit, so a commit that fails leaves
+    the document exactly as it was — no split state for a repair to restore."""
     await kb.seed(make())
 
     commit_failure = OperationalError("COMMIT", {}, Exception("connection reset"))
     with (
         patch.object(AsyncSession, "commit", AsyncMock(side_effect=commit_failure)),
-        caplog.at_level(logging.ERROR),
-        pytest.raises(Exception) as raised,
+        pytest.raises(RuntimeError, match="Document removal failed"),
     ):
         await kb.svc.delete_document(item_id)
 
-    # Surfaced as a failure — and NOT as the "nothing changed" domain error,
-    # because the vectors did change.
-    assert not isinstance(raised.value, KnowledgeBaseError)
-    split = [
-        r
-        for r in caplog.records
-        if r.levelname == "ERROR" and "SPLIT KNOWLEDGE DOCUMENT" in r.getMessage()
-    ]
-    assert len(split) == 1 and item_id in split[0].getMessage()
-    assert "Retry the delete" in split[0].getMessage()
-
-    # The split state: row present and still published, vectors gone.
     row = await kb.row(item_id)
     assert row is not None and row.is_published is True
-    assert item_id not in kb.store.parents
-
-    # ...which the reconcile/repair pass restores, because the row is live.
-    orphaned, repaired = await kb.boot_repair()
-    assert orphaned == [item_id] and repaired == [item_id]
+    assert await kb.admitted(item_id)
     assert kb.store.parents[item_id] == 3
+    assert kb.store.delete_calls == []
 
 
 # ---------------------------------------------------------------------------
@@ -522,35 +546,32 @@ async def test_t7_a_share_cleanup_failure_after_the_commit_is_logged_not_raised(
 
 
 # ---------------------------------------------------------------------------
-# T8: bulk delete reports the vector failure per id, in a constant sentence
+# T8: bulk delete counts a delete whose vectors fail as a delete
 # ---------------------------------------------------------------------------
 
 
-async def test_t8_bulk_delete_reports_a_vector_failure_without_driver_text(kb):
+async def test_t8_bulk_delete_counts_a_delete_whose_vectors_fail_as_deleted(kb):
+    """A vector failure after the commit is no failed delete (#2063); what
+    still fails is reported in a constant sentence, with no driver text."""
     await kb.seed(_item(AUTHORED_ID))
     await kb.seed(_item(OTHER_AUTHORED_ID))
     kb.store.fail_for[AUTHORED_ID] = RuntimeError(DRIVER_TEXT)
 
-    result = await kb.svc.bulk_delete_documents([AUTHORED_ID, OTHER_AUTHORED_ID])
-
-    assert result["deleted_count"] == 1
-    assert result["errors"] == [
-        f"Document {AUTHORED_ID}: not deleted, because removing it from search "
-        "did not complete; retrying the delete finishes it"
-    ]
-    assert not any(
-        fragment in error
-        for error in result["errors"]
-        for fragment in ("chroma", "sqlite", "/var/lib", "KNOWLEDGE_", "[")
+    result = await kb.svc.bulk_delete_documents(
+        [AUTHORED_ID, OTHER_AUTHORED_ID, "absent-id"]
     )
-    assert await kb.row(AUTHORED_ID) is not None
-    assert kb.store.parents[AUTHORED_ID] == 3
-    assert await kb.row(OTHER_AUTHORED_ID) is None
+
+    assert result["deleted_count"] == 2
+    assert result["errors"] == ["Document absent-id: delete failed"]
+    for item_id in (AUTHORED_ID, OTHER_AUTHORED_ID):
+        assert await kb.row(item_id) is None
+        assert not await kb.admitted(item_id)
+    assert kb.store.parents[AUTHORED_ID] == 3  # left for the orphan sweep
     assert OTHER_AUTHORED_ID not in kb.store.parents
 
 
 # ---------------------------------------------------------------------------
-# Item 6: a cancellation mid-hold is logged, and leaves no chunk without a row
+# Item 6: a cancellation is logged, and leaves no admitted chunk without a row
 # ---------------------------------------------------------------------------
 
 
@@ -561,44 +582,43 @@ async def test_t8_bulk_delete_reports_a_vector_failure_without_driver_text(kb):
         pytest.param(BUILTIN_ID, _builtin, id="builtin"),
     ],
 )
-async def test_a_cancellation_at_the_commit_logs_the_split_state(
-    kb, caplog, item_id, make
+async def test_a_cancellation_at_the_commit_leaves_the_document_whole(
+    kb, item_id, make
 ):
-    """``CancelledError`` is not an ``Exception``: without its own handler a
-    task cancelled at the commit left the split state with no log line."""
+    """``CancelledError`` is not an ``Exception``. Cancelled at its commit, the
+    delete has touched no vector, so the document is as it was."""
     await kb.seed(make())
     with (
         patch.object(
             AsyncSession, "commit", AsyncMock(side_effect=asyncio.CancelledError())
         ),
-        caplog.at_level(logging.ERROR),
         pytest.raises(asyncio.CancelledError),
     ):
         await kb.svc.delete_document(item_id)
 
-    assert any(
-        "SPLIT KNOWLEDGE DOCUMENT" in r.getMessage() and item_id in r.getMessage()
-        for r in caplog.records
-    )
     row = await kb.row(item_id)
     assert row is not None and row.is_published is True
-    assert item_id not in kb.store.parents
+    assert await kb.admitted(item_id)
+    assert kb.store.parents[item_id] == 3
+    assert kb.store.delete_calls == []
 
 
-async def test_a_cancellation_during_the_vector_delete_is_logged_and_rolled_back(
+async def test_a_cancellation_during_the_vector_delete_is_logged_after_the_commit(
     kb, caplog
 ):
     await kb.seed(_item(AUTHORED_ID))
     kb.store.fail_for[AUTHORED_ID] = asyncio.CancelledError()
 
-    with caplog.at_level(logging.ERROR), pytest.raises(asyncio.CancelledError):
+    with caplog.at_level(logging.WARNING), pytest.raises(asyncio.CancelledError):
         await kb.svc.delete_document(AUTHORED_ID)
 
     assert any(
         "cancelled" in r.getMessage() and AUTHORED_ID in r.getMessage()
         for r in caplog.records
     )
-    assert await kb.row(AUTHORED_ID) is not None
+    # The delete had committed: the document is gone from every door.
+    assert await kb.row(AUTHORED_ID) is None
+    assert not await kb.admitted(AUTHORED_ID)
 
 
 # ---------------------------------------------------------------------------
@@ -610,7 +630,7 @@ RUNBOOK_V2 = RUNBOOK_MD.replace("# Body content for tests.", "# Body, version tw
 
 
 async def test_the_pack_bootstrap_stamps_the_pack_hash_on_the_row(kb, tmp_path):
-    shipped = kb_init._item_id_from_runbook_id("example-runbook")
+    shipped = item_id_from_runbook_id("example-runbook")
     await kb.boot(tmp_path, _write_pack(tmp_path))
     assert (await kb.row(shipped)).metadata == {PACK_CONTENT_HASH_KEY: PACK_V1_HASH}
 
@@ -622,7 +642,7 @@ async def test_an_edited_then_unpublished_builtin_stays_unpublished_after_a_rebo
     skip used to hash the row's current content, so the edit looked like a new
     pack version: delete + re-ingest republished the runbook with vectors."""
     pack_dir = _write_pack(tmp_path)
-    shipped = kb_init._item_id_from_runbook_id("example-runbook")
+    shipped = item_id_from_runbook_id("example-runbook")
     await kb.boot(tmp_path, pack_dir)
     assert await kb.svc.update_document_metadata(shipped, content="# Edited\nfix")
     assert (await kb.svc.delete_document(shipped))["action"] == "unpublished"
@@ -638,7 +658,7 @@ async def test_an_edited_then_unpublished_builtin_stays_unpublished_after_a_rebo
 
 async def test_a_new_pack_version_republishes_an_unpublished_builtin(kb, tmp_path):
     """The documented rule still holds: a shipped update is a new document."""
-    shipped = kb_init._item_id_from_runbook_id("example-runbook")
+    shipped = item_id_from_runbook_id("example-runbook")
     await kb.boot(tmp_path, _write_pack(tmp_path))
     await kb.svc.delete_document(shipped)
 
@@ -658,7 +678,7 @@ async def test_a_row_from_before_the_stamp_is_compared_by_content_once(kb, tmp_p
     without touching ``updated_at`` (bookkeeping, not an edit) — so a later
     edit and unpublish survive the boot after that."""
     pack_dir = _write_pack(tmp_path)
-    shipped = kb_init._item_id_from_runbook_id("example-runbook")
+    shipped = item_id_from_runbook_id("example-runbook")
     await kb.boot(tmp_path, pack_dir)
     async with kb.factory() as session:  # what every row looks like today
         await DatabaseKnowledgeItemRepository(session).update_fields(
@@ -687,7 +707,7 @@ async def test_a_pre_stamp_row_edited_and_unpublished_is_not_republished(kb, tmp
     after the upgrade. An unpublished row's retirement outranks its content,
     so it is taken as this pack version, stamped and skipped."""
     pack_dir = _write_pack(tmp_path)
-    shipped = kb_init._item_id_from_runbook_id("example-runbook")
+    shipped = item_id_from_runbook_id("example-runbook")
     await kb.boot(tmp_path, pack_dir)
     await kb.svc.update_document_metadata(shipped, content="# Edited\nfix")
     await kb.svc.delete_document(shipped)
@@ -707,21 +727,20 @@ async def test_a_pre_stamp_row_edited_and_unpublished_is_not_republished(kb, tmp
 
 
 # ---------------------------------------------------------------------------
-# Item 7: the next boot cleans vectors an older version's repair put back
+# Item 7: the next boot collects the vectors every unpublish leaves
 # ---------------------------------------------------------------------------
 
 
-async def test_an_upgrade_cleans_an_unpublished_builtin_an_older_repair_restored(
-    kb, tmp_path
-):
-    """Before #1966 every boot re-embedded unpublished built-ins, so upgraded
-    deployments hold vectors for retired runbooks. The first boot on this
-    version deletes them, and no later boot brings them back."""
+async def test_the_next_boot_collects_an_unpublished_builtins_vectors(kb, tmp_path):
+    """An unpublish is a SQL-only flip (#2397), so the retired runbook's chunks
+    stay in the store, unadmitted, until the next pack-loading boot's reconcile
+    deletes them; no later boot brings them back."""
     pack_dir = _write_pack(tmp_path)
-    shipped = kb_init._item_id_from_runbook_id("example-runbook")
+    shipped = item_id_from_runbook_id("example-runbook")
     await kb.boot(tmp_path, pack_dir)
     await kb.svc.delete_document(shipped)
-    kb.store.parents[shipped] = 3  # what the old repair did at the next boot
+    assert shipped in kb.store.parents
+    assert not await kb.admitted(shipped)
 
     second = await kb.boot(tmp_path, pack_dir)
 
@@ -736,7 +755,7 @@ async def test_an_upgrade_cleans_an_unpublished_builtin_an_older_repair_restored
 
 
 # ---------------------------------------------------------------------------
-# T1 at the route: DELETE /knowledge/documents/{id} answers 503
+# #2063 at the route: DELETE /knowledge/documents/{id} answers 204
 # ---------------------------------------------------------------------------
 
 
@@ -774,9 +793,11 @@ def _app(service, user):
         pytest.param(BUILTIN_ID, _builtin, ("platform_admin",), id="operator"),
     ],
 )
-async def test_the_delete_route_answers_503_and_says_the_delete_did_not_complete(
+async def test_the_delete_route_answers_204_when_the_vectors_fail(
     kb, monkeypatch, item_id, make, roles
 ):
+    """#2063: the 503 is gone. A 204 means no chunk of the document is
+    retrievable through a KB door, whatever happened to its vectors."""
     monkeypatch.setattr(
         global_authoring, "requested_tenant_provider", lambda: BUILTIN_SINGLE
     )
@@ -785,24 +806,10 @@ async def test_the_delete_route_answers_503_and_says_the_delete_did_not_complete
     transport = httpx.ASGITransport(app=_app(kb.svc, _user(roles=roles)))
 
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
-        failed = await client.delete(f"/knowledge/documents/{item_id}")
-        detail = failed.json()["detail"]
+        answered = await client.delete(f"/knowledge/documents/{item_id}")
 
-        assert failed.status_code == 503
-        assert "not deleted" in detail and "did not complete" in detail
-        assert "still in the knowledge base" in detail
-        assert "Retry" in detail
-        # A remote store can fail after applying the delete (or part of it),
-        # so the answer must not promise that nothing changed.
-        assert "nothing was changed" not in detail
-        assert "chroma" not in detail.lower()
-        row = await kb.row(item_id)
-        assert row is not None and row.is_published is True
-        assert kb.store.parents[item_id] == 3
-
-        # The promise is what makes the retry safe: it completes the delete.
-        del kb.store.fail_for[item_id]
-        retried = await client.delete(f"/knowledge/documents/{item_id}")
-
-    assert retried.status_code == 204
-    assert item_id not in kb.store.parents
+    assert answered.status_code == 204, answered.text
+    assert not await kb.admitted(item_id)
+    assert not await kb.listed(item_id)
+    row = await kb.row(item_id)
+    assert row is None if item_id == AUTHORED_ID else row.is_published is False

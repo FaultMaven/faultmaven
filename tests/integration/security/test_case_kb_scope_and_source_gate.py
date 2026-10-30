@@ -359,7 +359,8 @@ async def _push(kb_client, world: _World, case: Case) -> Set[str]:
         sanitizer=_Sanitizer(),
         tracer=MagicMock(),
         vector_store=KnowledgeVectorStore(kb_client),
-        db_session_factory=MagicMock(),
+        # The world's rows: every door's real admission check runs (#2397).
+        db_session_factory=world.knowledge._db_session_factory,
     )
     with patch.object(kvs_module, "embed_query_or_raise", new=_fixed_embedding):
         await KbPrefetcher(deps=deps).prefetch_kb_context(
@@ -394,7 +395,8 @@ async def _pull(kb_client, world: _World, case: Case) -> Set[str]:
     )
     router = _CapturingRouter()
     adapter = KBToolAdapter(
-        AnswerFromKB(vector_store=KnowledgeVectorStore(kb_client), llm_router=router)
+        AnswerFromKB(vector_store=KnowledgeVectorStore(kb_client), llm_router=router),
+        admit=world.knowledge.admitted_document_ids,
     )
     with patch.object(kvs_module, "embed_query_or_raise", new=_fixed_embedding):
         result = await adapter.execute_with_context(
@@ -408,7 +410,9 @@ async def _dedup(kb_client, world: _World, case: Case) -> Set[str]:
     """The terminal-turn dedup with the engine's own resolver. It keeps its top
     3 matches, so the scope it searched is recorded and evaluated by the same
     ChromaDB at full depth; what it returned must sit inside that set."""
-    kb = RunbookKnowledgeBase.over_kb_collection(kb_client)
+    kb = RunbookKnowledgeBase.over_kb_collection(
+        kb_client, admit=world.knowledge.admitted_document_ids
+    )
     returned: Set[str] = set()
     scopes: List[Dict[str, Any]] = []
     original = kb.search_by_text
@@ -434,7 +438,11 @@ async def _dedup(kb_client, world: _World, case: Case) -> Set[str]:
     assert len(scopes) == 1, scopes
     with patch.object(kvs_module, "embed_query_or_raise", new=_fixed_embedding):
         hits = await KnowledgeVectorStore(kb_client).search(
-            KB_COLLECTION, "connection pool exhausted", k=25, where=scopes[0]
+            KB_COLLECTION,
+            "connection pool exhausted",
+            k=25,
+            where=scopes[0],
+            admit=world.knowledge.admitted_document_ids,
         )
     searched = {hit["metadata"]["parent_document_id"] for hit in hits}
     assert returned and returned <= searched, (returned, searched)

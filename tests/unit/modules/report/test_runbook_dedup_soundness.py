@@ -44,6 +44,7 @@ from faultmaven.models.report import RunbookMatch
 from faultmaven.modules.report.domain.services.report_recommendation_service import (
     ReportRecommendationService,
 )
+from tests.utils import admit_every_parent
 
 pytestmark = [pytest.mark.unit]
 
@@ -57,7 +58,7 @@ async def _scope_resolver():
 
 
 def _kb(search_result=None) -> RunbookKnowledgeBase:
-    kb = RunbookKnowledgeBase(vector_store=MagicMock())
+    kb = RunbookKnowledgeBase(vector_store=MagicMock(), admit=admit_every_parent)
     kb.search_runbooks = AsyncMock(return_value=search_result or [])
     return kb
 
@@ -151,7 +152,7 @@ async def test_unavailable_embedder_refuses_instead_of_recommending_generate():
 async def test_chromadb_failure_is_not_flattened_into_no_similar_runbooks():
     vector_store = MagicMock()
     vector_store.query_by_embedding = AsyncMock(side_effect=RuntimeError("unreachable"))
-    kb = RunbookKnowledgeBase(vector_store=vector_store)
+    kb = RunbookKnowledgeBase(vector_store=vector_store, admit=admit_every_parent)
 
     with patch(_EMBED_QUERY, new=AsyncMock(return_value=[0.1] * 1024)):
         with pytest.raises(KnowledgeBaseError):

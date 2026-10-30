@@ -4,12 +4,15 @@ from datetime import datetime
 from typing import (
     TYPE_CHECKING,
     Any,
+    Awaitable,
+    Callable,
     ContextManager,
     Dict,
     Iterable,
     List,
     Optional,
     Sequence,
+    Set,
 )
 
 from pydantic import BaseModel, Field
@@ -473,6 +476,23 @@ class ISanitizer(ABC):
         pass
 
 
+#: The KB admission check (#2397): of the parent ids a query's chunks name, the
+#: ones whose ``knowledge_items`` row is complete and published. Supplied by
+#: ``IKnowledgeService.admitted_document_ids``; it raises when it cannot answer.
+AdmitParents = Callable[[Sequence[str]], Awaitable[Set[str]]]
+
+
+def require_admit(admit: Any, *, reader: str) -> None:
+    """Refuse a KB reader built or called with no callable admission check
+    (``None`` included), before any store call."""
+    if not callable(admit):
+        raise TypeError(
+            f"{reader} requires an admit callback (AdmitParents), got "
+            f"{type(admit).__name__}: a KB read serves a chunk only when its "
+            "parent's knowledge_items row admits it"
+        )
+
+
 class IKnowledgeVectorStore(ABC):
     """The knowledge-base vector store: one shared collection, every KB scope.
 
@@ -491,7 +511,10 @@ class IKnowledgeVectorStore(ABC):
     (each defaults to the KB collection), ``search``'s ``query_embedding`` and
     ``hybrid_search``'s ``context_metadata`` / ``filter_mode``. With those two
     left out, ``hybrid_search`` takes ``min_score`` by keyword only, as every
-    consumer passes it. The signature-conformance test holds the
+    consumer passes it. Both reads take ``admit`` (:data:`AdmitParents`) by
+    keyword only and with no default: the store keeps a hit only when its
+    parent is admitted, and refuses a call without a callable check
+    (:func:`require_admit`). The signature-conformance test holds the
     implementation to this port.
     """
 
@@ -502,8 +525,10 @@ class IKnowledgeVectorStore(ABC):
         query: str,
         k: int = 5,
         where: Optional[Dict[str, Any]] = None,
+        *,
+        admit: AdmitParents,
     ) -> List[Dict[str, Any]]:
-        """Pure vector search of one collection.
+        """Pure vector search of one collection, row-checked.
 
         Args:
             collection_name: The collection, named exactly.
@@ -511,16 +536,20 @@ class IKnowledgeVectorStore(ABC):
             k: Number of hits to return.
             where: ChromaDB metadata filter. Required on the KB collection,
                 where it must name a scope key.
+            admit: The admission check; an admission-thinned page is read
+                again deeper.
 
         Returns:
             Hits ordered by similarity, each ``{"id", "content", "metadata",
             "score"}``; ``score`` is the cosine similarity.
 
         Raises:
+            TypeError: ``admit`` is not callable, before any store call.
             ValueError: A KB-collection query whose ``where`` names no scope
                 key.
             KnowledgeBaseError: The embedding model is unavailable. Never an
                 empty result.
+            Whatever ``admit`` raises: the read did not complete.
         """
         pass
 
@@ -533,6 +562,7 @@ class IKnowledgeVectorStore(ABC):
         where: Optional[Dict[str, Any]] = None,
         *,
         min_score: Optional[float] = None,
+        admit: AdmitParents,
     ) -> List[Dict[str, Any]]:
         """Vector plus keyword-constrained recall, then a multi-signal rerank.
 
@@ -540,6 +570,8 @@ class IKnowledgeVectorStore(ABC):
             collection_name, query, k, where: As :meth:`search`.
             min_score: Minimum cosine a candidate must carry, applied before
                 the top-``k`` cut.
+            admit: As :meth:`search`, applied to the candidates of both
+                recall arms before the rerank and the top-``k`` cut.
 
         Returns:
             The top ``k`` hits in rerank order, each as :meth:`search` returns

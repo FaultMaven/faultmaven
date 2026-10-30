@@ -26,6 +26,7 @@ from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
     KnowledgeVectorStore,
     _tokenize,
 )
+from tests.utils import admit_every_parent
 
 
 def _hit(cid, score, content="", **meta):
@@ -379,7 +380,7 @@ class TestMinScoreIsAppliedAtAdmission:
         store = KnowledgeVectorStore(MagicMock())
         store._embed_query_or_raise = AsyncMock(return_value=[0.1])
         store._corpus_term_stats = MagicMock(return_value=None)
-        store.search = AsyncMock(
+        store._recall = AsyncMock(
             return_value=[
                 _hit("keep1", 0.90, "an unrelated sentence"),
                 _hit("drop", 0.10, "disk full disk full disk full"),
@@ -393,6 +394,7 @@ class TestMinScoreIsAppliedAtAdmission:
             query="disk full",
             k=2,
             where={"scope": "global"},
+            admit=admit_every_parent,
         )
         assert [c["id"] for c in unfiltered] == ["keep1", "drop"], (
             "control: without a floor the reranker really does rank the "
@@ -406,6 +408,7 @@ class TestMinScoreIsAppliedAtAdmission:
             k=2,
             where={"scope": "global"},
             min_score=0.5,
+            admit=admit_every_parent,
         )
         assert [c["id"] for c in out] == ["keep1", "keep2"]
 
@@ -414,12 +417,13 @@ class TestMinScoreIsAppliedAtAdmission:
         store = KnowledgeVectorStore(MagicMock())
         store._embed_query_or_raise = AsyncMock(return_value=[0.1])
         store._corpus_term_stats = MagicMock(return_value=None)
-        store.search = AsyncMock(return_value=[_hit("a", 0.1, "disk")])
+        store._recall = AsyncMock(return_value=[_hit("a", 0.1, "disk")])
         store._keyword_constrained_search = AsyncMock(return_value=[])
         out = await store.hybrid_search(
             collection_name="faultmaven_kb",
             query="disk",
             k=5,
             where={"scope": "global"},
+            admit=admit_every_parent,
         )
         assert [c["id"] for c in out] == ["a"]

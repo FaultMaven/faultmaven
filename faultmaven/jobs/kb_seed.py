@@ -1,7 +1,7 @@
 """KB Seed Job - Standalone entrypoint for platform KB pack seeding.
 
-Runs the same atomic, idempotent KB pack bootstrap as the single-tenant web
-startup (``faultmaven/bootstrap/kb_init.py``): ensure every pack runbook has
+Runs the same idempotent KB pack bootstrap as the single-tenant web startup
+(``faultmaven/bootstrap/kb_init.py``): ensure every pack runbook has
 its ``knowledge_items`` row + ChromaDB chunks, prune orphaned built-ins, and
 reconcile SQL<->vector drift.
 

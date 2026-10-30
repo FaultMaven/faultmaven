@@ -61,6 +61,7 @@ from faultmaven.modules.knowledge.domain.services.knowledge_service import (
 from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (  # noqa: E501
     DatabaseKnowledgeItemRepository,
 )
+from faultmaven.utils.runbook_id import item_id_from_runbook_id
 
 pytestmark = pytest.mark.integration
 
@@ -247,7 +248,7 @@ def _write_pack(tmp_path: Path) -> tuple[Path, str]:
         '---\nid: stamp-probe\ntitle: "Stamp probe"\nscope: global\n---\n\n'
         "# Stamp probe\n\nBody.\n"
     )
-    item_id = kb_init._item_id_from_runbook_id("stamp-probe")
+    item_id = item_id_from_runbook_id("stamp-probe")
     pack_dir = tmp_path / "pack"
     relpath = "global/stamp-probe.md"
     md_dest = pack_dir / "runbooks" / relpath
@@ -333,9 +334,7 @@ async def test_a_repaired_row_is_restamped_from_the_row(
     )
 
     with _ambient_enterprise(ENTERPRISE_A):
-        chunks = await service.reindex_missing_vectors(
-            "kb_orphan_row", role_may_update=True
-        )
+        chunks = await service.reindex_missing_vectors("kb_orphan_row")
 
     assert chunks >= 1
     assert _stamps(chroma, "kb_orphan_row") == {ENTERPRISE_B}
@@ -401,3 +400,48 @@ async def test_a_failed_commit_realigns_the_vectors_stamped_from_the_observed_ro
     assert not any("queue drains" in document for _, document in chunks.values())
     # ... and stamped from that observed row.
     assert _stamps(chroma, "kb_realigned") == {ENTERPRISE_B}
+
+
+@pytest.mark.asyncio
+async def test_a_failed_commit_on_a_row_deleted_meanwhile_deletes_no_vector(
+    service, chroma, session_factory
+):
+    """The vanished-row path of the same compensation (#2397): the row is
+    deleted while the update commits, the commit fails, and the re-read finds
+    no row. Nothing deletes the chunks the update wrote; they stay stamped
+    from the row they were written for, and no KB door admits them."""
+    await _write_row(
+        session_factory,
+        item_id="kb_vanished",
+        enterprise_id=ENTERPRISE_B,
+        content=_BODY,
+    )
+    edited = _BODY + "\n\n## Verification\n\nThe queue drains within a minute."
+
+    async def _deleted_then_failed(*_args, **_kwargs):
+        async with session_factory() as other:
+            await DatabaseKnowledgeItemRepository(other).delete("kb_vanished")
+        raise RuntimeError("commit failed")
+
+    store = service._vector_store
+    with (
+        patch.object(
+            DatabaseKnowledgeItemRepository,
+            "update_fields",
+            side_effect=_deleted_then_failed,
+        ),
+        patch.object(
+            store,
+            "delete_documents_by_parent_id",
+            wraps=store.delete_documents_by_parent_id,
+        ) as vector_delete,
+    ):
+        with pytest.raises(RuntimeError, match="commit failed"):
+            await service.update_document_metadata("kb_vanished", content=edited)
+
+    # The swap's own pre-delete, and no discard after it.
+    assert vector_delete.await_count == 1
+    chunks = _chunks(chroma, "kb_vanished")
+    assert any("queue drains" in document for _, document in chunks.values())
+    assert _stamps(chroma, "kb_vanished") == {ENTERPRISE_B}
+    assert await service.admitted_document_ids(["kb_vanished"]) == set()

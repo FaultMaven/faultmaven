@@ -2,18 +2,21 @@
 
 An authored ingest (``KnowledgeService.ingest_runbook`` without ``shipped``)
 inserts its row with ``ingest_complete`` false and sets it true once its vectors
-are written. Retrieval queries the vector store and reads no row, so an
-incomplete row's vectors are served while the vector store holds them.
+are written. No KB door serves an incomplete row's vectors (every door admits a
+chunk only when its row is complete and published, #2397), so such a row is
+garbage, never a leak: one whose ingest failed and whose row cleanup failed
+too, or whose INSERT committed after the ingest raised. This sweep, where armed, removes it.
 
 A row is swept once its ``created_at`` is older than
 ``KB_INCOMPLETE_INGEST_MAX_AGE_HOURS`` (default 24); a younger one may be an
 ingest still running. The bound affects only liveness: an ingest whose row was
 swept fails its guarded flip (``ingest_complete`` is set only on the row
-carrying that ingest's stamp) and removes its own vectors.
+carrying that ingest's stamp) and raises; the vectors it wrote stay unadmitted.
 
-Per row, in ``delete_document``'s order: the row's DELETE, guarded on its stamp
-and on ``ingest_complete`` false, uncommitted; one vector delete by parent id;
-commit. A failed vector delete rolls the row back for the next run, and a row
+Per row: the row's DELETE, guarded on its stamp and on ``ingest_complete``
+false, uncommitted; one vector delete by parent id; commit. A collector, not a
+writer, so it deletes vectors and keeps its row until they are gone: a failed
+vector delete rolls the row back for the next run, and a row
 whose guarded delete matches nothing is counted ``spared``. No share is deleted:
 an authored row gets its share in the transaction that completes it.
 

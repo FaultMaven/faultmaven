@@ -19,6 +19,7 @@ import pytest
 
 from faultmaven.bootstrap import kb_init
 from faultmaven.models.interfaces import IKnowledgeVectorStore
+from faultmaven.utils.runbook_id import item_id_from_runbook_id
 from tests.utils import regex_only_sanitizer
 
 RUNBOOK_MD = """---
@@ -51,7 +52,7 @@ def _write_pack(
     """
     import numpy as np
 
-    item_id = kb_init._item_id_from_runbook_id("example-runbook")
+    item_id = item_id_from_runbook_id("example-runbook")
     pack_dir = tmp_path / "pack"
     md_dest = pack_dir / "runbooks" / relpath
     md_dest.parent.mkdir(parents=True, exist_ok=True)
@@ -183,7 +184,7 @@ async def test_bootstrap_ingests_new_runbook(tmp_path: Path):
     assert result.failed == []
     knowledge_service.ingest_runbook.assert_awaited_once()
     kw = knowledge_service.ingest_runbook.await_args.kwargs
-    assert kw["document_id"] == kb_init._item_id_from_runbook_id("example-runbook")
+    assert kw["document_id"] == item_id_from_runbook_id("example-runbook")
     assert kw["title"] == "Example Runbook"
     # The pack's (text, vector) pairs are forwarded verbatim — vectors are the
     # zeros written by _write_pack (dim 8).
@@ -529,13 +530,12 @@ async def test_default_pack_dir(tmp_path: Path, monkeypatch, source):
 
 
 def test_item_id_from_runbook_id_is_deterministic():
-    assert kb_init._item_id_from_runbook_id("foo") == kb_init._item_id_from_runbook_id(
-        "foo"
-    )
-    assert kb_init._item_id_from_runbook_id("foo") != kb_init._item_id_from_runbook_id(
-        "bar"
-    )
-    assert kb_init._item_id_from_runbook_id("foo").startswith("kb_")
+    """The id the bootstrap derives for a pack runbook (``utils.runbook_id``,
+    which the pack builder uses too): stable, distinct per runbook, and of the
+    built-in shape the reconcile and prune are keyed on."""
+    assert item_id_from_runbook_id("foo") == item_id_from_runbook_id("foo")
+    assert item_id_from_runbook_id("foo") != item_id_from_runbook_id("bar")
+    assert kb_init._BUILTIN_ITEM_ID_RE.match(item_id_from_runbook_id("foo"))
 
 
 # ============================================================
@@ -1064,7 +1064,7 @@ async def test_reindex_missing_vectors_re_embeds_from_persisted_row(
     svc._index_document_in_vector_store.reset_mock()
     svc._index_document_in_vector_store.return_value = 4
 
-    chunks = await svc.reindex_missing_vectors("kb_repairme", role_may_update=True)
+    chunks = await svc.reindex_missing_vectors("kb_repairme")
 
     assert chunks == 4
     svc._index_document_in_vector_store.assert_awaited_once()
@@ -1094,7 +1094,7 @@ async def test_reindex_missing_vectors_absent_row_is_noop(fk_on_ingest_service):
     svc, _ = fk_on_ingest_service
     svc._index_document_in_vector_store.reset_mock()
 
-    chunks = await svc.reindex_missing_vectors("kb_doesnotexist", role_may_update=True)
+    chunks = await svc.reindex_missing_vectors("kb_doesnotexist")
 
     assert chunks == 0
     svc._index_document_in_vector_store.assert_not_awaited()
@@ -1112,9 +1112,7 @@ class TestRepairOrphanedRows:
     @pytest.mark.asyncio
     async def test_empty_is_noop(self):
         svc = self._service(AsyncMock(return_value=3))
-        repaired, still = await kb_init._repair_orphaned_rows(
-            [], svc, role_may_update=True
-        )
+        repaired, still = await kb_init._repair_orphaned_rows([], svc)
         assert repaired == []
         assert still == []
         svc.reindex_missing_vectors.assert_not_awaited()
@@ -1123,23 +1121,19 @@ class TestRepairOrphanedRows:
     async def test_re_embeds_all_orphaned_rows(self):
         svc = self._service(AsyncMock(return_value=3))
         repaired, still = await kb_init._repair_orphaned_rows(
-            ["kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb"], svc, role_may_update=True
+            ["kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb"], svc
         )
         assert repaired == ["kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb"]
         assert still == []
         assert svc.reindex_missing_vectors.await_count == 2
-        svc.reindex_missing_vectors.assert_awaited_with(
-            "kb_bbbbbbbbbbbb", role_may_update=True
-        )
+        svc.reindex_missing_vectors.assert_awaited_with("kb_bbbbbbbbbbbb")
 
     @pytest.mark.asyncio
     async def test_zero_chunks_leaves_row_orphaned(self):
         """Embedding model unavailable → 0 chunks → fail-safe: NOT repaired,
         left for a later boot rather than reported as healed."""
         svc = self._service(AsyncMock(return_value=0))
-        repaired, still = await kb_init._repair_orphaned_rows(
-            ["kb_aaaaaaaaaaaa"], svc, role_may_update=True
-        )
+        repaired, still = await kb_init._repair_orphaned_rows(["kb_aaaaaaaaaaaa"], svc)
         assert repaired == []
         assert still == ["kb_aaaaaaaaaaaa"]
 
@@ -1147,20 +1141,18 @@ class TestRepairOrphanedRows:
     async def test_exception_leaves_row_orphaned(self):
         """A repair error (e.g. ChromaDB down) never aborts the boot path."""
         svc = self._service(AsyncMock(side_effect=RuntimeError("chroma down")))
-        repaired, still = await kb_init._repair_orphaned_rows(
-            ["kb_aaaaaaaaaaaa"], svc, role_may_update=True
-        )
+        repaired, still = await kb_init._repair_orphaned_rows(["kb_aaaaaaaaaaaa"], svc)
         assert repaired == []
         assert still == ["kb_aaaaaaaaaaaa"]
 
     @pytest.mark.asyncio
     async def test_mixed_success_and_failure(self):
-        async def _reindex(item_id, *, role_may_update):
+        async def _reindex(item_id):
             return 3 if item_id == "kb_aaaaaaaaaaaa" else 0
 
         svc = self._service(AsyncMock(side_effect=_reindex))
         repaired, still = await kb_init._repair_orphaned_rows(
-            ["kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb"], svc, role_may_update=True
+            ["kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb"], svc
         )
         assert repaired == ["kb_aaaaaaaaaaaa"]
         assert still == ["kb_bbbbbbbbbbbb"]
@@ -1171,9 +1163,7 @@ class TestRepairOrphanedRows:
         handles — repair nothing (fast boot preserved), leave all warned."""
         svc = self._service(AsyncMock(return_value=1))
         rows = [f"kb_{i:012x}" for i in range(kb_init.KB_REPAIR_MAX_ROWS + 1)]
-        repaired, still = await kb_init._repair_orphaned_rows(
-            rows, svc, role_may_update=True
-        )
+        repaired, still = await kb_init._repair_orphaned_rows(rows, svc)
         assert repaired == []
         assert still == rows
         svc.reindex_missing_vectors.assert_not_awaited()
@@ -1186,9 +1176,7 @@ class TestRepairOrphanedRows:
         assert kb_init.KB_REPAIR_MAX_ROWS <= kb_init.KB_REPAIR_MAX_CHUNKS
         svc = self._service(AsyncMock(return_value=1))
         rows = [f"kb_{i:012x}" for i in range(kb_init.KB_REPAIR_MAX_ROWS)]
-        repaired, still = await kb_init._repair_orphaned_rows(
-            rows, svc, role_may_update=True
-        )
+        repaired, still = await kb_init._repair_orphaned_rows(rows, svc)
         assert repaired == rows
         assert still == []
 
@@ -1199,9 +1187,7 @@ class TestRepairOrphanedRows:
         the startup path. Here the first row alone spends the whole budget."""
         svc = self._service(AsyncMock(return_value=kb_init.KB_REPAIR_MAX_CHUNKS))
         rows = ["kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb", "kb_cccccccccccc"]
-        repaired, still = await kb_init._repair_orphaned_rows(
-            rows, svc, role_may_update=True
-        )
+        repaired, still = await kb_init._repair_orphaned_rows(rows, svc)
         assert repaired == ["kb_aaaaaaaaaaaa"]
         assert still == ["kb_bbbbbbbbbbbb", "kb_cccccccccccc"]
         # The deferred rows are never embedded this boot.
@@ -1212,9 +1198,7 @@ class TestRepairOrphanedRows:
         """The row cap is a parameter (deployment-configurable), not hardcoded."""
         svc = self._service(AsyncMock(return_value=1))
         rows = ["kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb", "kb_cccccccccccc"]
-        repaired, still = await kb_init._repair_orphaned_rows(
-            rows, svc, role_may_update=True, max_rows=2
-        )
+        repaired, still = await kb_init._repair_orphaned_rows(rows, svc, max_rows=2)
         assert repaired == []  # 3 > cap 2 → bulk-loss, repair nothing
         assert still == rows
         svc.reindex_missing_vectors.assert_not_awaited()
@@ -1225,7 +1209,7 @@ class TestRepairOrphanedRows:
         svc = self._service(AsyncMock(return_value=5))
         rows = ["kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb", "kb_cccccccccccc"]
         repaired, still = await kb_init._repair_orphaned_rows(
-            rows, svc, role_may_update=True, max_rows=10, max_chunks=5
+            rows, svc, max_rows=10, max_chunks=5
         )
         # First row embeds 5 chunks (== budget) → the rest defer.
         assert repaired == ["kb_aaaaaaaaaaaa"]
@@ -1280,7 +1264,7 @@ class TestCrossStoreRepairSeam:
     async def test_orphaned_row_is_detected_then_repaired(self):
         reindexed: list[str] = []
 
-        async def _reindex(item_id, *, role_may_update):
+        async def _reindex(item_id):
             reindexed.append(item_id)
             return 3
 
@@ -1304,9 +1288,7 @@ class TestCrossStoreRepairSeam:
         assert orphaned == ["kb_bbbbbbbbbbbb"]
 
         # Step 2 — repair HEALS it by re-embedding from its persisted SQL row.
-        repaired, still = await kb_init._repair_orphaned_rows(
-            orphaned, svc, role_may_update=True
-        )
+        repaired, still = await kb_init._repair_orphaned_rows(orphaned, svc)
         assert repaired == ["kb_bbbbbbbbbbbb"]
         assert still == []
         assert reindexed == ["kb_bbbbbbbbbbbb"]
@@ -1466,7 +1448,7 @@ def test_pack_load_rejects_duplicate_vector_row_across_runbooks(tmp_path, caplog
     # A second runbook (reusing the same md file) whose only chunk reuses row 0.
     first = manifest["runbooks"][0]
     second = dict(first)
-    second["item_id"] = kb_init._item_id_from_runbook_id("second-runbook")
+    second["item_id"] = item_id_from_runbook_id("second-runbook")
     second["chunks"] = [{"chunk_index": 0, "vector_row": 0, "text": "other"}]
     manifest["runbooks"].append(second)
     manifest_path.write_text(_json.dumps(manifest), encoding="utf-8")

@@ -14,7 +14,7 @@ import logging
 from typing import Any, Dict
 
 from faultmaven.infrastructure.llm.router import LLMRouter
-from faultmaven.models.interfaces import IKnowledgeVectorStore
+from faultmaven.models.interfaces import AdmitParents, IKnowledgeVectorStore
 from faultmaven.modules.agent.tools.document_qa_tool import DocumentQATool
 from faultmaven.modules.agent.tools.kb_configs.unified_kb_config import UnifiedKBConfig
 
@@ -62,6 +62,7 @@ global documentation, your personal runbooks, and your team's shared procedures.
         k: int = 5,
         *,
         redaction_ctx: Any,
+        admit: AdmitParents,
     ) -> str:
         """
         Query knowledge base under the case's scope filter.
@@ -73,6 +74,8 @@ global documentation, your personal runbooks, and your team's shared procedures.
             k: Number of chunks to retrieve (default: 5)
             redaction_ctx: The turn's case redaction context; the synthesis
                 call sends through it (#1956)
+            admit: The knowledge module's admission check, which the store
+                applies to every hit (#2397)
 
         Returns:
             Relevant documentation with citations from the case's scope
@@ -83,4 +86,5 @@ global documentation, your personal runbooks, and your team's shared procedures.
             k=k,
             filters=scope_filter,
             redaction_ctx=redaction_ctx,
+            admit=admit,
         )

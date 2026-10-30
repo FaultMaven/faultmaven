@@ -32,6 +32,7 @@ from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     KnowledgeService,
 )
+from faultmaven.utils.runbook_id import item_id_from_runbook_id
 from tests.unit.bootstrap.test_kb_init import RUNBOOK_MD, _write_pack
 
 pytestmark = [
@@ -95,7 +96,7 @@ async def test_kb_seed_under_the_maintenance_role_repairs_and_never_updates(
                     ),
                     {"e": STANDALONE_ENTERPRISE_ID},
                 )
-                shipped = kb_init._item_id_from_runbook_id("example-runbook")
+                shipped = item_id_from_runbook_id("example-runbook")
                 # A built-in ingested before the stamp existed (metadata '{}')
                 # whose content still matches the pack: the skip would stamp
                 # it — an UPDATE this role is refused.

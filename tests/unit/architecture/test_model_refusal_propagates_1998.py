@@ -93,7 +93,7 @@ from tests.unit.architecture.test_model_dispatch_lexical_1998 import (
     _files,
     _names,
 )
-from tests.utils import sanitize_pii_pinned, sockets_refused
+from tests.utils import admit_every_parent, sanitize_pii_pinned, sockets_refused
 
 pytestmark = [pytest.mark.unit, pytest.mark.architecture, pytest.mark.security]
 
@@ -1053,7 +1053,10 @@ async def _turn(
     router = _TurnRouter(model)
     tools = AgentToolRegistry()
     tools.register(
-        KBToolAdapter(AnswerFromKB(vector_store=_Chunks(), llm_router=router))
+        KBToolAdapter(
+            AnswerFromKB(vector_store=_Chunks(), llm_router=router),
+            admit=admit_every_parent,
+        )
     )
     tools.register(
         CaseEvidenceQAAdapter(

@@ -18,6 +18,7 @@ from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
     SCOPE_PRIORITY,
     KnowledgeVectorStore,
 )
+from tests.utils import admit_every_parent
 
 #: The tenant stamp every KB chunk must carry since #1168 — ``add_documents``
 #: refuses a KB write without it, so a KB-collection write in these tests that
@@ -899,7 +900,11 @@ class TestTheFilterPresenceKeySet:
         ) as embed:
             with pytest.raises(ValueError, match="require scope filter"):
                 await store.search(
-                    KB_COLLECTION, "pool", k=3, where={"organization_id": "org-1"}
+                    KB_COLLECTION,
+                    "pool",
+                    k=3,
+                    where={"organization_id": "org-1"},
+                    admit=admit_every_parent,
                 )
 
         embed.assert_not_called()

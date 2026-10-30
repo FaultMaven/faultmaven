@@ -166,11 +166,10 @@ from faultmaven.modules.knowledge.domain.services.knowledge_service import (
 )
 
 service = container.get(KnowledgeService)
-results = await service.search_knowledge(
-    query="postgresql timeout",
-    limit=10,
-    use_hybrid=True,  # dense vector + keyword-constrained recall, then rerank
-)
+# Hybrid only (dense vector + keyword-constrained recall, then rerank), and
+# row-checked: a hit is kept only when its knowledge_items row is complete and
+# published.
+results = await service.search_knowledge(query="postgresql timeout", limit=10)
 ```
 
 ### Document Upload

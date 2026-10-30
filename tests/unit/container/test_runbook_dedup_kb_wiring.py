@@ -20,6 +20,7 @@ import pytest
 from faultmaven.container.providers.services import create_runbook_dedup_kb
 from faultmaven.infrastructure.knowledge.knowledge_vector_store import KB_COLLECTION
 from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
+from tests.utils import admit_every_parent
 
 pytestmark = [pytest.mark.unit]
 
@@ -31,6 +32,7 @@ def test_with_the_production_writer_the_reader_binds_kb_collection():
     kb = create_runbook_dedup_kb(
         knowledge_vector_store=MagicMock(),
         kb_chromadb_client=MagicMock(),
+        admit=admit_every_parent,
     )
 
     assert isinstance(kb, RunbookKnowledgeBase)
@@ -48,6 +50,7 @@ def test_no_kb_writer_means_no_dedup_reader_even_with_a_settings_store():
     kb = create_runbook_dedup_kb(
         knowledge_vector_store=None,
         kb_chromadb_client=MagicMock(),
+        admit=admit_every_parent,
     )
 
     assert kb is None
@@ -60,6 +63,7 @@ def test_a_writer_without_its_client_disables_dedup_rather_than_misbinding():
     kb = create_runbook_dedup_kb(
         knowledge_vector_store=MagicMock(),
         kb_chromadb_client=None,
+        admit=admit_every_parent,
     )
 
     assert kb is None
@@ -67,6 +71,10 @@ def test_a_writer_without_its_client_disables_dedup_rather_than_misbinding():
 
 def test_no_stores_at_all_means_no_dedup_kb():
     assert (
-        create_runbook_dedup_kb(knowledge_vector_store=None, kb_chromadb_client=None)
+        create_runbook_dedup_kb(
+            knowledge_vector_store=None,
+            kb_chromadb_client=None,
+            admit=admit_every_parent,
+        )
         is None
     )

@@ -133,7 +133,7 @@ def test_flag_on_builds_the_tool_on_the_registered_deps(reclassify_flag) -> None
 async def test_the_given_tool_reclassifies_the_in_flight_case(reclassify_flag) -> None:
     reclassify_flag(True)
     container = _composed()
-    registry = _create_investigation_tools(container)
+    registry = _create_investigation_tools(container, knowledge_service=MagicMock())
     tool = registry.get("reclassify_evidence")
     assert tool is not None, "flag on, yet the model is not given the tool"
 
@@ -167,7 +167,7 @@ def test_flag_off_builds_nothing_and_gives_nothing(reclassify_flag) -> None:
     # The reclassifier is still built: the route answers 404 off its own flag
     # check, never 503 for a missing reclassifier.
     assert isinstance(container.services["evidence_reclassifier"], EvidenceReclassifier)
-    registry = _create_investigation_tools(container)
+    registry = _create_investigation_tools(container, knowledge_service=MagicMock())
     assert registry is None or registry.get("reclassify_evidence") is None
 
 

@@ -244,17 +244,11 @@ def register_tools(container: BaseDIContainer) -> None:
     # Add Q&A tools to tools list
     container.tools.extend([t for t in qa_tools.values() if t is not None])
 
-    # Create KB adapters (AgentTool wrappers for the DA loop)
-    from faultmaven.modules.agent.tools.kb_tool_adapter import (
-        CaseEvidenceQAAdapter,
-        KBToolAdapter,
-    )
+    # The case evidence adapter (an AgentTool wrapper for the DA loop). The
+    # ``kb_qa`` adapter is built by ``_create_investigation_tools``, after the
+    # knowledge service whose admission check it is bound to (#2397).
+    from faultmaven.modules.agent.tools.kb_tool_adapter import CaseEvidenceQAAdapter
 
-    container.kb_adapter = (
-        KBToolAdapter(wrapped_tool=qa_tools["kb_qa_tool"])
-        if qa_tools["kb_qa_tool"]
-        else None
-    )
     container.case_evidence_qa_adapter = (
         CaseEvidenceQAAdapter(wrapped_tool=qa_tools["case_evidence_qa_tool"])
         if qa_tools["case_evidence_qa_tool"]

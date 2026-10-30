@@ -65,6 +65,7 @@ from faultmaven.modules.case.contracts import (
     SolutionType,
     ValidationMethod,
 )
+from tests.utils import admit_every_parent
 
 _FILE_ID = "file_0123456789ab"
 
@@ -485,7 +486,7 @@ def _dedup_kb(matches=None):
     """
     from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
 
-    kb = RunbookKnowledgeBase(vector_store=MagicMock())
+    kb = RunbookKnowledgeBase(vector_store=MagicMock(), admit=admit_every_parent)
     kb.search_runbooks = AsyncMock(return_value=matches or [])
     return kb
 

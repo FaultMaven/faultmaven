@@ -17,6 +17,7 @@ import pytest
 from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
     KnowledgeVectorStore,
 )
+from tests.utils import admit_every_parent
 
 pytestmark = [pytest.mark.unit]
 
@@ -67,6 +68,7 @@ async def test_hybrid_search_embeds_the_query_once_regardless_of_keyword_count()
             query=query,
             k=5,
             where={"scope": "global"},
+            admit=admit_every_parent,
         )
 
     assert results, "sanity: the sweep returned candidates"
@@ -93,6 +95,7 @@ async def test_keyword_probes_all_reuse_the_single_query_vector():
             query="CrashLoopBackOff on payment-svc after release OOMKilled exit 137",
             k=5,
             where={"scope": "global"},
+            admit=admit_every_parent,
         )
 
     calls = store._get_or_create_collection.return_value.query.call_args_list

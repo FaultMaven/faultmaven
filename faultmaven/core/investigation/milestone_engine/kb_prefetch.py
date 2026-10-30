@@ -233,13 +233,11 @@ class KbPrefetcher:
                 query=query,
                 limit=KB_PREFETCH_FETCH_LIMIT,
                 filters=scope_filter,
-                use_hybrid=True,
                 # The floor goes in at ADMISSION, not after ranking. Hybrid
                 # results are ordered by the reranker's blend, so the filter
                 # below would thin this window from the middle: on a measured
                 # query it left 2 hits where 10 were asked for. The filter
-                # below stays as the
-                # authority (and still governs the pure-vector fallback).
+                # below stays as the authority.
                 min_score=KB_PREFETCH_RELEVANCE_THRESHOLD,
             )
             relevant = [

@@ -314,9 +314,6 @@ class TestOneCreatorOfAKnowledgeItem:
         # The completing flip of an authored ingest (#2394): ``ingest_complete``
         # only, ``updated_at`` set to itself; no title.
         (REPOSITORY, "mark_ingest_complete", "update()"),
-        # A no-op UPDATE (``is_published`` and ``updated_at`` set to themselves)
-        # that takes SQLite's writer lock before a read (#1966); no title.
-        (REPOSITORY, "read_is_published", "update()"),
         # Names the table, writes nothing: the ``has_table_privilege(..., 'UPDATE')``
         # probe the maintenance role check (#1966) reads the table's full name for.
         (REPOSITORY, "may_update", "__table__"),

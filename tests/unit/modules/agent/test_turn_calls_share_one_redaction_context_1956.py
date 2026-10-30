@@ -61,6 +61,7 @@ from faultmaven.modules.case.api import title_generation
 from faultmaven.modules.case.contracts import CaseState, InquiryData, UploadedFile
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
+from tests.utils import admit_every_parent
 
 pytestmark = pytest.mark.unit
 
@@ -227,7 +228,10 @@ class TestKBQASendsRedactedSynthesis:
     async def test_the_synthesis_prompt_is_case_redacted(self):
         router = _RecordingRouter(content="Rotate the credential.")
         redaction = _MarkingRedaction()
-        adapter = KBToolAdapter(AnswerFromKB(vector_store=_Store(), llm_router=router))
+        adapter = KBToolAdapter(
+            AnswerFromKB(vector_store=_Store(), llm_router=router),
+            admit=admit_every_parent,
+        )
 
         result = await adapter.execute_with_context(
             {"question": f"what to do when {RAW} cannot log in?"},

@@ -1100,3 +1100,13 @@ def log_field(record, name):
     if isinstance(record.msg, dict) and name in record.msg:
         return record.msg[name]
     return record.__dict__.get(name)
+
+
+async def admit_every_parent(parent_ids) -> set:
+    """A KB ``admit`` callback (``AdmitParents``) that admits every parent.
+
+    For a test of something other than row-checked retrieval (#2397): a filter,
+    a ranking, an embedder fault. The admission check itself is pinned by
+    ``tests/integration/modules/knowledge/test_row_checked_retrieval_2397.py``.
+    """
+    return set(parent_ids)

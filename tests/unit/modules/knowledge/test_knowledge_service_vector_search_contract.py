@@ -37,22 +37,26 @@ from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
 
 
 class _RecordingMockVectorStore:
-    """A mock that exposes the real KnowledgeVectorStore.search signature.
+    """A mock that exposes the real KnowledgeVectorStore.hybrid_search signature.
 
     Using ``MagicMock(spec=KnowledgeVectorStore)`` would reject wrong-shaped
-    calls but accept any kwarg names. This explicit signature records the
-    exact kwargs passed so the test can assert against them.
+    calls but accept any kwarg names. This explicit signature (the port's,
+    ``admit`` required by keyword, #2397) records the exact kwargs passed so
+    the test can assert against them.
     """
 
     def __init__(self):
         self.search_calls: list[dict] = []
 
-    async def search(
+    async def hybrid_search(
         self,
         collection_name: str,
         query: str,
         k: int = 5,
         where: dict | None = None,
+        *,
+        min_score: float | None = None,
+        admit,
     ) -> list[dict]:
         self.search_calls.append(
             {
@@ -60,6 +64,7 @@ class _RecordingMockVectorStore:
                 "query": query,
                 "k": k,
                 "where": where,
+                "admit": admit,
             }
         )
         return []
@@ -67,9 +72,10 @@ class _RecordingMockVectorStore:
 
 @pytest.mark.asyncio
 async def test_knowledge_service_search_uses_real_signature():
-    """``KnowledgeService.search`` must invoke ``vector_store.search`` with
-    the kwargs matching the real signature (``collection_name``, ``query``,
-    ``k``, ``where``). Passing ``filters=`` (the old name) would raise
+    """``KnowledgeService.search_knowledge`` must invoke
+    ``vector_store.hybrid_search`` with the kwargs matching the real signature
+    (``collection_name``, ``query``, ``k``, ``where``, and its own admission
+    check as ``admit``). Passing ``filters=`` (the old name) would raise
     TypeError against the real store.
     """
     from faultmaven.modules.knowledge.domain.services.knowledge_service import (
@@ -100,6 +106,7 @@ async def test_knowledge_service_search_uses_real_signature():
     assert call["query"] == "kubernetes pod crashloop"
     assert call["k"] == 5
     assert isinstance(call["where"], dict)
+    assert call["admit"] == service.admitted_document_ids
     # A filter naming a scope key is required by
     # KnowledgeVectorStore._require_kb_filter_present.
     from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
@@ -145,7 +152,9 @@ class _HitReturningStore:
     def __init__(self, hits):
         self._hits = hits
 
-    async def search(self, collection_name, query, k=5, where=None):
+    async def hybrid_search(
+        self, collection_name, query, k=5, where=None, *, min_score=None, admit
+    ):
         return self._hits
 
 
@@ -223,6 +232,7 @@ def test_knowledge_vector_store_search_signature_unchanged():
         "k",
         "where",
         "query_embedding",
+        "admit",
     ], (
         f"KnowledgeVectorStore.search signature changed to {params}. "
         f"If this is intentional, update the callers in "
@@ -235,3 +245,8 @@ def test_knowledge_vector_store_search_signature_unchanged():
     # unchanged. Pinned here too: dropping the default would silently break them
     # in exactly the swallowed-TypeError way this test exists to catch.
     assert sig.parameters["query_embedding"].default is None
+    # ``admit`` (#2397) is keyword-only with NO default: a caller that leaves
+    # the admission check out fails at the call, not by serving every chunk.
+    admit = sig.parameters["admit"]
+    assert admit.kind is inspect.Parameter.KEYWORD_ONLY
+    assert admit.default is inspect.Parameter.empty

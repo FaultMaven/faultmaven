@@ -804,10 +804,13 @@ async def delete_document(
     only, per the global-tier policy). A refusal over a document the caller
     cannot even see answers 404 rather than 403 (#867).
 
-    A 204 means the document has no retrievable chunk left (#1966). When its
-    search-index entries cannot be removed the answer is 503: the delete did
-    not complete, the document is still in the knowledge base, and retrying
-    the request once the knowledge base is available finishes it.
+    A 204 means no chunk of the document is retrievable through a knowledge
+    base search, investigation retrieval or runbook dedup (#1966, #2397):
+    every one of them serves a chunk only while its document is published,
+    and the delete has committed. Its search-index entries are removed
+    afterwards, best effort; any left behind are never served. An excerpt
+    already in a case's conversation context
+    stays there until that case next searches the knowledge base.
 
     Args:
         document_id: Document identifier
@@ -836,23 +839,6 @@ async def delete_document(
 
     except HTTPException:
         raise
-    except KnowledgeBaseError as e:
-        # The vector delete failed, so the row change was rolled back before
-        # it committed (#1966): the document is still there, and a retry
-        # completes the delete. It does not promise that nothing changed — a
-        # remote store can fail after applying the delete, or part of it. A
-        # 404 here — what a `success: False` maps to — would tell the caller
-        # the document is gone while it is still listed.
-        logger.error(f"Failed to remove document {document_id} from search: {e}")
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "The document was not deleted: removing it from search did not "
-                "complete, and it is still in the knowledge base. Retry the "
-                "delete once the knowledge base is available; the retry "
-                "finishes it."
-            ),
-        )
     except Exception as e:
         logger.error(f"Failed to delete document {document_id}: {e}")
         # See update_document — no internal exception text to the widened

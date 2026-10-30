@@ -1,5 +1,6 @@
 """A failure after the item's INSERT commits leaves no item, and the cleanup
-removes only what its own call wrote (#2378).
+removes only what its own call wrote (#2378): its row and its share, never a
+vector (#2397). Chunks left under an id with no row are never served.
 
 ``DatabaseKnowledgeItemRepository.create`` commits the row and then refreshes
 it. ``ingest_runbook`` used to call it before its compensated block, so a raise
@@ -324,7 +325,8 @@ async def test_a_failed_check_for_a_standing_row_keeps_what_a_peer_created(
 async def test_a_share_whose_row_is_gone_is_removed(session_factory):
     """A peer's ``_delete_existing`` removed the id's chunks before this call
     wrote its own, then this call's row (not its share), and has not
-    re-created it: no item stands, so this call's chunks and share go."""
+    re-created it: no item stands, so this call's share goes, and its chunks
+    stay under an id no row admits (#2397)."""
     store = _Chunks()
     await store.delete_documents_by_parent_id(DOC_ID)
     service = _indexing_into(
@@ -337,14 +339,15 @@ async def test_a_share_whose_row_is_gone_is_removed(session_factory):
         await _ingest(service)
 
     assert await _rows(session_factory) == NOTHING
-    assert store.chunks == {}
+    assert sorted(store.chunks) == ["this-0", "this-1", "this-2"]
+    assert await service.admitted_document_ids([DOC_ID]) == set()
 
 
 async def test_a_cleanup_session_that_fails_to_close_carries_on(
     session_factory, caplog
 ):
     """The cleanup's row delete committed, and then closing its session raised:
-    the row is gone, so its chunks and share go too."""
+    the row is gone, so its share goes too, and its chunks are unadmitted."""
     factory = _FailingClose(session_factory)
     store = _Chunks()
     service = _indexing_into(_knowledge(factory), store, then=factory.arm)
@@ -356,7 +359,8 @@ async def test_a_cleanup_session_that_fails_to_close_carries_on(
         await _ingest(service)
 
     assert await _rows(session_factory) == NOTHING
-    assert store.chunks == {}
+    assert sorted(store.chunks) == ["this-0", "this-1", "this-2"]
+    assert await service.admitted_document_ids([DOC_ID]) == set()
     assert "closing its cleanup's session failed (OSError)" in caplog.text
     assert "check for a row" not in caplog.text
 

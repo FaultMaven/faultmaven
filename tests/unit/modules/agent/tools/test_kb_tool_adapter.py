@@ -18,6 +18,7 @@ from tests.unit.modules.agent.tools.leaky_failure import (
     assert_reported_by_class,
     leaky_error,
 )
+from tests.utils import admit_every_parent
 
 #: A case scope as ``case_retrieval_scope`` builds it for a shared case.
 CASE_SCOPE = {
@@ -64,7 +65,7 @@ class TestKBToolAdapter:
 
     @pytest.mark.asyncio
     async def test_passes_question_to_wrapped_tool(self, mock_kb_tool, context):
-        adapter = KBToolAdapter(wrapped_tool=mock_kb_tool)
+        adapter = KBToolAdapter(wrapped_tool=mock_kb_tool, admit=admit_every_parent)
 
         result = await adapter.execute_with_context(
             {"question": "How to diagnose memory leaks?"}, context
@@ -76,12 +77,13 @@ class TestKBToolAdapter:
             scope_filter=CASE_SCOPE,
             k=5,
             redaction_ctx=context.redaction_ctx,
+            admit=admit_every_parent,
         )
 
     @pytest.mark.asyncio
     async def test_the_scope_is_the_contexts_not_the_users(self, mock_kb_tool, context):
         """The adapter forwards the case scope; the turn's user is not an input."""
-        adapter = KBToolAdapter(wrapped_tool=mock_kb_tool)
+        adapter = KBToolAdapter(wrapped_tool=mock_kb_tool, admit=admit_every_parent)
 
         await adapter.execute_with_context({"question": "test"}, context)
 
@@ -95,7 +97,7 @@ class TestKBToolAdapter:
     ):
         """No resolved scope: refuse, rather than invent a narrower one."""
         context.kb_scope_filter = None
-        adapter = KBToolAdapter(wrapped_tool=mock_kb_tool)
+        adapter = KBToolAdapter(wrapped_tool=mock_kb_tool, admit=admit_every_parent)
 
         result = await adapter.execute_with_context({"question": "test"}, context)
 
@@ -106,7 +108,7 @@ class TestKBToolAdapter:
 
     @pytest.mark.asyncio
     async def test_empty_question_returns_error(self, mock_kb_tool, context):
-        adapter = KBToolAdapter(wrapped_tool=mock_kb_tool)
+        adapter = KBToolAdapter(wrapped_tool=mock_kb_tool, admit=admit_every_parent)
 
         result = await adapter.execute_with_context({"question": ""}, context)
 
@@ -114,11 +116,11 @@ class TestKBToolAdapter:
         assert "No question" in result.error
 
     def test_adapter_name(self, mock_kb_tool):
-        adapter = KBToolAdapter(wrapped_tool=mock_kb_tool)
+        adapter = KBToolAdapter(wrapped_tool=mock_kb_tool, admit=admit_every_parent)
         assert adapter.name == "kb_qa"
 
     def test_adapter_has_parameters_schema(self, mock_kb_tool):
-        adapter = KBToolAdapter(wrapped_tool=mock_kb_tool)
+        adapter = KBToolAdapter(wrapped_tool=mock_kb_tool, admit=admit_every_parent)
         schema = adapter.parameters_schema
         assert "question" in schema["properties"]
         assert "question" in schema["required"]
@@ -165,7 +167,8 @@ async def test_a_failed_search_names_its_class_and_keeps_its_guidance(
     wrapped = AsyncMock()
     wrapped._arun = AsyncMock(side_effect=leaky_error())
 
-    result = await adapter_cls(wrapped_tool=wrapped).execute_with_context(
+    admission = {"admit": admit_every_parent} if adapter_cls is KBToolAdapter else {}
+    result = await adapter_cls(wrapped_tool=wrapped, **admission).execute_with_context(
         {"question": "test"}, context
     )
 

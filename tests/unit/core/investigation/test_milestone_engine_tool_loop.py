@@ -39,6 +39,7 @@ from faultmaven.infrastructure.security.model_content import (
 )
 from faultmaven.models.interfaces import IAgentToolRegistry, ToolResult
 from tests.model_content import disabled_redaction, vetted
+from tests.utils import admit_every_parent
 
 # =========================================================================
 # Test schema model
@@ -1626,7 +1627,7 @@ def _real_da_registry(result_chars: int):
         SearchFileTool(storage_service=MagicMock()),
         DeepAnalysisTool(tier2_service=MagicMock()),
         WebSearchTool(settings=MagicMock(), provider=MagicMock()),
-        KBToolAdapter(wrapped_tool=MagicMock()),
+        KBToolAdapter(wrapped_tool=MagicMock(), admit=admit_every_parent),
         VectorizeFileTool(case_vector_store=MagicMock(), storage_service=MagicMock()),
         CaseEvidenceQAAdapter(wrapped_tool=MagicMock()),
     ]

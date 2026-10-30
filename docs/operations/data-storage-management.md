@@ -69,15 +69,15 @@ Separating them into two ChromaDB instances (`chroma-kb/` and `chroma-evidence/`
 ### Relationship between the KB pack, knowledge/, evidence/, and the two ChromaDB instances
 
 ```text
-KB pack (resources/knowledge/pack/ or KB_PACK_DIR)  →  startup bootstrap (idempotent)  →  knowledge_items + chroma-kb/ (faultmaven_kb collection)
-Dashboard / API conversion  →  draft row  →  verify  →  knowledge_items + chroma-kb/
-Dashboard / API upload  →  draft row verified on the spot  →  knowledge_items + chroma-kb/
-knowledge/*.md  →  POST /knowledge/scan (standalone, manual)  →  draft row  →  verify  →  knowledge_items + chroma-kb/
+KB pack (resources/knowledge/pack/ or KB_PACK_DIR)  →  startup bootstrap (idempotent)  →  body: knowledge_items; chunk texts + vectors: chroma-kb/ (faultmaven_kb collection)
+Dashboard / API conversion  →  draft row  →  verify  →  body: knowledge_items; chunks: chroma-kb/
+Dashboard / API upload  →  draft row verified on the spot  →  body: knowledge_items; chunks: chroma-kb/
+knowledge/*.md  →  POST /knowledge/scan (standalone, manual)  →  draft row  →  verify  →  body: knowledge_items; chunks: chroma-kb/
 
 evidence/<organization_id>/<case_id>/<date>/<uuid>_<file>  →  background vectorization  →  chroma-evidence/ (case_{id} collection)
 ```
 
-- `resources/knowledge/pack/` (or `KB_PACK_DIR`) holds the **KB pack** — pre-deployed runbooks + build-time vectors. The startup bootstrap (`faultmaven/bootstrap/kb_init.py`) ingests it with **no embedding model**: it writes the pack's chunk texts + pre-computed vectors into `knowledge_items` + `chroma-kb/`. Content-hash idempotency makes restarts free for unchanged runbooks; removed runbooks are pruned. The pack is built/owned by `faultmaven-kb-toolkit` — see [`kb-pack-architecture.md`](../architecture/knowledge-and-ai/kb-pack-architecture.md).
+- `resources/knowledge/pack/` (or `KB_PACK_DIR`) holds the **KB pack** — pre-deployed runbooks + build-time vectors. The startup bootstrap (`faultmaven/bootstrap/kb_init.py`) ingests it with **no embedding model**: it writes each runbook's body to its `knowledge_items` row and the pack's chunk texts + pre-computed vectors to `chroma-kb/`. A chunk is served only while its row is complete and published (#2397). Content-hash idempotency makes restarts free for unchanged runbooks; removed runbooks are pruned. The pack is built/owned by `faultmaven-kb-toolkit` — see [`kb-pack-architecture.md`](../architecture/knowledge-and-ai/kb-pack-architecture.md).
 - `knowledge/` is the **standalone import directory** `/knowledge/scan` reads: hand-placed runbook files become drafts holding their text. Nothing writes here; authored and converted drafts live in `conversion_drafts.content` (#1950), and the pre-deployed built-ins come from the pack. See [`document-to-runbook-conversion.md`](../architecture/knowledge-and-ai/document-to-runbook-conversion.md) §9.5.
 - `evidence/` holds **raw uploaded files**. After the upload API returns a response, a background task vectorizes the content into a `case_{case_id}` collection in `chroma-evidence/`.
 - Each ChromaDB instance is independent — they share no files.
@@ -138,15 +138,18 @@ directory until `KB_PACK_DIR` is unset. Pick the row that matches the deployment
 **Confirm it landed.** On Compose and Kubernetes `single`, read the API log (`./faultmaven.sh logs api`): `KB bootstrap: ingesting N runbook(s) from pack <dir> (version=...)`, then the `KB bootstrap: BootstrapResult(ingested=..., skipped_unchanged=..., failed=..., pruned=..., ...)` summary with the counts you expect. A `KB bootstrap: no pack loaded from <dir>` warning means the pack was not loaded (missing, corrupt, or refused by a load guard); for a hand-extracted pack the usual cause is an extract that kept the `kb-pack/` root instead of leaving `pack.json` + `vectors.npz` + `runbooks/` directly in `KB_PACK_DIR`. Under `multi` the API log only says `KB bootstrap skipped under multi-tenancy: seed the platform KB pack via the kb_seed maintenance job (#770).`; the evidence is in the Job's log: `KB seed completed: BootstrapResult(...)` and the `KB bootstrap complete: N ingested, N unchanged, N failed, N pruned, ...` line. `ingested=0` with every runbook unchanged means the Job's image carries the pack the database already holds: check it is the image you built, not a stale tag.
 
 The bootstrap is **idempotent**: it compares the pack's `content_hash` against the
-existing `knowledge_items.content` row and skips unchanged runbooks. Changed
-runbooks are deleted and re-ingested; new runbooks are added; runbooks
-removed from the pack are pruned.
+hash stamped on the existing row when the pack last ingested it
+(`knowledge_items.metadata.pack_content_hash`), not against the row's current
+content, so an operator's edit is never mistaken for a new pack version, and skips
+unchanged runbooks. Changed runbooks are deleted and re-ingested; new runbooks are
+added; runbooks removed from the pack are pruned.
 
 The bootstrap ingests **each runbook separately**. `_ingest_pack_runbook` refuses
 a runbook with no chunks in the pack before any lookup or delete. A failure in
 `ingest_runbook` from its row's INSERT on (ChromaDB unreachable, for example)
-runs `_delete_knowledge_item_row` before it raises, and what can remain is
-listed in `ingest_runbook`'s docstring. Per-runbook failures don't abort the
+runs `_delete_knowledge_item_row` before it raises: it removes the row, never the
+vectors, which no row then admits and the next bootstrap's reconcile collects
+(the failure contract: [`kb-ingestion-architecture.md`](../architecture/knowledge-and-ai/kb-ingestion-architecture.md#failure-contract)). Per-runbook failures don't abort the
 rest of the bootstrap; check the API logs for `KB bootstrap failed for ...`
 warnings after restart. Full build + delivery detail: [`kb-pack-architecture.md`](../architecture/knowledge-and-ai/kb-pack-architecture.md).
 
@@ -275,9 +278,12 @@ Add runbooks through the paths that keep the invariant below: a new KB pack for 
 
 ### Removing a runbook
 
-Delete it via the API or the Dashboard, so both SQL and ChromaDB are updated.
-An authored runbook has no file to remove. A built-in is **unpublished**: its row is
-kept and its vectors are removed. To retire a built-in for good, remove it from the
+Delete it via the API or the Dashboard. Once the delete answers, no knowledge base
+search, investigation or runbook dedup serves it: every one reads a chunk only
+while its row is complete and published. An authored runbook has no file to
+remove: its row is deleted and its vectors are removed after it, best effort. A
+built-in is **unpublished**: its row is kept and flagged, and the next bootstrap's
+reconcile removes its vectors. To retire a built-in for good, remove it from the
 pack (the bootstrap then prunes the row).
 
 For bulk removal, `fm-reset-kb --yes` (without `--rebuild`) wipes the full KB state; the next API restart re-ingests the KB pack and nothing else (no startup step reads `data/knowledge/`). A runbook authored through the Dashboard exists only as database rows, so the wipe removes its `knowledge_items` row and vectors along with the built-ins. It keeps the `conversion_drafts` rows (and so the draft text) unless `--all-drafts` is passed; back up `data/faultmaven.db` first (see [Backup Strategy](#backup-strategy)).

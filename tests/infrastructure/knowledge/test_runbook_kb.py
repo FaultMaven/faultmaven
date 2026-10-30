@@ -20,6 +20,7 @@ from faultmaven.infrastructure.knowledge.runbook_kb import (
 )
 from faultmaven.models.exceptions import KnowledgeBaseError
 from faultmaven.models.report import RunbookMatch
+from tests.utils import admit_every_parent
 
 pytestmark = [pytest.mark.unit, pytest.mark.knowledge_base]
 
@@ -56,7 +57,7 @@ def _results(rows: list) -> dict:
 def _kb(rows=None) -> RunbookKnowledgeBase:
     store = MagicMock()
     store.query_by_embedding = AsyncMock(return_value=_results(rows or []))
-    return RunbookKnowledgeBase(vector_store=store)
+    return RunbookKnowledgeBase(vector_store=store, admit=admit_every_parent)
 
 
 # ---------------------------------------------------------------------------
