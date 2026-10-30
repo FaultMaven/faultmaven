@@ -8,14 +8,12 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     engine_proposed_resolution_total,
     evidence_need_status_changed_total,
 )
-from faultmaven.core.investigation.problem_status import (
-    FALSE_ALARM_CLOSURE_REASON,
-    problem_on_hold,
-)
+from faultmaven.core.investigation.problem_status import problem_on_hold
 from faultmaven.modules.case.contracts import (
     TERMINAL_HYPOTHESIS_STATES,
     Case,
     CaseState,
+    ClosureReason,
     NeedPurpose,
     NeedState,
     SolutionFeasible,
@@ -415,7 +413,7 @@ def _maybe_propose_false_alarm_close(case: "Case", metadata: dict) -> None:
 
     propose_transition(case=case, to_state="closed", summary=message)
     case.pending_transition["justifying_signature"] = (
-        f"{FALSE_ALARM_CLOSURE_REASON}|{invalidation.turn}"
+        f"{ClosureReason.CLOSED_FALSE_ALARM}|{invalidation.turn}"
     )
     metadata["transition_proposed_this_turn"] = True
     metadata["override_suggestions"] = _close_confirmation_suggestions(case)

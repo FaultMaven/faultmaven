@@ -55,6 +55,14 @@ logger = logging.getLogger(__name__)
 #: that is not the one open now.
 STALE_OFFER_LINE = "That button was for an earlier offer that's no longer open."
 
+#: The reply to a confirmation the engine could not carry out: the pending
+#: named a target the confirm does not execute (``confirm_pending_transition``
+#: logs it and clears it, #2420), so no transition ran and the case is as it was.
+UNCARRIED_PROPOSAL_REPLY = (
+    "That proposal could not be carried out, so nothing changed: the case is "
+    "still open."
+)
+
 
 async def _confirm_pending_transition(
     report_service,
@@ -105,6 +113,23 @@ async def _confirm_pending_transition(
         return {
             "agent_response": resolve_msg,
             "suggested_follow_ups": _resolution_confirmation_suggestions(case),
+            "case_updated": case,
+            "metadata": turn_metadata,
+        }
+    if not executed:
+        # Nothing terminal ran and nothing was re-offered, so there is no
+        # report to render and no terminal reply to compose: the case did not
+        # move, and the reply says so.
+        turn_metadata = _finish_deterministic_turn(
+            case,
+            user_message or "",
+            UNCARRIED_PROPOSAL_REPLY,
+            upload_report,
+            progress_made=False,
+        )
+        return {
+            "agent_response": UNCARRIED_PROPOSAL_REPLY,
+            "suggested_follow_ups": [],
             "case_updated": case,
             "metadata": turn_metadata,
         }

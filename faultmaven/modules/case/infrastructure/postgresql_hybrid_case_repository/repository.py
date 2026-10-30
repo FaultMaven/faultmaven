@@ -210,6 +210,11 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             # can never wedge the case. No-op on healthy cases.
             case.reconcile_turn_sequence()
 
+            # Re-verify the whole aggregate before writing, as the SQLite save
+            # does: an invalid nested model or a field set around validation is
+            # refused here rather than stored for the next load to refuse.
+            Case.model_validate(case.model_dump(mode="python"))
+
             # Update timestamp
             case.updated_at = datetime.now(timezone.utc)
 

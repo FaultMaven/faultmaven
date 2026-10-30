@@ -952,7 +952,7 @@ class TestClosedFamilySolutionSurface:
             )
         )
         case.progress.solution_proposed = True  # stale
-        _execute_closed_transition(case, "u1", "closed_unresolved")
+        _execute_closed_transition(case, "u1", "closed_insufficient_evidence")
         assert case.state == CaseState.CLOSED
         assert case.progress.solution_proposed is False
         assert case.progress.solution_state == SolutionState.UNKNOWN

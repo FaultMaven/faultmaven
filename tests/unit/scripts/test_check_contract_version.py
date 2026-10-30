@@ -352,3 +352,38 @@ class TestAgainstTheRealRepository:
         # phrasings made it fail the first time a real publication took the
         # "re-publication" branch instead of the "unchanged" one.
         assert "contract" in result.stdout.lower(), result.stdout
+
+
+class TestAnEnumMeaningIsSurface:
+    """By ruling (contract 14.9.0) a per-value meaning is structure: a client's
+    label table is written against it, so editing one needs a bump."""
+
+    @staticmethod
+    def _reason(meaning, description="Why a CLOSED case ended."):
+        return _spec(
+            schemas={
+                "ClosureReason": {
+                    "type": "string",
+                    "description": description,
+                    "enum": ["inquiry_only"],
+                    "x-enum-descriptions": [meaning],
+                }
+            }
+        )
+
+    def test_an_edited_meaning_without_a_bump_fails(self, check):
+        code, report = check(
+            self._reason("Closed during inquiry."), self._reason("Closed early.")
+        )
+
+        assert code == 1
+        assert "~ schema    ClosureReason" in "\n".join(report)
+
+    def test_an_edited_description_beside_it_needs_no_bump(self, check):
+        code, report = check(
+            self._reason("Closed during inquiry."),
+            self._reason("Closed during inquiry.", description="Reworded."),
+        )
+
+        assert code == 0
+        assert "unchanged" in "\n".join(report)

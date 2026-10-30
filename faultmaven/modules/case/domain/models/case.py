@@ -21,9 +21,9 @@ from .evidence import Evidence, UploadedFile
 from .evidence_needs import EvidenceNeed
 from .hypothesis import Hypothesis, HypothesisState
 from .lifecycle import (
-    VALID_CLOSURE_REASONS,
     CaseAction,
     CaseState,
+    ClosureReason,
     InvestigationStrategy,
 )
 from .problem import InquiryData, InvestigationStage, ProblemVerification
@@ -223,14 +223,12 @@ class Case(BaseModel):
         description="Complete history of case actions (phase transitions and dispositions)",
     )
 
-    closure_reason: Optional[str] = Field(
+    closure_reason: Optional[ClosureReason] = Field(
         default=None,
         description=(
             "Sub-categorization of a CLOSED case, derived by the engine; None for "
-            "non-terminal and RESOLVED cases. One of: "
-            + " | ".join(sorted(VALID_CLOSURE_REASONS))
+            "non-terminal and RESOLVED cases."
         ),
-        max_length=100,
     )
 
     disposition_eligibility: Optional[Dict[str, str]] = Field(
@@ -720,18 +718,6 @@ class Case(BaseModel):
 
         return self
 
-    @field_validator("closure_reason")
-    @classmethod
-    def valid_closure_reason(cls, v):
-        """closure_reason is a sub-categorization of CLOSED state, all
-        engine-derived. None for non-terminal and RESOLVED cases.
-        See: VALID_CLOSURE_REASONS in lifecycle.py."""
-        if v is not None and v not in VALID_CLOSURE_REASONS:
-            raise ValueError(
-                f"closure_reason must be one of: {sorted(VALID_CLOSURE_REASONS)}"
-            )
-        return v
-
     @field_validator("action_history")
     @classmethod
     def action_history_ordered(cls, v):
@@ -1021,15 +1007,6 @@ class Case(BaseModel):
 
         Spec Reference: DB Design Specification lines 157-176
         """
-        # Skip validation during atomic_update() to avoid Catch-22
-        if getattr(self, "_in_atomic_update", False):
-            return self
-
-        # Allow atomic transitions by checking if multiple terminal fields are being set
-        # This is a private flag used to verify transient states during atomic updates
-        if hasattr(self, "_in_terminal_transition"):
-            return self
-
         # RESOLVED requires resolved_at and closed_at
         if self.state == CaseState.RESOLVED:
             if not self.resolved_at:
@@ -1070,29 +1047,6 @@ class Case(BaseModel):
             )
 
         return self
-
-    def atomic_transition(self):
-        """
-        Context manager to allow atomic updates of interdependent fields.
-        Useful for transitioning to terminal states where state/timestamps depend on each other.
-        """
-
-        class AtomicContext:
-            def __init__(self, case):
-                self.case = case
-
-            def __enter__(self):
-                self.case._in_terminal_transition = True
-                return self.case
-
-            def __exit__(self, exc_type, exc_val, exc_tb):
-                if hasattr(self.case, "_in_terminal_transition"):
-                    del self.case._in_terminal_transition
-                # Only validate if no exception occurred during the block
-                if exc_type is None:
-                    self.case.validate_state_timestamp_consistency()
-
-        return AtomicContext(self)
 
     @model_validator(mode="after")
     def validate_description_for_investigation_and_resolution(self) -> "Case":
@@ -1141,16 +1095,12 @@ class Case(BaseModel):
     # Atomic State Update Helper
     # ============================================================
     def atomic_update(self, **updates: Any) -> None:
-        """
-        Perform atomic updates to multiple fields, bypassing incremental validation.
+        """Set several interdependent fields at once, as one validated state.
 
-        This method is necessary for state transitions that require multiple fields
-        to be updated simultaneously (e.g., setting state=RESOLVED requires
-        resolved_at to be set, but resolved_at can only be set when state=RESOLVED).
-
-        The validation Catch-22:
-        - Cannot set state=RESOLVED if resolved_at is None (validator line 3361)
-        - Cannot set resolved_at if status != RESOLVED (validator line 3367)
+        Some transitions cannot be made one assignment at a time: under
+        ``validate_assignment`` every assignment validates the whole model, so
+        ``state=RESOLVED`` is refused while ``resolved_at`` is unset, and
+        ``resolved_at`` is refused while the state is not RESOLVED.
 
         Usage:
             case.atomic_update(
@@ -1159,43 +1109,33 @@ class Case(BaseModel):
                 closed_at=datetime.now(UTC),
             )
 
-        Args:
-            **updates: Field names and values to update atomically
+        The updates are merged over the case's fields and validated as one
+        ``Case``: every field's type and validators, every model validator, and
+        every nested model's after-validators (nested instances pass through
+        as they are, so their own field constraints are not re-checked here;
+        the SQLite and PostgreSQL saves validate the whole dumped aggregate,
+        the in-memory repository's does not). Only when that passes are the
+        updated fields copied onto this case.
+
+        The merged state shares the case's own nested instances, so a nested
+        after-validator that repairs in place applies even when the update is
+        refused: ``InquiryData`` stamps a missing ``problem_statement_confirmed_at``,
+        ``EvidenceNeed`` resets ``obtainability`` to UNKNOWN on a terminal or
+        non-causal need, and ``ChatDataOffer`` derives missing ``block_keys``
+        from its ``blocks``. All three are idempotent repairs a reload makes
+        anyway.
 
         Raises:
-            ValueError: If the post-update state violates a cross-field invariant
-                (e.g., state=RESOLVED with no resolved_at). Pre-update state is
-                restored before the exception propagates.
-
-        Note:
-            Sets _in_atomic_update flag to bypass per-field validators that would
-            otherwise reject transient inconsistent states during multi-field
-            updates. After all updates apply, this method re-runs the cross-field
-            validators on the final state to catch callers that forgot a required
-            field — without that revalidation step, atomic_update would silently
-            accept malformed transitions (e.g., state=RESOLVED without timestamps).
+            TypeError: A key is not a ``Case`` field. No field is written.
+            pydantic.ValidationError: The merged state is not a valid case (a
+                ``ValueError``). No updated field is written.
         """
-        snapshot = {f: getattr(self, f) for f in updates}
-
-        object.__setattr__(self, "_in_atomic_update", True)
-        try:
-            for field_name, value in updates.items():
-                object.__setattr__(self, field_name, value)
-        finally:
-            object.__setattr__(self, "_in_atomic_update", False)
-
-        try:
-            self.validate_state_timestamp_consistency()
-            self.validate_timestamp_ordering()
-            self.validate_description_for_investigation_and_resolution()
-        except ValueError:
-            object.__setattr__(self, "_in_atomic_update", True)
-            try:
-                for field_name, value in snapshot.items():
-                    object.__setattr__(self, field_name, value)
-            finally:
-                object.__setattr__(self, "_in_atomic_update", False)
-            raise
+        unknown = sorted(set(updates) - set(type(self).model_fields))
+        if unknown:
+            raise TypeError(f"atomic_update: not a Case field: {', '.join(unknown)}")
+        final = type(self).model_validate({**dict(self), **updates})
+        for field_name in updates:
+            object.__setattr__(self, field_name, getattr(final, field_name))
 
     # ============================================================
     # Configuration

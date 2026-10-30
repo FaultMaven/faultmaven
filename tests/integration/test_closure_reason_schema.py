@@ -108,10 +108,10 @@ def test_the_column_is_wide_enough_for_every_reason_the_model_allows(
     silently truncates (SQLite) at the moment a case closes — the least
     recoverable time to find out.
     """
-    from faultmaven.modules.case.domain.models.lifecycle import VALID_CLOSURE_REASONS
+    from faultmaven.modules.case.domain.models.lifecycle import ClosureReason
 
     declared_length = migrated_columns["closure_reason"]["type"].length
-    longest = max(VALID_CLOSURE_REASONS, key=len)
+    longest = max(ClosureReason, key=len)
 
     assert len(longest) <= declared_length, (
         f"{longest!r} ({len(longest)} chars) does not fit "

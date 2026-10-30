@@ -23,7 +23,7 @@ from faultmaven.modules.case.domain.models.case import (
     reconcile_turn_numbers,
     stage_while_investigating,
 )
-from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.models.lifecycle import CaseState, ClosureReason
 from faultmaven.modules.case.domain.models.metadata import CaseMetadata
 from faultmaven.modules.case.domain.models.problem import InvestigationStage
 from faultmaven.modules.case.domain.models.progress import (
@@ -440,10 +440,45 @@ def test_a_null_activity_column_loads_as_the_model_default():
     assert metadata.last_activity_at.tzinfo is not None
 
 
+@pytest.mark.parametrize(
+    "stored",
+    [pytest.param({"state": "abandoned"}, id="state")],
+)
+def test_a_column_outside_its_vocabulary_fails_the_read(stored):
+    """``state`` is constrained by the database (``cases_state_check``), so a
+    value outside it cannot be stored, and the read refuses one."""
+    with pytest.raises(ValueError, match="abandoned"):
+        CaseMetadata.from_stored(**_stored(closed_at=_NOW, **stored))
+
+
+def test_a_reason_outside_the_vocabulary_is_served_null_and_warned(caplog):
+    """Nothing in the database constrains ``closure_reason``. One the type does
+    not hold is served null and named in the warning, not fatal: the operator
+    list is how such a case gets found (a case load still refuses it)."""
+    with caplog.at_level("WARNING"):
+        metadata = CaseMetadata.from_stored(
+            **_stored(
+                state="closed",
+                closed_at=_NOW,
+                closure_reason="closed_after_investigation",
+            )
+        )
+    assert metadata.closure_reason is None
+    assert "case_metadata_unreadable" in caplog.text
+    assert "closure_reason" in caplog.text and "case_000000000001" in caplog.text
+
+
+def test_a_stored_reason_is_served_as_the_enum():
+    metadata = CaseMetadata.from_stored(
+        **_stored(state="closed", closed_at=_NOW, closure_reason="inquiry_only")
+    )
+    assert metadata.closure_reason is ClosureReason.INQUIRY_ONLY
+
+
 def test_metadata_has_no_field_that_can_hold_user_text():
     """``CaseMetadata`` is the domain half of the bound: every string field is a
     system id or a closed vocabulary. A new ``str`` field fails here until it is
-    classified."""
+    classified. ``closure_reason`` is a ``ClosureReason``, closed by its type."""
     string_fields = {
         name
         for name, field in CaseMetadata.model_fields.items()
@@ -457,7 +492,6 @@ def test_metadata_has_no_field_that_can_hold_user_text():
         # The effective driver's id (#1926): a system id, never a name.
         "driver_id",
         "source",
-        "closure_reason",
         "shared_team_ids",
     }
 

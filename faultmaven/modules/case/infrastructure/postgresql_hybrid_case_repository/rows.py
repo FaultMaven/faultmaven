@@ -343,7 +343,9 @@ def _case_record_params(case: Case, last_activity_at: datetime) -> Dict[str, Any
         "investigation_strategy": case.investigation_strategy.value,
         "state": case.state.value,
         "source": case.source,
-        "closure_reason": case.closure_reason,
+        "closure_reason": (
+            None if case.closure_reason is None else case.closure_reason.value
+        ),
         # Prevention: persist the DERIVED counter so it can never be saved
         # ahead of turn_history (the drift that wedged cases). See
         # Case.effective_current_turn — single source so the two repos can't

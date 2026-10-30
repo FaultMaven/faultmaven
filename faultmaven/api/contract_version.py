@@ -21,7 +21,10 @@ Bump this in the same PR as the change it describes:
 * **PATCH** — available for a re-publication that changes no structure at all.
   Not required for one: a reworded description is not something a client can
   break on, and demanding a bump for prose would train people to bump without
-  reading.
+  reading. The exception, from 14.9.0: an enum's per-value meaning in
+  ``x-enum-descriptions`` is structure, so editing one bumps the version, and
+  a change to what a published value means cannot ship as a description
+  change alone.
 
 Each version's entry below is headed ``# X.Y.Z — MAJOR. …`` (or ``MINOR.`` /
 ``PATCH.``), the form faultmaven-copilot's and faultmaven-dashboard's
@@ -2276,4 +2279,28 @@ asked to accept, and it belongs to a person.
 # decline was given against changes (a new confirmation, solution or cause).
 # A description change, as 9.0.0's was for the same key; a client that renders
 # Close on `ready`, as both do, needs nothing more.
-API_CONTRACT_VERSION = "14.8.0"
+
+# 14.9.0 — MINOR. `closure_reason` and `valid_next_states` are published as
+# enums (#2389), now that no write path can store a closure reason outside the
+# vocabulary (#1795).
+#
+# * `ClosureReason` joins `components`, with the eight values 14.8.0 has and
+#   each value's meaning in `x-enum-descriptions`, an array parallel to `enum`.
+#   `closure_reason` on `CaseSummary`, `CaseDetail` and `AdminCaseMetadata`
+#   references it, and is null for a case that is not CLOSED, as before.
+# * `SelectableNextState` joins `components`, whose only value is `closed`, as
+#   before, with its meaning. `valid_next_states` on `CaseSummary`,
+#   `CaseDetail` and the three `CaseUIResponse_*` schemas lists it.
+#
+# From this version a per-value meaning in `x-enum-descriptions` is structure:
+# editing one bumps the version, and so does each value added later, with the
+# client label first. A change to what a published value means cannot ship as
+# a description change alone. A client keys its label table on the enum
+# (`Record<ClosureReason, …>` in the generated TypeScript), so a value without
+# a label is a type error rather than a fallback label.
+#
+# MINOR because every client survives it: the values and their wire form are
+# unchanged, each field narrows from a string to an enum of the values it
+# already carried, and no request schema carries either field. The generated
+# types change from `string | null` and `string[]` to the unions at adoption.
+API_CONTRACT_VERSION = "14.9.0"

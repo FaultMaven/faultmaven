@@ -296,7 +296,19 @@ def render_markdown(spec: Dict[str, Any]) -> str:
             if definition.get("description"):
                 lines += [definition["description"].strip(), ""]
 
-            if definition.get("enum"):
+            if definition.get("x-enum-descriptions"):
+                # Each value beside its meaning: the meanings are contract text.
+                lines += ["**Values:**", ""]
+                lines += [
+                    f"- `{value}` — {meaning}"
+                    for value, meaning in zip(
+                        definition["enum"],
+                        definition["x-enum-descriptions"],
+                        strict=True,
+                    )
+                ]
+                lines.append("")
+            elif definition.get("enum"):
                 values = ", ".join(f"`{value}`" for value in definition["enum"])
                 lines += [f"**Values:** {values}", ""]
 

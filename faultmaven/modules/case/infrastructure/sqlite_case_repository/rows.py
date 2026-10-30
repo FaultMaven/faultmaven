@@ -272,7 +272,9 @@ def _case_record_params(case: Case, last_activity_at: datetime) -> dict[str, Any
         "turns_without_progress": case.turns_without_progress,
         "created_at": case.created_at,
         "updated_at": case.updated_at,
-        "closure_reason": getattr(case, "closure_reason", None),
+        "closure_reason": (
+            None if case.closure_reason is None else case.closure_reason.value
+        ),
         "last_activity_at": last_activity_at,
         "resolved_at": getattr(case, "resolved_at", None),
         "closed_at": getattr(case, "closed_at", None),

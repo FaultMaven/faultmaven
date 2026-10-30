@@ -28,7 +28,6 @@ from faultmaven.core.investigation.milestone_engine.transition_turns import (
     FALSE_ALARM_HOLD_REPLY,
 )
 from faultmaven.core.investigation.problem_status import (
-    FALSE_ALARM_CLOSURE_REASON,
     edit_statement,
     invalidate_problem,
 )
@@ -45,6 +44,7 @@ from faultmaven.core.investigation.schemas import (
 )
 from faultmaven.modules.case.contracts import (
     CaseState,
+    ClosureReason,
     EvidenceCategory,
     InvestigationStage,
     MitigationRecord,
@@ -183,7 +183,7 @@ class TestADeclinedFalseAlarmCloseBindsTheModel:
 
         await _turn(engine, case, "makes sense", _proposes("closed"))
         pending = case.pending_transition
-        assert pending["closure_reason"] == FALSE_ALARM_CLOSURE_REASON
+        assert pending["closure_reason"] == ClosureReason.CLOSED_FALSE_ALARM
         assert _SIGNED not in pending
 
         await _turn(engine, case, "no")
@@ -209,7 +209,7 @@ class TestADeclinedFalseAlarmCloseBindsTheModel:
             redaction_ctx=None,
         )
         pending = case.pending_transition
-        assert pending["closure_reason"] == FALSE_ALARM_CLOSURE_REASON
+        assert pending["closure_reason"] == ClosureReason.CLOSED_FALSE_ALARM
         assert _SIGNED not in pending
         not_yet = result["suggested_follow_ups"][1]
 
@@ -233,7 +233,7 @@ class TestADeclinedFalseAlarmCloseBindsTheModel:
         await _turn(engine, case, "no")
         assert case.problem_verification.invalidation.close_declined_at_turn
         assert not any(
-            s.startswith(f"{FALSE_ALARM_CLOSURE_REASON}|")
+            s.startswith("closed_false_alarm|")
             for s in case.progress.deferred_disposition_declined_signatures
         )
 
@@ -271,7 +271,10 @@ class TestADeclinedFalseAlarmCloseBindsTheModel:
             intent_data={"to_state": card["intent"]["to_state"]},
             redaction_ctx=None,
         )
-        assert case.pending_transition["closure_reason"] == FALSE_ALARM_CLOSURE_REASON
+        assert (
+            case.pending_transition["closure_reason"]
+            == ClosureReason.CLOSED_FALSE_ALARM
+        )
         key = terminal_offer_key(case.pending_transition)
         assert [
             f["intent"].get("proposal_id") for f in offered["suggested_follow_ups"]
@@ -282,7 +285,7 @@ class TestADeclinedFalseAlarmCloseBindsTheModel:
 
         closing = await _turn(engine, case, "yes", _proposes("closed"))
         assert case.state == CaseState.CLOSED
-        assert case.closure_reason == FALSE_ALARM_CLOSURE_REASON
+        assert case.closure_reason == ClosureReason.CLOSED_FALSE_ALARM
         # The closed case still holds its declined finding, so the read that
         # attaches the card would answer; the closing reply carries none.
         assert _CLOSE_INTENT not in _intents(closing)
@@ -348,7 +351,7 @@ class TestTheHoldEndsWithItsPremise:
         )
         assert case.progress.problem_status == ProblemStatus.INVALIDATED
         assert case.problem_verification.invalidation.close_declined_at_turn is None
-        assert case.pending_transition[_SIGNED] == f"{FALSE_ALARM_CLOSURE_REASON}|7"
+        assert case.pending_transition[_SIGNED] == "closed_false_alarm|7"
 
     async def test_a_confirmed_revision_lifts_the_hold(self):
         engine, case, _ = await _declined_finding()
@@ -367,7 +370,10 @@ class TestTheHoldEndsWithItsPremise:
         assert case.problem_verification.invalidation is None
         assert "TRANSITION NOT PROPOSED" not in _feedback(result)
         assert case.pending_transition["to_state"] == "closed"
-        assert case.pending_transition["closure_reason"] != FALSE_ALARM_CLOSURE_REASON
+        assert (
+            case.pending_transition["closure_reason"]
+            != ClosureReason.CLOSED_FALSE_ALARM
+        )
 
     async def test_a_declined_revision_keeps_the_hold(self):
         """The finding survives a revision the user declined, and so does the
@@ -424,7 +430,10 @@ class TestTheHoldEndsWithItsPremise:
             intent_data={"to_state": "closed"},
             redaction_ctx=None,
         )
-        assert case.pending_transition["closure_reason"] == FALSE_ALARM_CLOSURE_REASON
+        assert (
+            case.pending_transition["closure_reason"]
+            == ClosureReason.CLOSED_FALSE_ALARM
+        )
         await _turn(engine, case, "yes")
         assert case.state == CaseState.CLOSED
 

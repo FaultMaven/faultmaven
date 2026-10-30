@@ -20,13 +20,13 @@ from faultmaven.models.api_models import (
 )
 from faultmaven.modules.case.domain.models.conclusion import ConfidenceLevel
 from faultmaven.modules.case.domain.models.hypothesis import HypothesisState
-from faultmaven.modules.case.domain.models.lifecycle import CaseState
+from faultmaven.modules.case.domain.models.lifecycle import CaseState, ClosureReason
 from faultmaven.modules.case.domain.models.problem import (
     InvestigationStage,
     ProblemStatus,
 )
 from faultmaven.modules.case.domain.services.case_action_manager import (
-    CaseActionManager,
+    SelectableNextState,
 )
 
 # ============================================================
@@ -474,7 +474,7 @@ class CaseUIResponse_Inquiry(BaseModel):
 
     uploaded_files_count: int = Field(ge=0, description="Total files uploaded")
 
-    valid_next_states: List[str] = Field(
+    valid_next_states: List[SelectableNextState] = Field(
         default_factory=list,
         description=VALID_NEXT_STATES_DESCRIPTION,
     )
@@ -541,7 +541,7 @@ class CaseUIResponse_Investigating(BaseModel):
 
     uploaded_files_count: int = Field(default=0, description="Number of uploaded files")
 
-    valid_next_states: List[str] = Field(
+    valid_next_states: List[SelectableNextState] = Field(
         default_factory=list,
         description=VALID_NEXT_STATES_DESCRIPTION,
     )
@@ -654,7 +654,7 @@ class CaseUIResponse_Resolved(BaseModel):
 
     uploaded_files_count: int = Field(default=0, description="Number of uploaded files")
 
-    valid_next_states: List[str] = Field(
+    valid_next_states: List[SelectableNextState] = Field(
         default_factory=list,
         description=VALID_NEXT_STATES_DESCRIPTION,
     )
@@ -698,7 +698,8 @@ class CaseUIResponse_Resolved(BaseModel):
         default=None,
         description=(
             "Where the problem statement stood when the case ended, as on the "
-            "INVESTIGATING response: a case closed as `closed_false_alarm` "
+            "INVESTIGATING response: a case closed as "
+            f"`{ClosureReason.CLOSED_FALSE_ALARM}` "
             "carries `invalidated` with its `invalidation_finding`, and a "
             "statement a revision or an edit changed carries "
             "`original_problem_statement`. Null for a case closed from "

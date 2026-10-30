@@ -1,8 +1,14 @@
+from typing import Mapping
+
 from faultmaven.core.investigation.cause_assurance import runbook_conversion_ready
 from faultmaven.core.investigation.prompts.templates.terminal import (
     TerminalAffordances,
 )
-from faultmaven.modules.case.contracts import CaseState
+from faultmaven.modules.case.contracts import (
+    CaseState,
+    ClosureReason,
+    closure_reason_table,
+)
 
 from .cause_state import (
     _get_root_cause_summary,
@@ -103,57 +109,56 @@ def _resolution_confirmation_suggestions(case) -> list:
     ]
 
 
-def _terminal_confirmation_response(case) -> str:
-    """Deterministic status line after a transition is confirmed.
-
-    Closure-reason-aware so the user can tell at a glance what was preserved.
-    The terminal reply is composed by ``_compose_terminal_reply`` which
-    appends the auto-generated summary content (when produced).
-    """
-    if case.state == CaseState.RESOLVED:
-        return "Case resolved."
-
-    closure_reason = getattr(case, "closure_reason", "") or ""
-    if closure_reason == "inquiry_only":
-        return "Case closed without investigation."
-    if closure_reason == "closed_false_alarm":
-        return (
+#: The status line a confirmed close opens its reply with, one per reason, so
+#: the user can tell at a glance what was preserved.
+_CLOSED_REPLIES: Mapping[ClosureReason, str] = closure_reason_table(
+    {
+        ClosureReason.INQUIRY_ONLY: "Case closed without investigation.",
+        ClosureReason.CLOSED_FALSE_ALARM: (
             "Case closed as a false alarm — the reported problem was not "
             "present. The evidence is preserved in the closure summary."
-        )
-    if closure_reason == "closed_insufficient_evidence":
-        return (
+        ),
+        ClosureReason.CLOSED_INSUFFICIENT_EVIDENCE: (
             "Case closed — insufficient evidence to ground a cause. "
             "Residual candidates and the missing data are preserved in the "
             "closure summary."
-        )
-    if closure_reason == "closed_restatement_held":
-        return (
+        ),
+        ClosureReason.CLOSED_RESTATEMENT_HELD: (
             "Case closed — a cause was supported by the evidence but never "
             "stated distinctly from the problem. The candidates and what the "
             "cause still needs are preserved in the closure summary."
-        )
-    if closure_reason == "resolution_declined":
-        return (
+        ),
+        ClosureReason.RESOLUTION_DECLINED: (
             "Case closed — the fix was confirmed to work; you chose not to "
             "mark it resolved."
-        )
-    if closure_reason == "solution_deferred":
-        return (
+        ),
+        ClosureReason.SOLUTION_DEFERRED: (
             "Case closed — cause identified and fix documented; implementation "
             "is deferred out-of-band."
-        )
-    if closure_reason == "closed_rca_infeasible":
-        return (
+        ),
+        ClosureReason.CLOSED_RCA_INFEASIBLE: (
             "Case closed — the root cause is not reachable for this problem; "
             "the mitigation stands as the accepted strategy."
-        )
-    if closure_reason == "mitigation_sufficient":
-        return (
+        ),
+        ClosureReason.MITIGATION_SUFFICIENT: (
             "Case closed — stabilized by a verified mitigation; root-cause "
             "analysis was deferred."
-        )
-    return "Case closed."
+        ),
+    }
+)
+
+
+def _terminal_confirmation_response(case) -> str:
+    """Deterministic status line after a transition is confirmed.
+
+    Closure-reason-aware so the user can tell at a glance what was preserved
+    (``_CLOSED_REPLIES``; a CLOSED case always carries a reason). The terminal
+    reply is composed by ``_compose_terminal_reply`` which appends the
+    auto-generated summary content (when produced).
+    """
+    if case.state == CaseState.RESOLVED:
+        return "Case resolved."
+    return _CLOSED_REPLIES[case.closure_reason]
 
 
 def _compose_terminal_reply(case, summary_payload: str | None) -> str:

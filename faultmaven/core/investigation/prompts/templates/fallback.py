@@ -562,11 +562,12 @@ def _fallback_body(
       that is nonetheless not PROVABLY bracket-free. It joins the collision
       corpus and gets the terminator, but no delimiters: fencing would tell
       the model this is material it did not write, which for engine-derived
-      text is false. ``closure_reason`` is the case in point — the only writer
-      is ``terminal_transitions.derive_closure_reason``, which returns one of
-      a closed set of labels, but the field itself is an unconstrained
-      ``Optional[str]`` (``max_length=100``, no pattern), so its shape is a
-      convention rather than a guarantee. The previous turn's
+      text is false. ``closure_reason`` is the case in point. It is a
+      ``ClosureReason``, so a validated case carries only the enum's values,
+      but the line renders the attribute as it stands, not ``.value`` of a
+      member as ``STATE:`` does, and a copy made without validation
+      (``model_copy(update=...)``) can hold any string there; so it stays
+      guarded. The previous turn's
       ``system_feedback`` is guarded for the same reason (#1688): the engine
       writes it, but it can quote model text such as a hypothesis statement.
       Fencing it would also be wrong in a second way: the fence rule tells the

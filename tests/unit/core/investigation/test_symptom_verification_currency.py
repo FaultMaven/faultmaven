@@ -376,9 +376,7 @@ class TestClosureReasonsAreReasons:
         assert self._derive(case) == "inquiry_only"
 
     def test_every_derivable_reason_passes_the_case_validator(self):
-        from faultmaven.modules.case.domain.models.lifecycle import (
-            VALID_CLOSURE_REASONS,
-        )
+        from faultmaven.modules.case.domain.models.lifecycle import ClosureReason
 
         for reason in (
             "inquiry_only",
@@ -386,17 +384,15 @@ class TestClosureReasonsAreReasons:
             "mitigation_sufficient",
             "closed_insufficient_evidence",
         ):
-            assert reason in VALID_CLOSURE_REASONS
+            assert reason in set(ClosureReason)
 
     def test_the_retired_reason_is_gone_entirely(self):
         """No legacy, no back-compat: the system is still under development, so
         an obsolete value is removed rather than carried."""
 
-        from faultmaven.modules.case.domain.models.lifecycle import (
-            VALID_CLOSURE_REASONS,
-        )
+        from faultmaven.modules.case.domain.models.lifecycle import ClosureReason
 
-        assert "closed_after_investigation" not in VALID_CLOSURE_REASONS
+        assert "closed_after_investigation" not in set(ClosureReason)
 
     def test_a_documented_but_deferred_fix_is_not_an_evidence_failure(self):
         """The fourth situation the generic bucket was hiding: the cause IS

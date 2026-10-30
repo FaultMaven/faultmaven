@@ -45,6 +45,7 @@ from faultmaven.core.investigation.causal_graph.similarity import (
 )
 from faultmaven.modules.case.contracts import (
     Case,
+    ClosureReason,
     EvidenceCategory,
     NeedPurpose,
     NeedState,
@@ -63,9 +64,6 @@ logger = logging.getLogger(__name__)
 #: A revised statement anchors the causal graph's PROBLEM node, which holds at
 #: most this many characters (``causal_graph.ingestion.seed_problem_node``).
 MAX_STATEMENT_CHARS = 500
-
-#: The closure reason a false-alarm finding derives (``derive_closure_reason``).
-FALSE_ALARM_CLOSURE_REASON = "closed_false_alarm"
 
 
 def cause_work_accepted(case: Case) -> bool:
@@ -469,7 +467,7 @@ def is_false_alarm_close(pending: dict | None) -> bool:
     return bool(
         pending
         and pending.get("to_state") == "closed"
-        and pending.get("closure_reason") == FALSE_ALARM_CLOSURE_REASON
+        and pending.get("closure_reason") == ClosureReason.CLOSED_FALSE_ALARM
     )
 
 

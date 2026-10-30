@@ -496,7 +496,7 @@ class _Scanner(ast.NodeVisitor):
                                 "model_copy(update=dict(messages=...))",
                                 func.value,
                             )
-        # ``Case.atomic_update`` sets fields directly, bypassing validation.
+        # ``Case.atomic_update`` copies the fields it is given onto the case.
         if name == "atomic_update" and isinstance(func, ast.Attribute):
             for kw in node.keywords:
                 if kw.arg == "messages":
