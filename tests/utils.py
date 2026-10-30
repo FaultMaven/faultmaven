@@ -572,6 +572,30 @@ def sanitize_pii_pinned(value: bool) -> Iterator[None]:
 TEST_PSEUDONYM_KEY = "title-test-pseudonym-key-0123456789abcdef"
 
 
+async def record_nothing(_session) -> bool:
+    """The ``record`` of an authored ``ingest_runbook`` whose caller writes no
+    row of its own (#2396): it records success, so the ingest commits."""
+    return True
+
+
+def recording_ingest(session_factory, chunks: int = 3):
+    """An ``ingest_runbook`` double for a caller under test (#2396): it runs the
+    caller's ``record`` in one session and commits, as the completing
+    transaction does, raising ``IngestNotRecorded`` when nothing was recorded."""
+    from unittest.mock import AsyncMock
+
+    from faultmaven.modules.knowledge.exceptions import IngestNotRecorded
+
+    async def ingest(*, document_id, record, **_kwargs):
+        async with session_factory() as session:
+            if not await record(session):
+                raise IngestNotRecorded(document_id)
+            await session.commit()
+        return chunks
+
+    return AsyncMock(side_effect=ingest)
+
+
 def regex_only_sanitizer(**env: str):
     """A real ``DataSanitizer`` that runs its regex patterns and never Presidio.
 

@@ -46,7 +46,7 @@ from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     KnowledgeService,
     build_kb_scope_filter,
 )
-from tests.utils import regex_only_sanitizer
+from tests.utils import record_nothing, regex_only_sanitizer
 
 pytestmark = [pytest.mark.integration]
 
@@ -173,6 +173,7 @@ async def test_a_published_runbook_is_found_by_dedup_and_only_within_its_scope(
             scope="personal",
             owner_id="user-a",
             verified_by="user-a",
+            record=record_nothing,
         )
 
     assert chunks_created > 0, "the live writer indexed nothing — nothing to find"
@@ -281,6 +282,7 @@ async def test_the_dedup_reader_binds_the_writers_collection_not_the_settings_on
                 enterprise_id=_ENTERPRISE_ID,
                 document_type="runbook",
                 scope="global",
+                record=record_nothing,
             )
             > 0
         )
@@ -341,6 +343,7 @@ async def test_a_pack_published_global_runbook_is_found_by_every_principal(
             ("# Runbook: OOMKilled pods after deploy", list(_TOY_EMBEDDING)),
             ("Raise the limit.", [0.12] * _DIM),
         ],
+        record=record_nothing,
     )
     assert chunks_created == 2
 

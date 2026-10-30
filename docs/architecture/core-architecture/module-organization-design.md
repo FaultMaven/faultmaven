@@ -33,7 +33,7 @@ A module is **VERTICAL** (business domain) if and only if it meets **ALL THREE**
 |--------|-------------------|----------------|
 | **Case** | Owns the case-domain tables (cases, evidence, hypotheses, solutions, case_messages, case_actions, uploaded_files, reports, and related high-cardinality tables) | ✅ **VERTICAL** |
 | **Auth** | Owns the 10 user-domain tables (`users`, `organizations`, `organization_members`, `roles`, `permissions`, `role_permissions`, `teams`, `team_members`, `user_audit_log`, `oauth_authorization_codes`) | ✅ **VERTICAL** |
-| **Knowledge** | Owns the `knowledge_items` PostgreSQL table + the unified `faultmaven_kb` ChromaDB collection | ✅ **VERTICAL** |
+| **Knowledge** | Owns the `knowledge_items`, `conversion_jobs` and `conversion_drafts` PostgreSQL tables + the unified `faultmaven_kb` ChromaDB collection | ✅ **VERTICAL** |
 | **Evidence** | Evidence table has FK to `cases` → part of Case module's schema | ❌ **DOMAIN SERVICE** |
 | **Agent** | No agent_* tables; `agent_tool_calls` is case audit data | ❌ **DOMAIN SERVICE** |
 | **Preprocessing** | No tables; data classification, extraction (11 extractors), and chunking that operate on Evidence data | ❌ **DOMAIN SERVICE** |
@@ -160,7 +160,7 @@ A component is **horizontal** (infrastructure) if it fails **ANY** of the three 
 ### Example 4: `modules/knowledge/` - ✅ VERTICAL
 
 **Criterion 1: Domain Data Ownership** ✅
-- Owns tables: `knowledge_items` (PostgreSQL) + the unified `faultmaven_kb` ChromaDB collection with metadata-based scope filtering (scope, owner_id, team_id)
+- Owns tables: `knowledge_items`, `conversion_jobs` and `conversion_drafts` (PostgreSQL) + the unified `faultmaven_kb` ChromaDB collection with metadata-based scope filtering (scope, owner_id, team_id)
 - Schema reference: `../data-and-storage/overview.md` Section 5.5.2 and `004_kb_sharing_infrastructure.sql`
 - These represent business entities (knowledge documents, runbooks)
 - **Result**: PASS
@@ -865,7 +865,7 @@ These modules implement **business capabilities** and should have full vertical 
 
 #### 3. **`modules/knowledge/`** ✅ **VERTICAL** (Schema-Verified)
 - **Business Logic**: Knowledge base management, RAG operations, document indexing
-- **Owns Data**: the `knowledge_items` PostgreSQL table + the unified `faultmaven_kb` ChromaDB collection (scope/owner_id/team_id metadata filtering — no per-user collections)
+- **Owns Data**: the `knowledge_items`, `conversion_jobs` and `conversion_drafts` PostgreSQL tables + the unified `faultmaven_kb` ChromaDB collection (scope/owner_id/team_id metadata filtering — no per-user collections)
 - **Schema Reference**: See `../data-and-storage/overview.md` Section 5.5.2 and `004_kb_sharing_infrastructure.sql`
 - **Cross-Module Usage**: Agent service uses knowledge for RAG
 - **Future Extraction**: Knowledge management microservice

@@ -7,12 +7,14 @@ before ``ingest_runbook`` wrote that item. The draft's foreign key to
 through the app engine's ``PRAGMA foreign_keys=ON``), so every upload failed at
 that first commit; and were it accepted, a failed ingestion stranded all three.
 
-Each property is driven through the real service on a database that enforces
-foreign keys, the vectors stubbed: an upload lands and its draft names its item;
-and each failure class (ingestion's refusal, a vector failure at personal and
-team scope, the row write failing before or after its commit landed, and the
-withdrawal failing too) leaves no upload, job, draft or share row behind, and
-nothing in ``list_all_drafts``. One case runs the upload on PostgreSQL.
+The rows are now the ``record`` of the transaction that completes the item
+(#2396). Each property is driven through the real service on a database that
+enforces foreign keys, the vectors stubbed: an upload lands and its draft names
+its item; and each failure class (ingestion's refusal, a vector failure at
+personal and team scope, the completing commit refused, or landed and raising,
+or cancelled, and a cancellation) leaves the upload whole or leaves no upload,
+job, draft or share row behind, and nothing in ``list_all_drafts``. One case
+runs the upload on PostgreSQL.
 """
 
 from __future__ import annotations
@@ -28,14 +30,13 @@ import anyio
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import delete, event, func, select, text, update
+from sqlalchemy import delete, event, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from faultmaven.api.v1.auth_dependencies import require_authentication
 from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.config.tenant_context import _current_enterprise_id
-from faultmaven.exceptions import ConflictError
 from faultmaven.infrastructure import embedding_guard
 from faultmaven.infrastructure.persistence.models import (
     Base,
@@ -63,8 +64,10 @@ from faultmaven.modules.knowledge.domain.services.knowledge_service import (
 from faultmaven.modules.knowledge.domain.services.runbook_validator import (
     RunbookQualityError,
 )
+from faultmaven.modules.knowledge.exceptions import IngestOutcomeUnknown
 from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
     DatabaseKnowledgeItemRepository,
+    KnowledgeItemRepositoryException,
 )
 from tests.runbook_samples import valid_runbook
 from tests.utils import regex_only_sanitizer, seed_enterprises, seed_users
@@ -119,7 +122,9 @@ class _Shares:
 
     async def share(self, **kwargs):
         async with self._factory() as session:
-            return await PostgreSQLShareRepository(session).share(**kwargs)
+            shared = await PostgreSQLShareRepository(session).share(**kwargs)
+            await session.commit()  # share() never commits (#2396)
+            return shared
 
     async def delete_for_resource(self, resource_type, resource_id):
         async with self._factory() as session:
@@ -158,21 +163,10 @@ class _FailingCommit:
             session.commit = commit
         return session
 
-    def arm_after_ingestion(self, service: KnowledgeService) -> None:
-        """Arm once ``ingest_runbook`` has returned: the next session is the
-        upload's own row write."""
-        ingest = service.ingest_runbook
-
-        async def ingest_then_arm(**kwargs):
-            chunks = await ingest(**kwargs)
-            self.armed = True
-            return chunks
-
-        service.ingest_runbook = ingest_then_arm
-
     def arm_at_completion(self, service: KnowledgeService) -> None:
         """Arm once the vectors are written: the next session is the ingest's
-        completing transaction, its flip and its share (#2394)."""
+        completing transaction, its flip, its share and its caller's record
+        (#2394, #2396)."""
 
         async def index_then_arm(*_args, **_kwargs):
             self.armed = True
@@ -287,7 +281,7 @@ async def test_a_vector_failure_leaves_nothing(session_factory, scope, caplog):
         with pytest.raises(RuntimeError, match="embedder unavailable"):
             await _upload(service, scope=scope)
 
-    # Ingestion undid its own writes; the upload withdraws nothing more.
+    # Ingestion undid its own writes; nothing withdraws an item (#2396).
     assert "withdraw" not in caplog.text
     # What ingestion had written when the vectors failed: its incomplete item
     # and, at either scope, no share: an authored item's share is written in
@@ -304,87 +298,69 @@ async def test_a_vector_failure_leaves_nothing(session_factory, scope, caplog):
     [RuntimeError("commit failed"), asyncio.CancelledError()],
     ids=["error", "cancelled"],
 )
-async def test_a_failed_row_write_withdraws_the_item(session_factory, error, landed):
-    """A commit refused, or one that landed and still raised or was cancelled:
-    no row remains, so withdrawing the item cannot leave a verified draft with a
-    NULL item (the key's ``SET NULL``). The item's vectors are removed best
-    effort, after its row (#2397)."""
+async def test_a_completing_commit_that_raised_leaves_the_upload_whole_or_absent(
+    session_factory, error, landed
+):
+    """The one commit that completes the item and writes the upload's rows
+    (#2396) was refused, or landed and still raised or was cancelled. Landed,
+    the upload is whole: an exception becomes the upload's success, and a
+    cancellation is re-raised. Refused, nothing remains. Nothing deletes a
+    vector (#2397). Before #2396 the item completed in a commit of its own, and
+    a failed row write had to withdraw it."""
     factory = _FailingCommit(session_factory, (error, landed))
     service = _knowledge(factory)
-    factory.arm_after_ingestion(service)
+    factory.arm_at_completion(service)
+    cancelled = isinstance(error, asyncio.CancelledError)
 
-    with pytest.raises(type(error)) as raised:
-        await _upload(service, scope="team")
+    if landed and not cancelled:
+        result = await _upload(service, scope="team")
+        await _assert_landed(session_factory, result["document_id"])
+    else:
+        expected = (
+            asyncio.CancelledError if cancelled else KnowledgeItemRepositoryException
+        )
+        with pytest.raises(expected) as raised:
+            await _upload(service, scope="team")
+        assert raised.value is error or raised.value.__cause__ is error
 
-    assert raised.value is error
-    document_id = service._index_document_in_vector_store.await_args.args[0].document_id
-    service._vector_store.delete_documents_by_parent_id.assert_awaited_once_with(
-        document_id
-    )
-    assert await _rows(session_factory) == NOTHING
-    assert await _drafts(session_factory) == []
+    whole = dict.fromkeys(NOTHING, 1)
+    assert await _rows(session_factory) == (whole if landed else NOTHING)
+    service._vector_store.delete_documents_by_parent_id.assert_not_awaited()
 
 
-async def test_a_failed_withdrawal_names_the_item(session_factory, caplog, monkeypatch):
-    """The withdrawal's delete cannot remove the item row. (A vector failure
-    no longer fails it: the delete completes once its row change commits,
-    #2397.)"""
-    factory = _FailingCommit(session_factory, (RuntimeError("commit failed"), False))
+@pytest.mark.parametrize("landed", [False, True], ids=["refused", "landed"])
+async def test_a_completion_whose_outcome_is_unknown_says_so(
+    session_factory, monkeypatch, caplog, landed
+):
+    """The completing commit raised, and so did the cleanup's delete, which
+    would have told whether it landed: the upload raises
+    ``IngestOutcomeUnknown``, never a plain failure. The state is consistent
+    either way: the item complete with its rows and its share, or an incomplete
+    row with none, never listed or served, for the sweep. Replaces the
+    withdrawal tests (a withdrawal that failed, rows that could not be removed,
+    an item row that kept its share), whose withdrawal is gone."""
+    factory = _FailingCommit(session_factory, (RuntimeError("commit failed"), landed))
     service = _knowledge(factory)
-    factory.arm_after_ingestion(service)
+    factory.arm_at_completion(service)
     monkeypatch.setattr(
         DatabaseKnowledgeItemRepository,
         "delete",
         AsyncMock(side_effect=OSError("down")),
     )
 
-    with (
-        caplog.at_level(logging.ERROR),
-        pytest.raises(RuntimeError, match="commit failed"),
-    ):
-        await _upload(service)
+    with caplog.at_level(logging.ERROR), pytest.raises(IngestOutcomeUnknown):
+        await _upload(service, scope="team")
 
+    assert "Failed to upload document: IngestOutcomeUnknown" in caplog.text
     document_id = service._index_document_in_vector_store.await_args.args[0].document_id
-    assert any(
-        r.levelno == logging.ERROR
-        and document_id in r.getMessage()
-        and "withdraw" in r.getMessage()
-        for r in caplog.records
-    ), caplog.text
-    # The failure's class, never its text: a failed INSERT's carries its
-    # parameters, the document among them.
-    assert "Failed to upload document: RuntimeError" in caplog.text
-    assert "commit failed" not in caplog.text
-    # What a crash between the two commits leaves too: the item, live and
-    # deletable, and no upload, job or draft.
-    assert await _rows(session_factory) == {**NOTHING, "knowledge_items": 1}
-    assert await _drafts(session_factory) == []
-
-
-async def test_rows_that_cannot_be_removed_keep_their_item(session_factory, caplog):
-    """The commit landed and raised, and removing the rows failed too. The item
-    stays, so the verified draft still names it (its withdrawal would have set
-    the draft's item to NULL, the key's ``SET NULL``)."""
-    factory = _FailingCommit(
-        session_factory,
-        (RuntimeError("commit failed"), True),
-        (RuntimeError("delete failed"), False),
-    )
-    service = _knowledge(factory)
-    factory.arm_after_ingestion(service)
-
-    with caplog.at_level(logging.ERROR), pytest.raises(RuntimeError, match="commit"):
-        await _upload(service)
-
-    document_id = service._index_document_in_vector_store.await_args.args[0].document_id
-    await _assert_landed(session_factory, document_id)
-    service._vector_store.delete_documents_by_parent_id.assert_not_awaited()
-    (draft,) = await _drafts(session_factory)
-    assert any(
-        draft["draft_id"] in r.getMessage() and document_id in r.getMessage()
-        for r in caplog.records
-        if r.levelno == logging.ERROR
-    ), caplog.text
+    if landed:
+        await _assert_landed(session_factory, document_id)
+        assert await _rows(session_factory) == dict.fromkeys(NOTHING, 1)
+    else:
+        assert await _rows(session_factory) == {**NOTHING, "knowledge_items": 1}
+        async with session_factory() as session:
+            assert not await session.scalar(select(KnowledgeItemModel.ingest_complete))
+        assert await _drafts(session_factory) == []
 
 
 async def test_a_failed_share_write_leaves_nothing(session_factory, monkeypatch):
@@ -403,41 +379,6 @@ async def test_a_failed_share_write_leaves_nothing(session_factory, monkeypatch)
 
     assert await _rows(session_factory) == NOTHING
     service._vector_store.delete_documents_by_parent_id.assert_not_awaited()
-
-
-async def test_an_item_row_that_survives_keeps_its_share(
-    session_factory, monkeypatch, caplog
-):
-    """The commit of ``_complete_authored_ingest`` (the flip and the share)
-    landed and then raised, and the cleanup's ``repo.delete`` raised, so the
-    item keeps the share that makes it a team item: shares go only after the
-    item's delete commits. The raising commit is the completion's: the item is
-    complete, and ``upload_document`` never reached its own row write, whose
-    failure would withdraw the item."""
-    monkeypatch.setattr(
-        DatabaseKnowledgeItemRepository,
-        "delete",
-        AsyncMock(side_effect=RuntimeError("row delete failed")),
-    )
-    factory = _FailingCommit(session_factory, (RuntimeError("commit failed"), True))
-    service = _knowledge(factory)
-    factory.arm_at_completion(service)
-
-    with (
-        caplog.at_level(logging.WARNING),
-        pytest.raises(RuntimeError, match="commit failed"),
-    ):
-        await _upload(service, scope="team")
-
-    assert "withdraw" not in caplog.text
-    assert "the cleanup's row delete failed too" in caplog.text
-    assert await _rows(session_factory) == {
-        **NOTHING,
-        "knowledge_items": 1,
-        "resource_shares": 1,
-    }
-    async with session_factory() as session:
-        assert await session.scalar(select(KnowledgeItemModel.ingest_complete))
 
 
 class _AddsThenRaises:
@@ -501,18 +442,19 @@ async def test_vectors_a_failed_store_wrote_are_never_served(
     [
         ("ingestion", "task_cancel"),
         ("ingestion", "anyio_scope"),
-        ("row_write", "anyio_scope"),
+        ("completion", "anyio_scope"),
     ],
 )
 async def test_a_cancelled_upload_leaves_nothing(session_factory, during, how):
-    """Cancelled while it embeds or while its rows commit, by ``task.cancel()``
-    (a shutdown) or by an anyio scope, which cancels every await that is not
-    shielded: ``BaseHTTPMiddleware`` runs the route in one."""
+    """Cancelled while it embeds or while its completing transaction, which
+    writes its rows (#2396), commits, by ``task.cancel()`` (a shutdown) or by an
+    anyio scope, which cancels every await that is not shielded:
+    ``BaseHTTPMiddleware`` runs the route in one."""
     factory = _FailingCommit(session_factory, (PARK, False))
     service = _knowledge(factory)
     parked = factory.parked
-    if during == "row_write":
-        factory.arm_after_ingestion(service)
+    if during == "completion":
+        factory.arm_at_completion(service)
     else:
 
         async def park(*_args, **_kwargs):
@@ -536,13 +478,8 @@ async def test_a_cancelled_upload_leaves_nothing(session_factory, during, how):
             await parked.wait()
             group.cancel_scope.cancel()
 
-    # Cancelled in the ingest: its cleanup is SQL only (#2397). Cancelled at
-    # the row write: the withdrawal's delete removes the vectors best effort.
-    vector_delete = service._vector_store.delete_documents_by_parent_id
-    if during == "row_write":
-        vector_delete.assert_awaited()
-    else:
-        vector_delete.assert_not_awaited()
+    # The cleanup is SQL only (#2397), wherever the cancellation lands.
+    service._vector_store.delete_documents_by_parent_id.assert_not_awaited()
     assert await _rows(session_factory) == NOTHING
     assert await _drafts(session_factory) == []
 
@@ -572,86 +509,6 @@ def test_the_upload_route_logs_the_class_not_the_text(caplog):
     failing.assert_awaited_once()
     assert "Document upload failed: RuntimeError" in caplog.text
     assert "BODY-2365" not in caplog.text
-
-
-async def test_verify_drafts_withdrawal_survives_an_anyio_cancel(session_factory):
-    """``verify_draft`` lost its swap (the draft was discarded during ingestion)
-    and is withdrawing what it published when the request's anyio scope is
-    cancelled: the withdrawal still completes."""
-    service = _knowledge(session_factory)
-    async with session_factory() as session:
-        session.add(
-            UploadedFileModel(
-                file_id="file_v",
-                enterprise_id=STANDALONE_ENTERPRISE_ID,
-                filename="f",
-                size_bytes=1,
-            )
-        )
-        await session.flush()
-        session.add(
-            ConversionJobModel(
-                id="conv_v",
-                user_id=OWNER,
-                enterprise_id=STANDALONE_ENTERPRISE_ID,
-                scope="personal",
-                status="completed",
-                source_file_id="file_v",
-                source_type="document",
-            )
-        )
-        session.add(
-            ConversionDraftModel(
-                id="draft_v",
-                enterprise_id=STANDALONE_ENTERPRISE_ID,
-                conversion_id="conv_v",
-                runbook_id="rb-v",
-                title="Redis Evictions",
-                content=valid_runbook("Redis Evictions Under Memory Pressure"),
-                status="draft",
-                validation_passed=True,
-            )
-        )
-        await session.commit()
-    ingest = service.ingest_runbook
-
-    async def ingest_then_discard(**kwargs):
-        chunks = await ingest(**kwargs)
-        async with session_factory() as session:
-            await session.execute(
-                update(ConversionDraftModel).values(status="discarded")
-            )
-            await session.commit()
-        return chunks
-
-    service.ingest_runbook = ingest_then_discard
-    entered, release = asyncio.Event(), asyncio.Event()
-
-    async def vector_delete(*_args, **_kwargs):
-        entered.set()
-        await release.wait()
-        return 3
-
-    service._vector_store.delete_documents_by_parent_id.side_effect = vector_delete
-    conversion = ConversionService(
-        sanitizer=regex_only_sanitizer(),
-        llm_router=AsyncMock(),
-        settings=MagicMock(),
-        db_session_factory=session_factory,
-        knowledge_service=service,
-    )
-
-    async def run():
-        with pytest.raises(ConflictError, match="nothing was published"):
-            await conversion.verify_draft("conv_v", "draft_v", OWNER)
-
-    async with anyio.create_task_group() as group:
-        group.start_soon(run)
-        await entered.wait()
-        group.cancel_scope.cancel()
-        release.set()
-
-    assert (await _rows(session_factory))["knowledge_items"] == 0
 
 
 @pytest.mark.postgres

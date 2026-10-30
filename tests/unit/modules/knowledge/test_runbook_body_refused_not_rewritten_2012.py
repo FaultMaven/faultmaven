@@ -114,7 +114,7 @@ from faultmaven.modules.knowledge.domain.services.runbook_validator import (
     find_security_hazards,
 )
 from tests.runbook_samples import valid_runbook
-from tests.utils import regex_only_sanitizer
+from tests.utils import record_nothing, regex_only_sanitizer
 
 pytestmark = [pytest.mark.unit, pytest.mark.knowledge_base, pytest.mark.security]
 
@@ -502,6 +502,7 @@ def _ingest_args(scope: str, **override) -> dict:
         scope=scope,
         owner_id="u1",
         team_id=TEAM_ID if scope == "team" else None,
+        record=None if override.get("shipped") else record_nothing,
     )
     args.update(override)
     return args

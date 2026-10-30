@@ -84,7 +84,12 @@ from tests.integration.security.test_case_kb_scope_and_source_gate import (
     _case as _resolved_content_case,
 )
 from tests.model_content import disabled_redaction
-from tests.utils import regex_only_sanitizer, seed_enterprises, seed_users
+from tests.utils import (
+    record_nothing,
+    regex_only_sanitizer,
+    seed_enterprises,
+    seed_users,
+)
 
 pytestmark = [pytest.mark.integration, pytest.mark.knowledge_base]
 
@@ -499,6 +504,7 @@ async def _cancelled_mid_add(kb, item_id: str, *, shipped: bool) -> int:
                 scope="global",
                 prechunked=[(_text("late"), list(Q))],
                 shipped=shipped,
+                record=None if shipped else record_nothing,
             )
         )
         await asyncio.wait_for(late.started.wait(), 10)
@@ -571,10 +577,11 @@ async def test_the_next_boot_collects_a_late_pack_write(kb):
     assert PACK_LATE not in _chunk_parents(kb)
 
 
-async def test_an_authored_raise_after_completion_removes_the_row_and_no_vector(kb):
-    """Cancelled at the completing commit's return (critique B2): the row was
-    complete, and the cleanup still removes it, so the caller's "failed" is
-    true; it deletes no vector, and no door serves the chunks."""
+async def test_an_authored_cancel_after_completion_keeps_the_row_and_no_vector(kb):
+    """Cancelled at the completing commit's return: the commit landed with its
+    caller's record, so the cleanup, which deletes only an incomplete row,
+    matches nothing and the row stands, served (#2396). The cancellation is
+    still re-raised, and no vector is deleted."""
     store = kb.store
     real_complete = kb.service._complete_authored_ingest
 
@@ -598,17 +605,15 @@ async def test_an_authored_raise_after_completion_removes_the_row_and_no_vector(
                 enterprise_id=STANDALONE_ENTERPRISE_ID,
                 scope="global",
                 prechunked=[(_text("after-completion"), list(Q))],
+                record=record_nothing,
             )
 
     assert vector_delete.await_count == 0  # nothing deletes a vector (#2388)
     async with kb.factory() as session:
-        assert (
-            await DatabaseKnowledgeItemRepository(session).get_by_id(AUTHORED_LATE)
-            is None
-        )
-    assert AUTHORED_LATE in _chunk_parents(kb)
-    assert AUTHORED_LATE not in await _push(kb)
-    assert "MARKER::after-completion::" not in await _pull(kb)
+        row = await DatabaseKnowledgeItemRepository(session).get_by_id(AUTHORED_LATE)
+    assert row is not None and row.ingest_complete
+    assert AUTHORED_LATE in await _push(kb)
+    assert "MARKER::after-completion::" in await _pull(kb)
 
 
 # --- #2063: a delete whose vector delete times out ----------------------------
@@ -622,6 +627,7 @@ async def test_a_delete_whose_vector_delete_times_out_leaves_nothing_served(kb):
         enterprise_id=STANDALONE_ENTERPRISE_ID,
         scope="global",
         prechunked=[(_text("late"), list(Q))],
+        record=record_nothing,
     )
     assert AUTHORED_LATE in await _push(kb)  # control: a live document is served
 

@@ -26,11 +26,9 @@ vector store is an in-memory double that keeps chunk counts by parent id, so
 observable. That every door applies the check is pinned over a real ChromaDB in
 ``tests/integration/modules/knowledge/test_row_checked_retrieval_2397.py``.
 
-T9 (a verify-race withdrawal whose delete fails answers a 409 that says the
-copy could not be withdrawn) is pinned by
-``test_drafts_live_in_the_database_1950.py::TestAWithdrawalThatFailsIsReportedTruthfully``,
-parametrized over a raising and a not-successful ``delete_document``; it is not
-duplicated here.
+T9 (a verify-race withdrawal whose delete fails) is gone with the withdrawal:
+a verify that loses its race publishes nothing (#2396), pinned by
+``test_drafts_live_in_the_database_1950.py::TestALostSwapHasNothingToWithdraw``.
 """
 
 from __future__ import annotations
@@ -146,7 +144,9 @@ class _Shares:
 
     async def share(self, **kwargs):
         async with self._factory() as session:
-            return await PostgreSQLShareRepository(session).share(**kwargs)
+            shared = await PostgreSQLShareRepository(session).share(**kwargs)
+            await session.commit()  # share() never commits (#2396)
+            return shared
 
     async def list_scopes_for_resource(self, resource_type, resource_id):
         async with self._factory() as session:

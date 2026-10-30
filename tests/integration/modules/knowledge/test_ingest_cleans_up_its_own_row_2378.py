@@ -1,6 +1,7 @@
 """A failure after the item's INSERT commits leaves no item, and the cleanup
-removes only what its own call wrote (#2378): its row and its share, never a
-vector (#2397). Chunks left under an id with no row are never served.
+removes only what its own call wrote (#2378): its row while it is incomplete,
+never a share (one is written only with the row's completion, #2396) and never
+a vector (#2397). Chunks left under an id with no row are never served.
 
 ``DatabaseKnowledgeItemRepository.create`` commits the row and then refreshes
 it. ``ingest_runbook`` used to call it before its compensated block, so a raise
@@ -38,6 +39,7 @@ from faultmaven.modules.knowledge.domain.models.knowledge_item import (
     KnowledgeItem,
     KnowledgeItemType,
 )
+from faultmaven.modules.knowledge.exceptions import IngestNotRecorded
 from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
     DatabaseKnowledgeItemRepository,
     KnowledgeItemRepositoryException,
@@ -56,7 +58,7 @@ from tests.integration.modules.knowledge.test_upload_writes_rows_after_ingest_23
     session_factory,
 )
 from tests.runbook_samples import valid_runbook
-from tests.utils import seed_enterprises, seed_users
+from tests.utils import record_nothing, seed_enterprises, seed_users
 
 pytestmark = [pytest.mark.integration, pytest.mark.knowledge_base]
 
@@ -185,16 +187,19 @@ async def _a_peer_reingests(factory, store: _Chunks):
     store.index(DOC_ID, "peer")
 
 
+_INGEST = dict(
+    document_id=DOC_ID,
+    title="Redis Evictions",
+    content=valid_runbook("Redis Evictions Under Memory Pressure"),
+    enterprise_id=STANDALONE_ENTERPRISE_ID,
+    scope="team",
+    owner_id=OWNER,
+    team_id=TEAM_ID,
+)
+
+
 async def _ingest(service):
-    return await service.ingest_runbook(
-        document_id=DOC_ID,
-        title="Redis Evictions",
-        content=valid_runbook("Redis Evictions Under Memory Pressure"),
-        enterprise_id=STANDALONE_ENTERPRISE_ID,
-        scope="team",
-        owner_id=OWNER,
-        team_id=TEAM_ID,
-    )
+    return await service.ingest_runbook(**_INGEST, record=record_nothing)
 
 
 async def _created_at(factory) -> list[datetime]:
@@ -286,12 +291,13 @@ async def test_the_cleanup_leaves_what_a_peer_created(
     assert sorted(store.chunks) == peer_chunks + this_chunks
 
 
-async def test_a_failed_check_for_a_standing_row_keeps_what_a_peer_created(
+async def test_a_failed_read_after_the_delete_keeps_what_a_peer_created(
     session_factory, monkeypatch, caplog
 ):
     """A peer re-ingested the id after this call indexed, so the cleanup's row
-    delete matched nothing, and then its check for a standing row raised: the
-    cleanup removes nothing more, and the peer's row, chunks and share stay."""
+    delete matched nothing, and then its read of the row raised: the cleanup
+    removes nothing more, the peer's row, chunks and share stay, and the
+    store's own error is re-raised, as for any failure before the completion."""
     store = _Chunks()
     service = _indexing_into(
         _knowledge(session_factory),
@@ -300,12 +306,12 @@ async def test_a_failed_check_for_a_standing_row_keeps_what_a_peer_created(
     )
     real_delete = DatabaseKnowledgeItemRepository.delete
 
-    async def read_failed(self, item_id):
+    async def read_failed(*_args, **_kwargs):
         raise RuntimeError("read failed")
 
     async def delete_then_fail_reads(self, item_id, **kwargs):
         matched = await real_delete(self, item_id, **kwargs)
-        monkeypatch.setattr(DatabaseKnowledgeItemRepository, "get_by_id", read_failed)
+        monkeypatch.setattr(self.db, "scalar", read_failed)
         return matched
 
     monkeypatch.setattr(
@@ -318,7 +324,7 @@ async def test_a_failed_check_for_a_standing_row_keeps_what_a_peer_created(
     ):
         await _ingest(service)
 
-    assert "check for a row still standing failed too (RuntimeError)" in caplog.text
+    assert "read of the row failed too (RuntimeError)" in caplog.text
     (created_at,) = await _created_at(session_factory)
     assert created_at.replace(tzinfo=None) == PEER_CREATED_AT.replace(tzinfo=None)
     assert await _rows(session_factory) == ONE_TEAM_ITEM
@@ -332,20 +338,23 @@ async def test_a_failed_check_for_a_standing_row_keeps_what_a_peer_created(
     ]
 
 
-async def test_a_share_whose_row_is_gone_is_removed(session_factory):
-    """Another call deleted this call's row (not its share) after this call
-    wrote its chunks, and has not re-created it: no item stands, so this
-    call's share goes, and its chunks stay under an id no row admits
-    (#2397)."""
+async def test_no_share_stands_without_a_complete_row(session_factory):
+    """The team share is written in the transaction that completes the row,
+    and ``share()`` never commits (#2396): a completion whose caller recorded
+    nothing rolls the flip back with its share, the cleanup removes the row,
+    and its chunks stay under an id no row admits (#2397). Before #2396
+    ``share()`` committed the flip with it, and the cleanup removed a share
+    whose row was gone."""
     store = _Chunks()
-    service = _indexing_into(
-        _knowledge(session_factory),
-        store,
-        then=partial(_delete_the_row, session_factory),
-    )
+    service = _indexing_into(_knowledge(session_factory), store)
 
-    with pytest.raises(RuntimeError, match="after the write"):
-        await _ingest(service)
+    async def record_refused(_session) -> bool:
+        return False
+
+    with pytest.raises(IngestNotRecorded):
+        await service.ingest_runbook(
+            **{**_INGEST, "record": record_refused},
+        )
 
     assert await _rows(session_factory) == NOTHING
     assert sorted(store.chunks) == ["this-0", "this-1", "this-2"]
@@ -356,7 +365,7 @@ async def test_a_cleanup_session_that_fails_to_close_carries_on(
     session_factory, caplog
 ):
     """The cleanup's row delete committed, and then closing its session raised:
-    the row is gone, so its share goes too, and its chunks are unadmitted."""
+    the row is gone, and its chunks are unadmitted."""
     factory = _FailingClose(session_factory)
     store = _Chunks()
     service = _indexing_into(_knowledge(factory), store, then=factory.arm)

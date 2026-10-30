@@ -204,6 +204,7 @@ class TestGetVisibleByIdSQL:
                 enterprise_id="ent-1",
                 created_by="user-1",
             )
+            await session.commit()
 
         assert (
             await _visible(
@@ -243,6 +244,7 @@ class TestGetVisibleByIdSQL:
                 enterprise_id="ent-1",
                 created_by="user-1",
             )
+            await session.commit()
 
         member = await _visible(
             db_factory, "t-1", "ent-1", user_id="user-2", team_ids=["team-A"]
@@ -276,6 +278,7 @@ class TestGetVisibleByIdSQL:
                 enterprise_id="ent-2",
                 created_by="user-1",
             )
+            await session.commit()
 
         assert (
             await _visible(
@@ -310,6 +313,7 @@ class TestGetVisibleByIdSQL:
                 enterprise_id="ent-2",  # not the resource's org
                 created_by="user-1",
             )
+            await session.commit()
 
         assert (
             await _visible(

@@ -68,7 +68,9 @@ async def share_factory():
 
 async def _share(factory, **kw):
     async with factory() as session:
-        return await PostgreSQLShareRepository(session).share(**kw)
+        shared = await PostgreSQLShareRepository(session).share(**kw)
+        await session.commit()  # share() never commits (#2396)
+        return shared
 
 
 _KB = {
