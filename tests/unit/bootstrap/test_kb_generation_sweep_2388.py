@@ -18,6 +18,7 @@ from unittest.mock import MagicMock, patch
 import chromadb
 import pytest
 from chromadb.config import Settings as ChromaSettings
+from freezegun import freeze_time
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from faultmaven.bootstrap import kb_init
@@ -217,9 +218,15 @@ async def test_the_bootstrap_sweeps_report_only_under_an_external_chromadb(
     before = corpus.present()
     service = MagicMock()
     service._vector_store = corpus.store
-    with patch(
-        "faultmaven.config.deployment_coherence.is_external_chroma_configured",
-        return_value=True,
+    # The bootstrap's sweep reads the wall clock (it passes no ``now``): run it
+    # on the fixture's, or the young chunk is past the floor from 23 h after
+    # ``NOW`` (#2435).
+    with (
+        patch(
+            "faultmaven.config.deployment_coherence.is_external_chroma_configured",
+            return_value=True,
+        ),
+        freeze_time(NOW),
     ):
         result = await kb_init.bootstrap_kb(
             knowledge_service=service,
