@@ -9,6 +9,8 @@ the values that make its case its own.
 - :func:`inquiry_case` is a ``make_case`` in INQUIRY.
 - :func:`investigating_case` confirms the problem statement and builds the case
   in INVESTIGATING.
+- :func:`with_open_offer` opens a resolve or close offer on a case.
+- :func:`with_declined_offer` opens one and records the user's decline of it.
 
 Any keyword a signature does not name is a ``Case`` field, passed to the
 constructor as given.
@@ -134,3 +136,48 @@ def investigating_case(
     if problem_status is not None:
         case.progress.problem_status = problem_status
     return case
+
+
+#: The bases an engine proposer opens with: their offers carry provenance.
+_ENGINE_BASES = ("backstop", "deferred", "false_alarm")
+
+
+def with_open_offer(
+    case: Case,
+    *,
+    kind: str = "resolve",
+    basis: str = "model",
+    summary: str = "Shall I?",
+) -> dict:
+    """Open a ``kind`` offer ("resolve" or "close") on ``case`` as ``basis``
+    opens it, and return it."""
+    from faultmaven.core.investigation.terminal_transitions import (
+        closure_verdict,
+        deferred_disposition_signature,
+        propose_transition,
+    )
+
+    to_state = {"resolve": "resolved", "close": "closed"}[kind]
+    propose_transition(case, to_state=to_state, summary=summary)
+    if basis in _ENGINE_BASES:
+        case.pending_transition["justifying_signature"] = (
+            deferred_disposition_signature(case, closure_verdict(case))
+        )
+    return case.pending_transition
+
+
+def with_declined_offer(
+    case: Case, *, kind: str = "resolve", basis: str = "backstop"
+) -> None:
+    """Open a ``kind`` offer as ``basis`` opens it and record the user's
+    decline of it, as a "Not yet" click records it."""
+    from faultmaven.core.investigation.milestone_engine.response_synthesis import (
+        _record_deferred_disposition_decline,
+    )
+    from faultmaven.core.investigation.terminal_transitions import (
+        cancel_pending_transition,
+    )
+
+    with_open_offer(case, kind=kind, basis=basis)
+    _record_deferred_disposition_decline(case)
+    cancel_pending_transition(case)
