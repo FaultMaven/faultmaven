@@ -34,9 +34,6 @@ from faultmaven.core.investigation.milestone_engine.response_synthesis import (
     schema_answer_stop_reason,
     synthesized_agent_response,
 )
-from faultmaven.core.investigation.milestone_engine.stage_gates import (
-    _close_confirmation_suggestions,
-)
 from faultmaven.core.investigation.milestone_engine.structured_output import (
     _parse_text_as_schema,
     _synthesize_agent_response,
@@ -598,7 +595,6 @@ GATE_SITES = [
     "resolution_ready_for_confirmation",
     "resolution_suggest_close",
     "resolution_needs_info_first_pass",
-    "close_pivoted_to_resolve",
     "rca_infeasible_closure_message",
     "deferred_solution_gate_message",
     "resolution_ready_gate_message",
@@ -611,7 +607,6 @@ GATE_SITES = [
 def _force_branch(site, case, md, engine):
     """Stand in for what ``_process_response_structured`` records on a turn
     that selects *site*. Returns a replacement case where the branch needs one."""
-    suggestions = _close_confirmation_suggestions(case)
     if site == "resolution_ready_for_confirmation":
         md[site] = True
     elif site == "resolution_suggest_close":
@@ -620,17 +615,12 @@ def _force_branch(site, case, md, engine):
     elif site == "resolution_needs_info_first_pass":
         md[site] = True
         md["resolution_needs_info_message"] = GATE_NOTICE
-        md["override_suggestions"] = suggestions
-    elif site == "close_pivoted_to_resolve":
-        md[site] = True
-        case.pending_transition = {"to_state": "resolved", "summary": GATE_NOTICE}
     elif site in (
         "rca_infeasible_closure_message",
         "deferred_solution_gate_message",
         "resolution_ready_gate_message",
     ):
         md[site] = GATE_NOTICE
-        md["override_suggestions"] = suggestions
     elif site == "summary_append":
         # The terminal transition the apply layer makes on such a turn,
         # through a validated copy: state and both timestamps land together.

@@ -155,9 +155,11 @@ def with_open_offer(
     opens it, through the record's writer, and return it. A close offer's
     ``closure_reason`` derives from the case as it stands. Refuses (an
     ``AssertionError``) when a standing decline binds the offer."""
-    from faultmaven.core.investigation.offers import open_offer
+    from faultmaven.core.investigation.terminal_transitions import (
+        open_disposition_offer,
+    )
 
-    record = open_offer(
+    record = open_disposition_offer(
         case, kind=OfferKind(kind), basis=OfferBasis(basis), summary=summary
     )
     assert record is not None, f"a standing decline binds a {basis} {kind} offer"

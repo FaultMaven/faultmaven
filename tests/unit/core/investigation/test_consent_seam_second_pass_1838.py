@@ -42,7 +42,6 @@ from faultmaven.core.investigation.milestone_engine.transition_consent import (
     is_bare_gate_reply,
     opens_with_consent_loosely,
     pending_gate_verdict,
-    terminal_offer_key,
 )
 from faultmaven.core.investigation.milestone_engine.turn_records import (
     _flatten_follow_ups,
@@ -57,12 +56,13 @@ from faultmaven.core.investigation.terminal_transitions import (
     QUESTION_SHORTCODES,
     is_question,
     is_substantive_reply,
-    propose_transition,
 )
+from faultmaven.modules.case.contracts import AnswerKind
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.domain.models.problem import ProblemVerification
 from faultmaven.modules.case.domain.models.progress import InvestigationProgress
+from tests.case_builders import with_open_offer
 
 pytestmark = pytest.mark.unit
 
@@ -72,7 +72,6 @@ CHECK = "\N{HEAVY CHECK MARK}"
 DASH = "\N{EM DASH}"
 
 STATEMENT = "Checkout API returns 503 for all users since 14:00 UTC"
-SIGNATURE = "SUGGEST_CLOSE|1|chain"
 REPLY = "Here is what the logs say about the 503s."
 
 #: Copilot's status-dropdown text for an INVESTIGATING case's Close pick
@@ -129,12 +128,15 @@ def _investigating() -> Case:
 
 
 def _pending_close() -> Case:
-    """An INVESTIGATING case with a signed CLOSE offer standing, so a recorded
-    refusal is visible and "nothing recorded" is not vacuous."""
+    """An INVESTIGATING case with the engine's deferred CLOSE offer standing,
+    so a recorded refusal binds and "nothing recorded" is not vacuous."""
     case = _investigating()
-    propose_transition(case, to_state="closed", summary="Shall I close it?")
-    case.pending_transition["justifying_signature"] = SIGNATURE
+    with_open_offer(case, kind="close", basis="deferred", summary="Shall I close it?")
     return case
+
+
+def _answers(case: Case) -> list:
+    return [answer.answer for answer in case.offer_record.answers]
 
 
 def _gate1_case() -> Case:
@@ -157,14 +159,14 @@ def _keys(follow_ups) -> list:
     return [(f.get("intent") or {}).get("proposal_id") for f in follow_ups]
 
 
-def _assert_card_reshown(result, case, before: dict) -> None:
+def _assert_card_reshown(result, case, before) -> None:
     """Nothing executed, nothing withdrawn, nothing recorded, and the standing
     offer's card shown again with its own key."""
     assert case.state == CaseState.INVESTIGATING
-    assert case.pending_transition == before, "the standing offer moved"
-    assert case.progress.deferred_disposition_declined_signatures == []
+    assert case.offer_record.open == before, "the standing offer moved"
+    assert _answers(case) == []
     assert "Please select one of the options above" in result["agent_response"]
-    assert _keys(result["suggested_follow_ups"]) == [before["proposed_at"]] * 2
+    assert _keys(result["suggested_follow_ups"]) == [before.proposal_id] * 2
 
 
 # =============================================================================
@@ -486,8 +488,8 @@ class TestTheShapeRowsThroughTheEngine:
         case = _pending_close()
         engine = _processing_engine()
         await engine.process_turn(case=case, user_message=message, redaction_ctx=None)
-        assert case.pending_transition is None, "the gate took the turn"
-        assert case.progress.deferred_disposition_declined_signatures == []
+        assert case.offer_record.open is None, "the gate took the turn"
+        assert _answers(case) == [AnswerKind.WITHDRAWN]
         engine.generator.generate_structured_output.assert_awaited()
 
     @pytest.mark.parametrize(
@@ -509,14 +511,14 @@ class TestTheShapeRowsThroughTheEngine:
         case = _pending_close()
         engine = _processing_engine()
         await engine.process_turn(case=case, user_message=message, redaction_ctx=None)
-        assert case.pending_transition is None
-        assert case.progress.deferred_disposition_declined_signatures == [SIGNATURE]
+        assert case.offer_record.open is None
+        assert _answers(case) == [AnswerKind.DECLINED]
         engine.generator.generate_structured_output.assert_awaited()
 
     async def test_an_undecorated_consent_opener_is_still_re_asked(self):
         """The control, unchanged from ``main``: the gate takes it."""
         case = _pending_close()
-        before = dict(case.pending_transition)
+        before = case.offer_record.open
         engine = _engine()
         result = await engine.process_turn(
             case=case,
@@ -546,8 +548,8 @@ class TestTheShapeRowsThroughTheEngine:
         case = _pending_close()
         engine = _processing_engine()
         await engine.process_turn(case=case, user_message=message, redaction_ctx=None)
-        assert case.pending_transition is None, "the question did not withdraw"
-        assert case.progress.deferred_disposition_declined_signatures == []
+        assert case.offer_record.open is None, "the question did not withdraw"
+        assert _answers(case) == [AnswerKind.WITHDRAWN]
         engine.generator.generate_structured_output.assert_awaited()
 
 
@@ -772,12 +774,11 @@ class TestADropdownRePickReshowsTheCard:
             redaction_ctx=None,
         )
         assert case.state == CaseState.INVESTIGATING
-        assert case.pending_transition["to_state"] == "closed"
-        key = terminal_offer_key(case.pending_transition)
+        assert case.offer_record.open.kind == "close"
+        key = case.offer_record.open.proposal_id
         assert _keys(first["suggested_follow_ups"]) == [key] * 2
-        # Signed, so a refusal recorded by the second pick would be visible.
-        case.pending_transition["justifying_signature"] = SIGNATURE
-        before = dict(case.pending_transition)
+        # Any answer the second pick recorded would be visible on the record.
+        before = case.offer_record.open
 
         second = await engine.process_turn(
             case=case,

@@ -1,17 +1,18 @@
-"""K16 (#1812): every confirmation pair the engine builds names the offer
-standing when it is built.
+"""K16 (#1812): every confirmation pair the engine serves names the offer
+standing when it is served.
 
 A click executes only when it names the offer standing when it arrives, so a
 pair built before its offer stands (or with none) ships cards that can never be
-honoured. The census below states N — the builder call sites in ``faultmaven/``
-— and the drivers reach every one of them, recording what each pair was
-stamped with. A site the census names that no driver reached fails the test,
-so it cannot pass by looking in the wrong place.
+honoured. The shape it existed for: before #1812 the deferred-disposition
+proposer built its pair above ``propose_transition``, where no offer stood yet.
 
-The shape it exists for: before #1812 the deferred-disposition proposer
-(``terminal_proposals._maybe_propose_deferred_close``) built its pair above
-``propose_transition``, where no offer stood yet. Restoring that order fails
-this test (verified by mutation).
+Since #2379 the resolve, close and revision pairs are built in one place, the
+offer projection (``offer_projection.project_offers``), from the open offer itself, so a
+pair cannot be built before its offer: the census below pins that the
+projection is their only builder. Gate 1's pair is not an offer on the record
+and keeps its own builder, keyed by the statement; its call sites are counted,
+and the drivers reach every one. Each driver also asserts that the pair it is
+served names the offer open after its turn.
 """
 
 import ast
@@ -24,8 +25,6 @@ import pytest
 
 import faultmaven
 import faultmaven.core.investigation.milestone_engine.cause_state as cause_state
-import faultmaven.core.investigation.milestone_engine.statement_revision as statement_revision
-import faultmaven.core.investigation.milestone_engine.terminal_replies as terminal_replies
 import faultmaven.core.investigation.milestone_engine.transition_consent as transition_consent
 import faultmaven.core.investigation.terminal_transitions as terminal_transitions
 from faultmaven.core.investigation.milestone_engine.affordances import (
@@ -34,7 +33,6 @@ from faultmaven.core.investigation.milestone_engine.affordances import (
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.milestone_engine.stage_gates import (
     _apply_stage_gate_side_effects,
-    declined_resolve_card,
 )
 from faultmaven.core.investigation.milestone_engine.terminal_proposals import (
     _maybe_propose_false_alarm_close,
@@ -42,12 +40,9 @@ from faultmaven.core.investigation.milestone_engine.terminal_proposals import (
 from faultmaven.core.investigation.milestone_engine.transition_consent import (
     gate1_offer_key,
     revision_offer_key,
-    terminal_offer_key,
 )
-from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommitPlan
-from faultmaven.core.investigation.milestone_engine.turn_completion import (
-    _compose_turn_reply,
-)
+from faultmaven.core.investigation.offer_projection import project_offers
+from faultmaven.core.investigation.offers import remember_resolve_request
 from faultmaven.core.investigation.problem_status import (
     invalidate_problem,
     propose_revision,
@@ -56,7 +51,6 @@ from faultmaven.core.investigation.schemas import (
     InvestigationResponse_Diagnosis,
     MilestoneUpdates,
 )
-from faultmaven.core.investigation.terminal_transitions import propose_transition
 from faultmaven.modules.agent.domain.services.orientation import (
     OrientationKind,
     build_orientation,
@@ -76,18 +70,17 @@ from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.domain.models.problem import ProblemVerification
 from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 from faultmaven.modules.case.domain.models.solution import Solution, SolutionType
+from tests.case_builders import with_declined_offer, with_open_offer
 from tests.source_tree import parse_file
 
 _FILE_ID = "file_0123456789ab"
 
 pytestmark = pytest.mark.unit
 
-BUILDERS = (
-    "_resolution_confirmation_suggestions",
-    "_close_confirmation_suggestions",
-    "_investigation_confirmation_suggestions",
-    "revision_confirmation_suggestions",
-)
+#: Gate 1's pair builder, keyed by the statement it presents.
+BUILDERS = ("_investigation_confirmation_suggestions",)
+#: The offer pairs, each built from the open offer by the projection.
+PAIR_BUILDERS = ("_resolve_pair", "_close_pair", "_revision_pair")
 PACKAGE = Path(faultmaven.__file__).resolve().parent
 STATEMENT = "Checkout API returns 503 for all users since 14:00 UTC"
 
@@ -108,20 +101,26 @@ def _census() -> dict[tuple[str, int], int]:
     return sites
 
 
-def test_the_census_finds_the_twenty_two_sites_and_each_passes_the_case():
-    """State N: 22. The plan's 17 sites, plus the one #1812 added —
-    ``transition_turns._refuse_offer_click`` re-shows the Gate 1 pair beside
-    its "earlier offer" line — the three the statement-revision handshake
-    adds: its pair served by ``engine_owned_affordances`` and re-shown by
-    ``_refuse_offer_click``, and the false-alarm close the engine offers — and
-    the resolve pair ``transition_turns._resolve_on_reopen_chip`` serves once
-    the "Mark it resolved" chip has proposed (#1895). A builder takes the case
-    (no default), because its key is the case's standing offer; a zero-argument
-    call could name none.
-    """
+def test_the_census_finds_gate_ones_three_sites_and_each_passes_the_case():
+    """State N: 3 — ``engine_owned_affordances``, ``_refuse_offer_click``
+    (re-showing Gate 1 beside its "earlier offer" line) and the orientation
+    reply. The builder takes the case, because its key is the case's
+    statement; a zero-argument call could name none."""
     sites = _census()
-    assert len(sites) == 22, sorted(sites)
+    assert len(sites) == 3, sorted(sites)
     assert all(n == 1 for n in sites.values()), sorted(sites.items())
+
+
+def test_the_offer_pairs_are_built_only_by_the_projection():
+    """Every reference to the resolve, close and revision pair builders is in
+    ``core/investigation/offers.py``: no other site can build a pair, so none
+    can build one before its offer is open."""
+    refs = set()
+    for path in sorted(PACKAGE.rglob("*.py")):
+        for node in ast.walk(parse_file(path)):
+            if isinstance(node, ast.Name) and node.id in PAIR_BUILDERS:
+                refs.add(path.relative_to(PACKAGE).as_posix())
+    assert refs == {"core/investigation/offers.py"}
 
 
 # ---------------------------------------------------------------------------
@@ -144,14 +143,8 @@ def built(monkeypatch):
         records.append(((rel, site.f_lineno), proposal_id))
         return real(proposal_id, case=case, gate=gate)
 
-    # ``terminal_replies`` and ``cause_state`` bind it at import;
-    # ``stage_gates`` imports it from ``transition_consent`` at call time.
-    for module in (
-        terminal_replies,
-        cause_state,
-        transition_consent,
-        statement_revision,
-    ):
+    # ``cause_state`` binds it at import.
+    for module in (cause_state, transition_consent):
         monkeypatch.setattr(module, "offer_intent_fields", spy)
     return records
 
@@ -241,7 +234,8 @@ def _investigating(*, cause: bool = False, absence: bool = False) -> Case:
 
 def _pending(to_state, **kw) -> Case:
     case = _investigating(**kw)
-    propose_transition(case, to_state=to_state, summary=f"Shall I {to_state} it?")
+    kind = {"resolved": "resolve", "closed": "close"}[to_state]
+    with_open_offer(case, kind=kind, basis="model", summary=f"Shall I {to_state} it?")
     return case
 
 
@@ -264,7 +258,7 @@ def _keys(follow_ups) -> list:
 
 
 def _served_the_standing_offer(result, case):
-    key = terminal_offer_key(case.pending_transition)
+    key = case.offer_record.open.proposal_id
     assert key, "premise: an offer stands after the turn"
     assert _keys(result["suggested_follow_ups"]) == [key, key]
 
@@ -293,10 +287,8 @@ async def _rca_infeasible_close():
     )
     metadata: dict = {}
     _apply_stage_gate_side_effects(case, {"mitigation_verified"}, "it held", metadata)
-    assert (
-        _keys(metadata["override_suggestions"])
-        == [terminal_offer_key(case.pending_transition)] * 2
-    )
+    assert case.offer_record.open.basis == "rca_infeasible"
+    assert _keys(project_offers(case).pair) == [case.offer_record.open.proposal_id] * 2
 
 
 async def _deferred_disposition(*, resolvable: bool):
@@ -309,9 +301,7 @@ async def _deferred_disposition(*, resolvable: bool):
     result = await _engine(response).process_turn(
         case=case, user_message="the platform team ships it", redaction_ctx=None
     )
-    assert case.pending_transition["to_state"] == (
-        "resolved" if resolvable else "closed"
-    )
+    assert case.offer_record.open.kind == ("resolve" if resolvable else "close")
     _served_the_standing_offer(result, case)
 
 
@@ -321,7 +311,7 @@ async def _resolution_backstop():
     result = await _engine().process_turn(
         case=case, user_message="it's gone now", redaction_ctx=None
     )
-    assert case.pending_transition["to_state"] == "resolved"
+    assert case.offer_record.open.kind == "resolve"
     _served_the_standing_offer(result, case)
 
 
@@ -345,11 +335,11 @@ async def _click_close_on_a_resolvable_case():
             intent_type="confirmation",
             intent_data={
                 "value": True,
-                "proposal_id": terminal_offer_key(case.pending_transition),
+                "proposal_id": case.offer_record.open.proposal_id,
             },
             redaction_ctx=None,
         )
-    assert case.pending_transition["to_state"] == "resolved"
+    assert case.offer_record.open.kind == "resolve"
     _served_the_standing_offer(result, case)
 
 
@@ -364,58 +354,29 @@ async def _close_picked_from_the_menu():
             intent_data={"to_state": "closed"},
             redaction_ctx=None,
         )
-        assert case.pending_transition["to_state"] == (
-            "resolved" if resolvable else "closed"
-        )
+        assert case.offer_record.open.kind == ("resolve" if resolvable else "close")
         _served_the_standing_offer(result, case)
 
 
 async def _typed_yes_on_a_pending_close_pivots():
-    """transitions.py (step 0 of check_automatic_transitions) and
-    turn_completion.py's close_pivoted_to_resolve branch. Step 0's confirm arm
-    is reached only by a direct call: 0b answers or withdraws every
-    non-needs_info pending before the LLM runs."""
+    """transition_turns.py: a bare typed "yes" accepts the close at 0b, and the
+    INV-37 re-check pivots it to a resolve offer whose pair is served."""
     case = _pending("closed", cause=True, absence=True)
-    engine = _engine()
-    metadata: dict = {}
     with patch.object(terminal_transitions, "close_pivoted_to_resolve_total"):
-        await engine.transitions.check_automatic_transitions(case, metadata, "yes")
-    assert metadata.get("close_pivoted_to_resolve") is True
-    assert (
-        _keys(metadata["override_suggestions"])
-        == [terminal_offer_key(case.pending_transition)] * 2
-    )
-
-    reply = await _compose_turn_reply(
-        None,
-        None,
-        _repo(),
-        case_updated=case,
-        follow_ups=[],
-        metadata={"close_pivoted_to_resolve": True},
-        plan=TurnCommitPlan(),
-        redaction_ctx=None,
-        response_obj=InvestigationResponse_Diagnosis(
-            agent_response="Noted.", state_updates={}
-        ),
-        stagnation_str="",
-        summary_failed=False,
-        summary_payload=None,
-        validation_repairs=[],
-    )
-    _served_the_standing_offer(reply, case)
+        result = await _engine().process_turn(
+            case=case, user_message="yes", redaction_ctx=None
+        )
+    assert case.offer_record.open.kind == "resolve"
+    assert case.offer_record.open.pivoted_from_close
+    _served_the_standing_offer(result, case)
 
 
 async def _reopen_chip_click():
     """transition_turns.py: the "Mark it resolved" chip proposes, and the pair
     names the offer it just made (#1895)."""
     case = _investigating(cause=True, absence=True)
-    case.progress.deferred_disposition_declined_signatures = [
-        terminal_transitions.deferred_disposition_signature(
-            case, terminal_transitions.ClosureReadiness.SUGGEST_RESOLVE
-        )
-    ]
-    chip = declined_resolve_card(case)
+    with_declined_offer(case, kind="resolve", basis="backstop")
+    chip = project_offers(case).reopen_chip
     result = await _engine().process_turn(
         case=case,
         user_message=chip["payload"],
@@ -423,7 +384,7 @@ async def _reopen_chip_click():
         intent_data=dict(chip["intent"]),
         redaction_ctx=None,
     )
-    assert case.pending_transition["to_state"] == "resolved"
+    assert case.offer_record.open.kind == "resolve"
     _served_the_standing_offer(result, case)
 
 
@@ -443,22 +404,24 @@ async def _llm_proposes_a_transition():
             metadata=metadata,
             user_message="The fix worked.",
         )
+        assert case.offer_record.open.basis == "model"
         assert (
-            _keys(metadata["override_suggestions"])
-            == [terminal_offer_key(case.pending_transition)] * 2
+            _keys(project_offers(case).pair) == [case.offer_record.open.proposal_id] * 2
         )
 
 
 async def _needs_info_answered():
-    """turn_completion.py: a needs_info RESOLVED offer, once answered — met
-    (the resolve pair) or not (the pivot to a close pair)."""
+    """transitions.py (step 0) and turn_completion.py: a resolution request,
+    re-checked on the next turn — met (the resolve pair) or not (the close
+    pair, #656's loop bound)."""
     for met in (True, False):
-        case = _pending("resolved", cause=True, absence=met)
-        case.pending_transition["needs_info"] = True
+        case = _investigating(cause=True, absence=met)
+        case.offer_record = remember_resolve_request(case, ["root cause"])
+        case.current_turn += 1
         result = await _engine().process_turn(
             case=case, user_message="here is how we verified it", redaction_ctx=None
         )
-        assert case.pending_transition["to_state"] == ("resolved" if met else "closed")
+        assert case.offer_record.open.kind == ("resolve" if met else "close")
         _served_the_standing_offer(result, case)
 
 
@@ -485,7 +448,7 @@ def _revision_case() -> Case:
         text=REVISED,
         evidence_ids=[],
         basis="the gateway log shows 503s only from eu-west",
-        offer_key=revision_offer_key(REVISED),
+        wording_key=revision_offer_key(REVISED),
     )
     return case
 
@@ -495,7 +458,7 @@ async def _revision_pending_turn():
     case = _revision_case()
     gate, pair = engine_owned_affordances(case)
     assert gate == "statement_revision"
-    assert _keys(pair) == [revision_offer_key(REVISED)] * 2
+    assert _keys(pair) == [case.offer_record.open.proposal_id] * 2
 
 
 async def _stale_click_on_the_revision():
@@ -508,7 +471,10 @@ async def _stale_click_on_the_revision():
         intent_data={"value": True, "proposal_id": "revision:0000000000000000"},
         redaction_ctx=None,
     )
-    assert _keys(result["suggested_follow_ups"]) == [revision_offer_key(REVISED)] * 2
+    assert (
+        _keys(result["suggested_follow_ups"])
+        == [case.offer_record.open.proposal_id] * 2
+    )
 
 
 async def _false_alarm_close():
@@ -517,10 +483,8 @@ async def _false_alarm_close():
     invalidate_problem(case, evidence_ids=[], basis="nothing failed in that window.")
     metadata = {"problem_invalidated_this_turn": True}
     _maybe_propose_false_alarm_close(case, metadata)
-    assert (
-        _keys(metadata["override_suggestions"])
-        == [terminal_offer_key(case.pending_transition)] * 2
-    )
+    assert case.offer_record.open.basis == "false_alarm"
+    assert _keys(project_offers(case).pair) == [case.offer_record.open.proposal_id] * 2
 
 
 DRIVERS = [
@@ -549,7 +513,7 @@ async def test_every_site_builds_its_pair_with_its_offer_standing(built):
         await drive()
 
     unkeyed = sorted({site for site, key in built if not key})
-    assert unkeyed == [], f"pairs built with no offer standing, at {unkeyed}"
+    assert unkeyed == [], f"Gate 1 pairs built with no statement, at {unkeyed}"
     unreached = sorted(set(_census()) - {site for site, _ in built})
     assert unreached == [], (
         f"census sites no driver reached: {unreached} — the test would pass "

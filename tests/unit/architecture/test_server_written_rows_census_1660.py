@@ -182,17 +182,19 @@ OTHER_READERS: dict[tuple[str, str], tuple[int, str]] = {
         "faultmaven/modules/case/infrastructure/sqlite_case_repository/repository.py",
         "SQLiteCaseRepository.save",
     ): (2, _PERSISTENCE),
-    # Whole-record dumps into storage: the turn records a case row carries.
+    # Whole-record dumps into storage: the turn records a case row carries,
+    # and the offer record (#2379), which holds no message row or summary
+    # (read as a case dump because its receiver is ``case.offer_record``).
     # ``_case_record_params`` reads no instance state, so the #1707 SQLite
     # split moved it to a module function in ``rows.py``.
     (
         "faultmaven/modules/case/infrastructure/sqlite_case_repository/rows.py",
         "_case_record_params",
-    ): (1, _PERSISTENCE),
+    ): (2, _PERSISTENCE),
     (
         "faultmaven/modules/case/infrastructure/postgresql_hybrid_case_repository/rows.py",
         "_case_record_params",
-    ): (1, _PERSISTENCE),
+    ): (2, _PERSISTENCE),
     # The call's ``messages`` keyword, and (#1800) the converted request
     # messages scanned for echoed thinking blocks before a thinking-off control.
     (

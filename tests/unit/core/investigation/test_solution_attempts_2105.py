@@ -28,9 +28,11 @@ from faultmaven.core.investigation.milestone_engine.statement_revision import (
     confirm_revision,
     staged_work_summary,
 )
+from faultmaven.core.investigation.offers import restage_revision
 from faultmaven.core.investigation.problem_status import (
     decline_revision,
     invalidate_problem,
+    pending_revision,
     propose_revision,
 )
 from faultmaven.core.investigation.progress_monitor import ProgressMonitor
@@ -66,12 +68,15 @@ from faultmaven.core.investigation.terminal_transitions import (
 )
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.modules.case.contracts import (
+    AnswerVia,
     Case,
     CauseState,
     ConfidenceLevel,
     EvidenceStance,
     HypothesisState,
     InvestigationActionType,
+    Offer,
+    OfferRecord,
     PendingRevision,
     ProblemStatus,
     ProblemVerification,
@@ -90,6 +95,7 @@ from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.ro
 from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
     SQLiteCaseRepository,
 )
+from tests.case_builders import with_open_offer
 from tests.unit.core.investigation.fix_turns_2039 import (
     _CAUSE_GONE,
     _GONE,
@@ -216,14 +222,14 @@ def _revise(case):
         text="checkout returns 503 under peak load",
         evidence_ids=[case.evidence[-1].evidence_id],
         basis="the 503s come back only at peak",
-        offer_key="rev_2105",
+        wording_key="revision:rev_2105",
     )
 
 
 async def _confirm(eng, case, turn) -> dict:
     case.current_turn = turn
     meta: dict = {}
-    await confirm_revision(eng.responses, case, meta)
+    await confirm_revision(eng.responses, case, meta, via=AnswerVia.CLICK)
     return meta
 
 
@@ -551,7 +557,7 @@ async def test_an_unjustified_second_fix_registers_while_a_transition_pends():
     eng, case = await _relapsed()
     await _turn(eng, case, 14, solutions_to_add=[_fix(_SECOND)])
     second = _solutions(case)[-1]
-    case.pending_transition = {"target_state": "resolved", "proposed_at_turn": 14}
+    with_open_offer(case, kind="resolve", basis="model")
 
     await _process(
         eng, case, 15, justified=False, milestones=_accepted(second.action_id)
@@ -1026,9 +1032,7 @@ async def test_a_fix_withdrawn_before_the_hold_keeps_the_ruled_refusal(
 
     said = "was withdrawn while its root cause" if licensed else _LICENSE
     assert f"{x.action_id} {said}" in meta["system_feedback"]
-    assert all(
-        b.held_fix is None for b in case.problem_verification.pending_revision.staged
-    )
+    assert all(b.held_fix is None for b in pending_revision(case).staged)
 
 
 async def test_two_held_registrations_give_two_windows_and_a_decline_names_them():
@@ -1050,7 +1054,7 @@ async def test_two_held_registrations_give_two_windows_and_a_decline_names_them(
         solutions_to_add=[_fix(_SECOND)],
         milestones=_accepted("new_index_0"),
     )
-    pending = case.problem_verification.pending_revision
+    pending = pending_revision(case)
     assert "2 reported fix execution(s)" in staged_work_summary(pending)
 
     await _confirm(eng, case, 8)
@@ -1073,7 +1077,7 @@ async def test_a_declined_revision_discards_the_carried_registration():
     )
     case.current_turn = 7
 
-    declined = decline_revision(case)
+    declined = decline_revision(case, via=AnswerVia.CLICK)
 
     assert "1 reported fix execution(s)" in staged_work_summary(declined)
     assert case.action_attempts == []
@@ -1114,7 +1118,7 @@ async def test_a_bundle_that_no_longer_validates_drops_its_carried_registration(
         solutions_to_add=[_fix(_FIRST)],
         milestones=_accepted("new_index_0"),
     )
-    (bundle,) = case.problem_verification.pending_revision.staged
+    (bundle,) = pending_revision(case).staged
     assert bundle.held_fix == _FIRST
     bundle.updates["solutions_to_add"] = [{"description": None}]
 
@@ -1157,9 +1161,7 @@ async def test_a_bare_acceptance_on_a_hold_after_a_first_fix_names_the_held_fix(
     assert "set accepted_action_ref to new_index_1 with solution_accepted" in (
         meta["system_feedback"]
     )
-    assert all(
-        b.held_fix is None for b in case.problem_verification.pending_revision.staged
-    )
+    assert all(b.held_fix is None for b in pending_revision(case).staged)
 
 
 async def test_a_bundle_staged_with_the_milestone_replays_as_a_live_acceptance():
@@ -1168,14 +1170,18 @@ async def test_a_bundle_staged_with_the_milestone_replays_as_a_live_acceptance()
     compatibility: it replays as a live bare acceptance."""
     eng, case = _identified()
     _revise(case)
-    case.problem_verification.pending_revision.staged.append(
-        StagedCauseWork(
-            turn=6,
-            updates={
-                "solutions_to_add": [_fix(_FIRST).model_dump(mode="json")],
-                "milestones": {"solution_accepted": True},
-            },
-        )
+    case.offer_record = restage_revision(
+        case,
+        (
+            *pending_revision(case).staged,
+            StagedCauseWork(
+                turn=6,
+                updates={
+                    "solutions_to_add": [_fix(_FIRST).model_dump(mode="json")],
+                    "milestones": {"solution_accepted": True},
+                },
+            ),
+        ),
     )
 
     await _confirm(eng, case, 7)
@@ -1282,9 +1288,9 @@ async def test_a_reworded_revision_keeps_the_hold_start():
         text="checkout returns 503 under peak load only",
         evidence_ids=[case.evidence[-1].evidence_id],
         basis="reworded",
-        offer_key="rev_2105_b",
+        wording_key="revision:rev_2105_b",
     )
-    assert case.problem_verification.pending_revision.held_since_turn == 5
+    assert pending_revision(case).held_since_turn == 5
 
     await _turn(eng, case, 8, milestones=_accepted(x.action_id))
     await _confirm(eng, case, 9)
@@ -1301,11 +1307,8 @@ async def test_the_skip_is_read_when_the_gate_decides():
     invalidate_problem(
         case, evidence_ids=[case.evidence[-1].evidence_id], basis="never present"
     )
-    case.pending_transition = {
-        "to_state": "closed",
-        "closure_reason": "closed_false_alarm",
-        "proposed_at_turn": 13,
-    }
+    with_open_offer(case, kind="close", basis="model")
+    assert case.offer_record.open.closure_reason == "closed_false_alarm"
 
     meta = await _process(
         eng,
@@ -1320,7 +1323,7 @@ async def test_the_skip_is_read_when_the_gate_decides():
         milestones=_accepted("new_index_0"),
     )
 
-    assert case.pending_transition is None
+    assert case.offer_record.open is None
     assert len(case.action_attempts) == 1
     assert "Milestones ['solution_accepted'] were NOT recorded" in (
         meta["system_feedback"]
@@ -1636,7 +1639,7 @@ async def test_a_fix_carried_in_this_revision_is_neither_named_nor_carried_again
 
     assert "new_index_0" not in bare.get("system_feedback", "")
     assert "held until the user confirms" not in named.get("system_feedback", "")
-    pending = case.problem_verification.pending_revision
+    pending = pending_revision(case)
     assert "1 reported fix execution(s)" in staged_work_summary(pending)
     await _confirm(eng, case, 17)
     assert _accepted_turns(case) == [6, 14]
@@ -1694,22 +1697,29 @@ async def _two_attempts_and_a_carry() -> Case:
     record.proposed_actions = list(case.proposed_actions)
     record.action_attempts = list(case.action_attempts)
     record.problem_verification = ProblemVerification(
-        symptom_statement="checkout returns 503",
-        pending_revision=PendingRevision(
-            text="checkout returns 503 under peak load",
-            proposed_at_turn=15,
-            staged=[
-                StagedCauseWork(
-                    turn=15, held_fix=_RESTART, held_fix_message="I restarted it"
-                )
-            ],
-        ),
+        symptom_statement="checkout returns 503"
+    )
+    record.offer_record = OfferRecord(
+        open=Offer(
+            proposal_id="0123456789abcdef",
+            kind="revision",
+            basis="revision",
+            revision=PendingRevision(
+                text="checkout returns 503 under peak load",
+                proposed_at_turn=15,
+                staged=(
+                    StagedCauseWork(
+                        turn=15, held_fix=_RESTART, held_fix_message="I restarted it"
+                    ),
+                ),
+            ),
+        )
     )
     return record
 
 
 def _attempt_record(case: Case):
-    (bundle,) = case.problem_verification.pending_revision.staged
+    (bundle,) = pending_revision(case).staged
     return (
         [(a.action_id, a.state, a.accepted_in_turn) for a in case.proposed_actions],
         [(t.action_id, t.attempt_id) for t in case.action_attempts],

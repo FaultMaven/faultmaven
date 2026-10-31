@@ -8,12 +8,12 @@ terminally recorded as closed-unresolved.
 
 That pivot already fires at proposal time (``assess_closure_readiness``
 → SUGGEST_RESOLVE, wired in the LLM-emit and dropdown paths). This suite
-pins the confirm-time guard in ``confirm_pending_transition``: a
-qualifying ``causal_absence`` can land AFTER a close was proposed, so the
-guard re-checks at the single execution chokepoint immediately before the
-close commits. On a hit it replaces the pending close with a RESOLVED
-proposal and reports that nothing terminal executed (returns False) — the
-caller re-presents the resolve confirmation.
+pins the confirm-time guard in ``confirm_open_offer``: a qualifying
+``causal_absence`` can land AFTER a close was offered, so the guard re-checks
+at the single execution chokepoint immediately before the close commits. On a
+hit it answers the close ``pivoted``, opens a RESOLVED offer in its place and
+reports that nothing terminal executed (returns False) — the caller
+re-presents the resolve confirmation.
 
 "resolve = close WITH resolution; close = close WITHOUT resolution": it is
 always safe to resolve a resolvable case whichever terminal the user asked
@@ -24,27 +24,22 @@ always a valid disposition), so the asymmetry stays principled.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from faultmaven.core.investigation import terminal_transitions
-from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
-from faultmaven.core.investigation.milestone_engine.terminal_replies import (
-    _resolution_confirmation_suggestions,
-)
-from faultmaven.core.investigation.milestone_engine.transitions import (
-    TransitionManager,
-)
 from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommitPlan
+from faultmaven.core.investigation.offer_projection import project_offers
 from faultmaven.core.investigation.terminal_transitions import (
     ClosureReadiness,
     assess_closure_readiness,
-    confirm_pending_transition,
-    propose_transition,
+    confirm_open_offer,
 )
 from faultmaven.modules.case.contracts import (
+    AnswerKind,
+    AnswerVia,
     Case,
     CaseState,
     EvidenceCategory,
@@ -57,7 +52,7 @@ from faultmaven.modules.case.domain.models.conclusion import (
 )
 from faultmaven.modules.case.domain.models.evidence import Evidence
 from faultmaven.modules.case.domain.models.solution import Solution, SolutionType
-from tests.case_builders import investigating_case
+from tests.case_builders import investigating_case, with_open_offer
 
 pytestmark = pytest.mark.unit
 
@@ -141,9 +136,12 @@ def _resolvable_case_with_pending_close() -> Case:
     _attach_confirmation(case)
     # Precondition sanity: this case IS resolvable.
     assert assess_closure_readiness(case).verdict == ClosureReadiness.SUGGEST_RESOLVE
-    propose_transition(case, to_state="closed", summary="Closing as unresolved.")
-    assert case.pending_transition["to_state"] == "closed"
+    with_open_offer(case, kind="close", summary="Closing as unresolved.")
     return case
+
+
+def _confirm(case: Case) -> bool:
+    return confirm_open_offer(case, case.effective_driver_id, via=AnswerVia.CLICK)
 
 
 # ---------------------------------------------------------------------------
@@ -155,20 +153,22 @@ def test_confirm_pending_close_pivots_to_resolved_when_resolvable():
     case = _resolvable_case_with_pending_close()
 
     with patch.object(terminal_transitions, "close_pivoted_to_resolve_total") as ctr:
-        executed = confirm_pending_transition(case, "user_test")
+        executed = _confirm(case)
         ctr.inc.assert_called_once()
 
     # Nothing terminal committed.
     assert executed is False
     assert case.state == CaseState.INVESTIGATING
-    # The pending transition was replaced with a RESOLVED proposal so the
-    # caller re-presents the resolve confirmation.
-    assert case.pending_transition is not None
-    assert case.pending_transition["to_state"] == "resolved"
+    # The close was answered ``pivoted`` and a RESOLVED offer opened in its
+    # place, so the caller re-presents the resolve confirmation.
+    assert [a.answer for a in case.offer_record.answers] == [AnswerKind.PIVOTED]
+    assert case.offer_record.open is not None
+    assert case.offer_record.open.kind == "resolve"
+    assert case.offer_record.open.pivoted_from_close
     # The pivot stores the canonical SUGGEST_RESOLVE message as the pending's
     # summary — the ONE source of truth the callers re-present (matching the
     # proposal-time pivot), not a re-derived string.
-    assert case.pending_transition["summary"] == assess_closure_readiness(case).message
+    assert case.offer_record.open.summary == assess_closure_readiness(case).message
 
 
 def test_pivot_message_handles_out_of_band_fix_without_record():
@@ -180,14 +180,14 @@ def test_pivot_message_handles_out_of_band_fix_without_record():
     case.progress.problem_status = ProblemStatus.VERIFIED
     _attach_confirmation(case)  # no root cause, no solution on record
     assert assess_closure_readiness(case).verdict == ClosureReadiness.SUGGEST_RESOLVE
-    propose_transition(case, to_state="closed", summary="Closing as unresolved.")
+    with_open_offer(case, kind="close", summary="Closing as unresolved.")
 
     with patch.object(terminal_transitions, "close_pivoted_to_resolve_total"):
-        executed = confirm_pending_transition(case, "user_test")
+        executed = _confirm(case)
 
     assert executed is False
-    assert case.pending_transition["to_state"] == "resolved"
-    msg = case.pending_transition["summary"]
+    assert case.offer_record.open.kind == "resolve"
+    msg = case.offer_record.open.summary
     assert "qualifies for **resolved**" in msg
     assert "Not yet identified" not in msg
 
@@ -200,15 +200,15 @@ def test_confirm_pending_close_executes_when_not_resolvable():
     _attach_solution(case)
     # No causal_absence → not resolvable → HAS_SUBSTANCE, not SUGGEST_RESOLVE.
     assert assess_closure_readiness(case).verdict != ClosureReadiness.SUGGEST_RESOLVE
-    propose_transition(case, to_state="closed", summary="Closing as stabilized.")
+    with_open_offer(case, kind="close", summary="Closing as stabilized.")
 
     with patch.object(terminal_transitions, "close_pivoted_to_resolve_total") as ctr:
-        executed = confirm_pending_transition(case, "user_test")
+        executed = _confirm(case)
         ctr.inc.assert_not_called()
 
     assert executed is True
     assert case.state == CaseState.CLOSED
-    assert case.pending_transition is None
+    assert case.offer_record.open is None
 
 
 def test_confirm_pending_resolve_is_unaffected_by_the_guard():
@@ -218,43 +218,48 @@ def test_confirm_pending_resolve_is_unaffected_by_the_guard():
     _attach_root_cause(case)
     _attach_solution(case)
     _attach_confirmation(case)
-    propose_transition(case, to_state="resolved", summary="Resolving.")
+    with_open_offer(case, kind="resolve", summary="Resolving.")
 
     with patch.object(terminal_transitions, "close_pivoted_to_resolve_total") as ctr:
-        executed = confirm_pending_transition(case, "user_test")
+        executed = _confirm(case)
         ctr.inc.assert_not_called()
 
     assert executed is True
     assert case.state == CaseState.RESOLVED
-    assert case.pending_transition is None
+    assert case.offer_record.open is None
 
 
-async def test_check_automatic_transitions_surfaces_resolve_confirmation_on_pivot():
-    """Engine wiring: a bare-'yes' confirm of a pending CLOSE on a resolvable
-    case pivots to RESOLVED — the fallback confirm branch must NOT report a
-    terminal transition, and must surface the resolve DECIDE pair for the
-    re-presented confirmation."""
+async def test_a_bare_yes_on_the_close_surfaces_the_resolve_confirmation():
+    """Engine wiring: a bare "yes" to an open CLOSE on a resolvable case is
+    answered at the engine's gate (0b) and pivots to RESOLVED — the turn
+    reports no terminal transition, never reaches the model, and surfaces the
+    resolve DECIDE pair for the re-presented confirmation."""
     case = _resolvable_case_with_pending_close()
-    eng = MilestoneEngine.__new__(MilestoneEngine)
-    eng.deps = EngineDeps()
-    eng.transitions = TransitionManager(deps=eng.deps, kb_prefetcher=None)
-    metadata: dict = {}
+    repo = MagicMock()
+    repo.save = AsyncMock(side_effect=lambda c, **_: c)
+    repo.get = AsyncMock(return_value=None)
+    engine = MilestoneEngine(MagicMock(), repo, investigation_tools=MagicMock())
+    engine.generator.generate_structured_output = AsyncMock(
+        side_effect=AssertionError("the gate answers a bare yes")
+    )
+    case.current_turn += 1
 
     with patch.object(terminal_transitions, "close_pivoted_to_resolve_total"):
-        updated = await eng.transitions.check_automatic_transitions(
-            case, metadata, "yes"
+        result = await engine.process_turn(
+            case=case, user_message="yes", redaction_ctx=None
         )
 
     # No terminal transition; the case stays INVESTIGATING with a RESOLVED
-    # proposal pending.
+    # offer open.
+    updated = result["case_updated"]
     assert updated.state == CaseState.INVESTIGATING
-    assert updated.pending_transition["to_state"] == "resolved"
-    assert metadata.get("status_transitioned") is not True
-    assert metadata.get("close_pivoted_to_resolve") is True
-    assert metadata["override_suggestions"] == _resolution_confirmation_suggestions(
-        updated
+    assert updated.offer_record.open.kind == "resolve"
+    assert result["metadata"].get("status_transitioned") is not True
+    assert result["agent_response"] == updated.offer_record.open.summary
+    assert result["suggested_follow_ups"] == project_offers(updated).pair
+    assert [card["label"] for card in result["suggested_follow_ups"]][0] == (
+        "Yes, mark as resolved"
     )
-    assert metadata["closure_readiness_verdict"] == ClosureReadiness.SUGGEST_RESOLVE
 
 
 def test_pivot_scoped_to_investigating_never_proposes_invalid_inquiry_edge():
@@ -267,12 +272,12 @@ def test_pivot_scoped_to_investigating_never_proposes_invalid_inquiry_edge():
     _attach_root_cause(case)
     _attach_solution(case)
     _attach_confirmation(case)
-    propose_transition(case, to_state="closed", summary="Inquiry-only close.")
+    with_open_offer(case, kind="close", summary="Inquiry-only close.")
 
     with patch.object(terminal_transitions, "close_pivoted_to_resolve_total") as ctr:
-        executed = confirm_pending_transition(case, "user_test")
+        executed = _confirm(case)
         ctr.inc.assert_not_called()
 
     assert executed is True
     assert case.state == CaseState.CLOSED
-    assert case.pending_transition is None
+    assert case.offer_record.open is None

@@ -51,6 +51,7 @@ from faultmaven.modules.agent.domain.services.out_of_band import (
 from faultmaven.modules.agent.domain.services.query_classifier import classify_query
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
+from tests.case_builders import with_open_offer
 
 pytestmark = pytest.mark.unit
 
@@ -405,7 +406,7 @@ class TestControls:
     ):
         ledger = InMemoryTurnLedger()
         service = _service(engine, recording_case_repository, ledger, verdict="2")
-        case.pending_transition = {"to_state": "resolved"}
+        with_open_offer(case, kind="resolve", basis="model")
         await _turn(
             service, recording_case_repository, case, query="write me a haiku instead"
         )
@@ -440,7 +441,6 @@ class TestControls:
         # OUT_OF_BAND, so all three assertions move together.
         service = _service(engine, recording_case_repository, ledger, verdict="2")
         case.state = CaseState.INQUIRY
-        case.pending_transition = None
         case.inquiry.problem_statement_confirmed = False
         case.inquiry.problem_statement_confirmed_at = None
         service.intent_resolver.resolve = AsyncMock(
@@ -539,7 +539,6 @@ class TestControls:
             turn_cap=_cap(InMemoryTurnLedger()),
         )
         case.state = CaseState.INQUIRY
-        case.pending_transition = None
         case.inquiry.problem_statement_confirmed = False
         case.inquiry.problem_statement_confirmed_at = None
         # An aside or an orientation turn stored no intent-bearing card.

@@ -1,9 +1,9 @@
 """Tests for `engine_owned_affordances`: the consolidated gate-affordance predicate.
 
-`engine_owned_affordances(case, metadata)` is the single source of truth for
+`engine_owned_affordances(case)` is the single source of truth for
 "when is a state-machine gate pending, and what is the canonical clickable
 affordance pair?" It replaces the previously-scattered handshake-deferred /
-override_suggestions branches in the response builder with one pure function.
+disposition branches in the response builder with one pure function.
 
 The architectural commitment these tests pin: **intent ↔ gate.** When a gate
 is pending, the engine owns the affordance pair and attaches intent metadata.
@@ -31,6 +31,7 @@ from faultmaven.core.investigation.milestone_engine.affordances import (
 from faultmaven.core.investigation.milestone_engine.transition_consent import (
     gate1_offer_key,
 )
+from faultmaven.core.investigation.offer_projection import project_offers
 from faultmaven.core.investigation.verification_status import (
     VerificationStatus,
     assess_verification_status,
@@ -44,7 +45,7 @@ from faultmaven.modules.case.domain.models.problem import (
     ProblemConfirmation,
     UrgencyLevel,
 )
-from tests.case_builders import investigating_case, make_case
+from tests.case_builders import investigating_case, make_case, with_open_offer
 
 _FILE_ID = "file_0123456789ab"
 
@@ -173,25 +174,18 @@ class TestEngineOwnedAffordances:
         )
         assert all(s["intent"]["proposal_id"] == key for s in affordances)
 
-    def test_override_suggestions_takes_priority(self):
-        """Imperative override (set by propose_transition during turn processing)
-        wins over case-state-derived gates. Maps to the ``disposition`` gate
-        identifier for telemetry.
+    def test_an_open_offer_takes_priority(self):
+        """An open resolve or close offer wins over case-state-derived gates;
+        its pair comes from the offer projection. Maps to the
+        ``disposition`` gate identifier for telemetry.
         """
         case = _inquiry_case(problem_statement_confirmed=False)
-        custom = [
-            {
-                "label": "Custom override",
-                "action_type": "DECIDE",
-                "payload": "override",
-                "intent": {"type": "confirmation", "confirmation_value": True},
-            }
-        ]
-        result = engine_owned_affordances(case, {"override_suggestions": custom})
+        with_open_offer(case, kind="close", basis="menu")
+        result = engine_owned_affordances(case)
         assert result is not None
         gate, affordances = result
         assert gate == "disposition"
-        assert affordances == custom
+        assert affordances == project_offers(case).pair
 
     def test_no_gate_in_investigating_even_after_symptom_verified(self):
         """Post-redesign there is no Gate 2 after symptom verification —
@@ -312,12 +306,12 @@ class TestInsufficientEvidenceHandoff:
         # A pending state-machine handshake outranks the insufficient-evidence
         # reading — the handoff sits LAST in the consolidator.
         case = _insufficient_evidence_case()
-        custom = [{"label": "Confirm close", "action_type": "DECIDE", "payload": "x"}]
-        result = engine_owned_affordances(case, {"override_suggestions": custom})
+        with_open_offer(case, kind="close", basis="menu")
+        result = engine_owned_affordances(case)
         assert result is not None
         gate, affordances = result
         assert gate == "disposition"
-        assert affordances == custom
+        assert affordances == project_offers(case).pair
 
     def test_handoff_affordances_keep_engaging_and_do_not_steer_to_close(self):
         # The handoff invites discriminating data or a fresh angle (keep-engaging,
@@ -473,12 +467,10 @@ class TestNotYetProductivePullback:
         # A pending state-machine handshake outranks the vacuum reading — the
         # pull-back sits LAST in the consolidator.
         case = _hypothesis_vacuum_case()
-        custom = [{"label": "Confirm close", "action_type": "DECIDE", "payload": "x"}]
-        gate, affordances = engine_owned_affordances(
-            case, {"override_suggestions": custom}
-        )
+        with_open_offer(case, kind="close", basis="menu")
+        gate, affordances = engine_owned_affordances(case)
         assert gate == "disposition"
-        assert affordances == custom
+        assert affordances == project_offers(case).pair
 
     def test_pullback_affordances_keep_engaging_and_do_not_steer_to_close(self):
         # The pull-back re-elicits the symptom / a place to look (keep-engaging,

@@ -42,9 +42,6 @@ from faultmaven.core.investigation.milestone_engine.progress import (
     check_if_progress_made,
     score_progress,
 )
-from faultmaven.core.investigation.milestone_engine.transition_consent import (
-    terminal_offer_key,
-)
 from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
     StructuredOutputMode,
@@ -52,7 +49,7 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
 )
 from faultmaven.models.interfaces import ILLMProvider
 from faultmaven.modules.case.contracts import Case, CaseState
-from tests.case_builders import inquiry_case
+from tests.case_builders import inquiry_case, with_open_offer
 
 
 class _StubLLM(ILLMProvider):
@@ -449,7 +446,7 @@ def _terminal_confirm_engine():
 def _yes_click(case) -> dict:
     """The Yes card's click on ``case``'s standing offer, which it names
     (#1812)."""
-    return {"value": True, "proposal_id": terminal_offer_key(case.pending_transition)}
+    return {"value": True, "proposal_id": case.offer_record.open.proposal_id}
 
 
 def _case_awaiting_confirmation(to_state: str):
@@ -489,18 +486,12 @@ def _case_awaiting_confirmation(to_state: str):
     case.state = CaseState.INVESTIGATING
     case.progress = InvestigationProgress()
     case.current_turn = 7
-    pending = {
-        "to_state": to_state,
-        "summary": f"Shall we mark this {to_state}?",
-        "evidence_ids": [],
-        "proposed_at": datetime.now(UTC).isoformat(),
-    }
-    if to_state == "closed":
-        # ``propose_transition`` derives and stores this; the executor reads it
-        # unguarded, so a hand-built pending without it never reaches the branch
-        # under test.
-        pending["closure_reason"] = "solution_deferred"
-    case.pending_transition = pending
+    with_open_offer(
+        case,
+        kind={"resolved": "resolve", "closed": "close"}[to_state],
+        basis="model",
+        summary=f"Shall we mark this {to_state}?",
+    )
     return case
 
 

@@ -94,7 +94,7 @@ def _make_engine(prose: str) -> MilestoneEngine:
 async def test_overclaim_notice_is_appended_to_reply_and_turn_summary():
     engine = _make_engine(_OVERCLAIM_PROSE)
     case = _make_investigating_case()
-    assert case.pending_transition is None  # precondition: plain variant fires
+    assert case.offer_record.open is None  # precondition: plain variant fires
 
     result = await engine.process_turn(
         case=case,

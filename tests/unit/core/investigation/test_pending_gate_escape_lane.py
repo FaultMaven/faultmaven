@@ -38,11 +38,7 @@ from faultmaven.core.investigation.milestone_engine.transition_consent import (
     _user_declines_transition,
     confirmation_token_class,
 )
-from faultmaven.core.investigation.terminal_transitions import (
-    closure_verdict,
-    deferred_disposition_signature,
-)
-from faultmaven.modules.case.contracts import ProblemStatus
+from faultmaven.modules.case.contracts import AnswerKind, ProblemStatus
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.conclusion import (
     ConfidenceLevel,
@@ -57,6 +53,7 @@ from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.domain.models.problem import ProblemVerification
 from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 from faultmaven.modules.case.domain.models.solution import Solution, SolutionType
+from tests.case_builders import with_open_offer
 
 _FILE_ID = "file_0123456789ab"
 
@@ -92,12 +89,11 @@ def _resolution_ready_case() -> Case:
     """An INVESTIGATING case carrying a qualifying causal-absence row.
 
     ``SUGGEST_RESOLVE`` and ``assess_resolution_readiness`` READY both gate on
-    exactly this, so it is the only shape on which a SIGNED resolve offer can
-    exist — which is what makes it the only shape worth testing the
+    exactly this, so it is the only shape on which an engine resolve offer
+    can exist — which is what makes it the only shape worth testing the
     contradicting pick against.
     """
-    case = _investigating_case_with_pending_close()
-    case.pending_transition = None
+    case = _investigating_case_with_pending_close(offer=False)
     case.progress.problem_status = ProblemStatus.VERIFIED
     case.root_cause_conclusion = RootCauseConclusion(
         root_cause="etcd peer certificate expired on member 2",
@@ -137,7 +133,9 @@ def _resolution_ready_case() -> Case:
     return case
 
 
-def _investigating_case_with_pending_close() -> Case:
+def _investigating_case_with_pending_close(
+    *, basis: str = "model", offer: bool = True
+) -> Case:
     case = Case(
         case_id="case_5db5417fe445",
         title="Escape-lane regression",
@@ -157,13 +155,18 @@ def _investigating_case_with_pending_close() -> Case:
     case.inquiry.problem_statement_confirmed_at = datetime.now(UTC)
     case.state = CaseState.INVESTIGATING
     case.progress = InvestigationProgress()
-    case.pending_transition = {
-        "to_state": "closed",
-        "summary": "You can **close** the case instead.",
-        "evidence_ids": [],
-        "proposed_at": datetime.now(UTC).isoformat(),
-    }
+    if offer:
+        with_open_offer(
+            case,
+            kind="close",
+            basis=basis,
+            summary="You can **close** the case instead.",
+        )
     return case
+
+
+def _answers(case: Case) -> list:
+    return [answer.answer for answer in case.offer_record.answers]
 
 
 async def _run_expecting_fall_through(engine, case, message):
@@ -172,7 +175,7 @@ async def _run_expecting_fall_through(engine, case, message):
     MilestoneEngineError; the sentinel inside proves the seam was hit."""
     with pytest.raises(MilestoneEngineError):
         await engine.process_turn(case=case, user_message=message, redaction_ctx=None)
-    assert case.pending_transition is None, (
+    assert case.offer_record.open is None, (
         "the non-answer must withdraw the pending proposal before normal " "processing"
     )
     assert engine.generator.generate_structured_output.called
@@ -202,7 +205,7 @@ async def test_short_ambiguous_reply_re_presents_without_an_llm_call():
     )
 
     assert "Please select one of the options above" in result["agent_response"]
-    assert case.pending_transition is not None
+    assert case.offer_record.open is not None
     assert not engine.generator.generate_structured_output.called
 
 
@@ -239,7 +242,7 @@ async def test_confirm_word_prefix_does_not_confirm():
     )
 
     assert case.state.value != "closed"
-    assert case.pending_transition is not None
+    assert case.offer_record.open is not None
     assert "Please select one of the options above" in result["agent_response"]
 
 
@@ -256,7 +259,7 @@ async def test_decline_word_prefix_is_not_swallowed_as_bare_decline():
     )
 
     assert "remains open" not in result["agent_response"]
-    assert case.pending_transition is not None  # not cancelled by a fake decline
+    assert case.offer_record.open is not None  # not cancelled by a fake decline
     assert "Please select one of the options above" in result["agent_response"]
 
 
@@ -272,7 +275,7 @@ async def test_whitespace_only_message_never_reaches_llm():
     )
 
     assert not engine.generator.generate_structured_output.called
-    assert case.pending_transition is not None
+    assert case.offer_record.open is not None
     assert "Please select one of the options above" in result["agent_response"]
 
 
@@ -280,10 +283,10 @@ class TestWithdrawalRecordsTheEngineOffer:
     """Every withdrawal path must record the refusal, not only the explicit
     "no".
 
-    fm#1122 follow-up: a decline records the offer's ``justifying_signature``
-    so the deferred-implementation proposer stops re-firing from unchanged
-    state. The two OTHER paths that withdraw a standing offer — a deflection
-    that is not a gate answer, and a contradicting status pick — cancelled it
+    fm#1122 follow-up: a decline is recorded on the offer record so the
+    deferred-implementation proposer stops re-firing from unchanged state.
+    The two OTHER paths that withdraw a standing offer — a deflection that is
+    not a gate answer, and a contradicting status pick — cancelled it
     unrecorded. The deflection case is the sharper one: the turn falls through
     to normal processing, which reaches ``_maybe_propose_deferred_close``
     again in the SAME turn and re-takes the affordances the user just pushed
@@ -291,12 +294,8 @@ class TestWithdrawalRecordsTheEngineOffer:
     """
 
     @staticmethod
-    def _engine_proposed_case(signature: str = "SUGGEST_CLOSE|1|chain") -> Case:
-        case = _investigating_case_with_pending_close()
-        # Only the engine proposer writes this key; it is what a refusal is
-        # recorded against.
-        case.pending_transition["justifying_signature"] = signature
-        return case
+    def _engine_proposed_case() -> Case:
+        return _investigating_case_with_pending_close(basis="deferred")
 
     @pytest.mark.asyncio
     async def test_long_non_question_deflection_records_the_refusal(self):
@@ -311,9 +310,7 @@ class TestWithdrawalRecordsTheEngineOffer:
             "team will pick it up from there.",
         )
 
-        assert case.progress.deferred_disposition_declined_signatures == [
-            "SUGGEST_CLOSE|1|chain"
-        ]
+        assert _answers(case) == [AnswerKind.DECLINED]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -340,7 +337,7 @@ class TestWithdrawalRecordsTheEngineOffer:
 
         await _run_expecting_fall_through(engine, case, question)
 
-        assert case.progress.deferred_disposition_declined_signatures == []
+        assert _answers(case) == [AnswerKind.WITHDRAWN]
 
     @pytest.mark.asyncio
     async def test_a_second_short_non_answer_is_re_asked_and_records_nothing(self):
@@ -355,9 +352,9 @@ class TestWithdrawalRecordsTheEngineOffer:
                 case=case, user_message="hmm maybe", redaction_ctx=None
             )
             assert "Please select one of the options above" in result["agent_response"]
-            assert case.pending_transition is not None
+            assert case.offer_record.open is not None
 
-        assert case.progress.deferred_disposition_declined_signatures == []
+        assert _answers(case) == []
         assert not engine.generator.generate_structured_output.called
 
     @pytest.mark.asyncio
@@ -372,31 +369,28 @@ class TestWithdrawalRecordsTheEngineOffer:
         RESOLVE picked against with CLOSED, and on that shape the arm must
         record NOTHING.
 
-        Why: a signed resolve offer exists only where an engine proposer made
+        Why: an engine resolve offer exists only where an engine proposer made
         it, and both require SUGGEST_RESOLVE — which is exactly where INV-37
         pivots the close pick straight back to a resolve proposal, on this same
         turn. Recording "the user refused resolve" would log "not re-proposing
         until the justifying state changes" and then re-propose in the next
-        breath, while permanently poisoning the signature the INV-43 backstop
-        keys on.
+        breath, while binding the INV-43 backstop with a decline the user never
+        gave.
 
         ‼ An earlier version of this test asserted the OPPOSITE, on a fixture
-        production cannot produce: a signed resolve pending on a case with no
+        production cannot produce: an engine resolve offer on a case with no
         evidence and no root cause. It was green because the thin case misses
         SUGGEST_RESOLVE, so the override guard never fired — a configuration
         that cannot occur, pinned as if it were the rule.
         """
         engine = _engine()
         case = _resolution_ready_case()
-        case.pending_transition = {
-            "to_state": "resolved",
-            "summary": "Shall I mark this case resolved?",
-            "evidence_ids": [],
-            "proposed_at": datetime.now(UTC).isoformat(),
-            "justifying_signature": deferred_disposition_signature(
-                case, closure_verdict(case)
-            ),
-        }
+        with_open_offer(
+            case,
+            kind="resolve",
+            basis="backstop",
+            summary="Shall I mark this case resolved?",
+        )
 
         await engine.process_turn(
             case=case,
@@ -406,42 +400,42 @@ class TestWithdrawalRecordsTheEngineOffer:
             redaction_ctx=None,
         )
 
-        assert case.progress.deferred_disposition_declined_signatures == [], (
+        assert AnswerKind.DECLINED not in _answers(case), (
             "a refusal was recorded for an offer the engine re-made on the "
             "same turn; that suppresses the backstop for a decision the user "
             "never got to take"
         )
-        assert (case.pending_transition or {}).get("to_state") == "resolved", (
+        assert _answers(case) == [AnswerKind.WITHDRAWN]
+        assert case.offer_record.open.kind == "resolve", (
             "premise: INV-37 pivots the close pick back to resolve here — "
             "without that pivot this test is asserting the wrong rule"
         )
 
     @pytest.mark.asyncio
     async def test_withdrawal_of_another_proposers_offer_records_nothing(self):
-        """An LLM- or user-initiated offer carries no signature, so declining
-        it says nothing about the engine-initiated disposition."""
+        """A question withdraws the model's offer; it declines nothing, so the
+        engine-initiated disposition is not bound by it."""
         engine = _engine()
         case = _investigating_case_with_pending_close()
-        assert "justifying_signature" not in case.pending_transition
+        assert case.offer_record.open.basis == "model"
 
         await _run_expecting_fall_through(engine, case, INCIDENT_QUESTION)
 
-        assert case.progress.deferred_disposition_declined_signatures == []
+        assert _answers(case) == [AnswerKind.WITHDRAWN]
 
 
 #: One novel file on the turn, as the service hands it to the engine.
 _UPLOAD = [
     {"file_id": "f_1", "filename": "app.log", "data_type": "log", "is_novel": True}
 ]
-_SIGNATURE = "SUGGEST_CLOSE|1|chain"
+_DECLINED = [AnswerKind.DECLINED]
+_WITHDRAWN = [AnswerKind.WITHDRAWN]
 
 
 def _signed_pending_close() -> Case:
-    """A pending CLOSE carrying the signature an ENGINE proposer writes, so a
-    recorded refusal is visible and "nothing recorded" is not vacuous."""
-    case = _investigating_case_with_pending_close()
-    case.pending_transition["justifying_signature"] = _SIGNATURE
-    return case
+    """An open CLOSE the ENGINE made (the deferred disposition), so a recorded
+    refusal binds and "nothing recorded" is not vacuous."""
+    return _investigating_case_with_pending_close(basis="deferred")
 
 
 class TestAnUploadTurnIsNeverConsumed:
@@ -456,18 +450,18 @@ class TestAnUploadTurnIsNeverConsumed:
     @pytest.mark.parametrize(
         "message, declined",
         [
-            ("logs", []),
-            ("", []),
-            ("ok here are the logs", []),
-            ("what does this log show?", []),
-            ("no", [_SIGNATURE]),
+            ("logs", _WITHDRAWN),
+            ("", _WITHDRAWN),
+            ("ok here are the logs", _WITHDRAWN),
+            ("what does this log show?", _WITHDRAWN),
+            ("no", _DECLINED),
             (
                 "we will apply it in friday's maintenance window as planned",
-                [_SIGNATURE],
+                _DECLINED,
             ),
             # #1808: a non-answer that opens with consent is not a deflection,
             # with or without an upload.
-            ("ok but we need to wait for the weekend soak first", []),
+            ("ok but we need to wait for the weekend soak first", _WITHDRAWN),
         ],
     )
     async def test_an_upload_turn_withdraws_and_reaches_the_llm(
@@ -481,9 +475,9 @@ class TestAnUploadTurnIsNeverConsumed:
                 case=case, user_message=message, attachments=_UPLOAD, redaction_ctx=None
             )
 
-        assert case.pending_transition is None
+        assert case.offer_record.open is None
         assert engine.generator.generate_structured_output.called
-        assert case.progress.deferred_disposition_declined_signatures == declined
+        assert _answers(case) == declined
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("message", ["hmm", "logs", "ok go ahead"])
@@ -496,9 +490,9 @@ class TestAnUploadTurnIsNeverConsumed:
         )
 
         assert "Please select one of the options above" in result["agent_response"]
-        assert case.pending_transition is not None
+        assert case.offer_record.open is not None
         assert not engine.generator.generate_structured_output.called
-        assert case.progress.deferred_disposition_declined_signatures == []
+        assert _answers(case) == []
 
     @pytest.mark.asyncio
     async def test_a_bare_no_without_an_upload_is_declined_without_an_llm_call(
@@ -512,9 +506,9 @@ class TestAnUploadTurnIsNeverConsumed:
         )
 
         assert "remains open" in result["agent_response"]
-        assert case.pending_transition is None
+        assert case.offer_record.open is None
         assert not engine.generator.generate_structured_output.called
-        assert case.progress.deferred_disposition_declined_signatures == [_SIGNATURE]
+        assert _answers(case) == _DECLINED
 
 
 class TestGateAnswerMatchers:
@@ -608,7 +602,7 @@ async def test_a_short_non_answer_is_re_asked_every_time():
             case=case, user_message="hm", redaction_ctx=None
         )
         assert "Please select one of the options above" in result["agent_response"]
-        assert case.pending_transition is not None
+        assert case.offer_record.open is not None
 
     assert not engine.generator.generate_structured_output.called
 
@@ -620,7 +614,7 @@ async def test_bare_decline_keeps_cheap_canned_acknowledgment():
 
     result = await engine.process_turn(case=case, user_message="no", redaction_ctx=None)
 
-    assert case.pending_transition is None
+    assert case.offer_record.open is None
     assert "remains open" in result["agent_response"]
     assert not engine.generator.generate_structured_output.called
 
@@ -643,4 +637,4 @@ async def test_a_no_that_says_more_is_processed_and_records_nothing():
         "No. we did not do anything yet. I showed the configmap without "
         "modification. did you see anything wrong?",
     )
-    assert case.progress.deferred_disposition_declined_signatures == []
+    assert _answers(case) == _WITHDRAWN

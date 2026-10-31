@@ -28,6 +28,7 @@ from faultmaven.core.investigation.milestone_engine.response_application import 
 from faultmaven.core.investigation.milestone_engine.turn_records import (
     REFUSED_EVIDENCE_SLOT,
 )
+from faultmaven.core.investigation.problem_status import pending_revision
 from faultmaven.core.investigation.schemas import InvestigationResponse_Diagnosis
 from faultmaven.modules.case.contracts import (
     Case,
@@ -220,7 +221,7 @@ def test_a_revision_citing_a_row_past_a_refused_one_is_proposed(engine):
 
     _apply(engine, case, updates)
 
-    pending = case.problem_verification.pending_revision
+    pending = pending_revision(case)
     assert pending is not None, "the revision was refused for citing nothing"
     (row,) = case.evidence
     assert row.evidence_id in pending.evidence_ids

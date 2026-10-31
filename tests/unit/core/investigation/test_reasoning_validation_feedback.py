@@ -43,6 +43,7 @@ from faultmaven.modules.case.contracts import (
     EvidenceSourceType,
     InvestigationProgress,
     MitigationRecord,
+    OfferRecord,
     ProblemStatus,
 )
 from tests.case_builders import investigating_case
@@ -87,7 +88,7 @@ def _validator_case(progress: InvestigationProgress):
     return SimpleNamespace(
         state=CaseState.INVESTIGATING,
         is_terminal=False,
-        pending_transition=None,
+        offer_record=OfferRecord(),
         progress=progress,
         evidence=["ev_1"],
         current_turn=5,

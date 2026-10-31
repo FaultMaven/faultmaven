@@ -46,7 +46,7 @@ from faultmaven.modules.case.domain.models.solution import (
     SolutionType,
     classify_solution_outcome,
 )
-from tests.case_builders import investigating_case
+from tests.case_builders import investigating_case, with_open_offer
 
 pytestmark = pytest.mark.unit
 
@@ -128,12 +128,7 @@ class TestIsSubstantiveReply:
 
 
 def _pending_resolve(case: Case) -> None:
-    case.pending_transition = {
-        "to_state": "resolved",
-        "summary": "Confirm resolution?",
-        "evidence_ids": [],
-        "proposed_at": datetime.now(timezone.utc).isoformat(),
-    }
+    with_open_offer(case, kind="resolve", basis="model", summary="Confirm resolution?")
 
 
 class TestMintedIntentTerminalConsentGuard:
@@ -229,7 +224,6 @@ class TestMintedIntentGateOneConsentGuard:
         case.state = CaseState.INQUIRY
         case.inquiry.problem_statement_confirmed = False
         case.inquiry.problem_statement_confirmed_at = None
-        case.pending_transition = None
         return case
 
     def test_bare_consent_still_commits_gate_one(self):
@@ -298,37 +292,30 @@ class TestMintedIntentGateOneConsentGuard:
         )
 
     @pytest.mark.parametrize(
-        "pending",
-        [
-            None,
-            {"to_state": "closed"},
-            {"needs_info": True},
-        ],
-        ids=["no-pending", "pending-close", "pending-needs-info"],
+        "pending", [None, "close"], ids=["no-offer", "close-offer"]
     )
     def test_an_affirmative_mint_is_guarded_whatever_is_pending(self, pending):
         """The two gates are not alternatives, and writing them as one was a
         real hole.
 
-        Every other Gate-1 case in this class has ``pending_transition=None``,
-        so a guard written as ``if pending: … else: <gate 1>`` passed all of
-        them while leaving the arm unreachable on the shape that HAS a pending
-        row. Measured on that shape with a substantive DECLINE: the pending
-        arm only matches ``confirmation_value is True``, so the mint was
-        adopted; 0b's decline branch cancelled the pending and fell through to
-        0c, and 0c committed Gate 1. A ``needs_info`` pending is more direct
-        still — 0b is skipped wholesale
-        (``elif not case.pending_transition.get("needs_info")``).
+        Every other Gate-1 case in this class has no offer open, so a guard
+        written as ``if offer: … else: <gate 1>`` passed all of them while
+        leaving the arm unreachable on the shape that HAS one. Measured on
+        that shape with a substantive DECLINE: the offer arm only matches
+        ``confirmation_value is True``, so the mint was adopted; 0b's decline
+        branch answered the offer and fell through to 0c, and 0c committed
+        Gate 1. (A resolution request is not an offer, #2408, so there is no
+        third shape any more.)
 
         #1464 changed what this can prove, and the change is stated rather
         than papered over. The mint is now AFFIRMATIVE (a declining one
         commits nothing anywhere, so it is guarded nowhere), and an
-        affirmative ``confirmation`` with any truthy ``pending`` is matched by
+        affirmative ``confirmation`` with any open offer is matched by
         ``confirms_pending_transition`` as well — that arm accepts
-        CONFIRMATION+True for any pending row, without looking at
-        ``to_state``. So the if/else hole can no longer reopen THROUGH a
-        pending case whichever way the Gate-1 arm is written, and the shape
-        where the arm answers alone is ``no-pending``.
+        CONFIRMATION+True for any open offer, without looking at its kind. So
+        the if/else hole can no longer reopen THROUGH an open offer whichever
+        way the Gate-1 arm is written, and the shape where the arm answers
+        alone is ``no-offer``.
 
         What the parametrization still holds: no shape of ``pending`` turns
         the guard off. That is the regression this class exists for — the
@@ -336,7 +323,8 @@ class TestMintedIntentGateOneConsentGuard:
         where adoption was measured.
         """
         case = self._inquiry_awaiting_gate_one()
-        case.pending_transition = pending
+        if pending is not None:
+            with_open_offer(case, kind=pending, basis="menu")
         minted = QueryIntent(type=IntentType.CONFIRMATION, confirmation_value=True)
         message = "yes - but is the problem statement about the replica or the primary?"
         assert is_substantive_reply(message) is True

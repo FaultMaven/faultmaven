@@ -25,8 +25,12 @@ from faultmaven.core.investigation.milestone_engine.milestone_inference import (
 from faultmaven.core.investigation.milestone_engine.structured_output import (
     _validate_with_degradation,
 )
+from faultmaven.core.investigation.offer_projection import project_offers
+from faultmaven.core.investigation.offers import answer_offer
 from faultmaven.core.investigation.schemas import EvidenceTrail, MilestoneUpdates
 from faultmaven.modules.case.contracts import (
+    AnswerKind,
+    AnswerVia,
     Case,
     CaseState,
     CauseState,
@@ -35,6 +39,7 @@ from faultmaven.modules.case.contracts import (
     EvidenceCategory,
     EvidenceSourceType,
     InvestigationProgress,
+    OfferRecord,
     ProblemStatus,
     RootCauseConclusion,
     Solution,
@@ -42,8 +47,24 @@ from faultmaven.modules.case.contracts import (
     SolutionState,
     SolutionType,
 )
+from tests.case_builders import with_open_offer
 
 _FILE_ID = "file_0123456789ab"
+
+
+def _labels(case) -> list:
+    """The labels of the open offer's confirmation pair."""
+    return [f["label"] for f in project_offers(case).pair]
+
+
+def _answer(case, answer: AnswerKind) -> None:
+    """The user's answer to the open offer, as a click records it."""
+    case.offer_record = answer_offer(
+        case,
+        proposal_id=case.offer_record.open.proposal_id,
+        answer=answer,
+        via=AnswerVia.CLICK,
+    )
 
 
 def _response(milestones: MilestoneUpdates, justifications: dict):
@@ -57,7 +78,7 @@ def _case(*, evidence=True):
     return SimpleNamespace(
         state=CaseState.INVESTIGATING,
         is_terminal=False,
-        pending_transition=None,
+        offer_record=OfferRecord(),
         progress=InvestigationProgress(),
         evidence=["ev_1"] if evidence else [],
         current_turn=5,
@@ -229,7 +250,8 @@ class TestDeferredImplementationClose:
         case.progress.solution_proposed = solution_proposed
         if cause_identified:
             case.progress.cause_state = CauseState.IDENTIFIED
-        case.pending_transition = pending
+        if pending is not None:
+            with_open_offer(case, kind=pending, basis="model")
         if confirmed:
             # A qualifying gone=>gone confirmation: a user-authored (not the
             # engine's M6 failed-fix disconfirmation) causal_absence row and the
@@ -275,8 +297,7 @@ class TestDeferredImplementationClose:
         case.solutions = [_solution()]
         meta = {}
         _maybe_propose_deferred_close(case, meta)
-        assert "transition_proposed_this_turn" not in meta
-        assert case.pending_transition is None
+        assert case.offer_record.open is None
 
     def test_no_proposal_when_feasible_now(self):
         from faultmaven.core.investigation.milestone_engine.terminal_proposals import (
@@ -286,8 +307,7 @@ class TestDeferredImplementationClose:
         case = self._case(feasible=SolutionFeasible.NOW, solution_proposed=True)
         meta = {}
         _maybe_propose_deferred_close(case, meta)
-        assert "transition_proposed_this_turn" not in meta
-        assert case.pending_transition is None
+        assert case.offer_record.open is None
 
     def test_no_proposal_when_deferred_but_no_solution(self):
         from faultmaven.core.investigation.milestone_engine.terminal_proposals import (
@@ -297,7 +317,7 @@ class TestDeferredImplementationClose:
         case = self._case(feasible=SolutionFeasible.DEFERRED, solution_proposed=False)
         meta = {}
         _maybe_propose_deferred_close(case, meta)
-        assert "transition_proposed_this_turn" not in meta
+        assert case.offer_record.open is None
 
     def test_proposes_close_when_deferred_with_solution(self):
         from faultmaven.core.investigation.milestone_engine.terminal_proposals import (
@@ -307,10 +327,9 @@ class TestDeferredImplementationClose:
         case = self._case(feasible=SolutionFeasible.DEFERRED, solution_proposed=True)
         meta = {}
         _maybe_propose_deferred_close(case, meta)
-        assert meta.get("transition_proposed_this_turn") is True
-        assert case.pending_transition is not None
-        assert case.pending_transition["to_state"] == "closed"
-        assert meta.get("override_suggestions")
+        offer = case.offer_record.open
+        assert (offer.kind, offer.basis) == ("close", "deferred")
+        assert _labels(case)[0] == "Yes, close this case"
 
     def test_no_proposal_when_handshake_in_flight(self):
         from faultmaven.core.investigation.milestone_engine.terminal_proposals import (
@@ -320,13 +339,13 @@ class TestDeferredImplementationClose:
         case = self._case(
             feasible=SolutionFeasible.DEFERRED,
             solution_proposed=True,
-            pending={"to_state": "resolved"},
+            pending="resolve",
         )
+        before = case.offer_record.open
         meta = {}
         _maybe_propose_deferred_close(case, meta)
-        # existing pending transition must not be clobbered
-        assert case.pending_transition == {"to_state": "resolved"}
-        assert "transition_proposed_this_turn" not in meta
+        # the open offer must not be clobbered
+        assert case.offer_record.open == before
 
     def test_pivots_to_resolve_when_a_confirmation_stands(self):
         """Resolve preservation: a deferred fix on a case carrying a gone=>gone
@@ -334,7 +353,7 @@ class TestDeferredImplementationClose:
 
         This proposer is one of three disposition paths; the LLM-proposal path
         and the confirm-time INV-37 guard both pivot on SUGGEST_RESOLVE. Before
-        this it called propose_transition("closed") directly, so the engine
+        this it offered CLOSED unconditionally, so the engine
         could offer to discard an attribution its own eligibility scored
         resolvable.
         """
@@ -362,8 +381,8 @@ class TestDeferredImplementationClose:
         meta = {}
         _maybe_propose_deferred_close(case, meta)
 
-        assert case.pending_transition["to_state"] == "resolved"
-        labels = [s["label"] for s in meta["override_suggestions"]]
+        assert case.offer_record.open.kind == "resolve"
+        labels = _labels(case)
         assert "Yes, mark as resolved" in labels
         assert "Yes, close this case" not in labels
 
@@ -379,8 +398,8 @@ class TestDeferredImplementationClose:
         meta = {}
         _maybe_propose_deferred_close(case, meta)
 
-        assert case.pending_transition["to_state"] == "closed"
-        labels = [s["label"] for s in meta["override_suggestions"]]
+        assert case.offer_record.open.kind == "close"
+        labels = _labels(case)
         assert "Yes, close this case" in labels
 
     @pytest.mark.parametrize("confirmed", [False, True])
@@ -407,7 +426,7 @@ class TestDeferredImplementationClose:
 
         message = meta.get("deferred_solution_gate_message")
         assert message, "the proposal must publish its rationale for rendering"
-        assert message == case.pending_transition["summary"]
+        assert message == case.offer_record.open.summary
         assert "deferred_solution_closure_message" not in meta
 
     def test_resolve_branch_does_not_reuse_the_pivot_from_close_prose(self):
@@ -452,18 +471,13 @@ class TestDeferredImplementationClose:
         """A decline POSTPONES the offer instead of being forgotten.
 
         fm#1122: the proposer re-fired every turn while solution_feasible was
-        DEFERRED. A decline clears pending_transition, the only state the
-        guards read, so nothing carried the refusal forward — five identical
-        offers against five explicit declines.
+        DEFERRED, because nothing carried the refusal forward — five identical
+        offers against five explicit declines. The decline is an answer on the
+        offer record, and it binds the deferred close until a solution or
+        confirmation it never saw is recorded.
         """
-        from faultmaven.core.investigation.milestone_engine.response_synthesis import (
-            _record_deferred_disposition_decline,
-        )
         from faultmaven.core.investigation.milestone_engine.terminal_proposals import (
             _maybe_propose_deferred_close,
-        )
-        from faultmaven.core.investigation.terminal_transitions import (
-            cancel_pending_transition,
         )
 
         case = self._case(feasible=SolutionFeasible.DEFERRED, solution_proposed=True)
@@ -471,70 +485,54 @@ class TestDeferredImplementationClose:
 
         offers = 0
         for _ in range(10):
-            meta = {}
-            _maybe_propose_deferred_close(case, meta)
-            if meta.get("transition_proposed_this_turn"):
+            case.current_turn += 1
+            _maybe_propose_deferred_close(case, {})
+            if case.offer_record.open is not None:
                 offers += 1
-                _record_deferred_disposition_decline(case)
-                cancel_pending_transition(case)
+                _answer(case, AnswerKind.DECLINED)
 
         assert offers == 1, f"offered {offers}x across 10 declined turns"
 
-    def test_offer_returns_when_the_justifying_state_changes(self):
+    def test_offer_returns_when_a_new_solution_is_recorded(self):
         """A decline must never permanently disarm the offer.
 
         Suppressing it for good would be engine-steered abandonment (D4): the
         case would carry a documented cause and fix with no route to a
-        disposition. When a premise moves the offer is legitimate again.
+        disposition. A solution the decline never saw lapses it (ruling 3).
         """
-        from faultmaven.core.investigation.milestone_engine.response_synthesis import (
-            _record_deferred_disposition_decline,
-        )
         from faultmaven.core.investigation.milestone_engine.terminal_proposals import (
             _maybe_propose_deferred_close,
-        )
-        from faultmaven.core.investigation.terminal_transitions import (
-            cancel_pending_transition,
         )
 
         case = self._case(feasible=SolutionFeasible.DEFERRED, solution_proposed=True)
         case.solutions = [_solution()]
 
-        meta = {}
-        _maybe_propose_deferred_close(case, meta)
-        assert meta.get("transition_proposed_this_turn") is True
-        _record_deferred_disposition_decline(case)
-        cancel_pending_transition(case)
+        _maybe_propose_deferred_close(case, {})
+        assert case.offer_record.open is not None
+        _answer(case, AnswerKind.DECLINED)
 
         # Silent while nothing has changed.
-        meta = {}
-        _maybe_propose_deferred_close(case, meta)
-        assert "transition_proposed_this_turn" not in meta
+        case.current_turn += 1
+        _maybe_propose_deferred_close(case, {})
+        assert case.offer_record.open is None
 
-        # A second solution lands — a premise moved, so the offer is live again.
+        # A second solution lands: the offer is live again.
+        case.current_turn += 1
         case.solutions = [_solution(), _solution("Raise the container limit")]
-        meta = {}
-        _maybe_propose_deferred_close(case, meta)
-        assert meta.get("transition_proposed_this_turn") is True
+        _maybe_propose_deferred_close(case, {})
+        assert case.offer_record.open is not None
 
-    def test_withdrawal_suppresses_the_offer_for_the_rest_of_the_turn(self):
+    def test_an_answer_suppresses_the_offer_for_the_rest_of_the_turn(self):
         """Withdrawing the offer must not be undone later in the SAME turn.
 
         The withdrawing branches fall through to normal processing, which
-        reaches this proposer again on that turn. Without a turn-scoped guard
-        it re-proposes and re-takes the affordances the user just acted on
-        (fm#1122) — and for a QUESTION, which is deliberately not recorded as
-        a refusal, this flag is the ONLY thing standing between the user and
-        that takeover.
+        reaches this proposer again on that turn. It reads the answer on the
+        record (``terminal_offer_answered_this_turn``), so it does not re-take
+        the affordances the user just acted on (fm#1122) — and for a QUESTION,
+        which is withdrawn and never declined, that is the only guard.
         """
-        from faultmaven.core.investigation.milestone_engine.response_synthesis import (
-            _note_engine_disposition_withdrawn,
-        )
         from faultmaven.core.investigation.milestone_engine.terminal_proposals import (
             _maybe_propose_deferred_close,
-        )
-        from faultmaven.core.investigation.terminal_transitions import (
-            cancel_pending_transition,
         )
 
         case = self._case(feasible=SolutionFeasible.DEFERRED, solution_proposed=True)
@@ -542,63 +540,49 @@ class TestDeferredImplementationClose:
 
         # Turn N: the engine offers, the user asks a question, the gate
         # withdraws the offer and the turn continues.
-        meta = {}
-        _maybe_propose_deferred_close(case, meta)
-        assert meta.get("transition_proposed_this_turn") is True
-        _note_engine_disposition_withdrawn(case, meta)
-        cancel_pending_transition(case)
+        _maybe_propose_deferred_close(case, {})
+        assert case.offer_record.open is not None
+        _answer(case, AnswerKind.WITHDRAWN)
 
-        # Same turn, same metadata: the fall-through must not re-propose.
-        _maybe_propose_deferred_close(case, meta)
-        assert case.pending_transition is None
+        # Same turn: the fall-through must not re-propose.
+        _maybe_propose_deferred_close(case, {})
+        assert case.offer_record.open is None
 
-        # Next turn (fresh metadata, nothing recorded as refused): the offer
-        # is live again, because a question is not a refusal.
-        next_meta = {}
-        _maybe_propose_deferred_close(case, next_meta)
-        assert next_meta.get("transition_proposed_this_turn") is True
-        assert case.progress.deferred_disposition_declined_signatures == []
+        # Next turn: the offer is live again, because a question is not a
+        # refusal.
+        case.current_turn += 1
+        _maybe_propose_deferred_close(case, {})
+        assert case.offer_record.open is not None
 
-    def test_withdrawal_of_another_proposers_offer_is_not_noted(self):
-        """The turn guard is keyed to THIS proposer's offer: withdrawing an
-        LLM- or user-initiated disposition must not suppress it."""
-        from faultmaven.core.investigation.milestone_engine.response_synthesis import (
-            _note_engine_disposition_withdrawn,
-        )
+    def test_an_answer_to_another_openers_offer_also_holds_the_turn(self):
+        """Whoever opened the offer the user just answered, the channel was
+        theirs this turn: the proposer stands down until the next one."""
         from faultmaven.core.investigation.milestone_engine.terminal_proposals import (
             _maybe_propose_deferred_close,
         )
 
-        case = self._case(feasible=SolutionFeasible.DEFERRED, solution_proposed=True)
+        case = self._case(
+            feasible=SolutionFeasible.DEFERRED, solution_proposed=True, pending="close"
+        )
         case.solutions = [_solution()]
-        case.pending_transition = {"to_state": "closed", "summary": "LLM proposed"}
+        _answer(case, AnswerKind.WITHDRAWN)
 
-        meta = {}
-        _note_engine_disposition_withdrawn(case, meta)
-        case.pending_transition = None
-        _maybe_propose_deferred_close(case, meta)
+        _maybe_propose_deferred_close(case, {})
+        assert case.offer_record.open is None
+        case.current_turn += 1
+        _maybe_propose_deferred_close(case, {})
+        assert case.offer_record.open.basis == "deferred"
 
-        assert meta.get("transition_proposed_this_turn") is True
-
-    def test_oscillating_justifying_state_does_not_re_arm_the_offer(self):
-        """A signature the user already refused must stay refused when the
-        case flips back into it.
+    def test_a_flipping_cause_leg_does_not_re_arm_the_offer(self):
+        """A decline stands whatever the cause leg does (ruling 3).
 
         ``cause_identification_leg`` reads "chain" only while cause_state is
         IDENTIFIED — recomputed from the chain every turn — and falls back to
-        "rcc" while an RCC stands. A case that flickers between the two
-        alternates S1->S2->S1, so a single stored slot is evicted on every
-        flip and the offer re-fires forever against a user who has refused
-        both.
+        "rcc" while an RCC stands. A case that flickers between the two used to
+        re-arm the offer on each flip (the decline was keyed on the leg).
         """
-        from faultmaven.core.investigation.milestone_engine.response_synthesis import (
-            _record_deferred_disposition_decline,
-        )
         from faultmaven.core.investigation.milestone_engine.terminal_proposals import (
             _maybe_propose_deferred_close,
-        )
-        from faultmaven.core.investigation.terminal_transitions import (
-            cancel_pending_transition,
         )
 
         case = self._case(feasible=SolutionFeasible.DEFERRED, solution_proposed=True)
@@ -617,75 +601,35 @@ class TestDeferredImplementationClose:
 
         offers = 0
         for turn in range(6):
+            case.current_turn += 1
             # Flip the leg between "chain" (IDENTIFIED) and the RCC backstop.
             case.progress.cause_state = (
                 CauseState.IDENTIFIED if turn % 2 == 0 else CauseState.CANDIDATES
             )
-            meta = {}
-            _maybe_propose_deferred_close(case, meta)
-            if meta.get("transition_proposed_this_turn"):
+            _maybe_propose_deferred_close(case, {})
+            if case.offer_record.open is not None:
                 offers += 1
-                _record_deferred_disposition_decline(case)
-                cancel_pending_transition(case)
+                _answer(case, AnswerKind.DECLINED)
 
-        # One offer per distinct justifying state, and never again after the
-        # user has refused in it.
-        assert offers <= 2, f"offered {offers}x across 6 refused turns"
-        assert len(case.progress.deferred_disposition_declined_signatures) == offers
-
-    def test_refused_signatures_are_bounded(self):
-        """The refusal record is persisted in the progress blob, so it must
-        not grow without limit on a case that keeps changing underneath the
-        offer."""
-        from faultmaven.core.investigation.milestone_engine.response_synthesis import (
-            _MAX_DECLINED_DISPOSITION_SIGNATURES,
-            _record_deferred_disposition_decline,
-        )
-
-        case = self._case(feasible=SolutionFeasible.DEFERRED, solution_proposed=True)
-        for i in range(_MAX_DECLINED_DISPOSITION_SIGNATURES + 5):
-            case.pending_transition = {
-                "to_state": "closed",
-                "summary": "offer",
-                "justifying_signature": f"SUGGEST_CLOSE|{i}|chain",
-            }
-            _record_deferred_disposition_decline(case)
-
-        declined = case.progress.deferred_disposition_declined_signatures
-        assert len(declined) == _MAX_DECLINED_DISPOSITION_SIGNATURES
-        # Oldest dropped first: the most recent refusals are the ones most
-        # likely to recur.
-        assert declined[-1] == (
-            f"SUGGEST_CLOSE|{_MAX_DECLINED_DISPOSITION_SIGNATURES + 4}|chain"
-        )
+        assert offers == 1, f"offered {offers}x across 6 refused turns"
 
     def test_resolve_pivot_keeps_the_offer_refusable(self):
         """The INV-37 pivot must not launder an engine offer into an
-        anonymous one.
-
-        ``confirm_pending_transition`` replaces the pending dict wholesale via
-        ``propose_transition``, so the provenance the refusal recorder reads
-        was dropped: engine proposes CLOSED -> a qualifying causal-absence row
-        lands -> the user confirms -> the pivot presents RESOLVED -> the user
-        refuses THAT -> nothing is recorded and the offer returns next turn.
-        """
-        from faultmaven.core.investigation.milestone_engine.response_synthesis import (
-            _record_deferred_disposition_decline,
-        )
+        anonymous one: the engine's close, accepted once the case became
+        resolvable, pivots to a resolve offer carrying the close's basis, and
+        the user's refusal of THAT binds the proposer's resolve."""
         from faultmaven.core.investigation.milestone_engine.terminal_proposals import (
             _maybe_propose_deferred_close,
         )
         from faultmaven.core.investigation.terminal_transitions import (
-            cancel_pending_transition,
-            confirm_pending_transition,
+            confirm_open_offer,
         )
 
         # No causal absence yet: the engine offers the CLOSE.
         case = self._case(feasible=SolutionFeasible.DEFERRED, solution_proposed=True)
         case.solutions = [_solution()]
-        meta = {}
-        _maybe_propose_deferred_close(case, meta)
-        assert case.pending_transition["to_state"] == "closed"
+        _maybe_propose_deferred_close(case, {})
+        assert case.offer_record.open.kind == "close"
 
         # A qualifying gone=>gone confirmation (both rows) lands after the
         # offer was made.
@@ -714,52 +658,43 @@ class TestDeferredImplementationClose:
         )
 
         # Confirm pivots CLOSED -> RESOLVED without committing anything.
-        executed = confirm_pending_transition(case, "user_test")
-        assert executed is False
-        assert case.pending_transition["to_state"] == "resolved"
-
-        # The user refuses the pivoted offer. It is still the engine's offer,
-        # so the refusal must stick — against the verdict that now holds.
-        _record_deferred_disposition_decline(case)
-        cancel_pending_transition(case)
-        assert case.progress.deferred_disposition_declined_signatures != []
-
-        meta = {}
-        _maybe_propose_deferred_close(case, meta)
-        assert "transition_proposed_this_turn" not in meta
-
-    def test_decline_of_another_proposers_offer_is_not_recorded(self):
-        """A decline of an LLM- or user-initiated disposition says nothing
-        about the engine-initiated one, so it must not suppress it."""
-        from faultmaven.core.investigation.milestone_engine.response_synthesis import (
-            _record_deferred_disposition_decline,
+        executed = confirm_open_offer(
+            case, case.effective_driver_id, via=AnswerVia.CLICK
         )
+        assert executed is False
+        offer = case.offer_record.open
+        assert (offer.kind, offer.basis) == ("resolve", "deferred")
+
+        # The user refuses the pivoted offer: it binds.
+        _answer(case, AnswerKind.DECLINED)
+        case.current_turn += 1
+        _maybe_propose_deferred_close(case, {})
+        assert case.offer_record.open is None
+
+    def test_a_declined_model_close_binds_nothing(self):
+        """A decline of the model's close says nothing about the engine's
+        deferred close: it is recorded as an answer and binds nothing."""
         from faultmaven.core.investigation.milestone_engine.terminal_proposals import (
             _maybe_propose_deferred_close,
         )
 
-        case = self._case(feasible=SolutionFeasible.DEFERRED, solution_proposed=True)
+        case = self._case(
+            feasible=SolutionFeasible.DEFERRED, solution_proposed=True, pending="close"
+        )
         case.solutions = [_solution()]
-        # An LLM- or user-initiated disposition: no `justifying_signature`,
-        # because this proposer is its only writer. That absence is the whole
-        # discriminator, so the fixture must not smuggle one in.
-        case.pending_transition = {"to_state": "closed", "summary": "LLM proposed"}
-        assert "justifying_signature" not in case.pending_transition
+        _answer(case, AnswerKind.DECLINED)
+        assert case.offer_record.answers[-1].basis == "model"
 
-        _record_deferred_disposition_decline(case)
-        assert case.progress.deferred_disposition_declined_signatures == []
-
-        case.pending_transition = None
-        meta = {}
-        _maybe_propose_deferred_close(case, meta)
-        assert meta.get("transition_proposed_this_turn") is True
+        case.current_turn += 1
+        _maybe_propose_deferred_close(case, {})
+        assert case.offer_record.open.basis == "deferred"
 
     def test_no_proposal_from_inquiry(self):
         """INQUIRY is the state the new guard actually adds.
 
         "closed" was a legal edge from any state; "resolved" is not one from
-        INQUIRY, and a proposal that cannot execute leaves pending_transition
-        standing so every later confirm turn fails identically. The terminal
+        INQUIRY, and an offer that cannot execute stays open so every later
+        confirm turn fails identically. The terminal
         case below does NOT pin this — `is_terminal` already rejected it — so
         without this case the guard is asserted by its sibling and tested by
         neither.
@@ -783,15 +718,15 @@ class TestDeferredImplementationClose:
         meta = {}
         _maybe_propose_deferred_close(case, meta)
 
-        assert case.pending_transition is None
+        assert case.offer_record.open is None
         assert meta == {}
 
     def test_no_proposal_outside_investigating(self):
         """The proposal target is state-dependent now, so the state is guarded.
 
         "closed" was a legal edge from any state; "resolved" is not one from
-        INQUIRY, and a proposal that cannot execute leaves `pending_transition`
-        standing so every later confirm turn fails identically. Exercises the
+        INQUIRY, and an offer that cannot execute stays open so every later
+        confirm turn fails identically. Exercises the
         previously-dead ``terminal=True`` fixture path.
         """
         from faultmaven.core.investigation.milestone_engine.terminal_proposals import (
@@ -807,8 +742,7 @@ class TestDeferredImplementationClose:
         meta = {}
         _maybe_propose_deferred_close(case, meta)
 
-        assert case.pending_transition is None
-        assert "transition_proposed_this_turn" not in meta
+        assert case.offer_record.open is None
         assert "deferred_solution_gate_message" not in meta
 
 

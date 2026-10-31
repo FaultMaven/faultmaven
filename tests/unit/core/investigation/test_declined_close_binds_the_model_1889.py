@@ -1,9 +1,9 @@
 """#1889: a declined close binds whoever proposes it, until its premise moves.
 
 The user's "no" to closing on a false-alarm finding is a fact about the
-finding, so it is recorded ON the finding (``close_declined_at_turn``), whoever
-opened the close; a declined engine deferred close is recorded against the
-signature that justified it. While either stands, a transition the model
+finding, so its premise on the offer record is the finding, whoever opened the
+close; a declined engine deferred close binds until a solution or confirmation
+it never saw is recorded (ruling 3). While either stands, a transition the model
 proposes that re-asks it is refused, the model is told the close may be
 proposed only when the user directs it, and the turn's own follow-ups gain one
 ``status_transition`` card so the user who did ask still has the close one step
@@ -21,14 +21,12 @@ from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngin
 from faultmaven.core.investigation.milestone_engine.stage_gates import (
     declined_close_card,
 )
-from faultmaven.core.investigation.milestone_engine.transition_consent import (
-    terminal_offer_key,
-)
 from faultmaven.core.investigation.milestone_engine.transition_turns import (
     FALSE_ALARM_HOLD_REPLY,
 )
 from faultmaven.core.investigation.problem_status import (
     edit_statement,
+    false_alarm_close_declined_at,
     invalidate_problem,
 )
 from faultmaven.core.investigation.prompts.templates.assembly import (
@@ -51,6 +49,7 @@ from faultmaven.modules.case.contracts import (
     ProblemStatus,
 )
 from faultmaven.modules.case.domain.models.solution import Solution, SolutionType
+from tests.case_builders import with_declined_offer
 from tests.unit.core.investigation.test_every_card_names_its_offer_1812 import (
     _investigating,
 )
@@ -69,7 +68,16 @@ from tests.unit.core.investigation.test_problem_statement_revision_and_false_ala
 pytestmark = pytest.mark.unit
 
 _CLOSE_INTENT = {"type": "status_transition", "to_state": "closed"}
-_SIGNED = "justifying_signature"
+
+
+def _declined_at(case):
+    """The turn the standing false-alarm close decline was given, or None."""
+    return false_alarm_close_declined_at(case)
+
+
+def _declines(case) -> list:
+    return [a for a in case.offer_record.answers if a.answer == "declined"]
+
 
 #: What the model suggests on the refused turn. The close card is appended to
 #: these; a refusal that replaced them would be the re-ask in disguise.
@@ -116,8 +124,8 @@ async def _declined_finding() -> tuple:
     bare "no" on turn 5."""
     engine, case, _ = await _finding_turn(model_proposes=None)
     result = await _turn(engine, case, "no")
-    assert case.pending_transition is None
-    assert case.problem_verification.invalidation.close_declined_at_turn == 5
+    assert case.offer_record.open is None
+    assert _declined_at(case) == 5
     return engine, case, result
 
 
@@ -136,7 +144,7 @@ class TestADeclinedFalseAlarmCloseBindsTheModel:
             _proposes("closed"),
             follow_ups=_MODEL_FOLLOW_UPS,
         )
-        assert case.pending_transition is None
+        assert case.offer_record.open is None
         assert case.state == CaseState.INVESTIGATING
         feedback = _feedback(result)
         assert "TRANSITION NOT PROPOSED" in feedback
@@ -158,7 +166,7 @@ class TestADeclinedFalseAlarmCloseBindsTheModel:
         ``resolved`` pivots to the same false-alarm close."""
         engine, case, _ = await _declined_finding()
         result = await _turn(engine, case, "so is it done then?", _proposes("resolved"))
-        assert case.pending_transition is None
+        assert case.offer_record.open is None
         assert "TRANSITION NOT PROPOSED" in _feedback(result)
         assert _intents(result) == [_CLOSE_INTENT]
 
@@ -178,21 +186,20 @@ class TestADeclinedFalseAlarmCloseBindsTheModel:
         nothing, and the model re-proposed on the next turn)."""
         engine, case, _ = await _finding_turn(model_proposes=None)
         await _turn(engine, case, "what does that mean for the alert?")
-        assert case.pending_transition is None
-        assert case.problem_verification.invalidation.close_declined_at_turn is None
+        assert case.offer_record.open is None
+        assert _declined_at(case) is None
 
         await _turn(engine, case, "makes sense", _proposes("closed"))
-        pending = case.pending_transition
-        assert pending["closure_reason"] == ClosureReason.CLOSED_FALSE_ALARM
-        assert _SIGNED not in pending
+        offer = case.offer_record.open
+        assert offer.closure_reason == ClosureReason.CLOSED_FALSE_ALARM
+        assert offer.basis == "model"
 
         await _turn(engine, case, "no")
-        assert case.pending_transition is None
-        assert case.problem_verification.invalidation.close_declined_at_turn == 7
-        assert case.progress.deferred_disposition_declined_signatures == []
+        assert case.offer_record.open is None
+        assert _declined_at(case) == 7
 
         result = await _turn(engine, case, "hmm, fine", _proposes("closed"))
-        assert case.pending_transition is None
+        assert case.offer_record.open is None
         assert "at turn 7" in _feedback(result)
 
     async def test_a_user_opened_close_declined_is_recorded_on_the_finding(self):
@@ -208,9 +215,9 @@ class TestADeclinedFalseAlarmCloseBindsTheModel:
             intent_data={"to_state": "closed"},
             redaction_ctx=None,
         )
-        pending = case.pending_transition
-        assert pending["closure_reason"] == ClosureReason.CLOSED_FALSE_ALARM
-        assert _SIGNED not in pending
+        offer = case.offer_record.open
+        assert offer.closure_reason == ClosureReason.CLOSED_FALSE_ALARM
+        assert offer.basis == "menu"
         not_yet = result["suggested_follow_ups"][1]
 
         await _turn(
@@ -220,22 +227,20 @@ class TestADeclinedFalseAlarmCloseBindsTheModel:
             intent_type="confirmation",
             intent_data={"value": False, **not_yet["intent"]},
         )
-        assert case.pending_transition is None
-        assert case.problem_verification.invalidation.close_declined_at_turn == 7
-        assert case.progress.deferred_disposition_declined_signatures == []
+        assert case.offer_record.open is None
+        assert _declined_at(case) == 7
 
     @pytest.mark.parametrize("model_opened", [False, True])
-    async def test_no_false_alarm_decline_enters_the_signature_list(self, model_opened):
+    async def test_a_false_alarm_decline_is_premised_on_the_finding(self, model_opened):
         engine, case, _ = await _finding_turn(model_proposes=None)
         if model_opened:
             await _turn(engine, case, "what does that mean for the alert?")
             await _turn(engine, case, "makes sense", _proposes("closed"))
         await _turn(engine, case, "no")
-        assert case.problem_verification.invalidation.close_declined_at_turn
-        assert not any(
-            s.startswith("closed_false_alarm|")
-            for s in case.progress.deferred_disposition_declined_signatures
-        )
+        (decline,) = _declines(case)
+        assert decline.closure_reason == ClosureReason.CLOSED_FALSE_ALARM
+        assert decline.premise.finding_turn is not None
+        assert decline.premise.confirmation_ids == ()
 
     async def test_a_bare_no_is_told_the_hold_and_given_the_card(self):
         """ "The case remains open for further investigation" is untrue on a
@@ -271,11 +276,8 @@ class TestADeclinedFalseAlarmCloseBindsTheModel:
             intent_data={"to_state": card["intent"]["to_state"]},
             redaction_ctx=None,
         )
-        assert (
-            case.pending_transition["closure_reason"]
-            == ClosureReason.CLOSED_FALSE_ALARM
-        )
-        key = terminal_offer_key(case.pending_transition)
+        assert case.offer_record.open.closure_reason == ClosureReason.CLOSED_FALSE_ALARM
+        key = case.offer_record.open.proposal_id
         assert [
             f["intent"].get("proposal_id") for f in offered["suggested_follow_ups"]
         ] == [
@@ -309,7 +311,7 @@ class TestADeclinedFalseAlarmCloseBindsTheModel:
         )
         await _turn(engine, case, "yes")
         assert case.state == CaseState.CLOSED
-        assert case.problem_verification.invalidation.close_declined_at_turn == 5
+        assert _declined_at(case) == 5
 
         with patch.object(turn_completion.logger, "info") as info:
             answer = await _turn(
@@ -350,8 +352,8 @@ class TestTheHoldEndsWithItsPremise:
             ),
         )
         assert case.progress.problem_status == ProblemStatus.INVALIDATED
-        assert case.problem_verification.invalidation.close_declined_at_turn is None
-        assert case.pending_transition[_SIGNED] == "closed_false_alarm|7"
+        assert _declined_at(case) is None
+        assert case.offer_record.open.basis == "false_alarm"
 
     async def test_a_confirmed_revision_lifts_the_hold(self):
         engine, case, _ = await _declined_finding()
@@ -369,11 +371,8 @@ class TestTheHoldEndsWithItsPremise:
         assert case.progress.problem_status == ProblemStatus.VERIFIED
         assert case.problem_verification.invalidation is None
         assert "TRANSITION NOT PROPOSED" not in _feedback(result)
-        assert case.pending_transition["to_state"] == "closed"
-        assert (
-            case.pending_transition["closure_reason"]
-            != ClosureReason.CLOSED_FALSE_ALARM
-        )
+        assert case.offer_record.open.kind == "close"
+        assert case.offer_record.open.closure_reason != ClosureReason.CLOSED_FALSE_ALARM
 
     async def test_a_declined_revision_keeps_the_hold(self):
         """The finding survives a revision the user declined, and so does the
@@ -391,7 +390,7 @@ class TestTheHoldEndsWithItsPremise:
         await _turn(engine, case, "no")
         assert case.progress.problem_status == ProblemStatus.INVALIDATED
         result = await _turn(engine, case, "right, ok", _proposes("closed"))
-        assert case.pending_transition is None
+        assert case.offer_record.open is None
         assert "at turn 5" in _feedback(result)
 
     async def test_an_edit_clears_the_hold(self):
@@ -400,13 +399,13 @@ class TestTheHoldEndsWithItsPremise:
         assert case.problem_verification.invalidation is None
         result = await _turn(engine, case, "let's stop here", _proposes("closed"))
         assert "TRANSITION NOT PROPOSED" not in _feedback(result)
-        assert case.pending_transition["to_state"] == "closed"
+        assert case.offer_record.open.kind == "close"
 
     async def test_a_close_repick_while_the_offer_stands_is_not_a_decline(self):
         """A status-menu CLOSE pick while the engine's false-alarm close stands
         re-shows that offer (#1838) and records nothing."""
         engine, case, _ = await _finding_turn(model_proposes=None)
-        key = terminal_offer_key(case.pending_transition)
+        key = case.offer_record.open.proposal_id
         case.current_turn += 1
         result = await engine.process_turn(
             case=case,
@@ -415,9 +414,9 @@ class TestTheHoldEndsWithItsPremise:
             intent_data={"to_state": "closed"},
             redaction_ctx=None,
         )
-        assert terminal_offer_key(case.pending_transition) == key
-        assert case.problem_verification.invalidation.close_declined_at_turn is None
-        assert case.progress.deferred_disposition_declined_signatures == []
+        assert case.offer_record.open.proposal_id == key
+        assert _declined_at(case) is None
+        assert _declines(case) == []
         assert "false alarm" in result["agent_response"]
 
     async def test_the_users_own_close_is_never_blocked(self):
@@ -430,10 +429,7 @@ class TestTheHoldEndsWithItsPremise:
             intent_data={"to_state": "closed"},
             redaction_ctx=None,
         )
-        assert (
-            case.pending_transition["closure_reason"]
-            == ClosureReason.CLOSED_FALSE_ALARM
-        )
+        assert case.offer_record.open.closure_reason == ClosureReason.CLOSED_FALSE_ALARM
         await _turn(engine, case, "yes")
         assert case.state == CaseState.CLOSED
 
@@ -454,10 +450,12 @@ class TestADeclinedDeferredCloseBindsTheModel:
         await engine.process_turn(
             case=case, user_message="the platform team ships it", redaction_ctx=None
         )
-        assert case.pending_transition["closure_reason"] == "solution_deferred"
-        signature = case.pending_transition[_SIGNED]
+        offer = case.offer_record.open
+        assert offer.closure_reason == "solution_deferred"
+        assert offer.basis == "deferred"
         await _turn(engine, case, "no")
-        assert case.progress.deferred_disposition_declined_signatures == [signature]
+        (decline,) = _declines(case)
+        assert decline.proposal_id == offer.proposal_id
         return engine, case
 
     async def test_the_models_close_at_the_declined_state_is_refused(self):
@@ -469,7 +467,7 @@ class TestADeclinedDeferredCloseBindsTheModel:
             _proposes("closed"),
             follow_ups=_MODEL_FOLLOW_UPS,
         )
-        assert case.pending_transition is None
+        assert case.offer_record.open is None
         feedback = _feedback(result)
         assert "TRANSITION NOT PROPOSED" in feedback
         assert "deferred-implementation close" in feedback
@@ -499,8 +497,8 @@ class TestADeclinedDeferredCloseBindsTheModel:
             intent_data={"to_state": card["intent"]["to_state"]},
             redaction_ctx=None,
         )
-        assert case.pending_transition["closure_reason"] == "solution_deferred"
-        key = terminal_offer_key(case.pending_transition)
+        assert case.offer_record.open.closure_reason == "solution_deferred"
+        key = case.offer_record.open.proposal_id
         assert [
             f["intent"].get("proposal_id") for f in offered["suggested_follow_ups"]
         ] == [key, key]
@@ -511,12 +509,11 @@ class TestADeclinedDeferredCloseBindsTheModel:
         assert _CLOSE_INTENT not in _intents(closing)
 
     async def test_a_moved_premise_lets_the_models_close_through(self):
-        """A second solution changes the justifying signature: the decline was
-        about the state it was given in. The engine's own deferred close comes
-        back with the new signature, and the model's proposal is superseded by
-        it (#1885), not refused as a re-ask."""
+        """A second solution lapses the decline (ruling 3): the engine's own
+        deferred close comes back, and the model's proposal is superseded by it
+        (#1885), not refused as a re-ask."""
         engine, case = await self._declined()
-        declined = list(case.progress.deferred_disposition_declined_signatures)
+        (declined,) = _declines(case)
         case.solutions.append(
             Solution(
                 solution_type=SolutionType.CONFIG_CHANGE,
@@ -527,8 +524,9 @@ class TestADeclinedDeferredCloseBindsTheModel:
         result = await _turn(engine, case, "let's stop here", _proposes("closed"))
         assert "declined" not in _feedback(result)
         assert _CLOSE_INTENT not in _intents(result)
-        assert case.pending_transition["to_state"] == "closed"
-        assert case.pending_transition[_SIGNED] not in declined
+        assert case.offer_record.open.kind == "close"
+        assert case.offer_record.open.proposal_id != declined.proposal_id
+        assert _declines(case)[0].lapsed_at_turn == case.current_turn
 
 
 # ---------------------------------------------------------------------------
@@ -553,7 +551,8 @@ class TestTheHoldBlock:
 
     def test_the_declined_line_is_present_once_declined_and_conditional(self):
         case = _invalidated_case()
-        case.problem_verification.invalidation.close_declined_at_turn = 6
+        case.current_turn = 6
+        with_declined_offer(case, kind="close", basis="false_alarm")
         block = _problem_hold_emphasis(case)
         assert "The user declined closing on this finding at turn 6" in block
         # Conditional, never a flat ban: a model that obeyed a ban would never
@@ -578,7 +577,8 @@ class TestTheHoldBlock:
                 proposed_at_turn=1, accepted=True
             )
         assert case.current_stage == stage
-        case.problem_verification.invalidation.close_declined_at_turn = 6
+        case.current_turn = 6
+        with_declined_offer(case, kind="close", basis="false_alarm")
         prompt = get_prompt_for_case(case, "what now?")
         assert "Reported problem not present (false alarm)" in prompt
         assert "declined closing on this finding at turn 6" in prompt

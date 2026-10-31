@@ -10,6 +10,7 @@ from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommi
 from faultmaven.core.investigation.milestone_engine.turn_records import (
     _create_turn_record,
 )
+from faultmaven.core.investigation.offers import remember_resolve_request
 from faultmaven.core.investigation.schemas import MilestoneUpdates
 from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
@@ -26,6 +27,7 @@ from faultmaven.modules.case.contracts import (
     ProblemVerification,
     UploadedFile,
 )
+from tests.case_builders import with_open_offer
 
 _FILE_ID = "file_0123456789ab"
 
@@ -639,12 +641,12 @@ class TestMilestoneEngine:
     # test_explicit_status_transition_* tests below.
 
     @pytest.mark.asyncio
-    async def test_reasoning_validation_skipped_when_pending_transition_exists(
+    async def test_reasoning_validation_skipped_when_an_offer_is_open(
         self, mock_llm, mock_repo, base_case
     ):
-        """Test that reasoning validation is skipped when a pending_transition exists
+        """Test that reasoning validation is skipped when a resolve offer is open
 
-        User-Agent Handshake: When a transition has been proposed (pending_transition set),
+        User-Agent Handshake: When a transition has been offered,
         the LLM may still attempt milestone updates. Reasoning validation should be
         skipped since the case is in the process of transitioning.
         """
@@ -655,15 +657,13 @@ class TestMilestoneEngine:
         )
 
         base_case.state = CaseState.INVESTIGATING
-        # Simulate a pending transition from a previous turn's propose_transition()
-        base_case.pending_transition = {
-            "to_state": "resolved",
-            "reason": "User indicated the problem is resolved",
-            "summary": "Based on your message, the issue appears to be resolved.",
-            "evidence_ids": [],
-            "proposed_at": "2026-02-09T00:00:00+00:00",
-            "proposed_by": "agent",
-        }
+        # A resolve offer open from a previous turn
+        with_open_offer(
+            base_case,
+            kind="resolve",
+            basis="model",
+            summary="Based on your message, the issue appears to be resolved.",
+        )
 
         # Mock LLM response trying to complete OTHER milestones without justification
         mock_response_content = json.dumps(
@@ -679,7 +679,7 @@ class TestMilestoneEngine:
 
         # User confirms the pending transition
         # This should NOT fail with reasoning validation error
-        # because pending_transition exists (case transitioning to terminal).
+        # because an offer is open (case transitioning to terminal).
         # A bare token: a longer typed reply is re-asked, not executed (#1783).
         result = await engine.process_turn(base_case, "yes", redaction_ctx=None)
 
@@ -734,11 +734,11 @@ class TestMilestoneEngine:
 
         updated_case = result_turn_n["case_updated"]
 
-        # Verify: Case stays INVESTIGATING, pending_transition proposed
+        # Verify: Case stays INVESTIGATING, an offer opened
         assert updated_case.state == CaseState.INVESTIGATING
         assert updated_case.progress.solution_verified is False
-        assert updated_case.pending_transition is not None
-        assert updated_case.pending_transition["to_state"] == "resolved"
+        assert updated_case.offer_record.open is not None
+        assert updated_case.offer_record.open.kind == "resolve"
 
         # ===== TURN N+1: User confirms the transition =====
 
@@ -759,7 +759,7 @@ class TestMilestoneEngine:
             if (f.get("intent") or {}).get("confirmation_value") is True
         )
         assert yes_card["intent"]["proposal_id"] == (
-            updated_case.pending_transition["proposed_at"]
+            updated_case.offer_record.open.proposal_id
         )
         result_turn_n1 = await engine.process_turn(
             updated_case,
@@ -793,7 +793,7 @@ class TestMilestoneEngine:
         assert final_case.progress.solution_verified is True
 
         # 5. Pending transition cleared after execution
-        assert final_case.pending_transition is None
+        assert final_case.offer_record.open is None
 
         # 6. Status history recorded transition with user as trigger
         assert len(final_case.action_history) > 0
@@ -857,8 +857,8 @@ class TestMilestoneEngine:
         assert updated_case.state == CaseState.INQUIRY
 
         # 2. Pending transition should be set to "closed"
-        assert updated_case.pending_transition is not None
-        assert updated_case.pending_transition["to_state"] == "closed"
+        assert updated_case.offer_record.open is not None
+        assert updated_case.offer_record.open.kind == "close"
 
         # 3. Should NOT have gone through investigation
         assert updated_case.progress.symptom_verified is False
@@ -867,12 +867,12 @@ class TestMilestoneEngine:
         assert not mock_llm.route.called
 
         # 5. Canonical CLOSE confirm/decline pair emitted (alignment with
-        #    agent-initiated path: every propose_transition surface offers
+        #    agent-initiated path: every surface that opens an offer gives
         #    deterministic DECIDE confirmation suggestions).
         suggestions = result["suggested_follow_ups"]
         assert len(suggestions) == 2
         # Both name the close offer just proposed (#1812).
-        key = updated_case.pending_transition["proposed_at"]
+        key = updated_case.offer_record.open.proposal_id
         assert suggestions[0]["intent"] == {
             "type": "confirmation",
             "confirmation_value": True,
@@ -923,8 +923,8 @@ class TestMilestoneEngine:
         assert updated_case.state == CaseState.INVESTIGATING
 
         # 2. Pending transition should be set to "closed"
-        assert updated_case.pending_transition is not None
-        assert updated_case.pending_transition["to_state"] == "closed"
+        assert updated_case.offer_record.open is not None
+        assert updated_case.offer_record.open.kind == "close"
 
         # 3. Solution should NOT be verified
         assert updated_case.progress.solution_verified is False
@@ -936,7 +936,7 @@ class TestMilestoneEngine:
         suggestions = result["suggested_follow_ups"]
         assert len(suggestions) == 2
         # Both name the close offer just proposed (#1812).
-        key = updated_case.pending_transition["proposed_at"]
+        key = updated_case.offer_record.open.proposal_id
         assert suggestions[0]["intent"] == {
             "type": "confirmation",
             "confirmation_value": True,
@@ -1040,7 +1040,7 @@ class TestMilestoneEngine:
 
         assert not mock_llm.route.called
         assert base_case.state == CaseState.INVESTIGATING
-        assert base_case.pending_transition is None
+        assert base_case.offer_record.open is None
 
     @pytest.mark.asyncio
     async def test_closed_transitions_use_handshake(
@@ -1069,8 +1069,8 @@ class TestMilestoneEngine:
 
         # Should propose transition (not execute immediately)
         assert updated_case.state == CaseState.INVESTIGATING
-        assert updated_case.pending_transition is not None
-        assert updated_case.pending_transition["to_state"] == "closed"
+        assert updated_case.offer_record.open is not None
+        assert updated_case.offer_record.open.kind == "close"
         # LLM should NOT be called (deterministic response)
         assert not mock_llm.route.called
 
@@ -1995,12 +1995,12 @@ class TestRunbookSuggestion:
         assert "did not run" in result.message
 
 
-class TestContradictingIntentCancelsPendingTransition:
-    """Tests for Fix 1: Contradicting status_transition cancels pending_transition.
+class TestContradictingIntentAnswersTheOpenOffer:
+    """Tests for Fix 1: a contradicting status_transition answers the open offer.
 
-    When a pending_transition exists and the user picks a DIFFERENT target from
-    the status menu, the pending proposal is cancelled and the new intent is
-    processed normally.
+    When an offer is open and the user picks a DIFFERENT target from the
+    status menu, the offer is answered and the new intent is processed
+    normally.
 
     The menu has shed two entries since this was written, so the shape that
     exercises the rule has moved twice: originally pending CLOSE + pick
@@ -2044,12 +2044,9 @@ class TestContradictingIntentCancelsPendingTransition:
         # A standing RESOLVE proposal — the shape an agent-opened handshake
         # leaves behind (closure_reason is None for RESOLVED; resolution is
         # itself the categorization).
-        case.pending_transition = {
-            "to_state": "resolved",
-            "summary": "Shall I mark this case resolved?",
-            "evidence_ids": [],
-            "proposed_at": "2026-04-23T00:00:00+00:00",
-        }
+        contradicted = with_open_offer(
+            case, kind="resolve", basis="model", summary="Shall I mark it resolved?"
+        )
 
         # Mock LLM response for the new intent processing
         mock_response_content = json.dumps(
@@ -2075,12 +2072,16 @@ class TestContradictingIntentCancelsPendingTransition:
         # superseded rather than nulled — the close request is itself a
         # proposal. So the slot is occupied either way; what matters is that it
         # is not the OFFER THE USER CONTRADICTED, because a later confirmation
-        # must not be able to land on that. Identity is the ``proposed_at``
-        # stamp, which the superseding proposal rewrites.
-        pending = updated_case.pending_transition
+        # must not be able to land on that. Identity is the ``proposal_id``.
+        offer = updated_case.offer_record.open
         assert (
-            pending is None or pending.get("proposed_at") != "2026-04-23T00:00:00+00:00"
-        ), f"the contradicted proposal is still standing: {pending}"
+            offer is None or offer.proposal_id != contradicted.proposal_id
+        ), f"the contradicted proposal is still standing: {offer}"
+        answered = updated_case.offer_record.answers[0]
+        assert (answered.proposal_id, answered.via) == (
+            contradicted.proposal_id,
+            "menu",
+        )
 
         # Case should NOT have transitioned — a contradiction proposes, never
         # executes.
@@ -2119,17 +2120,10 @@ class TestContradictingIntentCancelsPendingTransition:
             ),
         )
 
-        # Set up a pending CLOSE transition (post-simplification shape:
-        # closure_reason is engine-derived enum; reason/proposed_by removed).
-        case.pending_transition = {
-            "to_state": "closed",
-            "summary": "Close without resolution",
-            "evidence_ids": [],
-            "proposed_at": "2026-04-23T00:00:00+00:00",
-            "closure_reason": "closed_insufficient_evidence",
-        }
-
-        before = dict(case.pending_transition)
+        # An open CLOSE offer (closure_reason is engine-derived).
+        before = with_open_offer(
+            case, kind="close", basis="menu", summary="Close without resolution"
+        )
 
         # User submits the SAME status_transition intent: a re-ask
         result = await engine.process_turn(
@@ -2143,13 +2137,13 @@ class TestContradictingIntentCancelsPendingTransition:
         updated_case = result["case_updated"]
 
         assert updated_case.state == CaseState.INVESTIGATING
-        assert updated_case.pending_transition == before
-        assert updated_case.progress.deferred_disposition_declined_signatures == []
+        assert updated_case.offer_record.open == before
+        assert updated_case.offer_record.answers == ()
         assert "Please select one of the options above" in result["agent_response"]
         assert [
             (f.get("intent") or {}).get("proposal_id")
             for f in result["suggested_follow_ups"]
-        ] == [before["proposed_at"]] * 2
+        ] == [before.proposal_id] * 2
 
 
 class TestRootCauseConclusionPersistence:
@@ -2351,20 +2345,21 @@ class TestTerminalTransitionPendingActionCleanup:
 
 
 # =============================================================================
-# Tests: needs_info-followup pivot proposes CLOSED (loop-breaker fix)
+# Tests: an unmet resolution request offers CLOSED (loop-breaker fix)
 # Surfaced 2026-05-24 in Run 25 (case_e766aa6b658f T12-T17): when readiness
 # fails on a follow-up evaluation, the engine used to emit a close-suggestion
 # message but never propose the close transition itself — so the user's
-# "yes" had nothing to confirm, producing a 5-turn stuck loop. The fix:
-# both SUGGEST_CLOSE and NEEDS_INFO-second-pass branches now propose CLOSED
-# alongside the message, mirroring the dropdown path's behavior.
+# "yes" had nothing to confirm, producing a 5-turn stuck loop. Both the
+# SUGGEST_CLOSE and still-NEEDS_INFO outcomes of the request's re-check open
+# a close offer alongside the message (#2408 keeps it: the request is read
+# once, on the next turn).
 # =============================================================================
 
 
-class TestNeedsInfoFollowupProposesClose:
-    """Verifies the needs_info-followup path proposes a CLOSED transition
-    in both pivot branches (SUGGEST_CLOSE and NEEDS_INFO second-pass),
-    so subsequent user confirmations actually fire instead of looping."""
+class TestAnUnmetRequestOffersClose:
+    """Verifies the request's re-check opens a CLOSED offer in both unmet
+    outcomes (SUGGEST_CLOSE and still NEEDS_INFO), so the user's next
+    confirmation fires instead of looping."""
 
     def _make_engine(self):
         mock_llm = MockLLMProvider()
@@ -2378,8 +2373,8 @@ class TestNeedsInfoFollowupProposesClose:
         )
 
     def _make_case_with_pending_resolve_needs_info(self):
-        """Case in INVESTIGATING with a pending RESOLVED transition
-        marked needs_info=True (the state the followup path re-evaluates)."""
+        """Case in INVESTIGATING with a resolution request remembered from
+        the previous turn (the state step 0 re-checks)."""
         case = Case(
             case_id="case_aabbccdd1122",
             title="Test Case",
@@ -2398,13 +2393,8 @@ class TestNeedsInfoFollowupProposesClose:
                 proposed_problem_statement="Issue ongoing",
             ),
         )
-        case.pending_transition = {
-            "to_state": "resolved",
-            "summary": "Awaiting user-provided detail",
-            "needs_info": True,
-            "evidence_ids": [],
-            "proposed_at": datetime.now(UTC).isoformat(),
-        }
+        case.offer_record = remember_resolve_request(case, ["root cause"])
+        case.current_turn += 1
         return case
 
     @pytest.mark.asyncio
@@ -2421,14 +2411,13 @@ class TestNeedsInfoFollowupProposesClose:
             case, metadata, user_message="ok"
         )
 
-        assert case.pending_transition is not None
-        assert case.pending_transition["to_state"] == "closed"
+        assert case.offer_record.open is not None
+        assert case.offer_record.open.kind == "close"
         # closure_reason is auto-derived; no mitigation, nothing established
-        assert (
-            case.pending_transition["closure_reason"] == "closed_insufficient_evidence"
-        )
+        assert case.offer_record.open.closure_reason == "closed_insufficient_evidence"
         assert metadata.get("resolution_suggest_close") is True
-        assert metadata.get("transition_proposed_this_turn") is True
+        assert case.offer_record.open.basis == "needs_info_unmet"
+        assert case.offer_record.resolve_request is None
 
     @pytest.mark.asyncio
     async def test_needs_info_second_pass_proposes_close(self):
@@ -2470,13 +2459,12 @@ class TestNeedsInfoFollowupProposesClose:
             case, metadata, user_message="ok"
         )
 
-        assert case.pending_transition is not None
-        assert case.pending_transition["to_state"] == "closed"
-        assert (
-            case.pending_transition["closure_reason"] == "closed_insufficient_evidence"
-        )
+        assert case.offer_record.open is not None
+        assert case.offer_record.open.kind == "close"
+        assert case.offer_record.open.closure_reason == "closed_insufficient_evidence"
         assert metadata.get("resolution_suggest_close") is True
-        assert metadata.get("transition_proposed_this_turn") is True
+        assert case.offer_record.open.basis == "needs_info_unmet"
+        assert case.offer_record.resolve_request is None
         # The hardcoded second-ask message is what the user sees — it now
         # frames the gate as "root cause eliminated", not "documented solution".
         assert (
@@ -2487,11 +2475,8 @@ class TestNeedsInfoFollowupProposesClose:
 
     @pytest.mark.asyncio
     async def test_ready_branch_unchanged(self):
-        """Control: if re-eval is READY, the pending stays RESOLVED and no
-        longer needs info — must not have been broken by the
-        SUGGEST_CLOSE/NEEDS_INFO branch changes. The ready offer is a NEW
-        offer (#1812 review finding 1): re-proposed with a fresh key, so a
-        card shipped while it needed information cannot confirm it."""
+        """Control: if re-eval is READY, the request opens the RESOLVED offer,
+        as the model's (it asked), and the request ends."""
         engine = self._make_engine()
         case = self._make_case_with_pending_resolve_needs_info()
         _make_resolution_ready(case)  # adds root_cause + Solution row
@@ -2515,18 +2500,14 @@ class TestNeedsInfoFollowupProposesClose:
                 collected_at=datetime.now(UTC),
             )
         )
-        needs_info_key = case.pending_transition["proposed_at"]
         metadata = {}
         await engine.transitions.check_automatic_transitions(
             case, metadata, user_message="ok"
         )
 
-        # Pending transition stays as RESOLVED, and no longer needs info
-        assert case.pending_transition is not None
-        assert case.pending_transition["to_state"] == "resolved"
-        assert not case.pending_transition.get("needs_info")
-        assert case.pending_transition["proposed_at"] != needs_info_key
-        assert metadata.get("transition_proposed_this_turn") is True
+        offer = case.offer_record.open
+        assert (offer.kind, offer.basis) == ("resolve", "model")
+        assert case.offer_record.resolve_request is None
         assert metadata.get("resolution_ready_for_confirmation") is True
         # The propose-close path did NOT fire
         assert metadata.get("resolution_suggest_close") is not True

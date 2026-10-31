@@ -27,26 +27,27 @@ from faultmaven.core.investigation.milestone_engine.turn_completion import (
 )
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
-from tests.case_builders import investigating_case
+from tests.case_builders import investigating_case, with_open_offer
 
 pytestmark = pytest.mark.unit
 
 
-def _case(state: CaseState, *, pending_transition: dict | None = None) -> Case:
+def _case(state: CaseState, *, offer: str | None = None) -> Case:
     # Build in INVESTIGATING (terminal states require resolved_at/closed_at/
     # closure_reason cross-field validation); the guard predicate only reads
     # ``case.state``, so bypass the validators with object.__setattr__ to place
     # a bare terminal state for the read (documented Case-testing pattern).
-    # pending_transition is set while the case is still INVESTIGATING (here, at
-    # construction): a bare terminal state would fail the timestamp cross-field
-    # check, which ``validate_assignment`` re-runs on every set. Flip the state
-    # last via object.__setattr__.
+    # The offer is opened while the case is still INVESTIGATING: a bare
+    # terminal state would fail the timestamp cross-field check, which
+    # ``validate_assignment`` re-runs on every set. Flip the state last via
+    # object.__setattr__.
     case = investigating_case(
         current_turn=5,
         statement="intermittent latency",
         symptom="intermittent latency",
-        pending_transition=pending_transition,
     )
+    if offer is not None:
+        with_open_offer(case, kind=offer, basis="model")
     if state is not CaseState.INVESTIGATING:
         object.__setattr__(case, "state", state)
     return case
@@ -127,7 +128,7 @@ def test_gate_prose_already_appended_suppresses_notice():
     """When one of the five prose gate-override branches already appended a
     state-framing notice this turn (gate_prose_appended=True), INV-40 does not
     stack a second notice — regardless of whether a transition is pending."""
-    case = _case(CaseState.INVESTIGATING, pending_transition={"to_state": "resolved"})
+    case = _case(CaseState.INVESTIGATING, offer="resolve")
     assert (
         _narration_overclaim_notice(case, "Case resolved.", gate_prose_appended=True)
         is None
@@ -146,7 +147,7 @@ def test_pending_proposal_without_gate_prose_still_corrects():
     the suggestions-only override branch mints a pending transition but appends
     NO prose (gate_prose_appended=False). The over-claim must still be corrected,
     with pending-aware wording that points at the confirm/decline options."""
-    case = _case(CaseState.INVESTIGATING, pending_transition={"to_state": "resolved"})
+    case = _case(CaseState.INVESTIGATING, offer="resolve")
     notice = _narration_overclaim_notice(
         case, "Case resolved.", gate_prose_appended=False
     )
@@ -155,9 +156,7 @@ def test_pending_proposal_without_gate_prose_still_corrects():
     assert "proposed" in lowered  # frames it as not-yet-effective
     assert "confirm" in lowered  # points at the affordances below
     # The strictly-worse variant: prose says "resolved" while CLOSE is proposed.
-    case_close = _case(
-        CaseState.INVESTIGATING, pending_transition={"to_state": "closed"}
-    )
+    case_close = _case(CaseState.INVESTIGATING, offer="close")
     assert (
         _narration_overclaim_notice(
             case_close, "Case resolved.", gate_prose_appended=False
@@ -192,7 +191,7 @@ def test_conditional_prose_false_positive_is_still_true():
     assert "not been resolved" in notice.lower()
     # The predicate is pure — it must not mutate the case.
     assert case.state is CaseState.INVESTIGATING
-    assert case.pending_transition is None
+    assert case.offer_record.open is None
 
 
 # ---------------------------------------------------------------------------
