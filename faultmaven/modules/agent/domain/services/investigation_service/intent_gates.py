@@ -9,6 +9,7 @@ from faultmaven.core.investigation.milestone_engine.statement_revision import (
 from faultmaven.core.investigation.milestone_engine.transition_consent import (
     gate1_bare_consent,
 )
+from faultmaven.core.investigation.offers import open_terminal_offer
 from faultmaven.models.api_models import (
     IntentType,
     QueryIntent,
@@ -39,7 +40,7 @@ def _minted_intent_swallows_gate_consent(
     lag?" is substantive input, never consent.
 
     **Two gates, not one.** Until fm#918 this returned False whenever the
-    case had no ``pending_transition``, justified as "mints with no
+    case had no pending transition, justified as "mints with no
     pending transition (e.g. Gate 1 problem-statement confirmation) …
     adopt as before — none of them can execute a terminal transition".
     The premise holds; the conclusion did not follow. A minted
@@ -81,10 +82,9 @@ def _minted_intent_swallows_gate_consent(
     outcome to the typed-decline pattern matcher instead.
 
     One structural consequence, so nobody re-derives it as a hole: with
-    the Gate-1 arm affirmative-only, any mint it matches while a
-    ``pending_transition`` exists is matched by ``confirms_pending_-
-    transition`` too (that arm accepts CONFIRMATION+True for any pending
-    row). The fm#918 if/else hole therefore cannot reopen through a
+    the Gate-1 arm affirmative-only, any mint it matches while a resolve or
+    close offer is open is matched by ``confirms_pending_transition`` too
+    (that arm accepts CONFIRMATION+True for any open offer). The fm#918 if/else hole therefore cannot reopen through a
     pending case — but the arm is still written independently of
     ``pending``, because 0c is reached with one or without one and the
     no-pending shape is the arm's own.
@@ -102,19 +102,16 @@ def _minted_intent_swallows_gate_consent(
     # primary?"): the pending arm only matches ``confirmation_value is
     # True``, so the mint was adopted, 0b cancelled the pending and fell
     # through, and 0c committed Gate 1 — the exposure the arm exists to
-    # close, reached through the one door the if/else left open. A
-    # ``needs_info`` pending is worse still: 0b is skipped wholesale
-    # (``elif not case.pending_transition.get("needs_info")``) and the
-    # mint lands in 0c directly.
-    pending = getattr(case, "pending_transition", None)
+    # close, reached through the one door the if/else left open.
+    offer = open_terminal_offer(case)
 
-    # The pending TERMINAL gate. Requires a pending row by definition.
-    confirms_pending_transition = bool(pending) and (
+    # The TERMINAL gate. Requires an open resolve or close offer.
+    confirms_pending_transition = offer is not None and (
         (minted.type == IntentType.CONFIRMATION and minted.confirmation_value is True)
         or (
             minted.type == IntentType.STATUS_TRANSITION
             and minted.to_state is not None
-            and minted.to_state.value == pending.get("to_state")
+            and minted.to_state.value == offer.kind.to_state
         )
     )
 

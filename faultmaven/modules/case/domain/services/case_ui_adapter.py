@@ -96,15 +96,15 @@ def _extract_problem_verification(case: Case) -> Optional[ProblemVerificationDat
         if pv and pv.urgency_level != UrgencyLevel.UNKNOWN
         else None
     )
+    offer = case.offer_record.open
+    revision = offer.revision if offer is not None else None
     return ProblemVerificationData(
         urgency_level=urgency_level,
         severity=pv.severity.lower() if pv and pv.severity else None,
         temporal_state=pv.temporal_state.value if pv and pv.temporal_state else None,
         problem_status=case.progress.problem_status if case.progress else None,
         original_problem_statement=original,
-        pending_revision=(
-            pv.pending_revision.text if pv and pv.pending_revision else None
-        ),
+        pending_revision=revision.text if revision is not None else None,
         invalidation_finding=(
             pv.invalidation.rationale if pv and pv.invalidation else None
         ),

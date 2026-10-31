@@ -184,13 +184,14 @@ class InvestigationProgress(BaseModel):
     )
     # ProblemVerification carries the statement's lifecycle beside it:
     # statement_history (confirmed / revised / edited / invalidated /
-    # invalidation_withdrawn records), pending_revision (text, evidence, basis,
-    # prior_status, held_since_turn, offer_key, staged cause work per turn, each turn's bundle
-    # carrying the fix execution it reported as `held_fix`, a fix identity the
-    # replay registers stamped at that turn, #2105), invalidation
-    # (rationale, evidence, turn, prior_status, close_declined_at_turn — the
-    # turn the user declined closing on the finding, #1889) and
-    # declined_revision_keys.
+    # invalidation_withdrawn records) and invalidation (rationale, evidence,
+    # turn, prior_status). A revision awaiting the user is an offer on the
+    # case's offer record (Case.offer_record, #2379): its PendingRevision
+    # (text, evidence, basis, prior_status, held_since_turn, wording_key,
+    # staged cause work per turn, each turn's bundle carrying the fix
+    # execution it reported as `held_fix`, a fix identity the replay registers
+    # stamped at that turn, #2105). A declined revision wording and a
+    # declined false-alarm close are answers on the same record.
     # investigation-lifecycle-logic.md §1.4.1.
 
     solution_proposed: bool = Field(
@@ -516,7 +517,7 @@ when an Axis-B (mitigation-gap) judgment fires, and the user accepts or declines
 
 ### 1.5 Complete Case Model
 
-> **Illustrative subset** — this snippet covers the investigation-engine-facing fields. The canonical model in `faultmaven/modules/case/domain/models/case.py` additionally exposes `description`, `is_archived`, `archived_at`, `last_activity_at`, `pending_transition`, `last_suggestions`, `kb_context`, `messages`, `message_count`, and `investigation_journal`.
+> **Illustrative subset** — this snippet covers the investigation-engine-facing fields. The canonical model in `faultmaven/modules/case/domain/models/case.py` additionally exposes `description`, `is_archived`, `archived_at`, `last_activity_at`, `offer_record` (the offer record, #2379: the one open offer, every answer, a remembered resolution request; rules in `core/investigation/offers.py`), `disposition_eligibility` (its projection), `last_suggestions`, `kb_context`, `messages`, `message_count`, and `investigation_journal`.
 
 ```python
 class Case(BaseModel):
@@ -715,8 +716,8 @@ Two validation checks gate the resolve and runbook generation flows. Both are in
 # Constructor: ResolutionReadiness(verdict, message, missing)
 class ResolutionReadiness:
     # Verdict values:
-    #   "ready"          — Root cause + solution present → propose RESOLVED transition
-    #   "needs_info"     — One missing (e.g., root cause but no solution) → propose with needs_info=True
+    #   "ready"          — Root cause + solution present → open a RESOLVED offer
+    #   "needs_info"     — One missing (e.g., root cause but no solution) → a request, no offer (#2408)
     #   "suggest_close"  — No root cause, no solution, no evidence → pivot to CLOSED (the LLM-emit path; RESOLVED is not a menu pick)
     verdict: str
     message: str        # Human-facing explanation
@@ -725,9 +726,9 @@ class ResolutionReadiness:
 
 Checks: `root_cause_conclusion` (or `working_conclusion` with likelihood ≥0.6), `solutions` list, `problem_verification`, `evidence` list.
 
-For `NEEDS_INFO`, the system stores the pending transition with `needs_info=True`. This remembers the user's intent to resolve. On subsequent turns, `_check_automatic_transitions` re-evaluates readiness. When the case becomes READY, the LLM response is overridden with a deterministic confirmation prompt.
+For `NEEDS_INFO` on a model `resolved`, no offer opens and no chips show: the readiness ask goes below the reply and the offer record remembers what is missing (`OfferRecord.resolve_request`, #2408). The next turn's `check_automatic_transitions` re-evaluates readiness once: READY opens the resolve offer with its confirmation pair; still short opens the close offer.
 
-For `SUGGEST_CLOSE`, the engine pivots the pending proposal to CLOSED immediately (the LLM-emit path; RESOLVED is not a menu pick). The user sees the close confirmation pair rather than a resolve prompt.
+For `SUGGEST_CLOSE`, the engine opens a CLOSE offer instead, immediately (the LLM-emit path; RESOLVED is not a menu pick). The user sees the close confirmation pair rather than a resolve prompt.
 
 **RunbookReadiness** (`assess_runbook_readiness(case)`) — higher bar for quality runbook generation.
 
@@ -836,7 +837,8 @@ class ProblemVerification(BaseModel):
     )
 
     # Statement lifecycle — written only by core/investigation/problem_status:
-    # statement_history, pending_revision, invalidation, declined_revision_keys
+    # statement_history and invalidation; a pending revision is the revision
+    # offer on Case.offer_record, opened and answered only by problem_status
     # (see investigation-lifecycle-logic.md §1.4.1).
 ```
 

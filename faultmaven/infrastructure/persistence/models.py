@@ -1497,10 +1497,11 @@ class CaseModel(Base):
     closed_at = Column(DateTime(timezone=True), nullable=True, index=True)
 
     # Denormalized per-disposition eligibility view (JSON text), maintained
-    # at CaseRepository.save() chokepoint via derive_disposition_eligibility.
-    # Shape: {"resolved": "ready|needs_info|not_eligible",
-    #         "closed":   "ready|needs_info|not_eligible"}
-    # Read by the UI adapter to gate dropdown affordances on case content.
+    # at the save chokepoint (CaseRepository.prepare_for_save) by the offer
+    # projection. Shape: ``DispositionEligibility``:
+    # {"resolved": "ready|needs_info|not_eligible",
+    #  "closed":   "ready|suggests_alternative|not_eligible"}
+    # Read by the UI adapter to gate the status menu's Close on case content.
     disposition_eligibility = Column(Text, nullable=True)
 
     # JSON blobs for complex domain objects (not query targets)

@@ -44,7 +44,6 @@ from faultmaven.core.investigation.milestone_engine.transition_consent import (
     offer_click_refusal,
     opens_with_consent_loosely,
     pending_gate_verdict,
-    terminal_offer_key,
 )
 from faultmaven.core.investigation.milestone_engine.transition_turns import (
     _close_on_explicit_intent,
@@ -72,6 +71,7 @@ from faultmaven.core.investigation.milestone_engine.turn_records import (
 from faultmaven.core.investigation.milestone_engine.vectorization import (
     EvidenceVectorizer,
 )
+from faultmaven.core.investigation.offers import answer_offer, open_terminal_offer
 from faultmaven.core.investigation.problem_status import (
     cancel_revision,
     decline_revision,
@@ -79,6 +79,8 @@ from faultmaven.core.investigation.problem_status import (
 from faultmaven.core.investigation.progress_monitor import ProgressMonitor
 from faultmaven.core.investigation.state_validator import StateValidator
 from faultmaven.core.investigation.terminal_transitions import (
+    ClosureReadiness,
+    closure_verdict,
     is_question,
     resolve_reopen_admitted,
 )
@@ -95,8 +97,11 @@ from faultmaven.infrastructure.security.case_redaction import load_case_redactio
 from faultmaven.models.interfaces import IAgentToolRegistry, ILLMProvider
 from faultmaven.modules.agent.tools.vectorize_file_tool import VECTORIZED_SYSTEM_MESSAGE
 from faultmaven.modules.case.contracts import (
+    AnswerKind,
+    AnswerVia,
     Case,
     CaseState,
+    OfferKind,
     ProblemStatus,
     TurnOutcome,
 )
@@ -106,11 +111,6 @@ from faultmaven.modules.case.domain.services.case_action_manager import (
 from faultmaven.modules.knowledge.contracts import IKnowledgeService
 
 from .affordances import _gate1_is_pending, gate1_statement_is_confirmable
-from .response_synthesis import (
-    _DISPOSITION_GATE_ANSWERED_KEY,
-    _note_engine_disposition_withdrawn,
-    _record_deferred_disposition_decline,
-)
 from .stage_gates import _add_system_feedback
 from .statement_revision import (
     confirm_revision,
@@ -553,12 +553,12 @@ class MilestoneEngine:
         # user-selectable case action (#1608) — it is earned by a confirmed
         # problem statement, which Gate 1 performs.
         #
-        # Placement is load-bearing, not tidiness. Section 0b below cancels a
-        # contradicting pending transition and records the fm#1122 decline
-        # signature before reaching the per-target branches, so refusing down
-        # there unwound past those mutations with no save: the standing close
-        # offer survived with no decline recorded, and the engine re-fired it
-        # on the next turn — the re-nag fm#1122 exists to prevent.
+        # Placement is load-bearing, not tidiness. Section 0b below answers a
+        # contradicting open offer (recording the fm#1122 decline) before
+        # reaching the per-target branches, so refusing down there unwound
+        # past that answer with no save: the open close offer survived with no
+        # decline recorded, and the engine re-fired it on the next turn — the
+        # re-nag fm#1122 exists to prevent.
         #
         # ``InvestigationService._handle_status_transition`` rejects this at
         # the boundary with a 422, so this is the backstop for direct engine
@@ -666,8 +666,8 @@ class MilestoneEngine:
             # with no offer left standing, and 0c must not refuse it there.
             click_answered_by_gate = False
 
-            # 0b. Pending transition confirmation — short-circuit before LLM
-            # When a pending transition exists (User-Agent Handshake), check if
+            # 0b. The open resolve or close offer — short-circuit before LLM
+            # When an offer is open (User-Agent Handshake), check if
             # the user is confirming or declining BEFORE calling the LLM. This
             # avoids unnecessary LLM calls and prevents schema validation errors
             # from blocking the confirmation.
@@ -678,27 +678,30 @@ class MilestoneEngine:
             #    and the offer the card presents (``proposal_id``). A click
             #    naming any other offer is refused before the verdict (#1812).
             #    A status-dropdown pick names a state, not an offer: a re-pick
-            #    of the pending target re-shows the card and executes nothing
+            #    of the offer's target re-shows the card and executes nothing
             #    (#1838).
             # 2. Pattern-based: fallback for users who type instead of clicking.
             #    Only a BARE consent token executes (#1783); a longer typed
             #    reply is re-asked.
-            if hasattr(case, "pending_transition") and case.pending_transition:
-                from faultmaven.core.investigation.terminal_transitions import (
-                    cancel_pending_transition,
-                )
+            offer = open_terminal_offer(case)
+            if offer is not None:
+                # Every branch below that falls through to normal processing
+                # ANSWERS the offer first (declined or withdrawn), and an
+                # offer answered on this turn keeps the engine's proposers
+                # quiet for the rest of it (``offers.
+                # terminal_offer_answered_this_turn``): a user part-way through
+                # deciding about a close, whose next word is "yes", must not
+                # have that word land on a resolve offer they were shown while
+                # asking about the close.
 
-                # This turn BEGAN inside a disposition handshake, whoever
-                # opened it. Recorded before any branch below decides what the
-                # message was, because several of them withdraw the offer and
-                # fall through to normal processing — and the resolution
-                # backstop at 4c must not read that as a free channel and put a
-                # DIFFERENT target in front of the user on the same turn. A
-                # user part-way through deciding about a close, whose next word
-                # is "yes", must not have that word land on a resolve offer
-                # they were shown while asking about the close. Turn-scoped: the
-                # backstop is free again next turn.
-                metadata[_DISPOSITION_GATE_ANSWERED_KEY] = True
+                def _answer(answer: AnswerKind, via: AnswerVia) -> None:
+                    case.offer_record = answer_offer(
+                        case,
+                        proposal_id=offer.proposal_id,
+                        answer=answer,
+                        via=via,
+                        actor_id=user_id,
+                    )
 
                 # Shared gate-reply classification: a question is never a
                 # gate answer regardless of length; otherwise length is the
@@ -710,41 +713,47 @@ class MilestoneEngine:
                     or is_question(stripped_message)
                 )
 
-                # Contradicting status_transition intent cancels the pending
-                # transition. Example: user clicked "Close" (pending), then
-                # clicked "Investigating" — cancel the close and process the
-                # new intent normally.
+                # Contradicting status_transition intent answers the open
+                # offer. Example: user was offered a resolution, then picked
+                # Close from the menu — the resolve offer is answered and the
+                # new intent processed normally.
                 if (
                     intent_type == "status_transition"
                     and intent_data
-                    and intent_data.get("to_state")
-                    != case.pending_transition.get("to_state")
+                    and intent_data.get("to_state") != offer.kind.to_state
                 ):
-                    old_target = case.pending_transition.get("to_state")
                     new_target = intent_data.get("to_state")
-                    # Picking a different target is an unmistakable refusal of
-                    # the standing offer, so record it before the cancel erases
-                    # the provenance (fm#1122) — otherwise the engine's
-                    # deferred disposition re-fires next turn from state the
-                    # user just contradicted.
-                    _record_deferred_disposition_decline(
-                        case, superseded_by=new_target, metadata=metadata
+                    # Picking a different target is an unmistakable refusal
+                    # of the open offer (fm#1122), with one exception: a
+                    # Close on a resolvable case whose resolution offer is
+                    # open is pivoted straight back to that resolution
+                    # (INV-37), so recording "the user refused resolve" would
+                    # bind the offer the engine is about to make. Withdrawn,
+                    # then. (While a resolve decline stands the close is not
+                    # pivoted and closes, #2360; the decline it would record
+                    # is the one already standing.)
+                    pivots_back = (
+                        new_target == CaseState.CLOSED.value
+                        and offer.kind == OfferKind.RESOLVE
+                        and closure_verdict(case) == ClosureReadiness.SUGGEST_RESOLVE
                     )
-                    _note_engine_disposition_withdrawn(case, metadata)
-                    cancel_pending_transition(case)
+                    _answer(
+                        AnswerKind.WITHDRAWN if pivots_back else AnswerKind.DECLINED,
+                        AnswerVia.MENU,
+                    )
                     logger.info(
-                        f"Pending transition to '{old_target}' cancelled — user "
-                        f"requested different transition to '{new_target}' "
-                        f"for case {case.case_id}"
+                        f"Open {offer.kind.value} offer answered — user "
+                        f"requested a transition to '{new_target}' for case "
+                        f"{case.case_id}"
                     )
                     # Fall through to normal intent processing (section 0c)
-                elif not case.pending_transition.get("needs_info"):
+                else:
                     # The answer the turn's intent carries, if any.
                     intent_confirms = (
                         intent_type == "confirmation"
                         and (intent_data or {}).get("value") is True
                     )
-                    # A status_transition intent naming the pending target. A
+                    # A status_transition intent naming the offer's target. A
                     # MINTED one (``typed``) carries a confirmation whose text
                     # decides, as any mint does. A CLICKED one is the status
                     # dropdown picked again, and is NOT consent (#1838, ruling
@@ -757,8 +766,7 @@ class MilestoneEngine:
                     # would escape and be recorded as a refusal.
                     status_transition_confirms = (
                         intent_type == "status_transition"
-                        and (intent_data or {}).get("to_state")
-                        == case.pending_transition.get("to_state")
+                        and (intent_data or {}).get("to_state") == offer.kind.to_state
                     )
                     status_repick_clicked = status_transition_confirms and not typed
                     intent_declines = (
@@ -773,13 +781,12 @@ class MilestoneEngine:
                     # A CLICK answers only the offer it names (#1812, ruling
                     # (a)). One that names another offer, or none, executes
                     # nothing, withdraws nothing and records nothing: the reply
-                    # says so and re-shows the standing offer. A minted intent
+                    # says so and re-shows the open offer. A minted intent
                     # (``typed``) is not a click, so the text decides and the
                     # key is not consulted.
-                    if (intent_confirms or intent_declines) and not typed:
-                        refusal = offer_click_refusal(
-                            intent_data, terminal_offer_key(case.pending_transition)
-                        )
+                    clicked = (intent_confirms or intent_declines) and not typed
+                    if clicked:
+                        refusal = offer_click_refusal(intent_data, offer.proposal_id)
                         if refusal is not None:
                             return _refuse_offer_click(
                                 case=case,
@@ -795,19 +802,22 @@ class MilestoneEngine:
                     # intent the service minted from typed text (``typed``)
                     # is not a click, and never overrides the text. The
                     # verdict also names how the user confirmed, for the
-                    # turn record (#1748). A clicked re-pick of the pending
+                    # turn record (#1748). A clicked re-pick of the offer's
                     # target is a re-ask that records nothing (#1838): the
-                    # standing offer's card comes back, and only its click or
+                    # open offer's card comes back, and only its click or
                     # a bare typed consent executes it.
                     if status_repick_clicked:
                         verdict, confirmed_via = "reask", None
                     else:
                         verdict, confirmed_via = pending_gate_verdict(
                             user_message,
-                            case.pending_transition.get("to_state"),
+                            offer.kind.to_state,
                             intent_value=intent_value,
                             typed=typed,
                         )
+                    # How the answer arrived, for the record: a click, or a
+                    # bare typed token (a minted intent decides by its text).
+                    gate_via = AnswerVia.CLICK if clicked else AnswerVia.TOKEN
                     # A turn carrying an upload is never consumed by the gate:
                     # the file is new data and must be analysed, whatever the
                     # caption says ("logs", "", "ok here are the logs"). Only
@@ -824,29 +834,23 @@ class MilestoneEngine:
                             upload_report=upload_report,
                             user_message=user_message,
                             confirmed_via=confirmed_via,
+                            via=gate_via,
                         )
                     elif verdict == "decline":
-                        # Record the refusal BEFORE cancelling: the cancel is
-                        # what erases the provenance this reads (fm#1122), and
-                        # the target the bare reply is keyed on (#2360).
-                        declined_to_state = case.pending_transition.get("to_state")
-                        _record_deferred_disposition_decline(case, metadata=metadata)
-                        _note_engine_disposition_withdrawn(case, metadata)
-                        cancel_pending_transition(case)
+                        _answer(AnswerKind.DECLINED, gate_via)
 
                         if message_is_substantive or turn_carries_upload:
                             # The decline carries substance beyond a bare
                             # "no" — new data, a question, a redirection
                             # ("no, we did not do anything yet — did you
                             # see anything wrong?"), or an upload. The
-                            # proposal is withdrawn; the message itself must
+                            # proposal is declined; the message itself must
                             # still be processed as a normal turn so nothing
                             # the user said or sent is swallowed by the gate.
                             logger.info(
-                                f"Pending transition declined with a "
-                                f"substantive message or an upload for case "
-                                f"{case.case_id} — proposal withdrawn, "
-                                f"processing message normally"
+                                f"Open offer declined with a substantive "
+                                f"message or an upload for case "
+                                f"{case.case_id} — processing message normally"
                             )
                             # Fall through to normal processing (section 0c)
                         else:
@@ -854,18 +858,18 @@ class MilestoneEngine:
                                 case=case,
                                 upload_report=upload_report,
                                 user_message=user_message,
-                                declined_to_state=declined_to_state,
+                                declined=offer,
                             )
                     else:
                         # ``reask`` (consent-shaped but not bare, text and
                         # minted intent disagree, or a clicked re-pick of the
-                        # pending target, #1838), or ``not_an_answer``. A
+                        # offer's target, #1838), or ``not_an_answer``. A
                         # SUBSTANTIVE non-answer (long, or carrying a question)
                         # is not an answer to the gate at all, and neither is
                         # a turn carrying an upload: holding the gate against
                         # those swallowed every typed turn with no LLM call
                         # and bricked the case (#656, turns 12-13). The
-                        # proposal is withdrawn instead and the message
+                        # offer is withdrawn instead and the message
                         # processed as a normal turn; the engine can always
                         # re-propose later from fresher state. Everything else
                         # — a re-ask, a short question-free reply ("hmm"),
@@ -873,31 +877,26 @@ class MilestoneEngine:
                         # buttons again, every time it is sent, and never
                         # recorded as a refusal: every proposal is terminal,
                         # and a re-ask must never become a decline (#1783,
-                        # ruling (a); the one-re-present cap #656 added is
-                        # gone). None of these is worth an LLM turn.
+                        # ruling (a)). None of these is worth an LLM turn.
                         text_escapes = (
                             verdict == "not_an_answer" and message_is_substantive
                         )
                         if text_escapes or turn_carries_upload:
-                            # The offer is withdrawn either way; whether that
-                            # is a REFUSAL splits on the two halves of
+                            # The offer is answered either way; whether it is
+                            # a REFUSAL splits on the two halves of
                             # message_is_substantive, which the gate
                             # deliberately conflates. A QUESTION (a question
-                            # mark, ``is_question``; #1840) is a
-                            # user deciding — "what happens to the runbook if
-                            # I close this?" — and recording it would make the
-                            # affordance disappear, unexplained, until a
-                            # premise moved: the same engine-acts-without-
-                            # saying-why defect this PR family exists to kill.
-                            # A long non-question non-answer is a deflection
+                            # mark, ``is_question``; #1840) is a user deciding
+                            # — "what happens to the runbook if I close
+                            # this?" — and is withdrawn, never declined:
+                            # recording it would make the affordance
+                            # disappear, unexplained, until a premise moved. A
+                            # long non-question non-answer is a deflection
                             # ("we'll do it in Friday's window") and IS a
-                            # refusal. Either way the withdrawal is noted for
-                            # the turn, because the fall-through below reaches
-                            # _maybe_propose_deferred_close again and would
-                            # otherwise re-take the affordances on this very
-                            # turn (fm#1122). An upload is not a refusal: it
-                            # is withdrawn and recorded only by the text rule.
-                            # A reply that OPENS with consent is not a
+                            # refusal (#1808's rule; round E revisits typed
+                            # replies). An upload is not a refusal: it is
+                            # withdrawn, and declined only by the text rule. A
+                            # reply that OPENS with consent is not a
                             # deflection either (#1808): "Yes, go ahead and
                             # close it. We verified …" is withdrawn and
                             # processed, and the offer may come back. Read
@@ -907,18 +906,17 @@ class MilestoneEngine:
                             # not take this turn (its readers stay strict), so
                             # the LLM sees it either way; reading loosely
                             # costs at most a refusal left unrecorded.
-                            if (
+                            deflection = (
                                 text_escapes
                                 and not is_question(stripped_message)
                                 and not opens_with_consent_loosely(stripped_message)
-                            ):
-                                _record_deferred_disposition_decline(
-                                    case, metadata=metadata
-                                )
-                            _note_engine_disposition_withdrawn(case, metadata)
-                            cancel_pending_transition(case)
+                            )
+                            if deflection:
+                                _answer(AnswerKind.DECLINED, AnswerVia.TYPED)
+                            else:
+                                _answer(AnswerKind.WITHDRAWN, AnswerVia.TYPED)
                             logger.info(
-                                f"Pending transition withdrawn for case "
+                                f"Open offer answered for case "
                                 f"{case.case_id}: message is not a gate "
                                 f"answer (substantive="
                                 f"{message_is_substantive}, upload="
@@ -934,8 +932,8 @@ class MilestoneEngine:
                             )
 
             # 0b'. A revised problem statement awaiting re-confirmation
-            # (statement_revision.py). Exclusive with a pending transition, so
-            # 0b above never ran on this turn. The click names its offer
+            # (statement_revision.py). The offer record's one slot holds it,
+            # so 0b above found no resolve or close offer on this turn. The click names its offer
             # (#1812); the text is read by the disposition gate's own grammar
             # (``pending_gate_verdict``): a click or a bare "yes" confirms and
             # the revision commits BEFORE the LLM call, so the model works this
@@ -970,10 +968,17 @@ class MilestoneEngine:
                 revision_verdict, _ = pending_gate_verdict(
                     user_message, None, intent_value=revision_intent, typed=typed
                 )
+                revision_via = (
+                    AnswerVia.CLICK
+                    if revision_intent is not None and not typed
+                    else AnswerVia.TOKEN
+                )
                 if revision_verdict == "confirm":
-                    await confirm_revision(self.responses, case, metadata)
+                    await confirm_revision(
+                        self.responses, case, metadata, via=revision_via
+                    )
                 elif revision_verdict == "decline":
-                    declined = decline_revision(case)
+                    declined = decline_revision(case, via=revision_via)
                     discarded = staged_work_summary(declined)
                     metadata["problem_status_changed"] = True
                     _add_system_feedback(
@@ -1033,22 +1038,19 @@ class MilestoneEngine:
                     f"for case {case.case_id}"
                 )
 
-                # Import terminal transition functions
                 from faultmaven.core.investigation.terminal_transitions import (
                     assess_closure_readiness,
-                    propose_transition,
                 )
 
                 # Handle each status transition
                 if to_status_str == "closed":
                     # The user's own close moves past a revision awaiting
-                    # re-confirmation: it is cancelled, not declined.
+                    # re-confirmation: it is withdrawn, not declined (INV-45).
                     if revision_pending(case):
-                        cancel_revision(case)
+                        cancel_revision(case, via=AnswerVia.MENU)
                     return _close_on_explicit_intent(
                         assess_closure_readiness=assess_closure_readiness,
                         case=case,
-                        propose_transition=propose_transition,
                         upload_report=upload_report,
                         user_message=user_message,
                     )
@@ -1060,7 +1062,7 @@ class MilestoneEngine:
                 # The branch that used to live here took ANY pick, ran the
                 # readiness check AFTER it and then argued with it (propose /
                 # pivot to close / ask for what is missing), and one of its
-                # arms confirmed a standing ``needs_info`` proposal without
+                # arms confirmed a standing resolve proposal without
                 # re-reading readiness — executing RESOLVED on a case carrying
                 # no qualifying ``causal_absence_evidence`` row. Deciding
                 # whether to OFFER retires the argument and the bypass
@@ -1102,19 +1104,11 @@ class MilestoneEngine:
                 # A CLICK answers only the offer it names (#1812, ruling (a)).
                 # Not one 0b answered (``click_answered_by_gate``). The only
                 # offer a click can answer here is Gate 1: while it is pending,
-                # every other click is checked against its key, whatever else
-                # is pending. With Gate 1 not pending, a click on a standing
-                # ``needs_info`` offer (which 0b skips) falls through to the LLM
-                # as it always did, and any other click finds nothing standing.
+                # every other click is checked against its key. With Gate 1
+                # not pending, nothing a click can answer is standing, so any
+                # click is refused.
                 gate1_standing = _gate1_is_pending(case)
-                if (
-                    not typed
-                    and not click_answered_by_gate
-                    and (
-                        gate1_standing
-                        or not (case.pending_transition or {}).get("needs_info")
-                    )
-                ):
+                if not typed and not click_answered_by_gate:
                     refusal = offer_click_refusal(
                         intent_data,
                         (
@@ -1163,9 +1157,9 @@ class MilestoneEngine:
                     # precisely because Gate 1 did not commit). ``_gate1_is_pending``
                     # is a pure function of that state, so the confirmation pair
                     # is re-offered on the refined statement with no bookkeeping
-                    # here. Nothing to withdraw either: Gate 1 has no
-                    # ``pending_transition`` row, which is why this arm has no
-                    # counterpart to 0b's ``_record_deferred_disposition_decline``.
+                    # here. Nothing to answer either: Gate 1 is not an offer
+                    # on the record, which is why this arm has no counterpart
+                    # to 0b's recorded decline.
                     if confirmation_value is False:
                         logger.info(
                             f"Case {case.case_id}: Gate 1 DECLINED via confirmation "

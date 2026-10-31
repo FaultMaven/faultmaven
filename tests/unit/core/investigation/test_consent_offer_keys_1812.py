@@ -21,6 +21,7 @@ The invariant these pin, from the plan:
   a consent token. A minted decline on question-free text still declines.
 """
 
+import re
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -40,32 +41,25 @@ from faultmaven.core.investigation.milestone_engine.errors import MilestoneEngin
 from faultmaven.core.investigation.milestone_engine.response_synthesis import (
     _narration_asserts_disposition,
 )
-from faultmaven.core.investigation.milestone_engine.stage_gates import (
-    _close_confirmation_suggestions,
-)
 from faultmaven.core.investigation.milestone_engine.terminal_replies import (
     _build_resolution_confirmation,
-    _resolution_confirmation_suggestions,
 )
 from faultmaven.core.investigation.milestone_engine.transition_consent import (
     TYPED_CONFIRMATION_LINE,
     _consent_prefix,
     gate1_offer_key,
     offer_click_refusal,
-    terminal_offer_key,
 )
 from faultmaven.core.investigation.milestone_engine.transition_turns import (
     STALE_OFFER_LINE,
 )
+from faultmaven.core.investigation.offer_projection import project_offers
+from faultmaven.core.investigation.offers import answer_offer, remember_resolve_request
 from faultmaven.core.investigation.schemas import (
     InquiryResponse,
     InvestigationResponse_Diagnosis,
 )
-from faultmaven.core.investigation.terminal_transitions import (
-    cancel_pending_transition,
-    propose_transition,
-)
-from faultmaven.modules.case.contracts import ProblemStatus
+from faultmaven.modules.case.contracts import AnswerKind, AnswerVia, ProblemStatus
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.conclusion import (
     ConfidenceLevel,
@@ -80,6 +74,7 @@ from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.domain.models.problem import ProblemVerification
 from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 from faultmaven.modules.case.domain.models.solution import Solution, SolutionType
+from tests.case_builders import with_open_offer
 
 _FILE_ID = "file_0123456789ab"
 
@@ -87,7 +82,6 @@ pytestmark = pytest.mark.unit
 
 STATEMENT = "Checkout API returns 503 for all users since 14:00 UTC"
 REVISED = "Checkout API returns 503 for EU users only since 14:00 UTC"
-SIGNATURE = "SUGGEST_CLOSE|1|chain"
 REPLY = "Here is what the logs say about the 503s."
 
 
@@ -177,12 +171,20 @@ def _investigating(*, cause: bool = False, absence: bool = False) -> Case:
 
 
 def _pending(to_state: str = "resolved", **kw) -> Case:
-    """An INVESTIGATING case with a signed terminal offer standing, so a
-    recorded refusal is visible and "nothing recorded" is not vacuous."""
+    """An INVESTIGATING case with an engine offer open, whose decline binds, so
+    a recorded refusal is visible and "nothing recorded" is not vacuous."""
     case = _investigating(**kw)
-    propose_transition(case, to_state=to_state, summary=f"Shall I {to_state} it?")
-    case.pending_transition["justifying_signature"] = SIGNATURE
+    kind, basis = {
+        "resolved": ("resolve", "backstop"),
+        "closed": ("close", "deferred"),
+    }[to_state]
+    with_open_offer(case, kind=kind, basis=basis, summary=f"Shall I {to_state} it?")
     return case
+
+
+def _declined_ids(case) -> list:
+    """The ids of the offers the user declined, oldest first."""
+    return [a.proposal_id for a in case.offer_record.answers if a.answer == "declined"]
 
 
 def _gate1_case(statement: str = STATEMENT) -> Case:
@@ -230,15 +232,15 @@ async def _turn(engine, case, message="", **kw):
     )
 
 
-def _assert_refused_on_terminal(result, case, before: dict):
-    """Nothing executed, nothing withdrawn, nothing recorded; the reply names
-    the earlier offer and re-shows the standing one with its current key."""
+def _assert_refused_on_terminal(result, case, before):
+    """Nothing executed, nothing answered; the reply names the earlier offer
+    and re-shows the open one with its key."""
     assert case.state == CaseState.INVESTIGATING
-    assert case.pending_transition == before, "the standing offer moved"
-    assert case.progress.deferred_disposition_declined_signatures == []
+    assert case.offer_record.open == before, "the open offer moved"
+    assert case.offer_record.answers == ()
     assert result["agent_response"].startswith(f"{STALE_OFFER_LINE}\n\n")
     assert "Please select one of the options above" in result["agent_response"]
-    assert _keys(result["suggested_follow_ups"]) == [before["proposed_at"]] * 2
+    assert _keys(result["suggested_follow_ups"]) == [before.proposal_id] * 2
 
 
 # =============================================================================
@@ -247,17 +249,15 @@ def _assert_refused_on_terminal(result, case, before: dict):
 
 
 class TestTheOfferKeys:
-    def test_a_terminal_offer_is_named_by_its_proposal(self):
+    def test_an_offer_is_named_by_an_opaque_random_id(self):
         case = _investigating()
-        propose_transition(case, to_state="resolved", summary="r")
-        first = terminal_offer_key(case.pending_transition)
-        assert first == case.pending_transition["proposed_at"]
-        cancel_pending_transition(case)
-        propose_transition(case, to_state="resolved", summary="r")
-        assert (
-            terminal_offer_key(case.pending_transition) != first
-        ), "a re-proposal is a new offer; its key must be fresh"
-        assert terminal_offer_key(None) is None
+        first = with_open_offer(case, kind="resolve", basis="model").proposal_id
+        assert re.fullmatch(r"[0-9a-f]{16}", first)
+        case.offer_record = answer_offer(
+            case, proposal_id=first, answer=AnswerKind.WITHDRAWN, via=AnswerVia.TYPED
+        )
+        second = with_open_offer(case, kind="resolve", basis="model").proposal_id
+        assert second != first, "a re-proposal is a new offer; its key must be fresh"
 
     def test_a_gate1_offer_is_named_by_its_wording(self):
         key = gate1_offer_key(STATEMENT)
@@ -280,30 +280,20 @@ class TestTheOfferKeys:
     def test_the_refusal_reason(self, intent_data, standing, expected):
         assert offer_click_refusal(intent_data, standing) == expected
 
-    def test_both_cards_of_every_pair_carry_the_standing_key(self):
-        case = _pending("resolved")
-        assert (
-            _keys(_resolution_confirmation_suggestions(case))
-            == [case.pending_transition["proposed_at"]] * 2
-        )
-        case = _pending("closed")
-        assert (
-            _keys(_close_confirmation_suggestions(case))
-            == [case.pending_transition["proposed_at"]] * 2
-        )
+    def test_both_cards_of_every_pair_carry_the_open_key(self):
+        for to_state in ("resolved", "closed"):
+            case = _pending(to_state)
+            assert (
+                _keys(project_offers(case).pair)
+                == [case.offer_record.open.proposal_id] * 2
+            )
         assert (
             _keys(_investigation_confirmation_suggestions(_gate1_case()))
             == [gate1_offer_key(STATEMENT)] * 2
         )
 
-    def test_a_pair_built_with_no_offer_standing_carries_no_key_and_says_so(
-        self, caplog
-    ):
-        """The safe direction: never a 500, and a click on it is refused."""
-        with caplog.at_level("ERROR"):
-            pair = _resolution_confirmation_suggestions(_investigating())
-        assert _keys(pair) == [None, None]
-        assert "confirmation_pair_without_offer" in caplog.text
+    def test_with_nothing_open_there_is_no_pair(self):
+        assert project_offers(_investigating()).pair == []
 
 
 # =============================================================================
@@ -320,7 +310,7 @@ class TestAClickAnswersOnlyTheOfferItNames:
             case,
             "Yes, the issue is resolved.",
             intent_type="confirmation",
-            intent_data=_click(True, terminal_offer_key(case.pending_transition)),
+            intent_data=_click(True, case.offer_record.open.proposal_id),
         )
         assert case.state == CaseState.RESOLVED
         assert case.turn_history[-1].terminal_confirmed_via == "intent"
@@ -329,7 +319,7 @@ class TestAClickAnswersOnlyTheOfferItNames:
     @pytest.mark.parametrize("value", [True, False])
     async def test_k2_a_stale_key_executes_nothing(self, refused, value):
         case = _pending("resolved")
-        before = dict(case.pending_transition)
+        before = case.offer_record.open
         engine = _engine()
         result = await _turn(
             engine,
@@ -347,7 +337,7 @@ class TestAClickAnswersOnlyTheOfferItNames:
         """A card rendered before the keys shipped, or Copilot's marker-built
         buttons (faultmaven-copilot#291)."""
         case = _pending("closed")
-        before = dict(case.pending_transition)
+        before = case.offer_record.open
         result = await _turn(
             _engine(),
             case,
@@ -361,8 +351,8 @@ class TestAClickAnswersOnlyTheOfferItNames:
     async def test_k4_a_gate1_card_on_a_pending_close_closes_nothing(self, refused):
         """The defeat pass's ``stale_gate1_yes_on_pending_close``."""
         case = _gate1_case()
-        propose_transition(case, to_state="closed", summary="Close it?")
-        before = dict(case.pending_transition)
+        with_open_offer(case, kind="close", basis="menu", summary="Close it?")
+        before = case.offer_record.open
         gate1_yes = _investigation_confirmation_suggestions(case)[0]["intent"]
 
         result = await _turn(
@@ -374,22 +364,27 @@ class TestAClickAnswersOnlyTheOfferItNames:
         )
 
         assert case.state == CaseState.INQUIRY
-        assert case.pending_transition == before
+        assert case.offer_record.open == before
         assert case.inquiry.problem_statement_confirmed is False
         assert result["agent_response"].startswith(STALE_OFFER_LINE)
-        assert _keys(result["suggested_follow_ups"]) == [before["proposed_at"]] * 2
+        assert _keys(result["suggested_follow_ups"]) == [before.proposal_id] * 2
         refused.labels.assert_called_once_with(gate="terminal", reason="stale")
 
     async def test_k5_a_withdrawn_resolve_card_does_not_close_the_case(self, refused):
         """The issue's scenario: a RESOLVE offer is withdrawn, a CLOSE is
         proposed later, and the old "Yes, mark as resolved" is clicked."""
         case = _investigating()
-        propose_transition(case, to_state="resolved", summary="Resolve it?")
-        old_yes = _resolution_confirmation_suggestions(case)[0]["intent"]
-        cancel_pending_transition(case)
-        propose_transition(case, to_state="closed", summary="Close it?")
-        assert old_yes["proposal_id"] != terminal_offer_key(case.pending_transition)
-        before = dict(case.pending_transition)
+        with_open_offer(case, kind="resolve", basis="model", summary="Resolve it?")
+        old_yes = project_offers(case).pair[0]["intent"]
+        case.offer_record = answer_offer(
+            case,
+            proposal_id=old_yes["proposal_id"],
+            answer=AnswerKind.WITHDRAWN,
+            via=AnswerVia.TYPED,
+        )
+        with_open_offer(case, kind="close", basis="model", summary="Close it?")
+        assert old_yes["proposal_id"] != case.offer_record.open.proposal_id
+        before = case.offer_record.open
 
         result = await _turn(
             _engine(),
@@ -400,7 +395,7 @@ class TestAClickAnswersOnlyTheOfferItNames:
         )
 
         assert case.state == CaseState.INVESTIGATING, "the stale card closed the case"
-        assert case.pending_transition == before
+        assert case.offer_record.open == before
         assert result["agent_response"].startswith(STALE_OFFER_LINE)
         refused.labels.assert_called_once_with(gate="terminal", reason="stale")
 
@@ -478,7 +473,7 @@ class TestAClickAnswersOnlyTheOfferItNames:
 
     async def test_k9_a_stale_no_withdraws_and_records_nothing(self, refused):
         case = _pending("closed")
-        before = dict(case.pending_transition)
+        before = case.offer_record.open
         result = await _turn(
             _engine(),
             case,
@@ -514,7 +509,7 @@ class TestAClickAnswersOnlyTheOfferItNames:
         """INV-37: the close click on a resolvable case pivots to a RESOLVED
         offer. That is a new offer, and the close card does not name it."""
         case = _pending("closed", cause=True, absence=True)
-        close_key = terminal_offer_key(case.pending_transition)
+        close_key = case.offer_record.open.proposal_id
         engine = _engine()
 
         pivot = await _turn(
@@ -524,8 +519,8 @@ class TestAClickAnswersOnlyTheOfferItNames:
             intent_type="confirmation",
             intent_data=_click(True, close_key),
         )
-        assert case.pending_transition["to_state"] == "resolved"
-        resolve_key = terminal_offer_key(case.pending_transition)
+        assert case.offer_record.open.kind == "resolve"
+        resolve_key = case.offer_record.open.proposal_id
         assert resolve_key != close_key
         assert _keys(pivot["suggested_follow_ups"]) == [resolve_key] * 2
 
@@ -570,10 +565,9 @@ class TestAClickAnswersOnlyTheOfferItNames:
             engine = _engine(_investigation_reply())
         else:
             case = _gate1_case()
-            propose_transition(case, to_state="closed", summary="Close it?")
-            case.pending_transition["justifying_signature"] = SIGNATURE
+            with_open_offer(case, kind="close", basis="menu", summary="Close it?")
             engine = _engine(InquiryResponse(agent_response=REPLY, state_updates={}))
-        key = terminal_offer_key(case.pending_transition)
+        key = case.offer_record.open.proposal_id
 
         result = await _turn(
             engine,
@@ -583,8 +577,8 @@ class TestAClickAnswersOnlyTheOfferItNames:
             intent_data=_click(False, key),
         )
 
-        assert case.pending_transition is None, "the declined offer was not withdrawn"
-        assert case.progress.deferred_disposition_declined_signatures == [SIGNATURE]
+        assert case.offer_record.open is None, "the declined offer was not answered"
+        assert _declined_ids(case) == [key]
         engine.generator.generate_structured_output.assert_awaited()
         assert STALE_OFFER_LINE not in result["agent_response"]
         refused.labels.assert_not_called()
@@ -592,76 +586,34 @@ class TestAClickAnswersOnlyTheOfferItNames:
             assert case.inquiry.problem_statement_confirmed is False
             assert case.inquiry.proposed_problem_statement == STATEMENT
 
-    async def test_a_needs_info_era_card_does_not_confirm_the_ready_offer(
-        self, refused
-    ):
-        """Review finding 1 (the reviewer's probe 6). A card shipped while the
-        RESOLVED offer still needed information names that offer. Once the
-        user supplies what was missing the offer is READY, and the ready offer
-        is a NEW offer: re-proposed with its own key, carrying the engine
-        proposer's signature and the cited evidence. The old card is then
-        stale, and a click on it executes nothing."""
-        case = _pending("resolved", cause=True, absence=True)
-        case.pending_transition["needs_info"] = True
-        case.pending_transition["evidence_ids"] = ["ev_1812aaaaaaaa"]
-        needs_info_key = terminal_offer_key(case.pending_transition)
-        old_card = _resolution_confirmation_suggestions(case)[0]
-        assert old_card["intent"]["proposal_id"] == needs_info_key
-
-        # The first click on it: a needs_info offer is not click-answerable
-        # (#1812 item 5), so the turn reaches the LLM, and the answer makes
-        # the offer ready.
+    async def test_a_request_has_no_card_and_its_ready_offer_a_fresh_key(self, refused):
+        """#2408: a resolution request is not an offer, so it ships no card a
+        click could answer. Once the user supplies what was missing, the next
+        turn's re-check opens the READY offer, a new offer with its own key,
+        and the turn's pair names it."""
+        case = _investigating(cause=True, absence=True)
+        case.offer_record = remember_resolve_request(case, ["root cause"])
+        assert project_offers(case).pair == []
+        case.current_turn += 1
         ready = await _turn(
-            _engine(_investigation_reply()),
-            case,
-            old_card["payload"],
-            intent_type="confirmation",
-            intent_data=_click(True, needs_info_key),
+            _engine(_investigation_reply()), case, "here is how we verified it"
         )
-        assert case.state == CaseState.INVESTIGATING
-        assert case.pending_transition["to_state"] == "resolved"
-        assert not case.pending_transition.get("needs_info")
-        ready_key = terminal_offer_key(case.pending_transition)
-        assert ready_key != needs_info_key, "the ready offer kept the old key"
-        assert case.pending_transition["justifying_signature"] == SIGNATURE
-        assert case.pending_transition["evidence_ids"] == ["ev_1812aaaaaaaa"]
-        assert case.pending_transition["summary"] == (
-            _build_resolution_confirmation(case)
-        )
-        # The turn still renders the ready confirmation, and its pair names
-        # the ready offer.
+        offer = case.offer_record.open
+        assert (offer.kind, offer.basis) == ("resolve", "model")
+        assert offer.summary == _build_resolution_confirmation(case)
         assert "Thanks for the additional details." in ready["agent_response"]
-        assert _keys(ready["suggested_follow_ups"]) == [ready_key] * 2
+        assert _keys(ready["suggested_follow_ups"]) == [offer.proposal_id] * 2
         refused.labels.assert_not_called()
-
-        # The second click on the same needs_info-era card.
-        before = dict(case.pending_transition)
-        result = await _turn(
-            _engine(),
-            case,
-            old_card["payload"],
-            intent_type="confirmation",
-            intent_data=_click(True, needs_info_key),
-        )
-        _assert_refused_on_terminal(result, case, before)
-        assert "Here's what I have on record" in result["agent_response"]
-        refused.labels.assert_called_once_with(gate="terminal", reason="stale")
 
     @pytest.mark.parametrize(
         "key, reason", [(None, "untargeted"), ("gate1:deadbeefdeadbeef", "stale")]
     )
-    async def test_a_needs_info_pending_does_not_exempt_gate1s_key(
+    async def test_a_click_beside_gate1_is_checked_against_its_key(
         self, refused, key, reason
     ):
-        """Review finding 5 (the reviewer's probe 4). While Gate 1 is pending,
-        a click is checked against Gate 1's key whatever else is pending; the
-        needs_info exemption applies only when Gate 1 is not."""
+        """With no offer open, a click while Gate 1 is pending is checked
+        against Gate 1's key (#1812)."""
         case = _gate1_case()
-        case.pending_transition = {
-            "needs_info": True,
-            "to_state": "closed",
-            "proposed_at": "2026-09-30T00:00:00+00:00",
-        }
         result = await _turn(
             _engine(),
             case,
@@ -674,17 +626,10 @@ class TestAClickAnswersOnlyTheOfferItNames:
         assert result["agent_response"].startswith(STALE_OFFER_LINE)
         refused.labels.assert_called_once_with(gate="gate1", reason=reason)
 
-    async def test_the_current_gate1_click_still_commits_beside_a_needs_info_pending(
-        self, refused
-    ):
+    async def test_the_current_gate1_click_commits(self, refused):
         """The control for the test above: the check is Gate 1's key, not a
         blanket refusal."""
         case = _gate1_case()
-        case.pending_transition = {
-            "needs_info": True,
-            "to_state": "closed",
-            "proposed_at": "2026-09-30T00:00:00+00:00",
-        }
         await _turn(
             _engine(InquiryResponse(agent_response=REPLY, state_updates={})),
             case,
@@ -695,21 +640,22 @@ class TestAClickAnswersOnlyTheOfferItNames:
         assert case.inquiry.problem_statement_confirmed is True
         refused.labels.assert_not_called()
 
-    async def test_a_click_on_a_needs_info_offer_still_falls_through(self, refused):
-        """Ruled unchanged (#1812 item 5): with Gate 1 not pending, a click on
-        a standing needs_info offer reaches the LLM, as it always did."""
-        case = _pending("resolved")
-        case.pending_transition["needs_info"] = True
+    async def test_a_click_after_a_request_is_refused(self, refused):
+        """No card names a request, so with nothing open a click answers
+        nothing: it is refused with the line alone, and no LLM call."""
+        case = _investigating(cause=True)
+        case.offer_record = remember_resolve_request(case, ["root cause"])
         engine = _engine(_investigation_reply())
-        await _turn(
+        result = await _turn(
             engine,
             case,
             "Yes, the issue is resolved.",
             intent_type="confirmation",
             intent_data=_click(True, None),
         )
-        engine.generator.generate_structured_output.assert_awaited()
-        refused.labels.assert_not_called()
+        assert result["agent_response"] == STALE_OFFER_LINE
+        engine.generator.generate_structured_output.assert_not_awaited()
+        refused.labels.assert_called_once_with(gate="none", reason="untargeted")
 
     async def test_a_refused_click_carrying_an_upload_records_the_upload(self, refused):
         """A stale or untargeted click is refused deterministically even when
@@ -717,7 +663,7 @@ class TestAClickAnswersOnlyTheOfferItNames:
         Nothing executes or is withdrawn, and the upload's reading is still
         recorded on the turn (``_finish_deterministic_turn``)."""
         case = _pending("resolved")
-        before = dict(case.pending_transition)
+        before = case.offer_record.open
         upload = [
             {
                 "file_id": "file_1812aaaaaaaa",
@@ -879,9 +825,9 @@ class TestAConsentOpenerIsNoDeflection:
         engine = _engine()
         with pytest.raises(MilestoneEngineError):
             await _turn(engine, case, message)
-        assert case.pending_transition is None
+        assert case.offer_record.open is None
         engine.generator.generate_structured_output.assert_awaited()
-        assert case.progress.deferred_disposition_declined_signatures == []
+        assert _declined_ids(case) == []
 
     @pytest.mark.parametrize(
         "message",
@@ -897,8 +843,8 @@ class TestAConsentOpenerIsNoDeflection:
         case = _pending("closed")
         with pytest.raises(MilestoneEngineError):
             await _turn(_engine(), case, message)
-        assert case.pending_transition is None
-        assert case.progress.deferred_disposition_declined_signatures == [SIGNATURE]
+        assert case.offer_record.open is None
+        assert len(_declined_ids(case)) == 1
 
     @pytest.mark.parametrize(
         "message",
@@ -915,11 +861,11 @@ class TestAConsentOpenerIsNoDeflection:
         with "okay" through the word boundary, the ruling's stated cost."""
         assert _consent_prefix(message)
         case = _pending("closed")
-        before = dict(case.pending_transition)
+        before = case.offer_record.open
         result = await _turn(_engine(), case, message)
-        assert case.pending_transition == before
+        assert case.offer_record.open == before
         assert "Please select one of the options above" in result["agent_response"]
-        assert case.progress.deferred_disposition_declined_signatures == []
+        assert case.offer_record.answers == ()
 
 
 # =============================================================================
@@ -931,11 +877,11 @@ class TestADeclineIsBare:
     @pytest.mark.parametrize("message", ["no problem, go ahead", "no worries"])
     async def test_a_positive_reply_opening_with_no_is_re_asked(self, message):
         case = _pending("closed")
-        before = dict(case.pending_transition)
+        before = case.offer_record.open
         result = await _turn(_engine(), case, message)
-        assert case.pending_transition == before
+        assert case.offer_record.open == before
         assert "Please select one of the options above" in result["agent_response"]
-        assert case.progress.deferred_disposition_declined_signatures == []
+        assert case.offer_record.answers == ()
 
     async def test_a_minted_decline_on_a_question_withdraws_and_records_nothing(
         self,
@@ -950,8 +896,8 @@ class TestADeclineIsBare:
                 intent_data={"value": False},
                 typed=True,
             )
-        assert case.pending_transition is None
-        assert case.progress.deferred_disposition_declined_signatures == []
+        assert case.offer_record.open is None
+        assert _declined_ids(case) == []
 
     async def test_a_minted_decline_on_question_free_text_still_declines(self):
         case = _pending("closed")
@@ -963,15 +909,15 @@ class TestADeclineIsBare:
             intent_data={"value": False},
             typed=True,
         )
-        assert case.pending_transition is None
-        assert case.progress.deferred_disposition_declined_signatures == [SIGNATURE]
+        assert case.offer_record.open is None
+        assert len(_declined_ids(case)) == 1
         assert "remains open" in result["agent_response"]
 
     async def test_a_bare_typed_decline_still_declines(self):
         case = _pending("closed")
         result = await _turn(_engine(), case, "Not yet.")
-        assert case.pending_transition is None
-        assert case.progress.deferred_disposition_declined_signatures == [SIGNATURE]
+        assert case.offer_record.open is None
+        assert len(_declined_ids(case)) == 1
         assert "remains open" in result["agent_response"]
 
 

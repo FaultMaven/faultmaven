@@ -41,7 +41,6 @@ from faultmaven.core.investigation.prompts.templates.fallback import (
     _fallback_tokens,
     get_fallback_prompt_for_case,
 )
-from faultmaven.core.investigation.terminal_transitions import propose_transition
 from faultmaven.exceptions import TOKEN_LIMIT
 from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
@@ -73,7 +72,7 @@ from faultmaven.modules.case.domain.models.solution import Solution, SolutionTyp
 from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
 from faultmaven.utils.model_context import resolve_model_budget
 from faultmaven.utils.token_estimation import estimate_tokens
-from tests.case_builders import inquiry_case
+from tests.case_builders import inquiry_case, with_open_offer
 from tests.model_content import disabled_redaction
 from tests.unit.core.investigation.given_tools import NO_TOOLS
 
@@ -168,12 +167,9 @@ def _closed(case: Case) -> Case:
 
 
 def _pending_close(case: Case) -> Case:
-    case.pending_transition = {
-        "to_state": "closed",
-        "summary": "You can **close** the case instead.",
-        "evidence_ids": [],
-        "proposed_at": datetime.now(UTC).isoformat(),
-    }
+    with_open_offer(
+        case, kind="close", basis="model", summary="You can **close** the case instead."
+    )
     return case
 
 
@@ -299,7 +295,8 @@ class TestAPromptlessTurnPassesTheNoticeOn:
             # The turn recorded its own entry. A gate turn that crashed would
             # leave the seeded record last, still carrying the notice.
             assert case.turn_history[-1].turn_number == case.current_turn, message
-            assert (case.pending_transition or {}).get("to_state") == pending_after
+            offer = case.offer_record.open
+            assert (offer.kind.to_state if offer else None) == pending_after
             assert case.turn_history[-1].system_feedback == NOTICE, message
             assert case.turn_history[-1].system_feedback_forwarded, message
         assert not case.is_terminal
@@ -319,7 +316,7 @@ class TestAPromptlessTurnPassesTheNoticeOn:
         engine = _engine()
         case = _with_notice(_investigating_case())
         # The engine's own proposal, so the confirm executes a real close.
-        propose_transition(case=case, to_state="closed", summary="Close it?")
+        with_open_offer(case, kind="close", basis="model", summary="Close it?")
 
         assert not await _turn(engine, case, "yes")
         assert case.state == CaseState.CLOSED
@@ -460,7 +457,7 @@ class TestTheNoticeIsDeliveredOnceAcrossAGate:
             await engine.process_turn(case, "", **DROPDOWN_CLOSE, redaction_ctx=None)
         )["case_updated"]
         assert llm.route.call_count == 0
-        assert case.pending_transition
+        assert case.offer_record.open is not None
 
         # Turn 3: the user declines with a question, which is processed as a
         # normal turn. Its prompt carries the notice from turn 1.

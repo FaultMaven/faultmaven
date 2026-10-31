@@ -38,13 +38,12 @@ from faultmaven.core.investigation.milestone_engine import runbook_creation
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.milestone_engine.terminal_replies import (
     GENERATE_RUNBOOK_PAYLOAD,
-    _resolution_confirmation_suggestions,
 )
+from faultmaven.core.investigation.offer_projection import project_offers
 from faultmaven.core.investigation.schemas import (
     InvestigationResponse_Diagnosis,
     TurnPayload,
 )
-from faultmaven.core.investigation.terminal_transitions import propose_transition
 from faultmaven.core.investigation.turn_budget import (
     TURN_COMMIT_RESERVE_SECONDS,
     bind_turn_deadline,
@@ -74,7 +73,7 @@ from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository im
 from faultmaven.modules.report.domain.services.report_generation_service import (
     ReportGenerationService,
 )
-from tests.case_builders import inquiry_case
+from tests.case_builders import inquiry_case, with_open_offer
 from tests.unit.core.investigation.test_runbook_completion_and_summary_failure import (
     _make_resolved_case,
     _make_runbook_ready,
@@ -250,13 +249,13 @@ def _investigating_case() -> Case:
 
 def _pending_resolve_case() -> Case:
     case = _investigating_case()
-    propose_transition(case, to_state="resolved", summary="Resolve it?")
+    with_open_offer(case, kind="resolve", basis="model", summary="Resolve it?")
     return case
 
 
 def _confirm_click(case: Case) -> QueryIntent:
     """The Yes card's intent, as the engine offers it on ``case``."""
-    return QueryIntent(**_resolution_confirmation_suggestions(case)[0]["intent"])
+    return QueryIntent(**project_offers(case).pair[0]["intent"])
 
 
 def _rows(caplog) -> list:
@@ -351,7 +350,7 @@ class TestAFailedCommitLeavesNothing:
         got = await _committed(sessions)
         assert got["case"].title == "a concurrent writer won", "positive control"
         assert got["case"].state == CaseState.INVESTIGATING
-        assert got["case"].pending_transition
+        assert got["case"].offer_record.open is not None
         assert got["reports"] == []
         assert _resolved_actions(got["case"]) == []
 

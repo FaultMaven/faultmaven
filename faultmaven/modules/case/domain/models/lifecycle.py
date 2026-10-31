@@ -9,9 +9,11 @@ from pydantic import (
     Field,
     GetJsonSchemaHandler,
     model_validator,
+    with_config,
 )
 from pydantic.json_schema import JsonSchemaValue
 from pydantic_core import CoreSchema
+from typing_extensions import TypedDict
 
 # ============================================================
 # Status & Lifecycle Models (Section 2)
@@ -360,8 +362,7 @@ class InvestigationStrategy(str, Enum):
 # escalating") lives in the LLM-authored persistent Report's free-form summary.
 #
 # A ``StrEnum``, not the ``(str, Enum)`` of the other enums here: the value is
-# persisted and compared as text (``pending_transition["justifying_signature"]``
-# is ``f"{reason}|{turn}"``) and interpolated into prompts and the action
+# persisted and compared as text and interpolated into prompts and the action
 # history, and ``str()`` of a ``(str, Enum)`` member renders its NAME.
 
 
@@ -389,25 +390,37 @@ class ClosureReason(StrEnum):
 _T = TypeVar("_T")
 
 
-def closure_reason_table(
-    mapping: Mapping[ClosureReason, _T],
-) -> Mapping[ClosureReason, _T]:
-    """``mapping`` as a read-only table with exactly one entry per closure reason.
+_E = TypeVar("_E", bound=StrEnum)
+
+
+def member_table(
+    enum: type[_E], mapping: Mapping[_E, _T], *, noun: str
+) -> Mapping[_E, _T]:
+    """``mapping`` as a read-only table with exactly one entry per member of
+    ``enum``.
 
     Raises ``ValueError`` naming every member it lacks and every key that is not
-    a member. A ``dict[ClosureReason, …]`` is tied to the vocabulary by type but
-    not complete, and completeness is what a hand-kept copy loses when a value
-    is added.
+    a member. A ``dict[Enum, …]`` is tied to the vocabulary by type but not
+    complete, and completeness is what a hand-kept copy loses when a value is
+    added. ``noun`` names the table in the error.
     """
-    members = set(ClosureReason)
-    missing = [member.value for member in ClosureReason if member not in mapping]
+    members = set(enum)
+    missing = [member.value for member in enum if member not in mapping]
     extra = [repr(key) for key in mapping if key not in members]
     if missing or extra:
         raise ValueError(
-            "a closure-reason table needs one entry per ClosureReason: "
+            f"{noun} table needs one entry per {enum.__name__}: "
             f"missing {missing or 'none'}, not a member {extra or 'none'}"
         )
-    return MappingProxyType({member: mapping[member] for member in ClosureReason})
+    return MappingProxyType({member: mapping[member] for member in enum})
+
+
+def closure_reason_table(
+    mapping: Mapping[ClosureReason, _T],
+) -> Mapping[ClosureReason, _T]:
+    """``mapping`` as a read-only table with exactly one entry per closure
+    reason (``member_table``)."""
+    return member_table(ClosureReason, mapping, noun="a closure-reason")
 
 
 #: Each value's meaning, published as the enum's ``x-enum-descriptions``.
@@ -449,3 +462,100 @@ _CLOSURE_REASON_MEANINGS: Mapping[ClosureReason, str] = closure_reason_table(
         ),
     }
 )
+
+
+# ============================================================
+# Disposition eligibility (#2379, contract 14.10.0)
+# ============================================================
+#
+# What the case content supports per disposition, derived on save from the
+# case and its offer record
+# (``core/investigation/offer_projection.project_offers``) and published on
+# every case read. Two narrow enums rather than one shared one:
+# each key has its own value set, and the precedent is ``SelectableNextState``.
+# Each value's meaning is contract text, published as ``x-enum-descriptions``;
+# editing one moves the contract version.
+
+
+class ResolveEligibility(StrEnum):
+    """Whether the case has earned resolution. Gates no control: RESOLVED is
+    not user-selectable, and the engine offers the resolve confirmation
+    itself."""
+
+    READY = "ready"
+    NEEDS_INFO = "needs_info"
+    NOT_ELIGIBLE = "not_eligible"
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, core_schema: CoreSchema, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        schema = handler.resolve_ref_schema(handler(core_schema))
+        schema["x-enum-descriptions"] = [_RESOLVE_ELIGIBILITY_MEANINGS[m] for m in cls]
+        return schema
+
+
+class CloseEligibility(StrEnum):
+    """Whether to show the status menu's Close."""
+
+    READY = "ready"
+    SUGGESTS_ALTERNATIVE = "suggests_alternative"
+    NOT_ELIGIBLE = "not_eligible"
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, core_schema: CoreSchema, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        schema = handler.resolve_ref_schema(handler(core_schema))
+        schema["x-enum-descriptions"] = [_CLOSE_ELIGIBILITY_MEANINGS[m] for m in cls]
+        return schema
+
+
+#: Contract text: editing an entry moves the contract version.
+_RESOLVE_ELIGIBILITY_MEANINGS: Mapping[ResolveEligibility, str] = member_table(
+    ResolveEligibility,
+    {
+        ResolveEligibility.READY: (
+            "The case has earned resolution. It is not a control: the engine "
+            "offers the resolve confirmation itself, except while the user's "
+            "decline of it stands."
+        ),
+        ResolveEligibility.NEEDS_INFO: (
+            "The case may resolve once what is missing is recorded. A request "
+            "asks for it, with no confirmation chips."
+        ),
+        ResolveEligibility.NOT_ELIGIBLE: (
+            "Resolution is not available: the case is not investigating, or its "
+            "evidence points to closing."
+        ),
+    },
+    noun="a resolve-eligibility",
+)
+
+#: Contract text: editing an entry moves the contract version.
+_CLOSE_ELIGIBILITY_MEANINGS: Mapping[CloseEligibility, str] = member_table(
+    CloseEligibility,
+    {
+        CloseEligibility.READY: (
+            "Show Close. Closing ends the case without a resolution."
+        ),
+        CloseEligibility.SUGGESTS_ALTERNATIVE: (
+            "Do not show Close. A resolve proposal is pending, or the case is "
+            "resolvable and its resolution has not been declined, so a close "
+            "would become a resolve proposal."
+        ),
+        CloseEligibility.NOT_ELIGIBLE: (
+            "Do not show Close: the case is already resolved or closed."
+        ),
+    },
+    noun="a close-eligibility",
+)
+
+
+@with_config(ConfigDict(extra="forbid"))
+class DispositionEligibility(TypedDict):
+    """Per-disposition eligibility: ``resolved`` and ``closed``, both
+    required, no other key."""
+
+    resolved: ResolveEligibility
+    closed: CloseEligibility

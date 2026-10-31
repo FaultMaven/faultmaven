@@ -1779,7 +1779,7 @@ class SuggestedFollowUp(NullTolerantModel):
     # metadata (QueryIntent routing) is owned by the engine, not the LLM —
     # it is attached deterministically by the response builder via
     # ``engine_owned_affordances`` when a state-machine gate is pending
-    # (Gate 1 / Gate 2 / Gate 3 / pending_transition). The engine→API
+    # (Gate 1, or an open offer on the case). The engine→API
     # serialization adds ``intent`` to ``SuggestedActionResponse`` at the
     # boundary; the LLM never sees it. Any LLM that tries to emit an
     # ``intent`` field will have it surfaced by ``_log_dropped_fields`` as

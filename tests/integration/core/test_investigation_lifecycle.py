@@ -635,8 +635,8 @@ class TestInvestigationLifecycle:
                 redaction_ctx=None,
             )
         case = result["case_updated"]
-        assert case.pending_transition is not None
-        assert case.pending_transition["to_state"] == "resolved"
+        assert case.offer_record.open is not None
+        assert case.offer_record.open.kind == "resolve"
 
         # === Turn 5: User confirms resolution by clicking the DECIDE pair ===
         case.current_turn = 5
@@ -727,8 +727,8 @@ class TestInvestigationLifecycle:
         updated = result["case_updated"]
         # Should propose CLOSED, not execute immediately
         assert updated.state == CaseState.INQUIRY
-        assert updated.pending_transition is not None
-        assert updated.pending_transition["to_state"] == "closed"
+        assert updated.offer_record.open is not None
+        assert updated.offer_record.open.kind == "close"
 
     async def test_abandon_investigation_via_intent(self, engine, case_repo):
         """Close INVESTIGATING case via dropdown proposes pending transition."""
@@ -746,8 +746,8 @@ class TestInvestigationLifecycle:
         updated = result["case_updated"]
         # Should propose CLOSED, not execute immediately
         assert updated.state == CaseState.INVESTIGATING
-        assert updated.pending_transition is not None
-        assert updated.pending_transition["to_state"] == "closed"
+        assert updated.offer_record.open is not None
+        assert updated.offer_record.open.kind == "close"
 
 
 # ============================================================
@@ -851,8 +851,8 @@ class TestTransitionsAreRecorded:
         await commit_turn_plan(case_repo, result["case_updated"], result["commit_plan"])
         case = result["case_updated"]
         assert case.state == CaseState.INVESTIGATING  # NOT resolved yet
-        assert case.pending_transition is not None
-        assert case.pending_transition["to_state"] == "resolved"
+        assert case.offer_record.open is not None
+        assert case.offer_record.open.kind == "resolve"
 
         # Turn 2: the user clicks the DECIDE pair — confirms the pending
         case.current_turn = 6

@@ -79,9 +79,16 @@ class TestOverrideBranchesUseComposer:
             "_build_resolution_confirmation(case_updated),",
             'metadata["resolution_readiness_message"],',
             'metadata["resolution_needs_info_message"],',
-            'metadata["rca_infeasible_closure_message"],',
-            'metadata["deferred_solution_gate_message"],',
+            "_prose_with_gate_notice(agent_response_text, offer_prose)",
         )
+        # The engine proposers' reasons, read through one composed branch.
+        for key in (
+            "rca_infeasible_closure_message",
+            "false_alarm_closure_message",
+            "deferred_solution_gate_message",
+            "resolution_ready_gate_message",
+        ):
+            assert f'"{key}",' in src, f"offer prose key missing: {key}"
         for anchor in anchors:
             assert anchor in src, f"gate branch anchor missing: {anchor}"
         # Derived from the anchor list, never hardcoded: the literal counts
@@ -108,12 +115,12 @@ class TestOverrideBranchesUseComposer:
         """The #430 boundary: prose composes, suggestions REPLACE.
 
         The gate branches must still assign follow_ups outright from the
-        engine-owned source — never merge/extend them with the LLM's own
-        suggestions.
+        engine-owned source (the offer projection) — never merge/extend them
+        with the LLM's own suggestions. The one gate branch that assigns
+        none is a resolution request, which carries no chips (#2408).
         """
         src = self._impl_source()
-        assert 'follow_ups = metadata["override_suggestions"]' in src
-        assert "follow_ups = _close_confirmation_suggestions(case_updated)" in src
-        assert "follow_ups = _resolution_confirmation_suggestions(case_updated)" in src
+        # The open offer's pair, from the offer projection (#2379).
+        assert "follow_ups = projection.pair" in src
         # An "augment" regression would extend rather than assign.
         assert "follow_ups.extend" not in src

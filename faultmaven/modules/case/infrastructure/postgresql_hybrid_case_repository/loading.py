@@ -489,7 +489,7 @@ async def _row_to_case(
             if getattr(row, "disposition_eligibility", None)
             else None
         ),
-        "pending_transition": metadata.get("pending_transition"),
+        "offer_record": metadata.get("offer_record") or {},
         "last_suggestions": metadata.get("last_suggestions"),
         # Pre-fetched runbooks (the KB push channel, fm#1360).
         "kb_context": metadata.get("kb_context"),

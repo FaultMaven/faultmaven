@@ -23,14 +23,13 @@ from faultmaven.core.investigation.milestone_engine.response_application import 
     ResponseApplier,
 )
 from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommitPlan
+from faultmaven.core.investigation.offers import answer_offer
 from faultmaven.core.investigation.prompts.templates.tool_text import NO_TOOLS
 from faultmaven.core.investigation.terminal_transitions import (
     _execute_resolved_transition,
-    cancel_pending_transition,
-    confirm_pending_transition,
-    propose_transition,
+    confirm_open_offer,
 )
-from faultmaven.modules.case.contracts import ProblemStatus
+from faultmaven.modules.case.contracts import AnswerKind, AnswerVia, ProblemStatus
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.lifecycle import (
     LEGAL_TRANSITIONS,
@@ -47,7 +46,7 @@ from faultmaven.modules.case.domain.services.case_action_manager import (
     USER_SELECTABLE_ACTIONS,
     earned_edge_refusal,
 )
-from tests.case_builders import investigating_case
+from tests.case_builders import investigating_case, with_open_offer
 from tests.model_content import vetted
 
 
@@ -79,66 +78,57 @@ def _make_investigating_case() -> Case:
 #
 # Source: §1.2 *INVESTIGATING → RESOLVED (Disposition)*; §1.4 line 488
 # Statement: Disposition transitions (INVESTIGATING → RESOLVED, INVESTIGATING →
-#   CLOSED, INQUIRY → CLOSED) NEVER auto-fire. The agent emits
-#   ProposedTransition; the user confirms on a subsequent turn.
-# Enforcement: Structural — propose_transition writes pending_transition only;
-#   confirm_pending_transition is the only path that mutates case.state.
+#   CLOSED, INQUIRY → CLOSED) NEVER auto-fire. An opener opens an offer on the
+#   case's offer record; the user accepts it on a subsequent turn.
+# Enforcement: Structural — ``open_offer`` writes the record only;
+#   ``confirm_open_offer`` is the only path that mutates case.state.
 #
 # These tests pin the *function-level contract* that the structural property
-# rests on: propose has no side effect on state, and confirm requires a
-# prior propose. The engine's per-turn message dispatch then ensures the two
-# calls land in separate turns. A refactor that consolidates propose+confirm
+# rests on: opening has no side effect on state, and confirming requires an
+# open offer. The engine's per-turn message dispatch then ensures the two
+# calls land in separate turns. A refactor that consolidates open+confirm
 # into a single function would break these tests immediately.
+
+
+def _open(case, kind: str, summary: str):
+    """Open a ``kind`` offer as the model would, and return it."""
+    return with_open_offer(case, kind=kind, basis="model", summary=summary)
 
 
 class TestINV03_DispositionHandshake:
     """INV-03: disposition transitions cannot complete without two separate calls."""
 
-    def test_inv03_propose_resolved_writes_pending_only(self):
-        """``propose_transition`` to RESOLVED stores a pending transition but
-        does not mutate ``case.state``. Mirrors the design's "writes
-        pending_transition; does NOT execute" guarantee.
-        """
+    def test_inv03_opening_a_resolve_offer_writes_the_record_only(self):
+        """Opening a resolve offer records it but does not mutate
+        ``case.state``: the design's "offers; does NOT execute" guarantee."""
         case = _make_investigating_case()
         assert case.state == CaseState.INVESTIGATING
         assert case.resolved_at is None
-        assert case.pending_transition is None
+        assert case.offer_record.open is None
 
-        propose_transition(
-            case,
-            to_state="resolved",
-            summary="Solution applied and verified",
-            evidence_ids=[],
-        )
+        offer = _open(case, "resolve", "Solution applied and verified")
 
-        # Pending transition is recorded for the next-turn confirmation
-        assert case.pending_transition is not None
-        assert case.pending_transition["to_state"] == "resolved"
-        assert "proposed_at" in case.pending_transition
-        # Status has NOT changed — propose is write-only-to-pending
+        # The offer is recorded for the next-turn confirmation
+        assert case.offer_record.open == offer
+        assert offer.kind == "resolve"
+        assert offer.proposal_id
+        # Status has NOT changed — opening writes the record only
         assert case.state == CaseState.INVESTIGATING
         assert case.resolved_at is None
 
-    def test_inv03_propose_closed_writes_pending_only(self):
-        """``propose_transition`` to CLOSED stores a pending transition with
-        engine-derived closure_reason but does not mutate ``case.state``.
-        """
+    def test_inv03_opening_a_close_offer_writes_the_record_only(self):
+        """A close offer carries an engine-derived closure_reason and does not
+        mutate ``case.state``."""
         case = _make_investigating_case()
 
-        propose_transition(
-            case,
-            to_state="closed",
-            summary="Closing without resolution",
-            evidence_ids=[],
-        )
+        offer = _open(case, "close", "Closing without resolution")
 
-        assert case.pending_transition is not None
-        assert case.pending_transition["to_state"] == "closed"
-        # closure_reason is engine-derived at propose time. Every value says
-        # WHY the case ended, never merely when — this case established
-        # nothing, so it is an insufficient-evidence close.
-        assert "closure_reason" in case.pending_transition
-        assert case.pending_transition["closure_reason"] in (
+        assert case.offer_record.open == offer
+        assert offer.kind == "close"
+        # closure_reason is engine-derived at open time. Every value says WHY
+        # the case ended, never merely when — this case established nothing,
+        # so it is an insufficient-evidence close.
+        assert offer.closure_reason in (
             "inquiry_only",
             "closed_rca_infeasible",
             "mitigation_sufficient",
@@ -148,76 +138,62 @@ class TestINV03_DispositionHandshake:
         assert case.state == CaseState.INVESTIGATING
         assert case.closed_at is None
 
-    def test_inv03_confirm_without_prior_propose_is_noop(self):
-        """``confirm_pending_transition`` is a no-op when no pending exists.
-
-        Pins the one-way data dependency from propose to confirm: there is
-        no path to mutate state via confirm without first writing
-        pending_transition via propose.
-        """
+    def test_inv03_confirm_without_an_open_offer_is_refused(self):
+        """``confirm_open_offer`` refuses when nothing is open: there is no
+        path to mutate state via confirm without first opening an offer."""
         case = _make_investigating_case()
-        assert case.pending_transition is None
+        assert case.offer_record.open is None
         assert case.state == CaseState.INVESTIGATING
 
-        result = confirm_pending_transition(case, user_id="user_test")
+        with pytest.raises(ValueError, match="no resolve or close offer open"):
+            confirm_open_offer(case, user_id="user_test", via=AnswerVia.CLICK)
 
-        # Confirm returns False and mutates nothing
-        assert result is False
         assert case.state == CaseState.INVESTIGATING
         assert case.resolved_at is None
         assert case.closed_at is None
-        assert case.pending_transition is None
+        assert case.offer_record.open is None
 
     def test_inv03_full_handshake_executes_only_via_explicit_confirm(self):
-        """End-to-end function-level handshake: propose → confirm executes.
+        """End-to-end function-level handshake: open → confirm executes.
 
-        Documents the canonical sequence and pins that ``confirm_pending_-
-        transition`` is the ONLY path that actually mutates ``case.state``
-        for disposition transitions. The engine's per-turn message dispatch
-        ensures these two calls land in separate process_turn invocations
-        (Turn N: propose, Turn N+1: confirm).
+        ``confirm_open_offer`` is the ONLY path that actually mutates
+        ``case.state`` for disposition transitions. The engine's per-turn
+        message dispatch ensures these two calls land in separate
+        process_turn invocations (Turn N: open, Turn N+1: confirm).
         """
         case = _make_investigating_case()
 
-        # Turn N: agent proposes
-        propose_transition(
-            case,
-            to_state="resolved",
-            summary="Solution applied",
-            evidence_ids=[],
-        )
-        assert case.pending_transition is not None
+        # Turn N: the model's offer
+        offer = _open(case, "resolve", "Solution applied")
         assert case.state == CaseState.INVESTIGATING  # NOT yet resolved
 
         # Turn N+1: user confirms via explicit confirm call
-        result = confirm_pending_transition(case, user_id="user_test")
+        result = confirm_open_offer(case, user_id="user_test", via=AnswerVia.CLICK)
 
         # Now and only now does state change
         assert result is True
         assert case.state == CaseState.RESOLVED
         assert case.resolved_at is not None
-        # Pending is cleared after successful execution
-        assert case.pending_transition is None
+        # The offer is answered after successful execution
+        assert case.offer_record.open is None
+        last = case.offer_record.answers[-1]
+        assert (last.proposal_id, last.answer) == (offer.proposal_id, "accepted")
 
-    def test_inv03_decline_clears_pending_without_executing(self):
-        """``cancel_pending_transition`` clears the pending transition and
-        leaves ``case.state`` unchanged. Complements the propose/confirm
-        pair: the user can decline the proposal, and the case stays in
-        its current state.
-        """
+    def test_inv03_decline_answers_the_offer_without_executing(self):
+        """A decline answers the offer and leaves ``case.state`` unchanged:
+        the user can decline the proposal, and the case stays where it is."""
         case = _make_investigating_case()
-        propose_transition(
+        offer = _open(case, "resolve", "Solution applied")
+
+        case.offer_record = answer_offer(
             case,
-            to_state="resolved",
-            summary="Solution applied",
-            evidence_ids=[],
+            proposal_id=offer.proposal_id,
+            answer=AnswerKind.DECLINED,
+            via=AnswerVia.CLICK,
         )
-        assert case.pending_transition is not None
 
-        cleared = cancel_pending_transition(case)
-
-        assert cleared is True
-        assert case.pending_transition is None
+        assert case.offer_record.open is None
+        assert case.offer_record.answers[-1].answer == "declined"
         assert case.state == CaseState.INVESTIGATING  # unchanged
         assert case.resolved_at is None
 
@@ -453,7 +429,7 @@ class TestINV04_NoDirectInquiryToResolved:
 #   the gate milestone the LLM emits, without a propose/confirm round-trip.
 # Statement: Setting a stage-gate milestone (mitigation_accepted,
 #   solution_accepted) advances ``case.current_stage`` immediately. No
-#   pending_transition is written, no user confirmation turn is required.
+#   offer is opened, no user confirmation turn is required.
 # Enforcement: Prompt-only via gate milestone semantics — the engine acts
 #   directly on whichever gate milestone the LLM emits, and the
 #   ``current_stage`` property on ``InvestigationProgress`` is a pure
@@ -478,13 +454,13 @@ class TestINV05_StageGatesAutoFireWithoutHandshake:
 
         case = _make_investigating_case()
         assert case.current_stage == InvestigationStage.DIAGNOSIS
-        # And critically: no pending_transition is involved for stage state
-        assert case.pending_transition is None
+        # And critically: no offer is involved for stage state
+        assert case.offer_record.open is None
 
     def test_inv05_mitigation_accepted_advances_stage_immediately(self):
         """An accepted-but-unverified mitigation advances
-        ``current_stage`` to MITIGATION immediately. No propose+confirm
-        round-trip; no pending_transition is written; no user-confirmation
+        ``current_stage`` to MITIGATION immediately. No open+confirm
+        round-trip; no offer is opened; no user-confirmation
         turn is required. Asymmetric with INV-03's disposition handshake.
         """
         from faultmaven.modules.case.domain.models.problem import InvestigationStage
@@ -503,7 +479,7 @@ class TestINV05_StageGatesAutoFireWithoutHandshake:
         # state machine in between)
         assert case.current_stage == InvestigationStage.MITIGATION
         # Critically: no handshake artifacts
-        assert case.pending_transition is None
+        assert case.offer_record.open is None
         # And disposition is unchanged — stage transition does NOT touch
         # case.state
         assert case.state == CaseState.INVESTIGATING
@@ -519,13 +495,13 @@ class TestINV05_StageGatesAutoFireWithoutHandshake:
         case.progress.solution_accepted = True
 
         assert case.current_stage == InvestigationStage.TREATMENT
-        assert case.pending_transition is None
+        assert case.offer_record.open is None
         assert case.state == CaseState.INVESTIGATING
 
-    def test_inv05_stage_property_does_not_write_pending_transition(self):
+    def test_inv05_stage_property_does_not_open_an_offer(self):
         """Static guard: ``InvestigationProgress.current_stage`` is a pure
-        computed property — it must not contain any code that writes
-        ``case.pending_transition`` or ``self.pending_transition``. If a
+        computed property — it must not contain any code that opens or answers
+        an offer on the case's offer record. If a
         future refactor introduces a handshake into stage computation,
         this test breaks and INV-05's asymmetry with INV-03 collapses.
         """
@@ -536,7 +512,7 @@ class TestINV05_StageGatesAutoFireWithoutHandshake:
             InvestigationProgress.current_stage.fget  # type: ignore[union-attr]
         )
 
-        forbidden = ["pending_transition", "propose_transition", "confirm_pending"]
+        forbidden = ["offer_record", "open_offer", "confirm_open_offer"]
         for token in forbidden:
             assert token not in source, (
                 f"INV-05 violation: InvestigationProgress.current_stage "
@@ -548,7 +524,7 @@ class TestINV05_StageGatesAutoFireWithoutHandshake:
 
 
 # =============================================================================
-# INV-06: KB-Resolution path still uses pending_transition (no auto-resolve)
+# INV-06: KB-Resolution path still uses the offer handshake (no auto-resolve)
 # =============================================================================
 #
 # Source: §1.2 *KB-Resolution Path (Milestone-Collapse Variant)*.
@@ -558,8 +534,8 @@ class TestINV05_StageGatesAutoFireWithoutHandshake:
 #   in one turn and lets the standard ProposedTransition flow handle the
 #   disposition on the NEXT turn. The "collapse" is in milestone-state
 #   authoring only, never in transition timing.
-# Enforcement: Structural — uses the same ``pending_transition`` mechanism
-#   as the multi-turn path; there is no collapse branch.
+# Enforcement: Structural — uses the same offer-record mechanism as the
+#   multi-turn path; there is no collapse branch.
 #
 # History (#722): PR #297 ("Option B") added a same-turn confirm collapse
 # gated on ``transition_proposed_this_turn AND knowledge_resolution_-
@@ -568,20 +544,20 @@ class TestINV05_StageGatesAutoFireWithoutHandshake:
 # production while the unit test injected both flags directly and stayed
 # green — a fixture-minted dead gate. #722 removed the collapse branch
 # deliberately: the user's "it worked" is the trusted verification claim,
-# never consent to the irreversible RESOLVED transition (INV-26). The
-# proposal flags are unified back into ``transition_proposed_this_turn``,
-# set by EVERY same-turn proposal site (LLM emit, rca_infeasible close,
-# deferred-solution close), so a proposal can never be confirmed by the
-# very message that produced it. The tests below pin all of that.
+# never consent to the irreversible RESOLVED transition (INV-26). Since
+# #2379 no step of ``check_automatic_transitions`` answers an offer at all:
+# only the gate (0b), at the start of a LATER turn, does, so a proposal can
+# never be confirmed by the very message that produced it. The tests below
+# pin all of that.
 
 
 class TestINV06_KBResolutionUsesPendingTransition:
     """INV-06: knowledge_resolution does not bypass the propose+confirm gate."""
 
-    def test_inv06_propose_transition_with_knowledge_resolution_present_does_not_execute(
+    def test_inv06_an_offer_with_knowledge_resolution_present_does_not_execute(
         self,
     ):
-        """``propose_transition`` behaves identically whether or not
+        """Opening a resolve offer behaves identically whether or not
         ``knowledge_resolution`` is set on the case.
 
         Pins that the KB-resolution path uses the same structural
@@ -599,16 +575,11 @@ class TestINV06_KBResolutionUsesPendingTransition:
             resolution_turn=2,
         )
 
-        propose_transition(
-            case,
-            to_state="resolved",
-            summary="Resolved via runbook rb_abc123",
-            evidence_ids=[],
-        )
+        _open(case, "resolve", "Resolved via runbook rb_abc123")
 
-        # Standard pending_transition write — identical to INV-03
-        assert case.pending_transition is not None
-        assert case.pending_transition["to_state"] == "resolved"
+        # Standard offer — identical to INV-03
+        assert case.offer_record.open is not None
+        assert case.offer_record.open.kind == "resolve"
         # Status UNCHANGED — no auto-resolve from knowledge_resolution
         assert case.state == CaseState.INVESTIGATING
         assert case.resolved_at is None
@@ -647,7 +618,7 @@ class TestINV06_KBResolutionUsesPendingTransition:
         # These calls indicate auto-resolution. None should appear inside
         # the kr handler:
         forbidden_calls = [
-            "confirm_pending_transition",
+            "confirm_open_offer",
             "_execute_resolved_transition",
             "_execute_closed_transition",
             "case.state = CaseState.RESOLVED",
@@ -678,17 +649,11 @@ class TestINV06_KBResolutionUsesPendingTransition:
         engine = MilestoneEngine(MagicMock(), repo, investigation_tools=MagicMock())
 
         case = _make_investigating_case()
-        propose_transition(
-            case,
-            to_state="resolved",
-            summary="Runbook rb_abc123 applied; user confirmed it worked",
-            evidence_ids=[],
-        )
-        assert case.pending_transition is not None
+        _open(case, "resolve", "Runbook rb_abc123 applied; user confirmed it worked")
+        assert case.offer_record.open is not None
         assert case.state == CaseState.INVESTIGATING
 
         metadata = {
-            "transition_proposed_this_turn": True,
             # Legacy collapse conjunction flag — must be inert (#722).
             "knowledge_resolution_signalled": True,
         }
@@ -703,39 +668,39 @@ class TestINV06_KBResolutionUsesPendingTransition:
         )
         assert result.resolved_at is None
         # Pending stays — waiting for user confirmation next turn
-        assert result.pending_transition is not None
+        assert result.offer_record.open is not None
         assert metadata.get("status_transitioned") is not True
 
     @pytest.mark.asyncio
     async def test_inv06_same_turn_proposal_not_confirmed_by_triggering_message(
         self,
     ):
-        """#722 flag unification: a close proposed mid-turn by a stage-gate
-        side effect (rca_infeasible / deferred-solution — sites that used
-        to set the ORPHANED ``transition_proposed`` flag) must not be
-        confirmed by the very message that produced it.
+        """#722: a close offered mid-turn by a stage-gate side effect
+        (rca_infeasible / deferred-solution) must not be confirmed by the very
+        message that produced it.
 
         Live hole this pins shut: user says "yes, the workaround is
         stable" → mitigation_verified fires → engine proposes CLOSED →
         step 0 of _check_automatic_transitions pattern-matched the same
         message as a bare "yes" and CLOSED the case in the same turn —
-        the user never saw the proposal. With the unified
-        ``transition_proposed_this_turn`` flag the skip-guard covers
-        every same-turn proposal site.
+        the user never saw the proposal. Since #2379 no step of
+        ``check_automatic_transitions`` answers an offer: the gate (0b) at
+        the start of a later turn is the only reader of a reply to one.
         """
         repo = MagicMock()
         repo.save = AsyncMock(side_effect=lambda c, **_: c)
         engine = MilestoneEngine(MagicMock(), repo, investigation_tools=MagicMock())
 
         case = _make_investigating_case()
-        # Simulate the stage-gate side effect having proposed a close
-        # earlier in THIS turn (before _check_automatic_transitions runs).
-        propose_transition(
+        # Simulate the stage-gate side effect having opened a close earlier
+        # in THIS turn (before _check_automatic_transitions runs).
+        with_open_offer(
             case,
-            to_state="closed",
+            kind="close",
+            basis="rca_infeasible",
             summary="Mitigation verified and stable — close as stabilized?",
         )
-        metadata = {"transition_proposed_this_turn": True}
+        metadata: dict = {}
 
         # The triggering message pattern-matches as a bare confirmation.
         result = await engine.transitions.check_automatic_transitions(
@@ -743,25 +708,17 @@ class TestINV06_KBResolutionUsesPendingTransition:
         )
 
         assert result.state == CaseState.INVESTIGATING, (
-            "A same-turn stage-gate close proposal was confirmed by the "
-            "message that triggered it. The unified "
-            "transition_proposed_this_turn flag must make step 0 skip "
-            "confirmation on every same-turn proposal (#722)."
+            "A same-turn stage-gate close offer was confirmed by the "
+            "message that triggered it (#722)."
         )
-        assert result.pending_transition is not None
+        assert result.offer_record.open is not None
         assert metadata.get("status_transitioned") is not True
 
     def test_inv06_full_kb_resolution_path_requires_explicit_confirm(self):
-        """End-to-end pin: at the FUNCTION level (propose_transition +
-        confirm_pending_transition), knowledge_resolution presence does
-        not grant a same-turn bypass. The same-turn collapse is at the
-        ENGINE level (``_check_automatic_transitions``), gated by
-        metadata flags set during turn processing.
-
-        This complements
-        ``test_inv06_engine_collapses_to_one_turn_when_both_flags_set``
-        which pins the engine-level collapse, and documents the
-        canonical 2-step sequence used by every non-KB path.
+        """End-to-end pin: at the FUNCTION level (``open_offer`` +
+        ``confirm_open_offer``), knowledge_resolution presence does not grant
+        a same-turn bypass, and documents the canonical 2-step sequence used
+        by every non-KB path.
         """
         case = _make_investigating_case()
         case.inquiry.knowledge_resolution = KnowledgeResolution(
@@ -772,19 +729,14 @@ class TestINV06_KBResolutionUsesPendingTransition:
             resolution_turn=2,
         )
 
-        # Step 1: engine proposes (LLM emitted knowledge_resolution + ProposedTransition)
-        propose_transition(
-            case,
-            to_state="resolved",
-            summary="Resolved via runbook",
-            evidence_ids=[],
-        )
+        # Step 1: the model's offer (knowledge_resolution + ProposedTransition)
+        _open(case, "resolve", "Resolved via runbook")
         assert case.state == CaseState.INVESTIGATING  # NOT yet resolved
-        assert case.pending_transition is not None
+        assert case.offer_record.open is not None
 
         # Step 2: explicit confirm (next turn, or via intent-routed click)
         # is the ONLY thing that completes the transition.
-        result = confirm_pending_transition(case, user_id="user_test")
+        result = confirm_open_offer(case, user_id="user_test", via=AnswerVia.TOKEN)
 
         assert result is True
         assert case.state == CaseState.RESOLVED
@@ -803,10 +755,9 @@ class TestINV06_KBResolutionUsesPendingTransition:
 #   the User-Agent Handshake.
 # Enforcement: Structural — the UI sends a system message with
 #   ``intent_type="status_transition"`` that routes through ``submit_turn``
-#   + the standard ``pending_transition`` mechanism. Each target either
-#   calls ``propose_transition`` (CLOSED, RESOLVED) or falls through to
-#   the LLM pipeline (INVESTIGATING) which writes pending via the LLM-
-#   emitted ProposedTransition.
+#   + the standard offer-record mechanism. Each target either opens an offer
+#   (CLOSED, and RESOLVED from the reopen chip) or is refused before any
+#   mutation (INVESTIGATING, and RESOLVED otherwise).
 #
 # Drift surfaced during verification (to fold into §1.3.1 drift notes):
 #
@@ -819,13 +770,9 @@ class TestINV06_KBResolutionUsesPendingTransition:
 #      the dropdown flows — §1.5.2 should be updated to describe the
 #      structured-intent route.
 #
-#   b. The RESOLVED dropdown is *path-dependent*: if a matching
-#      pending_transition already exists, the click confirms it
-#      (milestone_engine/engine.py); otherwise the click runs
-#      ``assess_resolution_readiness`` and may propose RESOLVED, pivot
-#      to propose CLOSED, or ask for needs_info. The §1.5.2 narrative
-#      doesn't surface this branching; readers won't know the dropdown
-#      can do these three different things. Worth a paragraph.
+#   b. RESOLVED is not a dropdown pick (contract 9.0.0); the one admitted
+#      RESOLVED ``status_transition`` is the "Mark it resolved" chip, which
+#      opens a resolve offer and never confirms.
 
 
 class TestINV14_DropdownUsesStandardHandshake:
@@ -833,8 +780,7 @@ class TestINV14_DropdownUsesStandardHandshake:
 
     Each test verifies that after the dropdown intent is processed:
       - case.state is UNCHANGED (no auto-execution).
-      - pending_transition is set (for CLOSED/RESOLVED) — handshake
-        proposal landed.
+      - an offer is open (for CLOSED) — the handshake proposal landed.
       - resolved_at / closed_at remain None.
 
     The existing test_transition_alignment.py tests verify the same
@@ -853,7 +799,7 @@ class TestINV14_DropdownUsesStandardHandshake:
 
     @pytest.mark.asyncio
     async def test_inv14_dropdown_inquiry_to_closed_proposes_does_not_execute(self):
-        """Dropdown INQUIRY → CLOSED writes pending_transition and returns
+        """Dropdown INQUIRY → CLOSED opens a close offer and returns
         confirmation suggestions. Case state stays INQUIRY this turn.
         """
         engine, _ = self._engine_and_repo()
@@ -887,8 +833,8 @@ class TestINV14_DropdownUsesStandardHandshake:
 
         updated = result["case_updated"]
         # Handshake: pending written, state untouched
-        assert updated.pending_transition is not None
-        assert updated.pending_transition["to_state"] == "closed"
+        assert updated.offer_record.open is not None
+        assert updated.offer_record.open.kind == "close"
         assert updated.state == CaseState.INQUIRY
         assert updated.closed_at is None
 
@@ -896,7 +842,7 @@ class TestINV14_DropdownUsesStandardHandshake:
     async def test_inv14_dropdown_investigating_to_closed_proposes_does_not_execute(
         self,
     ):
-        """Dropdown INVESTIGATING → CLOSED writes pending_transition; state
+        """Dropdown INVESTIGATING → CLOSED opens a close offer; state
         stays INVESTIGATING this turn.
         """
         engine, _ = self._engine_and_repo()
@@ -916,8 +862,8 @@ class TestINV14_DropdownUsesStandardHandshake:
         )
 
         updated = result["case_updated"]
-        assert updated.pending_transition is not None
-        assert updated.pending_transition["to_state"] == "closed"
+        assert updated.offer_record.open is not None
+        assert updated.offer_record.open.kind == "close"
         assert updated.state == CaseState.INVESTIGATING
         assert updated.closed_at is None
 
@@ -933,8 +879,8 @@ class TestINV14_DropdownUsesStandardHandshake:
         decides whether the offer is MADE, so there is no pick to argue with.
 
         What INV-14 still says about this edge is that nothing executes, and
-        the refusal says it more strongly than the pivot did: no
-        pending_transition is written either.
+        the refusal says it more strongly than the pivot did: no offer is
+        opened either.
         """
         engine, _ = self._engine_and_repo()
         case = _make_investigating_case()
@@ -952,7 +898,7 @@ class TestINV14_DropdownUsesStandardHandshake:
                 redaction_ctx=None,
             )
 
-        assert case.pending_transition is None
+        assert case.offer_record.open is None
         assert case.state == CaseState.INVESTIGATING
         assert case.resolved_at is None
         assert case.closed_at is None
@@ -960,12 +906,12 @@ class TestINV14_DropdownUsesStandardHandshake:
     def test_inv14_investigating_request_is_refused_before_any_mutation(self):
         """The INVESTIGATING refusal must come BEFORE section 0b's mutations.
 
-        Placement is the invariant, not merely the refusal. Section 0b cancels
-        a contradicting pending transition and records the fm#1122 decline
-        signature before reaching the per-target branches. A refusal raised
-        from down there unwinds past those mutations with no save, so a
-        standing close offer survives with no decline recorded and the engine
-        re-fires it next turn — the re-nag fm#1122 exists to prevent.
+        Placement is the invariant, not merely the refusal. Section 0b answers
+        a contradicting open offer (recording the fm#1122 decline) before
+        reaching the per-target branches. A refusal raised from down there
+        unwinds past that answer with no save, so an open close offer survives
+        with no decline recorded and the engine re-fires it next turn — the
+        re-nag fm#1122 exists to prevent.
 
         Static rather than behavioural because the damage is in what is NOT
         persisted: an in-memory assertion after the raise sees the mutations
@@ -988,16 +934,13 @@ class TestINV14_DropdownUsesStandardHandshake:
             "(contract 9.0.0) may be requestable"
         )
 
-        for mutator in (
-            "_record_deferred_disposition_decline(",
-            "cancel_pending_transition(",
-        ):
+        for mutator in ("answer_offer(",):
             mutator_idx = source.find(mutator)
             assert mutator_idx >= 0, f"{mutator} no longer present — update this test"
             assert guard_idx < mutator_idx, (
                 f"INV-14 violation: the earned-edge refusal is raised AFTER "
                 f"{mutator} runs. That unwinds past a mutation the turn never "
-                f"saves, dropping the fm#1122 decline signature and letting "
+                f"saves, dropping the fm#1122 decline and letting "
                 f"the engine re-nag with the offer the user contradicted."
             )
 
@@ -2350,10 +2293,10 @@ class TestINV22_ProposedTransitionAgainstActionGraph:
         result = await engine.transitions.check_automatic_transitions(case, metadata)
 
         # No pending transition was set — the rejection happened BEFORE
-        # propose_transition could run.
-        assert result.pending_transition is None, (
+        # an offer could be opened.
+        assert result.offer_record.open is None, (
             "INV-22 violation: invalid proposed_transition from INQUIRY "
-            "produced a pending_transition. The engine must reject "
+            "opened an offer. The engine must reject "
             "to_state='resolved' from INQUIRY (not a valid edge) "
             "instead of pivoting to CLOSED via SUGGEST_CLOSE."
         )
@@ -2398,11 +2341,11 @@ class TestINV22_ProposedTransitionAgainstActionGraph:
         result = await engine.transitions.check_automatic_transitions(case, metadata)
 
         # Valid edge → pending transition WAS set.
-        assert result.pending_transition is not None, (
+        assert result.offer_record.open is not None, (
             "INV-22 over-reach: valid to_state='closed' from INQUIRY "
             "was rejected. The guard should only reject invalid edges."
         )
-        assert result.pending_transition["to_state"] == "closed"
+        assert result.offer_record.open.kind == "close"
         # No rejection feedback for a valid emission.
         assert "INVALID TRANSITION ERROR" not in (metadata.get("system_feedback") or "")
 

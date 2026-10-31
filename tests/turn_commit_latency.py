@@ -31,10 +31,7 @@ from faultmaven.core.investigation.milestone_engine.turn_commit import (
     TurnCommitPlan,
     commit_turn_plan,
 )
-from faultmaven.core.investigation.terminal_transitions import (
-    confirm_pending_transition,
-    propose_transition,
-)
+from faultmaven.core.investigation.terminal_transitions import execute_user_closure
 from faultmaven.modules.case.contracts import (
     MessageRowKind,
     TurnOutcome,
@@ -61,6 +58,7 @@ from faultmaven.modules.case.domain.owned_models.report import (
     ReportStatus,
     ReportType,
 )
+from tests.case_builders import with_open_offer
 
 #: Turns per measured case: past where a real investigation ends, so the last
 #: commits upsert a case larger than most.
@@ -145,8 +143,11 @@ def _grow_one_turn(case: Case, turn: int, *, terminal: bool) -> TurnCommitPlan:
         )
         case.hypotheses[hypothesis.hypothesis_id] = hypothesis
     if terminal:
-        propose_transition(case, to_state="closed", summary="Close it?")
-        assert confirm_pending_transition(case, "user_latency")
+        # The case has no creator row to drive it, so the close runs through
+        # the executor the REST close uses; the open offer is answered with it.
+        with_open_offer(case, kind="close", summary="Close it?")
+        execute_user_closure(case, "user_latency")
+        assert case.state == CaseState.CLOSED
         plan.add_reports(
             [
                 CaseReport(

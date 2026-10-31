@@ -7,10 +7,11 @@ re-proposes RESOLVED every turn the user confirms, and the LLM-proposal
 block's ``propose_transition`` overwrote that CLOSE with a fresh
 RESOLVED+needs_info, looping forever to max_turns.
 
-Fix: the engine's same-turn offer stands (INV-43, #1885). When the handshake
-block has already pivoted to CLOSE this turn (``transition_proposed_this_turn``
-with the CLOSE pending), the LLM's same-turn ``proposed_transition`` is ignored
-so it can't clobber the escape.
+Fix: the engine's same-turn offer stands (INV-43, #1885). When the request's
+re-check has already opened the CLOSE this turn, the LLM's same-turn
+``proposed_transition`` is ignored (the record holds one offer), so it can't
+clobber the escape. Since #2408 the first ask is a remembered request, not a
+RESOLVED offer: no chips, and the next turn re-checks it.
 """
 
 from datetime import datetime, timezone
@@ -21,6 +22,7 @@ import pytest
 from faultmaven.core.investigation.milestone_engine import turn_completion
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommitPlan
+from faultmaven.core.investigation.offers import remember_resolve_request
 from faultmaven.core.investigation.schemas import (
     EvidenceToAdd,
     InvestigationResponse_Diagnosis,
@@ -108,6 +110,12 @@ def _needs_info_case() -> Case:
     return case
 
 
+def _asked_last_turn(case: Case) -> None:
+    """The previous turn asked for what the resolution still needs."""
+    case.offer_record = remember_resolve_request(case, ["solution"])
+    case.current_turn += 1
+
+
 def _llm_proposes_resolved():
     fake = MagicMock()
     fake.state_updates.proposed_transition = MagicMock(
@@ -118,19 +126,13 @@ def _llm_proposes_resolved():
 
 @pytest.mark.asyncio
 async def test_repeat_needs_info_escapes_to_close_not_clobbered():
-    """The loop bug: case already asked once (pending resolved+needs_info),
-    user confirms again (LLM re-proposes RESOLVED). The escape must win →
-    pending_transition becomes CLOSED, NOT re-armed as RESOLVED."""
+    """The loop bug: case already asked once, user confirms again (LLM
+    re-proposes RESOLVED). The escape must win → a CLOSE offer, NOT a
+    re-armed RESOLVED."""
     engine = _engine()
     case = _needs_info_case()
-    # Simulate turn N+1: we already asked for the solution last turn.
-    case.pending_transition = {
-        "to_state": "resolved",
-        "summary": "Before I can mark this as resolved, I need a bit more detail…",
-        "evidence_ids": [],
-        "proposed_at": datetime.now(timezone.utc).isoformat(),
-        "needs_info": True,
-    }
+    # Turn N+1: we already asked for the solution last turn.
+    _asked_last_turn(case)
     metadata = _llm_proposes_resolved()
 
     await engine.transitions.check_automatic_transitions(
@@ -140,8 +142,8 @@ async def test_repeat_needs_info_escapes_to_close_not_clobbered():
     )
 
     # Escape fired and was NOT clobbered by the LLM's re-proposed RESOLVED.
-    assert case.pending_transition is not None
-    assert case.pending_transition["to_state"] == "closed", (
+    assert case.offer_record.open is not None
+    assert case.offer_record.open.kind == "close", (
         "Repeat resolution NEEDS_INFO must escape to CLOSE; the LLM's "
         "same-turn RESOLVED re-proposal clobbered the pivot (the stuck loop)."
     )
@@ -149,12 +151,12 @@ async def test_repeat_needs_info_escapes_to_close_not_clobbered():
 
 
 @pytest.mark.asyncio
-async def test_first_needs_info_stays_resolved_not_prematurely_closed():
-    """Control: on the FIRST ask (no prior needs_info pending), the gate
-    asks for the solution (RESOLVED + needs_info) — it must NOT jump
+async def test_first_ask_is_a_request_not_a_premature_close():
+    """Control: on the FIRST ask (no request remembered), the gate asks for
+    the solution with no offer and no chips (#2408) — it must NOT jump
     straight to CLOSE."""
     engine = _engine()
-    case = _needs_info_case()  # no pending_transition yet
+    case = _needs_info_case()  # nothing asked yet
     metadata = _llm_proposes_resolved()
 
     await engine.transitions.check_automatic_transitions(
@@ -163,15 +165,17 @@ async def test_first_needs_info_stays_resolved_not_prematurely_closed():
         user_message="mark resolved",
     )
 
-    assert case.pending_transition["to_state"] == "resolved"
-    assert case.pending_transition.get("needs_info") is True
+    assert case.offer_record.open is None
+    assert "solution" in case.offer_record.resolve_request.missing
+    assert metadata.get("resolution_needs_info_first_pass") is True
     assert not metadata.get("resolution_suggest_close")
 
 
 @pytest.mark.asyncio
 async def test_ready_case_resolves_guard_does_not_interfere():
-    """Control: a genuinely-ready case (root cause + Solution record) still
-    proposes RESOLVED — the close-escape guard only fires on the pivot."""
+    """Control: a genuinely-ready case (the fix confirmed: the cause gone and
+    the problem gone with it) still opens the RESOLVED offer — the
+    close-escape guard only fires on the pivot."""
     engine = _engine()
     case = _needs_info_case()
     case.solutions.append(
@@ -181,6 +185,21 @@ async def test_ready_case_resolves_guard_does_not_interfere():
             longterm_fix="CREATE INDEX ...",
         )
     )
+    for category, summary in (
+        (EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE, "queries use the new index"),
+        (EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE, "p99 back to 40ms"),
+    ):
+        case.evidence.append(
+            Evidence(
+                summary=summary,
+                category=category,
+                source_type=EvidenceSourceType.LOGS,
+                collected_by="user_test",
+                primary_purpose="confirm the fix",
+                source_file_id=_FILE_ID,
+                collected_at_turn=2,
+            )
+        )
     metadata = _llm_proposes_resolved()
 
     await engine.transitions.check_automatic_transitions(
@@ -189,7 +208,7 @@ async def test_ready_case_resolves_guard_does_not_interfere():
         user_message="mark resolved",
     )
 
-    assert case.pending_transition["to_state"] == "resolved"
+    assert case.offer_record.open.kind == "resolve"
     assert not metadata.get("resolution_suggest_close")
 
 
@@ -215,16 +234,10 @@ async def test_readiness_verdict_recorded_for_transition_compliance():
 
 @pytest.mark.asyncio
 async def test_readiness_verdict_recorded_on_needs_info_recheck():
-    """The needs_info re-check path (second pass) records the verdict too."""
+    """The request's re-check (second pass) records the verdict too."""
     engine = _engine()
     case = _needs_info_case()
-    case.pending_transition = {
-        "to_state": "resolved",
-        "summary": "Before I can mark this as resolved…",
-        "evidence_ids": [],
-        "proposed_at": datetime.now(timezone.utc).isoformat(),
-        "needs_info": True,
-    }
+    _asked_last_turn(case)
     metadata = {
         "response_obj": MagicMock(state_updates=MagicMock(proposed_transition=None))
     }
@@ -240,13 +253,12 @@ async def test_readiness_verdict_recorded_on_needs_info_recheck():
 
 
 @pytest.mark.asyncio
-async def test_the_flag_alone_with_nothing_pending_supersedes_nothing():
-    """The same-turn rule needs an offer STANDING, not just the flag (#1885):
-    a flag with nothing pending lets the model's proposal land."""
+async def test_with_nothing_open_the_models_proposal_is_not_superseded():
+    """The same-turn rule needs an offer OPEN (#1885): with none, the model's
+    proposal is read on its merits (here, a request)."""
     engine = _engine()
     case = _needs_info_case()
     metadata = _llm_proposes_resolved()
-    metadata["transition_proposed_this_turn"] = True
 
     await engine.transitions.check_automatic_transitions(
         case=case,
@@ -254,7 +266,7 @@ async def test_the_flag_alone_with_nothing_pending_supersedes_nothing():
         user_message="mark resolved",
     )
 
-    assert case.pending_transition["to_state"] == "resolved"
+    assert case.offer_record.resolve_request is not None
     assert not metadata.get("transition_superseded_by_engine")
 
 
@@ -270,20 +282,15 @@ def _compliance(info) -> dict:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("model_proposes", ["resolved", "closed"])
 async def test_steps_zero_ready_reproposal_stands_on_a_real_turn(model_proposes):
-    """Step 0's needs_info -> READY re-proposal is an engine offer like any
-    other: the model's same-turn proposal is dropped (and said to be), not
-    pivoted. Real ``process_turn``, stubbed generator."""
+    """Step 0's re-check of a met request opens the resolve offer before
+    step 2 reads the model's proposal: the model's same-turn proposal is
+    dropped (and said to be), not pivoted. Real ``process_turn``, stubbed
+    generator."""
     engine = _engine()
     engine.kb_prefetcher.prefetch_kb_context = AsyncMock(return_value=None)
     case = _needs_info_case()
-    case.current_turn = 3
-    case.pending_transition = {
-        "to_state": "resolved",
-        "summary": "Before I can mark this as resolved, I need a bit more detail…",
-        "evidence_ids": [],
-        "proposed_at": datetime.now(timezone.utc).isoformat(),
-        "needs_info": True,
-    }
+    case.current_turn = 2
+    _asked_last_turn(case)
     engine.generator.generate_structured_output = AsyncMock(
         return_value=InvestigationResponse_Diagnosis(
             agent_response="Good, the index removed the full scans.",
@@ -316,9 +323,8 @@ async def test_steps_zero_ready_reproposal_stands_on_a_real_turn(model_proposes)
             redaction_ctx=None,
         )
 
-    pending = result["case_updated"].pending_transition
-    assert pending["to_state"] == "resolved"
-    assert not pending.get("needs_info")
+    offer = result["case_updated"].offer_record.open
+    assert (offer.kind, offer.basis) == ("resolve", "model")
     extra = _compliance(info)
     assert extra["transition_superseded_by_engine"] is True
     assert extra["transition_pivoted"] is False

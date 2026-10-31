@@ -20,8 +20,9 @@ import pytest
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.milestone_engine.stage_gates import (
     _apply_stage_gate_side_effects,
-    _close_confirmation_suggestions,
 )
+from faultmaven.core.investigation.offer_projection import project_offers
+from faultmaven.core.investigation.offers import answer_offer, open_terminal_offer
 from faultmaven.core.investigation.schemas import (
     EvidenceToAdd,
     EvidenceTrail,
@@ -30,11 +31,10 @@ from faultmaven.core.investigation.schemas import (
     MilestoneUpdates,
     ProposedTransition,
 )
-from faultmaven.core.investigation.terminal_transitions import (
-    cancel_pending_transition,
-    confirm_pending_transition,
-)
+from faultmaven.core.investigation.terminal_transitions import confirm_open_offer
 from faultmaven.modules.case.contracts import (
+    AnswerKind,
+    AnswerVia,
     Case,
     CaseState,
     Evidence,
@@ -95,7 +95,7 @@ def _make_case(
 
 
 def test_rca_infeasible_creates_pending_closure():
-    """mitigation_verified gate + rca_infeasible=True → pending_transition
+    """mitigation_verified gate + rca_infeasible=True → an open close offer
     to CLOSED.
 
     closure_reason is engine-derived from case state: closing from
@@ -108,19 +108,18 @@ def test_rca_infeasible_creates_pending_closure():
         case, {"mitigation_verified"}, "mitigation worked", metadata
     )
 
-    assert case.pending_transition is not None
-    assert case.pending_transition["to_state"] == "closed"
-    assert case.pending_transition["closure_reason"] == "closed_rca_infeasible"
-    assert "third-party API outage" in case.pending_transition["summary"]
-    assert (
-        "shall we close this case as stabilized?" in case.pending_transition["summary"]
-    )
+    assert case.offer_record.open is not None
+    assert case.offer_record.open.kind == "close"
+    assert case.offer_record.open.closure_reason == "closed_rca_infeasible"
+    assert "third-party API outage" in case.offer_record.open.summary
+    assert "shall we close this case as stabilized?" in case.offer_record.open.summary
 
-    assert metadata["transition_proposed_this_turn"] is True
-    assert metadata["override_suggestions"] == _close_confirmation_suggestions(case)
-    assert (
-        metadata["rca_infeasible_closure_message"] == case.pending_transition["summary"]
-    )
+    assert case.offer_record.open.basis == "rca_infeasible"
+    assert [card["label"] for card in project_offers(case).pair] == [
+        "Yes, close this case",
+        "Not yet, continue investigating",
+    ]
+    assert metadata["rca_infeasible_closure_message"] == case.offer_record.open.summary
 
     # The mitigation stays verified (forward-only).
     assert case.progress.mitigation.verified is True
@@ -128,7 +127,7 @@ def test_rca_infeasible_creates_pending_closure():
 
 
 def test_rca_infeasible_false_does_not_propose_closure():
-    """mitigation_verified gate + rca_infeasible=False → no pending_transition."""
+    """mitigation_verified gate + rca_infeasible=False → no offer."""
     case = _make_case(rca_infeasible=False)
     metadata: dict = {}
 
@@ -136,7 +135,7 @@ def test_rca_infeasible_false_does_not_propose_closure():
         case, {"mitigation_verified"}, "mitigation worked", metadata
     )
 
-    assert case.pending_transition is None
+    assert case.offer_record.open is None
     assert "rca_infeasible_closure_message" not in metadata
     assert case.progress.mitigation.verified is True
     assert case.progress.mitigation.accepted is True
@@ -151,33 +150,39 @@ def test_no_problem_verification_does_not_propose_closure():
         case, {"mitigation_verified"}, "mitigation worked", metadata
     )
 
-    assert case.pending_transition is None
+    assert case.offer_record.open is None
     assert "rca_infeasible_closure_message" not in metadata
 
 
-def test_confirm_pending_transition_closes_rca_infeasible():
+def test_confirming_the_offer_closes_rca_infeasible():
     """User confirmation drives CLOSED with
     closure_reason=closed_rca_infeasible."""
     case = _make_case(rca_infeasible=True, rationale="deprecated legacy system")
     _apply_stage_gate_side_effects(case, {"mitigation_verified"}, "ok", {})
 
-    confirmed = confirm_pending_transition(case, "user_123")
+    confirmed = confirm_open_offer(case, "user_123", via=AnswerVia.CLICK)
 
     assert confirmed is True
     assert case.state == CaseState.CLOSED
     assert case.closure_reason == "closed_rca_infeasible"
-    assert case.pending_transition is None
+    assert case.offer_record.open is None
 
 
 def test_decline_clears_pending_and_keeps_case_investigating():
-    """User decline clears pending_transition; case remains INVESTIGATING for RCA."""
+    """User decline answers the offer; case remains INVESTIGATING for RCA."""
     case = _make_case(rca_infeasible=True)
     _apply_stage_gate_side_effects(case, {"mitigation_verified"}, "ok", {})
 
-    cancelled = cancel_pending_transition(case)
+    case.offer_record = answer_offer(
+        case,
+        proposal_id=open_terminal_offer(case).proposal_id,
+        answer=AnswerKind.DECLINED,
+        via=AnswerVia.CLICK,
+        actor_id="user_123",
+    )
 
-    assert cancelled is True
-    assert case.pending_transition is None
+    assert case.offer_record.open is None
+    assert case.offer_record.answers[-1].answer == AnswerKind.DECLINED
     assert case.state == CaseState.INVESTIGATING
 
 
@@ -257,14 +262,14 @@ async def test_the_models_same_turn_proposal_leaves_the_engines_close(model_prop
     )
 
     assert case.progress.mitigation.verified is True
-    pending = case.pending_transition
-    assert pending["to_state"] == "closed"
-    assert pending["closure_reason"] == "closed_rca_infeasible"
-    assert pending["summary"] == (
+    offer = case.offer_record.open
+    assert offer.kind == "close"
+    assert offer.closure_reason == "closed_rca_infeasible"
+    assert offer.summary == (
         "The mitigation is verified and stable. Since third-party API outage, "
         "shall we close this case as stabilized?"
     )
-    assert pending["summary"] in result["agent_response"]
+    assert offer.summary in result["agent_response"]
 
 
 @pytest.mark.parametrize("model_proposes", [None, "resolved", "closed"])
@@ -305,7 +310,7 @@ async def test_a_resolvable_case_is_never_offered_the_stabilized_close(
     )
 
     assert case.progress.mitigation.verified is True
-    assert case.pending_transition["to_state"] == "resolved"
+    assert case.offer_record.open.kind == "resolve"
     assert "stabilized" not in result["agent_response"]
     labels = [s["label"] for s in result["suggested_follow_ups"]]
     assert "Yes, mark as resolved" in labels

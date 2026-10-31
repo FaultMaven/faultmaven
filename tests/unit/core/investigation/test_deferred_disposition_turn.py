@@ -174,7 +174,7 @@ async def test_confirmed_case_is_offered_resolve_not_close():
 
     assert "Yes, mark as resolved" in labels
     assert "Yes, close this case" not in labels
-    assert case.pending_transition["to_state"] == "resolved"
+    assert case.offer_record.open.kind == "resolve"
     assert LLM_ANALYSIS in text
     assert "Closing would" not in text, "pivot-from-close prose on an unprompted offer"
     assert "out-of-band" in text
@@ -195,7 +195,7 @@ def _deferred_response_with(model_proposes: str):
 @pytest.mark.parametrize("model_proposes", ["closed", "resolved"])
 async def test_the_models_same_turn_proposal_leaves_the_signed_offer(model_proposes):
     """#1885: the engine's offer is what the user answers. Replaced by the
-    model's, it lost its signature, a decline recorded nothing, and the engine
+    model's, it lost its basis, a decline bound nothing, and the engine
     offered the same close again on the next ordinary turn (fm#1122's re-nag).
     A model RESOLVED on this case is not ready, and used to stand in for the
     engine's close as a resolve offer."""
@@ -205,9 +205,8 @@ async def test_the_models_same_turn_proposal_leaves_the_signed_offer(model_propo
     result = await engine.process_turn(
         case=case, user_message="the platform team ships it", redaction_ctx=None
     )
-    pending = case.pending_transition
-    assert pending["to_state"] == "closed"
-    assert "justifying_signature" in pending
+    offer = case.offer_record.open
+    assert (offer.kind, offer.basis) == ("close", "deferred")
     labels = [s["label"] for s in result["suggested_follow_ups"]]
     assert "Yes, close this case" in labels
 
@@ -218,9 +217,8 @@ async def test_the_models_same_turn_proposal_leaves_the_signed_offer(model_propo
         )
     )
     await engine.process_turn(case=case, user_message="no", redaction_ctx=None)
-    assert case.progress.deferred_disposition_declined_signatures == [
-        pending["justifying_signature"]
-    ]
+    (decline,) = case.offer_record.answers
+    assert (decline.proposal_id, decline.answer) == (offer.proposal_id, "declined")
 
     case.current_turn += 1
     engine.generator.generate_structured_output = AsyncMock(
@@ -231,4 +229,4 @@ async def test_the_models_same_turn_proposal_leaves_the_signed_offer(model_propo
         user_message="what should the platform team change first?",
         redaction_ctx=None,
     )
-    assert case.pending_transition is None, "the declined offer came back"
+    assert case.offer_record.open is None, "the declined offer came back"

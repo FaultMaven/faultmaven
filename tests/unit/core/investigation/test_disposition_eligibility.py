@@ -25,18 +25,16 @@ from datetime import UTC, datetime
 import pytest
 
 from faultmaven.core.investigation.terminal_transitions import (
-    DISPOSITION_ELIGIBILITY_NEEDS_INFO,
-    DISPOSITION_ELIGIBILITY_NOT_ELIGIBLE,
-    DISPOSITION_ELIGIBILITY_READY,
-    DISPOSITION_ELIGIBILITY_SUGGESTS_ALTERNATIVE,
     derive_disposition_eligibility,
 )
 from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
+    CloseEligibility,
     EvidenceCategory,
     EvidenceSourceType,
     InquiryData,
+    ResolveEligibility,
 )
 from faultmaven.modules.case.domain.models.conclusion import (
     ConfidenceLevel,
@@ -174,8 +172,8 @@ class TestDeriveDispositionEligibility:
         case = _make_inquiry_case()
         result = derive_disposition_eligibility(case)
         assert result == {
-            "resolved": DISPOSITION_ELIGIBILITY_NOT_ELIGIBLE,
-            "closed": DISPOSITION_ELIGIBILITY_READY,
+            "resolved": ResolveEligibility.NOT_ELIGIBLE,
+            "closed": CloseEligibility.READY,
         }
 
     def test_investigating_empty_case_is_close_only(self):
@@ -183,8 +181,8 @@ class TestDeriveDispositionEligibility:
         SUGGEST_CLOSE → resolved is not_eligible; close remains ready."""
         case = _make_investigating_case()
         result = derive_disposition_eligibility(case)
-        assert result["resolved"] == DISPOSITION_ELIGIBILITY_NOT_ELIGIBLE
-        assert result["closed"] == DISPOSITION_ELIGIBILITY_READY
+        assert result["resolved"] == ResolveEligibility.NOT_ELIGIBLE
+        assert result["closed"] == CloseEligibility.READY
 
     def test_investigating_partial_returns_needs_info_for_resolved(self):
         """INVESTIGATING + evidence + root_cause but no solution:
@@ -195,8 +193,8 @@ class TestDeriveDispositionEligibility:
         _attach_root_cause(case)
         # No solution attached → NEEDS_INFO for resolved
         result = derive_disposition_eligibility(case)
-        assert result["resolved"] == DISPOSITION_ELIGIBILITY_NEEDS_INFO
-        assert result["closed"] == DISPOSITION_ELIGIBILITY_READY
+        assert result["resolved"] == ResolveEligibility.NEEDS_INFO
+        assert result["closed"] == CloseEligibility.READY
 
     def test_investigating_resolution_ready_returns_ready_for_resolved(self):
         """INVESTIGATING + root cause + solution: resolution-readiness =
@@ -209,8 +207,8 @@ class TestDeriveDispositionEligibility:
         _attach_solution(case)
         _attach_confirmation(case)  # cause confirmed eliminated → READY
         result = derive_disposition_eligibility(case)
-        assert result["resolved"] == DISPOSITION_ELIGIBILITY_READY
-        assert result["closed"] == DISPOSITION_ELIGIBILITY_SUGGESTS_ALTERNATIVE
+        assert result["resolved"] == ResolveEligibility.READY
+        assert result["closed"] == CloseEligibility.SUGGESTS_ALTERNATIVE
 
     def test_terminal_resolved_is_not_eligible_for_anything(self):
         """RESOLVED case is terminal — no further dispositions."""
@@ -223,8 +221,8 @@ class TestDeriveDispositionEligibility:
         object.__setattr__(case, "state", CaseState.RESOLVED)
         result = derive_disposition_eligibility(case)
         assert result == {
-            "resolved": DISPOSITION_ELIGIBILITY_NOT_ELIGIBLE,
-            "closed": DISPOSITION_ELIGIBILITY_NOT_ELIGIBLE,
+            "resolved": ResolveEligibility.NOT_ELIGIBLE,
+            "closed": CloseEligibility.NOT_ELIGIBLE,
         }
 
     def test_terminal_closed_is_not_eligible_for_anything(self):
@@ -233,8 +231,8 @@ class TestDeriveDispositionEligibility:
         object.__setattr__(case, "state", CaseState.CLOSED)
         result = derive_disposition_eligibility(case)
         assert result == {
-            "resolved": DISPOSITION_ELIGIBILITY_NOT_ELIGIBLE,
-            "closed": DISPOSITION_ELIGIBILITY_NOT_ELIGIBLE,
+            "resolved": ResolveEligibility.NOT_ELIGIBLE,
+            "closed": CloseEligibility.NOT_ELIGIBLE,
         }
 
 
@@ -267,8 +265,8 @@ class TestRepositorySaveChokepoint:
         saved = await repo.save(case)
 
         assert saved.disposition_eligibility == {
-            "resolved": DISPOSITION_ELIGIBILITY_NOT_ELIGIBLE,
-            "closed": DISPOSITION_ELIGIBILITY_READY,
+            "resolved": ResolveEligibility.NOT_ELIGIBLE,
+            "closed": CloseEligibility.READY,
         }
 
     async def test_save_refreshes_on_subsequent_writes(self):
@@ -278,8 +276,7 @@ class TestRepositorySaveChokepoint:
         case = _make_investigating_case()
         await repo.save(case)
         assert (
-            case.disposition_eligibility["resolved"]
-            == DISPOSITION_ELIGIBILITY_NOT_ELIGIBLE
+            case.disposition_eligibility["resolved"] == ResolveEligibility.NOT_ELIGIBLE
         )
 
         # Now attach root cause + solution + causal_absence (cause confirmed
@@ -290,13 +287,13 @@ class TestRepositorySaveChokepoint:
         _attach_confirmation(case)
         await repo.save(case)
 
-        assert case.disposition_eligibility["resolved"] == DISPOSITION_ELIGIBILITY_READY
+        assert case.disposition_eligibility["resolved"] == ResolveEligibility.READY
         # And close flips to suggests_alternative (SUGGEST_RESOLVE
         # warning — distinct from needs_info; the user is asked to
         # consider resolving, not to add data).
         assert (
             case.disposition_eligibility["closed"]
-            == DISPOSITION_ELIGIBILITY_SUGGESTS_ALTERNATIVE
+            == CloseEligibility.SUGGESTS_ALTERNATIVE
         )
 
     async def test_eligibility_overwritten_even_if_caller_set_a_stale_value(self):
@@ -307,16 +304,15 @@ class TestRepositorySaveChokepoint:
         case = _make_inquiry_case()
         # Caller sets a wrong value.
         case.disposition_eligibility = {
-            "resolved": DISPOSITION_ELIGIBILITY_READY,  # wrong — inquiry can't resolve
-            "closed": DISPOSITION_ELIGIBILITY_READY,
+            "resolved": ResolveEligibility.READY,  # wrong — inquiry can't resolve
+            "closed": CloseEligibility.READY,
         }
 
         await repo.save(case)
 
         # Chokepoint overwrote with the truth.
         assert (
-            case.disposition_eligibility["resolved"]
-            == DISPOSITION_ELIGIBILITY_NOT_ELIGIBLE
+            case.disposition_eligibility["resolved"] == ResolveEligibility.NOT_ELIGIBLE
         )
 
 
@@ -339,8 +335,8 @@ class TestUIAdapterExposesEligibility:
 
         case = _make_inquiry_case()
         case.disposition_eligibility = {
-            "resolved": DISPOSITION_ELIGIBILITY_NOT_ELIGIBLE,
-            "closed": DISPOSITION_ELIGIBILITY_READY,
+            "resolved": ResolveEligibility.NOT_ELIGIBLE,
+            "closed": CloseEligibility.READY,
         }
 
         ui = transform_case_for_ui(case)
@@ -354,8 +350,8 @@ class TestUIAdapterExposesEligibility:
 
         case = _make_investigating_case()
         case.disposition_eligibility = {
-            "resolved": DISPOSITION_ELIGIBILITY_READY,
-            "closed": DISPOSITION_ELIGIBILITY_SUGGESTS_ALTERNATIVE,
+            "resolved": ResolveEligibility.READY,
+            "closed": CloseEligibility.SUGGESTS_ALTERNATIVE,
         }
 
         ui = transform_case_for_ui(case)
@@ -383,8 +379,8 @@ class TestLifecycleIntegration:
         case = _make_inquiry_case()
         await repo.save(case)
         assert case.disposition_eligibility == {
-            "resolved": DISPOSITION_ELIGIBILITY_NOT_ELIGIBLE,
-            "closed": DISPOSITION_ELIGIBILITY_READY,
+            "resolved": ResolveEligibility.NOT_ELIGIBLE,
+            "closed": CloseEligibility.READY,
         }, "INQUIRY: close-only at the start"
 
         # Stage 2: transition to INVESTIGATING. Still thin — resolved
@@ -401,10 +397,9 @@ class TestLifecycleIntegration:
         )
         await repo.save(case)
         assert (
-            case.disposition_eligibility["resolved"]
-            == DISPOSITION_ELIGIBILITY_NOT_ELIGIBLE
+            case.disposition_eligibility["resolved"] == ResolveEligibility.NOT_ELIGIBLE
         )
-        assert case.disposition_eligibility["closed"] == DISPOSITION_ELIGIBILITY_READY
+        assert case.disposition_eligibility["closed"] == CloseEligibility.READY
 
         # Stage 3: attach root cause + solution + causal_absence (cause
         # confirmed eliminated) → resolution-grade.
@@ -412,11 +407,11 @@ class TestLifecycleIntegration:
         _attach_solution(case)
         _attach_confirmation(case)
         await repo.save(case)
-        assert case.disposition_eligibility["resolved"] == DISPOSITION_ELIGIBILITY_READY
+        assert case.disposition_eligibility["resolved"] == ResolveEligibility.READY
         # Close warns now — SUGGEST_RESOLVE → suggests_alternative.
         assert (
             case.disposition_eligibility["closed"]
-            == DISPOSITION_ELIGIBILITY_SUGGESTS_ALTERNATIVE
+            == CloseEligibility.SUGGESTS_ALTERNATIVE
         )
 
 
@@ -436,10 +431,7 @@ class TestEligibilityValuesAreSemanticallyDisjoint:
     """
 
     def test_needs_info_and_suggests_alternative_are_distinct_constants(self):
-        assert (
-            DISPOSITION_ELIGIBILITY_NEEDS_INFO
-            != DISPOSITION_ELIGIBILITY_SUGGESTS_ALTERNATIVE
-        )
+        assert ResolveEligibility.NEEDS_INFO != CloseEligibility.SUGGESTS_ALTERNATIVE
 
     def test_partial_resolution_uses_needs_info_not_alternative(self):
         """Partial-resolution case: user must ADD data (root cause /
@@ -452,8 +444,8 @@ class TestEligibilityValuesAreSemanticallyDisjoint:
 
         result = derive_disposition_eligibility(case)
 
-        assert result["resolved"] == DISPOSITION_ELIGIBILITY_NEEDS_INFO
-        assert result["resolved"] != DISPOSITION_ELIGIBILITY_SUGGESTS_ALTERNATIVE
+        assert result["resolved"] == ResolveEligibility.NEEDS_INFO
+        assert result["resolved"] != CloseEligibility.SUGGESTS_ALTERNATIVE
 
     def test_resolution_grade_close_uses_suggests_alternative_not_needs_info(self):
         """Resolution-grade case clicked-to-close: user should be told
@@ -467,5 +459,5 @@ class TestEligibilityValuesAreSemanticallyDisjoint:
 
         result = derive_disposition_eligibility(case)
 
-        assert result["closed"] == DISPOSITION_ELIGIBILITY_SUGGESTS_ALTERNATIVE
-        assert result["closed"] != DISPOSITION_ELIGIBILITY_NEEDS_INFO
+        assert result["closed"] == CloseEligibility.SUGGESTS_ALTERNATIVE
+        assert result["closed"] != ResolveEligibility.NEEDS_INFO

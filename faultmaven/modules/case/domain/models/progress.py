@@ -261,11 +261,9 @@ class InvestigationProgress(BaseModel):
        (which mirrors ``solution_proposed``). ``cause_state`` drives whether
        the diagnostic machinery runs. The section also holds state that is not
        recomputed: the LLM-set ``solution_feasible``, the ``work_gate_crossed``
-       latch (set once, never reset), the
-       ``deferred_disposition_declined_signatures`` refusal log (deferred and
-       resolve offers; a false-alarm close's decline is recorded on the
-       finding, ``ProblemInvalidation.close_declined_at_turn``) and the
-       ``last_anti_anchoring_turn`` cooldown stamp.
+       latch (set once, never reset) and the ``last_anti_anchoring_turn``
+       cooldown stamp. Declines of the engine's offers are not progress: they
+       are answers on the case's offer record (``Case.offer_record``).
 
     Root-cause metadata and milestone completion timestamps follow them.
     """
@@ -425,33 +423,6 @@ class InvestigationProgress(BaseModel):
             "(#2038), recorded only while cause_state is IDENTIFIED. M6 reads "
             "its representative cause off them at the next recompute, before "
             "that turn's derive and verdicts move the graph (#2042)."
-        ),
-    )
-
-    deferred_disposition_declined_signatures: List[str] = Field(
-        default_factory=list,
-        description=(
-            "Every justifying-state signature the user has REFUSED a "
-            "deferred-implementation or resolve offer against (empty = never "
-            "refused). The offer is re-proposed only when no entry covers the "
-            "current signature (``covering_declined_signature``: the same "
-            "``verdict|solutions|leg`` prefix and a superset of the current "
-            "qualifying confirmation ids, #1895), so a refusal POSTPONES it "
-            "until something about the case actually changes — it never "
-            "permanently disarms it. A decline counter would instead teach "
-            "the engine to abandon, which is soft-collapse (D4). Persisted in "
-            "the progress blob so the refusal survives the turn that cleared "
-            "``pending_transition``; before this, nothing recorded it and the "
-            "proposal re-fired every single turn (fm#1122: five identical "
-            "offers against five explicit declines). A SET rather than the "
-            "last signature: the cause-identification leg is recomputed every "
-            "turn and can flip back (``chain`` while cause_state is "
-            "IDENTIFIED, ``rcc`` while it is not), so a single slot re-arms "
-            "the offer on every oscillation between two states the user has "
-            "already refused in. Bounded by "
-            "``_MAX_DECLINED_DISPOSITION_SIGNATURES``, oldest dropped first. "
-            "No false-alarm entry: that decline is recorded on the finding "
-            "(``ProblemInvalidation.close_declined_at_turn``, #1889)."
         ),
     )
 

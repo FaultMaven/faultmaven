@@ -24,17 +24,20 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from faultmaven.core.investigation.offers import (
+    open_revision,
+    terminal_offer_opened_this_turn,
+)
 from faultmaven.core.investigation.problem_status import (
     commit_revision,
     current_statement,
 )
 from faultmaven.core.investigation.schemas import InvestigationResponse_Diagnosis
-from faultmaven.modules.case.contracts import CaseState, ProblemStatus
+from faultmaven.modules.case.contracts import AnswerVia, CaseState, ProblemStatus
 
 from .stage_gates import CARRIED_FIX_KEY, _add_system_feedback
 from .transition_consent import (
     TYPED_CONFIRMATION_LINE,
-    offer_intent_fields,
 )
 from .turn_records import REFUSED_EVIDENCE_SLOT
 
@@ -45,29 +48,26 @@ logger = logging.getLogger(__name__)
 
 #: Set on a replayed bundle's metadata. The apply path's engine proposers
 #: (deferred close, false-alarm close) stand down under it: an offer made inside
-#: the replay would land on ``case.pending_transition`` with its card and its
-#: same-turn guard left in the bundle's dict, and the confirmation turn's own
-#: "yes" — consent to the revised STATEMENT — would then execute it. The live
-#: turn that follows the replay runs the proposers with its own metadata, so an
-#: offer the replayed state warrants is made there, with its card, unexecuted.
+#: the replay would stand before the confirmation turn's own "yes" — consent to
+#: the revised STATEMENT — had reached the gate. The live turn that follows the
+#: replay runs the proposers with its own metadata, so an offer the replayed
+#: state warrants is made there, with its card, unexecuted.
 REPLAY_METADATA_KEY = "replaying_staged_cause_work"
 
 #: One list for every bundle of a replay: the actions the replay has minted
 #: from fix entries so far, which the stage gate weighs as fix bearers (#2105).
 REPLAY_FIX_SLOTS_KEY = "replay_fix_slots"
 
-#: What an offer made inside the replay writes beside ``pending_transition``:
-#: the same-turn guard (#722: a proposal is never confirmed by the message that
-#: produced it), the card, and the prose that explains it. Carried into the
-#: turn's own metadata whenever the replay leaves an offer standing, whichever
-#: proposer made it — so the user's "yes" to the revised statement cannot
-#: execute it, and the offer reaches the user with its card. The proposers in
-#: the apply path's tail also stand down under ``REPLAY_METADATA_KEY``; this is
-#: what covers the ones that do not (the stage-gate side effects) and any added
-#: later — every proposer writes the same-turn guard beside its offer.
+#: The prose an offer made inside the replay writes beside it. Carried into the
+#: turn's own metadata whenever the replay leaves an offer open, whichever
+#: proposer made it, so the offer reaches the user with its reason; its card
+#: comes from the offer projection at compose. The offer is opened on the
+#: confirmation turn (``Offer.opened_at_turn``), so the gate, which answers
+#: only an offer opened on an earlier turn, never executes it on the user's
+#: "yes" to the revised statement (#722). The proposers in the apply path's
+#: tail also stand down under ``REPLAY_METADATA_KEY``; this covers the ones
+#: that do not (the stage-gate side effects) and any added later.
 PROPOSAL_KEYS = (
-    "transition_proposed_this_turn",
-    "override_suggestions",
     "rca_infeasible_closure_message",
     "deferred_solution_gate_message",
     "false_alarm_closure_message",
@@ -91,21 +91,20 @@ REPLAYED_KEYS = (
 
 
 def revision_pending(case: "Case") -> bool:
-    """Whether a revised statement awaits the user's re-confirmation."""
-    pv = case.problem_verification
+    """Whether a revised statement awaits the user's re-confirmation: a
+    revision offer is open."""
     return (
         case.state == CaseState.INVESTIGATING
         and case.progress.problem_status == ProblemStatus.REVISION_PENDING
-        and pv is not None
-        and pv.pending_revision is not None
+        and open_revision(case) is not None
     )
 
 
 def revision_offer(case: "Case") -> str | None:
-    """The key of the revision offer standing on ``case``, or None."""
+    """The ``proposal_id`` of the revision offer open on ``case``, or None."""
     if not revision_pending(case):
         return None
-    return case.problem_verification.pending_revision.offer_key or None
+    return open_revision(case).proposal_id
 
 
 def revision_presentation(case: "Case") -> str:
@@ -113,7 +112,7 @@ def revision_presentation(case: "Case") -> str:
     user confirmed, the revision the evidence calls for, and how to answer.
     Composed below the model's reply on every pending turn; asks nothing the
     user may already have answered."""
-    pending = case.problem_verification.pending_revision
+    pending = open_revision(case).revision
     confirmed = _quoted(current_statement(case))
     revised = _quoted(pending.text)
     basis = pending.basis.strip()
@@ -127,31 +126,12 @@ def revision_presentation(case: "Case") -> str:
     )
 
 
-def revision_confirmation_suggestions(case: "Case") -> list:
-    """The confirm/refine pair for the standing revision, each naming its offer."""
-    offer = offer_intent_fields(revision_offer(case), case=case, gate="revision")
-    return [
-        {
-            "label": "Yes, use the revised statement",
-            "action_type": "DECIDE",
-            "payload": "Yes, the revised problem statement is right.",
-            "body": "Continue the investigation on the revised problem statement.",
-            "intent": {"type": "confirmation", "confirmation_value": True, **offer},
-        },
-        {
-            "label": "No, let me clarify",
-            "action_type": "DECIDE",
-            "payload": "No — let me clarify the problem first.",
-            "body": "Keep the confirmed statement and clarify what is wrong.",
-            "intent": {"type": "confirmation", "confirmation_value": False, **offer},
-        },
-    ]
-
-
 async def confirm_revision(
     responses: Any,
     case: "Case",
     metadata: dict,
+    *,
+    via: AnswerVia,
 ) -> None:
     """The user re-confirmed the revision: commit it and replay what was staged.
 
@@ -163,7 +143,7 @@ async def confirm_revision(
     stamped at that turn and decides nothing again (#2105); a bundle that no
     longer validates is dropped with it.
     """
-    pending = commit_revision(case)
+    pending = commit_revision(case, via=via)
     await responses.kb_prefetcher.prefetch_kb_context(case, pending.text, "symptom")
 
     replayed: dict[str, list] = {key: [] for key in REPLAYED_KEYS}
@@ -207,9 +187,8 @@ async def confirm_revision(
         }
         if bundle.held_fix:
             bundle_metadata[CARRIED_FIX_KEY] = bundle
-        offer_before = case.pending_transition
         await responses._apply_investigation_updates(case, updates, bundle_metadata)
-        if case.pending_transition and case.pending_transition is not offer_before:
+        if terminal_offer_opened_this_turn(case) is not None:
             for key in PROPOSAL_KEYS:
                 if key in bundle_metadata:
                     metadata[key] = bundle_metadata[key]

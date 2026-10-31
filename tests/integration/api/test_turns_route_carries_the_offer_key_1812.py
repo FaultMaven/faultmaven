@@ -25,13 +25,10 @@ import faultmaven.modules.case.api.routes.conversation as conversation
 from faultmaven.api.v1.auth_dependencies import require_authentication
 from faultmaven.api.v1.dependencies import get_investigation_service
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
-from faultmaven.core.investigation.milestone_engine.terminal_replies import (
-    _resolution_confirmation_suggestions,
-)
 from faultmaven.core.investigation.milestone_engine.transition_turns import (
     STALE_OFFER_LINE,
 )
-from faultmaven.core.investigation.terminal_transitions import propose_transition
+from faultmaven.core.investigation.offer_projection import project_offers
 from faultmaven.modules.agent.domain.services.investigation_service.service import (
     InvestigationService,
 )
@@ -43,6 +40,7 @@ from faultmaven.modules.case.api.routes.router import router
 from faultmaven.modules.case.contracts import Case, CaseState
 from faultmaven.modules.case.domain.models.problem import ProblemVerification
 from faultmaven.modules.case.domain.models.progress import InvestigationProgress
+from tests.case_builders import with_open_offer
 
 pytestmark = pytest.mark.integration
 
@@ -71,7 +69,7 @@ def _case_with_a_resolve_offer() -> Case:
     case.state = CaseState.INVESTIGATING
     case.progress = InvestigationProgress()
     case.current_turn = 7
-    propose_transition(case, to_state="resolved", summary="Resolve it?")
+    with_open_offer(case, kind="resolve", summary="Resolve it?")
     return case
 
 
@@ -141,9 +139,9 @@ def _post_click(client, card: dict):
 
 def test_the_card_key_reaches_the_engine_and_the_click_executes(mounted):
     client, store, engine_spy = mounted
-    yes = _resolution_confirmation_suggestions(store.row())[0]
+    yes = project_offers(store.row()).pair[0]
     key = yes["intent"]["proposal_id"]
-    assert key == store.row().pending_transition["proposed_at"]
+    assert key == store.row().offer_record.open.proposal_id
 
     response = _post_click(client, yes)
 
@@ -159,13 +157,13 @@ def test_a_card_for_another_offer_executes_nothing(mounted):
     standing one. Without it, the test above would pass on a route that drops
     the key and an engine that ignores it."""
     client, store, _ = mounted
-    before = dict(store.row().pending_transition)
-    stale = _resolution_confirmation_suggestions(store.row())[0]
-    stale["intent"]["proposal_id"] = "2026-01-01T00:00:00+00:00"
+    before = store.row().offer_record.open
+    stale = project_offers(store.row()).pair[0]
+    stale["intent"]["proposal_id"] = "0123456789abcdef"
 
     response = _post_click(client, stale)
 
     assert response.status_code == 200, response.text
     assert store.row().state == CaseState.INVESTIGATING
-    assert store.row().pending_transition == before
+    assert store.row().offer_record.open == before
     assert response.json()["agent_response"].startswith(STALE_OFFER_LINE)
