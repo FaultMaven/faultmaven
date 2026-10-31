@@ -464,7 +464,7 @@ Verify that the applied fix resolves the problem. If it does not, diagnose the f
 
 1. When evidence confirms resolution, set `proposed_transition` to RESOLVED.
 2. Offer exactly two DECIDE suggestions: "Yes, mark as resolved" / "Not yet, I want to investigate further."
-3. After user confirms: the backend sets `solution_verified=True` via `confirm_pending_transition`. The agent's job ends at setting `proposed_transition`. Remind the user to revert any mitigation workaround still in place.
+3. After user confirms: the backend sets `solution_verified=True` via `confirm_open_offer`. The agent's job ends at setting `proposed_transition`. Remind the user to revert any mitigation workaround still in place.
 
 **Gate Conditions:**
 
