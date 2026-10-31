@@ -132,8 +132,11 @@ dependencies = [
     # and the PdfWriter.find_outline_item lookup (GHSA-qfv9-64jg-mh7p) loop
     # forever, stacked stream filters exhaust memory (GHSA-7mh2-4gg2-979f),
     # and an image claiming /DCTDecode reaches arbitrary Pillow decoders
-    # (GHSA-5hx5-vpf9-5wcv).
-    "pypdf>=6.21.1",
+    # (GHSA-5hx5-vpf9-5wcv). >=6.21.4: CVE-2026-119203 to CVE-2026-119209
+    # (GHSA-5849-834g-hvw5, GHSA-cggf-277g-3q54, GHSA-mfr5-77xh-9j7h,
+    # GHSA-42gh-23hr-vphw, GHSA-4vqv-7265-gm2w, GHSA-62m5-6wh8-28x7,
+    # GHSA-x3rh-gjgm-fmqc).
+    "pypdf>=6.21.4",
     "python-docx>=1.1.2",
 
     # Data processing and analysis
