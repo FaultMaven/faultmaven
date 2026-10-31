@@ -10,6 +10,7 @@ SQLite throughout.
 
 from __future__ import annotations
 
+import functools
 import re
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -217,9 +218,19 @@ async def test_the_bootstrap_sweeps_report_only_under_an_external_chromadb(
     before = corpus.present()
     service = MagicMock()
     service._vector_store = corpus.store
-    with patch(
-        "faultmaven.config.deployment_coherence.is_external_chroma_configured",
-        return_value=True,
+    # The bootstrap's sweep is given the fixture's clock: it passes no ``now``,
+    # so on the wall clock the young chunk is past the floor from 23 h after
+    # ``NOW`` (#2435).
+    with (
+        patch(
+            "faultmaven.config.deployment_coherence.is_external_chroma_configured",
+            return_value=True,
+        ),
+        patch.object(
+            kb_init,
+            "sweep_superseded_generations",
+            functools.partial(sweep_superseded_generations, now=NOW),
+        ),
     ):
         result = await kb_init.bootstrap_kb(
             knowledge_service=service,
