@@ -228,7 +228,9 @@ def _maybe_propose_confirmed_resolution(case: "Case", metadata: dict) -> None:
     # other opener, so anything they opened is open here and this returns. On
     # a case that is both DEFERRED and confirmed, the deferred proposer's own
     # SUGGEST_RESOLVE pivot has already offered RESOLVED with the more specific
-    # out-of-band rationale. (No request check: step 0 ran first and ended it.)
+    # out-of-band rationale. (No request check: step 0 ended any request
+    # carried into this turn, and one step 2 sets this turn means NEEDS_INFO,
+    # which the READY check below excludes.)
     if case.offer_record.open is not None:
         return
     if case.state != CaseState.INVESTIGATING:
