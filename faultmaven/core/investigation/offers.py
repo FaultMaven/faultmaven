@@ -69,7 +69,8 @@ automatic transitions read the record, and again on every save.
 below the reply, and ``remember_resolve_request`` records what is missing. The
 next turn's re-check reads it once: READY opens the resolve offer, anything
 else opens the needs-info-unmet close. Until it has, the apply-step openers
-stand down (``awaiting_request_recheck``).
+that run before it (deferred, false-alarm, rca-infeasible) stand down
+(``awaiting_request_recheck``).
 
 **Opening a terminal offer.** ``terminal_transitions.open_disposition_offer``
 opens a resolve or close offer: it derives a close's ``closure_reason`` from

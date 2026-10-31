@@ -16,11 +16,16 @@ once: READY offers the resolve, still NEEDS_INFO offers the close.
 Real ``process_turn`` turns with a stubbed generator: no live LLM.
 """
 
+from unittest.mock import AsyncMock
+
 import pytest
 
 from faultmaven.core.investigation.offers import standing_false_alarm_decline
 from faultmaven.core.investigation.schemas import (
     EvidenceToAdd,
+    EvidenceTrail,
+    InvestigationResponse_Mitigation,
+    MilestoneJustifications,
     MilestoneUpdates,
     ProblemVerificationUpdate,
 )
@@ -33,6 +38,7 @@ from faultmaven.modules.case.contracts import (
     AnswerKind,
     CaseState,
     ClosureReason,
+    MitigationRecord,
     ProblemStatus,
 )
 from faultmaven.modules.case.domain.models.evidence import (
@@ -208,6 +214,90 @@ class TestANeedsInfoProposalIsARequest:
         assert offer.basis == "needs_info_unmet"
         assert _labels(result) == CLOSE_PAIR
         assert case.offer_record.resolve_request is None
+
+    async def test_a_false_alarm_finding_waits_for_the_recheck(self):
+        """The false-alarm twin: a finding recorded on the turn after the
+        request does not open the false-alarm proposer's close; the re-check
+        opens its close, on the finding's reason."""
+        case, _ = _needs_info_case()
+        case.solutions = []
+        case.root_cause_conclusion = None
+        engine = _engine()
+        await _asked(engine, case)
+
+        result = await _turn(
+            engine,
+            case,
+            "the gateway log shows no errors",
+            _finding("No 5xx 13:55-14:05.", "no 5xx in the window"),
+        )
+
+        assert case.progress.problem_status == ProblemStatus.INVALIDATED, "premise"
+        offer = case.offer_record.open
+        assert offer.basis == "needs_info_unmet"
+        assert offer.closure_reason == ClosureReason.CLOSED_FALSE_ALARM
+        assert _labels(result) == CLOSE_PAIR
+
+    async def test_an_rca_infeasible_close_waits_for_the_recheck(self):
+        """The rca-infeasible twin: a mitigation verified on the turn after
+        the request does not open the stabilized close; the re-check opens
+        its close."""
+        case = _rca_case()
+        assert assess_resolution_readiness(case).verdict == (
+            ResolutionReadiness.NEEDS_INFO
+        ), "premise"
+        engine = _engine()
+        await _asked(engine, case)
+        assert case.offer_record.resolve_request is not None, "premise"
+
+        case.current_turn += 1
+        engine.generator.generate_structured_output = AsyncMock(
+            return_value=_mitigation_verified()
+        )
+        result = await engine.process_turn(
+            case=case, user_message="the failover held", redaction_ctx=None
+        )
+
+        assert case.progress.mitigation.verified is True, "premise"
+        offer = case.offer_record.open
+        assert offer.basis == "needs_info_unmet"
+        assert _labels(result) == CLOSE_PAIR
+
+
+def _rca_case():
+    """A verified case whose RCA was declared infeasible, with a mitigation
+    accepted and not yet verified, and a symptom on record (NEEDS_INFO)."""
+    case = _base_case()
+    case.solutions = []
+    case.root_cause_conclusion = None
+    case.problem_verification.rca_infeasible = True
+    case.problem_verification.rca_infeasible_rationale = "third-party API outage"
+    case.progress.mitigation = MitigationRecord(proposed_at_turn=0, accepted=True)
+    return case
+
+
+def _mitigation_verified() -> InvestigationResponse_Mitigation:
+    return InvestigationResponse_Mitigation(
+        agent_response="The failover held.",
+        state_updates={
+            "milestones": MilestoneUpdates(mitigation_verified=True),
+            "evidence_to_add": [
+                EvidenceToAdd(
+                    summary="error rate 0% for 30 minutes after failover",
+                    extract="gateway 5xx rate: 0.0 at 14:30-15:00",
+                    category=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+                    source_type=EvidenceSourceType.LOGS,
+                    source_file_id=_FILE_ID,
+                )
+            ],
+        },
+        evidence_trail=EvidenceTrail(
+            evidence_analyzed=[],
+            milestone_justifications=MilestoneJustifications(
+                mitigation_verified="error rate back to 0 after the failover"
+            ),
+        ),
+    )
 
 
 def _finding(summary: str, basis: str) -> _DSU:
