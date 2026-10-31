@@ -2267,17 +2267,13 @@
           "disposition_eligibility": {
             "anyOf": [
               {
-                "additionalProperties": {
-                  "type": "string"
-                },
-                "type": "object"
+                "$ref": "#/components/schemas/DispositionEligibility"
               },
               {
                 "type": "null"
               }
             ],
-            "description": "Per-disposition eligibility. \u203c The two keys answer for DIFFERENT audiences: ``closed`` gates a user CONTROL, ``resolved`` gates nothing in the UI \u2014 it is the engine's own readiness verdict, and what it decides is whether the agent OFFERS the resolution handshake. Shape: ``{'resolved': str, 'closed': str}`` where each value is one of:\n- ``ready`` \u2014 case content supports this disposition with no follow-up. On the CLOSED side: render the control. On the RESOLVED side: the agent proposes the handshake; render nothing.\n- ``needs_info`` \u2014 content is partial; the user must supply more (root cause / solution / confirmation the problem is gone). Resolve side only, and no control either way \u2014 the agent asks in conversation.\n- ``suggests_alternative`` \u2014 Close side only, and it means DO NOT RENDER CLOSE: the agent is offering the resolution, and Close and Resolve are not offered together. It is set when the case confirms a resolution (a qualifying causal-absence row and a symptom-absence row at or after the fix) and either the user has not declined that resolution, when every close pivots back to a resolve proposal, or the declined resolution is being offered again at the user's request. The honest rendering is no status control at all. Once the user declines the resolution, a Close closes the case and ``closed`` reads ``ready``, except while that resolution is offered again at the user's request (a Close sent then cancels the offer and closes). This holds until the state the decline was given against changes: a new confirmation that the fix held, a new solution, or the cause established differently.\n- ``not_eligible`` \u2014 not available; render nothing.\n\nDifferent from ``valid_next_states`` \u2014 that field is which actions the user may SELECT, this field is what the case CONTENT supports. The two no longer overlap on the resolve side: ``resolved`` here is the engine's own readiness verdict, which decides whether the agent offers the resolution handshake, not whether a control is rendered.",
-            "title": "Disposition Eligibility"
+            "description": "Per-disposition eligibility, ``{resolved, closed}``, both keys always present. \u203c The two keys answer for DIFFERENT audiences: ``closed`` (``CloseEligibility``) gates a user CONTROL \u2014 render Close only on ``ready``; ``resolved`` (``ResolveEligibility``) gates nothing in the UI \u2014 it is the engine's own readiness verdict, and what it decides is whether the agent OFFERS the resolution. Each value's meaning is its enum's ``x-enum-descriptions``. ``closed`` reads ``suggests_alternative`` while a resolve proposal is pending, and on a resolvable case whose resolution the user has not declined (a close would become a resolve proposal). A decline stands until a new solution or a new confirmation that the fix held is recorded; nothing else lapses it. A request for what a resolution still needs is not a proposal: it carries no confirmation chips, and Close stays.\n\nDifferent from ``valid_next_states`` \u2014 that field is which actions the user may SELECT, this field is what the case CONTENT supports. The two no longer overlap on the resolve side: ``resolved`` here is the engine's own readiness verdict, which decides whether the agent offers the resolution handshake, not whether a control is rendered."
           },
           "inquiry": {
             "$ref": "#/components/schemas/InquiryResponseData",
@@ -2379,17 +2375,13 @@
           "disposition_eligibility": {
             "anyOf": [
               {
-                "additionalProperties": {
-                  "type": "string"
-                },
-                "type": "object"
+                "$ref": "#/components/schemas/DispositionEligibility"
               },
               {
                 "type": "null"
               }
             ],
-            "description": "Per-disposition eligibility. \u203c The two keys answer for DIFFERENT audiences: ``closed`` gates a user CONTROL, ``resolved`` gates nothing in the UI \u2014 it is the engine's own readiness verdict, and what it decides is whether the agent OFFERS the resolution handshake. Shape: ``{'resolved': str, 'closed': str}`` where each value is one of:\n- ``ready`` \u2014 case content supports this disposition with no follow-up. On the CLOSED side: render the control. On the RESOLVED side: the agent proposes the handshake; render nothing.\n- ``needs_info`` \u2014 content is partial; the user must supply more (root cause / solution / confirmation the problem is gone). Resolve side only, and no control either way \u2014 the agent asks in conversation.\n- ``suggests_alternative`` \u2014 Close side only, and it means DO NOT RENDER CLOSE: the agent is offering the resolution, and Close and Resolve are not offered together. It is set when the case confirms a resolution (a qualifying causal-absence row and a symptom-absence row at or after the fix) and either the user has not declined that resolution, when every close pivots back to a resolve proposal, or the declined resolution is being offered again at the user's request. The honest rendering is no status control at all. Once the user declines the resolution, a Close closes the case and ``closed`` reads ``ready``, except while that resolution is offered again at the user's request (a Close sent then cancels the offer and closes). This holds until the state the decline was given against changes: a new confirmation that the fix held, a new solution, or the cause established differently.\n- ``not_eligible`` \u2014 not available; render nothing.\n\nDifferent from ``valid_next_states`` \u2014 that field is which actions the user may SELECT, this field is what the case CONTENT supports. The two no longer overlap on the resolve side: ``resolved`` here is the engine's own readiness verdict, which decides whether the agent offers the resolution handshake, not whether a control is rendered.",
-            "title": "Disposition Eligibility"
+            "description": "Per-disposition eligibility, ``{resolved, closed}``, both keys always present. \u203c The two keys answer for DIFFERENT audiences: ``closed`` (``CloseEligibility``) gates a user CONTROL \u2014 render Close only on ``ready``; ``resolved`` (``ResolveEligibility``) gates nothing in the UI \u2014 it is the engine's own readiness verdict, and what it decides is whether the agent OFFERS the resolution. Each value's meaning is its enum's ``x-enum-descriptions``. ``closed`` reads ``suggests_alternative`` while a resolve proposal is pending, and on a resolvable case whose resolution the user has not declined (a close would become a resolve proposal). A decline stands until a new solution or a new confirmation that the fix held is recorded; nothing else lapses it. A request for what a resolution still needs is not a proposal: it carries no confirmation chips, and Close stays.\n\nDifferent from ``valid_next_states`` \u2014 that field is which actions the user may SELECT, this field is what the case CONTENT supports. The two no longer overlap on the resolve side: ``resolved`` here is the engine's own readiness verdict, which decides whether the agent offers the resolution handshake, not whether a control is rendered."
           },
           "investigation_turn": {
             "anyOf": [
@@ -2539,17 +2531,13 @@
           "disposition_eligibility": {
             "anyOf": [
               {
-                "additionalProperties": {
-                  "type": "string"
-                },
-                "type": "object"
+                "$ref": "#/components/schemas/DispositionEligibility"
               },
               {
                 "type": "null"
               }
             ],
-            "description": "Per-disposition eligibility. \u203c The two keys answer for DIFFERENT audiences: ``closed`` gates a user CONTROL, ``resolved`` gates nothing in the UI \u2014 it is the engine's own readiness verdict, and what it decides is whether the agent OFFERS the resolution handshake. Shape: ``{'resolved': str, 'closed': str}`` where each value is one of:\n- ``ready`` \u2014 case content supports this disposition with no follow-up. On the CLOSED side: render the control. On the RESOLVED side: the agent proposes the handshake; render nothing.\n- ``needs_info`` \u2014 content is partial; the user must supply more (root cause / solution / confirmation the problem is gone). Resolve side only, and no control either way \u2014 the agent asks in conversation.\n- ``suggests_alternative`` \u2014 Close side only, and it means DO NOT RENDER CLOSE: the agent is offering the resolution, and Close and Resolve are not offered together. It is set when the case confirms a resolution (a qualifying causal-absence row and a symptom-absence row at or after the fix) and either the user has not declined that resolution, when every close pivots back to a resolve proposal, or the declined resolution is being offered again at the user's request. The honest rendering is no status control at all. Once the user declines the resolution, a Close closes the case and ``closed`` reads ``ready``, except while that resolution is offered again at the user's request (a Close sent then cancels the offer and closes). This holds until the state the decline was given against changes: a new confirmation that the fix held, a new solution, or the cause established differently.\n- ``not_eligible`` \u2014 not available; render nothing.\n\nDifferent from ``valid_next_states`` \u2014 that field is which actions the user may SELECT, this field is what the case CONTENT supports. The two no longer overlap on the resolve side: ``resolved`` here is the engine's own readiness verdict, which decides whether the agent offers the resolution handshake, not whether a control is rendered.",
-            "title": "Disposition Eligibility"
+            "description": "Per-disposition eligibility, ``{resolved, closed}``, both keys always present. \u203c The two keys answer for DIFFERENT audiences: ``closed`` (``CloseEligibility``) gates a user CONTROL \u2014 render Close only on ``ready``; ``resolved`` (``ResolveEligibility``) gates nothing in the UI \u2014 it is the engine's own readiness verdict, and what it decides is whether the agent OFFERS the resolution. Each value's meaning is its enum's ``x-enum-descriptions``. ``closed`` reads ``suggests_alternative`` while a resolve proposal is pending, and on a resolvable case whose resolution the user has not declined (a close would become a resolve proposal). A decline stands until a new solution or a new confirmation that the fix held is recorded; nothing else lapses it. A request for what a resolution still needs is not a proposal: it carries no confirmation chips, and Close stays.\n\nDifferent from ``valid_next_states`` \u2014 that field is which actions the user may SELECT, this field is what the case CONTENT supports. The two no longer overlap on the resolve side: ``resolved`` here is the engine's own readiness verdict, which decides whether the agent offers the resolution handshake, not whether a control is rendered."
           },
           "investigation_turn": {
             "anyOf": [
@@ -2713,6 +2701,21 @@
         },
         "title": "CaseUpdateRequest",
         "type": "object"
+      },
+      "CloseEligibility": {
+        "description": "Whether to show the status menu's Close.",
+        "enum": [
+          "ready",
+          "suggests_alternative",
+          "not_eligible"
+        ],
+        "title": "CloseEligibility",
+        "type": "string",
+        "x-enum-descriptions": [
+          "Show Close. Closing ends the case without a resolution.",
+          "Do not show Close. A resolve proposal is pending, or the case is resolvable and its resolution has not been declined, so a close would become a resolve proposal.",
+          "Do not show Close: the case is already resolved or closed."
+        ]
       },
       "ClosureReason": {
         "description": "Why a CLOSED case ended: the most specific reason that holds when it is closed. Null for any case that is not CLOSED.",
@@ -2925,6 +2928,24 @@
           "username"
         ],
         "title": "DevLoginRequest",
+        "type": "object"
+      },
+      "DispositionEligibility": {
+        "additionalProperties": false,
+        "description": "Per-disposition eligibility: ``resolved`` and ``closed``, both\nrequired, no other key.",
+        "properties": {
+          "closed": {
+            "$ref": "#/components/schemas/CloseEligibility"
+          },
+          "resolved": {
+            "$ref": "#/components/schemas/ResolveEligibility"
+          }
+        },
+        "required": [
+          "resolved",
+          "closed"
+        ],
+        "title": "DispositionEligibility",
         "type": "object"
       },
       "DocumentSnippetResponse": {
@@ -5301,6 +5322,21 @@
         "title": "ResolutionSummary",
         "type": "object"
       },
+      "ResolveEligibility": {
+        "description": "Whether the case has earned resolution. Gates no control: RESOLVED is\nnot user-selectable, and the engine offers the resolve confirmation\nitself.",
+        "enum": [
+          "ready",
+          "needs_info",
+          "not_eligible"
+        ],
+        "title": "ResolveEligibility",
+        "type": "string",
+        "x-enum-descriptions": [
+          "The case has earned resolution. It is not a control: the engine offers the resolve confirmation itself, except while the user's decline of it stands.",
+          "The case may resolve once what is missing is recorded. A request asks for it, with no confirmation chips.",
+          "Resolution is not available: the case is not investigating, or its evidence points to closing."
+        ]
+      },
       "RevokeUserTokensResponse": {
         "description": "Per-user token revocation response (#769).\n\nReports the revocation watermark rather than a token count: revocation is\nenforced by rejecting every token issued at or before ``revoked_before``,\nand nothing indexes a user's outstanding JTIs to count.",
         "example": {
@@ -7109,7 +7145,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "14.9.0"
+    "version": "14.10.0"
   },
   "openapi": "3.1.0",
   "paths": {
