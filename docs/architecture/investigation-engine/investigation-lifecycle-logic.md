@@ -322,10 +322,24 @@ user must explicitly confirm before the case action executes.
 **Flow**:
 
 1. Agent detects solution effectiveness → includes `ProposedTransition` in response
-2. System stores `pending_transition` on case (does NOT execute)
-3. Agent's response asks user: "Should I mark this case as resolved?"
-4. Next turn: user confirms → system ensures milestone ordering (`solution_proposed` → `solution_accepted` → `solution_verified`) and transitions
-5. If user declines → `pending_transition` cleared, investigation continues
+2. System opens a resolve offer on the case's offer record (does NOT execute)
+3. Agent's response asks user: "Should I mark this case as resolved?", and the reply carries the offer's confirmation pair
+4. Next turn: user accepts → system ensures milestone ordering (`solution_proposed` → `solution_accepted` → `solution_verified`) and transitions; the answer `accepted` is recorded once the transition has executed
+5. If user declines → the answer `declined` is recorded, with the state it was given against; investigation continues
+
+**The offer record (#2379).** Every offer the user answers — resolve, close, or a
+revised problem statement — lives on one record, `cases.metadata["offer_record"]`,
+reached through `modules/case/contracts.py`: at most one offer open, every answer
+(`accepted`, `declined`, `withdrawn`, `lapsed`, `pivoted`, `superseded`) with the
+effective driver who gave it and the state it was given against, and a remembered
+resolution request, which is not an offer. Three writers change it (`open_offer`,
+`answer_offer`, `lapse_offers`), one projection derives every affordance from it
+(`offer_projection.project_offers`: `disposition_eligibility`, the open offer's
+confirmation pair, the **Mark it resolved** chip), and the rules — what each opener
+is, what a decline binds and when it lapses — are stated once, in
+`core/investigation/offers.py`'s module docstring. Only the current driver answers;
+a driver change lapses nothing. Offers and declines in flight at the deploy that
+introduced the record were dropped (ruling 5).
 
 **WHO OPENS THE HANDSHAKE (INV-43)**:
 
@@ -349,7 +363,7 @@ It is a backstop and not a fourth proposer by three rules:
 
 - **Last.** It runs at step 4c of `_apply_turn_response` (the
   `_process_turn_impl` phase that applies the turn's response), after `_check_automatic_transitions`, and bails on any
-  `pending_transition` an earlier opener left standing.
+  offer an earlier opener left open.
 - **Same bar.** Its trigger is `assess_resolution_readiness` READY — a
   qualifying `causal_absence_evidence` row and a `symptom_absence_evidence` row
   at or after it — not a looser reading of "looks finished". A stabilized case
@@ -361,67 +375,71 @@ It is a backstop and not a fourth proposer by three rules:
   offer mid-turn. Opening a different target into that channel is how a "yes"
   meant for the offer on screen lands on the one substituted underneath it.
 
-A decline postpones it rather than counting against it: the refusal is recorded
-against the `deferred_disposition_signature` that justified the offer, in the
-same space the deferred proposer uses, so declining either silences both until a
-premise moves (fm#1122). The refusal binds whoever opened the offer — an
-LLM-opened one carries no signature of its own, so one is derived at decline
-time; otherwise the backstop, which fires on readiness alone, re-proposes on the
-next turn. A declined deferred close binds the model too (#1889): while its
-signature stands, a model `closed` proposal that the closure check keeps at
-CLOSED is refused (one it pivots to RESOLVED on a resolvable case is not), with
-feedback saying the model may propose it only when the user directs it, and a
-**Close with the solution documented** card appended to the turn's follow-ups.
-(A false-alarm close is not in this signature space at all; its decline is
-recorded on the finding, §1.4.1.)
+A decline postpones it rather than counting against it, and it binds whoever
+opened the offer (fm#1122): a declined resolve offer binds every resolve offer
+that is not the user's own — this backstop, the deferred proposer's resolve
+pivot and the model's — so the backstop, which fires on readiness alone, does
+not re-propose on the next turn. A declined deferred close binds the engine's
+deferred close and the model too (#1889): while it stands, a model `closed`
+proposal that the closure check keeps at CLOSED is refused (one it pivots to
+RESOLVED on a resolvable case is not), with feedback saying the model may
+propose it only when the user directs it, and a **Close with the solution
+documented** card appended to the turn's follow-ups. A declined false-alarm
+close binds every terminal offer that is not the user's own while its finding
+stands (§1.4.1). A declined rca-infeasible, needs-info-unmet, model or menu
+close records its answer and binds nothing.
 
-**A declined RESOLVE binds the model too, until a NEW confirmation (#1895).** A
-resolution is earned, not requested, so after a decline it is due back exactly
-when the state that earned it moves — and the move a user most often brings
-after "not yet" is a fresh confirmation that the fix held. The signature names
-it: `verdict | solutions | cause leg | confirmation ids`, the fourth part the
-sorted ids of the qualifying confirmation rows of both legs
-(`resolution_confirmation_rows`: the cause rows, then the symptom rows). A decline stands
-while an entry with the same first three parts holds every id that qualifies
-now (a subset rule, read in one place, `covering_declined_signature`): a row
-that stops qualifying, or is pruned and re-enters, moves nothing; elapsed turns
-and repeated declines never do; one row the decline never saw does.
+**A declined RESOLVE binds the model too, until a NEW confirmation or solution
+(#1895; ruling 3 of #2379).** A resolution is earned, not requested, so after a
+decline it is due back exactly when the state that earned it moves — and the
+move a user most often brings after "not yet" is a fresh confirmation that the
+fix held. The decline's premise names it: the sorted ids of the case's solutions
+and of the qualifying confirmation rows of both legs
+(`resolution_confirmation_rows`: the cause rows, then the symptom rows). A
+decline stands while every id current now is inside its premise
+(`offers.decline_stands`, the one predicate every reader uses): a row that stops
+qualifying, or is pruned and re-enters, a withdrawn solution, a contested cause,
+a revision, the problem status, elapsed turns, a driver change and repeated
+declines move nothing; one solution or row the decline never saw does, and
+lapses it for good (`lapsed_at_turn`: a later disqualification of that row does
+not revive it).
 
 - **The decline turn covers what it records.** A deflection ("not yet, it has
   only been clean for an hour") falls through to the model, which may record the
-  user's words as a confirmation row that same turn. Section 0b marks the turn,
-  and the signature is re-stamped against the turn's rows immediately before
-  `check_automatic_transitions`, on a SUGGEST_RESOLVE verdict only.
+  user's words as a confirmation row that same turn. `offers.lapse_offers`
+  widens the premise of a decline given this turn to cover what the turn
+  recorded, at step 3b, immediately before `check_automatic_transitions`, and
+  again on save.
 - **The model is refused.** While the decline stands, step 2 refuses a model
   `resolved` on a READY case and a model `closed` that the closure check pivots
-  to RESOLVED (INV-37), with feedback, and step 0 withdraws a `needs_info`
-  resolve that turns READY on the rows the decline covers rather than promoting
-  it. Nothing re-offers while the decline stands. The user's own close pick
-  still pivots to the resolve offer: this binds the model, never the user.
+  to RESOLVED (INV-37), with feedback, and step 0 opens nothing when a
+  remembered resolution request turns READY on the rows the decline covers.
+  Nothing re-offers while the decline stands. The user's own close pick does
+  not pivot (#2360): it closes, as `resolution_declined`. This binds the model,
+  never the user.
 - **It returns on the turn it is earned.** A turn that records a new
-  confirmation moves the signature before step 2 and the backstop, so the offer
-  comes back on that turn, from the model or the backstop.
+  confirmation or solution lapses the decline before step 2 and the backstop,
+  so the offer comes back on that turn, from the model or the backstop.
 - **A user who changes their mind** is not asked to manufacture evidence (a
   request is never a confirmation row). Every turn on which the decline stands
-  (no offer pending, the problem not on hold) carries the engine's **Mark it
+  (no offer open, the problem not on hold) carries the engine's **Mark it
   resolved** chip, whatever the model did, exactly once: a `status_transition` to `resolved` whose `proposal_id` is the reopen
-  key, a digest of the declined entry the decline stands on. The service
-  boundary and the engine admit that one request while the entry still covers
-  the case; the engine then proposes on a READY case with the usual pair, and
-  the user confirms (INV-03). A stale key (a new confirmation has since moved
-  the state) keeps the 422, and by then the engine is offering the resolution
+  key, `reopen:` and the newest standing decline's `proposal_id`. The service
+  boundary and the engine admit that one request while that decline stands;
+  the engine then opens a resolve offer (basis `reopen`, which no decline
+  binds) on a READY case with the usual pair, and the user confirms (INV-03). A
+  stale key (a new confirmation has since lapsed the decline) keeps the 422, and by then the engine is offering the resolution
   itself. The bare "no" is answered with what brings the offer back and the
   chip. While the decline stands the prompt and the refusal's feedback state one
   rule (`RESOLVE_DECLINED_RULE`): do not propose on the evidence on record;
   record a NEW verification as evidence and propose in the same turn; point a
   user who changes their mind at the **Mark it resolved** action, never
   proposing on, or recording a row from, a request.
-- **The decline turn's markers reach the apply step.** Section 0b's turn-scoped
-  markers (the handshake-answered and offer-withdrawn guards, and the resolve
-  decline) cross into the apply step's metadata through one named channel
-  (`TURN_MARKER_KEYS`), so the deferred proposer that runs there honours them: a
-  question about a standing deferred offer withdraws it for the turn, and a
-  deflection's decline is not re-offered on its own turn.
+- **The decline turn is read from the record.** Whether an offer was answered
+  this turn is the record's (`offers.terminal_offer_answered_this_turn`), so the
+  apply step's proposers read it with no turn markers: a question about a
+  standing deferred offer withdraws it for the turn, and a deflection's decline
+  is not re-offered on its own turn.
 
 **Why RESOLVED left the status menu.** It was listed in `USER_SELECTABLE_ACTIONS`
 until the engine could see the readiness bar for itself, and the listing was
@@ -444,9 +462,10 @@ ever produce "shall I mark this resolved?". The case has one terminal destinatio
 and the engine is already offering it. Once the user declines that resolution,
 `closed` reads `ready` and the menu shows Close again: choosing it closes the case
 (`closure_reason` `resolution_declined`), and the chip stays as the way back
-(#2360). While the chip's resolve proposal is pending, Close is hidden again, so
-the two are never offered together; the decline lapses when the state it was
-given against changes (a new confirmation, solution or cause leg).
+(#2360). While any resolve offer is open, Close is hidden (ruling 6 of #2379),
+so the two are never offered together. Under a revised problem statement
+awaiting the user, Close shows, and choosing it withdraws the revision first
+(#2379). The decline lapses only on a new confirmation or solution.
 
 **MULTIPLE SOLUTIONS HANDLING**:
 
@@ -454,36 +473,34 @@ If multiple solutions exist, the agent proposes resolution when AT LEAST ONE
 solution appears effective. The user confirms which solution resolved the issue.
 
 ```python
-def propose_transition(case, to_status, summary, evidence_ids=None):
-    """Store a pending transition proposal. Does NOT execute.
+def open_disposition_offer(case, *, kind, basis, summary="", evidence_ids=()):
+    """Open a resolve or close offer on the record. Does NOT execute.
 
-    For CLOSED transitions, closure_reason is derived by the engine via
-    derive_closure_reason() and stored in pending_transition automatically.
-    The caller never passes closure_reason directly.
+    A close carries the closure_reason derive_closure_reason() gives for the
+    case as it stands; the caller never passes one. Returns None, writing
+    nothing, when a standing decline binds the offer; raises while an offer
+    is already open (one slot).
     """
-    case.pending_transition = {
-        "to_status": to_status,
-        "summary": summary,
-        "evidence_ids": evidence_ids or [],
-        "proposed_at": datetime.now(UTC).isoformat(),
-        "proposed_by": "agent",
-    }
-    if to_status == "closed":
-        case.pending_transition["closure_reason"] = derive_closure_reason(case)
+    reason = derive_closure_reason(case) if kind == OfferKind.CLOSE else None
+    return open_offer(case, kind=kind, basis=basis, summary=summary,
+                      evidence_ids=evidence_ids, closure_reason=reason)
 
-def confirm_pending_transition(case, user_id):
-    """Execute transition after user confirms.
+def confirm_open_offer(case, user_id, *, via):
+    """Execute the open resolve or close offer the user accepted.
 
-    Raises ValueError if case is in an invalid state for the requested
-    transition (e.g., trying to resolve a case that is not INVESTIGATING).
-    pending_transition is only cleared after successful execution.
+    Raises ValueError if no such offer is open or the case is in an invalid
+    state for the transition. ``accepted`` is recorded only after the
+    transition executed, so an executor that raises leaves the offer open.
     """
-    if pending["to_status"] == "resolved":
+    offer = open_terminal_offer(case)
+    if offer.kind == OfferKind.RESOLVE:
         _execute_resolved_transition(case, user_id)
-        # closure_reason is None for RESOLVED
-    elif pending["to_status"] == "closed":
-        _execute_closed_transition(case, user_id, pending["closure_reason"])
-    case.pending_transition = None
+    else:
+        _execute_closed_transition(case, user_id, offer.closure_reason)
+    case.offer_record = answer_offer(
+        case, proposal_id=offer.proposal_id, answer=AnswerKind.ACCEPTED,
+        via=via, actor_id=user_id,
+    )
     # DISPOSITION - no further case actions
 ```
 
@@ -496,25 +513,23 @@ don't need readiness checks, but `assess_closure_readiness(case)` produces a
 meaningful investigation summary for the confirmation prompt. This gives the user a
 chance to see what was accomplished before committing to an irreversible action.
 
-**SUGGEST_CLOSE pivot for RESOLVED:** When resolution readiness returns `SUGGEST_CLOSE` (no root cause, no solution, no evidence), the LLM-emit path (the one way a RESOLVED proposal reaches the state machine besides the engine's own READY offer, INV-43) immediately pivots the pending proposal to CLOSED and present the close confirmation pair. The user sees the close prompt rather than a resolve prompt.
+**SUGGEST_CLOSE pivot for RESOLVED:** When resolution readiness returns `SUGGEST_CLOSE` (no root cause, no solution, no evidence), the LLM-emit path (the one way a RESOLVED proposal reaches the state machine besides the engine's own READY offer, INV-43) opens a CLOSE offer instead and presents the close confirmation pair. The user sees the close prompt rather than a resolve prompt.
 
-**SUGGEST_RESOLVE pivot for CLOSED (symmetric):** When closure readiness returns `SUGGEST_RESOLVE` (the case confirms a resolution — a qualifying `causal_absence` and a `symptom_absence` at or after it: the root cause eliminated and the problem gone with it), both the UI-dropdown path and the LLM-emit path pivot the pending proposal to RESOLVED and present the resolve confirmation pair. Closing a resolution-grade case would discard the resolution attribution; the pivot reconciles loose user terminology ("close" vs "resolve") against actual case content. This is the close-side counterpart of the RESOLVED → SUGGEST_CLOSE pivot above — together they form a symmetric strategy: a thin case requested as resolved pivots to close; a rich case requested as closed pivots to resolve. The dropdown pivot does not fire while a resolve decline stands (#1895, #2360): close is the user's choice at any time, so once the user has declined the resolution their Close proposes CLOSED (`close_pivots_to_resolve`). The LLM-emit pivot still fires there, and the resolve it produces is refused against the decline.
+**SUGGEST_RESOLVE pivot for CLOSED (symmetric):** When closure readiness returns `SUGGEST_RESOLVE` (the case confirms a resolution — a qualifying `causal_absence` and a `symptom_absence` at or after it: the root cause eliminated and the problem gone with it), both the UI-dropdown path and the LLM-emit path open a RESOLVED offer instead and present the resolve confirmation pair. Closing a resolution-grade case would discard the resolution attribution; the pivot reconciles loose user terminology ("close" vs "resolve") against actual case content. This is the close-side counterpart of the RESOLVED → SUGGEST_CLOSE pivot above — together they form a symmetric strategy: a thin case requested as resolved pivots to close; a rich case requested as closed pivots to resolve. The dropdown pivot does not fire while a resolve decline stands (#1895, #2360): close is the user's choice at any time, so once the user has declined the resolution their Close proposes CLOSED (`close_pivots_to_resolve`). The LLM-emit pivot still fires there, and the resolve it produces is refused against the decline.
 
-**Confirm-time resolve-preservation (INV-37, #656 P3.4).** The two pivots above fire at *proposal* time. But the confirmation can land *after* a close was proposed (the fix is confirmed effective between the close proposal and its confirmation), so the SUGGEST_RESOLVE pivot is also enforced at *confirm* time: `confirm_pending_transition` re-runs `assess_closure_readiness` at the single execution chokepoint immediately before a CLOSE commits, and on `SUGGEST_RESOLVE` replaces the pending close with a RESOLVED proposal instead of closing (returning `False` so the caller re-presents the resolve confirmation). The governing principle is "resolve = close *with* resolution; close = close *without* resolution" — it is **always safe to resolve a case that can be resolved**, whichever terminal the user asked for, and users have no incentive to close a case that qualifies for resolution. This makes "a resolvable case is never terminally recorded as closed-unresolved" a hard invariant at the terminal boundary, not only a proposal-time nicety, with one exception: the user who declined the resolution. While that decline stands, a pending close confirmed now closes, whoever proposed it, and its reason is re-derived as `resolution_declined` (#2360). Scoped to `INVESTIGATING` (RESOLVED is not a valid edge from INQUIRY). There is no symmetric counterpart in the other direction — every case is closable, so closing is always a valid disposition and needs no readiness gate (see INV-37).
+**Confirm-time resolve-preservation (INV-37, #656 P3.4).** The two pivots above fire at *proposal* time. But the confirmation can land *after* a close was proposed (the fix is confirmed effective between the close proposal and its confirmation), so the SUGGEST_RESOLVE pivot is also enforced at *confirm* time: `confirm_open_offer` re-runs `assess_closure_readiness` at the single execution chokepoint immediately before a CLOSE commits, and on `SUGGEST_RESOLVE` answers the close `pivoted` and opens a RESOLVED offer in its place instead of closing (returning `False` so the caller re-presents the resolve confirmation). The governing principle is "resolve = close *with* resolution; close = close *without* resolution" — it is **always safe to resolve a case that can be resolved**, whichever terminal the user asked for, and users have no incentive to close a case that qualifies for resolution. This makes "a resolvable case is never terminally recorded as closed-unresolved" a hard invariant at the terminal boundary, not only a proposal-time nicety, with one exception: the user who declined the resolution. While that decline stands, a close offer accepted now closes, whoever opened it, and its reason is re-derived as `resolution_declined` (#2360). Scoped to `INVESTIGATING` (RESOLVED is not a valid edge from INQUIRY). There is no symmetric counterpart in the other direction — every case is closable, so closing is always a valid disposition and needs no readiness gate (see INV-37).
 
-**`disposition_eligibility` — denormalized read view for UI affordance gating.** The two pivots above kick in at *action time* (when the user has already requested a transition). The complementary preventive measure is to gate the affordances themselves: hide Resolve when the case isn't resolution-grade, and warn on Close when closing would silently discard a documented resolution. The per-case answer is computed by `derive_disposition_eligibility(case)` in `terminal_transitions.py` and persisted to the `cases.disposition_eligibility` column as `{"resolved": <verdict>, "closed": <verdict>}` where each verdict is one of:
+**`disposition_eligibility` — denormalized read view for UI affordance gating.** The two pivots above kick in at *action time* (when the user has already requested a transition). The complementary preventive measure is to gate the affordances themselves: hide Resolve when the case isn't resolution-grade, and warn on Close when closing would silently discard a documented resolution. The per-case answer is the offer projection's (`offer_projection.project_offers`, over `derive_disposition_eligibility(case)` in `terminal_transitions.py`), persisted to the `cases.disposition_eligibility` column as a `DispositionEligibility`, `{"resolved": ResolveEligibility, "closed": CloseEligibility}`: two narrow enums, each published with every value's meaning (`x-enum-descriptions`, contract 14.10.0, #2379), and no other key.
 
-- `ready` — disposition is appropriate; render enabled with the default confirm UX.
-- `needs_info` — disposition is allowed but the case is partial; user must ADD information before transitioning. Currently only the Resolve side surfaces this.
-- `suggests_alternative` — disposition is allowed but the system recommends the OTHER disposition for this case (e.g., resolution-grade case clicked-to-close, while the user has not declined that resolution). User is asked to RE-DIRECT, not to add data. Currently only the Close side surfaces this.
-- `not_eligible` — disposition is not available; hide the affordance entirely.
+- `resolved` — `ready`: the case has earned resolution. It is not a control: the engine offers the resolve confirmation itself, except while the user's decline of it stands. `needs_info`: the case may resolve once what is missing is recorded; a request asks for it, with no confirmation chips. `not_eligible`: the case is not investigating, or its evidence points to closing.
+- `closed` — `ready`: show Close; closing ends the case without a resolution. `suggests_alternative`: do not show Close — a resolve offer is open, or the case is resolvable and its resolution has not been declined, so a close would become a resolve proposal (ruling 6 of #2379). `not_eligible`: the case is already resolved or closed.
 
-`needs_info` and `suggests_alternative` are kept as distinct values rather than overloading one label, because they drive different UX patterns (add-data vs reconsider-action). The column is maintained at the **single chokepoint `CaseRepository.save()`** (pattern P3) — every save calls the derive helper and rewrites the column, so the value can never drift from current case content without per-mutation-site update burden. The UI adapter passes the column through to all three `CaseUIResponse_*` variants; the frontend renders the dropdown menu against `disposition_eligibility`, not just `valid_next_states`. Distinction: `valid_next_states` answers *which actions the user may select*; `disposition_eligibility` answers *which of those make sense given current content*. (Neither is the legality graph — that is `LEGAL_TRANSITIONS`, §1.3.)
+`needs_info` and `suggests_alternative` are distinct values on distinct keys because they drive different UX patterns (add-data vs reconsider-action). The column is maintained at the **single chokepoint `CaseRepository.prepare_for_save`**, which every repository's save calls (pattern P3): it lapses what the record's rule lapses and rewrites the column from the projection, so the value can never drift from current case content without per-mutation-site update burden. The UI adapter passes the column through to all three `CaseUIResponse_*` variants; the frontend renders the dropdown menu against `disposition_eligibility`, not just `valid_next_states`. Distinction: `valid_next_states` answers *which actions the user may select*; `disposition_eligibility` answers *which of those make sense given current content*. (Neither is the legality graph — that is `LEGAL_TRANSITIONS`, §1.3.)
 
-**needs_info flag for RESOLVED:** When resolution readiness returns `NEEDS_INFO`, the system stores the pending transition with `needs_info=True`. This remembers the user's intent to resolve. On subsequent turns, the system re-evaluates readiness via `assess_resolution_readiness()`:
+**A NEEDS_INFO resolution is a request, not an offer (#2408; ruling 1 of #2379):** When the model proposes `resolved` and resolution readiness returns `NEEDS_INFO`, nothing opens and no chips show: the readiness ask goes below the reply, Close stays in the menu (`closed` = `ready`), and the record remembers what is missing (`OfferRecord.resolve_request`). The next turn re-reads readiness via `assess_resolution_readiness()` once, whatever the user answered, and the request ends:
 
-- **READY** → clears `needs_info`, appends the confirmation prompt to the LLM response
-- **Still not ready** → cancels pending transition, suggests Close instead (no re-ask loop — the user was already asked once and couldn't provide the info). The resulting CLOSE proposal is terminal-clean: the root-cause analysis and full history are preserved.
+- **READY** → opens the resolve offer (basis `model`, since the model asked) with its confirmation pair below the LLM response; under a standing resolve decline nothing opens, and the turn gets the decline's feedback and the reopen chip
+- **Still not ready** → opens a close offer instead (basis `needs_info_unmet`, whose decline binds nothing) — no re-ask loop: the user was already asked once and couldn't provide the info. The resulting CLOSE offer is terminal-clean: the root-cause analysis and full history are preserved.
 
 **Gate prose composes; gate suggestions replace.** On every gate-override turn
 (needs-info first pass, the READY/suggest-Close re-evaluations above, RCA-infeasible
@@ -528,29 +543,30 @@ on gate turns remain engine-owned **replacements** — that is the separate
 suggestion-ownership decision (#428's "augment" was reverted by #430) and is
 deliberately unchanged.
 
-> **Loop-bound (the engine's same-turn offer stands).** The "suggests Close instead" pivot above is produced by the handshake block early in `_check_automatic_transitions`. But the user typically re-confirms ("yes, it's resolved") and the LLM dutifully re-emits `proposed_transition=resolved` on the **same** turn — and the later LLM-proposal block in the same method calls `propose_transition`, which **replaces `pending_transition` wholesale**, clobbering the CLOSE pivot. Unguarded, that re-arms RESOLVED+`needs_info` every turn → the gate loops to max_turns ([project-resolution-gate-stuck-loop]; Run 36). The guard is the general same-turn rule (INV-43, #1885): when an engine opener has left an offer standing this turn (`metadata["transition_proposed_this_turn"]` with a `pending_transition`), the LLM's same-turn `proposed_transition` is **ignored** so it cannot overwrite it. This is what makes "no re-ask loop" actually hold — independent of *why* the case is in resolution `NEEDS_INFO` (instant/index resolution, mitigation-first, or any desync that leaves 0 `Solution` records).
+> **Loop-bound (the engine's same-turn offer stands).** The "suggests Close instead" offer above is opened by step 0, early in `check_automatic_transitions`. But the user typically re-confirms ("yes, it's resolved") and the LLM dutifully re-emits `proposed_transition=resolved` on the **same** turn. Before the record, the later LLM-proposal step **replaced the pending proposal wholesale**, clobbering the CLOSE and re-arming RESOLVED+`needs_info` every turn → the gate looped to max_turns ([project-resolution-gate-stuck-loop]; Run 36). The guard is the general same-turn rule (INV-43, #1885), now structural: the record has one slot (`open_offer` raises while it is taken), so while an offer is open the LLM's same-turn `proposed_transition` is **ignored** and reported superseded. This is what makes "no re-ask loop" actually hold — independent of *why* the case is in resolution `NEEDS_INFO` (instant/index resolution, mitigation-first, or any desync that leaves 0 `Solution` records).
 >
 > **Gate strictness — absence-driven.** `assess_resolution_readiness` gates RESOLVED on gone ⇒ gone, two rows (`_resolution_confirmed` → `cause_assurance.resolution_confirmation_rows`, INV-30): a **qualifying** `causal_absence_evidence` row (the cause seen removed, `cause_elimination_rows`) and a non-engine-authored `symptom_absence_evidence` row collected at or after the fix — the recorded execution of the latest fix, or the earliest such cause row when the fix was made out of band — and after the latest failed-fix window (the reported problem seen gone, `symptom_elimination_rows`). The cause row qualifies when it is non-engine-authored (the engine only mints absence rows as M6 failed-fix *dis*confirmations), not itself a failed-fix disconfirmation (REFUTES-linked, on either belief axis, to the cause the engine marked disconfirmed — a sibling-scoped REFUTES is proof-by-exclusion and does not disqualify), at-or-after the latest engine-known failed-fix disconfirmation, and from the latest observed **fix window** — the latest whose fix's outcome was looked at (the cause re-checked, or the problem seen persisting after the fix) — not a failed one (`fix_windows` / `confirming_window`: a resolution confirms the latest fix, so rows from before a newer observed fix confirm nothing about it; a fix seen failing — the cause shown removed, then the problem seen again — confirms nothing afterwards, and only a new recorded fix opens a window that can; the gate and M6 read that one predicate, methodology §7.3, #1927) — the same metadata bar the RESOLVED confirm-stamp's candidate filter uses. The cause row must also be about the case's cause (#2036): none qualifies while identification is held on an open root (a validated cause whose why-stopping verdict is not given, or a root its hypothesis marked not terminal, methodology §9.2), and none recorded before that cause was posited as a hypothesis's root (the identified root, else the one the root-cause conclusion names, else the latest-attached). Without it, a renewed credential's "issuer Ready again" row read as the root cause removed, and the readiness gate went READY with no cause identified at all. The root cause confirmed *eliminated* and the problem seen gone after it is the only failure-proof, non-circular "the fix worked" signal; neither row alone is (#1906: the cause row alone — a service shown running again — read READY while the scrape target the user had reported down was unchecked, and the backstop told the user the problem had gone with it). The two rows are sufficient — a separate `Solution` record is for documentation quality (and the higher runbook bar), not a resolution gate; an out-of-band fix the user reports verbally ("I fixed X, it works now") is a claim and yields no row (#1930): both rows come from post-fix output the user submits, with no `solutions_to_add` needed, and FaultMaven asks for that output as data when only the words arrive. A case that never confirms the cause is gone — stabilized, deferred, or symptom-only relief (`symptom_absence_evidence`) — converges to CLOSE instead. (This is the settled end-state of the [project-resolution-gate-stuck-loop] sequencing: the success flow now emits absence evidence on confirmed resolution and the gate keys on it. The earlier gate, which required a `Solution` record, produced the documented stuck-loop — it refused a clear "yes, it's resolved" and kept demanding a "documented solution" the user did not have, then closed.)
 
 **Pending transition confirmation — deterministic answers, escape lane for everything
-else:** When a `pending_transition` exists (not `needs_info`), the user's response is
-classified before any LLM call:
+else:** When a resolve or close offer is open (`offers.open_terminal_offer`), the
+user's response is classified before any LLM call, and every outcome but a re-ask
+answers the offer on the record:
 
-Every pending proposal is terminal (RESOLVED or CLOSED), so consent is read
+Every such offer is terminal (RESOLVED or CLOSED), so consent is read
 narrowly (#1783, ruling (a), 2026-09-29). One function,
 `transition_consent.pending_gate_verdict`, reads the text and the turn's intent
 together, first match wins:
 
 - **A click** (the Yes card's `confirmation` intent, sent by the client rather than
   minted) → execute the transition; the Not-yet card → decline, as below. A card's
-  intent names the offer it presents (`proposal_id`, the pending proposal's
-  `proposed_at`), and a confirmation click
+  intent names the offer it presents (`proposal_id`, random and minted when the
+  offer opened), and a confirmation click
   executes or declines only when that is the offer standing when it arrives (#1812).
   Checked before any verdict is read: a click naming another offer, or none,
-  **executes nothing, withdraws nothing and records nothing**, and is answered with
+  **executes nothing and answers nothing**, and is answered with
   "That button was for an earlier offer that's no longer open." and the standing
   offer's card again (`_refuse_offer_click`). The status pick names its target
-  state, not an offer: a re-pick of the pending target is re-asked, below
+  state, not an offer: a re-pick of the open offer's target is re-asked, below
 - **Bare yes** → execute transition. The WHOLE reply must be one consent token
   valid for the proposal's target. Exactly, a bare reply is the token's words,
   with any whitespace, any listed positive decoration (emoji, Slack shortcode or
@@ -572,8 +588,8 @@ together, first match wins:
   (the set the gate used to execute on: "ok go ahead", "ok, don't close it yet",
   "yes please close it", "ok 👎", "close it" on a pending RESOLVE), any reply
   whose text and minted intent disagree, a minted confirmation on text that is
-  not a bare token ("that works"), and a **status-dropdown re-pick of the pending
-  target** (#1838: the pick names a state, not the offer, so a double submit, a
+  not a bare token ("that works"), and a **status-dropdown re-pick of the open
+  offer's target** (#1838: the pick names a state, not the offer, so a double submit, a
   client retry or a second tab never executes it) → **re-ask**: re-present the
   confirmation with DECIDE suggestions (clickable Yes/No with intent metadata), and the line
   "To confirm, click **Yes** or reply with the single word yes." (#1814)
@@ -581,17 +597,17 @@ together, first match wins:
   `wait`, `cancel`, `don't`, `not ready`, `hold on`, `stop`) with the same
   decorations and trailing punctuation as a bare yes (#1813); or the Not-yet click;
   or a minted decline on question-free text — below the substantive bound, no
-  upload → cancel transition, acknowledge deterministically. "no problem, go
+  upload → answer the offer `declined`, acknowledge deterministically. "no problem, go
   ahead", "no worries" and "no, not yet" are not declines (they are re-asked, or
   take the escape lane when substantive), and "note…"/"stopped…" do not read as
   "no"/"stop"
 - **Decline carrying substance or an upload** (a Not-yet click, whose payload is
   over the bound; a minted decline on long question-free text; or a decline sent
-  with a file) → cancel transition, then process the message as a normal turn so
+  with a file) → answer it `declined`, then process the message as a normal turn so
   its content is not lost. A typed reply that opens with a decline token and says
   more is not a decline but a non-answer, below; so is a minted decline on a
   question (`is_question`; #1840), so a question
-  is never recorded as a refusal
+  is never recorded as a decline
 - **Short (≤40 characters) question-free non-answer** ("hmm maybe") and **blank
   input** (whitespace-only slips past the route's empty-payload guard) → re-ask,
   as above
@@ -600,32 +616,31 @@ together, first match wins:
   lists, from ASCII and fullwidth to Arabic, Greek, Armenian and Ethiopic, the
   question emoji, the interrobang and the double marks, or Slack's `:question:`,
   `:grey_question:` and `:interrobang:`; #1840) → the message is *not an answer
-  to the gate*: the proposal is **withdrawn** (`cancel_pending_transition`) and
-  the message processed as a normal investigation turn. It is recorded as a
-  refusal only when the text is such a non-answer without a question that does
-  not open with a consent token read loosely (`opens_with_consent_loosely`;
+  to the gate*: the offer is answered **withdrawn** and the message processed as
+  a normal investigation turn. It is answered `declined` instead only when the
+  text is such a non-answer without a question that does not open with a consent
+  token read loosely (`opens_with_consent_loosely`;
   #1808, #1840). **Two readers, two strengths** (#1840 review): whether the gate
   TAKES a turn is read strictly (`_consent_prefix`), because a turn it takes
   never reaches the LLM, and read loosely "`ok` is false in the /health response
-  from node-3 again" was swallowed. Only whether a withdrawal is RECORDED is read
+  from node-3 again" was swallowed. Only whether the answer is `declined` is read
   loosely (`_shape_text`): invisible characters (Unicode Cf, and U+034F) and
   wrapping marks (`*` and `_` where they wrap a word, never inside an
   identifier; the straight, curly and low-9 double quotes and the guillemets;
   an apostrophe not inside a word) read as
   spaces, while a backtick (it quotes a word) and strikethrough's `~` (it
   negates) do not. So "*Yes*, …", "_Yes_, …" and a "Yes" behind an invisible
-  character are processed and never recorded, as is "Yes, go ahead and close
+  character are processed and only withdrawn, as is "Yes, go ahead and close
   it. We verified …": consent in a sentence, not a deflection, so the offer may
   come back, and so may "ok but we need to wait for the weekend soak first" (the
   cost the ruling accepts). "`ok` is false in /health …" and "ok_status flag
-  never flipped …" are processed and recorded. An upload alone records
-  nothing. The engine can always re-propose later from fresher state.
+  never flipped …" are processed and declined. An upload alone only
+  withdraws. The engine can always re-propose later from fresher state.
 
 So the gate's consumption rule is exact: without an LLM turn it answers only the
 re-asks above (and a bare decline), and it **never** consumes a turn carrying an
 upload, nor a non-answer over 40 characters or carrying a question. A re-ask repeats
-**every time** it is earned and **never records a refusal or withdraws the
-proposal**: a terminal proposal must not turn into a decline because the user
+**every time** it is earned and **never answers the offer**: a terminal proposal must not turn into a decline because the user
 typed more than one word. The one-re-present cap #656 added (a second non-answer
 withdrew the proposal and recorded it as a refusal) is gone.
 
@@ -650,9 +665,9 @@ offer key it carries from the matched card is never read.
 after the transition was proposed, it is **not** consent (#1838, ruling (b)). The pick
 names a state, not the standing offer, and a double submit, a client retry or a second
 tab sends it as surely as a deliberate second pick. So the gate re-shows the standing
-offer's card and records nothing; only the card's click or a bare typed consent
+offer's card and answers nothing; only the card's click or a bare typed consent
 executes it. The re-ask is forced rather than read from the pick's text, which is over
-the 40-character bound and would otherwise escape and be recorded as a refusal. A
+the 40-character bound and would otherwise escape and be declined. A
 `status_transition` the intent resolver MINTED from typed text is read by its text,
 as any mint is.
 
@@ -671,11 +686,12 @@ payload (a command, a false results handoff; `_label_stays_decide`), counted on
 `faultmaven_llm_decide_card_bare_payload_total{action}`. Engine-authored cards carry
 an intent naming their offer and are outside the rule.
 
-**Contradicting status_transition intent:** If a user clicks a *different* dropdown
-option while a pending transition exists (e.g., "Close" is pending but user clicks
-"Investigating"), the pending transition is cancelled and the new intent is processed
-normally. This handles the case where the user changes their mind after requesting
-a transition.
+**Contradicting status_transition intent:** If a user picks a *different* status-menu
+target while an offer is open (a resolve offer is open and the user picks Close), the
+open offer is answered — `declined`, or `withdrawn` when the close will pivot straight
+back to that resolve (INV-37), so no decline binds the offer the engine is about to
+make — and the new intent is processed normally. This handles the case where the user
+changes their mind after an offer was made.
 
 ##### KB-Resolution Path (Milestone-Collapse Variant)
 
@@ -723,7 +739,7 @@ class KnowledgeResolution(BaseModel):
 
 **Trigger**: User-Agent Handshake (same pattern as RESOLVED)
 
-Both dropdown and NLP abandonment patterns propose a pending transition with a
+Both dropdown and NLP abandonment patterns open a close offer with a
 closure readiness summary. The user must confirm before the transition executes.
 
 `assess_closure_readiness(case)` summarizes what was accomplished (evidence count,
@@ -732,14 +748,15 @@ prompt. Two verdicts: `HAS_SUBSTANCE` (shows summary) or `TRIVIAL` (minimal data
 
 ```python
 closure = assess_closure_readiness(case)
-propose_transition(
-    case=case,
-    to_status="closed",
+case.offer_record = open_disposition_offer(
+    case,
+    kind=OfferKind.CLOSE,
+    basis=OfferBasis.MENU,  # or MODEL, DEFERRED, ...: whoever opened it
     summary=closure.message,
     # closure_reason derived by engine via derive_closure_reason():
     # inquiry_only | closed_false_alarm | resolution_declined | solution_deferred | closed_rca_infeasible | mitigation_sufficient | closed_restatement_held | closed_insufficient_evidence
 )
-# User confirms → _execute_closed_transition(case, user_id, closure_reason)
+# User accepts → _execute_closed_transition(case, user_id, closure_reason)
 ```
 
 #### INQUIRY → CLOSED (Disposition)
@@ -748,14 +765,14 @@ propose_transition(
 
 ```python
 closure = assess_closure_readiness(case)
-propose_transition(
-    case=case,
-    to_status="closed",
-    reason="User expressed close intent from INQUIRY",
+case.offer_record = open_disposition_offer(
+    case,
+    kind=OfferKind.CLOSE,
+    basis=OfferBasis.MENU,
     summary=closure.message,
-    closure_reason="inquiry_only",
+    # closure_reason derived on an INQUIRY case: "inquiry_only"
 )
-# User confirms → _execute_closed_transition(case, user_id, "inquiry_only")
+# User accepts → _execute_closed_transition(case, user_id, "inquiry_only")
 ```
 
 ### 1.3 Valid Transitions Summary
@@ -882,32 +899,38 @@ async def process_turn(case: Case, user_message: str) -> str:
     # DISPOSITION CASE ACTION HANDLING (User-Agent Handshake)
     # ============================================================
     # Disposition case actions are NEVER automatic. The agent proposes
-    # a transition via ProposedTransition, and the system holds it
-    # pending until the user confirms in the next turn.
+    # a transition via ProposedTransition, the system opens an offer on the
+    # case's offer record, and the user answers it on the next turn.
 
-    # 1. Handle pending transition confirmation from previous turn
-    #    Two detection paths (checked in order):
+    # 1. Answer the offer opened on a previous turn (section 0b, before the
+    #    LLM call). Two detection paths (checked in order):
     #    a. Intent-based: DECIDE suggestion clicks carry
-    #       intent_type="confirmation" + confirmation_value (deterministic)
-    #    b. Pattern-based: fallback for users who type instead of clicking
-    if case.pending_transition:
-        intent_confirms = (intent_type == "confirmation" and intent_data.get("value") is True)
-        intent_declines = (intent_type == "confirmation" and intent_data.get("value") is False)
-        if intent_confirms or user_confirms_transition(user_message):
-            confirm_pending_transition(case, case.user_id)
-        elif intent_declines or user_declines_transition(user_message):
-            cancel_pending_transition(case)
+    #       intent_type="confirmation" + confirmation_value + proposal_id
+    #    b. Typed: a bare consent or decline token (pending_gate_verdict)
+    offer = open_terminal_offer(case)
+    if offer is not None:
+        verdict = pending_gate_verdict(user_message, offer.kind.to_state, ...)
+        if verdict == "confirm":
+            confirm_open_offer(case, case.effective_driver_id, via=...)
+        elif verdict == "decline":
+            case.offer_record = answer_offer(
+                case, proposal_id=offer.proposal_id,
+                answer=AnswerKind.DECLINED, via=..., actor_id=user_id,
+            )
 
-    # 2. Handle ProposedTransition from LLM response
+    # 2. Handle ProposedTransition from LLM response (step 2 of
+    #    check_automatic_transitions): readiness decides what it earns
     proposed = getattr(response.state_updates, "proposed_transition", None)
-    if proposed:
-        propose_transition(
-            case=case,
-            to_status=proposed.to_status,
-            reason=proposed.reason,
-            summary=proposed.summary,
+    if proposed and case.offer_record.open is None:
+        record = open_disposition_offer(
+            case,
+            kind=OfferKind(...),  # resolve or close, after the readiness pivots
+            basis=OfferBasis.MODEL,
+            summary=...,
             evidence_ids=proposed.evidence_ids,
         )
+        if record is not None:  # None: a standing decline binds it
+            case.offer_record = record
 
     return agent_response
 
@@ -1081,13 +1104,12 @@ to `invalidated`, the engine offers the close once (INV-46), and resolution is
 not eligible. Declined, the case holds: no hypotheses, updates, chains,
 solutions or mitigations, and no mitigation or solution signal is accepted;
 housekeeping, repair patterns and the stall counter pause. The decline is a
-fact about the finding and is recorded on it
-(`ProblemInvalidation.close_declined_at_turn`, written by
-`record_false_alarm_close_declined`), whoever opened the close: the engine, the
-model, or the user's own status-menu pick, since each derives the same
-`closed_false_alarm` reason from the same finding (#1889). A finding is
-replaced only after it is cleared, so the record lasts exactly as long as the
-premise it is about. While it stands, a transition the model proposes is
+fact about the finding: an answer on the offer record whose premise is the
+finding's turn (#2379; read by `problem_status.false_alarm_close_declined_at`),
+whoever opened the close: the engine, the model, or the user's own status-menu
+pick, since each derives the same `closed_false_alarm` reason from the same
+finding (#1889). It lapses when the finding is withdrawn, edited away or
+replaced, so it lasts exactly as long as the premise it is about. While it stands, a transition the model proposes is
 refused whatever its target (a `resolved` would pivot to this close), the model
 is told the user declined at turn N and may propose a close only when the user
 directs it, and the turn's follow-ups gain one **Close as false alarm** card:
@@ -1238,8 +1260,8 @@ none could be stated.
 Users still ask for an investigation the way §1.2's natural flow always had
 them ask: by saying so, or by the agent proposing one. Gate 1 performs the edge.
 
-**→ CLOSED (from INQUIRY or INVESTIGATING)**: the engine calls `propose_transition`
-directly, returns a closure-readiness summary plus the canonical Yes/No confirmation
+**→ CLOSED (from INQUIRY or INVESTIGATING)**: the engine opens a close offer (basis
+`menu`) directly, returns a closure-readiness summary plus the canonical Yes/No confirmation
 pair. The transition fires only when the user confirms on the next turn.
 
 **→ RESOLVED (from INVESTIGATING)**: **refused**, like INVESTIGATING above and for
@@ -1348,7 +1370,10 @@ up from the evidence as they appear, and it never waits on them (#1880).
 └─────────────────────────────────────────────────┘
 ```
 
-**Confirmation actions are rendered as DECIDE suggestions** with `intent` metadata:
+**Confirmation actions are rendered as DECIDE suggestions** with `intent` metadata. The
+resolve, close and revision pairs are derived from the open offer by the offer projection
+(`offer_projection.project_offers`, #2379) when the reply is composed, never stored, so a
+pair always names the offer open on the case:
 
 ```python
 # Resolution confirmation suggestions carry intent for deterministic routing
@@ -1359,16 +1384,17 @@ up from the evidence as they appear, and it never waits on them (#1880).
     "intent": {
         "type": "confirmation",
         "confirmation_value": True,
-        # The offer this card presents: the pending proposal's proposed_at
-        # (a Gate-1 card carries gate1_offer_key(statement)).
-        "proposal_id": "2026-09-30T11:57:20.123456+00:00",
+        # The offer this card presents: the open offer's proposal_id,
+        # random and minted at open (a Gate-1 card carries
+        # gate1_offer_key(statement)).
+        "proposal_id": "9f2c41d07ab3e865",
     },
 }
 ```
 
 **Click flow**: Frontend sends `payload` as query text AND `intent` as `QueryIntent` metadata,
-forwarded verbatim. This routes through `IntentType.CONFIRMATION` → deterministic
-`pending_transition` handling, bypassing the tool loop and pattern matching entirely. The engine
+forwarded verbatim. This routes through `IntentType.CONFIRMATION` → the deterministic
+answer to the open offer (section 0b), bypassing the tool loop and pattern matching entirely. The engine
 executes the click only when its `proposal_id` names the offer standing when it arrives; any
 other click is answered with that offer again and executes nothing (#1812).
 
@@ -1404,18 +1430,19 @@ else:
 Before presenting the confirmation, the system runs `assess_resolution_readiness(case)` which checks for root cause + solution. Three outcomes:
 
 - **READY** — Root cause and solution present. System shows what's on record and asks user to confirm.
-- **NEEDS_INFO** — Partially ready (e.g., root cause but no solution). System asks user to provide the missing piece.
-- **SUGGEST_CLOSE** — No root cause, no solution, no evidence. The LLM-emit branch pivots the pending proposal to CLOSED and emit the close confirmation pair. If the issue was actually fixed, the user can provide root cause and solution to reopen the resolve path.
+- **NEEDS_INFO** — Partially ready (e.g., root cause but no solution). System asks user to provide the missing piece: a request, not an offer, with no confirmation chips (#2408).
+- **SUGGEST_CLOSE** — No root cause, no solution, no evidence. The LLM-emit branch opens a CLOSE offer instead and emits the close confirmation pair. If the issue was actually fixed, the user can provide root cause and solution to reopen the resolve path.
 
 ```python
 readiness = assess_resolution_readiness(case)
 
 if readiness.verdict == "suggest_close":
-    # Pivot: propose CLOSED instead of RESOLVED, emit close confirmation pair
-    propose_transition(case=case, to_status="closed", summary=readiness.message)
+    # Pivot: offer CLOSED instead of RESOLVED, emit close confirmation pair
+    open_disposition_offer(case, kind=CLOSE, basis=MODEL, summary=readiness.message)
     return readiness.message
 
 if readiness.verdict == "needs_info":
+    remember_resolve_request(case, readiness.missing)  # no offer, no chips
     return readiness.message  # Asks for missing root cause or solution
 
 # READY — show what's on record and ask for confirmation
@@ -1440,7 +1467,7 @@ What will happen:
 
 Before presenting the confirmation, the system runs `assess_closure_readiness(case)` which checks for resolution-grade content. Three outcomes:
 
-- **SUGGEST_RESOLVE** — Case has root cause + solution on record (resolution-grade). Both the UI-dropdown branch and the LLM-emit branch pivot the pending proposal to RESOLVED and emit the resolve confirmation pair. Closing would discard resolution attribution; the engine reconciles intent against case content. Symmetric to `ResolutionReadiness.SUGGEST_CLOSE`.
+- **SUGGEST_RESOLVE** — Case has root cause + solution on record (resolution-grade). Both the UI-dropdown branch and the LLM-emit branch open a RESOLVED offer instead and emit the resolve confirmation pair (the dropdown branch not while the user's resolve decline stands, #2360). Closing would discard resolution attribution; the engine reconciles intent against case content. Symmetric to `ResolutionReadiness.SUGGEST_CLOSE`.
 - **HAS_SUBSTANCE** — Case has investigation work (evidence / hypotheses / partial findings) but is missing one of root cause / solution. Closing is the right disposition; the engine surfaces a summary of what was accomplished.
 - **TRIVIAL** — Case has no investigation data. The engine confirms close with a minimal-data warning.
 
@@ -1448,12 +1475,12 @@ Before presenting the confirmation, the system runs `assess_closure_readiness(ca
 closure = assess_closure_readiness(case)
 
 if closure.verdict == "suggest_resolve":
-    # Pivot: propose RESOLVED instead of CLOSED, emit resolve confirmation pair
-    propose_transition(case=case, to_status="resolved", summary=closure.message)
+    # Pivot: offer RESOLVED instead of CLOSED, emit resolve confirmation pair
+    open_disposition_offer(case, kind=RESOLVE, basis=MENU, summary=closure.message)
     return closure.message  # "Case qualifies for resolved — mark resolved instead?"
 
-# HAS_SUBSTANCE / TRIVIAL — propose CLOSED with the summary message
-propose_transition(case=case, to_status="closed", summary=closure.message)
+# HAS_SUBSTANCE / TRIVIAL — offer CLOSED with the summary message
+open_disposition_offer(case, kind=CLOSE, basis=MENU, summary=closure.message)
 ```
 
 ```python
@@ -1490,10 +1517,10 @@ Close this case?
 
 **Ambiguous "close this case" (NLP pattern)**
 
-When a user types "close this case" during INVESTIGATING without specifying resolved or closed, the system asks for clarification. No `pending_transition` is set — we don't know the user's intent yet. Their next message routes through the standard pattern matching (resolve_patterns or abandonment_patterns).
+When a user types "close this case" during INVESTIGATING without specifying resolved or closed, the system asks for clarification. No offer is opened — we don't know the user's intent yet. Their next message routes through the standard pattern matching (resolve_patterns or abandonment_patterns).
 
 ```python
-# No pending_transition set — just ask for clarification
+# No offer opened — just ask for clarification
 return """You'd like to close this case. Before I do, I need to know:
 
 - **Resolved** — The problem is fixed. I'll document the solution.

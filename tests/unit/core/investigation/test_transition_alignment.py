@@ -16,10 +16,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
-from faultmaven.core.investigation.milestone_engine.transition_consent import (
-    terminal_offer_key,
-)
 from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommitPlan
+from faultmaven.core.investigation.offer_projection import project_offers
 from faultmaven.modules.case.contracts import ProblemStatus
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.conclusion import (
@@ -133,7 +131,7 @@ def _assert_canonical_confirm_pair(suggestions, expected_label_substring, case):
     """Every alignment site must emit exactly two DECIDE suggestions
     carrying confirmation intent metadata, both naming the offer standing on
     ``case`` (#1812): a click executes only when it names that offer."""
-    key = terminal_offer_key(case.pending_transition)
+    key = case.offer_record.open.proposal_id
     assert key, "premise: an offer stands on the case these cards present"
     assert len(suggestions) == 2
     assert all(s["action_type"] == "DECIDE" for s in suggestions)
@@ -154,7 +152,7 @@ def _assert_canonical_confirm_pair(suggestions, expected_label_substring, case):
 
 
 # ---------------------------------------------------------------------------
-# UI dropdown alignment — every propose_transition site emits canonical pair
+# UI dropdown alignment — every site that opens an offer emits canonical pair
 # ---------------------------------------------------------------------------
 
 
@@ -177,7 +175,7 @@ async def test_ui_dropdown_inquiry_to_closed_emits_canonical_close_pair():
         },
         redaction_ctx=None,
     )
-    assert result["case_updated"].pending_transition["to_state"] == "closed"
+    assert result["case_updated"].offer_record.open.kind == "close"
     _assert_canonical_confirm_pair(
         result["suggested_follow_ups"], "close", result["case_updated"]
     )
@@ -203,7 +201,7 @@ async def test_ui_dropdown_investigating_to_closed_emits_canonical_close_pair():
         },
         redaction_ctx=None,
     )
-    assert result["case_updated"].pending_transition["to_state"] == "closed"
+    assert result["case_updated"].offer_record.open.kind == "close"
     _assert_canonical_confirm_pair(
         result["suggested_follow_ups"], "close", result["case_updated"]
     )
@@ -249,7 +247,7 @@ async def test_ui_dropdown_resolve_is_refused():
                 redaction_ctx=None,
             )
         assert (
-            case.pending_transition is None
+            case.offer_record.open is None
         ), f"{label}: the refusal must touch no state"
 
 
@@ -284,16 +282,16 @@ async def test_ui_dropdown_close_pivots_to_resolve_when_resolution_grade():
         },
         redaction_ctx=None,
     )
-    pending = result["case_updated"].pending_transition
-    assert pending is not None
-    assert pending["to_state"] == "resolved", (
+    offer = result["case_updated"].offer_record.open
+    assert offer is not None
+    assert offer.kind == "resolve", (
         "Dropdown SUGGEST_RESOLVE pivot did not fire: the user clicked "
         "Close but the case has root cause + solution. Engine should "
         "have pivoted to propose RESOLVED so the user's confirm "
         "preserves resolution attribution."
     )
     # closure_reason is None for RESOLVED (resolution itself is the categorization)
-    assert pending.get("closure_reason") is None
+    assert offer.closure_reason is None
     _assert_canonical_confirm_pair(
         result["suggested_follow_ups"], "resolved", result["case_updated"]
     )
@@ -309,9 +307,8 @@ async def test_check_automatic_transitions_sets_override_for_resolved():
     """When ``response_obj.state_updates.proposed_transition`` is set to
     ``resolved``, ``_check_automatic_transitions`` must:
 
-    1. Call ``propose_transition()`` so ``case.pending_transition`` is set.
-    2. Populate ``metadata["override_suggestions"]`` with the canonical
-       resolution confirm/decline pair.
+    1. Open a resolve offer on ``case.offer_record``.
+    2. Project the canonical resolution confirm/decline pair from it.
 
     This is Change 3 — the routing for the third trigger path (NL→LLM via
     B). Tested directly against ``_check_automatic_transitions`` to avoid
@@ -339,10 +336,9 @@ async def test_check_automatic_transitions_sets_override_for_resolved():
         user_message="The fix worked.",
     )
 
-    assert case.pending_transition is not None
-    assert case.pending_transition["to_state"] == "resolved"
-    assert metadata.get("transition_proposed_this_turn") is True
-    _assert_canonical_confirm_pair(metadata["override_suggestions"], "resolved", case)
+    assert case.offer_record.open is not None
+    assert case.offer_record.open.kind == "resolve"
+    _assert_canonical_confirm_pair(project_offers(case).pair, "resolved", case)
 
 
 @pytest.mark.asyncio
@@ -367,15 +363,13 @@ async def test_check_automatic_transitions_sets_override_for_closed():
         user_message="Close as unresolved.",
     )
 
-    assert case.pending_transition is not None
-    assert case.pending_transition["to_state"] == "closed"
+    assert case.offer_record.open is not None
+    assert case.offer_record.open.kind == "close"
     # Regression guard: closure_reason is engine-derived from
     # (case.state, mitigation_verified). Investigating + no mitigation
     # → closed_insufficient_evidence.
-    assert (
-        case.pending_transition.get("closure_reason") == "closed_insufficient_evidence"
-    )
-    _assert_canonical_confirm_pair(metadata["override_suggestions"], "close", case)
+    assert case.offer_record.open.closure_reason == "closed_insufficient_evidence"
+    _assert_canonical_confirm_pair(project_offers(case).pair, "close", case)
 
 
 @pytest.mark.asyncio
@@ -402,9 +396,9 @@ async def test_check_automatic_transitions_closure_reason_inquiry_only():
         user_message="never mind, close this case.",
     )
 
-    assert case.pending_transition is not None
-    assert case.pending_transition["to_state"] == "closed"
-    assert case.pending_transition.get("closure_reason") == "inquiry_only"
+    assert case.offer_record.open is not None
+    assert case.offer_record.open.kind == "close"
+    assert case.offer_record.open.closure_reason == "inquiry_only"
 
 
 @pytest.mark.asyncio
@@ -442,9 +436,9 @@ async def test_check_automatic_transitions_closure_reason_stabilized_investigati
         user_message="ok closing — mitigation worked",
     )
 
-    assert case.pending_transition is not None
-    assert case.pending_transition["to_state"] == "closed"
-    assert case.pending_transition.get("closure_reason") == "mitigation_sufficient"
+    assert case.offer_record.open is not None
+    assert case.offer_record.open.kind == "close"
+    assert case.offer_record.open.closure_reason == "mitigation_sufficient"
 
 
 @pytest.mark.asyncio
@@ -475,15 +469,13 @@ async def test_llm_emit_resolved_pivots_to_close_when_thin():
         user_message="The fix worked.",
     )
 
-    assert case.pending_transition is not None
-    assert case.pending_transition["to_state"] == "closed"
-    assert (
-        case.pending_transition.get("closure_reason") == "closed_insufficient_evidence"
-    )
+    assert case.offer_record.open is not None
+    assert case.offer_record.open.kind == "close"
+    assert case.offer_record.open.closure_reason == "closed_insufficient_evidence"
     # NEEDS_INFO first-pass flag must NOT be set on a SUGGEST_CLOSE pivot —
     # the response builder distinguishes the two paths.
     assert not metadata.get("resolution_needs_info_first_pass")
-    _assert_canonical_confirm_pair(metadata["override_suggestions"], "close", case)
+    _assert_canonical_confirm_pair(project_offers(case).pair, "close", case)
 
 
 @pytest.mark.asyncio
@@ -515,25 +507,26 @@ async def test_llm_emit_closed_pivots_to_resolved_when_resolution_grade():
         user_message="Let's close this.",
     )
 
-    assert case.pending_transition is not None
-    assert case.pending_transition["to_state"] == "resolved", (
+    assert case.offer_record.open is not None
+    assert case.offer_record.open.kind == "resolve", (
         "LLM-emit SUGGEST_RESOLVE pivot did not fire: the agent proposed "
         "CLOSED but the case has root cause + solution. Engine should "
         "have pivoted to propose RESOLVED so the user's confirm preserves "
         "resolution attribution."
     )
     # closure_reason is None for RESOLVED
-    assert case.pending_transition.get("closure_reason") is None
-    _assert_canonical_confirm_pair(metadata["override_suggestions"], "resolved", case)
+    assert case.offer_record.open.closure_reason is None
+    _assert_canonical_confirm_pair(project_offers(case).pair, "resolved", case)
 
 
 @pytest.mark.asyncio
-async def test_llm_emit_resolved_needs_info_keeps_resolve_with_flag():
+async def test_llm_emit_resolved_needs_info_asks_and_offers_nothing():
     """LLM proposes RESOLVED on a case with substance (root cause + evidence)
-    but no ``causal_absence_evidence`` row (NEEDS_INFO). Engine keeps the
-    resolve intent, sets needs_info=True, and surfaces the readiness message
-    via the resolution_needs_info_first_pass metadata so the response builder
-    can override the LLM's agent_response."""
+    but no ``causal_absence_evidence`` row (NEEDS_INFO). That is a request,
+    not an offer (#2408, ruling 1): nothing opens, no confirm pair is
+    projected, the request is remembered for the next turn's re-check, and
+    the readiness message reaches the response builder through
+    ``resolution_needs_info_first_pass``."""
     engine = MilestoneEngine(
         MagicMock(),
         _make_repo(),
@@ -576,19 +569,19 @@ async def test_llm_emit_resolved_needs_info_keeps_resolve_with_flag():
         user_message="The fix worked.",
     )
 
-    assert case.pending_transition is not None
-    assert case.pending_transition["to_state"] == "resolved"
-    assert case.pending_transition.get("needs_info") is True
+    assert case.offer_record.open is None
+    assert case.offer_record.resolve_request is not None
+    assert case.offer_record.resolve_request.missing
     assert metadata.get("resolution_needs_info_first_pass") is True
     assert metadata.get("resolution_needs_info_message")
-    _assert_canonical_confirm_pair(metadata["override_suggestions"], "resolved", case)
+    assert project_offers(case).pair == []
 
 
 @pytest.mark.asyncio
 async def test_llm_emit_resolved_ready_keeps_resolve_pair():
     """LLM proposes RESOLVED on a READY case (root cause + solution).
     Engine proposes RESOLVED with the canonical resolve confirmation
-    pair, no needs_info, no pivot."""
+    pair, no request, no pivot."""
     engine = MilestoneEngine(
         MagicMock(),
         _make_repo(),
@@ -611,17 +604,17 @@ async def test_llm_emit_resolved_ready_keeps_resolve_pair():
         user_message="The fix worked.",
     )
 
-    assert case.pending_transition is not None
-    assert case.pending_transition["to_state"] == "resolved"
-    assert not case.pending_transition.get("needs_info")
+    assert case.offer_record.open is not None
+    assert case.offer_record.open.kind == "resolve"
+    assert case.offer_record.resolve_request is None
     assert not metadata.get("resolution_needs_info_first_pass")
-    _assert_canonical_confirm_pair(metadata["override_suggestions"], "resolved", case)
+    _assert_canonical_confirm_pair(project_offers(case).pair, "resolved", case)
 
 
 @pytest.mark.asyncio
 async def test_check_automatic_transitions_no_override_when_no_proposal():
     """Common case: LLM did not emit proposed_transition. Engine must not
-    set override_suggestions, leaving the LLM's follow-ups untouched."""
+    open an offer, so no confirm pair replaces the LLM's follow-ups."""
     engine = MilestoneEngine(
         MagicMock(),
         _make_repo(),
@@ -639,9 +632,8 @@ async def test_check_automatic_transitions_no_override_when_no_proposal():
         user_message="Let me check the logs.",
     )
 
-    assert case.pending_transition is None
-    assert "override_suggestions" not in metadata
-    assert metadata.get("transition_proposed_this_turn") is not True
+    assert case.offer_record.open is None
+    assert project_offers(case).pair == []
 
 
 # ============================================================

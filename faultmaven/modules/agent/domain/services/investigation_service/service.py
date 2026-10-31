@@ -27,6 +27,7 @@ from faultmaven.core.investigation.milestone_engine.transition_consent import (
     gate1_bare_consent,
 )
 from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommitPlan
+from faultmaven.core.investigation.offers import open_terminal_offer
 from faultmaven.core.investigation.schemas import TurnPayload
 from faultmaven.core.investigation.suggestion_liveness import (
     live_suggestions,
@@ -838,11 +839,11 @@ class InvestigationService:
         if (
             intent_type == IntentType.CONVERSATION
             and not payload.has_attachments
-            # A blank or greeting-shaped reply over a pending terminal
-            # proposal is an answer to THAT question; the engine's own
+            # A blank or greeting-shaped reply over an open resolve or
+            # close offer is an answer to THAT question; the engine's own
             # gate handling re-presents or withdraws it. Same guard as
             # the out-of-band lane below.
-            and not getattr(case, "pending_transition", None)
+            and open_terminal_offer(case) is None
         ):
             # ``query`` may be empty here: a bare @mention in Slack arrives
             # with no text and no file, and used to be refused by the route.
@@ -968,15 +969,15 @@ class InvestigationService:
         # already excludes); fm#918's Gate-1 arm is defined by the absence
         # of one, so the exemption has to be carried explicitly.
         #
-        # It only ever ADDS coverage for the no-pending case, because a
-        # pending row already excludes this lane one line up — and that
-        # overlap is the point: the guard can refuse with a pending row
+        # It only ever ADDS coverage for the no-offer case, because an
+        # open offer already excludes this lane one line up — and that
+        # overlap is the point: the guard can refuse with an offer open
         # too (the two gate arms are an OR, not an if/else), and there the
         # conjunct is inert rather than wrong.
         #
-        # It is NOT the same rule as ``pending_transition``, and the
+        # It is NOT the same rule as the open-offer one, and the
         # difference is worth knowing: that one suppresses this lane on
-        # EVERY turn while a gate is open, whereas this is turn-local —
+        # EVERY turn while an offer is open, whereas this is turn-local —
         # it is a verdict the guard reached on THIS message, so it exists
         # only where the guard ran, which needs a live intent-bearing card
         # on offer. A Gate-1 case whose ``last_suggestions`` has since
@@ -1003,7 +1004,7 @@ class InvestigationService:
             and query
             and not payload.has_attachments
             and not case.is_terminal
-            and not getattr(case, "pending_transition", None)
+            and open_terminal_offer(case) is None
             and not gate_reply_refused
             # A bare consent at a pending Gate 1 is the engine's to read
             # (#1841), never the classifier's: see above.
@@ -1255,12 +1256,12 @@ class InvestigationService:
         # land in the error-rate SLO.
         #
         # Boundary placement also matters for correctness, not just status
-        # codes. ``process_turn`` cancels a contradicting pending transition
-        # and records the fm#1122 decline signature BEFORE it reaches the
-        # per-target branches; raising from there unwinds without a save, so
-        # the standing close offer survives with no decline recorded and the
-        # engine re-fires it next turn — the exact re-nag fm#1122 exists to
-        # prevent. Refusing before the engine runs touches no state at all.
+        # codes. ``process_turn`` answers a contradicting open offer (the
+        # fm#1122 decline) BEFORE it reaches the per-target branches; raising
+        # from there unwinds without a save, so the open close offer survives
+        # with no decline recorded and the engine re-fires it next turn — the
+        # exact re-nag fm#1122 exists to prevent. Refusing before the engine
+        # runs touches no state at all.
         #
         # DERIVED from ``USER_SELECTABLE_ACTIONS`` rather than restated: the
         # two used to be independent facts that could disagree in either
@@ -1269,9 +1270,8 @@ class InvestigationService:
         # One admission, which leaves RESOLVED unselectable (#1895): the
         # "Mark it resolved" chip re-presents the resolution the user
         # declined, and its ``proposal_id`` (the reopen key) is let through
-        # only while the declined entry it names still covers the case. A
-        # stale or forged key keeps the 422. The engine then proposes; the
-        # user confirms.
+        # only while the decline it names still stands. A stale or forged
+        # key keeps the 422. The engine then proposes; the user confirms.
         refusal = earned_edge_refusal(case.state, to_state)
         if refusal and not resolve_reopen_admitted(case, to_state, proposal_id):
             raise ValidationException(refusal, {"field": "to_state", "value": to_state})

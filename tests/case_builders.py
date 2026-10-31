@@ -9,6 +9,8 @@ the values that make its case its own.
 - :func:`inquiry_case` is a ``make_case`` in INQUIRY.
 - :func:`investigating_case` confirms the problem statement and builds the case
   in INVESTIGATING.
+- :func:`with_open_offer` opens a resolve or close offer on a case.
+- :func:`with_declined_offer` opens one and records the user's decline of it.
 
 Any keyword a signature does not name is a ``Case`` field, passed to the
 constructor as given.
@@ -20,8 +22,14 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from faultmaven.modules.case.contracts import (
+    AnswerKind,
+    AnswerVia,
     CaseState,
     InquiryData,
+    Offer,
+    OfferAnswer,
+    OfferBasis,
+    OfferKind,
     ProblemStatus,
     ProblemVerification,
 )
@@ -134,3 +142,44 @@ def investigating_case(
     if problem_status is not None:
         case.progress.problem_status = problem_status
     return case
+
+
+def with_open_offer(
+    case: Case,
+    *,
+    kind: str = "resolve",
+    basis: str = "model",
+    summary: str = "Shall I?",
+) -> Offer:
+    """Open a ``kind`` offer ("resolve" or "close") on ``case`` as ``basis``
+    opens it, through the record's writer, and return it. A close offer's
+    ``closure_reason`` derives from the case as it stands. Refuses (an
+    ``AssertionError``) when a standing decline binds the offer."""
+    from faultmaven.core.investigation.terminal_transitions import (
+        open_disposition_offer,
+    )
+
+    record = open_disposition_offer(
+        case, kind=OfferKind(kind), basis=OfferBasis(basis), summary=summary
+    )
+    assert record is not None, f"a standing decline binds a {basis} {kind} offer"
+    case.offer_record = record
+    return record.open
+
+
+def with_declined_offer(
+    case: Case, *, kind: str = "resolve", basis: str = "backstop"
+) -> OfferAnswer:
+    """Open a ``kind`` offer as ``basis`` opens it and record the user's
+    decline of it, as a "Not yet" click records it, against the case as it
+    stands. Returns the answer."""
+    from faultmaven.core.investigation.offers import answer_offer
+
+    offer = with_open_offer(case, kind=kind, basis=basis)
+    case.offer_record = answer_offer(
+        case,
+        proposal_id=offer.proposal_id,
+        answer=AnswerKind.DECLINED,
+        via=AnswerVia.CLICK,
+    )
+    return case.offer_record.answers[-1]

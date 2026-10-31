@@ -19,9 +19,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import List
 
+from faultmaven.core.investigation.problem_status import pending_revision
 from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
+    CauseState,
     ConfidenceLevel,
     Hypothesis,
     HypothesisState,
@@ -29,7 +31,6 @@ from faultmaven.modules.case.contracts import (
     ProblemStatus,
     WorkingConclusion,
 )
-from faultmaven.modules.case.domain.models.progress import CauseState
 
 #: Link count at or above which a hypothesis stops reading as thinly
 #: supported. An editorial band, NOT a claim about what a case requires.
@@ -493,13 +494,14 @@ def _hold_conclusion(case: Case) -> WorkingConclusion | None:
     revised statement awaiting re-confirmation, or a false alarm."""
     status = case.progress.problem_status
     pv = case.problem_verification
-    if status == ProblemStatus.REVISION_PENDING and pv and pv.pending_revision:
+    revision = pending_revision(case)
+    if status == ProblemStatus.REVISION_PENDING and revision is not None:
         statement = (
             "The evidence shows a different problem than the one confirmed; "
-            f"awaiting the user's confirmation of: {pv.pending_revision.text}"
+            f"awaiting the user's confirmation of: {revision.text}"
         )
         caveats = ["Cause work is held until the revised statement is confirmed"]
-        evidence = list(pv.pending_revision.evidence_ids)
+        evidence = list(revision.evidence_ids)
     elif status == ProblemStatus.INVALIDATED and pv and pv.invalidation:
         statement = (
             "The reported problem was not present where and when it was "

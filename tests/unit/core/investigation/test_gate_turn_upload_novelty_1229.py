@@ -61,7 +61,7 @@ from faultmaven.core.investigation.milestone_engine.turn_commit import (
 from faultmaven.core.investigation.schemas import InvestigationResponse_Diagnosis
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
-from tests.case_builders import investigating_case
+from tests.case_builders import investigating_case, with_open_offer
 
 pytestmark = pytest.mark.unit
 
@@ -133,12 +133,12 @@ def _investigating_case(*, pending: Optional[str] = None) -> Case:
         turns_without_progress=STANDING_STALL,
     )
     if pending:
-        case.pending_transition = {
-            "to_state": pending,
-            "summary": "You can **close** the case instead.",
-            "evidence_ids": [],
-            "proposed_at": datetime.now(UTC).isoformat(),
-        }
+        with_open_offer(
+            case,
+            kind={"resolved": "resolve", "closed": "close"}[pending],
+            basis="model",
+            summary="You can **close** the case instead.",
+        )
     return case
 
 
@@ -152,7 +152,7 @@ async def _gate_turn(engine: MilestoneEngine, case: Case, attachments) -> dict:
     turn always escapes the pending gate (#1783): the gate's re-ask, which this
     helper used to drive with ``"hmm"``, now sends an upload to generation.
     """
-    assert not case.pending_transition, (
+    assert case.offer_record.open is None, (
         "with a CLOSE pending, a CLOSE pick is a click that EXECUTES it — the "
         "representative branch needs nothing pending"
     )
@@ -568,7 +568,7 @@ class TestBothPathsAgree:
         )
 
         assert engine.generator.generate_structured_output.called
-        assert case.pending_transition is None
+        assert case.offer_record.open is None
         generation = await self._generation(_novel())
         assert self._upload_keys(result["metadata"]) == self._upload_keys(generation)
         assert self._upload_keys(result["metadata"]) == {

@@ -71,6 +71,7 @@ from faultmaven.core.investigation.milestone_engine.affordances import (
 from faultmaven.core.investigation.milestone_engine.terminal_replies import (
     _terminal_confirmation_response,
 )
+from faultmaven.core.investigation.offer_projection import project_offers
 from faultmaven.core.investigation.terminal_transitions import derive_closure_reason
 from faultmaven.core.investigation.verification_status import (
     VerificationStatus,
@@ -106,6 +107,7 @@ from faultmaven.modules.case.contracts import (
     ProblemVerification,
     ValidationMethod,
 )
+from tests.case_builders import with_open_offer
 
 _FILE_ID = "file_0123456789ab"
 
@@ -745,12 +747,10 @@ class TestRestatementHeldHandoff:
     def test_state_machine_gates_take_precedence(self):
         """Ordered with its peers, BELOW any pending state-machine handshake."""
         case = _restatement_held_case()
-        override = [{"label": "Yes, resolve it", "action_type": "DECIDE"}]
-        gate, affordances = engine_owned_affordances(
-            case, {"override_suggestions": override}
-        )
+        with_open_offer(case, kind="close", basis="menu")
+        gate, affordances = engine_owned_affordances(case)
         assert gate == "disposition"
-        assert affordances == override
+        assert affordances == project_offers(case).pair
 
     def test_peers_are_mutually_exclusive_on_this_case(self):
         """All four mid-investigation branches read the same join, and a case

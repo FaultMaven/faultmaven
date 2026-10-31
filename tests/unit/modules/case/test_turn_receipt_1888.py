@@ -54,10 +54,9 @@ from faultmaven.core.investigation.milestone_engine import runbook_creation
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.milestone_engine.terminal_replies import (
     GENERATE_RUNBOOK_PAYLOAD,
-    _resolution_confirmation_suggestions,
 )
+from faultmaven.core.investigation.offer_projection import project_offers
 from faultmaven.core.investigation.schemas import InvestigationResponse_Diagnosis
-from faultmaven.core.investigation.terminal_transitions import propose_transition
 from faultmaven.exceptions import CASE_TERMINAL
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.modules.agent.domain.services.investigation_service.service import (
@@ -99,7 +98,7 @@ from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository im
 from faultmaven.modules.report.domain.services.report_generation_service import (
     ReportGenerationService,
 )
-from tests.case_builders import investigating_case
+from tests.case_builders import investigating_case, with_open_offer
 from tests.unit.core.investigation.test_runbook_completion_and_summary_failure import (
     _make_resolved_case,
     _make_runbook_ready,
@@ -396,7 +395,7 @@ async def _conversions_settled() -> None:
 
 def _confirm_click(case: Case) -> dict:
     """The standing offer's Yes card, as a client posts it."""
-    card = _resolution_confirmation_suggestions(case)[0]
+    card = project_offers(case).pair[0]
     intent = dict(card["intent"])
     return {
         "query": card["payload"],
@@ -550,7 +549,7 @@ class TestARetryReplaysTheCommittedTurn:
         """The other gate: new data on a closed case is a 409. The turn that
         closed the case carried a paste; its retry must replay."""
         case = _investigating_case()
-        propose_transition(case, to_state="closed", summary="Close it?")
+        with_open_offer(case, kind="close", basis="model", summary="Close it?")
         await world.seed(case)
         close = {
             **_confirm_click(case),

@@ -23,9 +23,6 @@ from datetime import UTC, datetime
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine.transition_consent import (
-    terminal_offer_key,
-)
 from faultmaven.modules.case.contracts import CaseState, EvidenceCategory
 from tests.unit.core.investigation.test_cause_work_requires_verified_problem import (
     _DSU,
@@ -66,7 +63,7 @@ async def test_a_confirmed_close_credits_the_driver_on_the_engine_confirm():
         intent_type="confirmation",
         intent_data={
             "value": True,
-            "proposal_id": terminal_offer_key(case.pending_transition),
+            "proposal_id": case.offer_record.open.proposal_id,
         },
         user_id=DRIVER,
         redaction_ctx=None,
@@ -76,16 +73,24 @@ async def test_a_confirmed_close_credits_the_driver_on_the_engine_confirm():
     assert _closed_by(case) == DRIVER
 
 
-async def test_a_typed_yes_credits_the_driver_on_the_automatic_transition():
-    """Step 0 of ``check_automatic_transitions``, reached by a direct call
-    (0b answers every pending before the model runs on a live turn)."""
+async def test_a_typed_yes_credits_the_driver_and_records_them_on_the_answer():
+    """A bare typed "yes" at the gate: the close is credited to the effective
+    driver, and the answer on the offer record names them (ruling 7)."""
     case = _pending("closed")
     case.driver_id = DRIVER
 
-    await _engine().transitions.check_automatic_transitions(case, {}, "yes")
+    await _engine().process_turn(
+        case=case, user_message="yes", user_id=DRIVER, redaction_ctx=None
+    )
 
     assert case.state == CaseState.CLOSED
     assert _closed_by(case) == DRIVER
+    accepted = case.offer_record.answers[-1]
+    assert (accepted.answer, accepted.via, accepted.answered_by) == (
+        "accepted",
+        "token",
+        DRIVER,
+    )
 
 
 async def test_evidence_the_driver_supplies_is_collected_by_the_driver():

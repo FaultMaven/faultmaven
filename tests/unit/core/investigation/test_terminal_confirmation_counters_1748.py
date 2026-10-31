@@ -25,7 +25,6 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 from typing import get_args
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -42,7 +41,6 @@ from faultmaven.core.investigation.milestone_engine.terminal_replies import (
     GENERATE_RUNBOOK_PAYLOAD,
     REGENERATE_CLOSURE_SUMMARY_PAYLOAD,
     REGENERATE_RESOLUTION_SUMMARY_PAYLOAD,
-    _resolution_confirmation_suggestions,
 )
 from faultmaven.core.investigation.milestone_engine.terminal_turns import (
     TerminalTurnHandler,
@@ -54,13 +52,14 @@ from faultmaven.core.investigation.milestone_engine.transition_consent import (
     confirmation_token_class,
     pending_gate_verdict,
 )
+from faultmaven.core.investigation.offer_projection import project_offers
 from faultmaven.core.investigation.schemas import TurnPayload
-from faultmaven.core.investigation.terminal_transitions import propose_transition
 from faultmaven.models.api_models import IntentType, QueryIntent
 from faultmaven.modules.agent.domain.services.investigation_service.service import (
     InvestigationService,
 )
 from faultmaven.modules.case.contracts import (
+    AnswerKind,
     Case,
     CaseState,
     TerminalConfirmedVia,
@@ -68,7 +67,7 @@ from faultmaven.modules.case.contracts import (
     TurnProgress,
 )
 from faultmaven.modules.case.exceptions import StaleCaseException
-from tests.case_builders import investigating_case
+from tests.case_builders import investigating_case, with_open_offer
 
 pytestmark = pytest.mark.unit
 
@@ -107,18 +106,26 @@ LABEL_TABLE = {
 #: re-asked, so nothing can produce them.
 REMOVED_LABELS = ("explicit_prefixed", "weak_prefixed", "typed_other")
 
+
 #: A RESOLVED offer standing somewhere else. A card names the offer it presents
 #: (#1812), so a CLICK in these tests is built from the case it is sent to
 #: (``_click_confirm``). These two are for the cards' text, and for MINTS, whose
 #: intent carries this other offer's key: a mint is not a click, and its text
 #: decides whatever key it carries.
-_ELSEWHERE = SimpleNamespace(
-    case_id="case_elsewhere", pending_transition={"proposed_at": "elsewhere"}
-)
-#: What "Yes, mark as resolved" sends when clicked.
-CONFIRM_CARD = _resolution_confirmation_suggestions(_ELSEWHERE)[0]
-#: What "Not yet, continue investigating" sends when clicked.
-DECLINE_CARD = _resolution_confirmation_suggestions(_ELSEWHERE)[1]
+def _resolution_pair(case: Case) -> list:
+    """The confirmation pair the record projects for ``case``'s open offer."""
+    return project_offers(case).pair
+
+
+def _elsewhere() -> Case:
+    case = investigating_case(case_id="case_e15e0e15e0e1", statement="elsewhere")
+    with_open_offer(case, kind="resolve", basis="backstop", summary="Resolve it?")
+    return case
+
+
+#: What "Yes, mark as resolved" sends when clicked, and what "Not yet,
+#: continue investigating" sends.
+CONFIRM_CARD, DECLINE_CARD = _resolution_pair(_elsewhere())
 
 #: The target each target-scoped token consents to, pinned literally. Every
 #: other token consents to either target.
@@ -639,7 +646,13 @@ def _investigating_case(pending: str = "resolved") -> Case:
         statement="pool exhaustion",
         current_turn=7,
     )
-    propose_transition(case, to_state=pending, summary="Resolve it?")
+    # An engine offer, so a decline of it binds and is visibly recorded.
+    with_open_offer(
+        case,
+        kind="resolve" if pending == "resolved" else "close",
+        basis="backstop" if pending == "resolved" else "deferred",
+        summary="Resolve it?",
+    )
     return case
 
 
@@ -692,7 +705,7 @@ async def _turn(svc: InvestigationService, query: str, intent: QueryIntent = Non
 def _click_confirm(case: Case) -> QueryIntent:
     """The Yes card's intent as the engine offers it on ``case``, forwarded
     verbatim as clients do: it names ``case``'s standing offer (#1812)."""
-    return QueryIntent(**_resolution_confirmation_suggestions(case)[0]["intent"])
+    return QueryIntent(**_resolution_pair(case)[0]["intent"])
 
 
 @pytest.fixture
@@ -708,8 +721,7 @@ def _offer_the_resolution_cards(store: _Store) -> None:
     """Put the confirmation pair on offer, as the proposing turn stored it."""
     row = store.row()
     row.last_suggestions = [
-        {**card, "offered_turn": row.current_turn}
-        for card in _resolution_confirmation_suggestions(row)
+        {**card, "offered_turn": row.current_turn} for card in _resolution_pair(row)
     ]
 
 
@@ -778,7 +790,7 @@ class TestTheConfirmationCounter:
         await _turn(_service(store), message)
 
         assert store.row().state == CaseState.INVESTIGATING
-        assert store.row().pending_transition["to_state"] == "resolved"
+        assert store.row().offer_record.open.kind == "resolve"
         assert store.row().turn_history[-1].terminal_confirmed_via is None
         confirmation.labels.assert_not_called()
         followup.labels.assert_not_called()
@@ -801,7 +813,7 @@ class TestTheConfirmationCounter:
             await _turn(svc, "ok")
 
         assert store.row().state == CaseState.INVESTIGATING
-        assert store.row().pending_transition
+        assert store.row().offer_record.open is not None
         assert not any(t.terminal_confirmed_via for t in store.row().turn_history)
         confirmation.labels.assert_not_called()
         followup.labels.assert_not_called()
@@ -861,7 +873,7 @@ class TestTheConfirmationCounter:
         assert engine.await_args.kwargs["intent_type"] == "confirmation"
         assert engine.await_args.kwargs["typed"] is True
         assert store.row().state == CaseState.INVESTIGATING
-        assert store.row().pending_transition["to_state"] == "resolved"
+        assert store.row().offer_record.open.kind == "resolve"
         confirmation.labels.assert_not_called()
 
     async def test_a_click_counts_as_intent(self, counters):
@@ -898,7 +910,7 @@ class TestTheConfirmationCounter:
             await _turn(_service(store), "ok")
 
         assert store.row().state == CaseState.INVESTIGATING
-        assert store.row().pending_transition["to_state"] == "resolved"
+        assert store.row().offer_record.open.kind == "resolve"
         assert store.row().turn_history[-1].terminal_confirmed_via is None
         confirmation.labels.assert_not_called()
 
@@ -914,30 +926,18 @@ class TestTheConfirmationCounter:
         assert store.row().state == CaseState.RESOLVED
 
 
-#: The signature an ENGINE proposer writes on its offer, which a refusal is
-#: recorded against.
-_SIGNATURE = "SUGGEST_RESOLVE|1|chain"
-
-
-def _sign_the_offer(store: _Store) -> None:
-    """Sign the standing proposal as an engine proposer would. Without it,
-    "nothing recorded" would hold vacuously: the thin case here derives no
-    signature, so even a real refusal would record nothing."""
-    store.row().pending_transition["justifying_signature"] = _SIGNATURE
-
-
 def _assert_re_asked(store: _Store, response) -> None:
     """The proposal was shown again with its buttons, still stands, executed
     nothing, and recorded no refusal."""
     row = store.row()
     assert row.state == CaseState.INVESTIGATING
-    assert row.pending_transition is not None
-    assert row.pending_transition["to_state"] == "resolved"
+    assert row.offer_record.open is not None
+    assert row.offer_record.open.kind == "resolve"
     assert "Please select one of the options above" in response.agent_response
     assert [action.label for action in response.suggested_actions] == [
-        card["label"] for card in _resolution_confirmation_suggestions(row)
+        card["label"] for card in _resolution_pair(row)
     ]
-    assert row.progress.deferred_disposition_declined_signatures == []
+    assert row.offer_record.answers == ()
     assert row.turn_history[-1].terminal_confirmed_via is None
 
 
@@ -952,7 +952,6 @@ class TestOnlyAClickOrABareTokenExecutes:
     async def test_a_typed_refusal_after_a_weak_token_is_re_asked(self, counters):
         confirmation, _ = counters
         store = _Store(_investigating_case())
-        _sign_the_offer(store)
         svc = _service(store)
 
         response = await _turn(svc, "ok, don't close it yet")
@@ -969,7 +968,6 @@ class TestOnlyAClickOrABareTokenExecutes:
         refusal, on a second non-answer. A re-ask never becomes a decline."""
         confirmation, _ = counters
         store = _Store(_investigating_case())
-        _sign_the_offer(store)
         svc = _service(store)
 
         for _ in range(2):
@@ -984,7 +982,6 @@ class TestOnlyAClickOrABareTokenExecutes:
     ):
         confirmation, _ = counters
         store = _Store(_investigating_case())
-        _sign_the_offer(store)
         _offer_the_resolution_cards(store)
         svc = _service(store)
         engine = _mint(svc, CONFIRM_CARD)
@@ -1004,7 +1001,6 @@ class TestOnlyAClickOrABareTokenExecutes:
         wins. The card is shown again, and nothing is recorded."""
         confirmation, _ = counters
         store = _Store(_investigating_case())
-        _sign_the_offer(store)
         _offer_the_resolution_cards(store)
         svc = _service(store)
         engine = _mint(svc, DECLINE_CARD)
@@ -1032,7 +1028,6 @@ class TestOnlyAClickOrABareTokenExecutes:
     async def test_close_it_does_not_confirm_a_pending_resolve(self, counters):
         confirmation, _ = counters
         store = _Store(_investigating_case())
-        _sign_the_offer(store)
 
         response = await _turn(_service(store), "close it")
 
@@ -1057,14 +1052,13 @@ class TestOnlyAClickOrABareTokenExecutes:
         every "nothing recorded" above: on this harness a refusal records."""
         confirmation, _ = counters
         store = _Store(_investigating_case())
-        _sign_the_offer(store)
 
         response = await _turn(_service(store), "no")
 
         row = store.row()
         assert row.state == CaseState.INVESTIGATING
-        assert row.pending_transition is None
-        assert row.progress.deferred_disposition_declined_signatures == [_SIGNATURE]
+        assert row.offer_record.open is None
+        assert [a.answer for a in row.offer_record.answers] == [AnswerKind.DECLINED]
         assert "Please select one of the options above" not in response.agent_response
         confirmation.labels.assert_not_called()
 

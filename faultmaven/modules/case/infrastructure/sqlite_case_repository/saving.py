@@ -46,7 +46,7 @@ async def _upsert_case_record(db, case: Case) -> None:
     is bumped to the current UTC time on every save so staleness
     queries can run without scanning JSON. The ``metadata`` JSON
     column carries transient runtime state that has no first-class
-    column yet (``message_count``, ``pending_transition``,
+    column yet (``message_count``, ``offer_record``,
     ``proposed_actions``, ``action_attempts``, ``turn_history``).
     """
     last_activity_at = datetime.now(UTC)

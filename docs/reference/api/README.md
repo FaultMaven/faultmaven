@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 14.9.0
+**Version:** 14.10.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -5139,11 +5139,7 @@ User hasn't committed to full investigation yet.
 - `case_id` (string, required) — Case identifier
 - `created_at` (string, required) — When case was created
 - `current_turn` (integer, required) — The MESSAGE clock: every persisted exchange advances it, asides included. It is what `Message.turn_number`, evidence `uploaded_at_turn` and the conversation anchors are keyed on, so keep using it to ADDRESS a turn — and prefer `investigation_turn` to DISPLAY one.
-- `disposition_eligibility` (object, optional) — Per-disposition eligibility. ‼ The two keys answer for DIFFERENT audiences: ``closed`` gates a user CONTROL, ``resolved`` gates nothing in the UI — it is the engine's own readiness verdict, and what it decides is whether the agent OFFERS the resolution handshake. Shape: ``{'resolved': str, 'closed': str}`` where each value is one of:
-- ``ready`` — case content supports this disposition with no follow-up. On the CLOSED side: render the control. On the RESOLVED side: the agent proposes the handshake; render nothing.
-- ``needs_info`` — content is partial; the user must supply more (root cause / solution / confirmation the problem is gone). Resolve side only, and no control either way — the agent asks in conversation.
-- ``suggests_alternative`` — Close side only, and it means DO NOT RENDER CLOSE: the agent is offering the resolution, and Close and Resolve are not offered together. It is set when the case confirms a resolution (a qualifying causal-absence row and a symptom-absence row at or after the fix) and either the user has not declined that resolution, when every close pivots back to a resolve proposal, or the declined resolution is being offered again at the user's request. The honest rendering is no status control at all. Once the user declines the resolution, a Close closes the case and ``closed`` reads ``ready``, except while that resolution is offered again at the user's request (a Close sent then cancels the offer and closes). This holds until the state the decline was given against changes: a new confirmation that the fix held, a new solution, or the cause established differently.
-- ``not_eligible`` — not available; render nothing.
+- `disposition_eligibility` (object, optional) — Per-disposition eligibility, ``{resolved, closed}``, both keys always present. ‼ The two keys answer for DIFFERENT audiences: ``closed`` (``CloseEligibility``) gates a user CONTROL — render Close only on ``ready``; ``resolved`` (``ResolveEligibility``) gates nothing in the UI — it is the engine's own readiness verdict, and what it decides is whether the agent OFFERS the resolution. Each value's meaning is its enum's ``x-enum-descriptions``. ``closed`` reads ``suggests_alternative`` while a resolve proposal is pending, and on a resolvable case whose resolution the user has not declined (a close would become a resolve proposal). A decline stands until a new solution or a new confirmation that the fix held is recorded; nothing else lapses it. A request for what a resolution still needs is not a proposal: it carries no confirmation chips, and Close stays.
 
 Different from ``valid_next_states`` — that field is which actions the user may SELECT, this field is what the case CONTENT supports. The two no longer overlap on the resolve side: ``resolved`` here is the engine's own readiness verdict, which decides whether the agent offers the resolution handshake, not whether a control is rendered.
 - `inquiry` (object, required) — Nested inquiry phase data
@@ -5170,11 +5166,7 @@ User has committed to investigation and agent is working through milestones.
 - `case_id` (string, required) — Case identifier
 - `created_at` (string, required) — When case was created
 - `current_turn` (integer, required) — The MESSAGE clock: every persisted exchange advances it, asides included. It is what `Message.turn_number`, evidence `uploaded_at_turn` and the conversation anchors are keyed on, so keep using it to ADDRESS a turn — and prefer `investigation_turn` to DISPLAY one.
-- `disposition_eligibility` (object, optional) — Per-disposition eligibility. ‼ The two keys answer for DIFFERENT audiences: ``closed`` gates a user CONTROL, ``resolved`` gates nothing in the UI — it is the engine's own readiness verdict, and what it decides is whether the agent OFFERS the resolution handshake. Shape: ``{'resolved': str, 'closed': str}`` where each value is one of:
-- ``ready`` — case content supports this disposition with no follow-up. On the CLOSED side: render the control. On the RESOLVED side: the agent proposes the handshake; render nothing.
-- ``needs_info`` — content is partial; the user must supply more (root cause / solution / confirmation the problem is gone). Resolve side only, and no control either way — the agent asks in conversation.
-- ``suggests_alternative`` — Close side only, and it means DO NOT RENDER CLOSE: the agent is offering the resolution, and Close and Resolve are not offered together. It is set when the case confirms a resolution (a qualifying causal-absence row and a symptom-absence row at or after the fix) and either the user has not declined that resolution, when every close pivots back to a resolve proposal, or the declined resolution is being offered again at the user's request. The honest rendering is no status control at all. Once the user declines the resolution, a Close closes the case and ``closed`` reads ``ready``, except while that resolution is offered again at the user's request (a Close sent then cancels the offer and closes). This holds until the state the decline was given against changes: a new confirmation that the fix held, a new solution, or the cause established differently.
-- ``not_eligible`` — not available; render nothing.
+- `disposition_eligibility` (object, optional) — Per-disposition eligibility, ``{resolved, closed}``, both keys always present. ‼ The two keys answer for DIFFERENT audiences: ``closed`` (``CloseEligibility``) gates a user CONTROL — render Close only on ``ready``; ``resolved`` (``ResolveEligibility``) gates nothing in the UI — it is the engine's own readiness verdict, and what it decides is whether the agent OFFERS the resolution. Each value's meaning is its enum's ``x-enum-descriptions``. ``closed`` reads ``suggests_alternative`` while a resolve proposal is pending, and on a resolvable case whose resolution the user has not declined (a close would become a resolve proposal). A decline stands until a new solution or a new confirmation that the fix held is recorded; nothing else lapses it. A request for what a resolution still needs is not a proposal: it carries no confirmation chips, and Close stays.
 
 Different from ``valid_next_states`` — that field is which actions the user may SELECT, this field is what the case CONTENT supports. The two no longer overlap on the resolve side: ``resolved`` here is the engine's own readiness verdict, which decides whether the agent offers the resolution handshake, not whether a control is rendered.
 - `investigation_turn` (object, optional) — How many of this case's turns so far were investigation work (#1329/#1387) — the same quantity `TurnResponse.investigation_turn` reports, carried on the case read so a header or a resolution summary can show it without having just submitted a turn. Excludes out-of-band turns (small talk, trivia, questions about FaultMaven itself), which are answered outside the investigation: an aside advances `current_turn` and leaves this alone. Null when the server predates the field.
@@ -5205,11 +5197,7 @@ Investigation complete, case closed with solution.
 - `case_id` (string, required) — Case identifier
 - `created_at` (string, required) — When case was created
 - `current_turn` (integer, required) — The MESSAGE clock: every persisted exchange advances it, asides included. It is what `Message.turn_number`, evidence `uploaded_at_turn` and the conversation anchors are keyed on, so keep using it to ADDRESS a turn — and prefer `investigation_turn` to DISPLAY one.
-- `disposition_eligibility` (object, optional) — Per-disposition eligibility. ‼ The two keys answer for DIFFERENT audiences: ``closed`` gates a user CONTROL, ``resolved`` gates nothing in the UI — it is the engine's own readiness verdict, and what it decides is whether the agent OFFERS the resolution handshake. Shape: ``{'resolved': str, 'closed': str}`` where each value is one of:
-- ``ready`` — case content supports this disposition with no follow-up. On the CLOSED side: render the control. On the RESOLVED side: the agent proposes the handshake; render nothing.
-- ``needs_info`` — content is partial; the user must supply more (root cause / solution / confirmation the problem is gone). Resolve side only, and no control either way — the agent asks in conversation.
-- ``suggests_alternative`` — Close side only, and it means DO NOT RENDER CLOSE: the agent is offering the resolution, and Close and Resolve are not offered together. It is set when the case confirms a resolution (a qualifying causal-absence row and a symptom-absence row at or after the fix) and either the user has not declined that resolution, when every close pivots back to a resolve proposal, or the declined resolution is being offered again at the user's request. The honest rendering is no status control at all. Once the user declines the resolution, a Close closes the case and ``closed`` reads ``ready``, except while that resolution is offered again at the user's request (a Close sent then cancels the offer and closes). This holds until the state the decline was given against changes: a new confirmation that the fix held, a new solution, or the cause established differently.
-- ``not_eligible`` — not available; render nothing.
+- `disposition_eligibility` (object, optional) — Per-disposition eligibility, ``{resolved, closed}``, both keys always present. ‼ The two keys answer for DIFFERENT audiences: ``closed`` (``CloseEligibility``) gates a user CONTROL — render Close only on ``ready``; ``resolved`` (``ResolveEligibility``) gates nothing in the UI — it is the engine's own readiness verdict, and what it decides is whether the agent OFFERS the resolution. Each value's meaning is its enum's ``x-enum-descriptions``. ``closed`` reads ``suggests_alternative`` while a resolve proposal is pending, and on a resolvable case whose resolution the user has not declined (a close would become a resolve proposal). A decline stands until a new solution or a new confirmation that the fix held is recorded; nothing else lapses it. A request for what a resolution still needs is not a proposal: it carries no confirmation chips, and Close stays.
 
 Different from ``valid_next_states`` — that field is which actions the user may SELECT, this field is what the case CONTENT supports. The two no longer overlap on the resolve side: ``resolved`` here is the engine's own readiness verdict, which decides whether the agent offers the resolution handshake, not whether a control is rendered.
 - `investigation_turn` (object, optional) — How many of this case's turns so far were investigation work (#1329/#1387) — the same quantity `TurnResponse.investigation_turn` reports, carried on the case read so a header or a resolution summary can show it without having just submitted a turn. Excludes out-of-band turns (small talk, trivia, questions about FaultMaven itself), which are answered outside the investigation: an aside advances `current_turn` and leaves this alone. Null when the server predates the field.
@@ -5238,6 +5226,18 @@ Request to update an existing case.
 - `description` (object, optional) — Updated description
 - `state` (object, optional) — Updated state (admin only)
 - `title` (object, optional) — Updated title
+
+---
+
+### CloseEligibility
+
+Whether to show the status menu's Close.
+
+**Values:**
+
+- `ready` — Show Close. Closing ends the case without a resolution.
+- `suggests_alternative` — Do not show Close. A resolve proposal is pending, or the case is resolvable and its resolution has not been declined, so a close would become a resolve proposal.
+- `not_eligible` — Do not show Close: the case is already resolved or closed.
 
 ---
 
@@ -5307,6 +5307,18 @@ Supports username-based login with optional user details.
 - `display_name` (object, optional) — Optional display name (will auto-generate if not provided)
 - `email` (object, optional) — Optional email address (will auto-generate if not provided)
 - `username` (string, required) — Username or email address (3-50 chars)
+
+---
+
+### DispositionEligibility
+
+Per-disposition eligibility: ``resolved`` and ``closed``, both
+required, no other key.
+
+**Properties:**
+
+- `closed` (object, required)
+- `resolved` (object, required)
 
 ---
 
@@ -6119,6 +6131,20 @@ Overall resolution metrics for RESOLVED phase.
 - `key_insights` (array, optional) — Key learnings from this investigation
 - `milestones_completed` (integer, required) — Count of milestones completed over the case's life. A raw count, not a fraction: milestones complete opportunistically and a case can resolve without traversing the mitigation path, so there is no fixed total to compare against.
 - `total_duration_minutes` (integer, required) — Total time from case creation to resolution
+
+---
+
+### ResolveEligibility
+
+Whether the case has earned resolution. Gates no control: RESOLVED is
+not user-selectable, and the engine offers the resolve confirmation
+itself.
+
+**Values:**
+
+- `ready` — The case has earned resolution. It is not a control: the engine offers the resolve confirmation itself, except while the user's decline of it stands.
+- `needs_info` — The case may resolve once what is missing is recorded. A request asks for it, with no confirmation chips.
+- `not_eligible` — Resolution is not available: the case is not investigating, or its evidence points to closing.
 
 ---
 

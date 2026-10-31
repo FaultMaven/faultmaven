@@ -27,6 +27,11 @@ from faultmaven.core.investigation.milestone_engine.regeneration import (
 from faultmaven.core.investigation.milestone_engine.turn_records import (
     _flatten_follow_ups,
 )
+from faultmaven.core.investigation.offer_projection import project_offers
+from faultmaven.core.investigation.offers import (
+    open_terminal_offer,
+    terminal_offer_opened_this_turn,
+)
 from faultmaven.modules.case.contracts import (
     MESSAGE_METADATA_AGENT_SYNTHESIZED,
     CaseState,
@@ -50,15 +55,10 @@ from .response_synthesis import (
     _prose_with_gate_notice,
     is_agent_response_synthesized,
 )
-from .stage_gates import (
-    _close_confirmation_suggestions,
-    declined_close_card,
-    declined_resolve_card,
-)
+from .stage_gates import declined_close_card
 from .statement_revision import revision_presentation
 from .terminal_replies import (
     _build_resolution_confirmation,
-    _resolution_confirmation_suggestions,
     _select_ack_follow_ups,
 )
 
@@ -89,13 +89,12 @@ def _narration_overclaim_notice(
     prose gate notice was already composed this turn (any of the
     ``_prose_with_gate_notice`` override branches, which already frame the
     not-yet-terminal state; ``gate_prose_appended`` is the caller's signal that
-    one fired). Critically it does **not** suppress on a bare ``pending_transition``:
-    the suggestions-only override branch proposes a transition but appends no
-    prose, so an over-claim there would otherwise stand uncontradicted — the
-    guard's most probable real-world shape (a model confident enough to
-    over-claim is the same one that proposes). The notice wording adapts to
-    whether a proposal is pending. Returns ``None`` when there is nothing to
-    correct.
+    one fired). Critically it does **not** suppress on a bare open offer: the
+    model's own proposal opens one but appends no prose, so an over-claim there
+    would otherwise stand uncontradicted — the guard's most probable
+    real-world shape (a model confident enough to over-claim is the same one
+    that proposes). The notice wording adapts to whether a resolve or close
+    offer is open. Returns ``None`` when there is nothing to correct.
 
     Pure over ``case`` + ``agent_text`` + ``gate_prose_appended``; the caller
     appends via ``_prose_with_gate_notice`` and increments
@@ -111,7 +110,7 @@ def _narration_overclaim_notice(
         # A prose gate notice already frames the real (not-yet-terminal) state
         # below the LLM's reply; a second notice would be redundant.
         return None
-    if case.pending_transition:
+    if open_terminal_offer(case):
         return _NARRATION_OVERCLAIM_NOTICE_PENDING
     return _NARRATION_OVERCLAIM_NOTICE
 
@@ -189,132 +188,73 @@ async def _compose_turn_reply(
     response_synthesized = is_agent_response_synthesized(response_obj)
     agent_response_text = "" if response_synthesized else response_obj.agent_response
 
-    # Post-LLM overrides for resolution readiness re-evaluation.
-    # Gate PROSE is composed with (appended below) the LLM's reply via
-    # _prose_with_gate_notice — never replacing the analysis the user
-    # asked for. Gate SUGGESTIONS stay engine-owned replacements.
-    # After a needs_info turn, check whether requirements are now met.
+    # Gate prose for the offer the turn opened, or the request it made. Gate
+    # PROSE is composed with (appended below) the LLM's reply via
+    # _prose_with_gate_notice — never replacing the analysis the user asked
+    # for. Gate SUGGESTIONS stay engine-owned replacements: the open offer's
+    # confirmation pair, from the offer projection (``offer_projection.project_offers``),
+    # here and again in ``engine_owned_affordances`` below.
     #
-    # ``gate_prose_appended`` records whether one of the PROSE
-    # branches fired: each frames the not-yet-terminal state below the
-    # LLM's reply, so the INV-40 guard suppresses on it. The
-    # suggestions-only branch (override_suggestions) appends NO prose,
-    # so the guard must still
-    # fire there (INV-40 — a proposed transition alone does not
-    # contradict a "Case resolved." narration).
+    # ``gate_prose_appended`` records whether one of the PROSE branches fired:
+    # each frames the not-yet-terminal state below the LLM's reply, so the
+    # INV-40 guard suppresses on it. The model's own proposal appends NO prose,
+    # so the guard must still fire there (INV-40 — a proposed transition alone
+    # does not contradict a "Case resolved." narration).
     gate_prose_appended = False
     # Set when Gate 1 composed its statement presentation, and checked
     # against the FINAL reply at the return boundary — see the counter there.
     _gate1_presentation: str | None = None
+    projection = project_offers(case_updated)
+    # The prose each engine opener publishes for its offer, in precedence
+    # order: the re-check of a resolution request (step 0), then the engine's
+    # own proposers. Every one says why the offer is on the table.
+    _OFFER_PROSE = (
+        "rca_infeasible_closure_message",
+        "false_alarm_closure_message",
+        "deferred_solution_gate_message",
+        "resolution_ready_gate_message",
+    )
+    offer_prose = next(
+        (metadata[key] for key in _OFFER_PROSE if metadata.get(key)), None
+    )
     if metadata.get("resolution_ready_for_confirmation"):
         agent_response_text = _prose_with_gate_notice(
             agent_response_text,
             "Thanks for the additional details.\n\n"
             + _build_resolution_confirmation(case_updated),
         )
-        follow_ups = _resolution_confirmation_suggestions(case_updated)
+        follow_ups = projection.pair
         gate_prose_appended = True
     elif metadata.get("resolution_suggest_close"):
-        # User didn't provide required info — suggest Close instead.
+        # The request was not met: Close is offered instead.
         agent_response_text = _prose_with_gate_notice(
             agent_response_text,
             metadata["resolution_readiness_message"],
         )
-        follow_ups = _close_confirmation_suggestions(case_updated)
+        follow_ups = projection.pair
         gate_prose_appended = True
     elif metadata.get("resolution_needs_info_first_pass"):
-        # LLM proposed RESOLVED but readiness check returned NEEDS_INFO.
-        # Append the readiness ask below the LLM's agent_response so
-        # the user sees both the turn's analysis and the same
-        # missing-info ask the readiness gate produces.
+        # The model proposed RESOLVED but readiness is NEEDS_INFO: a request,
+        # not an offer (#2408). The readiness ask goes below the LLM's reply,
+        # and the follow-ups are the model's own: no confirmation chips.
         agent_response_text = _prose_with_gate_notice(
             agent_response_text,
             metadata["resolution_needs_info_message"],
         )
-        follow_ups = metadata["override_suggestions"]
         gate_prose_appended = True
-    elif metadata.get("close_pivoted_to_resolve"):
-        # INV-37 resolve-preservation: the user confirmed a pending
-        # CLOSE, but the case had become resolvable — the confirm-time
-        # guard pivoted it to a RESOLVED proposal. Append (below the
-        # LLM's reply) the SUGGEST_RESOLVE prose the guard already
-        # computed and stored on the resolved pending — the same text
-        # the proposal-time pivot shows, so both pivot paths render one
-        # message.
-        agent_response_text = _prose_with_gate_notice(
-            agent_response_text,
-            (case_updated.pending_transition or {}).get("summary", ""),
-        )
-        follow_ups = _resolution_confirmation_suggestions(case_updated)
+    elif offer_prose is not None:
+        # An engine-proposed offer (the rca-infeasible or false-alarm close,
+        # the deferred disposition, the resolution backstop): its reason is
+        # composed below the model's reply, because an offer the user did not
+        # ask for and the model did not narrate is otherwise two unexplained
+        # buttons (fm#1122, case_fa29e0023b85 turns 11-15).
+        agent_response_text = _prose_with_gate_notice(agent_response_text, offer_prose)
+        follow_ups = projection.pair
         gate_prose_appended = True
-    elif metadata.get("rca_infeasible_closure_message"):
-        # Stage-gate side effect: mitigation_verified + rca_infeasible=True.
-        # Append the engine-built closure proposal below the LLM's
-        # mitigation-confirmation reply, with the canonical close
-        # confirm/decline pair.
-        agent_response_text = _prose_with_gate_notice(
-            agent_response_text,
-            metadata["rca_infeasible_closure_message"],
-        )
-        follow_ups = metadata["override_suggestions"]
-        gate_prose_appended = True
-    elif metadata.get("false_alarm_closure_message"):
-        # False alarm: the evidence showed the reported symptom was never
-        # present, and the ENGINE offers the close that finding calls for —
-        # so, like its engine-proposed siblings, it says why below the reply.
-        agent_response_text = _prose_with_gate_notice(
-            agent_response_text,
-            metadata["false_alarm_closure_message"],
-        )
-        follow_ups = metadata["override_suggestions"]
-        gate_prose_appended = True
-    elif metadata.get("deferred_solution_gate_message"):
-        # Deferred-implementation disposition: the ENGINE proposed this
-        # one, so its rationale has to be rendered the same way the
-        # rca_infeasible sibling's is. Without this the key was written
-        # and never read, and the user got a bare confirm/decline pair
-        # with no stated reason — on the close branch, a "without
-        # resolution" affordance sitting directly under LLM prose that
-        # had just said it would not propose closure (case_fa29e0023b85
-        # turns 11-15). Must precede the generic override_suggestions
-        # branch below, which swaps suggestions but appends NO prose.
-        agent_response_text = _prose_with_gate_notice(
-            agent_response_text,
-            metadata["deferred_solution_gate_message"],
-        )
-        follow_ups = metadata["override_suggestions"]
-        gate_prose_appended = True
-    elif metadata.get("resolution_ready_gate_message"):
-        # Resolution backstop (INV-43): the ENGINE opened this
-        # handshake because the cause is confirmed eliminated and no
-        # other opener proposed it. Same treatment as its two
-        # engine-proposed siblings above — the rationale is composed
-        # below the model's reply, because an offer the user did not
-        # ask for and the model did not narrate is otherwise two
-        # unexplained buttons. Must precede the generic
-        # override_suggestions branch, which appends no prose.
-        agent_response_text = _prose_with_gate_notice(
-            agent_response_text,
-            metadata["resolution_ready_gate_message"],
-        )
-        follow_ups = metadata["override_suggestions"]
-        gate_prose_appended = True
-    elif metadata.get("override_suggestions"):
-        # ProposedTransition was emitted by the LLM this turn (either
-        # detecting solution success or routing user-expressed
-        # transition intent). Replace the LLM's follow-ups with the
-        # canonical confirm/decline pair so both remaining openers
-        # (the model's proposed_transition via this branch, and the
-        # engine's own INV-43 backstop) converge on the same
-        # deterministic confirmation UX. There used to be a third, the
-        # resolve dropdown; it went when RESOLVED left the menu. NOTE: no prose is
-        # appended here, so the INV-40 guard below still runs — an
-        # over-claiming narration on this branch is corrected.
-        follow_ups = metadata["override_suggestions"]
 
     # Engine-owned gate affordances. When a state-machine gate is
-    # pending (Gate 1 — problem-statement confirmation; or a
-    # pending_transition disposition handshake), the engine
+    # pending (Gate 1 — problem-statement confirmation; or an open
+    # offer on the case's offer record), the engine
     # emits the canonical clickable affordance pair regardless of
     # LLM compliance with the prompt's suggestion-emission
     # directives. The consolidator is a single source of truth that
@@ -334,7 +274,7 @@ async def _compose_turn_reply(
     # FRESH grounding grade because this runs after
     # ``_apply_investigation_updates`` recomputed cause_state this turn
     # (the #593 re-derive-after-stamp ordering the plan requires).
-    gate_result = engine_owned_affordances(case_updated, metadata)
+    gate_result = engine_owned_affordances(case_updated)
     if gate_result is not None:
         gate_name, gate_affordances = gate_result
         # REPLACE the LLM's suggestions with the engine-owned gate
@@ -450,8 +390,8 @@ async def _compose_turn_reply(
     # The model re-proposed a close the user declined, and step 2 refused it
     # (#1889). The close stays one step away: its card is APPENDED to the
     # follow-ups as settled above, never substituted for them — replacing the
-    # model's suggestions with a lone close button (``override_suggestions``)
-    # would turn the refusal into the re-ask it exists to stop. No terminal
+    # model's suggestions with a lone close button would turn the refusal into
+    # the re-ask it exists to stop. No terminal
     # check: nothing reaches the refusal on a terminal case (0a hands its
     # turns to the terminal path, and step 2's refusal sits behind the legality
     # check, which admits no target from a terminal state).
@@ -462,13 +402,12 @@ async def _compose_turn_reply(
     # EVERY turn a resolve decline stands, whatever the model did. The model
     # never proposes on a request (``RESOLVE_DECLINED_RULE``) and points a user
     # who changes their mind at this chip, so the chip cannot depend on a
-    # refusal having happened. One predicate, the builder's: the decline
-    # covers the current state, no offer is pending, the problem is not on
-    # hold. A new confirmation (the offer returns with its own pair) or a
-    # pending offer leaves it off. Appended once: any follow-up already
-    # carrying its label or its intent is dropped first, so the turn shows
-    # exactly one.
-    resolve_card = declined_resolve_card(case_updated)
+    # refusal having happened. The projection's chip: the decline stands, no
+    # offer is open, the problem is not on hold. A new confirmation (the offer
+    # returns with its own pair) or an open offer leaves it off. Appended
+    # once: any follow-up already carrying its label or its intent is dropped
+    # first, so the turn shows exactly one.
+    resolve_card = projection.reopen_chip
     if resolve_card is not None:
         follow_ups = [
             *(f for f in follow_ups if not _is_resolve_chip(f, resolve_card)),
@@ -586,11 +525,8 @@ async def _compose_turn_reply(
     _llm_proposed_to_status = (
         getattr(_llm_proposed, "to_state", None) if _llm_proposed else None
     )
-    _engine_to_status = (
-        case_updated.pending_transition.get("to_state")
-        if case_updated.pending_transition
-        else None
-    )
+    _open_offer = open_terminal_offer(case_updated)
+    _engine_to_status = _open_offer.kind.to_state if _open_offer else None
     # A proposal the engine's same-turn offer superseded was DROPPED, not
     # pivoted (#1885): the two are separate fields so the pivot rate keeps
     # meaning "the engine re-read the model's request".
@@ -608,7 +544,7 @@ async def _compose_turn_reply(
             "turn": case_updated.current_turn,
             "state": case_updated.state.value,
             "proposed_transition_emitted": bool(
-                metadata.get("transition_proposed_this_turn")
+                terminal_offer_opened_this_turn(case_updated)
             ),
             "llm_proposed_to_status": _llm_proposed_to_status,
             "engine_effective_to_status": _engine_to_status,

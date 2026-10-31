@@ -20,18 +20,21 @@ opportunistic flow, and nothing here may defer it.
 Two more outcomes follow verification besides "verified":
 
 * **The statement is inaccurate** (the problem is real, the wording is not):
-  ``propose_revision`` holds a revised statement for the user's re-confirmation
-  (REVISION_PENDING). Cause work arriving meanwhile is STAGED on the pending
-  revision, not refused — ``cause_work_staged`` — and replayed when the user
-  confirms, so the confirmation turn can still verify, hypothesize and
-  identify. ``commit_revision`` writes the statement into every store that
-  holds it; ``decline_revision`` / ``cancel_revision`` return to where the case
-  was.
+  ``propose_revision`` opens a revision offer on the case's offer record
+  (``core/investigation/offers.py``) and holds the revised statement there for
+  the user's re-confirmation (REVISION_PENDING). Cause work arriving meanwhile
+  is STAGED on the open revision, not refused — ``cause_work_staged`` — and
+  replayed when the user confirms, so the confirmation turn can still verify,
+  hypothesize and identify. ``commit_revision`` writes the statement into
+  every store that holds it; ``decline_revision`` / ``cancel_revision`` return
+  to where the case was. These are the only openers and answerers of the
+  revision offer, so this module stays the one writer of ``problem_status``.
 * **The problem never existed** (a false alarm): ``invalidate_problem``
   (INVALIDATED). The case can be closed, never resolved; nothing progresses
   until new evidence shows a problem (a revision) or the user disputes the
-  finding (``withdraw_invalidation``). A declined close is a fact about the
-  finding and is recorded on it (``record_false_alarm_close_declined``).
+  finding (``withdraw_invalidation``). A declined close is an answer on the
+  offer record whose premise is the finding: it binds while the finding
+  stands (``false_alarm_close_declined_at``).
 
 The ``*_refusal`` functions are the guards: each returns why a proposal cannot
 be accepted, or None. The transitions assume their guard passed.
@@ -43,13 +46,26 @@ from datetime import UTC, datetime
 from faultmaven.core.investigation.causal_graph.similarity import (
     hypothesis_statements_duplicate,
 )
+from faultmaven.core.investigation.offers import (
+    answer_offer,
+    open_offer,
+    open_revision,
+    restage_revision,
+    revision_declined,
+    standing_false_alarm_decline,
+)
 from faultmaven.modules.case.contracts import (
+    AnswerKind,
+    AnswerVia,
     Case,
     ClosureReason,
     EvidenceCategory,
     NeedPurpose,
     NeedState,
     NodeType,
+    Offer,
+    OfferBasis,
+    OfferKind,
     PendingRevision,
     ProblemInvalidation,
     ProblemStatementRecord,
@@ -147,7 +163,7 @@ def _cited(case: Case, evidence_ids: list[str], category: EvidenceCategory) -> b
 
 
 def revision_refusal(
-    case: Case, text: str, evidence_ids: list[str], basis: str, offer_key: str
+    case: Case, text: str, evidence_ids: list[str], basis: str, wording_key: str
 ) -> str | None:
     """Why a revised statement cannot be proposed now, or None. Any status
     admits one: an unverified or verified problem may turn out mis-stated, a
@@ -187,11 +203,7 @@ def revision_refusal(
                 "it restates a root cause; the problem statement describes what "
                 "is observed, never why"
             )
-    if offer_key in (
-        case.problem_verification.declined_revision_keys
-        if case.problem_verification
-        else []
-    ):
+    if revision_declined(case, wording_key):
         return "the user already declined this wording"
     return None
 
@@ -233,22 +245,37 @@ def invalidation_refusal(case: Case, evidence_ids: list[str], basis: str) -> str
 # --------------------------------------------------------------------------
 
 
+def pending_revision(case: Case) -> PendingRevision | None:
+    """The revised statement awaiting the user's re-confirmation: the payload
+    of the open revision offer, or None."""
+    offer = open_revision(case)
+    return offer.revision if offer is not None else None
+
+
 def propose_revision(
     case: Case,
     *,
     text: str,
     evidence_ids: list[str],
     basis: str,
-    offer_key: str,
+    wording_key: str,
 ) -> PendingRevision:
-    """Hold a revised statement for the user's re-confirmation. A proposal made
-    while one is pending replaces its wording, and keeps the cause work already
-    staged, the turn the hold began and the status the case had before it."""
-    pv = case.problem_verification
-    previous = pv.pending_revision
-    pv.pending_revision = PendingRevision(
+    """Open a revision offer holding a revised statement for the user's
+    re-confirmation. A proposal made while one is open answers it
+    ``superseded`` and opens the new wording, keeping the cause work already
+    staged, the turn the hold began and the status the case had before it.
+    The caller has checked ``revision_refusal``, so no decline binds it."""
+    previous = pending_revision(case)
+    if previous is not None:
+        case.offer_record = answer_offer(
+            case,
+            proposal_id=open_revision(case).proposal_id,
+            answer=AnswerKind.SUPERSEDED,
+            via=AnswerVia.ENGINE,
+        )
+    revision = PendingRevision(
         text=text.strip(),
-        evidence_ids=list(evidence_ids),
+        evidence_ids=tuple(evidence_ids),
         basis=basis.strip(),
         proposed_at_turn=case.current_turn,
         held_since_turn=(
@@ -259,32 +286,74 @@ def propose_revision(
             if previous is not None
             else case.progress.problem_status
         ),
-        offer_key=offer_key,
-        staged=list(previous.staged) if previous is not None else [],
+        wording_key=wording_key,
+        staged=previous.staged if previous is not None else (),
     )
+    record = open_offer(
+        case, kind=OfferKind.REVISION, basis=OfferBasis.REVISION, revision=revision
+    )
+    if record is None:
+        raise ValueError(
+            f"case {case.case_id}: a declined wording was proposed again; "
+            "revision_refusal admits only a wording the user has not declined"
+        )
+    case.offer_record = record
     _move(case, ProblemStatus.REVISION_PENDING, via="revision_proposed")
-    return pv.pending_revision
+    return revision
 
 
 def stage_cause_work(case: Case, *, updates: dict, evidence_added: list[str]) -> None:
-    """Hold this turn's cause work on the pending revision, with the evidence
+    """Hold this turn's cause work on the open revision, with the evidence
     ids its ``new_index_N`` refs resolve against."""
-    case.problem_verification.pending_revision.staged.append(
-        StagedCauseWork(
-            turn=case.current_turn,
-            updates=updates,
-            evidence_added=list(evidence_added),
-        )
+    revision = pending_revision(case)
+    case.offer_record = restage_revision(
+        case,
+        (
+            *revision.staged,
+            StagedCauseWork(
+                turn=case.current_turn,
+                updates=updates,
+                evidence_added=tuple(evidence_added),
+            ),
+        ),
     )
 
 
-def commit_revision(case: Case) -> PendingRevision:
+def hold_fix_on_revision(
+    case: Case, *, identity: str, user_message: str, evidence_added: list[str]
+) -> None:
+    """Carry a fix acceptance through the hold (#2105): set it on this turn's
+    staged bundle, staging an empty one when the turn staged nothing."""
+    revision = pending_revision(case)
+    staged = list(revision.staged)
+    index = next((i for i, b in enumerate(staged) if b.turn == case.current_turn), None)
+    if index is None:
+        staged.append(
+            StagedCauseWork(
+                turn=case.current_turn, evidence_added=tuple(evidence_added)
+            )
+        )
+        index = len(staged) - 1
+    staged[index] = staged[index].model_copy(
+        update={"held_fix": identity, "held_fix_message": user_message[:10000]}
+    )
+    case.offer_record = restage_revision(case, staged)
+
+
+def commit_revision(case: Case, *, via: AnswerVia) -> PendingRevision:
     """The user re-confirmed the revised statement: write it to every store
     that holds the statement and verify the problem. Returns the revision, whose
     staged cause work the caller replays."""
     pv = case.problem_verification
-    pending = pv.pending_revision
-    assert pending is not None, "commit_revision without a pending revision"
+    offer = open_revision(case)
+    assert offer is not None, "commit_revision without a revision open"
+    pending = offer.revision
+    case.offer_record = answer_offer(
+        case,
+        proposal_id=offer.proposal_id,
+        answer=AnswerKind.ACCEPTED,
+        via=via,
+    )
     _write_statement(case, pending.text)
     pv.statement_history.append(
         ProblemStatementRecord(
@@ -296,7 +365,6 @@ def commit_revision(case: Case) -> PendingRevision:
         )
     )
     pv.invalidation = None
-    pv.pending_revision = None
     _supersede_symptom_needs(
         case, f"problem statement revised at turn {case.current_turn}"
     )
@@ -304,19 +372,24 @@ def commit_revision(case: Case) -> PendingRevision:
     return pending
 
 
-def decline_revision(case: Case) -> PendingRevision | None:
+def decline_revision(case: Case, *, via: AnswerVia) -> PendingRevision | None:
     """The user declined the revised statement: back to where the case was,
-    with the wording recorded so it is not proposed again."""
-    pending = _drop_pending(case, via="revision_declined")
-    if pending is not None:
-        case.problem_verification.declined_revision_keys.append(pending.offer_key)
-    return pending
+    with the decline recorded against the wording, so it is not proposed
+    again."""
+    return _answer_pending(
+        case, answer=AnswerKind.DECLINED, via=via, status_via="revision_declined"
+    )
 
 
-def cancel_revision(case: Case) -> PendingRevision | None:
+def cancel_revision(
+    case: Case, *, via: AnswerVia, answer: AnswerKind = AnswerKind.WITHDRAWN
+) -> PendingRevision | None:
     """The user moved past the revision (closed the case themselves): back to
-    where the case was. Not a decline — the wording is not recorded."""
-    return _drop_pending(case, via="revision_cancelled")
+    where the case was. Not a decline — nothing binds the wording. The menu
+    close withdraws it; a REST close lapses it."""
+    return _answer_pending(
+        case, answer=answer, via=via, status_via="revision_cancelled"
+    )
 
 
 def invalidate_problem(case: Case, *, evidence_ids: list[str], basis: str) -> None:
@@ -363,41 +436,18 @@ def withdraw_invalidation(case: Case, *, basis: str) -> bool:
     return True
 
 
-def record_false_alarm_close_declined(case: Case) -> None:
-    """The user declined closing the case on the false-alarm finding.
-
-    Recorded on the finding, whoever opened the close: the closure reason is
-    derived from the same finding whichever proposer asked, so one refusal
-    answers all of them. Until this, the engine's decline went into the
-    deferred-disposition signature list, which nothing on the false-alarm side
-    read (and where it could only evict a live deferred refusal), and a model-
-    or user-opened decline was recorded nowhere, so the model re-proposed the
-    close on the next turn (#1889). No signature and no eviction: the record is
-    cleared with the finding, which is the "until a premise moves" rule by
-    construction. The latest decline's turn is kept; the prompt names it.
-    """
-    pv = case.problem_verification
-    if pv is None or pv.invalidation is None:
-        return
-    pv.invalidation.close_declined_at_turn = case.current_turn
-    logger.info(
-        "Case %s: false-alarm close declined at turn %s; held on the finding "
-        "until it is withdrawn, revised or edited",
-        case.case_id,
-        case.current_turn,
-    )
-
-
 def false_alarm_close_declined_at(case: Case) -> int | None:
     """The turn the user declined closing on the standing false-alarm finding,
-    or None when no finding stands or its close was never declined. Read only
-    while the case is INVALIDATED: a finding carried under a pending revision
-    is answered by the revision's own handshake first."""
+    or None when no finding stands or no close on it was declined. Whoever
+    opened that close (the engine, the model, the user's menu), the decline's
+    premise is the finding, so it binds while the finding stands
+    (``offers.decline_stands``). Read only while the case is INVALIDATED: a
+    finding carried under a pending revision is answered by the revision's own
+    handshake first."""
     if case.progress.problem_status != ProblemStatus.INVALIDATED:
         return None
-    pv = case.problem_verification
-    invalidation = pv.invalidation if pv else None
-    return invalidation.close_declined_at_turn if invalidation else None
+    declined = standing_false_alarm_decline(case)
+    return declined.at_turn if declined is not None else None
 
 
 def _clear_invalidation(case: Case, *, via: str) -> None:
@@ -425,7 +475,7 @@ def edit_statement(case: Case, text: str) -> None:
     unverified. The open symptom needs asked for evidence of the old wording
     and are superseded. A false-alarm finding was a finding about the old
     statement: it is cleared, the problem is unverified against the new one,
-    and the offer to close on that finding is withdrawn, whoever made it."""
+    and the offer to close on that finding lapses, whoever made it."""
     text = text.strip()
     if case.problem_verification is None:
         # The Gate-1 transition always creates the record; a case without one
@@ -441,10 +491,10 @@ def edit_statement(case: Case, text: str) -> None:
         case, f"the user edited the problem statement at turn {case.current_turn}"
     )
     if case.progress.problem_status == ProblemStatus.INVALIDATED:
+        # The close offered on the finding lapses with it, at the save
+        # (``offers.lapse_offers``).
         case.problem_verification.invalidation = None
         _move(case, ProblemStatus.UNVERIFIED, via="statement_edited")
-        if is_false_alarm_close(case.pending_transition):
-            case.pending_transition = None
 
 
 def record_confirmed_statement(case: Case) -> None:
@@ -459,24 +509,22 @@ def record_confirmed_statement(case: Case) -> None:
     )
 
 
-def is_false_alarm_close(pending: dict | None) -> bool:
-    """Whether ``pending`` is a close resting on the false-alarm finding,
-    whoever proposed it (the engine or the model). Such a close never outlives
-    the finding: a withdrawal or an edit takes it back without the user
-    answering it."""
+def is_false_alarm_close(offer: Offer | None) -> bool:
+    """Whether ``offer`` is a close resting on the false-alarm finding,
+    whoever opened it (the engine, the model, the user's menu). Such a close
+    never outlives the finding: a withdrawal or an edit takes it back without
+    the user answering it."""
     return bool(
-        pending
-        and pending.get("to_state") == "closed"
-        and pending.get("closure_reason") == ClosureReason.CLOSED_FALSE_ALARM
+        offer is not None
+        and offer.kind == OfferKind.CLOSE
+        and offer.closure_reason == ClosureReason.CLOSED_FALSE_ALARM
     )
 
 
-def is_engine_false_alarm_close(pending: dict | None) -> bool:
-    """Whether ``pending`` is the engine's own false-alarm close offer — the
-    one pending transition a revision may take back and coexist with. Its
-    ``justifying_signature`` is provenance only: a decline of any false-alarm
-    close is recorded on the finding (``record_false_alarm_close_declined``)."""
-    return is_false_alarm_close(pending) and "justifying_signature" in (pending or {})
+def is_engine_false_alarm_close(offer: Offer | None) -> bool:
+    """Whether ``offer`` is the engine's own false-alarm close — the one
+    terminal offer a revision may withdraw and take the place of."""
+    return is_false_alarm_close(offer) and offer.basis == OfferBasis.FALSE_ALARM
 
 
 def _write_statement(case: Case, text: str) -> None:
@@ -518,14 +566,19 @@ def _supersede_symptom_needs(case: Case, reason: str) -> None:
         ).inc()
 
 
-def _drop_pending(case: Case, *, via: str) -> PendingRevision | None:
-    pv = case.problem_verification
-    pending = pv.pending_revision if pv else None
-    if pending is None:
+def _answer_pending(
+    case: Case, *, answer: AnswerKind, via: AnswerVia, status_via: str
+) -> PendingRevision | None:
+    """Answer the open revision and return the case to the status it had
+    before the revision was proposed."""
+    offer = open_revision(case)
+    if offer is None:
         return None
-    pv.pending_revision = None
-    _move(case, pending.prior_status, via=via)
-    return pending
+    case.offer_record = answer_offer(
+        case, proposal_id=offer.proposal_id, answer=answer, via=via
+    )
+    _move(case, offer.revision.prior_status, via=status_via)
+    return offer.revision
 
 
 def _move(case: Case, to: ProblemStatus, *, via: str) -> bool:

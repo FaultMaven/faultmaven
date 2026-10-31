@@ -1,8 +1,8 @@
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 # This docstring is published: Pydantic emits it as the schema `description`
@@ -377,30 +377,41 @@ class StagedCauseWork(BaseModel):
     identity (its description, whitespace-collapsed and case-folded), never an
     action ref. The replay registers the newest SOLUTION bearing it, stamped at
     ``turn``, with ``held_fix_message`` as its attempt's user message.
+
+    Frozen, like the revision offer that carries it (``Offer.revision``).
     """
+
+    model_config = ConfigDict(frozen=True)
 
     turn: int
     updates: Dict[str, Any] = Field(default_factory=dict)
-    evidence_added: List[str] = Field(default_factory=list)
+    evidence_added: Tuple[str, ...] = ()
     held_fix: Optional[str] = None
     held_fix_message: str = ""
 
 
 class PendingRevision(BaseModel):
     """A revised statement awaiting the user's re-confirmation, and the cause
-    work that arrived while it waited. The staged work is replayed through the
-    normal apply path when the user confirms, and discarded when they decline.
+    work that arrived while it waited: the payload of the open revision offer
+    (``Offer.revision``). The staged work is replayed through the normal apply
+    path when the user confirms, and discarded when they decline.
+
+    ``wording_key`` names the wording shown (``revision_offer_key``). A
+    declined revision binds that wording; the offer itself is named by its
+    ``proposal_id``.
     """
 
+    model_config = ConfigDict(frozen=True)
+
     text: str
-    evidence_ids: List[str] = Field(default_factory=list)
+    evidence_ids: Tuple[str, ...] = ()
     basis: str = ""
     proposed_at_turn: int = 0
     #: The turn the hold began: the first proposal's, kept across re-wordings.
     held_since_turn: int = 0
     prior_status: ProblemStatus = ProblemStatus.UNVERIFIED
-    offer_key: str = ""
-    staged: List[StagedCauseWork] = Field(default_factory=list)
+    wording_key: str = ""
+    staged: Tuple[StagedCauseWork, ...] = ()
 
 
 class ProblemInvalidation(BaseModel):
@@ -412,14 +423,6 @@ class ProblemInvalidation(BaseModel):
     #: Where the problem stood when the finding was recorded. A withdrawn
     #: finding returns there: a verification it overrode was never refuted.
     prior_status: ProblemStatus = ProblemStatus.UNVERIFIED
-    #: The turn the user last declined closing the case on this finding, or
-    #: None. A fact about the finding, so it lives on it: whoever opened the
-    #: close (the engine, the model, the user's own status-menu pick), the
-    #: close rests on this finding, and no one asks it again while the finding
-    #: stands. A finding is replaced only after it is cleared (withdrawn,
-    #: revised away, edited away), so the record lives exactly as long as the
-    #: premise it is about (#1889). Written by ``problem_status`` only.
-    close_declined_at_turn: Optional[int] = None
     recorded_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -506,22 +509,9 @@ class ProblemVerification(BaseModel):
         ),
     )
 
-    pending_revision: Optional[PendingRevision] = Field(
-        default=None,
-        description="A revised statement awaiting the user's re-confirmation.",
-    )
-
     invalidation: Optional[ProblemInvalidation] = Field(
         default=None,
         description="Why the reported symptom was found never to have been present.",
-    )
-
-    declined_revision_keys: List[str] = Field(
-        default_factory=list,
-        description=(
-            "Offer keys of revisions the user declined, so the same wording is "
-            "not proposed again."
-        ),
     )
 
     # ============================================================

@@ -153,8 +153,8 @@ def confirmed_transition_arms(
         Derived from what actually happened rather than from which branch is asking:
 
         * ``status_transitioned`` is ``executed`` — the value
-          ``confirm_pending_transition`` RETURNED, not an assumption. It returns
-          ``False`` when a pending CLOSE pivots to a RESOLVED proposal, in which
+          ``confirm_open_offer`` RETURNED, not an assumption. It returns
+          ``False`` when an accepted CLOSE pivots to a RESOLVED offer, in which
           case nothing terminal committed and the arm would be a lie.
         * ``solution_verified`` is claimed only for a RESOLVED landing. It is a
           resolution milestone, so asserting it on a CLOSED confirmation — which

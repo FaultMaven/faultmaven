@@ -20,7 +20,11 @@ from faultmaven.models.api_models import (
 )
 from faultmaven.modules.case.domain.models.conclusion import ConfidenceLevel
 from faultmaven.modules.case.domain.models.hypothesis import HypothesisState
-from faultmaven.modules.case.domain.models.lifecycle import CaseState, ClosureReason
+from faultmaven.modules.case.domain.models.lifecycle import (
+    CaseState,
+    ClosureReason,
+    DispositionEligibility,
+)
 from faultmaven.modules.case.domain.models.problem import (
     InvestigationStage,
     ProblemStatus,
@@ -479,7 +483,7 @@ class CaseUIResponse_Inquiry(BaseModel):
         description=VALID_NEXT_STATES_DESCRIPTION,
     )
 
-    disposition_eligibility: Optional[Dict[str, str]] = Field(
+    disposition_eligibility: Optional[DispositionEligibility] = Field(
         default=None,
         description=(
             DISPOSITION_ELIGIBILITY_DESCRIPTION + DISPOSITION_ELIGIBILITY_DELTA
@@ -546,7 +550,7 @@ class CaseUIResponse_Investigating(BaseModel):
         description=VALID_NEXT_STATES_DESCRIPTION,
     )
 
-    disposition_eligibility: Optional[Dict[str, str]] = Field(
+    disposition_eligibility: Optional[DispositionEligibility] = Field(
         default=None,
         description=(
             DISPOSITION_ELIGIBILITY_DESCRIPTION + DISPOSITION_ELIGIBILITY_DELTA
@@ -659,7 +663,7 @@ class CaseUIResponse_Resolved(BaseModel):
         description=VALID_NEXT_STATES_DESCRIPTION,
     )
 
-    disposition_eligibility: Optional[Dict[str, str]] = Field(
+    disposition_eligibility: Optional[DispositionEligibility] = Field(
         default=None,
         description=(
             DISPOSITION_ELIGIBILITY_DESCRIPTION + DISPOSITION_ELIGIBILITY_DELTA

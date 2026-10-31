@@ -246,7 +246,7 @@ def _case_record_params(case: Case, last_activity_at: datetime) -> dict[str, Any
     ``current_turn``, ``turns_without_progress`` are first-class
     columns. The ``metadata`` JSON blob still holds the transient
     runtime state (proposed_actions / action_attempts / turn_history /
-    pending_transition / message_count / last_suggestions) — those have
+    offer_record / message_count / last_suggestions) — those have
     no first-class column yet.
     """
     return {
@@ -311,7 +311,7 @@ def _case_record_params(case: Case, last_activity_at: datetime) -> dict[str, Any
         "metadata": json.dumps(
             {
                 "message_count": case.message_count,
-                "pending_transition": case.pending_transition,
+                "offer_record": case.offer_record.model_dump(mode="json"),
                 "proposed_actions": (
                     [to_json_compatible(a.model_dump()) for a in case.proposed_actions]
                     if case.proposed_actions
@@ -451,7 +451,7 @@ def _row_to_case(
 
     # Parse metadata for the transient runtime state that has no
     # first-class column yet (proposed_actions / action_attempts /
-    # turn_history / pending_transition / message_count /
+    # turn_history / offer_record / message_count /
     # last_suggestions).
     metadata = json.loads(row.metadata) if row.metadata else {}
 
@@ -472,7 +472,7 @@ def _row_to_case(
             if getattr(row, "disposition_eligibility", None)
             else None
         ),
-        "pending_transition": metadata.get("pending_transition"),
+        "offer_record": metadata.get("offer_record") or {},
         "last_suggestions": metadata.get("last_suggestions"),
         # Pre-fetched runbooks (the KB push channel, fm#1360). See the
         # writer for why dropping this made the channel inert.

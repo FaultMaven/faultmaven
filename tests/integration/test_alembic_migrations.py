@@ -44,8 +44,8 @@ TEST_DB = os.path.join(os.environ[TEST_DATA_ROOT_ENV], "test_migration.db")
 # the 001-053 chain) plus additive revisions on top of it, so the seed
 # assertions below reverse the whole schema with "downgrade base" and each
 # additive revision is stepped over on its own.
-#: 022_knowledge_item_vector_generation
-HEAD_REVISION = "03f93180f630"  # pragma: allowlist secret
+#: 023_drop_in_flight_revisions
+HEAD_REVISION = "cf17b34fc8c4"  # pragma: allowlist secret
 #: The baseline, which every additive revision parents onto.
 BASELINE_REVISION = "a1e0c17bd001"  # 001_enterprise_baseline
 #: The first additive revision.
@@ -107,6 +107,9 @@ INGEST_COMPLETE_REVISION = "d0eb318ce3e0"  # pragma: allowlist secret
 #: ``022_knowledge_item_vector_generation``: ``knowledge_items.vector_generation``,
 #: the generation a row's served chunks carry (#2388).
 VECTOR_GENERATION_REVISION = "03f93180f630"  # pragma: allowlist secret
+#: ``023_drop_in_flight_revisions``: a stored ``pending_revision`` is dropped and
+#: its case returned to the prior status (#2379, ruling 5).
+DROP_IN_FLIGHT_REVISIONS_REVISION = "cf17b34fc8c4"  # pragma: allowlist secret
 #: The tables 002_llm_usage_ledger adds (#640).
 LLM_USAGE_TABLES = ["llm_turn_spend", "llm_usage_daily"]
 
@@ -3827,6 +3830,172 @@ class TestKnowledgeItemVectorGenerationRevision:
         assert (
             "ALTER TABLE knowledge_items DROP COLUMN vector_generation;" in down.stdout
         )
+
+
+class TestDropInFlightRevisionsRevision:
+    """023 drops every revision in flight at deploy (#2379, ruling 5): a held
+    case returns to the status it had before the revision, and the revision
+    is removed. Nothing else in either column moves, and a revision left on a
+    row whose hold already ended is not touched. The downgrade does the same
+    to a revision open on the offer record, so the previous image finds no
+    hold it cannot leave.
+
+    Its PostgreSQL half, under ``row_security = off``:
+    ``tests/integration/security/test_drop_in_flight_revisions_postgres.py``.
+    """
+
+    #: ``(case_id, progress, problem_verification)`` as seeded.
+    ROWS = [
+        (
+            "case_held",
+            '{"problem_status": "revision_pending", "cause_state": "unknown"}',
+            '{"symptom_statement": "s", "pending_revision": {"text": "r", '
+            '"prior_status": "verified", "staged": [{"turn": 3}]}}',
+        ),
+        (
+            "case_no_prior",
+            '{"problem_status": "revision_pending"}',
+            '{"symptom_statement": "s", "pending_revision": {"text": "r"}}',
+        ),
+        (
+            "case_untouched",
+            '{"problem_status": "verified"}',
+            '{"symptom_statement": "s", "pending_revision": null, '
+            '"declined_revision_keys": ["revision:abc"]}',
+        ),
+        (
+            "case_leftover",
+            '{"problem_status": "verified"}',
+            '{"symptom_statement": "s", "pending_revision": {"text": "r", '
+            '"prior_status": "unverified"}}',
+        ),
+    ]
+
+    def _seed(self) -> None:
+        enterprise = TestStandaloneTenancySeed.STANDALONE_ENTERPRISE_ID
+        conn = sqlite3.connect(TEST_DB)
+        try:
+            conn.execute(
+                "INSERT INTO users (user_id, enterprise_id, username, email, "
+                "display_name, created_at, updated_at) VALUES ('u1', ?, 'u1', "
+                "'u1@example.com', 'U One', datetime('now'), datetime('now'))",
+                (enterprise,),
+            )
+            for case_id, progress, verification in self.ROWS:
+                conn.execute(
+                    "INSERT INTO cases (case_id, enterprise_id, user_id, title, "
+                    "progress, problem_verification, created_at, updated_at) "
+                    "VALUES (?, ?, 'u1', 't', ?, ?, datetime('now'), "
+                    "datetime('now'))",
+                    (case_id, enterprise, progress, verification),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _rows() -> dict:
+        return {
+            case_id: (json.loads(progress), json.loads(verification))
+            for case_id, progress, verification in query_rows(
+                TEST_DB, "SELECT case_id, progress, problem_verification FROM cases"
+            )
+        }
+
+    def test_upgrade_restores_the_prior_status_and_drops_the_revision(
+        self, clean_database, database_url
+    ):
+        prepare_database(VECTOR_GENERATION_REVISION, database_url)
+        self._seed()
+        before = self._rows()
+
+        result = run_alembic(
+            f"upgrade {DROP_IN_FLIGHT_REVISIONS_REVISION}", database_url
+        )
+        assert result.returncode == 0, result.stderr
+        assert "dropped in-flight revisions on 2 row(s)" in result.stderr
+
+        rows = self._rows()
+        assert rows["case_held"] == (
+            {"problem_status": "verified", "cause_state": "unknown"},
+            {"symptom_statement": "s"},
+        )
+        assert rows["case_no_prior"] == (
+            {"problem_status": "unverified"},
+            {"symptom_statement": "s"},
+        )
+        assert rows["case_untouched"] == before["case_untouched"]
+        assert rows["case_leftover"] == before["case_leftover"]
+
+        result = run_alembic(f"downgrade {VECTOR_GENERATION_REVISION}", database_url)
+        assert result.returncode == 0, result.stderr
+        assert self._rows() == rows
+
+    def test_downgrade_drops_an_open_revision_offer(self, clean_database, database_url):
+        prepare_database(DROP_IN_FLIGHT_REVISIONS_REVISION, database_url)
+        self._seed()
+        revision = {"text": "r", "prior_status": "verified", "staged": []}
+        held = {"offer_record": {"open": {"kind": "revision", "revision": revision}}}
+        resolve = {"offer_record": {"open": {"kind": "resolve"}}}
+        conn = sqlite3.connect(TEST_DB)
+        try:
+            for case_id, metadata in (
+                ("case_untouched", held),
+                ("case_leftover", resolve),
+            ):
+                conn.execute(
+                    "UPDATE cases SET metadata = ?, progress = ? WHERE case_id = ?",
+                    (
+                        json.dumps(metadata),
+                        '{"problem_status": "revision_pending"}',
+                        case_id,
+                    ),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+        result = run_alembic(f"downgrade {VECTOR_GENERATION_REVISION}", database_url)
+        assert result.returncode == 0, result.stderr
+        assert "dropped open revision offers on 1 row(s)" in result.stderr
+
+        rows = query_rows(TEST_DB, "SELECT case_id, progress, metadata FROM cases")
+        moved = {case_id: (json.loads(p), json.loads(m)) for case_id, p, m in rows}
+        assert moved["case_untouched"] == (
+            {"problem_status": "verified"},
+            {"offer_record": {"open": None}},
+        )
+        assert moved["case_leftover"] == (
+            {"problem_status": "revision_pending"},
+            resolve,
+        )
+
+    def test_the_postgresql_script_runs_under_row_security_off(self):
+        pg = "postgresql://offline@localhost/offline"
+        up = run_alembic(
+            f"upgrade {VECTOR_GENERATION_REVISION}:"
+            f"{DROP_IN_FLIGHT_REVISIONS_REVISION} --sql",
+            pg,
+        )
+        assert up.returncode == 0, up.stderr
+        sql = up.stdout
+        off = sql.index("SET LOCAL row_security = off;")
+        update = sql.index("UPDATE cases SET progress = jsonb_set(")
+        restored = sql.index("SET LOCAL row_security TO DEFAULT;")
+        assert off < update < restored, sql
+        assert "AND progress->>'problem_status' = 'revision_pending'" in sql
+
+        down = run_alembic(
+            f"downgrade {DROP_IN_FLIGHT_REVISIONS_REVISION}:"
+            f"{VECTOR_GENERATION_REVISION} --sql",
+            pg,
+        )
+        assert down.returncode == 0, down.stderr
+        sql = down.stdout
+        off = sql.index("SET LOCAL row_security = off;")
+        update = sql.index("metadata = jsonb_set(metadata, '{offer_record,open}'")
+        restored = sql.index("SET LOCAL row_security TO DEFAULT;")
+        assert off < update < restored, sql
 
 
 class TestRbacSeed:

@@ -26,6 +26,7 @@ import pytest
 
 from faultmaven.core.investigation.cause_assurance import ENGINE_EVIDENCE_AUTHOR
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.offers import remember_resolve_request
 from faultmaven.core.investigation.schemas import InvestigationResponse_Diagnosis
 from faultmaven.core.investigation.terminal_transitions import (
     ResolutionReadiness,
@@ -45,7 +46,7 @@ from faultmaven.modules.case.domain.models.evidence import (
 )
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.domain.models.solution import Solution, SolutionType
-from tests.case_builders import investigating_case
+from tests.case_builders import investigating_case, with_open_offer
 
 _FILE_ID = "file_0123456789ab"
 
@@ -174,6 +175,11 @@ def _case(
     return case
 
 
+def _declines(case: Case) -> list:
+    """The declines on the case's offer record."""
+    return [a for a in case.offer_record.answers if a.answer == "declined"]
+
+
 def _confirmed_case() -> Case:
     """Gone ⇒ gone on record: the cause observed removed, the problem with it."""
     return _case(absence=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE, problem_gone=True)
@@ -195,7 +201,7 @@ async def test_confirmed_case_is_offered_resolve_when_the_model_stays_silent():
     text = result["agent_response"]
     labels = [s["label"] for s in result["suggested_follow_ups"]]
 
-    assert case.pending_transition["to_state"] == "resolved"
+    assert case.offer_record.open.kind == "resolve"
     assert labels == [RESOLVE_LABEL, DECLINE_LABEL]
     assert LLM_ANALYSIS in text, "the model's reply must survive the gate turn"
     assert "confirmed eliminated" in text, "an engine offer must say why"
@@ -265,7 +271,7 @@ async def test_stabilized_case_is_not_offered_resolve():
         case=case, user_message="failover is holding for now", redaction_ctx=None
     )
 
-    assert getattr(case, "pending_transition", None) is None
+    assert case.offer_record.open is None
     assert RESOLVE_LABEL not in [s["label"] for s in result["suggested_follow_ups"]]
 
 
@@ -284,7 +290,7 @@ async def test_engine_authored_failed_fix_row_does_not_open_the_handshake():
         case=case, user_message="that didn't help", redaction_ctx=None
     )
 
-    assert getattr(case, "pending_transition", None) is None
+    assert case.offer_record.open is None
 
 
 @pytest.mark.asyncio
@@ -298,19 +304,21 @@ async def test_declined_offer_is_not_re_proposed_from_unchanged_state():
     await engine.process_turn(
         case=case, user_message="yep, the errors are gone now", redaction_ctx=None
     )
-    assert case.pending_transition["to_state"] == "resolved"
+    assert case.offer_record.open.kind == "resolve"
 
     # The user declines on the next turn, then says something ordinary on the
     # one after. Nothing about the case has changed, so the offer must stay down.
+    case.current_turn += 1
     await engine.process_turn(case=case, user_message="no", redaction_ctx=None)
-    assert getattr(case, "pending_transition", None) is None
-    assert case.progress.deferred_disposition_declined_signatures
+    assert case.offer_record.open is None
+    assert _declines(case)
 
+    case.current_turn += 1
     result = await engine.process_turn(
         case=case, user_message="one more question", redaction_ctx=None
     )
 
-    assert getattr(case, "pending_transition", None) is None, "re-nagged"
+    assert case.offer_record.open is None, "re-nagged"
     assert RESOLVE_LABEL not in [s["label"] for s in result["suggested_follow_ups"]]
 
 
@@ -318,7 +326,7 @@ async def test_declined_offer_is_not_re_proposed_from_unchanged_state():
 async def test_decline_of_an_llm_opened_offer_also_silences_the_backstop():
     """A refusal binds whoever asked — otherwise the backstop re-nags.
 
-    ``justifying_signature`` is written only by the ENGINE proposers, so a
+    A decline used to be recorded only for an ENGINE proposer's offer, so a
     decline of an LLM-opened offer recorded nothing, and the backstop — which
     fires on readiness alone and knows nothing about who asked — re-proposed on
     the very next turn. Measured before the fix: LLM opens RESOLVED, user types
@@ -341,49 +349,37 @@ async def test_decline_of_an_llm_opened_offer_also_silences_the_backstop():
     await engine.process_turn(
         case=case, user_message="the errors stopped", redaction_ctx=None
     )
-    assert case.pending_transition["to_state"] == "resolved"
-    assert (
-        case.pending_transition.get("justifying_signature") is None
-    ), "premise: an LLM-opened offer carries no engine signature"
+    assert case.offer_record.open.kind == "resolve"
+    assert case.offer_record.open.basis == "model", "premise: the model opened it"
 
+    case.current_turn += 1
     await engine.process_turn(case=case, user_message="no", redaction_ctx=None)
-    assert (
-        case.progress.deferred_disposition_declined_signatures
+    assert _declines(
+        case
     ), "the refusal left no record, so nothing can be suppressed by it"
 
+    case.current_turn += 1
     result = await engine.process_turn(
         case=case, user_message="one more question", redaction_ctx=None
     )
 
-    assert getattr(case, "pending_transition", None) is None, "re-nagged"
+    assert case.offer_record.open is None, "re-nagged"
     assert RESOLVE_LABEL not in [s["label"] for s in result["suggested_follow_ups"]]
 
 
 @pytest.mark.asyncio
-async def test_contradicted_needs_info_offer_records_no_signature():
-    """The decline record must not collect strings that suppress nothing.
-
-    A ``needs_info`` resolve pending CAN reach the decline recorder — 0b's
-    contradicting-status-pick arm runs before its ``elif not needs_info`` — and
-    on such a case ``assess_closure_readiness`` is HAS_SUBSTANCE, not
-    SUGGEST_RESOLVE. Deriving a signature there records a string no resolve
-    proposer ever computes: inert for its own purpose, but it lands in the list
-    ``_maybe_propose_deferred_close`` reads, which is bounded at 8 and evicts
-    oldest-first — so it can push out a refusal still doing work.
-    """
+async def test_a_menu_close_after_a_resolution_request_answers_nothing():
+    """A resolution request is not an offer (#2408), so a Close from the menu
+    on the next turn has nothing to answer or decline: it opens the close, and
+    the request ends with it."""
     case = _case(absence=None)
-    case.pending_transition = {
-        "to_state": "resolved",
-        "summary": "To mark this resolved I just need a few essentials...",
-        "evidence_ids": [],
-        "needs_info": True,
-        "proposed_at": datetime.now(UTC).isoformat(),
-    }
+    case.offer_record = remember_resolve_request(case, ["root cause"])
     engine = MilestoneEngine(MagicMock(), _make_repo(), investigation_tools=MagicMock())
     engine.generator.generate_structured_output = AsyncMock(
         return_value=_silent_response()
     )
 
+    case.current_turn += 1
     await engine.process_turn(
         case=case,
         user_message="close it instead",
@@ -392,9 +388,12 @@ async def test_contradicted_needs_info_offer_records_no_signature():
         redaction_ctx=None,
     )
 
-    assert (
-        case.progress.deferred_disposition_declined_signatures == []
-    ), "recorded a signature for a verdict no resolve proposer keys on"
+    assert (case.offer_record.open.kind, case.offer_record.open.basis) == (
+        "close",
+        "menu",
+    )
+    assert case.offer_record.answers == ()
+    assert case.offer_record.resolve_request is None
 
 
 @pytest.mark.asyncio
@@ -410,20 +409,16 @@ async def test_no_offer_on_a_turn_that_began_inside_a_handshake():
     otherwise fire — which is exactly what makes this worth pinning.)
     """
     case = _confirmed_case()
-    case.pending_transition = {
-        "to_state": "closed",
-        "summary": "Shall I close this case?",
-        "evidence_ids": [],
-        "proposed_at": datetime.now(UTC).isoformat(),
-    }
+    with_open_offer(case, kind="close", basis="model", summary="Shall I close?")
 
+    case.current_turn += 1
     result = await _engine(_silent_response()).process_turn(
         case=case,
         user_message="what happens to the runbook if I close this?",
         redaction_ctx=None,
     )
 
-    assert getattr(case, "pending_transition", None) is None
+    assert case.offer_record.open is None
     assert RESOLVE_LABEL not in [s["label"] for s in result["suggested_follow_ups"]]
 
 
@@ -432,26 +427,23 @@ async def test_offer_returns_on_the_next_turn():
     """Turn-scoped, not a refusal: the question above postponed the offer, it
     did not record a decline. Nothing declined means nothing suppressed."""
     case = _confirmed_case()
-    case.pending_transition = {
-        "to_state": "closed",
-        "summary": "Shall I close this case?",
-        "evidence_ids": [],
-        "proposed_at": datetime.now(UTC).isoformat(),
-    }
+    with_open_offer(case, kind="close", basis="model", summary="Shall I close?")
     engine = _engine(_silent_response())
 
+    case.current_turn += 1
     await engine.process_turn(
         case=case,
         user_message="what happens to the runbook if I close this?",
         redaction_ctx=None,
     )
-    assert not case.progress.deferred_disposition_declined_signatures
+    assert not _declines(case)
 
+    case.current_turn += 1
     result = await engine.process_turn(
         case=case, user_message="ok, thanks", redaction_ctx=None
     )
 
-    assert case.pending_transition["to_state"] == "resolved"
+    assert case.offer_record.open.kind == "resolve"
     assert RESOLVE_LABEL in [s["label"] for s in result["suggested_follow_ups"]]
 
 
@@ -498,7 +490,7 @@ async def test_the_cause_shown_gone_alone_brings_no_offer_until_the_problem_is()
     assert any(
         e.category == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE for e in case.evidence
     ), "premise: the cause leg was recorded"
-    assert getattr(case, "pending_transition", None) is None
+    assert case.offer_record.open is None
     assert RESOLVE_LABEL not in labels
     assert "problem went with it" not in result["agent_response"]
     assert assess_resolution_readiness(case).verdict == ResolutionReadiness.NEEDS_INFO
@@ -517,6 +509,6 @@ async def test_the_cause_shown_gone_alone_brings_no_offer_until_the_problem_is()
     )
 
     labels = [s["label"] for s in result["suggested_follow_ups"]]
-    assert case.pending_transition["to_state"] == "resolved"
+    assert case.offer_record.open.kind == "resolve"
     assert labels == [RESOLVE_LABEL, DECLINE_LABEL]
     assert "problem went with it" in result["agent_response"]

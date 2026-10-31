@@ -1,30 +1,31 @@
-"""A confirmed proposal the engine cannot carry out ends a turn that changes nothing.
+"""A transition the engine cannot carry out is never offered.
 
-The model may propose INQUIRY → ``investigating``, and the proposal is stored
-(#2420). A bare "yes" then confirms a target ``confirm_pending_transition`` does
-not execute: it clears the pending and reports that nothing ran. The confirm
-turn went on to render a terminal reply for a case that had not moved, which
-raised once the replies were keyed by closure reason (#2416).
+The model may propose INQUIRY → ``investigating``, a legal edge (#2420). It
+used to be stored as a pending proposal, and a bare "yes" then confirmed a
+target the confirm does not execute; the confirm turn went on to render a
+terminal reply for a case that had not moved, which raised once the replies
+were keyed by closure reason (#2416). Only a disposition is an offer (ruling 2,
+#2379): the proposal opens nothing and the model is told why, and the
+investigation starts the one way it does, on the user's confirmation of the
+problem statement (Gate 1).
 
 Real ``process_turn`` turns with a stubbed generator: no live LLM.
 """
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine.transition_turns import (
-    UNCARRIED_PROPOSAL_REPLY,
-)
 from faultmaven.modules.case.contracts import CaseState
 from tests.case_builders import inquiry_case
 from tests.unit.core.investigation.test_declined_resolution_binds_the_model_1895 import (
     _engine,
+    _feedback,
     _turn,
 )
 
 pytestmark = pytest.mark.unit
 
 
-async def test_yes_to_an_investigating_proposal_keeps_the_case_and_clears_it():
+async def test_an_investigating_proposal_opens_nothing_and_says_why():
     engine = _engine()
     case = inquiry_case(
         case_id="case_c0bbeef0a514",
@@ -34,13 +35,8 @@ async def test_yes_to_an_investigating_proposal_keeps_the_case_and_clears_it():
         statement="Checkout returns 502",
     )
     proposed = await _turn(engine, case, "let's investigate", propose="investigating")
+
     case = proposed["case_updated"]
-    assert case.pending_transition["to_state"] == "investigating", "premise"
-
-    result = await _turn(engine, case, "yes")
-
-    after = result["case_updated"]
-    assert after.state is CaseState.INQUIRY
-    assert after.pending_transition is None
-    assert result["agent_response"] == UNCARRIED_PROPOSAL_REPLY
-    assert after.turn_history[-1].progress_made is False
+    assert case.state is CaseState.INQUIRY
+    assert case.offer_record.open is None
+    assert "only resolved or closed is offered" in _feedback(proposed)

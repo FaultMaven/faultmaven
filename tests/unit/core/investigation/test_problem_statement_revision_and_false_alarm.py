@@ -34,14 +34,22 @@ from faultmaven.core.investigation.milestone_engine.transition_consent import (
     revision_offer_key,
 )
 from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommitPlan
+from faultmaven.core.investigation.offers import (
+    lapse_offers,
+    open_terminal_offer,
+    revision_declined,
+    terminal_offer_answered_this_turn,
+)
 from faultmaven.core.investigation.problem_status import (
     cancel_revision,
     commit_revision,
     decline_revision,
     edit_statement,
     edit_statement_refusal,
+    false_alarm_close_declined_at,
     invalidate_problem,
     invalidation_refusal,
+    pending_revision,
     propose_revision,
     revision_refusal,
     withdraw_invalidation,
@@ -64,17 +72,17 @@ from faultmaven.core.investigation.terminal_transitions import (
     _execute_resolved_transition,
     assess_closure_readiness,
     assess_resolution_readiness,
-    confirm_pending_transition,
+    confirm_open_offer,
     derive_closure_reason,
     derive_disposition_eligibility,
     execute_user_closure,
-    propose_transition,
 )
 from faultmaven.core.investigation.verification_status import (
     assess_verification_status,
 )
 from faultmaven.models.case_ui import CaseUIResponse_Resolved
 from faultmaven.modules.case.contracts import (
+    AnswerVia,
     Case,
     CaseState,
     CausalNode,
@@ -107,7 +115,7 @@ from faultmaven.modules.case.domain.services.case_ui_adapter import (
 from faultmaven.modules.report.domain.services.report_generation_service import (
     ReportGenerationService,
 )
-from tests.case_builders import investigating_case
+from tests.case_builders import investigating_case, with_open_offer
 
 _FILE_ID = "file_0123456789ab"
 
@@ -204,7 +212,7 @@ def _propose(case: Case, text: str = REVISED, *, evidence=None) -> None:
         text=text,
         evidence_ids=ids,
         basis="the gateway log shows timeouts with normal DB latency",
-        offer_key=revision_offer_key(text),
+        wording_key=revision_offer_key(text),
     )
 
 
@@ -325,7 +333,7 @@ class TestRevisionGuard:
     def test_a_declined_wording_is_not_proposed_again(self):
         case = _case()
         _propose(case)
-        decline_revision(case)
+        decline_revision(case, via=AnswerVia.CLICK)
         assert "declined" in self._refusal(case)
 
 
@@ -373,7 +381,7 @@ class TestTransitions:
         case = _case()
         need = _symptom_need(case)
         _propose(case)
-        commit_revision(case)
+        commit_revision(case, via=AnswerVia.CLICK)
 
         problem = next(
             n for n in case.causal_nodes.values() if n.node_type == NodeType.PROBLEM
@@ -391,25 +399,22 @@ class TestTransitions:
     def test_decline_and_cancel_return_to_where_the_case_was(self):
         case = _case(ProblemStatus.VERIFIED)
         _propose(case)
-        decline_revision(case)
+        decline_revision(case, via=AnswerVia.CLICK)
         assert case.progress.problem_status == ProblemStatus.VERIFIED
         assert case.description == STATEMENT
-        assert case.problem_verification.declined_revision_keys == [
-            revision_offer_key(REVISED)
-        ]
+        assert revision_declined(case, revision_offer_key(REVISED))
 
         _propose(case, text=REVISED + " (eu-west)")
-        cancel_revision(case)
+        cancel_revision(case, via=AnswerVia.MENU)
         assert case.progress.problem_status == ProblemStatus.VERIFIED
-        assert len(case.problem_verification.declined_revision_keys) == 1
+        # A cancel binds nothing: only the declined wording is held back.
+        assert not revision_declined(case, revision_offer_key(REVISED + " (eu-west)"))
 
     def test_a_replacing_proposal_keeps_the_original_prior_status(self):
         case = _case(ProblemStatus.VERIFIED)
         _propose(case)
         _propose(case, text=REVISED + " for EU users")
-        assert case.problem_verification.pending_revision.prior_status == (
-            ProblemStatus.VERIFIED
-        )
+        assert pending_revision(case).prior_status == (ProblemStatus.VERIFIED)
 
     def test_invalidation_and_its_withdrawal(self):
         case = _case()
@@ -446,7 +451,7 @@ class TestTransitions:
         assert need.state == NeedState.SUPERSEDED
         assert case.progress.problem_status == ProblemStatus.UNVERIFIED
 
-    async def test_an_edit_clears_a_false_alarm_and_withdraws_its_close(self):
+    async def test_an_edit_clears_a_false_alarm_and_lapses_its_close(self):
         engine, case = _engine(), _case()
         await _apply(
             engine,
@@ -460,11 +465,11 @@ class TestTransitions:
                 ),
             ),
         )
-        assert case.pending_transition
+        assert open_terminal_offer(case) is not None
         edit_statement(case, REVISED)
         assert case.progress.problem_status == ProblemStatus.UNVERIFIED
         assert case.problem_verification.invalidation is None
-        assert case.pending_transition is None
+        assert open_terminal_offer(_saved(case)) is None
         assert derive_closure_reason(case) != ClosureReason.CLOSED_FALSE_ALARM
 
     def test_an_edit_on_a_case_missing_its_verification_record_creates_it(self):
@@ -526,7 +531,7 @@ class TestApplyStep:
                 verification_updates=_revision_update("new_index_0"),
             ),
         )
-        proposed_at = case.problem_verification.pending_revision.proposed_at_turn
+        proposed_at = pending_revision(case).proposed_at_turn
         case.current_turn += 1
         meta = await _apply(
             engine,
@@ -537,9 +542,7 @@ class TestApplyStep:
             ),
         )
         assert "problem_status_changed" not in meta
-        assert case.problem_verification.pending_revision.proposed_at_turn == (
-            proposed_at
-        )
+        assert pending_revision(case).proposed_at_turn == (proposed_at)
 
     async def test_a_same_turn_verification_is_granted_on_confirmation_instead(self):
         engine, case = _engine(), _case()
@@ -553,7 +556,7 @@ class TestApplyStep:
             ),
             _Response("timeouts in the gateway log"),
         )
-        pending = case.problem_verification.pending_revision
+        pending = pending_revision(case)
         assert pending.prior_status == ProblemStatus.UNVERIFIED
         assert "symptom_verified" not in meta["milestones_completed"]
 
@@ -595,10 +598,10 @@ class TestApplyStep:
             ),
         )
         assert case.progress.problem_status == ProblemStatus.INVALIDATED
-        pending = case.pending_transition
-        assert pending["to_state"] == "closed"
-        assert pending["closure_reason"] == ClosureReason.CLOSED_FALSE_ALARM
-        assert "justifying_signature" in pending
+        offer = case.offer_record.open
+        assert offer.kind == "close"
+        assert offer.closure_reason == ClosureReason.CLOSED_FALSE_ALARM
+        assert offer.basis == "false_alarm"
         assert "false alarm" in meta["false_alarm_closure_message"]
         readiness = assess_resolution_readiness(case)
         assert readiness.verdict == readiness.SUGGEST_CLOSE
@@ -644,7 +647,7 @@ class TestApplyStep:
                 ),
             ),
         )
-        assert case.pending_transition
+        assert open_terminal_offer(case) is not None
         await _apply(
             engine,
             case,
@@ -653,19 +656,13 @@ class TestApplyStep:
                 verification_updates=_revision_update("new_index_0"),
             ),
         )
-        assert case.pending_transition is None
+        assert open_terminal_offer(case) is None
         assert case.progress.problem_status == ProblemStatus.REVISION_PENDING
-        assert case.problem_verification.pending_revision.prior_status == (
-            ProblemStatus.INVALIDATED
-        )
+        assert pending_revision(case).prior_status == (ProblemStatus.INVALIDATED)
 
     async def test_a_revision_cannot_cut_in_on_another_pending_transition(self):
         engine, case = _engine(), _case(ProblemStatus.VERIFIED)
-        from faultmaven.core.investigation.terminal_transitions import (
-            propose_transition,
-        )
-
-        propose_transition(case, to_state="closed", summary="close?")
+        with_open_offer(case, kind="close", basis="model", summary="close?")
         meta = await _apply(
             engine,
             case,
@@ -702,7 +699,7 @@ class TestApplyStep:
             ),
         )
         assert case.progress.problem_status == ProblemStatus.UNVERIFIED
-        assert case.pending_transition is None
+        assert open_terminal_offer(case) is None
         assert meta["problem_status_changed"] is True
 
     async def test_a_causal_absence_before_verification_is_symptom_absence(self):
@@ -864,8 +861,8 @@ class TestStagingAcrossTheHandshake:
 
         assert case.hypotheses == {}
         assert [n.node_type for n in case.causal_nodes.values()] == [NodeType.PROBLEM]
-        (bundle,) = case.problem_verification.pending_revision.staged
-        assert bundle.evidence_added == meta["evidence_added"]
+        (bundle,) = pending_revision(case).staged
+        assert list(bundle.evidence_added) == meta["evidence_added"]
         assert set(bundle.updates) >= {
             "hypotheses_to_add",
             "causal_nodes_to_add",
@@ -892,7 +889,7 @@ class TestStagingAcrossTheHandshake:
         (hyp,) = updated.hypotheses.values()
         assert hyp.root_node_id is not None
         assert updated.progress.cause_state == CauseState.IDENTIFIED
-        assert updated.problem_verification.pending_revision is None
+        assert pending_revision(updated) is None
         # The replay ran before the LLM's response metadata replaced the turn's
         # dict; the turn record still carries what it produced.
         record = updated.turn_history[-1]
@@ -933,14 +930,12 @@ class TestStagingAcrossTheHandshake:
 
         meta = await _apply(engine, case, dsu)
 
-        (bundle,) = case.problem_verification.pending_revision.staged
+        (bundle,) = pending_revision(case).staged
         assert [u["hypothesis_id"] for u in bundle.updates["hypotheses_to_update"]] == [
             "new_index_1"
         ]
         assert "NOT refuted" not in meta.get("system_feedback", "")
-        assert "1 refutation(s)" in staged_work_summary(
-            case.problem_verification.pending_revision
-        )
+        assert "1 refutation(s)" in staged_work_summary(pending_revision(case))
 
         case.current_turn += 1
         result = await engine.process_turn(
@@ -999,7 +994,7 @@ class TestStagingAcrossTheHandshake:
             ),
         )
 
-        assert case.problem_verification.pending_revision is not None
+        assert pending_revision(case) is not None
         assert standing.state == HypothesisState.ACTIVE
         assert "NOT refuted" not in meta.get("system_feedback", "")
 
@@ -1042,16 +1037,12 @@ class TestStagingAcrossTheHandshake:
         assert updated.progress.problem_status == ProblemStatus.VERIFIED
         # The live turn makes the offer the replayed state warrants — the
         # cause is identified and the fix deferred — with its card.
-        from faultmaven.core.investigation.milestone_engine.transition_consent import (
-            terminal_offer_key,
-        )
-
-        assert updated.pending_transition["to_state"] == "closed"
+        assert updated.offer_record.open.kind == "close"
         keys = {
             (f.get("intent") or {}).get("proposal_id")
             for f in result["suggested_follow_ups"]
         }
-        assert keys == {terminal_offer_key(updated.pending_transition)}
+        assert keys == {updated.offer_record.open.proposal_id}
 
     async def test_an_acceptance_of_a_staged_fix_is_held_with_it_and_staged_once(self):
         from faultmaven.core.investigation.schemas import SolutionToAdd
@@ -1072,7 +1063,7 @@ class TestStagingAcrossTheHandshake:
 
         assert "was not registered" not in meta["system_feedback"]
         assert "held until the user confirms" in meta["system_feedback"]
-        (bundle,) = case.problem_verification.pending_revision.staged
+        (bundle,) = pending_revision(case).staged
         # The gate's decision is carried by fix identity (#2105), never as the
         # milestone itself.
         assert bundle.held_fix == "raise the orders pool to 50 connections"
@@ -1084,7 +1075,7 @@ class TestStagingAcrossTheHandshake:
         await _apply(engine, case, _DSU(solutions_to_add=[fix()]))
         staged = [
             item
-            for b in case.problem_verification.pending_revision.staged
+            for b in pending_revision(case).staged
             for item in b.updates.get("solutions_to_add", [])
         ]
         assert len(staged) == 1
@@ -1139,9 +1130,6 @@ class TestStagingAcrossTheHandshake:
         mitigation verifies on an rca_infeasible problem. Replayed, it must
         still arrive as an offer with its card, never executed by the "yes"
         that confirmed the statement (#1871 review)."""
-        from faultmaven.core.investigation.milestone_engine.transition_consent import (
-            terminal_offer_key,
-        )
         from faultmaven.core.investigation.schemas import SolutionToAdd
 
         engine, case = _engine(), _case()
@@ -1174,12 +1162,12 @@ class TestStagingAcrossTheHandshake:
 
         updated = result["case_updated"]
         assert updated.state == CaseState.INVESTIGATING
-        assert updated.pending_transition["to_state"] == "closed"
+        assert updated.offer_record.open.kind == "close"
         keys = {
             (f.get("intent") or {}).get("proposal_id")
             for f in result["suggested_follow_ups"]
         }
-        assert keys == {terminal_offer_key(updated.pending_transition)}
+        assert keys == {updated.offer_record.open.proposal_id}
 
     async def test_a_decline_note_survives_the_live_turns_own_feedback(self):
         """Feedback written before the LLM call (the decline note) is merged
@@ -1221,7 +1209,7 @@ class TestStagingAcrossTheHandshake:
         assert updated.progress.problem_status == ProblemStatus.UNVERIFIED
         assert updated.description == STATEMENT
         assert updated.hypotheses == {}
-        assert updated.problem_verification.pending_revision is None
+        assert pending_revision(updated) is None
         feedback = updated.turn_history[-1].system_feedback or ""
         assert "(1 hypothesis(es), 1 causal node(s)) was discarded" in feedback
 
@@ -1245,7 +1233,7 @@ class TestHandshakeDoors:
             (f.get("intent") or {}).get("proposal_id")
             for f in result["suggested_follow_ups"]
         }
-        assert keys == {revision_offer_key(REVISED)}
+        assert keys == {case.offer_record.open.proposal_id}
 
     async def test_a_stale_click_commits_nothing(self):
         engine, case = _engine(), _case()
@@ -1267,7 +1255,10 @@ class TestHandshakeDoors:
             case=case,
             user_message="Yes, the revised problem statement is right.",
             intent_type="confirmation",
-            intent_data={"value": True, "proposal_id": revision_offer_key(REVISED)},
+            intent_data={
+                "value": True,
+                "proposal_id": case.offer_record.open.proposal_id,
+            },
             redaction_ctx=None,
         )
         assert case.progress.problem_status == ProblemStatus.VERIFIED
@@ -1308,7 +1299,7 @@ class TestHandshakeDoors:
             redaction_ctx=None,
         )
         assert case.progress.problem_status == ProblemStatus.VERIFIED
-        assert case.problem_verification.pending_revision is None
+        assert pending_revision(case) is None
         assert case.description == STATEMENT
 
     async def test_the_model_cannot_propose_a_transition_meanwhile(self):
@@ -1320,7 +1311,7 @@ class TestHandshakeDoors:
         )
         metadata: dict = {"response_obj": response}
         await engine.transitions.check_automatic_transitions(case, metadata, "close")
-        assert case.pending_transition is None
+        assert open_terminal_offer(case) is None
         assert "awaiting the user's confirmation" in metadata["system_feedback"]
 
     async def test_the_users_own_close_cancels_the_revision(self):
@@ -1342,7 +1333,7 @@ class TestHandshakeDoors:
             redaction_ctx=None,
         )
         assert case.progress.problem_status == ProblemStatus.VERIFIED
-        assert case.pending_transition["to_state"] == "closed"
+        assert case.offer_record.open.kind == "close"
 
 
 # ---------------------------------------------------------------------------
@@ -1485,7 +1476,7 @@ class TestClosure:
     def test_a_revised_case_reports_what_was_originally_reported(self):
         case = _case()
         _propose(case)
-        commit_revision(case)
+        commit_revision(case, via=AnswerVia.CLICK)
         lines = ReportGenerationService._problem_statement_section(case)
         assert REVISED in lines[1]
         assert f"Originally reported as: {STATEMENT}" in "".join(lines)
@@ -1496,7 +1487,7 @@ class TestClosure:
         data = _extract_problem_verification(case)
         assert data.problem_status == "revision_pending"
         assert data.pending_revision == REVISED
-        commit_revision(case)
+        commit_revision(case, via=AnswerVia.CLICK)
         data = _extract_problem_verification(case)
         assert data.original_problem_statement == STATEMENT
         assert data.pending_revision is None
@@ -1527,7 +1518,7 @@ class TestTerminalCaseRead:
     def test_a_resolved_revised_case_says_what_was_originally_reported(self):
         case = _case(ProblemStatus.VERIFIED)
         _propose(case)
-        commit_revision(case)
+        commit_revision(case, via=AnswerVia.CLICK)
         _execute_resolved_transition(case, "u")
 
         result = transform_case_for_ui(case)
@@ -1599,7 +1590,7 @@ def test_a_node_is_retexted_in_place_so_chains_keep_their_anchor():
     )
     case.causal_nodes[root.node_id] = root
     _propose(case)
-    commit_revision(case)
+    commit_revision(case, via=AnswerVia.CLICK)
     assert problem.node_id in case.causal_nodes
     assert case.causal_nodes[problem.node_id].statement == REVISED
 
@@ -1608,19 +1599,27 @@ def test_a_node_is_retexted_in_place_so_chains_keep_their_anchor():
 # A false-alarm close never outlives its finding, whoever proposed it (#1876)
 # ---------------------------------------------------------------------------
 
-_ENGINE_WITHDRAWN_KEY = "engine_disposition_withdrawn_this_turn"
-
 
 def _false_alarm_case(*, model_close: bool) -> Case:
-    """INVALIDATED, with the close either the model's (no signature) or the
-    engine's (signed, as ``_maybe_propose_false_alarm_close`` writes it)."""
+    """INVALIDATED, with the close either the model's or the engine's (its
+    ``false_alarm`` basis, as ``_maybe_propose_false_alarm_close`` opens it)."""
     case = _case()
     absent = _with(case, _evidence(EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE, "a"))
     invalidate_problem(case, evidence_ids=absent, basis="the alert misfired")
-    propose_transition(case, to_state="closed", summary="close?")
-    if not model_close:
-        case.pending_transition["justifying_signature"] = "sig"
-    assert case.pending_transition["closure_reason"] == ClosureReason.CLOSED_FALSE_ALARM
+    with_open_offer(
+        case,
+        kind="close",
+        basis="model" if model_close else "false_alarm",
+        summary="close?",
+    )
+    assert case.offer_record.open.closure_reason == ClosureReason.CLOSED_FALSE_ALARM
+    return case
+
+
+def _saved(case: Case) -> Case:
+    """``case`` as the save chokepoint leaves the record: what no longer holds
+    lapsed (``offers.lapse_offers``)."""
+    case.offer_record = lapse_offers(case)
     return case
 
 
@@ -1637,40 +1636,45 @@ class TestFalseAlarmCloseFollowsItsFinding:
     async def test_a_withdrawal_takes_back_the_models_close(self):
         engine, case = _engine(), _false_alarm_case(model_close=True)
         await _apply(engine, case, _withdraw_update())
-        assert case.pending_transition is None
+        assert open_terminal_offer(case) is None
         assert case.progress.problem_status == ProblemStatus.UNVERIFIED
-        assert confirm_pending_transition(case, "u") is False
+        with pytest.raises(ValueError, match="no resolve or close offer open"):
+            confirm_open_offer(case, "u", via=AnswerVia.TOKEN)
         assert case.state == CaseState.INVESTIGATING
         result = await engine.process_turn(
             case=case, user_message="yes", redaction_ctx=None
         )
         assert result["case_updated"].state == CaseState.INVESTIGATING
 
-    async def test_an_edit_takes_back_the_models_close(self):
+    async def test_an_edit_lapses_the_models_close_at_the_save(self):
         case = _false_alarm_case(model_close=True)
         edit_statement(case, "The checkout page returns 502 at peak")
-        assert case.pending_transition is None
+        assert open_terminal_offer(_saved(case)) is None
+        assert case.offer_record.answers[-1].answer == "lapsed"
         assert case.progress.problem_status == ProblemStatus.UNVERIFIED
 
-    async def test_a_withdrawal_still_notes_the_engines_own_disposition(self):
-        engine, case = _engine(), _false_alarm_case(model_close=False)
-        meta = await _apply(engine, case, _withdraw_update())
-        assert case.pending_transition is None
-        assert meta[_ENGINE_WITHDRAWN_KEY] is True
-
-    async def test_a_withdrawn_models_close_records_no_engine_disposition(self):
-        engine, case = _engine(), _false_alarm_case(model_close=True)
-        meta = await _apply(engine, case, _withdraw_update())
-        assert case.pending_transition is None
-        assert _ENGINE_WITHDRAWN_KEY not in meta
+    @pytest.mark.parametrize("model_close", [True, False])
+    async def test_a_withdrawal_answers_the_close_for_the_turn(self, model_close):
+        """Withdrawn by the engine, whoever opened it, and answered on this
+        turn, so the engine's proposers do not open another one in its
+        place before the user has seen the finding go."""
+        engine, case = _engine(), _false_alarm_case(model_close=model_close)
+        await _apply(engine, case, _withdraw_update())
+        assert open_terminal_offer(case) is None
+        last = case.offer_record.answers[-1]
+        assert (last.answer, last.via, last.answered_by) == (
+            "withdrawn",
+            "engine",
+            None,
+        )
+        assert terminal_offer_answered_this_turn(case)
 
     def test_an_edit_leaves_a_close_that_is_not_a_false_alarm(self):
         case = _case(ProblemStatus.VERIFIED)
-        propose_transition(case, to_state="closed", summary="close?")
-        case.pending_transition["closure_reason"] = "closed_insufficient_evidence"
-        before = dict(case.pending_transition)
+        before = with_open_offer(case, kind="close", basis="menu", summary="close?")
+        assert before.closure_reason != ClosureReason.CLOSED_FALSE_ALARM, "premise"
         edit_statement(case, "The checkout page returns 502 at peak")
-        assert case.pending_transition == before
+        assert _saved(case).offer_record.open == before
         assert case.progress.problem_status == ProblemStatus.VERIFIED
 
     async def test_a_revision_still_cannot_cut_in_on_the_models_false_alarm_close(
@@ -1686,7 +1690,7 @@ class TestFalseAlarmCloseFollowsItsFinding:
                 verification_updates=_revision_update("new_index_0"),
             ),
         )
-        assert case.pending_transition is not None
+        assert open_terminal_offer(case) is not None
         assert case.progress.problem_status == ProblemStatus.INVALIDATED
         assert "awaiting the user's answer" in meta["system_feedback"]
         # The engine's own close is still withdrawn by a revision:
@@ -1694,7 +1698,7 @@ class TestFalseAlarmCloseFollowsItsFinding:
 
     async def test_the_status_menu_close_is_the_third_proposer(self):
         """The user's own close from the status menu on a false alarm derives
-        the same reason, unsigned, and is taken back the same way."""
+        the same reason, as the user's, and lapses the same way."""
         engine, case = _engine(), _case()
         absent = _with(case, _evidence(EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE, "a"))
         invalidate_problem(case, evidence_ids=absent, basis="the alert misfired")
@@ -1705,11 +1709,11 @@ class TestFalseAlarmCloseFollowsItsFinding:
             intent_data={"to_state": "closed"},
             redaction_ctx=None,
         )
-        pending = case.pending_transition
-        assert pending["closure_reason"] == ClosureReason.CLOSED_FALSE_ALARM
-        assert "justifying_signature" not in pending
+        offer = case.offer_record.open
+        assert offer.closure_reason == ClosureReason.CLOSED_FALSE_ALARM
+        assert offer.basis == "menu"
         edit_statement(case, "The checkout page returns 502 at peak")
-        assert case.pending_transition is None
+        assert open_terminal_offer(_saved(case)) is None
 
     async def test_dispute_then_yes_never_closes_on_a_withdrawn_finding(self):
         """The issue's repro: invalidate, the model proposes the close, the
@@ -1722,7 +1726,8 @@ class TestFalseAlarmCloseFollowsItsFinding:
         )
         updated = result["case_updated"]
         assert updated.state != CaseState.CLOSED
-        reason = (updated.pending_transition or {}).get("closure_reason")
+        offer = updated.offer_record.open
+        reason = offer.closure_reason if offer is not None else None
         assert not (
             reason == ClosureReason.CLOSED_FALSE_ALARM
             and updated.progress.problem_status != ProblemStatus.INVALIDATED
@@ -1732,8 +1737,6 @@ class TestFalseAlarmCloseFollowsItsFinding:
 # ---------------------------------------------------------------------------
 # The engine's same-turn offer stands against the model's proposal (#1885)
 # ---------------------------------------------------------------------------
-
-_SIGNED = "justifying_signature"
 
 
 def _respond(engine: MilestoneEngine, dsu: _DSU) -> None:
@@ -1773,8 +1776,8 @@ async def _finding_turn(*, model_proposes: str | None) -> tuple:
 
 
 class TestTheEnginesFalseAlarmOfferStands:
-    """On the turn the finding is made, the engine's signed close is what the
-    user answers, whatever the model proposed beside it. Real ``process_turn``,
+    """On the turn the finding is made, the engine's close is what the user
+    answers, whatever the model proposed beside it. Real ``process_turn``,
     stubbed generator."""
 
     @pytest.mark.parametrize("model_proposes", ["closed", "resolved"])
@@ -1782,16 +1785,15 @@ class TestTheEnginesFalseAlarmOfferStands:
         self, model_proposes
     ):
         _, case, result = await _finding_turn(model_proposes=model_proposes)
-        pending = case.pending_transition
-        assert pending["to_state"] == "closed"
-        assert pending["closure_reason"] == ClosureReason.CLOSED_FALSE_ALARM
-        assert pending[_SIGNED] == "closed_false_alarm|4"
-        # The card the user is shown names the offer that is standing.
+        offer = case.offer_record.open
+        assert (offer.kind, offer.basis) == ("close", "false_alarm")
+        assert offer.closure_reason == ClosureReason.CLOSED_FALSE_ALARM
+        # The card the user is shown names the offer that is open.
         keys = {
             (f.get("intent") or {}).get("proposal_id")
             for f in result["suggested_follow_ups"]
         }
-        assert keys == {pending["proposed_at"]}
+        assert keys == {offer.proposal_id}
         assert "false alarm" in result["agent_response"]
 
     async def test_the_dropped_proposal_is_reported_superseded_not_pivoted(self):
@@ -1815,17 +1817,18 @@ class TestTheEnginesFalseAlarmOfferStands:
         feedback = result["case_updated"].turn_history[-1].system_feedback or ""
         assert "TRANSITION NOT PROPOSED" in feedback
 
-    async def test_a_bare_no_then_records_the_decline_on_the_finding(self):
-        """The decline is a fact about the finding (#1889): recorded there, and
-        never in the deferred-disposition signature list, where no reader
-        matched it and it could only evict a live deferred refusal."""
+    async def test_a_bare_no_then_records_the_decline_against_the_finding(self):
+        """The decline's premise is the finding (#1889): it binds while the
+        finding stands."""
         engine, case, _ = await _finding_turn(model_proposes="closed")
         case.current_turn += 1
         _respond(engine, _DSU())
         await engine.process_turn(case=case, user_message="no", redaction_ctx=None)
-        assert case.pending_transition is None
-        assert case.problem_verification.invalidation.close_declined_at_turn == 5
-        assert case.progress.deferred_disposition_declined_signatures == []
+        assert open_terminal_offer(case) is None
+        (decline,) = case.offer_record.answers
+        assert decline.answer == "declined"
+        assert decline.premise.finding_turn == 4
+        assert false_alarm_close_declined_at(case) == 5
 
     async def test_a_revision_then_withdraws_the_close(self):
         """INV-45: a revision may withdraw the ENGINE's false-alarm close.
@@ -1848,11 +1851,9 @@ class TestTheEnginesFalseAlarmOfferStands:
         assert "STATEMENT REVISION NOT ACCEPTED" not in (
             meta.get("system_feedback") or ""
         )
-        assert case.pending_transition is None
+        assert open_terminal_offer(case) is None
         assert case.progress.problem_status == ProblemStatus.REVISION_PENDING
-        assert case.problem_verification.pending_revision.prior_status == (
-            ProblemStatus.INVALIDATED
-        )
+        assert pending_revision(case).prior_status == (ProblemStatus.INVALIDATED)
 
     async def test_a_revision_on_the_chat_turn_is_accepted(self):
         """The reachable path: 0b withdraws the signed close (the substantive
@@ -1871,12 +1872,12 @@ class TestTheEnginesFalseAlarmOfferStands:
             user_message="The /orders API times out after 30s; the database is fine",
             redaction_ctx=None,
         )
-        assert case.pending_transition is None
+        assert open_terminal_offer(case) is None
         assert case.progress.problem_status == ProblemStatus.REVISION_PENDING
 
-    async def test_without_a_model_proposal_the_offer_is_signed(self):
+    async def test_without_a_model_proposal_the_offer_is_the_engines(self):
         _, case, _ = await _finding_turn(model_proposes=None)
-        assert case.pending_transition[_SIGNED] == "closed_false_alarm|4"
+        assert case.offer_record.open.basis == "false_alarm"
 
     async def test_with_no_engine_offer_the_models_proposal_lands(self):
         """Negative control: the rule is about the engine's SAME-turn offer,
@@ -1888,6 +1889,5 @@ class TestTheEnginesFalseAlarmOfferStands:
         result = await engine.process_turn(
             case=case, user_message="let's stop here", redaction_ctx=None
         )
-        pending = result["case_updated"].pending_transition
-        assert pending["to_state"] == "closed"
-        assert _SIGNED not in pending
+        offer = result["case_updated"].offer_record.open
+        assert (offer.kind, offer.basis) == ("close", "model")

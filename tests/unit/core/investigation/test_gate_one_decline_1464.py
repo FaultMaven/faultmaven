@@ -52,7 +52,6 @@ from faultmaven.core.investigation.milestone_engine.cause_state import (
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.milestone_engine.transition_consent import (
     gate1_offer_key,
-    terminal_offer_key,
 )
 from faultmaven.core.investigation.schemas import TurnPayload
 from faultmaven.infrastructure.llm.structured_output_capability import (
@@ -69,6 +68,7 @@ from faultmaven.modules.agent.domain.services.investigation_service.service impo
     InvestigationService,
 )
 from faultmaven.modules.case.contracts import Case, CaseState, InquiryData
+from tests.case_builders import with_open_offer
 
 PROPOSED = "Read replica db-2 is lagging behind the primary by >30s since 09:00 UTC"
 REFINED = "Read replica db-2 serves stale rows to the checkout API since 09:00 UTC"
@@ -129,7 +129,6 @@ def _inquiry_case_awaiting_gate_one() -> Case:
     case.inquiry.proposed_problem_statement = PROPOSED
     case.inquiry.problem_statement_confirmed = False
     case.inquiry.problem_statement_confirmed_at = None
-    case.pending_transition = None
     return case
 
 
@@ -266,51 +265,37 @@ class TestGateOneCommitsOnConsentOnly:
         )
 
     @pytest.mark.parametrize(
-        "pending",
-        [
-            None,
-            {
-                "to_state": "closed",
-                "summary": "close it?",
-                "proposed_at": "2026-09-30T00:00:00+00:00",
-            },
-            {"needs_info": True, "to_state": "closed"},
-        ],
-        ids=["no-pending", "pending-close", "pending-needs-info"],
+        "pending", [None, "close"], ids=["no-offer", "close-offer"]
     )
-    async def test_the_decline_holds_on_every_pending_shape(self, pending):
+    async def test_the_decline_holds_on_every_offer_shape(self, pending):
         """fm#918's lesson, applied to the fix.
 
-        That exposure survived review because every Gate-1 fixture had
-        ``pending_transition=None``, so the one shape that mattered was never
-        exercised. These three reach 0c by three different routes:
+        That exposure survived review because every Gate-1 fixture had no
+        offer open, so the one shape that mattered was never exercised. These
+        reach 0c by two different routes:
 
-          - ``no-pending`` — straight to 0c;
-          - ``pending-close`` — 0b's decline arm cancels the pending, then
-            falls through to 0c because the message is substantive;
-          - ``pending-needs-info`` — 0b is skipped wholesale
-            (``elif not case.pending_transition.get("needs_info")``) and the
-            intent lands in 0c directly.
+          - ``no-offer`` — straight to 0c;
+          - ``close-offer`` — 0b's decline arm answers the open close, then
+            falls through to 0c because the message is substantive.
 
-        Drop any one and a fix that holds only on the shape it was written
-        against passes.
+        (A third shape, a ``needs_info`` pending that 0b skipped, is gone: a
+        resolution request is not an offer, #2408.) Drop either and a fix that
+        holds only on the shape it was written against passes.
         """
         case = _inquiry_case_awaiting_gate_one()
-        case.pending_transition = dict(pending) if pending else None
         engine = _engine(case)
-        # The Not-yet card of the offer that is standing (#1812): the pending
-        # close's own card where 0b answers it, Gate 1's where 0c does. A
-        # needs_info pending is not click-answerable, and 0c reads Gate 1.
-        answerable = pending if pending and not pending.get("needs_info") else None
+        # The Not-yet card of the offer that is open (#1812): the close's own
+        # card where 0b answers it, Gate 1's where 0c does.
+        if pending is not None:
+            offer = with_open_offer(case, kind=pending, basis="menu")
+            intent_data = {"value": False, "proposal_id": offer.proposal_id}
+        else:
+            intent_data = _gate1_click(False)
         await engine.process_turn(
             case=case,
             user_message=SUBSTANTIVE_DECLINE,
             intent_type="confirmation",
-            intent_data=(
-                {"value": False, "proposal_id": terminal_offer_key(answerable)}
-                if answerable
-                else _gate1_click(False)
-            ),
+            intent_data=intent_data,
             redaction_ctx=None,
         )
         _assert_gate_one_uncommitted(case)

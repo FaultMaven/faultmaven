@@ -8,26 +8,24 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     engine_proposed_resolution_total,
     evidence_need_status_changed_total,
 )
+from faultmaven.core.investigation.offers import (
+    awaiting_request_recheck,
+    terminal_offer_answered_this_turn,
+)
 from faultmaven.core.investigation.problem_status import problem_on_hold
+from faultmaven.core.investigation.terminal_transitions import open_disposition_offer
 from faultmaven.modules.case.contracts import (
     TERMINAL_HYPOTHESIS_STATES,
     Case,
     CaseState,
-    ClosureReason,
     NeedPurpose,
     NeedState,
+    OfferBasis,
+    OfferKind,
     SolutionFeasible,
 )
 
-from .response_synthesis import (
-    _DISPOSITION_GATE_ANSWERED_KEY,
-    _ENGINE_DISPOSITION_WITHDRAWN_KEY,
-)
-from .stage_gates import (
-    _close_confirmation_suggestions,
-    _solution_cause_validated,
-)
-from .terminal_replies import _resolution_confirmation_suggestions
+from .stage_gates import _solution_cause_validated
 
 logger = logging.getLogger(__name__)
 
@@ -84,33 +82,30 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
     # proposed for closure citing the disconfirmed cause in the same breath.
     if not _solution_cause_validated(case):
         return
-    # Don't clobber an in-flight handshake.
-    if getattr(case, "pending_transition", None):
+    # Don't clobber an in-flight handshake: the slot holds one offer, and a
+    # remembered resolution request is step 0's to decide (#2408).
+    if case.offer_record.open is not None or awaiting_request_recheck(case):
         return
     # Defense in depth, and stricter than the `is_terminal` check it replaces:
     # the proposal target is now STATE-DEPENDENT. "closed" was a legal edge
     # from any state, so hardcoding it made this guard free; "resolved" is NOT
     # a legal edge from INQUIRY (LEGAL_TRANSITIONS — resolution requires
-    # investigation work). A proposal that cannot execute leaves
-    # `pending_transition` standing, so every later confirm turn would fail the
-    # same way. Only the INVESTIGATING pipeline calls this today; the guard
+    # investigation work). A proposal that cannot execute leaves its offer
+    # open, so every later confirm turn would fail the same way. Only the INVESTIGATING pipeline calls this today; the guard
     # keeps that assumption true if another caller is ever added.
     if case.state != CaseState.INVESTIGATING:
         return
 
     from faultmaven.core.investigation.terminal_transitions import (
         assess_closure_readiness,
-        covering_declined_signature,
-        deferred_disposition_signature,
-        propose_transition,
     )
 
     # Resolve preservation (INV-37), the SAME choice the other two disposition
     # paths already make: the LLM-proposal path pivots CLOSED->RESOLVED on
     # SUGGEST_RESOLVE, and the confirm-time guard pivots a pending CLOSE the
     # same way unless the user declined that resolution (#2360), which also
-    # silences this proposer (the covering check below). This proposer used to
-    # call propose_transition("closed") directly, so it was the one path that
+    # silences this proposer (``open_disposition_offer`` refuses under the decline). This
+    # proposer used to offer CLOSED unconditionally, so it was the one path that
     # could offer "close this case without resolution" on a case its OWN
     # eligibility scored resolvable.
     # Deferred implementation says WHEN the fix lands, not that the cause went
@@ -124,43 +119,26 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
     # fixes is therefore path INCONSISTENCY (one proposer disagreeing with the
     # other two), not a reconstructed history of that case. What kept those
     # five turns going is the re-proposal loop, which is a separate concern.
-    # The engine's own offer was withdrawn earlier this turn (a decline, a
-    # question, a deflection, a contradicting status pick). Re-proposing it
-    # now would take the affordances back on the very turn the user acted on
-    # them. Turn-scoped: unlike the refusal record this does not survive the
-    # turn, so an offer the user only asked about returns on the next one.
-    if metadata.get(_ENGINE_DISPOSITION_WITHDRAWN_KEY):
-        return
-    # The turn began inside a disposition handshake. Same reasoning as the
-    # resolution backstop's copy of this guard, and the hazard is if anything
-    # sharper here: this proposer can substitute a DIFFERENT target (its
-    # SUGGEST_RESOLVE pivot offers RESOLVED) into a channel the user was
-    # mid-answer on. ``_note_engine_disposition_withdrawn`` above does not
-    # cover it — that one fires only when the withdrawn offer carried an
-    # engine signature, so an LLM-opened close the user merely asked about
-    # leaves it unset.
-    if metadata.get(_DISPOSITION_GATE_ANSWERED_KEY):
+    # An offer was answered on this turn (a decline, a question, a
+    # deflection, a contradicting status pick): the turn began inside a
+    # disposition handshake, or the engine withdrew its own offer. Offering
+    # now would put an offer back in front of a user who just acted on one,
+    # or substitute a DIFFERENT target (this proposer's SUGGEST_RESOLVE pivot
+    # offers RESOLVED) into a channel they were mid-answer on. Turn-scoped: an
+    # offer the user only asked about returns on the next turn.
+    if terminal_offer_answered_this_turn(case):
         return
 
     closure = assess_closure_readiness(case)
-    # A decline POSTPONES the offer until the case changes underneath it.
-    # Re-proposing every turn regardless is what produced five identical
-    # offers against five explicit declines (fm#1122): the decline clears
-    # `pending_transition`, which is the only state the guards above read, so
-    # nothing carried the refusal forward. Keyed on the JUSTIFYING state, not
-    # on a decline count: counting declines and giving up would be the engine
-    # steering toward abandonment (D4 soft-collapse), and it would also strand
-    # a case whose situation later genuinely warrants the offer again.
-    # Matched by the covering rule, not equality (#1895): only a confirmation
-    # the decline never saw moves its fourth part.
-    signature = deferred_disposition_signature(case, closure.verdict)
-    if covering_declined_signature(
-        p.deferred_disposition_declined_signatures, signature
-    ):
-        return
-
+    # A decline POSTPONES the offer until the case changes underneath it
+    # (fm#1122: five identical offers against five explicit declines), and the
+    # record's rule decides when: ``open_disposition_offer`` refuses while a standing
+    # decline binds it, until a solution or confirmation the decline never saw
+    # is recorded (ruling 3). Never a decline count: counting declines and
+    # giving up would be the engine steering toward abandonment (D4
+    # soft-collapse).
     if closure.verdict == closure.SUGGEST_RESOLVE:
-        to_state = "resolved"
+        kind = OfferKind.RESOLVE
         # Purpose-written, NOT `closure.message`. That text is a pivot-FROM-a-
         # close ("Closing would record it as unresolved and discard the
         # resolution"), which is coherent on the LLM path — where a close was
@@ -179,7 +157,7 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
             "case resolved?"
         )
     else:
-        to_state = "closed"
+        kind = OfferKind.CLOSE
         gate_message = (
             "The root cause and fix are documented, but the fix can't be applied "
             "or verified during this session — it needs out-of-band implementation "
@@ -187,31 +165,17 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
             "this case with the solution documented for your team to apply?"
         )
 
-    propose_transition(case=case, to_state=to_state, summary=gate_message)
-    # Provenance AND payload in one key: this proposer is the only writer of
-    # `justifying_signature`, so its presence identifies the offer and its
-    # value is what a decline is recorded against. A separate `proposed_by`
-    # tag was redundant — it duplicated a check the missing signature already
-    # covers, and no test could tell the two guards apart.
-    case.pending_transition["justifying_signature"] = signature
-    # Unified same-turn proposal flag: keeps step 0 of
-    # _check_automatic_transitions from confirming this disposition with the
-    # very message that produced it (#722 same-turn-confirmation guard).
-    metadata["transition_proposed_this_turn"] = True
-    # Built only now: each card names the offer ``propose_transition`` just
-    # stamped (#1812), and none stood above it.
-    metadata["override_suggestions"] = (
-        _resolution_confirmation_suggestions(case)
-        if to_state == "resolved"
-        else _close_confirmation_suggestions(case)
+    record = open_disposition_offer(
+        case, kind=kind, basis=OfferBasis.DEFERRED, summary=gate_message
     )
-    # Rendered by the response composer, the same way the rca_infeasible
-    # sibling's message is. Before this the key was written and read NOWHERE,
-    # so the engine proposed a disposition the user saw only as a bare
-    # confirm/decline pair with no stated reason.
+    if record is None:
+        return
+    case.offer_record = record
+    # Rendered by the response composer below the model's reply: an
+    # engine-proposed disposition has to say why it is on the table.
     metadata["deferred_solution_gate_message"] = gate_message
     logger.info(
-        f"Proposed {to_state.upper()} transition for case {case.case_id} "
+        f"Proposed {kind.value.upper()} offer for case {case.case_id} "
         f"(solution_feasible=DEFERRED; closure_verdict={closure.verdict}; "
         f"the documented root cause and solution are preserved either way)"
     )
@@ -252,47 +216,35 @@ def _maybe_propose_confirmed_resolution(case: "Case", metadata: dict) -> None:
     ``symptom_absence`` and is correctly left alone, and the engine's own M6
     failed-fix rows are excluded by ``resolution_confirmation_rows``.
 
-    Re-nag discipline is fm#1122's, shared with the deferred proposer rather
-    than reinvented: one ``deferred_disposition_signature``, one
-    ``deferred_disposition_declined_signatures`` list. A user who declines
-    "mark this resolved" is not asked again until a premise moves, and because
-    both proposers key the same signature, declining one cannot leave the
-    other free to re-ask the settled question on the next turn.
+    Re-nag discipline is fm#1122's, and the record's: a declined resolve offer,
+    whoever opened it, binds every engine and model resolve offer
+    (``offers.binding_decline``), so a user who declines "mark this resolved"
+    is not asked again until a solution or confirmation the decline never saw
+    is recorded, and on that turn this offers again.
     """
     if problem_on_hold(case):
         return
     # This is what makes it a BACKSTOP: the call site runs it last, after every
-    # other opener, so anything they proposed is standing here and this returns.
-    # On a case that is both DEFERRED and confirmed, the deferred proposer's own
+    # other opener, so anything they opened is open here and this returns. On
+    # a case that is both DEFERRED and confirmed, the deferred proposer's own
     # SUGGEST_RESOLVE pivot has already offered RESOLVED with the more specific
-    # out-of-band rationale, and overwriting it with the generic message would
-    # be strictly worse.
-    if getattr(case, "pending_transition", None):
+    # out-of-band rationale.
+    if case.offer_record.open is not None or awaiting_request_recheck(case):
         return
     if case.state != CaseState.INVESTIGATING:
         return
-    # The engine's own offer was withdrawn earlier this turn (a decline, a
-    # question, a deflection). Re-proposing now takes the affordances back on
-    # the very turn the user acted on them — the same turn-scoped guard the
-    # deferred proposer carries, for the same reason.
-    if metadata.get(_ENGINE_DISPOSITION_WITHDRAWN_KEY):
-        return
-    # The turn began inside a disposition handshake. Whatever became of that
-    # offer — withdrawn on a question, declined, contradicted — the channel was
-    # the user's this turn, and opening a different target into it is how a
-    # "yes" meant for the offer they were reading lands on the one the engine
-    # substituted underneath it.
-    if metadata.get(_DISPOSITION_GATE_ANSWERED_KEY):
+    # An offer was answered on this turn: whatever became of it — withdrawn on
+    # a question, declined, contradicted — the channel was the user's this
+    # turn, and opening a different target into it is how a "yes" meant for
+    # the offer they were reading lands on the one the engine substituted
+    # underneath it.
+    if terminal_offer_answered_this_turn(case):
         return
 
     from faultmaven.core.investigation.terminal_transitions import (
         ResolutionReadiness,
         assess_resolution_readiness,
         cause_identification_leg,
-        closure_verdict,
-        covering_declined_signature,
-        deferred_disposition_signature,
-        propose_transition,
     )
 
     if not getattr(case, "progress", None):
@@ -300,22 +252,6 @@ def _maybe_propose_confirmed_resolution(case: "Case", metadata: dict) -> None:
 
     readiness = assess_resolution_readiness(case)
     if readiness.verdict != ResolutionReadiness.READY:
-        return
-
-    # Same signature space as the deferred proposer, deliberately: both offer
-    # RESOLVED off the same justifying state, so one refusal must silence both.
-    # The verdict is SUGGEST_RESOLVE on every case that clears the READY bar
-    # (both gate on ``_resolution_confirmed``), so this is the same string that
-    # proposer would compute — computed rather than hardcoded so the two cannot
-    # drift if either gate is re-scoped, and taken through ``closure_verdict``
-    # so the user-facing message this call would otherwise build and throw away
-    # is not built at all.
-    # Covered, not equal (#1895): the decline stands until a confirmation it
-    # never saw is recorded, and on that turn this offers again.
-    signature = deferred_disposition_signature(case, closure_verdict(case))
-    if covering_declined_signature(
-        case.progress.deferred_disposition_declined_signatures, signature
-    ):
         return
 
     # The "still open until you confirm" clause is load-bearing, not padding.
@@ -354,16 +290,12 @@ def _maybe_propose_confirmed_resolution(case: "Case", metadata: dict) -> None:
             "it, tell me and I'll record that first."
         )
     gate_message = f"{confirmed} Shall I mark this case resolved?"
-    propose_transition(case=case, to_state="resolved", summary=gate_message)
-    case.pending_transition["justifying_signature"] = signature
-    # NOT the #722 guard here (see the docstring — ordering covers that): this
-    # is what the turn's ``transition_compliance`` line reads as
-    # ``proposed_transition_emitted``. Its two engine-proposing siblings set it
-    # for the same reason, and the neighbouring ``llm_proposed_to_status``
-    # (read off the response object) is what separates an engine offer from a
-    # model one.
-    metadata["transition_proposed_this_turn"] = True
-    metadata["override_suggestions"] = _resolution_confirmation_suggestions(case)
+    record = open_disposition_offer(
+        case, kind=OfferKind.RESOLVE, basis=OfferBasis.BACKSTOP, summary=gate_message
+    )
+    if record is None:
+        return
+    case.offer_record = record
     # Rendered by the response composer below the model's reply. An
     # engine-proposed disposition has to say why it is on the table — the
     # deferred sibling shipped a bare confirm/decline pair for exactly as long
@@ -386,18 +318,21 @@ def _maybe_propose_false_alarm_close(case: "Case", metadata: dict) -> None:
     """Offer to close a case whose evidence showed the reported symptom was
     never present — the one close the engine offers on a finding.
 
-    Offered once, on the turn the finding is made. A decline is recorded on
-    the finding (``ProblemInvalidation.close_declined_at_turn``, #1889), as it
-    is for a close the model or the user opened, and the case then holds until
-    new evidence names a different problem or the user disputes the finding:
-    the model's re-proposals are refused with the close card appended, and the
-    close stays on the status menu. ``justifying_signature`` marks this offer
-    as the engine's (INV-45's revision gate reads it); it is not the decline
-    record. RESOLVED is never offered — there was nothing to fix.
+    Offered once, on the turn the finding is made. A decline of it, or of a
+    close the model or the user opened on the finding, has the finding as its
+    premise (#1889): the case then holds until new evidence names a different
+    problem or the user disputes the finding, the model's re-proposals are
+    refused with the close card appended, and the close stays on the status
+    menu. Its basis (``false_alarm``) marks it as the engine's, which INV-45's
+    revision gate reads. RESOLVED is never offered — there was nothing to fix.
     """
     if not metadata.get("problem_invalidated_this_turn"):
         return
-    if case.is_terminal or getattr(case, "pending_transition", None):
+    if (
+        case.is_terminal
+        or case.offer_record.open is not None
+        or awaiting_request_recheck(case)
+    ):
         return
     invalidation = case.problem_verification.invalidation
     message = (
@@ -407,16 +342,12 @@ def _maybe_propose_false_alarm_close(case: "Case", metadata: dict) -> None:
         "false alarm? If you have information showing the problem is real, "
         "say so and the investigation continues."
     )
-    from faultmaven.core.investigation.terminal_transitions import (
-        propose_transition,
+    record = open_disposition_offer(
+        case, kind=OfferKind.CLOSE, basis=OfferBasis.FALSE_ALARM, summary=message
     )
-
-    propose_transition(case=case, to_state="closed", summary=message)
-    case.pending_transition["justifying_signature"] = (
-        f"{ClosureReason.CLOSED_FALSE_ALARM}|{invalidation.turn}"
-    )
-    metadata["transition_proposed_this_turn"] = True
-    metadata["override_suggestions"] = _close_confirmation_suggestions(case)
+    if record is None:
+        return
+    case.offer_record = record
     metadata["false_alarm_closure_message"] = message
     logger.info(
         "Proposed CLOSED (false alarm) for case %s at turn %s",

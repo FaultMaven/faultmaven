@@ -385,7 +385,8 @@ def validate_reasoning_first(
     Skip Conditions (validation bypassed):
         1. Response is InquiryResponse or TerminalResponse (no investigation milestones)
         2. Case is already in terminal state (RESOLVED or CLOSED)
-        3. Case has a pending_transition (user confirmation in progress)
+        3. A resolve or close offer is open, or the solution is verified
+           (``justification_skipped``)
     """
     # Debug logging for Turn 2 issue
     logger.debug(

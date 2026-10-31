@@ -35,6 +35,7 @@ from faultmaven.modules.case.domain.models.problem import (
     InquiryData,
     ProblemVerification,
 )
+from tests.case_builders import with_open_offer
 
 from .conftest import (
     MockCaseRepository,
@@ -1327,12 +1328,9 @@ class TestMintedIntentTerminalConsentAdoption:
         case.inquiry.proposed_problem_statement = "Test problem"
         case.inquiry.problem_statement_confirmed = True
         case.state = CaseState.INVESTIGATING
-        case.pending_transition = {
-            "to_state": "resolved",
-            "summary": "Confirm resolution?",
-            "evidence_ids": [],
-            "proposed_at": datetime.now(timezone.utc).isoformat(),
-        }
+        with_open_offer(
+            case, kind="resolve", basis="model", summary="Confirm resolution?"
+        )
         case.last_suggestions = list(self.RESOLVE_SUGGESTIONS)
         return case
 

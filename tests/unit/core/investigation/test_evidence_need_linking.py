@@ -851,10 +851,7 @@ class TestAsksTheUserNeverSeesAreNotRecorded:
         [
             "resolution_ready_for_confirmation",
             "resolution_suggest_close",
-            "resolution_needs_info_first_pass",
-            "close_pivoted_to_resolve",
             "rca_infeasible_closure_message",
-            "override_suggestions",
         ],
     )
     def test_each_resolution_branch_flag_is_treated_as_replaced(self, flag):

@@ -7,9 +7,8 @@ the user has declined that resolution (#1895), the menu shows Close again
 (except while the declined resolution is re-offered), the menu close proposes
 CLOSED, and confirming it closes the case with the reason
 ``resolution_declined``. The "Mark it resolved" chip stays, the model's close
-is still refused (chat is unchanged), and a change to the state the decline was
-given against (a new confirmation, solution or cause) lapses it and restores
-the pivot.
+is still refused (chat is unchanged), and a new solution or confirmation
+lapses the decline and restores the pivot (ruling 3).
 
 Real ``process_turn`` turns with a stubbed generator: no live LLM.
 """
@@ -20,28 +19,27 @@ from unittest.mock import patch
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from faultmaven.core.investigation.milestone_engine.stage_gates import (
-    DECLINED_RESOLVE_CARD_LABEL,
-)
 from faultmaven.core.investigation.milestone_engine.terminal_replies import (
     _terminal_confirmation_response,
 )
+from faultmaven.core.investigation.offer_projection import DECLINED_RESOLVE_CARD_LABEL
+from faultmaven.core.investigation.offers import decline_stands
 from faultmaven.core.investigation.terminal_transitions import (
     ClosureReadiness,
     closure_verdict,
-    confirm_pending_transition,
+    confirm_open_offer,
     declined_resolve_entry,
-    deferred_disposition_signature,
     derive_closure_reason,
     derive_disposition_eligibility,
     execute_user_closure,
-    propose_transition,
 )
 from faultmaven.infrastructure.observability import funnel_metrics
 from faultmaven.modules.case.contracts import (
+    AnswerVia,
     CaseState,
     ClosureReason,
     MitigationRecord,
+    Offer,
 )
 from faultmaven.modules.case.domain.models.solution import (
     InvestigationActionType,
@@ -52,8 +50,8 @@ from faultmaven.modules.case.domain.models.solution import (
 from faultmaven.modules.report.domain.services.report_generation_service import (
     ReportGenerationService,
 )
+from tests.case_builders import with_declined_offer, with_open_offer
 from tests.unit.core.investigation.test_declined_resolution_binds_the_model_1895 import (
-    _SR,
     _chip_intent,
     _declined,
     _engine_disconfirmation,
@@ -111,9 +109,7 @@ def _new_confirmation(case) -> None:
 def _declined_case():
     """A resolvable case with the resolve decline recorded on it."""
     case = _confirmed_case()
-    case.progress.deferred_disposition_declined_signatures = [
-        deferred_disposition_signature(case, _SR)
-    ]
+    with_declined_offer(case, kind="resolve", basis="backstop")
     assert declined_resolve_entry(case) is not None, "premise: the decline stands"
     return case
 
@@ -146,12 +142,12 @@ class TestTheMenuShowsClose:
             intent_type="status_transition",
             intent_data=_chip_intent(case),
         )
-        assert case.pending_transition["to_state"] == "resolved"
+        assert case.offer_record.open.kind == "resolve"
         assert declined_resolve_entry(case) is not None, "premise: decline stands"
         assert derive_disposition_eligibility(case)["closed"] == "suggests_alternative"
 
         await _turn(engine, case, "no")
-        assert case.pending_transition is None
+        assert case.offer_record.open is None
         assert derive_disposition_eligibility(case)["closed"] == "ready"
 
 
@@ -159,8 +155,8 @@ class TestTheMenuCloseCloses:
     async def test_it_proposes_a_close_and_confirming_it_closes(self):
         engine, case, _ = await _offered_then_declined()
         result = await _menu_close(engine, case)
-        assert case.pending_transition["to_state"] == "closed"
-        assert case.pending_transition["closure_reason"] == _REASON
+        assert case.offer_record.open.kind == "close"
+        assert case.offer_record.open.closure_reason == _REASON
         # Asked as a close, not with the pivot's "mark it resolved instead?".
         assert "close this case without resolution" in result["agent_response"]
         assert "mark it **resolved** instead" not in result["agent_response"]
@@ -172,42 +168,51 @@ class TestTheMenuCloseCloses:
 
     async def test_declining_it_keeps_the_case_the_decline_and_close(self):
         """The reply keys on what was declined: a close, so the plain reply,
-        with the chip still attached and nothing recorded."""
+        with the chip still attached. The decline of the user's own close is
+        recorded as an answer and binds nothing."""
         engine, case, _ = await _offered_then_declined()
         declined = list(_declined(case))
         await _menu_close(engine, case)
 
         result = await _turn(engine, case, "no")
         assert case.state == CaseState.INVESTIGATING
-        assert case.pending_transition is None
+        assert case.offer_record.open is None
         assert result["agent_response"] == (
             "Understood. The case remains open for further investigation."
         )
         assert _labels(result) == [DECLINED_RESOLVE_CARD_LABEL]
-        assert _declined(case) == declined
+        *before, menu_close = _declined(case)
+        assert before == declined
+        assert (menu_close.kind, menu_close.basis) == ("close", "menu")
+        assert not decline_stands(menu_close, case)
         assert derive_disposition_eligibility(case)["closed"] == "ready"
 
     async def test_after_a_new_confirmation_the_menu_close_pivots_again(self):
         engine, case, _ = await _offered_then_declined()
         _new_confirmation(case)
         await _menu_close(engine, case)
-        assert case.pending_transition["to_state"] == "resolved"
+        assert case.offer_record.open.kind == "resolve"
 
 
 class TestTheConfirmTimeGuard:
-    """Keyed on the decline alone, whoever proposed the close: here an engine
-    close (``justifying_signature``) proposed before the case was resolvable,
-    carrying the reason derived then."""
+    """Keyed on the decline alone, whoever offered the close: here the
+    engine's deferred close, offered before the case was resolvable, carrying
+    the reason derived then."""
 
     def _stale_close(self, case):
-        propose_transition(case, to_state="closed", summary="Close it?")
-        case.pending_transition["closure_reason"] = "solution_deferred"
-        case.pending_transition["justifying_signature"] = "has_substance|1|rcc|"
+        stale = Offer(
+            proposal_id="0123456789abcdef",
+            kind="close",
+            basis="deferred",
+            closure_reason="solution_deferred",
+            summary="Close it?",
+        )
+        case.offer_record = case.offer_record.model_copy(update={"open": stale})
 
     def test_a_close_confirmed_while_the_decline_stands_closes(self):
         case = _declined_case()
         self._stale_close(case)
-        assert confirm_pending_transition(case, "user_test") is True
+        assert confirm_open_offer(case, "user_test", via=AnswerVia.CLICK) is True
         assert case.state == CaseState.CLOSED
         assert case.closure_reason == _REASON
 
@@ -219,22 +224,22 @@ class TestTheConfirmTimeGuard:
             "faultmaven.core.investigation.terminal_transitions."
             "close_pivoted_to_resolve_total"
         ):
-            assert confirm_pending_transition(case, "user_test") is False
+            assert confirm_open_offer(case, "user_test", via=AnswerVia.CLICK) is False
         assert case.state == CaseState.INVESTIGATING
-        assert case.pending_transition["to_state"] == "resolved"
+        assert case.offer_record.open.kind == "resolve"
 
     def test_a_failed_fix_before_the_confirm_drops_the_stored_reason(self):
         """A close proposed under the decline stores ``resolution_declined``.
         A failed fix recorded before the confirm means the fix is no longer
         confirmed, so the close must not say it was."""
         case = _declined_case()
-        propose_transition(case, to_state="closed", summary="Close it?")
-        assert case.pending_transition["closure_reason"] == _REASON, "premise"
+        with_open_offer(case, kind="close", basis="menu", summary="Close it?")
+        assert case.offer_record.open.closure_reason == _REASON, "premise"
         # After the turn-1 confirmation rows, so it disqualifies them.
         case.evidence.append(_engine_disconfirmation(turn=2))
         assert closure_verdict(case) != ClosureReadiness.SUGGEST_RESOLVE, "premise"
 
-        assert confirm_pending_transition(case, "user_test") is True
+        assert confirm_open_offer(case, "user_test", via=AnswerVia.CLICK) is True
         assert case.closure_reason == "solution_deferred"
 
 

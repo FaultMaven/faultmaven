@@ -1,13 +1,14 @@
 """Whether a user turn confirms or declines a proposed terminal transition.
 
-Every ``pending_transition`` is a terminal proposal (RESOLVED or CLOSED), and a
-terminal state has no outgoing edge. So the gate reads consent narrowly (#1783,
-ruling (a), 2026-09-29): a proposal executes on its click, or on a typed reply
-that is, as a whole, one consent token for the proposal's target. Any other
-typed reply is re-asked, and a re-ask never records a refusal.
+Every open resolve or close offer (``Case.offer_record``) is a terminal
+proposal, and a terminal state has no outgoing edge. So the gate reads consent
+narrowly (#1783, ruling (a), 2026-09-29): a proposal executes on its click, or
+on a typed reply that is, as a whole, one consent token for the proposal's
+target. Any other typed reply is re-asked, and a re-ask never records a
+refusal.
 
 A click is consent only to the offer it names (#1812, ruling (a)): every
-confirmation card carries its offer's key (``terminal_offer_key``,
+confirmation card carries its offer's key (the offer's ``proposal_id``,
 ``gate1_offer_key``), and a click whose key is not the standing offer's
 executes nothing. A typed decline is as bare as a typed consent (#1813), and
 Gate 1 reads a typed consent through the same bare test (#1794), which the
@@ -214,24 +215,10 @@ OfferRefusal = Literal["stale", "untargeted"]
 #: presentation. No quote marks, because the grammar rejects a quoted token.
 TYPED_CONFIRMATION_LINE = "To confirm, click **Yes** or reply with the single word yes."
 
-#: The prefix that marks a Gate 1 offer key, so it can never equal a terminal
-#: offer's key (a ``proposed_at`` timestamp).
+#: The prefix that marks a Gate 1 offer key, so it can never equal an offer's
+#: ``proposal_id`` (16 hex characters).
 _GATE1_KEY_PREFIX = "gate1:"
 _REVISION_KEY_PREFIX = "revision:"
-
-
-def terminal_offer_key(pending: Optional[dict[str, Any]]) -> Optional[str]:
-    """The key of the terminal offer ``pending`` presents, or None when none stands.
-
-    ``proposed_at``: ``propose_transition`` is the only writer of a fresh
-    offer, and stamps it on every proposal. Every step that changes what is
-    offered re-proposes rather than editing the standing dict: the INV-37
-    CLOSE→RESOLVE pivot, and a ``needs_info`` RESOLVED offer becoming ready. So
-    a withdrawn or superseded offer's key never comes back. (The fields set in
-    place, ``justifying_signature`` and a first-pass ``needs_info``, are set
-    right after the proposal they belong to.)
-    """
-    return (pending or {}).get("proposed_at") or None
 
 
 def _statement_digest(statement: Optional[str]) -> str:
@@ -249,9 +236,10 @@ def gate1_offer_key(statement: Optional[str]) -> str:
 
 
 def revision_offer_key(statement: Optional[str]) -> str:
-    """The key of the statement-revision offer that presents ``statement``:
-    Gate 1's rule — the offer is the wording shown — under its own prefix, so a
-    click on one card never answers the other."""
+    """The wording key of a revised ``statement``: Gate 1's digest under its
+    own prefix. A declined revision binds this wording, so the same revision
+    is not proposed again; the revision offer itself is named by its
+    ``proposal_id``."""
     return f"{_REVISION_KEY_PREFIX}{_statement_digest(statement)}"
 
 

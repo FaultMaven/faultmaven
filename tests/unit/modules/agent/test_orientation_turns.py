@@ -35,6 +35,7 @@ from faultmaven.modules.case.contracts import (
 )
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
+from tests.case_builders import with_open_offer
 
 pytestmark = pytest.mark.unit
 
@@ -227,7 +228,7 @@ class TestStateAware:
     ):
         """ "?" / "hi" / "" over a standing resolve proposal answers THAT question;
         the engine's gate handling owns it (PR #1343 review)."""
-        investigating.pending_transition = {"to_state": "resolved"}
+        with_open_offer(investigating, kind="resolve", basis="model")
         for query in ("hi", "", "help"):
             engine.process_turn.reset_mock()
             await _turn(service, recording_case_repository, investigating, query=query)

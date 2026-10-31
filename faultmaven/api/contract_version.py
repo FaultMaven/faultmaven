@@ -2303,4 +2303,37 @@ asked to accept, and it belongs to a person.
 # unchanged, each field narrows from a string to an enum of the values it
 # already carried, and no request schema carries either field. The generated
 # types change from `string | null` and `string[]` to the unions at adoption.
-API_CONTRACT_VERSION = "14.9.0"
+
+# 14.10.0 — MINOR. A case's offers live on one record, and `disposition_eligibility`
+# is published as an enum (#2379, #2408; rulings of 2026-10-30).
+#
+# * `ResolveEligibility` (`ready`, `needs_info`, `not_eligible`) and
+#   `CloseEligibility` (`ready`, `suggests_alternative`, `not_eligible`) join
+#   `components`, each value's meaning in `x-enum-descriptions`. Two enums, not
+#   one, because each key has its own values (the precedent is
+#   `SelectableNextState`). `DispositionEligibility` is `{resolved, closed}`,
+#   both required and no other key, and types `disposition_eligibility` on the
+#   three `CaseUIResponse_*` schemas (still nullable). The wire values are
+#   unchanged.
+# * What `closed` means now: `suggests_alternative` while a resolve proposal is
+#   pending, or on a resolvable case whose resolution the user has not
+#   declined; otherwise `ready`. Two cases change. Under a problem-statement
+#   revision awaiting the user, a standing resolve decline keeps Close (`ready`;
+#   choosing it withdraws the revision and closes with `resolution_declined`),
+#   where it read `suggests_alternative`. And a model's resolve request on a
+#   case that has not earned resolution is not a proposal: it shows no
+#   confirmation chips and Close stays `ready`.
+# * A decline lapses only when a new solution or a new confirmation that the fix
+#   held is recorded (a declined close on a false-alarm finding, when the
+#   finding goes). A withdrawn solution, a contested or re-established cause,
+#   the problem status, elapsed turns and a driver change no longer lapse it,
+#   so the "Mark it resolved" chip and Close stay while it stands.
+# * A confirmation card's `proposal_id` is opaque: 16 random hex characters
+#   (an ISO timestamp before), and the reopen chip's is `reopen:` and the
+#   declined offer's id. Clients forward it verbatim, as before.
+#
+# MINOR because every client survives it: no value is added or removed, each
+# field narrows from a string map to an object of the enums it already
+# carried, and no request schema carries it. A client rendering Close on
+# `ready`, as faultmaven-copilot's `HeaderSummary` does, needs no logic change.
+API_CONTRACT_VERSION = "14.10.0"

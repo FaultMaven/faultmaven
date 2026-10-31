@@ -56,6 +56,7 @@ from faultmaven.modules.case.contracts import (
     UploadedFile,
 )
 from faultmaven.modules.case.domain.models.turn import TurnProgress
+from tests.case_builders import with_open_offer
 
 _FILE_ID = "file_0123456789ab"
 
@@ -385,9 +386,8 @@ def test_the_treatment_blocked_handoff_never_offers_a_disposition():
 def test_the_disposition_gate_still_wins_over_the_new_branch():
     """Ordering, not luck: a pending disposition handshake owns the turn."""
     case = _grounded_stalled()
-    gate, _ = engine_owned_affordances(
-        case, {"override_suggestions": [{"label": "Yes, close this case"}]}
-    )
+    with_open_offer(case, kind="close", basis="menu")
+    gate, _ = engine_owned_affordances(case)
     assert gate == "disposition"
 
 

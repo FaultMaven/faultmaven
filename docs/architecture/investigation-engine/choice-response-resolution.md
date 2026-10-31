@@ -31,9 +31,9 @@ The system presents close-ended choices to users at critical decision points: in
 
 | Decision Point | Choices Offered | What Happens If User Types Instead |
 |---|---|---|
-| Problem confirmation | "Yes, let's investigate" / "Not quite, let me clarify" | `pending_transition` pattern matching (partial coverage) |
-| Resolution confirmation | "Yes, mark as resolved" / "Not yet, continue investigating" | `pending_transition` pattern matching (partial coverage) |
-| Close confirmation | "Yes, close this case" / "Not yet, continue investigating" | `pending_transition` pattern matching (partial coverage) |
+| Problem confirmation | "Yes, let's investigate" / "Not quite, let me clarify" | Gate 1's bare-consent reader (INV-01) |
+| Resolution confirmation | "Yes, mark as resolved" / "Not yet, continue investigating" | the open offer's gate (`pending_gate_verdict`, INV-26) |
+| Close confirmation | "Yes, close this case" / "Not yet, continue investigating" | the open offer's gate (`pending_gate_verdict`, INV-26) |
 | Ambiguous close | "Resolved" / "Closed" | Falls through to LLM (no matching) |
 | Hypothesis action | "Validate" / "Refute" / "Retire" | **No handler exists** — silent fallthrough |
 
@@ -72,6 +72,8 @@ If the classifier is unsure, the message goes through normal LLM processing. Fal
 ### P6: No pending choice state, but a bounded lifetime
 
 No lock, no gate, no "awaiting answer" flag: the agent's last response and its suggestions *are* the visible pending state, and the system reads `last_suggestions` to know what was offered.
+
+The one exception is an **offer** — to resolve, to close, or to accept a revised problem statement — which is case state, not a suggestion: it lives on the case's offer record (`cases.metadata["offer_record"]`, #2379; rules in `core/investigation/offers.py`). Its cards are derived from the record by the offer projection when a reply is composed, each naming the open offer's `proposal_id`, and the engine's gate answers the open offer whatever `last_suggestions` holds. Nothing below governs it; the stored copies of its cards are what the resolver matches typed text against, and only the text decides (INV-26).
 
 What the stored entries do carry is a **liveness stamp** — the turn that offered them (`offered_turn`), and for a clarification the target file's `data_type` at that moment (`offered_data_type`). Two facts make "which entries are still answerable?" non-trivial (#1245, fm#918). The stamp answers the first, and only half of the second — which mechanism answers which is spelled out below the bullets, because getting that wrong is how this section previously contradicted itself:
 
@@ -200,21 +202,21 @@ There are two gates, and #721 guarded only the first:
 
 | Gate | "Would commit" means |
 |---|---|
-| The pending terminal transition | the case has a `pending_transition` (always `resolved`/`closed`) AND the mint is a `confirmation` with `confirmation_value=True`, or a `status_transition` matching the pending target |
-| **Gate 1** (problem statement) | the case is INQUIRY with a `proposed_problem_statement`, and the mint is a `confirmation` with `confirmation_value=True` — whereupon the engine's section 0c sets `problem_statement_confirmed` and `_check_automatic_transitions` fires INQUIRY → INVESTIGATING. **Says nothing about `pending_transition`, deliberately** — see below |
+| The open terminal offer | a resolve or close offer is open on the record (`offers.open_terminal_offer`) AND the mint is a `confirmation` with `confirmation_value=True`, or a `status_transition` matching the offer's target |
+| **Gate 1** (problem statement) | the case is INQUIRY with a `proposed_problem_statement`, and the mint is a `confirmation` with `confirmation_value=True` — whereupon the engine's section 0c sets `problem_statement_confirmed` and `_check_automatic_transitions` fires INQUIRY → INVESTIGATING. **Says nothing about an open offer, deliberately** — see below |
 
-#721 scoped this to the first gate on the reasoning that a mint with no pending transition "cannot execute a terminal transition". True, and beside the point: it can still commit Gate 1, so `"correct — is the problem statement about the replica or the primary?"` started investigations off a statement the user was questioning (fm#918 exposure 3).
+#721 scoped this to the first gate on the reasoning that a mint with no open offer "cannot execute a terminal transition". True, and beside the point: it can still commit Gate 1, so `"correct — is the problem statement about the replica or the primary?"` started investigations off a statement the user was questioning (fm#918 exposure 3).
 
-**The two rows are an OR, not an if/else, and that distinction is load-bearing.** A case can carry a pending transition AND be an INQUIRY case with a proposed problem statement, and scoping the Gate-1 row to "no `pending_transition`" makes it unreachable exactly there. Measured on that shape with a substantive DECLINE (`"no - but is the problem statement about the replica or the primary?"`): the pending row only matches `confirmation_value is True`, so the mint is adopted, 0b cancels the pending and falls through, and 0c commits Gate 1. A `needs_info` pending is more direct still — 0b is skipped wholesale. `test_an_affirmative_mint_is_guarded_whatever_is_pending` parametrizes all three shapes.
+**The two rows are an OR, not an if/else, and that distinction is load-bearing.** A case can carry an open offer AND be an INQUIRY case with a proposed problem statement, and scoping the Gate-1 row to "no open offer" makes it unreachable exactly there. Measured on that shape with a substantive DECLINE (`"no - but is the problem statement about the replica or the primary?"`): the offer row only matches `confirmation_value is True`, so the mint is adopted, 0b answers the offer and falls through, and 0c commits Gate 1. (A `needs_info` pending used to skip 0b wholesale; since #2408 a resolution request is not an offer at all.) `test_an_affirmative_mint_is_guarded_whatever_is_pending` parametrizes the shapes.
 
 **#1464 changed what that reproducer proves, and the Gate-1 row with it.** 0c was blind to `confirmation_value` — a minted (or clicked) `False` committed Gate 1 exactly as `True` did — so the declining mint above was a live exposure and the Gate-1 row had to match declines too. 0c now commits on an explicit `True` alone, so:
 
 - the declining mint no longer commits anything anywhere, and the Gate-1 row is **affirmative-only** to match;
-- with an affirmative mint the fm#918 shape cannot reopen through a pending case whichever way the row is written, because `confirms_pending_transition` accepts CONFIRMATION+`True` for *any* truthy pending row. The shape where the Gate-1 row answers alone is **no pending** — which is the row's own reason for existing, and why it is still written independently of `pending`.
+- with an affirmative mint the fm#918 shape cannot reopen through a case with an open offer whichever way the row is written, because `confirms_pending_transition` accepts CONFIRMATION+`True` whenever a terminal offer is open. The shape where the Gate-1 row answers alone is **no open offer** — which is the row's own reason for existing, and why it is still written independently of the offer.
 
 The engine-side rule (a branch keyed on `intent_type == "confirmation"` reads `intent_data["value"]`) holds across all three branches in `_process_turn_impl` and is scanned by `tests/unit/core/investigation/test_gate_one_decline_1464.py`.
 
-The rejected message falls back to conversation: where a pending transition exists it flows through the pending-gate escape lane (the proposal is withdrawn, the message is processed as a normal turn, and the engine can re-propose from fresher state); at Gate 1 the LLM simply reads the text. **Declines** — over a pending transition or at Gate 1 — and contradicting status transitions adopt as before: none of them commits anything, they only cancel a standing proposal, and the message is processed as a normal turn either way. DECIDE clicks are untouched: a click is deterministic consent, to the offer it names and only while that offer stands (#1812, INV-26 (c)). A mint carries whichever card the resolver matched, key included, and the key is never read: the text decides.
+The rejected message falls back to conversation: where an offer is open it flows through the gate's escape lane (the offer is answered `withdrawn`, or `declined` for a deflection, the message is processed as a normal turn, and the engine can offer again from fresher state); at Gate 1 the LLM simply reads the text. **Declines** — of an open offer or at Gate 1 — and contradicting status transitions adopt as before: none of them commits anything, they only answer a standing offer, and the message is processed as a normal turn either way. DECIDE clicks are untouched: a click is deterministic consent, to the offer it names and only while that offer stands (#1812, INV-26 (c)). A mint carries whichever card the resolver matched, key included, and the key is never read: the text decides.
 
 ---
 
@@ -398,31 +400,32 @@ This is the trivial case. The classifier easily matches it. But we also add a fa
 
 ## 8. Resolution Readiness Gate
 
-A separate but related robustness issue: when the user requests "Resolved" but the case lacks required information (root cause + solution), the system asks for more detail. On the next turn, the system must **re-evaluate** whether requirements are now met — not blindly proceed to confirmation.
+A separate but related robustness issue: when a resolution is proposed (by the model; RESOLVED is not a menu pick) but the case lacks required information, the system asks for more detail. That ask is a **request, not an offer** (#2408): no confirmation chips, nothing to confirm, Close still in the menu; the case's offer record remembers what is missing (`OfferRecord.resolve_request`). On the next turn, the system must **re-evaluate** whether requirements are now met — not blindly proceed to confirmation.
 
 ### Flow
 
 ```text
-User requests "Resolved"
+Model proposes "resolved"
        |
        v
   assess_resolution_readiness(case)
        |
-       ├── READY → propose transition, show confirmation
-       ├── NEEDS_INFO → set pending_transition.needs_info=True,
-       |                 tell user what's missing
-       └── SUGGEST_CLOSE → pivot the pending proposal to CLOSED,
+       ├── READY → open the resolve offer, show confirmation
+       ├── NEEDS_INFO → remember the request (no offer, no chips),
+       |                 tell the user what's missing below the reply
+       └── SUGGEST_CLOSE → open a CLOSE offer instead,
                            emit the close confirmation pair
-       
-  ... next turn arrives ...
+
+  ... next turn arrives (the request is read once) ...
        |
        v
   Re-run assess_resolution_readiness(case)
        |
-       ├── READY → clear needs_info, show confirmation prompt
+       ├── READY → open the resolve offer, show confirmation prompt
        |            with "Yes, mark as resolved" / "Not yet" choices
+       |            (nothing opens while the user's resolve decline stands)
        └── NOT READY (NEEDS_INFO or SUGGEST_CLOSE)
-            → cancel pending_transition, suggest Close
+            → open a close offer (basis needs_info_unmet)
               with "Yes, close this case" / "Not yet" choices
 ```
 
@@ -434,11 +437,11 @@ User requests "Resolved"
 
 ---
 
-## 9. Pending Transition — Intent Routing Interface
+## 9. Open Offer — Intent Routing Interface
 
-Intent resolution bridges into `pending_transition` handling via the `CONFIRMATION` intent type. When the classifier resolves a user input to `{type: "confirmation", confirmation_value: true|false}`, that metadata feeds into the deterministic dispatch (`confirm_pending_transition()` / `cancel_pending_transition()`).
+Intent resolution bridges into the open offer's gate via the `CONFIRMATION` intent type. When the classifier resolves a user input to `{type: "confirmation", confirmation_value: true|false}`, that metadata feeds into the deterministic dispatch (`terminal_transitions.confirm_open_offer()` on consent, `offers.answer_offer(..., answer=declined)` on a decline), and the text, not the mint, decides (INV-26).
 
-The full deterministic dispatch table (clear yes / clear no / anything else / repeated dropdown click), the User-Agent Handshake pattern, and the "no LLM tool loop fallthrough when pending_transition exists" invariant are canonical in:
+The full deterministic dispatch table (clear yes / clear no / anything else / repeated dropdown click), the User-Agent Handshake pattern, and the "no LLM tool loop fallthrough while an offer is open" invariant are canonical in:
 
 See **[Investigation Lifecycle Logic §1.2 — Pending transition confirmation](./investigation-lifecycle-logic.md#investigating--resolved-disposition)** and the surrounding User-Agent Handshake section.
 
