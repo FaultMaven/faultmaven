@@ -51,6 +51,7 @@ from faultmaven.core.investigation.offers import (
     answer_offer,
     open_offer,
     open_terminal_offer,
+    require_answerer,
     standing_resolve_decline,
 )
 from faultmaven.core.investigation.verification_status import (
@@ -783,6 +784,7 @@ def open_disposition_offer(
     summary: str = "",
     evidence_ids: Iterable[str] = (),
     pivoted_from_close: bool = False,
+    readiness_pivot: bool = False,
 ) -> Optional[OfferRecord]:
     """``offers.open_offer`` for a resolve or close offer: a close carries the
     reason derived from the case as it stands (``derive_closure_reason``).
@@ -798,6 +800,7 @@ def open_disposition_offer(
             derive_closure_reason(case) if kind == OfferKind.CLOSE else None
         ),
         pivoted_from_close=pivoted_from_close,
+        readiness_pivot=readiness_pivot,
     )
 
 
@@ -840,12 +843,14 @@ def confirm_open_offer(case: Case, user_id: str, *, via: AnswerVia) -> bool:
     offer open.
 
     Raises:
-        ValueError: when no resolve or close offer is open, or the case is in
-            an invalid state for the transition.
+        ValueError: when no resolve or close offer is open, ``user_id`` is not
+            the case's effective driver (checked before anything executes), or
+            the case is in an invalid state for the transition.
     """
     offer = open_terminal_offer(case)
     if offer is None:
         raise ValueError(f"case {case.case_id} has no resolve or close offer open")
+    require_answerer(case, user_id)
 
     reason = offer.closure_reason
     # Closed-gate resolve-preservation (INV-37): a resolvable case must never
@@ -859,6 +864,7 @@ def confirm_open_offer(case: Case, user_id: str, *, via: AnswerVia) -> bool:
     if offer.kind == OfferKind.CLOSE and case.state == CaseState.INVESTIGATING:
         closure = assess_closure_readiness(case)
         if close_pivots_to_resolve(case, closure.verdict):
+            before = case.offer_record
             case.offer_record = answer_offer(
                 case,
                 proposal_id=offer.proposal_id,
@@ -866,20 +872,25 @@ def confirm_open_offer(case: Case, user_id: str, *, via: AnswerVia) -> bool:
                 via=via,
                 actor_id=user_id,
             )
-            case.offer_record = open_disposition_offer(
+            record = open_disposition_offer(
                 case,
                 kind=OfferKind.RESOLVE,
                 basis=offer.basis,
                 summary=closure.message,
                 pivoted_from_close=True,
             )
-            close_pivoted_to_resolve_total.inc()
-            logger.info(
-                f"Case {case.case_id}: accepted CLOSE pivoted to a RESOLVED offer "
-                f"— case is resolvable (SUGGEST_RESOLVE). Resolve-preservation "
-                f"(INV-37): a resolvable case is never closed."
-            )
-            return False
+            if record is not None:
+                case.offer_record = record
+                close_pivoted_to_resolve_total.inc()
+                logger.info(
+                    f"Case {case.case_id}: accepted CLOSE pivoted to a RESOLVED "
+                    f"offer — case is resolvable (SUGGEST_RESOLVE). "
+                    f"Resolve-preservation (INV-37): a resolvable case is never "
+                    f"closed."
+                )
+                return False
+            # A decline binds the resolve after all: the close closes.
+            case.offer_record = before
         if (
             closure.verdict == ClosureReadiness.SUGGEST_RESOLVE
             or reason == ClosureReason.RESOLUTION_DECLINED

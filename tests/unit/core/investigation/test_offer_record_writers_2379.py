@@ -211,6 +211,18 @@ class TestAccepting:
         assert case.offer_record.open == offer
         assert _answers(case) == []
 
+    def test_a_confirm_by_anyone_but_the_driver_moves_nothing(self):
+        case = _case()
+        offer = with_open_offer(case, kind="close")
+        with pytest.raises(ValueError, match="only the case's driver"):
+            confirm_open_offer(case, "user_reader", via=AnswerVia.CLICK)
+
+        assert case.state == CaseState.INVESTIGATING
+        assert case.closure_reason is None
+        assert case.action_history == []
+        assert case.offer_record.open == offer
+        assert _answers(case) == []
+
     def test_an_accept_is_recorded_after_the_transition(self):
         case = _case()
         with_open_offer(case, kind="close")

@@ -621,6 +621,19 @@ class TestADeclinedDeferredCloseBinds:
         )
         assert _labels(result) == CLOSE_PAIR
 
+    async def test_a_model_resolved_the_readiness_check_closes_is_not_bound(self):
+        """The control, as on main: the deferred decline binds a model
+        ``closed`` the closure check keeps at CLOSED, not a ``resolved`` that
+        resolution readiness turns into a close (SUGGEST_CLOSE: nothing on
+        record), which is a different question."""
+        engine, case = await _declined_deferred()
+        case.root_cause_conclusion = None
+        case.solutions = []
+        case.evidence = []
+        result = await _turn(engine, case, "is it resolved", _proposes("resolved"))
+        assert _DEFERRED_FEEDBACK not in _feedback(result)
+        assert _labels(result) == CLOSE_PAIR
+
 
 # ---------------------------------------------------------------------------
 # A declined false-alarm close

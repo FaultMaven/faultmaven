@@ -39,8 +39,9 @@ check is an invariant behind it. A driver change lapses nothing.
 
 - a declined resolve offer, any basis, binds every resolve offer that is not
   the user's own (a model close that pivots to a resolve included);
-- a declined ``deferred`` close binds the engine's deferred close and every
-  model close;
+- a declined ``deferred`` close binds the engine's deferred close and a model
+  close the closure check kept at CLOSED (not a model ``resolved`` the
+  readiness check turned into a close);
 - a declined false-alarm close (``closed_false_alarm``), any basis, binds every
   terminal offer that is not the user's own, while its finding stands;
 - a declined revision binds the same wording, and never lapses.
@@ -67,7 +68,8 @@ automatic transitions read the record, and again on every save.
 (``NEEDS_INFO``) opens no offer and shows no chips: the readiness ask goes
 below the reply, and ``remember_resolve_request`` records what is missing. The
 next turn's re-check reads it once: READY opens the resolve offer, anything
-else opens the needs-info-unmet close.
+else opens the needs-info-unmet close. Until it has, the apply-step openers
+stand down (``awaiting_request_recheck``).
 
 **Opening a terminal offer.** ``terminal_transitions.open_disposition_offer``
 opens a resolve or close offer: it derives a close's ``closure_reason`` from
@@ -160,6 +162,13 @@ def terminal_offer_answered_this_turn(case: "Case") -> bool:
     )
 
 
+def awaiting_request_recheck(case: "Case") -> bool:
+    """Whether a remembered resolution request awaits step 0's re-check. The
+    apply-step openers stand down meanwhile, so the re-check decides the turn
+    (#2408), as the standing ``needs_info`` proposal kept them out before."""
+    return case.offer_record.resolve_request is not None
+
+
 def last_answer(case: "Case") -> Optional[OfferAnswer]:
     """The newest answer on the record, or None."""
     answers = case.offer_record.answers
@@ -208,14 +217,15 @@ def _premise(
 
 
 def _widened(premise: OfferPremise, now: OfferPremise) -> OfferPremise:
-    """``premise`` widened to cover ``now``: the union of their ids, and the
-    finding standing now."""
+    """``premise`` widened to cover ``now``: the union of their ids. The
+    finding is the declined one: a finding the turn recorded in its place is
+    one the user never declined."""
     return OfferPremise(
         solution_ids=tuple(sorted({*premise.solution_ids, *now.solution_ids})),
         confirmation_ids=tuple(
             sorted({*premise.confirmation_ids, *now.confirmation_ids})
         ),
-        finding_turn=now.finding_turn,
+        finding_turn=premise.finding_turn,
         wording_key=premise.wording_key,
     )
 
@@ -302,9 +312,13 @@ def binding_decline(
     kind: OfferKind,
     basis: OfferBasis,
     wording_key: Optional[str] = None,
+    readiness_pivot: bool = False,
 ) -> Optional[OfferAnswer]:
     """The standing decline that binds an offer of ``kind`` opened as
-    ``basis``, or None. The user's own offers are never bound."""
+    ``basis``, or None. The user's own offers are never bound.
+    ``readiness_pivot`` marks a model ``resolved`` the readiness check turned
+    into a close: a deferred decline does not bind it, only a model close
+    the closure check kept at CLOSED."""
     if basis.origin == OfferOrigin.USER:
         return None
     if kind == OfferKind.REVISION:
@@ -314,7 +328,9 @@ def binding_decline(
         return false_alarm
     if kind == OfferKind.RESOLVE:
         return standing_resolve_decline(case)
-    if basis in (OfferBasis.DEFERRED, OfferBasis.MODEL):
+    if basis == OfferBasis.DEFERRED or (
+        basis == OfferBasis.MODEL and not readiness_pivot
+    ):
         return standing_deferred_decline(case)
     return None
 
@@ -322,6 +338,16 @@ def binding_decline(
 # --------------------------------------------------------------------------
 # The writers
 # --------------------------------------------------------------------------
+
+
+def require_answerer(case: "Case", actor_id: Optional[str]) -> None:
+    """Raise ``ValueError`` unless ``actor_id`` (when given) is the case's
+    effective driver: only the driver answers (ruling 7). An invariant check
+    behind the turn's 403."""
+    if actor_id is not None and actor_id != case.effective_driver_id:
+        raise ValueError(
+            f"case {case.case_id}: only the case's driver answers its offers"
+        )
 
 
 def new_proposal_id() -> str:
@@ -355,6 +381,7 @@ def open_offer(
     closure_reason: Optional[ClosureReason] = None,
     revision: Optional[PendingRevision] = None,
     pivoted_from_close: bool = False,
+    readiness_pivot: bool = False,
 ) -> Optional[OfferRecord]:
     """The record with a new ``kind`` offer open, or None when a standing
     decline binds it (``binding_decline``), in which case nothing is written.
@@ -379,7 +406,13 @@ def open_offer(
         )
     wording_key = revision.wording_key if revision is not None else None
     if (
-        binding_decline(case, kind=kind, basis=basis, wording_key=wording_key)
+        binding_decline(
+            case,
+            kind=kind,
+            basis=basis,
+            wording_key=wording_key,
+            readiness_pivot=readiness_pivot,
+        )
         is not None
     ):
         logger.info(
@@ -434,10 +467,7 @@ def answer_offer(
         raise ValueError(
             f"case {case.case_id}: offer {proposal_id!r} is not the open offer"
         )
-    if actor_id is not None and actor_id != case.effective_driver_id:
-        raise ValueError(
-            f"case {case.case_id}: only the case's driver answers its offers"
-        )
+    require_answerer(case, actor_id)
     nobody = answer == AnswerKind.LAPSED or via == AnswerVia.ENGINE
     entry = OfferAnswer(
         proposal_id=offer.proposal_id,

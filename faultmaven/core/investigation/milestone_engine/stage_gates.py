@@ -17,7 +17,10 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     pending_action_superseded_stale_total,
     solution_offer_superseded_total,
 )
-from faultmaven.core.investigation.offers import open_terminal_offer
+from faultmaven.core.investigation.offers import (
+    awaiting_request_recheck,
+    open_terminal_offer,
+)
 from faultmaven.core.investigation.problem_status import (
     hold_fix_on_revision,
     pending_revision,
@@ -1420,6 +1423,7 @@ def _apply_stage_gate_side_effects(
         if (
             rca_infeasible
             and case.offer_record.open is None
+            and not awaiting_request_recheck(case)
             and not case.is_terminal
             and not problem_on_hold(case)
             and closure_verdict(case) != ClosureReadiness.SUGGEST_RESOLVE

@@ -9,6 +9,7 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     evidence_need_status_changed_total,
 )
 from faultmaven.core.investigation.offers import (
+    awaiting_request_recheck,
     terminal_offer_answered_this_turn,
 )
 from faultmaven.core.investigation.problem_status import problem_on_hold
@@ -81,8 +82,9 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
     # proposed for closure citing the disconfirmed cause in the same breath.
     if not _solution_cause_validated(case):
         return
-    # Don't clobber an in-flight handshake: the slot holds one offer.
-    if case.offer_record.open is not None:
+    # Don't clobber an in-flight handshake: the slot holds one offer, and a
+    # remembered resolution request is step 0's to decide (#2408).
+    if case.offer_record.open is not None or awaiting_request_recheck(case):
         return
     # Defense in depth, and stricter than the `is_terminal` check it replaces:
     # the proposal target is now STATE-DEPENDENT. "closed" was a legal edge
@@ -227,7 +229,7 @@ def _maybe_propose_confirmed_resolution(case: "Case", metadata: dict) -> None:
     # a case that is both DEFERRED and confirmed, the deferred proposer's own
     # SUGGEST_RESOLVE pivot has already offered RESOLVED with the more specific
     # out-of-band rationale.
-    if case.offer_record.open is not None:
+    if case.offer_record.open is not None or awaiting_request_recheck(case):
         return
     if case.state != CaseState.INVESTIGATING:
         return
@@ -326,7 +328,11 @@ def _maybe_propose_false_alarm_close(case: "Case", metadata: dict) -> None:
     """
     if not metadata.get("problem_invalidated_this_turn"):
         return
-    if case.is_terminal or case.offer_record.open is not None:
+    if (
+        case.is_terminal
+        or case.offer_record.open is not None
+        or awaiting_request_recheck(case)
+    ):
         return
     invalidation = case.problem_verification.invalidation
     message = (

@@ -347,7 +347,7 @@ def _close_on_explicit_intent(
     # by a decline (``offers.binding_decline``).
     closure = assess_closure_readiness(case)
     if close_pivots_to_resolve(case, closure.verdict):
-        case.offer_record = open_disposition_offer(
+        record = open_disposition_offer(
             case,
             kind=OfferKind.RESOLVE,
             basis=OfferBasis.MENU,
@@ -363,7 +363,7 @@ def _close_on_explicit_intent(
             # as a close, not with the pivot's "mark it resolved instead?".
             closure = assess_close_summary(case)
         # closure_reason is derived inside open_disposition_offer from case state.
-        case.offer_record = open_disposition_offer(
+        record = open_disposition_offer(
             case,
             kind=OfferKind.CLOSE,
             basis=OfferBasis.MENU,
@@ -373,6 +373,9 @@ def _close_on_explicit_intent(
             f"Proposed CLOSED transition for case {case.case_id} via dropdown "
             f"(pending user confirmation)"
         )
+    # The user's own offer, which no decline binds; handled as every opener.
+    if record is not None:
+        case.offer_record = record
 
     turn_metadata = _finish_deterministic_turn(
         case,
@@ -445,12 +448,14 @@ def _resolve_on_reopen_chip(*, case, upload_report, user_message):
         follow_ups: list = []
     else:
         agent_response = _build_resolution_confirmation(case)
-        case.offer_record = open_disposition_offer(
+        record = open_disposition_offer(
             case,
             kind=OfferKind.RESOLVE,
             basis=OfferBasis.REOPEN,
             summary=agent_response,
         )
+        if record is not None:
+            case.offer_record = record
         follow_ups = project_offers(case).pair
         logger.info(
             f"Opened a RESOLVED offer for case {case.case_id} from the reopen "

@@ -18,6 +18,12 @@ Real ``process_turn`` turns with a stubbed generator: no live LLM.
 
 import pytest
 
+from faultmaven.core.investigation.offers import standing_false_alarm_decline
+from faultmaven.core.investigation.schemas import (
+    EvidenceToAdd,
+    MilestoneUpdates,
+    ProblemVerificationUpdate,
+)
 from faultmaven.core.investigation.terminal_transitions import (
     ResolutionReadiness,
     assess_resolution_readiness,
@@ -29,8 +35,13 @@ from faultmaven.modules.case.contracts import (
     ClosureReason,
     ProblemStatus,
 )
+from faultmaven.modules.case.domain.models.evidence import (
+    EvidenceCategory,
+    EvidenceSourceType,
+)
 from tests.unit.core.investigation.test_offer_record_declines_bind_2379 import (
     _DSU,
+    _FILE_ID,
     CLOSE_PAIR,
     RESOLVE_PAIR,
     _base_case,
@@ -177,3 +188,83 @@ class TestANeedsInfoProposalIsARequest:
         assert offer.basis == "needs_info_unmet"
         assert _labels(result) == CLOSE_PAIR
         assert case.offer_record.resolve_request is None
+
+    async def test_the_request_is_rechecked_before_any_engine_opener(self):
+        """The apply-step openers stand down while a request awaits step 0:
+        a deferred close the next turn would have opened does not pre-empt
+        the re-check, whose still-short outcome is the close it opens."""
+        case, _ = _needs_info_case()
+        engine = _engine()
+        await _asked(engine, case)
+
+        result = await _turn(
+            engine,
+            case,
+            "we can't apply it until next week's change window",
+            _DSU(milestones=MilestoneUpdates(solution_feasible="deferred")),
+        )
+
+        offer = case.offer_record.open
+        assert offer.basis == "needs_info_unmet"
+        assert _labels(result) == CLOSE_PAIR
+        assert case.offer_record.resolve_request is None
+
+
+def _finding(summary: str, basis: str) -> _DSU:
+    return _DSU(
+        evidence_to_add=[
+            EvidenceToAdd(
+                summary=summary,
+                extract=summary,
+                category=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+                source_type=EvidenceSourceType.LOGS,
+                source_file_id=_FILE_ID,
+            )
+        ],
+        verification_updates=ProblemVerificationUpdate(
+            problem_invalidated=True,
+            invalidation_evidence_ids=["new_index_0"],
+            invalidation_basis=basis,
+        ),
+    )
+
+
+class TestAFalseAlarmDeclineKeepsItsFinding:
+    async def test_a_finding_recorded_on_the_decline_turn_was_not_declined(self):
+        """A substantive "no" on which the model withdraws the finding and
+        records another: the decline is of the first finding, so it does not
+        bind the second."""
+        case = _base_case(problem_status=ProblemStatus.UNVERIFIED)
+        case.root_cause_conclusion = None
+        case.solutions = []
+        engine = _engine()
+        offered = await _turn(
+            engine,
+            case,
+            "the gateway log shows no errors at 14:00",
+            _finding("No 5xx 13:55-14:05.", "no 5xx in the window"),
+        )
+        first = case.problem_verification.invalidation.turn
+
+        second = _finding("No 5xx at the edge for 13:00-15:00.", "the edge is clean")
+        second.verification_updates.invalidation_withdrawn = True
+        second.verification_updates.withdrawal_basis = "the gateway log was wrong"
+        card = next(
+            f
+            for f in offered["suggested_follow_ups"]
+            if (f.get("intent") or {}).get("confirmation_value") is False
+        )
+        await _turn(
+            engine,
+            case,
+            "No - that gateway log is the wrong one, the errors were at the edge; "
+            "please re-check the edge log for me",
+            second,
+            intent_type="confirmation",
+            intent_data={"value": False, "proposal_id": card["intent"]["proposal_id"]},
+        )
+
+        assert case.problem_verification.invalidation.turn != first, "premise"
+        decline = next(a for a in case.offer_record.answers if a.answer == "declined")
+        assert decline.premise.finding_turn == first
+        assert standing_false_alarm_decline(case) is None

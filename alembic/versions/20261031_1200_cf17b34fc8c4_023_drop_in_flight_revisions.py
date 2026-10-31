@@ -18,7 +18,9 @@ stay on hold with nowhere to stage cause work. So for each such row this
 revision returns ``progress.problem_status`` to the revision's
 ``prior_status`` (``unverified`` when it carries none, the model's default)
 and removes ``pending_revision``: what the user's own close of the revision
-does. The cause work staged on it is dropped with it.
+does. The cause work staged on it is dropped with it. Only a held row moves
+(``problem_status = revision_pending``): a ``pending_revision`` left behind on
+a row whose hold already ended is not touched.
 
 Row-level security
 ------------------
@@ -32,9 +34,12 @@ updating one enterprise's rows.
 Downgrade
 ---------
 
-A no-op. The revisions were dropped by ruling; there is nothing to restore, and
-the previous image reads a row without ``pending_revision`` as a case with
-none.
+The same in reverse. The previous image does not read the offer record, so a
+case holding a revision opened on this image would sit at ``revision_pending``
+with no ``pending_revision`` there, and a turn carrying cause work would fail.
+For each row whose ``metadata.offer_record.open`` is a revision, the downgrade
+returns ``progress.problem_status`` to that revision's ``prior_status`` and
+drops the open revision. The revisions dropped on upgrade stay dropped.
 
 Revision ID: cf17b34fc8c4
 Revises: 03f93180f630
@@ -58,8 +63,8 @@ _log = logging.getLogger("alembic.runtime.migration")
 ROW_SECURITY_OFF = "SET LOCAL row_security = off"
 ROW_SECURITY_RESTORED = "SET LOCAL row_security TO DEFAULT"
 
-#: Per dialect: return the status to the revision's prior one, and remove the
-#: revision. One statement, so both columns move together.
+#: Per dialect: return a held case's status to the revision's prior one, and
+#: remove the revision. One statement, so both columns move together.
 DROP_REVISIONS = {
     "sqlite": (
         "UPDATE cases SET "
@@ -68,7 +73,8 @@ DROP_REVISIONS = {
         "'unverified')), "
         "problem_verification = json_remove(problem_verification, "
         "'$.pending_revision') "
-        "WHERE json_type(problem_verification, '$.pending_revision') = 'object'"
+        "WHERE json_type(problem_verification, '$.pending_revision') = 'object' "
+        "AND json_extract(progress, '$.problem_status') = 'revision_pending'"
     ),
     "postgresql": (
         "UPDATE cases SET "
@@ -76,26 +82,56 @@ DROP_REVISIONS = {
         "problem_verification->'pending_revision'->>'prior_status', "
         "'unverified'))), "
         "problem_verification = problem_verification - 'pending_revision' "
-        "WHERE jsonb_typeof(problem_verification->'pending_revision') = 'object'"
+        "WHERE jsonb_typeof(problem_verification->'pending_revision') = 'object' "
+        "AND progress->>'problem_status' = 'revision_pending'"
+    ),
+}
+
+#: The reverse, per dialect: return the status of a case whose open offer is a
+#: revision to that revision's prior one, and drop the open revision.
+DROP_OPEN_REVISIONS = {
+    "sqlite": (
+        "UPDATE cases SET "
+        "progress = json_set(progress, '$.problem_status', COALESCE("
+        "json_extract(metadata, '$.offer_record.open.revision.prior_status'), "
+        "'unverified')), "
+        "metadata = json_set(metadata, '$.offer_record.open', json('null')) "
+        "WHERE json_extract(metadata, '$.offer_record.open.kind') = 'revision'"
+    ),
+    "postgresql": (
+        "UPDATE cases SET "
+        "progress = jsonb_set(progress, '{problem_status}', to_jsonb(COALESCE("
+        "metadata->'offer_record'->'open'->'revision'->>'prior_status', "
+        "'unverified'))), "
+        "metadata = jsonb_set(metadata, '{offer_record,open}', 'null'::jsonb) "
+        "WHERE metadata->'offer_record'->'open'->>'kind' = 'revision'"
     ),
 }
 
 
-def upgrade() -> None:
-    """Drop every in-flight revision, returning its case to the prior status."""
+def _run(statements: dict, done: str) -> None:
+    """Run this dialect's statement, under ``row_security = off`` on
+    PostgreSQL, and log how many rows it moved."""
     dialect = op.get_context().dialect.name
     postgresql_dialect = dialect == "postgresql"
     if postgresql_dialect:
         op.execute(ROW_SECURITY_OFF)
-    statement = text(DROP_REVISIONS[dialect])
+    statement = text(statements[dialect])
     if op.get_context().as_sql:
         op.execute(statement)
     else:
         count = op.get_bind().execute(statement).rowcount
-        _log.info("023: dropped in-flight revisions on %d row(s)", count)
+        _log.info("023: %s on %d row(s)", done, count)
     if postgresql_dialect:
         op.execute(ROW_SECURITY_RESTORED)
 
 
+def upgrade() -> None:
+    """Drop every in-flight revision, returning its case to the prior status."""
+    _run(DROP_REVISIONS, "dropped in-flight revisions")
+
+
 def downgrade() -> None:
-    """Nothing to restore: the in-flight revisions were dropped by ruling."""
+    """Drop every open revision offer, returning its case to the prior
+    status, so the previous image finds no hold it cannot leave."""
+    _run(DROP_OPEN_REVISIONS, "dropped open revision offers")

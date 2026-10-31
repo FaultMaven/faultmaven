@@ -1,9 +1,10 @@
 """Revision 023 under row-level security, on a real PostgreSQL.
 
 ``023_drop_in_flight_revisions`` drops every revised problem statement in
-flight at deploy (#2379, ruling 5): ``cases.progress.problem_status`` returns to
-the revision's ``prior_status`` and ``problem_verification.pending_revision`` is
-removed. ``cases`` is tenant-scoped, so what the UPDATE reaches depends on who
+flight at deploy (#2379, ruling 5): on a held case ``cases.progress.
+problem_status`` returns to the revision's ``prior_status`` and
+``problem_verification.pending_revision`` is removed; a revision left on a row
+whose hold ended is not touched. ``cases`` is tenant-scoped, so what the UPDATE reaches depends on who
 runs it, and only a real database can show that:
 
 * **The owner reaches every enterprise.** The probe migrates as a NON-superuser
@@ -54,6 +55,7 @@ _REVISION_PV = (
     '{"symptom_statement": "s", "pending_revision": '
     '{"text": "r", "prior_status": "verified"}}'
 )
+_NOT_HELD = '{"problem_status": "verified"}'
 
 
 async def _execute(url: str, *statements: str) -> list:
@@ -71,8 +73,9 @@ async def _execute(url: str, *statements: str) -> list:
 
 
 async def _seed(url: str) -> tuple:
-    """Two enterprises, each with a case holding a revision, and one case with
-    none. Returns the enterprises and the tag."""
+    """Two enterprises, each with a case holding a revision, one case with
+    none, and one whose hold ended with its revision left behind. Returns the
+    enterprises and the tag."""
     tag = uuid.uuid4().hex[:8]
     enterprises = (f"ent_a_{tag}", f"ent_b_{tag}")
     statements = []
@@ -92,6 +95,12 @@ async def _seed(url: str) -> tuple:
         f"problem_verification) VALUES ('case_none_{tag}', '{enterprises[0]}', "
         f"""'u_{enterprises[0]}', 't', '{{"problem_status": "verified"}}', """
         f"""'{{"symptom_statement": "s"}}')"""
+    )
+    statements.append(
+        f"INSERT INTO cases (case_id, enterprise_id, user_id, title, progress, "
+        f"problem_verification) VALUES ('case_leftover_{tag}', "
+        f"'{enterprises[0]}', 'u_{enterprises[0]}', 't', '{_NOT_HELD}', "
+        f"'{_REVISION_PV}')"
     )
     await _execute(url, *statements)
     return enterprises, tag
@@ -115,7 +124,8 @@ async def _revision(url: str) -> str:
 async def test_the_owner_drops_every_enterprises_revisions():
     """Migrated by a role that owns the tables and is not a superuser. Both
     enterprises' held cases return to their prior status with no revision;
-    the case with none is untouched; the downgrade restores nothing."""
+    the case with none and the one whose hold ended are untouched; the
+    downgrade moves none of them (none holds an open revision offer)."""
     superuser_url = os.environ["DATABASE_URL"]
     role = f"fm_023_owner_{uuid.uuid4().hex[:8]}"
     await _execute(superuser_url, drop_role_sql(role))
@@ -144,6 +154,7 @@ async def test_the_owner_drops_every_enterprises_revisions():
                     {"symptom_statement": "s"},
                 )
             assert rows[f"case_none_{tag}"] == before[f"case_none_{tag}"]
+            assert rows[f"case_leftover_{tag}"] == before[f"case_leftover_{tag}"]
 
             result = alembic_on(owner_url, f"downgrade {_PARENT_REVISION}")
             assert result.returncode == 0, result.stderr[-2000:]

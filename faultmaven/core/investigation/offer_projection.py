@@ -16,12 +16,13 @@ from functools import cached_property
 from typing import TYPE_CHECKING, Optional
 
 from faultmaven.core.investigation.offers import confirmation_pair
+from faultmaven.core.investigation.problem_status import problem_on_hold
 from faultmaven.core.investigation.terminal_transitions import (
     declined_resolve_entry,
     derive_disposition_eligibility,
     resolve_reopen_key,
 )
-from faultmaven.modules.case.contracts import DispositionEligibility, ProblemStatus
+from faultmaven.modules.case.contracts import DispositionEligibility
 
 if TYPE_CHECKING:
     from faultmaven.modules.case.contracts import Case
@@ -57,10 +58,7 @@ def _reopen_chip(case: "Case") -> Optional[dict]:
     does not compete with a live one) or while the problem is on hold (a
     revision awaiting the user, a false alarm).
     """
-    if case.offer_record.open is not None or case.progress.problem_status in (
-        ProblemStatus.REVISION_PENDING,
-        ProblemStatus.INVALIDATED,
-    ):
+    if case.offer_record.open is not None or problem_on_hold(case):
         return None
     entry = declined_resolve_entry(case)
     if entry is None:

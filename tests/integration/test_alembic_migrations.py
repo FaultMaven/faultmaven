@@ -3833,10 +3833,12 @@ class TestKnowledgeItemVectorGenerationRevision:
 
 
 class TestDropInFlightRevisionsRevision:
-    """023 drops every revision in flight at deploy (#2379, ruling 5): the
+    """023 drops every revision in flight at deploy (#2379, ruling 5): a held
     case returns to the status it had before the revision, and the revision
-    is removed. Nothing else in either column moves, and the downgrade
-    restores nothing (the revisions were dropped by ruling).
+    is removed. Nothing else in either column moves, and a revision left on a
+    row whose hold already ended is not touched. The downgrade does the same
+    to a revision open on the offer record, so the previous image finds no
+    hold it cannot leave.
 
     Its PostgreSQL half, under ``row_security = off``:
     ``tests/integration/security/test_drop_in_flight_revisions_postgres.py``.
@@ -3860,6 +3862,12 @@ class TestDropInFlightRevisionsRevision:
             '{"problem_status": "verified"}',
             '{"symptom_statement": "s", "pending_revision": null, '
             '"declined_revision_keys": ["revision:abc"]}',
+        ),
+        (
+            "case_leftover",
+            '{"problem_status": "verified"}',
+            '{"symptom_statement": "s", "pending_revision": {"text": "r", '
+            '"prior_status": "unverified"}}',
         ),
     ]
 
@@ -3917,10 +3925,50 @@ class TestDropInFlightRevisionsRevision:
             {"symptom_statement": "s"},
         )
         assert rows["case_untouched"] == before["case_untouched"]
+        assert rows["case_leftover"] == before["case_leftover"]
 
         result = run_alembic(f"downgrade {VECTOR_GENERATION_REVISION}", database_url)
         assert result.returncode == 0, result.stderr
         assert self._rows() == rows
+
+    def test_downgrade_drops_an_open_revision_offer(self, clean_database, database_url):
+        prepare_database(DROP_IN_FLIGHT_REVISIONS_REVISION, database_url)
+        self._seed()
+        revision = {"text": "r", "prior_status": "verified", "staged": []}
+        held = {"offer_record": {"open": {"kind": "revision", "revision": revision}}}
+        resolve = {"offer_record": {"open": {"kind": "resolve"}}}
+        conn = sqlite3.connect(TEST_DB)
+        try:
+            for case_id, metadata in (
+                ("case_untouched", held),
+                ("case_leftover", resolve),
+            ):
+                conn.execute(
+                    "UPDATE cases SET metadata = ?, progress = ? WHERE case_id = ?",
+                    (
+                        json.dumps(metadata),
+                        '{"problem_status": "revision_pending"}',
+                        case_id,
+                    ),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+        result = run_alembic(f"downgrade {VECTOR_GENERATION_REVISION}", database_url)
+        assert result.returncode == 0, result.stderr
+        assert "dropped open revision offers on 1 row(s)" in result.stderr
+
+        rows = query_rows(TEST_DB, "SELECT case_id, progress, metadata FROM cases")
+        moved = {case_id: (json.loads(p), json.loads(m)) for case_id, p, m in rows}
+        assert moved["case_untouched"] == (
+            {"problem_status": "verified"},
+            {"offer_record": {"open": None}},
+        )
+        assert moved["case_leftover"] == (
+            {"problem_status": "revision_pending"},
+            resolve,
+        )
 
     def test_the_postgresql_script_runs_under_row_security_off(self):
         pg = "postgresql://offline@localhost/offline"
@@ -3933,6 +3981,19 @@ class TestDropInFlightRevisionsRevision:
         sql = up.stdout
         off = sql.index("SET LOCAL row_security = off;")
         update = sql.index("UPDATE cases SET progress = jsonb_set(")
+        restored = sql.index("SET LOCAL row_security TO DEFAULT;")
+        assert off < update < restored, sql
+        assert "AND progress->>'problem_status' = 'revision_pending'" in sql
+
+        down = run_alembic(
+            f"downgrade {DROP_IN_FLIGHT_REVISIONS_REVISION}:"
+            f"{VECTOR_GENERATION_REVISION} --sql",
+            pg,
+        )
+        assert down.returncode == 0, down.stderr
+        sql = down.stdout
+        off = sql.index("SET LOCAL row_security = off;")
+        update = sql.index("metadata = jsonb_set(metadata, '{offer_record,open}'")
         restored = sql.index("SET LOCAL row_security TO DEFAULT;")
         assert off < update < restored, sql
 

@@ -552,26 +552,27 @@ class TransitionManager:
                     f"verdict=SUGGEST_RESOLVE; pivoting to RESOLVED."
                 )
 
-        # The deferred side of #1889: a close while the user's decline of the
-        # engine's deferred close stands. A ``resolved`` the readiness check
-        # pivots to CLOSED is read the same way.
-        if kind == OfferKind.CLOSE:
-            reask = declined_close_reask(case, closing=True)
-            if reask is not None:
-                _refuse_declined_reask(metadata, *reask)
-                logger.info(
-                    f"Case {case.case_id}: model proposed CLOSED while the "
-                    f"user's decline of the deferred close stands — refused."
-                )
-                return
-
+        # The deferred side of #1889 is the record's: a model ``closed`` the
+        # closure check kept at CLOSED is bound by the user's decline of the
+        # engine's deferred close; a ``resolved`` the readiness check pivots
+        # to CLOSED is not (``offers.binding_decline``, as on main).
         record = open_disposition_offer(
             case,
             kind=kind,
             basis=OfferBasis.MODEL,
             summary=summary,
             evidence_ids=getattr(proposed, "evidence_ids", None) or (),
+            readiness_pivot=proposed.to_state == "resolved" and kind == OfferKind.CLOSE,
         )
+        if record is None and kind == OfferKind.CLOSE:
+            reask = declined_close_reask(case, closing=True)
+            if reask is not None:
+                _refuse_declined_reask(metadata, *reask)
+            logger.info(
+                f"Case {case.case_id}: model proposed CLOSED while the user's "
+                f"decline of the deferred close stands — refused."
+            )
+            return
         if record is None:
             # The resolve side (#1895): the model's ``resolved`` on a READY
             # case, and its ``closed`` the closure check pivots to RESOLVED
