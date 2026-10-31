@@ -1,4 +1,4 @@
-"""The offer record: its writers, what a decline binds, and the projection.
+"""The offer record: its writers, what a decline binds, and when it lapses.
 
 This docstring is where the record's rules are stated (#2379, the rulings of
 2026-10-30). The invariants (INV-26 and the ones that read it) point here.
@@ -58,9 +58,9 @@ lapses when its finding is withdrawn, edited away or replaced. ``decline_stands`
 is the one live predicate every reader uses, so the backstop re-offers on the
 very turn a new confirmation arrives. ``lapse_offers`` also stamps
 ``lapsed_at_turn`` on a decline whose premise moved, so a later
-disqualification of the new row does not revive it; and it refreshes the
-premise of a decline given on the current turn, so the model's same-turn
-updates never un-answer it (#1895). It runs at step 3b of a turn, before the
+disqualification of the new row does not revive it; and it widens the
+premise of a decline given on the current turn to cover what that turn
+recorded, so the model's same-turn updates never un-answer it (#1895). It runs at step 3b of a turn, before the
 automatic transitions read the record, and again on every save.
 
 **The request** (ruling 1). A model ``resolved`` the case has not earned
@@ -69,16 +69,20 @@ below the reply, and ``remember_resolve_request`` records what is missing. The
 next turn's re-check reads it once: READY opens the resolve offer, anything
 else opens the needs-info-unmet close.
 
-**The projection** (``project_offers``). Pure, and the only place an
-affordance is derived from the record: ``disposition_eligibility`` (on every
-save) and the reply's chips (the open offer's confirmation pair; with nothing
-open, the reopen chip while a resolve decline stands and the problem is not on
-hold).
+**Opening a terminal offer.** ``terminal_transitions.open_disposition_offer``
+opens a resolve or close offer: it derives a close's ``closure_reason`` from
+the case as it stands and hands it to ``open_offer``, which refuses a close
+without one.
+
+**The projection** (``offer_projection.project_offers``). Pure, and the only
+place an affordance is derived from the record: ``disposition_eligibility``
+(on every save) and the reply's chips (the open offer's confirmation pair,
+``confirmation_pair``; with nothing open, the reopen chip while a resolve
+decline stands and the problem is not on hold).
 """
 
 import logging
 import secrets
-from functools import cached_property
 from typing import TYPE_CHECKING, Iterable, Optional
 
 from faultmaven.core.investigation.cause_assurance import (
@@ -89,7 +93,6 @@ from faultmaven.modules.case.contracts import (
     AnswerVia,
     CaseState,
     ClosureReason,
-    DispositionEligibility,
     Offer,
     OfferAnswer,
     OfferBasis,
@@ -98,7 +101,6 @@ from faultmaven.modules.case.contracts import (
     OfferPremise,
     OfferRecord,
     PendingRevision,
-    ProblemStatus,
     ResolveRequest,
     StagedCauseWork,
 )
@@ -205,6 +207,19 @@ def _premise(
     )
 
 
+def _widened(premise: OfferPremise, now: OfferPremise) -> OfferPremise:
+    """``premise`` widened to cover ``now``: the union of their ids, and the
+    finding standing now."""
+    return OfferPremise(
+        solution_ids=tuple(sorted({*premise.solution_ids, *now.solution_ids})),
+        confirmation_ids=tuple(
+            sorted({*premise.confirmation_ids, *now.confirmation_ids})
+        ),
+        finding_turn=now.finding_turn,
+        wording_key=premise.wording_key,
+    )
+
+
 def _scope(answer: OfferAnswer) -> Optional[str]:
     """What a decline binds, or None when the answer binds nothing."""
     if answer.answer != AnswerKind.DECLINED:
@@ -225,10 +240,11 @@ def _premise_holds(answer: OfferAnswer, case: "Case") -> bool:
     if scope == _REVISION:
         return True
     if scope == _FALSE_ALARM:
-        return (
-            case.progress.problem_status == ProblemStatus.INVALIDATED
-            and _finding_turn(case) == answer.premise.finding_turn
-        )
+        # The finding itself, not the status: a revision awaiting the user
+        # holds REVISION_PENDING over a finding that still stands, and a
+        # declined revision returns to it.
+        finding = _finding_turn(case)
+        return finding is not None and finding == answer.premise.finding_turn
     return set(_solution_ids(case)) <= set(answer.premise.solution_ids) and set(
         _confirmation_ids(case)
     ) <= set(answer.premise.confirmation_ids)
@@ -336,26 +352,30 @@ def open_offer(
     basis: OfferBasis,
     summary: str = "",
     evidence_ids: Iterable[str] = (),
+    closure_reason: Optional[ClosureReason] = None,
     revision: Optional[PendingRevision] = None,
     pivoted_from_close: bool = False,
 ) -> Optional[OfferRecord]:
     """The record with a new ``kind`` offer open, or None when a standing
     decline binds it (``binding_decline``), in which case nothing is written.
 
-    Raises ``ValueError`` when an offer is already open: answer or lapse it
-    first. A close offer's ``closure_reason`` is derived here, from the case
-    as it stands (``derive_closure_reason``). Opening an offer ends a
-    remembered resolution request.
+    Raises ``ValueError`` when an offer is already open (answer or lapse it
+    first), and when ``closure_reason`` is missing from a close offer or given
+    for any other kind. A terminal offer is opened through
+    ``terminal_transitions.open_disposition_offer``, which derives a close's
+    reason from the case as it stands. Opening an offer ends a remembered
+    resolution request.
     """
-    from faultmaven.core.investigation.terminal_transitions import (
-        derive_closure_reason,
-    )
-
     record = case.offer_record
     if record.open is not None:
         raise ValueError(
             f"case {case.case_id} already has a {record.open.kind.value} offer "
             "open; answer or lapse it first"
+        )
+    if (closure_reason is None) == (kind == OfferKind.CLOSE):
+        raise ValueError(
+            f"case {case.case_id}: a close offer carries its closure_reason, "
+            f"and only a close offer does (kind={kind.value})"
         )
     wording_key = revision.wording_key if revision is not None else None
     if (
@@ -373,7 +393,7 @@ def open_offer(
         proposal_id=new_proposal_id(),
         kind=kind,
         basis=basis,
-        closure_reason=derive_closure_reason(case) if kind == OfferKind.CLOSE else None,
+        closure_reason=closure_reason,
         summary=summary,
         evidence_ids=tuple(evidence_ids or ()),
         opened_at_turn=case.current_turn,
@@ -455,13 +475,8 @@ def _premise_gone(case: "Case", offer: Offer) -> bool:
     if case.is_terminal:
         return True
     if _is_false_alarm(offer.kind, offer.closure_reason):
-        pv = case.problem_verification
-        invalidation = pv.invalidation if pv is not None else None
-        return (
-            case.progress.problem_status != ProblemStatus.INVALIDATED
-            or invalidation is None
-            or invalidation.turn > offer.opened_at_turn
-        )
+        finding = _finding_turn(case)
+        return finding is None or finding > offer.opened_at_turn
     return False
 
 
@@ -471,8 +486,10 @@ def lapse_offers(case: "Case") -> OfferRecord:
     - An open resolve or close offer whose premise has gone is answered
       ``lapsed`` (``_premise_gone``). A revision is never touched: only
       ``problem_status`` opens and answers it.
-    - A decline given on the current turn has its premise refreshed to the
-      case as it stands, so the turn's own updates never un-answer it.
+    - A decline given on the current turn has its premise widened to cover
+      the case as it stands, so the turn's own updates never un-answer it.
+      Widened, never narrowed: a row the turn disqualified is still one the
+      decline saw, and re-entering later moves nothing.
     - An older decline whose premise moved is stamped ``lapsed_at_turn``.
     - The resolution request ends when the case leaves INVESTIGATING.
     """
@@ -508,7 +525,9 @@ def lapse_offers(case: "Case") -> OfferRecord:
         if scope in (None, _REVISION) or answer.lapsed_at_turn is not None:
             continue
         if answer.at_turn == case.current_turn:
-            fresh = _premise(case, answer.kind, answer.closure_reason)
+            fresh = _widened(
+                answer.premise, _premise(case, answer.kind, answer.closure_reason)
+            )
             if fresh != answer.premise:
                 answers[i] = answer.model_copy(update={"premise": fresh})
         elif not _premise_holds(answer, case):
@@ -559,15 +578,8 @@ def restage_revision(case: "Case", staged: Iterable[StagedCauseWork]) -> OfferRe
 
 
 # --------------------------------------------------------------------------
-# The projection
+# Confirmation pairs (read by ``offer_projection``)
 # --------------------------------------------------------------------------
-
-#: The "Mark it resolved" chip (#1895): label, payload, body.
-DECLINED_RESOLVE_CARD_LABEL = "Mark it resolved"
-_DECLINED_RESOLVE_CARD_PAYLOAD = "Mark this case resolved."
-_DECLINED_RESOLVE_CARD_BODY = (
-    "Re-open the resolution the agent proposed. You confirm on the next step."
-)
 
 
 def _pair(offer: Offer, yes: tuple[str, str, str], no: tuple[str, str, str]) -> list:
@@ -652,85 +664,7 @@ _PAIRS = {
 }
 
 
-def _reopen_chip(case: "Case") -> Optional[dict]:
-    """The chip that keeps a declined resolution one step away (#1895), or
-    None.
-
-    RESOLVED is earned, never requested: it is not on the status menu, and a
-    user's request never becomes the confirmation row that earns it. So once
-    the user has declined the resolution, neither the engine nor the model
-    offers it again until a solution or confirmation the decline never saw is
-    recorded. A user who changes their mind meanwhile needs a deterministic way
-    back on every client, Slack included (which renders only the server's
-    suggestions): this chip re-presents the offer the user declined.
-
-    Its intent is the published ``QueryIntent`` shape ``{"type":
-    "status_transition", "to_state": "resolved", "proposal_id": <reopen
-    key>}``, which every client forwards verbatim. The reopen key
-    (``terminal_transitions.resolve_reopen_key``) names the newest standing
-    decline; the service boundary and the engine's guard admit the chip only
-    while that decline stands (``resolve_reopen_admitted``), and the engine
-    then OPENS a resolve offer the user confirms (INV-03). It names no open
-    offer. Not built while any offer is open (it re-opens a declined offer, it
-    does not compete with a live one) or while the problem is on hold (a
-    revision awaiting the user, a false alarm).
-    """
-    from faultmaven.core.investigation.terminal_transitions import (
-        declined_resolve_entry,
-        resolve_reopen_key,
-    )
-
-    if case.offer_record.open is not None or case.progress.problem_status in (
-        ProblemStatus.REVISION_PENDING,
-        ProblemStatus.INVALIDATED,
-    ):
-        return None
-    entry = declined_resolve_entry(case)
-    if entry is None:
-        return None
-    return {
-        "label": DECLINED_RESOLVE_CARD_LABEL,
-        "action_type": "DECIDE",
-        "payload": _DECLINED_RESOLVE_CARD_PAYLOAD,
-        "body": _DECLINED_RESOLVE_CARD_BODY,
-        "intent": {
-            "type": "status_transition",
-            "to_state": "resolved",
-            "proposal_id": resolve_reopen_key(entry),
-        },
-    }
-
-
-class OfferProjection:
-    """Every affordance the record implies, derived on demand from one case:
-    ``disposition_eligibility``, the open offer's confirmation ``pair`` and the
-    ``reopen_chip``."""
-
-    def __init__(self, case: "Case") -> None:
-        self._case = case
-
-    @cached_property
-    def disposition_eligibility(self) -> DispositionEligibility:
-        from faultmaven.core.investigation.terminal_transitions import (
-            derive_disposition_eligibility,
-        )
-
-        return derive_disposition_eligibility(self._case)
-
-    @cached_property
-    def pair(self) -> list[dict]:
-        """The open offer's confirmation pair, each card naming it by its
-        ``proposal_id``; empty when nothing is open."""
-        offer = self._case.offer_record.open
-        return [] if offer is None else _PAIRS[offer.kind](offer)
-
-    @cached_property
-    def reopen_chip(self) -> Optional[dict]:
-        """The "Mark it resolved" chip: with nothing open, while a resolve
-        decline stands and the problem is not on hold; else None."""
-        return _reopen_chip(self._case)
-
-
-def project_offers(case: "Case") -> OfferProjection:
-    """The one projection of the record onto what the user is shown."""
-    return OfferProjection(case)
+def confirmation_pair(offer: Optional[Offer]) -> list[dict]:
+    """``offer``'s confirmation pair, each card naming it by its
+    ``proposal_id``; empty when no offer is given."""
+    return [] if offer is None else _PAIRS[offer.kind](offer)

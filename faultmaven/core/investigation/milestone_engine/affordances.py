@@ -4,7 +4,8 @@ from faultmaven.core.investigation.causal_graph.similarity import (
     hypothesis_statements_duplicate,
 )
 from faultmaven.core.investigation.cause_assurance import evidence_datum_key
-from faultmaven.core.investigation.offers import open_terminal_offer, project_offers
+from faultmaven.core.investigation.offer_projection import project_offers
+from faultmaven.core.investigation.offers import open_terminal_offer
 from faultmaven.core.investigation.problem_status import problem_on_hold
 from faultmaven.core.investigation.prompts.templates.investigation import (
     SCHEMA_INSTRUCTIONS,
@@ -622,7 +623,7 @@ def engine_owned_affordances(case: "Case") -> tuple[str, list] | None:
 
     The state machine has a small enumerable set of gates: an open offer on
     the case's offer record (its confirmation pair, from the offer projection,
-    ``offers.project_offers``) and Gate 1 (problem-statement confirmation).
+    ``offer_projection.project_offers``) and Gate 1 (problem-statement confirmation).
     When a gate is pending, the engine knows the canonical affordance pair;
     the LLM cannot add value there and shouldn't try.
 

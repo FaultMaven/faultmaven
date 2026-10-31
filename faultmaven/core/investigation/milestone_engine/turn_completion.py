@@ -27,9 +27,9 @@ from faultmaven.core.investigation.milestone_engine.regeneration import (
 from faultmaven.core.investigation.milestone_engine.turn_records import (
     _flatten_follow_ups,
 )
+from faultmaven.core.investigation.offer_projection import project_offers
 from faultmaven.core.investigation.offers import (
     open_terminal_offer,
-    project_offers,
     terminal_offer_opened_this_turn,
 )
 from faultmaven.modules.case.contracts import (
@@ -192,7 +192,7 @@ async def _compose_turn_reply(
     # PROSE is composed with (appended below) the LLM's reply via
     # _prose_with_gate_notice — never replacing the analysis the user asked
     # for. Gate SUGGESTIONS stay engine-owned replacements: the open offer's
-    # confirmation pair, from the offer projection (``offers.project_offers``),
+    # confirmation pair, from the offer projection (``offer_projection.project_offers``),
     # here and again in ``engine_owned_affordances`` below.
     #
     # ``gate_prose_appended`` records whether one of the PROSE branches fired:

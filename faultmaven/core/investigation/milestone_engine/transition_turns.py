@@ -18,15 +18,13 @@ from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommi
 from faultmaven.core.investigation.milestone_engine.turn_records import (
     _finish_deterministic_turn,
 )
-from faultmaven.core.investigation.offers import (
-    open_offer,
-    open_terminal_offer,
-    project_offers,
-)
+from faultmaven.core.investigation.offer_projection import project_offers
+from faultmaven.core.investigation.offers import open_terminal_offer
 from faultmaven.core.investigation.problem_status import (
     false_alarm_close_declined_at,
     problem_on_hold,
 )
+from faultmaven.core.investigation.terminal_transitions import open_disposition_offer
 from faultmaven.modules.case.contracts import (
     AnswerVia,
     CaseState,
@@ -349,7 +347,7 @@ def _close_on_explicit_intent(
     # by a decline (``offers.binding_decline``).
     closure = assess_closure_readiness(case)
     if close_pivots_to_resolve(case, closure.verdict):
-        case.offer_record = open_offer(
+        case.offer_record = open_disposition_offer(
             case,
             kind=OfferKind.RESOLVE,
             basis=OfferBasis.MENU,
@@ -364,8 +362,8 @@ def _close_on_explicit_intent(
             # A resolve decline stands: the close closes, so it is asked about
             # as a close, not with the pivot's "mark it resolved instead?".
             closure = assess_close_summary(case)
-        # closure_reason is derived inside open_offer from case state.
-        case.offer_record = open_offer(
+        # closure_reason is derived inside open_disposition_offer from case state.
+        case.offer_record = open_disposition_offer(
             case,
             kind=OfferKind.CLOSE,
             basis=OfferBasis.MENU,
@@ -447,7 +445,7 @@ def _resolve_on_reopen_chip(*, case, upload_report, user_message):
         follow_ups: list = []
     else:
         agent_response = _build_resolution_confirmation(case)
-        case.offer_record = open_offer(
+        case.offer_record = open_disposition_offer(
             case,
             kind=OfferKind.RESOLVE,
             basis=OfferBasis.REOPEN,

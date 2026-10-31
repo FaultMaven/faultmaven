@@ -15,7 +15,7 @@ Design Decision (Issue B):
 
 Flow:
 1. An opener (the engine, the model, the user's menu) opens a resolve or close
-   offer (``offers.open_offer``); nothing executes
+   offer (``open_disposition_offer``); nothing executes
 2. The reply carries the offer's confirmation pair
 3. Next turn: if the user accepts, ``confirm_open_offer`` executes the
    transition and records the answer; a decline is recorded as an answer
@@ -25,7 +25,7 @@ Reference: investigation-lifecycle-logic.md Section 1.4
 
 import logging
 from datetime import UTC, datetime
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 from faultmaven.core.investigation.cause_assurance import (
     CONFIRMED_RCC_LIKELIHOOD_FLOOR,
@@ -71,7 +71,9 @@ from faultmaven.modules.case.contracts import (
     EvidenceCategory,
     InvestigationActionType,
     OfferAnswer,
+    OfferBasis,
     OfferKind,
+    OfferRecord,
     ProblemStatus,
     ResolveEligibility,
     SolutionState,
@@ -642,7 +644,7 @@ def derive_closure_reason(case: "Case") -> ClosureReason:
 
 # Per-disposition eligibility, published on every case read so a client can
 # gate the status menu's Close on case content, not only on the structural
-# action graph. The half of the offer projection (``offers.project_offers``)
+# action graph. The half of the offer projection (``offer_projection.project_offers``)
 # that is written on save; the value sets are the published enums
 # ``ResolveEligibility`` and ``CloseEligibility``, whose ``x-enum-descriptions``
 # carry each value's meaning (contract text).
@@ -759,6 +761,9 @@ def close_pivots_to_resolve(case: Case, verdict: str) -> bool:
 #: What binds the model while a resolve decline stands (#1895): the ONE rule the
 #: step-2 refusal's feedback and the prompt line both state. The model never
 #: proposes on a request; a user who changes their mind has the engine's chip.
+#: A new solution lapses the decline too (``offers.decline_stands``, ruling 3
+#: of #2379), but it earns READY only with a verification of its own, so the
+#: rule names the verification alone.
 RESOLVE_DECLINED_RULE = (
     "Do not propose resolved on the evidence already on record. If the user "
     "reports a NEW verification that the fix held, record it (the cause gone "
@@ -768,6 +773,32 @@ RESOLVE_DECLINED_RULE = (
     "action: point them to it, and never record a confirmation row from a "
     "request."
 )
+
+
+def open_disposition_offer(
+    case: Case,
+    *,
+    kind: OfferKind,
+    basis: OfferBasis,
+    summary: str = "",
+    evidence_ids: Iterable[str] = (),
+    pivoted_from_close: bool = False,
+) -> Optional[OfferRecord]:
+    """``offers.open_offer`` for a resolve or close offer: a close carries the
+    reason derived from the case as it stands (``derive_closure_reason``).
+    Returns the new record, or None when a standing decline binds the offer.
+    """
+    return open_offer(
+        case,
+        kind=kind,
+        basis=basis,
+        summary=summary,
+        evidence_ids=evidence_ids,
+        closure_reason=(
+            derive_closure_reason(case) if kind == OfferKind.CLOSE else None
+        ),
+        pivoted_from_close=pivoted_from_close,
+    )
 
 
 def resolve_reopen_key(entry: OfferAnswer) -> str:
@@ -835,7 +866,7 @@ def confirm_open_offer(case: Case, user_id: str, *, via: AnswerVia) -> bool:
                 via=via,
                 actor_id=user_id,
             )
-            case.offer_record = open_offer(
+            case.offer_record = open_disposition_offer(
                 case,
                 kind=OfferKind.RESOLVE,
                 basis=offer.basis,
@@ -954,7 +985,7 @@ def _execute_closed_transition(
 
     closure_reason is the engine-derived reason. Callers are
     `confirm_open_offer`, which reads it from the close offer, where
-    `open_offer` placed it via `derive_closure_reason`, and
+    `open_disposition_offer` placed it via `derive_closure_reason`, and
     `execute_user_closure`, which derives it.
 
     Raises:

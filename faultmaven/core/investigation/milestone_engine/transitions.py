@@ -4,7 +4,6 @@ import logging
 from typing import Any
 
 from faultmaven.core.investigation.offers import (
-    open_offer,
     remember_resolve_request,
     standing_deferred_decline,
 )
@@ -12,6 +11,7 @@ from faultmaven.core.investigation.problem_status import (
     false_alarm_close_declined_at,
     record_confirmed_statement,
 )
+from faultmaven.core.investigation.terminal_transitions import open_disposition_offer
 from faultmaven.modules.case.contracts import (
     Case,
     CaseAction,
@@ -333,7 +333,7 @@ class TransitionManager:
         metadata["resolution_readiness_verdict"] = readiness.verdict
         metadata["resolution_readiness_missing"] = readiness.missing
         if readiness.verdict == readiness.READY:
-            record = open_offer(
+            record = open_disposition_offer(
                 case,
                 kind=OfferKind.RESOLVE,
                 basis=OfferBasis.MODEL,
@@ -368,7 +368,7 @@ class TransitionManager:
                 "the root cause analysis and the documented (or "
                 "deferred) solution."
             )
-        record = open_offer(
+        record = open_disposition_offer(
             case,
             kind=OfferKind.CLOSE,
             basis=OfferBasis.NEEDS_INFO_UNMET,
@@ -450,6 +450,19 @@ class TransitionManager:
             metadata.setdefault("validation_repairs", []).append(
                 f"Rejected proposed_transition.to_state="
                 f"{proposed.to_state!r} from {case.state.value!r}"
+            )
+            return
+
+        # Only a disposition is offered (ruling 2). INQUIRY → INVESTIGATING is
+        # a legal edge, but it is Gate 1's: the user's confirmation of the
+        # problem statement moves the case, never an offer the model makes
+        # (#2420).
+        if proposed.to_state not in ("resolved", "closed"):
+            _add_system_feedback(
+                metadata,
+                "TRANSITION NOT PROPOSED: only resolved or closed is offered to "
+                "the user. The investigation starts when the user confirms the "
+                "problem statement.",
             )
             return
 
@@ -552,7 +565,7 @@ class TransitionManager:
                 )
                 return
 
-        record = open_offer(
+        record = open_disposition_offer(
             case,
             kind=kind,
             basis=OfferBasis.MODEL,

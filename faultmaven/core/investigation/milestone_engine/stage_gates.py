@@ -17,7 +17,7 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     pending_action_superseded_stale_total,
     solution_offer_superseded_total,
 )
-from faultmaven.core.investigation.offers import open_offer, open_terminal_offer
+from faultmaven.core.investigation.offers import open_terminal_offer
 from faultmaven.core.investigation.problem_status import (
     hold_fix_on_revision,
     pending_revision,
@@ -26,6 +26,7 @@ from faultmaven.core.investigation.problem_status import (
 from faultmaven.core.investigation.prompts.context_builder.budget import (
     structural_index_is_searchable,
 )
+from faultmaven.core.investigation.terminal_transitions import open_disposition_offer
 from faultmaven.core.investigation.working_conclusion_generator import (
     generate_working_conclusion,
 )
@@ -1440,10 +1441,10 @@ def _apply_stage_gate_side_effects(
                 f"Since {rationale}, shall we close this case as stabilized?"
             )
             # Its decline binds nothing (the record's rules,
-            # ``core/investigation/offers.py``), so open_offer is refused only
+            # ``core/investigation/offers.py``), so the open is refused only
             # under a standing false-alarm decline, which an infeasible-RCA
             # mitigation cannot sit beside.
-            record = open_offer(
+            record = open_disposition_offer(
                 case,
                 kind=OfferKind.CLOSE,
                 basis=OfferBasis.RCA_INFEASIBLE,
@@ -1452,7 +1453,7 @@ def _apply_stage_gate_side_effects(
             if record is not None:
                 case.offer_record = record
                 metadata["rca_infeasible_closure_message"] = closure_message
-                # The reason open_offer just derived, read rather than
+                # The reason the open just derived, read rather than
                 # re-derived: an rca_infeasible declaration beside a standing
                 # working conclusion and a solution record derives
                 # ``solution_deferred``, which no local mirror would.

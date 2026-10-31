@@ -121,9 +121,10 @@ class OfferPremise(BaseModel):
     a resolve or close answer its solution and confirmation ids, a false-alarm
     close the finding's turn, a revision its wording key.
 
-    The ids are sorted and complete. A decline given on turn N is refreshed to
+    The ids are sorted and complete. A decline given on turn N is widened to
     cover what turn N itself recorded (``offers.lapse_offers``), so the
-    model's same-turn updates never un-answer it."""
+    model's same-turn updates never un-answer it.
+    """
 
     model_config = ConfigDict(frozen=True)
 

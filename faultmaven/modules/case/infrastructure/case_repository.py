@@ -255,13 +255,12 @@ class CaseRepository(ABC):
         """The save chokepoint's derivations, one place for every repository
         (pattern P3): the offer record's lapse rule (``offers.lapse_offers``),
         then the projection's ``disposition_eligibility``
-        (``offers.project_offers``), each assigned to the case. So a write
-        outside the engine (a REST edit or close) lapses what it moved, and the
-        published eligibility always describes the record being stored."""
-        from faultmaven.core.investigation.offers import (
-            lapse_offers,
-            project_offers,
-        )
+        (``offer_projection.project_offers``), each assigned to the case. So a
+        write outside the engine (a REST edit or close) lapses what it moved,
+        and the published eligibility always describes the record being
+        stored."""
+        from faultmaven.core.investigation.offer_projection import project_offers
+        from faultmaven.core.investigation.offers import lapse_offers
 
         case.offer_record = lapse_offers(case)
         case.disposition_eligibility = project_offers(case).disposition_eligibility

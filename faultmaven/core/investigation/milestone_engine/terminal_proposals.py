@@ -9,10 +9,10 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     evidence_need_status_changed_total,
 )
 from faultmaven.core.investigation.offers import (
-    open_offer,
     terminal_offer_answered_this_turn,
 )
 from faultmaven.core.investigation.problem_status import problem_on_hold
+from faultmaven.core.investigation.terminal_transitions import open_disposition_offer
 from faultmaven.modules.case.contracts import (
     TERMINAL_HYPOTHESIS_STATES,
     Case,
@@ -102,7 +102,7 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
     # paths already make: the LLM-proposal path pivots CLOSED->RESOLVED on
     # SUGGEST_RESOLVE, and the confirm-time guard pivots a pending CLOSE the
     # same way unless the user declined that resolution (#2360), which also
-    # silences this proposer (``open_offer`` refuses under the decline). This
+    # silences this proposer (``open_disposition_offer`` refuses under the decline). This
     # proposer used to offer CLOSED unconditionally, so it was the one path that
     # could offer "close this case without resolution" on a case its OWN
     # eligibility scored resolvable.
@@ -130,7 +130,7 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
     closure = assess_closure_readiness(case)
     # A decline POSTPONES the offer until the case changes underneath it
     # (fm#1122: five identical offers against five explicit declines), and the
-    # record's rule decides when: ``open_offer`` refuses while a standing
+    # record's rule decides when: ``open_disposition_offer`` refuses while a standing
     # decline binds it, until a solution or confirmation the decline never saw
     # is recorded (ruling 3). Never a decline count: counting declines and
     # giving up would be the engine steering toward abandonment (D4
@@ -163,7 +163,7 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
             "this case with the solution documented for your team to apply?"
         )
 
-    record = open_offer(
+    record = open_disposition_offer(
         case, kind=kind, basis=OfferBasis.DEFERRED, summary=gate_message
     )
     if record is None:
@@ -288,7 +288,7 @@ def _maybe_propose_confirmed_resolution(case: "Case", metadata: dict) -> None:
             "it, tell me and I'll record that first."
         )
     gate_message = f"{confirmed} Shall I mark this case resolved?"
-    record = open_offer(
+    record = open_disposition_offer(
         case, kind=OfferKind.RESOLVE, basis=OfferBasis.BACKSTOP, summary=gate_message
     )
     if record is None:
@@ -336,7 +336,7 @@ def _maybe_propose_false_alarm_close(case: "Case", metadata: dict) -> None:
         "false alarm? If you have information showing the problem is real, "
         "say so and the investigation continues."
     )
-    record = open_offer(
+    record = open_disposition_offer(
         case, kind=OfferKind.CLOSE, basis=OfferBasis.FALSE_ALARM, summary=message
     )
     if record is None:

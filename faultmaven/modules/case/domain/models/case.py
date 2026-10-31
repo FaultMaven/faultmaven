@@ -239,8 +239,8 @@ class Case(BaseModel):
             "Per-disposition eligibility, ``{resolved, closed}``. A read view "
             "derived at the one save chokepoint (``CaseRepository."
             "prepare_for_save``) by the offer projection "
-            "(``core/investigation/offers.project_offers``), from the case and "
-            "its offer record. ``closed`` says whether to show Close; "
+            "(``core/investigation/offer_projection.project_offers``), from the "
+            "case and its offer record. ``closed`` says whether to show Close; "
             "``resolved`` gates no control. Always populated for persisted "
             "cases; None on an in-memory case before its first save."
         ),

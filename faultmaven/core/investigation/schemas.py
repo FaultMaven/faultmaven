@@ -1437,7 +1437,7 @@ class ProposedTransition(NullTolerantModel):
     Agent signals a state transition. Engine handles everything else.
 
     Terminal transitions (→ RESOLVED or → CLOSED) require user confirmation;
-    this signal opens an offer on the case. Engine derives closure_reason from
+    this signal sets pending_transition. Engine derives closure_reason from
     case state programmatically — the LLM does not author it. The engine
     builds the confirmation prompt summary from existing helpers.
     """

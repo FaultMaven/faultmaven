@@ -469,8 +469,9 @@ _CLOSURE_REASON_MEANINGS: Mapping[ClosureReason, str] = closure_reason_table(
 # ============================================================
 #
 # What the case content supports per disposition, derived on save from the
-# case and its offer record (``core/investigation/offers.project_offers``) and
-# published on every case read. Two narrow enums rather than one shared one:
+# case and its offer record
+# (``core/investigation/offer_projection.project_offers``) and published on
+# every case read. Two narrow enums rather than one shared one:
 # each key has its own value set, and the precedent is ``SelectableNextState``.
 # Each value's meaning is contract text, published as ``x-enum-descriptions``;
 # editing one moves the contract version.
