@@ -429,7 +429,12 @@ not revive it).
   the engine then opens a resolve offer (basis `reopen`, which no decline
   binds) on a READY case with the usual pair, and the user confirms (INV-03). A
   stale key (a new confirmation has since lapsed the decline) keeps the 422, and by then the engine is offering the resolution
-  itself. The bare "no" is answered with what brings the offer back and the
+  itself. Every decline of a resolution is answered by the model, the bare
+  "no" included (#2223, ruling (b)): on the turn it is given, the prompt carries
+  `RESOLVE_DECLINED_THIS_TURN_LINE` beside the standing line, which says the
+  record already holds the confirmation and asks the model to find out what the
+  user still needs to see, or to name the check that would settle it and ask for
+  its output as data. That turn never forces tools, and its reply carries the
   chip. While the decline stands the prompt and the refusal's feedback state one
   rule (`RESOLVE_DECLINED_RULE`): do not propose on the evidence on record;
   record a NEW verification as evidence and propose in the same turn; point a
@@ -597,7 +602,9 @@ together, first match wins:
   `wait`, `cancel`, `don't`, `not ready`, `hold on`, `stop`) with the same
   decorations and trailing punctuation as a bare yes (#1813); or the Not-yet click;
   or a minted decline on question-free text — below the substantive bound, no
-  upload → answer the offer `declined`, acknowledge deterministically. "no problem, go
+  upload → answer the offer `declined`. A declined CLOSE is acknowledged
+  deterministically; a declined RESOLVE is processed as a normal turn, whatever
+  its length (#2223, ruling (b); *INVESTIGATING → RESOLVED* above). "no problem, go
   ahead", "no worries" and "no, not yet" are not declines (they are re-asked, or
   take the escape lane when substantive), and "note…"/"stopped…" do not read as
   "no"/"stop"
@@ -638,7 +645,7 @@ together, first match wins:
   withdraws. The engine can always re-propose later from fresher state.
 
 So the gate's consumption rule is exact: without an LLM turn it answers only the
-re-asks above (and a bare decline), and it **never** consumes a turn carrying an
+re-asks above (and a bare decline of a close), and it **never** consumes a turn carrying an
 upload, nor a non-answer over 40 characters or carrying a question. A re-ask repeats
 **every time** it is earned and **never answers the offer**: a terminal proposal must not turn into a decline because the user
 typed more than one word. The one-re-present cap #656 added (a second non-answer

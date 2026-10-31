@@ -28,7 +28,6 @@ from faultmaven.core.investigation.terminal_transitions import open_disposition_
 from faultmaven.modules.case.contracts import (
     AnswerVia,
     CaseState,
-    Offer,
     OfferBasis,
     OfferKind,
 )
@@ -165,38 +164,23 @@ FALSE_ALARM_HOLD_REPLY = (
 )
 
 
-#: The reply to a bare "no" to a resolution (#1895). It says what brings the
-#: offer back, and where a user who changes their mind finds it: the reopen
-#: chip, the reply's one follow-up.
-RESOLVE_DECLINED_REPLY = (
-    "Understood, the case stays open. I won't ask about resolving again unless "
-    "a new confirmation that the fix held is recorded; if you change your "
-    "mind, use 'Mark it resolved' below."
-)
-
-
-def _decline_bare_reply(*, case, upload_report, user_message, declined: Offer):
-    """Reply to a bare (non-substantive) decline of the open offer, leaving the case open.
+def _decline_bare_reply(*, case, upload_report, user_message):
+    """Reply to a bare (non-substantive) decline of the open CLOSE offer,
+    leaving the case open. Only a close reaches it: a declined resolution is
+    always answered by the model (#2223, ruling (b)).
 
     On a false-alarm close the decline was just recorded with the finding as
     its premise, and the reply says what the hold is and how it moves, with the
-    close card (``declined_close_card``) as its one follow-up (#1889). On a
-    resolution the decline was just recorded against the solutions and
-    confirmations on record, and the reply says what brings the offer back,
-    with the "Mark it resolved" chip as its one follow-up (#1895).
-
-    Keyed on ``declined``, the offer just declined: a close the user declines
-    while their resolve decline stands (#2360) gets the plain reply, with the
-    chip still attached.
+    close card (``declined_close_card``) as its one follow-up (#1889). Any other
+    close gets the plain reply; one the user declines while their resolve
+    decline stands (#2360) carries the "Mark it resolved" chip as its one
+    follow-up (#1895).
     """
     follow_ups: list = []
     resolve_card = project_offers(case).reopen_chip
     if false_alarm_close_declined_at(case) is not None:
         agent_response = FALSE_ALARM_HOLD_REPLY
         follow_ups = [declined_close_card("false_alarm")]
-    elif resolve_card is not None and declined.kind == OfferKind.RESOLVE:
-        agent_response = RESOLVE_DECLINED_REPLY
-        follow_ups = [resolve_card]
     else:
         agent_response = "Understood. The case remains open for further investigation."
         if resolve_card is not None:

@@ -6,7 +6,10 @@ from typing import Optional
 from faultmaven.core.investigation.milestone_engine.generation import (
     TOOLLESS_INFERENCE_OUTPUT_FLOOR,
 )
-from faultmaven.core.investigation.offers import open_terminal_offer
+from faultmaven.core.investigation.offers import (
+    open_terminal_offer,
+    terminal_offer_answered_this_turn,
+)
 from faultmaven.core.investigation.prompts.templates.assembly import get_prompt_for_case
 from faultmaven.core.investigation.prompts.templates.tool_text import (
     NO_TOOLS,
@@ -158,7 +161,10 @@ async def _generate_turn_response(
     # single-shot structured path (reasoning declared) and must get the
     # un-elided prompt — no search_file will run to recover an extract
     # replaced by an index stub. Pure over case state; computed once.
-    has_pending = open_terminal_offer(case) is not None
+    # A terminal offer the gate answered this turn counts as pending (#2223),
+    # so a decline the model answers is never a forced-tool turn.
+    offer_open = open_terminal_offer(case) is not None
+    has_pending = offer_open or terminal_offer_answered_this_turn(case)
     force_tools = (
         _should_force_tools(processing_mode, case, has_pending)
         if investigation_tools
@@ -219,10 +225,11 @@ async def _generate_turn_response(
     # ``_has_readable_material`` guarantees a real search target so forcing
     # tools cannot crash the loop.
     #
-    # Safety net: when a resolve or close offer is open, the user is in a
-    # confirmation flow. Don't force tool_choice=required — the user's
-    # message is a confirmation/decline that may have fallen through
-    # pattern matching (typed instead of clicked). Forcing tools crashes
+    # Safety net: when a resolve or close offer is open, or the gate answered
+    # one on this turn, the user is in a confirmation flow. Don't force
+    # tool_choice=required — the user's message is a confirmation/decline
+    # that may have fallen through pattern matching (typed instead of
+    # clicked), or a decline the model answers (#2223). Forcing tools crashes
     # the tool loop when the LLM has nothing to search for.
     if route_single_shot:
         # fm#1116: nothing to search on this turn — take the single-shot

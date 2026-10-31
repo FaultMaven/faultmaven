@@ -108,16 +108,40 @@ RESOLVE_DECLINED_LINE = (
 )
 
 
+#: The line the prompt carries on the turn the user declines the resolution
+#: (#2223, ruling (b)), beside ``RESOLVE_DECLINED_LINE``: the decline is
+#: answered by the model, which asks what would settle it. A READY case already
+#: holds both confirmation rows, so the line says so and forbids recording
+#: them again: a row recorded from the record or from the user's words would
+#: lapse the decline and bring the offer straight back.
+RESOLVE_DECLINED_THIS_TURN_LINE = (
+    "**THE USER HAS JUST DECLINED MARKING THIS CASE RESOLVED.** The case record "
+    "already holds the confirmation the offer rested on: the cause shown "
+    "removed and the reported problem seen gone after the fix. Do not record "
+    "either again, from the record or from the user's words. Ask what they "
+    "still need to see before calling it resolved, or what makes them doubt "
+    "the fix. If a specific check would settle it (the fix mechanism's own "
+    "state, a schedule's last run, a window with no recurrence), name it and "
+    "ask for its output as data (pasted or attached, not typed into your "
+    "message)."
+)
+
+
 def _resolve_declined_emphasis(case) -> str:
     """``RESOLVE_DECLINED_LINE`` while the user's decline of the resolution
-    stands (``terminal_transitions.declined_resolve_entry``), else "".
-    Appended to the focus block on every stage, never replacing it."""
+    stands (``terminal_transitions.declined_resolve_entry``), else "", and
+    ``RESOLVE_DECLINED_THIS_TURN_LINE`` after it when that decline was given
+    on the current turn (#2223). One read decides both lines, so they cannot
+    disagree. Appended to the focus block on every stage, never replacing it."""
     from faultmaven.core.investigation.terminal_transitions import (
         declined_resolve_entry,
     )
 
-    if declined_resolve_entry(case) is None:
+    entry = declined_resolve_entry(case)
+    if entry is None:
         return ""
+    if entry.at_turn == case.current_turn:
+        return f"\n{RESOLVE_DECLINED_LINE}\n{RESOLVE_DECLINED_THIS_TURN_LINE}\n"
     return f"\n{RESOLVE_DECLINED_LINE}\n"
 
 

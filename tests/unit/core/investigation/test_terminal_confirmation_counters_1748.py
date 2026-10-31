@@ -1049,9 +1049,11 @@ class TestOnlyAClickOrABareTokenExecutes:
 
     async def test_a_bare_no_still_declines_and_records_the_refusal(self, counters):
         """An explicit decline stays a decline. Also the positive control for
-        every "nothing recorded" above: on this harness a refusal records."""
+        every "nothing recorded" above: on this harness a refusal records. A
+        close: a declined resolution is answered by the model (#2223), which
+        this harness refuses to reach."""
         confirmation, _ = counters
-        store = _Store(_investigating_case())
+        store = _Store(_investigating_case("closed"))
 
         response = await _turn(_service(store), "no")
 
