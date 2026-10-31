@@ -322,7 +322,7 @@ def _case_record_params(case: Case, last_activity_at: datetime) -> Dict[str, Any
     columns (the PG hybrid had been writing them as phantom columns
     before the schema baseline; now they're real). The ``metadata``
     JSON blob still holds the transient runtime state (proposed_actions /
-    action_attempts / turn_history / pending_transition /
+    action_attempts / turn_history / offer_record /
     message_count / last_suggestions) — those have no first-class
     column yet.
     """
@@ -396,7 +396,7 @@ def _case_record_params(case: Case, last_activity_at: datetime) -> Dict[str, Any
                     # is dropped by the falsy filter below; the read
                     # side's default already covers that.
                     "message_count": case.message_count,
-                    "pending_transition": case.pending_transition,
+                    "offer_record": case.offer_record.model_dump(mode="json"),
                     "proposed_actions": (
                         [a.model_dump(mode="json") for a in case.proposed_actions]
                         if case.proposed_actions

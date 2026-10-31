@@ -1,10 +1,10 @@
 import json
-from typing import Any
 
 from faultmaven.core.investigation.causal_graph.similarity import (
     hypothesis_statements_duplicate,
 )
 from faultmaven.core.investigation.cause_assurance import evidence_datum_key
+from faultmaven.core.investigation.offers import open_terminal_offer, project_offers
 from faultmaven.core.investigation.problem_status import problem_on_hold
 from faultmaven.core.investigation.prompts.templates.investigation import (
     SCHEMA_INSTRUCTIONS,
@@ -19,10 +19,7 @@ from faultmaven.core.investigation.verification_status import (
 from faultmaven.modules.case.contracts import Case, CaseState
 
 from .cause_state import _investigation_confirmation_suggestions
-from .statement_revision import (
-    revision_confirmation_suggestions,
-    revision_pending,
-)
+from .statement_revision import revision_pending
 
 
 def gate1_statement_is_confirmable(statement_at_turn_start: "str | None") -> bool:
@@ -620,16 +617,14 @@ _GATE_VERIFICATION_STATUS: dict[str, VerificationStatus] = {
 }
 
 
-def engine_owned_affordances(
-    case: "Case", metadata: dict[str, Any] | None = None
-) -> tuple[str, list] | None:
+def engine_owned_affordances(case: "Case") -> tuple[str, list] | None:
     """Return ``(gate_name, affordance_list)`` when a state-machine gate is pending.
 
-    The state machine has a small enumerable set of gates: imperative
-    pending_transition (set by ``propose_transition`` via
-    ``metadata['override_suggestions']``) and Gate 1 (problem-statement
-    confirmation). When a gate is pending, the engine knows the canonical
-    affordance pair; the LLM cannot add value there and shouldn't try.
+    The state machine has a small enumerable set of gates: an open offer on
+    the case's offer record (its confirmation pair, from the offer projection,
+    ``offers.project_offers``) and Gate 1 (problem-statement confirmation).
+    When a gate is pending, the engine knows the canonical affordance pair;
+    the LLM cannot add value there and shouldn't try.
 
     Gate 2 (investigation path) and Gate 3 (post-mitigation continuation)
     were removed (redesign R5): there is no prospective path fork, and a
@@ -639,7 +634,7 @@ def engine_owned_affordances(
     EVIDENCE / FREE_SPEECH suggestions pass through unmodified.
 
     Gate identifiers (telemetry-stable labels):
-      - ``"disposition"`` — pending_transition / propose_transition override
+      - ``"disposition"`` — an open resolve or close offer
       - ``"gate1"`` — problem-statement confirmation
       - ``"insufficient_evidence"`` — work-gated stall with no grounded cause
         (code-guarded, always on)
@@ -650,8 +645,8 @@ def engine_owned_affordances(
       - ``"not_yet_productive"`` — persisted 0-hypothesis vacuum; a pull-back to
         symptom / expected-vs-observed clarification (code-guarded, always on)
 
-    The disposition branch sits above gate1 because pending_transition can
-    fire while gate1 is technically open. The mid-investigation readings sit
+    The disposition branch sits above gate1 because a close offer can be open
+    while gate1 is technically open (a close from INQUIRY). The mid-investigation readings sit
     LAST — any pending state-machine handshake (disposition, gate1) takes
     precedence over them — and are mutually exclusive with each other: all four
     read the same ``assess_verification_status`` join, and a case has exactly one
@@ -659,18 +654,16 @@ def engine_owned_affordances(
     only; ``restatement_held`` is written beside ``insufficient_evidence`` because
     it is the cell carved out of it.
     """
-    md = metadata or {}
-
-    if md.get("override_suggestions"):
-        return ("disposition", md["override_suggestions"])
+    if open_terminal_offer(case) is not None:
+        return ("disposition", project_offers(case).pair)
 
     if _gate1_is_pending(case):
         return ("gate1", _investigation_confirmation_suggestions(case))
 
     # The statement-revision handshake: Gate 1 again, inside INVESTIGATING.
-    # Exclusive with a pending transition by construction (problem_status).
+    # The offer record's one slot keeps it apart from a resolve or close offer.
     if revision_pending(case):
-        return ("statement_revision", revision_confirmation_suggestions(case))
+        return ("statement_revision", project_offers(case).pair)
 
     # The four mid-investigation readings below all ask the SAME join, and each
     # used to recompute it — across the two ``engine_owned_affordances`` call

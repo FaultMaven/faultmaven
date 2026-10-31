@@ -1437,7 +1437,7 @@ class ProposedTransition(NullTolerantModel):
     Agent signals a state transition. Engine handles everything else.
 
     Terminal transitions (→ RESOLVED or → CLOSED) require user confirmation;
-    this signal sets pending_transition. Engine derives closure_reason from
+    this signal opens an offer on the case. Engine derives closure_reason from
     case state programmatically — the LLM does not author it. The engine
     builds the confirmation prompt summary from existing helpers.
     """
@@ -1779,7 +1779,7 @@ class SuggestedFollowUp(NullTolerantModel):
     # metadata (QueryIntent routing) is owned by the engine, not the LLM —
     # it is attached deterministically by the response builder via
     # ``engine_owned_affordances`` when a state-machine gate is pending
-    # (Gate 1 / Gate 2 / Gate 3 / pending_transition). The engine→API
+    # (Gate 1, or an open offer on the case). The engine→API
     # serialization adds ``intent`` to ``SuggestedActionResponse`` at the
     # boundary; the LLM never sees it. Any LLM that tries to emit an
     # ``intent`` field will have it surfaced by ``_log_dropped_fields`` as

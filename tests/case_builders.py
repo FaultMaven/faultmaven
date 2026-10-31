@@ -22,8 +22,14 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from faultmaven.modules.case.contracts import (
+    AnswerKind,
+    AnswerVia,
     CaseState,
     InquiryData,
+    Offer,
+    OfferAnswer,
+    OfferBasis,
+    OfferKind,
     ProblemStatus,
     ProblemVerification,
 )
@@ -138,46 +144,40 @@ def investigating_case(
     return case
 
 
-#: The bases an engine proposer opens with: their offers carry provenance.
-_ENGINE_BASES = ("backstop", "deferred", "false_alarm")
-
-
 def with_open_offer(
     case: Case,
     *,
     kind: str = "resolve",
     basis: str = "model",
     summary: str = "Shall I?",
-) -> dict:
+) -> Offer:
     """Open a ``kind`` offer ("resolve" or "close") on ``case`` as ``basis``
-    opens it, and return it."""
-    from faultmaven.core.investigation.terminal_transitions import (
-        closure_verdict,
-        deferred_disposition_signature,
-        propose_transition,
-    )
+    opens it, through the record's writer, and return it. A close offer's
+    ``closure_reason`` derives from the case as it stands. Refuses (an
+    ``AssertionError``) when a standing decline binds the offer."""
+    from faultmaven.core.investigation.offers import open_offer
 
-    to_state = {"resolve": "resolved", "close": "closed"}[kind]
-    propose_transition(case, to_state=to_state, summary=summary)
-    if basis in _ENGINE_BASES:
-        case.pending_transition["justifying_signature"] = (
-            deferred_disposition_signature(case, closure_verdict(case))
-        )
-    return case.pending_transition
+    record = open_offer(
+        case, kind=OfferKind(kind), basis=OfferBasis(basis), summary=summary
+    )
+    assert record is not None, f"a standing decline binds a {basis} {kind} offer"
+    case.offer_record = record
+    return record.open
 
 
 def with_declined_offer(
     case: Case, *, kind: str = "resolve", basis: str = "backstop"
-) -> None:
+) -> OfferAnswer:
     """Open a ``kind`` offer as ``basis`` opens it and record the user's
-    decline of it, as a "Not yet" click records it."""
-    from faultmaven.core.investigation.milestone_engine.response_synthesis import (
-        _record_deferred_disposition_decline,
-    )
-    from faultmaven.core.investigation.terminal_transitions import (
-        cancel_pending_transition,
-    )
+    decline of it, as a "Not yet" click records it, against the case as it
+    stands. Returns the answer."""
+    from faultmaven.core.investigation.offers import answer_offer
 
-    with_open_offer(case, kind=kind, basis=basis)
-    _record_deferred_disposition_decline(case)
-    cancel_pending_transition(case)
+    offer = with_open_offer(case, kind=kind, basis=basis)
+    case.offer_record = answer_offer(
+        case,
+        proposal_id=offer.proposal_id,
+        answer=AnswerKind.DECLINED,
+        via=AnswerVia.CLICK,
+    )
+    return case.offer_record.answers[-1]

@@ -41,6 +41,7 @@ from faultmaven.core.investigation.milestone_engine.turn_records import (
     _report_turn_uploads,
     _resolve_id_ref,
 )
+from faultmaven.core.investigation.offers import answer_offer, open_terminal_offer
 from faultmaven.core.investigation.problem_status import (
     cause_work_accepted,
     cause_work_staged,
@@ -48,6 +49,7 @@ from faultmaven.core.investigation.problem_status import (
     invalidation_refusal,
     is_engine_false_alarm_close,
     is_false_alarm_close,
+    pending_revision,
     propose_revision,
     revision_refusal,
     stage_cause_work,
@@ -61,13 +63,12 @@ from faultmaven.core.investigation.schemas import (
     MilestoneUpdates,
     TerminalResponse,
 )
-from faultmaven.core.investigation.terminal_transitions import (
-    cancel_pending_transition,
-)
 from faultmaven.infrastructure.observability.evidence_metrics import (
     EVIDENCE_ROW_REFUSED_TOTAL,
 )
 from faultmaven.modules.case.contracts import (
+    AnswerKind,
+    AnswerVia,
     Case,
     ConfidenceLevel,
     Evidence,
@@ -106,7 +107,6 @@ from .milestone_inference import (
     fix_acceptance_justification_error,
     validate_reasoning_first,
 )
-from .response_synthesis import _note_engine_disposition_withdrawn
 from .stage_gates import (
     CARRIED_FIX_KEY,
     FIX_JUSTIFICATION_KEY,
@@ -229,15 +229,8 @@ class ResponseApplier:
         response_obj: BaseInteractionResponse,
         attachments: list[dict[str, Any]] | None = None,
         upload_report: dict[str, list[str]] | None = None,
-        turn_markers: dict[str, Any] | None = None,
     ) -> tuple[Case, dict[str, Any]]:
         """Process structured response and update case state.
-
-        ``turn_markers`` are section 0b's turn-scoped markers
-        (``response_synthesis.TURN_MARKER_KEYS``, read off the turn's metadata
-        by ``response_synthesis.turn_markers``). They seed this step's metadata
-        so the proposers here honour a withdrawal or a decline made earlier in
-        the same turn.
 
         ``upload_report`` is the turn's already-derived upload reading (see
         ``_report_turn_uploads``). ``_process_turn_impl`` derives it once, for
@@ -261,7 +254,6 @@ class ResponseApplier:
             "status_transitioned": False,
             "outcome": TurnOutcome.CONVERSATION,
         }
-        metadata.update(turn_markers or {})
         metadata.update(
             upload_report
             if upload_report is not None
@@ -730,7 +722,7 @@ class ResponseApplier:
                 if verified_this_turn
                 else (
                     "a transition is awaiting the user's answer"
-                    if case.pending_transition
+                    if open_terminal_offer(case)
                     else invalidation_refusal(
                         case, _ids(vu.invalidation_evidence_ids), vu.invalidation_basis
                     )
@@ -750,19 +742,15 @@ class ResponseApplier:
             metadata["problem_invalidated_this_turn"] = True
             return
 
-        pending_revision = pv.pending_revision
-        if (
-            revision
-            and pending_revision is not None
-            and revision == pending_revision.text.strip()
-        ):
+        held = pending_revision(case)
+        if revision and held is not None and revision == held.text.strip():
             # The wording already awaiting the user, sent again: nothing moves,
             # and it must not read as progress on a turn spent waiting.
             return
 
         if revision:
             key = revision_offer_key(revision)
-            pending = case.pending_transition
+            pending = open_terminal_offer(case)
             refusal = (
                 "a transition is awaiting the user's answer"
                 if pending and not is_engine_false_alarm_close(pending)
@@ -792,21 +780,24 @@ class ResponseApplier:
                 text=revision,
                 evidence_ids=_ids(vu.revision_evidence_ids),
                 basis=vu.revision_basis,
-                offer_key=key,
+                wording_key=key,
             )
             metadata["problem_status_changed"] = True
             metadata["revision_proposed_this_turn"] = True
 
     @staticmethod
     def _withdraw_false_alarm_close(case: Case, metadata: dict[str, Any]) -> None:
-        """Take back a pending false-alarm close, whoever proposed it: the
-        finding it rested on no longer stands. The offer is withdrawn, not
-        declined — nothing is recorded against it (the engine's disposition is
-        noted only when the engine made the offer)."""
-        pending = case.pending_transition
-        if pending and is_false_alarm_close(pending):
-            _note_engine_disposition_withdrawn(case, metadata)
-            cancel_pending_transition(case)
+        """Take back an open false-alarm close, whoever opened it: the finding
+        it rested on no longer stands, or a revision takes its place (INV-45).
+        Withdrawn by the engine, not declined: nothing binds."""
+        offer = open_terminal_offer(case)
+        if is_false_alarm_close(offer):
+            case.offer_record = answer_offer(
+                case,
+                proposal_id=offer.proposal_id,
+                answer=AnswerKind.WITHDRAWN,
+                via=AnswerVia.ENGINE,
+            )
 
     @staticmethod
     def _stage_cause_work(case: Case, updates: Any, metadata: dict[str, Any]) -> None:
@@ -835,7 +826,7 @@ class ResponseApplier:
         if "solutions_to_add" in subset:
             staged_before = {
                 fix_identity(item.get("description"))
-                for bundle in case.problem_verification.pending_revision.staged
+                for bundle in pending_revision(case).staged
                 for item in bundle.updates.get("solutions_to_add", [])
             }
             fresh = [

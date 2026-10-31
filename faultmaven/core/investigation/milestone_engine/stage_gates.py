@@ -17,9 +17,11 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     pending_action_superseded_stale_total,
     solution_offer_superseded_total,
 )
+from faultmaven.core.investigation.offers import open_offer, open_terminal_offer
 from faultmaven.core.investigation.problem_status import (
+    hold_fix_on_revision,
+    pending_revision,
     problem_on_hold,
-    stage_cause_work,
 )
 from faultmaven.core.investigation.prompts.context_builder.budget import (
     structural_index_is_searchable,
@@ -35,6 +37,8 @@ from faultmaven.modules.case.contracts import (
     InterventionQuadrant,
     InvestigationActionType,
     MitigationRecord,
+    OfferBasis,
+    OfferKind,
     SolutionType,
     WorkingConclusion,
 )
@@ -192,8 +196,8 @@ def _should_force_tools(
     classified ``directed_analysis``, (b) the case holds a file a
     directed-analysis tool can read (``_has_readable_material``: a row whose
     file is stored, or a stored upload that renders, #2375), and (c) the user
-    is not mid-confirmation (a ``pending_transition`` turn is a typed
-    confirm/decline with nothing to search — forcing tools would crash the
+    is not mid-confirmation (a turn over an open resolve or close offer is a
+    typed confirm/decline with nothing to search — forcing tools would crash the
     loop). This is the linchpin of #708: a fresh evidence-bearing upload
     reroutes to ``directed_analysis`` AND satisfies ``_has_readable_material``
     via its stored UploadedFile, so tools are forced on the delivering turn
@@ -738,13 +742,12 @@ _NAMED_ERROR = re.compile(r"Milestones \[([^\]]*)\] (completed without .*)", re.
 
 def justification_skipped(case: Case) -> bool:
     """No milestone justification is asked on a terminal case or while a
-    terminal transition is in progress (a pending transition, or the solution
-    verified). The gate reads it at decision time (#2105)."""
+    terminal transition is in progress (a resolve or close offer open, or the
+    solution verified). A revision awaiting the user is not one. The gate
+    reads it at decision time (#2105)."""
     return case.is_terminal or (
         case.state == CaseState.INVESTIGATING
-        and bool(
-            getattr(case, "pending_transition", None) or case.progress.solution_verified
-        )
+        and bool(open_terminal_offer(case) or case.progress.solution_verified)
     )
 
 
@@ -974,7 +977,7 @@ def _fix_entries(
 
 def _carried_fixes(case: Case) -> set:
     """The fix identities this pending revision's bundles already carry."""
-    staged = case.problem_verification.pending_revision.staged
+    staged = pending_revision(case).staged
     return {bundle.held_fix for bundle in staged if bundle.held_fix}
 
 
@@ -1039,9 +1042,7 @@ def _resolve_fix_identity(
             _note_unnamed_acceptance(case, entries, metadata, holding=holding)
             return None
         carried = holding and [
-            b.turn
-            for b in case.problem_verification.pending_revision.staged
-            if b.held_fix
+            b.turn for b in pending_revision(case).staged if b.held_fix
         ]
         if carried:
             _add_system_feedback(
@@ -1173,12 +1174,11 @@ def _hold_settles(
     if bearer.state == "accepted":  # not re-sent: settled as on a live turn
         _note_failed_fix(case, bearer, metadata)
         return True
-    pending_revision = case.problem_verification.pending_revision
     if (
         bearer.state == "superseded"
         and bearer.superseded_reason == "license_lost"
         # Withdrawn before the hold began, not by the hold itself.
-        and (bearer.superseded_in_turn or 0) < pending_revision.held_since_turn
+        and (bearer.superseded_in_turn or 0) < pending_revision(case).held_since_turn
     ):
         _refuse_withdrawn(metadata, bearer.action_id, _license_holds(case, metadata))
         return True
@@ -1189,17 +1189,12 @@ def _carry_fix(
     case: Case, identity: str, user_message: str, metadata: dict[str, Any]
 ) -> None:
     """Record the decision on this turn's staged bundle, for the replay."""
-    pending_revision = case.problem_verification.pending_revision
-    bundle = next(
-        (b for b in pending_revision.staged if b.turn == case.current_turn), None
+    hold_fix_on_revision(
+        case,
+        identity=identity,
+        user_message=user_message or "",
+        evidence_added=metadata.get("evidence_slots", []),
     )
-    if bundle is None:
-        stage_cause_work(
-            case, updates={}, evidence_added=metadata.get("evidence_slots", [])
-        )
-        bundle = pending_revision.staged[-1]
-    bundle.held_fix = identity
-    bundle.held_fix_message = (user_message or "")[:10000]
     logger.info(
         "Case %s: carried a fix acceptance at turn %s", case.case_id, case.current_turn
     )
@@ -1407,7 +1402,6 @@ def _apply_stage_gate_side_effects(
         from faultmaven.core.investigation.terminal_transitions import (
             ClosureReadiness,
             closure_verdict,
-            propose_transition,
         )
 
         # Don't clobber an in-flight disposition handshake, and never on a
@@ -1424,7 +1418,7 @@ def _apply_stage_gate_side_effects(
         # elimination would be offered on a premise the case contradicts.
         if (
             rca_infeasible
-            and not getattr(case, "pending_transition", None)
+            and case.offer_record.open is None
             and not case.is_terminal
             and not problem_on_hold(case)
             and closure_verdict(case) != ClosureReadiness.SUGGEST_RESOLVE
@@ -1445,33 +1439,28 @@ def _apply_stage_gate_side_effects(
                 "The mitigation is verified and stable. "
                 f"Since {rationale}, shall we close this case as stabilized?"
             )
-            propose_transition(
-                case=case,
-                to_state="closed",
+            # Its decline binds nothing (the record's rules,
+            # ``core/investigation/offers.py``), so open_offer is refused only
+            # under a standing false-alarm decline, which an infeasible-RCA
+            # mitigation cannot sit beside.
+            record = open_offer(
+                case,
+                kind=OfferKind.CLOSE,
+                basis=OfferBasis.RCA_INFEASIBLE,
                 summary=closure_message,
             )
-            # Unified same-turn proposal flag: keeps step 0 of
-            # _check_automatic_transitions from confirming this close with
-            # the very message that produced it (#722 same-turn-confirmation
-            # guard) — the mitigation-verified message that triggered this
-            # proposal often pattern-matches as a bare "yes".
-            metadata["transition_proposed_this_turn"] = True
-            metadata["override_suggestions"] = _close_confirmation_suggestions(case)
-            metadata["rca_infeasible_closure_message"] = closure_message
-            # Read the reason propose_transition just STORED rather than
-            # re-deriving it here. Mirroring the derivation meant reproducing 2
-            # of its 5 branches, which diverges whenever another branch wins —
-            # an rca_infeasible declaration alongside a standing working
-            # conclusion and a solution record derives `solution_deferred`,
-            # which a two-branch mirror cannot express.
-            stored_reason = (getattr(case, "pending_transition", None) or {}).get(
-                "closure_reason"
-            )
-            logger.info(
-                f"Proposed CLOSED transition for case {case.case_id} "
-                f"(rca_infeasible=True; closure_reason derived as "
-                f"{stored_reason}, rationale: {rationale})"
-            )
+            if record is not None:
+                case.offer_record = record
+                metadata["rca_infeasible_closure_message"] = closure_message
+                # The reason open_offer just derived, read rather than
+                # re-derived: an rca_infeasible declaration beside a standing
+                # working conclusion and a solution record derives
+                # ``solution_deferred``, which no local mirror would.
+                logger.info(
+                    f"Proposed CLOSED transition for case {case.case_id} "
+                    f"(rca_infeasible=True; closure_reason derived as "
+                    f"{record.open.closure_reason}, rationale: {rationale})"
+                )
 
     metadata["compliance_detected"] = True
     metadata["progress_made"] = True
@@ -1653,47 +1642,6 @@ def _apply_stage_gate_signals(
         )
 
 
-def _close_confirmation_suggestions(case) -> list:
-    """Generate DECIDE follow-up suggestions for close (abandon) confirmation.
-
-    Mirrors the INQUIRY and RESOLVED confirmation patterns: one positive
-    (confirm close) and one mild negative (continue investigating).
-
-    Note: the confirmation prompt is purely about the irreversibility of
-    closing. The summary is a downstream Dashboard artifact; mentioning it
-    here would either promise unconditionally (sometimes false, when the
-    substance gate skips) or muddy the decision the user is being asked to
-    make. The body text deliberately stays silent about the report.
-
-    Both intents name the standing offer, ``case.pending_transition``, by its
-    key (#1812), so this is called with the CLOSED proposal already standing.
-    """
-    # Local: ``transition_consent`` imports this module.
-    from .transition_consent import offer_intent_fields, terminal_offer_key
-
-    offer = offer_intent_fields(
-        terminal_offer_key(getattr(case, "pending_transition", None)),
-        case=case,
-        gate="terminal",
-    )
-    return [
-        {
-            "label": "Yes, close this case",
-            "action_type": "DECIDE",
-            "payload": "Yes, close this case without resolution.",
-            "body": "Confirm closing the case. Closing is irreversible — the case becomes read-only.",
-            "intent": {"type": "confirmation", "confirmation_value": True, **offer},
-        },
-        {
-            "label": "Not yet, continue investigating",
-            "action_type": "DECIDE",
-            "payload": "Not yet — I'd like to continue investigating.",
-            "body": "Keep the investigation open and continue working toward a solution.",
-            "intent": {"type": "confirmation", "confirmation_value": False, **offer},
-        },
-    ]
-
-
 #: The two closes a user can decline from the engine and still want later, by
 #: the side ``transitions.declined_close_reask`` names: (label, payload, body).
 _DECLINED_CLOSE_CARDS = {
@@ -1725,8 +1673,8 @@ def declined_close_card(side: str) -> dict:
     intent the status menu sends, executed by ``_close_on_explicit_intent``,
     with the usual confirm pair after it.
 
-    It names a STATE, not an offer: no ``pending_transition`` stands behind it
-    and it carries no ``proposal_id`` (``offer_intent_fields`` is not called;
+    It names a STATE, not an offer: no open offer stands behind it and it
+    carries no ``proposal_id`` (``offer_intent_fields`` is not called;
     the #1812 census of confirmation builders does not include it). It is
     APPENDED to the turn's follow-ups, never substituted for them: a refusal
     that replaced the model's suggestions with a single close button would be
@@ -1739,70 +1687,4 @@ def declined_close_card(side: str) -> dict:
         "payload": payload,
         "body": body,
         "intent": {"type": "status_transition", "to_state": "closed"},
-    }
-
-
-#: The "Mark it resolved" chip (#1895): (label, payload, body).
-DECLINED_RESOLVE_CARD_LABEL = "Mark it resolved"
-_DECLINED_RESOLVE_CARD_PAYLOAD = "Mark this case resolved."
-_DECLINED_RESOLVE_CARD_BODY = (
-    "Re-open the resolution the agent proposed. You confirm on the next step."
-)
-
-
-def declined_resolve_card(case) -> Optional[dict]:
-    """The chip that keeps a declined resolution one step away, or None when
-    no resolve decline stands (#1895).
-
-    RESOLVED is earned, never requested: it is not on the status menu, and a
-    user's request never becomes the confirmation row that earns it. So once
-    the user has declined the resolution, neither the engine nor the model
-    offers it again until a NEW confirmation that the fix held is recorded. A
-    user who changes their mind meanwhile needs a deterministic way back on
-    every client, Slack included (which renders only the server's
-    suggestions). This chip is that way: it re-presents the offer the engine
-    made and the user declined, and nothing else.
-
-    Its intent is ``{"type": "status_transition", "to_state": "resolved",
-    "proposal_id": <reopen key>}``, the published ``QueryIntent`` shape, which
-    every client forwards verbatim. ``proposal_id`` is the reopen key
-    (``terminal_transitions.resolve_reopen_key``), a digest of the declined
-    entry the decline stands on. The two places that refuse a RESOLVED
-    ``status_transition`` (the service boundary and the engine's guard) admit
-    it only while that same entry still covers the case
-    (``resolve_reopen_admitted``); the engine then PROPOSES resolved with the
-    usual confirmation pair, and the user confirms (INV-03). A stale chip (a
-    new confirmation has since moved the state) is refused with the 422, and
-    by then the engine is offering the resolution itself.
-
-    It names no standing offer (no ``pending_transition`` stands behind it, so
-    ``offer_intent_fields`` is not called and the #1812 census of confirmation
-    builders does not include it). ``turn_completion`` APPENDS it to the
-    follow-ups of EVERY turn this returns a card for, never substituting it
-    for them and never twice: the model points a user who changes their mind
-    at it and never proposes on a request, so it must be on screen whatever
-    the model did. Not built while any offer stands (the chip
-    re-opens a declined offer, it does not compete with a live one) or while
-    the problem statement is on hold (no transition is proposed then).
-    """
-    if getattr(case, "pending_transition", None) or problem_on_hold(case):
-        return None
-    from faultmaven.core.investigation.terminal_transitions import (
-        declined_resolve_entry,
-        resolve_reopen_key,
-    )
-
-    entry = declined_resolve_entry(case)
-    if entry is None:
-        return None
-    return {
-        "label": DECLINED_RESOLVE_CARD_LABEL,
-        "action_type": "DECIDE",
-        "payload": _DECLINED_RESOLVE_CARD_PAYLOAD,
-        "body": _DECLINED_RESOLVE_CARD_BODY,
-        "intent": {
-            "type": "status_transition",
-            "to_state": "resolved",
-            "proposal_id": resolve_reopen_key(entry),
-        },
     }

@@ -25,9 +25,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
-from faultmaven.core.investigation.milestone_engine.stage_gates import (
-    DECLINED_RESOLVE_CARD_LABEL,
-)
 from faultmaven.core.investigation.milestone_engine.transitions import (
     DECLINED_RESOLVE_FEEDBACK,
 )
@@ -73,6 +70,8 @@ _FILE_ID = "file_0123456789ab"
 _DSU = InvestigationResponse_Diagnosis.DiagnosisStateUpdate
 
 RESOLVE_PAIR = ["Yes, mark as resolved", "Not yet, continue investigating"]
+#: The "Mark it resolved" chip, as the reply labels it.
+REOPEN_CHIP = "Mark it resolved"
 CLOSE_PAIR = ["Yes, close this case", "Not yet, continue investigating"]
 _REVISED = (
     "AssumeRoleWithWebIdentity fails for the nightly batch pods only; the API "
@@ -447,7 +446,7 @@ class TestADeclinedResolutionBinds:
         # The engine re-offers nothing; the reopen chip stays unless on hold.
         quiet = await _turn(engine, case, "what does that line mean")
         assert not set(RESOLVE_PAIR) & set(_labels(quiet))
-        assert (DECLINED_RESOLVE_CARD_LABEL in _labels(quiet)) is not on_hold
+        assert (REOPEN_CHIP in _labels(quiet)) is not on_hold
         assert derive_disposition_eligibility(case)["closed"] == "ready"
 
         # The model's resolution is refused.

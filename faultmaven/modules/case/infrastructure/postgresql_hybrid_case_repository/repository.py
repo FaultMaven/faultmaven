@@ -218,15 +218,10 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             # Update timestamp
             case.updated_at = datetime.now(timezone.utc)
 
-            # P3 chokepoint: refresh denormalized disposition_eligibility
-            # from current case content. Same site as the SQLite + in-memory
-            # repositories so the column stays in sync regardless of
-            # backend, without per-mutation-site write burden.
-            from faultmaven.core.investigation.terminal_transitions import (
-                derive_disposition_eligibility,
-            )
-
-            case.disposition_eligibility = derive_disposition_eligibility(case)
+            # P3 chokepoint (``CaseRepository.prepare_for_save``): the offer
+            # record's lapse rule, then the disposition eligibility derived
+            # from the case and its record.
+            self.prepare_for_save(case)
 
             # Two columns, two meanings (ADR-017 D1/D2). ``enterprise_id`` is
             # the isolation key every child row inherits from its case;

@@ -24,8 +24,10 @@ from .lifecycle import (
     CaseAction,
     CaseState,
     ClosureReason,
+    DispositionEligibility,
     InvestigationStrategy,
 )
+from .offer import OfferRecord
 from .problem import InquiryData, InvestigationStage, ProblemVerification
 from .progress import InvestigationProgress
 from .solution import ActionAttempt, ProposedAction, Solution
@@ -231,42 +233,28 @@ class Case(BaseModel):
         ),
     )
 
-    disposition_eligibility: Optional[Dict[str, str]] = Field(
+    disposition_eligibility: Optional[DispositionEligibility] = Field(
         default=None,
         description=(
-            "Per-disposition eligibility view for the case-action dropdown. "
-            "Denormalized read view maintained at the single chokepoint "
-            "``CaseRepository.save()`` via ``derive_disposition_eligibility``. "
-            "Shape: ``{'resolved': str, 'closed': str}`` where each value is "
-            "one of ``ready`` / ``needs_info`` / ``not_eligible``. "
-            "Frontend uses this to gate Resolve/Close affordances on the "
-            "current case content, not just the structural action graph. "
-            "Always populated for persisted cases; may be None on in-memory "
-            "Case objects before the first save."
+            "Per-disposition eligibility, ``{resolved, closed}``. A read view "
+            "derived at the one save chokepoint (``CaseRepository."
+            "prepare_for_save``) by the offer projection "
+            "(``core/investigation/offers.project_offers``), from the case and "
+            "its offer record. ``closed`` says whether to show Close; "
+            "``resolved`` gates no control. Always populated for persisted "
+            "cases; None on an in-memory case before its first save."
         ),
     )
 
-    pending_transition: Optional[Dict[str, Any]] = Field(
-        default=None,
-        description="""
-        Pending status transition awaiting user confirmation (User-Agent Handshake pattern).
-
-        Used for terminal transitions that require explicit user confirmation:
-        - to_state: Target status (str)
-        - reason: Why transition is being proposed (str)
-        - summary: Agent's explanation to user (str)
-        - evidence_ids: Supporting evidence (List[str])
-        - proposed_at: When transition was proposed (str ISO datetime)
-        - proposed_by: Who proposed it ("agent" | "user" | user_id)
-        - closure_reason: Derived closure categorization for CLOSED
-          proposals (str, set by propose_transition)
-        - needs_info: RESOLVED proposal parked while the readiness ask is
-          outstanding (bool; resolution NEEDS_INFO flow)
-
-        Cleared after transition executes or is cancelled. propose_transition
-        rebuilds the dict from scratch, so the per-proposal flag
-        (needs_info) resets on every new proposal.
-        """,
+    offer_record: OfferRecord = Field(
+        default_factory=OfferRecord,
+        description=(
+            "What the case offers the user to answer (resolve, close, a "
+            "revised statement), at most one at a time, and every answer "
+            "given. Written only by ``core/investigation/offers.py``'s "
+            "writers, whose docstring states the rules; persisted as "
+            "``cases.metadata['offer_record']``."
+        ),
     )
 
     last_suggestions: Optional[List[Dict[str, Any]]] = Field(

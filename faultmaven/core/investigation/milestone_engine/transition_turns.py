@@ -18,11 +18,22 @@ from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommi
 from faultmaven.core.investigation.milestone_engine.turn_records import (
     _finish_deterministic_turn,
 )
+from faultmaven.core.investigation.offers import (
+    open_offer,
+    open_terminal_offer,
+    project_offers,
+)
 from faultmaven.core.investigation.problem_status import (
     false_alarm_close_declined_at,
     problem_on_hold,
 )
-from faultmaven.modules.case.contracts import CaseState
+from faultmaven.modules.case.contracts import (
+    AnswerVia,
+    CaseState,
+    Offer,
+    OfferBasis,
+    OfferKind,
+)
 
 from .cause_state import (
     _count_gate1_turn,
@@ -30,19 +41,11 @@ from .cause_state import (
     _investigation_confirmation_suggestions,
 )
 from .progress import confirmed_transition_arms
-from .stage_gates import (
-    _close_confirmation_suggestions,
-    declined_close_card,
-    declined_resolve_card,
-)
-from .statement_revision import (
-    revision_confirmation_suggestions,
-    revision_presentation,
-)
+from .stage_gates import declined_close_card
+from .statement_revision import revision_presentation
 from .terminal_replies import (
     _build_resolution_confirmation,
     _compose_terminal_reply,
-    _resolution_confirmation_suggestions,
     _select_ack_follow_ups,
 )
 from .transition_consent import TYPED_CONFIRMATION_LINE, OfferRefusal
@@ -55,14 +58,6 @@ logger = logging.getLogger(__name__)
 #: that is not the one open now.
 STALE_OFFER_LINE = "That button was for an earlier offer that's no longer open."
 
-#: The reply to a confirmation the engine could not carry out: the pending
-#: named a target the confirm does not execute (``confirm_pending_transition``
-#: logs it and clears it, #2420), so no transition ran and the case is as it was.
-UNCARRIED_PROPOSAL_REPLY = (
-    "That proposal could not be carried out, so nothing changed: the case is "
-    "still open."
-)
-
 
 async def _confirm_pending_transition(
     report_service,
@@ -74,8 +69,9 @@ async def _confirm_pending_transition(
     upload_report,
     user_message,
     confirmed_via,
+    via: AnswerVia,
 ):
-    """Execute a confirmed pending transition: transition, render the closure/resolution report and compose the ack turn.
+    """Execute the accepted offer: transition, render the closure/resolution report and compose the ack turn.
 
     ``repository`` is read for the regeneration count only. The report row
     goes into ``plan`` and commits with the terminal state, in the turn's one
@@ -83,26 +79,22 @@ async def _confirm_pending_transition(
     no report (#1882).
     """
     from faultmaven.core.investigation.terminal_transitions import (
-        confirm_pending_transition,
+        confirm_open_offer,
     )
 
     # The confirming ACTOR (ADR-020 D6): the turn's principal, which is the
     # case's effective driver — no one else may submit a turn.
-    executed = confirm_pending_transition(case, case.effective_driver_id)
-    if not executed and (case.pending_transition or {}).get("to_state") == "resolved":
-        # INV-37 resolve-preservation: the pending CLOSE
-        # pivoted to a RESOLVED proposal (the case became
-        # resolvable). Nothing terminal committed — present
-        # the resolve confirmation instead of a CLOSED
-        # report, which would falsely record the case as
-        # closed-unresolved. The pivot's user-facing message
-        # is the SUGGEST_RESOLVE prose the guard already
-        # computed and stored on the resolved pending (same
-        # text the proposal-time pivot shows — one source of
-        # truth, and it renders the no-record out-of-band-fix
-        # case correctly, which _build_resolution_confirmation
-        # does not).
-        resolve_msg = case.pending_transition["summary"]
+    executed = confirm_open_offer(case, case.effective_driver_id, via=via)
+    if not executed:
+        # INV-37 resolve-preservation: the accepted CLOSE pivoted to a
+        # RESOLVED offer (the case became resolvable). Nothing terminal
+        # committed — present the resolve confirmation instead of a CLOSED
+        # report, which would falsely record the case as closed-unresolved.
+        # The pivot's message is the SUGGEST_RESOLVE prose the guard computed
+        # and stored on the resolve offer (the same text the proposal-time
+        # pivot shows, and it renders the no-record out-of-band fix correctly,
+        # which _build_resolution_confirmation does not).
+        resolve_msg = open_terminal_offer(case).summary
         turn_metadata = _finish_deterministic_turn(
             case,
             user_message or "",
@@ -112,24 +104,7 @@ async def _confirm_pending_transition(
         )
         return {
             "agent_response": resolve_msg,
-            "suggested_follow_ups": _resolution_confirmation_suggestions(case),
-            "case_updated": case,
-            "metadata": turn_metadata,
-        }
-    if not executed:
-        # Nothing terminal ran and nothing was re-offered, so there is no
-        # report to render and no terminal reply to compose: the case did not
-        # move, and the reply says so.
-        turn_metadata = _finish_deterministic_turn(
-            case,
-            user_message or "",
-            UNCARRIED_PROPOSAL_REPLY,
-            upload_report,
-            progress_made=False,
-        )
-        return {
-            "agent_response": UNCARRIED_PROPOSAL_REPLY,
-            "suggested_follow_ups": [],
+            "suggested_follow_ups": project_offers(case).pair,
             "case_updated": case,
             "metadata": turn_metadata,
         }
@@ -202,26 +177,26 @@ RESOLVE_DECLINED_REPLY = (
 )
 
 
-def _decline_bare_reply(*, case, upload_report, user_message, declined_to_state):
-    """Reply to a bare (non-substantive) decline of a pending transition, leaving the case open.
+def _decline_bare_reply(*, case, upload_report, user_message, declined: Offer):
+    """Reply to a bare (non-substantive) decline of the open offer, leaving the case open.
 
-    On a false-alarm close the decline was just recorded on the finding, and
-    the reply says what the hold is and how it moves, with the close card
-    (``declined_close_card``) as its one follow-up (#1889). On a resolution the
-    decline was just recorded against the confirmations on record, and the
-    reply says what brings the offer back, with the "Mark it resolved" chip
-    (``declined_resolve_card``) as its one follow-up (#1895).
+    On a false-alarm close the decline was just recorded with the finding as
+    its premise, and the reply says what the hold is and how it moves, with the
+    close card (``declined_close_card``) as its one follow-up (#1889). On a
+    resolution the decline was just recorded against the solutions and
+    confirmations on record, and the reply says what brings the offer back,
+    with the "Mark it resolved" chip as its one follow-up (#1895).
 
-    Keyed on ``declined_to_state``, the target of the offer just declined: a
-    close the user declines while their resolve decline stands (#2360) gets
-    the plain reply, with the chip still attached.
+    Keyed on ``declined``, the offer just declined: a close the user declines
+    while their resolve decline stands (#2360) gets the plain reply, with the
+    chip still attached.
     """
     follow_ups: list = []
-    resolve_card = declined_resolve_card(case)
+    resolve_card = project_offers(case).reopen_chip
     if false_alarm_close_declined_at(case) is not None:
         agent_response = FALSE_ALARM_HOLD_REPLY
         follow_ups = [declined_close_card("false_alarm")]
-    elif resolve_card is not None and declined_to_state == "resolved":
+    elif resolve_card is not None and declined.kind == OfferKind.RESOLVE:
         agent_response = RESOLVE_DECLINED_REPLY
         follow_ups = [resolve_card]
     else:
@@ -245,22 +220,17 @@ def _decline_bare_reply(*, case, upload_report, user_message, declined_to_state)
 
 
 def _pending_transition_reask(case) -> tuple[str, list]:
-    """The standing terminal offer's re-ask text and its confirmation pair.
+    """The open offer's re-ask text and its confirmation pair.
 
-    The pair names the offer by its current key (#1812). The last paragraph
-    says what a typed confirmation must look like (#1814, ruling (b)), since a
-    typed reply executes only when it is one bare consent token (#1783).
+    The pair names the offer by its ``proposal_id`` (#1812). The last
+    paragraph says what a typed confirmation must look like (#1814, ruling
+    (b)), since a typed reply executes only when it is one bare consent token
+    (#1783).
     """
-    to_state = case.pending_transition.get("to_state", "resolved")
-    summary = case.pending_transition.get("summary", "")
-
+    summary = open_terminal_offer(case).summary
     ask = f"Please select one of the options above to continue.\n\n{TYPED_CONFIRMATION_LINE}"
     agent_response = ask if not summary else f"{summary}\n\n{ask}"
-    if to_state == "resolved":
-        follow_ups = _resolution_confirmation_suggestions(case)
-    else:
-        follow_ups = _close_confirmation_suggestions(case)
-    return agent_response, follow_ups
+    return agent_response, project_offers(case).pair
 
 
 def _represent_pending_transition(*, case, upload_report, user_message):
@@ -317,7 +287,7 @@ def _refuse_offer_click(
         follow_ups = _investigation_confirmation_suggestions(case)
     elif standing == "revision":
         agent_response = f"{STALE_OFFER_LINE}\n\n{revision_presentation(case)}"
-        follow_ups = revision_confirmation_suggestions(case)
+        follow_ups = project_offers(case).pair
 
     confirmation_click_refused_total.labels(
         gate=standing or "none", reason=reason
@@ -356,11 +326,11 @@ def _close_on_explicit_intent(
     *,
     assess_closure_readiness,
     case,
-    propose_transition,
     upload_report,
     user_message,
 ):
-    """Handle an explicit status_transition intent to 'closed', proposing or confirming per closure readiness."""
+    """Handle an explicit status_transition intent to 'closed': open the menu
+    close, or its INV-37 resolve pivot, per closure readiness."""
     if case.state not in (
         CaseState.INQUIRY,
         CaseState.INVESTIGATING,
@@ -372,61 +342,40 @@ def _close_on_explicit_intent(
         close_pivots_to_resolve,
     )
 
-    # Use closure readiness for a meaningful summary, and
-    # pivot to RESOLVED if the case has root cause + solution
-    # on record (SUGGEST_RESOLVE — symmetric to the LLM-emit
-    # path's SUGGEST_CLOSE pivot for the opposite direction),
-    # unless the user declined that resolution (#2360).
+    # Use closure readiness for a meaningful summary, and pivot to RESOLVED
+    # if the case confirms its resolution (SUGGEST_RESOLVE — symmetric to the
+    # model path's SUGGEST_CLOSE pivot for the opposite direction), unless the
+    # user declined that resolution (#2360). The user's own offer: never bound
+    # by a decline (``offers.binding_decline``).
     closure = assess_closure_readiness(case)
     if close_pivots_to_resolve(case, closure.verdict):
-        # closure_reason auto-derives to None inside
-        # propose_transition for RESOLVED — resolution itself
-        # is the categorization. The user still confirms via
-        # the resolution confirmation pair.
-        propose_transition(
-            case=case,
-            to_state="resolved",
+        case.offer_record = open_offer(
+            case,
+            kind=OfferKind.RESOLVE,
+            basis=OfferBasis.MENU,
             summary=closure.message,
         )
         logger.info(
-            f"User dropdown-requested CLOSED for case "
-            f"{case.case_id} but verdict=SUGGEST_RESOLVE "
-            f"(case has root cause + solution); pivoting "
-            f"to RESOLVED."
+            f"User dropdown-requested CLOSED for case {case.case_id} but "
+            f"verdict=SUGGEST_RESOLVE; pivoting to a RESOLVED offer."
         )
-        turn_metadata = _finish_deterministic_turn(
+    else:
+        if closure.verdict == closure.SUGGEST_RESOLVE:
+            # A resolve decline stands: the close closes, so it is asked about
+            # as a close, not with the pivot's "mark it resolved instead?".
+            closure = assess_close_summary(case)
+        # closure_reason is derived inside open_offer from case state.
+        case.offer_record = open_offer(
             case,
-            user_message or "",
-            closure.message,
-            upload_report,
-            progress_made=False,
+            kind=OfferKind.CLOSE,
+            basis=OfferBasis.MENU,
+            summary=closure.message,
         )
-        return {
-            "agent_response": closure.message,
-            "suggested_follow_ups": _resolution_confirmation_suggestions(case),
-            "case_updated": case,
-            "metadata": turn_metadata,
-        }
-    if closure.verdict == closure.SUGGEST_RESOLVE:
-        # A resolve decline stands: the close closes, so it is asked about
-        # as a close, not with the pivot's "mark it resolved instead?".
-        closure = assess_close_summary(case)
+        logger.info(
+            f"Proposed CLOSED transition for case {case.case_id} via dropdown "
+            f"(pending user confirmation)"
+        )
 
-    # Standard close — closure_reason derived inside
-    # propose_transition from case state.
-    propose_transition(
-        case=case,
-        to_state="closed",
-        summary=closure.message,
-    )
-
-    logger.info(
-        f"Proposed CLOSED transition for case {case.case_id} via dropdown "
-        f"(pending user confirmation)"
-    )
-
-    # Return with closure summary + canonical confirm/decline pair
-    # (alignment with agent-initiated path).
     turn_metadata = _finish_deterministic_turn(
         case,
         user_message or "",
@@ -436,7 +385,7 @@ def _close_on_explicit_intent(
     )
     return {
         "agent_response": closure.message,
-        "suggested_follow_ups": _close_confirmation_suggestions(case),
+        "suggested_follow_ups": project_offers(case).pair,
         "case_updated": case,
         "metadata": turn_metadata,
     }
@@ -444,24 +393,24 @@ def _close_on_explicit_intent(
 
 def _resolve_on_reopen_chip(*, case, upload_report, user_message):
     """Handle the "Mark it resolved" chip: re-open the resolution the user
-    declined, as a proposal the user confirms on the next step (#1895).
+    declined, as an offer the user confirms on the next step (#1895).
 
     Reached only with the chip's key admitted (``resolve_reopen_admitted``, at
     the service boundary and again at the engine's guard): RESOLVED is not
     user-selectable, and this is the engine's own declined offer coming back,
-    not a request for the state. It PROPOSES and never confirms (INV-03): the
-    canonical confirmation pair follows, as on every other opener.
+    not a request for the state. It OPENS an offer and never confirms
+    (INV-03): the canonical confirmation pair follows, as on every other
+    opener. The user's own offer, so the decline does not bind it.
 
     The bar is re-read here: the offer is made only when
     ``assess_resolution_readiness`` is READY, the bar step 2 applies to the
     model's proposal, and not while the problem statement is on hold (a
     revision awaiting the user, when no transition is proposed). Otherwise
-    nothing is proposed or recorded, and the reply says why.
+    nothing is opened or recorded, and the reply says why.
     """
     from faultmaven.core.investigation.terminal_transitions import (
         ResolutionReadiness,
         assess_resolution_readiness,
-        propose_transition,
     )
 
     if problem_on_hold(case):
@@ -498,11 +447,16 @@ def _resolve_on_reopen_chip(*, case, upload_report, user_message):
         follow_ups: list = []
     else:
         agent_response = _build_resolution_confirmation(case)
-        propose_transition(case=case, to_state="resolved", summary=agent_response)
-        follow_ups = _resolution_confirmation_suggestions(case)
+        case.offer_record = open_offer(
+            case,
+            kind=OfferKind.RESOLVE,
+            basis=OfferBasis.REOPEN,
+            summary=agent_response,
+        )
+        follow_ups = project_offers(case).pair
         logger.info(
-            f"Proposed RESOLVED transition for case {case.case_id} from the "
-            f"reopen chip (pending user confirmation)"
+            f"Opened a RESOLVED offer for case {case.case_id} from the reopen "
+            f"chip (pending user confirmation)"
         )
 
     turn_metadata = _finish_deterministic_turn(

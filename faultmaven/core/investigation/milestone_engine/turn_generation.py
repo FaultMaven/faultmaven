@@ -6,6 +6,7 @@ from typing import Optional
 from faultmaven.core.investigation.milestone_engine.generation import (
     TOOLLESS_INFERENCE_OUTPUT_FLOOR,
 )
+from faultmaven.core.investigation.offers import open_terminal_offer
 from faultmaven.core.investigation.prompts.templates.assembly import get_prompt_for_case
 from faultmaven.core.investigation.prompts.templates.tool_text import (
     NO_TOOLS,
@@ -157,9 +158,9 @@ async def _generate_turn_response(
     # single-shot structured path (reasoning declared) and must get the
     # un-elided prompt — no search_file will run to recover an extract
     # replaced by an index stub. Pure over case state; computed once.
-    has_pending = hasattr(case, "pending_transition") and case.pending_transition
+    has_pending = open_terminal_offer(case) is not None
     force_tools = (
-        _should_force_tools(processing_mode, case, bool(has_pending))
+        _should_force_tools(processing_mode, case, has_pending)
         if investigation_tools
         else False
     )
@@ -218,7 +219,7 @@ async def _generate_turn_response(
     # ``_has_readable_material`` guarantees a real search target so forcing
     # tools cannot crash the loop.
     #
-    # Safety net: when a pending_transition exists, the user is in a
+    # Safety net: when a resolve or close offer is open, the user is in a
     # confirmation flow. Don't force tool_choice=required — the user's
     # message is a confirmation/decline that may have fallen through
     # pattern matching (typed instead of clicked). Forcing tools crashes

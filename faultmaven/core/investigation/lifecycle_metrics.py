@@ -112,7 +112,7 @@ confirmation_click_refused_total = Counter(
 # Healthy-system expectations (rough, subject to scenario mix):
 #   gate1 — fires on the first INQUIRY turn after a problem statement is
 #           proposed, repeats until Gate 1 closes
-#   disposition — fires whenever propose_transition emits override_suggestions
+#   disposition — fires whenever a resolve or close offer is open at compose
 #
 # Failure-mode signal: a sustained zero rate on `gate1` while INQUIRY turn
 # volume is non-zero indicates the consolidator or the Gate 1 predicate has

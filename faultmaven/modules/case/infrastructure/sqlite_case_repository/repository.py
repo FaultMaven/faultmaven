@@ -176,15 +176,10 @@ class SQLiteCaseRepository(CaseRepository):
         try:
             case.updated_at = datetime.now(UTC)
 
-            # P3 chokepoint: refresh denormalized disposition_eligibility
-            # from current case content. Single site so the column stays
-            # in sync with state/root_cause/solutions/progress without
-            # per-mutation-site write burden.
-            from faultmaven.core.investigation.terminal_transitions import (
-                derive_disposition_eligibility,
-            )
-
-            case.disposition_eligibility = derive_disposition_eligibility(case)
+            # P3 chokepoint (``CaseRepository.prepare_for_save``): the offer
+            # record's lapse rule, then the disposition eligibility derived
+            # from the case and its record.
+            self.prepare_for_save(case)
 
             # Two columns, two meanings (ADR-017 D1/D2): the enterprise
             # isolates and every child row inherits it from its case; the

@@ -232,16 +232,39 @@ class CaseRepository(ABC):
     #: The fields ``save`` stamps on the case object before it commits. A save
     #: that fails puts them back (``restore_save_stamps``), so the object is
     #: what it was before the call and a re-save of it is not refused as stale
-    #: over a version the database never took. Left as stamped, on purpose:
-    #: the message rows ``normalise_message_row`` completes (ids and
-    #: timestamps a re-save reuses, see ``ICaseRepository.save``) and the
-    #: turn-sequence repair ``reconcile_turn_sequence`` makes, both idempotent.
-    SAVE_STAMPED_FIELDS = ("version", "updated_at", "disposition_eligibility")
+    #: over a version the database never took. Restored by reference, which is
+    #: sound because ``prepare_for_save`` assigns new values and edits none in
+    #: place (the offer record is frozen). Left as stamped, on purpose: the
+    #: message rows ``normalise_message_row`` completes (ids and timestamps a
+    #: re-save reuses, see ``ICaseRepository.save``) and the turn-sequence
+    #: repair ``reconcile_turn_sequence`` makes, both idempotent.
+    SAVE_STAMPED_FIELDS = (
+        "version",
+        "updated_at",
+        "disposition_eligibility",
+        "offer_record",
+    )
 
     @classmethod
     def save_stamps(cls, case: Case) -> Dict[str, Any]:
         """The values ``save`` is about to overwrite on ``case``."""
         return {name: getattr(case, name) for name in cls.SAVE_STAMPED_FIELDS}
+
+    @staticmethod
+    def prepare_for_save(case: Case) -> None:
+        """The save chokepoint's derivations, one place for every repository
+        (pattern P3): the offer record's lapse rule (``offers.lapse_offers``),
+        then the projection's ``disposition_eligibility``
+        (``offers.project_offers``), each assigned to the case. So a write
+        outside the engine (a REST edit or close) lapses what it moved, and the
+        published eligibility always describes the record being stored."""
+        from faultmaven.core.investigation.offers import (
+            lapse_offers,
+            project_offers,
+        )
+
+        case.offer_record = lapse_offers(case)
+        case.disposition_eligibility = project_offers(case).disposition_eligibility
 
     @staticmethod
     def restore_save_stamps(case: Case, stamps: Dict[str, Any]) -> None:
@@ -984,9 +1007,6 @@ class InMemoryCaseRepository(CaseRepository):
         """
         self.check_turn_rows(case, reports, receipt)
         stamps = self.save_stamps(case)
-        from faultmaven.core.investigation.terminal_transitions import (
-            derive_disposition_eligibility,
-        )
         from faultmaven.modules.case.exceptions import StaleCaseException
 
         # Update timestamp
@@ -1005,11 +1025,9 @@ class InMemoryCaseRepository(CaseRepository):
         for _msg in case.messages:
             self.normalise_message_row(_msg)
 
-        # P3 chokepoint: refresh denormalized disposition_eligibility from
-        # current case content. Same site as the SQL-backed repositories
-        # so all tests using the in-memory repo also exercise the
-        # eligibility-maintenance invariant.
-        case.disposition_eligibility = derive_disposition_eligibility(case)
+        # P3 chokepoint, the same one the SQL-backed repositories call, so
+        # every test on the in-memory repo exercises it too.
+        self.prepare_for_save(case)
 
         existing = self._cases.get(case.case_id)
         receipt_key = (
