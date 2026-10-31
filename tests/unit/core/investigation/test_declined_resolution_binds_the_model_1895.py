@@ -168,7 +168,9 @@ def _respond(
 async def _turn(engine, case, message: str, **kw) -> dict:
     case.current_turn += 1
     process_kw = {
-        k: kw.pop(k) for k in ("intent_type", "intent_data", "typed") if k in kw
+        k: kw.pop(k)
+        for k in ("intent_type", "intent_data", "typed", "attachments")
+        if k in kw
     }
     _respond(engine, **kw)
     return await engine.process_turn(

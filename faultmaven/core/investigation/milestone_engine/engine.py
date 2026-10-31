@@ -1312,6 +1312,7 @@ class MilestoneEngine:
                 intent_data=intent_data,
                 user_id=user_id,
                 user_message=user_message,
+                turn_carries_upload=bool(attachments),
                 kb_rendered=metadata[TURN_METADATA_KB_PROMPTED],
             )
 

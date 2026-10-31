@@ -201,9 +201,9 @@ def _should_force_tools(
     directed-analysis tool can read (``_has_readable_material``: a row whose
     file is stored, or a stored upload that renders, #2375), and (c) the user
     is not mid-confirmation: no resolve or close offer is open, or was answered
-    by the gate on this turn (#2223) — a typed confirm/decline has nothing to
-    search, and forcing tools would crash the loop. This is the linchpin of
-    #708: a fresh evidence-bearing upload
+    by the gate on a turn that carries no upload (#2223) — a typed
+    confirm/decline has nothing to search, and forcing tools would crash the
+    loop. This is the linchpin of #708: a fresh evidence-bearing upload
     reroutes to ``directed_analysis`` AND satisfies ``_has_readable_material``
     via its stored UploadedFile, so tools are forced on the delivering turn
     instead of leaving it on ``tool_choice=auto`` where the agent can reply in

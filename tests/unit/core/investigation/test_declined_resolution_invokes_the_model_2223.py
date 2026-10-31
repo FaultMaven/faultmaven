@@ -6,7 +6,8 @@ nothing, so the case stalled after the decline. Every resolve decline the gate
 RECORDS (a bare token, a minted confirmation, the Not-yet click, a deflection;
 any offer basis) now falls through to a model turn whose prompt carries
 ``RESOLVE_DECLINED_THIS_TURN_LINE`` beside ``RESOLVE_DECLINED_LINE``. That turn
-never forces tools, and 0c does not log the click it skips. The decline still
+never forces tools unless it carries an upload (#708), and 0c does not log the
+click it skips. The decline still
 binds the model's same-turn ``resolved``: that refusal is
 ``test_declined_resolution_binds_the_model_1895.py::TestTheDeclineTurn::
 test_a_decline_recording_a_row_and_proposing_is_refused``.
@@ -112,6 +113,24 @@ class TestTheDeclineIsAnsweredByTheModel:
         assert decline.at_turn == case.current_turn
         assert case.offer_record.open is None
         assert case.state == CaseState.INVESTIGATING
+
+    async def test_an_upload_answering_the_offer_is_still_forced(self):
+        """The forcing exemption is for a turn with nothing new. A turn that
+        delivers a file while the offer is open answers the offer too, and
+        stays #708's delivering turn: forced, as before #2223."""
+        engine, case = await _offered(stored=True)
+        upload = case.uploaded_files[0]
+        await _turn(
+            engine,
+            case,
+            "here are the overnight logs",
+            attachments=[{"file_id": upload.file_id, "filename": upload.filename}],
+        )
+
+        _, kwargs = _call(engine)
+        assert case.offer_record.open is None
+        assert case.offer_record.answers[-1].at_turn == case.current_turn
+        assert kwargs["force_tool_use"] is True
 
     @pytest.mark.parametrize("how", ["click", "deflection"])
     async def test_every_recorded_decline_carries_the_line(self, how):

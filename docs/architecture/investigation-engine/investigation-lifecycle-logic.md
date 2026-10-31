@@ -434,8 +434,8 @@ not revive it).
   `RESOLVE_DECLINED_THIS_TURN_LINE` beside the standing line, which says the
   record already holds the confirmation and asks the model to find out what the
   user still needs to see, or to name the check that would settle it and ask for
-  its output as data. That turn never forces tools, and its reply carries the
-  chip. While the decline stands the prompt and the refusal's feedback state one
+  its output as data. That turn never forces tools unless it carries an upload
+  (#708), and its reply carries the chip. While the decline stands the prompt and the refusal's feedback state one
   rule (`RESOLVE_DECLINED_RULE`): do not propose on the evidence on record;
   record a NEW verification as evidence and propose in the same turn; point a
   user who changes their mind at the **Mark it resolved** action, never
