@@ -200,8 +200,8 @@ def _should_force_tools(
     classified ``directed_analysis``, (b) the case holds a file a
     directed-analysis tool can read (``_has_readable_material``: a row whose
     file is stored, or a stored upload that renders, #2375), and (c) the user
-    is not mid-confirmation: no resolve or close offer is open, or was answered
-    by the gate on a turn that carries no upload (#2223) — a typed
+    is not mid-confirmation: no resolve or close offer is open, and the gate
+    did not record a bare resolve decline on this turn (#2223) — a typed
     confirm/decline has nothing to search, and forcing tools would crash the
     loop. This is the linchpin of #708: a fresh evidence-bearing upload
     reroutes to ``directed_analysis`` AND satisfies ``_has_readable_material``

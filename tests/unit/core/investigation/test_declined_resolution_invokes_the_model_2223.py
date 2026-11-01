@@ -5,9 +5,10 @@ The canned reply to a bare "no" named no missing confirmation and asked for
 nothing, so the case stalled after the decline. Every resolve decline the gate
 RECORDS (a bare token, a minted confirmation, the Not-yet click, a deflection;
 any offer basis) now falls through to a model turn whose prompt carries
-``RESOLVE_DECLINED_THIS_TURN_LINE`` beside ``RESOLVE_DECLINED_LINE``. That turn
-never forces tools unless it carries an upload (#708), and 0c does not log the
-click it skips. The decline still
+``RESOLVE_DECLINED_THIS_TURN_LINE`` beside ``RESOLVE_DECLINED_LINE``, on every
+processing mode. A bare one never forces tools; every other turn that answers
+an offer is forced as before (#708). 0c skips a confirmation the gate consumed,
+and only that one. The decline still
 binds the model's same-turn ``resolved``: that refusal is
 ``test_declined_resolution_binds_the_model_1895.py::TestTheDeclineTurn::
 test_a_decline_recording_a_row_and_proposing_is_refused``.
@@ -23,9 +24,12 @@ Real ``process_turn`` turns with a stubbed generator: no live LLM.
 """
 
 import logging
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.errors import MilestoneEngineError
 from faultmaven.core.investigation.milestone_engine.transition_consent import (
     TYPED_CONFIRMATION_LINE,
 )
@@ -37,7 +41,9 @@ from faultmaven.core.investigation.prompts.templates.assembly import (
     RESOLVE_DECLINED_LINE,
     RESOLVE_DECLINED_THIS_TURN_LINE,
 )
-from faultmaven.modules.case.contracts import CaseState
+from faultmaven.modules.case.contracts import CaseState, ProblemStatus
+from faultmaven.modules.case.domain.models.evidence import UploadedFile
+from tests.case_builders import inquiry_case, with_open_offer
 from tests.unit.core.investigation.test_declined_resolution_binds_the_model_1895 import (
     _DECLINE_VIA,
     _MODEL_FOLLOW_UPS,
@@ -46,6 +52,15 @@ from tests.unit.core.investigation.test_declined_resolution_binds_the_model_1895
     _engine,
     _labels,
     _turn,
+)
+from tests.unit.core.investigation.test_problem_statement_revision_and_false_alarm import (
+    _case as _revision_case,
+)
+from tests.unit.core.investigation.test_problem_statement_revision_and_false_alarm import (
+    _engine as _revision_engine,
+)
+from tests.unit.core.investigation.test_problem_statement_revision_and_false_alarm import (
+    _propose,
 )
 from tests.unit.core.investigation.test_resolution_backstop_turn import (
     _confirmed_case,
@@ -132,6 +147,39 @@ class TestTheDeclineIsAnsweredByTheModel:
         assert case.offer_record.answers[-1].at_turn == case.current_turn
         assert kwargs["force_tool_use"] is True
 
+    async def test_a_question_withdrawing_the_offer_is_still_forced(self):
+        """Only the bare decline #2223 routes to the model is exempt. A question
+        withdraws the offer and keeps the ``tool_choice=required`` it has on
+        ``main``."""
+        engine, case = await _offered(stored=True)
+        await _turn(engine, case, "Check sts.log for AssumeRole errors since the fix?")
+
+        _, kwargs = _call(engine)
+        assert case.offer_record.answers[-1].answer == "withdrawn"
+        assert case.offer_record.answers[-1].at_turn == case.current_turn
+        assert kwargs["force_tool_use"] is True
+
+    @pytest.mark.parametrize("mode", ["knowledge_query", "agent_meta"])
+    async def test_a_decline_on_a_mode_with_no_focus_block_carries_both_lines(
+        self, mode
+    ):
+        """A knowledge question or a question about FaultMaven itself renders
+        no focus block of its own; the decline's lines are appended all the
+        same."""
+        engine, case = await _offered()
+        await _turn(
+            engine,
+            case,
+            "Not yet. Explain how Redis failover works first",
+            intent_type="conversation",
+            intent_data={"query_mode": mode},
+        )
+
+        prompt, _ = _call(engine)
+        assert _declined(case)[-1].at_turn == case.current_turn
+        assert RESOLVE_DECLINED_LINE in prompt
+        assert RESOLVE_DECLINED_THIS_TURN_LINE in prompt
+
     @pytest.mark.parametrize("how", ["click", "deflection"])
     async def test_every_recorded_decline_carries_the_line(self, how):
         """The Not-yet click and a deflection reached the model before #2223,
@@ -197,6 +245,83 @@ class TestTheGateStillDecides:
         assert not [
             line for line in engine_lines if "Explicit confirmation intent" in line
         ]
+
+    async def test_0c_does_not_log_a_minted_revision_answer_0b_prime_took(self, caplog):
+        """The revision gate consumes a minted answer as 0b consumes a minted
+        decline: 0c does not see it again."""
+        engine, case = _revision_engine(), _revision_case()
+        _propose(case)
+        case.current_turn += 1
+        with caplog.at_level(logging.INFO, logger=_ENGINE_LOGGER):
+            await engine.process_turn(
+                case=case,
+                user_message="yes",
+                intent_type="confirmation",
+                intent_data={"value": True},
+                typed=True,
+                redaction_ctx=None,
+            )
+
+        assert case.progress.problem_status == ProblemStatus.VERIFIED
+        engine_lines = [
+            r.getMessage() for r in caplog.records if r.name == _ENGINE_LOGGER
+        ]
+        assert any(
+            line.startswith("Processing turn") for line in engine_lines
+        ), "positive control: the engine's log is captured"
+        assert not [line for line in engine_lines if "but status is" in line]
+
+    async def test_a_mint_the_gate_set_aside_still_reaches_gate_one(self):
+        """An upload carries a re-asked mint through 0b: the offer is
+        withdrawn, and the mint was never taken. It is Gate 1's to read, and
+        a confirmation on text that is not one bare consent is counted
+        deferred, as on ``main``."""
+        case = inquiry_case(
+            case_id="case_2223aaaaaaaa",
+            title="Replica lag",
+            user_id="user_test",
+            enterprise_id="org_test",
+            description="replica lag",
+            statement="Replica db-2 lags the primary by >30s since 09:00 UTC",
+        )
+        case.uploaded_files.append(
+            UploadedFile(
+                file_id="file_2223aaaaaaaa",
+                filename="lag.log",
+                size_bytes=512,
+                uploaded_at_turn=1,
+            )
+        )
+        with_open_offer(case, kind="close", basis="model", summary="Close it?")
+        repo = MagicMock()
+        repo.save = AsyncMock(side_effect=lambda c, **_: c)
+        repo.get = AsyncMock(side_effect=lambda cid: None)
+        engine = MilestoneEngine(MagicMock(), repo, investigation_tools=MagicMock())
+        engine.generator.generate_structured_output = AsyncMock(
+            side_effect=RuntimeError("the seam: 0c has run")
+        )
+        case.current_turn += 1
+
+        with patch(
+            "faultmaven.core.investigation.milestone_engine.engine."
+            "inquiry_handshake_deferred_total"
+        ) as deferred:
+            with pytest.raises(MilestoneEngineError):
+                await engine.process_turn(
+                    case=case,
+                    user_message="yes, that's the problem, the lag log is attached",
+                    attachments=[
+                        {"file_id": "file_2223aaaaaaaa", "filename": "lag.log"}
+                    ],
+                    intent_type="confirmation",
+                    intent_data={"value": True},
+                    typed=True,
+                    redaction_ctx=None,
+                )
+
+        assert case.offer_record.answers[-1].answer == "withdrawn"
+        assert engine.generator.generate_structured_output.await_count == 1
+        deferred.labels.assert_called_once_with(reason="not_bare")
 
     async def test_a_short_refusal_the_gate_does_not_read_as_a_decline_is_re_asked(
         self,

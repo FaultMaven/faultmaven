@@ -71,11 +71,7 @@ from faultmaven.core.investigation.milestone_engine.turn_records import (
 from faultmaven.core.investigation.milestone_engine.vectorization import (
     EvidenceVectorizer,
 )
-from faultmaven.core.investigation.offers import (
-    answer_offer,
-    open_terminal_offer,
-    terminal_offer_answered_this_turn,
-)
+from faultmaven.core.investigation.offers import answer_offer, open_terminal_offer
 from faultmaven.core.investigation.problem_status import (
     cancel_revision,
     decline_revision,
@@ -667,11 +663,19 @@ class MilestoneEngine:
                     redaction_ctx=await self._turn_redaction(case, redaction_ctx),
                 )
 
-            # Set when section 0b answered this turn's confirmation click: it
-            # named the standing offer, and the gate executed or declined it. A
-            # declined click whose payload is substantive falls through to 0c
-            # with no offer left standing, and 0c must not refuse it there.
-            click_answered_by_gate = False
+            # Set when section 0b or 0b' consumed this turn's confirmation
+            # intent: a click naming the standing offer, or a mint whose answer
+            # the gate took (0b's decline; the revision's confirm or decline at
+            # 0b'). 0c skips such an intent: it was never Gate 1's, and 0c must
+            # neither refuse nor log it (#2223). A mint the gate set aside (a
+            # re-ask carried through by an upload, a question) still reaches
+            # 0c.
+            confirmation_consumed_by_gate = False
+            # Set when 0b recorded a resolve decline from a bare message: not
+            # substantive, no upload. That is the turn #2223 routes to the
+            # model, and the one turn it exempts from forcing tools; no other
+            # turn that answered an offer is exempted.
+            bare_resolve_decline = False
 
             # 0b. The open resolve or close offer — short-circuit before LLM
             # When an offer is open (User-Agent Handshake), check if
@@ -802,7 +806,7 @@ class MilestoneEngine:
                                 standing="terminal",
                                 reason=refusal,
                             )
-                        click_answered_by_gate = True
+                        confirmation_consumed_by_gate = True
                     # One verdict from the text and the intent together
                     # (#1783, ruling (a)). A terminal proposal executes only
                     # on its click or on a BARE typed consent token; an
@@ -845,6 +849,15 @@ class MilestoneEngine:
                         )
                     elif verdict == "decline":
                         _answer(AnswerKind.DECLINED, gate_via)
+                        # A minted decline the gate took is consumed here, as
+                        # a click is above.
+                        if intent_declines:
+                            confirmation_consumed_by_gate = True
+                        bare_resolve_decline = (
+                            offer.kind == OfferKind.RESOLVE
+                            and not message_is_substantive
+                            and not turn_carries_upload
+                        )
 
                         if (
                             offer.kind == OfferKind.RESOLVE
@@ -983,10 +996,15 @@ class MilestoneEngine:
                                 standing="revision",
                                 reason=refusal,
                             )
-                        click_answered_by_gate = True
+                        confirmation_consumed_by_gate = True
                 revision_verdict, _ = pending_gate_verdict(
                     user_message, None, intent_value=revision_intent, typed=typed
                 )
+                if revision_intent is not None and revision_verdict in (
+                    "confirm",
+                    "decline",
+                ):
+                    confirmation_consumed_by_gate = True
                 revision_via = (
                     AnswerVia.CLICK
                     if revision_intent is not None and not typed
@@ -1104,13 +1122,9 @@ class MilestoneEngine:
                 else:
                     raise ValueError(f"Unknown to_state: {to_status_str}")
 
-            # A confirmation a gate already answered this turn (0b's terminal
-            # offer, clicked or minted, or the revision click 0b' answered) is
-            # skipped: it was never Gate 1's, and there is nothing left here to
-            # log or do for it (#2223).
-            elif intent_type == "confirmation" and not (
-                click_answered_by_gate or terminal_offer_answered_this_turn(case)
-            ):
+            # A confirmation intent 0b or 0b' consumed is skipped
+            # (``confirmation_consumed_by_gate``, #2223).
+            elif intent_type == "confirmation" and not confirmation_consumed_by_gate:
                 # THE ANSWER THE USER GAVE. A confirmation intent carries one
                 # (``QueryIntent`` refuses to validate without it), and this
                 # branch commits a gate, so it must read it — a branch that
@@ -1127,11 +1141,11 @@ class MilestoneEngine:
                 )
 
                 # A CLICK answers only the offer it names (#1812, ruling (a)).
-                # Not one a gate answered (``click_answered_by_gate``): those
-                # skip this branch. The only offer a click can answer here is
-                # Gate 1: while it is pending, every other click is checked
-                # against its key. With Gate 1 not pending, nothing a click can
-                # answer is standing, so any click is refused.
+                # Not one a gate consumed (``confirmation_consumed_by_gate``):
+                # those skip this branch. The only offer a click can answer
+                # here is Gate 1: while it is pending, every other click is
+                # checked against its key. With Gate 1 not pending, nothing a
+                # click can answer is standing, so any click is refused.
                 gate1_standing = _gate1_is_pending(case)
                 if not typed:
                     refusal = offer_click_refusal(
@@ -1312,7 +1326,7 @@ class MilestoneEngine:
                 intent_data=intent_data,
                 user_id=user_id,
                 user_message=user_message,
-                turn_carries_upload=bool(attachments),
+                bare_resolve_decline=bare_resolve_decline,
                 kb_rendered=metadata[TURN_METADATA_KB_PROMPTED],
             )
 

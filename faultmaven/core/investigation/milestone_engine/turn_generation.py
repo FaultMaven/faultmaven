@@ -6,10 +6,7 @@ from typing import Optional
 from faultmaven.core.investigation.milestone_engine.generation import (
     TOOLLESS_INFERENCE_OUTPUT_FLOOR,
 )
-from faultmaven.core.investigation.offers import (
-    open_terminal_offer,
-    terminal_offer_answered_this_turn,
-)
+from faultmaven.core.investigation.offers import open_terminal_offer
 from faultmaven.core.investigation.prompts.templates.assembly import get_prompt_for_case
 from faultmaven.core.investigation.prompts.templates.tool_text import (
     NO_TOOLS,
@@ -45,13 +42,14 @@ async def _generate_turn_response(
     intent_data,
     user_id,
     user_message,
-    turn_carries_upload,
+    bare_resolve_decline,
     kb_rendered=None,
 ):
     """Generate the LLM (or single-shot) response for this turn.
 
-    ``turn_carries_upload`` is whether the turn carries an attachment, read
-    as the offer gate reads it (``bool(attachments)``).
+    ``bare_resolve_decline`` is whether the offer gate recorded a resolve
+    decline from a bare message on this turn (not substantive, no upload):
+    the turn #2223 routes to the model, which never forces tools.
 
     ``redaction_ctx`` is the turn's case redaction context, loaded once per
     turn by the investigation service (or by the engine on a direct call),
@@ -165,14 +163,10 @@ async def _generate_turn_response(
     # single-shot structured path (reasoning declared) and must get the
     # un-elided prompt — no search_file will run to recover an extract
     # replaced by an index stub. Pure over case state; computed once.
-    # A terminal offer the gate answered this turn counts as pending (#2223),
-    # so a decline the model answers is never a forced-tool turn, unless the
-    # turn carries an upload: that is #708's delivering turn, forced as ever.
-    offer_open = open_terminal_offer(case) is not None
-    answered_without_upload = (
-        terminal_offer_answered_this_turn(case) and not turn_carries_upload
-    )
-    has_pending = offer_open or answered_without_upload
+    # A bare resolve decline counts as pending (#2223): the model answers it,
+    # and there is nothing new to search. No other turn that answered an offer
+    # (a withdrawal, a substantive decline, an upload, a click) is exempted.
+    has_pending = open_terminal_offer(case) is not None or bare_resolve_decline
     force_tools = (
         _should_force_tools(processing_mode, case, has_pending)
         if investigation_tools
@@ -233,14 +227,13 @@ async def _generate_turn_response(
     # ``_has_readable_material`` guarantees a real search target so forcing
     # tools cannot crash the loop.
     #
-    # Safety net: when a resolve or close offer is open, or the gate answered
-    # one on this turn and the turn carries no upload, the user is in a
-    # confirmation flow. Don't force tool_choice=required — the user's message
-    # is a confirmation/decline that may have fallen through pattern matching
-    # (typed instead of clicked), or a decline the model answers (#2223).
+    # Safety net: when a resolve or close offer is open, or the gate recorded
+    # a bare resolve decline on this turn, the user is in a confirmation flow.
+    # Don't force tool_choice=required — the user's message is a
+    # confirmation/decline that may have fallen through pattern matching
+    # (typed instead of clicked), or a bare decline the model answers (#2223).
     # Forcing tools crashes the tool loop when the LLM has nothing to search
-    # for. A turn that answered an offer with an upload delivers the file, and
-    # is forced (#708).
+    # for.
     if route_single_shot:
         # fm#1116: nothing to search on this turn — take the single-shot
         # structured path with reasoning declared, instead of a tool

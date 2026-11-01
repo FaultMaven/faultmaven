@@ -431,11 +431,13 @@ not revive it).
   stale key (a new confirmation has since lapsed the decline) keeps the 422, and by then the engine is offering the resolution
   itself. Every decline of a resolution is answered by the model, the bare
   "no" included (#2223, ruling (b)): on the turn it is given, the prompt carries
-  `RESOLVE_DECLINED_THIS_TURN_LINE` beside the standing line, which says the
-  record already holds the confirmation and asks the model to find out what the
-  user still needs to see, or to name the check that would settle it and ask for
-  its output as data. That turn never forces tools unless it carries an upload
-  (#708), and its reply carries the chip. While the decline stands the prompt and the refusal's feedback state one
+  `RESOLVE_DECLINED_THIS_TURN_LINE` beside the standing line, on every
+  processing mode. It says the record already holds the confirmation (record
+  neither leg again this turn), asks what the user still needs to see and to
+  name the one check that would settle it, and sends a report in the user's
+  message to the chat-data rules (`system_state_report.request`). A bare
+  decline (not substantive, no upload) never forces tools; any other turn that
+  answers an offer is forced as before. The reply carries the chip. While the decline stands the prompt and the refusal's feedback state one
   rule (`RESOLVE_DECLINED_RULE`): do not propose on the evidence on record;
   record a NEW verification as evidence and propose in the same turn; point a
   user who changes their mind at the **Mark it resolved** action, never
