@@ -2336,4 +2336,36 @@ asked to accept, and it belongs to a person.
 # field narrows from a string map to an object of the enums it already
 # carried, and no request schema carries it. A client rendering Close on
 # `ready`, as faultmaven-copilot's `HeaderSummary` does, needs no logic change.
-API_CONTRACT_VERSION = "14.10.0"
+
+# 14.11.0 — MINOR. KB uploads and conversions are retry-safe under an
+# `Idempotency-Key` (#2433).
+#
+# * `POST /knowledge/documents` and `POST /knowledge/convert` take an optional
+#   `Idempotency-Key` header, in the turn route's grammar (out of grammar →
+#   422). A keyed request commits a receipt in the transaction that publishes
+#   it (`kb_request_receipts`); without a key, every request publishes, as
+#   before.
+# * A retry under the key, with the same file and the same form fields, is
+#   answered **201** with the published request's body (the upload with its
+#   `Location`) and `X-Idempotency-Replayed: true`, now declared on both 201s.
+#   Nothing publishes again. That holds after a lost response and after a
+#   **500** `KB_INGEST_OUTCOME_UNKNOWN` (which replays if the upload landed and
+#   runs if it did not); the 500's detail now tells a keyed client to retry
+#   with the same key.
+# * Two **409**s are declared on both routes, told apart by `x-error-code`:
+#   `IDEMPOTENCY_KEY_REUSE` (the key was used with a different file or
+#   different fields) and `KB_REQUEST_IN_PROGRESS` (the first is still
+#   running; `Retry-After` is when its renewed claim would lapse, and it may
+#   still be running then).
+# * Both routes are answered by the route, never by `IdempotencyMiddleware`,
+#   which used to replay a keyed upload from its cache without comparing the
+#   file.
+# * `POST /knowledge/convert`'s `created_at` (and every datetime in its body)
+#   is now spelled with `Z` instead of `+00:00`, so the first answer and its
+#   replay are the same bytes. Both are ISO 8601.
+#
+# MINOR because every client survives it: the header is optional, the new
+# statuses answer only a keyed request, and an unkeyed request behaves as
+# before. faultmaven-dashboard adopts by sending one key per submission and
+# reusing it on retry.
+API_CONTRACT_VERSION = "14.11.0"

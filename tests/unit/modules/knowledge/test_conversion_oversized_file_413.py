@@ -56,7 +56,7 @@ def convert_service():
     return SimpleNamespace(
         convert_document=AsyncMock(
             return_value=SimpleNamespace(
-                model_dump=lambda: {"drafts": [], "status": "ok"}
+                model_dump=lambda mode=None: {"drafts": [], "status": "ok"}
             )
         )
     )

@@ -83,6 +83,13 @@ UNLABELLED_BY_DESIGN = {
 #: Every entry must still match a site (``test_every_dynamic_status_is_classified``).
 DYNAMIC_STATUS = {
     (
+        "faultmaven/modules/knowledge/api/request_idempotency.py",
+        "replayed",
+    ): (
+        "Replays a published KB upload's or conversion's stored status, which "
+        "is the 201 it was answered with (#2433); never 409."
+    ),
+    (
         "faultmaven/api/exception_handlers.py",
         "_llm_http",
     ): (

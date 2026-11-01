@@ -273,6 +273,8 @@ pytestmark = [
 #: the LLM usage ledger is per-enterprise spend, enrolled by its own revision.
 #: ``turn_receipts`` joins it with revision 010 (#1888): a committed turn's
 #: request identity and the response its author was sent.
+#: ``kb_request_receipts`` joins it with revision 024 (#2433): the same for a
+#: published KB upload or conversion.
 ENTERPRISE_SCOPED_TABLES = frozenset(
     {
         "case_actions",
@@ -290,6 +292,7 @@ ENTERPRISE_SCOPED_TABLES = frozenset(
         "evidence_needs",
         "hypotheses",
         "hypothesis_evidence",
+        "kb_request_receipts",
         "knowledge_items",
         "llm_turn_spend",
         "llm_usage_daily",

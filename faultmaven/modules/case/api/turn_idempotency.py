@@ -57,18 +57,20 @@ that gap misses the receipt and runs; OCC or the unique key still lets only
 one commit, as above.
 """
 
-import hashlib
-import json
 import logging
 import math
-import secrets
 from dataclasses import dataclass
-from typing import Any, Optional, Sequence, Tuple
+from typing import Any, Optional
 
 from fastapi import HTTPException, status
 from pydantic import ValidationError
 
 from faultmaven.config.idempotency_key import IDEMPOTENCY_KEY_REUSE
+from faultmaven.infrastructure.concurrency.owned_claim import (
+    ClaimHeld,
+    OwnedClaim,
+    take_claim,
+)
 from faultmaven.models.api_models import TurnResponse
 from faultmaven.models.interfaces_case import ICaseService
 from faultmaven.modules.case.contracts import Case, TurnReceipt, TurnReceiptKey
@@ -90,69 +92,6 @@ IDEMPOTENCY_REPLAY_UNAVAILABLE = "IDEMPOTENCY_REPLAY_UNAVAILABLE"
 #: forever; a turn that outlives it can be duplicated, and OCC still lets only
 #: one commit.
 CLAIM_MARGIN_SECONDS = 30.0
-
-#: Compare-and-delete: release the claim only if this request still holds it.
-#: A plain DEL after the TTL expired would delete a LATER holder's claim and
-#: let a third duplicate in.
-_RELEASE_IF_HELD = """
-if redis.call('GET', KEYS[1]) == ARGV[1] then
-    return redis.call('DEL', KEYS[1])
-end
-return 0
-"""
-
-#: Logged once per process: an absent claim store is a deployment fact, not a
-#: per-request event.
-_REPORTED: set = set()
-
-
-def _report_once(key: str, message: str, *args: Any) -> None:
-    if key in _REPORTED:
-        return
-    _REPORTED.add(key)
-    logger.warning(message, *args)
-
-
-def request_fingerprint(
-    *,
-    query: Optional[str],
-    pasted_content: Optional[str],
-    intent_type: Optional[str],
-    intent_data: Optional[str],
-    input_type: Optional[str],
-    source_url: Optional[str],
-    observed_at: Optional[str],
-    files: Sequence[Tuple[str, bytes]],
-) -> str:
-    """sha256 over a turn's semantic inputs, as the client sent them.
-
-    The form fields verbatim, and each file by name, size and the sha256 of
-    its CONTENT, never by ``UploadFile`` metadata alone: two different files
-    of one name and size are two different turns. Canonical JSON (sorted
-    keys), so the fingerprint is a function of the inputs and nothing else.
-    """
-    canonical = json.dumps(
-        {
-            "query": query,
-            "pasted_content": pasted_content,
-            "intent_type": intent_type,
-            "intent_data": intent_data,
-            "input_type": input_type,
-            "source_url": source_url,
-            "observed_at": observed_at,
-            "files": [
-                {
-                    "name": name,
-                    "size": len(content),
-                    "sha256": hashlib.sha256(content).hexdigest(),
-                }
-                for name, content in files
-            ],
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def claim_ttl_seconds(response_bound_seconds: float) -> int:
@@ -183,21 +122,15 @@ class KeyedTurn:
     replay: Optional[TurnResponse] = None
     """The committed turn's response, when this request is its retry."""
 
-    _redis: Any = None
-    _claim: Optional[str] = None
-    _token: Optional[str] = None
+    _claim: Optional[OwnedClaim] = None
 
     async def release(self) -> None:
         """Give the claim up, if this request still holds it. Safe to call
         more than once, and never raises: a claim that fails to release
         expires at its TTL."""
-        if self._claim is None:
-            return
-        claim, self._claim = self._claim, None
-        try:
-            await self._redis.eval(_RELEASE_IF_HELD, 1, claim, self._token)
-        except Exception as exc:  # noqa: BLE001 - the TTL is the backstop
-            logger.warning("Could not release turn claim %s: %r", claim, exc)
+        if self._claim is not None:
+            claim, self._claim = self._claim, None
+            await claim.release()
 
 
 async def open_keyed_turn(
@@ -330,44 +263,19 @@ async def _claim(
     case: Case,
     response_bound_seconds: float,
 ) -> None:
-    """Take the in-flight claim, OWNER-TOKENED, or refuse with 409.
-
-    ``SET NX`` with a per-request random value, so only this request's release
-    can delete it. No claim store, or one that fails, means no claim: the turn
-    proceeds and OCC is its backstop.
-    """
-    if redis is None:
-        _report_once(
-            "no-redis",
-            "No Redis client on app.state: keyed turns run without an in-flight "
-            "claim, so a concurrent duplicate may spend a second LLM run "
-            "(optimistic concurrency still lets one commit)",
-        )
-        return
-    name = claim_name(
-        case, keyed.receipt_key.author_id, keyed.receipt_key.idempotency_key
-    )
-    token = secrets.token_hex(16)
+    """Take the in-flight claim, OWNER-TOKENED, or refuse with 409
+    (``infrastructure/concurrency/owned_claim``). No claim store, or one that
+    fails, means no claim: the turn proceeds and OCC is its backstop. A fixed
+    TTL, never renewed: the turn's bound is its own."""
     try:
-        acquired = await redis.set(
-            name, token, nx=True, ex=claim_ttl_seconds(response_bound_seconds)
+        keyed._claim = await take_claim(
+            redis,
+            claim_name(
+                case, keyed.receipt_key.author_id, keyed.receipt_key.idempotency_key
+            ),
+            ttl_seconds=claim_ttl_seconds(response_bound_seconds),
+            purpose="keyed turns",
+            backstop="optimistic concurrency still lets one commit",
         )
-    except Exception as exc:  # noqa: BLE001 - OCC is the backstop
-        _report_once(
-            "claim-failed",
-            "Turn in-flight claim unavailable (%r): keyed turns run without it",
-            exc,
-        )
-        return
-    if acquired:
-        keyed._redis, keyed._claim, keyed._token = redis, name, token
-        return
-
-    retry_after = 1
-    try:
-        remaining_ms = await redis.pttl(name)
-        if remaining_ms and remaining_ms > 0:
-            retry_after = max(1, math.ceil(remaining_ms / 1000))
-    except Exception:  # noqa: BLE001 - 1 s is an honest lower bound
-        pass
-    raise _in_progress(retry_after)
+    except ClaimHeld as held:
+        raise _in_progress(held.retry_after) from None

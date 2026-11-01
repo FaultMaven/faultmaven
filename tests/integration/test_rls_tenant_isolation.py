@@ -484,6 +484,8 @@ async def test_rls_enabled_and_policy_present(superuser_engine):
             "llm_turn_spend",
             # the turn receipt, revision 010 (#1888)
             "turn_receipts",
+            # the KB request receipt, revision 024 (#2433)
+            "kb_request_receipts",
             # no enterprise_id of its own: one hop through teams
             "team_members",
         ):

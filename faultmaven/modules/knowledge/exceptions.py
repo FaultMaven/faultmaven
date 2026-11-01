@@ -179,10 +179,33 @@ class IngestNotRecorded(KnowledgeException):
 KB_INGEST_OUTCOME_UNKNOWN = "KB_INGEST_OUTCOME_UNKNOWN"
 
 #: What the caller is told: the runbook may be live, so a blind retry could
-#: publish it twice.
+#: publish it twice. A retry under the same ``Idempotency-Key`` cannot (#2433):
+#: it replays the upload if it landed and runs if it did not.
 INGEST_OUTCOME_UNKNOWN_DETAIL = (
-    "The runbook may have been published. Check the knowledge base before retrying."
+    "The runbook may have been published. Retry with the same Idempotency-Key "
+    "to learn whether it was; without a key, check the knowledge base before "
+    "retrying."
 )
+
+
+class KbReceiptExistsError(Exception):
+    """A keyed upload or conversion tried to publish under a key that already
+    has a receipt (#2433).
+
+    The receipt's key refused the INSERT, so nothing of this request was
+    published, and ANOTHER request under the same key already was. Reached
+    only by a duplicate that ran without the route's in-flight claim (no
+    Redis, a failed claim store, or an expired lease). The route answers it
+    with the published request's receipt, as a retry would be answered.
+    """
+
+    def __init__(self, route_name: str, idempotency_key: str) -> None:
+        self.route_name = route_name
+        self.idempotency_key = idempotency_key
+        super().__init__(
+            f"A {route_name} under Idempotency-Key {idempotency_key!r} already "
+            "published"
+        )
 
 
 class IngestOutcomeUnknown(KnowledgeException):

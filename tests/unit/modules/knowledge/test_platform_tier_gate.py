@@ -86,7 +86,7 @@ def conversion_client():
     app.include_router(conversion_router)
     service = MagicMock()
     service.convert_document = AsyncMock(
-        return_value=MagicMock(model_dump=lambda: {"ok": True})
+        return_value=MagicMock(model_dump=lambda mode=None: {"ok": True})
     )
     service.create_runbook_from_template = AsyncMock(
         return_value={

@@ -1,12 +1,12 @@
 # FaultMaven Database ER Diagram
 
-> **Auto-generated** from SQLAlchemy models on 2026-10-30 10:50 UTC.
+> **Auto-generated** from SQLAlchemy models on 2026-11-01 04:06 UTC.
 > Do not edit manually — run `python scripts/generate_er_diagram.py --update` to regenerate.
 > Render with any Mermaid-compatible viewer (GitHub, VS Code, Mermaid Live Editor).
 
 ## Summary
 
-**42 tables** in the schema.
+**43 tables** in the schema.
 
 | Table | Columns | Primary Key | Foreign Keys |
 |-------|---------|-------------|--------------|
@@ -27,6 +27,7 @@
 | `evidence_needs` | 17 | `need_id` | cases, enterprises, organizations |
 | `hypotheses` | 26 | `hypothesis_id` | cases, causal_nodes, enterprises, organizations, users |
 | `hypothesis_evidence` | 9 | `hypothesis_id, evidence_id` | enterprises, evidence, hypotheses, organizations, users |
+| `kb_request_receipts` | 10 | `enterprise_id, author_id, route, idempotency_key` | conversion_jobs, enterprises, knowledge_items |
 | `knowledge_items` | 30 | `item_id` | enterprises, organizations, users |
 | `llm_turn_spend` | 17 | `enterprise_id, case_id, turn_number` | cases, enterprises |
 | `llm_usage_daily` | 15 | `enterprise_id, usage_date, billing_subject_kind, billing_subject_id, actor_user_id, provider, model, outcome` | enterprises |
@@ -333,6 +334,18 @@ erDiagram
         NUMERIC confidence
         INTEGER linked_at_turn
         VARCHAR linked_by FK
+        DATETIME created_at
+    }
+    kb_request_receipts {
+        VARCHAR enterprise_id PK
+        VARCHAR author_id PK
+        VARCHAR route PK
+        VARCHAR idempotency_key PK
+        VARCHAR request_fingerprint
+        INTEGER status_code
+        JSON response
+        VARCHAR knowledge_item_id FK
+        VARCHAR conversion_id FK
         DATETIME created_at
     }
     knowledge_items {
@@ -702,6 +715,7 @@ erDiagram
     causal_nodes ||--o{ hypotheses : ""
     causal_nodes ||--o{ solutions : ""
     conversion_jobs ||--o{ conversion_drafts : ""
+    conversion_jobs ||--o{ kb_request_receipts : ""
     enterprises ||--o{ case_actions : ""
     enterprises ||--o{ case_entities : ""
     enterprises ||--o{ case_messages : ""
@@ -717,6 +731,7 @@ erDiagram
     enterprises ||--o{ evidence_needs : ""
     enterprises ||--o{ hypotheses : ""
     enterprises ||--o{ hypothesis_evidence : ""
+    enterprises ||--o{ kb_request_receipts : ""
     enterprises ||--o{ knowledge_items : ""
     enterprises ||--o{ llm_turn_spend : ""
     enterprises ||--o{ llm_usage_daily : ""
@@ -743,6 +758,7 @@ erDiagram
     hypotheses ||--o{ hypothesis_evidence : ""
     hypotheses ||--o{ solutions : ""
     knowledge_items ||--o{ conversion_drafts : ""
+    knowledge_items ||--o{ kb_request_receipts : ""
     organizations ||--o{ case_actions : ""
     organizations ||--o{ case_entities : ""
     organizations ||--o{ case_messages : ""

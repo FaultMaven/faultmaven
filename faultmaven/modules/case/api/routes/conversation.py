@@ -63,6 +63,9 @@ from faultmaven.exceptions import (
     SessionException,
     ValidationException,
 )
+from faultmaven.infrastructure.concurrency.request_fingerprint import (
+    request_fingerprint,
+)
 from faultmaven.infrastructure.logging.coordinator import current_correlation_id
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.infrastructure.protection.tenant_turn_cap import (
@@ -87,7 +90,6 @@ from faultmaven.modules.case.api.turn_idempotency import (
     KeyedTurn,
     open_keyed_turn,
     replay_committed_turn,
-    request_fingerprint,
 )
 from faultmaven.modules.case.contracts import TurnReceiptExistsError
 from faultmaven.modules.case.exceptions import StaleCaseException
@@ -710,14 +712,16 @@ async def submit_turn(
                 author_id=current_user.user_id,
                 idempotency_key=idempotency_key,
                 fingerprint=request_fingerprint(
-                    query=query,
-                    pasted_content=pasted_content,
-                    intent_type=intent_type,
-                    intent_data=intent_data,
-                    input_type=input_type,
-                    source_url=source_url,
-                    observed_at=observed_at,
-                    files=[(f.filename or "", content) for f, content in file_contents],
+                    {
+                        "query": query,
+                        "pasted_content": pasted_content,
+                        "intent_type": intent_type,
+                        "intent_data": intent_data,
+                        "input_type": input_type,
+                        "source_url": source_url,
+                        "observed_at": observed_at,
+                    },
+                    [(f.filename or "", content) for f, content in file_contents],
                 ),
                 case_service=case_service,
                 response_bound_seconds=turn_ceiling.response_bound_seconds,

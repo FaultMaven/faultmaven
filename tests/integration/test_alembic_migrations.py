@@ -44,8 +44,8 @@ TEST_DB = os.path.join(os.environ[TEST_DATA_ROOT_ENV], "test_migration.db")
 # the 001-053 chain) plus additive revisions on top of it, so the seed
 # assertions below reverse the whole schema with "downgrade base" and each
 # additive revision is stepped over on its own.
-#: 023_drop_in_flight_revisions
-HEAD_REVISION = "cf17b34fc8c4"  # pragma: allowlist secret
+#: 024_kb_request_receipts
+HEAD_REVISION = "d6cfb801d9f5"  # pragma: allowlist secret
 #: The baseline, which every additive revision parents onto.
 BASELINE_REVISION = "a1e0c17bd001"  # 001_enterprise_baseline
 #: The first additive revision.
@@ -110,6 +110,9 @@ VECTOR_GENERATION_REVISION = "03f93180f630"  # pragma: allowlist secret
 #: ``023_drop_in_flight_revisions``: a stored ``pending_revision`` is dropped and
 #: its case returned to the prior status (#2379, ruling 5).
 DROP_IN_FLIGHT_REVISIONS_REVISION = "cf17b34fc8c4"  # pragma: allowlist secret
+#: ``024_kb_request_receipts``: one row per keyed KB upload or conversion that
+#: published (#2433).
+KB_REQUEST_RECEIPTS_REVISION = "d6cfb801d9f5"  # pragma: allowlist secret
 #: The tables 002_llm_usage_ledger adds (#640).
 LLM_USAGE_TABLES = ["llm_turn_spend", "llm_usage_daily"]
 
@@ -304,6 +307,8 @@ def get_current_revision(database_url: str) -> str:
 # committed keyed turn (#1888). ``knowledge_suggestions`` is gone: 011 removed
 # the knowledge-suggestion subsystem (#1897). ``investigation_sessions`` is
 # gone: 017 retired the investigation-sessions subsystem (#1935).
+# ``kb_request_receipts`` is 024's: one row per published keyed KB upload or
+# conversion (#2433).
 EXPECTED_TABLES = [
     "alembic_version",
     "case_actions",
@@ -322,6 +327,7 @@ EXPECTED_TABLES = [
     "evidence_needs",
     "hypotheses",
     "hypothesis_evidence",
+    "kb_request_receipts",
     "knowledge_items",
     "config_overrides",
     "llm_turn_spend",
@@ -722,11 +728,15 @@ class TestLlmUsageLedgerRevision:
         result = run_alembic(f"downgrade {BASELINE_REVISION}", database_url)
         assert result.returncode == 0, result.stderr
         assert get_current_revision(database_url) == BASELINE_REVISION
-        # Less the ledger and 010's receipts; plus the tables the baseline
-        # creates and 009, 011 and 017 drop, which stepping down over them
-        # restores.
+        # Less the ledger and 010's and 024's receipts; plus the tables the
+        # baseline creates and 009, 011 and 017 drop, which stepping down over
+        # them restores.
         assert get_tables(TEST_DB) == sorted(
-            (set(before) - set(LLM_USAGE_TABLES) - {"turn_receipts"})
+            (
+                set(before)
+                - set(LLM_USAGE_TABLES)
+                - {"turn_receipts", "kb_request_receipts"}
+            )
             | {"case_checkpoints", "knowledge_suggestions", "investigation_sessions"}
         )
 
@@ -3996,6 +4006,127 @@ class TestDropInFlightRevisionsRevision:
         update = sql.index("metadata = jsonb_set(metadata, '{offer_record,open}'")
         restored = sql.index("SET LOCAL row_security TO DEFAULT;")
         assert off < update < restored, sql
+
+
+class TestKbRequestReceiptsRevision:
+    """024 adds ``kb_request_receipts`` (#2433): one table, its two subject
+    indexes, its CHECKs, and on PostgreSQL the plain tenant policy (enrolment
+    pinned live by ``test_rls_tenant_isolation.py``). A receipt names exactly
+    the subject its route does and goes with it."""
+
+    @staticmethod
+    def _schema() -> list:
+        return query_rows(
+            TEST_DB,
+            "SELECT type, name FROM sqlite_master "
+            "WHERE tbl_name = 'kb_request_receipts' ORDER BY type, name",
+        )
+
+    def test_upgrade_adds_the_table_and_downgrade_removes_only_it(
+        self, clean_database, database_url
+    ):
+        prepare_database(DROP_IN_FLIGHT_REVISIONS_REVISION, database_url)
+        parent = get_tables(TEST_DB)
+
+        result = run_alembic(f"upgrade {KB_REQUEST_RECEIPTS_REVISION}", database_url)
+        assert result.returncode == 0, result.stderr
+        assert get_tables(TEST_DB) == sorted(set(parent) | {"kb_request_receipts"})
+        assert self._schema() == [
+            ("index", "ix_kb_request_receipts_conversion"),
+            ("index", "ix_kb_request_receipts_item"),
+            ("index", "sqlite_autoindex_kb_request_receipts_1"),  # the key
+            ("table", "kb_request_receipts"),
+        ]
+        pk = sorted(
+            (row[5], row[1])
+            for row in query_rows(TEST_DB, 'PRAGMA table_info("kb_request_receipts")')
+            if row[5]
+        )
+        assert [name for _, name in pk] == [
+            "enterprise_id",
+            "author_id",
+            "route",
+            "idempotency_key",
+        ]
+
+        result = run_alembic(
+            f"downgrade {DROP_IN_FLIGHT_REVISIONS_REVISION}", database_url
+        )
+        assert result.returncode == 0, result.stderr
+        assert get_tables(TEST_DB) == parent
+
+    def test_a_receipt_names_its_routes_subject_and_goes_with_it(
+        self, clean_database, database_url
+    ):
+        prepare_database("head", database_url)
+        conn = sqlite3.connect(TEST_DB)
+        conn.execute("PRAGMA foreign_keys=ON")
+        try:
+            (enterprise,) = conn.execute(
+                "SELECT enterprise_id FROM enterprises LIMIT 1"
+            ).fetchone()
+            conn.execute(
+                "INSERT INTO knowledge_items (item_id, enterprise_id, title, "
+                "content, item_type, vector_generation) "
+                "VALUES ('kb_1', ?, 't', 'c', 'runbook', 'g1')",
+                (enterprise,),
+            )
+            conn.execute(
+                "INSERT INTO uploaded_files (file_id, enterprise_id, filename, "
+                "size_bytes) VALUES ('file_1', ?, 'src', 1)",
+                (enterprise,),
+            )
+            conn.execute(
+                "INSERT INTO conversion_jobs (id, enterprise_id, source_file_id, "
+                "scope, source_type) VALUES ('job_1', ?, 'file_1', 'personal', "
+                "'document')",
+                (enterprise,),
+            )
+            insert = (
+                "INSERT INTO kb_request_receipts (enterprise_id, author_id, route, "
+                "idempotency_key, request_fingerprint, status_code, response, "
+                "knowledge_item_id, conversion_id, created_at) "
+                "VALUES (?, 'u1', ?, ?, 'f', 201, '{}', ?, ?, datetime('now'))"
+            )
+            conn.execute(insert, (enterprise, "upload", "key-0001", "kb_1", None))
+            conn.execute(insert, (enterprise, "convert", "key-0001", None, "job_1"))
+            for route, item, job in [
+                ("upload", None, "job_1"),
+                ("convert", "kb_1", "job_1"),
+                ("verify", "kb_1", None),
+            ]:
+                with pytest.raises(sqlite3.IntegrityError, match="CHECK"):
+                    conn.execute(insert, (enterprise, route, "key-0002", item, job))
+            with pytest.raises(sqlite3.IntegrityError, match="UNIQUE"):
+                conn.execute(insert, (enterprise, "upload", "key-0001", "kb_1", None))
+
+            conn.execute("DELETE FROM knowledge_items WHERE item_id = 'kb_1'")
+            assert conn.execute("SELECT route FROM kb_request_receipts").fetchall() == [
+                ("convert",)
+            ]
+            conn.execute("DELETE FROM conversion_jobs WHERE id = 'job_1'")
+            assert conn.execute("SELECT * FROM kb_request_receipts").fetchall() == []
+        finally:
+            conn.close()
+
+    def test_the_postgresql_upgrade_enrols_the_table_in_row_level_security(self):
+        pg = "postgresql://offline@localhost/offline"
+        up = run_alembic(
+            f"upgrade {DROP_IN_FLIGHT_REVISIONS_REVISION}:"
+            f"{KB_REQUEST_RECEIPTS_REVISION} --sql",
+            pg,
+        )
+        assert up.returncode == 0, up.stderr
+        sql = up.stdout
+        assert "CREATE TABLE kb_request_receipts" in sql
+        assert "response JSON NOT NULL" in sql, "json, not jsonb: keys keep order"
+        assert sql.count("ON DELETE CASCADE") == 3
+        assert 'ALTER TABLE "kb_request_receipts" ENABLE ROW LEVEL SECURITY' in sql
+        assert (
+            'CREATE POLICY "kb_request_receipts_tenant_isolation" ON '
+            '"kb_request_receipts" USING (enterprise_id = '
+            "current_setting('app.current_enterprise_id', true))"
+        ) in sql
 
 
 class TestRbacSeed:
