@@ -141,8 +141,8 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
         kind = OfferKind.RESOLVE
         # Purpose-written, NOT `closure.message`. That text is a pivot-FROM-a-
         # close ("Closing would close it without marking it resolved; the
-        # confirmed fix stays on record, but only a resolved case can be turned
-        # into a runbook"), which is coherent on the LLM path — where a close
+        # confirmed fix stays on record", plus a runbook clause on a
+        # runbook-ready case), which is coherent on the LLM path — where a close
         # was actually requested — and incoherent here, where the engine
         # proposed this turn's disposition unprompted. Reusing it would
         # presuppose a close the user never asked for and would never state the

@@ -42,6 +42,7 @@ from faultmaven.core.investigation.cause_assurance import (
     has_resolution_confirmation,
     has_root_cause_record,
     latest_fix_window,
+    runbook_conversion_ready,
 )
 from faultmaven.core.investigation.lifecycle_metrics import (
     close_pivoted_to_resolve_total,
@@ -1417,14 +1418,19 @@ def assess_closure_readiness(case: "Case") -> ClosureReadiness:
                 + ", ".join(_solution_display_titles(case.solutions))
                 + "\n"
             )
+        # The runbook clause names a cost only where resolving would offer a
+        # runbook: the RESOLVED runbook suggestion is gated on the same predicate.
+        consequence = "the confirmed fix stays on record"
+        if runbook_conversion_ready(case):
+            consequence += ", but only a resolved case can be turned into a runbook"
         return ClosureReadiness(
             verdict=ClosureReadiness.SUGGEST_RESOLVE,
             message=(
                 "This case has a fix confirmed to have eliminated the root "
                 "cause — it qualifies for **resolved** status rather than "
                 "closed. Closing would close it without marking it resolved; "
-                "the confirmed fix stays on record, but only a resolved case "
-                "can be turned into a runbook.\n\n"
+                + consequence
+                + ".\n\n"
                 + detail
                 + "\nWould you like to mark it **resolved** instead?"
             ),
