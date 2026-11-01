@@ -150,6 +150,9 @@ MUST_BE_EMPTY = frozenset(
         # means a case survived too.
         "turn_receipts",
         "uploaded_files",
+        # KB request receipts (#2433): deleted with their knowledge item or
+        # conversion job, so a surviving row means one survived too.
+        "kb_request_receipts",
         # Identity / tenancy. ``sso_org_mappings`` and
         # ``sso_personal_enterprises`` are deliberately untenanted (the callback
         # that reads them is unauthenticated, so no tenant is bound yet — #869,

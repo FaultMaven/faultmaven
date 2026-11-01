@@ -44,6 +44,7 @@ from faultmaven.api.v1.auth_dependencies import require_authentication
 from faultmaven.api.v1.dependencies import get_investigation_service
 from faultmaven.config.idempotency_key import (
     IDEMPOTENCY_KEY_REUSE,
+    IDEMPOTENCY_REPLAY_UNAVAILABLE,
     IDEMPOTENCY_REPLAYED_HEADER,
 )
 from faultmaven.core.investigation.case_telemetry import (
@@ -58,6 +59,9 @@ from faultmaven.core.investigation.milestone_engine.terminal_replies import (
 from faultmaven.core.investigation.offer_projection import project_offers
 from faultmaven.core.investigation.schemas import InvestigationResponse_Diagnosis
 from faultmaven.exceptions import CASE_TERMINAL
+from faultmaven.infrastructure.concurrency.request_fingerprint import (
+    request_fingerprint,
+)
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.modules.agent.domain.services.investigation_service.service import (
     InvestigationService,
@@ -70,12 +74,10 @@ from faultmaven.modules.case.api.routes.dependencies import (
 )
 from faultmaven.modules.case.api.routes.router import router
 from faultmaven.modules.case.api.turn_idempotency import (
-    IDEMPOTENCY_REPLAY_UNAVAILABLE,
     TURN_IN_PROGRESS,
     KeyedTurn,
     claim_name,
     open_keyed_turn,
-    request_fingerprint,
 )
 from faultmaven.modules.case.contracts import (
     Case,
@@ -1151,14 +1153,16 @@ class TestAnUnreplayableReceipt:
                 author_id=OWNER,
                 idempotency_key=KEY,
                 request_fingerprint=request_fingerprint(
-                    query=QUERY["query"],
-                    pasted_content=None,
-                    intent_type=None,
-                    intent_data=None,
-                    input_type=None,
-                    source_url=None,
-                    observed_at=None,
-                    files=[],
+                    {
+                        "query": QUERY["query"],
+                        "pasted_content": None,
+                        "intent_type": None,
+                        "intent_data": None,
+                        "input_type": None,
+                        "source_url": None,
+                        "observed_at": None,
+                    },
+                    [],
                 ),
                 turn_number=case.current_turn,
                 # A deploy since changed the schema: a required field is gone.

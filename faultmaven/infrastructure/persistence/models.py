@@ -3157,6 +3157,69 @@ class ConversionDraftModel(Base):
     )
 
 
+class KbRequestReceiptModel(Base):
+    """One keyed KB upload or conversion that published: its request identity
+    and its answer (#2433). Owned by the knowledge module.
+
+    Written in the transaction that publishes: an upload's in the ``record``
+    that completes its item (#2396), a conversion's in ``_persist_job_rows``
+    with the job. So a receipt exists exactly when its request published, and
+    a retry under the same ``Idempotency-Key`` is answered from ``response``
+    instead of publishing again (``modules/knowledge/api/request_idempotency``).
+
+    The key is ``(enterprise_id, author_id, route, idempotency_key)``, the
+    enterprise first because RLS scopes the table on it, as on
+    ``turn_receipts``. ``author_id`` has no foreign key: the receipt goes with
+    its subject, not with the account. ``response`` is ``JSON``, not
+    ``JsonBlob``, so a replay keeps the key order the client was sent.
+
+    The subject is the item (``upload``) or the job (``convert``), exactly the
+    one its ``route`` names, and the receipt is deleted with it (``ON DELETE
+    CASCADE``): it lives exactly as long as what it describes, and there is no
+    retention job.
+    """
+
+    __tablename__ = "kb_request_receipts"
+
+    enterprise_id = Column(
+        String(36),
+        ForeignKey("enterprises.enterprise_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    author_id = Column(String(36), primary_key=True)
+    route = Column(String(16), primary_key=True)
+    idempotency_key = Column(String(IDEMPOTENCY_KEY_MAX_LENGTH), primary_key=True)
+    # sha256 hex of the request's form fields and file content.
+    request_fingerprint = Column(String(64), nullable=False)
+    status_code = Column(Integer, nullable=False)
+    response = Column(JSON, nullable=False)
+    knowledge_item_id = Column(
+        String(36),
+        ForeignKey("knowledge_items.item_id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    conversion_id = Column(
+        String(36),
+        ForeignKey("conversion_jobs.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    created_at = Column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "route IN ('upload', 'convert')", name="kb_request_receipts_route_check"
+        ),
+        CheckConstraint(
+            "(route = 'upload' AND knowledge_item_id IS NOT NULL "
+            "AND conversion_id IS NULL) OR (route = 'convert' "
+            "AND conversion_id IS NOT NULL AND knowledge_item_id IS NULL)",
+            name="kb_request_receipts_subject_check",
+        ),
+        Index("ix_kb_request_receipts_item", "knowledge_item_id"),
+        Index("ix_kb_request_receipts_conversion", "conversion_id"),
+    )
+
+
 # ============================================================
 # Sharing Domain
 # ============================================================

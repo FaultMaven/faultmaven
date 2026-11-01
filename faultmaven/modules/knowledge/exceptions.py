@@ -184,6 +184,34 @@ INGEST_OUTCOME_UNKNOWN_DETAIL = (
     "The runbook may have been published. Check the knowledge base before retrying."
 )
 
+#: ``POST /knowledge/documents``'s text for the same 500: a retry under the
+#: upload's ``Idempotency-Key`` replays it if it landed and runs if not (#2433).
+UPLOAD_OUTCOME_UNKNOWN_DETAIL = (
+    "The runbook may have been published. Retry with the same Idempotency-Key "
+    "to learn whether it was; without a key, check the knowledge base before "
+    "retrying."
+)
+
+
+class KbReceiptExistsError(Exception):
+    """A keyed upload or conversion tried to publish under a key that already
+    has a receipt (#2433).
+
+    The receipt's key refused the INSERT, so nothing of this request was
+    published, and ANOTHER request under the same key already was. Reached
+    only by a duplicate that ran without the route's in-flight claim (no
+    Redis, a failed claim store, or an expired lease). The route answers it
+    with the published request's receipt, as a retry would be answered.
+    """
+
+    def __init__(self, route_name: str, idempotency_key: str) -> None:
+        self.route_name = route_name
+        self.idempotency_key = idempotency_key
+        super().__init__(
+            f"A {route_name} under Idempotency-Key {idempotency_key!r} already "
+            "published"
+        )
+
 
 class IngestOutcomeUnknown(KnowledgeException):
     """An authored ingest's completing transaction raised, and whether its
@@ -193,12 +221,14 @@ class IngestOutcomeUnknown(KnowledgeException):
     The runbook and its caller's record are one transaction, so the state is
     consistent either way: both, or neither, the row then incomplete and never
     served. Answered 500 with ``x-error-code: KB_INGEST_OUTCOME_UNKNOWN`` and no
-    ``Retry-After`` by ``api.exception_handlers``. Not a 503, which in this API
-    says nothing was saved.
+    ``Retry-After`` by ``api.exception_handlers``: ``INGEST_OUTCOME_UNKNOWN_DETAIL``,
+    or ``UPLOAD_OUTCOME_UNKNOWN_DETAIL`` once the upload route sets ``from_upload``.
+    Not a 503, which in this API says nothing was saved.
     """
 
-    def __init__(self, item_id: str) -> None:
+    def __init__(self, item_id: str, *, from_upload: bool = False) -> None:
         self.item_id = item_id
+        self.from_upload = from_upload
         super().__init__(INGEST_OUTCOME_UNKNOWN_DETAIL)
 
 

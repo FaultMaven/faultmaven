@@ -217,6 +217,26 @@ logger.info("✅ Knowledge endpoints added")
 app.include_router(conversion_router, prefix="/api/v1")
 logger.info("✅ Document conversion endpoints added")
 
+# KB upload and conversion replay is owned by the receipt each commits with
+# what it publishes (#2433), for the turn route's reasons above: the
+# middleware's cache is written after the route returns, holds no in-flight
+# claim and does not fingerprint a multipart body. Read off the mounted app by
+# endpoint identity, as the turn route's path is.
+from .modules.knowledge.api.conversion_routes import convert_document
+from .modules.knowledge.api.routes import upload_document
+
+_KB_RECEIPT_ROUTE_PATHS = [
+    route.path
+    for route in app.routes
+    if getattr(route, "endpoint", None) in (upload_document, convert_document)
+]
+if len(_KB_RECEIPT_ROUTE_PATHS) != 2:
+    raise RuntimeError(
+        f"expected the KB upload and conversion routes, found "
+        f"{_KB_RECEIPT_ROUTE_PATHS}"
+    )
+declare_route_policy(app, *_KB_RECEIPT_ROUTE_PATHS, never_replayed=True)
+
 app.include_router(report_router, prefix="/api/v1")
 logger.info("✅ Report endpoints added")
 

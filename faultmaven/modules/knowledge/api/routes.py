@@ -25,6 +25,7 @@ Core Design Principles:
 • Observability: Add tracing spans for key operations
 """
 
+import asyncio
 import logging
 import uuid
 from datetime import datetime
@@ -47,7 +48,11 @@ from faultmaven.api.v1.auth_dependencies import (
     require_authentication,
 )
 from faultmaven.api.v1.utils.parsing import parse_comma_separated_tags
+from faultmaven.config.tenant_context import writable_enterprise_id
 from faultmaven.exceptions import AuthorizationError, ValidationException
+from faultmaven.infrastructure.concurrency.request_fingerprint import (
+    request_fingerprint,
+)
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models import KnowledgeBaseDocument, SearchRequest
 from faultmaven.models.api import DocumentSnippetResponse
@@ -56,8 +61,21 @@ from faultmaven.modules.auth.contracts import DevUser, is_team_member
 from faultmaven.modules.knowledge.api.platform_tier import (
     require_global_authoring_allowed,
 )
+from faultmaven.modules.knowledge.api.request_idempotency import (
+    IdempotencyKey,
+    KeyedRequest,
+    keyed_responses,
+    open_keyed_request,
+    redis_of,
+    replay_committed_request,
+    replayed,
+)
 from faultmaven.modules.knowledge.domain.document_write import (
     ensure_document_write_allowed,
+)
+from faultmaven.modules.knowledge.domain.request_receipts import (
+    ROUTE_UPLOAD,
+    KbReceiptKey,
 )
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     KnowledgeService,
@@ -68,6 +86,7 @@ from faultmaven.modules.knowledge.domain.services.runbook_validator import (
 from faultmaven.modules.knowledge.exceptions import (
     IngestOutcomeUnknown,
     ItemTitleScrubUnavailable,
+    KbReceiptExistsError,
 )
 from faultmaven.modules.knowledge.taxonomy import (
     KnowledgeScope,
@@ -299,9 +318,16 @@ SUGGESTED_DOCUMENT_TYPES = {
 }
 
 
+def _document_location(document_id: str) -> str:
+    return f"/api/v1/knowledge/documents/{document_id}"
+
+
 # (No legacy router paths)
 @router.post(
-    "/documents", status_code=201, dependencies=[Depends(require_authentication)]
+    "/documents",
+    status_code=201,
+    dependencies=[Depends(require_authentication)],
+    responses=keyed_responses(created="The runbook, published.", location=True),
 )
 @trace("api_upload_document")
 async def upload_document(
@@ -318,6 +344,7 @@ async def upload_document(
     knowledge_service: KnowledgeService = Depends(get_knowledge_service),
     response: Response = Response(),
     current_user: DevUser = Depends(require_authentication),
+    idempotency_key: IdempotencyKey = None,
 ) -> dict:
     """
     Upload a document to the knowledge base
@@ -342,6 +369,22 @@ async def upload_document(
     reversed. If that check cannot run (the sanitizer or its pseudonym key is
     unavailable) the upload answers **503**, a retryable server-side
     condition, with a generic detail, and nothing is saved.
+
+    **Retries (`Idempotency-Key`).** A keyed upload commits a receipt with the
+    runbook, in the same transaction. A request with a key this caller already
+    used for an upload:
+
+    - for the same upload (same file content, same fields), once it published
+      → **201** with that upload's body and `Location`, and
+      `X-Idempotency-Replayed: true`. Nothing is published again.
+    - for a different upload → **409** `x-error-code: IDEMPOTENCY_KEY_REUSE`.
+    - while the first is still running → **409** `x-error-code:
+      KB_REQUEST_IN_PROGRESS` with `Retry-After`; retry with the same key.
+
+    A lost response, or this route's **500** `KB_INGEST_OUTCOME_UNKNOWN`
+    (whose detail says to retry with the same key), is recovered by retrying
+    with the same key: it replays if the first published, and runs if it did
+    not. Without a key, every request publishes a new runbook.
     """
     logger = logging.getLogger(__name__)
     logger.info(f"Uploading document: {file.filename}")
@@ -399,6 +442,9 @@ async def upload_document(
                 detail="You can only publish a runbook to a team you belong to",
             )
 
+    # The keyed upload's claim, held from the idempotency step until the
+    # upload is fully answered (released in ``finally``, #2433).
+    keyed: Optional[KeyedRequest] = None
     try:
         # Validate file type — runbook upload accepts text formats only
         # Binary formats (PDF, DOCX) should go through "Convert to Runbook"
@@ -444,6 +490,45 @@ async def upload_document(
 
         # Read file content
         content = await file.read()
+
+        # The idempotency step (#2433): claim, look up, replay; order and
+        # rationale in ``request_idempotency``. Every form field and the
+        # file's bytes are fingerprinted, so another file under the key is a
+        # 409, not a replay.
+        if idempotency_key:
+            keyed = await open_keyed_request(
+                redis=redis_of(request),
+                receipt_key=KbReceiptKey(
+                    enterprise_id=writable_enterprise_id(None),
+                    author_id=current_user.user_id,
+                    route_name=ROUTE_UPLOAD,
+                    idempotency_key=idempotency_key,
+                    request_fingerprint=await asyncio.to_thread(
+                        request_fingerprint,
+                        {
+                            "title": title,
+                            "document_type": document_type,
+                            "category": category,
+                            "tags": tags,
+                            "source_url": source_url,
+                            "description": description,
+                            "scope": scope.value,
+                            "team_id": team_id,
+                        },
+                        [(filename, content)],
+                    ),
+                ),
+                lookup=knowledge_service.get_request_receipt,
+            )
+            if keyed.replay is not None:
+                return replayed(
+                    keyed.replay,
+                    headers={
+                        "Location": _document_location(
+                            keyed.replay.response["document_id"]
+                        )
+                    },
+                )
 
         # Universal-newline decode, the same translation ``Path.read_text``
         # applies on every other text path here (#1403). This route was the one
@@ -503,11 +588,12 @@ async def upload_document(
             tags=tag_list,
             source_url=source_url,
             description=description,
+            receipt_key=keyed.receipt_key if keyed is not None else None,
         )
 
         # Set Location header for REST compliance
         document_id = result.get("document_id", result.get("id", "unknown"))
-        response.headers["Location"] = f"/api/v1/knowledge/documents/{document_id}"
+        response.headers["Location"] = _document_location(document_id)
 
         logger.info(f"Successfully queued document {document_id} for ingestion")
 
@@ -515,6 +601,16 @@ async def upload_document(
 
     except HTTPException:
         raise
+    except KbReceiptExistsError:
+        # Another upload under this key published while this one ran without
+        # a claim; nothing of this one did. Answered as its retry would be.
+        receipt = await replay_committed_request(
+            keyed=keyed, lookup=knowledge_service.get_request_receipt
+        )
+        return replayed(
+            receipt,
+            headers={"Location": _document_location(receipt.response["document_id"])},
+        )
     except RunbookQualityError as quality_error:
         # The single gate's refusal, rendered as the structured 422 this route
         # has always answered. Without this the blanket handler below would
@@ -530,10 +626,10 @@ async def upload_document(
         # The title's redaction (#1981) could not run: a server-side
         # dependency, so the global handler's generic 503, not the blanket 500.
         raise
-    except IngestOutcomeUnknown:
+    except IngestOutcomeUnknown as unknown:
         # The upload may have been published (#2396): the global handler's 500
-        # with ``KB_INGEST_OUTCOME_UNKNOWN``, which tells the client to look
-        # before retrying.
+        # with ``KB_INGEST_OUTCOME_UNKNOWN``, here with the upload's own text.
+        unknown.from_upload = True
         raise
     except Exception as e:
         # The class, never the text: a failed row write's text carries its
@@ -545,6 +641,10 @@ async def upload_document(
         # the exception (that is where the diagnostic belongs) and answers with
         # the static prefix only.
         raise HTTPException(status_code=500, detail="Document upload failed")
+    finally:
+        # Only now is the upload fully answered, its receipt committed with it.
+        if keyed is not None:
+            await keyed.release()
 
 
 @router.get("/documents")

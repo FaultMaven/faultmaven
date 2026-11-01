@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 14.10.0
+**Version:** 14.11.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -2840,9 +2840,21 @@ check cannot run (the sanitizer or its pseudonym key is unavailable) the
 request answers **503**, a retryable server-side condition, with a generic
 detail, and nothing is saved.
 
+**Retries (`Idempotency-Key`).** A keyed conversion commits a receipt with
+its job, in the same transaction. A request with a key this caller already
+used for a conversion: the same file and fields, once the job committed →
+**201** with that job's body and `X-Idempotency-Replayed: true`, and no new
+job or drafts; a different file or fields → **409** `IDEMPOTENCY_KEY_REUSE`;
+the first still running → **409** `KB_REQUEST_IN_PROGRESS` with
+`Retry-After`. Without a key, every request converts again.
+
 **Tags:** `knowledge-conversion`
 
 **Auth:** `HTTPBearer`
+
+**Parameters:**
+
+- `Idempotency-Key` (header, optional) — Optional. Identifies this submission across retries: a retry under the same key, with the same file and fields, returns the published result instead of publishing again. One key per submission; a new submission, or any change to its file or fields, takes a new key.
 
 **Request body** (required):
 
@@ -2850,7 +2862,8 @@ detail, and nothing is saved.
 
 **Responses:**
 
-- `201` — Successful Response
+- `201` — The conversion job and its drafts. A retry under the same `Idempotency-Key` is answered with the same body, and carries `X-Idempotency-Replayed: true`.
+- `409` — Conflict. Told apart by `x-error-code`: `KB_REQUEST_IN_PROGRESS` (a request with this `Idempotency-Key` is still running: retry with the same key after `Retry-After` seconds; it may still be running then); `IDEMPOTENCY_KEY_REUSE` (the key was used for a different file or different fields). `IDEMPOTENCY_REPLAY_UNAVAILABLE` (the conversion committed, and its stored response no longer validates: reload your conversions). Without `x-error-code`, `conflict_reason: duplicate_runbook_id`: a live draft already holds a runbook id this conversion minted.
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
@@ -2919,9 +2932,29 @@ reversed. If that check cannot run (the sanitizer or its pseudonym key is
 unavailable) the upload answers **503**, a retryable server-side
 condition, with a generic detail, and nothing is saved.
 
+**Retries (`Idempotency-Key`).** A keyed upload commits a receipt with the
+runbook, in the same transaction. A request with a key this caller already
+used for an upload:
+
+- for the same upload (same file content, same fields), once it published
+  → **201** with that upload's body and `Location`, and
+  `X-Idempotency-Replayed: true`. Nothing is published again.
+- for a different upload → **409** `x-error-code: IDEMPOTENCY_KEY_REUSE`.
+- while the first is still running → **409** `x-error-code:
+  KB_REQUEST_IN_PROGRESS` with `Retry-After`; retry with the same key.
+
+A lost response, or this route's **500** `KB_INGEST_OUTCOME_UNKNOWN`
+(whose detail says to retry with the same key), is recovered by retrying
+with the same key: it replays if the first published, and runs if it did
+not. Without a key, every request publishes a new runbook.
+
 **Tags:** `knowledge_base`
 
 **Auth:** `HTTPBearer`
+
+**Parameters:**
+
+- `Idempotency-Key` (header, optional) — Optional. Identifies this submission across retries: a retry under the same key, with the same file and fields, returns the published result instead of publishing again. One key per submission; a new submission, or any change to its file or fields, takes a new key.
 
 **Request body** (required):
 
@@ -2929,7 +2962,8 @@ condition, with a generic detail, and nothing is saved.
 
 **Responses:**
 
-- `201` — Successful Response (`object`)
+- `201` — The runbook, published. A retry under the same `Idempotency-Key` is answered with the same body, and carries `X-Idempotency-Replayed: true`. (`object`)
+- `409` — Conflict. Told apart by `x-error-code`: `KB_REQUEST_IN_PROGRESS` (a request with this `Idempotency-Key` is still running: retry with the same key after `Retry-After` seconds; it may still be running then); `IDEMPOTENCY_KEY_REUSE` (the key was used for a different file or different fields).
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---

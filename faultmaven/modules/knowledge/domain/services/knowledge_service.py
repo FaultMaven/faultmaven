@@ -39,6 +39,7 @@ from typing import (
 )
 
 import anyio
+from sqlalchemy.exc import IntegrityError
 
 if TYPE_CHECKING:
     # Type-only import; the runtime import stays lazy inside ingest_runbook
@@ -71,6 +72,12 @@ from faultmaven.models.interfaces import (
 )
 from faultmaven.models.vector_metadata import VectorMetadata
 from faultmaven.modules.knowledge.domain.item_title import sanitize_item_title
+from faultmaven.modules.knowledge.domain.request_receipts import (
+    KbReceiptKey,
+    KbRequestReceipt,
+    add_receipt,
+    read_receipt,
+)
 from faultmaven.modules.knowledge.domain.services.conversion_service.draft_retirement import (
     discard_drafts_naming_item,
 )
@@ -86,6 +93,7 @@ from faultmaven.modules.knowledge.domain.write_scope import (
 from faultmaven.modules.knowledge.exceptions import (
     IngestNotRecorded,
     IngestOutcomeUnknown,
+    KbReceiptExistsError,
 )
 from faultmaven.utils.exception_name import exception_class_name
 from faultmaven.utils.line_endings import normalize_line_endings
@@ -1843,6 +1851,12 @@ class KnowledgeService:
             return _DELETED
         return _COMPLETED if complete else _ABSENT
 
+    async def get_request_receipt(
+        self, key: KbReceiptKey
+    ) -> Optional[KbRequestReceipt]:
+        """A keyed upload's receipt, or ``None`` (#2433)."""
+        return await read_receipt(self._db_session_factory, key)
+
     # API-compatible methods that match the router expectations
     async def upload_document(
         self,
@@ -1856,10 +1870,13 @@ class KnowledgeService:
         description: Optional[str] = None,
         owner_id: Optional[str] = None,
         team_id: Optional[str] = None,
+        receipt_key: Optional[KbReceiptKey] = None,
     ) -> Dict[str, Any]:
         """Upload document: publish it through :meth:`ingest_runbook`, whose
         completing transaction also writes its upload, conversion job and
-        verified draft rows.
+        verified draft rows, and, for a keyed upload, its receipt
+        (``receipt_key``, #2433): the response this returns, so a retry under
+        the key replays the same body.
 
         Everything this publishes becomes a ``KnowledgeItemType.RUNBOOK`` (see
         :meth:`ingest_runbook`) and the ``ConversionDraftModel`` written below
@@ -1890,6 +1907,11 @@ class KnowledgeService:
                 at the API boundary. Either is raised before any row is
                 written, so a refusal leaves nothing behind and needs no
                 compensation.
+            KbReceiptExistsError: another upload under ``receipt_key``
+                published first; nothing of this one was. Classified after
+                the completing session has closed, by reading the receipt
+                back: a second session inside the first deadlocks a pool of
+                one connection.
         """
         try:
             import uuid as _uuid
@@ -1997,6 +2019,20 @@ class KnowledgeService:
             draft_id = f"draft_{_uuid.uuid4().hex[:12]}"
             source_file_id = f"file_{_uuid.uuid4().hex[:12]}"
 
+            # One body: what this returns, and what a keyed upload's receipt
+            # stores for its retry to replay.
+            response = {
+                "document_id": document_id,
+                "status": "completed",
+                "metadata": {
+                    "title": title,
+                    "document_type": document_type,
+                    "category": category or document_type,
+                    "tags": tags or [],
+                    "created_at": to_json_compatible(created_at),
+                },
+            }
+
             async def record(session) -> bool:
                 """The upload, job and verified draft rows, in the transaction
                 that completes the item they name (#2396)."""
@@ -2059,6 +2095,13 @@ class KnowledgeService:
                         verified_by=owner_id,  # NULL if anonymous; FK SET NULL
                     )
                 )
+                if receipt_key is not None:
+                    add_receipt(
+                        session,
+                        receipt_key,
+                        response=response,
+                        knowledge_item_id=document_id,
+                    )
                 await session.flush()
                 return True
 
@@ -2072,42 +2115,44 @@ class KnowledgeService:
             # upload_document is called by anonymous / non-verified upload
             # paths, so verified_by is None (verification_level defaults to
             # EXPERIMENTAL inside ingest_runbook).
-            chunks_created = await self.ingest_runbook(
-                document_id=document_id,
-                title=title,
-                content=content,
-                enterprise_id=enterprise_id,
-                document_type=document_type,
-                tags=tags,
-                source_url=source_url,
-                scope=scope,
-                owner_id=owner_id,
-                team_id=team_id,
-                verified_by=None,
-                record=record,
-            )
+            try:
+                chunks_created = await self.ingest_runbook(
+                    document_id=document_id,
+                    title=title,
+                    content=content,
+                    enterprise_id=enterprise_id,
+                    document_type=document_type,
+                    tags=tags,
+                    source_url=source_url,
+                    scope=scope,
+                    owner_id=owner_id,
+                    team_id=team_id,
+                    verified_by=None,
+                    record=record,
+                )
+            except IntegrityError as refused:
+                # ``record``'s flush, before the COMMIT, so the cleanup has
+                # already deleted this upload's incomplete row.
+                if receipt_key is not None and await read_receipt(
+                    self._db_session_factory, receipt_key
+                ):
+                    raise KbReceiptExistsError(
+                        receipt_key.route_name, receipt_key.idempotency_key
+                    ) from refused
+                raise
 
             logger.info(
                 f"Uploaded document {document_id}: {chunks_created} chunks indexed"
             )
 
-            return {
-                "document_id": document_id,
-                "status": "completed",
-                "metadata": {
-                    "title": title,
-                    "document_type": document_type,
-                    "category": category or document_type,
-                    "tags": tags or [],
-                    "created_at": to_json_compatible(created_at),
-                },
-            }
+            return response
 
-        except RunbookQualityError:
+        except (RunbookQualityError, KbReceiptExistsError):
             # A refused draft is a client-side outcome (422), not a service
             # fault. Logged as a warning by the global handler; re-raised here
             # without the "Failed to upload document" ERROR line, which would
-            # otherwise make every rejected paste look like an outage.
+            # otherwise make every rejected paste look like an outage. A
+            # duplicate under a published key is answered with its receipt.
             raise
         except Exception as e:
             # The class, never the text: a failed INSERT's text carries its

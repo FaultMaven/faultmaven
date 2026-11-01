@@ -45,8 +45,8 @@ from faultmaven.modules.knowledge.domain.services.conversion_service.service imp
     ConversionService,
 )
 from faultmaven.modules.knowledge.exceptions import (
-    INGEST_OUTCOME_UNKNOWN_DETAIL,
     KB_INGEST_OUTCOME_UNKNOWN,
+    UPLOAD_OUTCOME_UNKNOWN_DETAIL,
     IngestOutcomeUnknown,
 )
 from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
@@ -70,6 +70,11 @@ from tests.utils import regex_only_sanitizer
 pytestmark = [pytest.mark.integration, pytest.mark.knowledge_base]
 
 CONVERSION, DRAFT = "conv_2396", "draft_2396"
+#: ``INGEST_OUTCOME_UNKNOWN_DETAIL`` as it reads on ``2ada6d455``: the verify
+#: route's 500 and ``verify-batch``'s per-draft ``error`` still carry it (#2433).
+CHECK_FIRST = (
+    "The runbook may have been published. Check the knowledge base before retrying."
+)
 
 
 async def _verifiable_draft(factory) -> None:
@@ -272,7 +277,7 @@ async def test_an_unknown_outcome_is_reported_unknown_never_failed(
     (result,) = summary["results"]
     assert (result["status"], result["error"]) == (
         "unknown",
-        INGEST_OUTCOME_UNKNOWN_DETAIL,
+        CHECK_FIRST,
     )
     assert (summary["failed"], summary["unknown"]) == (0, 1)
     status, items = await _state(session_factory)
@@ -528,4 +533,6 @@ def test_an_unknown_outcome_answers_500_with_its_code_and_no_retry_after(route):
     assert response.status_code == 500, response.text
     assert response.headers["x-error-code"] == KB_INGEST_OUTCOME_UNKNOWN
     assert "retry-after" not in response.headers
-    assert response.json()["detail"] == INGEST_OUTCOME_UNKNOWN_DETAIL
+    assert response.json()["detail"] == (
+        UPLOAD_OUTCOME_UNKNOWN_DETAIL if route == "upload" else CHECK_FIRST
+    )

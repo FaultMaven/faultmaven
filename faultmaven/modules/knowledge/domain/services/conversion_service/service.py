@@ -71,6 +71,12 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
     generate_draft_id,
     generate_runbook_id,
 )
+from faultmaven.modules.knowledge.domain.request_receipts import (
+    KbReceiptKey,
+    KbReceiptWrite,
+    KbRequestReceipt,
+    read_receipt,
+)
 from faultmaven.modules.knowledge.domain.services.conversion_service.draft_retirement import (
     release_live_case_key_if_drained,
 )
@@ -307,8 +313,15 @@ class ConversionService:
         user_id: str,
         enterprise_id: Optional[str],
         team_id: Optional[str] = None,
+        receipt_key: Optional[KbReceiptKey] = None,
     ) -> ConversionResponse:
-        """Full conversion pipeline: preprocess → analyze → convert → validate → persist."""
+        """Full conversion pipeline: preprocess → analyze → convert → validate → persist.
+
+        A keyed request's receipt (``receipt_key``, #2433) is written with the
+        job, holding this response's JSON body. Raises
+        :class:`KbReceiptExistsError` when another conversion under the key
+        published first.
+        """
         await self._ensure_team_publish_allowed(scope, team_id, user_id)
         # No sanitizer means no title can be scrubbed, so refuse before the
         # model calls this conversion would pay for (#1981).
@@ -411,6 +424,17 @@ class ConversionService:
         else:
             status = ConversionStatus.COMPLETED
 
+        def response() -> ConversionResponse:
+            return ConversionResponse(
+                conversion_id=conversion_id,
+                status=status,
+                source_file=source_file,
+                analysis=analysis,
+                drafts=drafts,
+                warnings=warnings,
+                created_at=created_at,
+            )
+
         # Step 5: Persist to database
         await _persist_job(
             self._db_session_factory,
@@ -427,6 +451,14 @@ class ConversionService:
             created_at=created_at,
             warnings=warnings,
             sanitizer=self._sanitizer,
+            receipt=(
+                KbReceiptWrite(
+                    key=receipt_key,
+                    build_response=lambda: response().model_dump(mode="json"),
+                )
+                if receipt_key is not None
+                else None
+            ),
         )
 
         logger.info(
@@ -441,15 +473,13 @@ class ConversionService:
             },
         )
 
-        return ConversionResponse(
-            conversion_id=conversion_id,
-            status=status,
-            source_file=source_file,
-            analysis=analysis,
-            drafts=drafts,
-            warnings=warnings,
-            created_at=created_at,
-        )
+        return response()
+
+    async def get_request_receipt(
+        self, key: KbReceiptKey
+    ) -> Optional[KbRequestReceipt]:
+        """A keyed conversion's receipt, or ``None`` (#2433)."""
+        return await read_receipt(self._db_session_factory, key)
 
     # =========================================================================
     # Case-to-Runbook Conversion

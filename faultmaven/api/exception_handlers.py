@@ -78,6 +78,7 @@ from faultmaven.modules.auth.exceptions import TeamOperationRefused
 from faultmaven.modules.knowledge.exceptions import (
     INGEST_OUTCOME_UNKNOWN_DETAIL,
     KB_INGEST_OUTCOME_UNKNOWN,
+    UPLOAD_OUTCOME_UNKNOWN_DETAIL,
     IngestOutcomeUnknown,
     ItemTitleScrubUnavailable,
 )
@@ -554,7 +555,11 @@ async def ingest_outcome_unknown_handler(
         request,
         HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=INGEST_OUTCOME_UNKNOWN_DETAIL,
+            detail=(
+                UPLOAD_OUTCOME_UNKNOWN_DETAIL
+                if exc.from_upload
+                else INGEST_OUTCOME_UNKNOWN_DETAIL
+            ),
             headers={"x-error-code": KB_INGEST_OUTCOME_UNKNOWN},
         ),
     )

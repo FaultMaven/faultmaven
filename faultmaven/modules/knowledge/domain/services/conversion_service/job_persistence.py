@@ -1,6 +1,7 @@
 """The conversion job + drafts database write: one transaction, plus
 IntegrityError classification after the session has been returned to
-the pool."""
+the pool. The job's team share and a keyed conversion's receipt (#2433)
+commit in the same transaction."""
 
 from datetime import datetime, timezone
 from typing import List, Optional
@@ -17,6 +18,9 @@ from faultmaven.infrastructure.persistence.models import (
     ConversionJobModel,
     UploadedFileModel,
 )
+from faultmaven.infrastructure.persistence.share_repository import (
+    PostgreSQLShareRepository,
+)
 from faultmaven.modules.knowledge.domain.item_title import sanitize_item_title
 from faultmaven.modules.knowledge.domain.models.conversion import (
     AnalysisResult,
@@ -25,9 +29,15 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
     DraftStatus,
     SourceFileInfo,
 )
+from faultmaven.modules.knowledge.domain.request_receipts import (
+    KbReceiptWrite,
+    add_receipt,
+    read_receipt,
+)
 from faultmaven.modules.knowledge.domain.services.conversion_service.draft_slots import (
     _raise_if_runbook_id_taken,
 )
+from faultmaven.modules.knowledge.exceptions import KbReceiptExistsError
 
 
 async def _persist_job(
@@ -48,6 +58,7 @@ async def _persist_job(
     warnings: Optional[List[str]] = None,
     *,
     sanitizer,
+    receipt: Optional[KbReceiptWrite] = None,
 ) -> None:
     """Persist conversion job and drafts to database.
 
@@ -55,6 +66,10 @@ async def _persist_job(
     disclosed and this is the one place a ``conversion_drafts`` row is written:
     a caller that could leave it out would be a path that stores the title raw
     (#1981). See :func:`_persist_job_rows`.
+
+    ``receipt`` is a keyed ``POST /knowledge/convert``'s (#2433), written with
+    the job. Raises :class:`KbReceiptExistsError` when another conversion under
+    its key published first: nothing of this one was.
     """
     if not db_session_factory:
         return
@@ -68,6 +83,10 @@ async def _persist_job(
             conversion_id=conversion_id,
             user_id=user_id,
             scope=scope,
+            # Team publish target: a share row on the conversion_job (source of
+            # truth, ADR-013 §D4), transferred to the promoted knowledge_item on
+            # verify. Inert when no share repo is wired.
+            share_team=team_id if scope == "team" and share_repo else None,
             status=status,
             source_file=source_file,
             analysis=analysis,
@@ -77,29 +96,20 @@ async def _persist_job(
             case_id=case_id,
             warnings=warnings,
             sanitizer=sanitizer,
+            receipt=receipt,
         )
-    except IntegrityError:
+    except IntegrityError as refused:
         # Classified AFTER the session block has exited, never inside it:
         # the classifier opens a SECOND session, and holding both at once
         # deadlocks a deployment pooled at one connection.
+        if receipt is not None and await read_receipt(db_session_factory, receipt.key):
+            raise KbReceiptExistsError(
+                receipt.key.route_name, receipt.key.idempotency_key
+            ) from refused
         await _raise_if_runbook_id_taken(
             db_session_factory, enterprise_id, [d.runbook_id for d in drafts]
         )
         raise
-
-    # Team publish target: record it as a share row on the conversion_job
-    # (source of truth, ADR-013 §D4). On verify, it is transferred to the
-    # promoted knowledge_item. Outside the session block — the share repo is
-    # sessionless. Inert (no-op) when no share repo is wired.
-    if scope == "team" and team_id and share_repo:
-        await share_repo.share(
-            resource_type="conversion_job",
-            resource_id=conversion_id,
-            scope_type="team",
-            scope_id=team_id,
-            enterprise_id=enterprise_id,
-            created_by=user_id,
-        )
 
 
 async def _persist_job_rows(
@@ -109,6 +119,7 @@ async def _persist_job_rows(
     conversion_id: str,
     user_id: str,
     scope: str,
+    share_team: Optional[str],
     status: ConversionStatus,
     source_file: SourceFileInfo,
     analysis: AnalysisResult,
@@ -118,8 +129,12 @@ async def _persist_job_rows(
     case_id: Optional[str],
     warnings: Optional[List[str]] = None,
     sanitizer,
+    receipt: Optional[KbReceiptWrite] = None,
 ) -> None:
-    """The upload + job + drafts write, as ONE transaction and one session.
+    """The upload + job + drafts write, as ONE transaction and one session,
+    with the job's team share (``share_team``) and a keyed conversion's
+    receipt in it: a job never stands without its share, and a receipt never
+    replays a job that did not commit with everything it names (#2433).
 
     Split out of ``_persist_job`` only so its caller can classify an
     ``IntegrityError`` after this session has been returned to the pool.
@@ -239,5 +254,25 @@ async def _persist_job_rows(
                 created_at=created_at,
             )
             session.add(draft_model)
+
+        if receipt is not None:
+            # Built here, once the titles are scrubbed and assigned back: the
+            # stored body is the body the request returns.
+            add_receipt(
+                session,
+                receipt.key,
+                response=receipt.build_response(),
+                conversion_id=conversion_id,
+            )
+        if share_team:
+            # Bound to this session, ``share`` never commits (#2396).
+            await PostgreSQLShareRepository(session).share(
+                resource_type="conversion_job",
+                resource_id=conversion_id,
+                scope_type="team",
+                scope_id=share_team,
+                enterprise_id=enterprise_id,
+                created_by=user_id,
+            )
 
         await session.commit()

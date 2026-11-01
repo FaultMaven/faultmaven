@@ -33,13 +33,34 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
+from faultmaven.config.idempotency_key import IDEMPOTENCY_REPLAY_UNAVAILABLE
+from faultmaven.config.tenant_context import writable_enterprise_id
 from faultmaven.exceptions import FaultMavenException, RawModelContentRefused
+from faultmaven.infrastructure.concurrency.request_fingerprint import (
+    digest_file,
+    request_fingerprint,
+)
 from faultmaven.modules.auth.contracts import DevUser
+from faultmaven.modules.knowledge.api.request_idempotency import (
+    IdempotencyKey,
+    KeyedRequest,
+    keyed_responses,
+    open_keyed_request,
+    redis_of,
+    replay_committed_request,
+    replayed,
+)
 from faultmaven.modules.knowledge.domain.models.conversion import (
     ConversionErrorCode,
+    ConversionResponse,
     DraftUpdateRequest,
+)
+from faultmaven.modules.knowledge.domain.request_receipts import (
+    ROUTE_CONVERT,
+    KbReceiptKey,
+    KbRequestReceipt,
 )
 from faultmaven.modules.knowledge.domain.services.conversion_service.errors import (
     ConversionRejectedError,
@@ -47,6 +68,7 @@ from faultmaven.modules.knowledge.domain.services.conversion_service.errors impo
 from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
     ConversionService,
 )
+from faultmaven.modules.knowledge.exceptions import KbReceiptExistsError
 from faultmaven.modules.knowledge.taxonomy import (
     KnowledgeScope,
     RunbookDifficulty,
@@ -112,13 +134,45 @@ from faultmaven.modules.knowledge.api.platform_tier import (
 # =============================================================================
 
 
-@router.post("/convert", status_code=201, dependencies=[Depends(_require_auth)])
+def _replayed_conversion(receipt: KbRequestReceipt) -> JSONResponse:
+    """The stored answer if it validates as a ``ConversionResponse``, else 409
+    ``IDEMPOTENCY_REPLAY_UNAVAILABLE``, as the turn's replay answers (#2433)."""
+    try:
+        ConversionResponse.model_validate(receipt.response)
+    except ValidationError:
+        logger.error("A conversion receipt no longer validates as its response")
+        raise HTTPException(
+            status_code=409,
+            detail="This conversion committed; reload your conversions.",
+            headers={"x-error-code": IDEMPOTENCY_REPLAY_UNAVAILABLE},
+        ) from None
+    return replayed(receipt)
+
+
+@router.post(
+    "/convert",
+    status_code=201,
+    dependencies=[Depends(_require_auth)],
+    responses=keyed_responses(
+        created="The conversion job and its drafts.",
+        location=False,
+        conflicts=(
+            f" `{IDEMPOTENCY_REPLAY_UNAVAILABLE}` (the conversion committed, and "
+            "its stored response no longer validates: reload your conversions)."
+            " Without `x-error-code`, `conflict_reason: duplicate_runbook_id`: "
+            "a live draft already holds a runbook id this conversion minted."
+        ),
+        codes=[IDEMPOTENCY_REPLAY_UNAVAILABLE],
+    ),
+)
 async def convert_document(
     file: UploadFile = File(...),
     scope: str = Form(...),
     team_id: Optional[str] = Form(None),
     service: ConversionService = Depends(_get_conversion_service),
     current_user: DevUser = Depends(_require_auth),
+    request: Request = None,  # noqa: B008 - app.state carries the claim store
+    idempotency_key: IdempotencyKey = None,
 ):
     """Upload a document and convert it to one or more runbook drafts.
 
@@ -126,6 +180,14 @@ async def convert_document(
     check cannot run (the sanitizer or its pseudonym key is unavailable) the
     request answers **503**, a retryable server-side condition, with a generic
     detail, and nothing is saved.
+
+    **Retries (`Idempotency-Key`).** A keyed conversion commits a receipt with
+    its job, in the same transaction. A request with a key this caller already
+    used for a conversion: the same file and fields, once the job committed →
+    **201** with that job's body and `X-Idempotency-Replayed: true`, and no new
+    job or drafts; a different file or fields → **409** `IDEMPOTENCY_KEY_REUSE`;
+    the first still running → **409** `KB_REQUEST_IN_PROGRESS` with
+    `Retry-After`. Without a key, every request converts again.
     """
     # Validate scope. A 400, not the 422 a typed Form field would answer:
     # this form field predates the taxonomy enums and its status is part of
@@ -184,6 +246,8 @@ async def convert_document(
         )
 
     tmp_path: Optional[Path] = None
+    # The keyed conversion's claim, released in ``finally`` (#2433).
+    keyed: Optional[KeyedRequest] = None
     try:
         # Refuse before reading anything. Starlette populates file.size for
         # spooled uploads, so the common case never touches memory or disk.
@@ -200,6 +264,32 @@ async def convert_document(
         if file.size is None and tmp_path.stat().st_size > max_upload_bytes:
             raise _too_large()
 
+        # The idempotency step (#2433), as the upload route's. The file is
+        # fingerprinted from the temp file, off the event loop, so it is still
+        # never resident in memory.
+        if idempotency_key:
+            digest = await asyncio.to_thread(digest_file, filename, tmp_path)
+            keyed = await open_keyed_request(
+                redis=redis_of(request),
+                receipt_key=KbReceiptKey(
+                    enterprise_id=writable_enterprise_id(None),
+                    author_id=current_user.user_id,
+                    route_name=ROUTE_CONVERT,
+                    idempotency_key=idempotency_key,
+                    request_fingerprint=request_fingerprint(
+                        {
+                            "scope": scope,
+                            "team_id": team_id,
+                            "content_type": content_type,
+                        },
+                        [digest],
+                    ),
+                ),
+                lookup=service.get_request_receipt,
+            )
+            if keyed.replay is not None:
+                return _replayed_conversion(keyed.replay)
+
         result = await service.convert_document(
             file_path=tmp_path,
             content_type=content_type,
@@ -208,16 +298,27 @@ async def convert_document(
             user_id=current_user.user_id,
             enterprise_id=getattr(current_user, "enterprise_id", None),
             team_id=team_id,
+            receipt_key=keyed.receipt_key if keyed is not None else None,
         )
 
-        return result.model_dump()
+        # JSON mode: the body a keyed conversion's receipt stores, so a first
+        # answer and its replay are the same bytes.
+        return result.model_dump(mode="json")
 
     except HTTPException:
-        # Defensive: no in-try raiser remains today (the size refusal is now a
-        # typed ConversionRejectedError), but the blanket handler below returns
-        # a 500 for anything it catches, so a future HTTPException raised here
-        # would be silently rewritten without this clause.
+        # The idempotency step's 409s; and defensive: the blanket handler
+        # below returns a 500 for anything it catches, so an HTTPException
+        # raised here would be silently rewritten without this clause.
         raise
+
+    except KbReceiptExistsError:
+        # Another conversion under this key published while this one ran
+        # without a claim; nothing of this one did. Answered as its retry.
+        return _replayed_conversion(
+            await replay_committed_request(
+                keyed=keyed, lookup=service.get_request_receipt
+            )
+        )
 
     except FaultMavenException:
         # Typed service exceptions (AuthorizationError for a team the caller
@@ -273,6 +374,9 @@ async def convert_document(
         )
 
     finally:
+        # Only now is the conversion fully answered, its receipt committed.
+        if keyed is not None:
+            await keyed.release()
         # Clean up temp file. Unset when the pre-read size refusal fired, in
         # which case there is nothing on disk to remove.
         if tmp_path is not None:
