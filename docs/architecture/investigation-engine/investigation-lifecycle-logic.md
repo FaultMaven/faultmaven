@@ -602,8 +602,8 @@ together, first match wins:
   "To confirm, click **Yes** or reply with the single word yes." (#1814)
 - **Bare no** — the WHOLE reply is one decline token (`no`, `nope`, `not yet`,
   `wait`, `cancel`, `don't`, `not ready`, `hold on`, `stop`) with the same
-  decorations and trailing punctuation as a bare yes (#1813); or the Not-yet click;
-  or a minted decline on question-free text — below the substantive bound, no
+  decorations and trailing punctuation as a bare yes (#1813), or a minted
+  decline on question-free text — below the substantive bound, no
   upload → answer the offer `declined`. A declined CLOSE is acknowledged
   deterministically; a declined RESOLVE is processed as a normal turn, whatever
   its length (#2223, ruling (b); *INVESTIGATING → RESOLVED* above). "no problem, go

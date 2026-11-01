@@ -165,7 +165,7 @@ async def _generate_turn_response(
     # replaced by an index stub. Pure over case state; computed once.
     # A bare resolve decline counts as pending (#2223): the model answers it,
     # and there is nothing new to search. No other turn that answered an offer
-    # (a withdrawal, a substantive decline, an upload, a click) is exempted.
+    # (a withdrawal, a substantive answer, an upload) is exempted.
     has_pending = open_terminal_offer(case) is not None or bare_resolve_decline
     force_tools = (
         _should_force_tools(processing_mode, case, has_pending)
