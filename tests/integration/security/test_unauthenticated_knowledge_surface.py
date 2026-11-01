@@ -307,7 +307,7 @@ class _Reply(dict):
     def __bool__(self) -> bool:
         return True
 
-    def model_dump(self) -> dict:
+    def model_dump(self, mode=None) -> dict:
         return {}
 
     def __getitem__(self, key):

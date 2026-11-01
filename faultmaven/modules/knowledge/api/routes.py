@@ -25,6 +25,7 @@ Core Design Principles:
 • Observability: Add tracing spans for key operations
 """
 
+import asyncio
 import logging
 import uuid
 from datetime import datetime
@@ -380,9 +381,10 @@ async def upload_document(
     - while the first is still running → **409** `x-error-code:
       KB_REQUEST_IN_PROGRESS` with `Retry-After`; retry with the same key.
 
-    A lost response, or a **500** `KB_INGEST_OUTCOME_UNKNOWN`, is recovered by
-    retrying with the same key: it replays if the first published, and runs
-    if it did not. Without a key, every request publishes a new runbook.
+    A lost response, or this route's **500** `KB_INGEST_OUTCOME_UNKNOWN`
+    (whose detail says to retry with the same key), is recovered by retrying
+    with the same key: it replays if the first published, and runs if it did
+    not. Without a key, every request publishes a new runbook.
     """
     logger = logging.getLogger(__name__)
     logger.info(f"Uploading document: {file.filename}")
@@ -501,7 +503,8 @@ async def upload_document(
                     author_id=current_user.user_id,
                     route_name=ROUTE_UPLOAD,
                     idempotency_key=idempotency_key,
-                    request_fingerprint=request_fingerprint(
+                    request_fingerprint=await asyncio.to_thread(
+                        request_fingerprint,
                         {
                             "title": title,
                             "document_type": document_type,
@@ -623,10 +626,10 @@ async def upload_document(
         # The title's redaction (#1981) could not run: a server-side
         # dependency, so the global handler's generic 503, not the blanket 500.
         raise
-    except IngestOutcomeUnknown:
+    except IngestOutcomeUnknown as unknown:
         # The upload may have been published (#2396): the global handler's 500
-        # with ``KB_INGEST_OUTCOME_UNKNOWN``, which tells a keyed client to
-        # retry with the same key and an unkeyed one to look first.
+        # with ``KB_INGEST_OUTCOME_UNKNOWN``, here with the upload's own text.
+        unknown.from_upload = True
         raise
     except Exception as e:
         # The class, never the text: a failed row write's text carries its

@@ -45,6 +45,7 @@ from faultmaven.config.idempotency_key import (
     IDEMPOTENCY_KEY_MIN_LENGTH,
     IDEMPOTENCY_KEY_PATTERN,
     IDEMPOTENCY_KEY_REUSE,
+    IDEMPOTENCY_REPLAY_UNAVAILABLE,
     IDEMPOTENCY_REPLAYED_HEADER,
 )
 from faultmaven.config.turn_ceiling import resolve_turn_ceiling
@@ -85,7 +86,6 @@ from faultmaven.modules.case.api.routes.dependencies import (
 )
 from faultmaven.modules.case.api.title_generation import _auto_title_case_if_default
 from faultmaven.modules.case.api.turn_idempotency import (
-    IDEMPOTENCY_REPLAY_UNAVAILABLE,
     TURN_IN_PROGRESS,
     KeyedTurn,
     open_keyed_turn,

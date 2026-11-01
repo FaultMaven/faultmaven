@@ -29,7 +29,7 @@ import fakeredis.aioredis as fakeredis_aio
 import httpx
 import pytest
 from fastapi import FastAPI
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from faultmaven.api.exception_handlers import get_exception_handlers
@@ -39,6 +39,7 @@ from faultmaven.api.v1.auth_dependencies import require_authentication
 from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.config.idempotency_key import (
     IDEMPOTENCY_KEY_REUSE,
+    IDEMPOTENCY_REPLAY_UNAVAILABLE,
     IDEMPOTENCY_REPLAYED_HEADER,
 )
 from faultmaven.config.tenant_context import _current_enterprise_id
@@ -79,8 +80,8 @@ from faultmaven.modules.knowledge.domain.services.conversion_service.service imp
     ConversionService,
 )
 from faultmaven.modules.knowledge.exceptions import (
-    INGEST_OUTCOME_UNKNOWN_DETAIL,
     KB_INGEST_OUTCOME_UNKNOWN,
+    UPLOAD_OUTCOME_UNKNOWN_DETAIL,
     KbReceiptExistsError,
 )
 from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
@@ -146,7 +147,15 @@ class World:
     conversion: Any
     analyze: AsyncMock
 
-    async def post(self, route: str, *, key=KEY, content=None, title="Redis Evictions"):
+    async def post(
+        self,
+        route: str,
+        *,
+        key=KEY,
+        content=None,
+        title="Redis Evictions",
+        content_type="text/markdown",
+    ):
         headers = {"Idempotency-Key": key} if key else {}
         if route == "upload":
             return await self.client.post(
@@ -159,7 +168,7 @@ class World:
             CONVERT,
             headers=headers,
             data={"scope": "personal"},
-            files={"file": ("doc.md", content or SOURCE_BYTES, "text/markdown")},
+            files={"file": ("doc.md", content or SOURCE_BYTES, content_type)},
         )
 
     async def _scalar(self, statement):
@@ -243,8 +252,10 @@ async def test_a_retry_after_a_lost_response_replays_it(world, route):
         ("upload", {"content": valid_runbook("Another Runbook Entirely").encode()}),
         ("upload", {"title": "Another title"}),
         ("convert", {"content": b"Another source document."}),
+        # The parser reads the declared type ahead of the extension.
+        ("convert", {"content_type": "text/html"}),
     ],
-    ids=["upload-file", "upload-field", "convert-file"],
+    ids=["upload-file", "upload-field", "convert-file", "convert-content-type"],
 )
 async def test_the_key_with_another_file_or_field_is_refused(world, route, change):
     assert (await world.post(route)).status_code == 201
@@ -319,6 +330,37 @@ async def test_a_duplicate_that_ran_without_a_claim_is_answered_with_the_first(
     assert world.analyze.await_count == (2 if route == "convert" else 0)
 
 
+@pytest.mark.parametrize("claimless", [False, True], ids=["retry", "claimless"])
+async def test_a_stored_conversion_that_no_longer_validates_is_not_replayed(
+    world, claimless
+):
+    """A receipt lives as long as its job, across deploys: a stored body that
+    no longer validates as a ``ConversionResponse`` is a 409, on a retry and on
+    a claimless duplicate's read-back alike, as the turn's replay is."""
+    if claimless:
+        world.app.state.redis_client = None
+    assert (await world.post("convert")).status_code == 201
+    async with world.factory() as session:
+        await session.execute(
+            update(KbRequestReceiptModel).values(response={"status": "completed"})
+        )
+        await session.commit()
+    if claimless:
+        real, calls = world.conversion.get_request_receipt, []
+
+        async def lookup(key):
+            calls.append(key)
+            return None if len(calls) == 1 else await real(key)
+
+        world.conversion.get_request_receipt = lookup
+
+    again = await world.post("convert")
+
+    assert again.status_code == 409, again.text
+    assert again.headers["x-error-code"] == IDEMPOTENCY_REPLAY_UNAVAILABLE
+    assert await world.published("convert") == 1
+
+
 @pytest.mark.parametrize("landed", [True, False], ids=["landed", "refused"])
 async def test_an_unknown_outcome_retried_under_its_key_replays_or_runs(
     world, session_factory, monkeypatch, landed
@@ -338,8 +380,7 @@ async def test_an_unknown_outcome_retried_under_its_key_replays_or_runs(
 
     assert unknown.status_code == 500, unknown.text
     assert unknown.headers["x-error-code"] == KB_INGEST_OUTCOME_UNKNOWN
-    assert unknown.json()["detail"] == INGEST_OUTCOME_UNKNOWN_DETAIL
-    assert "Retry with the same Idempotency-Key" in INGEST_OUTCOME_UNKNOWN_DETAIL
+    assert unknown.json()["detail"] == UPLOAD_OUTCOME_UNKNOWN_DETAIL
     assert retry.status_code == 201, retry.text
     assert (retry.headers.get(IDEMPOTENCY_REPLAYED_HEADER) == "true") is landed
     assert await world.published("upload") == 1

@@ -1,4 +1,4 @@
-"""The ``Idempotency-Key`` grammar, and the two names its answers carry.
+"""The ``Idempotency-Key`` grammar, and the names its answers carry.
 
 One copy, read by every party that touches a key (#1888):
 
@@ -36,6 +36,11 @@ _KEY_RE = re.compile(IDEMPOTENCY_KEY_PATTERN)
 #: than the one it was first used with. The same condition answers the same
 #: code whichever layer detects it (the middleware's cache, or a turn receipt).
 IDEMPOTENCY_KEY_REUSE = "IDEMPOTENCY_KEY_REUSE"
+
+#: ``x-error-code`` of the 409 for a committed turn or conversion whose stored
+#: response no longer validates as ``TurnResponse`` (``turn_idempotency``) or
+#: ``ConversionResponse`` (``conversion_routes``); the request is not run again.
+IDEMPOTENCY_REPLAY_UNAVAILABLE = "IDEMPOTENCY_REPLAY_UNAVAILABLE"
 
 #: Set ``true`` on a response that is a replay of an earlier one rather than a
 #: new execution. Listed in ``cors_expose_headers`` so a browser client can

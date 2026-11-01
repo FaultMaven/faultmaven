@@ -44,6 +44,7 @@ from faultmaven.api.v1.auth_dependencies import require_authentication
 from faultmaven.api.v1.dependencies import get_investigation_service
 from faultmaven.config.idempotency_key import (
     IDEMPOTENCY_KEY_REUSE,
+    IDEMPOTENCY_REPLAY_UNAVAILABLE,
     IDEMPOTENCY_REPLAYED_HEADER,
 )
 from faultmaven.core.investigation.case_telemetry import (
@@ -73,7 +74,6 @@ from faultmaven.modules.case.api.routes.dependencies import (
 )
 from faultmaven.modules.case.api.routes.router import router
 from faultmaven.modules.case.api.turn_idempotency import (
-    IDEMPOTENCY_REPLAY_UNAVAILABLE,
     TURN_IN_PROGRESS,
     KeyedTurn,
     claim_name,

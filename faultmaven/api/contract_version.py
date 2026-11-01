@@ -2350,13 +2350,16 @@ asked to accept, and it belongs to a person.
 #   `Location`) and `X-Idempotency-Replayed: true`, now declared on both 201s.
 #   Nothing publishes again. That holds after a lost response and after a
 #   **500** `KB_INGEST_OUTCOME_UNKNOWN` (which replays if the upload landed and
-#   runs if it did not); the 500's detail now tells a keyed client to retry
-#   with the same key.
+#   runs if it did not). `POST /knowledge/documents`'s 500 detail now tells a
+#   keyed client to retry with the same key; the verify routes' 500 detail and
+#   `verify-batch`'s per-draft `error` keep their 14.10.0 text.
 # * Two **409**s are declared on both routes, told apart by `x-error-code`:
-#   `IDEMPOTENCY_KEY_REUSE` (the key was used with a different file or
-#   different fields) and `KB_REQUEST_IN_PROGRESS` (the first is still
-#   running; `Retry-After` is when its renewed claim would lapse, and it may
-#   still be running then).
+#   `IDEMPOTENCY_KEY_REUSE` (the key was used with a different file, declared
+#   content type on `/convert`, or different fields) and
+#   `KB_REQUEST_IN_PROGRESS` (the first is still running; `Retry-After` is when
+#   its renewed claim would lapse, and it may still be running then).
+#   `/convert` also declares `IDEMPOTENCY_REPLAY_UNAVAILABLE`: the job committed,
+#   and its stored body no longer validates as `ConversionResponse`.
 # * Both routes are answered by the route, never by `IdempotencyMiddleware`,
 #   which used to replay a keyed upload from its cache without comparing the
 #   file.

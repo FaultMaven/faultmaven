@@ -65,7 +65,10 @@ from typing import Any, Optional
 from fastapi import HTTPException, status
 from pydantic import ValidationError
 
-from faultmaven.config.idempotency_key import IDEMPOTENCY_KEY_REUSE
+from faultmaven.config.idempotency_key import (
+    IDEMPOTENCY_KEY_REUSE,
+    IDEMPOTENCY_REPLAY_UNAVAILABLE,
+)
 from faultmaven.infrastructure.concurrency.owned_claim import (
     ClaimHeld,
     OwnedClaim,
@@ -79,12 +82,6 @@ logger = logging.getLogger(__name__)
 
 #: ``x-error-code`` of the 409 for a duplicate of a keyed turn still running.
 TURN_IN_PROGRESS = "TURN_IN_PROGRESS"
-
-#: ``x-error-code`` of the 409 for a committed turn whose stored response no
-#: longer validates as a ``TurnResponse`` (a deploy changed the schema between
-#: the commit and the retry). Never a 500, and never a new turn: the turn DID
-#: commit, so running it again is the one wrong answer.
-IDEMPOTENCY_REPLAY_UNAVAILABLE = "IDEMPOTENCY_REPLAY_UNAVAILABLE"
 
 #: Slack on the claim's lifetime beyond the turn's own bound (its ceiling, the
 #: commit reserve and the auto-title). Past the TTL the claim expires on its

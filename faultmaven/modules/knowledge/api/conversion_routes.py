@@ -33,8 +33,9 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
+from faultmaven.config.idempotency_key import IDEMPOTENCY_REPLAY_UNAVAILABLE
 from faultmaven.config.tenant_context import writable_enterprise_id
 from faultmaven.exceptions import FaultMavenException, RawModelContentRefused
 from faultmaven.infrastructure.concurrency.request_fingerprint import (
@@ -53,11 +54,13 @@ from faultmaven.modules.knowledge.api.request_idempotency import (
 )
 from faultmaven.modules.knowledge.domain.models.conversion import (
     ConversionErrorCode,
+    ConversionResponse,
     DraftUpdateRequest,
 )
 from faultmaven.modules.knowledge.domain.request_receipts import (
     ROUTE_CONVERT,
     KbReceiptKey,
+    KbRequestReceipt,
 )
 from faultmaven.modules.knowledge.domain.services.conversion_service.errors import (
     ConversionRejectedError,
@@ -131,6 +134,21 @@ from faultmaven.modules.knowledge.api.platform_tier import (
 # =============================================================================
 
 
+def _replayed_conversion(receipt: KbRequestReceipt) -> JSONResponse:
+    """The stored answer if it validates as a ``ConversionResponse``, else 409
+    ``IDEMPOTENCY_REPLAY_UNAVAILABLE``, as the turn's replay answers (#2433)."""
+    try:
+        ConversionResponse.model_validate(receipt.response)
+    except ValidationError:
+        logger.error("A conversion receipt no longer validates as its response")
+        raise HTTPException(
+            status_code=409,
+            detail="This conversion committed; reload your conversions.",
+            headers={"x-error-code": IDEMPOTENCY_REPLAY_UNAVAILABLE},
+        ) from None
+    return replayed(receipt)
+
+
 @router.post(
     "/convert",
     status_code=201,
@@ -139,9 +157,12 @@ from faultmaven.modules.knowledge.api.platform_tier import (
         created="The conversion job and its drafts.",
         location=False,
         conflicts=(
+            f" `{IDEMPOTENCY_REPLAY_UNAVAILABLE}` (the conversion committed, and "
+            "its stored response no longer validates: reload your conversions)."
             " Without `x-error-code`, `conflict_reason: duplicate_runbook_id`: "
             "a live draft already holds a runbook id this conversion minted."
         ),
+        codes=[IDEMPOTENCY_REPLAY_UNAVAILABLE],
     ),
 )
 async def convert_document(
@@ -256,13 +277,18 @@ async def convert_document(
                     route_name=ROUTE_CONVERT,
                     idempotency_key=idempotency_key,
                     request_fingerprint=request_fingerprint(
-                        {"scope": scope, "team_id": team_id}, [digest]
+                        {
+                            "scope": scope,
+                            "team_id": team_id,
+                            "content_type": content_type,
+                        },
+                        [digest],
                     ),
                 ),
                 lookup=service.get_request_receipt,
             )
             if keyed.replay is not None:
-                return replayed(keyed.replay)
+                return _replayed_conversion(keyed.replay)
 
         result = await service.convert_document(
             file_path=tmp_path,
@@ -288,7 +314,7 @@ async def convert_document(
     except KbReceiptExistsError:
         # Another conversion under this key published while this one ran
         # without a claim; nothing of this one did. Answered as its retry.
-        return replayed(
+        return _replayed_conversion(
             await replay_committed_request(
                 keyed=keyed, lookup=service.get_request_receipt
             )

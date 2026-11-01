@@ -2863,7 +2863,7 @@ the first still running → **409** `KB_REQUEST_IN_PROGRESS` with
 **Responses:**
 
 - `201` — The conversion job and its drafts. A retry under the same `Idempotency-Key` is answered with the same body, and carries `X-Idempotency-Replayed: true`.
-- `409` — Conflict. Told apart by `x-error-code`: `KB_REQUEST_IN_PROGRESS` (a request with this `Idempotency-Key` is still running: retry with the same key after `Retry-After` seconds; it may still be running then); `IDEMPOTENCY_KEY_REUSE` (the key was used for a different file or different fields). Without `x-error-code`, `conflict_reason: duplicate_runbook_id`: a live draft already holds a runbook id this conversion minted.
+- `409` — Conflict. Told apart by `x-error-code`: `KB_REQUEST_IN_PROGRESS` (a request with this `Idempotency-Key` is still running: retry with the same key after `Retry-After` seconds; it may still be running then); `IDEMPOTENCY_KEY_REUSE` (the key was used for a different file or different fields). `IDEMPOTENCY_REPLAY_UNAVAILABLE` (the conversion committed, and its stored response no longer validates: reload your conversions). Without `x-error-code`, `conflict_reason: duplicate_runbook_id`: a live draft already holds a runbook id this conversion minted.
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
@@ -2943,9 +2943,10 @@ used for an upload:
 - while the first is still running → **409** `x-error-code:
   KB_REQUEST_IN_PROGRESS` with `Retry-After`; retry with the same key.
 
-A lost response, or a **500** `KB_INGEST_OUTCOME_UNKNOWN`, is recovered by
-retrying with the same key: it replays if the first published, and runs
-if it did not. Without a key, every request publishes a new runbook.
+A lost response, or this route's **500** `KB_INGEST_OUTCOME_UNKNOWN`
+(whose detail says to retry with the same key), is recovered by retrying
+with the same key: it replays if the first published, and runs if it did
+not. Without a key, every request publishes a new runbook.
 
 **Tags:** `knowledge_base`
 

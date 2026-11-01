@@ -36,9 +36,8 @@ transaction, so nothing of it publishes (``KbReceiptExistsError``). The route
 answers it as a retry: the published request's receipt, read back.
 """
 
-import logging
 from dataclasses import dataclass
-from typing import Annotated, Any, Awaitable, Callable, Dict, Optional
+from typing import Annotated, Any, Awaitable, Callable, Dict, Optional, Sequence
 
 from fastapi import Header, HTTPException, Request, status
 from fastapi.responses import JSONResponse
@@ -60,8 +59,6 @@ from faultmaven.modules.knowledge.domain.request_receipts import (
     KbReceiptKey,
     KbRequestReceipt,
 )
-
-logger = logging.getLogger(__name__)
 
 #: ``x-error-code`` of the 409 for a duplicate of a keyed request still running.
 KB_REQUEST_IN_PROGRESS = "KB_REQUEST_IN_PROGRESS"
@@ -93,7 +90,9 @@ IdempotencyKey = Annotated[
 ]
 
 
-def keyed_responses(*, created: str, location: bool, conflicts: str = "") -> Dict:
+def keyed_responses(
+    *, created: str, location: bool, conflicts: str = "", codes: Sequence[str] = ()
+) -> Dict:
     """The route's documented 201 and 409 (``responses=``)."""
     headers: Dict[str, Any] = {
         IDEMPOTENCY_REPLAYED_HEADER: {
@@ -132,7 +131,7 @@ def keyed_responses(*, created: str, location: bool, conflicts: str = "") -> Dic
                     "description": "Which conflict.",
                     "schema": {
                         "type": "string",
-                        "enum": [KB_REQUEST_IN_PROGRESS, IDEMPOTENCY_KEY_REUSE],
+                        "enum": [KB_REQUEST_IN_PROGRESS, IDEMPOTENCY_KEY_REUSE, *codes],
                     },
                 },
                 "Retry-After": {
