@@ -199,9 +199,9 @@ class TestDeriveDispositionEligibility:
     def test_investigating_resolution_ready_returns_ready_for_resolved(self):
         """INVESTIGATING + root cause + solution: resolution-readiness =
         READY → resolved eligibility = ready. Close eligibility flips
-        to suggests_alternative (SUGGEST_RESOLVE warns that closing
-        would discard attribution and recommends resolving instead —
-        distinct from needs_info which asks the user to add data)."""
+        to suggests_alternative because the case is resolution-grade, so a
+        close pivots to resolve (INV-37) — distinct from needs_info, which
+        asks the user to add data."""
         case = _make_investigating_case()
         _attach_root_cause(case)
         _attach_solution(case)
