@@ -666,10 +666,10 @@ class MilestoneEngine:
             # Set when section 0b or 0b' consumed this turn's confirmation
             # intent: a click naming the standing offer, or a mint whose answer
             # the gate took (0b's decline; the revision's confirm or decline at
-            # 0b'). 0c's confirmation branch skips such an intent: it was never
-            # Gate 1's, and that branch must neither refuse nor log it (#2223);
-            # the rest of 0c still runs. A mint the gate set aside (a re-ask
-            # carried through by an upload, a question) still reaches it.
+            # 0b'). Such an intent skips 0c's confirmation branch, which
+            # neither refuses nor logs it: it was never Gate 1's (#2223). A
+            # mint the gate set aside (a re-ask carried through by an upload, a
+            # question) still reaches that branch.
             confirmation_consumed_by_gate = False
             # Set when 0b recorded a resolve decline from a bare message: not
             # substantive, no upload. That is the turn #2223 routes to the
