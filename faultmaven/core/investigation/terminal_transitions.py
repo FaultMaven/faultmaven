@@ -1423,7 +1423,8 @@ def assess_closure_readiness(case: "Case") -> ClosureReadiness:
                 "This case has a fix confirmed to have eliminated the root "
                 "cause — it qualifies for **resolved** status rather than "
                 "closed. Closing would close it without marking it resolved; "
-                "the confirmed fix stays on record.\n\n"
+                "the confirmed fix stays on record, but only a resolved case "
+                "can be turned into a runbook.\n\n"
                 + detail
                 + "\nWould you like to mark it **resolved** instead?"
             ),

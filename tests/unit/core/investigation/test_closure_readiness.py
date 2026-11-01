@@ -194,11 +194,13 @@ class TestSuggestResolveVerdict:
         stays on the case (#2454)."""
         assert (
             "Closing would close it without marking it resolved; the confirmed "
-            "fix stays on record." in self._pivot_message()
+            "fix stays on record, but only a resolved case can be turned into "
+            "a runbook." in self._pivot_message()
         )
 
-    def test_pivot_never_says_unresolved_or_discard(self):
-        message = self._pivot_message()
+    @pytest.mark.parametrize("with_solution", [True, False])
+    def test_pivot_never_says_unresolved_or_discard(self, with_solution):
+        message = self._pivot_message(with_solution=with_solution).lower()
         assert "unresolved" not in message
         assert "discard" not in message
 
@@ -207,7 +209,8 @@ class TestSuggestResolveVerdict:
             "This case has a fix confirmed to have eliminated the root cause — "
             "it qualifies for **resolved** status rather than closed. Closing "
             "would close it without marking it resolved; the confirmed fix "
-            "stays on record.\n\n"
+            "stays on record, but only a resolved case can be turned into a "
+            "runbook.\n\n"
             "- **Root cause**: Connection pool exhaustion under load\n"
             "\nWould you like to mark it **resolved** instead?"
         )
