@@ -257,13 +257,16 @@ _CASE_OPEN_BRANCHES = {
         _investigating_case,
         [("", DROPDOWN_CLOSE, "closed"), ("no", {}, None)],
     ),
-    "dropdown close pivoting to resolve, then decline": (
+    # A decline of the resolve offer a pivot leaves is no longer one of these
+    # branches: it is answered by the model (#2223), whose prompt is the next
+    # one built.
+    "dropdown close pivoting to resolve": (
         _resolution_ready_case,
-        [("", DROPDOWN_CLOSE, "resolved"), ("no", {}, None)],
+        [("", DROPDOWN_CLOSE, "resolved")],
     ),
-    "confirmed close pivoting to resolve (INV-37), then decline": (
+    "confirmed close pivoting to resolve (INV-37)": (
         lambda: _pending_close(_resolution_ready_case()),
-        [("yes", {}, "resolved"), ("no", {}, None)],
+        [("yes", {}, "resolved")],
     ),
     "INQUIRY dropdown close, then decline": (
         _inquiry_case,

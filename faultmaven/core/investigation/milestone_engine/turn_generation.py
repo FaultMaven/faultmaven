@@ -42,9 +42,14 @@ async def _generate_turn_response(
     intent_data,
     user_id,
     user_message,
+    bare_resolve_decline,
     kb_rendered=None,
 ):
     """Generate the LLM (or single-shot) response for this turn.
+
+    ``bare_resolve_decline`` is whether the offer gate recorded a resolve
+    decline from a bare message on this turn (not substantive, no upload):
+    the turn #2223 routes to the model, which never forces tools.
 
     ``redaction_ctx`` is the turn's case redaction context, loaded once per
     turn by the investigation service (or by the engine on a direct call),
@@ -158,7 +163,10 @@ async def _generate_turn_response(
     # single-shot structured path (reasoning declared) and must get the
     # un-elided prompt — no search_file will run to recover an extract
     # replaced by an index stub. Pure over case state; computed once.
-    has_pending = open_terminal_offer(case) is not None
+    # A bare resolve decline counts as pending (#2223): the model answers it,
+    # and there is nothing new to search. No other turn that answered an offer
+    # (a withdrawal, a substantive answer, an upload) is exempted.
+    has_pending = open_terminal_offer(case) is not None or bare_resolve_decline
     force_tools = (
         _should_force_tools(processing_mode, case, has_pending)
         if investigation_tools
@@ -219,11 +227,13 @@ async def _generate_turn_response(
     # ``_has_readable_material`` guarantees a real search target so forcing
     # tools cannot crash the loop.
     #
-    # Safety net: when a resolve or close offer is open, the user is in a
-    # confirmation flow. Don't force tool_choice=required — the user's
-    # message is a confirmation/decline that may have fallen through
-    # pattern matching (typed instead of clicked). Forcing tools crashes
-    # the tool loop when the LLM has nothing to search for.
+    # Safety net: when a resolve or close offer is open, or the gate recorded
+    # a bare resolve decline on this turn, the user is in a confirmation flow.
+    # Don't force tool_choice=required — the user's message is a
+    # confirmation/decline that may have fallen through pattern matching
+    # (typed instead of clicked), or a bare decline the model answers (#2223).
+    # Forcing tools crashes the tool loop when the LLM has nothing to search
+    # for.
     if route_single_shot:
         # fm#1116: nothing to search on this turn — take the single-shot
         # structured path with reasoning declared, instead of a tool

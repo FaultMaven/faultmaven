@@ -108,16 +108,42 @@ RESOLVE_DECLINED_LINE = (
 )
 
 
+#: The line the prompt carries on the turn the user declines the resolution
+#: (#2223, ruling (b)), beside ``RESOLVE_DECLINED_LINE``: the decline is
+#: answered by the model, which asks what would settle it. A READY case already
+#: holds both confirmation rows, so the line says so and forbids recording
+#: them again this turn; a report in the user's message is requested as data
+#: under the chat-data rules (``system_state_report.request``).
+RESOLVE_DECLINED_THIS_TURN_LINE = (
+    "**THE USER HAS JUST DECLINED MARKING THIS CASE RESOLVED.** The case record "
+    "already holds the confirmation the offer rested on (the cause shown "
+    "removed, the reported problem seen gone after the fix); do not record the "
+    "cause or the problem as gone again this turn. Ask what they still need to "
+    "see before calling it resolved, or what makes them doubt the fix, and "
+    "name the one check that would settle it (for example the fix mechanism's "
+    "own state, a schedule's last run, or a window with no recurrence). If "
+    "their message itself reports the state of their system, follow the "
+    "chat-data rules: request that output with `system_state_report.request`, "
+    "not in your reply."
+)
+
+
 def _resolve_declined_emphasis(case) -> str:
     """``RESOLVE_DECLINED_LINE`` while the user's decline of the resolution
-    stands (``terminal_transitions.declined_resolve_entry``), else "".
-    Appended to the focus block on every stage, never replacing it."""
+    stands (``terminal_transitions.declined_resolve_entry``), else "", and
+    ``RESOLVE_DECLINED_THIS_TURN_LINE`` after it when that decline was given
+    on the current turn (#2223). One read decides both lines, so they cannot
+    disagree. Appended to the focus block on every stage and processing mode,
+    never replacing it."""
     from faultmaven.core.investigation.terminal_transitions import (
         declined_resolve_entry,
     )
 
-    if declined_resolve_entry(case) is None:
+    entry = declined_resolve_entry(case)
+    if entry is None:
         return ""
+    if entry.at_turn == case.current_turn:
+        return f"\n{RESOLVE_DECLINED_LINE}\n{RESOLVE_DECLINED_THIS_TURN_LINE}\n"
     return f"\n{RESOLVE_DECLINED_LINE}\n"
 
 
@@ -472,8 +498,8 @@ def get_prompt_for_case(
             # and the stage instructions close the cached prefix (#613). A
             # problem hold renders on every stage (#1889); the zone emphasis
             # only on DIAGNOSIS; a standing resolve decline is appended on
-            # every stage (#1895). Empty on a knowledge_query or agent_meta
-            # turn.
+            # every stage (#1895) and every processing mode (#2223). A
+            # knowledge_query or agent_meta turn carries nothing else.
             focus_emphasis = ""
             if processing_mode == "knowledge_query":
                 adaptive_instr = knowledge_query_instructions(given_tools)
@@ -494,7 +520,7 @@ def get_prompt_for_case(
                     adaptive_instr = treatment_instructions(given_tools)
                 else:
                     adaptive_instr = rca_diagnosis_block(given_tools)
-                focus_emphasis += _resolve_declined_emphasis(case)
+            focus_emphasis += _resolve_declined_emphasis(case)
 
             # Add stage to context for schema reference
             ctx["stage"] = stage.value if stage else "diagnosis"

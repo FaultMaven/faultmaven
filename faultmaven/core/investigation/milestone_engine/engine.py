@@ -149,7 +149,10 @@ from .statement_revision import (
 # nor a non-answer longer than this or carrying a question mark
 # (``is_question``, #1840) — new evidence, a question, an instruction to keep
 # investigating: those withdraw the proposal and are processed as a normal
-# investigation turn, so the gate can never swallow them.
+# investigation turn, so the gate can never swallow them. The same bound
+# splits a decline of a CLOSE offer: a bare one is acknowledged without an LLM
+# turn (``_decline_bare_reply``), a longer one is processed. A decline of a
+# RESOLVE offer is always processed, whatever its length (#2223, ruling (b)).
 _PENDING_GATE_SUBSTANTIVE_LEN = 40
 
 
@@ -660,11 +663,19 @@ class MilestoneEngine:
                     redaction_ctx=await self._turn_redaction(case, redaction_ctx),
                 )
 
-            # Set when section 0b answered this turn's confirmation click: it
-            # named the standing offer, and the gate executed or declined it. A
-            # declined click whose payload is substantive falls through to 0c
-            # with no offer left standing, and 0c must not refuse it there.
-            click_answered_by_gate = False
+            # Set when section 0b or 0b' consumed this turn's confirmation
+            # intent: a click naming the standing offer, or a mint whose answer
+            # the gate took (0b's decline; the revision's confirm or decline at
+            # 0b'). Such an intent skips 0c's confirmation branch, which
+            # neither refuses nor logs it: it was never Gate 1's (#2223). A
+            # mint the gate set aside (a re-ask carried through by an upload, a
+            # question) still reaches that branch.
+            confirmation_consumed_by_gate = False
+            # Set when 0b recorded a resolve decline from a bare message: not
+            # substantive, no upload. That is the turn #2223 routes to the
+            # model, and the one turn it exempts from forcing tools; a
+            # substantive answer, a withdrawal or an upload is not exempted.
+            bare_resolve_decline = False
 
             # 0b. The open resolve or close offer — short-circuit before LLM
             # When an offer is open (User-Agent Handshake), check if
@@ -795,7 +806,7 @@ class MilestoneEngine:
                                 standing="terminal",
                                 reason=refusal,
                             )
-                        click_answered_by_gate = True
+                        confirmation_consumed_by_gate = True
                     # One verdict from the text and the intent together
                     # (#1783, ruling (a)). A terminal proposal executes only
                     # on its click or on a BARE typed consent token; an
@@ -838,27 +849,48 @@ class MilestoneEngine:
                         )
                     elif verdict == "decline":
                         _answer(AnswerKind.DECLINED, gate_via)
+                        # A minted decline the gate took is consumed here, as
+                        # a click is above.
+                        if intent_declines:
+                            confirmation_consumed_by_gate = True
+                        bare_resolve_decline = (
+                            offer.kind == OfferKind.RESOLVE
+                            and not message_is_substantive
+                            and not turn_carries_upload
+                        )
 
-                        if message_is_substantive or turn_carries_upload:
-                            # The decline carries substance beyond a bare
-                            # "no" — new data, a question, a redirection
-                            # ("no, we did not do anything yet — did you
-                            # see anything wrong?"), or an upload. The
-                            # proposal is declined; the message itself must
-                            # still be processed as a normal turn so nothing
-                            # the user said or sent is swallowed by the gate.
+                        if (
+                            offer.kind == OfferKind.RESOLVE
+                            or message_is_substantive
+                            or turn_carries_upload
+                        ):
+                            # A declined RESOLUTION is always answered by the
+                            # model, bare or not (#2223, ruling (b)): the
+                            # prompt carries the decline as context
+                            # (``RESOLVE_DECLINED_THIS_TURN_LINE``), so it can
+                            # ask what the user still needs to see, and the
+                            # decline recorded above binds its proposal
+                            # (#1895). A declined CLOSE reaches the model only
+                            # when it carries substance beyond a bare "no" —
+                            # new data, a question, a redirection ("no, we did
+                            # not do anything yet — did you see anything
+                            # wrong?"), or an upload — so nothing the user said
+                            # or sent is swallowed by the gate.
                             logger.info(
-                                f"Open offer declined with a substantive "
-                                f"message or an upload for case "
-                                f"{case.case_id} — processing message normally"
+                                f"Open {offer.kind.value} offer declined for "
+                                f"case {case.case_id} (substantive="
+                                f"{message_is_substantive}, upload="
+                                f"{turn_carries_upload}) — processing "
+                                f"message normally"
                             )
                             # Fall through to normal processing (section 0c)
                         else:
+                            # A bare decline of a close: the length test is
+                            # close-only now.
                             return _decline_bare_reply(
                                 case=case,
                                 upload_report=upload_report,
                                 user_message=user_message,
-                                declined=offer,
                             )
                     else:
                         # ``reask`` (consent-shaped but not bare, text and
@@ -964,10 +996,15 @@ class MilestoneEngine:
                                 standing="revision",
                                 reason=refusal,
                             )
-                        click_answered_by_gate = True
+                        confirmation_consumed_by_gate = True
                 revision_verdict, _ = pending_gate_verdict(
                     user_message, None, intent_value=revision_intent, typed=typed
                 )
+                if revision_intent is not None and revision_verdict in (
+                    "confirm",
+                    "decline",
+                ):
+                    confirmation_consumed_by_gate = True
                 revision_via = (
                     AnswerVia.CLICK
                     if revision_intent is not None and not typed
@@ -1085,7 +1122,9 @@ class MilestoneEngine:
                 else:
                     raise ValueError(f"Unknown to_state: {to_status_str}")
 
-            elif intent_type == "confirmation":
+            # A confirmation intent 0b or 0b' consumed is skipped
+            # (``confirmation_consumed_by_gate``, #2223).
+            elif intent_type == "confirmation" and not confirmation_consumed_by_gate:
                 # THE ANSWER THE USER GAVE. A confirmation intent carries one
                 # (``QueryIntent`` refuses to validate without it), and this
                 # branch commits a gate, so it must read it — a branch that
@@ -1102,13 +1141,13 @@ class MilestoneEngine:
                 )
 
                 # A CLICK answers only the offer it names (#1812, ruling (a)).
-                # Not one 0b answered (``click_answered_by_gate``). The only
-                # offer a click can answer here is Gate 1: while it is pending,
-                # every other click is checked against its key. With Gate 1
-                # not pending, nothing a click can answer is standing, so any
-                # click is refused.
+                # Not one a gate consumed (``confirmation_consumed_by_gate``):
+                # those skip this branch. The only offer a click can answer
+                # here is Gate 1: while it is pending, every other click is
+                # checked against its key. With Gate 1 not pending, nothing a
+                # click can answer is standing, so any click is refused.
                 gate1_standing = _gate1_is_pending(case)
-                if not typed and not click_answered_by_gate:
+                if not typed:
                     refusal = offer_click_refusal(
                         intent_data,
                         (
@@ -1287,6 +1326,7 @@ class MilestoneEngine:
                 intent_data=intent_data,
                 user_id=user_id,
                 user_message=user_message,
+                bare_resolve_decline=bare_resolve_decline,
                 kb_rendered=metadata[TURN_METADATA_KB_PROMPTED],
             )
 

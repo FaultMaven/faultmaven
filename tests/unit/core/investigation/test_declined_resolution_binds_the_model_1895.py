@@ -28,9 +28,6 @@ from faultmaven.core.investigation.cause_assurance import (
 )
 from faultmaven.core.investigation.intent_resolver import IntentResolver
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
-from faultmaven.core.investigation.milestone_engine.transition_turns import (
-    RESOLVE_DECLINED_REPLY,
-)
 from faultmaven.core.investigation.milestone_engine.transitions import (
     DECLINED_RESOLVE_FEEDBACK,
 )
@@ -171,7 +168,9 @@ def _respond(
 async def _turn(engine, case, message: str, **kw) -> dict:
     case.current_turn += 1
     process_kw = {
-        k: kw.pop(k) for k in ("intent_type", "intent_data", "typed") if k in kw
+        k: kw.pop(k)
+        for k in ("intent_type", "intent_data", "typed", "attachments")
+        if k in kw
     }
     _respond(engine, **kw)
     return await engine.process_turn(
@@ -194,6 +193,45 @@ def _declined(case) -> list:
 
 def _qualifying(case) -> list:
     return sorted(e.evidence_id for e in resolution_confirmation_rows(case))
+
+
+def _decline(case, how: str) -> tuple[str, dict]:
+    """The message and ``process_turn`` keywords of a decline of the open
+    resolve offer, by how it arrives at the gate: a bare typed token, a
+    confirmation the intent resolver minted from short typed text (#2223's
+    turn 10), the Not-yet click, or a deflection."""
+    offer = case.offer_record.open
+    assert offer is not None and offer.kind == "resolve", "premise: an offer"
+    if how == "token":
+        return "no", {}
+    if how == "minted":
+        return "I can't call it resolved yet.", {
+            "intent_type": "confirmation",
+            "intent_data": {"value": False, "proposal_id": offer.proposal_id},
+            "typed": True,
+        }
+    if how == "click":
+        # The engine's intent shape, as the service hands the card's on.
+        card = project_offers(case).pair[1]
+        assert card["intent"]["confirmation_value"] is False, "premise: Not yet"
+        return card["payload"], {
+            "intent_type": "confirmation",
+            "intent_data": {
+                "value": False,
+                "proposal_id": card["intent"]["proposal_id"],
+            },
+        }
+    assert how == "deflection", how
+    return _DEFLECTION, {}
+
+
+#: The gate's record of each way a decline arrives (``_decline``).
+_DECLINE_VIA = {
+    "token": AnswerVia.TOKEN,
+    "minted": AnswerVia.TOKEN,
+    "click": AnswerVia.CLICK,
+    "deflection": AnswerVia.TYPED,
+}
 
 
 async def _offered_then_declined(reply: str = "no"):
@@ -533,21 +571,42 @@ class TestANewConfirmationReEarnsTheOffer:
 
 class TestTheDeclineTurn:
     async def test_a_bare_no_records_one_decline_and_answers_with_the_chip(self):
-        engine, case, result = await _offered_then_declined("no")
-        (decline,) = _declined(case)
-        assert decline.via == AnswerVia.TOKEN
-        assert list(decline.premise.confirmation_ids) == _qualifying(case)
-        assert result["agent_response"] == RESOLVE_DECLINED_REPLY
-        assert _labels(result) == [DECLINED_RESOLVE_CARD_LABEL]
-
-    async def test_a_deflection_recording_a_row_and_proposing_is_refused(self):
-        """D measured ``pending=resolved`` on the turn the user said not yet;
-        the re-stamp makes step 2 read the row as covered."""
+        """#2223: the bare "no" is answered by the model, not a canned line,
+        and the reply still carries the chip."""
         case = _confirmed_case()
         engine = _engine()
         await _turn(engine, case, "errors gone")
-        result = await _turn(engine, case, _DEFLECTION, row=True, propose="resolved")
+        result = await _turn(
+            engine,
+            case,
+            "no",
+            narration="What would you need to see?",
+            follow_ups=_MODEL_FOLLOW_UPS,
+        )
+        assert engine.generator.generate_structured_output.await_count == 1
+        (decline,) = _declined(case)
+        assert decline.via == AnswerVia.TOKEN
+        assert list(decline.premise.confirmation_ids) == _qualifying(case)
+        assert result["agent_response"].startswith("What would you need to see?")
+        assert _labels(result) == ["Share more context", DECLINED_RESOLVE_CARD_LABEL]
+
+    @pytest.mark.parametrize("how", ["deflection", "token", "minted"])
+    async def test_a_decline_recording_a_row_and_proposing_is_refused(self, how):
+        """D measured ``pending=resolved`` on the turn the user said not yet;
+        the re-stamp makes step 2 read the row as covered. Every decline the
+        gate records reaches the model (#2223), the bare and the minted one
+        too, and on each the decline binds the model's same-turn proposal."""
+        case = _confirmed_case()
+        engine = _engine()
+        await _turn(engine, case, "errors gone")
+        message, process_kw = _decline(case, how)
+        result = await _turn(
+            engine, case, message, row=True, propose="resolved", **process_kw
+        )
+        assert engine.generator.generate_structured_output.await_count == 1
+        assert _declined(case)[-1].via == _DECLINE_VIA[how]
         assert case.offer_record.open is None
+        assert case.state == CaseState.INVESTIGATING
         assert DECLINED_RESOLVE_FEEDBACK in _feedback(result)
         # The decline was widened to cover the row the model recorded on it.
         assert set(_qualifying(case)) <= set(
