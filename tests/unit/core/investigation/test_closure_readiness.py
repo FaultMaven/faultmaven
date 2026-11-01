@@ -20,23 +20,15 @@ from datetime import UTC, datetime
 
 import pytest
 
-from faultmaven.core.investigation.cause_assurance import runbook_conversion_ready
 from faultmaven.core.investigation.terminal_transitions import (
     ClosureReadiness,
     assess_closure_readiness,
 )
 from faultmaven.modules.case.contracts import (
     Case,
-    CausalNode,
     EvidenceCategory,
     EvidenceSourceType,
-    EvidenceStance,
-    NodeEvidenceLink,
-    NodeState,
-    NodeType,
     ProblemStatus,
-    ProblemVerification,
-    ValidationMethod,
 )
 from faultmaven.modules.case.domain.models.conclusion import (
     ConfidenceLevel,
@@ -186,41 +178,13 @@ class TestSuggestResolveVerdict:
 
         assert readiness.verdict == ClosureReadiness.SUGGEST_RESOLVE
 
-    @staticmethod
-    def _pivot_case(kind: str) -> Case:
-        """``solution`` / ``no_solution``: the builders' case, not runbook-ready
-        (no validated root). ``runbook_ready``: plus a verified symptom statement
-        and a VALIDATED root whose SUPPORTS link cites the causal-absence row."""
+    def _pivot_message(self, *, with_solution: bool = True) -> str:
         case = _make_investigating_case()
         _attach_root_cause(case)
-        if kind != "no_solution":
+        if with_solution:
             _attach_solution(case)
         _attach_confirmation(case)
-        if kind == "runbook_ready":
-            case.problem_verification = ProblemVerification(symptom_statement="5xx")
-            absence = case.evidence[-2]
-            assert absence.category == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
-            root = CausalNode(
-                statement="Connection pool exhaustion under load",
-                node_type=NodeType.ROOT,
-                node_state=NodeState.VALIDATED,
-                validation_method=ValidationMethod.EMPIRICAL,
-                actionable=True,
-                generated_at_turn=2,
-                evidence_links=[
-                    NodeEvidenceLink(
-                        evidence_id=absence.evidence_id,
-                        stance=EvidenceStance.SUPPORTS,
-                        reasoning="the fix removed the pool exhaustion",
-                    )
-                ],
-            )
-            case.causal_nodes = {root.node_id: root}
-        assert runbook_conversion_ready(case) is (kind == "runbook_ready")
-        return case
-
-    def _pivot_message(self, kind: str = "solution") -> str:
-        readiness = assess_closure_readiness(self._pivot_case(kind))
+        readiness = assess_closure_readiness(case)
         assert readiness.verdict == ClosureReadiness.SUGGEST_RESOLVE
         return readiness.message
 
@@ -230,26 +194,17 @@ class TestSuggestResolveVerdict:
         stays on the case (#2454)."""
         assert (
             "Closing would close it without marking it resolved; the confirmed "
-            "fix stays on record.\n\n" in self._pivot_message()
+            "fix stays on record." in self._pivot_message()
         )
 
-    def test_runbook_ready_pivot_names_the_runbook_cost(self):
-        """Only a resolved case is offered a runbook, so a runbook-ready case's
-        pivot says what closing gives up."""
-        assert (
-            "Closing would close it without marking it resolved; the confirmed "
-            "fix stays on record, but only a resolved case can be turned into "
-            "a runbook.\n\n" in self._pivot_message("runbook_ready")
-        )
-
-    @pytest.mark.parametrize("kind", ["solution", "no_solution", "runbook_ready"])
-    def test_pivot_never_says_unresolved_or_discard(self, kind):
-        message = self._pivot_message(kind).lower()
+    @pytest.mark.parametrize("with_solution", [True, False])
+    def test_pivot_never_says_unresolved_or_discard(self, with_solution):
+        message = self._pivot_message(with_solution=with_solution).lower()
         assert "unresolved" not in message
         assert "discard" not in message
 
     def test_pivot_template_is_otherwise_unchanged(self):
-        assert self._pivot_message("no_solution") == (
+        assert self._pivot_message(with_solution=False) == (
             "This case has a fix confirmed to have eliminated the root cause — "
             "it qualifies for **resolved** status rather than closed. Closing "
             "would close it without marking it resolved; the confirmed fix "

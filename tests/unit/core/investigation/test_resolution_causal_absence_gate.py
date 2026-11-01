@@ -45,7 +45,6 @@ def _case(*, cats=(), solutions=1, cause=True):
         solutions=[SimpleNamespace(title="failover") for _ in range(solutions)],
         evidence=[SimpleNamespace(category=c) for c in cats],
         hypotheses={},
-        causal_nodes={},
         progress=SimpleNamespace(
             completed_milestones=[], problem_status=ProblemStatus.VERIFIED
         ),
