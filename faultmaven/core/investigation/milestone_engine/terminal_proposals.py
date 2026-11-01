@@ -140,13 +140,13 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
     if closure.verdict == closure.SUGGEST_RESOLVE:
         kind = OfferKind.RESOLVE
         # Purpose-written, NOT `closure.message`. That text is a pivot-FROM-a-
-        # close ("Closing would record it as unresolved and discard the
-        # resolution"), which is coherent on the LLM path — where a close was
-        # actually requested — and incoherent here, where the engine proposed
-        # this turn's disposition unprompted. Reusing it would presuppose a
-        # close the user never asked for and would never state the deferred-
-        # implementation reason: the same prose/affordance incoherence this
-        # function is being fixed to stop producing.
+        # close ("Closing would close it without marking it resolved; the
+        # confirmed fix stays on record"), which is coherent on the LLM path —
+        # where a close was actually requested — and incoherent here, where the
+        # engine proposed this turn's disposition unprompted. Reusing it would
+        # presuppose a close the user never asked for and would never state the
+        # deferred-implementation reason: the same prose/affordance incoherence
+        # this function is being fixed to stop producing.
         gate_message = (
             "The fix on this case is confirmed to have eliminated the root "
             "cause — the cause was removed and the problem went with it — so "

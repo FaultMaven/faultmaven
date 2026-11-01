@@ -433,8 +433,8 @@ class TestDeferredImplementationClose:
         """The resolve branch needs its OWN sentence.
 
         `assess_closure_readiness().message` is a pivot-FROM-a-close text
-        ("Closing would record it as unresolved..."), coherent only where a
-        close was actually requested. This proposer offers the disposition
+        ("Closing would close it without marking it resolved..."), coherent
+        only where a close was actually requested. This proposer offers the disposition
         unprompted, so reusing it would presuppose a close the user never made
         and never state the deferred-implementation reason — reintroducing, on
         the resolve branch, the prose/affordance incoherence this function was

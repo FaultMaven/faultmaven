@@ -178,6 +178,40 @@ class TestSuggestResolveVerdict:
 
         assert readiness.verdict == ClosureReadiness.SUGGEST_RESOLVE
 
+    def _pivot_message(self, *, with_solution: bool = True) -> str:
+        case = _make_investigating_case()
+        _attach_root_cause(case)
+        if with_solution:
+            _attach_solution(case)
+        _attach_confirmation(case)
+        readiness = assess_closure_readiness(case)
+        assert readiness.verdict == ClosureReadiness.SUGGEST_RESOLVE
+        return readiness.message
+
+    def test_pivot_says_what_a_close_after_declining_records(self):
+        """A close after declining the pivot records ``resolution_declined``:
+        the case closes without being marked resolved, and the confirmed fix
+        stays on the case (#2454)."""
+        assert (
+            "Closing would close it without marking it resolved; the confirmed "
+            "fix stays on record." in self._pivot_message()
+        )
+
+    def test_pivot_never_says_unresolved_or_discard(self):
+        message = self._pivot_message()
+        assert "unresolved" not in message
+        assert "discard" not in message
+
+    def test_pivot_template_is_otherwise_unchanged(self):
+        assert self._pivot_message(with_solution=False) == (
+            "This case has a fix confirmed to have eliminated the root cause — "
+            "it qualifies for **resolved** status rather than closed. Closing "
+            "would close it without marking it resolved; the confirmed fix "
+            "stays on record.\n\n"
+            "- **Root cause**: Connection pool exhaustion under load\n"
+            "\nWould you like to mark it **resolved** instead?"
+        )
+
 
 # ---------------------------------------------------------------------------
 # HAS_SUBSTANCE — investigation produced work but not resolution-grade
