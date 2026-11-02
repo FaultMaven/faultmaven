@@ -31,6 +31,9 @@ import pytest
 
 from faultmaven.core.investigation.intent_resolver import IntentResolver
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.transition_consent import (
+    gate1_offer_key,
+)
 from faultmaven.core.investigation.prompts.templates.tool_text import NO_TOOLS
 from faultmaven.core.investigation.schemas import TurnPayload
 from faultmaven.core.preprocessing.tier2.local_service import LocalTier2Service
@@ -294,10 +297,16 @@ class TestDeepAnalysisSendsRedactedSections:
 class TestTheIntentClassifierSendsTheRedactedMessage:
     async def test_the_classifier_prompt_is_case_redacted(self):
         router = _RecordingRouter(content="none")
+        # Gate 1's card: a choice typed text may still answer. An offer's card
+        # never reaches the classifier (#2222).
         choices = [
             {
-                "label": "Yes, close the case",
-                "intent": {"type": "confirmation", "value": True},
+                "label": "Yes, let's investigate",
+                "intent": {
+                    "type": "confirmation",
+                    "value": True,
+                    "proposal_id": gate1_offer_key("API returns 503"),
+                },
             }
         ]
 

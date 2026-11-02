@@ -92,7 +92,7 @@ CAUSE_IDENTIFIED_LIKELIHOOD = 0.6
 # INV-26 substantive-input bound: a typed reply longer than this cannot be a
 # bare consent to a pending terminal transition. Shared by every consumer of
 # ``is_substantive_reply`` so the confirm-side substance test cannot drift
-# between the pattern matcher and the intent-resolver guard (#721).
+# between the bare readers and Gate 1's intent-resolver guard (#721, #1794).
 BARE_CONSENT_MAX_LENGTH = 100
 
 
@@ -102,7 +102,7 @@ BARE_CONSENT_MAX_LENGTH = 100
 #: (U+037E), Armenian (U+055E) and Ethiopic (U+1367); the question emoji, red
 #: and white (U+2753, U+2754); and the interrobang and the double marks
 #: (U+203D, U+2049, U+2048, U+2047). A script missing here is read as no
-#: question, which only costs a re-ask or a recorded refusal, never a consent.
+#: question, which only costs a re-ask, never a consent or a refusal.
 QUESTION_MARKS = frozenset(
     "?\uff1f\u00bf\u061f\u2e2e\ufe56\ufe16\u037e\u055e\u1367"
     "\u2753\u2754\u203d\u2049\u2048\u2047"
@@ -122,9 +122,9 @@ def is_question(user_message: "str | None") -> bool:
     The one question rule of the consent gate. It used to be four separate
     ``"?" in`` checks that read ASCII only, so ``can we close it on friday？``,
     ``¿ok`` and ``friday :question:`` were recorded as refusals. Its readers:
-    ``is_substantive_reply`` below; the engine's ``message_is_substantive`` and its escape-lane record
-    rule (a question withdraws an offer and is never recorded as a refusal);
-    and ``pending_gate_verdict``'s minted decline on a question (#1813).
+    ``is_substantive_reply`` below, and the engine's ``message_is_substantive``
+    (a question withdraws an offer and hands the turn to the model; no typed
+    reply but a bare decline token records a refusal, #2222).
     """
     text = user_message or ""
     return any(c in QUESTION_MARKS for c in text) or any(
@@ -136,14 +136,15 @@ def is_substantive_reply(user_message: "str | None") -> bool:
     """INV-26 substance test for a reply that would commit a gate.
 
     Named for the pending TERMINAL transition because that is the gate it was
-    written for, and it now has a second caller that is neither pending nor
-    terminal: the adoption-site guard applies it to INQUIRY's Gate 1 as well
-    (fm#918). It is deliberately shared between its two callers — two confirm
-    lanes with two substance predicates is the drift this exists to prevent —
-    so tuning it (``BARE_CONSENT_MAX_LENGTH``, the contrastive tokens) moves
-    both gates at once.
+    written for. It is read through the bare readers
+    (``transition_consent.confirmation_token_class`` and through it
+    ``gate1_bare_consent``), so the terminal gate and Gate 1 — whose
+    adoption-site guard reads ``gate1_bare_consent`` (fm#918, #1794) — share
+    it: two confirm lanes with two substance predicates is the drift this
+    exists to prevent, so tuning it (``BARE_CONSENT_MAX_LENGTH``, the
+    contrastive tokens) moves both gates at once.
 
-    ‼ "Shared" means shared by the two CONFIRM-side callers below, and not
+    ‼ "Shared" means shared by the CONFIRM-side readers, and not
     that it is the only substance test in the gate machinery. The engine's 0b
     handler computes its own ``message_is_substantive`` for a different
     question — *is this an answer to the gate at all, or should the proposal
@@ -166,10 +167,10 @@ def is_substantive_reply(user_message: "str | None") -> bool:
     transition.
 
     This is the single source of truth for the confirm-side substance test:
-    ``transition_consent.confirmation_token_class`` (typed pattern matching) and
+    ``transition_consent.confirmation_token_class`` applies it, and through it
     the IntentResolver adoption guard in ``investigation_service`` (#721,
-    classifier-minted confirmation intents) both apply it. An empty message is
-    not substantive — it is also not consent; callers reject it separately.
+    #1794; a minted Gate 1 confirmation). An empty message is not substantive
+    — it is also not consent; callers reject it separately.
     """
     if not user_message:
         return False

@@ -500,16 +500,16 @@ class TestWhatLapsesIt:
         assert _labels(result) == RESOLVE_PAIR
 
     async def test_a_same_turn_confirmation_does_not_lapse_it(self):
-        """The #1895 shape: a deflection declines and falls through, and the
-        model records the user's words as a confirmation on that turn."""
+        """The #1895 shape: a decline falls through to the model (a bare "no"
+        on a resolve offer does, #2223), and the model records the user's
+        words as a confirmation on that turn."""
         case, engine = _resolvable_case(), _engine()
         offered = await _turn(engine, case, "the errors are gone now")
         assert _labels(offered) == RESOLVE_PAIR
         result = await _turn(
             engine,
             case,
-            "Not yet - it has been clean for an hour but I want to wait for "
-            "the overnight batch before calling it",
+            "no",
             _proposes(
                 "resolved",
                 evidence_to_add=[

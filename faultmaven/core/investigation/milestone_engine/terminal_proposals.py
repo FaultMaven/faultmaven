@@ -119,8 +119,8 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
     # fixes is therefore path INCONSISTENCY (one proposer disagreeing with the
     # other two), not a reconstructed history of that case. What kept those
     # five turns going is the re-proposal loop, which is a separate concern.
-    # An offer was answered on this turn (a decline, a question, a
-    # deflection, a contradicting status pick): the turn began inside a
+    # An offer was answered on this turn (a decline, a question, a long
+    # non-answer, a contradicting status pick): the turn began inside a
     # disposition handshake, or the engine withdrew its own offer. Offering
     # now would put an offer back in front of a user who just acted on one,
     # or substitute a DIFFERENT target (this proposer's SUGGEST_RESOLVE pivot

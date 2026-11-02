@@ -37,6 +37,7 @@ from faultmaven.core.investigation.milestone_engine.turn_completion import (
 )
 from faultmaven.core.investigation.offer_projection import (
     DECLINED_RESOLVE_CARD_LABEL,
+    DECLINED_RESOLVE_CLOSE_LABEL,
     project_offers,
 )
 from faultmaven.core.investigation.offers import decline_stands
@@ -59,10 +60,6 @@ from faultmaven.core.investigation.terminal_transitions import (
     resolve_reopen_key,
 )
 from faultmaven.exceptions import ValidationException
-from faultmaven.models.api_models import QueryIntent
-from faultmaven.modules.agent.domain.services.investigation_service.intent_gates import (
-    _minted_intent_swallows_gate_consent,
-)
 from faultmaven.modules.agent.domain.services.investigation_service.service import (
     InvestigationService,
 )
@@ -119,7 +116,7 @@ _ROW = {
     "source_file_id": _FILE_ID,
 }
 
-#: A long non-question reply to the offer: a deflection, recorded as a decline
+#: A long non-question reply to the offer: withdrawn, never declined (#2222),
 #: and handed to the model.
 _DEFLECTION = (
     "Not yet - it has been clean for an hour but I want to wait for the "
@@ -129,6 +126,10 @@ _DEFLECTION = (
 _MODEL_FOLLOW_UPS = [
     SuggestedFollowUp(label="Share more context", action_type="FREE_SPEECH"),
 ]
+
+#: The engine's chips while a resolve decline stands, in order: "Mark it
+#: resolved" (#1895) and "Close without resolving" beside it (#2222).
+_CHIPS = [DECLINED_RESOLVE_CARD_LABEL, DECLINED_RESOLVE_CLOSE_LABEL]
 
 
 def _engine() -> MilestoneEngine:
@@ -197,15 +198,16 @@ def _qualifying(case) -> list:
 
 def _decline(case, how: str) -> tuple[str, dict]:
     """The message and ``process_turn`` keywords of a decline of the open
-    resolve offer, by how it arrives at the gate: a bare typed token, a
-    confirmation the intent resolver minted from short typed text (#2223's
-    turn 10), the Not-yet click, or a deflection."""
+    resolve offer, by how it arrives at the gate: a bare typed token, the same
+    bare token carrying a confirmation the intent resolver minted (the mint
+    carries no answer, #2222: the token declines), or the Not-yet click. A
+    long typed reply is no decline (#2222); it is withdrawn."""
     offer = case.offer_record.open
     assert offer is not None and offer.kind == "resolve", "premise: an offer"
     if how == "token":
         return "no", {}
     if how == "minted":
-        return "I can't call it resolved yet.", {
+        return "no", {
             "intent_type": "confirmation",
             "intent_data": {"value": False, "proposal_id": offer.proposal_id},
             "typed": True,
@@ -221,8 +223,7 @@ def _decline(case, how: str) -> tuple[str, dict]:
                 "proposal_id": card["intent"]["proposal_id"],
             },
         }
-    assert how == "deflection", how
-    return _DEFLECTION, {}
+    raise AssertionError(how)
 
 
 #: The gate's record of each way a decline arrives (``_decline``).
@@ -230,7 +231,6 @@ _DECLINE_VIA = {
     "token": AnswerVia.TOKEN,
     "minted": AnswerVia.TOKEN,
     "click": AnswerVia.CLICK,
-    "deflection": AnswerVia.TYPED,
 }
 
 
@@ -354,8 +354,8 @@ class TestADeclinedResolutionBindsTheModel:
         assert case.state == CaseState.INVESTIGATING
         assert DECLINED_RESOLVE_FEEDBACK in _feedback(result)
         # Appended after the model's own follow-ups, never substituted.
-        assert _labels(result) == ["Share more context", DECLINED_RESOLVE_CARD_LABEL]
-        assert result["suggested_follow_ups"][-1]["intent"] == {
+        assert _labels(result) == ["Share more context", *_CHIPS]
+        assert result["suggested_follow_ups"][-2]["intent"] == {
             "type": "status_transition",
             "to_state": "resolved",
             "proposal_id": resolve_reopen_key(declined_before[-1]),
@@ -368,7 +368,7 @@ class TestADeclinedResolutionBindsTheModel:
         result = await _turn(engine, case, "anything else?", propose="closed")
         assert case.offer_record.open is None
         assert DECLINED_RESOLVE_FEEDBACK in _feedback(result)
-        assert _labels(result)[-1] == DECLINED_RESOLVE_CARD_LABEL
+        assert _labels(result)[-2:] == _CHIPS
 
     async def test_the_refusal_is_logged_as_resolve(self, caplog):
         engine, case, _ = await _offered_then_declined()
@@ -384,11 +384,8 @@ class TestADeclinedResolutionBindsTheModel:
         engine, case, _ = await _offered_then_declined()
         for message in ("what else is in that log?", "ok, I changed my mind"):
             result = await _turn(engine, case, message, follow_ups=_MODEL_FOLLOW_UPS)
-            assert _labels(result) == [
-                "Share more context",
-                DECLINED_RESOLVE_CARD_LABEL,
-            ]
-            assert result["suggested_follow_ups"][-1]["intent"] == _chip_intent(case)
+            assert _labels(result) == ["Share more context", *_CHIPS]
+            assert result["suggested_follow_ups"][-2]["intent"] == _chip_intent(case)
             assert DECLINED_RESOLVE_FEEDBACK not in _feedback(result)
             assert case.offer_record.open is None
 
@@ -407,8 +404,8 @@ class TestADeclinedResolutionBindsTheModel:
             ],
         )
         assert DECLINED_RESOLVE_FEEDBACK in _feedback(result)
-        assert _labels(result) == ["Share more context", DECLINED_RESOLVE_CARD_LABEL]
-        assert result["suggested_follow_ups"][-1]["intent"] == _chip_intent(case)
+        assert _labels(result) == ["Share more context", *_CHIPS]
+        assert result["suggested_follow_ups"][-2]["intent"] == _chip_intent(case)
 
     async def test_no_chip_once_a_new_confirmation_brings_the_offer_back(self):
         engine, case, _ = await _offered_then_declined()
@@ -447,11 +444,11 @@ class TestADeclinedResolutionBindsTheModel:
                 validation_repairs=[],
             )
 
-        assert _labels(await _compose()) == [DECLINED_RESOLVE_CARD_LABEL], "control"
+        assert _labels(await _compose()) == _CHIPS, "control"
         # The chip's own resolve offer: the user's, so the decline does not
         # bind it.
         with_open_offer(case, kind="resolve", basis="reopen")
-        assert DECLINED_RESOLVE_CARD_LABEL not in _labels(await _compose())
+        assert not set(_CHIPS) & set(_labels(await _compose()))
 
     async def test_a_refused_model_narrating_resolved_gets_the_still_open_notice(self):
         """INV-40: the refusal leaves no gate prose, so the over-claim is
@@ -588,9 +585,9 @@ class TestTheDeclineTurn:
         assert decline.via == AnswerVia.TOKEN
         assert list(decline.premise.confirmation_ids) == _qualifying(case)
         assert result["agent_response"].startswith("What would you need to see?")
-        assert _labels(result) == ["Share more context", DECLINED_RESOLVE_CARD_LABEL]
+        assert _labels(result) == ["Share more context", *_CHIPS]
 
-    @pytest.mark.parametrize("how", ["deflection", "token", "minted"])
+    @pytest.mark.parametrize("how", ["token", "minted"])
     async def test_a_decline_recording_a_row_and_proposing_is_refused(self, how):
         """D measured ``pending=resolved`` on the turn the user said not yet;
         the re-stamp makes step 2 read the row as covered. Every decline the
@@ -617,21 +614,25 @@ class TestTheDeclineTurn:
         await _turn(engine, case, "ok what next")
         assert case.offer_record.open is None
 
-    async def test_the_deflection_turn_carries_the_chip(self):
-        """B5: the deflection falls through to the model; its reply still
-        carries the chip, keyed on the decline the turn recorded."""
+    async def test_a_long_typed_reply_is_withdrawn_and_the_offer_returns(self):
+        """#2222: a long typed reply is no decline (#1808 recorded it as one).
+        It falls through to the model with the offer withdrawn, so no decline
+        stands and no chip is shown, and the offer returns on the next turn
+        while it is still earned (fm#1122)."""
         case = _confirmed_case()
         engine = _engine()
         await _turn(engine, case, "errors gone")
-        result = await _turn(
-            engine, case, _DEFLECTION, row=True, follow_ups=_MODEL_FOLLOW_UPS
-        )
-        assert _labels(result) == ["Share more context", DECLINED_RESOLVE_CARD_LABEL]
-        assert result["suggested_follow_ups"][-1]["intent"]["proposal_id"] == (
-            resolve_reopen_key(_declined(case)[-1])
-        )
-        await _turn(engine, case, "ok what next")
+        result = await _turn(engine, case, _DEFLECTION, follow_ups=_MODEL_FOLLOW_UPS)
+        assert engine.generator.generate_structured_output.await_count == 1
+        last = case.offer_record.answers[-1]
+        assert (last.answer, last.via) == ("withdrawn", AnswerVia.TYPED)
+        assert _declined(case) == []
         assert case.offer_record.open is None
+        assert _labels(result) == ["Share more context"]
+
+        await _turn(engine, case, "ok what next")
+        assert case.offer_record.open is not None
+        assert case.offer_record.open.kind == "resolve"
 
     async def test_the_same_turn_widening_never_narrows_the_premise(self):
         """A same-turn disconfirmation shrinks what qualifies: the decline's
@@ -646,7 +647,8 @@ class TestTheDeclineTurn:
         def _failed_fix_lands():
             case.evidence.append(_engine_disconfirmation(turn=case.current_turn))
 
-        await _turn(engine, case, _DEFLECTION, side_effect=_failed_fix_lands)
+        # A bare "no" on a resolve offer reaches the model (#2223).
+        await _turn(engine, case, "no", side_effect=_failed_fix_lands)
         assert closure_verdict(case) != _SR, "premise: the verdict flipped"
         (decline,) = _declined(case)
         assert set(declined_rows) <= set(decline.premise.confirmation_ids)
@@ -689,27 +691,28 @@ class TestTheChip:
         )
         assert case.state == CaseState.RESOLVED
 
-    async def test_a_typed_exact_match_mints_the_chip_and_only_proposes(self):
+    @pytest.mark.parametrize("text", ["Mark this case resolved.", "Mark it resolved"])
+    async def test_a_typed_exact_retype_mints_nothing_and_proposes_nothing(self, text):
+        """#2222: retyping the chip's payload or label is not its click. The
+        resolver sets the chip aside before either tier, so the text reaches
+        the model as conversation, and the standing decline keeps the
+        proposers quiet."""
         engine, case, _ = await _offered_then_declined()
-        chip = project_offers(case).reopen_chip
-        minted = await IntentResolver(None).resolve(
-            "Mark this case resolved.", [chip], redaction_ctx=disabled_redaction()
+        projection = project_offers(case)
+        router = MagicMock()
+        minted = await IntentResolver(router).resolve(
+            text,
+            [projection.reopen_chip, projection.close_chip],
+            redaction_ctx=disabled_redaction(),
         )
-        assert minted == chip["intent"]
-        # INV-26: the mint proposes, it commits no gate, so it is adopted.
-        assert not _minted_intent_swallows_gate_consent(
-            case, QueryIntent(**minted), "Mark this case resolved."
-        )
-        await _turn(
-            engine,
-            case,
-            "Mark this case resolved.",
-            intent_type="status_transition",
-            intent_data=dict(minted),
-            typed=True,
-        )
+        assert minted is None
+        router.assert_not_called()
+
+        result = await _turn(engine, case, text, follow_ups=_MODEL_FOLLOW_UPS)
+        assert engine.generator.generate_structured_output.await_count == 1
         assert case.state == CaseState.INVESTIGATING
-        assert case.offer_record.open.kind == "resolve"
+        assert case.offer_record.open is None
+        assert _labels(result) == ["Share more context", *_CHIPS]
 
     async def test_a_double_click_re_asks_and_records_nothing(self):
         engine, case, _ = await _offered_then_declined()
@@ -1053,18 +1056,20 @@ async def _deferred_offer(*, resolvable: bool):
 
 class TestTheDeclineTurnReachesTheApplyStep:
     @pytest.mark.parametrize("model_proposes", [None, "resolved"])
-    async def test_a_deflection_on_a_deferred_resolve_offer_is_not_re_offered(
+    async def test_a_decline_on_a_deferred_resolve_offer_is_not_re_offered(
         self, model_proposes
     ):
         """F1: the deferred proposer runs inside the apply step, before the
         step-3b lapse. It reads the decline 0b answered on the record, so the
         row the model records from the user's "not yet" does not let it
-        re-offer the resolution on the very turn it was declined."""
+        re-offer the resolution on the very turn it was declined. A bare "no"
+        on a resolve offer reaches the model (#2223); a long typed reply is no
+        decline (#2222)."""
         engine, case = await _deferred_offer(resolvable=True)
         result = await _turn(
             engine,
             case,
-            _DEFLECTION,
+            "no",
             row=True,
             propose=model_proposes,
             follow_ups=_MODEL_FOLLOW_UPS,
@@ -1073,7 +1078,7 @@ class TestTheDeclineTurnReachesTheApplyStep:
         assert set(_qualifying(case)) <= set(
             _declined(case)[-1].premise.confirmation_ids
         )
-        assert _labels(result)[-1] == DECLINED_RESOLVE_CARD_LABEL
+        assert _labels(result)[-2:] == _CHIPS
 
         case.current_turn += 1
         engine.generator.generate_structured_output = AsyncMock(
@@ -1127,7 +1132,7 @@ class TestNothingReOffersWhileTheDeclineStands:
         result = await _turn(engine, case, "here is more context about the fix")
         assert case.offer_record.open is None
         assert DECLINED_RESOLVE_FEEDBACK in _feedback(result)
-        assert _labels(result)[-1] == DECLINED_RESOLVE_CARD_LABEL
+        assert _labels(result)[-2:] == _CHIPS
 
 
 class TestOnHold:

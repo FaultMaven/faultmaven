@@ -42,7 +42,6 @@ from faultmaven.core.investigation.milestone_engine.transition_consent import (
     gate1_bare_consent,
     gate1_offer_key,
     offer_click_refusal,
-    opens_with_consent_loosely,
     pending_gate_verdict,
 )
 from faultmaven.core.investigation.milestone_engine.transition_turns import (
@@ -142,14 +141,13 @@ from .statement_revision import (
 # an LLM turn, it answers with the proposal's buttons, every time and never
 # recording a refusal: a consent-shaped reply that is not bare and that
 # ``is_substantive_reply`` does not call substantive (the set the gate used to
-# execute on); a reply whose text and minted intent disagree; a minted
-# confirmation on text that is not bare; a status-dropdown re-pick of the
-# pending target (#1838); and a short (at most this many characters)
-# question-free non-answer ("hm"). It NEVER consumes a turn carrying an upload,
-# nor a non-answer longer than this or carrying a question mark
-# (``is_question``, #1840) — new evidence, a question, an instruction to keep
-# investigating: those withdraw the proposal and are processed as a normal
-# investigation turn, so the gate can never swallow them. The same bound
+# execute on); a status-dropdown re-pick of the pending target (#1838); and a
+# short (at most this many characters) question-free non-answer ("hm"). It
+# NEVER consumes a turn carrying an upload, nor a non-answer longer than this
+# or carrying a question mark (``is_question``, #1840) — new evidence, a
+# question, an instruction to keep investigating: those withdraw the proposal,
+# record no decline (#2222) and are processed as a normal investigation turn,
+# so the gate can never swallow them. The same bound
 # splits a decline of a CLOSE offer: a bare one is acknowledged without an LLM
 # turn (``_decline_bare_reply``), a longer one is processed. A decline of a
 # RESOLVE offer is always processed, whatever its length (#2223, ruling (b)).
@@ -393,12 +391,13 @@ class MilestoneEngine:
                 ADR-013 §D4). ``None`` means no principal — an engine-internal
                 turn — and collapses the allowlist to the global corpus.
             typed: True when the service MINTED ``intent_type`` from typed text
-                (the intent resolver) rather than receiving it from a click. It
-                names how a terminal transition was confirmed (#1748): a typed
-                "ok" the resolver turned into a confirmation is not a click. A
-                keyword of its own, not an ``intent_data`` key: that dict is
-                filled from the client's intent payload, and server facts never
-                ride in it (the same reason ``user_id`` is kept out).
+                (the intent resolver) rather than receiving it from a click. A
+                minted intent answers no offer (#2222): 0b and 0b' read the
+                click or the text, and 0c commits a minted Gate 1 confirmation
+                only on a bare consent (#1794). A keyword of its own, not an
+                ``intent_data`` key: that dict is filled from the client's
+                intent payload, and server facts never ride in it (the same
+                reason ``user_id`` is kept out).
             redaction_ctx: The turn's case redaction context
                 (``CaseRedactionContext``), which the investigation service
                 loads once per turn and hands to every model call it makes on
@@ -664,12 +663,13 @@ class MilestoneEngine:
                 )
 
             # Set when section 0b or 0b' consumed this turn's confirmation
-            # intent: a click naming the standing offer, or a mint whose answer
-            # the gate took (0b's decline; the revision's confirm or decline at
-            # 0b'). Such an intent skips 0c's confirmation branch, which
-            # neither refuses nor logs it: it was never Gate 1's (#2223). A
-            # mint the gate set aside (a re-ask carried through by an upload, a
-            # question) still reaches that branch.
+            # intent: a click naming the standing offer, or any confirmation
+            # intent on a turn the gate answered (a decline at 0b; a confirm or
+            # decline at 0b'), clicked or minted. A mint carries no answer
+            # (#2222): the gate answered from the text. Such an intent skips
+            # 0c's confirmation branch, which neither refuses nor logs it: it
+            # was never Gate 1's (#2223). A mint on a turn the gate set aside
+            # (a question, an upload) still reaches that branch.
             confirmation_consumed_by_gate = False
             # Set when 0b recorded a resolve decline from a bare message: not
             # substantive, no upload. That is the turn #2223 routes to the
@@ -691,9 +691,9 @@ class MilestoneEngine:
             #    A status-dropdown pick names a state, not an offer: a re-pick
             #    of the offer's target re-shows the card and executes nothing
             #    (#1838).
-            # 2. Pattern-based: fallback for users who type instead of clicking.
-            #    Only a BARE consent token executes (#1783); a longer typed
-            #    reply is re-asked.
+            # 2. Text-based: for users who type instead of clicking. Only a
+            #    BARE consent or decline token answers (#1783, #1813); an
+            #    intent minted from typed text answers nothing (#2222).
             offer = open_terminal_offer(case)
             if offer is not None:
                 # Every branch below that falls through to normal processing
@@ -764,37 +764,30 @@ class MilestoneEngine:
                         intent_type == "confirmation"
                         and (intent_data or {}).get("value") is True
                     )
-                    # A status_transition intent naming the offer's target. A
-                    # MINTED one (``typed``) carries a confirmation whose text
-                    # decides, as any mint does. A CLICKED one is the status
-                    # dropdown picked again, and is NOT consent (#1838, ruling
-                    # (b)): the pick names a state, not an offer, and a double
-                    # submit, a client retry or a second tab sends it as surely
-                    # as a deliberate second pick. It is forced to a re-ask
-                    # below, never left to its text: the dropdown's text ("Close
-                    # this case as unresolved. Summarize what we found so
-                    # far.") is over the substantive bound, and as text it
-                    # would escape and be recorded as a refusal.
-                    status_transition_confirms = (
+                    # A status_transition intent naming the offer's target: the
+                    # status dropdown picked again (typed text never mints a
+                    # status_transition, #2222). It is NOT consent (#1838,
+                    # ruling (b)): the pick names a state, not an offer, and a
+                    # double submit, a client retry or a second tab sends it as
+                    # surely as a deliberate second pick. It is forced to a
+                    # re-ask below, never left to its text: the dropdown's text
+                    # ("Close this case as unresolved. Summarize what we found
+                    # so far.") is over the substantive bound, and as text it
+                    # would escape and withdraw the offer.
+                    status_repick_clicked = (
                         intent_type == "status_transition"
                         and (intent_data or {}).get("to_state") == offer.kind.to_state
                     )
-                    status_repick_clicked = status_transition_confirms and not typed
                     intent_declines = (
                         intent_type == "confirmation"
                         and (intent_data or {}).get("value") is False
-                    )
-                    intent_value: bool | None = (
-                        True
-                        if intent_confirms or status_transition_confirms
-                        else False if intent_declines else None
                     )
                     # A CLICK answers only the offer it names (#1812, ruling
                     # (a)). One that names another offer, or none, executes
                     # nothing, withdraws nothing and records nothing: the reply
                     # says so and re-shows the open offer. A minted intent
-                    # (``typed``) is not a click, so the text decides and the
-                    # key is not consulted.
+                    # (``typed``) is not a click: it carries no answer, the
+                    # text decides and the key is not consulted (#2222).
                     clicked = (intent_confirms or intent_declines) and not typed
                     if clicked:
                         refusal = offer_click_refusal(intent_data, offer.proposal_id)
@@ -807,27 +800,24 @@ class MilestoneEngine:
                                 reason=refusal,
                             )
                         confirmation_consumed_by_gate = True
-                    # One verdict from the text and the intent together
-                    # (#1783, ruling (a)). A terminal proposal executes only
-                    # on its click or on a BARE typed consent token; an
-                    # intent the service minted from typed text (``typed``)
-                    # is not a click, and never overrides the text. The
-                    # verdict also names how the user confirmed, for the
-                    # turn record (#1748). A clicked re-pick of the offer's
-                    # target is a re-ask that records nothing (#1838): the
-                    # open offer's card comes back, and only its click or
-                    # a bare typed consent executes it.
+                    # One verdict, from the click or the text (#1783, ruling
+                    # (a); #2222). An offer is answered only by its click or
+                    # by a BARE typed consent or decline token. The verdict
+                    # also names how the user confirmed, for the turn record
+                    # (#1748). A clicked re-pick of the offer's target is a
+                    # re-ask that records nothing (#1838): the open offer's
+                    # card comes back, and only its click or a bare typed
+                    # consent executes it.
                     if status_repick_clicked:
                         verdict, confirmed_via = "reask", None
                     else:
                         verdict, confirmed_via = pending_gate_verdict(
                             user_message,
                             offer.kind.to_state,
-                            intent_value=intent_value,
-                            typed=typed,
+                            clicked=intent_confirms if clicked else None,
                         )
                     # How the answer arrived, for the record: a click, or a
-                    # bare typed token (a minted intent decides by its text).
+                    # bare typed token.
                     gate_via = AnswerVia.CLICK if clicked else AnswerVia.TOKEN
                     # A turn carrying an upload is never consumed by the gate:
                     # the file is new data and must be analysed, whatever the
@@ -849,9 +839,11 @@ class MilestoneEngine:
                         )
                     elif verdict == "decline":
                         _answer(AnswerKind.DECLINED, gate_via)
-                        # A minted decline the gate took is consumed here, as
-                        # a click is above.
-                        if intent_declines:
+                        # A confirmation intent on a turn the gate answered is
+                        # consumed here, clicked or minted, as a click is
+                        # above: a mint's answer came from the bare token, and
+                        # it never reaches 0c (#2223).
+                        if intent_confirms or intent_declines:
                             confirmation_consumed_by_gate = True
                         bare_resolve_decline = (
                             offer.kind == OfferKind.RESOLVE
@@ -893,60 +885,30 @@ class MilestoneEngine:
                                 user_message=user_message,
                             )
                     else:
-                        # ``reask`` (consent-shaped but not bare, text and
-                        # minted intent disagree, or a clicked re-pick of the
-                        # offer's target, #1838), or ``not_an_answer``. A
-                        # SUBSTANTIVE non-answer (long, or carrying a question)
-                        # is not an answer to the gate at all, and neither is
-                        # a turn carrying an upload: holding the gate against
-                        # those swallowed every typed turn with no LLM call
-                        # and bricked the case (#656, turns 12-13). The
-                        # offer is withdrawn instead and the message
-                        # processed as a normal turn; the engine can always
-                        # re-propose later from fresher state. Everything else
-                        # — a re-ask, a short question-free reply ("hmm"),
-                        # blank input — is answered with the proposal's
-                        # buttons again, every time it is sent, and never
-                        # recorded as a refusal: every proposal is terminal,
-                        # and a re-ask must never become a decline (#1783,
-                        # ruling (a)). None of these is worth an LLM turn.
+                        # ``reask`` (consent-shaped but not bare, or a clicked
+                        # re-pick of the offer's target, #1838), or
+                        # ``not_an_answer``. A SUBSTANTIVE non-answer (long, or
+                        # carrying a question) is not an answer to the gate at
+                        # all, and neither is a turn carrying an upload:
+                        # holding the gate against those swallowed every typed
+                        # turn with no LLM call and bricked the case (#656,
+                        # turns 12-13). The offer is withdrawn instead and the
+                        # message processed as a normal turn; it returns on a
+                        # later turn while it is still earned (fm#1122).
+                        # Everything else — a re-ask, a short question-free
+                        # reply ("I can't call it resolved yet."), blank input
+                        # — is answered with the proposal's buttons again,
+                        # every time it is sent. None of these is worth an LLM
+                        # turn.
                         text_escapes = (
                             verdict == "not_an_answer" and message_is_substantive
                         )
                         if text_escapes or turn_carries_upload:
-                            # The offer is answered either way; whether it is
-                            # a REFUSAL splits on the two halves of
-                            # message_is_substantive, which the gate
-                            # deliberately conflates. A QUESTION (a question
-                            # mark, ``is_question``; #1840) is a user deciding
-                            # — "what happens to the runbook if I close
-                            # this?" — and is withdrawn, never declined:
-                            # recording it would make the affordance
-                            # disappear, unexplained, until a premise moved. A
-                            # long non-question non-answer is a deflection
-                            # ("we'll do it in Friday's window") and IS a
-                            # refusal (#1808's rule; round E revisits typed
-                            # replies). An upload is not a refusal: it is
-                            # withdrawn, and declined only by the text rule. A
-                            # reply that OPENS with consent is not a
-                            # deflection either (#1808): "Yes, go ahead and
-                            # close it. We verified …" is withdrawn and
-                            # processed, and the offer may come back. Read
-                            # LOOSELY here, and only here (#1840): "*Yes*, …",
-                            # "_Yes_, …" and a "Yes" behind an invisible
-                            # character open with consent too. The gate did
-                            # not take this turn (its readers stay strict), so
-                            # the LLM sees it either way; reading loosely
-                            # costs at most a refusal left unrecorded.
-                            deflection = (
-                                text_escapes
-                                and not is_question(stripped_message)
-                                and not opens_with_consent_loosely(stripped_message)
-                            )
-                            if deflection:
-                                _answer(AnswerKind.DECLINED, AnswerVia.TYPED)
-                            else:
-                                _answer(AnswerKind.WITHDRAWN, AnswerVia.TYPED)
+                            # Withdrawn, never declined: only a click or a
+                            # whole-message bare token answers an offer, and a
+                            # typed reply that is not one never records a
+                            # decline (#2222, ruling 2026-10-30).
+                            _answer(AnswerKind.WITHDRAWN, AnswerVia.TYPED)
                             logger.info(
                                 f"Open offer answered for case "
                                 f"{case.case_id}: message is not a gate "
@@ -967,7 +929,8 @@ class MilestoneEngine:
             # (statement_revision.py). The offer record's one slot holds it,
             # so 0b above found no resolve or close offer on this turn. The click names its offer
             # (#1812); the text is read by the disposition gate's own grammar
-            # (``pending_gate_verdict``): a click or a bare "yes" confirms and
+            # (``pending_gate_verdict``), and a minted intent answers nothing
+            # (#2222): a click or a bare "yes" confirms and
             # the revision commits BEFORE the LLM call, so the model works this
             # turn on the revised statement with the staged cause work already
             # replayed; a decline returns the case to where it was; anything
@@ -997,18 +960,19 @@ class MilestoneEngine:
                                 reason=refusal,
                             )
                         confirmation_consumed_by_gate = True
+                # A click's value answers; a mint carries none (#2222).
+                revision_clicked = None if typed else revision_intent
                 revision_verdict, _ = pending_gate_verdict(
-                    user_message, None, intent_value=revision_intent, typed=typed
+                    user_message, None, clicked=revision_clicked
                 )
+                # Consumed on a turn the gate answered, clicked or minted.
                 if revision_intent is not None and revision_verdict in (
                     "confirm",
                     "decline",
                 ):
                     confirmation_consumed_by_gate = True
                 revision_via = (
-                    AnswerVia.CLICK
-                    if revision_intent is not None and not typed
-                    else AnswerVia.TOKEN
+                    AnswerVia.CLICK if revision_clicked is not None else AnswerVia.TOKEN
                 )
                 if revision_verdict == "confirm":
                     await confirm_revision(

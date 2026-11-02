@@ -1,15 +1,19 @@
 """Bounded choice matching for typed responses to offered suggestions.
 
-When the agent presents DECIDE suggestions with intent metadata (e.g.,
-"Yes, mark as resolved" with confirmation intent), and the user types a
+When the agent presents DECIDE suggestions with intent metadata (a file's
+reclassification choices, Gate 1's confirmation pair) and the user types a
 response instead of clicking, this module determines whether the typed text
 is answering one of those choices or is unrelated conversational input.
 
 A resolver match is an INFERENCE from typed text, not a deterministic
-click. The adoption site (``InvestigationService``) therefore applies the
-INV-26 substance guard before adopting a minted intent that would confirm
-a pending TERMINAL transition (#721): substantive typed input is never
-consumed as consent to an irreversible RESOLVED/CLOSED.
+click, so typed text never answers an offer through it (#2222, ruling
+2026-10-30): only a click or a whole-message bare token does, and the engine
+reads the bare token itself. Every chip that answers or re-opens an offer
+(the resolve, close and revision pairs, "Mark it resolved", the declined-close
+cards) is set aside before either tier runs (``_typed_text_may_answer``), so
+retyping one's words is not its click. Gate 1's pair stays: Gate 1 is not on
+the offer record, and the adoption site adopts its mint only on a bare consent
+(``intent_gates``).
 
 Design: see docs/architecture/investigation-engine/choice-response-resolution.md
 """
@@ -17,6 +21,9 @@ Design: see docs/architecture/investigation-engine/choice-response-resolution.md
 import logging
 from typing import Any, Dict, List, Optional
 
+from faultmaven.core.investigation.milestone_engine.transition_consent import (
+    is_gate1_offer_key,
+)
 from faultmaven.core.investigation.suggestion_liveness import normalize_choice_text
 from faultmaven.exceptions import RawModelContentRefused
 from faultmaven.infrastructure.llm.dispatch import (
@@ -49,6 +56,28 @@ CLASSIFIER_MAX_TOKENS = 512
 # from "the user typed something unrelated" — which is how the tier stayed dead
 # without anyone noticing.
 CLASSIFIER_MIN_OUTPUT_TOKENS = 1
+
+
+def _typed_text_may_answer(choice: Dict[str, Any]) -> bool:
+    """Whether typed text may resolve to ``choice`` (#2222, ruling 2026-10-30).
+
+    False for a chip that answers or re-opens an offer: any
+    ``status_transition`` (the "Mark it resolved" chip, the declined-close
+    cards, the "Close without resolving" chip), and any ``confirmation`` that
+    does not name Gate 1 (the resolve, close and revision pairs, and a
+    confirmation naming nothing). Only a click or a whole-message bare token
+    answers an offer. True for every other choice: Gate 1's pair, a file
+    reclassification, save-chat-data and a hypothesis action.
+    """
+    intent = choice.get("intent")
+    if not isinstance(intent, dict):
+        return True
+    kind = intent.get("type")
+    if kind == "status_transition":
+        return False
+    if kind == "confirmation":
+        return is_gate1_offer_key(intent.get("proposal_id"))
+    return True
 
 
 class IntentResolver:
@@ -88,8 +117,13 @@ class IntentResolver:
         if len(msg) > MAX_MESSAGE_LENGTH:
             return None
 
-        # Filter to suggestions that carry intent metadata
-        choices = [s for s in last_suggestions if s.get("intent")]
+        # Filter to suggestions that carry intent metadata and that typed text
+        # may answer: an offer's chip is set aside before EITHER tier, so a
+        # retyped label is not its click, and with nothing left the
+        # classifier is not called (#2222).
+        choices = [
+            s for s in last_suggestions if s.get("intent") and _typed_text_may_answer(s)
+        ]
         if not choices:
             return None
 

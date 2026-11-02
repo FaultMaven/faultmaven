@@ -5,7 +5,8 @@ Pure, and the only place an affordance is derived from the record
 ``disposition_eligibility``, written on every save
 (``CaseRepository.prepare_for_save``), and the reply's chips — the open
 offer's confirmation pair and, with nothing open, the "Mark it resolved" chip
-while a resolve decline stands and the problem is not on hold.
+while a resolve decline stands and the problem is not on hold, with the
+"Close without resolving" chip beside it.
 
 A module of its own because the eligibility and the chip read the readiness
 assessments in ``terminal_transitions``, which reads the record: kept out of
@@ -32,6 +33,15 @@ DECLINED_RESOLVE_CARD_LABEL = "Mark it resolved"
 _DECLINED_RESOLVE_CARD_PAYLOAD = "Mark this case resolved."
 _DECLINED_RESOLVE_CARD_BODY = (
     "Re-open the resolution the agent proposed. You confirm on the next step."
+)
+
+#: The "Close without resolving" chip (#2222, ruled copy 2026-11-02): label,
+#: payload, body.
+DECLINED_RESOLVE_CLOSE_LABEL = "Close without resolving"
+_DECLINED_RESOLVE_CLOSE_PAYLOAD = "Close this case without marking it resolved."
+_DECLINED_RESOLVE_CLOSE_BODY = (
+    "Close the case with the confirmed fix on record, not marked resolved. "
+    "You confirm on the next step; closing is irreversible."
 )
 
 
@@ -76,10 +86,31 @@ def _reopen_chip(case: "Case") -> Optional[dict]:
     }
 
 
+def _close_chip() -> dict:
+    """The chip that closes the case while a resolve decline stands (#2222,
+    the Slack ruling: "Decline, then close").
+
+    Slack renders only the server's suggestions and has no status menu, so
+    after a resolve decline it showed "Mark it resolved" alone and could not
+    close. This chip sends the status menu's own intent, ``{"type":
+    "status_transition", "to_state": "closed"}``: it names a state and no
+    offer, like the menu and ``declined_close_card``. The click opens a CLOSE
+    offer recording ``resolution_declined`` (#2360: no pivot while the decline
+    stands), which the user confirms on the next step.
+    """
+    return {
+        "label": DECLINED_RESOLVE_CLOSE_LABEL,
+        "action_type": "DECIDE",
+        "payload": _DECLINED_RESOLVE_CLOSE_PAYLOAD,
+        "body": _DECLINED_RESOLVE_CLOSE_BODY,
+        "intent": {"type": "status_transition", "to_state": "closed"},
+    }
+
+
 class OfferProjection:
     """Every affordance the record implies, derived on demand from one case:
-    ``disposition_eligibility``, the open offer's confirmation ``pair`` and the
-    ``reopen_chip``."""
+    ``disposition_eligibility``, the open offer's confirmation ``pair``, the
+    ``reopen_chip`` and the ``close_chip`` beside it."""
 
     def __init__(self, case: "Case") -> None:
         self._case = case
@@ -99,6 +130,13 @@ class OfferProjection:
         """The "Mark it resolved" chip: with nothing open, while a resolve
         decline stands and the problem is not on hold; else None."""
         return _reopen_chip(self._case)
+
+    @cached_property
+    def close_chip(self) -> Optional[dict]:
+        """The "Close without resolving" chip: present exactly when
+        ``reopen_chip`` is, so every reply that carries "Mark it resolved"
+        carries it too (#2222); else None."""
+        return _close_chip() if self.reopen_chip is not None else None
 
 
 def project_offers(case: "Case") -> OfferProjection:

@@ -93,8 +93,9 @@ class AnswerKind(StrEnum):
 
     ACCEPTED = "accepted"
     DECLINED = "declined"
-    #: Taken back unanswered: a question about it, an upload, a menu close
-    #: past a revision, the engine on a finding the user disputed.
+    #: Taken back unanswered: a question about it, a long typed non-answer,
+    #: an upload, a menu close past a revision, the engine on a finding the
+    #: user disputed.
     WITHDRAWN = "withdrawn"
     #: Its premise went, with nobody answering (the case left INVESTIGATING,
     #: its finding was cleared).

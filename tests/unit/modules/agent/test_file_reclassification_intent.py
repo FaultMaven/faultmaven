@@ -2005,6 +2005,7 @@ def test_every_reader_of_a_stored_entry_tolerates_any_shape():
         (resolver, "IntentResolver._build_prompt"),  # f-string: any shape
         (resolver, "IntentResolver.resolve"),  # truthiness only
         (resolver, "IntentResolver._parse_response"),  # truthiness only
+        (resolver, "_typed_text_may_answer"),  # isinstance(intent, dict)
         (clarification, "_stored_suggestions"),  # truthiness only
         # ---- NOT stored-entry readers: they share a field NAME -------------
         # The re-render of THIS turn's engine follow-ups, not of a stored row.
@@ -2019,6 +2020,12 @@ def test_every_reader_of_a_stored_entry_tolerates_any_shape():
         (
             "core/investigation/milestone_engine/turn_completion.py",
             "_is_resolve_chip",
+        ),
+        # The same check for the "Close without resolving" chip (#2222);
+        # shape-tolerant the same way (``isinstance(intent, dict)`` too).
+        (
+            "core/investigation/milestone_engine/turn_completion.py",
+            "_is_close_chip",
         ),
         # A tool result's own label.
         (generation, "StructuredOutputGenerator._format_tool_result"),

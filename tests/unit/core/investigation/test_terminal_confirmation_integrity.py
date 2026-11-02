@@ -8,10 +8,11 @@ compliance) from a message that doesn't carry it.
 - #722: no same-turn confirm — pinned in ``test_lifecycle_invariants.py``
   (INV-06 tests). This file covers the shared substance predicate the
   handshake's confirm lanes rely on.
-- #721 (widened by fm#918): the IntentResolver classifier tier must not mint
-  GATE consent from substantive typed text
-  (``_minted_intent_swallows_gate_consent``) — the pending terminal
-  transition, and INQUIRY's Gate 1.
+- #721 (widened by fm#918, narrowed by #2222): the IntentResolver must not
+  mint GATE consent from typed text. It never mints an offer's chip at all
+  (``_typed_text_may_answer``), and the adoption guard
+  (``_minted_intent_swallows_gate_consent``) keeps INQUIRY's Gate 1 to a bare
+  consent.
 - #787: user-confirmed resolution must not stamp never-run pending
   ProposedActions as executed.
 """
@@ -21,9 +22,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from faultmaven.core.investigation.intent_resolver import _typed_text_may_answer
 from faultmaven.core.investigation.milestone_engine.transition_consent import (
     confirmation_token_class,
 )
+from faultmaven.core.investigation.offers import confirmation_pair
 from faultmaven.core.investigation.terminal_transitions import (
     BARE_CONSENT_MAX_LENGTH,
     _execute_resolved_transition,
@@ -132,16 +135,30 @@ def _pending_resolve(case: Case) -> None:
 
 
 class TestMintedIntentTerminalConsentGuard:
+    """#2222: the guard has no terminal arm. Typed text never mints an open
+    offer's pair, and the engine's 0b reads a mint as no answer, so a forced
+    mint reaches the text rule (``test_typed_text_answers_no_offer_2222``)."""
+
     GUARD = staticmethod(_minted_intent_swallows_gate_consent)
 
-    def test_substantive_confirmation_mint_is_rejected(self):
-        """The #721 reproducer: typed contrastive text classifier-matched
-        to "Yes, mark as resolved" must NOT confirm the pending resolve."""
+    @pytest.mark.parametrize("kind", ["resolve", "close"])
+    def test_the_721_reproducer_is_never_minted(self, kind):
+        """The #721 reproducer, typed contrastive text classifier-matched to
+        "Yes, mark as resolved", cannot happen: neither card of an open
+        offer's pair is offered to the resolver."""
+        case = _make_investigating_case()
+        with_open_offer(case, kind=kind, basis="model", summary="Confirm?")
+        pair = confirmation_pair(case.offer_record.open)
+        assert len(pair) == 2
+        assert not any(_typed_text_may_answer(card) for card in pair)
+
+    def test_a_mint_at_an_open_offer_is_left_to_the_engine(self):
+        """No terminal arm: the engine reads the text, not the mint."""
         case = _make_investigating_case()
         _pending_resolve(case)
         minted = QueryIntent(type=IntentType.CONFIRMATION, confirmation_value=True)
         assert (
-            self.GUARD(case, minted, "yes but what about the replication lag?") is True
+            self.GUARD(case, minted, "yes but what about the replication lag?") is False
         )
 
     def test_bare_unlisted_confirmation_mint_adopts(self):
@@ -171,19 +188,6 @@ class TestMintedIntentTerminalConsentGuard:
         _pending_resolve(case)
         minted = QueryIntent(type=IntentType.CONFIRMATION, confirmation_value=False)
         assert self.GUARD(case, minted, "no but wait — what about the cache?") is False
-
-    def test_status_transition_mint_matching_pending_is_guarded(self):
-        """A minted status_transition to the pending target is an implicit
-        confirmation in the engine (repeated-intent rule) — same guard."""
-        case = _make_investigating_case()
-        _pending_resolve(case)
-        minted = QueryIntent(
-            type=IntentType.STATUS_TRANSITION, to_state=CaseState.RESOLVED
-        )
-        assert (
-            self.GUARD(case, minted, "resolve it but first tell me the root cause?")
-            is True
-        )
 
     def test_status_transition_mint_to_other_target_adopts(self):
         """A contradicting status_transition merely cancels the pending
@@ -309,13 +313,8 @@ class TestMintedIntentGateOneConsentGuard:
 
         #1464 changed what this can prove, and the change is stated rather
         than papered over. The mint is now AFFIRMATIVE (a declining one
-        commits nothing anywhere, so it is guarded nowhere), and an
-        affirmative ``confirmation`` with any open offer is matched by
-        ``confirms_pending_transition`` as well — that arm accepts
-        CONFIRMATION+True for any open offer, without looking at its kind. So
-        the if/else hole can no longer reopen THROUGH an open offer whichever
-        way the Gate-1 arm is written, and the shape where the arm answers
-        alone is ``no-offer``.
+        commits nothing anywhere, so it is guarded nowhere). #2222 removed the
+        terminal arm, so the Gate-1 arm answers alone on both shapes.
 
         What the parametrization still holds: no shape of ``pending`` turns
         the guard off. That is the regression this class exists for — the
