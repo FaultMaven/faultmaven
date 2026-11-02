@@ -449,7 +449,8 @@ not revive it).
   answers an offer is forced as before. The reply carries the chips. While the decline stands the prompt and the refusal's feedback state one
   rule (`RESOLVE_DECLINED_RULE`): do not propose on the evidence on record;
   record a NEW verification as evidence and propose in the same turn; point a
-  user who changes their mind at the **Mark it resolved** action, never
+  user who changes their mind at the **Mark it resolved** action, and one who
+  wants to close at the **Close without resolving** action, never
   proposing on, or recording a row from, a request.
 - **The decline turn is read from the record.** Whether an offer was answered
   this turn is the record's (`offers.terminal_offer_answered_this_turn`), so the
@@ -641,11 +642,9 @@ match wins:
   /health response from node-3 again" was swallowed. So "*Yes*, …", a "Yes"
   behind an invisible character, "Yes, go ahead and close it. We verified …",
   "We're out of time on this one — please close the case." and "we'll do it in
-  Friday's window" are all processed and withdrawn. A withdrawn offer stays
-  quiet for the rest of its turn, the model's proposal included: step 2 stands
-  it down with feedback (`offers.terminal_offer_withdrawn_this_turn`), so the
-  same reply never shows the offer again. It returns on a later turn while it
-  is still earned (fm#1122).
+  Friday's window" are all processed and withdrawn. The offer returns on a later
+  turn while it is still earned (fm#1122). The model's own proposal on that
+  turn is not held back yet (#2471).
 
 So the gate's consumption rule is exact: without an LLM turn it answers only the
 re-asks above (and a bare decline of a close), and it **never** consumes a turn carrying an

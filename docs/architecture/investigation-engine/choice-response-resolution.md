@@ -190,6 +190,7 @@ Single token: `1`, `2`, ..., `N`, or `none`.
 - User message is >200 characters (conversational, not a short answer)
 - User message has file attachments (evidence submission, not a choice answer)
 - Intent metadata already present (user clicked — no classification needed)
+- The message is a whole-message bare token that answers the offer open on the record (`pending_gate_verdict` reads it as a confirm or a decline): the gate reads it, and the out-of-band triage is skipped too (#2222)
 
 ### Gate-Consent Guard at the Adoption Site (#721, INV-26; fm#918; #2222)
 

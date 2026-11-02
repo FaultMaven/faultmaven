@@ -37,10 +37,7 @@ from faultmaven.core.investigation.milestone_engine.transitions import (
     DECLINED_RESOLVE_FEEDBACK,
 )
 from faultmaven.core.investigation.offer_projection import project_offers
-from faultmaven.core.investigation.offers import (
-    confirmation_pair,
-    terminal_offer_withdrawn_this_turn,
-)
+from faultmaven.core.investigation.offers import confirmation_pair
 from faultmaven.core.investigation.offers import (
     standing_resolve_decline as _standing_resolve_decline,
 )
@@ -60,7 +57,6 @@ from tests.unit.core.investigation.test_declined_resolution_binds_the_model_1895
     _MODEL_FOLLOW_UPS,
     _declined,
     _engine,
-    _feedback,
     _labels,
     _offered_then_declined,
     _respond,
@@ -432,51 +428,7 @@ class TestTheReaskCopy:
 
 
 # ---------------------------------------------------------------------------
-# 7. A withdrawn offer stays quiet for its turn (review F1)
-# ---------------------------------------------------------------------------
-
-#: The stand-down's feedback, as the model reads it.
-STOOD_DOWN = "TRANSITION NOT PROPOSED: the user set the open offer aside"
-
-
-class TestAWithdrawnOfferStaysQuietForItsTurn:
-    @pytest.mark.parametrize(
-        "text",
-        [
-            "No, keep it open - we will verify after the Friday maintenance "
-            "window first.",
-            "How do we know the fix held through the overnight batch?",
-        ],
-    )
-    async def test_the_models_proposal_stands_down_then_the_offer_returns(self, text):
-        engine, case = await _offered()
-        first = case.offer_record.open.proposal_id
-        result = await _turn(engine, case, text, propose="resolved")
-
-        last = case.offer_record.answers[-1]
-        assert (last.answer, last.via) == ("withdrawn", AnswerVia.TYPED)
-        assert terminal_offer_withdrawn_this_turn(case)
-        assert case.offer_record.open is None
-        assert "Yes, mark as resolved" not in _labels(result)
-        assert STOOD_DOWN in _feedback(result)
-
-        await _turn(engine, case, "ok what next")
-        assert case.offer_record.open.kind == "resolve", "still READY: it returns"
-        assert case.offer_record.open.proposal_id != first
-
-    async def test_a_bare_decline_is_still_refused_by_the_decline(self):
-        engine, case = await _offered()
-        result = await _turn(engine, case, "no", propose="resolved")
-
-        assert not terminal_offer_withdrawn_this_turn(case)
-        assert _declined(case)[-1].via == AnswerVia.TOKEN
-        assert case.offer_record.open is None
-        assert DECLINED_RESOLVE_FEEDBACK in _feedback(result)
-        assert STOOD_DOWN not in _feedback(result)
-
-
-# ---------------------------------------------------------------------------
-# 8. A bare answer to the open offer is the gate's (review F2)
+# 7. A bare answer to the open offer is the gate's (review F2)
 # ---------------------------------------------------------------------------
 
 
@@ -484,11 +436,11 @@ def _live_reclassification(case) -> dict:
     """A carried clarification for the case's upload, live this turn."""
     upload = case.uploaded_files[0]
     return {
-        "label": "Logs",
+        "label": "Logs and errors",
         "action_type": "DECIDE",
-        "payload": f"Treat {upload.filename} as logs.",
-        "body": "Treat the file as logs.",
-        "intent": _reclassification_intent(upload.file_id, "logs"),
+        "payload": f"Treat {upload.filename} as logs and errors.",
+        "body": "Treat the file as logs and errors.",
+        "intent": _reclassification_intent(upload.file_id, "logs_and_errors"),
         "offered_turn": case.current_turn,
         "offered_data_type": upload.data_type,
     }
@@ -564,7 +516,7 @@ class TestABareAnswerIsTheGates:
 
 
 # ---------------------------------------------------------------------------
-# 9. The model is told about the Close chip (review F3)
+# 8. The model is told about the Close chip (review F3)
 # ---------------------------------------------------------------------------
 
 
@@ -574,4 +526,7 @@ def test_the_decline_prompt_and_feedback_name_the_close_chip():
     prompt = get_prompt_for_case(case, "what now?")
     assert RESOLVE_DECLINED_LINE in prompt
     assert "'Close without resolving'" in prompt
-    assert "'Close without resolving'" in DECLINED_RESOLVE_FEEDBACK
+    assert (
+        "attached its 'Mark it resolved' and 'Close without resolving' actions"
+        in DECLINED_RESOLVE_FEEDBACK
+    )

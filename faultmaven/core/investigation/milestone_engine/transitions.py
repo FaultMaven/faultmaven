@@ -6,7 +6,6 @@ from typing import Any
 from faultmaven.core.investigation.offers import (
     remember_resolve_request,
     standing_deferred_decline,
-    terminal_offer_withdrawn_this_turn,
 )
 from faultmaven.core.investigation.problem_status import (
     false_alarm_close_declined_at,
@@ -506,20 +505,6 @@ class TransitionManager:
                 f"user a {engine_offer.kind.to_state!r} transition this turn, "
                 "and that offer is what they will answer. Do not re-propose a "
                 "transition until they have answered it.",
-            )
-            return
-
-        # A withdrawn offer stays quiet for the rest of its turn and returns on
-        # a later one while it is still earned (fm#1122; #2222's ruling 2): a
-        # user who set the offer aside this turn (a question, an upload, a
-        # typed reply that is not a bare token) is not shown it again in the
-        # same reply, whoever proposes it.
-        if terminal_offer_withdrawn_this_turn(case):
-            _add_system_feedback(
-                metadata,
-                "TRANSITION NOT PROPOSED: the user set the open offer aside "
-                "this turn without answering it. It is offered again on a later "
-                "turn while it is still earned; answer their message.",
             )
             return
 
