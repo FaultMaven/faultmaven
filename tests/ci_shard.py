@@ -1,4 +1,9 @@
-"""Run one slice of the suite: ``pytest -p tests.ci_shard --shard=K/N``.
+"""Run one slice of the suite: ``pytest tests/ --shard=K/N``.
+
+``tests/conftest.py`` registers this plugin (``pytest_plugins``), so the
+option exists in every run of the repository's suite. ``-p tests.ci_shard``
+loads it outside that conftest, as tests/unit/ci/test_ci_shard.py does, and
+needs the repository on ``sys.path`` (``python -m pytest`` from its root).
 
 CI splits Test Standalone and Test Cloud across N jobs so their wall clock
 is no longer one 4-vCPU runner's pytest phase. Each slice collects the whole

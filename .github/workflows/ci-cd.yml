@@ -401,7 +401,9 @@ jobs:
     # measurement under Test Cloud below.
     #
     # SPLIT 2026-11-02: the history above is of the unsplit job. A slice runs a
-    # third of it; 30 keeps the margin while the per-slice cost is measured.
+    # third of it: on the split's first run (41522973080) the Standalone slices
+    # took 5.8 / 9.0 / 8.9 min and the Cloud slices 7.6 / 10.2 / 8.8 min,
+    # install included, so 30 is ~3x the slowest.
     timeout-minutes: 30
     name: Test Standalone (slice ${{ matrix.slice }}/3)
     strategy:
@@ -463,8 +465,8 @@ jobs:
           # fixtures paid once per module. Measured on #1644's head: 12 complete
           # xdist runs per job, every failure list empty and identical, and
           # the pytest phase 2.32x faster here (2.16x on Cloud). pytest-cov
-          # combines the workers' data into one .coverage before the reports and
-          # the threshold step below read it.
+          # combines the workers' data into one .coverage, which this slice hands
+          # to the aggregate job (Test Standalone) for the report and threshold.
           #
           # `not performance` + `--ignore=tests/performance` (#2090): a
           # wall-clock test judges the runner, not the diff, so it runs in
@@ -506,7 +508,10 @@ jobs:
           path: .coverage.standalone.${{ matrix.slice }}
           include-hidden-files: true
           if-no-files-found: error
-          retention-days: 1
+          # A re-run of a failed slice replaces its own artifact and needs the
+          # other slices' still there: 7 days covers a re-run the next week.
+          overwrite: true
+          retention-days: 7
 
   # The required check "Test Standalone": every slice passed, and the coverage of
   # the three, combined, clears the threshold the unsplit job held. It runs
@@ -661,7 +666,9 @@ jobs:
     # `TestClient(app)` lifespan) is #1569.
     #
     # SPLIT 2026-11-02: the history above is of the unsplit job. A slice runs a
-    # third of it; 30 keeps the margin while the per-slice cost is measured.
+    # third of it: on the split's first run (41522973080) the Standalone slices
+    # took 5.8 / 9.0 / 8.9 min and the Cloud slices 7.6 / 10.2 / 8.8 min,
+    # install included, so 30 is ~3x the slowest.
     timeout-minutes: 30
     name: Test Cloud (slice ${{ matrix.slice }}/3)
     strategy:
@@ -845,7 +852,10 @@ jobs:
           path: .coverage.cloud.${{ matrix.slice }}
           include-hidden-files: true
           if-no-files-found: error
-          retention-days: 1
+          # A re-run of a failed slice replaces its own artifact and needs the
+          # other slices' still there: 7 days covers a re-run the next week.
+          overwrite: true
+          retention-days: 7
 
   # The required check "Test Cloud": every slice passed, and the coverage of
   # the three, combined, clears the threshold the unsplit job held. It runs
