@@ -87,6 +87,13 @@ from tests import offline_tiktoken  # noqa: E402
 
 offline_tiktoken.install()
 
+# ``--shard=K/N`` runs one slice of the selection (``tests/ci_shard.py``): CI
+# splits Test Standalone and Test Cloud across jobs with it. Registered here,
+# not with ``-p``, because the ``pytest`` console script does not put the
+# repository on ``sys.path`` before it loads ``-p`` plugins; this conftest is
+# imported with it there. Without ``--shard`` the plugin does nothing.
+pytest_plugins = ["tests.ci_shard"]
+
 # "No Redis" is an EMPTY ``REDIS_HOST``: the client factory then returns the
 # in-process FakeRedis without a connection (``redis_client.py``), the zero-
 # config preset reads it as unset, and a caller's value is left alone (Test
