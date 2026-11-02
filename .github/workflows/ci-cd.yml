@@ -46,11 +46,13 @@ permissions:
 # No pip cache on any setup-python step (`cache: 'pip'`). Measured
 # 2026-11-02: a dependency install took 75-123 s whether the pip cache was
 # restored or not, while each PR ref saved its own ~2.9 GB copy per lockfile
-# (main never saves one: these jobs are skipped on a push the merge queue
-# verified). Two open PRs held the repository past its 10 GB Actions cache
-# limit, and eviction took main's Docker layer cache with it, so `build`
-# rebuilt the image from scratch (~576 s instead of ~150 s) and twice ran its
-# runner out of disk. Do not re-add it without a cache that main writes.
+# (main almost never saves one: these jobs are skipped on a push the merge
+# queue verified, which is nearly every push; only an admin merge or a direct
+# push runs them there). Two open PRs held the repository past its 10 GB
+# Actions cache limit, and eviction took main's Docker layer cache with it,
+# so `build` rebuilt the image from scratch (~576 s instead of ~150 s) and
+# twice ran its runner out of disk. Do not re-add it without a cache that
+# main writes.
 jobs:
   # ============================================================================
   # DOCS-ONLY DETECTION
@@ -1166,12 +1168,15 @@ jobs:
       # and 41439385339, both on 2026-11-02. Remove the preinstalled
       # toolchains this job never uses before building; the two `df` lines
       # show what that frees.
+      # In the background: the deletion takes ~60 s and the build's large
+      # writes come minutes later, so it overlaps the buildx setup and the
+      # early layers instead of delaying the build (the job's processes run
+      # until the job ends). "Disk space after the build" shows the result.
       - name: Free runner disk space
         run: |
           df -h /
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup \
-            /opt/hostedtoolcache/CodeQL /usr/local/share/boost
-          df -h /
+          sudo nohup rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost > /dev/null 2>&1 &
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -1195,6 +1200,12 @@ jobs:
           # dropped main's layers and most builds rebuilt everything: the full
           # builds that ran the runner out of disk.
           cache-from: type=gha
+
+      # Free space when the build ended, pass or fail: a disk failure's log
+      # shows what was left, and a cleanup that freed nothing shows here too.
+      - name: Disk space after the build
+        if: always()
+        run: df -h /
 
   # ============================================================================
   # SECURITY SCANNING
