@@ -331,8 +331,16 @@ jobs:
   # STANDALONE TESTING
   # Minimal deps (pip install faultmaven) with optional features off — the
   # standalone config. Proves the core runs without the optional integrations.
+  #
+  # Split three ways (`--shard=K/3`, tests/ci_shard.py): each slice job
+  # collects the whole selection and runs the files assigned to it, so every
+  # test runs in exactly one slice and no file is split. The required check
+  # keeps this job's name: the aggregate job below, which fails unless every
+  # slice passed and combines their coverage for the threshold. A 4-vCPU
+  # runner's pytest phase was the whole wall clock of a CI run (Test Cloud's
+  # 17 of 31 minutes on 2026-11-02); the slices run side by side.
   # ============================================================================
-  test-standalone:
+  test-standalone-slice:
     needs: [changes, code-quality]
     # Skipped on a documentation-only diff (#1506). The condition is written
     # out rather than left to the implicit needs-success gate because it has to
@@ -391,8 +399,17 @@ jobs:
     # Test Cloud cancelled first while this one passed, because the two caps
     # had drifted apart (45 here, 30 there). They are equal again — see the
     # measurement under Test Cloud below.
-    timeout-minutes: 45
-    name: Test Standalone
+    #
+    # SPLIT 2026-11-02: the history above is of the unsplit job. A slice runs a
+    # third of it; 30 keeps the margin while the per-slice cost is measured.
+    timeout-minutes: 30
+    name: Test Standalone (slice ${{ matrix.slice }}/3)
+    strategy:
+      # A failing slice must not cancel the others: their results are the
+      # rest of the report.
+      fail-fast: false
+      matrix:
+        slice: [1, 2, 3]
 
     steps:
       - name: Checkout Repository
@@ -455,16 +472,23 @@ jobs:
           # test_runbook_regex_redos.py (the ReDoS of #1395/#1405) and
           # test_secret_patterns_1980.py; by the plan, the revocation TTL tests
           # in test_revocation_store_contract.py, which pin the deadline rule.
+          #
+          # `--shard`: this job's third (tests/ci_shard.py). No coverage
+          # report here, a third's would mislead: the data goes to the
+          # aggregate job, which combines the slices and prints the report.
           pytest tests/ \
+            --shard="$SLICE/3" \
             -n logical --dist loadfile \
             --cov=faultmaven \
-            --cov-report=term-missing \
+            --cov-report= \
             -m "not cloud and not benchmark and not performance" \
             --ignore=tests/performance \
             --durations=0 \
             --durations-min=1.0 \
             -v
+          mv .coverage ".coverage.standalone.$SLICE"
         env:
+          SLICE: ${{ matrix.slice }}
           # Standalone configuration - optional (cloud) features disabled
           SKIP_SERVICE_CHECKS: "true"
           OPIK_ENABLED: "false"
@@ -475,9 +499,68 @@ jobs:
           SANITIZE_PII: "false"
           VECTOR_STORAGE_TYPE: "inmemory"
 
+      - name: Upload this slice's coverage
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-standalone-${{ matrix.slice }}
+          path: .coverage.standalone.${{ matrix.slice }}
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
+  # The required check "Test Standalone": every slice passed, and the coverage of
+  # the three, combined, clears the threshold the unsplit job held. It runs
+  # no test itself. Same condition as the slices, so a docs-only diff skips
+  # it and a failed detector runs it.
+  test-standalone:
+    needs: [changes, code-quality, test-standalone-slice]
+    if: >-
+      ${{ !cancelled()
+      && needs.code-quality.result == 'success'
+      && needs.changes.outputs.docs_only != 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    name: Test Standalone
+
+    steps:
+      - name: Every slice passed
+        env:
+          SLICES: ${{ needs.test-standalone-slice.result }}
+        run: |
+          if [ "$SLICES" != "success" ]; then
+            echo "::error::A Test Standalone slice did not pass ($SLICES): see the Test Standalone (slice K/3) jobs."
+            exit 1
+          fi
+
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.11"
+
+      # The coverage the slices wrote with: the lockfile's pin.
+      - name: Install coverage
+        run: pip install "$(grep -E '^coverage==' requirements/test.txt)"
+
+      - name: Download the slices' coverage
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: coverage-standalone-*
+          path: coverage-data
+          merge-multiple: true
+
       - name: Check Coverage Threshold
         run: |
-          coverage report --fail-under=50
+          set -euo pipefail
+          found=$(find coverage-data -name '.coverage.standalone.*' | wc -l)
+          if [ "$found" != 3 ]; then
+            echo "::error::Expected the coverage of 3 slices, found $found."
+            exit 1
+          fi
+          coverage combine coverage-data/
+          coverage report --show-missing --fail-under=50
 
   # ============================================================================
   # CLOUD TESTING
@@ -506,8 +589,19 @@ jobs:
   # Test PostgreSQL Integration also installs cloud.txt but selects `-m postgres`,
   # whose tests talk to PostgreSQL directly and never construct a Redis client or
   # boot the app, so it needs no Redis of its own.
+  #
+  # Split three ways (`--shard=K/3`, tests/ci_shard.py): each slice job
+  # collects the whole selection and runs the files assigned to it, so every
+  # test runs in exactly one slice and no file is split. The required check
+  # keeps this job's name: the aggregate job below, which fails unless every
+  # slice passed and combines their coverage for the threshold. A 4-vCPU
+  # runner's pytest phase was the whole wall clock of a CI run (this job's
+  # 17 of 31 minutes on 2026-11-02); the slices run side by side.
+  #
+  # The pairing check and the real-Redis step run once, in slice 1; every
+  # slice keeps the Redis service so the step's slice is not special.
   # ============================================================================
-  test-cloud:
+  test-cloud-slice:
     needs: [changes, code-quality]
     # Skipped on a documentation-only diff (#1506). The condition is written
     # out rather than left to the implicit needs-success gate because it has to
@@ -565,8 +659,15 @@ jobs:
     # prints on a run that FINISHES, so a cap that clears the cost is what
     # makes the attribution exist at all. The structural lever (the per-test
     # `TestClient(app)` lifespan) is #1569.
-    timeout-minutes: 45
-    name: Test Cloud
+    #
+    # SPLIT 2026-11-02: the history above is of the unsplit job. A slice runs a
+    # third of it; 30 keeps the margin while the per-slice cost is measured.
+    timeout-minutes: 30
+    name: Test Cloud (slice ${{ matrix.slice }}/3)
+    strategy:
+      fail-fast: false
+      matrix:
+        slice: [1, 2, 3]
 
     services:
       redis:
@@ -606,6 +707,7 @@ jobs:
           echo "✓ Cloud dependencies verified"
 
       - name: Verify the cloud Redis pairing
+        if: matrix.slice == 1
         # First: the pairing this job claims, and the real-Redis step below,
         # hold only if the app reaches the real server through hiredis. The
         # FakeRedis fallback is silent by design (standalone wants it), so a
@@ -621,6 +723,7 @@ jobs:
           REDIS_DB: "0"
 
       - name: Run the real-Redis tests
+        if: matrix.slice == 1
         # The test modules that reach the job's Redis, and nothing else, each
         # in a pytest call of its own. test_real_redis_stores.py exists to
         # drive the server (its `real_redis` fixture skips where no Redis is
@@ -677,17 +780,21 @@ jobs:
           # `cloud`-marked tests, all but tests/integration/
           # test_real_redis_stores.py, which runs in the real-Redis step
           # without --cov. The same `-n logical --dist loadfile` too.
+          # `--shard` and the coverage hand-off as in Test Standalone.
           pytest tests/ \
+            --shard="$SLICE/3" \
             -n logical --dist loadfile \
             --cov=faultmaven \
-            --cov-report=term-missing \
+            --cov-report= \
             -m "not benchmark and not performance" \
             --ignore=tests/performance \
             --ignore=tests/integration/test_real_redis_stores.py \
             --durations=0 \
             --durations-min=1.0 \
             -v
+          mv .coverage ".coverage.cloud.$SLICE"
         env:
+          SLICE: ${{ matrix.slice }}
           # No preset (see the job header): without this, naming no provider,
           # Redis or ChromaDB applies the zero-config `local` preset (DEBUG on,
           # LOG_LEVEL=DEBUG, the local LLM) to the whole suite.
@@ -731,9 +838,68 @@ jobs:
           # Cases are in SQLite: DATABASE_URL picks the store, no selector does.
           VECTOR_STORAGE_TYPE: "inmemory"
 
+      - name: Upload this slice's coverage
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-cloud-${{ matrix.slice }}
+          path: .coverage.cloud.${{ matrix.slice }}
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
+  # The required check "Test Cloud": every slice passed, and the coverage of
+  # the three, combined, clears the threshold the unsplit job held. It runs
+  # no test itself. Same condition as the slices, so a docs-only diff skips
+  # it and a failed detector runs it.
+  test-cloud:
+    needs: [changes, code-quality, test-cloud-slice]
+    if: >-
+      ${{ !cancelled()
+      && needs.code-quality.result == 'success'
+      && needs.changes.outputs.docs_only != 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    name: Test Cloud
+
+    steps:
+      - name: Every slice passed
+        env:
+          SLICES: ${{ needs.test-cloud-slice.result }}
+        run: |
+          if [ "$SLICES" != "success" ]; then
+            echo "::error::A Test Cloud slice did not pass ($SLICES): see the Test Cloud (slice K/3) jobs."
+            exit 1
+          fi
+
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.11"
+
+      # The coverage the slices wrote with: the lockfile's pin.
+      - name: Install coverage
+        run: pip install "$(grep -E '^coverage==' requirements/cloud.txt)"
+
+      - name: Download the slices' coverage
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: coverage-cloud-*
+          path: coverage-data
+          merge-multiple: true
+
       - name: Check Coverage Threshold
         run: |
-          coverage report --fail-under=50
+          set -euo pipefail
+          found=$(find coverage-data -name '.coverage.cloud.*' | wc -l)
+          if [ "$found" != 3 ]; then
+            echo "::error::Expected the coverage of 3 slices, found $found."
+            exit 1
+          fi
+          coverage combine coverage-data/
+          coverage report --show-missing --fail-under=50
 
   # ============================================================================
   # POSTGRESQL INTEGRATION
@@ -1138,7 +1304,7 @@ jobs:
 
   # ============================================================================
   # BUILD AND PUBLISH
-  # Build Docker image after all tests pass
+  # Build the Docker image, beside the test suites rather than after them
   # ============================================================================
   build:
     runs-on: ubuntu-24.04
@@ -1146,14 +1312,16 @@ jobs:
     # cap of 15 left 7% margin on a required check, and a cancelled required
     # check blocks the merge with no diagnostic.
     timeout-minutes: 25
-    needs: [test-standalone, test-cloud, test-postgres, test-postgres-fips, architecture-lint, api-contract-drift, test-packaging]
-    # No docs-only condition here on purpose. GitHub skips a job whose
-    # dependency was skipped, so the four suites above carry this one down
-    # with them -- and, just as important, carry it UP again when the
-    # detector fails and they run after all. An `if:` of its own keyed on
-    # `changes` would have to repeat all seven results to stay fail-safe, and
-    # getting that list wrong is how a required check starts passing
-    # without having built anything (#1506).
+    # Beside the suites, not after them: it needs nothing they produce, and
+    # waiting for the slowest of them put its ~5 min at the end of every run.
+    # Their own required checks still gate the merge. The condition is the
+    # suites' fail-safe one (#1506): a docs-only diff skips it, a failed
+    # detector (`docs_only` empty) runs it.
+    needs: [changes, code-quality]
+    if: >-
+      ${{ !cancelled()
+      && needs.code-quality.result == 'success'
+      && needs.changes.outputs.docs_only != 'true' }}
 
     steps:
       - name: Checkout Repository

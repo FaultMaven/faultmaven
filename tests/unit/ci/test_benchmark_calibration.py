@@ -4397,10 +4397,12 @@ EVENT_SHAPES = [
 
 PAIR = ("benchmarks", "nightly-absolute")
 
-#: ci-cd.yml's two required jobs that run the whole tree (Test PostgreSQL
-#: selects only ``-m postgres``, Test Packaging only tests/installation/). No
-#: wall-clock test may run in them: its verdict is the runner's (#2090).
-REQUIRED_PYTEST_JOBS = ("test-standalone", "test-cloud")
+#: The jobs that run the whole tree for ci-cd.yml's two required suites (Test
+#: PostgreSQL selects only ``-m postgres``, Test Packaging only
+#: tests/installation/). Since the suites were split, the slice jobs run the
+#: pytest commands; the required checks are their aggregates, which run none.
+#: No wall-clock test may run in them: its verdict is the runner's (#2090).
+REQUIRED_PYTEST_JOBS = ("test-standalone-slice", "test-cloud-slice")
 
 
 def _pytest_invocations(run: str) -> List[List[str]]:
