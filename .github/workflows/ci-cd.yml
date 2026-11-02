@@ -508,8 +508,10 @@ jobs:
           path: .coverage.standalone.${{ matrix.slice }}
           include-hidden-files: true
           if-no-files-found: error
-          # A re-run of a failed slice replaces its own artifact and needs the
-          # other slices' still there: 7 days covers a re-run the next week.
+          # Kept 7 days so a "Re-run failed jobs" days later still finds the
+          # slices that passed (a failed slice never reached this step).
+          # `overwrite` is for a slice that runs again after it uploaded
+          # ("Re-run all jobs"): its new artifact replaces its old one.
           overwrite: true
           retention-days: 7
 
@@ -852,8 +854,10 @@ jobs:
           path: .coverage.cloud.${{ matrix.slice }}
           include-hidden-files: true
           if-no-files-found: error
-          # A re-run of a failed slice replaces its own artifact and needs the
-          # other slices' still there: 7 days covers a re-run the next week.
+          # Kept 7 days so a "Re-run failed jobs" days later still finds the
+          # slices that passed (a failed slice never reached this step).
+          # `overwrite` is for a slice that runs again after it uploaded
+          # ("Re-run all jobs"): its new artifact replaces its old one.
           overwrite: true
           retention-days: 7
 
