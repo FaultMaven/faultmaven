@@ -1055,6 +1055,20 @@ jobs:
           fi
           echo "✅ Dockerfile found"
 
+      # The runner's root disk holds Docker's data. A full image build (a
+      # layer-cache miss: the dependency install and the ~2GB BGE-M3 model,
+      # then `load: true` and the cache export) has run it out of space,
+      # "no space left on device" while writing the model: runs 41396984677
+      # and 41439385339, both on 2026-11-02. Remove the preinstalled
+      # toolchains this job never uses before building; the two `df` lines
+      # show what that frees.
+      - name: Free runner disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          df -h /
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
