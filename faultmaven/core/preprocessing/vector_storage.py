@@ -19,7 +19,8 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 
 from faultmaven.core.preprocessing.models import Chunk, UnifiedDataType
-from faultmaven.infrastructure.model_cache import model_cache
+from faultmaven.infrastructure.embedding_guard import embed_texts_or_raise
+from faultmaven.models.exceptions import KnowledgeBaseError
 from faultmaven.utils.token_estimation import _get_tiktoken_encoder
 
 logger = logging.getLogger(__name__)
@@ -195,8 +196,8 @@ class VectorIndexOutcome(str, Enum):
     NOTHING_TO_INDEX = "nothing_to_index"
     #: BGE-M3 could not be loaded. Nothing written; retry once it is back.
     EMBEDDER_UNAVAILABLE = "embedder_unavailable"
-    #: Chunking, embedding, or the ChromaDB write raised. Nothing guaranteed
-    #: written.
+    #: Chunking, embedding, or the ChromaDB write raised, or the embed timed
+    #: out. Nothing guaranteed written.
     FAILED = "failed"
 
 
@@ -223,8 +224,10 @@ async def store_in_vector_db_background(
     Despite the name, there is no upload-time caller: ``VectorizeFileTool`` is
     the only one, and it awaits this inside the directed-analysis tool loop —
     proactively as a background task, or reactively under
-    ``vectorization_reactive_timeout_seconds``. The time-bound policy lives
-    there, not here.
+    ``vectorization_reactive_timeout_seconds``. Those are the callers' budgets.
+    The embed itself runs through ``embedding_guard.embed_texts_or_raise``,
+    which bounds it by its token count, on the default executor and never on
+    the KB indexing slot (#2055).
 
     Args:
         case_id: Case identifier
@@ -292,10 +295,11 @@ async def store_in_vector_db_background(
                 }
             )
 
-        # 3. Generate BGE-M3 embeddings for all chunks (off the event loop via
-        # the model_cache async boundary).
+        # 3. Generate BGE-M3 embeddings for all chunks, through the guard that
+        # bounds every indexing embed (#2055): this call used to await the
+        # model with no bound at all. A timeout raises, and is FAILED below.
         #
-        # None → BGE-M3 unavailable, and there is nothing useful to write. This
+        # An unavailable model → nothing useful to write. This
         # used to fall back to ChromaDB's default embedding, which pins the
         # collection to that model's dimension: search embeds with BGE-M3
         # (CaseVectorStore.search, #941), so those chunks are unsearchable
@@ -305,8 +309,15 @@ async def store_in_vector_db_background(
         # writable once the model returns, and the evidence itself is still
         # reachable through the Evidence record and the Tier 1 structural index.
         texts = [doc["content"] for doc in documents]
-        embeddings = await model_cache.aembed_texts(texts)
-        if embeddings is None:
+        try:
+            embeddings = await embed_texts_or_raise(
+                texts,
+                subject=f"Indexing evidence {evidence_id}",
+                operation="vectorize_evidence",
+            )
+        except KnowledgeBaseError as embed_error:
+            if embed_error.error_code != "KNOWLEDGE_EMBEDDER_UNAVAILABLE":
+                raise  # a timeout: FAILED, below
             logger.warning(
                 f"BGE-M3 unavailable for {evidence_id}: skipping vector "
                 f"indexing rather than writing into a second embedding space. "

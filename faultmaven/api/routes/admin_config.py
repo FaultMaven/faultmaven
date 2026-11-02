@@ -1358,6 +1358,14 @@ async def get_env_config_status(
             None,
         )
 
+        # The KB indexing window and this process's slot (#2055): a hung
+        # encode holds the slot until restart, and this is where it shows.
+        from faultmaven.api.dependencies import knowledge_indexing_status
+
+        knowledge_indexing = knowledge_indexing_status(
+            settings.knowledge.index_request_window_seconds
+        )
+
         return EnvConfigStatusResponse(
             auth_mode=settings.auth.auth_mode,
             deployment=deployment,
@@ -1374,6 +1382,7 @@ async def get_env_config_status(
             turn_timing=turn_timing,
             personal_tenant_limits=personal_tenant_limits,
             database_timeouts=database_timeouts,
+            knowledge_indexing=knowledge_indexing,
             timestamp=datetime.now(timezone.utc),
         )
 

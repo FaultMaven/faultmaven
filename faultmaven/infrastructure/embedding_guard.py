@@ -28,15 +28,15 @@ correctly, with its own copy of the logic — and the copy had silently dropped
 the time bound. A site that hand-rolls this is a bug even when its refusal looks
 right.
 
-The write side is here for the same reason, but does NOT yet have the same
-coverage, and the difference matters. ``embed_texts_or_raise`` bounds exactly
-one indexing embed: ``KnowledgeService._index_document_in_vector_store``, the
-one #953 was about. One write-side site still hand-rolls its own answer with no
-time bound — ``core/preprocessing/vector_storage.py`` (live via the
-``vectorize_file`` agent tool). It is the same drift this module exists to end;
-it is simply not ended yet. Read "one policy" below as an intent this module
-holds for the sites routed through it, not as a claim about every embed in the
-codebase.
+The write side is here for the same reason, and every indexing embed now
+routes through it (#2055): ``embed_texts_or_raise`` bounds the KB indexer
+(``KnowledgeService._index_document_in_vector_store``, the one #953 was about),
+which runs its encode on the KB indexing slot (``infrastructure.index_slot``),
+and the case evidence indexer (``core/preprocessing/vector_storage.py``, live
+via the ``vectorize_file`` agent tool), which runs on the default executor. The
+bound is sized from the batch's BGE-M3 token count, not its chunk count: a
+chunk can hold 50 tokens or 3,000, and the per-chunk rule allowed a
+97k-character runbook 302 s of the 373 s it took (#2055).
 
 The two bounds are deliberately DIFFERENT numbers, and this module is where
 that stays visible. A query may give up before a cold load finishes, because
@@ -56,7 +56,8 @@ turn budget.
 
 import asyncio
 import logging
-from typing import List, Optional
+import os
+from typing import Any, List, Optional, Sequence
 
 from faultmaven.models.exceptions import KnowledgeBaseError
 
@@ -83,37 +84,112 @@ EMBED_TIMEOUT_SECONDS = 10.0
 # accept that latency). 180s is that worst case plus headroom.
 EMBED_BATCH_LOAD_SECONDS = 180.0
 
-# Per-text allowance on top of the load budget.
+# Core-seconds BGE-M3 spends encoding one token. Measured on the image under
+# ``--cpus=2 --network none``, model warm, torch pinned to 2 threads (what
+# ``configure_inference_threads`` pins on Cloud), chunked by ``ContentChunker``
+# (round-49 probe, #2055 comment 6542538393):
 #
-# Anchored to the worst case this repo describes rather than one picked to look
-# round — though "describes" is the honest verb: the pre-embedded KB pack exists
-# because embedding the shipped runbooks (~1244-1319 chunks, depending which
-# docstring you read) on a CPU-limited pod takes "tens of minutes", and the
-# analysis file that number came from is no longer in the tree. Read at the
-# lower bound that is ~1s/chunk, so 2s carries a 2x margin; read at 40 minutes
-# it is ~2s/chunk and the margin is gone. The bound is still useful there — it
-# fires on work that has STOPPED, and a batch that merely runs long is bounded
-# by the caller's own timeout — but it is not the 2x it looks like.
-EMBED_BATCH_PER_TEXT_SECONDS = 2.0
+#   | document                       | chars  | chunks | tokens | embed | ms/token |
+#   |--------------------------------|--------|--------|--------|-------|----------|
+#   | shipped runbooks, concatenated | 96,737 | 61     | 29,746 | 373 s | 12.5     |
+#   | gateway log extract            | 99,500 | 49     | 45,861 | 504 s | 11.0     |
+#
+# 12.5 ms a token on 2 cores is 25 core-ms, the worse row. Tokens predicted the
+# cost within 14%; bytes under-counted log text by 1.3x; and the 61-chunk
+# document took less time than the 49-chunk one.
+INDEX_CORE_SECONDS_PER_TOKEN = 0.025
+
+# The most cores the rate is credited with. It was measured on 2; encode does
+# not scale linearly past a few threads, so a bigger node is not assumed faster.
+INDEX_MAX_CORES = 4.0
+
+# One-shot flag: the byte fallback is logged once per process, not per embed.
+_byte_fallback_logged = False
 
 
-def batch_embed_timeout(text_count: int) -> float:
-    """The bound for embedding ``text_count`` texts in one batch.
+def index_cores() -> float:
+    """The cores an encode gets: the container's CPU quota (a fraction counts as
+    a fraction), else the node's core count, capped at ``INDEX_MAX_CORES``."""
+    from faultmaven.infrastructure.model_cache import _cgroup_cpu_quota
 
-    Deliberately proportional to the work and NOT capped at some round number.
-    The bound exists to turn "never returns" into "returns an error" — not to
-    enforce a latency SLA. A ceiling tighter than what a large document
-    legitimately costs would make that document permanently un-editable, which
-    trades a hang for a silent capability loss.
+    return min(_cgroup_cpu_quota() or float(os.cpu_count() or 1), INDEX_MAX_CORES)
 
-    The consequence is that a big enough document can outlast the caller's own
-    client timeout. That is a bounded, visible failure: the client gives up and
-    the server does not hang forever. Under #952 the two stores are left
-    describing the same text on every path that RETURNS — including this one,
-    since a timeout raises before the destructive delete. A process killed
-    mid-swap is not covered by that, or by anything short of 2PC.
+
+def index_estimate_seconds(tokens: int) -> float:
+    """Seconds a warm model takes to encode ``tokens`` BGE-M3 tokens here."""
+    return max(tokens, 0) * INDEX_CORE_SECONDS_PER_TOKEN / index_cores()
+
+
+def batch_embed_timeout(tokens: int) -> float:
+    """The bound for embedding a batch of ``tokens`` BGE-M3 tokens.
+
+    A cold load plus twice the measured estimate. Deliberately proportional to
+    the work and NOT capped at some round number. The bound exists to turn
+    "never returns" into "returns an error", not to enforce a latency SLA: the
+    request window does that, up front (``infrastructure.index_slot``). A
+    ceiling tighter than what a large document legitimately costs would make
+    that document permanently un-editable, which trades a hang for a silent
+    capability loss.
+
+    Under #952 the two stores are left describing the same text on every path
+    that RETURNS, including this one, since a timeout raises before any write.
+    A process killed mid-swap is not covered by that, or by anything short of
+    2PC.
     """
-    return EMBED_BATCH_LOAD_SECONDS + EMBED_BATCH_PER_TEXT_SECONDS * max(text_count, 0)
+    return EMBED_BATCH_LOAD_SECONDS + 2.0 * index_estimate_seconds(tokens)
+
+
+def _count_index_tokens_sync(texts: List[str]) -> Optional[int]:
+    from faultmaven.infrastructure.model_cache import model_cache
+
+    try:
+        loaded = model_cache.get_bge_m3_tokenizer()
+        if loaded is None:
+            return None
+        tokenizer, max_length = loaded
+        if not texts:
+            return 0
+        encoded = tokenizer(
+            texts, add_special_tokens=True, truncation=True, max_length=max_length
+        )["input_ids"]
+        counts = [len(ids) for ids in encoded]
+    except Exception as exc:
+        logger.debug("BGE-M3 token count failed: %s", type(exc).__name__)
+        return None
+    return sum(counts) if len(counts) == len(texts) else None
+
+
+async def count_index_tokens(texts: Sequence[str]) -> Optional[int]:
+    """BGE-M3 tokens in ``texts``, counted the way the encode sees them.
+
+    The model's own tokenizer, special tokens included and each text truncated
+    at the model's ``max_seq_length``, summed. Off the event loop. None when the
+    tokenizer cannot load (``ModelCache.get_bge_m3_tokenizer``), which never
+    touches the network.
+    """
+    return await asyncio.to_thread(_count_index_tokens_sync, list(texts))
+
+
+async def _guard_tokens(texts: List[str], known: Optional[int]) -> int:
+    """The token count the guard sizes its bound from: ``known``, else a count,
+    else UTF-8 bytes plus the two special tokens per text. A token spans at
+    least a byte of text (bar SentencePiece's word marker before a text's first
+    word), so that is an upper bound to within a token per text, which the
+    bound's 2x margin covers. A loose bound is safe for a hang bound; the
+    fallback is logged once."""
+    global _byte_fallback_logged
+    if known is not None:
+        return known
+    counted = await count_index_tokens(texts)
+    if counted is not None:
+        return counted
+    if not _byte_fallback_logged:
+        _byte_fallback_logged = True
+        logger.warning(
+            "BGE-M3 tokenizer unavailable: the indexing time bound counts UTF-8 "
+            "bytes instead of tokens, an upper bound"
+        )
+    return sum(len(text.encode("utf-8")) + 2 for text in texts)
 
 
 async def embed_query_or_raise(
@@ -185,6 +261,7 @@ async def embed_texts_or_raise(
     subject: str,
     operation: str,
     log: Optional[logging.Logger] = None,
+    ticket: Optional[Any] = None,
 ) -> List[List[float]]:
     """Embed a BATCH of texts for indexing, raising rather than degrading.
 
@@ -203,6 +280,12 @@ async def embed_texts_or_raise(
             message the operator sees.
         operation: Call-site name for the log line (e.g. "update_document").
         log: Logger to report on. Defaults to this module's.
+        ticket: The KB indexing slot's ``IndexTicket``
+            (``infrastructure.index_slot``, which imports this module):
+            the encode runs on the slot, one at a time per host, and the bound
+            also covers the guard bounds of the encodes queued ahead of it.
+            None (evidence vectorization) runs on the default executor, bounded
+            by its own estimate alone.
 
     There is no opt-out. #953 asked whether the boot repair path should stay
     unbounded on the grounds that ``kb_init``'s per-boot chunk budget already
@@ -218,36 +301,61 @@ async def embed_texts_or_raise(
 
     Raises:
         KnowledgeBaseError: The embedding timed out
-            (``KNOWLEDGE_EMBEDDER_TIMEOUT``) or the model could not be loaded
+            (``KNOWLEDGE_EMBEDDER_TIMEOUT``), while queued behind other
+            indexing or mid-encode, or the model could not be loaded
             (``KNOWLEDGE_EMBEDDER_UNAVAILABLE``). Never a short/empty vector
             list for a non-empty input — a caller that wrote those would index
             a document against someone else's chunks.
 
     Same caveat as the query path: the bound is on the CALLER, not the work.
-    ``aembed_texts`` runs on a worker thread via ``asyncio.to_thread``, which
-    cannot be cancelled, so a timed-out batch keeps embedding in the background
-    (and warms the model cache for the retry). What this guarantees is that the
-    caller returns — not that the encode stops.
+    An encode that has started runs on its thread to completion, which nothing
+    can cancel. A caller that gives up while still queued cancels its encode,
+    so it never runs. A slot encode keeps the slot until its thread settles,
+    whatever its caller did. What this guarantees is that the caller returns,
+    not that the encode stops.
     """
     from faultmaven.infrastructure.model_cache import model_cache
 
     log = log or logger
 
-    timeout = batch_embed_timeout(len(texts))
+    tokens = await _guard_tokens(texts, ticket.tokens if ticket is not None else None)
+    timeout = batch_embed_timeout(tokens)
+    future = None
+    if ticket is None:
+        bound = timeout
+        work = model_cache.aembed_texts(texts)
+    else:
+        future, ahead = ticket.run(texts, guard_seconds=timeout)
+        bound = timeout + ahead
+        work = asyncio.wrap_future(future)
     try:
-        embeddings = await asyncio.wait_for(
-            model_cache.aembed_texts(texts), timeout=timeout
-        )
+        embeddings = await asyncio.wait_for(work, timeout=bound)
     except asyncio.TimeoutError:
+        # ``cancel`` succeeds only on an encode that never started.
+        if future is not None and future.cancel():
+            log.error(
+                f"BGE-M3 batch embedding for {operation} waited {bound:.0f}s "
+                f"for other indexing on this server and never started"
+            )
+            raise KnowledgeBaseError(
+                f"{subject} unavailable: waited {bound:.0f}s for other indexing "
+                f"on this server",
+                error_code="KNOWLEDGE_EMBEDDER_TIMEOUT",
+            )
         log.error(
-            f"BGE-M3 batch embedding timed out after {timeout}s for "
-            f"{operation} ({len(texts)} texts)"
+            f"BGE-M3 batch embedding timed out after {bound:.0f}s for "
+            f"{operation} ({len(texts)} texts, {tokens} tokens)"
         )
         raise KnowledgeBaseError(
             f"{subject} unavailable: embedding {len(texts)} chunks timed "
-            f"out after {timeout}s",
+            f"out after {bound:.0f}s",
             error_code="KNOWLEDGE_EMBEDDER_TIMEOUT",
         )
+    except asyncio.CancelledError:
+        # A queued encode of a request that went away never runs.
+        if future is not None:
+            future.cancel()
+        raise
 
     if embeddings is None:
         log.error(f"BGE-M3 model unavailable for {operation}")

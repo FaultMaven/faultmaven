@@ -208,7 +208,9 @@ async def kb():
     store = _KbStore()
     indexed: list[str] = []
 
-    async def _index(document, prechunked=None, enterprise_id=None, generation=None):
+    async def _index(
+        document, prechunked=None, enterprise_id=None, generation=None, ticket=None
+    ):
         # The embedder is the only stubbed step: whatever is indexed lands in
         # the store, so a re-index is observable as the parent coming back.
         indexed.append(document.document_id)

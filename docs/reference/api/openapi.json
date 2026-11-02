@@ -3075,6 +3075,10 @@
             "title": "Features",
             "type": "object"
           },
+          "knowledge_indexing": {
+            "$ref": "#/components/schemas/KnowledgeIndexingStatus",
+            "description": "The KB indexing request window, and this process's indexing slot: how many encodes it holds and how long the running one has run."
+          },
           "llm_provider": {
             "description": "Primary LLM provider name",
             "title": "Llm Provider",
@@ -3138,6 +3142,7 @@
           "turn_timing",
           "personal_tenant_limits",
           "database_timeouts",
+          "knowledge_indexing",
           "timestamp"
         ],
         "title": "EnvConfigStatusResponse",
@@ -3828,6 +3833,40 @@
           "updated_at"
         ],
         "title": "KnowledgeBaseDocument",
+        "type": "object"
+      },
+      "KnowledgeIndexingStatus": {
+        "description": "The KB indexing window and this process's indexing slot (#2055).\n\nNumbers, so not a ``features`` entry. An encode that never returns holds\nthe slot until the process restarts, and every later KB write is refused\n503 meanwhile: ``encoding_for_seconds`` far past any document's estimate\nis that state.",
+        "properties": {
+          "encoding_for_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How long this process's running KB indexing encode has run; null when none runs.",
+            "title": "Encoding For Seconds"
+          },
+          "queued": {
+            "description": "KB indexing encodes held in this process: the running one and the ones waiting their turn.",
+            "title": "Queued",
+            "type": "integer"
+          },
+          "window_seconds": {
+            "description": "INDEX_REQUEST_WINDOW_SECONDS: the seconds a KB upload, update or verify may spend indexing its document. A document that would not fit is refused before anything is written (413 alone, 503 behind other indexing); 0 refuses nothing up front.",
+            "title": "Window Seconds",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "window_seconds",
+          "queued",
+          "encoding_for_seconds"
+        ],
+        "title": "KnowledgeIndexingStatus",
         "type": "object"
       },
       "KnowledgeScope": {
@@ -7145,7 +7184,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "14.11.0"
+    "version": "14.12.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -12138,7 +12177,7 @@
     },
     "/api/v1/knowledge/conversions/{conversion_id}/drafts/{draft_id}/verify": {
       "post": {
-        "description": "Promote draft to verified status and trigger ingestion into ChromaDB.\n\nVerifying a draft publishes it into the KB at the job's scope; a global\ndraft is the platform corpus, so the service refuses (AuthorizationError \u2192\n403) unless the caller may author global scope (admin single-tenant; never\na tenant session under multi, #770).\n\nService-layer typed exceptions (AuthorizationError, NotFoundError,\nConflictError, ValidationException) propagate to the global handlers in\napi/exception_handlers.py for canonical translation to 403 / 404 / 409 /\n422 respectively. The route no longer catches ValueError; see\ndocs/architecture/specifications/exception-contract.md.\n\nThe published title is redacted before anything is written (#1981). If that\ncheck cannot run (the sanitizer or its pseudonym key is unavailable) the\nrequest answers **503**, a retryable server-side condition, with a generic\ndetail, and the draft stays a draft.",
+        "description": "Promote draft to verified status and trigger ingestion into ChromaDB.\n\nVerifying a draft publishes it into the KB at the job's scope; a global\ndraft is the platform corpus, so the service refuses (AuthorizationError \u2192\n403) unless the caller may author global scope (admin single-tenant; never\na tenant session under multi, #770).\n\nService-layer typed exceptions (AuthorizationError, NotFoundError,\nConflictError, ValidationException) propagate to the global handlers in\napi/exception_handlers.py for canonical translation to 403 / 404 / 409 /\n422 respectively. The route no longer catches ValueError; see\ndocs/architecture/specifications/exception-contract.md.\n\nThe published title is redacted before anything is written (#1981). If that\ncheck cannot run (the sanitizer or its pseudonym key is unavailable) the\nrequest answers **503**, a retryable server-side condition, with a generic\ndetail, and the draft stays a draft.\n\nWith ``INDEX_REQUEST_WINDOW_SECONDS`` set, a draft whose indexing would not\nfit the window is refused before anything is written, and stays a draft:\n**413** ``KNOWLEDGE_DOCUMENT_TOO_LARGE`` or **503**\n``KNOWLEDGE_INDEXING_BUSY`` + ``Retry-After`` (#2055).",
         "operationId": "verify_draft_api_v1_knowledge_conversions__conversion_id__drafts__draft_id__verify_post",
         "parameters": [
           {
@@ -12169,6 +12208,17 @@
             },
             "description": "Successful Response"
           },
+          "413": {
+            "description": "Too large; nothing was saved. `x-error-code: KNOWLEDGE_DOCUMENT_TOO_LARGE`: indexing the document alone would not fit this deployment's request window, however long the client waits; split it into smaller documents. Without that code, the request exceeds MAX_UPLOAD_SIZE_MB.",
+            "headers": {
+              "x-error-code": {
+                "description": "KNOWLEDGE_DOCUMENT_TOO_LARGE, when sent.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
           "422": {
             "content": {
               "application/json": {
@@ -12178,6 +12228,23 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "description": "Unavailable; nothing was saved. `x-error-code: KNOWLEDGE_INDEXING_BUSY`: the indexing already queued on this server leaves no room for this document within the request window; retry after `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds, with KNOWLEDGE_INDEXING_BUSY.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "x-error-code": {
+                "description": "KNOWLEDGE_INDEXING_BUSY, when sent.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -12396,7 +12463,7 @@
         ]
       },
       "post": {
-        "description": "Upload a document to the knowledge base\n\nArgs:\n    file: Document file to upload\n    title: Document title\n    document_type: Type of document\n    tags: Comma-separated tags\n    source_url: Source URL if applicable\n    scope: Publishing tier \u2014 ``personal`` (default), ``team`` or\n        ``global``. ``global`` is the platform corpus every tenant reads\n        and requires the platform-admin role; ``team`` requires a\n        ``team_id`` naming a team you belong to.\n    team_id: Required when ``scope`` is ``team``.\n\nReturns:\n    Upload job information\n\nThe title is redacted with the deployment's sanitizer before anything is\nwritten (#1981): it is shown to every reader of the tier and never\nreversed. If that check cannot run (the sanitizer or its pseudonym key is\nunavailable) the upload answers **503**, a retryable server-side\ncondition, with a generic detail, and nothing is saved.\n\n**Retries (`Idempotency-Key`).** A keyed upload commits a receipt with the\nrunbook, in the same transaction. A request with a key this caller already\nused for an upload:\n\n- for the same upload (same file content, same fields), once it published\n  \u2192 **201** with that upload's body and `Location`, and\n  `X-Idempotency-Replayed: true`. Nothing is published again.\n- for a different upload \u2192 **409** `x-error-code: IDEMPOTENCY_KEY_REUSE`.\n- while the first is still running \u2192 **409** `x-error-code:\n  KB_REQUEST_IN_PROGRESS` with `Retry-After`; retry with the same key.\n\nA lost response, or this route's **500** `KB_INGEST_OUTCOME_UNKNOWN`\n(whose detail says to retry with the same key), is recovered by retrying\nwith the same key: it replays if the first published, and runs if it did\nnot. Without a key, every request publishes a new runbook.",
+        "description": "Upload a document to the knowledge base\n\nArgs:\n    file: Document file to upload\n    title: Document title\n    document_type: Type of document\n    tags: Comma-separated tags\n    source_url: Source URL if applicable\n    scope: Publishing tier \u2014 ``personal`` (default), ``team`` or\n        ``global``. ``global`` is the platform corpus every tenant reads\n        and requires the platform-admin role; ``team`` requires a\n        ``team_id`` naming a team you belong to.\n    team_id: Required when ``scope`` is ``team``.\n\nReturns:\n    Upload job information\n\nThe title is redacted with the deployment's sanitizer before anything is\nwritten (#1981): it is shown to every reader of the tier and never\nreversed. If that check cannot run (the sanitizer or its pseudonym key is\nunavailable) the upload answers **503**, a retryable server-side\ncondition, with a generic detail, and nothing is saved.\n\n**Retries (`Idempotency-Key`).** A keyed upload commits a receipt with the\nrunbook, in the same transaction. A request with a key this caller already\nused for an upload:\n\n- for the same upload (same file content, same fields), once it published\n  \u2192 **201** with that upload's body and `Location`, and\n  `X-Idempotency-Replayed: true`. Nothing is published again.\n- for a different upload \u2192 **409** `x-error-code: IDEMPOTENCY_KEY_REUSE`.\n- while the first is still running \u2192 **409** `x-error-code:\n  KB_REQUEST_IN_PROGRESS` with `Retry-After`; retry with the same key.\n\nA lost response, or this route's **500** `KB_INGEST_OUTCOME_UNKNOWN`\n(whose detail says to retry with the same key), is recovered by retrying\nwith the same key: it replays if the first published, and runs if it did\nnot. Without a key, every request publishes a new runbook.\n\n**Indexing window** (`INDEX_REQUEST_WINDOW_SECONDS`, #2055). The runbook is\nindexed inside this request. With a window set, one that indexing would not\nfit is refused before anything is saved: **413** `x-error-code:\nKNOWLEDGE_DOCUMENT_TOO_LARGE` when the document alone cannot fit (split\nit), **503** `x-error-code: KNOWLEDGE_INDEXING_BUSY` with `Retry-After`\nwhen the indexing queued on this server leaves no room for it.",
         "operationId": "upload_document_api_v1_knowledge_documents_post",
         "parameters": [
           {
@@ -12482,6 +12549,17 @@
               }
             }
           },
+          "413": {
+            "description": "Too large; nothing was saved. `x-error-code: KNOWLEDGE_DOCUMENT_TOO_LARGE`: indexing the document alone would not fit this deployment's request window, however long the client waits; split it into smaller documents. Without that code, the request exceeds MAX_UPLOAD_SIZE_MB.",
+            "headers": {
+              "x-error-code": {
+                "description": "KNOWLEDGE_DOCUMENT_TOO_LARGE, when sent.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
           "422": {
             "content": {
               "application/json": {
@@ -12491,6 +12569,23 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "description": "Unavailable; nothing was saved. `x-error-code: KNOWLEDGE_INDEXING_BUSY`: the indexing already queued on this server leaves no room for this document within the request window; retry after `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds, with KNOWLEDGE_INDEXING_BUSY.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "x-error-code": {
+                "description": "KNOWLEDGE_INDEXING_BUSY, when sent.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -12562,7 +12657,7 @@
     },
     "/api/v1/knowledge/documents/bulk-update": {
       "post": {
-        "description": "Bulk update document metadata.\n\nOwnership-aware per target (#866): this surface is a loop over\n``PUT /documents/{id}``, so it carries the same gate \u2014 any authenticated\ncaller may submit a batch, and the per-document write policy decides each\ntarget. Refused targets are reported in ``errors`` and never counted as\nupdated; ``total_requested`` is the de-duplicated batch size (see\n``_normalize_bulk_document_ids``), so the counts reconcile.",
+        "description": "Bulk update document metadata. ``updates`` naming ``content`` is\nrefused with **422** and nothing is updated (#2055): content re-indexes,\nso it changes one document at a time, through ``PUT``.\n\nOwnership-aware per target (#866): this surface is a loop over\n``PUT /documents/{id}``, so it carries the same gate \u2014 any authenticated\ncaller may submit a batch, and the per-document write policy decides each\ntarget. Refused targets are reported in ``errors`` and never counted as\nupdated; ``total_requested`` is the de-duplicated batch size (see\n``_normalize_bulk_document_ids``), so the counts reconcile.",
         "operationId": "bulk_update_documents_api_v1_knowledge_documents_bulk_update_post",
         "requestBody": {
           "content": {
@@ -12590,14 +12685,7 @@
             "description": "Successful Response"
           },
           "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
+            "description": "Refused; nothing was updated. `updates` names `content`: bulk update changes metadata only, so change a document's content with `PUT /knowledge/documents/{document_id}`. Or the body did not bind."
           }
         },
         "security": [
@@ -12742,7 +12830,7 @@
         ]
       },
       "put": {
-        "description": "Update document metadata and content.\n\nOwnership-aware (#834): the owner may edit their own personal/team\ndocument; global-scope editing is platform-corpus authoring (operator\nonly, per the global-tier policy). A refusal over a document the caller\ncannot even see answers 404 rather than 403 (#867).\n\nA new ``title`` is redacted with the deployment's sanitizer. If that check\ncannot run the update answers **503**, a retryable server-side condition,\nwith a generic detail, and nothing is saved (#1981).\n\nNew ``content`` is stored as sent, line endings normalised, and never\nrewritten. Content holding a credential (a private key, a credential URL, a\nprovider token, an AWS key, a JWT, a bearer or basic credential) or a\ndestructive command is refused with **422**, naming each one's line and\ntype but not its text, and nothing is saved (#2012). A placeholder such as\n``<password>`` or ``${DB_PASS}`` is not refused.",
+        "description": "Update document metadata and content.\n\nOwnership-aware (#834): the owner may edit their own personal/team\ndocument; global-scope editing is platform-corpus authoring (operator\nonly, per the global-tier policy). A refusal over a document the caller\ncannot even see answers 404 rather than 403 (#867).\n\nA new ``title`` is redacted with the deployment's sanitizer. If that check\ncannot run the update answers **503**, a retryable server-side condition,\nwith a generic detail, and nothing is saved (#1981).\n\nNew ``content`` is stored as sent, line endings normalised, and never\nrewritten. Content holding a credential (a private key, a credential URL, a\nprovider token, an AWS key, a JWT, a bearer or basic credential) or a\ndestructive command is refused with **422**, naming each one's line and\ntype but not its text, and nothing is saved (#2012). A placeholder such as\n``<password>`` or ``${DB_PASS}`` is not refused.\n\nNew ``content`` longer than a draft may be (100,000 characters) is refused\nwith **422**. With ``INDEX_REQUEST_WINDOW_SECONDS`` set, content whose\nre-indexing would not fit the window is refused with **413**\n``KNOWLEDGE_DOCUMENT_TOO_LARGE`` or **503** ``KNOWLEDGE_INDEXING_BUSY`` +\n``Retry-After``, as on upload. Either way nothing is saved, and search\nserves what it served before (#2055).",
         "operationId": "update_document_api_v1_knowledge_documents__document_id__put",
         "parameters": [
           {
@@ -12780,6 +12868,17 @@
             },
             "description": "Successful Response"
           },
+          "413": {
+            "description": "Too large; nothing was saved. `x-error-code: KNOWLEDGE_DOCUMENT_TOO_LARGE`: indexing the document alone would not fit this deployment's request window, however long the client waits; split it into smaller documents. Without that code, the request exceeds MAX_UPLOAD_SIZE_MB.",
+            "headers": {
+              "x-error-code": {
+                "description": "KNOWLEDGE_DOCUMENT_TOO_LARGE, when sent.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
           "422": {
             "content": {
               "application/json": {
@@ -12789,6 +12888,23 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "description": "Unavailable; nothing was saved. `x-error-code: KNOWLEDGE_INDEXING_BUSY`: the indexing already queued on this server leaves no room for this document within the request window; retry after `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds, with KNOWLEDGE_INDEXING_BUSY.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "x-error-code": {
+                "description": "KNOWLEDGE_INDEXING_BUSY, when sent.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -12941,7 +13057,7 @@
     },
     "/api/v1/knowledge/drafts/verify-batch": {
       "post": {
-        "description": "Activate multiple drafts sequentially (verify + ingest into KB).",
+        "description": "Activate multiple drafts sequentially (verify + ingest into KB).\n\nWith ``INDEX_REQUEST_WINDOW_SECONDS`` set, the drafts share the request's\nwindow (#2055): a draft the window has no room left for is ``deferred``\n(unverified; verify it again), as is every draft after it, and the envelope\ncounts them in ``deferred``. A draft too large for any window is\n``failed``.",
         "operationId": "verify_batch_api_v1_knowledge_drafts_verify_batch_post",
         "requestBody": {
           "content": {

@@ -11,7 +11,8 @@ only consumer.
 
 from typing import Any, Optional
 
-from faultmaven.api.models import DatabaseTimeoutsStatus
+from faultmaven.api.models import DatabaseTimeoutsStatus, KnowledgeIndexingStatus
+from faultmaven.infrastructure import index_slot
 from faultmaven.infrastructure.chroma_client import chroma_client_kind
 from faultmaven.infrastructure.persistence.database import (
     active_database_backend,
@@ -82,6 +83,22 @@ def database_timeouts_status(
         ),
         revocation_read_timeout_seconds=revocation_read_timeout_seconds,
     )
+
+
+def knowledge_indexing_status(window_seconds: int) -> KnowledgeIndexingStatus:
+    """The KB indexing window beside this process's slot (#2055): how many
+    encodes it holds, and how long the running one has run."""
+    return KnowledgeIndexingStatus(
+        window_seconds=window_seconds,
+        queued=index_slot.index_admission.queued(),
+        encoding_for_seconds=index_slot.index_admission.encoding_for_seconds(),
+    )
+
+
+def indexing_retry_after_seconds() -> int:
+    """When the KB indexing this process holds should be done, in seconds: the
+    ``Retry-After`` of a ``KNOWLEDGE_INDEXING_BUSY`` refusal (#2055)."""
+    return index_slot.index_admission.retry_after_seconds()
 
 
 def session_storage_backend_name(redis_client: Any) -> str:

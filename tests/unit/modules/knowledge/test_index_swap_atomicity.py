@@ -31,6 +31,8 @@ from faultmaven.modules.knowledge.domain.services.knowledge_service import (
 pytestmark = [pytest.mark.unit]
 
 _EMBED_TEXTS = "faultmaven.infrastructure.model_cache.model_cache.aembed_texts"
+# Update and repair encode on the KB indexing slot's thread (#2055).
+_ENCODE_ON_SLOT = "faultmaven.infrastructure.model_cache.model_cache.embed_texts_sync"
 #: The generation the indexer writes under (#2388).
 GEN = "9e" * 16
 
@@ -198,7 +200,7 @@ async def test_update_document_metadata_does_not_report_success_on_failure():
         "knowledge_item_repository.DatabaseKnowledgeItemRepository",
         return_value=repo,
     ):
-        with patch(_EMBED_TEXTS, new=AsyncMock(return_value=None)):
+        with patch(_ENCODE_ON_SLOT, new=MagicMock(return_value=None)):
             with pytest.raises(KnowledgeBaseError):
                 await service.update_document_metadata(
                     document_id="doc-1", content="# New content\n\nUpdated."
@@ -244,7 +246,7 @@ async def test_boot_repair_still_tolerates_an_unavailable_embedder():
     session.__aexit__ = AsyncMock(return_value=False)
     service._db_session_factory = MagicMock(return_value=session)
 
-    with patch(_EMBED_TEXTS, new=AsyncMock(return_value=None)):
+    with patch(_ENCODE_ON_SLOT, new=MagicMock(return_value=None)):
         chunks = await service.reindex_missing_vectors("doc-1")
 
     assert chunks == 0, "boot repair must degrade, not raise"
@@ -287,9 +289,9 @@ async def test_boot_repair_counts_a_row_with_no_tenant_as_a_failed_repair(
     session.__aenter__ = AsyncMock(return_value=session)
     session.__aexit__ = AsyncMock(return_value=False)
     service._db_session_factory = MagicMock(return_value=session)
-    embed = AsyncMock(return_value=[[0.1] * 1024])
+    embed = MagicMock(return_value=[[0.1] * 1024])
 
-    with caplog.at_level("ERROR"), patch(_EMBED_TEXTS, new=embed):
+    with caplog.at_level("ERROR"), patch(_ENCODE_ON_SLOT, new=embed):
         chunks = await service.reindex_missing_vectors("doc-no-tenant")
 
     assert chunks == 0, "a refused repair must degrade to 0, not raise"
@@ -297,7 +299,7 @@ async def test_boot_repair_counts_a_row_with_no_tenant_as_a_failed_repair(
     assert any(
         "doc-no-tenant" in r.getMessage() for r in errors
     ), "the refused repair was not logged at ERROR with its item id"
-    embed.assert_not_awaited()
+    embed.assert_not_called()
     assert service._vector_store.delete_documents_by_parent_id.await_count == 0
     assert service._vector_store.add_documents.await_count == 0
 

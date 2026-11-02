@@ -26,6 +26,7 @@ from faultmaven.exceptions import (
     RawModelContentRefused,
     ValidationException,
 )
+from faultmaven.infrastructure import index_slot
 from faultmaven.infrastructure.llm.dispatch import (
     route_model_call,
 )
@@ -36,6 +37,7 @@ from faultmaven.infrastructure.persistence.models import (
     UploadedFileModel,
 )
 from faultmaven.infrastructure.security.model_content import model_boundary_redacted
+from faultmaven.models.exceptions import IndexAdmissionRefused
 from faultmaven.modules.auth.contracts import IAccountDirectory, is_team_member
 from faultmaven.modules.knowledge.domain.case_authoring import (
     CASE_ID_RULE,
@@ -1771,21 +1773,57 @@ class ConversionService:
         is recorded ``forbidden`` (never published) while the rest of the batch
         proceeds (#770, R4). A draft whose publication may or may not have
         committed is recorded ``unknown``, never ``failed`` (#2396).
+
+        The batch is one request, so with ``INDEX_REQUEST_WINDOW_SECONDS`` set
+        its drafts share one window (#2055): each is indexed within what the
+        batch has left of it. A draft the remaining window cannot fit (indexing
+        queued ahead of it, or the window spent) is ``deferred``, unverified,
+        and so is every draft after it; verifying it again runs it in a fresh
+        window. A draft too large for any window is ``failed`` with that
+        reason, and the batch goes on. At a window of 0 nothing is deferred.
         """
+        from faultmaven.config.settings import get_settings
+
         results = []
         verified = 0
         failed = 0
         skipped = 0
         forbidden = 0
         unknown = 0
+        deferred = 0
+
+        window = float(get_settings().knowledge.index_request_window_seconds)
+        started = index_slot.now()
+        deferring = False
+
+        def defer(conversion_id: str, draft_id: str) -> None:
+            results.append(
+                {
+                    "conversion_id": conversion_id,
+                    "draft_id": draft_id,
+                    "status": "deferred",
+                    "error": (
+                        "Not verified: this request had no indexing time left "
+                        "for it. Verify it again."
+                    ),
+                    "knowledge_item_id": None,
+                }
+            )
 
         for conversion_id, draft_id in draft_refs:
+            remaining = window - (index_slot.now() - started) if window > 0 else None
+            if deferring or (remaining is not None and remaining <= 0):
+                deferring = True
+                defer(conversion_id, draft_id)
+                deferred += 1
+                continue
             try:
                 response = await self.verify_draft(
                     conversion_id=conversion_id,
                     draft_id=draft_id,
                     user_id=user_id,
                     is_platform_admin=is_platform_admin,
+                    index_window_seconds=remaining,
                 )
                 results.append(
                     {
@@ -1799,6 +1837,23 @@ class ConversionService:
                     }
                 )
                 verified += 1
+            except IndexAdmissionRefused as refused:
+                # Refused before anything was written; the draft stays a draft.
+                if refused.status_code == 413:
+                    results.append(
+                        {
+                            "conversion_id": conversion_id,
+                            "draft_id": draft_id,
+                            "status": "failed",
+                            "error": refused.message,
+                            "knowledge_item_id": None,
+                        }
+                    )
+                    failed += 1
+                else:
+                    deferring = True
+                    defer(conversion_id, draft_id)
+                    deferred += 1
             except AuthorizationError as e:
                 # Global-tier authoring denial (multi-tenant / non-admin). Not a
                 # failure of THIS draft — a policy refusal; record it distinctly
@@ -1909,6 +1964,7 @@ class ConversionService:
             "skipped": skipped,
             "forbidden": forbidden,
             "unknown": unknown,
+            "deferred": deferred,
             "results": results,
         }
 
@@ -1918,6 +1974,7 @@ class ConversionService:
         draft_id: str,
         user_id: str,
         is_platform_admin: bool = False,
+        index_window_seconds: Optional[float] = None,
     ) -> Optional[VerifyResponse]:
         """Promote draft to verified status, update frontmatter, trigger ingestion.
 
@@ -1935,6 +1992,11 @@ class ConversionService:
         author's, and again by ``ingest_runbook`` on the text it publishes. The
         draft stays a draft. That covers a draft whose ``validation_passed`` was
         recorded before the secret check existed.
+
+        A draft the indexing window cannot fit is refused before anything is
+        written (``IndexAdmissionRefused``, 413 or 503, #2055), and stays a
+        draft. ``index_window_seconds`` is what the request has left of the
+        window (``verify_batch``); None means ``INDEX_REQUEST_WINDOW_SECONDS``.
         """
         if not self._db_session_factory:
             return None
@@ -2160,11 +2222,13 @@ class ConversionService:
                 team_id=team_id,
                 verified_by=user_id,
                 record=record,
+                index_window_seconds=index_window_seconds,
             )
-        except RunbookQualityError:
-            # The body holds a credential (#2012): refused before anything was
-            # written, and the draft stays a draft. A client-side outcome
-            # (422), so not logged as an ingestion failure.
+        except (RunbookQualityError, IndexAdmissionRefused):
+            # The body holds a credential (#2012), or the indexing window
+            # cannot fit it (#2055): refused before anything was written, and
+            # the draft stays a draft. A client-side outcome, so not logged as
+            # an ingestion failure.
             raise
         except IngestNotRecorded:
             # The swap missed: another verify won, a delete won, or an edit

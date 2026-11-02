@@ -27,7 +27,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from faultmaven.utils.optional_dependency import dependency_is_usable
 
@@ -85,8 +85,16 @@ def _sentence_transformer_class():
 # by a drift-guard test — kb_pack stays model-free and cannot import this module).
 BGE_M3_MODEL_ID = "BAAI/bge-m3"
 
+# BGE-M3's sequence limit (its sentence-transformers ``max_seq_length``): the
+# encode truncates a longer text, so a token count does too.
+BGE_M3_MAX_SEQ_LENGTH = 8192
+
 
 _THREADS_CONFIGURED = False
+
+# Guards the standalone tokenizer's one load; not ``ModelCache._lock``, which a
+# cold model load holds for a minute or two.
+_TOKENIZER_LOCK = threading.Lock()
 
 
 def _cgroup_cpu_quota() -> Optional[float]:
@@ -218,6 +226,7 @@ class ModelCache:
                     cls._instance._initialized = False
                     cls._instance._models = {}
                     cls._instance._load_info: Dict[str, ModelLoadInfo] = {}
+                    cls._instance._tokenizer = None
         return cls._instance
 
     def __init__(self):
@@ -358,13 +367,48 @@ class ModelCache:
         loop and, on k8s, trips the liveness probe.
         """
 
-        def _run() -> Optional[List[List[float]]]:
-            model = self.get_bge_m3_model()
-            if model is None:
-                return None
-            return model.encode(texts).tolist()
+        return await asyncio.to_thread(self.embed_texts_sync, texts)
 
-        return await asyncio.to_thread(_run)
+    def embed_texts_sync(self, texts: List[str]) -> Optional[List[List[float]]]:
+        """The body of :meth:`aembed_texts`, on the CALLING thread: the (lazy,
+        cached) load, then one batched ``encode``. None if the model is
+        unavailable.
+
+        For a worker thread only: ``aembed_texts``'s, or the KB indexing slot's
+        (``infrastructure.index_slot``, #2055). Never on the event loop.
+        """
+        model = self.get_bge_m3_model()
+        if model is None:
+            return None
+        return model.encode(texts).tolist()
+
+    def get_bge_m3_tokenizer(self) -> Optional[Tuple[Any, int]]:
+        """BGE-M3's tokenizer and its sequence limit, to count tokens (#2055).
+
+        The resident model's own tokenizer when the model is loaded. Otherwise
+        the tokenizer alone, from the local snapshot the image ships
+        (``local_files_only``: never the network), loaded once and kept for the
+        process. None when neither loads. Blocking: off the event loop.
+        """
+        model = self.peek_bge_m3_model()
+        tokenizer = getattr(model, "tokenizer", None) if model is not None else None
+        if tokenizer is not None:
+            limit = getattr(model, "max_seq_length", None)
+            return tokenizer, limit if isinstance(limit, int) else BGE_M3_MAX_SEQ_LENGTH
+        with _TOKENIZER_LOCK:
+            if self._tokenizer is None:
+                try:
+                    from transformers import AutoTokenizer
+
+                    self._tokenizer = AutoTokenizer.from_pretrained(
+                        BGE_M3_MODEL_ID, local_files_only=True
+                    )
+                except Exception as exc:
+                    self.logger.debug(
+                        "BGE-M3 tokenizer unavailable: %s", type(exc).__name__
+                    )
+                    return None
+            return self._tokenizer, BGE_M3_MAX_SEQ_LENGTH
 
     async def aembed_query(self, text: str) -> Optional[List[float]]:
         """Embed a SINGLE text (e.g. a search query) → one 1024-dim vector.
@@ -396,6 +440,7 @@ class ModelCache:
         with self._lock:
             self._models.clear()
             self._load_info.clear()
+            self._tokenizer = None
             self.logger.debug("Model cache cleared")
 
     def get_cache_info(self) -> dict:

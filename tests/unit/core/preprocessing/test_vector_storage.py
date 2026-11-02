@@ -149,7 +149,7 @@ class TestChunkStructuralIndex:
 
 class TestStoreInVectorDbBackground:
     @pytest.mark.asyncio
-    @patch("faultmaven.core.preprocessing.vector_storage.model_cache")
+    @patch("faultmaven.infrastructure.model_cache.model_cache")
     async def test_successful_storage_with_bge_m3(self, mock_model_cache):
         # Mock the async embed boundary → two 1024-dim vectors, one per chunk.
         mock_model_cache.aembed_texts = AsyncMock(
@@ -192,7 +192,7 @@ class TestStoreInVectorDbBackground:
         mock_model_cache.aembed_texts.assert_called_once()
 
     @pytest.mark.asyncio
-    @patch("faultmaven.core.preprocessing.vector_storage.model_cache")
+    @patch("faultmaven.infrastructure.model_cache.model_cache")
     async def test_skips_indexing_when_bge_m3_unavailable(self, mock_model_cache):
         """No second embedding space, on either side of the collection.
 
@@ -238,7 +238,7 @@ class TestStoreInVectorDbBackground:
         mock_store.add_documents.assert_not_called()
 
     @pytest.mark.asyncio
-    @patch("faultmaven.core.preprocessing.vector_storage.model_cache")
+    @patch("faultmaven.infrastructure.model_cache.model_cache")
     async def test_scalar_metadata_filtered(self, mock_model_cache):
         mock_model_cache.aembed_texts = AsyncMock(
             return_value=np.random.rand(1, 1024).tolist()
@@ -275,7 +275,7 @@ class TestStoreInVectorDbBackground:
         assert "list_val" not in chunk_meta
 
     @pytest.mark.asyncio
-    @patch("faultmaven.core.preprocessing.vector_storage.model_cache")
+    @patch("faultmaven.infrastructure.model_cache.model_cache")
     async def test_error_handled_silently(self, mock_model_cache):
         mock_model_cache.aembed_texts = AsyncMock(return_value=None)
 
@@ -293,7 +293,7 @@ class TestStoreInVectorDbBackground:
         )
 
     @pytest.mark.asyncio
-    @patch("faultmaven.core.preprocessing.vector_storage.model_cache")
+    @patch("faultmaven.infrastructure.model_cache.model_cache")
     async def test_chunk_index_and_total_in_metadata(self, mock_model_cache):
         mock_model_cache.aembed_texts = AsyncMock(
             return_value=np.random.rand(2, 1024).tolist()

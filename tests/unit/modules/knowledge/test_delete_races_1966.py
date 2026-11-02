@@ -161,7 +161,9 @@ async def _world(engine, dialect):
 
     svc._sanitizer.asanitize = _same
 
-    async def _index(document, prechunked=None, enterprise_id=None, generation=None):
+    async def _index(
+        document, prechunked=None, enterprise_id=None, generation=None, ticket=None
+    ):
         await asyncio.sleep(0.05)  # the embed
         store.parents[document.document_id] = 3
         return 3
@@ -262,7 +264,7 @@ async def test_a_delete_during_the_repair_embed_leaves_nothing_admitted(
     entered, release = asyncio.Event(), asyncio.Event()
 
     async def gated_index(
-        document, prechunked=None, enterprise_id=None, generation=None
+        document, prechunked=None, enterprise_id=None, generation=None, ticket=None
     ):
         entered.set()
         await release.wait()

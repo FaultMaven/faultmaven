@@ -40,7 +40,7 @@ from faultmaven.exceptions import (
     ServiceException,
     ValidationException,
 )
-from faultmaven.models.exceptions import OAuthProtocolError
+from faultmaven.models.exceptions import IndexAdmissionRefused, OAuthProtocolError
 from faultmaven.modules.auth.exceptions import TeamOperationRefused
 from faultmaven.modules.knowledge.exceptions import (
     IngestOutcomeUnknown,
@@ -417,6 +417,7 @@ class TestGetExceptionHandlers:
             TeamOperationRefused,
             ItemTitleScrubUnavailable,
             IngestOutcomeUnknown,
+            IndexAdmissionRefused,
             ServiceError,
             ServiceException,
             LLMException,

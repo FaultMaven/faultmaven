@@ -1036,36 +1036,27 @@ class TestTheRoutesAnswer422:
 
 
 class TestBulkUpdate:
-    """``POST /knowledge/documents/bulk-update`` loops over the update. A refused
-    body is the caller's content, not a fault: logged at INFO, never ERROR,
-    and reported with the endpoint's generic per-item text (#866).
+    """``POST /knowledge/documents/bulk-update`` takes metadata only (#2055), so
+    a body is refused before any document is read, and its text reaches no
+    log line."""
 
-    Mutation: log the refusal through the generic ``except Exception`` arm.
-    """
-
-    async def test_a_refused_body_is_a_generic_failure_logged_at_info(
-        self, session_factory, caplog
-    ):
+    async def test_a_body_is_refused_before_it_is_read(self, session_factory, caplog):
         service = _knowledge(session_factory)
         await service.ingest_runbook(**_ingest_args("personal"))
         body, _ = _body_with(REAL[0][1])
         name = "faultmaven.modules.knowledge.domain.services.knowledge_service"
 
         with caplog.at_level(logging.INFO, logger=name):
-            result = await service.bulk_update_documents(
-                ["kb_0123456789ab"], {"content": body}
-            )
+            with pytest.raises(ValidationException, match="metadata only"):
+                await service.bulk_update_documents(
+                    ["kb_0123456789ab"], {"content": body}
+                )
 
-        assert result["updated_count"] == 0
-        assert result["errors"] == ["Document kb_0123456789ab: update failed"]
         assert await _published(session_factory) == [valid_runbook()]
-        records = [r for r in caplog.records if r.name == name]
-        assert [r for r in records if "Refused" in r.getMessage()], records
-        assert not [r for r in records if r.levelno >= logging.ERROR]
         assert not [
             # The token's tail: its digits are the document id's too.
             f
-            for r in records
+            for r in caplog.records
             for f in _fragments(_GITHUB[14:])
             if f in r.getMessage()
         ]

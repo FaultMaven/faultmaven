@@ -478,6 +478,37 @@ class DatabaseTimeoutsStatus(BaseModel):
     )
 
 
+class KnowledgeIndexingStatus(BaseModel):
+    """The KB indexing window and this process's indexing slot (#2055).
+
+    Numbers, so not a ``features`` entry. An encode that never returns holds
+    the slot until the process restarts, and every later KB write is refused
+    503 meanwhile: ``encoding_for_seconds`` far past any document's estimate
+    is that state.
+    """
+
+    window_seconds: int = Field(
+        description=(
+            "INDEX_REQUEST_WINDOW_SECONDS: the seconds a KB upload, update or "
+            "verify may spend indexing its document. A document that would not "
+            "fit is refused before anything is written (413 alone, 503 behind "
+            "other indexing); 0 refuses nothing up front."
+        )
+    )
+    queued: int = Field(
+        description=(
+            "KB indexing encodes held in this process: the running one and the "
+            "ones waiting their turn."
+        )
+    )
+    encoding_for_seconds: Optional[float] = Field(
+        description=(
+            "How long this process's running KB indexing encode has run; null "
+            "when none runs."
+        )
+    )
+
+
 class EnvConfigStatusResponse(BaseModel):
     """Read-only environment configuration status for dashboard display."""
 
@@ -551,6 +582,13 @@ class EnvConfigStatusResponse(BaseModel):
             "The bounds in force on a database that stops answering: the "
             "PostgreSQL command, connect and statement timeouts the engine was "
             "built with, and the deadline on the token-revocation read."
+        )
+    )
+    knowledge_indexing: KnowledgeIndexingStatus = Field(
+        description=(
+            "The KB indexing request window, and this process's indexing "
+            "slot: how many encodes it holds and how long the running one has "
+            "run."
         )
     )
     timestamp: datetime

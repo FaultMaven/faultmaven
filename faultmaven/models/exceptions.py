@@ -79,6 +79,33 @@ class KnowledgeBaseError(FaultMavenError):
         super().__init__(message, error_code or "KNOWLEDGE_BASE_ERROR", context)
 
 
+class IndexAdmissionRefused(FaultMavenError):
+    """A KB document refused before anything is written: indexing it would not
+    fit the request window (#2055, ``infrastructure.index_slot``).
+
+    **413** ``KNOWLEDGE_DOCUMENT_TOO_LARGE``: the document alone cannot fit, so
+    no retry can; ``message`` gives its size and the limit, written for the
+    person who sent it. **503** ``KNOWLEDGE_INDEXING_BUSY``: the indexing
+    queued ahead of it is the obstacle, and a retry after
+    ``retry_after_seconds`` may fit. Not a ``KnowledgeBaseError``, so no arm
+    that answers an indexing failure answers this.
+    """
+
+    def __init__(
+        self, message: str, *, status_code: int, retry_after_seconds: Optional[int]
+    ) -> None:
+        super().__init__(
+            message,
+            error_code=(
+                "KNOWLEDGE_DOCUMENT_TOO_LARGE"
+                if status_code == 413
+                else "KNOWLEDGE_INDEXING_BUSY"
+            ),
+        )
+        self.status_code = status_code
+        self.retry_after_seconds = retry_after_seconds
+
+
 class SessionManagementError(FaultMavenError):
     """Session and case management errors"""
 
