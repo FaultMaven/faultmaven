@@ -147,10 +147,17 @@ def _boot_a_fresh_install(root: Path) -> dict:
             timeout=240,
         )
     except subprocess.TimeoutExpired as exc:
+        # The output a timeout carries is bytes even under text=True: CPython
+        # decodes only a run that completes.
+        def tail(data) -> str:
+            if isinstance(data, bytes):
+                data = data.decode(errors="replace")
+            return (data or "")[-2000:]
+
         raise AssertionError(
             f"the child did not finish in {exc.timeout} s:\n"
-            f"stdout tail:\n{(exc.stdout or '')[-2000:]}\n"
-            f"stderr tail:\n{(exc.stderr or '')[-2000:]}"
+            f"stdout tail:\n{tail(exc.stdout)}\n"
+            f"stderr tail:\n{tail(exc.stderr)}"
         ) from exc
     for line in completed.stdout.splitlines():
         if line.startswith(_MARKER):
