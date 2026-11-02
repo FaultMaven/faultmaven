@@ -538,6 +538,30 @@ as `session_ttl_seconds`.
 | `SESSION_TIMEOUT_MINUTES` | int (1–1440) | 30 | Minutes a session lives past its last write. A preset fills it in when it is unset: `local` sets 60, `standard` and `enterprise` set 30. A preset applies when `CONFIG_PRESET` names it, and `local` also applies by itself to a deployment that configures nothing (no LLM provider, Redis or ChromaDB server) |
 | `SESSION_MAX_SESSIONS_PER_USER` | int (>= 1) | 10 | Live sessions one user may hold; a new session evicts the least recently active beyond it |
 
+## Knowledge Base Indexing
+
+`KnowledgeSettings.index_request_window_seconds` (`settings.knowledge`). KB
+upload, update (`PUT /knowledge/documents/{id}` with `content`) and draft
+verify index the document inside the request (#2055), so behind a proxy whose
+read timeout is shorter than the indexing a document needs, the client is cut
+off after all the work. With a window set, such a document is refused before
+anything is written: **413** `KNOWLEDGE_DOCUMENT_TOO_LARGE` when it alone
+cannot fit, **503** `KNOWLEDGE_INDEXING_BUSY` + `Retry-After` when the indexing
+already queued on the server leaves no room for it, and `verify-batch` returns
+the drafts the rest of its window cannot fit as `deferred`. The estimate is the
+document's BGE-M3 token count at a measured 25 core-ms a token, divided by the
+CPU quota (at most 4 cores). KB indexing encodes run one at a time per
+container. A document that fits only once a cold model has loaded starts the
+load and is answered 503 until it has (after a failed load, with no load in
+progress, it is answered as for an unavailable embedder and no load starts);
+while an encode is past its time bound every document is answered 503. The
+window, the queue, the running encode's age and the host lock's state are
+reported under `knowledge_indexing` on `GET /api/v1/admin/config/status`.
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `INDEX_REQUEST_WINDOW_SECONDS` | int (0, or 60–3600) | 0 | Seconds a KB write may spend indexing its document. `0` refuses nothing up front; the embedding guard (180 s for a model load plus twice the estimate) still bounds the embed. Set it below the fronting proxy's read timeout, less the rest of the request: for example 600 under an ingress `proxy-read-timeout` of 660 s |
+
 ## Related Documentation
 
 - [Context Management Guide](./CONTEXT_MANAGEMENT.md)

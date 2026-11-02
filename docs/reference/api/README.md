@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 14.11.0
+**Version:** 14.12.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -2811,6 +2811,11 @@ check cannot run (the sanitizer or its pseudonym key is unavailable) the
 request answers **503**, a retryable server-side condition, with a generic
 detail, and the draft stays a draft.
 
+With ``INDEX_REQUEST_WINDOW_SECONDS`` set, a draft whose indexing would not
+fit the window is refused before anything is written, and stays a draft:
+**413** ``KNOWLEDGE_DOCUMENT_TOO_LARGE`` or **503**
+``KNOWLEDGE_INDEXING_BUSY`` + ``Retry-After`` (#2055).
+
 **Tags:** `knowledge-conversion`
 
 **Auth:** `HTTPBearer`
@@ -2823,7 +2828,9 @@ detail, and the draft stays a draft.
 **Responses:**
 
 - `200` — Successful Response
+- `413` — Too large; nothing was saved. `x-error-code: KNOWLEDGE_DOCUMENT_TOO_LARGE`: indexing the document alone would not fit this deployment's request window, however long the client waits; split it into smaller documents. Without that code, the request exceeds MAX_UPLOAD_SIZE_MB.
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
+- `503` — Unavailable; nothing was saved. `x-error-code: KNOWLEDGE_INDEXING_BUSY`: within the request window there is no room for this document because other indexing is queued on this server, the indexing model is loading, or an encode is stuck past its time bound; retry after `Retry-After` seconds.
 
 ---
 
@@ -2948,6 +2955,13 @@ A lost response, or this route's **500** `KB_INGEST_OUTCOME_UNKNOWN`
 with the same key: it replays if the first published, and runs if it did
 not. Without a key, every request publishes a new runbook.
 
+**Indexing window** (`INDEX_REQUEST_WINDOW_SECONDS`, #2055). The runbook is
+indexed inside this request. With a window set, one that indexing would not
+fit is refused before anything is saved: **413** `x-error-code:
+KNOWLEDGE_DOCUMENT_TOO_LARGE` when the document alone cannot fit (split
+it), **503** `x-error-code: KNOWLEDGE_INDEXING_BUSY` with `Retry-After`
+when the indexing queued on this server leaves no room for it.
+
 **Tags:** `knowledge_base`
 
 **Auth:** `HTTPBearer`
@@ -2964,7 +2978,9 @@ not. Without a key, every request publishes a new runbook.
 
 - `201` — The runbook, published. A retry under the same `Idempotency-Key` is answered with the same body, and carries `X-Idempotency-Replayed: true`. (`object`)
 - `409` — Conflict. Told apart by `x-error-code`: `KB_REQUEST_IN_PROGRESS` (a request with this `Idempotency-Key` is still running: retry with the same key after `Retry-After` seconds; it may still be running then); `IDEMPOTENCY_KEY_REUSE` (the key was used for a different file or different fields).
+- `413` — Too large; nothing was saved. `x-error-code: KNOWLEDGE_DOCUMENT_TOO_LARGE`: indexing the document alone would not fit this deployment's request window, however long the client waits; split it into smaller documents. Without that code, the request exceeds MAX_UPLOAD_SIZE_MB.
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
+- `503` — Unavailable; nothing was saved. `x-error-code: KNOWLEDGE_INDEXING_BUSY`: within the request window there is no room for this document because other indexing is queued on this server, the indexing model is loading, or an encode is stuck past its time bound; retry after `Retry-After` seconds.
 
 ---
 
@@ -3003,7 +3019,9 @@ as deleted; ``total_requested`` is the de-duplicated batch size (see
 
 **Bulk Update Documents**
 
-Bulk update document metadata.
+Bulk update document metadata. ``updates`` naming ``content`` is
+refused with **422** and nothing is updated (#2055): content re-indexes,
+so it changes one document at a time, through ``PUT``.
 
 Ownership-aware per target (#866): this surface is a loop over
 ``PUT /documents/{id}``, so it carries the same gate — any authenticated
@@ -3023,7 +3041,7 @@ updated; ``total_requested`` is the de-duplicated batch size (see
 **Responses:**
 
 - `200` — Successful Response (`object`)
-- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
+- `422` — Refused; nothing was updated. `updates` names `content`: bulk update changes metadata only, so change a document's content with `PUT /knowledge/documents/{document_id}`. Or the body did not bind.
 
 ---
 
@@ -3182,6 +3200,13 @@ destructive command is refused with **422**, naming each one's line and
 type but not its text, and nothing is saved (#2012). A placeholder such as
 ``<password>`` or ``${DB_PASS}`` is not refused.
 
+New ``content`` longer than a draft may be (100,000 characters) is refused
+with **422**. With ``INDEX_REQUEST_WINDOW_SECONDS`` set, content whose
+re-indexing would not fit the window is refused with **413**
+``KNOWLEDGE_DOCUMENT_TOO_LARGE`` or **503** ``KNOWLEDGE_INDEXING_BUSY`` +
+``Retry-After``, as on upload. Either way nothing is saved, and search
+serves what it served before (#2055).
+
 **Tags:** `knowledge_base`
 
 **Auth:** `HTTPBearer`
@@ -3197,7 +3222,9 @@ type but not its text, and nothing is saved (#2012). A placeholder such as
 **Responses:**
 
 - `200` — Successful Response (`object`)
-- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
+- `413` — Too large; nothing was saved. `x-error-code: KNOWLEDGE_DOCUMENT_TOO_LARGE`: indexing the document alone would not fit this deployment's request window, however long the client waits; split it into smaller documents. Without that code, the request exceeds MAX_UPLOAD_SIZE_MB.
+- `422` — Refused; nothing was saved. The new `content` holds a credential or a destructive command, or is longer than a draft may be (100,000 characters). Or the body did not bind.
+- `503` — Unavailable; nothing was saved. `x-error-code: KNOWLEDGE_INDEXING_BUSY`: within the request window there is no room for this document because other indexing is queued on this server, the indexing model is loading, or an encode is stuck past its time bound; retry after `Retry-After` seconds.
 
 ---
 
@@ -3323,6 +3350,12 @@ List all non-deleted drafts across all conversion jobs.
 **Verify Batch**
 
 Activate multiple drafts sequentially (verify + ingest into KB).
+
+With ``INDEX_REQUEST_WINDOW_SECONDS`` set, the drafts share the request's
+window (#2055): a draft the window has no room left for is ``deferred``
+(unverified; verify it again), as is every draft after it, and the envelope
+counts them in ``deferred``. A draft too large for any window is
+``failed``.
 
 **Tags:** `knowledge-conversion`
 
@@ -5396,6 +5429,7 @@ Read-only environment configuration status for dashboard display.
 - `db_backend` (string, required) — 'sqlite' or 'postgresql' — the dialect of the database engine the running process built; 'not initialized' before it has built one
 - `deployment` (string, required) — 'standalone' or 'cloud' — from DEPLOYMENT_MODE (ADR-004)
 - `features` (object, optional) — Optional features and their configuration status
+- `knowledge_indexing` (object, required) — The KB indexing request window, and this process's indexing slot: how many encodes it holds and how long the running one has run.
 - `llm_provider` (string, required) — Primary LLM provider name
 - `personal_tenant_limits` (object, required) — Effective values of the settings that bound self-service sign-up: whether an org-less SSO identity may provision a personal tenant, how many such tenants may be provisioned per hour deployment-wide, and how many investigation turns each one gets per UTC day.
 - `pii_redaction_enabled` (boolean, required)
@@ -5605,6 +5639,25 @@ Response model for knowledge base document operations.
 - `verification_level` (integer, optional)
 - `verification_reason` (object, optional)
 - `verification_status` (object, optional)
+
+---
+
+### KnowledgeIndexingStatus
+
+The KB indexing window and this process's indexing slot (#2055).
+
+Numbers, so not a ``features`` entry. An encode that never returns holds
+the slot until the process restarts. Once it is past its time bound, and
+with a window set, every later KB write is refused 503 meanwhile:
+``encoding_for_seconds`` far past any document's estimate is that state.
+
+**Properties:**
+
+- `encoding_for_seconds` (object, required) — How long this process's running KB indexing encode has run; null when none runs.
+- `host_lock_available` (boolean, required) — False while this process's latest attempt to open or lock the host lock file failed: its KB encodes then run without serialising against the other worker processes of the container.
+- `queued` (integer, required) — KB indexing encodes held in this process: the running one and the ones waiting their turn.
+- `waiting_for_host_lock` (boolean, required) — True while this process's indexing slot is blocked on the host lock, behind another worker process's encode.
+- `window_seconds` (integer, required) — INDEX_REQUEST_WINDOW_SECONDS: the seconds a KB upload, update or verify may spend indexing its document. A document that would not fit is refused before anything is written (413 alone, 503 behind other indexing); 0 refuses nothing up front.
 
 ---
 

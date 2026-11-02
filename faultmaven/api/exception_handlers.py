@@ -73,7 +73,7 @@ from faultmaven.exceptions import (
     is_billing_error,
     walk_cause_chain,
 )
-from faultmaven.models.exceptions import OAuthProtocolError
+from faultmaven.models.exceptions import IndexAdmissionRefused, OAuthProtocolError
 from faultmaven.modules.auth.exceptions import TeamOperationRefused
 from faultmaven.modules.knowledge.exceptions import (
     INGEST_OUTCOME_UNKNOWN_DETAIL,
@@ -496,6 +496,53 @@ def llm_service_error_http_exception(exc: BaseException) -> HTTPException:
         SERVICE_ERROR_DETAIL,
         "10",
     )
+
+
+async def index_admission_refused_handler(
+    request: Request,
+    exc: IndexAdmissionRefused,
+) -> JSONResponse:
+    """Answer a KB document refused before anything was written, because
+    indexing it would not fit the request window (#2055).
+
+    **413** ``KNOWLEDGE_DOCUMENT_TOO_LARGE``: the document alone cannot fit;
+    the detail is the refusal's own sentence, written for the person who sent
+    it (its size and the limit). **503** ``KNOWLEDGE_INDEXING_BUSY`` +
+    ``Retry-After``: the indexing queued ahead, the model loading, or an encode
+    stuck past its time bound is the obstacle. The 503 is rebuilt by the same
+    sentence builder (``index_slot.refusal``) for the refusal's reason, its
+    wait read from the queue at response time, so nothing the exception
+    carries reaches a 5xx (#1400).
+    """
+    logger.info(
+        "Indexing refused (%s): %s %s",
+        exc.error_code,
+        request.method,
+        request.url.path,
+    )
+    if exc.status_code == 413:
+        answer = HTTPException(
+            status_code=413,
+            detail=exc.message,
+            headers={"x-error-code": "KNOWLEDGE_DOCUMENT_TOO_LARGE"},
+        )
+    else:
+        from faultmaven.api.dependencies import indexing_busy_refusal
+
+        busy = indexing_busy_refusal(
+            "loading"
+            if exc.reason == "loading"
+            else ("hung" if exc.reason == "hung" else "busy")
+        )
+        answer = HTTPException(
+            status_code=503,
+            detail=busy.message,
+            headers={
+                "x-error-code": "KNOWLEDGE_INDEXING_BUSY",
+                "Retry-After": str(busy.retry_after_seconds),
+            },
+        )
+    return await http_exception_handler(request, answer)
 
 
 async def item_title_scrub_unavailable_handler(
@@ -1161,6 +1208,7 @@ def get_exception_handlers() -> dict[Type[Exception], Callable]:
         TeamOperationRefused: team_operation_refused_handler,
         ItemTitleScrubUnavailable: item_title_scrub_unavailable_handler,
         IngestOutcomeUnknown: ingest_outcome_unknown_handler,
+        IndexAdmissionRefused: index_admission_refused_handler,
         ServiceError: service_error_handler,
         ServiceException: service_exception_handler,
         LLMException: service_exception_handler,

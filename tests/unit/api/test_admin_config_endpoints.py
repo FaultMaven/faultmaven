@@ -160,6 +160,7 @@ def mock_settings():
     # True): an auto-created MagicMock attribute is truthy, so the KB push
     # would report enabled on a process that composed no knowledge service.
     settings.knowledge.kb_prefetch_enabled = False
+    settings.knowledge.index_request_window_seconds = 0
     settings.tools.web_search_api_key = None
     settings.tools.web_search_engine_id = None
     settings.is_cloud = False  # standalone (canonical DEPLOYMENT_MODE, ADR-004)
@@ -3177,3 +3178,54 @@ class TestDatabaseTimeoutsAreTheOnesInForce:
         assert timeouts.statement_timeout_seconds == 10.5
         assert timeouts.client_connection_check_interval_seconds == 2.0
         assert timeouts.revocation_read_timeout_seconds == 7.0
+
+
+# ============================================================
+# knowledge_indexing: the KB indexing window and slot (#2055)
+# ============================================================
+
+
+class TestKnowledgeIndexingIsReported:
+    """The window from settings; the queue, the running encode's age and the
+    host lock from this process's slot: a hung encode holds the slot until
+    restart, and a slot behind another process's lock shows no age, and this
+    is where an operator sees both."""
+
+    @pytest.mark.asyncio
+    async def test_the_window_the_queue_and_the_running_encodes_age(
+        self, mock_admin_user, mock_settings, rate_limited_app, monkeypatch
+    ):
+        from faultmaven.infrastructure import index_slot
+
+        clock = MagicMock(return_value=100.0)
+        monkeypatch.setattr(index_slot, "_clock", clock)
+        admission = index_slot.IndexAdmission()
+        monkeypatch.setattr(index_slot, "index_admission", admission)
+        mock_settings.knowledge.index_request_window_seconds = 600
+
+        async def _status():
+            with patch(SETTINGS_PATCH, return_value=mock_settings):
+                result = await get_env_config_status(
+                    request=_request_for(rate_limited_app),
+                    current_user=mock_admin_user,
+                )
+            return result.knowledge_indexing
+
+        idle = await _status()
+        running = admission.admit_forced(["a"], 1000)
+        admission.admit_forced(["b"], 1000)
+        running._started()
+        clock.return_value = 142.5
+        admission.host_lock_available = False
+        admission.waiting_for_host_lock = True
+        busy = await _status()
+
+        assert idle.model_dump() == {
+            "window_seconds": 600,
+            "queued": 0,
+            "encoding_for_seconds": None,
+            "host_lock_available": True,
+            "waiting_for_host_lock": False,
+        }
+        assert (busy.queued, busy.encoding_for_seconds) == (2, 42.5)
+        assert (busy.host_lock_available, busy.waiting_for_host_lock) == (False, True)

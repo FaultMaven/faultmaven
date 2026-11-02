@@ -104,7 +104,9 @@ def _service(factory, store, *, before=None, then=None):
     service._vector_store = store
     calls: list[str] = []
 
-    async def index(document, prechunked=None, enterprise_id=None, generation=None):
+    async def index(
+        document, prechunked=None, enterprise_id=None, generation=None, ticket=None
+    ):
         writer = "repair" if calls else "this"
         calls.append(writer)
         if writer == "this" and before:
@@ -236,7 +238,9 @@ async def test_a_pack_row_is_complete_from_its_insert_and_issues_no_update(
     service = _knowledge(session_factory)
     service._vector_store = store
 
-    async def index(document, prechunked=None, enterprise_id=None, generation=None):
+    async def index(
+        document, prechunked=None, enterprise_id=None, generation=None, ticket=None
+    ):
         store.index(document.document_id, "pack")
         await mid_ingest()
         return len(prechunked)

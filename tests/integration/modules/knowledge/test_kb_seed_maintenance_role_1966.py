@@ -157,7 +157,11 @@ async def test_kb_seed_under_the_maintenance_role_repairs_and_never_updates(
             svc._share_repo = None
 
             async def _index(
-                document, prechunked=None, enterprise_id=None, generation=None
+                document,
+                prechunked=None,
+                enterprise_id=None,
+                generation=None,
+                ticket=None,
             ):
                 store.parents[document.document_id] = 3
                 store.generations[document.document_id] = generation

@@ -138,7 +138,9 @@ def _indexing_into(service, store: _Chunks, *, then=None):
     """``service`` indexing into ``store``; with ``then``, it runs ``then`` once
     its chunks are written and raises, as a store failing after the write."""
 
-    async def index(document, prechunked=None, enterprise_id=None, generation=None):
+    async def index(
+        document, prechunked=None, enterprise_id=None, generation=None, ticket=None
+    ):
         store.index(document.document_id, "this")
         if then:
             await then()

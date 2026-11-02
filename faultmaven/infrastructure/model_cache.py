@@ -85,8 +85,16 @@ def _sentence_transformer_class():
 # by a drift-guard test — kb_pack stays model-free and cannot import this module).
 BGE_M3_MODEL_ID = "BAAI/bge-m3"
 
+# BGE-M3's sequence limit (its sentence-transformers ``max_seq_length``): the
+# encode truncates a longer text, so a token count does too.
+BGE_M3_MAX_SEQ_LENGTH = 8192
+
 
 _THREADS_CONFIGURED = False
+
+# Guards the standalone tokenizer's one load; not ``ModelCache._lock``, which a
+# cold model load holds for a minute or two.
+_TOKENIZER_LOCK = threading.Lock()
 
 
 def _cgroup_cpu_quota() -> Optional[float]:
@@ -218,6 +226,8 @@ class ModelCache:
                     cls._instance._initialized = False
                     cls._instance._models = {}
                     cls._instance._load_info: Dict[str, ModelLoadInfo] = {}
+                    cls._instance._tokenizer = None
+                    cls._instance._bge_m3_loading = False
         return cls._instance
 
     def __init__(self):
@@ -267,6 +277,7 @@ class ModelCache:
             if model_key in self._models:
                 return self._models[model_key]
 
+            self._bge_m3_loading = True
             start_time = time.time()
             try:
                 # Resolve the class FIRST. This is the only step that proves
@@ -318,6 +329,13 @@ class ModelCache:
                 )
                 self.logger.error(f"Failed to load BGE-M3 model: {e}")
                 return None
+            finally:
+                self._bge_m3_loading = False
+
+    def is_bge_m3_loading(self) -> bool:
+        """Whether a BGE-M3 load is running now, from its start under the
+        load lock until it records its ``ModelLoadInfo`` (#2055)."""
+        return self._bge_m3_loading
 
     def peek_bge_m3_model(self) -> Optional["SentenceTransformer"]:
         """Return BGE-M3 **only if it is already resident**; never load it.
@@ -334,43 +352,59 @@ class ModelCache:
 
         Whether the model is resident is decided by the documented policy
         (``LAZY_LOAD_ML_MODELS`` / ``PRELOAD_MODELS``, applied in the web
-        lifespan) or by the first real ``aembed_*`` call — not by this method.
+        lifespan) or by the first real embed — not by this method.
         """
         return self._models.get(BGE_M3_MODEL_ID)
 
-    async def aembed_texts(self, texts: List[str]) -> Optional[List[List[float]]]:
-        """Embed a LIST of texts with BGE-M3 → one 1024-dim vector per text.
+    def embed_texts_sync(self, texts: List[str]) -> Optional[List[List[float]]]:
+        """Embed a LIST of texts with BGE-M3 → one 1024-dim vector per text, on
+        the CALLING thread: the (lazy, cached) load, then one batched
+        ``encode``, far cheaper than N per-text passes.
 
-        THE async boundary for embedding: both the (lazy, cached) model load and
-        the CPU-bound ``encode`` run on a worker thread via ``asyncio.to_thread``,
-        so callers NEVER block the event loop. Batched — a single ``encode`` over
-        the list is far cheaper than N per-text passes (sentence-transformers
-        vectorizes). Returns ``None`` if the model is unavailable, so the caller
-        decides what that means — search paths raise (see
-        :mod:`faultmaven.infrastructure.embedding_guard`), the case indexing
-        path skips. What no caller may do is write or query in a *second*
-        embedding space: one space per collection, or the index is incoherent
-        (#941).
-
-        Prefer this / ``aembed_query`` over open-coding
-        ``await asyncio.to_thread(bge_model.encode, ...)`` at call sites: a bare
-        synchronous ``model.encode(...)`` on an async path silently blocks the
-        loop and, on k8s, trips the liveness probe.
+        Called only on an indexing slot's thread (``infrastructure.index_slot``,
+        #2055), through ``embedding_guard.embed_texts_or_raise``; a bare
+        synchronous ``encode`` on an async path blocks the loop and, on k8s,
+        trips the liveness probe. Returns ``None`` if the model is unavailable,
+        and the guard raises: what no caller may do is write in a *second*
+        embedding space (#941).
         """
+        model = self.get_bge_m3_model()
+        if model is None:
+            return None
+        return model.encode(texts).tolist()
 
-        def _run() -> Optional[List[List[float]]]:
-            model = self.get_bge_m3_model()
-            if model is None:
-                return None
-            return model.encode(texts).tolist()
+    def get_bge_m3_tokenizer(self) -> Optional[Any]:
+        """BGE-M3's tokenizer, to count tokens (#2055): an object of its own,
+        never the resident model's, whose truncation state a concurrent encode
+        changes. Loaded alone from the local snapshot the image ships
+        (``local_files_only``: never the network), once per process, after the
+        thread knobs are pinned, since the import brings torch. None when it
+        will not load. Blocking: off the event loop.
+        """
+        with _TOKENIZER_LOCK:
+            if self._tokenizer is None:
+                try:
+                    pin_thread_env()
+                    from transformers import AutoTokenizer
 
-        return await asyncio.to_thread(_run)
+                    self._tokenizer = AutoTokenizer.from_pretrained(
+                        BGE_M3_MODEL_ID, local_files_only=True
+                    )
+                except Exception as exc:
+                    self.logger.debug(
+                        "BGE-M3 tokenizer unavailable: %s", type(exc).__name__
+                    )
+                    return None
+            return self._tokenizer
 
     async def aembed_query(self, text: str) -> Optional[List[float]]:
         """Embed a SINGLE text (e.g. a search query) → one 1024-dim vector.
 
-        Same off-the-event-loop guarantees as :meth:`aembed_texts`; returns
-        ``None`` if BGE-M3 is unavailable.
+        The async boundary for queries: the (lazy, cached) load and the
+        CPU-bound ``encode`` run on a worker thread via ``asyncio.to_thread``,
+        so the event loop never blocks. Returns ``None`` if BGE-M3 is
+        unavailable, and the caller decides what that means (search raises,
+        :mod:`faultmaven.infrastructure.embedding_guard`).
         """
 
         def _run() -> Optional[List[float]]:
@@ -396,6 +430,7 @@ class ModelCache:
         with self._lock:
             self._models.clear()
             self._load_info.clear()
+            self._tokenizer = None
             self.logger.debug("Model cache cleared")
 
     def get_cache_info(self) -> dict:

@@ -56,7 +56,7 @@ from faultmaven.infrastructure.concurrency.request_fingerprint import (
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models import KnowledgeBaseDocument, SearchRequest
 from faultmaven.models.api import DocumentSnippetResponse
-from faultmaven.models.exceptions import KnowledgeBaseError
+from faultmaven.models.exceptions import IndexAdmissionRefused, KnowledgeBaseError
 from faultmaven.modules.auth.contracts import DevUser, is_team_member
 from faultmaven.modules.knowledge.api.platform_tier import (
     require_global_authoring_allowed,
@@ -119,6 +119,47 @@ RUNBOOK_SECURITY_HELP = (
     "${DB_PASSWORD}, and rotate it: it has been exposed. Remove any "
     "destructive command. The runbook is unchanged."
 )
+
+
+#: The answers of a route that indexes a document, when indexing it would not
+#: fit ``INDEX_REQUEST_WINDOW_SECONDS`` (#2055): ``IndexAdmissionRefused``,
+#: raised before anything is written and answered by ``api.exception_handlers``.
+INDEX_REFUSAL_RESPONSES: Dict[int | str, Dict[str, Any]] = {
+    413: {
+        "description": (
+            "Too large; nothing was saved. `x-error-code: "
+            "KNOWLEDGE_DOCUMENT_TOO_LARGE`: indexing the document alone would "
+            "not fit this deployment's request window, however long the client "
+            "waits; split it into smaller documents. Without that code, the "
+            "request exceeds MAX_UPLOAD_SIZE_MB."
+        ),
+        "headers": {
+            "x-error-code": {
+                "description": "KNOWLEDGE_DOCUMENT_TOO_LARGE, when sent.",
+                "schema": {"type": "string"},
+            }
+        },
+    },
+    503: {
+        "description": (
+            "Unavailable; nothing was saved. `x-error-code: "
+            "KNOWLEDGE_INDEXING_BUSY`: within the request window there is no "
+            "room for this document because other indexing is queued on this "
+            "server, the indexing model is loading, or an encode is stuck past "
+            "its time bound; retry after `Retry-After` seconds."
+        ),
+        "headers": {
+            "x-error-code": {
+                "description": "KNOWLEDGE_INDEXING_BUSY, when sent.",
+                "schema": {"type": "string"},
+            },
+            "Retry-After": {
+                "description": "Seconds, with KNOWLEDGE_INDEXING_BUSY.",
+                "schema": {"type": "integer"},
+            },
+        },
+    },
+}
 
 
 def runbook_quality_detail(
@@ -327,7 +368,10 @@ def _document_location(document_id: str) -> str:
     "/documents",
     status_code=201,
     dependencies=[Depends(require_authentication)],
-    responses=keyed_responses(created="The runbook, published.", location=True),
+    responses={
+        **keyed_responses(created="The runbook, published.", location=True),
+        **INDEX_REFUSAL_RESPONSES,
+    },
 )
 @trace("api_upload_document")
 async def upload_document(
@@ -385,6 +429,13 @@ async def upload_document(
     (whose detail says to retry with the same key), is recovered by retrying
     with the same key: it replays if the first published, and runs if it did
     not. Without a key, every request publishes a new runbook.
+
+    **Indexing window** (`INDEX_REQUEST_WINDOW_SECONDS`, #2055). The runbook is
+    indexed inside this request. With a window set, one that indexing would not
+    fit is refused before anything is saved: **413** `x-error-code:
+    KNOWLEDGE_DOCUMENT_TOO_LARGE` when the document alone cannot fit (split
+    it), **503** `x-error-code: KNOWLEDGE_INDEXING_BUSY` with `Retry-After`
+    when the indexing queued on this server leaves no room for it.
     """
     logger = logging.getLogger(__name__)
     logger.info(f"Uploading document: {file.filename}")
@@ -630,6 +681,10 @@ async def upload_document(
         # The upload may have been published (#2396): the global handler's 500
         # with ``KB_INGEST_OUTCOME_UNKNOWN``, here with the upload's own text.
         unknown.from_upload = True
+        raise
+    except IndexAdmissionRefused:
+        # Refused before anything was written (#2055): the global handler's
+        # 413, or 503 + Retry-After.
         raise
     except Exception as e:
         # The class, never the text: a failed row write's text carries its
@@ -1163,7 +1218,20 @@ async def fulltext_search_documents(
         raise HTTPException(status_code=500, detail="Full-text search failed")
 
 
-@router.put("/documents/{document_id}", dependencies=[Depends(require_authentication)])
+@router.put(
+    "/documents/{document_id}",
+    dependencies=[Depends(require_authentication)],
+    responses={
+        **INDEX_REFUSAL_RESPONSES,
+        422: {
+            "description": (
+                "Refused; nothing was saved. The new `content` holds a "
+                "credential or a destructive command, or is longer than a "
+                "draft may be (100,000 characters). Or the body did not bind."
+            )
+        },
+    },
+)
 async def update_document(
     document_id: str,
     update_data: dict,
@@ -1188,6 +1256,13 @@ async def update_document(
     destructive command is refused with **422**, naming each one's line and
     type but not its text, and nothing is saved (#2012). A placeholder such as
     ``<password>`` or ``${DB_PASS}`` is not refused.
+
+    New ``content`` longer than a draft may be (100,000 characters) is refused
+    with **422**. With ``INDEX_REQUEST_WINDOW_SECONDS`` set, content whose
+    re-indexing would not fit the window is refused with **413**
+    ``KNOWLEDGE_DOCUMENT_TOO_LARGE`` or **503** ``KNOWLEDGE_INDEXING_BUSY`` +
+    ``Retry-After``, as on upload. Either way nothing is saved, and search
+    serves what it served before (#2055).
     """
     logger = logging.getLogger(__name__)
 
@@ -1229,6 +1304,16 @@ async def update_document(
                 quality_error, help_text=RUNBOOK_SECURITY_HELP
             ),
         ) from quality_error
+    except ValidationException:
+        # Content over the draft bound (#2055): the global handler's 422, not
+        # the blanket 500 below. Nothing was saved.
+        raise
+    except IndexAdmissionRefused:
+        # Refused before the first write (#2055), so the document and its
+        # vectors are unchanged: the global handler's 413, or 503 +
+        # Retry-After. Ahead of the arm below, which answers an indexing
+        # failure.
+        raise
     except KnowledgeBaseError as e:
         # Re-indexing failed, so the edit was NOT saved: the row is committed
         # only after the new chunks are in place (#952), which is what lets
@@ -1259,14 +1344,29 @@ async def update_document(
         raise HTTPException(status_code=500, detail="Failed to update document")
 
 
-@router.post("/documents/bulk-update", dependencies=[Depends(require_authentication)])
+@router.post(
+    "/documents/bulk-update",
+    dependencies=[Depends(require_authentication)],
+    responses={
+        422: {
+            "description": (
+                "Refused; nothing was updated. `updates` names `content`: bulk "
+                "update changes metadata only, so change a document's content "
+                "with `PUT /knowledge/documents/{document_id}`. Or the body did "
+                "not bind."
+            )
+        }
+    },
+)
 async def bulk_update_documents(
     request: Request,
     payload: Dict[str, Any],
     knowledge_service: KnowledgeService = Depends(get_knowledge_service),
     current_user: DevUser = Depends(require_authentication),
 ) -> dict:
-    """Bulk update document metadata.
+    """Bulk update document metadata. ``updates`` naming ``content`` is
+    refused with **422** and nothing is updated (#2055): content re-indexes,
+    so it changes one document at a time, through ``PUT``.
 
     Ownership-aware per target (#866): this surface is a loop over
     ``PUT /documents/{id}``, so it carries the same gate — any authenticated
@@ -1303,7 +1403,9 @@ async def bulk_update_documents(
         logger.info(f"Bulk updated {result['updated_count']} documents")
         return result
 
-    except HTTPException:
+    except (HTTPException, ValidationException):
+        # A ValidationException is `content` in `updates` (#2055): the global
+        # handler's 422.
         raise
     except Exception as e:
         logger.error(f"Bulk update failed: {e}")

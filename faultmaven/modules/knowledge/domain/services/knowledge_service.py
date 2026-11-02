@@ -48,6 +48,7 @@ if TYPE_CHECKING:
     # module load.
     from sqlalchemy.ext.asyncio import AsyncSession
 
+    from faultmaven.infrastructure.index_slot import IndexTicket
     from faultmaven.modules.knowledge.domain.models.knowledge_item import (
         VerificationLevel,
     )
@@ -63,7 +64,7 @@ from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
     KB_COLLECTION,
 )
 from faultmaven.models import KnowledgeBaseDocument, SearchResult
-from faultmaven.models.exceptions import KnowledgeBaseError
+from faultmaven.models.exceptions import IndexAdmissionRefused, KnowledgeBaseError
 from faultmaven.models.interfaces import (
     IKnowledgeVectorStore,
     ILLMProvider,
@@ -860,6 +861,43 @@ class KnowledgeService:
             updated_at=item.updated_at.isoformat() if item.updated_at else "",
         )
 
+    @staticmethod
+    async def _index_ticket(
+        content: str, *, window_seconds: Optional[float] = None, forced: bool = False
+    ) -> "IndexTicket":
+        """The KB indexing slot's ticket for ``content`` (#2055), taken before
+        anything is written and held through its embed.
+
+        ``window_seconds`` is what this request may still spend, None meaning
+        ``INDEX_REQUEST_WINDOW_SECONDS``; a document alone must fit the setting.
+        Tokens are counted only when the setting is non-zero: at 0 nothing is
+        refused, and the guard counts inside the embed. ``forced`` (the boot
+        repair) is never refused.
+
+        Raises:
+            IndexAdmissionRefused: 413 or 503, see ``IndexAdmission.admit``.
+            KnowledgeBaseError: ``KNOWLEDGE_EMBEDDER_UNAVAILABLE``, a window is
+                set and the tokenizer would not load.
+        """
+        from faultmaven.config.settings import get_settings
+        from faultmaven.infrastructure.embedding_guard import count_index_tokens
+        from faultmaven.infrastructure.index_slot import index_admission
+        from faultmaven.modules.knowledge.domain.services.content_chunker import (
+            ContentChunker,
+        )
+
+        limit = float(get_settings().knowledge.index_request_window_seconds)
+        chunks = ContentChunker().split(content)
+        tokens = await count_index_tokens(chunks) if limit > 0 else None
+        if forced:
+            return index_admission.admit_forced(chunks, tokens)
+        return index_admission.admit(
+            chunks,
+            tokens,
+            window_seconds=limit if window_seconds is None else window_seconds,
+            size_limit_seconds=limit,
+        )
+
     async def _index_document_in_vector_store(
         self,
         document: KnowledgeBaseDocument,
@@ -867,6 +905,7 @@ class KnowledgeService:
         *,
         enterprise_id: str,
         generation: str,
+        ticket: "Optional[IndexTicket]" = None,
     ) -> int:
         """Index a document's chunks + embeddings into the vector store, under
         ``generation``, deleting nothing (#2388).
@@ -903,6 +942,10 @@ class KnowledgeService:
                 :class:`ContentChunker` and embedded with BGE-M3 — the
                 upload/draft path. Per-chunk metadata is derived from the
                 document frontmatter either way (it is not carried in the pack).
+            ticket: The KB indexing slot's ticket (:meth:`_index_ticket`,
+                #2055): its chunks are the ones embedded, on that slot. None
+                chunks here and embeds with no KB ticket; every production
+                caller passes one.
         Returns:
             Number of chunks indexed. Never 0 for a failure — see Raises.
 
@@ -984,7 +1027,11 @@ class KnowledgeService:
                     ContentChunker,
                 )
 
-                chunks = ContentChunker().split(document.content)
+                chunks = (
+                    ticket.chunks
+                    if ticket is not None
+                    else ContentChunker().split(document.content)
+                )
                 if not chunks:
                     raise KnowledgeBaseError(
                         f"No chunks produced for document {document.document_id}",
@@ -999,6 +1046,7 @@ class KnowledgeService:
                     chunks,
                     subject=f"Indexing document {document.document_id}",
                     operation="index_document",
+                    ticket=ticket,
                 )
 
             # Extract RAG-enrichment fields from frontmatter
@@ -1094,6 +1142,7 @@ class KnowledgeService:
         shipped: bool = False,
         replaces_generation: Optional[str] = None,
         record: "Optional[Callable[[AsyncSession], Awaitable[bool]]]" = None,
+        index_window_seconds: Optional[float] = None,
     ) -> int:
         """Promote runbook content to a fully-published KnowledgeItem.
 
@@ -1252,6 +1301,9 @@ class KnowledgeService:
                 ingest, refused for ``shipped``. True records the caller's
                 success and the transaction commits; False, or a raise, rolls
                 the completion back with it. It must not commit.
+            index_window_seconds: An authored ingest's indexing window: what
+                the request may still spend on it (#2055). None means
+                ``INDEX_REQUEST_WINDOW_SECONDS``.
 
         Returns:
             Number of chunks indexed in ChromaDB (always > 0 on success): a
@@ -1263,6 +1315,11 @@ class KnowledgeService:
         Raises:
             RunbookQualityError: a non-shipped body holds a secret or a
                 destructive command (422). Nothing has been written.
+            IndexAdmissionRefused: an authored ingest that would not fit the
+                indexing window (413, or 503 behind other indexing; #2055).
+                Nothing has been written. So is a ``KnowledgeBaseError``
+                ``KNOWLEDGE_EMBEDDER_UNAVAILABLE`` raised when a window is set
+                and the tokenizer would not load.
             IngestNotRecorded: ``record`` returned False. Nothing was
                 published.
             IngestOutcomeUnknown: the completing COMMIT raised, and whether
@@ -1395,13 +1452,14 @@ class KnowledgeService:
             updated_at=to_json_compatible(now),
         )
 
-        async def index() -> int:
+        async def index(ticket: "Optional[IndexTicket]" = None) -> int:
             # The row's NOT NULL enterprise_id, and the generation it carries.
             chunks = await self._index_document_in_vector_store(
                 doc_model,
                 prechunked=prechunked,
                 enterprise_id=enterprise_id,
                 generation=item.vector_generation,
+                ticket=ticket,
             )
             if chunks <= 0:
                 raise RuntimeError(
@@ -1423,6 +1481,10 @@ class KnowledgeService:
             )
             return chunks_created
 
+        # The indexing slot's ticket, before the row (#2055): a refusal leaves
+        # nothing written, and the ticket is held through the embed.
+        ticket = await self._index_ticket(content, window_seconds=index_window_seconds)
+
         # A failure or a cancellation from the row's INSERT on runs one SQL
         # cleanup (#2365): ``create`` commits before it refreshes, so a failure
         # or cancel can land after the row has (#2378). It removes the row
@@ -1435,7 +1497,7 @@ class KnowledgeService:
         try:
             async with self._db_session_factory() as session:
                 await DatabaseKnowledgeItemRepository(session).create(item)
-            chunks_created = await index()
+            chunks_created = await index(ticket)
             await self._complete_authored_ingest(
                 document_id,
                 created_at=now,
@@ -1466,6 +1528,10 @@ class KnowledgeService:
                 elif cleanup is None and not cancelled:
                     raise IngestOutcomeUnknown(document_id) from failure
             raise
+        finally:
+            # Released here only if no encode was submitted; a submitted one
+            # releases it when its thread settles.
+            ticket.close()
 
         return chunks_created
 
@@ -1641,8 +1707,8 @@ class KnowledgeService:
         repaired chunk carries the same retrieval filters as a fresh ingest.
 
         Unlike the pack boot path this DOES load the embedding model (via the
-        non-prechunked branch of :meth:`_index_document_in_vector_store` →
-        ``model_cache.aembed_texts``, off the event loop). Callers MUST bound how
+        non-prechunked branch of :meth:`_index_document_in_vector_store`, on
+        the KB indexing slot's thread, #2055). Callers MUST bound how
         many rows they repair per boot: re-embedding the whole KB reintroduces
         the on-pod CPU-embedding timeout the prechunked pack exists to avoid.
 
@@ -1740,12 +1806,16 @@ class KnowledgeService:
             updated_at=to_json_compatible(row.updated_at),
         )
         try:
-            chunks = await self._index_document_in_vector_store(
-                doc_model,
-                prechunked=None,
-                enterprise_id=row.enterprise_id,
-                generation=row.vector_generation,
-            )
+            # On the KB indexing slot, never refused (#2055): a repair encode
+            # still takes turns with an upload's, on this host.
+            async with await self._index_ticket(row.content, forced=True) as ticket:
+                chunks = await self._index_document_in_vector_store(
+                    doc_model,
+                    prechunked=None,
+                    enterprise_id=row.enterprise_id,
+                    generation=row.vector_generation,
+                    ticket=ticket,
+                )
         except KnowledgeBaseError as e:
             # Deliberate, documented tolerance — see the docstring. A failed
             # boot-time repair leaves the row orphaned for a later attempt; it
@@ -1907,6 +1977,9 @@ class KnowledgeService:
                 at the API boundary. Either is raised before any row is
                 written, so a refusal leaves nothing behind and needs no
                 compensation.
+            IndexAdmissionRefused: indexing the content would not fit the
+                request window (413, or 503 behind other indexing; #2055).
+                Nothing is written, the receipt included.
             KbReceiptExistsError: another upload under ``receipt_key``
                 published first; nothing of this one was. Classified after
                 the completing session has closed, by reading the receipt
@@ -2147,9 +2220,10 @@ class KnowledgeService:
 
             return response
 
-        except (RunbookQualityError, KbReceiptExistsError):
+        except (RunbookQualityError, KbReceiptExistsError, IndexAdmissionRefused):
             # A refused draft is a client-side outcome (422), not a service
-            # fault. Logged as a warning by the global handler; re-raised here
+            # fault, and so is a document the indexing window refused (413/503,
+            # #2055). Logged as a warning by the global handler; re-raised here
             # without the "Failed to upload document" ERROR line, which would
             # otherwise make every rejected paste look like an outage. A
             # duplicate under a published key is answered with its receipt.
@@ -2981,7 +3055,10 @@ class KnowledgeService:
         refused with ``RunbookQualityError`` (422) before anything is written
         when it holds a credential or a destructive command
         (:func:`enforce_runbook_security`, #2012). It is never rewritten. A
-        new ``title`` is redacted (#1981).
+        new ``title`` is redacted (#1981). A ``content`` longer than the draft
+        bound is refused with ``ValidationException`` (422), and one the
+        indexing window cannot fit with ``IndexAdmissionRefused`` (413/503),
+        both before anything is embedded or written (#2055).
 
         **A content change writes a new generation** (#2388, #952). The new
         content's chunks are written first, under a freshly minted
@@ -3039,6 +3116,9 @@ class KnowledgeService:
             from faultmaven.modules.knowledge.domain.models.knowledge_item import (
                 KnowledgeItemType,
             )
+            from faultmaven.modules.knowledge.draft_content import (
+                ensure_draft_content_within_bound,
+            )
             from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (  # noqa: E501
                 DatabaseKnowledgeItemRepository,
             )
@@ -3092,6 +3172,9 @@ class KnowledgeService:
                 # corpus as 16 extra chunks and 1284 of 1297 chunks carrying a
                 # ``\r``.
                 content = normalize_line_endings(kwargs["content"])
+                # The draft bound, as upload holds it (#1950, #2055): 422
+                # before any embed. Only the 10 MB body cap applied here.
+                ensure_draft_content_within_bound(content)
                 # The security half of the gate, before the first write
                 # (#2012): a body holding a credential is refused (422), and
                 # the body is otherwise stored as the author wrote it. It used
@@ -3146,11 +3229,16 @@ class KnowledgeService:
 
                 item.updated_at = datetime.now(timezone.utc)
                 updates["vector_generation"] = mint_vector_generation()
-                await self._index_document_in_vector_store(
-                    self._build_index_model(item),
-                    enterprise_id=item.enterprise_id,
-                    generation=updates["vector_generation"],
-                )
+                # Admitted to the indexing slot first (#2055): a 413 or 503
+                # refusal has written nothing, so the row and its vectors are
+                # unchanged.
+                async with await self._index_ticket(item.content) as ticket:
+                    await self._index_document_in_vector_store(
+                        self._build_index_model(item),
+                        enterprise_id=item.enterprise_id,
+                        generation=updates["vector_generation"],
+                        ticket=ticket,
+                    )
 
             switched_from: Optional[str] = None
             async with self._db_session_factory() as session:
@@ -3226,9 +3314,11 @@ class KnowledgeService:
                 ),
             }
 
-        except RunbookQualityError:
-            # A refused body is a client-side outcome (422), not a fault:
-            # re-raised without the ERROR line, as ``upload_document`` does.
+        except (RunbookQualityError, ValidationException, IndexAdmissionRefused):
+            # A refused body (422, the draft bound's included) or a document
+            # the indexing window refused (413/503): client-side outcomes, not
+            # faults, so re-raised without the ERROR line, as
+            # ``upload_document`` does.
             raise
         except Exception as e:
             logger.error(f"Failed to update document {document_id}: {e}")
@@ -3237,13 +3327,22 @@ class KnowledgeService:
     async def bulk_update_documents(
         self, document_ids: List[str], updates: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Bulk update document metadata.
+        """Bulk update document metadata. An ``updates`` naming ``content`` is
+        refused with ``ValidationException`` (422) before any document is
+        touched.
 
         ``errors`` is returned verbatim to the caller in a 200 body by
         ``POST /knowledge/documents/bulk-update``, which any authenticated
         caller may reach (#866), so per-target entries never carry exception
         text — the diagnostic stays in the log line.
         """
+        if "content" in updates:
+            # Metadata only (#2055): content re-indexes, one document per
+            # request, through its own window.
+            raise ValidationException(
+                "Bulk update changes metadata only. Change a document's content "
+                "with PUT /knowledge/documents/{id}."
+            )
         updated_count = 0
         errors = []
 
@@ -3254,12 +3353,6 @@ class KnowledgeService:
                     updated_count += 1
                 else:
                     errors.append(f"Document {doc_id} not found")
-            except RunbookQualityError as refused:
-                # The body holds a credential (#2012): the caller's content,
-                # refused before anything was written, not a fault. The entry
-                # stays the generic text this endpoint's policy requires.
-                errors.append(f"Document {doc_id}: update failed")
-                logger.info(f"Refused the update of document {doc_id}: {refused}")
             except Exception as e:
                 errors.append(f"Document {doc_id}: update failed")
                 logger.error(f"Failed to update document {doc_id}: {e}")

@@ -57,7 +57,8 @@ from faultmaven.modules.knowledge.domain.services.knowledge_service import (
 
 pytestmark = [pytest.mark.unit]
 
-_EMBED_TEXTS = "faultmaven.infrastructure.model_cache.model_cache.aembed_texts"
+# The encode, on the KB indexing slot's thread (#2055).
+_EMBED_TEXTS = "faultmaven.infrastructure.model_cache.model_cache.embed_texts_sync"
 _REPO = (
     "faultmaven.modules.knowledge.infrastructure.persistence."
     "knowledge_item_repository.DatabaseKnowledgeItemRepository"
@@ -218,7 +219,7 @@ async def test_row_is_not_committed_when_the_embedder_is_unavailable():
     service, repo, calls = _service(state)
 
     with patch(_REPO, return_value=repo):
-        with patch(_EMBED_TEXTS, new=AsyncMock(return_value=None)):
+        with patch(_EMBED_TEXTS, new=MagicMock(return_value=None)):
             with pytest.raises(KnowledgeBaseError):
                 await service.update_document_metadata(
                     document_id="doc-1", content=NEW_CONTENT
@@ -240,7 +241,7 @@ async def test_row_is_not_committed_when_the_vector_swap_fails():
     )
 
     with patch(_REPO, return_value=repo):
-        with patch(_EMBED_TEXTS, new=AsyncMock(return_value=[[0.1] * 1024])):
+        with patch(_EMBED_TEXTS, new=MagicMock(return_value=[[0.1] * 1024])):
             with pytest.raises(KnowledgeBaseError):
                 await service.update_document_metadata(
                     document_id="doc-1", content=NEW_CONTENT
@@ -263,7 +264,7 @@ async def test_vectors_are_written_before_the_row_commits():
     service, repo, calls = _service(state)
 
     with patch(_REPO, return_value=repo):
-        with patch(_EMBED_TEXTS, new=AsyncMock(return_value=[[0.1] * 1024])):
+        with patch(_EMBED_TEXTS, new=MagicMock(return_value=[[0.1] * 1024])):
             result = await service.update_document_metadata(
                 document_id="doc-1", content=NEW_CONTENT
             )
@@ -289,7 +290,7 @@ async def test_indexed_chunks_carry_the_updated_timestamp_not_the_previous_one()
     before = datetime.now(timezone.utc)
 
     with patch(_REPO, return_value=repo):
-        with patch(_EMBED_TEXTS, new=AsyncMock(return_value=[[0.1] * 1024])):
+        with patch(_EMBED_TEXTS, new=MagicMock(return_value=[[0.1] * 1024])):
             await service.update_document_metadata(
                 document_id="doc-1", content=NEW_CONTENT
             )
@@ -367,7 +368,7 @@ async def test_a_concurrent_unpublish_is_not_resurrected_by_the_commit():
     state = _state()
     service, repo, calls = _service(state)
 
-    async def _embed_then_someone_unpublishes(texts):
+    def _embed_then_someone_unpublishes(texts):
         # The concurrent retirement lands while we are embedding.
         state["is_published"] = False
         return [[0.1] * 1024 for _ in texts]
@@ -393,7 +394,7 @@ async def test_a_row_deleted_mid_update_leaves_no_admitted_vector():
     state = _state()
     service, repo, calls = _service(state)
 
-    async def _embed_then_someone_deletes(texts):
+    def _embed_then_someone_deletes(texts):
         state["present"] = False
         return [[0.1] * 1024 for _ in texts]
 
@@ -426,7 +427,7 @@ async def test_a_failed_commit_serves_the_previous_content():
     )
 
     with patch(_REPO, return_value=repo):
-        with patch(_EMBED_TEXTS, new=AsyncMock(return_value=[[0.1] * 1024])):
+        with patch(_EMBED_TEXTS, new=MagicMock(return_value=[[0.1] * 1024])):
             with pytest.raises(RuntimeError):
                 await service.update_document_metadata(
                     document_id="doc-1", content=NEW_CONTENT
@@ -447,7 +448,7 @@ async def test_a_commit_that_landed_but_raised_serves_the_new_content():
     )
 
     with patch(_REPO, return_value=repo):
-        with patch(_EMBED_TEXTS, new=AsyncMock(return_value=[[0.1] * 1024])):
+        with patch(_EMBED_TEXTS, new=MagicMock(return_value=[[0.1] * 1024])):
             with pytest.raises(RuntimeError):
                 await service.update_document_metadata(
                     document_id="doc-1", content=NEW_CONTENT
@@ -476,7 +477,7 @@ async def test_two_racing_updates_serve_the_content_that_committed(last):
     first = OTHER_CONTENT if last == NEW_CONTENT else NEW_CONTENT
 
     with patch(_REPO, return_value=repo):
-        with patch(_EMBED_TEXTS, new=AsyncMock(return_value=[[0.1] * 1024])):
+        with patch(_EMBED_TEXTS, new=MagicMock(return_value=[[0.1] * 1024])):
             updates = [
                 asyncio.create_task(
                     service.update_document_metadata(document_id="doc-1", content=c)
@@ -512,7 +513,7 @@ async def test_a_concurrent_unpublish_leaves_the_vectors_we_added_unadmitted():
     state = _state()
     service, repo, calls = _service(state)
 
-    async def _embed_then_someone_unpublishes(texts):
+    def _embed_then_someone_unpublishes(texts):
         state["is_published"] = False
         return [[0.1] * 1024 for _ in texts]
 
@@ -537,7 +538,7 @@ async def test_a_failed_commit_on_a_row_unpublished_meanwhile_writes_nothing_mor
         state, commit_raises=RuntimeError("database gone"), commit_lands=False
     )
 
-    async def _embed_then_someone_unpublishes(texts):
+    def _embed_then_someone_unpublishes(texts):
         state["is_published"] = False
         return [[0.1] * 1024 for _ in texts]
 
@@ -564,7 +565,7 @@ async def test_a_failed_generation_delete_is_logged_and_the_update_stands(caplog
     )
 
     with patch(_REPO, return_value=repo):
-        with patch(_EMBED_TEXTS, new=AsyncMock(return_value=[[0.1] * 1024])):
+        with patch(_EMBED_TEXTS, new=MagicMock(return_value=[[0.1] * 1024])):
             result = await service.update_document_metadata(
                 document_id="doc-1", content=NEW_CONTENT
             )
@@ -583,7 +584,7 @@ async def test_the_response_describes_the_committed_row_not_the_snapshot():
     state = _state()
     service, repo, calls = _service(state)
 
-    async def _embed_then_someone_retitles(texts):
+    def _embed_then_someone_retitles(texts):
         state["title"] = "Renamed by someone else"
         return [[0.1] * 1024 for _ in texts]
 
@@ -619,7 +620,7 @@ async def test_a_failing_re_read_leaves_the_previous_content_served():
     repo.get_by_id = AsyncMock(side_effect=_read_then_fail)
 
     with patch(_REPO, return_value=repo):
-        with patch(_EMBED_TEXTS, new=AsyncMock(return_value=[[0.1] * 1024])):
+        with patch(_EMBED_TEXTS, new=MagicMock(return_value=[[0.1] * 1024])):
             with pytest.raises(RuntimeError):
                 await service.update_document_metadata(
                     document_id="doc-1", content=NEW_CONTENT

@@ -52,6 +52,7 @@ from faultmaven.modules.knowledge.api.request_idempotency import (
     replay_committed_request,
     replayed,
 )
+from faultmaven.modules.knowledge.api.routes import INDEX_REFUSAL_RESPONSES
 from faultmaven.modules.knowledge.domain.models.conversion import (
     ConversionErrorCode,
     ConversionResponse,
@@ -540,7 +541,14 @@ async def verify_batch(
     service: ConversionService = Depends(_get_conversion_service),
     current_user: DevUser = Depends(_require_auth),
 ):
-    """Activate multiple drafts sequentially (verify + ingest into KB)."""
+    """Activate multiple drafts sequentially (verify + ingest into KB).
+
+    With ``INDEX_REQUEST_WINDOW_SECONDS`` set, the drafts share the request's
+    window (#2055): a draft the window has no room left for is ``deferred``
+    (unverified; verify it again), as is every draft after it, and the envelope
+    counts them in ``deferred``. A draft too large for any window is
+    ``failed``.
+    """
     result = await service.verify_batch(
         draft_refs=[(ref.conversion_id, ref.draft_id) for ref in body.draft_ids],
         user_id=current_user.user_id,
@@ -557,6 +565,7 @@ async def verify_batch(
 @router.post(
     "/conversions/{conversion_id}/drafts/{draft_id}/verify",
     dependencies=[Depends(_require_auth)],
+    responses=INDEX_REFUSAL_RESPONSES,
 )
 async def verify_draft(
     conversion_id: str,
@@ -581,6 +590,11 @@ async def verify_draft(
     check cannot run (the sanitizer or its pseudonym key is unavailable) the
     request answers **503**, a retryable server-side condition, with a generic
     detail, and the draft stays a draft.
+
+    With ``INDEX_REQUEST_WINDOW_SECONDS`` set, a draft whose indexing would not
+    fit the window is refused before anything is written, and stays a draft:
+    **413** ``KNOWLEDGE_DOCUMENT_TOO_LARGE`` or **503**
+    ``KNOWLEDGE_INDEXING_BUSY`` + ``Retry-After`` (#2055).
     """
     result = await service.verify_draft(
         conversion_id=conversion_id,

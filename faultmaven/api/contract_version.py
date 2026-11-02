@@ -2371,4 +2371,42 @@ asked to accept, and it belongs to a person.
 # statuses answer only a keyed request, and an unkeyed request behaves as
 # before. faultmaven-dashboard adopts by sending one key per submission and
 # reusing it on retry.
-API_CONTRACT_VERSION = "14.11.0"
+
+# 14.12.0 — MINOR. A KB document whose indexing would not fit the request
+# window is refused before anything is written (#2055).
+#
+# * `POST /knowledge/documents`, `PUT /knowledge/documents/{document_id}` and
+#   `POST /knowledge/conversions/{conversion_id}/drafts/{draft_id}/verify`
+#   declare a **413** and a **503**, told apart from the existing answers by
+#   `x-error-code`. With `INDEX_REQUEST_WINDOW_SECONDS` set:
+#   `KNOWLEDGE_DOCUMENT_TOO_LARGE` (413) when indexing the document alone would
+#   not fit the window (split it); `KNOWLEDGE_INDEXING_BUSY` (503, with
+#   `Retry-After`) when the indexing already queued on the server leaves no
+#   room for it, when it fits only once a cold model has loaded (the load
+#   starts; `Retry-After` is the load's remaining estimate; when the latest
+#   load failed, the route answers as for an unavailable embedder instead),
+#   or while an encode is stuck past its time bound (`Retry-After: 60`).
+#   Nothing is saved either way. At the default window of 0 neither is sent.
+# * `PUT /knowledge/documents/{document_id}` holds `content` to the draft
+#   bound (100,000 characters), as upload does: **422**, before any embed. A
+#   `ValidationException` there is now the global 422, where it was a 500.
+# * `POST /knowledge/documents/bulk-update` declares its **422**: an `updates`
+#   naming `content` is refused, and nothing is updated; content changes
+#   through `PUT`.
+# * Both routes' declared 422 replaces the generated `HTTPValidationError`
+#   one, as `PUT /cases/{case_id}/driver`'s does: the refusals' bodies are the
+#   global `ValidationException` handler's (and PUT's credential refusal its
+#   own `detail`), not that schema.
+# * `POST /knowledge/drafts/verify-batch` gains the per-draft status
+#   `deferred` and a `deferred` count: with a window set, the drafts the rest
+#   of the batch's window cannot fit are not verified, and verifying one again
+#   runs it in a fresh window. A draft too large for any window is `failed`.
+# * `GET /admin/config/status` gains `knowledge_indexing` (`window_seconds`,
+#   `queued`, `encoding_for_seconds`, `host_lock_available`,
+#   `waiting_for_host_lock`), a new `KnowledgeIndexingStatus` schema.
+#
+# MINOR because every client survives it: no client sends `content` to
+# bulk-update (faultmaven-dashboard, faultmaven-copilot and
+# faultmaven-slack-agent searched), and `deferred`, the 413 and the 503 cannot
+# arrive until a deployment sets the window, which follows the Dashboard step.
+API_CONTRACT_VERSION = "14.12.0"
