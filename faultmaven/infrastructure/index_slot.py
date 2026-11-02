@@ -276,7 +276,8 @@ class EncodeSlot:
         self._executor = executor
         self._host_lock = host_lock
         self._tickets: List[IndexTicket] = []
-        #: False once this process could not open or lock the host lock file.
+        #: False while this process's latest attempt to open or lock the host
+        #: lock file failed.
         self.host_lock_available = True
         #: True while the slot's thread is blocked in ``flock``.
         self.waiting_for_host_lock = False
@@ -342,6 +343,7 @@ class EncodeSlot:
                 fcntl.flock(fd, fcntl.LOCK_EX)
             finally:
                 self.waiting_for_host_lock = False
+            self.host_lock_available = True
             return fd
         except OSError as exc:
             if fd is not None:
@@ -427,6 +429,14 @@ class IndexAdmission(EncodeSlot):
         if self._cold() and tokens <= index_max_tokens(
             window_seconds - pending + loading
         ):
+            if self._load_failed():
+                # Not "loading" forever: the model would not load, so the
+                # embed would fail the same way (as for an unloadable
+                # tokenizer above), and no load is started.
+                raise KnowledgeBaseError(
+                    "Indexing unavailable: the embedding model could not be " "loaded",
+                    error_code="KNOWLEDGE_EMBEDDER_UNAVAILABLE",
+                )
             self._start_load()
             raise refusal("loading", wait=self.retry_after_seconds("loading"))
         raise refusal("busy", wait=self.retry_after_seconds())
@@ -436,6 +446,14 @@ class IndexAdmission(EncodeSlot):
         from faultmaven.infrastructure.model_cache import model_cache
 
         return model_cache.peek_bge_m3_model() is None
+
+    @staticmethod
+    def _load_failed() -> bool:
+        """The latest BGE-M3 load recorded an error."""
+        from faultmaven.infrastructure.model_cache import model_cache
+
+        info = model_cache.get_model_load_info()
+        return info is not None and info.error is not None
 
     def _start_load(self) -> None:
         """Start the model load on the slot, once: a forced ticket the queue

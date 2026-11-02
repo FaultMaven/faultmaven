@@ -443,6 +443,20 @@ async def test_a_caller_that_gives_up_behind_the_host_lock_never_encodes(
 # The host lock
 # ---------------------------------------------------------------------------
 
+
+def test_a_later_successful_lock_reports_the_host_lock_available_again(
+    monkeypatch, tmp_path
+):
+    admission = IndexAdmission()
+    monkeypatch.setattr(index_slot, "HOST_LOCK_PATH", str(tmp_path / "no" / "kb.lock"))
+    admission._job(admission.admit_forced([], 0), lambda: None, lambda: None)
+    after_failure = admission.host_lock_available
+    monkeypatch.setattr(index_slot, "HOST_LOCK_PATH", str(tmp_path / "kb.lock"))
+    admission._job(admission.admit_forced([], 0), lambda: None, lambda: None)
+
+    assert (after_failure, admission.host_lock_available) == (False, True)
+
+
 _HOLDER = """
 import sys, time
 from pathlib import Path

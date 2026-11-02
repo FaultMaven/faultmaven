@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -40,7 +41,11 @@ from faultmaven.config.settings import get_settings
 from faultmaven.exceptions import ValidationException
 from faultmaven.infrastructure import embedding_guard, index_slot
 from faultmaven.infrastructure.index_slot import index_admission
-from faultmaven.infrastructure.model_cache import model_cache
+from faultmaven.infrastructure.model_cache import (
+    BGE_M3_MODEL_ID,
+    ModelLoadInfo,
+    model_cache,
+)
 from faultmaven.infrastructure.persistence.models import (
     Base,
     ConversionDraftModel,
@@ -50,7 +55,7 @@ from faultmaven.infrastructure.persistence.models import (
     KnowledgeItemModel,
     UploadedFileModel,
 )
-from faultmaven.models.exceptions import IndexAdmissionRefused
+from faultmaven.models.exceptions import IndexAdmissionRefused, KnowledgeBaseError
 from faultmaven.modules.knowledge.api import routes
 from faultmaven.modules.knowledge.api.conversion_routes import (
     router as conversion_router,
@@ -71,6 +76,7 @@ from tests.utils import record_nothing, regex_only_sanitizer
 pytestmark = [pytest.mark.unit, pytest.mark.knowledge_base]
 
 RUNBOOK_TOKENS = 29_746  # 371.825 s warm on 2 cores: fits 600 s alone
+COLD_BAND = 40_000  # 500 s warm: fits 600 s, but not with a 180 s model load
 TOO_LARGE = 48_001  # 600.0125 s warm: fits no 600 s window
 ITEM = "kb_0123456789ab"
 _TABLES = (
@@ -159,6 +165,30 @@ def busy():
     held = index_admission.admit_forced(["other"], RUNBOOK_TOKENS)
     yield held
     held.close()
+
+
+@pytest.fixture
+def cold_model(monkeypatch):
+    """A cold model whose load, on the KB slot, waits for ``release``; with
+    ``fails``, it then records an error, as a failed load does."""
+    state = SimpleNamespace(loads=0, fails=False, release=threading.Event())
+
+    def _load(triggered_by):
+        state.loads += 1
+        state.release.wait(30)
+        if state.fails:
+            model_cache._load_info[BGE_M3_MODEL_ID] = ModelLoadInfo(
+                model_name=BGE_M3_MODEL_ID,
+                loaded_at=datetime.now(timezone.utc),
+                load_time_seconds=0.0,
+                error="OSError",
+            )
+
+    monkeypatch.setattr(model_cache, "peek_bge_m3_model", lambda: None)
+    monkeypatch.setattr(model_cache, "get_bge_m3_model", _load)
+    monkeypatch.setattr(model_cache, "_load_info", {})
+    yield state
+    state.release.set()
 
 
 @pytest.fixture
@@ -265,6 +295,14 @@ def _client(**services) -> TestClient:
     return TestClient(_app(**services), raise_server_exceptions=False)
 
 
+def _upload_route():
+    return _client(knowledge=_knowledge(_no_database())).post(
+        "/api/v1/knowledge/documents",
+        data={"title": "T", "document_type": "runbook", "scope": "personal"},
+        files={"file": ("rb.md", valid_runbook().encode(), "text/markdown")},
+    )
+
+
 def _no_database():
     """A session factory for a request refused before it reads anything."""
     return MagicMock(side_effect=AssertionError("the database was reached"))
@@ -354,6 +392,59 @@ class TestUpload:
             assert response.headers["x-error-code"] == "KNOWLEDGE_DOCUMENT_TOO_LARGE"
             assert "Retry-After" not in response.headers
             assert "Split it" in response.json()["detail"]
+
+    def test_the_route_answers_a_loading_model_with_the_loads_wait(
+        self, world, window, cold_model
+    ):
+        world.tokens.return_value = COLD_BAND
+
+        response = _upload_route()
+
+        assert response.status_code == 503, response.text
+        assert response.headers["x-error-code"] == "KNOWLEDGE_INDEXING_BUSY"
+        assert response.headers["Retry-After"] == "180"
+        assert response.json()["detail"] == (
+            index_slot.refusal("loading", wait=180).message
+        )
+        assert cold_model.loads == 1
+
+    def test_the_route_answers_a_stuck_encode_with_a_fixed_wait(
+        self, world, window, clock
+    ):
+        stuck = index_admission.admit_forced(["stuck"], 0)
+        stuck.guard_seconds = 10.0
+        stuck._started()
+        clock.now = 11.0
+        try:
+            response = _upload_route()
+        finally:
+            stuck.close()
+
+        assert response.status_code == 503, response.text
+        assert response.headers["x-error-code"] == "KNOWLEDGE_INDEXING_BUSY"
+        assert response.headers["Retry-After"] == "60"
+        assert response.json()["detail"] == index_slot.refusal("hung", wait=60).message
+
+    def test_a_model_that_failed_to_load_is_unavailable_and_not_loaded_again(
+        self, world, window, cold_model
+    ):
+        """Each route answers ``KNOWLEDGE_EMBEDDER_UNAVAILABLE`` as it answers
+        any ``KnowledgeBaseError``; upload's blanket 500 is #2461's."""
+        world.tokens.return_value = COLD_BAND
+        cold_model.fails = True
+        loading = _upload_route()
+        cold_model.release.set()
+        index_slot._KB_EXECUTOR.submit(lambda: None).result(30)
+
+        unavailable = _upload_route()
+
+        assert loading.status_code == 503 and cold_model.loads == 1
+        assert unavailable.status_code == 500, unavailable.text
+        assert "x-error-code" not in unavailable.headers
+        with pytest.raises(KnowledgeBaseError) as refused:
+            index_admission.admit(["c"], COLD_BAND, window_seconds=600)
+        assert refused.value.error_code == "KNOWLEDGE_EMBEDDER_UNAVAILABLE"
+        assert cold_model.loads == 1 and index_admission.queued() == 0
 
 
 # =============================================================================

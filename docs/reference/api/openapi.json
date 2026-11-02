@@ -3851,7 +3851,7 @@
             "title": "Encoding For Seconds"
           },
           "host_lock_available": {
-            "description": "False once this process could not open or lock the host lock file: its KB encodes then run without serialising against the other worker processes of the container.",
+            "description": "False while this process's latest attempt to open or lock the host lock file failed: its KB encodes then run without serialising against the other worker processes of the container.",
             "title": "Host Lock Available",
             "type": "boolean"
           },
@@ -12242,7 +12242,7 @@
             "description": "Validation Error"
           },
           "503": {
-            "description": "Unavailable; nothing was saved. `x-error-code: KNOWLEDGE_INDEXING_BUSY`: the indexing already queued on this server leaves no room for this document within the request window; retry after `Retry-After` seconds.",
+            "description": "Unavailable; nothing was saved. `x-error-code: KNOWLEDGE_INDEXING_BUSY`: within the request window there is no room for this document because other indexing is queued on this server, the indexing model is loading, or an encode is stuck past its time bound; retry after `Retry-After` seconds.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds, with KNOWLEDGE_INDEXING_BUSY.",
@@ -12583,7 +12583,7 @@
             "description": "Validation Error"
           },
           "503": {
-            "description": "Unavailable; nothing was saved. `x-error-code: KNOWLEDGE_INDEXING_BUSY`: the indexing already queued on this server leaves no room for this document within the request window; retry after `Retry-After` seconds.",
+            "description": "Unavailable; nothing was saved. `x-error-code: KNOWLEDGE_INDEXING_BUSY`: within the request window there is no room for this document because other indexing is queued on this server, the indexing model is loading, or an encode is stuck past its time bound; retry after `Retry-After` seconds.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds, with KNOWLEDGE_INDEXING_BUSY.",
@@ -12895,7 +12895,7 @@
             "description": "Refused; nothing was saved. The new `content` holds a credential or a destructive command, or is longer than a draft may be (100,000 characters). Or the body did not bind."
           },
           "503": {
-            "description": "Unavailable; nothing was saved. `x-error-code: KNOWLEDGE_INDEXING_BUSY`: the indexing already queued on this server leaves no room for this document within the request window; retry after `Retry-After` seconds.",
+            "description": "Unavailable; nothing was saved. `x-error-code: KNOWLEDGE_INDEXING_BUSY`: within the request window there is no room for this document because other indexing is queued on this server, the indexing model is loading, or an encode is stuck past its time bound; retry after `Retry-After` seconds.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds, with KNOWLEDGE_INDEXING_BUSY.",

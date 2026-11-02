@@ -2383,9 +2383,10 @@ asked to accept, and it belongs to a person.
 #   not fit the window (split it); `KNOWLEDGE_INDEXING_BUSY` (503, with
 #   `Retry-After`) when the indexing already queued on the server leaves no
 #   room for it, when it fits only once a cold model has loaded (the load
-#   starts; `Retry-After` is the load's remaining estimate), or while an
-#   encode is stuck past its time bound (`Retry-After: 60`). Nothing is saved
-#   either way. At the default window of 0 neither is sent.
+#   starts; `Retry-After` is the load's remaining estimate; when the latest
+#   load failed, the route answers as for an unavailable embedder instead),
+#   or while an encode is stuck past its time bound (`Retry-After: 60`).
+#   Nothing is saved either way. At the default window of 0 neither is sent.
 # * `PUT /knowledge/documents/{document_id}` holds `content` to the draft
 #   bound (100,000 characters), as upload does: **422**, before any embed. A
 #   `ValidationException` there is now the global 422, where it was a 500.

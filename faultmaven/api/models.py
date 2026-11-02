@@ -509,9 +509,9 @@ class KnowledgeIndexingStatus(BaseModel):
     )
     host_lock_available: bool = Field(
         description=(
-            "False once this process could not open or lock the host lock "
-            "file: its KB encodes then run without serialising against the "
-            "other worker processes of the container."
+            "False while this process's latest attempt to open or lock the "
+            "host lock file failed: its KB encodes then run without "
+            "serialising against the other worker processes of the container."
         )
     )
     waiting_for_host_lock: bool = Field(
