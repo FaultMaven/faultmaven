@@ -43,6 +43,16 @@ permissions:
 #     a sha-pinned action, so its github-actions entry in .github/dependabot.yml
 #     is what proposes new releases, fixes included.
 
+# No pip cache on any setup-python step (`cache: 'pip'`). Measured
+# 2026-11-02: a dependency install took 75-123 s whether the pip cache was
+# restored or not, while each PR ref saved its own ~2.9 GB copy per lockfile
+# (main almost never saves one: these jobs are skipped on a push the merge
+# queue verified, which is nearly every push; only an admin merge or a direct
+# push runs them there). Two open PRs held the repository past its 10 GB
+# Actions cache limit, and eviction took main's Docker layer cache with it,
+# so `build` rebuilt the image from scratch (~576 s instead of ~150 s) and
+# twice ran its runner out of disk. Do not re-add it without a cache that
+# main writes.
 jobs:
   # ============================================================================
   # DOCS-ONLY DETECTION
@@ -272,8 +282,6 @@ jobs:
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
-          cache: 'pip'
-          cache-dependency-path: 'requirements/test.txt'
 
       - name: Install Dependencies from Lockfile
         run: |
@@ -394,8 +402,6 @@ jobs:
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
-          cache: 'pip'
-          cache-dependency-path: 'requirements/test.txt'
 
       - name: Install Standalone (minimal deps) from Lockfile
         run: |
@@ -583,8 +589,6 @@ jobs:
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
-          cache: 'pip'
-          cache-dependency-path: 'requirements/cloud.txt'
 
       - name: Install Cloud (full deps) from Lockfile
         run: |
@@ -756,7 +760,12 @@ jobs:
       && needs.code-quality.result == 'success'
       && needs.changes.outputs.docs_only != 'true' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # 25, not 15: the job usually takes 6-7 min, but its `pip install -r
+    # requirements/cloud.txt` downloads ~3 GB from PyPI (torch with its CUDA
+    # wheels), and on a slow runner that alone took 589 s (run 41506167045,
+    # job 14.8 min against a 15 min cap). A cancelled required check blocks
+    # the merge with no diagnostic.
+    timeout-minutes: 25
     name: Test PostgreSQL Integration
 
     services:
@@ -788,8 +797,6 @@ jobs:
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
-          cache: 'pip'
-          cache-dependency-path: 'requirements/cloud.txt'
 
       - name: Install full deps from Lockfile
         run: |
@@ -847,7 +854,8 @@ jobs:
       && needs.code-quality.result == 'success'
       && needs.changes.outputs.docs_only != 'true' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # 25 for the reason given on test-postgres: the same ~3 GB install.
+    timeout-minutes: 25
     name: Test PostgreSQL Integration (FIPS, PostgreSQL 18)
 
     services:
@@ -882,8 +890,6 @@ jobs:
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
-          cache: 'pip'
-          cache-dependency-path: 'requirements/cloud.txt'
 
       - name: Install full deps from Lockfile
         run: |
@@ -952,8 +958,6 @@ jobs:
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
-          cache: 'pip'
-          cache-dependency-path: 'requirements/dev.txt'
 
       - name: Install Dependencies from Lockfile
         run: |
@@ -1006,8 +1010,6 @@ jobs:
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
-          cache: 'pip'
-          cache-dependency-path: 'requirements/dev.txt'
 
       - name: Install Dependencies from Lockfile
         run: |
@@ -1127,8 +1129,6 @@ jobs:
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
-          cache: 'pip'
-          cache-dependency-path: 'requirements/test.txt'
 
       - name: Run Packaging Tests
         run: |
@@ -1167,6 +1167,23 @@ jobs:
           fi
           echo "✅ Dockerfile found"
 
+      # The runner's root disk holds Docker's data. A full image build (a
+      # layer-cache miss: the dependency install and the ~2GB BGE-M3 model,
+      # then `load: true` and the cache export) has run it out of space,
+      # "no space left on device" while writing the model: runs 41396984677
+      # and 41439385339, both on 2026-11-02. Remove the preinstalled
+      # toolchains this job never uses (~22 GB). In the background: the
+      # deletion takes ~60 s and the build's large writes come minutes later,
+      # so it overlaps the buildx setup and the early layers instead of
+      # delaying the build (a step's background processes run until the job
+      # ends). The `df` here is before it; "Disk space after the build" shows
+      # what was left once the build finished.
+      - name: Free runner disk space
+        run: |
+          df -h /
+          sudo nohup rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost > /dev/null 2>&1 &
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
@@ -1177,12 +1194,24 @@ jobs:
           push: false
           load: true
           tags: faultmaven:ci
-          # GitHub Actions layer cache. The heavy layers (deps install, the
-          # ~2GB bundled BGE-M3 model) are content-addressed and only rebuild
-          # when requirements/Dockerfile change — code-only PRs reuse them and
-          # restore from main's cache, so no per-PR model re-download.
+          # GitHub Actions layer cache, READ-ONLY here. The heavy layers (deps
+          # install, the ~2GB bundled BGE-M3 model) are content-addressed and
+          # only rebuild when requirements/Dockerfile change, so a PR or queue
+          # run restores them from main's cache, which publish-docker.yml
+          # writes after every merge. This job writes none: a PR or queue
+          # ref's cache is readable by that ref alone, and each full build here
+          # wrote ~2GB of it (cache-to mode=max). With the per-PR pip caches
+          # (see the note above `jobs:`) that held the repository over its
+          # 10 GB Actions cache limit (15.8 GB on 2026-11-02), so eviction
+          # dropped main's layers and most builds rebuilt everything: the full
+          # builds that ran the runner out of disk.
           cache-from: type=gha
-          cache-to: type=gha,mode=max
+
+      # Free space when the build ended, pass or fail: a disk failure's log
+      # shows what was left, and a cleanup that freed nothing shows here too.
+      - name: Disk space after the build
+        if: always()
+        run: df -h /
 
   # ============================================================================
   # SECURITY SCANNING
@@ -1207,7 +1236,6 @@ jobs:
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
-          cache: 'pip'
 
       - name: Install bandit
         # Pinned: bandit gates on its raw exit code, so an unpinned release
