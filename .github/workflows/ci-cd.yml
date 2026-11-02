@@ -740,16 +740,6 @@ jobs:
   # this job existed (the :name::jsonb bind-drop and the reused-:case_id
   # AmbiguousParameterError among them). Tests are marked `postgres` and
   # skip themselves unless DATABASE_URL is a Postgres URL.
-  #
-  # Two servers, one lane each (#2463):
-  #   * stock `postgres:16`, the lane named "Test PostgreSQL Integration" (a
-  #     required check: its name must not change);
-  #   * PostgreSQL 18 with OpenSSL in FIPS mode (Bitnami's image, the default
-  #     of its Helm chart). FIPS mode refuses non-approved digests: revision 022
-  #     filled a column with md5() and passed the stock lane, yet
-  #     `alembic upgrade head` fails on a FIPS-mode server (#2462).
-  #     Its first step proves the server refuses md5(), so the lane cannot
-  #     pass while testing a server that is not in FIPS mode.
   # ============================================================================
   test-postgres:
     needs: [changes, code-quality]
@@ -767,45 +757,25 @@ jobs:
       && needs.changes.outputs.docs_only != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    name: Test PostgreSQL Integration${{ matrix.server.lane }}
-    strategy:
-      # The lanes test different servers: one failing must not cancel the other.
-      fail-fast: false
-      matrix:
-        server:
-          - lane: ""  # the required check's name, unchanged
-            image: postgres:16
-            user: fmtest
-            fips: ""
-          - lane: " (FIPS, PostgreSQL 18)"
-            # bitnami/postgresql:latest at 2026-11-02 (PostgreSQL 18.6). By
-            # digest: Docker Hub publishes no versioned Bitnami tags any more,
-            # and `latest` moves. The POSTGRES_* names below are aliases this
-            # image reads; POSTGRES_USER=postgres makes the superuser the
-            # tests' user, as POSTGRES_USER is on the stock image.
-            image: docker.io/bitnami/postgresql@sha256:9834b9d958f73a6c79457af08ebdbb8651fcb51e5efbad22b96636637316c26e
-            user: postgres
-            fips: "yes"
+    name: Test PostgreSQL Integration
 
     services:
       postgres:
-        image: ${{ matrix.server.image }}
+        image: postgres:16
         env:
-          POSTGRES_USER: ${{ matrix.server.user }}
+          POSTGRES_USER: fmtest
           POSTGRES_PASSWORD: fmtest  # pragma: allowlist secret
           POSTGRES_DB: fmtest
-          # Read by the Bitnami image only; the stock image ignores it.
-          OPENSSL_FIPS: ${{ matrix.server.fips }}
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U ${{ matrix.server.user }}"
+          --health-cmd "pg_isready -U fmtest"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
 
     env:
-      DATABASE_URL: "postgresql+asyncpg://${{ matrix.server.user }}:fmtest@localhost:5432/fmtest"  # pragma: allowlist secret
+      DATABASE_URL: "postgresql+asyncpg://fmtest:fmtest@localhost:5432/fmtest"  # pragma: allowlist secret
       # Bypass the integration conftest's Redis/API readiness gate — these
       # tests need only PostgreSQL.
       SKIP_SERVICE_CHECKS: "true"
@@ -827,32 +797,6 @@ jobs:
           pip install -r requirements/cloud.txt
           pip install -e . --no-deps
 
-      # A positive control: the lane exists to run against a server that
-      # refuses md5(). If the image stopped honouring OPENSSL_FIPS, or its
-      # default changed, every step below would pass against a server that
-      # is not the one this lane claims to test.
-      - name: Assert the server is in FIPS mode (refuses md5)
-        if: matrix.server.fips == 'yes'
-        run: |
-          python - <<'PY'
-          import os
-          import sys
-
-          import psycopg2
-
-          url = os.environ["DATABASE_URL"].replace("postgresql+asyncpg://", "postgresql://", 1)
-          with psycopg2.connect(url) as conn, conn.cursor() as cur:
-              try:
-                  cur.execute("SELECT md5('a')")
-              except psycopg2.Error as exc:
-                  if "could not compute MD5 hash" in str(exc):
-                      print(f"FIPS mode confirmed: {str(exc).strip()}")
-                      sys.exit(0)
-                  raise
-          print("::error::This lane's server computed md5(): it is not in FIPS mode, so the lane tests nothing it exists for.")
-          sys.exit(1)
-          PY
-
       - name: Apply Migrations to PostgreSQL
         run: alembic upgrade head
 
@@ -870,6 +814,118 @@ jobs:
           # or SKIP_SERVICE_CHECKS misconfigured), pytest exits 0 and the
           # build gate would go green having validated nothing — reopening
           # the dark-path gap this job was created to close.
+          if grep -qE '[0-9]+ skipped' /tmp/pg.log; then
+            echo "::error::PostgreSQL tests were skipped — check DATABASE_URL / SKIP_SERVICE_CHECKS on this job."
+            exit 1
+          fi
+          grep -qE '[0-9]+ passed' /tmp/pg.log || { echo "::error::No PostgreSQL tests ran."; exit 1; }
+
+  # ============================================================================
+  # POSTGRESQL INTEGRATION, FIPS MODE (#2463)
+  # The same suite as test-postgres, on PostgreSQL 18 with OpenSSL in FIPS mode
+  # (Bitnami's image, which is in FIPS mode by default, as is its Helm chart).
+  # FIPS mode refuses non-approved digests: revision 022 filled a column with
+  # md5() and passed test-postgres, yet `alembic upgrade head` fails on a
+  # FIPS-mode server (#2462).
+  #
+  # A job of its own, not a matrix leg of test-postgres: that job's name is a
+  # required check and must stay exactly "Test PostgreSQL Integration", and a
+  # matrix job's name is built from matrix values. Keep the steps below in step
+  # with test-postgres's. `build` needs this job too, so a FIPS failure blocks
+  # the merge, as a test-postgres failure does.
+  #
+  # The image is pinned by digest: Docker Hub publishes no versioned Bitnami
+  # tags any more, and `latest` moves. If the pull fails with "manifest
+  # unknown", the digest was retired upstream: re-pin to the current
+  # `docker.io/bitnami/postgresql:latest` (`docker buildx imagetools inspect`).
+  # ============================================================================
+  test-postgres-fips:
+    needs: [changes, code-quality]
+    # The same fail-safe docs-only condition as test-postgres (#1506).
+    if: >-
+      ${{ !cancelled()
+      && needs.code-quality.result == 'success'
+      && needs.changes.outputs.docs_only != 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    name: Test PostgreSQL Integration (FIPS, PostgreSQL 18)
+
+    services:
+      postgres:
+        # bitnami/postgresql:latest at 2026-11-02, PostgreSQL 18.6.
+        image: docker.io/bitnami/postgresql@sha256:9834b9d958f73a6c79457af08ebdbb8651fcb51e5efbad22b96636637316c26e
+        env:
+          # Aliases this image reads. POSTGRES_USER=postgres makes the
+          # superuser the tests' user, as POSTGRES_USER is on the stock image.
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: fmtest  # pragma: allowlist secret
+          POSTGRES_DB: fmtest
+          # The image's default already, set so the lane does not rely on it.
+          OPENSSL_FIPS: "yes"
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: "postgresql+asyncpg://postgres:fmtest@localhost:5432/fmtest"  # pragma: allowlist secret
+      SKIP_SERVICE_CHECKS: "true"
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.11"
+          cache: 'pip'
+          cache-dependency-path: 'requirements/cloud.txt'
+
+      - name: Install full deps from Lockfile
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements/cloud.txt
+          pip install -e . --no-deps
+
+      # A positive control: this job exists to run against a server that
+      # refuses md5(). If the image's default or its OPENSSL_FIPS handling
+      # changed, every step below would pass against a server that is not the
+      # one this job claims to test. The refusal is recognised by its message:
+      # its SQLSTATE is XX000, which any internal error carries.
+      - name: Assert the server is in FIPS mode (refuses md5)
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+
+          import psycopg2
+
+          url = os.environ["DATABASE_URL"].replace("postgresql+asyncpg://", "postgresql://", 1)
+          with psycopg2.connect(url) as conn, conn.cursor() as cur:
+              try:
+                  cur.execute("SELECT md5('a')")
+              except psycopg2.Error as exc:
+                  if "could not compute MD5 hash" in str(exc):
+                      print(f"FIPS mode confirmed: {str(exc).strip()}")
+                      sys.exit(0)
+                  print(f"::error::The FIPS probe failed for another reason (SQLSTATE {exc.pgcode}): {str(exc).strip()}")
+                  sys.exit(1)
+          print("::error::This job's server computed md5(): it is not in FIPS mode, so the job tests nothing it exists for.")
+          sys.exit(1)
+          PY
+
+      - name: Apply Migrations to PostgreSQL
+        run: alembic upgrade head
+
+      - name: Run PostgreSQL Integration Tests
+        run: |
+          # As test-postgres: explicit pipefail, and fail on a skipped or empty run.
+          set -o pipefail
+          pytest tests/ -m postgres -v --no-header -p no:cacheprovider | tee /tmp/pg.log
           if grep -qE '[0-9]+ skipped' /tmp/pg.log; then
             echo "::error::PostgreSQL tests were skipped — check DATABASE_URL / SKIP_SERVICE_CHECKS on this job."
             exit 1
@@ -1090,9 +1146,9 @@ jobs:
     # cap of 15 left 7% margin on a required check, and a cancelled required
     # check blocks the merge with no diagnostic.
     timeout-minutes: 25
-    needs: [test-standalone, test-cloud, test-postgres, architecture-lint, api-contract-drift, test-packaging]
+    needs: [test-standalone, test-cloud, test-postgres, test-postgres-fips, architecture-lint, api-contract-drift, test-packaging]
     # No docs-only condition here on purpose. GitHub skips a job whose
-    # dependency was skipped, so the three suites above carry this one down
+    # dependency was skipped, so the four suites above carry this one down
     # with them -- and, just as important, carry it UP again when the
     # detector fails and they run after all. An `if:` of its own keyed on
     # `changes` would have to repeat all six results to stay fail-safe, and

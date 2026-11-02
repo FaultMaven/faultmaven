@@ -48,7 +48,7 @@ To get started with local development for the `faultmaven` monolith:
         |----------|-------------------------|
         | `requirements/dev.txt` | Architecture Boundary Check, API Contract Drift Check |
         | `requirements/test.txt` | Test Standalone, Code Quality Checks, Test Packaging Configuration, Environment Smoke Check |
-        | `requirements/cloud.txt` | Test Cloud, Test PostgreSQL Integration |
+        | `requirements/cloud.txt` | Test Cloud, Test PostgreSQL Integration, Test PostgreSQL Integration (FIPS, PostgreSQL 18) |
 
         Security Scanning installs no lockfile — it audits the files themselves with `pip-audit --no-deps`.
 

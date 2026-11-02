@@ -248,9 +248,9 @@ def downgrade() -> None:
 Every migration runs on **both** dialects. CI checks both: the test suites
 migrate a SQLite file (`tests/integration/test_alembic_migrations.py`),
 and the *Test PostgreSQL Integration* job applies `alembic upgrade head` to a
-PostgreSQL 16 service before running the tests marked `postgres`. Its second
-lane, *Test PostgreSQL Integration (FIPS, PostgreSQL 18)*, does the same on
-PostgreSQL 18 with OpenSSL in FIPS mode (#2463).
+PostgreSQL 16 service before running the tests marked `postgres`. A second
+job, *Test PostgreSQL Integration (FIPS, PostgreSQL 18)*, does the same on
+PostgreSQL 18 with OpenSSL in FIPS mode (#2463); both gate the merge.
 
 - **Use no digest FIPS mode refuses.** A FIPS-mode server (the Bitnami image
   and Helm chart's default) raises `could not compute MD5 hash: unsupported`
@@ -531,8 +531,8 @@ other way round.
 | Triggers | PL/pgSQL functions | SQLite trigger syntax; dropped by a batch rebuild |
 | `ALTER COLUMN` | Supported | Needs batch mode |
 
-**Solution**: Test against PostgreSQL before pushing (CI's PostgreSQL job runs
-`postgres:16` and, in its FIPS lane, `bitnami/postgresql` with
+**Solution**: Test against PostgreSQL before pushing (CI's PostgreSQL jobs run
+`postgres:16` and, in the FIPS job, `bitnami/postgresql` with
 `OPENSSL_FIPS=yes`; the digest is in `.github/workflows/ci-cd.yml`):
 
 ```bash
@@ -546,7 +546,7 @@ docker run -d --name faultmaven-pg \
 export DATABASE_URL=postgresql+asyncpg://postgres:test@localhost:5432/faultmaven
 alembic upgrade head
 
-# The FIPS lane's server: md5() and other non-approved digests raise here
+# The FIPS job's server: md5() and other non-approved digests raise here
 docker run -d --name faultmaven-pg-fips \
   -e POSTGRES_USER=postgres \
   -e POSTGRES_PASSWORD=test \
