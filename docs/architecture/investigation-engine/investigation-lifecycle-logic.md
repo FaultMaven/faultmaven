@@ -641,8 +641,11 @@ match wins:
   /health response from node-3 again" was swallowed. So "*Yes*, …", a "Yes"
   behind an invisible character, "Yes, go ahead and close it. We verified …",
   "We're out of time on this one — please close the case." and "we'll do it in
-  Friday's window" are all processed and withdrawn. The offer returns on a later
-  turn while it is still earned (fm#1122).
+  Friday's window" are all processed and withdrawn. A withdrawn offer stays
+  quiet for the rest of its turn, the model's proposal included: step 2 stands
+  it down with feedback (`offers.terminal_offer_withdrawn_this_turn`), so the
+  same reply never shows the offer again. It returns on a later turn while it
+  is still earned (fm#1122).
 
 So the gate's consumption rule is exact: without an LLM turn it answers only the
 re-asks above (and a bare decline of a close), and it **never** consumes a turn carrying an

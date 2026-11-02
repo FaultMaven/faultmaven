@@ -773,7 +773,8 @@ RESOLVE_DECLINED_RULE = (
     "and propose resolved in the same turn. A user who "
     "changes their mind without one uses the engine's 'Mark it resolved' "
     "action: point them to it, and never record a confirmation row from a "
-    "request."
+    "request. A user who wants to close the case instead uses the engine's "
+    "'Close without resolving' action: point them to it."
 )
 
 

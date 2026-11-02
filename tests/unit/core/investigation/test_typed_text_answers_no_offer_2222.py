@@ -33,10 +33,20 @@ from faultmaven.core.investigation.milestone_engine.cause_state import (
 from faultmaven.core.investigation.milestone_engine.transition_turns import (
     _pending_transition_reask,
 )
+from faultmaven.core.investigation.milestone_engine.transitions import (
+    DECLINED_RESOLVE_FEEDBACK,
+)
 from faultmaven.core.investigation.offer_projection import project_offers
-from faultmaven.core.investigation.offers import confirmation_pair
+from faultmaven.core.investigation.offers import (
+    confirmation_pair,
+    terminal_offer_withdrawn_this_turn,
+)
 from faultmaven.core.investigation.offers import (
     standing_resolve_decline as _standing_resolve_decline,
+)
+from faultmaven.core.investigation.prompts.templates.assembly import (
+    RESOLVE_DECLINED_LINE,
+    get_prompt_for_case,
 )
 from faultmaven.core.investigation.schemas import SuggestedFollowUp, TurnPayload
 from faultmaven.modules.agent.domain.services.investigation_service.clarification import (
@@ -50,6 +60,7 @@ from tests.unit.core.investigation.test_declined_resolution_binds_the_model_1895
     _MODEL_FOLLOW_UPS,
     _declined,
     _engine,
+    _feedback,
     _labels,
     _offered_then_declined,
     _respond,
@@ -418,3 +429,149 @@ class TestTheReaskCopy:
         text, pair = _pending_transition_reask(case)
         assert text.endswith(f"\n\n{REASK}\n\n{REASK_HOW}")
         assert len(pair) == 2
+
+
+# ---------------------------------------------------------------------------
+# 7. A withdrawn offer stays quiet for its turn (review F1)
+# ---------------------------------------------------------------------------
+
+#: The stand-down's feedback, as the model reads it.
+STOOD_DOWN = "TRANSITION NOT PROPOSED: the user set the open offer aside"
+
+
+class TestAWithdrawnOfferStaysQuietForItsTurn:
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "No, keep it open - we will verify after the Friday maintenance "
+            "window first.",
+            "How do we know the fix held through the overnight batch?",
+        ],
+    )
+    async def test_the_models_proposal_stands_down_then_the_offer_returns(self, text):
+        engine, case = await _offered()
+        first = case.offer_record.open.proposal_id
+        result = await _turn(engine, case, text, propose="resolved")
+
+        last = case.offer_record.answers[-1]
+        assert (last.answer, last.via) == ("withdrawn", AnswerVia.TYPED)
+        assert terminal_offer_withdrawn_this_turn(case)
+        assert case.offer_record.open is None
+        assert "Yes, mark as resolved" not in _labels(result)
+        assert STOOD_DOWN in _feedback(result)
+
+        await _turn(engine, case, "ok what next")
+        assert case.offer_record.open.kind == "resolve", "still READY: it returns"
+        assert case.offer_record.open.proposal_id != first
+
+    async def test_a_bare_decline_is_still_refused_by_the_decline(self):
+        engine, case = await _offered()
+        result = await _turn(engine, case, "no", propose="resolved")
+
+        assert not terminal_offer_withdrawn_this_turn(case)
+        assert _declined(case)[-1].via == AnswerVia.TOKEN
+        assert case.offer_record.open is None
+        assert DECLINED_RESOLVE_FEEDBACK in _feedback(result)
+        assert STOOD_DOWN not in _feedback(result)
+
+
+# ---------------------------------------------------------------------------
+# 8. A bare answer to the open offer is the gate's (review F2)
+# ---------------------------------------------------------------------------
+
+
+def _live_reclassification(case) -> dict:
+    """A carried clarification for the case's upload, live this turn."""
+    upload = case.uploaded_files[0]
+    return {
+        "label": "Logs",
+        "action_type": "DECIDE",
+        "payload": f"Treat {upload.filename} as logs.",
+        "body": "Treat the file as logs.",
+        "intent": _reclassification_intent(upload.file_id, "logs"),
+        "offered_turn": case.current_turn,
+        "offered_data_type": upload.data_type,
+    }
+
+
+class TestABareAnswerIsTheGates:
+    async def test_a_bare_yes_never_reaches_the_resolver(self):
+        """With the pair filtered out, the resolver would classify "yes"
+        against whatever else is live; the gate reads it instead."""
+        engine, case = await _offered()
+        case.last_suggestions = [
+            *[
+                {**c, "offered_turn": case.current_turn}
+                for c in project_offers(case).pair
+            ],
+            _live_reclassification(case),
+        ]
+        router = _router("1")
+        engine_turns = AsyncMock(wraps=engine.process_turn)
+        engine.process_turn = engine_turns
+        service = _service(engine)
+        service.intent_resolver = IntentResolver(router)
+        await service.repository.save(case)
+
+        await service.process_turn(
+            case_id=case.case_id, user_id=case.user_id, payload=TurnPayload(query="yes")
+        )
+
+        router.route.assert_not_called()
+        assert engine_turns.await_args.kwargs["intent_type"] == "conversation"
+        assert case.state == CaseState.RESOLVED
+
+    async def test_other_text_still_reaches_the_resolver(self):
+        """The negative control: a reply that is not a bare token is matched
+        against the live clarification as before."""
+        engine, case = await _offered()
+        case.last_suggestions = [_live_reclassification(case)]
+        router = _router("none")
+        service = _service(engine)
+        service.intent_resolver = IntentResolver(router)
+        await service.repository.save(case)
+        _respond(engine)
+
+        await service.process_turn(
+            case_id=case.case_id,
+            user_id=case.user_id,
+            payload=TurnPayload(query="Treat it as logs"),
+        )
+
+        router.route.assert_awaited_once()
+
+    @pytest.mark.parametrize(
+        "text, triaged", [("yes :+1: :skin-tone-2:", False), ("Treat it as logs", True)]
+    )
+    async def test_a_bare_consent_at_a_revision_skips_the_triage(self, text, triaged):
+        """With no mint to keep it off the out-of-band lane, a decorated bare
+        consent at a pending revision would meet the triage, and an aside
+        verdict ("2") would skip 0b'."""
+        engine, case = _revision_engine(), _revision_case()
+        _propose(case)
+        service = _service(engine)
+        triage = AsyncMock(wraps=OutOfBandTriage(_router("2")).triage)
+        service.out_of_band_triage.triage = triage
+        await service.repository.save(case)
+
+        await service.process_turn(
+            case_id=case.case_id, user_id=case.user_id, payload=TurnPayload(query=text)
+        )
+
+        assert triage.await_count == (1 if triaged else 0)
+        if not triaged:
+            assert case.progress.problem_status == ProblemStatus.VERIFIED
+
+
+# ---------------------------------------------------------------------------
+# 9. The model is told about the Close chip (review F3)
+# ---------------------------------------------------------------------------
+
+
+def test_the_decline_prompt_and_feedback_name_the_close_chip():
+    case = _confirmed_case()
+    with_declined_offer(case, kind="resolve", basis="backstop")
+    prompt = get_prompt_for_case(case, "what now?")
+    assert RESOLVE_DECLINED_LINE in prompt
+    assert "'Close without resolving'" in prompt
+    assert "'Close without resolving'" in DECLINED_RESOLVE_FEEDBACK

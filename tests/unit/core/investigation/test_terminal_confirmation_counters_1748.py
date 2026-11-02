@@ -802,28 +802,24 @@ class TestTheConfirmationCounter:
         )
         followup.labels.assert_not_called()
 
-    async def test_an_ok_the_resolver_minted_into_an_intent_is_still_weak(
-        self, counters
-    ):
-        """Review F2: a typed "ok" the resolver turns into a confirmation
-        intent is a typed "ok", not a click."""
+    @pytest.mark.parametrize("card", [CONFIRM_CARD, DECLINE_CARD])
+    async def test_a_typed_ok_is_the_gates_and_still_weak(self, counters, card):
+        """Review F2: a typed "ok" is a typed "ok", not a click. Since #2222 a
+        bare token answering the open offer never reaches the resolver at all
+        (the gate's own reader decides), so no mint, whichever card the
+        resolver would have matched, reaches the gate."""
         confirmation, _ = counters
         store = _Store(_investigating_case())
         _offer_the_resolution_cards(store)
         svc = _service(store)
-        svc.intent_resolver.resolve = AsyncMock(return_value=CONFIRM_CARD["intent"])
-        engine = _spy_on_the_engine(svc)
+        engine = _mint(svc, card)
 
         await _turn(svc, "ok")
 
-        # The mint happened and reached the gate as an intent — otherwise this
-        # measures the plain typed path and cannot tell a click from a mint —
-        # and ``typed`` travelled as the engine's own keyword, never inside the
-        # client-filled ``intent_data`` (review F10).
-        assert engine.await_args.kwargs["intent_type"] == "confirmation"
-        assert engine.await_args.kwargs["typed"] is True
-        assert "typed" not in engine.await_args.kwargs["intent_data"]
-        # A bare token, so the minted confirmation executes (#1783).
+        svc.intent_resolver.resolve.assert_not_awaited()
+        assert engine.await_args.kwargs["intent_type"] == "conversation"
+        assert not engine.await_args.kwargs.get("typed", False)
+        # A bare token, so it executes (#1783).
         assert store.row().state == CaseState.RESOLVED
         assert store.row().turn_history[-1].terminal_confirmed_via == "weak_token"
         confirmation.labels.assert_called_once_with(
@@ -845,8 +841,11 @@ class TestTheConfirmationCounter:
 
         await _turn(svc, "that works")
 
+        # ``typed`` travels as the engine's own keyword, never inside the
+        # client-filled ``intent_data`` (review F10).
         assert engine.await_args.kwargs["intent_type"] == "confirmation"
         assert engine.await_args.kwargs["typed"] is True
+        assert "typed" not in engine.await_args.kwargs["intent_data"]
         assert store.row().state == CaseState.INVESTIGATING
         assert store.row().offer_record.open.kind == "resolve"
         confirmation.labels.assert_not_called()
@@ -970,28 +969,6 @@ class TestOnlyAClickOrABareTokenExecutes:
         assert engine.await_args.kwargs["typed"] is True
         _assert_re_asked(store, response)
         confirmation.labels.assert_not_called()
-
-    async def test_a_minted_decline_carries_no_answer(self, counters):
-        """#2222: a mint answers no offer, so the bare token decides. The
-        resolver no longer mints the resolve pair at all; forced here, the
-        engine still reads only the text: "ok" is a whole-message bare consent
-        and confirms, where the mint used to turn it into a re-ask."""
-        confirmation, _ = counters
-        store = _Store(_investigating_case())
-        _offer_the_resolution_cards(store)
-        svc = _service(store)
-        engine = _mint(svc, DECLINE_CARD)
-
-        await _turn(svc, "ok")
-
-        assert engine.await_args.kwargs["intent_type"] == "confirmation"
-        assert engine.await_args.kwargs["intent_data"]["value"] is False
-        assert engine.await_args.kwargs["typed"] is True
-        assert store.row().state == CaseState.RESOLVED
-        assert store.row().turn_history[-1].terminal_confirmed_via == "weak_token"
-        confirmation.labels.assert_called_once_with(
-            via="weak_token", to_state="resolved"
-        )
 
     async def test_a_curly_apostrophe_consent_executes(self, counters):
         confirmation, _ = counters

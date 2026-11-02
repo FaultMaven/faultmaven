@@ -163,6 +163,16 @@ def terminal_offer_answered_this_turn(case: "Case") -> bool:
     )
 
 
+def terminal_offer_withdrawn_this_turn(case: "Case") -> bool:
+    """Whether a resolve or close offer was withdrawn on the current turn."""
+    return any(
+        answer.at_turn == case.current_turn
+        and answer.kind in TERMINAL_KINDS
+        and answer.answer == AnswerKind.WITHDRAWN
+        for answer in case.offer_record.answers
+    )
+
+
 def awaiting_request_recheck(case: "Case") -> bool:
     """Whether a remembered resolution request awaits step 0's re-check. The
     apply-step openers stand down meanwhile, so the re-check decides the turn

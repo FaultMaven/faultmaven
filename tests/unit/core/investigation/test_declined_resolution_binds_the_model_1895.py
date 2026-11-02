@@ -706,7 +706,7 @@ class TestTheChip:
             redaction_ctx=disabled_redaction(),
         )
         assert minted is None
-        router.assert_not_called()
+        router.route.assert_not_called()
 
         result = await _turn(engine, case, text, follow_ups=_MODEL_FOLLOW_UPS)
         assert engine.generator.generate_structured_output.await_count == 1

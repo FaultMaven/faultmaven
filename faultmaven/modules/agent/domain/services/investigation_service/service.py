@@ -25,6 +25,7 @@ from faultmaven.core.investigation.milestone_engine.affordances import _gate1_is
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.milestone_engine.transition_consent import (
     gate1_bare_consent,
+    pending_gate_verdict,
 )
 from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommitPlan
 from faultmaven.core.investigation.offers import open_terminal_offer
@@ -890,11 +891,25 @@ class InvestigationService:
         # a bare consent (#1794).
         intent_minted = False
 
+        # A bare token that answers the offer open on the record (a resolve,
+        # close or revision offer) is the gate's to read (#2222): neither the
+        # resolver, which would classify it against whatever else is live, nor
+        # the out-of-band triage, which could call it an aside, sees it. The
+        # gate's own reader decides, as #1841 does for Gate 1.
+        open_offer = case.offer_record.open
+        bare_offer_answer = (
+            open_offer is not None
+            and bool(query)
+            and pending_gate_verdict(query, open_offer.kind.to_state, clicked=None)[0]
+            in ("confirm", "decline")
+        )
+
         if (
             intent_type == IntentType.CONVERSATION
             and query
             and not payload.has_attachments
             and case.last_suggestions
+            and not bare_offer_answer
         ):
             on_offer = live_suggestions(
                 case.last_suggestions, case, as_of_turn=case.current_turn
@@ -1006,6 +1021,8 @@ class InvestigationService:
             # A bare consent at a pending Gate 1 is the engine's to read
             # (#1841), never the classifier's: see above.
             and not (_gate1_is_pending(case) and gate1_bare_consent(query))
+            # A bare answer to the open offer, likewise (#1841's pattern; #2222).
+            and not bare_offer_answer
         ):
             oob_kind = await self.out_of_band_triage.triage(
                 case, query, classification, redaction_ctx=redaction_ctx

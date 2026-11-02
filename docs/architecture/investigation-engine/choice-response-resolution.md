@@ -159,7 +159,7 @@ User submits message
 
 ### Classifier Input
 
-The choices are the live suggestions typed text may answer: Gate 1's pair, clarification choices, save-chat-data and hypothesis actions. An offer's card is set aside before either tier (`intent_resolver._typed_text_may_answer`, #2222): any `status_transition` card (the **Mark it resolved** and **Close without resolving** chips, the declined-close cards) and any `confirmation` that does not name Gate 1 (the resolve, close and revision pairs). With nothing left, the classifier is not called.
+The choices are the live suggestions typed text may answer: Gate 1's pair and clarification (file reclassification) choices. An offer's card is set aside before either tier (`intent_resolver._typed_text_may_answer`, #2222): any `status_transition` card (the **Mark it resolved** and **Close without resolving** chips, the declined-close cards) and any `confirmation` that does not name Gate 1 (the resolve, close and revision pairs). With nothing left, the classifier is not called.
 
 ```text
 The assistant just offered these choices:
