@@ -16,8 +16,12 @@ Existing rows (the owner's ruling (c), 2026-10-30)
 ---------------------------------------------------
 The column is added nullable, each existing row is given a random generation in
 ONE UPDATE (``lower(hex(randomblob(16)))`` on SQLite,
-``md5(random()::text || item_id)`` on PostgreSQL), and the column is then made
-NOT NULL. That fills a column; it migrates no chunk. No chunk carries those
+``replace(gen_random_uuid()::text, '-', '')`` on PostgreSQL), and the column is
+then made NOT NULL. Not ``md5()``: a server whose OpenSSL runs in FIPS mode
+(the Bitnami chart's default, ``global.defaultFips: restricted``) refuses it
+with "could not compute MD5 hash: unsupported". ``gen_random_uuid()`` (built in
+since PostgreSQL 13) draws from the server's strong random source, which FIPS
+mode allows. That fills a column; it migrates no chunk. No chunk carries those
 values, so nothing written before this revision is served from the first query
 after it. The next pack-loading bootstrap re-ingests every built-in row from
 the pack (a pack row with no chunk of its generation, pre-embedded, no model);
@@ -68,7 +72,9 @@ COLUMN = "vector_generation"
 #: Each existing row's random generation, one UPDATE per dialect.
 FILL = {
     "sqlite": f"UPDATE {TABLE} SET {COLUMN} = lower(hex(randomblob(16)))",
-    "postgresql": f"UPDATE {TABLE} SET {COLUMN} = md5(random()::text || item_id)",
+    "postgresql": (
+        f"UPDATE {TABLE} SET {COLUMN} = replace(gen_random_uuid()::text, '-', '')"
+    ),
 }
 ROW_SECURITY_OFF = "SET LOCAL row_security = off"
 ROW_SECURITY_RESTORED = "SET LOCAL row_security TO DEFAULT"

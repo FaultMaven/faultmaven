@@ -3823,7 +3823,7 @@ class TestKnowledgeItemVectorGenerationRevision:
         off = sql.index("SET LOCAL row_security = off;")
         fill = sql.index(
             "UPDATE knowledge_items SET vector_generation = "
-            "md5(random()::text || item_id);"
+            "replace(gen_random_uuid()::text, '-', '');"
         )
         restored = sql.index("SET LOCAL row_security TO DEFAULT;")
         not_null = sql.index(
