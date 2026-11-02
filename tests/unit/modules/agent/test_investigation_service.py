@@ -9,6 +9,7 @@ from uuid import uuid4
 
 import pytest
 
+from faultmaven.core.investigation.offers import confirmation_pair
 from faultmaven.core.investigation.schemas import Attachment, TurnPayload
 from faultmaven.exceptions import (
     NotFoundError,
@@ -1299,29 +1300,12 @@ class TestTurnResponseCauseAssurance:
 
 
 class TestMintedIntentTerminalConsentAdoption:
-    """#721 adoption-site pins: a classifier-minted confirmation must not
-    dispatch as consent to a pending terminal transition when the typed
-    message is substantive (INV-26). See
-    tests/unit/core/investigation/test_terminal_confirmation_integrity.py
-    for the predicate-level matrix — these tests drive the REAL adoption
-    path in process_turn with the resolver mocked at its boundary."""
-
-    # ``offered_turn`` is not decoration: the adoption site only lets the
-    # resolver see LIVE entries (#1245), and an unstamped one is not live.
-    # Without it these tests would pass the resolver an empty list, never
-    # reach the INV-26 guard at all, and land on ``conversation`` — which is
-    # what the substantive-message test asserts, so it would go green
-    # vacuously while the guard it exists to pin went unexercised.
-    # ``create_sample_case`` starts at turn 0, so the offer is turn 0 and the
-    # turn under test is turn 1 — one turn old, the follow-up window.
-    RESOLVE_SUGGESTIONS = [
-        {
-            "label": "Yes, mark as resolved",
-            "payload": "Yes, mark as resolved",
-            "intent": {"type": "confirmation", "confirmation_value": True},
-            "offered_turn": 0,
-        }
-    ]
+    """#721 adoption-site pins, as #2222 rules them: typed text never mints a
+    card of an open offer's pair, so no typed reply reaches the engine as a
+    confirmation of a pending terminal transition, and the classifier is not
+    called for the pair. The engine reads the text itself (only a bare token
+    answers). These drive the REAL adoption path in process_turn with the
+    resolver's classifier tier doubled at its boundary."""
 
     def _pending_case(self, user_id: str) -> Case:
         case = create_sample_case(user_id=user_id)
@@ -1331,58 +1315,52 @@ class TestMintedIntentTerminalConsentAdoption:
         with_open_offer(
             case, kind="resolve", basis="model", summary="Confirm resolution?"
         )
-        case.last_suggestions = list(self.RESOLVE_SUGGESTIONS)
+        # ``offered_turn`` is not decoration: the adoption site only lets the
+        # resolver see LIVE entries (#1245), and an unstamped one is not live.
+        # ``create_sample_case`` starts at turn 0, so the offer is turn 0 and
+        # the turn under test is turn 1 — one turn old, the follow-up window.
+        case.last_suggestions = [
+            {**card, "offered_turn": 0}
+            for card in confirmation_pair(case.offer_record.open)
+        ]
         return case
 
-    async def _run_turn(self, query: str, user_id: str, case, engine, repo):
-        service = InvestigationService(milestone_engine=engine, case_repository=repo)
-        await repo.save(case)
-        # Simulate the Tier-2 classifier semantically matching the typed
-        # text to the resolve suggestion — the exact #721 scenario.
-        service.intent_resolver.resolve = AsyncMock(
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "query",
+        [
+            # The #721 reproducer.
+            "yes but what about the replication lag?",
+            # A bare phrasing outside the token list: the mint used to make it
+            # consent, which only a click or a bare token is now.
+            "affirmative",
+            # The pair's own label, retyped: not its click.
+            "Yes, mark as resolved",
+        ],
+    )
+    async def test_typed_text_never_dispatches_the_offers_confirmation(
+        self, query, mock_milestone_engine, mock_case_repository, sample_user_id
+    ):
+        case = self._pending_case(sample_user_id)
+        service = InvestigationService(
+            milestone_engine=mock_milestone_engine,
+            case_repository=mock_case_repository,
+        )
+        await mock_case_repository.save(case)
+        classify = AsyncMock(
             return_value={"type": "confirmation", "confirmation_value": True}
         )
+        service.intent_resolver._classify = classify
+
         await service.process_turn(
             case_id=case.case_id,
-            user_id=user_id,
+            user_id=sample_user_id,
             payload=TurnPayload(query=query, attachments=[]),
         )
-        return engine.process_turn.call_args.kwargs
 
-    @pytest.mark.asyncio
-    async def test_substantive_message_does_not_dispatch_confirmation(
-        self, mock_milestone_engine, mock_case_repository, sample_user_id
-    ):
-        case = self._pending_case(sample_user_id)
-        kwargs = await self._run_turn(
-            "yes but what about the replication lag?",
-            sample_user_id,
-            case,
-            mock_milestone_engine,
-            mock_case_repository,
-        )
-        assert kwargs.get("intent_type") != "confirmation", (
-            "#721: a substantive typed message reached the engine as a "
-            "confirmation intent — the classifier mint swallowed it as "
-            "consent to an irreversible transition."
-        )
+        classify.assert_not_awaited()
+        kwargs = mock_milestone_engine.process_turn.call_args.kwargs
         assert kwargs.get("intent_type") == "conversation"
-
-    @pytest.mark.asyncio
-    async def test_bare_message_still_dispatches_minted_confirmation(
-        self, mock_milestone_engine, mock_case_repository, sample_user_id
-    ):
-        """The classifier tier's legitimate value: a bare phrasing outside
-        the engine's pattern list still confirms via the minted intent."""
-        case = self._pending_case(sample_user_id)
-        kwargs = await self._run_turn(
-            "affirmative",
-            sample_user_id,
-            case,
-            mock_milestone_engine,
-            mock_case_repository,
-        )
-        assert kwargs.get("intent_type") == "confirmation"
 
 
 class TestObservedAtSeedsFileCoverage:

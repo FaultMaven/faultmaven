@@ -10,8 +10,9 @@ swallowed every turn; the case was unrecoverable from the keyboard.
 Contract pinned here (the escape lane):
 
 - A message that is not a gate answer (longer than the substantive-length
-  bound, or carrying a question) withdraws the pending proposal and the
-  turn proceeds to normal processing — the LLM seam is reached.
+  bound, or carrying a question) withdraws the pending proposal, records no
+  decline (#2222), and the turn proceeds to normal processing — the LLM seam
+  is reached.
 - A short question-free non-answer ("hmm") re-presents the confirmation,
   every time it is sent, and records no refusal: every pending proposal is
   terminal, and a re-ask must never become a decline (#1783, ruling (a)). The
@@ -280,17 +281,14 @@ async def test_whitespace_only_message_never_reaches_llm():
 
 
 class TestWithdrawalRecordsTheEngineOffer:
-    """Every withdrawal path must record the refusal, not only the explicit
-    "no".
+    """Every path that leaves a standing offer answers it on the record.
 
     fm#1122 follow-up: a decline is recorded on the offer record so the
     deferred-implementation proposer stops re-firing from unchanged state.
-    The two OTHER paths that withdraw a standing offer — a deflection that is
-    not a gate answer, and a contradicting status pick — cancelled it
-    unrecorded. The deflection case is the sharper one: the turn falls through
-    to normal processing, which reaches ``_maybe_propose_deferred_close``
-    again in the SAME turn and re-takes the affordances the user just pushed
-    away.
+    Only a click or a bare token is a decline (#2222). A long typed reply that
+    is not a gate answer is WITHDRAWN: the answer still keeps the proposers
+    quiet for the rest of the turn (``terminal_offer_answered_this_turn``),
+    and the offer returns on a later turn while it is still earned.
     """
 
     @staticmethod
@@ -298,8 +296,9 @@ class TestWithdrawalRecordsTheEngineOffer:
         return _investigating_case_with_pending_close(basis="deferred")
 
     @pytest.mark.asyncio
-    async def test_long_non_question_deflection_records_the_refusal(self):
-        """A deflection is not a "no", but it is not an acceptance either."""
+    async def test_a_long_non_question_reply_is_withdrawn_not_declined(self):
+        """#2222: #1808 recorded this as a refusal (a "deflection"). Only a
+        click or a whole-message bare token answers an offer."""
         engine = _engine()
         case = self._engine_proposed_case()
 
@@ -310,7 +309,7 @@ class TestWithdrawalRecordsTheEngineOffer:
             "team will pick it up from there.",
         )
 
-        assert _answers(case) == [AnswerKind.DECLINED]
+        assert _answers(case) == [AnswerKind.WITHDRAWN]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -443,8 +442,7 @@ class TestAnUploadTurnIsNeverConsumed:
     carrying an upload and a short caption was re-asked forever and the file
     never analysed. An upload turn now always escapes the gate: the proposal
     is withdrawn and the turn processed normally. A refusal is recorded only
-    by the text rule (a decline, or a non-answer over 40 characters with no
-    "?"), never for the upload itself."""
+    for a bare decline token (#2222), never for the upload itself."""
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -455,12 +453,11 @@ class TestAnUploadTurnIsNeverConsumed:
             ("ok here are the logs", _WITHDRAWN),
             ("what does this log show?", _WITHDRAWN),
             ("no", _DECLINED),
+            # #2222: a long typed non-answer is withdrawn, never declined.
             (
                 "we will apply it in friday's maintenance window as planned",
-                _DECLINED,
+                _WITHDRAWN,
             ),
-            # #1808: a non-answer that opens with consent is not a deflection,
-            # with or without an upload.
             ("ok but we need to wait for the weekend soak first", _WITHDRAWN),
         ],
     )

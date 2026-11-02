@@ -73,7 +73,7 @@ If the classifier is unsure, the message goes through normal LLM processing. Fal
 
 No lock, no gate, no "awaiting answer" flag: the agent's last response and its suggestions *are* the visible pending state, and the system reads `last_suggestions` to know what was offered.
 
-The one exception is an **offer** — to resolve, to close, or to accept a revised problem statement — which is case state, not a suggestion: it lives on the case's offer record (`cases.metadata["offer_record"]`, #2379; rules in `core/investigation/offers.py`). Its cards are derived from the record by the offer projection when a reply is composed, each naming the open offer's `proposal_id`, and the engine's gate answers the open offer whatever `last_suggestions` holds. Nothing below governs it; the stored copies of its cards are what the resolver matches typed text against, and only the text decides (INV-26).
+The one exception is an **offer** — to resolve, to close, or to accept a revised problem statement — which is case state, not a suggestion: it lives on the case's offer record (`cases.metadata["offer_record"]`, #2379; rules in `core/investigation/offers.py`). Its cards are derived from the record by the offer projection when a reply is composed, each naming the open offer's `proposal_id`, and the engine's gate answers the open offer whatever `last_suggestions` holds. Nothing below governs it: the resolver never matches typed text against an offer's cards, and only a click or a whole-message bare token answers an offer (#2222, INV-26).
 
 What the stored entries do carry is a **liveness stamp** — the turn that offered them (`offered_turn`), and for a clarification the target file's `data_type` at that moment (`offered_data_type`). Two facts make "which entries are still answerable?" non-trivial (#1245, fm#918). The stamp answers the first, and only half of the second — which mechanism answers which is spelled out below the bullets, because getting that wrong is how this section previously contradicted itself:
 
@@ -159,6 +159,8 @@ User submits message
 
 ### Classifier Input
 
+The choices are the live suggestions typed text may answer: Gate 1's pair and clarification (file reclassification) choices. An offer's card is set aside before either tier (`intent_resolver._typed_text_may_answer`, #2222): any `status_transition` card (the **Mark it resolved** and **Close without resolving** chips, the declined-close cards) and any `confirmation` that does not name Gate 1 (the resolve, close and revision pairs). With nothing left, the classifier is not called.
+
 ```text
 The assistant just offered these choices:
 
@@ -184,39 +186,21 @@ Single token: `1`, `2`, ..., `N`, or `none`.
 
 ### When NOT to Run the Classifier
 
-- No `last_suggestions` with intent metadata on the case (nothing to match against)
+- No `last_suggestions` with intent metadata on the case, or none typed text may answer (an offer's cards are set aside, above)
 - User message is >200 characters (conversational, not a short answer)
 - User message has file attachments (evidence submission, not a choice answer)
 - Intent metadata already present (user clicked — no classification needed)
+- The message is a whole-message bare token that answers the offer open on the record (`pending_gate_verdict` reads it as a confirm or a decline): the gate reads it, and the out-of-band triage is skipped too (#2222)
 
-### Gate-Consent Guard at the Adoption Site (#721, INV-26; widened by fm#918)
+### Gate-Consent Guard at the Adoption Site (#721, INV-26; fm#918; #2222)
 
-A resolver match is an **inference** from typed text, not a deterministic click — but the engine treats adopted intents as click-equivalent consent and consults them *before* its INV-26 bare-token guards. Unguarded, the classifier could match `"yes but what about the replication lag?"` to "Yes, mark as resolved" and irreversibly resolve the case — consuming substantive input as consent, exactly what INV-26 forbids.
+A resolver match is an **inference** from typed text, not a deterministic click. Since #2222 it never reaches an offer: typed text answers an open resolve, close or revision offer only as one whole bare consent or decline token, which the engine reads itself (INV-26), so no offer's card is offered to the resolver (above), and the engine reads any minted intent at an offer as no answer.
 
-So the adoption site (`intent_gates._minted_intent_swallows_gate_consent`) rejects a minted intent when it **would commit a gate** and the message is not consent to it. Each gate has its own screen:
+One gate is still reached by a mint: **Gate 1** (the problem statement). The adoption site (`intent_gates._minted_intent_swallows_gate_consent`) drops a minted `confirmation` with `confirmation_value=True` on an INQUIRY case carrying a `proposed_problem_statement` unless the message is one **bare** consent token (`transition_consent.gate1_bare_consent`, #1794, ruling (a)). Unguarded, the engine's section 0c would set `problem_statement_confirmed` and `_check_automatic_transitions` would fire INQUIRY → INVESTIGATING: `"correct — is the problem statement about the replica or the primary?"` started investigations off a statement the user was questioning (fm#918 exposure 3). A mint on "yes please" or "ok, don't start yet" is dropped, the LLM's flag on the same text meets the same test, and 0c applies it again to any minted confirmation that reaches it. The guard says nothing about an open offer, deliberately: 0c is reached with one or without one.
 
-- **the pending terminal transition:** the message is **substantive** per `terminal_transitions.is_substantive_reply`, the same predicate `confirmation_token_class` uses (>100 chars, contains `?`, or a contrastive `" but "`), so the confirm lanes cannot drift. A shorter mint that is adopted still executes only when its text is a bare consent token, because the engine's pending gate reads the text (#1783);
-- **Gate 1:** the message is not one **bare** consent token, per `transition_consent.gate1_bare_consent` (#1794, ruling (a)). Gate 1 has no text reader downstream, so the guard applies the bare test itself: a mint on "yes please" or "ok, don't start yet" is dropped, and the LLM's flag on the same text meets the same test. The engine's section 0c applies it again to any minted confirmation that reaches it.
+#1464 made the guard affirmative-only: 0c commits on an explicit `True` alone, so a declining mint commits nothing anywhere. The engine-side rule (a branch keyed on `intent_type == "confirmation"` reads `intent_data["value"]`) holds across every such branch in `_process_turn_impl` and is scanned by `tests/unit/core/investigation/test_gate_one_decline_1464.py`. A confirmation intent the gate consumed on a turn it answered skips 0c's confirmation branch (#2223); a mint on a turn the gate set aside (a question, an upload) still reaches it (INV-26 (c)).
 
-There are two gates, and #721 guarded only the first:
-
-| Gate | "Would commit" means |
-|---|---|
-| The open terminal offer | a resolve or close offer is open on the record (`offers.open_terminal_offer`) AND the mint is a `confirmation` with `confirmation_value=True`, or a `status_transition` matching the offer's target |
-| **Gate 1** (problem statement) | the case is INQUIRY with a `proposed_problem_statement`, and the mint is a `confirmation` with `confirmation_value=True` — whereupon the engine's section 0c sets `problem_statement_confirmed` and `_check_automatic_transitions` fires INQUIRY → INVESTIGATING. **Says nothing about an open offer, deliberately** — see below |
-
-#721 scoped this to the first gate on the reasoning that a mint with no open offer "cannot execute a terminal transition". True, and beside the point: it can still commit Gate 1, so `"correct — is the problem statement about the replica or the primary?"` started investigations off a statement the user was questioning (fm#918 exposure 3).
-
-**The two rows are an OR, not an if/else, and that distinction is load-bearing.** A case can carry an open offer AND be an INQUIRY case with a proposed problem statement, and scoping the Gate-1 row to "no open offer" makes it unreachable exactly there. Measured on that shape with a substantive DECLINE (`"no - but is the problem statement about the replica or the primary?"`): the offer row only matches `confirmation_value is True`, so the mint is adopted, 0b answers the offer and falls through, and 0c commits Gate 1. Since #2223, a confirmation intent 0b consumed (a minted decline it recorded) skips 0c's confirmation branch, which neither refuses nor logs it. A mint the gate set aside (a re-ask carried through by an upload, or a question, as this one is) still reaches 0c's confirmation branch (INV-26 (c)). (A `needs_info` pending used to skip 0b wholesale; since #2408 a resolution request is not an offer at all.) `test_an_affirmative_mint_is_guarded_whatever_is_pending` parametrizes the shapes.
-
-**#1464 changed what that reproducer proves, and the Gate-1 row with it.** 0c was blind to `confirmation_value` — a minted (or clicked) `False` committed Gate 1 exactly as `True` did — so the declining mint above was a live exposure and the Gate-1 row had to match declines too. 0c now commits on an explicit `True` alone, so:
-
-- the declining mint no longer commits anything anywhere, and the Gate-1 row is **affirmative-only** to match;
-- with an affirmative mint the fm#918 shape cannot reopen through a case with an open offer whichever way the row is written, because `confirms_pending_transition` accepts CONFIRMATION+`True` whenever a terminal offer is open. The shape where the Gate-1 row answers alone is **no open offer** — which is the row's own reason for existing, and why it is still written independently of the offer.
-
-The engine-side rule (a branch keyed on `intent_type == "confirmation"` reads `intent_data["value"]`) holds across all three branches in `_process_turn_impl` and is scanned by `tests/unit/core/investigation/test_gate_one_decline_1464.py`.
-
-The rejected message falls back to conversation: where an offer is open it flows through the gate's escape lane (the offer is answered `withdrawn`, or `declined` for a deflection, the message is processed as a normal turn, and the engine can offer again from fresher state); at Gate 1 the LLM simply reads the text. **Declines** — of an open offer or at Gate 1 — and contradicting status transitions adopt as before: none of them commits anything, they only answer a standing offer, and the message is processed as a normal turn either way. DECIDE clicks are untouched: a click is deterministic consent, to the offer it names and only while that offer stands (#1812, INV-26 (c)). A mint carries whichever card the resolver matched, key included, and the key is never read: the text decides.
+The rejected message falls back to conversation, where the LLM reads the text. DECIDE clicks are untouched: a click is deterministic consent, to the offer it names and only while that offer stands (#1812, INV-26 (c)).
 
 ---
 
@@ -316,8 +300,12 @@ class IntentResolver:
         if len(user_message.strip()) > 200:
             return None
 
-        # Guard: need suggestions with intent to match against
-        suggestions_with_intent = [s for s in last_suggestions if s.get("intent")]
+        # Guard: need suggestions with intent that typed text may answer. An
+        # offer's card is set aside before either tier (#2222).
+        suggestions_with_intent = [
+            s for s in last_suggestions
+            if s.get("intent") and _typed_text_may_answer(s)
+        ]
         if not suggestions_with_intent:
             return None
 
@@ -394,7 +382,7 @@ Default to `None` (no match) → normal LLM processing. The classifier is a best
 
 ### User types the exact payload text
 
-This is the trivial case. The classifier easily matches it. But we also add a fast-path: exact string match against suggestion payloads before calling the classifier, avoiding the LLM call entirely.
+This is the trivial case. The classifier easily matches it. But we also add a fast-path: exact string match against suggestion payloads before calling the classifier, avoiding the LLM call entirely. Not for an offer's card (#2222): retyping "Mark it resolved", "Yes, mark as resolved" or a declined-close card's payload ("Close this case as a false alarm.") is not its click. Those cards are set aside before either tier, and are answered only by their click or, for a pair, by a whole-message bare token.
 
 ---
 
@@ -439,7 +427,7 @@ Model proposes "resolved"
 
 ## 9. Open Offer — Intent Routing Interface
 
-Intent resolution bridges into the open offer's gate via the `CONFIRMATION` intent type. When the classifier resolves a user input to `{type: "confirmation", confirmation_value: true|false}`, that metadata feeds into the deterministic dispatch (`terminal_transitions.confirm_open_offer()` on consent, `offers.answer_offer(..., answer=declined)` on a decline), and the text, not the mint, decides (INV-26).
+Intent resolution does not reach the open offer: only a click or a whole-message bare token answers it (#2222, INV-26).
 
 The full deterministic dispatch table (clear yes / clear no / anything else / repeated dropdown click), the User-Agent Handshake pattern, and the "no LLM tool loop fallthrough while an offer is open" invariant are canonical in:
 

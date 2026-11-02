@@ -6,10 +6,11 @@ The invariant these pin, from the plan:
   or on a typed reply that is a bare consent token. A status-dropdown re-pick
   of the pending target re-shows the card (#1838), and no LLM-written DECIDE
   card sends a text the gate reads as a bare reply (#1839).
-* A reply that opens with consent, or that carries a question mark the gate
-  reads (``QUESTION_MARKS``, ``QUESTION_SHORTCODES``), is never recorded as a
-  refusal (#1840). The gate itself reads strictly, so a
-  reply it does not recognise as typed reaches the LLM (#1840 review).
+* A reply that carries a question mark the gate reads (``QUESTION_MARKS``,
+  ``QUESTION_SHORTCODES``) is never a gate answer (#1840), and no typed reply
+  but a bare decline token is recorded as a refusal (#2222). The gate reads
+  strictly, so a reply it does not recognise as typed reaches the LLM (#1840
+  review).
 * A bare typed consent commits a pending Gate 1 without the LLM (#1841).
 * #1783's must-execute and must-not-execute corpora are unchanged
   (``test_terminal_confirmation_counters_1748.py``).
@@ -40,7 +41,6 @@ from faultmaven.core.investigation.milestone_engine.transition_consent import (
     gate1_bare_consent,
     gate1_offer_key,
     is_bare_gate_reply,
-    opens_with_consent_loosely,
     pending_gate_verdict,
 )
 from faultmaven.core.investigation.milestone_engine.turn_records import (
@@ -197,154 +197,131 @@ PROCEED_ON_ERROR = (
 )
 
 #: ``pending_gate_verdict`` at a pending CLOSE for a typed reply with no
-#: intent, and whether the escape lane's record rule would record it as a
-#: refusal once it escapes (over 40 characters, or a question). The rule's two
-#: exemptions are a loose consent opener (``opens_with_consent_loosely``) and
-#: a question (``is_question``). A short row never escapes, so ``no`` with
-#: U+200B is re-asked by the engine whatever this column says.
-#:
-#: The verdict is the strict reading (#1840 review): a reply the gate does not
+#: click. The strict reading (#1840 review): a reply the gate does not
 #: recognise as consent-shaped as typed is ``not_an_answer``, so a long one is
-#: withdrawn and reaches the LLM. Only whether it is RECORDED reads loosely.
+#: withdrawn, unrecorded, and reaches the LLM (#2222: no typed reply but a bare
+#: token answers an offer). A short one is re-asked.
 SHAPE_ROWS = [
     # U+FE0E is an emoji modifier, as U+FE0F is, after an emoji.
-    (f"yes {CHECK}{TEXT_SELECTOR}", "confirm", False),
+    (f"yes {CHECK}{TEXT_SELECTOR}", "confirm"),
     # The bare readers stay strict (#1783's corpus): never executed.
-    (f"yes{ZWSP}", "reask", False),
-    (f"{ZWSP}yes", "not_an_answer", False),
-    (f"no{ZWSP}", "not_an_answer", True),
+    (f"yes{ZWSP}", "reask"),
+    (f"{ZWSP}yes", "not_an_answer"),
+    (f"no{ZWSP}", "not_an_answer"),
     # A long consenting reply under markup or an invisible character: the gate
-    # does not take it, so it is processed, and it is never recorded.
-    (f"{ZWSP}Yes,{TAIL}", "not_an_answer", False),
-    (f"{LRM}Yes,{TAIL}", "not_an_answer", False),
-    (f"{SHY}Yes,{TAIL}", "not_an_answer", False),
-    (f"{RLI}Yes,{TAIL}", "not_an_answer", False),
-    (f"{CGJ}Yes,{TAIL}", "not_an_answer", False),
+    # does not take it, so it is processed.
+    (f"{ZWSP}Yes,{TAIL}", "not_an_answer"),
+    (f"{LRM}Yes,{TAIL}", "not_an_answer"),
+    (f"{SHY}Yes,{TAIL}", "not_an_answer"),
+    (f"{RLI}Yes,{TAIL}", "not_an_answer"),
+    (f"{CGJ}Yes,{TAIL}", "not_an_answer"),
     # A modifier or a selector where it modifies nothing: the strict readers
-    # keep it, so the gate does not take the reply; the loose record reader
-    # reads past it, so it is not recorded (Revision 2, F1).
-    (f"{THUMBS} {EMOJI_SELECTOR}Yes,{TAIL}", "not_an_answer", False),
+    # keep it, so the gate does not take the reply (Revision 2, F1).
+    (f"{THUMBS} {EMOJI_SELECTOR}Yes,{TAIL}", "not_an_answer"),
     (
         f"go{EMOJI_SELECTOR}ahead and close it, the fix held overnight and the "
         "alerts are quiet",
         "not_an_answer",
-        False,
     ),
     (
         f"No{EMOJI_SELECTOR}, keep it open {DASH} errors are still coming in from "
         "the east region",
         "not_an_answer",
-        True,
     ),
-    (f"*Yes*,{TAIL}", "not_an_answer", False),
-    (f"**Yes**{TAIL}", "not_an_answer", False),
-    (f"_Yes_,{TAIL}", "not_an_answer", False),
-    (f"__Yes__,{TAIL}", "not_an_answer", False),
-    (f'"Yes" {DASH}{TAIL}', "not_an_answer", False),
+    (f"*Yes*,{TAIL}", "not_an_answer"),
+    (f"**Yes**{TAIL}", "not_an_answer"),
+    (f"_Yes_,{TAIL}", "not_an_answer"),
+    (f"__Yes__,{TAIL}", "not_an_answer"),
+    (f'"Yes" {DASH}{TAIL}', "not_an_answer"),
     (
         f"\N{LEFT DOUBLE QUOTATION MARK}Yes\N{RIGHT DOUBLE QUOTATION MARK} "
         f"{DASH}{TAIL}",
         "not_an_answer",
-        False,
     ),
     (
         f"\N{DOUBLE LOW-9 QUOTATION MARK}Yes\N{LEFT DOUBLE QUOTATION MARK} "
         f"{DASH}{TAIL}",
         "not_an_answer",
-        False,
     ),
     (
         f"\N{LEFT-POINTING DOUBLE ANGLE QUOTATION MARK}Yes"
         f"\N{RIGHT-POINTING DOUBLE ANGLE QUOTATION MARK} {DASH}{TAIL}",
         "not_an_answer",
-        False,
     ),
-    (f"'Yes' {DASH}{TAIL}", "not_an_answer", False),
+    (f"'Yes' {DASH}{TAIL}", "not_an_answer"),
     (
         "_go ahead_ and close it, the fix held overnight and the alerts are quiet",
         "not_an_answer",
-        False,
     ),
     (
         '"ok" status from the canary was a lie, the 503s are back now',
         "not_an_answer",
-        False,
     ),
     # Undecorated consent openers are the gate's, as on ``main``: re-asked.
-    ("Yes, go ahead and close it, the fix held overnight", "reask", False),
+    ("Yes, go ahead and close it, the fix held overnight", "reask"),
     (
         "that's right, close it, the fix held overnight and the alerts are quiet",
         "reask",
-        False,
     ),
     # A backtick quotes a word rather than using it, and ``*``/``_`` inside an
-    # identifier are part of it: each of these is processed AND recorded.
-    (f"`yes`{TAIL}", "not_an_answer", True),
-    ("`ok` is false in the /health response from node-3 again", "not_an_answer", True),
+    # identifier are part of it: each of these is processed.
+    (f"`yes`{TAIL}", "not_an_answer"),
+    ("`ok` is false in the /health response from node-3 again", "not_an_answer"),
     (
         "confirm_timeout is 5s on payments, that's the culprit here",
         "not_an_answer",
-        True,
     ),
     (
         "ok_status flag never flipped on the canary, we can't close yet",
         "not_an_answer",
-        True,
     ),
-    (PROCEED_ON_ERROR, "not_an_answer", True),
+    (PROCEED_ON_ERROR, "not_an_answer"),
     # A question mark the gate reads, as an emoji or as Slack's shortcode, is
-    # substantive and never recorded.
-    ("can we close it on friday\N{FULLWIDTH QUESTION MARK}", "not_an_answer", False),
-    ("\N{INVERTED QUESTION MARK}ok", "not_an_answer", False),
-    ("ok \N{ARABIC QUESTION MARK}", "not_an_answer", False),
-    ("ok\N{GREEK QUESTION MARK}", "not_an_answer", False),
-    ("ok \N{ARMENIAN QUESTION MARK}", "not_an_answer", False),
-    ("ok \N{ETHIOPIC QUESTION MARK}", "not_an_answer", False),
-    ("friday \N{BLACK QUESTION MARK ORNAMENT}", "not_an_answer", False),
-    ("hmm \N{INTERROBANG}", "not_an_answer", False),
+    # substantive.
+    ("can we close it on friday\N{FULLWIDTH QUESTION MARK}", "not_an_answer"),
+    ("\N{INVERTED QUESTION MARK}ok", "not_an_answer"),
+    ("ok \N{ARABIC QUESTION MARK}", "not_an_answer"),
+    ("ok\N{GREEK QUESTION MARK}", "not_an_answer"),
+    ("ok \N{ARMENIAN QUESTION MARK}", "not_an_answer"),
+    ("ok \N{ETHIOPIC QUESTION MARK}", "not_an_answer"),
+    ("friday \N{BLACK QUESTION MARK ORNAMENT}", "not_an_answer"),
+    ("hmm \N{INTERROBANG}", "not_an_answer"),
     (
         "can we close it on friday instead :question: the soak needs the weekend",
         "not_an_answer",
-        False,
     ),
     # The ASCII semicolon the Greek question mark looks like is not a question.
-    ("ok;", "reask", False),
-    # Negatives: these must still record the refusal.
+    ("ok;", "reask"),
+    # Typed refusals that are not one bare token: processed, never recorded
+    # (#2222; they were the deflections #1808 recorded).
     (
         "~~ok, close it~~ actually no, keep it open, we still see errors in prod",
         "not_an_answer",
-        True,
     ),
     (
         f"No, keep it open {DASH} errors are still coming in from the east region",
         "not_an_answer",
-        True,
     ),
     (
         f"*No*, keep it open {DASH} errors are still coming in from the east region",
         "not_an_answer",
-        True,
     ),
     (
         "don't close it, the fix has not been verified in the east region yet",
         "not_an_answer",
-        True,
     ),
     (
         f"no_way, keep it open {DASH} errors are still coming in from the east "
         "region",
         "not_an_answer",
-        True,
     ),
     (
         f"_No_, keep it open {DASH} errors are still coming in from the east region",
         "not_an_answer",
-        True,
     ),
     (
         f"'no' {DASH} keep it open, errors are still coming in from the east region",
         "not_an_answer",
-        True,
     ),
 ]
 
@@ -372,44 +349,41 @@ MODIFIER_ROWS = [
 ]
 
 
-class TestOneGrammarTwoStrengths:
-    @pytest.mark.parametrize("message, verdict, recordable", SHAPE_ROWS)
-    def test_the_shape_table(self, message, verdict, recordable):
-        assert pending_gate_verdict(
-            message, "closed", intent_value=None, typed=False
-        ) == (verdict, "explicit_token" if verdict == "confirm" else None)
-        # The escape lane records a refusal only for a reply that neither
-        # opens with consent, read loosely, nor carries a question.
-        exempt = opens_with_consent_loosely(message) or is_question(message)
-        assert exempt is (not recordable)
+class TestOneStrictGrammar:
+    @pytest.mark.parametrize("message, verdict", SHAPE_ROWS)
+    def test_the_shape_table(self, message, verdict):
+        assert pending_gate_verdict(message, "closed", clicked=None) == (
+            verdict,
+            "explicit_token" if verdict == "confirm" else None,
+        )
 
     @pytest.mark.parametrize("message, via", MODIFIER_ROWS)
     def test_a_modifier_counts_only_on_an_emoji_or_a_symbol(self, message, via):
         assert confirmation_token_class(message, "closed") == via
 
     @pytest.mark.parametrize("message", [f"*Yes*,{TAIL}", f"{ZWSP}Yes,{TAIL}"])
-    def test_the_gate_reads_strictly_and_the_record_rule_loosely(self, message):
-        """The two readers on one reply: the gate does not take it
-        (``_consent_prefix``, so the LLM sees it), and its withdrawal is not
-        recorded (``opens_with_consent_loosely``)."""
+    def test_the_gate_reads_strictly(self, message):
+        """The gate does not take a consent under markup or behind an
+        invisible character (``_consent_prefix``), so the LLM sees it."""
         assert not _consent_prefix(message)
-        assert opens_with_consent_loosely(message)
 
     @pytest.mark.parametrize("mark", sorted(QUESTION_MARKS))
     def test_every_question_mark_is_a_question(self, mark):
         assert is_question(f"ok {mark}")
         assert is_substantive_reply(f"ok {mark}")
-        assert pending_gate_verdict(
-            f"ok {mark}", "closed", intent_value=None, typed=False
-        ) == ("not_an_answer", None)
+        assert pending_gate_verdict(f"ok {mark}", "closed", clicked=None) == (
+            "not_an_answer",
+            None,
+        )
 
     @pytest.mark.parametrize("code", QUESTION_SHORTCODES)
     def test_every_question_shortcode_is_a_question(self, code):
         assert is_question(f"ok {code}")
         assert is_question(f"ok {code.upper()}"), "read case-insensitively"
-        assert pending_gate_verdict(
-            f"ok {code}", "closed", intent_value=None, typed=False
-        ) == ("not_an_answer", None)
+        assert pending_gate_verdict(f"ok {code}", "closed", clicked=None) == (
+            "not_an_answer",
+            None,
+        )
 
     def test_the_question_marks_are_pinned(self):
         assert QUESTION_MARKS == frozenset(
@@ -434,21 +408,22 @@ class TestOneGrammarTwoStrengths:
         assert not is_question("ok;") and not is_question("")
         assert not is_question(None)
 
-    def test_a_minted_decline_on_a_question_in_any_script_is_no_refusal(self):
-        """#1813's rule, read through ``is_question``. A long text, so the
-        engine sends it down the escape lane rather than re-asking it."""
+    def test_a_typed_refusal_is_no_answer_with_or_without_a_question(self):
+        """#2222: a typed reply that is not one bare token never declines, and
+        a mint is not an input to the verdict. A long text, so the engine
+        sends it down the escape lane, withdrawn, rather than re-asking it."""
         text = (
             "can we hold off on closing until friday's change window "
             "instead\N{FULLWIDTH QUESTION MARK}"
         )
-        assert pending_gate_verdict(text, "closed", intent_value=False, typed=True) == (
+        assert pending_gate_verdict(text, "closed", clicked=None) == (
             "not_an_answer",
             None,
         )
-        # The control: the same words with no question mark still decline.
-        assert pending_gate_verdict(
-            text[:-1], "closed", intent_value=False, typed=True
-        ) == ("decline", None)
+        assert pending_gate_verdict(text[:-1], "closed", clicked=None) == (
+            "not_an_answer",
+            None,
+        )
 
 
 def _processing_engine() -> MilestoneEngine:
@@ -483,8 +458,7 @@ class TestTheShapeRowsThroughTheEngine:
         self, message
     ):
         """The gate does not take it: the offer is withdrawn and the LLM
-        processes the reply. It opens with consent once the markup is read
-        past, so the withdrawal is not recorded as a refusal."""
+        processes the reply. No refusal is recorded."""
         case = _pending_close()
         engine = _processing_engine()
         await engine.process_turn(case=case, user_message=message, redaction_ctx=None)
@@ -504,15 +478,15 @@ class TestTheShapeRowsThroughTheEngine:
             "~~ok, close it~~ actually no, keep it open, we still see errors in prod",
         ],
     )
-    async def test_a_deflection_is_processed_and_recorded(self, message):
-        """As on ``main``: the reply reaches the LLM and the refusal is
-        recorded. A backtick, and ``*``/``_`` inside an identifier, are not
-        markup around a consent word."""
+    async def test_a_long_non_answer_is_processed_and_withdrawn(self, message):
+        """#2222: the reply reaches the LLM and the offer is withdrawn, never
+        declined; #1808 recorded these as refusals. A backtick, and ``*``/``_``
+        inside an identifier, are not markup around a consent word."""
         case = _pending_close()
         engine = _processing_engine()
         await engine.process_turn(case=case, user_message=message, redaction_ctx=None)
         assert case.offer_record.open is None
-        assert _answers(case) == [AnswerKind.DECLINED]
+        assert _answers(case) == [AnswerKind.WITHDRAWN]
         engine.generator.generate_structured_output.assert_awaited()
 
     async def test_an_undecorated_consent_opener_is_still_re_asked(self):
@@ -800,17 +774,13 @@ class TestADropdownRePickReshowsTheCard:
         assert case.state == CaseState.CLOSED
         assert case.turn_history[-1].terminal_confirmed_via == "intent"
 
-    async def test_a_minted_status_transition_on_a_bare_token_still_closes(self):
-        """Unchanged: a MINTED intent's text decides, and ``close it`` is bare
-        consent to a CLOSE."""
+    async def test_a_typed_bare_token_still_closes(self):
+        """The text decides, and ``close it`` is bare consent to a CLOSE. No
+        status transition is minted from typed text any more (#2222), so the
+        bare token reaches the gate as text."""
         case = _pending_close()
         await _engine().process_turn(
-            case=case,
-            user_message="close it",
-            intent_type="status_transition",
-            intent_data={"to_state": "closed"},
-            typed=True,
-            redaction_ctx=None,
+            case=case, user_message="close it", redaction_ctx=None
         )
         assert case.state == CaseState.CLOSED
         assert case.turn_history[-1].terminal_confirmed_via == "explicit_token"

@@ -335,7 +335,8 @@ effective driver who gave it and the state it was given against, and a remembere
 resolution request, which is not an offer. Three writers change it (`open_offer`,
 `answer_offer`, `lapse_offers`), one projection derives every affordance from it
 (`offer_projection.project_offers`: `disposition_eligibility`, the open offer's
-confirmation pair, the **Mark it resolved** chip), and the rules — what each opener
+confirmation pair, the **Mark it resolved** chip and the **Close without
+resolving** chip beside it), and the rules — what each opener
 is, what a decline binds and when it lapses — are stated once, in
 `core/investigation/offers.py`'s module docstring. Only the current driver answers;
 a driver change lapses nothing. Offers and declines in flight at the deploy that
@@ -404,9 +405,9 @@ declines move nothing; one solution or row the decline never saw does, and
 lapses it for good (`lapsed_at_turn`: a later disqualification of that row does
 not revive it).
 
-- **The decline turn covers what it records.** A deflection ("not yet, it has
-  only been clean for an hour") falls through to the model, which may record the
-  user's words as a confirmation row that same turn. `offers.lapse_offers`
+- **The decline turn covers what it records.** A declined resolution falls
+  through to the model (#2223, below), which may record the user's words as a
+  confirmation row that same turn. `offers.lapse_offers`
   widens the premise of a decline given this turn to cover what the turn
   recorded, at step 3b, immediately before `check_automatic_transitions`, and
   again on save.
@@ -424,7 +425,15 @@ not revive it).
   request is never a confirmation row). Every turn on which the decline stands
   (no offer open, the problem not on hold) carries the engine's **Mark it
   resolved** chip, whatever the model did, exactly once: a `status_transition` to `resolved` whose `proposal_id` is the reopen
-  key, `reopen:` and the newest standing decline's `proposal_id`. The service
+  key, `reopen:` and the newest standing decline's `proposal_id`. The
+  **Close without resolving** chip follows it on every such turn (#2222; the
+  offer projection's `close_chip`, present exactly when the reopen chip is): the
+  status menu's own `status_transition` to `closed`, so a client with no status
+  menu (Slack) can decline, then close. Its click opens a CLOSE offer recording
+  `resolution_declined` (#2360), which the user confirms on the next step. Any
+  other follow-up naming either chip, or carrying a `status_transition` to
+  `closed`, is dropped first: while the decline stands every close records
+  `resolution_declined`. The service
   boundary and the engine admit that one request while that decline stands;
   the engine then opens a resolve offer (basis `reopen`, which no decline
   binds) on a READY case with the usual pair, and the user confirms (INV-03). A
@@ -437,16 +446,17 @@ not revive it).
   name the one check that would settle it, and sends a report in the user's
   message to the chat-data rules (`system_state_report.request`). A bare
   decline (not substantive, no upload) never forces tools; any other turn that
-  answers an offer is forced as before. The reply carries the chip. While the decline stands the prompt and the refusal's feedback state one
+  answers an offer is forced as before. The reply carries the chips. While the decline stands the prompt and the refusal's feedback state one
   rule (`RESOLVE_DECLINED_RULE`): do not propose on the evidence on record;
   record a NEW verification as evidence and propose in the same turn; point a
-  user who changes their mind at the **Mark it resolved** action, never
+  user who changes their mind at the **Mark it resolved** action, and one who
+  wants to close at the **Close without resolving** action, never
   proposing on, or recording a row from, a request.
 - **The decline turn is read from the record.** Whether an offer was answered
   this turn is the record's (`offers.terminal_offer_answered_this_turn`), so the
   apply step's proposers read it with no turn markers: a question about a
-  standing deferred offer withdraws it for the turn, and a deflection's decline
-  is not re-offered on its own turn.
+  standing deferred offer withdraws it for the turn, and a decline is not
+  re-offered on its own turn.
 
 **Why RESOLVED left the status menu.** It was listed in `USER_SELECTABLE_ACTIONS`
 until the engine could see the readiness bar for itself, and the listing was
@@ -560,9 +570,12 @@ user's response is classified before any LLM call, and every outcome but a re-as
 answers the offer on the record:
 
 Every such offer is terminal (RESOLVED or CLOSED), so consent is read
-narrowly (#1783, ruling (a), 2026-09-29). One function,
-`transition_consent.pending_gate_verdict`, reads the text and the turn's intent
-together, first match wins:
+narrowly (#1783, ruling (a), 2026-09-29), and **only a click or a whole-message
+bare token answers an offer** (#2222, ruling 2026-10-30): a typed reply that is
+not one bare token never records a decline, and an intent the intent resolver
+minted from typed text answers nothing. One function,
+`transition_consent.pending_gate_verdict`, reads the click or the text, first
+match wins:
 
 - **A click** (the Yes card's `confirmation` intent, sent by the client rather than
   minted) → execute the transition; the Not-yet card → decline, as below. A card's
@@ -588,22 +601,20 @@ together, first match wins:
   consents only to a CLOSE, and `resolve it` / `mark (it) as resolved` only to a
   RESOLVE. An invisible character or a wrapping mark is not a decoration, so
   `yes` carrying U+200B, `**yes**` and `"yes"` are not bare and are re-asked
-  (#1840; #1783's corpus). A bare token the intent resolver minted a confirmation
-  from executes the same way; a minted *decline* on a bare consent token disagrees
-  with its text, and is re-asked
+  (#1840; #1783's corpus)
 - **Consent-shaped but not bare, and not substantive per `is_substantive_reply`**
   (the set the gate used to execute on: "ok go ahead", "ok, don't close it yet",
-  "yes please close it", "ok 👎", "close it" on a pending RESOLVE), any reply
-  whose text and minted intent disagree, a minted confirmation on text that is
-  not a bare token ("that works"), and a **status-dropdown re-pick of the open
+  "yes please close it", "ok 👎", "close it" on a pending RESOLVE), and a
+  **status-dropdown re-pick of the open
   offer's target** (#1838: the pick names a state, not the offer, so a double submit, a
   client retry or a second tab never executes it) → **re-ask**: re-present the
-  confirmation with DECIDE suggestions (clickable Yes/No with intent metadata), and the line
-  "To confirm, click **Yes** or reply with the single word yes." (#1814)
+  confirmation with DECIDE suggestions (clickable Yes/No with intent metadata),
+  "Please select one of the options above to continue.", and as its own
+  paragraph "To confirm, click **Yes** or reply with the single word yes. To
+  decline, click **Not yet** or reply with the single word no." (#1814; #2222)
 - **Bare no** — the WHOLE reply is one decline token (`no`, `nope`, `not yet`,
   `wait`, `cancel`, `don't`, `not ready`, `hold on`, `stop`) with the same
-  decorations and trailing punctuation as a bare yes (#1813), or a minted
-  decline on question-free text — below the substantive bound, no
+  decorations and trailing punctuation as a bare yes (#1813), no
   upload → answer the offer `declined`. A declined CLOSE is acknowledged
   deterministically; a declined RESOLVE is processed as a normal turn, whatever
   its length (#2223, ruling (b); *INVESTIGATING → RESOLVED* above). "no problem, go
@@ -611,12 +622,10 @@ together, first match wins:
   take the escape lane when substantive), and "note…"/"stopped…" do not read as
   "no"/"stop"
 - **Decline carrying substance or an upload** (a Not-yet click, whose payload is
-  over the bound; a minted decline on long question-free text; or a decline sent
-  with a file) → answer it `declined`, then process the message as a normal turn so
-  its content is not lost. A typed reply that opens with a decline token and says
-  more is not a decline but a non-answer, below; so is a minted decline on a
-  question (`is_question`; #1840), so a question
-  is never recorded as a decline
+  over the bound, or a bare decline sent with a file) → answer it `declined`, then
+  process the message as a normal turn so its content is not lost. A typed reply
+  that opens with a decline token and says more is not a decline but a
+  non-answer, below
 - **Short (≤40 characters) question-free non-answer** ("hmm maybe") and **blank
   input** (whitespace-only slips past the route's empty-payload guard) → re-ask,
   as above
@@ -625,26 +634,17 @@ together, first match wins:
   lists, from ASCII and fullwidth to Arabic, Greek, Armenian and Ethiopic, the
   question emoji, the interrobang and the double marks, or Slack's `:question:`,
   `:grey_question:` and `:interrobang:`; #1840) → the message is *not an answer
-  to the gate*: the offer is answered **withdrawn** and the message processed as
-  a normal investigation turn. It is answered `declined` instead only when the
-  text is such a non-answer without a question that does not open with a consent
-  token read loosely (`opens_with_consent_loosely`;
-  #1808, #1840). **Two readers, two strengths** (#1840 review): whether the gate
-  TAKES a turn is read strictly (`_consent_prefix`), because a turn it takes
-  never reaches the LLM, and read loosely "`ok` is false in the /health response
-  from node-3 again" was swallowed. Only whether the answer is `declined` is read
-  loosely (`_shape_text`): invisible characters (Unicode Cf, and U+034F) and
-  wrapping marks (`*` and `_` where they wrap a word, never inside an
-  identifier; the straight, curly and low-9 double quotes and the guillemets;
-  an apostrophe not inside a word) read as
-  spaces, while a backtick (it quotes a word) and strikethrough's `~` (it
-  negates) do not. So "*Yes*, …", "_Yes_, …" and a "Yes" behind an invisible
-  character are processed and only withdrawn, as is "Yes, go ahead and close
-  it. We verified …": consent in a sentence, not a deflection, so the offer may
-  come back, and so may "ok but we need to wait for the weekend soak first" (the
-  cost the ruling accepts). "`ok` is false in /health …" and "ok_status flag
-  never flipped …" are processed and declined. An upload alone only
-  withdraws. The engine can always re-propose later from fresher state.
+  to the gate*: the offer is answered **withdrawn**, never `declined` (#2222;
+  #1808's rule that recorded a long question-free reply as a decline is gone),
+  and the message processed as a normal investigation turn. Whether the gate
+  TAKES a turn is read strictly (`_consent_prefix`; #1840 review), because a
+  turn it takes never reaches the LLM, and read loosely "`ok` is false in the
+  /health response from node-3 again" was swallowed. So "*Yes*, …", a "Yes"
+  behind an invisible character, "Yes, go ahead and close it. We verified …",
+  "We're out of time on this one — please close the case." and "we'll do it in
+  Friday's window" are all processed and withdrawn. The offer returns on a later
+  turn while it is still earned (fm#1122). The model's own proposal on that
+  turn is not held back yet (#2471).
 
 So the gate's consumption rule is exact: without an LLM turn it answers only the
 re-asks above (and a bare decline of a close), and it **never** consumes a turn carrying an
@@ -663,12 +663,14 @@ merely swallow the input — it *executed* the terminal transition on it. The ch
 re-present answers only the replies listed above; a turn carrying an upload, and a
 non-answer over 40 characters or carrying a question, are never consumed by the gate. The short-message re-present also preserves
 the original motivation of the deterministic path — not sending a bare "hmm" through
-the LLM tool loop. The IntentResolver's LLM classifier tier can map typed text to the
-Yes suggestion: the adoption guard (#721) drops such a mint from substantive text, and
-a mint that survives it executes only when its text is itself a bare consent token
-(#1783), so the text, not the classifier, carries the guarantee. At Gate 1 the guard
-drops a mint on any text that is not bare (#1794). A mint is not a click, so the
-offer key it carries from the matched card is never read.
+the LLM tool loop. The IntentResolver never maps typed text to an offer's chip
+(#2222): the resolve, close and revision pairs, the **Mark it resolved** and **Close
+without resolving** chips and the declined-close cards are set aside before either of
+its tiers, so retyping a chip's words is not its click, and typing a declined-close
+card's payload ("Close this case as a false alarm.") does not close: those cards are
+clicked, like every disposition chip. Its classifier stays for clarification choices
+and Gate 1's pair, where the adoption guard drops a mint on any text that is not bare
+(#1794).
 
 **Repeated status_transition intent:** If a user picks the same dropdown option again
 after the transition was proposed, it is **not** consent (#1838, ruling (b)). The pick
@@ -676,9 +678,8 @@ names a state, not the standing offer, and a double submit, a client retry or a 
 tab sends it as surely as a deliberate second pick. So the gate re-shows the standing
 offer's card and answers nothing; only the card's click or a bare typed consent
 executes it. The re-ask is forced rather than read from the pick's text, which is over
-the 40-character bound and would otherwise escape and be declined. A
-`status_transition` the intent resolver MINTED from typed text is read by its text,
-as any mint is.
+the 40-character bound and would otherwise escape and withdraw the offer. Typed text
+never mints a `status_transition` (#2222).
 
 **No LLM-written card stands in for consent (#1839, ruling (a)).** An LLM-authored
 DECIDE card carries no intent, so its click arrives as its payload text alone, which

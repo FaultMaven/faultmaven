@@ -46,6 +46,7 @@ from faultmaven.core.investigation.milestone_engine.terminal_replies import (
 )
 from faultmaven.core.investigation.milestone_engine.transition_consent import (
     TYPED_CONFIRMATION_LINE,
+    TYPED_DECLINE_LINE,
     _consent_prefix,
     gate1_offer_key,
     offer_click_refusal,
@@ -797,7 +798,7 @@ class TestAMintedGate1ConfirmationIsScreened:
 
 
 # =============================================================================
-# #1808: a reply that opens with consent is no deflection
+# #1808, retired by #2222: no long typed reply records a refusal
 # =============================================================================
 
 LONG_CONSENT = (
@@ -810,7 +811,7 @@ EVIDENCE = (
 )
 
 
-class TestAConsentOpenerIsNoDeflection:
+class TestALongReplyIsWithdrawnNeverDeclined:
     @pytest.mark.parametrize(
         "message",
         [
@@ -818,6 +819,11 @@ class TestAConsentOpenerIsNoDeflection:
             EVIDENCE,
             "ok but we need to wait for the weekend soak first",
             "sure thing but hold off until the change window closes",
+            # No consent opens these: #1808 recorded them as deflections. Only
+            # a click or a bare token answers an offer (#2222).
+            "we will do it in friday's maintenance window instead of now",
+            "no problem, go ahead and close it, the fix held overnight in prod",
+            "yesterday we rolled it back and it is fine now ok",
         ],
     )
     async def test_withdrawn_and_processed_and_nothing_recorded(self, message):
@@ -828,23 +834,6 @@ class TestAConsentOpenerIsNoDeflection:
         assert case.offer_record.open is None
         engine.generator.generate_structured_output.assert_awaited()
         assert _declined_ids(case) == []
-
-    @pytest.mark.parametrize(
-        "message",
-        [
-            "we will do it in friday's maintenance window instead of now",
-            "no problem, go ahead and close it, the fix held overnight in prod",
-            "yesterday we rolled it back and it is fine now ok",
-        ],
-    )
-    async def test_a_deflection_still_records_the_refusal(self, message):
-        """The control: no consent opens these, so the fm#1122 rule stands."""
-        assert not _consent_prefix(message)
-        case = _pending("closed")
-        with pytest.raises(MilestoneEngineError):
-            await _turn(_engine(), case, message)
-        assert case.offer_record.open is None
-        assert len(_declined_ids(case)) == 1
 
     @pytest.mark.parametrize(
         "message",
@@ -899,8 +888,11 @@ class TestADeclineIsBare:
         assert case.offer_record.open is None
         assert _declined_ids(case) == []
 
-    async def test_a_minted_decline_on_question_free_text_still_declines(self):
+    async def test_a_minted_decline_on_question_free_text_is_re_asked(self):
+        """#2222: a mint carries no answer. "not now thanks" is not one bare
+        token, so the gate re-asks it and records nothing."""
         case = _pending("closed")
+        before = case.offer_record.open
         result = await _turn(
             _engine(),
             case,
@@ -909,9 +901,9 @@ class TestADeclineIsBare:
             intent_data={"value": False},
             typed=True,
         )
-        assert case.offer_record.open is None
-        assert len(_declined_ids(case)) == 1
-        assert "remains open" in result["agent_response"]
+        assert case.offer_record.open == before
+        assert case.offer_record.answers == ()
+        assert "Please select one of the options above" in result["agent_response"]
 
     async def test_a_bare_typed_decline_still_declines(self):
         case = _pending("closed")
@@ -935,7 +927,7 @@ class TestTheReaskSaysHowToConfirm:
         assert "Please select one of the options above to continue." in text
         assert text.endswith(
             "Please select one of the options above to continue.\n\n"
-            f"{TYPED_CONFIRMATION_LINE}"
+            f"{TYPED_CONFIRMATION_LINE} {TYPED_DECLINE_LINE}"
         )
 
     def test_gate1_presentation_carries_the_line(self):
@@ -946,9 +938,10 @@ class TestTheReaskSaysHowToConfirm:
     def test_the_line_has_no_quote_marks_and_claims_no_disposition(self):
         """The grammar rejects a quoted token, and INV-40's completion-phrase
         scan must not fire on the engine's own copy."""
-        assert '"' not in TYPED_CONFIRMATION_LINE
-        assert "'" not in TYPED_CONFIRMATION_LINE
-        assert not _narration_asserts_disposition(TYPED_CONFIRMATION_LINE)
+        for line in (TYPED_CONFIRMATION_LINE, TYPED_DECLINE_LINE):
+            assert '"' not in line
+            assert "'" not in line
+            assert not _narration_asserts_disposition(line)
         assert not _narration_asserts_disposition(STALE_OFFER_LINE)
         assert not _narration_asserts_disposition(
             _gate1_statement_presentation(_gate1_case())

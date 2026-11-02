@@ -22,7 +22,10 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from faultmaven.core.investigation.milestone_engine.terminal_replies import (
     _terminal_confirmation_response,
 )
-from faultmaven.core.investigation.offer_projection import DECLINED_RESOLVE_CARD_LABEL
+from faultmaven.core.investigation.offer_projection import (
+    DECLINED_RESOLVE_CARD_LABEL,
+    DECLINED_RESOLVE_CLOSE_LABEL,
+)
 from faultmaven.core.investigation.offers import decline_stands
 from faultmaven.core.investigation.terminal_transitions import (
     ClosureReadiness,
@@ -168,8 +171,9 @@ class TestTheMenuCloseCloses:
 
     async def test_declining_it_keeps_the_case_the_decline_and_close(self):
         """The reply keys on what was declined: a close, so the plain reply,
-        with the chip still attached. The decline of the user's own close is
-        recorded as an answer and binds nothing."""
+        with the chips still attached ("Close without resolving" beside "Mark
+        it resolved", #2222). The decline of the user's own close is recorded
+        as an answer and binds nothing."""
         engine, case, _ = await _offered_then_declined()
         declined = list(_declined(case))
         await _menu_close(engine, case)
@@ -180,7 +184,10 @@ class TestTheMenuCloseCloses:
         assert result["agent_response"] == (
             "Understood. The case remains open for further investigation."
         )
-        assert _labels(result) == [DECLINED_RESOLVE_CARD_LABEL]
+        assert _labels(result) == [
+            DECLINED_RESOLVE_CARD_LABEL,
+            DECLINED_RESOLVE_CLOSE_LABEL,
+        ]
         *before, menu_close = _declined(case)
         assert before == declined
         assert (menu_close.kind, menu_close.basis) == ("close", "menu")

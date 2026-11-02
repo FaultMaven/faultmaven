@@ -292,77 +292,58 @@ def _with_target(entry: str) -> tuple[str, str]:
     return entry, "resolved"
 
 
-#: ``pending_gate_verdict`` against a pending RESOLVED: the reply, the answer
-#: its intent carries (None: no intent), ``typed`` (False only for a click),
-#: and the verdict and channel expected. A typed row with an intent is one the
-#: resolver MINTED from the text.
+#: ``pending_gate_verdict`` against a pending RESOLVED: the reply, the value of
+#: a CLICKED confirmation (None: no click), and the verdict and channel
+#: expected. A minted intent is not an input: it answers nothing, so the text
+#: decides (#2222, ruling 2026-10-30).
 GATE_TABLE = [
-    ("ok", None, True, "confirm", "weak_token"),
-    ("ok", True, True, "confirm", "weak_token"),
-    ("ok", False, True, "reask", None),
-    ("ok go ahead", None, True, "reask", None),
-    ("ok go ahead", True, True, "reask", None),
-    ("ok go ahead", False, True, "reask", None),
-    ("ok, don't close it yet", None, True, "reask", None),
-    ("ok, don't close it yet", False, True, "reask", None),
-    ("no", None, True, "decline", None),
-    ("no", True, True, "reask", None),
+    ("ok", None, "confirm", "weak_token"),
+    ("ok go ahead", None, "reask", None),
+    ("ok, don't close it yet", None, "reask", None),
+    ("no", None, "decline", None),
     # #1813: a typed decline is BARE. This one opens with "no" and says more,
     # so it answers neither way; carrying "?", it takes the escape lane.
     (
         "no, we did not do anything yet \u2014 did you see anything wrong?",
         None,
-        True,
         "not_an_answer",
         None,
     ),
-    ("no problem, go ahead", None, True, "not_an_answer", None),
-    ("hmm", None, True, "not_an_answer", None),
-    ("the pod restarted", None, True, "not_an_answer", None),
-    ("that works", True, True, "reask", None),
-    # A MINTED decline on question-free text still declines (#1813, item 3)...
-    ("not now thanks", False, True, "decline", None),
-    # ...and the same words typed, with no mint, are re-asked (item 1).
-    ("not now thanks", None, True, "not_an_answer", None),
-    # A minted decline on a question is not a refusal (#1813, item 2), whether
-    # or not the text is a decline token.
-    ("no?", False, True, "not_an_answer", None),
-    (
-        "can we hold off until friday's change window?",
-        False,
-        True,
-        "not_an_answer",
-        None,
-    ),
+    ("no problem, go ahead", None, "not_an_answer", None),
+    ("hmm", None, "not_an_answer", None),
+    ("the pod restarted", None, "not_an_answer", None),
+    ("that works", None, "not_an_answer", None),
+    # Not a bare token, so not a decline (#1813, #2222: a typed reply that is
+    # not one bare token never records a decline).
+    ("not now thanks", None, "not_an_answer", None),
+    ("no?", None, "not_an_answer", None),
+    ("can we hold off until friday's change window?", None, "not_an_answer", None),
     (
         "yes, go ahead and close it, verified the fix in staging and prod",
         None,
-        True,
         "reask",
         None,
     ),
     (
         "we will do it in friday's maintenance window instead of now",
         None,
-        True,
         "not_an_answer",
         None,
     ),
-    ("what happens to the runbook if I close this?", None, True, "not_an_answer", None),
+    ("what happens to the runbook if I close this?", None, "not_an_answer", None),
     (
         "ok so here's what I found: the pod restarted at 3pm and the logs show OOM "
         "kills at the same time, memory limit 512Mi",
         None,
-        True,
         "not_an_answer",
         None,
     ),
-    ("   ", None, True, "not_an_answer", None),
-    # A click is read from the intent alone: the card's own text, or anything.
-    (CONFIRM_CARD["payload"], True, False, "confirm", "intent"),
-    ("ok, don't close it yet", True, False, "confirm", "intent"),
-    (DECLINE_CARD["payload"], False, False, "decline", None),
-    ("ok", False, False, "decline", None),
+    ("   ", None, "not_an_answer", None),
+    # A click is read from its value alone: the card's own text, or anything.
+    (CONFIRM_CARD["payload"], True, "confirm", "intent"),
+    ("ok, don't close it yet", True, "confirm", "intent"),
+    (DECLINE_CARD["payload"], False, "decline", None),
+    ("ok", False, "decline", None),
 ]
 
 _ALL_TOKENS = _EXPLICIT_CONFIRM_TOKENS + _WEAK_CONFIRM_TOKENS
@@ -478,27 +459,21 @@ class TestTheClassifier:
         classifier: #1840 made the shape reader lenient, and the gate must
         still execute exactly the bare set."""
         message, to_state = _with_target(entry)
-        verdict, _ = pending_gate_verdict(
-            message, to_state, intent_value=None, typed=True
-        )
+        verdict, _ = pending_gate_verdict(message, to_state, clicked=None)
         assert verdict == "confirm"
 
     @pytest.mark.parametrize("entry", MUST_NOT_EXECUTE)
     def test_nothing_but_a_bare_consent_executes_at_the_gate(self, entry):
         message, to_state = _with_target(entry)
-        verdict, _ = pending_gate_verdict(
-            message, to_state, intent_value=None, typed=True
-        )
+        verdict, _ = pending_gate_verdict(message, to_state, clicked=None)
         assert verdict != "confirm"
 
-    @pytest.mark.parametrize(
-        "message, intent_value, typed, verdict, via",
-        GATE_TABLE,
-    )
-    def test_the_gate_verdict_table(self, message, intent_value, typed, verdict, via):
-        assert pending_gate_verdict(
-            message, "resolved", intent_value=intent_value, typed=typed
-        ) == (verdict, via)
+    @pytest.mark.parametrize("message, clicked, verdict, via", GATE_TABLE)
+    def test_the_gate_verdict_table(self, message, clicked, verdict, via):
+        assert pending_gate_verdict(message, "resolved", clicked=clicked) == (
+            verdict,
+            via,
+        )
 
     def test_the_removed_labels_are_gone(self):
         assert get_args(TerminalConfirmedVia) == (
@@ -827,28 +802,24 @@ class TestTheConfirmationCounter:
         )
         followup.labels.assert_not_called()
 
-    async def test_an_ok_the_resolver_minted_into_an_intent_is_still_weak(
-        self, counters
-    ):
-        """Review F2: a typed "ok" the resolver turns into a confirmation
-        intent is a typed "ok", not a click."""
+    @pytest.mark.parametrize("card", [CONFIRM_CARD, DECLINE_CARD])
+    async def test_a_typed_ok_is_the_gates_and_still_weak(self, counters, card):
+        """Review F2: a typed "ok" is a typed "ok", not a click. Since #2222 a
+        bare token answering the open offer never reaches the resolver at all
+        (the gate's own reader decides), so no mint, whichever card the
+        resolver would have matched, reaches the gate."""
         confirmation, _ = counters
         store = _Store(_investigating_case())
         _offer_the_resolution_cards(store)
         svc = _service(store)
-        svc.intent_resolver.resolve = AsyncMock(return_value=CONFIRM_CARD["intent"])
-        engine = _spy_on_the_engine(svc)
+        engine = _mint(svc, card)
 
         await _turn(svc, "ok")
 
-        # The mint happened and reached the gate as an intent — otherwise this
-        # measures the plain typed path and cannot tell a click from a mint —
-        # and ``typed`` travelled as the engine's own keyword, never inside the
-        # client-filled ``intent_data`` (review F10).
-        assert engine.await_args.kwargs["intent_type"] == "confirmation"
-        assert engine.await_args.kwargs["typed"] is True
-        assert "typed" not in engine.await_args.kwargs["intent_data"]
-        # A bare token, so the minted confirmation executes (#1783).
+        svc.intent_resolver.resolve.assert_not_awaited()
+        assert engine.await_args.kwargs["intent_type"] == "conversation"
+        assert not engine.await_args.kwargs.get("typed", False)
+        # A bare token, so it executes (#1783).
         assert store.row().state == CaseState.RESOLVED
         assert store.row().turn_history[-1].terminal_confirmed_via == "weak_token"
         confirmation.labels.assert_called_once_with(
@@ -870,8 +841,11 @@ class TestTheConfirmationCounter:
 
         await _turn(svc, "that works")
 
+        # ``typed`` travels as the engine's own keyword, never inside the
+        # client-filled ``intent_data`` (review F10).
         assert engine.await_args.kwargs["intent_type"] == "confirmation"
         assert engine.await_args.kwargs["typed"] is True
+        assert "typed" not in engine.await_args.kwargs["intent_data"]
         assert store.row().state == CaseState.INVESTIGATING
         assert store.row().offer_record.open.kind == "resolve"
         confirmation.labels.assert_not_called()
@@ -992,23 +966,6 @@ class TestOnlyAClickOrABareTokenExecutes:
         # the gate's answer to it, not to plain text.
         assert engine.await_args.kwargs["intent_type"] == "confirmation"
         assert engine.await_args.kwargs["intent_data"]["value"] is True
-        assert engine.await_args.kwargs["typed"] is True
-        _assert_re_asked(store, response)
-        confirmation.labels.assert_not_called()
-
-    async def test_a_minted_decline_on_a_bare_token_is_re_asked(self, counters):
-        """The text says yes and the mint says no: they disagree, so neither
-        wins. The card is shown again, and nothing is recorded."""
-        confirmation, _ = counters
-        store = _Store(_investigating_case())
-        _offer_the_resolution_cards(store)
-        svc = _service(store)
-        engine = _mint(svc, DECLINE_CARD)
-
-        response = await _turn(svc, "ok")
-
-        assert engine.await_args.kwargs["intent_type"] == "confirmation"
-        assert engine.await_args.kwargs["intent_data"]["value"] is False
         assert engine.await_args.kwargs["typed"] is True
         _assert_re_asked(store, response)
         confirmation.labels.assert_not_called()

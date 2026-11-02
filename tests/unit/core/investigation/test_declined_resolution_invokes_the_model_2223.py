@@ -3,8 +3,9 @@ context, so it can ask what the user still needs to see (ruling (b)).
 
 The canned reply to a bare "no" named no missing confirmation and asked for
 nothing, so the case stalled after the decline. Every resolve decline the gate
-RECORDS (a bare token, a minted confirmation, the Not-yet click, a deflection;
-any offer basis) now falls through to a model turn whose prompt carries
+RECORDS (a bare token, with or without a minted confirmation, or the Not-yet
+click; any offer basis; #2222: no other typed reply is a decline) now falls
+through to a model turn whose prompt carries
 ``RESOLVE_DECLINED_THIS_TURN_LINE`` beside ``RESOLVE_DECLINED_LINE``, on every
 processing mode. A bare one never forces tools; every other turn that answers
 an offer is forced as before (#708). 0c skips a confirmation the gate consumed,
@@ -35,6 +36,7 @@ from faultmaven.core.investigation.milestone_engine.transition_consent import (
 )
 from faultmaven.core.investigation.offer_projection import (
     DECLINED_RESOLVE_CARD_LABEL,
+    DECLINED_RESOLVE_CLOSE_LABEL,
     project_offers,
 )
 from faultmaven.core.investigation.prompts.templates.assembly import (
@@ -122,7 +124,11 @@ class TestTheDeclineIsAnsweredByTheModel:
         assert RESOLVE_DECLINED_THIS_TURN_LINE in prompt
         assert kwargs["force_tool_use"] is False
         assert result["agent_response"].startswith(_ASK)
-        assert _labels(result) == ["Share more context", DECLINED_RESOLVE_CARD_LABEL]
+        assert _labels(result) == [
+            "Share more context",
+            DECLINED_RESOLVE_CARD_LABEL,
+            DECLINED_RESOLVE_CLOSE_LABEL,
+        ]
         (decline,) = _declined(case)
         assert decline.via == _DECLINE_VIA[how]
         assert decline.at_turn == case.current_turn
@@ -165,12 +171,12 @@ class TestTheDeclineIsAnsweredByTheModel:
     ):
         """A knowledge question or a question about FaultMaven itself renders
         no focus block of its own; the decline's lines are appended all the
-        same."""
+        same. A bare decline token: a longer reply is no decline (#2222)."""
         engine, case = await _offered()
         await _turn(
             engine,
             case,
-            "Not yet. Explain how Redis failover works first",
+            "Not yet.",
             intent_type="conversation",
             intent_data={"query_mode": mode},
         )
@@ -180,10 +186,10 @@ class TestTheDeclineIsAnsweredByTheModel:
         assert RESOLVE_DECLINED_LINE in prompt
         assert RESOLVE_DECLINED_THIS_TURN_LINE in prompt
 
-    @pytest.mark.parametrize("how", ["click", "deflection"])
+    @pytest.mark.parametrize("how", ["click"])
     async def test_every_recorded_decline_carries_the_line(self, how):
-        """The Not-yet click and a deflection reached the model before #2223,
-        with nothing that asked it to seek a verification."""
+        """The Not-yet click reached the model before #2223, with nothing that
+        asked it to seek a verification."""
         engine, case = await _offered()
         message, process_kw = _decline(case, how)
         await _turn(engine, case, message, **process_kw)

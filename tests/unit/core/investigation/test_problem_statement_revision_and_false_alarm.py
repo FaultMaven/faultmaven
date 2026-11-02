@@ -1264,30 +1264,25 @@ class TestHandshakeDoors:
         assert case.progress.problem_status == ProblemStatus.VERIFIED
         assert case.description == REVISED
 
-    @pytest.mark.parametrize(
-        "message, swallowed",
-        [
-            ("yes", False),
-            ("Yes, use the revised statement", True),
-            ("yes but it is only the EU region, isn't it?", True),
-        ],
-    )
-    def test_a_minted_confirmation_commits_only_on_a_bare_consent(
-        self, message, swallowed
-    ):
-        """The resolver may mint a confirmation from typed text matched against
-        the card; like Gate 1, only one bare consent token may commit."""
-        from faultmaven.models.api_models import IntentType, QueryIntent
-        from faultmaven.modules.agent.domain.services.investigation_service.intent_gates import (
-            _minted_intent_swallows_gate_consent,
+    def test_the_revision_card_is_never_minted(self):
+        """#2222: typed text never mints the revision card's intent, so the
+        adoption guard has no revision arm; the engine's 0b' reads the text
+        (only a bare token answers)."""
+        from faultmaven.core.investigation.intent_resolver import (
+            _typed_text_may_answer,
         )
+        from faultmaven.core.investigation.offer_projection import project_offers
 
         case = _case()
         _propose(case)
-        minted = QueryIntent(type=IntentType.CONFIRMATION, confirmation_value=True)
-        assert _minted_intent_swallows_gate_consent(case, minted, message) is swallowed
+        pair = project_offers(case).pair
+        assert len(pair) == 2
+        assert not any(_typed_text_may_answer(card) for card in pair)
 
-    async def test_a_minted_decline_declines(self):
+    async def test_a_minted_decline_carries_no_answer(self):
+        """#2222: a mint is not a click. "No, the original statement is
+        correct" is not one bare decline token, so the revision still stands
+        and the turn is answered as an ordinary one."""
         engine, case = _engine(), _case(ProblemStatus.VERIFIED)
         _propose(case)
         await engine.process_turn(
@@ -1298,8 +1293,8 @@ class TestHandshakeDoors:
             typed=True,
             redaction_ctx=None,
         )
-        assert case.progress.problem_status == ProblemStatus.VERIFIED
-        assert pending_revision(case) is None
+        assert case.progress.problem_status == ProblemStatus.REVISION_PENDING
+        assert pending_revision(case) is not None
         assert case.description == STATEMENT
 
     async def test_the_model_cannot_propose_a_transition_meanwhile(self):

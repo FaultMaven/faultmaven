@@ -78,6 +78,23 @@ def _is_resolve_chip(follow_up: Any, resolve_card: dict) -> bool:
     )
 
 
+def _is_close_chip(follow_up: Any, close_card: dict) -> bool:
+    """Whether ``follow_up`` duplicates the "Close without resolving" chip: a
+    ``status_transition`` to ``closed`` (its intent, the status menu's), or
+    the same label. While a resolve decline stands every close records
+    ``resolution_declined`` (#2360), so a second close card would name the
+    wrong reason."""
+    if not isinstance(follow_up, dict):
+        return False
+    label = str(follow_up.get("label") or "").strip().lower()
+    intent = follow_up.get("intent")
+    return (
+        isinstance(intent, dict)
+        and intent.get("type") == close_card["intent"]["type"]
+        and intent.get("to_state") == close_card["intent"]["to_state"]
+    ) or label == close_card["label"].lower()
+
+
 def _narration_overclaim_notice(
     case, agent_text: str | None, *, gate_prose_appended: bool = False
 ) -> str | None:
@@ -404,14 +421,22 @@ async def _compose_turn_reply(
     # who changes their mind at this chip, so the chip cannot depend on a
     # refusal having happened. The projection's chip: the decline stands, no
     # offer is open, the problem is not on hold. A new confirmation (the offer
-    # returns with its own pair) or an open offer leaves it off. Appended
-    # once: any follow-up already carrying its label or its intent is dropped
-    # first, so the turn shows exactly one.
+    # returns with its own pair) or an open offer leaves it off. The "Close
+    # without resolving" chip follows it, so a client with no status menu can
+    # close (#2222). Each appended once: any follow-up already carrying its
+    # label or its intent is dropped first, so the turn shows exactly one.
     resolve_card = projection.reopen_chip
-    if resolve_card is not None:
+    close_card = projection.close_chip
+    if resolve_card is not None and close_card is not None:
         follow_ups = [
-            *(f for f in follow_ups if not _is_resolve_chip(f, resolve_card)),
+            *(
+                f
+                for f in follow_ups
+                if not _is_resolve_chip(f, resolve_card)
+                and not _is_close_chip(f, close_card)
+            ),
             resolve_card,
+            close_card,
         ]
 
     # Append the synthesized summary (or skip / failure note) so it

@@ -45,7 +45,11 @@ from .terminal_replies import (
     _compose_terminal_reply,
     _select_ack_follow_ups,
 )
-from .transition_consent import TYPED_CONFIRMATION_LINE, OfferRefusal
+from .transition_consent import (
+    TYPED_CONFIRMATION_LINE,
+    TYPED_DECLINE_LINE,
+    OfferRefusal,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -173,18 +177,18 @@ def _decline_bare_reply(*, case, upload_report, user_message):
     its premise, and the reply says what the hold is and how it moves, with the
     close card (``declined_close_card``) as its one follow-up (#1889). Any other
     close gets the plain reply; one the user declines while their resolve
-    decline stands (#2360) carries the "Mark it resolved" chip as its one
-    follow-up (#1895).
+    decline stands (#2360) carries the "Mark it resolved" chip (#1895) and
+    the "Close without resolving" chip beside it (#2222).
     """
     follow_ups: list = []
-    resolve_card = project_offers(case).reopen_chip
+    projection = project_offers(case)
     if false_alarm_close_declined_at(case) is not None:
         agent_response = FALSE_ALARM_HOLD_REPLY
         follow_ups = [declined_close_card("false_alarm")]
     else:
         agent_response = "Understood. The case remains open for further investigation."
-        if resolve_card is not None:
-            follow_ups = [resolve_card]
+        if projection.reopen_chip is not None:
+            follow_ups = [projection.reopen_chip, projection.close_chip]
     turn_metadata = _finish_deterministic_turn(
         case,
         user_message or "",
@@ -205,12 +209,16 @@ def _pending_transition_reask(case) -> tuple[str, list]:
     """The open offer's re-ask text and its confirmation pair.
 
     The pair names the offer by its ``proposal_id`` (#1812). The last
-    paragraph says what a typed confirmation must look like (#1814, ruling
-    (b)), since a typed reply executes only when it is one bare consent token
-    (#1783).
+    paragraph says what a typed confirmation and a typed decline must look
+    like (#1814, ruling (b); #2222, ruled copy 2026-11-02): a typed reply
+    answers only when it is one bare consent or decline token (#1783, #1813),
+    so it names the "Not yet" click too.
     """
     summary = open_terminal_offer(case).summary
-    ask = f"Please select one of the options above to continue.\n\n{TYPED_CONFIRMATION_LINE}"
+    ask = (
+        "Please select one of the options above to continue.\n\n"
+        f"{TYPED_CONFIRMATION_LINE} {TYPED_DECLINE_LINE}"
+    )
     agent_response = ask if not summary else f"{summary}\n\n{ask}"
     return agent_response, project_offers(case).pair
 

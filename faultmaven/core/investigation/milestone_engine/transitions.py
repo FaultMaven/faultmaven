@@ -92,8 +92,8 @@ def _declined_resolve_feedback() -> str:
     return (
         "TRANSITION NOT PROPOSED: the user declined marking this case resolved, "
         "and no new confirmation that the fix held has been recorded since. "
-        "The engine has attached its 'Mark it resolved' action to this reply. "
-        + RESOLVE_DECLINED_RULE
+        "The engine has attached its 'Mark it resolved' and 'Close without "
+        "resolving' actions to this reply. " + RESOLVE_DECLINED_RULE
     )
 
 

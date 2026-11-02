@@ -19,29 +19,24 @@ of the pending target re-shows the offer's card, and no LLM-written card ships
 a text the gate reads as a bare reply, as written or as a client sends it
 (``card_reads_as_bare_reply``).
 
-The grammar has two strengths (#1840). Every reader that decides what the
-gate DOES with a turn stays strict: the bare readers
-(``confirmation_token_class``, ``gate1_bare_consent``,
+Only a click or a whole-message bare token answers an offer (#2222, ruling
+2026-10-30). A typed reply that is not a bare token never records a decline,
+and an intent the service minted from typed text answers nothing: the gate
+reads the click, or the text. Every reader here is strict (#1840): the bare
+readers (``confirmation_token_class``, ``gate1_bare_consent``,
 ``_user_declines_transition``), so a token carrying an invisible character or
 wrapped in markup is not bare and is re-asked (#1783's corpus), and the reader
 that decides whether the gate takes the turn at all (``_consent_prefix``,
 ``opens_with_consent_token``), so a reply the gate does not recognise reaches
-the LLM. Only the escape lane's record rule reads loosely
-(``opens_with_consent_loosely``, over ``_shape_text``): a reply that opens
-with consent under markup is processed, and never recorded as a refusal. Each
-errs toward the safe side of its own question.
+the LLM.
 """
 
 import hashlib
 import logging
-import re
 import unicodedata
 from typing import Any, Literal, Optional
 
-from faultmaven.core.investigation.terminal_transitions import (
-    is_question,
-    is_substantive_reply,
-)
+from faultmaven.core.investigation.terminal_transitions import is_substantive_reply
 from faultmaven.modules.case.contracts import TerminalConfirmedVia
 
 from .stage_gates import _matches_gate_token
@@ -166,30 +161,13 @@ def _is_invisible(c: str) -> bool:
     combining grapheme joiner (U+034F, which is a nonspacing mark). iOS, Slack
     and copy-paste insert them.
 
-    Only the loose reading (``_shape_text``) and the card rule
-    (``card_reads_as_bare_reply``) look past them. To every other reader each
-    is a character like any other, so ``yes`` followed by U+200B is not bare
-    and is re-asked (#1783's corpus pins ``ok`` + U+200B as never executing).
+    Only the card rule (``card_reads_as_bare_reply``) looks past them. To
+    every other reader each is a character like any other, so ``yes``
+    followed by U+200B is not bare and is re-asked (#1783's corpus pins ``ok``
+    + U+200B as never executing).
     """
     return c == "\u034f" or unicodedata.category(c) == "Cf"
 
-
-#: A mark a reply may wrap a word in (#1840): markdown emphasis, ``*`` and
-#: ``_``, only where it wraps a word, never inside an identifier (so
-#: ``ok_status``, ``confirm_timeout`` and ``proceed_on_error`` keep theirs);
-#: quotes in these scripts (``"``, the curly and low-9 double quotes, and the
-#: double and single guillemets); and a straight apostrophe where it is not INSIDE a
-#: word, so ``that's right`` and ``don't`` keep theirs (``_normalize_reply``
-#: has already made the curly ones straight). A backtick is deliberately
-#: absent: it quotes a word rather than using it (`` `ok` is false in the
-#: /health response``). So is strikethrough's ``~``, because ``~~ok, close
-#: it~~`` negates. Only the loose reading removes these marks; to a bare
-#: reader ``**yes**`` and ``"yes"`` are not bare (#1783).
-_MARKUP_RE = re.compile(
-    r"(?<!\w)[*_]+|[*_]+(?!\w)"
-    r"|[\"\u201c\u201d\u201e\u00ab\u00bb\u2039\u203a]"
-    r"|(?<!\w)'|'(?!\w)"
-)
 
 #: The typed decline tokens. A typed reply declines only when the WHOLE of it
 #: is one of them (#1813, the bare-decline mirror of ``confirmation_token_class``).
@@ -215,6 +193,11 @@ OfferRefusal = Literal["stale", "untargeted"]
 #: presentation. No quote marks, because the grammar rejects a quoted token.
 TYPED_CONFIRMATION_LINE = "To confirm, click **Yes** or reply with the single word yes."
 
+#: What a typed decline must look like, said after ``TYPED_CONFIRMATION_LINE``
+#: in the terminal re-ask (#2222, ruled copy 2026-11-02): a typed reply that is
+#: not one bare token never records a decline, so the re-ask names the click.
+TYPED_DECLINE_LINE = "To decline, click **Not yet** or reply with the single word no."
+
 #: The prefix that marks a Gate 1 offer key, so it can never equal an offer's
 #: ``proposal_id`` (16 hex characters).
 _GATE1_KEY_PREFIX = "gate1:"
@@ -233,6 +216,12 @@ def gate1_offer_key(statement: Optional[str]) -> str:
     button-value limit. A statement revised to identical text keeps its key.
     """
     return f"{_GATE1_KEY_PREFIX}{_statement_digest(statement)}"
+
+
+def is_gate1_offer_key(key: Optional[str]) -> bool:
+    """Whether ``key`` names a Gate 1 offer (``gate1_offer_key``'s prefix).
+    An offer's ``proposal_id`` and a revision's wording key never do."""
+    return bool(key) and str(key).startswith(_GATE1_KEY_PREFIX)
 
 
 def revision_offer_key(statement: Optional[str]) -> str:
@@ -289,10 +278,9 @@ def _undecorated(user_message: str) -> str:
     token (``clo(y)se it``, ``o👍k``). A modifier is replaced only when the
     character before it in the reply is neither alphanumeric nor whitespace;
     after a letter, a digit or a space, or at the start, it stays, so the
-    reply is not bare (``_EMOJI_MODIFIERS``). The treatment every strict
-    reader here applies (``confirmation_token_class`` and through it
-    ``gate1_bare_consent``, ``_user_declines_transition``, ``_consent_prefix``),
-    and the base of the loose reading (``_shape_text``).
+    reply is not bare (``_EMOJI_MODIFIERS``). The treatment every reader here
+    applies (``confirmation_token_class`` and through it
+    ``gate1_bare_consent``, ``_user_declines_transition``, ``_consent_prefix``).
     """
     normalized = _normalize_reply(user_message)
     kept: list[str] = []
@@ -348,7 +336,7 @@ def confirmation_token_class(
     This reader is strict, and stays so (#1840): an invisible character and
     a wrapping mark are not decorations, so a token carrying either
     (``"yes"``, ``**yes**``, ``yes`` with a trailing U+200B) is not bare and
-    is re-asked. Only the loose reading (``_shape_text``) reads past them.
+    is re-asked.
 
     The shared substance screen runs first: ``is_substantive_reply`` is the
     predicate the IntentResolver adoption guard applies to minted intents
@@ -386,48 +374,6 @@ def gate1_bare_consent(user_message: str) -> bool:
     return confirmation_token_class(user_message, None) is not None
 
 
-def _is_modifier_or_selector(c: str) -> bool:
-    """Whether ``c`` modifies or selects the presentation of the character
-    before it: an emoji modifier (``_EMOJI_MODIFIERS``), or any variation
-    selector, VS1 to VS16 (U+FE00 to U+FE0F) or VS17 to VS256 (U+E0100 to
-    U+E01EF) (#1840 review).
-
-    Read by the loose reading (``_shape_text``) alone, which makes every one a
-    space wherever it stands. The strict readers keep ``_undecorated``'s rule,
-    under which one that follows a letter, a digit or a space, or opens the
-    reply, stays, so the reply is not bare. Reading past it is safe only in
-    the loose reader, because that reader decides nothing but whether a reply
-    the gate did not take is RECORDED as a refusal: a stray U+FE0F or skin tone
-    before ``Yes, go ahead…`` then costs no refusal, as on ``main``.
-    """
-    o = ord(c)
-    return c in _EMOJI_MODIFIERS or 0xFE00 <= o <= 0xFE0F or 0xE0100 <= o <= 0xE01EF
-
-
-def _shape_text(user_message: str) -> str:
-    """``user_message`` read loosely, for the escape lane's record rule only
-    (#1840).
-
-    Every invisible character (``_is_invisible``) and every modifier or
-    variation selector (``_is_modifier_or_selector``) becomes a space, wherever
-    it stands, then ``_undecorated`` runs, then every wrapping mark (``_MARKUP_RE``) becomes a
-    space and whitespace is collapsed. So ``_Yes_, go ahead…``, ``"Yes" — …``,
-    ``«Yes» — …`` and a ``Yes`` behind a U+200B, a bidi mark, a stray U+FE0F or
-    a skin tone all read as opening with ``yes``, while ``that's right`` keeps its apostrophe and
-    ``ok_status``, `` `ok` `` and ``~~ok~~`` keep the marks that change what
-    they say.
-
-    Read only through ``opens_with_consent_loosely``: never by a bare test
-    (#1783's corpus), and never by a reader that decides whether the gate
-    takes the turn.
-    """
-    text = "".join(
-        " " if _is_invisible(c) or _is_modifier_or_selector(c) else c
-        for c in user_message
-    )
-    return " ".join(_MARKUP_RE.sub(" ", _undecorated(text)).split())
-
-
 def _consent_prefix(user_message: str) -> bool:
     """Whether ``user_message`` OPENS with a consent token on a word boundary,
     after the same treatment ``confirmation_token_class`` gives it (#1808).
@@ -442,35 +388,12 @@ def _consent_prefix(user_message: str) -> bool:
     a turn and answers it with a re-ask and no LLM call. That is why it stays
     strict: read loosely, `` `ok` is false in the /health response from node-3
     again`` was swallowed and re-asked where it must reach the LLM (#1840
-    review). Whether a turn the gate does not take is RECORDED as a refusal is
-    a different question, answered loosely by ``opens_with_consent_loosely``.
+    review).
     """
     if not user_message:
         return False
     return _matches_gate_token(
         _undecorated(user_message),
-        _EXPLICIT_CONFIRM_TOKENS + _WEAK_CONFIRM_TOKENS,
-    )
-
-
-def opens_with_consent_loosely(user_message: str) -> bool:
-    """Whether ``user_message`` opens with a consent token once invisible
-    characters and wrapping marks are read past (``_shape_text``; #1840):
-    ``*Yes*, …``, ``_Yes_, …``, ``"Yes" — …``, a ``Yes`` behind a U+200B.
-
-    For the engine's escape-lane record rule ONLY. A reply that reaches that
-    rule has already escaped the gate (it is over 40 characters, or a
-    question): it is withdrawn and the LLM processes it whatever this says.
-    This decides only whether the withdrawal is RECORDED as a refusal, so
-    reading loosely costs at most a refusal left unrecorded, and a consenting
-    reply under markup is never recorded as one. Never read by anything that
-    decides whether the gate takes the turn: read loosely there, evidence is
-    answered with a re-ask and no LLM call (``_consent_prefix``).
-    """
-    if not user_message:
-        return False
-    return _matches_gate_token(
-        _shape_text(user_message),
         _EXPLICIT_CONFIRM_TOKENS + _WEAK_CONFIRM_TOKENS,
     )
 
@@ -555,52 +478,38 @@ def pending_gate_verdict(
     user_message: str,
     to_state: Optional[str],
     *,
-    intent_value: Optional[bool],
-    typed: bool,
+    clicked: Optional[bool],
 ) -> tuple[PendingGateVerdict, Optional[TerminalConfirmedVia]]:
-    """The pending-transition gate's answer to one user turn (#1783, ruling (a)).
+    """The pending-offer gate's answer to one user turn (#1783, ruling (a);
+    #2222, ruling 2026-10-30: only a click or a whole-message bare token
+    answers an offer).
 
-    ``intent_value`` is the answer an intent carries: True for a
-    ``confirmation`` with ``value=True`` or a MINTED ``status_transition`` to
-    the pending target, False for a ``confirmation`` with ``value=False``, None
-    when the turn carries neither. ``typed`` is True when the service MINTED
-    that intent from typed text, so it is not a click. A status-dropdown
-    re-pick of the pending target is a click that names a state, not an offer,
-    so it is not consent: the engine re-asks it without calling this (#1838).
+    ``clicked`` is the value of a CLICKED confirmation naming the open offer
+    (its key is checked by the engine before this runs, #1812), or None. An
+    intent the service minted from typed text is not a click and is never
+    passed: the text decides. A status-dropdown re-pick of the pending target
+    names a state, not an offer, so it is not consent: the engine re-asks it
+    without calling this (#1838).
 
-    Returns the verdict and, for ``confirm``, how the user confirmed:
+    Returns the verdict and, for ``confirm``, how the user confirmed. First
+    match wins:
 
-    * ``confirm`` — execute. Only a click (``"intent"``), or a bare consent
-      token (``confirmation_token_class``) that no minted decline contradicts;
-    * ``decline`` — an explicit decline: the Not-yet click, a BARE typed
-      decline token (``_user_declines_transition``), or a minted decline on
-      text that is neither consent-shaped nor a question;
-    * ``reask`` — show the proposal's buttons again, and record nothing: a
-      consent-shaped reply that is not bare, a reply whose text and minted
-      intent disagree, or a minted confirmation on text that is not bare;
-    * ``not_an_answer`` — the reply answers neither way, a minted decline on
-      a question included (#1813; ``is_question``, #1840): the escape lane's question rule then withdraws the
-      proposal and records nothing. The caller re-asks a short one and sends
-      a substantive one down the escape lane.
-
-    First match wins, so a minted intent never overrides the typed text. A
-    click's offer key is checked by the engine before this runs (#1812).
+    * a click confirms (``"intent"``) or declines;
+    * a bare consent token (``confirmation_token_class``) confirms;
+    * a consent-shaped reply that is not bare (``opens_with_consent_token``)
+      is ``reask``: the offer's buttons again, recording nothing;
+    * a bare decline token (``_user_declines_transition``) declines;
+    * anything else is ``not_an_answer``. The caller re-asks a short one, and
+      withdraws the offer for a question, a reply over 40 characters or an
+      upload and hands the turn to the model. Neither records a decline.
     """
-    if intent_value is not None and not typed:
-        return ("confirm", "intent") if intent_value else ("decline", None)
+    if clicked is not None:
+        return ("confirm", "intent") if clicked else ("decline", None)
     bare = confirmation_token_class(user_message, to_state)
     if bare is not None:
-        return ("reask", None) if intent_value is False else ("confirm", bare)
-    # A minted decline on a question is not a refusal (#1813): once, here,
-    # ahead of both decline returns below, so "no?" (not bare) lands here too.
-    if typed and intent_value is False and is_question(user_message):
-        return "not_an_answer", None
+        return "confirm", bare
     if opens_with_consent_token(user_message):
         return "reask", None
     if _user_declines_transition(user_message):
-        return ("reask", None) if intent_value is True else ("decline", None)
-    if intent_value is True:
-        return "reask", None
-    if intent_value is False:
         return "decline", None
     return "not_an_answer", None

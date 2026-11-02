@@ -194,12 +194,11 @@ def _finish_deterministic_turn(
     or a decline), or sends a turn the gate never consumes — one carrying an
     upload, or a non-answer over 40 characters or carrying a question mark
     (``is_question``) — which the gate's own escape lane withdraws
-    it for. Everything else the gate answers
+    it for, recording no decline (#2222). Everything else the gate answers
     with the proposal's buttons, every time and never recording a refusal: a
     consent-shaped reply that is not bare and that ``is_substantive_reply``
-    does not call substantive, a reply whose text and minted intent disagree,
-    a minted confirmation on text that is not bare, and a short (at most 40
-    characters) question-free non-answer (#1783).
+    does not call substantive, and a short (at most 40 characters)
+    question-free non-answer (#1783).
     """
     metadata: dict[str, Any] = {
         "turn_number": case.current_turn,

@@ -25,6 +25,7 @@ from faultmaven.core.investigation.milestone_engine.affordances import _gate1_is
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.milestone_engine.transition_consent import (
     gate1_bare_consent,
+    pending_gate_verdict,
 )
 from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommitPlan
 from faultmaven.core.investigation.offers import open_terminal_offer
@@ -884,16 +885,31 @@ class InvestigationService:
         gate_reply_refused = False
 
         # Set when the intent below was MINTED from typed text rather than sent
-        # by a click. The engine names how a terminal transition was confirmed
-        # (#1748), and a typed "ok" the resolver turned into a confirmation is
-        # still a typed "ok", not a click.
+        # by a click. A typed "ok" the resolver turned into a confirmation is
+        # still a typed "ok", not a click: the engine reads a mint as no answer
+        # to an offer (#2222), and commits a minted Gate 1 confirmation only on
+        # a bare consent (#1794).
         intent_minted = False
+
+        # A bare token that answers the offer open on the record (a resolve,
+        # close or revision offer) is the gate's to read (#2222): neither the
+        # resolver, which would classify it against whatever else is live, nor
+        # the out-of-band triage, which could call it an aside, sees it. The
+        # gate's own reader decides, as #1841 does for Gate 1.
+        open_offer = case.offer_record.open
+        bare_offer_answer = (
+            open_offer is not None
+            and bool(query)
+            and pending_gate_verdict(query, open_offer.kind.to_state, clicked=None)[0]
+            in ("confirm", "decline")
+        )
 
         if (
             intent_type == IntentType.CONVERSATION
             and query
             and not payload.has_attachments
             and case.last_suggestions
+            and not bare_offer_answer
         ):
             on_offer = live_suggestions(
                 case.last_suggestions, case, as_of_turn=case.current_turn
@@ -911,23 +927,19 @@ class InvestigationService:
                 try:
                     resolved_qi = QueryIntent(**resolved_intent)
                     if _minted_intent_swallows_gate_consent(case, resolved_qi, query):
-                        # INV-26 guard (#721, widened by fm#918): the
-                        # resolver's classifier tier matched substantive
-                        # typed text ("yes but what about the replication
-                        # lag?") to a suggestion whose intent would COMMIT
-                        # A GATE — the pending TERMINAL transition, or
-                        # INQUIRY's Gate 1. Substantive input is never
-                        # consent — drop the minted intent so the message
-                        # flows through as a normal turn (where a pending
-                        # transition exists its own escape lane withdraws
-                        # the proposal and processes the message; the
-                        # engine can re-propose from fresher state).
+                        # INV-26 guard (#721, fm#918): the resolver matched
+                        # typed text that is not one bare consent token
+                        # ("yes but what about the replication lag?") to
+                        # Gate 1's confirmation. Only a bare consent commits
+                        # Gate 1 (#1794) — drop the minted intent so the
+                        # message flows through as a normal turn. The
+                        # resolver mints no offer's chip at all (#2222).
                         gate_reply_refused = True
                         logger.info(
                             "Discarded classifier-minted intent "
                             f"{resolved_qi.type.value} for case "
-                            f"{case.case_id}: substantive reply must not "
-                            "commit a gate (INV-26, #721/fm#918)"
+                            f"{case.case_id}: a reply that is not bare "
+                            "consent must not commit Gate 1 (INV-26, #1794)"
                         )
                     else:
                         intent = resolved_qi
@@ -964,16 +976,16 @@ class InvestigationService:
         # verdict answers from a small prompt with no case context,
         # records ``TurnOutcome.OUT_OF_BAND``, and renders in later
         # prompts as an off-topic exchange, so the engine never learns the
-        # user questioned its problem statement. #721's arm was exempt by
-        # construction (it REQUIRED a pending transition, which this lane
-        # already excludes); fm#918's Gate-1 arm is defined by the absence
-        # of one, so the exemption has to be carried explicitly.
+        # user questioned its problem statement. The guard's one arm is
+        # Gate 1's (fm#918), which is defined by the absence of an open
+        # offer, so the exemption has to be carried explicitly. Typed text
+        # under an offer's chip mints nothing (#2222), so it is triaged like
+        # any text turn (ruling 2026-11-02, no exemption).
         #
         # It only ever ADDS coverage for the no-offer case, because an
-        # open offer already excludes this lane one line up — and that
-        # overlap is the point: the guard can refuse with an offer open
-        # too (the two gate arms are an OR, not an if/else), and there the
-        # conjunct is inert rather than wrong.
+        # open offer already excludes this lane one line up; where the
+        # guard refuses with an offer open too, the conjunct is inert
+        # rather than wrong.
         #
         # It is NOT the same rule as the open-offer one, and the
         # difference is worth knowing: that one suppresses this lane on
@@ -1009,6 +1021,8 @@ class InvestigationService:
             # A bare consent at a pending Gate 1 is the engine's to read
             # (#1841), never the classifier's: see above.
             and not (_gate1_is_pending(case) and gate1_bare_consent(query))
+            # A bare answer to the open offer, likewise (#1841's pattern; #2222).
+            and not bare_offer_answer
         ):
             oob_kind = await self.out_of_band_triage.triage(
                 case, query, classification, redaction_ctx=redaction_ctx
@@ -1087,7 +1101,6 @@ class InvestigationService:
                     proposal_id=(intent.proposal_id if intent else None),
                     user_id=user_id,
                     attachments=attachment_metadata or None,
-                    typed=intent_minted,
                     redaction_ctx=redaction_ctx,
                 )
             elif intent_type == IntentType.CONFIRMATION:
@@ -1197,11 +1210,13 @@ class InvestigationService:
         proposal_id: Optional[str] = None,
         user_id: Optional[str] = None,
         attachments: Optional[List[Dict[str, Any]]] = None,
-        typed: bool = False,
         *,
         redaction_ctx: Any,
     ) -> Dict[str, Any]:
         """Handle status transition intent with validation.
+
+        A status transition always arrives from a click (a status-menu pick or
+        a chip): typed text never mints one (#2222).
 
         Args:
             case: Case entity
@@ -1220,11 +1235,6 @@ class InvestigationService:
                 ``_preprocess_attachment`` had already recorded a row for every
                 attachment, so an upload riding a dropdown/chip intent was
                 invisible to the engine (#1229).
-            typed: True when the intent was minted from typed text by the
-                intent resolver, not sent by a click. Passed to the engine as
-                its own ``typed`` keyword, which names how a terminal transition
-                was confirmed (#1748) — never inside ``intent_data``, which the
-                client's intent payload fills.
             redaction_ctx: The turn's case redaction context, handed to the
                 engine (#1956).
 
@@ -1289,7 +1299,6 @@ class InvestigationService:
                 "proposal_id": proposal_id,
             },
             user_id=user_id,
-            typed=typed,
             redaction_ctx=redaction_ctx,
         )
 
@@ -1315,14 +1324,19 @@ class InvestigationService:
             confirmation_value: True for yes, False for no
             proposal_id: The offer the card named (``QueryIntent.proposal_id``).
                 The engine executes a click only when it names the offer
-                standing when it arrives (#1812); a minted intent keeps its
-                card's key, but the text decides it and the key is not read.
+                standing when it arrives (#1812). A minted intent is Gate 1's
+                (#2222) and commits only on a bare consent; its key is not
+                read.
             user_id: Authenticated principal for the turn (keys the agent's
                 KB read allowlist)
             attachments: The turn's engine attachment metadata (see
                 ``_handle_status_transition``; #1229).
-            typed: The intent was minted from typed text, not clicked (see
-                ``_handle_status_transition``; #1748).
+            typed: True when the intent resolver MINTED the intent from typed
+                text rather than a click sending it. Passed to the engine as its
+                own ``typed`` keyword, never inside ``intent_data``, which the
+                client's intent payload fills. A minted intent answers no offer
+                (#2222), and 0c commits a minted Gate 1 confirmation only on a
+                bare consent (#1794).
             redaction_ctx: The turn's case redaction context (#1956).
 
         Returns:
