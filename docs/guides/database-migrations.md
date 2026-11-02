@@ -254,10 +254,11 @@ PostgreSQL 18 with OpenSSL in FIPS mode (#2463); both gate the merge.
 
 - **Use no digest FIPS mode refuses.** A FIPS-mode server (the Bitnami image
   and Helm chart's default) raises `could not compute MD5 hash: unsupported`
-  on `md5()`, and the same holds for pgcrypto's `digest(…, 'md5')` and
-  `gen_salt('md5')`. For a random fill, use `sha256()` (built in since
-  PostgreSQL 11) or `gen_random_uuid()` (since 13); revision 022 had to be
-  rewritten for this (#2462).
+  on `md5()`. pgcrypto's `digest(…, 'md5')` raises too, and so does
+  `crypt()` with an MD5 salt (`gen_salt('md5')` itself only makes the salt).
+  For a random fill, use `sha256()` (built in since PostgreSQL 11) or
+  `gen_random_uuid()` (since 13); revision 022 had to be rewritten for this
+  (#2462).
 
 - **Guard PostgreSQL-only DDL on the dialect.** The baseline reads
   `op.get_context().dialect.name` and branches: RLS

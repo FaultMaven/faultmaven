@@ -860,7 +860,7 @@ jobs:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: fmtest  # pragma: allowlist secret
           POSTGRES_DB: fmtest
-          # The image's default already, set so the lane does not rely on it.
+          # The image's default already, set so the job does not rely on it.
           OPENSSL_FIPS: "yes"
         ports:
           - 5432:5432
@@ -1151,7 +1151,7 @@ jobs:
     # dependency was skipped, so the four suites above carry this one down
     # with them -- and, just as important, carry it UP again when the
     # detector fails and they run after all. An `if:` of its own keyed on
-    # `changes` would have to repeat all six results to stay fail-safe, and
+    # `changes` would have to repeat all seven results to stay fail-safe, and
     # getting that list wrong is how a required check starts passing
     # without having built anything (#1506).
 

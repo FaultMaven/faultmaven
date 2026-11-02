@@ -652,7 +652,7 @@ async def test_revision_005_warns_when_the_migrator_cannot_close_public():
             # the server's messages to the client collected. client_min_messages
             # is pinned on this connection, not left to the server's default: a
             # server may set it above WARNING (the Bitnami image sets `error`,
-            # and CI's FIPS lane runs that image, #2463), and the warning would
+            # and CI's FIPS job runs that image, #2463), and the warning would
             # then never reach a client. The operator still sees it, because
             # the revision also logs it (PUBLIC_CREATE_WARNING via alembic's
             # logger), which the stderr assertion below checks.
