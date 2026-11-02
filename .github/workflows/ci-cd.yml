@@ -1079,12 +1079,17 @@ jobs:
           push: false
           load: true
           tags: faultmaven:ci
-          # GitHub Actions layer cache. The heavy layers (deps install, the
-          # ~2GB bundled BGE-M3 model) are content-addressed and only rebuild
-          # when requirements/Dockerfile change — code-only PRs reuse them and
-          # restore from main's cache, so no per-PR model re-download.
+          # GitHub Actions layer cache, READ-ONLY here. The heavy layers (deps
+          # install, the ~2GB bundled BGE-M3 model) are content-addressed and
+          # only rebuild when requirements/Dockerfile change, so a PR or queue
+          # run restores them from main's cache, which publish-docker.yml
+          # writes after every merge. This job writes none. A PR or queue ref's
+          # cache is readable by that ref alone, and each full build here wrote
+          # ~2GB of it (cache-to mode=max). That held the repository over its
+          # 10 GB Actions cache limit (15.8 GB on 2026-11-02), so
+          # least-recently-used eviction dropped main's layers and most builds
+          # rebuilt everything, the full builds that ran the runner out of disk.
           cache-from: type=gha
-          cache-to: type=gha,mode=max
 
   # ============================================================================
   # SECURITY SCANNING
