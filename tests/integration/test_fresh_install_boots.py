@@ -118,25 +118,40 @@ def _boot_a_fresh_install(root: Path) -> dict:
         # credential gate beside it is live too. Presence is what it checks.
         "CHAT_PROVIDER": "gemini",
         "GEMINI_API_KEY": "dummy-key-for-boot-probe",
-        # Offline, as the shipped image runs (its Dockerfile's runtime ENV).
-        # Without them the startup model preload fetched BGE-M3 from
-        # huggingface.co; the image bakes the model in. Here the preload fails
-        # fast and the boot goes on, as it does when a model is unavailable.
+        # No model preload: the startup preload of BGE-M3 fetched it from
+        # huggingface.co on every CI run (~2 GB; the image bakes it in), and
+        # it is not what this probe tests. The app's own opt-out; the value
+        # is JSON, so an empty string would fail settings construction.
+        "PRELOAD_MODELS": "[]",
+        # And if anything else loads a model: offline, as the shipped image
+        # runs (its Dockerfile's runtime ENV), from an empty cache, so the
+        # load fails fast and the boot is the same on every machine.
         "HF_HUB_OFFLINE": "1",
         "TRANSFORMERS_OFFLINE": "1",
-        # No Redis, as tests/conftest.py sets for the suite: otherwise the
-        # client resolves the default host (faultmaven-redis-master) first.
-        "REDIS_HOST": "",
+        "HF_HOME": str(root / "hf-home"),
+        # The parent's Redis, which the suite's steps leave empty
+        # (tests/conftest.py): otherwise the client resolves the default host
+        # (faultmaven-redis-master) first.
+        "REDIS_HOST": os.environ.get("REDIS_HOST", ""),
     }
 
-    completed = subprocess.run(
-        [sys.executable, str(script)],
-        cwd=run_dir,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=600,
-    )
+    try:
+        completed = subprocess.run(
+            [sys.executable, str(script)],
+            cwd=run_dir,
+            env=env,
+            capture_output=True,
+            text=True,
+            # An offline boot takes ~45 s. 240 fails a hung boot in minutes
+            # rather than holding a CI slice for ten, and says where it was.
+            timeout=240,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise AssertionError(
+            f"the child did not finish in {exc.timeout} s:\n"
+            f"stdout tail:\n{(exc.stdout or '')[-2000:]}\n"
+            f"stderr tail:\n{(exc.stderr or '')[-2000:]}"
+        ) from exc
     for line in completed.stdout.splitlines():
         if line.startswith(_MARKER):
             return json.loads(line[len(_MARKER) :])
@@ -188,8 +203,10 @@ class TestAFirstEverInstallBoots:
         """A fresh install boots offline: the image runs with HF_HUB_OFFLINE
         and the model baked in, and a test reaches no network (CLAUDE.md).
         The child runs the suite's guard; anything it refused is listed."""
+        # Refusals first: when a refused call is what broke the boot, they
+        # name its call sites, which `error` alone does not.
+        assert fresh_boot["network_refusals"] == [], fresh_boot.get("error")
         assert fresh_boot["booted"] is True, fresh_boot.get("error")
-        assert fresh_boot["network_refusals"] == []
 
     def test_the_usage_ledger_lives_as_long_as_the_app(self, fresh_boot):
         """#640: a fresh install migrates to the ledger's tables, the composition

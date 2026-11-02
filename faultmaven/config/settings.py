@@ -2602,7 +2602,8 @@ class EmbeddingSettings(BaseSettings):
         description="List of model names to pre-load at startup even with lazy_load_ml_models=True. "
         "Default: ['BAAI/bge-m3'] — preloaded so the first request path does not pay a "
         "cold-load penalty (see data-preprocessing-design-specification.md §5.7). "
-        "Set to [] (via PRELOAD_MODELS='') to opt out for faster startup, accepting "
+        "Set to [] (via PRELOAD_MODELS='[]'; the value is JSON, and an empty string "
+        "fails settings construction) to opt out for faster startup, accepting "
         "~60–120s first-request latency while the model loads.",
     )
 
