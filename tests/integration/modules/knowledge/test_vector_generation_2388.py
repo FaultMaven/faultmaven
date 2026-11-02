@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Dict, List, Optional
@@ -886,7 +887,7 @@ async def test_migration_022_fills_each_row_then_steps_back_on_postgresql():
                     )
                 ).scalar()
             assert len(set(generations)) == 2
-            assert all(len(g) == 32 for g in generations)
+            assert all(re.fullmatch("[0-9a-f]{32}", g) for g in generations)
             assert nullable == "NO"
 
             down = alembic_on(url, "downgrade d0eb318ce3e0")  # pragma: allowlist secret

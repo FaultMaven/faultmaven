@@ -3822,8 +3822,8 @@ class TestKnowledgeItemVectorGenerationRevision:
         )
         off = sql.index("SET LOCAL row_security = off;")
         fill = sql.index(
-            "UPDATE knowledge_items SET vector_generation = "
-            "md5(random()::text || item_id);"
+            "UPDATE knowledge_items SET vector_generation = left(encode(sha256("
+            "convert_to(random()::text || item_id, 'UTF8')), 'hex'), 32);"
         )
         restored = sql.index("SET LOCAL row_security TO DEFAULT;")
         not_null = sql.index(

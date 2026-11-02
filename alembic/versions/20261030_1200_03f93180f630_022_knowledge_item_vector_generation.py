@@ -16,10 +16,14 @@ Existing rows (the owner's ruling (c), 2026-10-30)
 ---------------------------------------------------
 The column is added nullable, each existing row is given a random generation in
 ONE UPDATE (``lower(hex(randomblob(16)))`` on SQLite,
-``md5(random()::text || item_id)`` on PostgreSQL), and the column is then made
-NOT NULL. That fills a column; it migrates no chunk. No chunk carries those
-values, so nothing written before this revision is served from the first query
-after it. The next pack-loading bootstrap re-ingests every built-in row from
+the first 32 hex digits of ``sha256(random()::text || item_id)`` on
+PostgreSQL), and the column is then made NOT NULL. Not ``md5()``: a server whose
+OpenSSL runs in FIPS mode refuses it ("could not compute MD5 hash:
+unsupported"); SHA-256 is FIPS-approved and built in since PostgreSQL 11.
+``convert_to`` hashes the text's UTF-8 bytes (a ``::bytea`` cast would parse
+backslashes as escapes). That fills a column; it migrates no chunk. No chunk
+carries those values, so nothing written before this revision is served from
+the first query after it. The next pack-loading bootstrap re-ingests every built-in row from
 the pack (a pack row with no chunk of its generation, pre-embedded, no model);
 an authored row goes to the bootstrap's capped repair, or is re-provisioned
 (``fm-reset-kb`` on standalone, the deployment wipe under multi). The rows
@@ -68,7 +72,10 @@ COLUMN = "vector_generation"
 #: Each existing row's random generation, one UPDATE per dialect.
 FILL = {
     "sqlite": f"UPDATE {TABLE} SET {COLUMN} = lower(hex(randomblob(16)))",
-    "postgresql": f"UPDATE {TABLE} SET {COLUMN} = md5(random()::text || item_id)",
+    "postgresql": (
+        f"UPDATE {TABLE} SET {COLUMN} = left(encode(sha256("
+        "convert_to(random()::text || item_id, 'UTF8')), 'hex'), 32)"
+    ),
 }
 ROW_SECURITY_OFF = "SET LOCAL row_security = off"
 ROW_SECURITY_RESTORED = "SET LOCAL row_security TO DEFAULT"
