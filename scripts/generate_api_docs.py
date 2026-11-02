@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
 """Generate the checked-in API reference from the live FastAPI app.
 
-Two artifacts, both derived from ``app.openapi()`` and nothing else:
+Three artifacts, derived from ``app.openapi()`` and, for the third, the
+contract changelog in ``faultmaven/api/contract_version.py``:
 
 - ``docs/reference/api/openapi.json`` — the specification, canonical JSON
 - ``docs/reference/api/README.md`` — a human-readable rendering of it
+- ``docs/reference/api/contract-notes.json`` — every ``ContractChange`` and the
+  meaning of each value an enum publishes, the data clients read instead of
+  parsing Python
 
 Run with ``--check`` to verify the committed artifacts match the app instead of
 rewriting them. That is what CI runs: it is the gate that stops the artifacts
 drifting away from the routes they describe (issue #880).
 
-Both outputs are byte-reproducible. Nothing here injects a timestamp, a
+All three outputs are byte-reproducible. Nothing here injects a timestamp, a
 hand-written description, or an example — an artifact that is partly generated
 and partly hand-authored cannot be checked against its source, and that is how
 the previous version of this script let the spec claim the API needed no
@@ -79,6 +83,7 @@ _pin_generation_environment()
 DOCS_DIR = PROJECT_ROOT / "docs" / "reference" / "api"
 SPEC_PATH = DOCS_DIR / "openapi.json"
 MARKDOWN_PATH = DOCS_DIR / "README.md"
+NOTES_PATH = DOCS_DIR / "contract-notes.json"
 
 METHOD_ORDER = ["get", "post", "put", "patch", "delete", "head", "options", "trace"]
 
@@ -93,6 +98,70 @@ def build_spec() -> Dict[str, Any]:
 def render_spec(spec: Dict[str, Any]) -> str:
     """Serialise the spec canonically, so equal specs give equal bytes."""
     return json.dumps(spec, indent=2, sort_keys=True) + "\n"
+
+
+def _vocabularies(spec: Dict[str, Any]) -> Dict[str, List[Dict[str, str]]]:
+    """Every schema enum that publishes meanings, its values in order beside them.
+
+    Read from the spec just built, so the notes and ``openapi.json`` cannot
+    disagree. An enum without ``x-enum-descriptions`` is left out: the spec
+    already lists its values, and this file is about what they mean.
+    """
+    vocabularies = {}
+    for name, schema in spec.get("components", {}).get("schemas", {}).items():
+        meanings = schema.get("x-enum-descriptions")
+        if meanings is None:
+            continue
+        values = schema.get("enum", [])
+        if len(values) != len(meanings):
+            raise ValueError(
+                f"{name} publishes {len(values)} enum values but "
+                f"{len(meanings)} x-enum-descriptions"
+            )
+        vocabularies[name] = [
+            {"value": value, "meaning": meaning}
+            for value, meaning in zip(values, meanings, strict=True)
+        ]
+    return vocabularies
+
+
+def build_notes(spec: Dict[str, Any]) -> Dict[str, Any]:
+    """The contract notes: the version, every change newest first, the meanings."""
+    from faultmaven.api.contract_version import CONTRACT_CHANGES
+
+    version = spec["info"]["version"]
+    if CONTRACT_CHANGES[0].version != version:
+        raise ValueError(
+            f"the newest ContractChange is {CONTRACT_CHANGES[0].version} but the "
+            f"spec publishes {version}"
+        )
+    return {
+        "contractVersion": version,
+        "entries": [
+            {
+                "version": change.version,
+                "level": change.level,
+                "title": change.title,
+                "body": change.body,
+            }
+            for change in CONTRACT_CHANGES
+        ],
+        "vocabularies": _vocabularies(spec),
+    }
+
+
+def render_notes(spec: Dict[str, Any]) -> str:
+    """Serialise the notes as ``render_spec`` does: only object keys sort."""
+    return json.dumps(build_notes(spec), indent=2, sort_keys=True) + "\n"
+
+
+def render_outputs(spec: Dict[str, Any]) -> Dict[Path, str]:
+    """Every artifact this script writes, and ``--check`` compares, by path."""
+    return {
+        SPEC_PATH: render_spec(spec),
+        MARKDOWN_PATH: render_markdown(spec),
+        NOTES_PATH: render_notes(spec),
+    }
 
 
 def _operations(path_item: Dict[str, Any]) -> List[Tuple[str, Dict[str, Any]]]:
@@ -362,7 +431,7 @@ def main() -> int:
     args = parser.parse_args()
 
     spec = build_spec()
-    outputs = {SPEC_PATH: render_spec(spec), MARKDOWN_PATH: render_markdown(spec)}
+    outputs = render_outputs(spec)
 
     if args.check:
         stale = [
@@ -384,6 +453,13 @@ def main() -> int:
                 "installed:\n"
                 "\n    pip install -r requirements/dev.txt\n"
             )
+            if NOTES_PATH in stale:
+                print(
+                    f"{NOTES_PATH.relative_to(PROJECT_ROOT)} is built from "
+                    "CONTRACT_CHANGES in faultmaven/api/contract_version.py and "
+                    "the spec's enum meanings, so a changelog edit is regenerated "
+                    "with the same command.\n"
+                )
             return 1
         print("✅ API reference matches the running app.")
         return 0

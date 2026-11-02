@@ -39,6 +39,11 @@ valid-looking artifact that CI rejects, with the diff showing up in schema shape
 (`ctx`/`input` on ValidationError, `const` vs a single-value `enum`,
 `contentMediaType` vs `format: binary`) rather than in routes.
 
+The third artifact, `contract-notes.json`, is data for the clients: every
+`ContractChange` in `faultmaven/api/contract_version.py`, newest first, and the
+values and meanings of each enum that publishes `x-enum-descriptions`, read
+from the spec just built.
+
 The contract version clients pin is `API_CONTRACT_VERSION` in
 `faultmaven/api/contract_version.py`; when and how to move it:
 `docs/development/api-contract-changes.md`.

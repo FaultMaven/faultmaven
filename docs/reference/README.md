@@ -15,6 +15,7 @@ Factual lookup materials for FaultMaven developers and operators.
 
 - [OpenAPI Spec](./api/openapi.json) — Generated from the running app; CI fails if it drifts
 - [API Reference](./api/README.md) — The same spec rendered for reading, including per-operation auth
+- [Contract Notes](./api/contract-notes.json) — Generated changelog entries and published value meanings, the data clients read
 - [LLM Model Capabilities](./llm-model-capabilities.md)
 - [Local LLM Setup](./configuration/local-llm-setup.md)
 - [Tool Catalog](./tools/tool-catalog.md)

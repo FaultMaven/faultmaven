@@ -26,10 +26,15 @@ Bump this in the same PR as the change it describes:
   a change to what a published value means cannot ship as a description
   change alone.
 
-Each version's entry below is headed ``# X.Y.Z — MAJOR. …`` (or ``MINOR.`` /
-``PATCH.``), the form faultmaven-copilot's and faultmaven-dashboard's
-``scripts/report-contract-hop.mjs`` finds with
-``/^#\s+(\d+\.\d+\.\d+)\s+[—-]\s/`` to list the entries a pin bump crosses.
+Each version is one ``ContractChange`` at the head of ``CONTRACT_CHANGES``
+below: its version, its level, a title and a body. ``API_CONTRACT_VERSION`` is
+derived from the newest entry, so the version cannot move without one, and
+``validate_contract_changes`` refuses at import an entry whose level does not
+match its bump from the previous version's entry.
+``scripts/generate_api_docs.py`` publishes the entries, beside each published
+value's meaning, in ``docs/reference/api/contract-notes.json``, the file
+faultmaven-copilot and faultmaven-dashboard read at their pinned ref to list
+the entries a pin bump crosses.
 
 ``scripts/check_contract_version.py`` fails a pull request whose structural
 surface differs from the base branch while this stays put, so a surface change
@@ -38,2375 +43,2755 @@ decide MINOR versus MAJOR: that judgement is the thing the clients are being
 asked to accept, and it belongs to a person.
 """
 
-# 8.0.0 — MAJOR. `InquiryResponseData` no longer publishes
-# `decided_to_investigate`. The field is removed from the model entirely, along
-# with the `decision_made_at` timestamp that existed only to keep a second
-# derived fact consistent with it.
-#
-# MAJOR is not a judgement call here: a published field was removed, which this
-# file names as MAJOR outright. The measured impact is nonetheless nil, and
-# client owners deserve both halves of that. Every reference in
-# faultmaven-copilot, faultmaven-dashboard and faultmaven-slack-agent is in a
-# GENERATED types file — no hand-written client code reads the value — and the
-# Slack agent's generated model defaults it to `False`, so a client that adopts
-# late sees no runtime change. What a late-adopting TypeScript client does see
-# is a required property its type declares and the server stops sending, which
-# is exactly the disagreement a pin bump exists to close.
-#
-# Why it went: Gate 1 has been ONE condition since #1611 — `gate1_passed` reads
-# `problem_statement_confirmed` alone, and the `Case` validator dropped its
-# separate requirement in the same change. The field was written by three
-# sites, always in lockstep with `problem_statement_confirmed`, and read by
-# nothing. A field that cannot differ from another invites the belief that it
-# can; this one had two readers of the code concluding INQUIRY → INVESTIGATING
-# was a two-handshake gate.
+import re
+from dataclasses import dataclass
+from typing import Literal
 
-# 7.2.0 — MINOR. `GET /api/v1/admin/llm/config` publishes `role_routing`, a
-# new list on `LLMConfigResponse` carrying a new `LLMRoleRouting` schema
-# (#1206). Purely additive: no existing property changed, nothing was removed,
-# and a client that ignores the field behaves exactly as before.
-#
-# What it adds is the answer the response could not previously give. It
-# published `primary_provider` and nothing about the other seven capability
-# roles, and those do not all follow the anchor:
-# `CLASSIFIER_PROVIDER`/`SYNTHESIS_PROVIDER`/`MULTIMODAL_PROVIDER` ship pinned
-# to gemini and stay put when the anchor is flipped (#1193 — that is what
-# makes an A/B comparison of the anchor controlled), while
-# `da`/`knowledge`/`structured_output` ship unset and move with it. An admin
-# who switched the anchor to openai was shown "openai" by a page on which
-# three roles still called Gemini and still needed its credential.
-#
-# Each row carries the resolved provider and model, the environment key that
-# decided each, whether the provider was set for that role or inherited from
-# `CHAT_PROVIDER`, whether the value came from `.env` or a dashboard override,
-# and whether the named provider is actually initialized — the last because a
-# pin with no credential is ignored by `route_request` and falls back to the
-# chain, so reporting it as live would be a new version of the same lie.
-#
-# READ ONLY. The write half — whether an admin may change a role pin at
-# runtime — is deliberately deferred and `_ALLOWED_OVERRIDES` is untouched;
-# making pins runtime-editable interacts with the A/B property above and is
-# its own decision. Standalone is unchanged: `PUT /admin/llm/config` still
-# 403s there and `.env` remains the single source of truth.
+ContractLevel = Literal["MAJOR", "MINOR", "PATCH"]
 
-# 7.1.0 — MINOR. `GET /readiness` publishes a **503**, which it could not
-# answer before (#1515). It is the Kubernetes readiness probe, and it now
-# returns 503 when a component fatal to serving — today only `database` — is
-# unhealthy, instead of reporting `{"status": "unready"}` with a 200 that no
-# probe could act on.
-#
-# The honest statement of what changed, because it is more than an addition:
-# the DECLARED surface grew (`['200'] -> ['200', '503']`, which is what the
-# differ reports), but the code for an unready answer also changed from 200 to
-# 503, and a status code changing is normally MAJOR.
-#
-# MINOR because of who the contract is with. It is with faultmaven-copilot,
-# faultmaven-dashboard and faultmaven-slack-agent, and none of them calls
-# `/readiness` — it is a kubelet probe path, and as of this change not even
-# the kubelet points at it (both production probes are on `/health`, which
-# this PR deliberately leaves at 200 always; see its handler docstring for
-# why a liveness probe must not fail on a dependency). So the question the
-# clients are being asked — "can this break you" — has a measured answer of
-# no. A reviewer who reads an undeclared probe response as part of the
-# contract should have made this a MAJOR; the fact it turns on is stated above
-# rather than buried, so that call can be made without re-deriving it. (That
-# note named 8.0.0 when written — 8.0.0 has since been published for an
-# unrelated removal, so read it as "the next major", not as a pointer.)
-#
-# `/health` is unchanged in the contract: still 200, and its only edit is the
-# docstring that says so on purpose.
 
-# 7.0.0 — MAJOR. Four published operations that admitted an anonymous caller
-# now refuse one, and a query FILTER that let a caller name whose sessions to
-# list is REMOVED (#1447 §1/§2). A caller that succeeded with no credential
-# yesterday gets 401 today, which is the definition of the bump.
-#
-#   * `GET /api/v1/sessions` gains `require_authentication` AND loses its
-#     `user_id` QUERY PARAMETER. It took no auth dependency at all and accepted
-#     that parameter as a filter, so an anonymous caller could name a user and
-#     read back their session ids — and, unfiltered, EVERY session id with the
-#     identity it is bound to. Whose sessions are listed is now the caller's
-#     own id and nothing else.
-#   * `GET /api/v1/sessions/{session_id}` gains `require_authentication` and a
-#     `session.user_id != current_user.user_id` → **403** ownership check. It
-#     published that session's `user_id` to anyone who knew the id.
-#   * `DELETE /api/v1/sessions/{session_id}` gains the same pair. It was the
-#     one with a write effect: an unauthenticated caller who learned a session
-#     id could destroy it.
-#   * `GET /admin/optimization/trigger-cleanup` is REMOVED.
-#   * `POST /admin/optimization/trigger-cleanup` is ADDED, gated by
-#     `require_platform_admin`. Same handler, and the two bullets are one
-#     change — but spelled as a removal and an addition, because that is what a
-#     client sees and what a differ reports. 5.0.0 and 6.0.0 each give their
-#     removals their own line; naming this one only by its old verb inside a
-#     "becomes" sentence would hide a removal inside a change list. Not a
-#     session route, and that is the point — see below.
-#
-# THIS WAS LIVE, NOT A HARDENING, and the correction matters because 6.0.0's
-# own entry got it wrong. That entry deferred `GET /api/v1/sessions` to "the day
-# `RedisSessionStore.list_sessions()` stops being a stub" and was corrected in
-# place; the stub is one of TWO implementations. `MinimalSessionService`
-# (`_container_impl._create_minimal_session_service`) ships a working
-# `list_sessions` with the `user_id` filter, and `create_session_service`
-# installs it whenever the real service cannot be constructed — "Reachable in
-# PRODUCTION, not only under test", in its own docstring — as does
-# `_create_minimal_container()` outright. Measured over ASGI against that
-# service with no `Authorization` header, two sessions minted for two users:
-#
-#     GET /api/v1/sessions?user_id=<victim>  -> 200  that user's session id
-#     GET /api/v1/sessions                   -> 200  every session id + user_id
-#     GET /api/v1/sessions/<victim session>  -> 200  its bound user_id
-#     DELETE /api/v1/sessions/<victim session> -> 204  and the session was gone
-#
-# The same four calls answer 401 on this contract. Cloud fails the boot rather
-# than degrading (`settings.must_not_degrade`), so the exposure was self-hosted,
-# where the API publishes 8090 on `0.0.0.0` with no proxy in front of it.
-#
-# WHY THE FILTER IS REMOVED RATHER THAN IGNORED, which is the smaller-looking
-# repair and the wrong one. Once the route forces `user_id =
-# current_user.user_id`, the parameter's only legal value is one the server
-# already holds: every accepted request would carry redundant information and
-# every rejected one wrong information, so the parameter can no longer say
-# anything. That is 6.0.0's argument for removing the IDENTICAL parameter from
-# `POST /api/v1/sessions` one route over, and it transfers without amendment.
-# The runtime behaviour is the same either way — FastAPI ignores an undeclared
-# query parameter — so what removal buys is a document that stops publishing a
-# filter that does nothing, which is the defect class 5.0.0 exists to close.
-#
-# THE GATES ARE ROUTE-LEVEL DEPENDENCIES, NOT ONLY HANDLER PARAMETERS, and that
-# is the difference between a refusal and a 500. FastAPI solves a dependant's
-# dependencies in DECLARATION ORDER, and every route on this router declared
-# `session_service` before `current_user` — so on a deployment whose Composition
-# Root had not populated `app.state.session_service`, the service's bare
-# attribute read raised before the auth dependency ran and an unauthenticated
-# caller received `500 Internal Server Error`: a pre-auth availability oracle on
-# the very routes this entry is about. Measured, and fixed by moving the gate
-# into `dependencies=[...]`, which is solved before the handler's own
-# parameters. The `current_user` parameter stays where the handler needs the
-# principal — FastAPI caches a dependency per request — and the ordering is now
-# asserted on a service-less app, because "declared in the right order" is not
-# a property anything else would check. Applied to all six authenticated routes
-# on the router, including the three that already had auth before this change.
-#
-# THE OWNERSHIP REFUSAL IS 403, NOT 404, and it is copied rather than designed:
-# `PUT /sessions/{id}`, `POST /sessions/search` and `POST
-# /sessions/{id}/archive` have carried `require_authentication` plus
-# `raise HTTPException(status_code=403, detail="Not authorized to ...")` all
-# along. The four routes here were not brought along with them; making the
-# stragglers answer differently from their siblings would have been a second
-# defect dressed as a fix. A 404-first ordering is likewise the siblings'
-# (absent session → 404, then the ownership check), so an authenticated caller
-# can still distinguish "no such session" from "not yours" — a pre-existing
-# property of this router, unchanged here, and not one the anonymous caller
-# this entry is about ever reaches.
-#
-# WHAT IS DELIBERATELY NOT IN THIS CHANGE, and it is the same two routes 6.0.0
-# deferred for the same reason, now with a ticket of their own (#1460):
-#
-#   * `POST /api/v1/sessions` — the mint — still takes
-#     `get_current_user_optional`. `getAuthHeaders()` in faultmaven-copilot
-#     returns headers WITHOUT `Authorization` when `transport.accessToken()`
-#     stumbles ("the request goes out unauthenticated", in its own comment),
-#     and `client.ts` treats a 401 on a credential-less request as the
-#     RECOVERABLE path and re-mints. Compose the two and requiring auth here is
-#     a mint → 401 → re-mint loop in the field. That is the case
-#     `docs/development/api-contract-changes.md` calls the one that cannot
-#     expand: client tolerant first, confirmed deployed, server after.
-#   * `POST /api/v1/sessions/{session_id}/heartbeat` — still open, and this one
-#     was DECIDED rather than inherited. Its only production caller is
-#     `heartbeatSession` in faultmaven-copilot (which the Dashboard runs too,
-#     via `@faultmaven/copilot-ui`); it deliberately avoids `authenticatedFetch`
-#     and its failure is swallowed as non-fatal, so a 401 would neither loop nor
-#     sign anyone out. What stops it shipping here is the mint: while the mint
-#     is anonymous-capable, anonymously-minted sessions exist, `CopilotPanel`
-#     mints unconditionally at mount, and sign-IN does not re-mint — so a
-#     signed-in user can hold an anonymously-minted session and would be refused
-#     403 forever, silently, losing the keep-alive the route exists to provide.
-#     A quiet permanent degradation is a worse thing to publish than a loud one.
-#
-# A FALSY CALLER ID IS NOT A SCOPE, and that is the second half of the listing
-# fix rather than a hardening beside it. Forcing `user_id = current_user.user_id`
-# closes the anonymous hole and leaves a narrower one, because the shape both
-# session services expose is a FILTER, not a scope:
-# `if user_id: [filter] else: return everything`. A caller whose id is falsy
-# therefore receives the whole table — session ids and the identity each is
-# bound to, which is the §1 payload behind a 200 instead of an anonymous call.
-# The repository already knew the shape by name: `_container_impl.py` records
-# "`CaseService.get_case` writes `if user_id and ...`, so an empty-string caller
-# id takes the unscoped path there." It reaches past sessions —
-# `case_scope_where(params, "")` returns None, dropping the owner clause
-# entirely, which is the cross-tenant platform-admin path's own return value
-# reached by an ordinary caller.
-#
-# Three layers, because no one of them is the whole answer:
-#
-#   1. `AuthService.verify_token` refuses a token whose `sub` names no subject.
-#      THIS IS THE ROOT, and it sits one line from where the gap was: PyJWT's
-#      `require` list above it asserts the claim is PRESENT, so presence and
-#      content are now decided together rather than one inferred from the
-#      other. It is the SINGLE POINT because every path that turns a token into
-#      a principal reads the claims this method returns — the two
-#      `AuthenticatedUser` constructions in `auth_service`, `DevUser` in
-#      `api/v1/auth_dependencies`, the tenant binder, and idempotency keying.
-#
-#      The two PRINCIPAL CONSTRUCTORS keep guards of their own as a second
-#      layer. N was 2, and one was unguarded: `AuthenticatedUser.from_jwt_claims`
-#      read `claims.get("sub", "")` — defaulting a missing subject to the value
-#      every scope check reads as "no owner" — and it serves
-#      `api/middleware/auth.get_current_user`, hence the admin routers and
-#      `api/routes/sessions.py`. The inventory of `jwt.decode` sites is pinned
-#      at 10 in `tests/unit/modules/auth/test_subject_is_an_identity.py` with
-#      exactly one classified PRINCIPAL, so a second principal source cannot be
-#      added without saying so — which is how "the single point" would
-#      otherwise quietly stop being single.
-#
-#   2. `GET /api/v1/sessions` and `POST /api/v1/sessions/search` refuse a
-#      principal with a blank id anyway, so a future identity path cannot
-#      reopen this quietly; search needed it for the same reason, forwarding the
-#      same id to the same filter. The refusal is byte-identical to
-#      `require_authentication`'s, so a subject-less credential learns "not
-#      authenticated" rather than "your token's shape was the problem". It
-#      REFUSES without NORMALISING: the id it returns is the principal's own
-#      bytes, because the four sibling ownership checks on that router compare
-#      unstripped, and a scope that stripped while they did not would answer a
-#      padded caller an empty listing while its per-session routes still worked.
-#
-#   3. Both `list_sessions` implementations key on `is not None` rather than
-#      truthiness, so a filter that was SUPPLIED is honoured literally. `None`
-#      still means "all" — that is the maintenance API several callers use.
-#
-# HOW REACHABLE IS IT, stated exactly rather than rounded up, because the answer
-# changes how this reads. PyJWT's `require` list asserts a claim is PRESENT, not
-# that it says anything: measured on PyJWT 2.13.0, `sub: ""` decodes clean and
-# arrives as an empty string, while `sub: null` and an absent `sub` are both
-# refused — the control showing `require` works, and what it works on. What
-# could NOT be established is a path by which a caller WITHOUT the signing key
-# obtains such a token: every mint reads `user.user_id` off a persisted row, and
-# no route was found that produces an empty one. So this is a fail-open on a
-# value the system has no known way to produce — not a second live enumeration —
-# and it is fixed because one `if` stands between "the caller's sessions" and
-# "everyone's", which is too little to leave resting on an unproven scarcity.
-#
-# `/admin/optimization/trigger-cleanup` IS IN THIS CHANGE THOUGH IT IS NOT A
-# SESSION ROUTE, because the root #1447 names is not about sessions: there is no
-# global authentication gate, every route is individually responsible for its
-# own auth, and nothing tells you when one forgets. That route forgot. Declared
-# on `app` directly in `main.py` rather than on one of the admin routers where
-# `require_platform_admin` is the house rule, it let an anonymous caller drive an
-# aggressive resource cleanup and a full `gc.collect()` on the running API — a
-# write effect and a denial-of-service lever, not a disclosure. It was found by
-# the guard this change installs, on the commit that installs it, which is the
-# argument for the guard. No client calls it: outside `main.py` the only
-# occurrences of the path are the generated `api.generated.ts` declarations in
-# faultmaven-copilot and faultmaven-dashboard, and a declaration is what a
-# generator emits, not what a client sends.
-#
-# IT ALSO STOPS BEING A `GET`. The method was part of the defect rather than a
-# detail beside it: a GET is prefetchable by a browser or a link scanner,
-# followable by a proxy, and replayable from history, and this operation runs an
-# aggressive resource cleanup and a full `gc.collect()` on the live API.
-# Publishing a non-safe operation under a safe verb invites exactly the
-# accidental trip an operator lever must not have. Doing it now costs nothing —
-# the bump is MAJOR already and nothing sends it — and doing it later would cost
-# a deprecation cycle. The gate is a router-level `dependencies=[...]` rather
-# than an unused handler parameter, matching the OAuth and SSO rate limiters:
-# what the route needs from `require_platform_admin` is the refusal, not the
-# principal. The emitted `security` is the same either way.
-#
-# WHAT IT DOES NOT GAIN IS AN AUDIT ROW, and that is a decision rather than an
-# omission. `operator_access_audit`'s vocabulary is a closed four: `LIST` and
-# `CONTENT_OPEN` (operator reads of TENANT DATA — the D8/D9 boundary) and
-# `ROLE_GRANTED` / `ROLE_REVOKED` (changes to who is an operator). Its own
-# docstring reads the enum as "operator events, of which data access is two".
-# This route reads no tenant data and grants no role, so a row would mean
-# inventing a fifth member and widening the table to "every platform-admin
-# action" — a decision about what the trail is FOR, which should not be taken as
-# a side effect of adding a gate. Its neighbours agree: the four
-# `require_platform_admin` routes in `api/routes/admin_config.py` write no audit
-# row either.
-#
-# THE GUARD. `tests/integration/api/test_no_unauthenticated_operations.py` reads
-# the committed `docs/reference/api/openapi.json`, collects every operation that
-# declares no `security`, and diffs it against a committed allowlist carrying a
-# reason per entry. It fails in BOTH directions — an unlisted open operation is
-# an unreviewed one, and a listed operation that has since gained auth is a
-# stale entry, which is a green test asserting nothing. The two routes deferred
-# above are listed as `_DEFERRED` carrying #1460, so closing them turns the
-# guard red and forces the entries out. It is the first thing in this repository
-# that asks whether an operation is ALLOWED to be open; the two existing
-# implementations of the neighbouring rule
-# (`tests/integration/api/test_openapi_documents_auth.py` and
-# `tests/unit/modules/case/api/test_session_is_not_identity.py`) both ask
-# whether a route that requires auth SAYS SO, which is a different question and
-# is why this class was found by reading rather than by CI.
-#
-# THE GUARD'S OWN BLIND SPOT WAS BIGGER THAN IT FIRST CLAIMED, and the answer is
-# reach rather than a narrower claim. It delegated "served but not documented"
-# to two sibling guards, and both build their app under the generator's pinned
-# `ENVIRONMENT=production` — which exists precisely to exclude the debug router
-# — so a route that mounts only outside production is missing from their route
-# tables too, and their counts agree about it vacuously. Measured under
-# `ENVIRONMENT=development`, the shipped default: `/debug/routes`,
-# `/debug/health`, `/debug/config` and `/debug/llm-providers` WERE served with
-# no auth dependency, and `GET /debug/config` answered an anonymous caller 200
-# with a six-key configuration summary. Past tense since #1474 closed them with
-# `require_platform_admin`; the entry stays because it is what this version
-# number records, and a changelog that silently acquires today's behaviour is
-# not one.
-#
-# They are covered now by the same rule applied to the served app rather than to
-# the artifact. Asserting the gate those entries lean on corrected a second
-# mistake: `_is_debug_enabled()` is a DISJUNCTION — `env in (development,
-# testing, test) OR enable_debug_endpoints` — so `ENABLE_DEBUG_ENDPOINTS=true`
-# mounts the router IN PRODUCTION. A test that varied only `ENVIRONMENT`
-# asserted "absent in production", which is false on exactly the flag that
-# matters. Both halves of the real property are asserted now: production is
-# closed by DEFAULT, and the way past it is one named operator switch. The
-# allowlist's reasons say that and no more.
-#
-# 6.0.0 — MAJOR. Two REMOVALS that together close one gap: a caller could name
-# the identity a session was minted for, and then spend that session id as
-# proof of it.
-#
-#   * `POST /api/v1/sessions` loses its `user_id` QUERY PARAMETER. It resolved
-#     FIRST — the handler read `if not user_id: <consult the bearer>`, so a
-#     supplied value won unconditionally and the authenticated user was never
-#     looked at, let alone compared. The docstring called it "Priority 1:
-#     `user_id` query parameter (explicit override)" one line above a comment
-#     claiming Priority 2 "prevents anonymous session creation"; both were
-#     published, and the first was true.
-#   * `POST /api/v1/cases/sessions/{session_id}/case` is REMOVED. It took
-#     `get_current_user_optional` and resolved
-#     `user_id = current_user.user_id if current_user else session.user_id`, so
-#     with no `Authorization` header the owner of the created case came from
-#     the session id in the path. Its 401/503/500 arms are gone with it
-#     (#1398), as is `AuthSessionService.get_user_from_session`, which had zero
-#     callers in `faultmaven/` and a docstring advertising exactly this use.
-#
-# ONE bump, because they are one chain. Separately each is a smell; together
-# they are a two-step to writing cases under a chosen identity with no
-# credential at all — mint a session naming the victim, then present that
-# session id. Severity is HIGH self-hosted, where the API publishes 8090 on
-# 0.0.0.0 with no proxy in front of it; MEDIUM in cloud. It is
-# write-with-forged-attribution and identity confusion, NOT exfiltration:
-# there is no unauthenticated path to READ another user's case or KB content,
-# because every read route scopes at the repository layer.
-#
-# WHY REMOVE THE PARAMETER RATHER THAN CONSTRAIN IT. The obvious repair is to
-# keep `user_id` and reject it when it disagrees with the bearer. But then its
-# only legal value is one the server already holds, so every accepted request
-# carries redundant information and every rejected one carries wrong
-# information — the parameter can no longer say anything. That is not a
-# hardening, it is a parameter with no remaining purpose, kept alive to be
-# validated. It is also how this got here: the parameter was presumably added
-# when the server could not yet see the bearer, and it outlived the reason.
-# The same argument does not reach the ROUTE, which had a purpose; see below.
-#
-# WHY REMOVE THE ROUTE RATHER THAN REPAIR IT. Repairing it means
-# `require_authentication` plus dropping the session fallback — and what
-# remains then does nothing `POST /api/v1/cases` does not already do: that
-# route accepts the same `session_id`, validates it against the same session
-# service, requires a bearer, and creates the case with
-# `owner_id=current_user.user_id`, writing the same
-# `session:{id}:current_case_id` pointer. What the removed route added over it
-# was get-or-create and `force_new` — reachable only by a caller who already
-# holds the session id, and called by nothing. A second door to case creation
-# that no client opens is what 4.0.0 and 5.0.0 have been closing.
-#
-# Repair would also have left the route half-gated. With a bearer required but
-# no `session.user_id != current_user.user_id` check, an authenticated caller
-# naming somebody else's session still retargets that session's
-# `current_case_id` pointer — the identical defect #1390/#1393 fixed one route
-# over, on `POST /cases/sessions/{id}/resume/{case_id}`.
-#
-# AND POINTING CALLERS AT `POST /api/v1/cases` DID NOT ANSWER THAT, because
-# that route HAD THE SAME DEFECT. It took `session_id` from the body, asked
-# only `if not session: 401`, and handed the id to `CaseService.create_case`,
-# which writes the pointer — so the argument above ("what remains does nothing
-# `POST /api/v1/cases` does not already do") was true of the retarget as well.
-# Removing one door while the surviving one stands open is not a fix, it is a
-# relocation. So the gate is ADDED to `create_case` in this same change, and
-# only then does the removal answer the half-gating without a third copy of
-# the two-gate rule. The gate mirrors the resume route's: `get_session` may
-# RAISE rather than return None (`ServiceException("Session store not
-# configured")`, or `SessionStoreException` for a configured-but-unreachable
-# store — two families, one meaning), and an unevaluable gate answers 503
-# rather than the 500 it used to; "no such session" and "not yours" answer
-# identically, as this route's existing 401 SESSION_EXPIRED, because the first
-# was already published here and the two must not be distinguishable. It is
-# resolved BEFORE the service is called, because the pointer write is inside
-# `create_case` and ahead of its own `repository.save`, so a later refusal
-# would leave the retarget done.
-#
-# `CaseCreateRequest.session_id`'s DESCRIPTION changes with it: it said
-# "Session ID for authentication and case association", which is the exact
-# claim this entry exists to retire. Prose only — `check_contract_version.py`
-# strips descriptions before comparing, so it moves no version — but it is
-# published to every client that regenerates its types, and leaving it would
-# have shipped the contradiction inside the fix.
-#
-# THE CLIENT-FIRST EVIDENCE, gathered before either removal rather than assumed
-# (`docs/development/api-contract-changes.md`: "Never remove something still
-# being read"; "Nobody should still be using it" is not evidence). What was
-# checked, in all four client repositories:
-#
-#   * The `user_id` query parameter. faultmaven-copilot posts to
-#     `/api/v1/sessions` from ONE place,
-#     `packages/copilot-ui/lib/session/client-session-manager.ts`, with a JSON
-#     body and NO query string; the Dashboard reaches the same code through the
-#     shared package. Both repositories' `api.generated.ts` DECLARE the
-#     parameter (`create_session_api_v1_sessions_post.parameters.query.user_id`)
-#     and nothing populates it — a declaration is what a generator emits, not
-#     what a client sends. Neither faultmaven-slack-agent nor
-#     faultmaven-website posts to the route at all — the slack agent's
-#     `faultmaven/client.py` reaches `/api/v1/cases` and
-#     `/api/v1/cases/{id}/turns` and no session route.
-#     It is not a field on `AuthSessionCreateRequest`, so no body
-#     carries it either: `tests/load/locustfile.py` puts `user_id` in the JSON,
-#     where Pydantic's default `extra='ignore'` has always dropped it. No test
-#     in this repository passes it as a query parameter.
-#   * The removed route. Case creation goes through `POST /api/v1/cases` in
-#     both clients that create cases — `packages/copilot-ui/lib/api/services/
-#     case-service.ts` and faultmaven-slack-agent's `faultmaven/client.py`. The
-#     only occurrences of `cases/sessions` in either frontend are the generated
-#     type declarations; there is no runtime caller in any of the four repos.
-#
-# WHAT IS DELIBERATELY NOT IN THIS CHANGE. `POST /api/v1/sessions` still does
-# not require authentication, and that is not an oversight — adding it is a
-# COORDINATED two-repository release, not a server fix. `getAuthHeaders()` in
-# faultmaven-copilot (`packages/copilot-ui/lib/api/fetch-utils.ts`) catches a
-# failed `transport.accessToken()`, logs a warning and returns headers WITHOUT
-# `Authorization` — "the request goes out unauthenticated", in its own comment
-# — so a signed-in user whose token refresh stumbles mints header-less today
-# and the server rescues them anonymously. `client.ts` then treats a 401 with
-# no credential as the RECOVERABLE path and re-mints rather than signing out,
-# deliberately, citing copilot issue #99. Requiring auth at the mint converts
-# that silent rescue into a retry loop in the field.
-#
-# The remaining unauthenticated session routes are filed as #1447, and ONE of
-# them is not a future hazard. `GET /api/v1/sessions` declares no auth
-# dependency at all and accepts a `user_id` FILTER, and the enumeration it
-# performs is already live — not, as this entry first claimed, pending "the day
-# `RedisSessionStore.list_sessions()` stops being a stub". That store's stub is
-# only one of two implementations. `MinimalSessionService`
-# (`_container_impl._create_minimal_session_service`) ships a WORKING
-# `list_sessions`, filtered by `user_id`, and `create_session_service` installs
-# it whenever the real service cannot be constructed — "Reachable in
-# PRODUCTION, not only under test", in its own docstring — as does
-# `_create_minimal_container()` outright. Measured on that path with no
-# `Authorization` header: `GET /api/v1/sessions?user_id=<victim>` returns that
-# user's session ids, and the unfiltered call returns EVERY session id with the
-# user it is bound to. By this entry's own thesis a session id is worth
-# something on its own, so that is a list of credentials and of the identities
-# they carry. Cloud fails the boot rather than degrading
-# (`settings.must_not_degrade`), so the exposure is self-hosted. Re-filed at
-# that severity in #1447 rather than fixed here: it is a different route on a
-# different router.
-#
-# ‼ CORRECTED AGAIN, by 7.0.0. This entry went on to say the listing "needs the
-# same coordinated release the mint does", and that is wrong for the same
-# reason the "stops being a stub" claim above it was: it was inherited from the
-# mint rather than checked against the listing. The coupling is a property of
-# the MINT — `getAuthHeaders()` sends header-less on a stumbled refresh and
-# `client.ts` re-mints on a credential-less 401 — and no client calls
-# `GET /api/v1/sessions` at all, in any of the four client repositories. So it
-# needed no coordination and 7.0.0 closed it outright. Corrected in place
-# rather than left standing, on this entry's own precedent: a wrong deferral
-# reads as a decision somebody made.
-#
-# 5.0.0 — MAJOR. Five published operations that do nothing they claim are
-# REMOVED from the session router, along with the request model one of them
-# required (#1425, #1431). One bump, because they are one defect wearing five
-# hats, and a client should adopt the answer once.
-#
-#   * `GET /api/v1/sessions/{session_id}/cases`. CLAIMED: this session's cases,
-#     narrowed by `include_empty`, `include_terminal` and `include_deleted`.
-#     DID: `case_service.list_user_cases(current_user.user_id, filters)` — the
-#     bearer's cases, under its own comment reading `Architecture: Session →
-#     User → User's Cases (indirect relationship)`. The same rows
-#     `GET /api/v1/cases` returns, minus `state`, `source`, `team_id` and the
-#     creation-date window, which this route never accepted.
-#   * `POST /api/v1/sessions/{session_id}/restore`. CLAIMED: `"status":
-#     "restored"`, a message naming the restoration type, and an
-#     `items_restored` count. DID: loaded the session, 404'd if absent, mutated
-#     NOTHING, and reported success (#1425).
-#   * `GET /api/v1/sessions/{session_id}/recovery-info`. CLAIMED:
-#     `can_restore: true`, `backup_available: true`, `data_integrity: "good"`,
-#     three `restoration_options` all true. DID: returned those as literals.
-#     There is no backup.
-#   * `GET /api/v1/sessions/{session_id}/stats`. CLAIMED: per-session query,
-#     upload, heartbeat and stats-request counts, plus a latest confidence
-#     score. DID: counted `session.case_history`, which is always empty (below).
-#   * `POST /api/v1/sessions/cleanup`, BOTH definitions of it — the route was
-#     declared twice in one file, and that is its own entry below.
-#   * `SessionRestoreRequest`, the schema `restore` took. Its `restore_point`
-#     was `Field(..., min_length=1)`: REQUIRED, validated, and read by nothing.
-#
-# `restore` AND `stats` REST ON A LIST THAT IS ALWAYS EMPTY, and this is what
-# turns #1425 from a dead field into a dead endpoint. `AuthSession.case_history`
-# and `.data_uploads` are initialised to `[]` by the Redis store and NOTHING IN
-# THE REPOSITORY EVER APPENDS TO EITHER. There is no `add_case_history` and no
-# `add_data_upload` anywhere — the two call sites that reach for
-# `session_manager.add_case_history` guard with `hasattr` and have always found
-# nothing — and `AuthSessionService.update_session` names both in its
-# `forbidden_fields` set, so a caller cannot write them either. The consequences
-# are worse than the issues report: `items_restored` was not "a count of items
-# the session already had", it was `{0, 0}` on every call in the product's
-# history, and every statistic `/stats` published was likewise always zero. The
-# endpoints did not degrade; they never worked.
-#
-# THE ALWAYS-ZERO REPORTING DID NOT STOP AT `/stats`, and the sweep was not
-# finished until it did. `GET /sessions/{session_id}` published
-# `metadata.data_uploads_count` and `metadata.case_history_count`, and
-# `GET /sessions` the same pair per row — `len()` of the same never-appended
-# lists, so always 0, on two operations this change KEEPS. Removing `/stats`
-# for always-zero statistics while leaving those two would have left a client
-# the same wrong conclusion on an endpoint it has more reason to call. They are
-# gone, and no published schema moves with them: `SessionResponse.metadata` is
-# `Optional[Dict[str, Any]]` and the list route declares no `response_model`.
-# The dead `add_case_history` block went from `session_heartbeat` for the same
-# reason — the guard has always been False, and it was doing the work on the
-# busiest route on the router.
-#
-# WHY DELETE RATHER THAN RETURN 501, which #1425 offered as its third option.
-# 501 keeps a promise alive, so it is worth something only if the promise has a
-# referent. Session restoration has none. The nearest thing in the codebase was
-# `CaseCheckpoint`, and it was a different noun: a snapshot of a CASE, with no
-# session dimension at all. It was written and never read, so it could not
-# restore a session even if a session were the thing it snapshotted (case
-# checkpoints were retired in #1882 for that reason). A 501 here would be a
-# promise pointing at nothing, which is the same defect this entry is about
-# with a different status code.
-#
-# THE CASES ROUTE HAD THREE FAULTS, NOT ONE, and each alone would have been a
-# reason to change it:
-#
-#   1. `include_terminal` and `include_deleted` were handed to `CaseListFilter`,
-#      which declares neither and sets no `model_config`, so Pydantic's default
-#      `extra='ignore'` dropped both without a word (#1431) — the identical
-#      mechanism as 4.0.0's `include_archived`, one route over. The seventh
-#      recorded instance of this defect class.
-#   2. It never compared `session.user_id` to `current_user.user_id`. It 404s on
-#      a session that does not exist and answers for one belonging to somebody
-#      else — harmlessly, because it ignores the session entirely, which is the
-#      only reason this is a design smell rather than a disclosure.
-#   3. Its outer handler turned EVERY exception into `200 []` with
-#      `X-Total-Count: 0`, "for robustness per OpenAPI requirement". A failed
-#      case lookup was indistinguishable from an empty account.
-#
-# It also imported `SessionCasesResponse` and never used it — the route carried
-# no `response_model` and returned a bare `JSONResponse` list, so the one schema
-# describing its own shape was dead on arrival. That model is deleted with it;
-# it had no other importer and was never in the published document.
-#
-# `POST /api/v1/sessions/cleanup` WAS DEFINED TWICE, and the two halves of the
-# system disagreed about which one existed. Starlette matches in registration
-# order, so the FIRST definition served every request; FastAPI's OpenAPI
-# generator writes each path once and the LAST writer wins, so the document
-# published the SECOND — its `operationId` (`cleanup_expired_sessions_v2`), its
-# summary and its description ("admin/testing endpoint ... In production, this
-# runs automatically every 30 minutes"). The served handler is the other one,
-# and it returns a `timestamp` the documented one does not. A client generating
-# an operation from this contract named a handler that never ran.
-#
-# `api-contract-drift` COULD NOT SEE THAT, and the reason is structural rather
-# than an oversight: the check regenerates the document and diffs it, and the
-# document IS `app.openapi()`. Both sides of the comparison come from the same
-# generator, which has the same last-writer-wins blind spot, so a shadowed route
-# is invisible to it by construction. `ruff` does flag the shadowing — `F811
-# Redefinition of unused 'cleanup_expired_sessions'` — but CI runs
-# `ruff check --select E9,F63,F7,F82,I`, and F811 is not in that set. The rule
-# that would have caught it was there all along, switched off.
-#
-# BOTH DEFINITIONS GO, rather than one surviving. The operation is
-# unauthenticated, has no client caller in any of the three repositories, and
-# deletes nothing Redis has not already dropped: sessions are stored with a TTL
-# (`redis_session_store`, `ex=ttl`), and `cleanup_expired_sessions` walks the
-# store deleting rows whose `expires_at` has passed — rows the TTL has evicted.
-# Keeping one would mean choosing which of two identical bodies is canonical and
-# publishing an unauthenticated maintenance verb to justify the choice.
-#
-# WHAT REMOVING THEM EXPOSED, and it is not a regression this change caused.
-# `AuthSessionService.cleanup_expired_sessions` now has NO CALLER — the two
-# routes were the only ones. The method was kept rather than deleted with them,
-# because the missing caller is the actual defect: `SessionSettings`
-# declares `cleanup_interval_minutes` (default 15, bound to
-# `SESSION_CLEANUP_INTERVAL_MINUTES`) and **no scheduler, task or loop reads
-# it**. Its only reader is a `field_validator` that REFUSES TO START the app
-# when the interval exceeds `SESSION_TIMEOUT_MINUTES`, on the stated ground
-# that "Cleanup should run at least as often as session expiration" — a
-# startup constraint enforcing a cadence for a pass nothing schedules, so an
-# operator who tunes this knob can be denied a boot over a loop that does not
-# exist. Measured: `SESSION_CLEANUP_INTERVAL_MINUTES=60` on its own makes
-# `FaultMavenSettings()` raise rather than construct.
-#
-# AND THAT LONE READER MIS-KEYS ITS OWN COMPARISON. `validate_cleanup_interval`
-# falls back to `values.get("timeout_minutes", 180)`, but that field has
-# declared `default=30` for its entire history, and the sibling validator five
-# lines above (`validate_heartbeat_vs_timeout`) reads the same field with 30.
-# The fallback is reached only when `timeout_minutes` is absent from
-# `info.data`, which — Pydantic validating in declaration order, that field
-# declared first — means only when it FAILED its own `ge=1, le=1440` or parsed
-# as a non-integer. Merely leaving it unset delivers the default, so the
-# refusal above is genuinely keyed to `SESSION_TIMEOUT_MINUTES` on every boot
-# that could otherwise have succeeded. What the stray 180 corrupts is the
-# DIAGNOSTIC on a boot already failing for another reason, and it corrupts it
-# in both directions: measured, `SESSION_TIMEOUT_MINUTES=2000` with the
-# interval at 200 reports "should not exceed SESSION_TIMEOUT_MINUTES (180)",
-# naming a timeout the operator never set; at interval 60 the cleanup error
-# vanishes entirely, where the sibling's constant would have raised it. Left
-# alone here deliberately: this entry is prose, and correcting the constant
-# adds errors to runs that today report one — a behaviour change owed its own
-# diff. The deleted v2 route's own description asserted "In production,
-# this runs automatically every 30 minutes", which was false in two ways at
-# once. The project has the machinery (`infrastructure/tasks/case_cleanup.py`
-# runs a `BackgroundScheduler` for cases); it was never wired to sessions, and
-# `cleanup_inactive_sessions` beside it runs only from the lifespan SHUTDOWN.
-# Redis expiry covers the shipped configuration, which is why this is a gap
-# rather than an outage — a non-Redis store would never expire a session. The
-# scheduler is deliberately NOT built here: it is a behaviour change with its
-# own blast radius and belongs in its own change, and the method stays so that
-# change has something to call. This is the same defect class as the rest of
-# this entry, one level up: declared in configuration, accepted, never applied.
-# (Later, #2297 removed `cleanup_expired_sessions` and `cleanup_inactive_sessions`:
-# the store's listing they walked was a stub, so neither could ever read a
-# session, and Redis TTL expires sessions. #2301 then removed
-# `cleanup_interval_minutes` and its validator: nothing scheduled on it.)
-#
-# THE CLIENT-FIRST STEP WAS ALREADY SATISFIED, and here is the evidence rather
-# than the assertion. `docs/development/api-contract-changes.md` orders a REMOVE
-# client-first, so all three client repositories were grepped for every removed
-# path, for `SessionRestoreRequest`, and for `restore_point` / `recovery-info` /
-# `include_terminal` / `include_deleted`, excluding the generated artifacts —
-# `src/types/api.generated.ts` and `faultmaven/api_generated.py` are outputs of
-# this contract, not callers of it:
-#
-#   * faultmaven-dashboard makes NO hand-written call to `/api/v1/sessions` at
-#     all. Its only trace of any removed operation is the generated types file.
-#   * faultmaven-copilot calls exactly two session routes, both of which survive:
-#     `POST /api/v1/sessions` (`packages/copilot-ui/lib/session/client-session-manager.ts`)
-#     and `POST /api/v1/sessions/{id}/heartbeat`
-#     (`packages/copilot-ui/lib/api/services/session-service.ts`). Its e2e mock,
-#     playground stub and API tests mirror those two and nothing else.
-#   * faultmaven-slack-agent makes no session call. `SessionRestoreRequest`
-#     exists in its `api_generated.py` and nowhere else.
-#
-# WHAT THIS EVIDENCE IS NOT, stated deliberately rather than left implied.
-# `docs/development/api-contract-changes.md` sets a higher bar for a REMOVE
-# than a grep: "Count arrivals of the old form — a Prometheus counter on
-# requests in the legacy shape — and contract when it reads zero across a full
-# deploy cycle of every client. 'Nobody should still be using it' is not
-# evidence." That was NOT done here, and the gap is widest exactly where it
-# matters: FOUR of the five removed operations were unauthenticated
-# (`restore`, `recovery-info`, `stats`, `cleanup`), so their plausible callers
-# — an operator's cron, a monitoring probe, anything a self-hosted admin wired
-# to a published maintenance verb — are precisely the population a grep of
-# three first-party repositories cannot see.
-#
-# The judgement is that measurement would not change the answer, because the
-# thing being measured cannot work: `restore` mutates nothing, `stats` and the
-# `items_restored` count read lists that are always empty, `recovery-info`
-# returns literals, and `cleanup` deletes what Redis has already evicted. A
-# counter proving somebody calls `/restore` would establish that they are being
-# lied to more often, not that the endpoint should stay. That is the argument
-# for removing without instrumenting, and it is recorded here so a reader can
-# disagree with the reasoning rather than discover the rule was skipped.
-#
-# So each client's adoption PR is a regeneration: five path entries and one
-# schema leave the typed surface, and no hand-written line changes. Both
-# TypeScript clients derive their filter types from the generated `operations`
-# type, which is what makes a removed parameter a COMPILER error there rather
-# than a silent no-op — the property 4.0.0 relied on and the reason MAJOR is the
-# right call even where nothing on the wire moves.
-#
-# ONE INTERNAL FIX SHIPS BESIDE THE REMOVAL, and it is the same defect with its
-# sign reversed. `MinimalCaseService` — the stand-in the DI container falls back
-# to when no case repository is available, so every line of it runs in production
-# the moment the repository is missing — filtered on
-# `getattr(filters, "include_deleted", False)` and
-# `getattr(filters, "include_terminal", False)`. `CaseListFilter` declares
-# neither, so neither `getattr` could ever see anything but its default: the
-# stand-in dropped every RESOLVED and CLOSED case UNCONDITIONALLY, where
-# `CaseService.list_user_cases` excludes no terminal state at all. Its
-# no-filters branch said the same thing without a filter object to blame it on,
-# narrowing to INQUIRY/INVESTIGATING and dropping empty cases where the real
-# service passes `state=None` and `include_empty=True`. Both are gone, from
-# `list_user_cases` and `count_user_cases` together so the page and its count
-# cannot disagree, and
-# `tests/unit/container/test_minimal_case_service_terminal_parity.py` pins it.
-# Not contract surface — `MinimalCaseService` is not published — but the same
-# sweep found it, and a filter nobody asked for is the same lie as a filter
-# nobody applies.
-#
-# ONE DOCUMENT WAS ARGUING WITH ITSELF and is corrected here.
-# `docs/architecture/case-and-session/case-and-session-concepts.md` listed
-# "Cases as session sub-resources" as **ELIMINATED** in its migration section
-# while, 500 lines earlier, requiring that
-# `GET /api/v1/sessions/{session_id}/cases` and `GET /api/v1/cases` "return
-# identical results for the same user", with client code and a test checklist to
-# match. The first statement is now true, and the second is deleted: a route
-# whose entire specification is "answer what another route answers" was the
-# argument for removing it.
-#
-# MAJOR because published operations DISAPPEAR. Five paths and one schema leave
-# `docs/reference/api/openapi.json`; a client generating types from this
-# contract stops being able to name them. Nothing that worked stops working,
-# because none of the five did what it said.
-#
-# Sequencing note, in the spirit of the two this file already carries: this
-# stacks straight on 4.0.0 (#1427) rather than amending it. `check_contract_version.py`
-# refuses a structural change whose version stood still, and two contracts must
-# never share a number. Stacking costs the clients nothing here, because NONE
-# HAS ADOPTED 4.0.0: faultmaven-dashboard and faultmaven-copilot pin 3.8.0 and
-# faultmaven-slack-agent pins 3.0.0, so each adoption PR crosses 4.0.0 and 5.0.0
-# in the same move whether or not they are separate numbers. Amending 4.0.0
-# would buy nothing and cost the record of which change was which.
-#
-# 4.0.0 — MAJOR. Three published filters that were never applied are REMOVED,
-# not implemented. Batched into one bump because they are one defect, and a
-# client should adopt the answer once.
-#
-#   * `include_archived` on `GET /api/v1/cases` (#1413). The `Query` parameter
-#     and the argument it fed to `CaseListFilter`, which declares no such field
-#     and sets no `model_config` — so Pydantic's default `extra='ignore'` had
-#     been dropping it without a word, and no repository carried the predicate
-#     either.
-#   * `CaseSearchRequest.user_id` and `CaseSearchRequest.organization_id`
-#     (#1416). Both published, both read by nothing.
-#
-# WHY REMOVE RATHER THAN IMPLEMENT, one at a time.
-#
-# `include_archived` has nothing behind it. There is no storage representation
-# of an archived case: the `cases` table has no archived column, `alembic/`
-# contains no archive migration, and
-# `postgresql_hybrid_case_repository._row_to_case` states outright that
-# `is_archived` / `archived_at` are gone. Implementing it is not a bug fix, it
-# is the archival epic — see below, which is where that intent is now recorded
-# in full.
-#
-# `user_id` is worse than dead. `search_cases(self, search_request,
-# user_id=None)` already receives the AUTHENTICATED caller from the route, so
-# `search_request.user_id` is a SECOND, client-supplied user id beside it.
-# Inert, it is merely a lie; honoured, it is a cross-tenant read. There is no
-# version of this field that both works and is safe on a caller-scoped
-# endpoint.
-#
-# `organization_id` contradicts ADR-017. The organization answers "who pays for
-# these accounts" and is never a visibility predicate — the ENTERPRISE is the
-# isolation tenant. So there is no correct WHERE clause to write for it, which
-# makes "implement it" not a smaller version of the same decision but a
-# different and wrong one.
-#
-# THE CLIENT-FIRST STEP WAS ALREADY SATISFIED, and this is how that was
-# established rather than assumed. `docs/development/api-contract-changes.md`
-# orders a REMOVE client-first — never remove something still being read — so
-# all three client repositories were grepped:
-#
-#   * faultmaven-dashboard sends none of them. It has a standing GUARD TEST,
-#     `src/lib/cases/api.test.ts` ("never sends include_archived on the list
-#     endpoint"), and `src/lib/cases/api.ts` sends `{query, limit, team_id}` to
-#     `/cases/search` under a comment explaining that it deliberately omits
-#     `state` because the field was declared and not applied — pointing here.
-#   * faultmaven-copilot sends none of them from production code: all three
-#     `getUserCases` call sites pass only `limit`/`offset`. One nuance worth
-#     stating, because it is what this MAJOR bump exists to surface — its
-#     `CaseListFilters` type is DERIVED from the generated operations type, so
-#     `include_archived` is expressible there and one test
-#     (`src/test/api/services/case-service.test.ts`) passes it explicitly and
-#     asserts it reaches the query string. Nothing on the wire changes for that
-#     client, but its adoption PR has to delete that line, and the compiler will
-#     say so. That is the derived type working exactly as intended.
-#   * faultmaven-slack-agent never lists and never searches: `POST
-#     /api/v1/cases` and `POST /api/v1/cases/{id}/turns`, plus auth and health.
-#
-# WHAT A REMOVED QUERY PARAMETER DOES AND DOES NOT BUY. `?include_archived=true`
-# will still be ACCEPTED after this — FastAPI drops an unknown query parameter
-# silently and there is no way to make it refuse one. Likewise an unknown key in
-# a `CaseSearchRequest` body, which `extra='ignore'` discards. What changes is
-# that the CONTRACT no longer promises anything about them: a client reading this
-# document is no longer told a filter exists, which is the whole of the lie. The
-# request validation is deliberately not tightened alongside — that is a separate
-# decision with its own blast radius, and tightening only the body half would
-# leave the two halves of one removal behaving differently.
-#
-# WHAT THE MODELS' DOCSTRINGS NOW SAY, and deliberately do not say. Both were
-# nearly used to assert the invariant — "every field here reaches the repository
-# query" — and neither says it.
-#
-# For `CaseListFilter` the claim is simply FALSE: it has two readers with
-# different appetites. `list_user_cases` reads every field; `list_all_cases`,
-# behind `GET /api/v1/admin/cases`, reads only `state`, `source`, `limit` and
-# `offset` and says in its own docstring that it deliberately ignores
-# `include_empty`. So the docstring states the invariant PER READER and names
-# the guard's two rule tables.
-#
-# For `CaseSearchRequest` the claim is now TRUE — 3.9.0 landed first and `state`
-# is applied — and it is still not made, for a reason that does not depend on
-# merge order. This text is published verbatim as the schema's description, and
-# a description is the one part of the contract nothing checks:
-# `check_contract_version.py` strips prose before comparing, precisely because
-# no client breaks on a reworded sentence. A blanket guarantee written there
-# would go stale the first time someone adds a field and forgets to wire it,
-# with every gate still green and the published contract asserting exactly the
-# thing #1416 was. So the docstring records what was REMOVED and why — history,
-# which cannot rot — and points at
-# `tests/unit/modules/case/test_declared_filters_reach_the_query.py`, which
-# classifies every field PER SURFACE and goes red on one that reaches no query.
-# An assertion that moves when the code does, rather than a sentence that does
-# not, which is the whole difference this version is about.
-#
-# TWO INTERNAL FIELDS GO WITH THEM, and cost no contract surface at all:
-# `CaseListFilter.user_id` and `CaseListFilter.organization_id`. `CaseListFilter`
-# is NOT in `docs/reference/api/openapi.json` — it is a service-layer model, not
-# a request body — so no client can see either one. They are the same defect,
-# found by the same sweep, and `grep -rn 'filters\.user_id\|filters\.organization_id'
-# faultmaven/` returns nothing. The route stops passing
-# `user_id=current_user.user_id` into the constructor: `list_user_cases` takes
-# the principal as its own argument and reads only `state`, `source`, `team_id`,
-# `limit`, `offset`, `include_empty` and the creation-date window off the filter,
-# so the constructor argument was a second copy that changed no answer.
-#
-# WHAT ARCHIVING WAS, carried forward here because deleting the parameter deletes
-# one of the three places it survived (the other two: a note in the case-service
-# tests, and a design document, both named below). Archiving was a first-class case state
-# with `is_archived` / `archived_at` columns; it was DROPPED in the schema
-# redesign (commit `7b5a1b93`), and the note left in
-# `tests/unit/modules/case/domain/services/test_case_service.py` beside the
-# removed `test_excludes_archived_cases_by_default` records the intent verbatim:
-# it "will be reintroduced as a deliberate epic with retention policy, scheduled
-# archival, and list-view filter UI". That is still the plan and this entry does
-# not cancel it. `closed_at` and the terminal states are the nearest thing today
-# and they are NOT the same concept — a case you have finished with is not a case
-# you have put away. The parameter comes back when there is something behind it,
-# as part of that epic, with a storage representation, a retention policy and a
-# migration; until then an affordance that does nothing is worse than no
-# affordance, and faultmaven-dashboard#51 is the evidence.
-#
-# ONE SECURITY PROBE CHANGES SHAPE, and it is worth saying why that is not a
-# loss. `tests/integration/security/test_two_enterprise_surface_probe.py` injected
-# `user_id` and `organization_id` into a `POST /cases/search` body to prove a
-# request-supplied principal never widens the caller's scope. With the fields
-# gone, that injection sends keys pydantic drops before any handler sees them —
-# which the probe's own guard, `test_the_search_injection_names_only_real_request
-# _fields`, correctly FAILS on: an injection naming an undeclared field measures
-# the parser, not the boundary. (It failed in CI, on the `postgres` lane, which
-# is exactly where a probe like that earns its keep.) So the injection now names
-# only `team_id`, and the boundary those two stood for is closed BY CONSTRUCTION
-# rather than by behaviour — the stronger of the two. The behavioural claim moves
-# to the unit tier, and the guard's BACKWARD half still fails the moment a new
-# tenant-shaped selector appears on the model without someone deciding whether it
-# is attackable.
-#
-# The third trace is the one that was actively wrong, and it is corrected in the
-# same change: `docs/architecture/specifications/llm-configuration-design.md`
-# described the reverted Phase-1 archival implementation in the present tense,
-# with `include_archived` and four other components marked "Done". It now says
-# what is true, and points here. The design text is kept — it is still the plan
-# — but a specification that describes a reverted feature as shipped is the same
-# lie this entry is about, one document over.
-#
-# MAJOR because published surface DISAPPEARS. A request body is validated
-# against a narrower schema and a query parameter leaves the document, so a
-# client generating types from this contract stops being able to name them —
-# which is the point: a name that cannot be typed cannot be sent in the belief
-# that it does something. Nothing that worked stops working, because none of
-# the three ever worked.
-#
-# Sequencing note, because this file has been bitten twice and says so: 3.9.0
-# (#1416's ADD) merged first, as #1426, and this is rebased on top of it. The
-# two entries sit side by side rather than colliding, which is what the ordering
-# was for — 3.9.0 makes `state` work, 4.0.0 removes the three fields that never
-# could.
-#
-# 3.9.0 — MINOR. `POST /api/v1/cases/search` applies the `state` it has always
-# declared. `CaseSearchRequest.state` was published in this document, accepted
-# by Pydantic, and read by nothing: `CaseService.search_cases` called
-# `repository.search(query=, user_id=, limit=, shared_case_ids=,
-# restrict_case_ids=)` and looked at no other field, and `ICaseRepository.search`
-# declared no `state` parameter for it to reach. So `{"query": "db", "state":
-# "resolved"}` answered **200 with resolved and unresolved cases alike** — no
-# error, no warning, a highlighted filter chip over an unfiltered list (#1416).
-#
-# DECLARING A FIELD IS NOT APPLYING IT, and this is the third recorded instance
-# of the same defect: faultmaven-dashboard#51 (a date picker that did nothing
-# for months and was eventually deleted as a lie), #1413 (`include_archived` on
-# `GET /cases`), and this one. It came within a review of being the fourth:
-# faultmaven-dashboard#154 proposed sending `state` during a text search
-# BECAUSE THE SCHEMA HAD IT, which would have recreated #51 inside the pull
-# request that was closing it. The schema was checked; the service was not.
-#
-# The predicate lives in the SAME WHERE CLAUSE as the text match and the
-# visibility scope. That is the rule #1409 established for the creation-date
-# bounds, and it is not a matter of taste here: search applies its `limit` in
-# SQL, so a state narrowed afterwards would be narrowing an already-limited
-# page — and would answer "no matching cases" whenever the limit happened to be
-# filled by rows in other states. Note what is NOT available as a cross-check on
-# this surface: search publishes no total (`CaseSearchResponse` is unused; the
-# route is `response_model=List[CaseSummary]`), so there is no count for a
-# misplaced predicate to visibly disagree with. It is the one filter surface
-# where the wrong placement would have stayed silent, which is why the tests
-# assert the placement directly, on every repository that can be stood up
-# (in-memory, SQLite, and PostgreSQL under the `postgres` marker).
-#
-# TWO THINGS SHIP BESIDE THE PREDICATE, both of them the same defect one slot
-# over. `SessionlessCaseRepository` — the wrapper actually wired in at runtime —
-# forwarded to `list` and `search` POSITIONALLY; inserting `state` ahead of
-# `limit` is precisely the edit that makes a positional forward bind the wrong
-# values, and the #405 rename already shipped that failure once (`list(state=…)`
-# against a wrapper still declaring `status`, swallowed into "you have no
-# cases"). Both forwards are now by keyword. And `search`'s second return value,
-# documented as `(cases, total_count)` since the interface was written, was
-# `len(cases)` in three of the four implementations — the page length wearing
-# the name of a total. Nothing reads it (`search_cases` discards it and the
-# route is `response_model=List[CaseSummary]`), which is exactly why it could
-# stay wrong: a DECLARED value that is not the value declared. It is now a true
-# COUNT over the same WHERE clause, as `list` has always computed it. Neither is
-# a contract change — no published shape moves — but both are the shape of thing
-# this version exists to stop.
-#
-# `state` is the only one of `CaseSearchRequest`'s three inert fields worth
-# having. `user_id` and `organization_id` are NOT being implemented: on a
-# caller-scoped endpoint the first is a second, client-supplied user id beside
-# the authenticated one, and the second contradicts ADR-017, where the
-# organization BILLS and is never a visibility predicate. Both are removed in
-# 4.0.0, together with `include_archived`.
-#
-# MINOR, AND THE ARGUMENT FOR MAJOR WAS CONSIDERED. It has to be, because this
-# entry itself quotes the rule that points the other way:
-# `docs/development/api-contract-changes.md` says "a field that keeps its type
-# and changes its meaning breaks clients and no tool will say so", and that is
-# exactly what applying a previously-ignored field does. The MAJOR case is
-# sharper still than for a removal: a REMOVAL reaches a client only when it
-# moves the ref it pins, whereas this reaches every deployed client the moment
-# the server rolls, with no version for them to gate on. If any client were
-# sending `state` and rendering the unfiltered list it got back, this change
-# would silently alter what its users see.
-#
-# It does not bite here, and that is VERIFIED rather than assumed: **no client
-# sends the field.** `POST /cases/search` has exactly one caller in the field,
-# faultmaven-dashboard, and it sends `query`, `limit` and `team_id` only — it
-# deliberately WITHHOLDS `state` behind a comment pointing at #1416
-# (`src/lib/cases/api.ts`), and disables its state chips during a text search
-# rather than send something that gets dropped. faultmaven-copilot and
-# faultmaven-slack-agent never call the route at all: the copilot's three
-# `getUserCases` call sites are the list endpoint, and the slack agent only
-# creates cases and submits turns. So the population whose behaviour could
-# change is empty, and what is left is a surface that grew a working filter.
-#
-# On the mechanical side the published surface does not change shape either —
-# nothing removed, nothing narrowed, nothing made required — so no client can
-# fail to parse, or fail to send what it sent yesterday. Adoption on the
-# dashboard side is the REMOVAL of a workaround.
-#
-# WORTH KNOWING FOR NEXT TIME: `check_contract_version.py` reports this as "no
-# structural change (a re-publication)", and it is right — the only thing in the
-# generated diff besides `info.version` is one reworded description. The version
-# moves anyway, for the reason above: what changed is the MEANING of a field
-# that was already published, and no differ can see that. This is what the
-# tooling deliberately does not decide. A version that stood still here would
-# tell a client nothing had happened on the one endpoint whose answers just
-# changed — and the next person to weigh MINOR against MAJOR on a
-# meaning-change would find no record that the question was asked.
-#
-# 3.8.0 — MINOR. `GET /api/v1/cases` accepts `created_after` and
-# `created_before`. `CaseListFilter` has carried both fields since it was
-# written, and the route never bound them as query params — so a client that
-# sent a date got no error and no filtering: FastAPI drops an unknown query
-# param silently, and the dashboard shipped a date picker that did nothing for
-# long enough that it was eventually deleted as a lie
-# (faultmaven-dashboard#51). This binds them.
-#
-# THE WINDOW IS HALF-OPEN: `[created_after, created_before)`, inclusive lower
-# and EXCLUSIVE upper. An inclusive upper bound is not expressible by a client
-# whose clock stops at milliseconds — which is every browser, because
-# `Date.prototype.toISOString` does — while `created_at` keeps microseconds. A
-# day bounded at 23:59:59.999 silently drops a case created at 23:59:59.9997,
-# which is the same class of quiet row-loss this entry exists to remove. To
-# select a calendar day, send that day's first instant and the FOLLOWING day's.
-#
-# THEY ARE INSTANTS, NOT CALENDAR DAYS. The server cannot know which day
-# "2026-09-14" meant, so it does not guess: the client resolves the day in ITS
-# OWN timezone. But any offset is NORMALIZED TO UTC before it reaches the query,
-# and that is load-bearing rather than tidy — on SQLite `created_at` is stored
-# as adapter-rendered TEXT and compared lexicographically, so
-# `2026-09-11T00:00:00+05:30` and the identical instant written
-# `2026-09-10T18:30:00Z` returned DIFFERENT rows until the bound was converted.
-# A naive value is read as UTC, the only reading that does not shift by whatever
-# zone the server happens to run in.
-#
-# An INVERTED window (`created_after > created_before`) is a 422, not an empty
-# list: unsatisfiable by construction, it would otherwise answer "you have no
-# cases in that range" when the truth is "you swapped the ends".
-#
-# Both predicates live in the same WHERE clause as every other filter, so
-# `total_count` counts the same set the page comes from — the pagination rule
-# `include_empty` already follows, and for the same reason: a bound applied
-# after the repository paginated would thin an already-sliced page.
-#
-# Additive: every existing call is unaffected, both params default to None.
-#
-# 3.7.0 — MINOR. The investigation turn reaches the EVIDENCE surfaces. 3.5.0
-# gave every schema that publishes a turn for display a nullable
-# `investigation_turn`, and missed the two that name a turn they do not
-# themselves render: evidence rows ("collected at turn N") and uploaded files
-# ("uploaded at turn N"). Both carried only the message clock, so on any case
-# with an aside a client printed `turn 5` beside an evidence row while its own
-# transcript called that same exchange `Turn 4` — the defect #1387 described for
-# history, one surface over (#1391).
-#
-# `SourceFileReference`, `EvidenceDetailsResponse`, `DerivedEvidenceSummary`,
-# `UploadedFileMetadata` and `UploadedFileDetailsResponse` each gain a nullable
-# `investigation_turn`: the per-row ORDINAL for the turn the row was collected
-# or uploaded at, from `Case.investigation_turn_at` — the same function
-# `Message.investigation_turn` uses, so the row and the exchange it belongs to
-# cannot disagree.
-#
-# WHY THE SERVER AND NOT THE CLIENT. A client can only resolve an evidence row's
-# ordinal by finding the conversation row on the same clock turn, which means
-# holding the conversation. The Dashboard's evidence tab holds none — it is a
-# separate fetch on a tab that never loads the transcript — and the copilot's
-# store is capped to a recent suffix, so a file uploaded early in a long case
-# has no local row either. Both clients would have had to render nothing.
-#
-# `collected_at_turn` and `uploaded_at_turn` are unchanged and still the message
-# clock: they are what anchors and jump-to-turn are keyed on. ADDRESS a turn
-# with those, DISPLAY the new one.
-#
-# Numbered 3.7.0, not 3.6.0, for the reason 3.6.0 itself records: #1388 took
-# 3.6.0 while this sat in review and merged first. Two different contracts must
-# never share a version, so this moves rather than collides and both entries
-# stay. They describe unrelated surfaces.
-#
-# 3.5.0 — MINOR. The investigation turn reaches the surfaces that DISPLAY a
-# turn. 2.7.0 put `investigation_turn` on `TurnResponse` (#1329) — the reply to
-# a submitted turn, and the one schema no history read and no header read can
-# reach. Every other surface therefore went on printing the message clock, so
-# an aside still moved the number the user was looking at, which is the symptom
-# #1329 set out to remove. Every schema that publishes a turn for DISPLAY gains
-# a nullable `investigation_turn` (#1387):
-#
-#   * `Message` — the per-row ORDINAL: the message clock at that row minus the
-#     out-of-band turns at or before it. Note this is not the case-level total
-#     moved onto the row. Attaching that total to every row would print the
-#     same number on all of them, because a count of "the turns so far" is only
-#     the label of the newest row; the ordinal is what labels the other rows,
-#     and the two agree exactly where they should, on the newest one.
-#
-#     Null on a `system` row. Those are background-job notices (runbook
-#     conversion) stamped with whichever turn happened to be OPEN when the job
-#     finished, so a number on one asserts membership in an exchange it had no
-#     part in — a rule both clients already implement privately, and the kind
-#     of duplication a server-computed field exists to remove.
-#
-#   * `CaseUIResponse_Inquiry`, `_Investigating`, `_Resolved`, and also
-#     `CaseSummary` (`GET /cases`), `CaseDetail` (`GET /cases/{id}`) and
-#     `AdminCaseMetadata` — the case-level COUNT, the same quantity
-#     `TurnResponse.investigation_turn` reports, carried on the case reads so a
-#     header, a resolution summary ("12 turns") or an exported archive can show
-#     it without having just submitted a turn. All six, not the three the first
-#     pass moved: a client reading the clock off whichever one it happens to
-#     hold is how the same defect survives in a different corner.
-#
-# `turn_number` and `current_turn` are unchanged and still mean the message
-# clock. That distinction is now load-bearing rather than incidental: the clock
-# is what ADDRESSES a turn — conversation anchors, evidence `uploaded_at_turn`,
-# suggestion liveness — and re-basing those to the displayed label would break
-# jump-to-turn silently, with no error and no failing test. Display the
-# ordinal, address by the clock.
-#
-# MINOR: nullable additions to response-only schemas. A client that ignores
-# them renders exactly what it renders today, and one that reads them falls
-# back to the clock when the field is absent. Adoption is tracked in
-# faultmaven-copilot#251, faultmaven-dashboard#127 and
-# faultmaven-slack-agent#64.
-#
-# 3.4.0 — MINOR. Two amendments to the team-consent surface 3.1.0 published,
-# found by review of #1365 after it merged.
-#
-# Numbered 3.4.0 for a reason that has nothing to do with what it publishes.
-# Two versions were taken while this sat in review: #1369 took 3.2.0 (below),
-# and #1370 takes 3.3.0 and merges first. Two different contracts must never
-# share a version — a number that cannot tell two contracts apart is not doing
-# its job, which is the whole reason 2.0.0 exists — so this moves rather than
-# collides, and the entries stay separate. They describe unrelated surfaces,
-# and merging them would lose which client has to adopt what.
-#
-# **3.3.0 is deliberately absent from this file right now.** It belongs to
-# #1370, which has not merged yet; its entry arrives with it. A gap here is the
-# honest record of two changes in flight, and inventing a placeholder to fill
-# it would put a version in the changelog that nothing published.
-#
-#   * `InvitationResponse` gains `revoked_by` and `revoked_at`, both nullable.
-#     They are what makes 3.1.0's own design claim checkable from outside:
-#     `status` is `revoked` whether the team admin withdrew the offer or the
-#     invitee declined it, and comparing `revoked_by` against `invited_by` is
-#     the whole of the difference. A field the server writes and no client can
-#     read is a record nobody keeps. New nullable fields on a response-only
-#     schema: a client that ignores them renders exactly what it renders today.
-#
-#   * `TeamCreateRequest.name` narrows from `maxLength: 255` to `200`, which is
-#     `teams.name`'s width exactly.
-#
-# The narrowing is the half that needs the argument, because tightening a
-# request field is normally where a client breaks. It cannot break one here, on
-# the 2.2.0 precedent: **no name between 201 and 255 characters has ever been
-# accepted**. `teams.name` is `VARCHAR(200)`, so PostgreSQL refused every one of
-# them with `StringDataRightTruncation` — an unhandled 500. A caller that sent
-# one was already outside the supported contract and getting undefined
-# behaviour; what changes is that it now gets a 422 naming the field. Nothing
-# that worked stops working, and the surface the clients generate against gets
-# narrower rather than differently shaped.
-#
-# One behaviour change ships with them and is NOT a schema change, so it is
-# recorded here rather than shown by the diff: accepting, declining or revoking
-# an invitation that has passed `expires_at` now answers **410
-# `invitation_expired`** consistently. 3.1.0 answered 410 or 409
-# `invitation_not_pending` depending on whether anything had listed the row
-# first, and recorded an elapsed offer as `revoked` — a withdrawal nobody
-# performed. Both statuses were already published for these operations, so a
-# client's error handling is unchanged; what changes is that it is now
-# deterministic.
-#
-# 3.3.0 — MINOR. A turn says which runbooks informed it (fm#1361). One
-# optional response field and two new component schemas; nothing existing
-# changes, so every current client survives unchanged.
-#
-#   * `TurnResponse.sources` — a list, defaulting to empty, of the knowledge
-#     the engine put in front of the model for that turn. A client that
-#     ignores it sees the response it always saw.
-#   * `Source` and `SourceType` join `components`. Both already existed in the
-#     API models and were simply never reachable from a published operation;
-#     they are published now because `TurnResponse` references them.
-#
-# Each entry carries the matched excerpt as `content`, the retrieval score as
-# `confidence`, and the runbook's `document_id` / `title` / `trigger` under
-# `metadata`. `type` is `knowledge_base` for everything emitted today —
-# `SourceType`'s other members are published because the enum is, not because
-# a turn can currently return them.
-#
-# ⚠ **`SourceType`'s value domain does not match the Copilot's `Source.type`
-# union**, and publishing the enum is what makes that a contract question
-# rather than an internal detail. The FIELD NAMES agree; the values overlap on
-# exactly one member of six:
-#
-#     published here : documentation, knowledge_base, log_file,
-#                      previous_analysis, user_provided, web_search
-#     copilot union  : external_api, knowledge_base, log_analysis,
-#                      previous_case, system_metrics, user_input
-#
-# Only `knowledge_base` is emitted, so no client breaks today — but this
-# document now licenses five values that client's union rejects, and a future
-# emitter choosing one would break it without changing this contract again.
-# The reconciliation is a two-repo decision and is deliberately NOT made here;
-# until it is, a producer on this surface may emit `knowledge_base` only.
-#
-# The list is empty whenever the KB pre-fetch admitted nothing, which includes
-# every deployment that sets `KB_PREFETCH_ENABLED=false` (fm#1360). A client
-# must therefore treat absence as "no citation to show", never as an error or
-# as a signal that retrieval failed. Runbooks the model fetched itself through
-# the `kb_qa` tool are NOT represented: that tool returns a formatted answer
-# string, so their identity does not exist at the tool boundary to publish.
-#
-# 3.2.0 — MINOR. `LLMProviderDetail` gains an optional, nullable
-# `selected_model_priced` (#1359): whether the model this provider will
-# actually call has a rate in the cost table. `false` means that provider's
-# calls report $0 spend; `null` means no model is resolved yet, which is
-# "nothing to say" rather than "unpriced" — an alarm that is always on is not
-# read, so an uninitialised provider must not report `false`.
-#
-# It exists because the unpriced signal was otherwise per-CALL. A model an
-# operator pins via `{PROVIDER}_MODEL` is in no `available_models` list and is
-# no `default_model`, so the build-time invariants cannot see it, and the
-# `llm_unpriced_calls` counter cannot fire until traffic has already been
-# billed. This is the same fact, known from the resolved model before a token
-# is spent, on the surface an operator reads when choosing one
-# (`GET /api/v1/admin/llm/config`). It is deliberately reported rather than
-# enforced: pricing is a self-declared estimate, remediable at runtime via
-# `LLM_PRICING_OVERRIDES`, and an unpriced model still yields a correct
-# investigation — refusing to serve on a missing rate row would take a
-# deployment down the day a provider ships a model.
-#
-# MINOR rather than MAJOR because it is a new optional field on a
-# response-only schema reached by one operator endpoint. No request shape
-# changes, nothing is removed, and no existing field changes meaning — a
-# client that ignores it renders exactly what it renders today. Optional
-# rather than required, unlike 2.5.0 and 2.1.0, because the server genuinely
-# has nothing to send for a provider it has not initialised.
-#
-# No client can break on it, verified by reading all three. The Dashboard
-# declares the shape by hand as `LLMProvider` in `src/types/llm.ts` — a
-# compile-time TypeScript interface it does not validate against, so an extra
-# JSON key is inert — and additionally carries the schema in the generated
-# `src/types/api.generated.ts`, where a regeneration only widens a response
-# type. The Slack agent's `LLMProviderDetail` lives in the generated
-# `faultmaven/api_generated.py` and is referenced nowhere outside it; pydantic
-# ignores unknown fields besides. The Copilot carries it in the generated
-# `packages/copilot-ui/types/api.generated.ts` and nowhere else — same
-# widening-only story as the Dashboard's generated copy. (An earlier draft of
-# this entry said the Copilot did not reference the schema at all. That was
-# false and came from grepping only `faultmaven-copilot/src`, which is not
-# where that client keeps its generated types; the MINOR call is unchanged,
-# but it now rests on having actually read the file.)
-#
-# 3.1.0 — MINOR. Teams form by consent (ADR-017 D4). Nine operations are added
-# and nothing existing is touched, so every current client survives the change
-# unchanged — which is what makes this the minor bump rather than the major one
-# 3.0.0 was:
-#
-#   * `POST /teams` — any authenticated account creates a team in its own
-#     enterprise and is that team's admin;
-#   * `GET /teams/{team_id}/members` — the roster, readable by its members;
-#   * `DELETE /teams/{team_id}/members/me` — leave; 409 when the leaver is the
-#     only admin and other members remain, and the sole member leaving
-#     soft-deletes the team;
-#   * `POST /teams/{team_id}/invitations`, `GET /teams/{team_id}/invitations`,
-#     `DELETE /teams/{team_id}/invitations/{invitation_id}` — the team admin's
-#     half: offer an address a place, see what became of every offer, withdraw
-#     one;
-#   * `GET /invitations`, `POST /invitations/{invitation_id}/accept`,
-#     `DELETE /invitations/{invitation_id}` — the invitee's half: the offers
-#     addressed to me, accept (which is the only thing on this API that creates
-#     a team membership), decline.
-#
-# Two response schemas join `components`, `InvitationResponse` and
-# `TeamMemberResponse`, plus the two request bodies `TeamCreateRequest` and
-# `InvitationCreateRequest`. `TeamResponse` is unchanged — it still carries
-# `enterprise_id` and no organization, exactly as 3.0.0 published it.
-#
-# **A refusal on this surface carries a machine-readable reason.** A 403, 404,
-# 409 or 410 from these routes answers
-# `{"error", "detail", "status_code", "reason"}` — the same envelope
-# `ConflictError` already emits with `conflict_reason`, with the slug in
-# `reason`. `detail` stays the human sentence a client renders. A client has to
-# distinguish "you are already a member" from "that address cannot join a team
-# in this enterprise" to say anything useful, and parsing prose for that is how
-# a UI ends up wrong in a language it was not written in. The slugs are
-# `enterprise_is_personal`,
-# `address_outside_enterprise_domain`, `already_a_member`, `not_a_team_admin`,
-# `not_found`, `invitation_expired`, `invitation_not_pending`,
-# `last_admin_cannot_leave`, `single_tenant_has_no_teams` and
-# `single_tenant_has_no_invitations`.
-#
-# Two of those slugs are deliberately ONE answer to two questions.
-# `address_outside_enterprise_domain` is returned both for an address on
-# another domain and for an address whose account is anchored to another
-# enterprise, at the same status and with the same message, because telling
-# them apart would answer "does an account exist at this address?" to anybody
-# who can create a team — which is everybody. A client must not try to infer
-# the difference; there is none to infer.
-#
-# The routes are published in every deployment and are the same shape in all of
-# them, but a single-tenant deployment answers 403 with
-# `single_tenant_has_no_teams` / `single_tenant_has_no_invitations`: it has one
-# enterprise, one default team and one account (ADR-017 D8), so there is nobody
-# to invite. Publishing them unconditionally is what keeps this document one
-# contract rather than a function of a deployment's `TENANT_PROVIDER`;
-# `GET /api/v1/meta/capabilities` already reports `teamSharing` so a client can
-# hide the UI rather than discover the 403.
-#
-# `GET /teams` is unchanged in shape and in behaviour, including its empty list
-# in standalone.
-#
-# 3.0.0 — MAJOR. The tenant a client reads off a row is the **enterprise**, not
-# the organization (ADR-017). Ten schemas move, and SIX of them REMOVE a
-# required field, which is why this is a major bump rather than the minor one a
-# rename might suggest:
-#
-#   * `TeamResponse`, `AdminUserListItem`, `UserDetailResponse`,
-#     `InvestigationSessionResponse` — `organization_id` → `enterprise_id`;
-#   * `BreakGlassGrant` — `target_organization_id` → `target_enterprise_id`;
-#   * `BreakGlassGrantRequest` — the REQUEST field `organization_id` becomes
-#     `enterprise_id`, so a client that keeps sending the old name is rejected;
-#   * `OperatorAccessAuditEntry` — `target_organization_id` →
-#     `target_enterprise_id`, and this one is the seventh rename but NOT a
-#     seventh removal of a required field: the old field was optional (a
-#     cross-tenant access has no single tenant to name), so a client that read
-#     it defensively survives the shape and only loses the value;
-#   * `CaseSummary`, `CaseDetail`, `AdminCaseMetadata` — `enterprise_id` is
-#     added as required and `organization_id` becomes optional. A case now
-#     carries both: the enterprise is what the read was scoped by, and the
-#     organization is billing attribution that is absent whenever nobody pays
-#     for the account (which, until organization assignment ships, is every
-#     account).
-#
-# Two QUERY parameters are renamed on the operator surfaces, and they are the
-# half a schema diff does not show:
-#
-#   * `GET /admin/grants` — `organization_id` → `enterprise_id`;
-#   * `GET /admin/audit/operator-access` — `target_organization_id` →
-#     `target_enterprise_id`.
-#
-# An ignored query parameter is WORSE than a rejected one here, and that is why
-# both old names are declared solely so they can be REFUSED with 422. FastAPI
-# drops an undeclared parameter silently, so a client still sending the old name
-# would get a 200 carrying every row — an unfiltered answer presented as a
-# filtered one, on the two surfaces that answer "who reached that tenant's
-# data". Nothing is ever served under the old name and neither appears in the
-# published schema; the refusal names its replacement.
-#
-# No path is added or removed and no OTHER status code changes; what changed is what
-# a row says about whose data it is. There is deliberately no transitional
-# period in which both fields are served: a tolerated old field is what keeps a
-# frontend reading it, and the whole point of moving the key is that the
-# organization stops answering "who may see this?". The clients adopt by pin
-# bump (faultmaven-dashboard, faultmaven-copilot, faultmaven-slack-agent,
-# faultmaven-cloud), which is also the cutover for the wipe-and-reprovision this
-# ships with — every session is re-established anyway, because the access and
-# refresh tokens now carry an `enterprise_id` claim and a token without one is
-# refused.
-#
-# 2.8.0 — MINOR. `POST /cases/{case_id}/turns` accepts an EMPTY turn — no
-# `query`, no `files`, no `pasted_content` — and answers it with a state-aware
-# orientation (where the investigation stands, what was last asked for, what
-# the user can do next). It used to be a 400 the client had to swallow, which
-# is how a bare `@FaultMaven` in Slack produced silence. Nothing a client sends
-# today is rejected or reshaped, so every existing client survives it; a
-# client that previously synthesised text for a bare mention can now send the
-# turn as it is. In the same release, `intent.type = "greeting"` sent by a
-# client is no longer obeyed: the server derives that intent from the text
-# itself (the value stays in the enum for generated types), so a client that
-# sent it gets the same answer it would have got for the text alone.
-#
-# 2.7.0 — MINOR. `TurnResponse` gains `investigation_turn` (nullable integer,
-# #1329): how many of the case's turns so far were investigation work.
-# `turn_number` keeps its meaning as the message clock and still advances on
-# every exchange; an out-of-band turn (small talk, trivia, a question about
-# FaultMaven itself) is now answered outside the investigation and recorded as
-# such, and this is the count a client should display as "Turn N". Nullable so
-# an older server that lacks it reads as "absent", not as zero. Nothing is
-# removed or reshaped, so every existing client survives it unchanged; the
-# clients' adoption is tracked in faultmaven-slack-agent#64,
-# faultmaven-dashboard#127 and faultmaven-copilot#251.
-#
-# 2.6.0 — MINOR. Capability discovery gains a second path,
-# `GET /api/v1/meta/capabilities`, served by the same handler as the existing
-# `GET /v1/meta/capabilities`; the old path stays, and is published
-# `deprecated: true` with a description naming its replacement.
-#
-# `/v1/meta/capabilities` was the only client-facing route outside `/api`, and
-# outside `/api` is where the deployed topology stops carrying it: the ingress
-# forwards `/api` (prefix), `/health` and `/metrics` to this service and
-# everything else to the Dashboard SPA. A same-origin Dashboard — `VITE_API_URL=""`,
-# which is the deployed default — therefore asks its own origin for
-# `/v1/meta/capabilities` and is answered with the SPA's HTML, and both clients
-# treat that as "no capabilities": the Copilot catches the JSON parse failure
-# and serves its degraded self-hosted fallback (`src/lib/capabilities.ts`), and
-# the Dashboard's `getCapabilities` rejects (`src/lib/meta/capabilities.ts`).
-# The endpoint that exists to say what the deployment supports could not be
-# reached by the client that most needs it.
-#
-# MINOR rather than MAJOR because nothing is removed or changed underneath a
-# caller. The old path answers exactly what it answered before — one handler,
-# two registrations, held byte-identical by
-# `tests/integration/test_main_app.py::test_capabilities_is_the_same_response_under_both_paths`
-# — so an extension already installed against it keeps working, which is why
-# the alias is kept rather than moved. `deprecated: true` is documentation: it
-# is what tells a client reading the spec which of two paths serving one
-# response to write against, and OpenAPI generators emit a deprecated operation
-# like any other (the Copilot and Dashboard already carry two such operations,
-# POST /api/v1/auth/dev-login and /dev-register, in their generated
-# `src/types/api.generated.ts`).
-#
-# 2.5.0 — MINOR. `EnvConfigStatusResponse` gains a required
-# `personal_tenant_limits` object, and `PersonalTenantLimitsStatus` joins
-# `components` (#1320, #1324). It reports the effective values of the three
-# settings that bound self-service sign-up — whether an org-less SSO identity
-# may provision a personal tenant, the deployment-wide hourly ceiling on that
-# provisioning, and the default daily investigation-turn allowance a personal
-# tenant gets. All three were reported nowhere, and all three fail silently:
-# each refusal reads to the person refused as something other than a
-# configured limit.
-#
-# MINOR rather than MAJOR because it is a new field on a response-only schema
-# reached by one operator endpoint, GET /api/v1/admin/config/status. No request
-# shape changes, nothing is removed, and no existing field changes meaning — a
-# client that ignores it renders exactly what it renders today. Required rather
-# than optional is deliberate and is a strengthened guarantee, the same shape as
-# 2.1.0: the server sends it on every response, and a block that could be absent
-# would read as "nothing to report", which is the failure the field exists to
-# close.
-#
-# No client can break on it, verified by reading them. The Dashboard declares
-# `EnvConfigStatus` by hand in `src/types/llm.ts` — a compile-time TypeScript
-# shape it does not validate against, so an extra JSON key is inert. The Copilot
-# carries the schema only in the generated `src/types/api.generated.ts`, and a
-# regeneration widens a response type nothing narrows. The Slack agent's
-# `EnvConfigStatusResponse` lives in the generated `faultmaven/api_generated.py`
-# and is referenced nowhere outside it; pydantic ignores unknown fields besides.
-#
-# 2.4.0 — MINOR. `CaseReport.format` widens from `const: "markdown"` to
-# `enum: ["markdown", "html"]` (#520). `reports_format_check` has admitted both
-# since the clean baseline, and the repository hydrates `format=row.format`
-# straight into the model — so the narrower type turned a row the database
-# accepts into a 500 on READ. The document now says what the storage layer has
-# always permitted.
-#
-# MINOR rather than MAJOR because no existing client can break on it, on two
-# independent grounds. First, the server still cannot emit `html`: nothing
-# writes it, so the set of values actually returned is unchanged and this is a
-# published latitude rather than a behaviour change. Second, no client reads the
-# field — verified by reading them: the Dashboard and Copilot carry it only in
-# `src/types/api.generated.ts` (TypeScript, compile-time, and widening a
-# response type is a superset none of them narrows), and the Slack agent's
-# `Literal["markdown"]` lives in `faultmaven/api_generated.py` on a `CaseReport`
-# that nothing outside that generated module references. A client that
-# regenerates picks up the wider type and compiles unchanged.
-#
-# 2.3.0 — MINOR. `HypothesisSummary` gains an optional `retirement_reason`
-# (#1142). The schema already carried `refutation_reason`, so a client rendering
-# a terminal hypothesis could say why one was REFUTED but not why one was
-# RETIRED — and retirement is the commoner end (40 retired against 8 refuted in
-# the corpus), so the half that was missing was the larger one. A hypothesis the
-# engine set aside having never grounded it and one it tested and abandoned
-# looked identical at this seam.
-#
-# MINOR rather than MAJOR because it is a new nullable response field on a
-# response-only schema: no request shape changes, no existing field changes
-# meaning, and a client that ignores it renders exactly what it renders today.
-#
-# 2.2.0 — MINOR. `POST /cases/{case_id}/turns` publishes `maxItems: 1` on its
-# `files` field (#694). The one-file-per-turn rule was always the supported
-# contract — it is what the clarification emitter is written against — but it
-# lived as convention plus client-side discipline, so nothing in the document
-# said so and a new client could exceed it silently.
-#
-# MINOR rather than MAJOR because every existing client already sends at most
-# one file, verified by reading them: the Copilot builds its payload as
-# `payload.files = [selectedFile!]` (UnifiedInputBar.tsx), the Slack agent's
-# `download_message_content` returns "at most one real file upload" and routes
-# the rest to `skipped_names`, and the Dashboard posts no files to this route.
-# No client sends a request this newly refuses. A caller that DID send two was
-# already outside the supported contract and getting undefined behaviour —
-# only the first attachment's failed classification was ever clarifiable.
-#
-# 2.1.0 — MINOR. `KnowledgeBaseDocument.scope` became REQUIRED and lost its
-# `"global"` default (#1166). This is a write-side hardening surfacing in a
-# read-side schema: the default meant a publish path that omitted its knowledge
-# tier published to the platform corpus every tenant reads, so the field is now
-# a decision every construction has to make. Existing clients survive it — the
-# schema is response-only (GET /knowledge/documents/{document_id}) and the
-# server already sent `scope` on every real response, because the DTO builder
-# reads it off the row. A response field going from optional-with-default to
-# required is a strengthened guarantee, not a new obligation on the caller.
-#
-# 2.0.1 — PATCH. `revoke()` was annotated `-> Any` while it still returned a
-# JSONResponse for errors; once those moved to a raised exception the
-# annotation was merely inaccurate, and it erased `type: object` from the
-# documented 200 response. Nothing on the wire changes, so no client can break
-# on this and none needs to adopt it urgently — it restores what the document
-# says about a response that never varied. Found by the advisory
-# breaking-change report on its first real run, and by nothing else.
-#
-# 2.0.0 — MAJOR. It publishes a change that already shipped. #1152 moved
-# `invalid_grant` from 401 to 400, replaced `{"detail": ...}` with the RFC 6749
-# §5.2 error object, and dropped `TokenRequest`/`RevokeRequest` from
-# `components` on POST /auth/oauth/token and /auth/oauth/revoke. It merged
-# before this machinery existed, so main's contract diverged from the one the
-# clients pinned while both still called themselves 1.0.0 — a version that
-# cannot tell two contracts apart is not doing its job. The first act of the
-# version is therefore to give the contract on main an identity distinct from
-# the 1.0.0 the clients are written against.
-# 3.6.0 — MINOR. `POST /knowledge/documents` gains two optional body fields,
-# `scope` and `team_id` (#1377). Uploading a finished runbook file was an
-# operator privilege hard-wired to the global tier; it is now an input method
-# like Convert and Write Runbook, and the operator gate moved to `scope ==
-# "global"` where it belongs.
-#
-# MINOR rather than MAJOR, and the judgement is worth stating because the
-# schema alone does not settle it. Two new OPTIONAL fields are textbook MINOR,
-# but the DEFAULT BEHAVIOUR changed: a caller that sends no `scope` used to
-# publish at global and now publishes at personal. That is a silent semantic
-# change, which is usually the worse kind.
-#
-# It is MINOR because no existing client can observe it. The only product
-# caller is faultmaven-dashboard, which adopts the change in the same batch
-# (faultmaven-dashboard#142 / #145). faultmaven-copilot names the URL in one
-# test and never calls it; faultmaven-slack-agent does not reference it. A
-# client that DID rely on the old default would deserve MAJOR — if one appears
-# before this is adopted, this entry is the thing to revisit.
-#
-# `scope` is also now a closed set (`personal | team | global`) rather than a
-# free string, so the schema publishes an `enum`. That narrows what is accepted
-# — but only to values the server ever handled: anything else reached an
-# unguarded `else` branch that wrote into the global runbook tree and then 500'd.
-#
-#
-# Numbered 3.6.0, not 3.5.0, and for the reason 3.4.0 records above: #1389 took
-# 3.5.0 while this sat in review and merged first. Two different contracts must
-# never share a version — a number that cannot tell two contracts apart is not
-# doing its job — so this moves rather than collides, and both entries stay.
-# They describe unrelated surfaces.
-# 6.1.0 — MINOR. `GET /api/v1/auth/sso/login` accepts an optional
-# `screen_hint` query parameter, `sign-in | sign-up`. Omitted, the request is
-# byte-identical to before, so every existing client survives untouched.
-#
-# It exists because a hosted login opens on its SIGN-IN screen by default, and
-# self-service sign-up went live with the ADR-017 cutover. A first-time visitor
-# following "try it" from the marketing site was therefore shown a form asking
-# for an account they do not have, with a sign-up link somewhere on it — which
-# is the defect faultmaven-website#42 describes, and the reason it was blocked
-# on fm#1045 until that landed.
-#
-# The parameter is a `Literal`, not a string, and the reason is worth stating
-# precisely because the obvious one is wrong: it is NOT injection. The shipped
-# WorkOS adapter urlencodes its parameters, so a free string could not append
-# query material to the authorization URL. It is closed because only two values
-# mean anything to the IdP — a third is a caller's bug, and forwarding it
-# silently would surface as "the hint does not work" rather than as a 422 at
-# the caller — and because the accepted values of a published parameter are
-# part of the contract clients read.
-#
-# It chooses a screen and nothing else. It is not persisted with the login
-# state and is not consulted on the callback leg, because whether an account
-# may be created is the IdP's and the sign-up policy's decision — a hint that
-# could move that would be an authorization parameter taking instructions from
-# the query string.
-#
-# Adopted by faultmaven-dashboard in the same batch (a `/signup` route that
-# hands off with the hint). faultmaven-copilot and faultmaven-slack-agent do
-# not call this endpoint.
-# 6.2.0 — MINOR. `GET /api/v1/auth/config` gains TWO booleans on the `oauth`
-# block: `supports_screen_hint` (does `hosted_login_url` honour the
-# `screen_hint` added in 6.1.0) and `self_service_signup_enabled` (can a
-# person with no account actually finish). Additive; a client that ignores
-# them is unaffected.
-#
-# They are separate because they are different facts and conflating them
-# builds a dead end one step further down. A deployment can forward the hint
-# perfectly while self-service sign-up is off — the shipped default — in
-# which case an org-less identity reaches the sign-up screen, completes it,
-# and is refused at the callback with `sso_org_unmapped` (ADR-017 / #1045).
-# A client gating a "create an account" control on the hint alone would send
-# someone through a form to an error. Offer the control only when BOTH are
-# true.
-#
-# It exists because 6.1.0 shipped a capability clients could not detect, and
-# that cost something immediately. faultmaven-dashboard#161 added a "Create an
-# account" button alongside "Sign In", merged, and deployed against an API
-# that did not yet have 6.1.0 — which accepts an unknown query parameter,
-# drops it, and serves the sign-in screen. The result was two buttons doing
-# exactly the same thing, with no signal anywhere that anything was wrong:
-# every test in three repositories was green, and the only way to tell was to
-# send a deliberately invalid value and see whether it 422'd.
-#
-# So the capability is advertised rather than inferred. This is the same rule
-# the Dashboard already applies to the browser extension (ADR-019:
-# "CAPABILITIES beat the version", "the Dashboard DEGRADES, never requires") —
-# it simply had not been applied to the backend it talks to.
-#
-# `False` by default, not `Optional[bool]`. An older API sends no such field,
-# and absent must read as "no": a client treating a missing value as
-# unknown-therefore-fine renders the dead control again, which is the whole
-# failure being closed.
-# 9.0.0 — MAJOR. RESOLVED is no longer a user-selectable case action.
-#
-# MAJOR on two counts. ``valid_next_states`` loses a value it published on
-# every INVESTIGATING case, and a ``status_transition`` request naming
-# ``resolved`` — which this API accepted and answered — is now a 422. A client
-# rendering that menu entry renders a control whose only outcome is a
-# validation error, which is precisely what "an existing client can break"
-# means.
-#
-# The edge itself is unchanged and still reachable: RESOLVED is earned by a
-# confirmed root-cause elimination and offered by the agent through the same
-# confirm/decline handshake it always used. What moved is who may OPEN that
-# handshake. The state machine's legality graph did not change.
-#
-# Symmetric with 7.x's removal of INQUIRY → INVESTIGATING from the same field,
-# and for the same reason: this dict is consulted with no case content, so
-# listing a content-gated edge advertised something the API would not honour on
-# demand. One client reconciled the gap against ``disposition_eligibility``;
-# that was a convention, not a contract, and the fallback path did not follow
-# it.
-#
-# ``disposition_eligibility`` keeps both keys and neither changes shape, but
-# ``resolved`` now describes the ENGINE's readiness verdict rather than a
-# control to render — and ``suggests_alternative`` on the close side means DO
-# NOT RENDER, because on those cases every close pivots back to a resolve
-# proposal. Both are description changes, not structural ones; they are called
-# out here because a client that keeps reading the old meaning renders a
-# button that cannot do what it says.
+@dataclass(frozen=True)
+class ContractChange:
+    """One published version of the contract and what it changed.
 
-# 9.1.0 — MINOR. `AdminCaseMetadata` — the operator case list's metadata row,
-# `GET /api/v1/admin/cases` with `view: "metadata"` — gains `shared_team_ids`,
-# the ids of the teams the case is shared to, ascending. Purely additive: an
-# optional list with an empty default, the same field and shape `CaseSummary`
-# already publishes, and a client that ignores it behaves exactly as before.
-#
-# It is metadata under the rule the model states — system-assigned ids, no text
-# a user typed — and the operator list was the one case read that never looked
-# it up. Where team sharing is wired (`TENANT_PROVIDER=multi`) it now carries
-# the case's teams; where it is not, it is empty, as on every other case read.
-#
-# The same release changes what the endpoint ANSWERS under
-# `TENANT_PROVIDER=multi` without changing its declared surface: it serves the
-# metadata view across every enterprise where it used to refuse with a 403. The
-# 403 was never declared in the published document, so the differ sees no
-# status-code change there; it is named here because a client that treated the
-# refusal as "unavailable in cloud" now receives rows.
+    ``title`` is one paragraph saying what moved; ``body`` is the reasoning a
+    client owner needs to accept it, plain text with its own line breaks, and
+    ``""`` when the title says it all.
+    """
 
-# 10.0.0 — MAJOR. `GET /api/v1/admin/users` under `TENANT_PROVIDER=multi`
-# lists the accounts of every enterprise, where it listed the operator's own,
-# and `AdminUserListItem` gains `account_kind` ('individual' | 'service'),
-# `service_channel` (which integration a service account serves, null for a
-# person) and `manageable` (whether the operator can administer the account).
-# The endpoint gains an optional `enterprise_id` filter, and `total` counts
-# every enterprise.
-#
-# MAJOR is not a judgement call here, for two reasons this file names outright.
-# A status code changed: `?role=` answered 200 under multi and now answers 422,
-# because the cross-enterprise read carries no roles and the filter could only
-# be applied to the operator's own enterprise under a list that claims all of
-# them (single-tenant deployments keep the filter). And a field's meaning
-# changed: `roles` stays a required list — never null, because a deployed core
-# reaches the running dashboard whatever contract it pins, and that build maps
-# `roles` — but on a row outside the operator's enterprise it is `[]`, meaning
-# NOT REPORTED rather than "holds no role". Those rows carry `manageable:
-# false`, and the administration routes still answer 404 for them.
-#
-# The measured impact on the clients: faultmaven-dashboard is the one consumer.
-# It never sends `role` (it pages with `limit`/`offset` and an optional
-# `search`), so the 422 reaches no shipped code path; faultmaven-copilot and
-# faultmaven-slack-agent do not call the endpoint. The current dashboard build
-# renders a `roles: []` row without error — `[].includes('admin')` is false,
-# so it shows the account as a plain user — but it does not yet read
-# `manageable`, so on a row outside the operator's enterprise it still offers
-# the role and deactivate controls, and those calls answer 404 until the
-# dashboard adopts this version and hides them. Under `single` nothing changes
-# but the new fields, every row `manageable: true`.
-#
-# Order of rollout: a deployed server reaches whichever client build is running,
-# whatever contract that build pins. Clients should adopt this version before a
-# server carrying it rolls out under `TENANT_PROVIDER=multi`, because from that
-# moment rows outside the operator's enterprise reach the running client.
-# 11.0.0 — MAJOR. `HypothesisState` loses `captured`. It was the queue for
-# hypotheses formed before the case's reported problem was verified; the engine
-# now refuses those instead, so every hypothesis is formed `active`. Rows still
-# `captured` are migrated to `retired` (alembic 007).
-#
-# MAJOR is not a judgement call here: a published enum value was removed, which
-# narrows a response type a client may switch on. The measured impact is small.
-# A deployed server at this version never emits `captured`, so a running client
-# of any build sees only values it already handles. faultmaven-dashboard has the
-# one hand-written branch on it (`CaseTabs.tsx`, a `case 'captured':` that falls
-# through to the default style); once it regenerates its types at this version
-# that case label no longer type-checks and is deleted with the pin bump.
-# faultmaven-copilot styles every state other than validated/refuted by default,
-# and faultmaven-slack-agent and fm-sre-simulator only regenerate.
-# 11.1.0 — MINOR. `ProblemVerificationData` gains four optional fields saying
-# where the confirmed problem statement stands against the evidence:
-# `problem_status` (unverified | verified | revision_pending | invalidated),
-# `original_problem_statement` (the statement the investigation opened on, when
-# the evidence has since revised it), `pending_revision` (a revised statement
-# awaiting the user's confirmation) and `invalidation_finding` (what showed the
-# reported problem was not present).
-#
-# `closure_reason` gains the value `closed_false_alarm` — a case closed because
-# the reported problem was found not present. The field is published as a plain
-# string, so the schema does not change, but every client that maps the values
-# to labels needs the new one: faultmaven-dashboard `closureReason.ts` and
-# faultmaven-copilot `case-service.ts` (both pin their key sets in a test); a
-# client without it falls back to its generic "Closed" label. The revision card
-# needs no client change: it is a DECIDE pair carrying `confirmation` intents,
-# rendered like Gate 1's.
-# 11.2.0 — MINOR. `TurnResponse.sources` is what the turn's prompt carried, and
-# history keeps it.
-#
-# `sources` was read from `case.kb_context` after the turn, but both pre-fetch
-# triggers (Gate 1, the root-cause edge) fire while the response is APPLIED,
-# after the answer was generated: the turn listed runbooks its answer never
-# saw. `sources` is now built from what the prompt build reports it rendered:
-# the entries whose header survived the KB section's budget, in the prompt the
-# model answered from (none for a template without the slot or the fallback). A Gate-1 fetch is listed on the next
-# turn, the first whose prompt carried it, and a turn that rendered no KB
-# context (greeting, out-of-band aside, deterministic branch) lists none.
-#
-# `Source` gains `new_this_turn`: true for an excerpt the previous turn's prompt
-# did not carry, decided against the previous assistant row's stored sources.
-# The context stands in every prompt until a pre-fetch replaces it, so
-# `sources` repeats turn to turn; faultmaven-copilot diffed turns to show it
-# once (`lib/state/turn-sources.ts`), reconstructing what the server knew.
-#
-# `Message` gains `sources`: the same list, persisted on the assistant row.
-# `GET /cases/{case_id}/messages` returned no sources before, so history showed
-# none of what the live turn did.
-#
-# `ProblemVerificationData.problem_status` is published as the `ProblemStatus`
-# enum (unverified | verified | revision_pending | invalidated) instead of a
-# plain string: the same four values, so a reader of the string survives.
-#
-# Clients: no client reads `problem_status`, `Message.sources` or
-# `new_this_turn` yet. A turn whose prompt carried no KB context now answers
-# `sources: []` while the context stands; faultmaven-copilot#299 made its turn
-# diff read an empty list as "nothing to record" rather than "context gone",
-# and ships before this deploys. Adopting this version replaces that diff with
-# `new_this_turn` and has its history mapper copy `Message.sources`.
-# faultmaven-dashboard and faultmaven-slack-agent only regenerate.
-# 11.3.0 — MINOR. `CaseUIResponse_Resolved` (served for RESOLVED and CLOSED
-# cases) gains `problem_verification`, the same `ProblemVerificationData` the
-# INVESTIGATING response carries, so a terminal case's header can say where its
-# problem statement stood when it ended: a case closed as `closed_false_alarm`
-# carries `invalidated` with its `invalidation_finding`, and either state
-# carries `original_problem_statement` when a revision or an edit changed the
-# statement. `problem_status` is the status the case ended with, not implied by
-# the state: resolving does not require `verified`, and a row saved before
-# 11.1.0 reads `unverified`. A case closed from INQUIRY confirmed no statement
-# and carries null. Before this, the header stated a false alarm's problem as
-# fact for the rest of the case's life.
-#
-# Clients: faultmaven-copilot (`CaseDetails.tsx`) and faultmaven-dashboard
-# (`IssueTab.tsx`) render every status already, but read the field on
-# INVESTIGATING only; adopting this version reads it for terminal states too.
-# `unverified` or an absent field renders as before. faultmaven-slack-agent
-# only regenerates.
-# 12.0.0 — MAJOR. `ProblemVerificationData` (INVESTIGATING and terminal cases)
-# publishes only what the case's own record holds. `impact` and `user_impact`
-# are removed, along with the `ImpactData` schema; `temporal_state` changes type
-# from the `TemporalStateData` object to the string `ongoing` | `historical`,
-# and `TemporalStateData` is removed. `urgency_level` and `severity` keep their
-# type and now describe the record's value, lowercase, null when not assessed.
-#
-# MAJOR: published fields were removed and one changed shape, which this file
-# names as MAJOR outright. The measured impact is nil: no client reads
-# `impact`, `user_impact` or `temporal_state` at runtime, so adopting this
-# version is a regenerate.
-#
-# Why they went: the adapter did not read them, it made them up. `impact` and
-# `user_impact` came from a substring match on the description ("api" in
-# "rapid" listed `api` as an affected service) and `temporal_state` was built
-# from evidence upload times with a literal `ongoing`. `urgency_level` was the
-# literal `unknown` and `severity` defaulted to `medium`. The record has no
-# writer for any scope or timeline fact beyond Gate 1's urgency and temporal
-# state. What the response now says is what Gate 1 recorded: `urgency_level`
-# from the preliminary urgency (null when unknown), `severity` from the user's
-# problem confirmation (null when not assessed; urgency no longer stands in for
-# it), `temporal_state` as reported at Gate 1 (null when not reported).
-#
-# `RootCauseSummary.severity` (RESOLVED and CLOSED responses) is removed too: the
-# adapter sent the literal `medium` for every case, and neither the root-cause
-# conclusion nor its hypothesis records a severity to send instead. No client
-# reads it.
-#
-# Clients: regenerate only; a value that read as `medium` or `unknown` for a
-# case that carried no assessment now reads null.
-# 12.1.0 — MINOR. The runbook taxonomy is published. `RunbookCreateRequest`
-# (`POST /knowledge/runbooks/create`) types `domain`, `symptom_class` items,
-# `severity`, `scope` and `difficulty` with the new `RunbookDomain`,
-# `SymptomClass`, `RunbookSeverity`, `KnowledgeScope` and `RunbookDifficulty`
-# enums instead of free strings, and `POST /knowledge/documents` types its
-# `scope` form field with `KnowledgeScope` (the same three values its literal
-# enum listed). The values are the runbook spec's (runbook-content-
-# architecture.md §Taxonomy Schema), defined once in
-# `faultmaven/modules/knowledge/taxonomy.py` (#1886).
-#
-# MINOR: an off-vocabulary value in the create request is now a 422 where it
-# used to be accepted into a draft that then failed validation, and a value the
-# validator passed with `severity: info` failed verify on a database CHECK that
-# had lost `info`; it now verifies. No client sends a value outside the lists:
-# faultmaven-dashboard's `CreateRunbookForm` offers exactly these.
-# The runbook validator now matches these vocabularies exactly, so a runbook
-# upload (`POST /knowledge/documents`) whose frontmatter says `domain: Database`,
-# `difficulty: foo` or `severity: 3` now gets a 422 naming the field. The first
-# two used to be accepted; `severity: 3` (and `severity: High`) passed the gate
-# and then failed on the draft row's CHECK.
-#
-# Clients: faultmaven-dashboard's `CreateRunbookForm` reads the generated enums
-# instead of its hand-kept lists when it adopts this version.
-# faultmaven-copilot and faultmaven-slack-agent only regenerate.
+    version: str
+    level: ContractLevel
+    title: str
+    body: str
 
-# 12.2.0 — MINOR. `POST /cases/{case_id}/turns` publishes its retry semantics
-# (#1888). The turn's one commit records the request's `Idempotency-Key` in a
-# turn receipt, and a retry with that key is answered with the committed turn
-# instead of running a new one. Added to the operation:
-#
-# * an optional `Idempotency-Key` header parameter, with the grammar every
-#   layer reads (8–255 of `[A-Za-z0-9_-]`); a key outside it is a 422;
-# * `X-Idempotency-Replayed: true` on a 200 that replays a committed turn
-#   (also added to the CORS-exposed headers);
-# * three labelled 409s that only a keyed duplicate can produce:
-#   `TURN_IN_PROGRESS` (with `Retry-After`, the seconds left on the first
-#   request's claim), `IDEMPOTENCY_KEY_REUSE` (the code the idempotency
-#   middleware already answers for the same condition) and
-#   `IDEMPOTENCY_REPLAY_UNAVAILABLE` (the turn committed, its stored response
-#   no longer validates: reload the case);
-# * the 409s and the 504 the route already raised, declared: an undocumented
-#   response is invisible to every client generator and contract differ.
-#
-# MINOR because no existing request changes outcome: an unkeyed turn runs
-# exactly as before, and the keys first-party clients already send (the
-# copilot's `opt_msg_<ms>_<n>`, stable across its retries) are inside the
-# grammar, so those retries now replay where they used to run a second turn
-# whenever the middleware's cache missed. The middleware no longer answers this
-# route at all (declared `never_replayed`). The terminal-case 409s stay
-# UNLABELLED: the Slack agent reads an unlabelled 409 as "this case is closed",
-# so labelling them `CASE_TERMINAL` waits for it to map that code first.
-# Requiring a key would be MAJOR, and waits for the Slack agent to send one.
-#
-# Clients: faultmaven-copilot (copilot-ui) can map `TURN_IN_PROGRESS` to an
-# automatic retry honouring `Retry-After` with the same key; the Slack agent
-# (sa#90) sends a key derived from the Slack message identity and maps both
-# codes. faultmaven-dashboard follows its copilot-ui pin. Until then every
-# client survives this unchanged.
 
-# 12.3.0 — MINOR. Every 409 that refuses a request because the case is terminal
-# (resolved or closed) carries `x-error-code: CASE_TERMINAL` (#1907):
-#
-# * `POST /cases/{case_id}/turns` — new data, a status change or a file
-#   reclassification on a terminal case (a text-only question is still
-#   answered). The code joins the route's documented 409 `x-error-code` enum,
-#   which no longer says the header is absent for a terminal case;
-# * `PUT /cases/{case_id}` — any update to a terminal case;
-# * `POST /cases/{case_id}/close` — a case that is already terminal. Its
-#   other 409 (the case changed while closing, `conflict_reason:
-#   concurrent_update`) stays unlabelled.
-#
-# The last two routes document their 409 for the first time. MINOR because the
-# status, the body and the condition are unchanged: a header was added to a
-# response a client already handles. Until now the terminal refusal was the one
-# 409 the turn route sent bare, and clients read "closed" from the header being
-# absent — an inference any other unlabelled 409 would have turned into a false
-# claim about a live case.
-#
-# Clients: the Slack agent maps `CASE_TERMINAL` to the same `CaseTerminalError`
-# as the unlabelled 409 since sa#92, so this lands with no window. copilot-ui
-# maps every 409 it does not name (this one included) to the version-conflict
-# error it gave the unlabelled one, and faultmaven-dashboard handles no 409 on
-# these routes directly; both survive this unchanged and only regenerate.
+# ASCII digits with no leading zero: ``\d`` would admit ``1.01.0`` and any
+# script's digits, and a client cannot order either.
+_PART = r"(0|[1-9][0-9]*)"
+_VERSION_PATTERN = re.compile(rf"{_PART}\.{_PART}\.{_PART}")
 
-# 12.4.0 — MINOR. The turn's time bounds are published, and the turn route's
-# 504 says which timeout it is (#1905):
-#
-# * `GET /api/v1/meta/capabilities` (and its deprecated `/v1` alias) has a
-#   typed response, `BackendCapabilities`, where it published `{}`. The model
-#   declares the shape already served, and adds two numbers to `limits`:
-#   `turnCeilingSeconds` (`AGENT_REQUEST_TIMEOUT`, or the chat provider's
-#   `AGENT_PROVIDER_TIMEOUT_OVERRIDES` entry) and `turnResponseBoundSeconds`
-#   (that plus the commit reserve and the auto-title bound: the NOMINAL bound
-#   on the turn route's answer, to which a client adds its network margin). Resolved per request for the chat provider in
-#   force, so they move when an operator switches it.
-# * `POST /cases/{case_id}/turns` documents `LLM_TIMEOUT` beside
-#   `REQUEST_TIMEOUT` in its 504 `x-error-code` enum. Both commit nothing.
-#   `REQUEST_TIMEOUT` no longer sends `Retry-After`: the turn used its whole
-#   ceiling on this input and the same input is likely to again, so a client
-#   retries at most once. `LLM_TIMEOUT` keeps `Retry-After: 30`.
-# * `TURN_IN_PROGRESS`'s `Retry-After` is described as the longest the running
-#   turn can still hold its claim, an upper bound (prose; no structural change).
-# * `GET /admin/config/status` reports `turn_timing`, the same two numbers.
-#
-# Server-side and not on the wire: every `AGENT_PROVIDER_TIMEOUT_OVERRIDES`
-# value is now held to 30–600 s like `AGENT_REQUEST_TIMEOUT`, and an
-# out-of-range value refuses the boot, so the published ceiling has a known
-# maximum.
-#
-# MINOR because every existing client survives it: the capabilities fields
-# are additions to a response clients already parse, the 504 status and body
-# are unchanged, and neither copilot nor the Slack agent reads `Retry-After` on
-# a 504 today, so dropping it from `REQUEST_TIMEOUT` changes nothing they do.
-#
-# Clients adopt in a later hop: the Slack agent maps the coded `LLM_TIMEOUT`
-# 504 as nothing-committed (today it reads it as "may still complete") and
-# sizes its attempts from `turnResponseBoundSeconds`; copilot likewise replaces
-# its policy recovery bound with the published one. faultmaven-dashboard only
-# regenerates.
-# 13.0.0 — MAJOR. The knowledge-suggestion subsystem is removed (#1897, owner
-# ruling 2026-10-09). Seven operations go:
-#
-# * `POST /api/v1/cases/{case_id}/extract-knowledge`;
-# * `GET /api/v1/knowledge/suggestions`,
-#   `GET`/`PUT /api/v1/knowledge/suggestions/{suggestion_id}`, and
-#   `POST /api/v1/knowledge/suggestions/{suggestion_id}/approve`, `/reject` and
-#   `/remediate-pii`.
-#
-# And one published property: `KnowledgeBaseDocument.source_suggestion_id`, the
-# lineage link from a knowledge item to the suggestion it came from. Nothing
-# ever wrote it.
-#
-# A case becomes a runbook through one writer, the conversion service
-# (`convert_from_case`, chat-triggered at resolution, into the owner's personal
-# drafts behind the CONFIRMED-cause gate). Extraction was a second writer from
-# an earlier design that targeted the GLOBAL tier through a platform-admin
-# review queue: it skipped the cause gate, and under multi-tenant its rows could
-# never be approved. Extraction was the queue's only writer, so the review
-# routes went with it. No promote action replaces them.
-#
-# MAJOR because operations are removed, which this file names as MAJOR
-# outright. The measured impact is nil: no first-party client calls any of the
-# seven — faultmaven-copilot, faultmaven-dashboard and faultmaven-slack-agent
-# reference them only in GENERATED types (the dashboard also carries an unused
-# hand-written `KnowledgeSuggestion` type). The system is pre-user, so there is
-# no deprecation window. Clients only regenerate; the dashboard drops its dead
-# type.
-# 13.1.0 — MINOR. A turn's knowledge-base `sources` are gated per viewer (#1919,
-# owner ruling 2026-10-10). A turn retrieves with the case driver's knowledge
-# and stores the runbook excerpts its prompt carried; when `GET
-# /api/v1/cases/{case_id}/messages` (`Message.sources`) or `POST
-# /api/v1/cases/{case_id}/turns` (`TurnResponse.sources`, live or replayed)
-# returns them, each is checked against the requester. A `knowledge_base`
-# source whose runbook the requester cannot open (not global, not theirs, not
-# shared to one of their teams, or unpublished), or one with no
-# `metadata.document_id`, comes back in a new documented shape:
-#
-# * `type` `knowledge_base` and `new_this_turn` kept;
-# * `content` `""`, `confidence` null;
-# * `metadata` exactly `{"access": "restricted"}` — no `title`, `document_id`
-#   or `trigger`.
-#
-# A readable source is unchanged. The operator break-glass transcript
-# (`/api/v1/admin/cases/{case_id}/messages`) is not gated. `GET .../messages`
-# now also answers `Cache-Control: no-cache, no-store, must-revalidate`,
-# `Pragma: no-cache` and `Expires: 0`: its body varies by viewer.
-#
-# MINOR because the `Source` schema is unchanged — a redacted entry is a valid
-# `Source` — and every first-party client survives it: copilot-ui's renderer
-# (which the dashboard shares) reads `metadata` as an open object, shows
-# "Source N" without a title, no link without a `document_id`, and no preview
-# for empty `content`. Clients adopt by showing "a runbook you don't have access
-# to" for `metadata.access == "restricted"`. The Slack agent only regenerates.
-#
-# 13.2.0 — MINOR. The case driver and hand-off (ADR-020, #1898). A case has a
-# creator (`user_id`, unchanged) and a DRIVER, who holds the investigation
-# writes (turns, edits, close, reports); the creator keeps delete, share and
-# unshare. Additive:
-#
-# * `PUT /api/v1/cases/{case_id}/driver` (`CaseDriverUpdateRequest`
-#   `{driver_id}`, answers `CaseSummary`) hands the case to a candidate; the
-#   creator or the current driver may call it. 404 to a non-reader, 403 to any
-#   other reader, 422 for a non-candidate, 409 `CASE_VERSION_CONFLICT` on a lost
-#   race; a resolved or closed case is NOT refused.
-# * `GET /api/v1/cases/{case_id}/driver-candidates` (`CaseDriverCandidateList`
-#   `{candidates: [{user_id, display_name}]}`), same callers and refusals.
-# * `CaseSummary` and `CaseDetail` gain `driver_id` (always the EFFECTIVE
-#   driver — the creator unless the case was handed on), `creator_display_name`
-#   and `driver_display_name` (display names, never email).
-# * `GET /api/v1/cases` gains `access` (`read` default | `write`: the cases the
-#   caller drives), and `CaseSearchRequest` gains the same `access` field.
-#
-# Behaviour a client may notice without a schema change: a reader who does not
-# drive a case is refused its investigation writes exactly as a teammate was
-# before (404 or 403 per route), now including the creator once someone else
-# drives. Clients adopt by judging the composer on `driver_id == me` and by
-# listing the extension's cases with `access=write`.
-#
-# 13.3.0 — MINOR. Evidence is submitted data, and the user declares what is
-# data (#1930). Additive:
-#
-# * `IntentType` gains `save_chat_data`, and `QueryIntent` gains `offer_id`
-#   (required for it): save the system output the user typed into a chat
-#   message, from the offer that names it.
-# * `SuggestedActionResponse` gains `prefill`: the text a client puts in its
-#   data box when the choice is taken (`""` opens it empty).
-#
-# Behaviour a client may notice without a schema change: when a message carries
-# system output, the reply leads `suggested_actions` with two choices for it —
-# "Yes, save it as data" (DECIDE, intent `save_chat_data`: the blocks become one
-# pasted file and the turn runs on it) and "Not exactly, let me re-submit"
-# (EVIDENCE with `prefill` = the blocks: the client opens its data box holding
-# them; nothing is sent). When a message reports the state of the user's system
-# with no data showing it ("it's stable"), the reply leads with "Submit the
-# output" (EVIDENCE, `prefill` ""; its body names the output asked for). There
-# is no "no" choice: an offer the user ignores leaves the message a claim. A
-# save on a resolved or closed case answers 409 `CASE_TERMINAL`; a
-# `save_chat_data` intent naming no offer of the case answers 422. Evidence
-# `source_type` (a string on the wire) no longer takes `user_description`; a
-# row with no source file is `engine_inference`. MINOR because every schema
-# change is additive and no first-party client branches on `source_type`: the
-# save choice works in every client that forwards a suggestion's `intent`, and a
-# client that does not yet know `prefill` shows the other choices as
-# informational cards.
-#
-# 13.4.0 — MINOR. The operator case list names each case's driver (#1926).
-# Additive:
-#
-# * `AdminCaseMetadata` (the row of `GET /api/v1/admin/cases` when it answers
-#   `view: "metadata"`) gains `driver_id`: the EFFECTIVE driver (ADR-020 D5) —
-#   the creator unless the case was handed on, `None` only when neither account
-#   exists any more. The same value `CaseSummary.driver_id` carries on the
-#   `full` view, which already had it.
-#
-# An id, never a name: ADR-012 D9 classes display names with titles, as text a
-# user typed, so `creator_display_name` and `driver_display_name` stay off the
-# operator row; an operator maps an id to a name through `/admin/users`. Under
-# `TENANT_PROVIDER=multi` the value comes from the cross-enterprise metadata
-# function (alembic `014_admin_case_metadata_driver`). Clients adopt by showing
-# a Driver column; the dashboard is the only consumer.
 
-# 13.5.0 — MINOR. `DELETE /api/v1/auth/users/{username}` declares a 409 (#1923):
-# an account that created cases cannot be deleted. The answer carries
-# `x-error-code: ACCOUNT_OWNS_CASES` and a message naming how many cases and the
-# `fm-reassign-cases` command that moves them; nothing is revoked or deleted. A
-# case created after that check is refused by the database instead, with the
-# same code and no count; the account's sessions were revoked by then. Additive
-# — one new response on an operator route; no schema changed, and `user_id`
-# stays required on every case schema, because no case can now lose its creator.
+def validate_contract_changes(changes: tuple[ContractChange, ...]) -> None:
+    """Refuse a changelog a client could not read a pin bump from.
 
-# 14.0.0 — MAJOR. The investigation-sessions subsystem is retired (#1935, owner
-# ruling 2026-10-12). Eight operations go, every one under
-# `/api/v1/cases/{case_id}/sessions`:
-#
-# * `POST` and `GET` on the collection, `GET .../active`;
-# * `GET` and `PATCH .../{session_id}`;
-# * `POST .../{session_id}/pause`, `/resume` and `/complete`.
-#
-# And five schemas: `InvestigationSessionResponse`, `SessionCreateRequest`,
-# `SessionUpdateRequest`, `SessionState` and the generated
-# `Body_complete_session_api_v1_cases__case_id__sessions__session_id__complete_post`.
-# With them goes `total_token_usage`, the counter #1696 ruled to retire:
-# nothing had written it since #1350. `AuthSessionCreateRequest` and
-# `AuthSessionStatus` keep their shapes; only their descriptions stop naming
-# the retired concept.
-#
-# Behaviour a client may notice without a schema change: the four RBAC
-# permissions seeded for the subsystem (`sessions:read`, `sessions:create`,
-# `sessions:execute`, `sessions:manage`) are retired with it, so they no longer
-# appear in `UserDetailResponse.permissions` (`GET /api/v1/admin/users/{user_id}`).
-# Nothing ever checked them, and no first-party client reads that list.
-#
-# The AUTH session surface is untouched: `/api/v1/sessions…` and
-# `POST /api/v1/cases/sessions/{session_id}/resume/{case_id}` serve the session
-# a client signs in with, and neither changes.
-#
-# The subsystem was the top of a Case → InvestigationSession → AgentExecution →
-# AgentToolCall hierarchy for an agent orchestrator that no longer exists; the
-# lower levels went in #982 and #1001. Its purposes are covered elsewhere:
-# grouping per period by `turn_history` / `case_messages` / `turn_receipts`,
-# token spend by the usage ledger (#640), pause and resume by the case state,
-# one active session by the case's single driver (ADR-020). The table is
-# dropped by alembic `017_drop_investigation_sessions`.
-#
-# MAJOR because operations are removed, which this file names as MAJOR
-# outright. The measured impact is nil: no first-party client calls any of the
-# eight — faultmaven-copilot, faultmaven-dashboard and faultmaven-slack-agent
-# reference them only in GENERATED types (the copilot's own
-# `SessionCreateRequest` is a hand-written type for the auth `/api/v1/sessions`
-# mint, unrelated). The system is pre-user, so there is no deprecation window.
-# Clients only regenerate.
+    ``changes`` runs newest first. Each version is ``MAJOR.MINOR.PATCH`` and
+    appears once, the order is strictly descending, every title is a
+    non-empty string on one line, every body a string, and each entry's level
+    is the bump from the entry after it:
+    MAJOR is ``(a+1, 0, 0)``, MINOR ``(a, b+1, 0)``, PATCH ``(a, b, c+1)``. The
+    oldest entry has nothing to be a bump from, so its level stands as written.
 
-# 14.1.0 — MINOR. A runbook draft's text lives in the database (#1950).
-#
-# * `DraftUpdateRequest.content` gains `maxLength` 100000
-#   (`DRAFT_CONTENT_MAX_CHARS`): the body of
-#   `PUT /api/v1/knowledge/conversions/{id}/drafts/{draft_id}` is stored as a
-#   row now, and nothing else bounds a JSON body. Sized at twice the largest
-#   shipped runbook (48,354 bytes) and three times a converted draft's
-#   ceiling; no draft the server makes or imports exceeds it, so no existing
-#   client edit is refused.
-#
-# Behaviour a client may notice without a schema change: a draft's `content`
-# in `GET /conversions/{id}` (and every response carrying a draft) is always
-# the full text — never `null` because the serving replica had no file. A
-# verify no longer fails because the file is missing. `POST /knowledge/scan`
-# imports files and never discards a draft; under `TENANT_PROVIDER=multi` it
-# answers 422 with "This deployment has no runbook directory; upload or convert
-# instead" (it was a 409 when a scan would have discarded every draft; that
-# refusal is gone).
-#
-# The same 100,000-character bound holds wherever a draft's text is born, as a
-# 422 naming the bound: `POST /knowledge/documents` (a runbook upload becomes a
-# draft row; the cap is new — before it only `MAX_UPLOAD_SIZE_MB` applied) and
-# `POST /knowledge/runbooks/create` (the composed runbook). A `/convert` failure
-# mode whose runbook exceeds it is reported in `warnings`, like any other
-# failed mode. `PUT …/drafts/{draft_id}` on a verified draft answers 409
-# `conflict_reason: "already_verified"` (it used to rewrite the row), and a
-# verify whose draft changed during its ingestion publishes nothing and answers
-# 409 naming what won: `already_verified` (another verify), `discarded` (a
-# delete) or `changed_during_verification` (an edit).
-# `GET /conversions/{id}` of a KB upload no longer answers 500 (its draft had
-# no stored score). MINOR because every client survives: the draft routes
-# declare no response model, so `content` going from nullable to always-present
-# is invisible to a generated type, and a client already shows a 409's or a
-# 422's detail.
-#
-# 14.2.0 — MINOR. `POST /cases/{case_id}/reports` declares its body
-# (`ReportGenerationRequest`, `report_types`: 1-3 of the report types), so the
-# contract carries the shape a client sends and a malformed body (a missing
-# `report_types`, an unknown type, an empty or longer-than-3 list, a bare
-# string, a body that is not an object) answers 422 naming the field where it
-# answered 500. A 422 on this route now comes before the case lookup, for
-# every authenticated caller alike, so it says nothing about whether the case
-# exists; an anonymous caller is still 401. MINOR because every request that
-# worked still works and the only change for the rest is an error moving from
-# 500 to 422 (#2005).
-#
-# 14.3.0 — MINOR. A runbook body is refused, never rewritten, when it holds a
-# credential (#2012). `PUT /api/v1/knowledge/documents/{document_id}` used to
-# run a new `content` through the sanitizer and answer 200 with the rewritten
-# text (internal addresses became `<IP_ADDRESS_…>`, commands were cut). It now
-# stores the content as sent, line endings normalised, and answers **422** when
-# the content holds a private key, a credential URL, a provider token, an AWS
-# key, a JWT, a bearer or basic credential, or a destructive command; nothing
-# is saved. On the wire the 422's `detail` is one string, as on the upload
-# route: the app's handler answers a dict detail with its `message`, so that
-# message names each finding's type and line, never its text. No schema moves. MINOR because a request that succeeded can
-# now be refused: the dashboard keeps the edit and shows the message. A
-# placeholder (`<password>`, `${DB_PASS}`) is not refused.
-#
-# 14.4.0 — MINOR. Organization roles carry only the management axis (#1040,
-# owner ruling 2026-09-24). No operation and no schema moves.
-#
-# Behaviour a client may notice without a schema change: the eight RBAC
-# permissions that gated case and evidence data by organization role
-# (`cases:read`, `cases:write`, `cases:delete`, `cases:assign`, `cases:close`,
-# `evidence:read`, `evidence:upload`, `evidence:delete`) are retired, so they no
-# longer appear in `UserDetailResponse.permissions`
-# (`GET /api/v1/admin/users/{user_id}`). That list is derived from the
-# account's roles (`users.dev_roles`), not from organization membership, which
-# is what faultmaven-cloud's organization management checks; it is not the
-# account's authority in any organization. An account whose roles include
-# `admin` now lists `["org:manage_settings", "org:manage_users"]`; one whose
-# roles are `member` or `viewer` lists `[]`. Nothing ever checked the eight —
-# ADR-017 D5 says organization roles gate no data — and no first-party client
-# reads that list. The rows are deleted by alembic
-# `020_org_permissions_are_management_only`.
-#
-# The OAuth scope strings `cases:read` / `cases:write` / `knowledge:read`, which
-# tokens carry in `scopes` and the consent page lists, are a separate vocabulary
-# and do not change.
-#
-# MINOR because the list keeps its type and every client survives a shorter
-# one: the dashboard's source has no reader of it, and the copilot and the slack
-# agent do not call the route.
-#
-# 14.5.0 — MINOR. `EnvConfigStatusResponse` gains a required
-# `database_timeouts` object, and `DatabaseTimeoutsStatus` joins `components`
-# (#2280). It reports the bounds in force on a database that stops answering:
-# the PostgreSQL command, connect and statement timeouts the engine was built
-# with, the opted-in client_connection_check_interval, and the deadline on the
-# token-revocation read every authenticated request makes. Each is seconds or
-# null (no bound). MINOR for the reasons 2.5.0 was: a new field on a
-# response-only schema reached by one operator endpoint, GET
-# /api/v1/admin/config/status; no request shape changes and nothing is removed.
-# The Dashboard's hand-declared `EnvConfigStatus` ignores an extra key, and the
-# generated client types only widen.
-#
-# `POST /cases/{case_id}/turns` documents a 503 (it answered several without
-# documenting one): `DATABASE_UNAVAILABLE` (new, `Retry-After: 5`, nothing
-# committed) when the database does not answer while the turn is prepared,
-# beside the 503 codes the route already answered (`TENANT_TURN_CAP_UNAVAILABLE`,
-# `LLM_OVER_CAPACITY`, `LLM_PROVIDER_UNAVAILABLE`, `LLM_INVALID_RESPONSE`, and
-# `REVOCATION_STATE_UNKNOWN` from authentication). Its two 504s keep their
-# meaning: a database timeout is never answered `REQUEST_TIMEOUT` or
-# `LLM_TIMEOUT`. MINOR: a newly documented status on a route that already
-# answered 503s, with one new code under it; no request shape changes.
-#
-# Behaviour a client may notice without a schema change: against a PostgreSQL
-# that stops answering, an authenticated request is answered 503
-# `REVOCATION_STATE_UNKNOWN` after REVOCATION_READ_TIMEOUT_SECONDS (5 s) where
-# it used to hang, and other reads fail after the command timeout. A turn whose
-# commit meets a database that stops answering mid-commit answers 500 with the
-# outcome unknown; a keyed retry is answered from the receipt.
+    Raises ``ValueError`` naming the first entry that breaks a rule.
+    """
+    if not changes:
+        raise ValueError("CONTRACT_CHANGES is empty: no version is published")
 
-# 14.6.0 — MINOR. A session lives `SESSION_TIMEOUT_MINUTES` past its last write
-# (#2301). The session store wrote every session for a fixed 1800 s whatever
-# the setting said, and a session also carried a 24-hour `expires_at` that its
-# heartbeats never moved. Now the store is built with the setting, every
-# session write (creation, resumption, heartbeat, update, archive) sets that
-# TTL, and the record's `expires_at` is the instant the write lapses.
-#
-# * `EnvConfigStatusResponse` gains `session_ttl_seconds`
-#   (`GET /api/v1/admin/config/status`): the TTL the built store applies, null
-#   before composition.
-#
-# Behaviour a client may notice without a schema change, on
-# `POST /api/v1/sessions`: `timeout_minutes` in the response is the server's
-# `SESSION_TIMEOUT_MINUTES` (it echoed the request's clamped value, 180 by
-# default), and `expires_at` is the session's own expiry, now plus that timeout
-# (it was `created_at` plus the requested minutes, a time nothing enforced, and
-# in the past on a resume of an old session). The request's `timeout_minutes`
-# is accepted and ignored, as it always was in effect, and loses its 60-480
-# bounds (a value outside them answered 422) and its 180 default; its removal
-# is a REMOVE, client first. The minted session's `metadata` no longer gains a
-# server-written `timeout_minutes`. A session heartbeated for more than 24
-# hours no longer expires at the 24-hour mark.
-#
-# And on `POST /api/v1/auth/logout`: the IdP (SSO) session is ended only when
-# the `X-Session-Id` sent names a session of the signed-in caller. Any
-# signed-in user could end another user's IdP session by sending that user's
-# session id; with the 24-hour cap gone, a heartbeat kept such an id alive
-# indefinitely, so the check lands with the change that widened it. The IdP
-# handle it revokes moved out of the session's client-writable `metadata` into
-# a server-set field no route accepts: a client could plant another user's
-# IdP session id in `metadata` on create or update and log out. An SSO
-# session's `metadata` (echoed by `PUT /sessions/{id}` and
-# `POST /sessions/search`) no longer carries `provider_session_id`, and a
-# `provider_session_id` a client writes there is inert.
-#
-# MINOR because every client survives it: the copilot sends `timeout_minutes`
-# and reads neither response field (its heartbeat interval is its own, 10
-# minutes, inside the 30-minute default), the dashboard runs the copilot's
-# session code, and the slack agent makes no session call.
+    parsed: list[tuple[int, int, int]] = []
+    seen: set[str] = set()
+    for change in changes:
+        match = (
+            _VERSION_PATTERN.fullmatch(change.version)
+            if isinstance(change.version, str)
+            else None
+        )
+        if match is None:
+            raise ValueError(
+                f"contract change {change.version!r}: the version is not "
+                "MAJOR.MINOR.PATCH"
+            )
+        if change.version in seen:
+            raise ValueError(
+                f"contract change {change.version}: the version is listed twice"
+            )
+        seen.add(change.version)
+        if change.level not in ("MAJOR", "MINOR", "PATCH"):
+            raise ValueError(
+                f"contract change {change.version}: the level {change.level!r} "
+                "is not MAJOR, MINOR or PATCH"
+            )
+        if not isinstance(change.title, str):
+            raise ValueError(
+                f"contract change {change.version}: the title is a "
+                f"{type(change.title).__name__}, not a str"
+            )
+        if not change.title.strip():
+            raise ValueError(f"contract change {change.version}: the title is empty")
+        if "\n" in change.title:
+            raise ValueError(
+                f"contract change {change.version}: the title holds a line break; "
+                "it is one paragraph on one line"
+            )
+        if not isinstance(change.body, str):
+            raise ValueError(
+                f"contract change {change.version}: the body is a "
+                f"{type(change.body).__name__}, not a str"
+            )
+        major, minor, patch = (int(part) for part in match.groups())
+        parsed.append((major, minor, patch))
 
-# 14.7.0 — MINOR. `GET /api/v1/meta/capabilities` (and its deprecated `/v1`
-# alias) reports `features.multiTenant`, a required boolean on
-# `BackendCapabilityFeatures` (#1489). It is `operator_authoring_refused()`
-# (`modules/knowledge/domain/global_authoring.py`), derived from
-# `requested_tenant_provider()` and resolved per request: true under
-# `TENANT_PROVIDER=multi`, exactly when the KB write policy refuses the
-# platform operator's arm, on a `global` document
-# (`ensure_global_authoring_allowed`) and on a `team` or `personal` document
-# the operator does not own (`ensure_document_write_allowed`). The policy
-# reads the same predicate. `deploymentMode` is `DEPLOYMENT_MODE`
-# (`settings.is_cloud`), which answers a different question: a cloud
-# deployment can run the single-tenant provider. No client could mirror the
-# policy before, so the Dashboard offered a platform administrator Edit on
-# documents a multi-tenant server answers 403.
-#
-# The client rule: an absent field reads as `true` (multi-tenant), the
-# conservative answer, so a client running against a core older than this
-# contract offers no operator arm rather than one the server may refuse. That
-# is the opposite polarity of the feature flags beside it, which read absent
-# as `false`.
-#
-# MINOR for the reasons 12.4.0 and 14.5.0 were: a new field on a
-# response-only schema clients already parse; no request shape changes and
-# nothing is removed. Clients that construct `BackendCapabilities` by hand
-# (the copilot's fallback literal and an e2e fixture) must add `multiTenant`
-# when they adopt 14.7.0, and a fallback built without an answer from the
-# core must set it to `true`. The Dashboard's hand-declared
-# `MetaCapabilityFeatures` declares every field optional.
-# 14.8.0 — MINOR. A user who declined a resolution can close the case (#2360).
-#
-# `closure_reason` gains the value `resolution_declined`: the fix was confirmed
-# to work and the user chose not to mark the case resolved. As with 11.1.0's
-# `closed_false_alarm`, the field is a plain string, so the schema does not
-# change, but every client that maps the values to labels needs the new one:
-# faultmaven-dashboard `closureReason.ts` (falls back to "Closed") and
-# faultmaven-copilot `case-service.ts` (falls back to "Other").
-#
-# `disposition_eligibility.closed` now reads `ready` on a resolvable case while
-# the user's decline of its resolution stands, so the status menu's Close
-# renders and closes the case. It reads `suggests_alternative` again while the
-# declined resolution is offered at the user's request, and once the state the
-# decline was given against changes (a new confirmation, solution or cause).
-# A description change, as 9.0.0's was for the same key; a client that renders
-# Close on `ready`, as both do, needs nothing more.
+    for newer, older, new, old in zip(changes, changes[1:], parsed, parsed[1:]):
+        if new <= old:
+            raise ValueError(
+                f"contract change {newer.version}: listed above {older.version}, "
+                "but the list runs newest first"
+            )
+        a, b, c = old
+        expected = {
+            "MAJOR": (a + 1, 0, 0),
+            "MINOR": (a, b + 1, 0),
+            "PATCH": (a, b, c + 1),
+        }[newer.level]
+        if new != expected:
+            raise ValueError(
+                f"contract change {newer.version}: labelled {newer.level}, but "
+                f"a {newer.level} bump from {older.version} is "
+                f"{'.'.join(map(str, expected))}"
+            )
 
-# 14.9.0 — MINOR. `closure_reason` and `valid_next_states` are published as
-# enums (#2389), now that no write path can store a closure reason outside the
-# vocabulary (#1795).
-#
-# * `ClosureReason` joins `components`, with the eight values 14.8.0 has and
-#   each value's meaning in `x-enum-descriptions`, an array parallel to `enum`.
-#   `closure_reason` on `CaseSummary`, `CaseDetail` and `AdminCaseMetadata`
-#   references it, and is null for a case that is not CLOSED, as before.
-# * `SelectableNextState` joins `components`, whose only value is `closed`, as
-#   before, with its meaning. `valid_next_states` on `CaseSummary`,
-#   `CaseDetail` and the three `CaseUIResponse_*` schemas lists it.
-#
-# From this version a per-value meaning in `x-enum-descriptions` is structure:
-# editing one bumps the version, and so does each value added later, with the
-# client label first. A change to what a published value means cannot ship as
-# a description change alone. A client keys its label table on the enum
-# (`Record<ClosureReason, …>` in the generated TypeScript), so a value without
-# a label is a type error rather than a fallback label.
-#
-# MINOR because every client survives it: the values and their wire form are
-# unchanged, each field narrows from a string to an enum of the values it
-# already carried, and no request schema carries either field. The generated
-# types change from `string | null` and `string[]` to the unions at adoption.
 
-# 14.10.0 — MINOR. A case's offers live on one record, and `disposition_eligibility`
-# is published as an enum (#2379, #2408; rulings of 2026-10-30).
-#
-# * `ResolveEligibility` (`ready`, `needs_info`, `not_eligible`) and
-#   `CloseEligibility` (`ready`, `suggests_alternative`, `not_eligible`) join
-#   `components`, each value's meaning in `x-enum-descriptions`. Two enums, not
-#   one, because each key has its own values (the precedent is
-#   `SelectableNextState`). `DispositionEligibility` is `{resolved, closed}`,
-#   both required and no other key, and types `disposition_eligibility` on the
-#   three `CaseUIResponse_*` schemas (still nullable). The wire values are
-#   unchanged.
-# * What `closed` means now: `suggests_alternative` while a resolve proposal is
-#   pending, or on a resolvable case whose resolution the user has not
-#   declined; otherwise `ready`. Two cases change. Under a problem-statement
-#   revision awaiting the user, a standing resolve decline keeps Close (`ready`;
-#   choosing it withdraws the revision and closes with `resolution_declined`),
-#   where it read `suggests_alternative`. And a model's resolve request on a
-#   case that has not earned resolution is not a proposal: it shows no
-#   confirmation chips and Close stays `ready`.
-# * A decline lapses only when a new solution or a new confirmation that the fix
-#   held is recorded (a declined close on a false-alarm finding, when the
-#   finding goes). A withdrawn solution, a contested or re-established cause,
-#   the problem status, elapsed turns and a driver change no longer lapse it,
-#   so the "Mark it resolved" chip and Close stay while it stands.
-# * A confirmation card's `proposal_id` is opaque: 16 random hex characters
-#   (an ISO timestamp before), and the reopen chip's is `reopen:` and the
-#   declined offer's id. Clients forward it verbatim, as before.
-#
-# MINOR because every client survives it: no value is added or removed, each
-# field narrows from a string map to an object of the enums it already
-# carried, and no request schema carries it. A client rendering Close on
-# `ready`, as faultmaven-copilot's `HeaderSummary` does, needs no logic change.
+CONTRACT_CHANGES: tuple[ContractChange, ...] = (
+    ContractChange(
+        version="14.12.0",
+        level="MINOR",
+        title=(
+            "A KB document whose indexing would not fit the request window is refused "
+            "before anything is written (#2055)."
+        ),
+        body=r"""* `POST /knowledge/documents`, `PUT /knowledge/documents/{document_id}` and
+  `POST /knowledge/conversions/{conversion_id}/drafts/{draft_id}/verify`
+  declare a **413** and a **503**, told apart from the existing answers by
+  `x-error-code`. With `INDEX_REQUEST_WINDOW_SECONDS` set:
+  `KNOWLEDGE_DOCUMENT_TOO_LARGE` (413) when indexing the document alone would
+  not fit the window (split it); `KNOWLEDGE_INDEXING_BUSY` (503, with
+  `Retry-After`) when the indexing already queued on the server leaves no
+  room for it, when it fits only once a cold model has loaded (the load
+  starts; `Retry-After` is the load's remaining estimate; when the latest
+  load failed, the route answers as for an unavailable embedder instead),
+  or while an encode is stuck past its time bound (`Retry-After: 60`).
+  Nothing is saved either way. At the default window of 0 neither is sent.
+* `PUT /knowledge/documents/{document_id}` holds `content` to the draft
+  bound (100,000 characters), as upload does: **422**, before any embed. A
+  `ValidationException` there is now the global 422, where it was a 500.
+* `POST /knowledge/documents/bulk-update` declares its **422**: an `updates`
+  naming `content` is refused, and nothing is updated; content changes
+  through `PUT`.
+* Both routes' declared 422 replaces the generated `HTTPValidationError`
+  one, as `PUT /cases/{case_id}/driver`'s does: the refusals' bodies are the
+  global `ValidationException` handler's (and PUT's credential refusal its
+  own `detail`), not that schema.
+* `POST /knowledge/drafts/verify-batch` gains the per-draft status
+  `deferred` and a `deferred` count: with a window set, the drafts the rest
+  of the batch's window cannot fit are not verified, and verifying one again
+  runs it in a fresh window. A draft too large for any window is `failed`.
+* `GET /admin/config/status` gains `knowledge_indexing` (`window_seconds`,
+  `queued`, `encoding_for_seconds`, `host_lock_available`,
+  `waiting_for_host_lock`), a new `KnowledgeIndexingStatus` schema.
 
-# 14.11.0 — MINOR. KB uploads and conversions are retry-safe under an
-# `Idempotency-Key` (#2433).
-#
-# * `POST /knowledge/documents` and `POST /knowledge/convert` take an optional
-#   `Idempotency-Key` header, in the turn route's grammar (out of grammar →
-#   422). A keyed request commits a receipt in the transaction that publishes
-#   it (`kb_request_receipts`); without a key, every request publishes, as
-#   before.
-# * A retry under the key, with the same file and the same form fields, is
-#   answered **201** with the published request's body (the upload with its
-#   `Location`) and `X-Idempotency-Replayed: true`, now declared on both 201s.
-#   Nothing publishes again. That holds after a lost response and after a
-#   **500** `KB_INGEST_OUTCOME_UNKNOWN` (which replays if the upload landed and
-#   runs if it did not). `POST /knowledge/documents`'s 500 detail now tells a
-#   keyed client to retry with the same key; the verify routes' 500 detail and
-#   `verify-batch`'s per-draft `error` keep their 14.10.0 text.
-# * Two **409**s are declared on both routes, told apart by `x-error-code`:
-#   `IDEMPOTENCY_KEY_REUSE` (the key was used with a different file, declared
-#   content type on `/convert`, or different fields) and
-#   `KB_REQUEST_IN_PROGRESS` (the first is still running; `Retry-After` is when
-#   its renewed claim would lapse, and it may still be running then).
-#   `/convert` also declares `IDEMPOTENCY_REPLAY_UNAVAILABLE`: the job committed,
-#   and its stored body no longer validates as `ConversionResponse`.
-# * Both routes are answered by the route, never by `IdempotencyMiddleware`,
-#   which used to replay a keyed upload from its cache without comparing the
-#   file.
-# * `POST /knowledge/convert`'s `created_at` (and every datetime in its body)
-#   is now spelled with `Z` instead of `+00:00`, so the first answer and its
-#   replay are the same bytes. Both are ISO 8601.
-#
-# MINOR because every client survives it: the header is optional, the new
-# statuses answer only a keyed request, and an unkeyed request behaves as
-# before. faultmaven-dashboard adopts by sending one key per submission and
-# reusing it on retry.
+MINOR because every client survives it: no client sends `content` to
+bulk-update (faultmaven-dashboard, faultmaven-copilot and
+faultmaven-slack-agent searched), and `deferred`, the 413 and the 503 cannot
+arrive until a deployment sets the window, which follows the Dashboard step.""",
+    ),
+    ContractChange(
+        version="14.11.0",
+        level="MINOR",
+        title=(
+            "KB uploads and conversions are retry-safe under an `Idempotency-Key` "
+            "(#2433)."
+        ),
+        body=r"""* `POST /knowledge/documents` and `POST /knowledge/convert` take an optional
+  `Idempotency-Key` header, in the turn route's grammar (out of grammar →
+  422). A keyed request commits a receipt in the transaction that publishes
+  it (`kb_request_receipts`); without a key, every request publishes, as
+  before.
+* A retry under the key, with the same file and the same form fields, is
+  answered **201** with the published request's body (the upload with its
+  `Location`) and `X-Idempotency-Replayed: true`, now declared on both 201s.
+  Nothing publishes again. That holds after a lost response and after a
+  **500** `KB_INGEST_OUTCOME_UNKNOWN` (which replays if the upload landed and
+  runs if it did not). `POST /knowledge/documents`'s 500 detail now tells a
+  keyed client to retry with the same key; the verify routes' 500 detail and
+  `verify-batch`'s per-draft `error` keep their 14.10.0 text.
+* Two **409**s are declared on both routes, told apart by `x-error-code`:
+  `IDEMPOTENCY_KEY_REUSE` (the key was used with a different file, declared
+  content type on `/convert`, or different fields) and
+  `KB_REQUEST_IN_PROGRESS` (the first is still running; `Retry-After` is when
+  its renewed claim would lapse, and it may still be running then).
+  `/convert` also declares `IDEMPOTENCY_REPLAY_UNAVAILABLE`: the job committed,
+  and its stored body no longer validates as `ConversionResponse`.
+* Both routes are answered by the route, never by `IdempotencyMiddleware`,
+  which used to replay a keyed upload from its cache without comparing the
+  file.
+* `POST /knowledge/convert`'s `created_at` (and every datetime in its body)
+  is now spelled with `Z` instead of `+00:00`, so the first answer and its
+  replay are the same bytes. Both are ISO 8601.
 
-# 14.12.0 — MINOR. A KB document whose indexing would not fit the request
-# window is refused before anything is written (#2055).
-#
-# * `POST /knowledge/documents`, `PUT /knowledge/documents/{document_id}` and
-#   `POST /knowledge/conversions/{conversion_id}/drafts/{draft_id}/verify`
-#   declare a **413** and a **503**, told apart from the existing answers by
-#   `x-error-code`. With `INDEX_REQUEST_WINDOW_SECONDS` set:
-#   `KNOWLEDGE_DOCUMENT_TOO_LARGE` (413) when indexing the document alone would
-#   not fit the window (split it); `KNOWLEDGE_INDEXING_BUSY` (503, with
-#   `Retry-After`) when the indexing already queued on the server leaves no
-#   room for it, when it fits only once a cold model has loaded (the load
-#   starts; `Retry-After` is the load's remaining estimate; when the latest
-#   load failed, the route answers as for an unavailable embedder instead),
-#   or while an encode is stuck past its time bound (`Retry-After: 60`).
-#   Nothing is saved either way. At the default window of 0 neither is sent.
-# * `PUT /knowledge/documents/{document_id}` holds `content` to the draft
-#   bound (100,000 characters), as upload does: **422**, before any embed. A
-#   `ValidationException` there is now the global 422, where it was a 500.
-# * `POST /knowledge/documents/bulk-update` declares its **422**: an `updates`
-#   naming `content` is refused, and nothing is updated; content changes
-#   through `PUT`.
-# * Both routes' declared 422 replaces the generated `HTTPValidationError`
-#   one, as `PUT /cases/{case_id}/driver`'s does: the refusals' bodies are the
-#   global `ValidationException` handler's (and PUT's credential refusal its
-#   own `detail`), not that schema.
-# * `POST /knowledge/drafts/verify-batch` gains the per-draft status
-#   `deferred` and a `deferred` count: with a window set, the drafts the rest
-#   of the batch's window cannot fit are not verified, and verifying one again
-#   runs it in a fresh window. A draft too large for any window is `failed`.
-# * `GET /admin/config/status` gains `knowledge_indexing` (`window_seconds`,
-#   `queued`, `encoding_for_seconds`, `host_lock_available`,
-#   `waiting_for_host_lock`), a new `KnowledgeIndexingStatus` schema.
-#
-# MINOR because every client survives it: no client sends `content` to
-# bulk-update (faultmaven-dashboard, faultmaven-copilot and
-# faultmaven-slack-agent searched), and `deferred`, the 413 and the 503 cannot
-# arrive until a deployment sets the window, which follows the Dashboard step.
-API_CONTRACT_VERSION = "14.12.0"
+MINOR because every client survives it: the header is optional, the new
+statuses answer only a keyed request, and an unkeyed request behaves as
+before. faultmaven-dashboard adopts by sending one key per submission and
+reusing it on retry.""",
+    ),
+    ContractChange(
+        version="14.10.0",
+        level="MINOR",
+        title=(
+            "A case's offers live on one record, and `disposition_eligibility` is "
+            "published as an enum (#2379, #2408; rulings of 2026-10-30)."
+        ),
+        body=r"""* `ResolveEligibility` (`ready`, `needs_info`, `not_eligible`) and
+  `CloseEligibility` (`ready`, `suggests_alternative`, `not_eligible`) join
+  `components`, each value's meaning in `x-enum-descriptions`. Two enums, not
+  one, because each key has its own values (the precedent is
+  `SelectableNextState`). `DispositionEligibility` is `{resolved, closed}`,
+  both required and no other key, and types `disposition_eligibility` on the
+  three `CaseUIResponse_*` schemas (still nullable). The wire values are
+  unchanged.
+* What `closed` means now: `suggests_alternative` while a resolve proposal is
+  pending, or on a resolvable case whose resolution the user has not
+  declined; otherwise `ready`. Two cases change. Under a problem-statement
+  revision awaiting the user, a standing resolve decline keeps Close (`ready`;
+  choosing it withdraws the revision and closes with `resolution_declined`),
+  where it read `suggests_alternative`. And a model's resolve request on a
+  case that has not earned resolution is not a proposal: it shows no
+  confirmation chips and Close stays `ready`.
+* A decline lapses only when a new solution or a new confirmation that the fix
+  held is recorded (a declined close on a false-alarm finding, when the
+  finding goes). A withdrawn solution, a contested or re-established cause,
+  the problem status, elapsed turns and a driver change no longer lapse it,
+  so the "Mark it resolved" chip and Close stay while it stands.
+* A confirmation card's `proposal_id` is opaque: 16 random hex characters
+  (an ISO timestamp before), and the reopen chip's is `reopen:` and the
+  declined offer's id. Clients forward it verbatim, as before.
+
+MINOR because every client survives it: no value is added or removed, each
+field narrows from a string map to an object of the enums it already
+carried, and no request schema carries it. A client rendering Close on
+`ready`, as faultmaven-copilot's `HeaderSummary` does, needs no logic change.""",
+    ),
+    ContractChange(
+        version="14.9.0",
+        level="MINOR",
+        title=(
+            "`closure_reason` and `valid_next_states` are published as enums (#2389), "
+            "now that no write path can store a closure reason outside the vocabulary "
+            "(#1795)."
+        ),
+        body=r"""* `ClosureReason` joins `components`, with the eight values 14.8.0 has and
+  each value's meaning in `x-enum-descriptions`, an array parallel to `enum`.
+  `closure_reason` on `CaseSummary`, `CaseDetail` and `AdminCaseMetadata`
+  references it, and is null for a case that is not CLOSED, as before.
+* `SelectableNextState` joins `components`, whose only value is `closed`, as
+  before, with its meaning. `valid_next_states` on `CaseSummary`,
+  `CaseDetail` and the three `CaseUIResponse_*` schemas lists it.
+
+From this version a per-value meaning in `x-enum-descriptions` is structure:
+editing one bumps the version, and so does each value added later, with the
+client label first. A change to what a published value means cannot ship as
+a description change alone. A client keys its label table on the enum
+(`Record<ClosureReason, …>` in the generated TypeScript), so a value without
+a label is a type error rather than a fallback label.
+
+MINOR because every client survives it: the values and their wire form are
+unchanged, each field narrows from a string to an enum of the values it
+already carried, and no request schema carries either field. The generated
+types change from `string | null` and `string[]` to the unions at adoption.""",
+    ),
+    ContractChange(
+        version="14.8.0",
+        level="MINOR",
+        title="A user who declined a resolution can close the case (#2360).",
+        body=r"""`closure_reason` gains the value `resolution_declined`: the fix was confirmed
+to work and the user chose not to mark the case resolved. As with 11.1.0's
+`closed_false_alarm`, the field is a plain string, so the schema does not
+change, but every client that maps the values to labels needs the new one:
+faultmaven-dashboard `closureReason.ts` (falls back to "Closed") and
+faultmaven-copilot `case-service.ts` (falls back to "Other").
+
+`disposition_eligibility.closed` now reads `ready` on a resolvable case while
+the user's decline of its resolution stands, so the status menu's Close
+renders and closes the case. It reads `suggests_alternative` again while the
+declined resolution is offered at the user's request, and once the state the
+decline was given against changes (a new confirmation, solution or cause).
+A description change, as 9.0.0's was for the same key; a client that renders
+Close on `ready`, as both do, needs nothing more.""",
+    ),
+    ContractChange(
+        version="14.7.0",
+        level="MINOR",
+        title=(
+            "`GET /api/v1/meta/capabilities` (and its deprecated `/v1` alias) reports "
+            "`features.multiTenant`, a required boolean on `BackendCapabilityFeatures` "
+            "(#1489). It is `operator_authoring_refused()` "
+            "(`modules/knowledge/domain/global_authoring.py`), derived from "
+            "`requested_tenant_provider()` and resolved per request: true under "
+            "`TENANT_PROVIDER=multi`, exactly when the KB write policy refuses the "
+            "platform operator's arm, on a `global` document "
+            "(`ensure_global_authoring_allowed`) and on a `team` or `personal` "
+            "document the operator does not own (`ensure_document_write_allowed`). The "
+            "policy reads the same predicate. `deploymentMode` is `DEPLOYMENT_MODE` "
+            "(`settings.is_cloud`), which answers a different question: a cloud "
+            "deployment can run the single-tenant provider. No client could mirror the "
+            "policy before, so the Dashboard offered a platform administrator Edit on "
+            "documents a multi-tenant server answers 403."
+        ),
+        body=r"""The client rule: an absent field reads as `true` (multi-tenant), the
+conservative answer, so a client running against a core older than this
+contract offers no operator arm rather than one the server may refuse. That
+is the opposite polarity of the feature flags beside it, which read absent
+as `false`.
+
+MINOR for the reasons 12.4.0 and 14.5.0 were: a new field on a
+response-only schema clients already parse; no request shape changes and
+nothing is removed. Clients that construct `BackendCapabilities` by hand
+(the copilot's fallback literal and an e2e fixture) must add `multiTenant`
+when they adopt 14.7.0, and a fallback built without an answer from the
+core must set it to `true`. The Dashboard's hand-declared
+`MetaCapabilityFeatures` declares every field optional.""",
+    ),
+    ContractChange(
+        version="14.6.0",
+        level="MINOR",
+        title=(
+            "A session lives `SESSION_TIMEOUT_MINUTES` past its last write (#2301). "
+            "The session store wrote every session for a fixed 1800 s whatever the "
+            "setting said, and a session also carried a 24-hour `expires_at` that its "
+            "heartbeats never moved. Now the store is built with the setting, every "
+            "session write (creation, resumption, heartbeat, update, archive) sets "
+            "that TTL, and the record's `expires_at` is the instant the write lapses."
+        ),
+        body=r"""* `EnvConfigStatusResponse` gains `session_ttl_seconds`
+  (`GET /api/v1/admin/config/status`): the TTL the built store applies, null
+  before composition.
+
+Behaviour a client may notice without a schema change, on
+`POST /api/v1/sessions`: `timeout_minutes` in the response is the server's
+`SESSION_TIMEOUT_MINUTES` (it echoed the request's clamped value, 180 by
+default), and `expires_at` is the session's own expiry, now plus that timeout
+(it was `created_at` plus the requested minutes, a time nothing enforced, and
+in the past on a resume of an old session). The request's `timeout_minutes`
+is accepted and ignored, as it always was in effect, and loses its 60-480
+bounds (a value outside them answered 422) and its 180 default; its removal
+is a REMOVE, client first. The minted session's `metadata` no longer gains a
+server-written `timeout_minutes`. A session heartbeated for more than 24
+hours no longer expires at the 24-hour mark.
+
+And on `POST /api/v1/auth/logout`: the IdP (SSO) session is ended only when
+the `X-Session-Id` sent names a session of the signed-in caller. Any
+signed-in user could end another user's IdP session by sending that user's
+session id; with the 24-hour cap gone, a heartbeat kept such an id alive
+indefinitely, so the check lands with the change that widened it. The IdP
+handle it revokes moved out of the session's client-writable `metadata` into
+a server-set field no route accepts: a client could plant another user's
+IdP session id in `metadata` on create or update and log out. An SSO
+session's `metadata` (echoed by `PUT /sessions/{id}` and
+`POST /sessions/search`) no longer carries `provider_session_id`, and a
+`provider_session_id` a client writes there is inert.
+
+MINOR because every client survives it: the copilot sends `timeout_minutes`
+and reads neither response field (its heartbeat interval is its own, 10
+minutes, inside the 30-minute default), the dashboard runs the copilot's
+session code, and the slack agent makes no session call.""",
+    ),
+    ContractChange(
+        version="14.5.0",
+        level="MINOR",
+        title=(
+            "`EnvConfigStatusResponse` gains a required `database_timeouts` object, "
+            "and `DatabaseTimeoutsStatus` joins `components` (#2280). It reports the "
+            "bounds in force on a database that stops answering: the PostgreSQL "
+            "command, connect and statement timeouts the engine was built with, the "
+            "opted-in client_connection_check_interval, and the deadline on the "
+            "token-revocation read every authenticated request makes. Each is seconds "
+            "or null (no bound). MINOR for the reasons 2.5.0 was: a new field on a "
+            "response-only schema reached by one operator endpoint, GET "
+            "/api/v1/admin/config/status; no request shape changes and nothing is "
+            "removed. The Dashboard's hand-declared `EnvConfigStatus` ignores an extra "
+            "key, and the generated client types only widen."
+        ),
+        body=r"""`POST /cases/{case_id}/turns` documents a 503 (it answered several without
+documenting one): `DATABASE_UNAVAILABLE` (new, `Retry-After: 5`, nothing
+committed) when the database does not answer while the turn is prepared,
+beside the 503 codes the route already answered (`TENANT_TURN_CAP_UNAVAILABLE`,
+`LLM_OVER_CAPACITY`, `LLM_PROVIDER_UNAVAILABLE`, `LLM_INVALID_RESPONSE`, and
+`REVOCATION_STATE_UNKNOWN` from authentication). Its two 504s keep their
+meaning: a database timeout is never answered `REQUEST_TIMEOUT` or
+`LLM_TIMEOUT`. MINOR: a newly documented status on a route that already
+answered 503s, with one new code under it; no request shape changes.
+
+Behaviour a client may notice without a schema change: against a PostgreSQL
+that stops answering, an authenticated request is answered 503
+`REVOCATION_STATE_UNKNOWN` after REVOCATION_READ_TIMEOUT_SECONDS (5 s) where
+it used to hang, and other reads fail after the command timeout. A turn whose
+commit meets a database that stops answering mid-commit answers 500 with the
+outcome unknown; a keyed retry is answered from the receipt.""",
+    ),
+    ContractChange(
+        version="14.4.0",
+        level="MINOR",
+        title=(
+            "Organization roles carry only the management axis (#1040, owner ruling "
+            "2026-09-24). No operation and no schema moves."
+        ),
+        body=r"""Behaviour a client may notice without a schema change: the eight RBAC
+permissions that gated case and evidence data by organization role
+(`cases:read`, `cases:write`, `cases:delete`, `cases:assign`, `cases:close`,
+`evidence:read`, `evidence:upload`, `evidence:delete`) are retired, so they no
+longer appear in `UserDetailResponse.permissions`
+(`GET /api/v1/admin/users/{user_id}`). That list is derived from the
+account's roles (`users.dev_roles`), not from organization membership, which
+is what faultmaven-cloud's organization management checks; it is not the
+account's authority in any organization. An account whose roles include
+`admin` now lists `["org:manage_settings", "org:manage_users"]`; one whose
+roles are `member` or `viewer` lists `[]`. Nothing ever checked the eight —
+ADR-017 D5 says organization roles gate no data — and no first-party client
+reads that list. The rows are deleted by alembic
+`020_org_permissions_are_management_only`.
+
+The OAuth scope strings `cases:read` / `cases:write` / `knowledge:read`, which
+tokens carry in `scopes` and the consent page lists, are a separate vocabulary
+and do not change.
+
+MINOR because the list keeps its type and every client survives a shorter
+one: the dashboard's source has no reader of it, and the copilot and the slack
+agent do not call the route.""",
+    ),
+    ContractChange(
+        version="14.3.0",
+        level="MINOR",
+        title=(
+            "A runbook body is refused, never rewritten, when it holds a credential "
+            "(#2012). `PUT /api/v1/knowledge/documents/{document_id}` used to run a "
+            "new `content` through the sanitizer and answer 200 with the rewritten "
+            "text (internal addresses became `<IP_ADDRESS_…>`, commands were cut). It "
+            "now stores the content as sent, line endings normalised, and answers "
+            "**422** when the content holds a private key, a credential URL, a "
+            "provider token, an AWS key, a JWT, a bearer or basic credential, or a "
+            "destructive command; nothing is saved. On the wire the 422's `detail` is "
+            "one string, as on the upload route: the app's handler answers a dict "
+            "detail with its `message`, so that message names each finding's type and "
+            "line, never its text. No schema moves. MINOR because a request that "
+            "succeeded can now be refused: the dashboard keeps the edit and shows the "
+            "message. A placeholder (`<password>`, `${DB_PASS}`) is not refused."
+        ),
+        body="",
+    ),
+    ContractChange(
+        version="14.2.0",
+        level="MINOR",
+        title=(
+            "`POST /cases/{case_id}/reports` declares its body "
+            "(`ReportGenerationRequest`, `report_types`: 1-3 of the report types), so "
+            "the contract carries the shape a client sends and a malformed body (a "
+            "missing `report_types`, an unknown type, an empty or longer-than-3 list, "
+            "a bare string, a body that is not an object) answers 422 naming the field "
+            "where it answered 500. A 422 on this route now comes before the case "
+            "lookup, for every authenticated caller alike, so it says nothing about "
+            "whether the case exists; an anonymous caller is still 401. MINOR because "
+            "every request that worked still works and the only change for the rest is "
+            "an error moving from 500 to 422 (#2005)."
+        ),
+        body="",
+    ),
+    ContractChange(
+        version="14.1.0",
+        level="MINOR",
+        title="A runbook draft's text lives in the database (#1950).",
+        body=r"""* `DraftUpdateRequest.content` gains `maxLength` 100000
+  (`DRAFT_CONTENT_MAX_CHARS`): the body of
+  `PUT /api/v1/knowledge/conversions/{id}/drafts/{draft_id}` is stored as a
+  row now, and nothing else bounds a JSON body. Sized at twice the largest
+  shipped runbook (48,354 bytes) and three times a converted draft's
+  ceiling; no draft the server makes or imports exceeds it, so no existing
+  client edit is refused.
+
+Behaviour a client may notice without a schema change: a draft's `content`
+in `GET /conversions/{id}` (and every response carrying a draft) is always
+the full text — never `null` because the serving replica had no file. A
+verify no longer fails because the file is missing. `POST /knowledge/scan`
+imports files and never discards a draft; under `TENANT_PROVIDER=multi` it
+answers 422 with "This deployment has no runbook directory; upload or convert
+instead" (it was a 409 when a scan would have discarded every draft; that
+refusal is gone).
+
+The same 100,000-character bound holds wherever a draft's text is born, as a
+422 naming the bound: `POST /knowledge/documents` (a runbook upload becomes a
+draft row; the cap is new — before it only `MAX_UPLOAD_SIZE_MB` applied) and
+`POST /knowledge/runbooks/create` (the composed runbook). A `/convert` failure
+mode whose runbook exceeds it is reported in `warnings`, like any other
+failed mode. `PUT …/drafts/{draft_id}` on a verified draft answers 409
+`conflict_reason: "already_verified"` (it used to rewrite the row), and a
+verify whose draft changed during its ingestion publishes nothing and answers
+409 naming what won: `already_verified` (another verify), `discarded` (a
+delete) or `changed_during_verification` (an edit).
+`GET /conversions/{id}` of a KB upload no longer answers 500 (its draft had
+no stored score). MINOR because every client survives: the draft routes
+declare no response model, so `content` going from nullable to always-present
+is invisible to a generated type, and a client already shows a 409's or a
+422's detail.""",
+    ),
+    ContractChange(
+        version="14.0.0",
+        level="MAJOR",
+        title=(
+            "The investigation-sessions subsystem is retired (#1935, owner ruling "
+            "2026-10-12). Eight operations go, every one under "
+            "`/api/v1/cases/{case_id}/sessions`:"
+        ),
+        body=r"""* `POST` and `GET` on the collection, `GET .../active`;
+* `GET` and `PATCH .../{session_id}`;
+* `POST .../{session_id}/pause`, `/resume` and `/complete`.
+
+And five schemas: `InvestigationSessionResponse`, `SessionCreateRequest`,
+`SessionUpdateRequest`, `SessionState` and the generated
+`Body_complete_session_api_v1_cases__case_id__sessions__session_id__complete_post`.
+With them goes `total_token_usage`, the counter #1696 ruled to retire:
+nothing had written it since #1350. `AuthSessionCreateRequest` and
+`AuthSessionStatus` keep their shapes; only their descriptions stop naming
+the retired concept.
+
+Behaviour a client may notice without a schema change: the four RBAC
+permissions seeded for the subsystem (`sessions:read`, `sessions:create`,
+`sessions:execute`, `sessions:manage`) are retired with it, so they no longer
+appear in `UserDetailResponse.permissions` (`GET /api/v1/admin/users/{user_id}`).
+Nothing ever checked them, and no first-party client reads that list.
+
+The AUTH session surface is untouched: `/api/v1/sessions…` and
+`POST /api/v1/cases/sessions/{session_id}/resume/{case_id}` serve the session
+a client signs in with, and neither changes.
+
+The subsystem was the top of a Case → InvestigationSession → AgentExecution →
+AgentToolCall hierarchy for an agent orchestrator that no longer exists; the
+lower levels went in #982 and #1001. Its purposes are covered elsewhere:
+grouping per period by `turn_history` / `case_messages` / `turn_receipts`,
+token spend by the usage ledger (#640), pause and resume by the case state,
+one active session by the case's single driver (ADR-020). The table is
+dropped by alembic `017_drop_investigation_sessions`.
+
+MAJOR because operations are removed, which this file names as MAJOR
+outright. The measured impact is nil: no first-party client calls any of the
+eight — faultmaven-copilot, faultmaven-dashboard and faultmaven-slack-agent
+reference them only in GENERATED types (the copilot's own
+`SessionCreateRequest` is a hand-written type for the auth `/api/v1/sessions`
+mint, unrelated). The system is pre-user, so there is no deprecation window.
+Clients only regenerate.""",
+    ),
+    ContractChange(
+        version="13.5.0",
+        level="MINOR",
+        title=(
+            "`DELETE /api/v1/auth/users/{username}` declares a 409 (#1923): an account "
+            "that created cases cannot be deleted. The answer carries `x-error-code: "
+            "ACCOUNT_OWNS_CASES` and a message naming how many cases and the "
+            "`fm-reassign-cases` command that moves them; nothing is revoked or "
+            "deleted. A case created after that check is refused by the database "
+            "instead, with the same code and no count; the account's sessions were "
+            "revoked by then. Additive — one new response on an operator route; no "
+            "schema changed, and `user_id` stays required on every case schema, "
+            "because no case can now lose its creator."
+        ),
+        body="",
+    ),
+    ContractChange(
+        version="13.4.0",
+        level="MINOR",
+        title="The operator case list names each case's driver (#1926). Additive:",
+        body=r"""* `AdminCaseMetadata` (the row of `GET /api/v1/admin/cases` when it answers
+  `view: "metadata"`) gains `driver_id`: the EFFECTIVE driver (ADR-020 D5) —
+  the creator unless the case was handed on, `None` only when neither account
+  exists any more. The same value `CaseSummary.driver_id` carries on the
+  `full` view, which already had it.
+
+An id, never a name: ADR-012 D9 classes display names with titles, as text a
+user typed, so `creator_display_name` and `driver_display_name` stay off the
+operator row; an operator maps an id to a name through `/admin/users`. Under
+`TENANT_PROVIDER=multi` the value comes from the cross-enterprise metadata
+function (alembic `014_admin_case_metadata_driver`). Clients adopt by showing
+a Driver column; the dashboard is the only consumer.""",
+    ),
+    ContractChange(
+        version="13.3.0",
+        level="MINOR",
+        title=(
+            "Evidence is submitted data, and the user declares what is data (#1930). "
+            "Additive:"
+        ),
+        body=r"""* `IntentType` gains `save_chat_data`, and `QueryIntent` gains `offer_id`
+  (required for it): save the system output the user typed into a chat
+  message, from the offer that names it.
+* `SuggestedActionResponse` gains `prefill`: the text a client puts in its
+  data box when the choice is taken (`""` opens it empty).
+
+Behaviour a client may notice without a schema change: when a message carries
+system output, the reply leads `suggested_actions` with two choices for it —
+"Yes, save it as data" (DECIDE, intent `save_chat_data`: the blocks become one
+pasted file and the turn runs on it) and "Not exactly, let me re-submit"
+(EVIDENCE with `prefill` = the blocks: the client opens its data box holding
+them; nothing is sent). When a message reports the state of the user's system
+with no data showing it ("it's stable"), the reply leads with "Submit the
+output" (EVIDENCE, `prefill` ""; its body names the output asked for). There
+is no "no" choice: an offer the user ignores leaves the message a claim. A
+save on a resolved or closed case answers 409 `CASE_TERMINAL`; a
+`save_chat_data` intent naming no offer of the case answers 422. Evidence
+`source_type` (a string on the wire) no longer takes `user_description`; a
+row with no source file is `engine_inference`. MINOR because every schema
+change is additive and no first-party client branches on `source_type`: the
+save choice works in every client that forwards a suggestion's `intent`, and a
+client that does not yet know `prefill` shows the other choices as
+informational cards.""",
+    ),
+    ContractChange(
+        version="13.2.0",
+        level="MINOR",
+        title=(
+            "The case driver and hand-off (ADR-020, #1898). A case has a creator "
+            "(`user_id`, unchanged) and a DRIVER, who holds the investigation writes "
+            "(turns, edits, close, reports); the creator keeps delete, share and "
+            "unshare. Additive:"
+        ),
+        body=r"""* `PUT /api/v1/cases/{case_id}/driver` (`CaseDriverUpdateRequest`
+  `{driver_id}`, answers `CaseSummary`) hands the case to a candidate; the
+  creator or the current driver may call it. 404 to a non-reader, 403 to any
+  other reader, 422 for a non-candidate, 409 `CASE_VERSION_CONFLICT` on a lost
+  race; a resolved or closed case is NOT refused.
+* `GET /api/v1/cases/{case_id}/driver-candidates` (`CaseDriverCandidateList`
+  `{candidates: [{user_id, display_name}]}`), same callers and refusals.
+* `CaseSummary` and `CaseDetail` gain `driver_id` (always the EFFECTIVE
+  driver — the creator unless the case was handed on), `creator_display_name`
+  and `driver_display_name` (display names, never email).
+* `GET /api/v1/cases` gains `access` (`read` default | `write`: the cases the
+  caller drives), and `CaseSearchRequest` gains the same `access` field.
+
+Behaviour a client may notice without a schema change: a reader who does not
+drive a case is refused its investigation writes exactly as a teammate was
+before (404 or 403 per route), now including the creator once someone else
+drives. Clients adopt by judging the composer on `driver_id == me` and by
+listing the extension's cases with `access=write`.""",
+    ),
+    ContractChange(
+        version="13.1.0",
+        level="MINOR",
+        title=(
+            "A turn's knowledge-base `sources` are gated per viewer (#1919, owner "
+            "ruling 2026-10-10). A turn retrieves with the case driver's knowledge and "
+            "stores the runbook excerpts its prompt carried; when `GET "
+            "/api/v1/cases/{case_id}/messages` (`Message.sources`) or `POST "
+            "/api/v1/cases/{case_id}/turns` (`TurnResponse.sources`, live or replayed) "
+            "returns them, each is checked against the requester. A `knowledge_base` "
+            "source whose runbook the requester cannot open (not global, not theirs, "
+            "not shared to one of their teams, or unpublished), or one with no "
+            "`metadata.document_id`, comes back in a new documented shape:"
+        ),
+        body=r"""* `type` `knowledge_base` and `new_this_turn` kept;
+* `content` `""`, `confidence` null;
+* `metadata` exactly `{"access": "restricted"}` — no `title`, `document_id`
+  or `trigger`.
+
+A readable source is unchanged. The operator break-glass transcript
+(`/api/v1/admin/cases/{case_id}/messages`) is not gated. `GET .../messages`
+now also answers `Cache-Control: no-cache, no-store, must-revalidate`,
+`Pragma: no-cache` and `Expires: 0`: its body varies by viewer.
+
+MINOR because the `Source` schema is unchanged — a redacted entry is a valid
+`Source` — and every first-party client survives it: copilot-ui's renderer
+(which the dashboard shares) reads `metadata` as an open object, shows
+"Source N" without a title, no link without a `document_id`, and no preview
+for empty `content`. Clients adopt by showing "a runbook you don't have access
+to" for `metadata.access == "restricted"`. The Slack agent only regenerates.""",
+    ),
+    ContractChange(
+        version="13.0.0",
+        level="MAJOR",
+        title=(
+            "The knowledge-suggestion subsystem is removed (#1897, owner ruling "
+            "2026-10-09). Seven operations go:"
+        ),
+        body=r"""* `POST /api/v1/cases/{case_id}/extract-knowledge`;
+* `GET /api/v1/knowledge/suggestions`,
+  `GET`/`PUT /api/v1/knowledge/suggestions/{suggestion_id}`, and
+  `POST /api/v1/knowledge/suggestions/{suggestion_id}/approve`, `/reject` and
+  `/remediate-pii`.
+
+And one published property: `KnowledgeBaseDocument.source_suggestion_id`, the
+lineage link from a knowledge item to the suggestion it came from. Nothing
+ever wrote it.
+
+A case becomes a runbook through one writer, the conversion service
+(`convert_from_case`, chat-triggered at resolution, into the owner's personal
+drafts behind the CONFIRMED-cause gate). Extraction was a second writer from
+an earlier design that targeted the GLOBAL tier through a platform-admin
+review queue: it skipped the cause gate, and under multi-tenant its rows could
+never be approved. Extraction was the queue's only writer, so the review
+routes went with it. No promote action replaces them.
+
+MAJOR because operations are removed, which this file names as MAJOR
+outright. The measured impact is nil: no first-party client calls any of the
+seven — faultmaven-copilot, faultmaven-dashboard and faultmaven-slack-agent
+reference them only in GENERATED types (the dashboard also carries an unused
+hand-written `KnowledgeSuggestion` type). The system is pre-user, so there is
+no deprecation window. Clients only regenerate; the dashboard drops its dead
+type.""",
+    ),
+    ContractChange(
+        version="12.4.0",
+        level="MINOR",
+        title=(
+            "The turn's time bounds are published, and the turn route's 504 says which "
+            "timeout it is (#1905):"
+        ),
+        body=r"""* `GET /api/v1/meta/capabilities` (and its deprecated `/v1` alias) has a
+  typed response, `BackendCapabilities`, where it published `{}`. The model
+  declares the shape already served, and adds two numbers to `limits`:
+  `turnCeilingSeconds` (`AGENT_REQUEST_TIMEOUT`, or the chat provider's
+  `AGENT_PROVIDER_TIMEOUT_OVERRIDES` entry) and `turnResponseBoundSeconds`
+  (that plus the commit reserve and the auto-title bound: the NOMINAL bound
+  on the turn route's answer, to which a client adds its network margin). Resolved per request for the chat provider in
+  force, so they move when an operator switches it.
+* `POST /cases/{case_id}/turns` documents `LLM_TIMEOUT` beside
+  `REQUEST_TIMEOUT` in its 504 `x-error-code` enum. Both commit nothing.
+  `REQUEST_TIMEOUT` no longer sends `Retry-After`: the turn used its whole
+  ceiling on this input and the same input is likely to again, so a client
+  retries at most once. `LLM_TIMEOUT` keeps `Retry-After: 30`.
+* `TURN_IN_PROGRESS`'s `Retry-After` is described as the longest the running
+  turn can still hold its claim, an upper bound (prose; no structural change).
+* `GET /admin/config/status` reports `turn_timing`, the same two numbers.
+
+Server-side and not on the wire: every `AGENT_PROVIDER_TIMEOUT_OVERRIDES`
+value is now held to 30–600 s like `AGENT_REQUEST_TIMEOUT`, and an
+out-of-range value refuses the boot, so the published ceiling has a known
+maximum.
+
+MINOR because every existing client survives it: the capabilities fields
+are additions to a response clients already parse, the 504 status and body
+are unchanged, and neither copilot nor the Slack agent reads `Retry-After` on
+a 504 today, so dropping it from `REQUEST_TIMEOUT` changes nothing they do.
+
+Clients adopt in a later hop: the Slack agent maps the coded `LLM_TIMEOUT`
+504 as nothing-committed (today it reads it as "may still complete") and
+sizes its attempts from `turnResponseBoundSeconds`; copilot likewise replaces
+its policy recovery bound with the published one. faultmaven-dashboard only
+regenerates.""",
+    ),
+    ContractChange(
+        version="12.3.0",
+        level="MINOR",
+        title=(
+            "Every 409 that refuses a request because the case is terminal (resolved "
+            "or closed) carries `x-error-code: CASE_TERMINAL` (#1907):"
+        ),
+        body=r"""* `POST /cases/{case_id}/turns` — new data, a status change or a file
+  reclassification on a terminal case (a text-only question is still
+  answered). The code joins the route's documented 409 `x-error-code` enum,
+  which no longer says the header is absent for a terminal case;
+* `PUT /cases/{case_id}` — any update to a terminal case;
+* `POST /cases/{case_id}/close` — a case that is already terminal. Its
+  other 409 (the case changed while closing, `conflict_reason:
+  concurrent_update`) stays unlabelled.
+
+The last two routes document their 409 for the first time. MINOR because the
+status, the body and the condition are unchanged: a header was added to a
+response a client already handles. Until now the terminal refusal was the one
+409 the turn route sent bare, and clients read "closed" from the header being
+absent — an inference any other unlabelled 409 would have turned into a false
+claim about a live case.
+
+Clients: the Slack agent maps `CASE_TERMINAL` to the same `CaseTerminalError`
+as the unlabelled 409 since sa#92, so this lands with no window. copilot-ui
+maps every 409 it does not name (this one included) to the version-conflict
+error it gave the unlabelled one, and faultmaven-dashboard handles no 409 on
+these routes directly; both survive this unchanged and only regenerate.""",
+    ),
+    ContractChange(
+        version="12.2.0",
+        level="MINOR",
+        title=(
+            "`POST /cases/{case_id}/turns` publishes its retry semantics (#1888). The "
+            "turn's one commit records the request's `Idempotency-Key` in a turn "
+            "receipt, and a retry with that key is answered with the committed turn "
+            "instead of running a new one. Added to the operation:"
+        ),
+        body=r"""* an optional `Idempotency-Key` header parameter, with the grammar every
+  layer reads (8–255 of `[A-Za-z0-9_-]`); a key outside it is a 422;
+* `X-Idempotency-Replayed: true` on a 200 that replays a committed turn
+  (also added to the CORS-exposed headers);
+* three labelled 409s that only a keyed duplicate can produce:
+  `TURN_IN_PROGRESS` (with `Retry-After`, the seconds left on the first
+  request's claim), `IDEMPOTENCY_KEY_REUSE` (the code the idempotency
+  middleware already answers for the same condition) and
+  `IDEMPOTENCY_REPLAY_UNAVAILABLE` (the turn committed, its stored response
+  no longer validates: reload the case);
+* the 409s and the 504 the route already raised, declared: an undocumented
+  response is invisible to every client generator and contract differ.
+
+MINOR because no existing request changes outcome: an unkeyed turn runs
+exactly as before, and the keys first-party clients already send (the
+copilot's `opt_msg_<ms>_<n>`, stable across its retries) are inside the
+grammar, so those retries now replay where they used to run a second turn
+whenever the middleware's cache missed. The middleware no longer answers this
+route at all (declared `never_replayed`). The terminal-case 409s stay
+UNLABELLED: the Slack agent reads an unlabelled 409 as "this case is closed",
+so labelling them `CASE_TERMINAL` waits for it to map that code first.
+Requiring a key would be MAJOR, and waits for the Slack agent to send one.
+
+Clients: faultmaven-copilot (copilot-ui) can map `TURN_IN_PROGRESS` to an
+automatic retry honouring `Retry-After` with the same key; the Slack agent
+(sa#90) sends a key derived from the Slack message identity and maps both
+codes. faultmaven-dashboard follows its copilot-ui pin. Until then every
+client survives this unchanged.""",
+    ),
+    ContractChange(
+        version="12.1.0",
+        level="MINOR",
+        title=(
+            "The runbook taxonomy is published. `RunbookCreateRequest` (`POST "
+            "/knowledge/runbooks/create`) types `domain`, `symptom_class` items, "
+            "`severity`, `scope` and `difficulty` with the new `RunbookDomain`, "
+            "`SymptomClass`, `RunbookSeverity`, `KnowledgeScope` and "
+            "`RunbookDifficulty` enums instead of free strings, and `POST "
+            "/knowledge/documents` types its `scope` form field with `KnowledgeScope` "
+            "(the same three values its literal enum listed). The values are the "
+            "runbook spec's (runbook-content-architecture.md §Taxonomy Schema), "
+            "defined once in `faultmaven/modules/knowledge/taxonomy.py` (#1886)."
+        ),
+        body=r"""MINOR: an off-vocabulary value in the create request is now a 422 where it
+used to be accepted into a draft that then failed validation, and a value the
+validator passed with `severity: info` failed verify on a database CHECK that
+had lost `info`; it now verifies. No client sends a value outside the lists:
+faultmaven-dashboard's `CreateRunbookForm` offers exactly these.
+The runbook validator now matches these vocabularies exactly, so a runbook
+upload (`POST /knowledge/documents`) whose frontmatter says `domain: Database`,
+`difficulty: foo` or `severity: 3` now gets a 422 naming the field. The first
+two used to be accepted; `severity: 3` (and `severity: High`) passed the gate
+and then failed on the draft row's CHECK.
+
+Clients: faultmaven-dashboard's `CreateRunbookForm` reads the generated enums
+instead of its hand-kept lists when it adopts this version.
+faultmaven-copilot and faultmaven-slack-agent only regenerate.""",
+    ),
+    ContractChange(
+        version="12.0.0",
+        level="MAJOR",
+        title=(
+            "`ProblemVerificationData` (INVESTIGATING and terminal cases) publishes "
+            "only what the case's own record holds. `impact` and `user_impact` are "
+            "removed, along with the `ImpactData` schema; `temporal_state` changes "
+            "type from the `TemporalStateData` object to the string `ongoing` | "
+            "`historical`, and `TemporalStateData` is removed. `urgency_level` and "
+            "`severity` keep their type and now describe the record's value, "
+            "lowercase, null when not assessed."
+        ),
+        body=r"""MAJOR: published fields were removed and one changed shape, which this file
+names as MAJOR outright. The measured impact is nil: no client reads
+`impact`, `user_impact` or `temporal_state` at runtime, so adopting this
+version is a regenerate.
+
+Why they went: the adapter did not read them, it made them up. `impact` and
+`user_impact` came from a substring match on the description ("api" in
+"rapid" listed `api` as an affected service) and `temporal_state` was built
+from evidence upload times with a literal `ongoing`. `urgency_level` was the
+literal `unknown` and `severity` defaulted to `medium`. The record has no
+writer for any scope or timeline fact beyond Gate 1's urgency and temporal
+state. What the response now says is what Gate 1 recorded: `urgency_level`
+from the preliminary urgency (null when unknown), `severity` from the user's
+problem confirmation (null when not assessed; urgency no longer stands in for
+it), `temporal_state` as reported at Gate 1 (null when not reported).
+
+`RootCauseSummary.severity` (RESOLVED and CLOSED responses) is removed too: the
+adapter sent the literal `medium` for every case, and neither the root-cause
+conclusion nor its hypothesis records a severity to send instead. No client
+reads it.
+
+Clients: regenerate only; a value that read as `medium` or `unknown` for a
+case that carried no assessment now reads null.""",
+    ),
+    ContractChange(
+        version="11.3.0",
+        level="MINOR",
+        title=(
+            "`CaseUIResponse_Resolved` (served for RESOLVED and CLOSED cases) gains "
+            "`problem_verification`, the same `ProblemVerificationData` the "
+            "INVESTIGATING response carries, so a terminal case's header can say where "
+            "its problem statement stood when it ended: a case closed as "
+            "`closed_false_alarm` carries `invalidated` with its "
+            "`invalidation_finding`, and either state carries "
+            "`original_problem_statement` when a revision or an edit changed the "
+            "statement. `problem_status` is the status the case ended with, not "
+            "implied by the state: resolving does not require `verified`, and a row "
+            "saved before 11.1.0 reads `unverified`. A case closed from INQUIRY "
+            "confirmed no statement and carries null. Before this, the header stated a "
+            "false alarm's problem as fact for the rest of the case's life."
+        ),
+        body=r"""Clients: faultmaven-copilot (`CaseDetails.tsx`) and faultmaven-dashboard
+(`IssueTab.tsx`) render every status already, but read the field on
+INVESTIGATING only; adopting this version reads it for terminal states too.
+`unverified` or an absent field renders as before. faultmaven-slack-agent
+only regenerates.""",
+    ),
+    ContractChange(
+        version="11.2.0",
+        level="MINOR",
+        title=(
+            "`TurnResponse.sources` is what the turn's prompt carried, and history "
+            "keeps it."
+        ),
+        body=r"""`sources` was read from `case.kb_context` after the turn, but both pre-fetch
+triggers (Gate 1, the root-cause edge) fire while the response is APPLIED,
+after the answer was generated: the turn listed runbooks its answer never
+saw. `sources` is now built from what the prompt build reports it rendered:
+the entries whose header survived the KB section's budget, in the prompt the
+model answered from (none for a template without the slot or the fallback). A Gate-1 fetch is listed on the next
+turn, the first whose prompt carried it, and a turn that rendered no KB
+context (greeting, out-of-band aside, deterministic branch) lists none.
+
+`Source` gains `new_this_turn`: true for an excerpt the previous turn's prompt
+did not carry, decided against the previous assistant row's stored sources.
+The context stands in every prompt until a pre-fetch replaces it, so
+`sources` repeats turn to turn; faultmaven-copilot diffed turns to show it
+once (`lib/state/turn-sources.ts`), reconstructing what the server knew.
+
+`Message` gains `sources`: the same list, persisted on the assistant row.
+`GET /cases/{case_id}/messages` returned no sources before, so history showed
+none of what the live turn did.
+
+`ProblemVerificationData.problem_status` is published as the `ProblemStatus`
+enum (unverified | verified | revision_pending | invalidated) instead of a
+plain string: the same four values, so a reader of the string survives.
+
+Clients: no client reads `problem_status`, `Message.sources` or
+`new_this_turn` yet. A turn whose prompt carried no KB context now answers
+`sources: []` while the context stands; faultmaven-copilot#299 made its turn
+diff read an empty list as "nothing to record" rather than "context gone",
+and ships before this deploys. Adopting this version replaces that diff with
+`new_this_turn` and has its history mapper copy `Message.sources`.
+faultmaven-dashboard and faultmaven-slack-agent only regenerate.""",
+    ),
+    ContractChange(
+        version="11.1.0",
+        level="MINOR",
+        title=(
+            "`ProblemVerificationData` gains four optional fields saying where the "
+            "confirmed problem statement stands against the evidence: `problem_status` "
+            "(unverified | verified | revision_pending | invalidated), "
+            "`original_problem_statement` (the statement the investigation opened on, "
+            "when the evidence has since revised it), `pending_revision` (a revised "
+            "statement awaiting the user's confirmation) and `invalidation_finding` "
+            "(what showed the reported problem was not present)."
+        ),
+        body=r"""`closure_reason` gains the value `closed_false_alarm` — a case closed because
+the reported problem was found not present. The field is published as a plain
+string, so the schema does not change, but every client that maps the values
+to labels needs the new one: faultmaven-dashboard `closureReason.ts` and
+faultmaven-copilot `case-service.ts` (both pin their key sets in a test); a
+client without it falls back to its generic "Closed" label. The revision card
+needs no client change: it is a DECIDE pair carrying `confirmation` intents,
+rendered like Gate 1's.""",
+    ),
+    ContractChange(
+        version="11.0.0",
+        level="MAJOR",
+        title=(
+            "`HypothesisState` loses `captured`. It was the queue for hypotheses "
+            "formed before the case's reported problem was verified; the engine now "
+            "refuses those instead, so every hypothesis is formed `active`. Rows still "
+            "`captured` are migrated to `retired` (alembic 007)."
+        ),
+        body=r"""MAJOR is not a judgement call here: a published enum value was removed, which
+narrows a response type a client may switch on. The measured impact is small.
+A deployed server at this version never emits `captured`, so a running client
+of any build sees only values it already handles. faultmaven-dashboard has the
+one hand-written branch on it (`CaseTabs.tsx`, a `case 'captured':` that falls
+through to the default style); once it regenerates its types at this version
+that case label no longer type-checks and is deleted with the pin bump.
+faultmaven-copilot styles every state other than validated/refuted by default,
+and faultmaven-slack-agent and fm-sre-simulator only regenerate.""",
+    ),
+    ContractChange(
+        version="10.0.0",
+        level="MAJOR",
+        title=(
+            "`GET /api/v1/admin/users` under `TENANT_PROVIDER=multi` lists the "
+            "accounts of every enterprise, where it listed the operator's own, and "
+            "`AdminUserListItem` gains `account_kind` ('individual' | 'service'), "
+            "`service_channel` (which integration a service account serves, null for a "
+            "person) and `manageable` (whether the operator can administer the "
+            "account). The endpoint gains an optional `enterprise_id` filter, and "
+            "`total` counts every enterprise."
+        ),
+        body=r"""MAJOR is not a judgement call here, for two reasons this file names outright.
+A status code changed: `?role=` answered 200 under multi and now answers 422,
+because the cross-enterprise read carries no roles and the filter could only
+be applied to the operator's own enterprise under a list that claims all of
+them (single-tenant deployments keep the filter). And a field's meaning
+changed: `roles` stays a required list — never null, because a deployed core
+reaches the running dashboard whatever contract it pins, and that build maps
+`roles` — but on a row outside the operator's enterprise it is `[]`, meaning
+NOT REPORTED rather than "holds no role". Those rows carry `manageable:
+false`, and the administration routes still answer 404 for them.
+
+The measured impact on the clients: faultmaven-dashboard is the one consumer.
+It never sends `role` (it pages with `limit`/`offset` and an optional
+`search`), so the 422 reaches no shipped code path; faultmaven-copilot and
+faultmaven-slack-agent do not call the endpoint. The current dashboard build
+renders a `roles: []` row without error — `[].includes('admin')` is false,
+so it shows the account as a plain user — but it does not yet read
+`manageable`, so on a row outside the operator's enterprise it still offers
+the role and deactivate controls, and those calls answer 404 until the
+dashboard adopts this version and hides them. Under `single` nothing changes
+but the new fields, every row `manageable: true`.
+
+Order of rollout: a deployed server reaches whichever client build is running,
+whatever contract that build pins. Clients should adopt this version before a
+server carrying it rolls out under `TENANT_PROVIDER=multi`, because from that
+moment rows outside the operator's enterprise reach the running client.""",
+    ),
+    ContractChange(
+        version="9.1.0",
+        level="MINOR",
+        title=(
+            "`AdminCaseMetadata` — the operator case list's metadata row, `GET "
+            '/api/v1/admin/cases` with `view: "metadata"` — gains `shared_team_ids`, '
+            "the ids of the teams the case is shared to, ascending. Purely additive: "
+            "an optional list with an empty default, the same field and shape "
+            "`CaseSummary` already publishes, and a client that ignores it behaves "
+            "exactly as before."
+        ),
+        body=r"""It is metadata under the rule the model states — system-assigned ids, no text
+a user typed — and the operator list was the one case read that never looked
+it up. Where team sharing is wired (`TENANT_PROVIDER=multi`) it now carries
+the case's teams; where it is not, it is empty, as on every other case read.
+
+The same release changes what the endpoint ANSWERS under
+`TENANT_PROVIDER=multi` without changing its declared surface: it serves the
+metadata view across every enterprise where it used to refuse with a 403. The
+403 was never declared in the published document, so the differ sees no
+status-code change there; it is named here because a client that treated the
+refusal as "unavailable in cloud" now receives rows.""",
+    ),
+    ContractChange(
+        version="9.0.0",
+        level="MAJOR",
+        title="RESOLVED is no longer a user-selectable case action.",
+        body=r"""MAJOR on two counts. ``valid_next_states`` loses a value it published on
+every INVESTIGATING case, and a ``status_transition`` request naming
+``resolved`` — which this API accepted and answered — is now a 422. A client
+rendering that menu entry renders a control whose only outcome is a
+validation error, which is precisely what "an existing client can break"
+means.
+
+The edge itself is unchanged and still reachable: RESOLVED is earned by a
+confirmed root-cause elimination and offered by the agent through the same
+confirm/decline handshake it always used. What moved is who may OPEN that
+handshake. The state machine's legality graph did not change.
+
+Symmetric with 7.x's removal of INQUIRY → INVESTIGATING from the same field,
+and for the same reason: this dict is consulted with no case content, so
+listing a content-gated edge advertised something the API would not honour on
+demand. One client reconciled the gap against ``disposition_eligibility``;
+that was a convention, not a contract, and the fallback path did not follow
+it.
+
+``disposition_eligibility`` keeps both keys and neither changes shape, but
+``resolved`` now describes the ENGINE's readiness verdict rather than a
+control to render — and ``suggests_alternative`` on the close side means DO
+NOT RENDER, because on those cases every close pivots back to a resolve
+proposal. Both are description changes, not structural ones; they are called
+out here because a client that keeps reading the old meaning renders a
+button that cannot do what it says.""",
+    ),
+    ContractChange(
+        version="8.0.0",
+        level="MAJOR",
+        title=(
+            "`InquiryResponseData` no longer publishes `decided_to_investigate`. The "
+            "field is removed from the model entirely, along with the "
+            "`decision_made_at` timestamp that existed only to keep a second derived "
+            "fact consistent with it."
+        ),
+        body=r"""MAJOR is not a judgement call here: a published field was removed, which this
+file names as MAJOR outright. The measured impact is nonetheless nil, and
+client owners deserve both halves of that. Every reference in
+faultmaven-copilot, faultmaven-dashboard and faultmaven-slack-agent is in a
+GENERATED types file — no hand-written client code reads the value — and the
+Slack agent's generated model defaults it to `False`, so a client that adopts
+late sees no runtime change. What a late-adopting TypeScript client does see
+is a required property its type declares and the server stops sending, which
+is exactly the disagreement a pin bump exists to close.
+
+Why it went: Gate 1 has been ONE condition since #1611 — `gate1_passed` reads
+`problem_statement_confirmed` alone, and the `Case` validator dropped its
+separate requirement in the same change. The field was written by three
+sites, always in lockstep with `problem_statement_confirmed`, and read by
+nothing. A field that cannot differ from another invites the belief that it
+can; this one had two readers of the code concluding INQUIRY → INVESTIGATING
+was a two-handshake gate.""",
+    ),
+    ContractChange(
+        version="7.2.0",
+        level="MINOR",
+        title=(
+            "`GET /api/v1/admin/llm/config` publishes `role_routing`, a new list on "
+            "`LLMConfigResponse` carrying a new `LLMRoleRouting` schema (#1206). "
+            "Purely additive: no existing property changed, nothing was removed, and a "
+            "client that ignores the field behaves exactly as before."
+        ),
+        body=r"""What it adds is the answer the response could not previously give. It
+published `primary_provider` and nothing about the other seven capability
+roles, and those do not all follow the anchor:
+`CLASSIFIER_PROVIDER`/`SYNTHESIS_PROVIDER`/`MULTIMODAL_PROVIDER` ship pinned
+to gemini and stay put when the anchor is flipped (#1193 — that is what
+makes an A/B comparison of the anchor controlled), while
+`da`/`knowledge`/`structured_output` ship unset and move with it. An admin
+who switched the anchor to openai was shown "openai" by a page on which
+three roles still called Gemini and still needed its credential.
+
+Each row carries the resolved provider and model, the environment key that
+decided each, whether the provider was set for that role or inherited from
+`CHAT_PROVIDER`, whether the value came from `.env` or a dashboard override,
+and whether the named provider is actually initialized — the last because a
+pin with no credential is ignored by `route_request` and falls back to the
+chain, so reporting it as live would be a new version of the same lie.
+
+READ ONLY. The write half — whether an admin may change a role pin at
+runtime — is deliberately deferred and `_ALLOWED_OVERRIDES` is untouched;
+making pins runtime-editable interacts with the A/B property above and is
+its own decision. Standalone is unchanged: `PUT /admin/llm/config` still
+403s there and `.env` remains the single source of truth.""",
+    ),
+    ContractChange(
+        version="7.1.0",
+        level="MINOR",
+        title=(
+            "`GET /readiness` publishes a **503**, which it could not answer before "
+            "(#1515). It is the Kubernetes readiness probe, and it now returns 503 "
+            "when a component fatal to serving — today only `database` — is unhealthy, "
+            'instead of reporting `{"status": "unready"}` with a 200 that no probe '
+            "could act on."
+        ),
+        body=r"""The honest statement of what changed, because it is more than an addition:
+the DECLARED surface grew (`['200'] -> ['200', '503']`, which is what the
+differ reports), but the code for an unready answer also changed from 200 to
+503, and a status code changing is normally MAJOR.
+
+MINOR because of who the contract is with. It is with faultmaven-copilot,
+faultmaven-dashboard and faultmaven-slack-agent, and none of them calls
+`/readiness` — it is a kubelet probe path, and as of this change not even
+the kubelet points at it (both production probes are on `/health`, which
+this PR deliberately leaves at 200 always; see its handler docstring for
+why a liveness probe must not fail on a dependency). So the question the
+clients are being asked — "can this break you" — has a measured answer of
+no. A reviewer who reads an undeclared probe response as part of the
+contract should have made this a MAJOR; the fact it turns on is stated above
+rather than buried, so that call can be made without re-deriving it. (That
+note named 8.0.0 when written — 8.0.0 has since been published for an
+unrelated removal, so read it as "the next major", not as a pointer.)
+
+`/health` is unchanged in the contract: still 200, and its only edit is the
+docstring that says so on purpose.""",
+    ),
+    ContractChange(
+        version="7.0.0",
+        level="MAJOR",
+        title=(
+            "Four published operations that admitted an anonymous caller now refuse "
+            "one, and a query FILTER that let a caller name whose sessions to list is "
+            "REMOVED (#1447 §1/§2). A caller that succeeded with no credential "
+            "yesterday gets 401 today, which is the definition of the bump."
+        ),
+        body=r"""  * `GET /api/v1/sessions` gains `require_authentication` AND loses its
+    `user_id` QUERY PARAMETER. It took no auth dependency at all and accepted
+    that parameter as a filter, so an anonymous caller could name a user and
+    read back their session ids — and, unfiltered, EVERY session id with the
+    identity it is bound to. Whose sessions are listed is now the caller's
+    own id and nothing else.
+  * `GET /api/v1/sessions/{session_id}` gains `require_authentication` and a
+    `session.user_id != current_user.user_id` → **403** ownership check. It
+    published that session's `user_id` to anyone who knew the id.
+  * `DELETE /api/v1/sessions/{session_id}` gains the same pair. It was the
+    one with a write effect: an unauthenticated caller who learned a session
+    id could destroy it.
+  * `GET /admin/optimization/trigger-cleanup` is REMOVED.
+  * `POST /admin/optimization/trigger-cleanup` is ADDED, gated by
+    `require_platform_admin`. Same handler, and the two bullets are one
+    change — but spelled as a removal and an addition, because that is what a
+    client sees and what a differ reports. 5.0.0 and 6.0.0 each give their
+    removals their own line; naming this one only by its old verb inside a
+    "becomes" sentence would hide a removal inside a change list. Not a
+    session route, and that is the point — see below.
+
+THIS WAS LIVE, NOT A HARDENING, and the correction matters because 6.0.0's
+own entry got it wrong. That entry deferred `GET /api/v1/sessions` to "the day
+`RedisSessionStore.list_sessions()` stops being a stub" and was corrected in
+place; the stub is one of TWO implementations. `MinimalSessionService`
+(`_container_impl._create_minimal_session_service`) ships a working
+`list_sessions` with the `user_id` filter, and `create_session_service`
+installs it whenever the real service cannot be constructed — "Reachable in
+PRODUCTION, not only under test", in its own docstring — as does
+`_create_minimal_container()` outright. Measured over ASGI against that
+service with no `Authorization` header, two sessions minted for two users:
+
+    GET /api/v1/sessions?user_id=<victim>  -> 200  that user's session id
+    GET /api/v1/sessions                   -> 200  every session id + user_id
+    GET /api/v1/sessions/<victim session>  -> 200  its bound user_id
+    DELETE /api/v1/sessions/<victim session> -> 204  and the session was gone
+
+The same four calls answer 401 on this contract. Cloud fails the boot rather
+than degrading (`settings.must_not_degrade`), so the exposure was self-hosted,
+where the API publishes 8090 on `0.0.0.0` with no proxy in front of it.
+
+WHY THE FILTER IS REMOVED RATHER THAN IGNORED, which is the smaller-looking
+repair and the wrong one. Once the route forces `user_id =
+current_user.user_id`, the parameter's only legal value is one the server
+already holds: every accepted request would carry redundant information and
+every rejected one wrong information, so the parameter can no longer say
+anything. That is 6.0.0's argument for removing the IDENTICAL parameter from
+`POST /api/v1/sessions` one route over, and it transfers without amendment.
+The runtime behaviour is the same either way — FastAPI ignores an undeclared
+query parameter — so what removal buys is a document that stops publishing a
+filter that does nothing, which is the defect class 5.0.0 exists to close.
+
+THE GATES ARE ROUTE-LEVEL DEPENDENCIES, NOT ONLY HANDLER PARAMETERS, and that
+is the difference between a refusal and a 500. FastAPI solves a dependant's
+dependencies in DECLARATION ORDER, and every route on this router declared
+`session_service` before `current_user` — so on a deployment whose Composition
+Root had not populated `app.state.session_service`, the service's bare
+attribute read raised before the auth dependency ran and an unauthenticated
+caller received `500 Internal Server Error`: a pre-auth availability oracle on
+the very routes this entry is about. Measured, and fixed by moving the gate
+into `dependencies=[...]`, which is solved before the handler's own
+parameters. The `current_user` parameter stays where the handler needs the
+principal — FastAPI caches a dependency per request — and the ordering is now
+asserted on a service-less app, because "declared in the right order" is not
+a property anything else would check. Applied to all six authenticated routes
+on the router, including the three that already had auth before this change.
+
+THE OWNERSHIP REFUSAL IS 403, NOT 404, and it is copied rather than designed:
+`PUT /sessions/{id}`, `POST /sessions/search` and `POST
+/sessions/{id}/archive` have carried `require_authentication` plus
+`raise HTTPException(status_code=403, detail="Not authorized to ...")` all
+along. The four routes here were not brought along with them; making the
+stragglers answer differently from their siblings would have been a second
+defect dressed as a fix. A 404-first ordering is likewise the siblings'
+(absent session → 404, then the ownership check), so an authenticated caller
+can still distinguish "no such session" from "not yours" — a pre-existing
+property of this router, unchanged here, and not one the anonymous caller
+this entry is about ever reaches.
+
+WHAT IS DELIBERATELY NOT IN THIS CHANGE, and it is the same two routes 6.0.0
+deferred for the same reason, now with a ticket of their own (#1460):
+
+  * `POST /api/v1/sessions` — the mint — still takes
+    `get_current_user_optional`. `getAuthHeaders()` in faultmaven-copilot
+    returns headers WITHOUT `Authorization` when `transport.accessToken()`
+    stumbles ("the request goes out unauthenticated", in its own comment),
+    and `client.ts` treats a 401 on a credential-less request as the
+    RECOVERABLE path and re-mints. Compose the two and requiring auth here is
+    a mint → 401 → re-mint loop in the field. That is the case
+    `docs/development/api-contract-changes.md` calls the one that cannot
+    expand: client tolerant first, confirmed deployed, server after.
+  * `POST /api/v1/sessions/{session_id}/heartbeat` — still open, and this one
+    was DECIDED rather than inherited. Its only production caller is
+    `heartbeatSession` in faultmaven-copilot (which the Dashboard runs too,
+    via `@faultmaven/copilot-ui`); it deliberately avoids `authenticatedFetch`
+    and its failure is swallowed as non-fatal, so a 401 would neither loop nor
+    sign anyone out. What stops it shipping here is the mint: while the mint
+    is anonymous-capable, anonymously-minted sessions exist, `CopilotPanel`
+    mints unconditionally at mount, and sign-IN does not re-mint — so a
+    signed-in user can hold an anonymously-minted session and would be refused
+    403 forever, silently, losing the keep-alive the route exists to provide.
+    A quiet permanent degradation is a worse thing to publish than a loud one.
+
+A FALSY CALLER ID IS NOT A SCOPE, and that is the second half of the listing
+fix rather than a hardening beside it. Forcing `user_id = current_user.user_id`
+closes the anonymous hole and leaves a narrower one, because the shape both
+session services expose is a FILTER, not a scope:
+`if user_id: [filter] else: return everything`. A caller whose id is falsy
+therefore receives the whole table — session ids and the identity each is
+bound to, which is the §1 payload behind a 200 instead of an anonymous call.
+The repository already knew the shape by name: `_container_impl.py` records
+"`CaseService.get_case` writes `if user_id and ...`, so an empty-string caller
+id takes the unscoped path there." It reaches past sessions —
+`case_scope_where(params, "")` returns None, dropping the owner clause
+entirely, which is the cross-tenant platform-admin path's own return value
+reached by an ordinary caller.
+
+Three layers, because no one of them is the whole answer:
+
+  1. `AuthService.verify_token` refuses a token whose `sub` names no subject.
+     THIS IS THE ROOT, and it sits one line from where the gap was: PyJWT's
+     `require` list above it asserts the claim is PRESENT, so presence and
+     content are now decided together rather than one inferred from the
+     other. It is the SINGLE POINT because every path that turns a token into
+     a principal reads the claims this method returns — the two
+     `AuthenticatedUser` constructions in `auth_service`, `DevUser` in
+     `api/v1/auth_dependencies`, the tenant binder, and idempotency keying.
+
+     The two PRINCIPAL CONSTRUCTORS keep guards of their own as a second
+     layer. N was 2, and one was unguarded: `AuthenticatedUser.from_jwt_claims`
+     read `claims.get("sub", "")` — defaulting a missing subject to the value
+     every scope check reads as "no owner" — and it serves
+     `api/middleware/auth.get_current_user`, hence the admin routers and
+     `api/routes/sessions.py`. The inventory of `jwt.decode` sites is pinned
+     at 10 in `tests/unit/modules/auth/test_subject_is_an_identity.py` with
+     exactly one classified PRINCIPAL, so a second principal source cannot be
+     added without saying so — which is how "the single point" would
+     otherwise quietly stop being single.
+
+  2. `GET /api/v1/sessions` and `POST /api/v1/sessions/search` refuse a
+     principal with a blank id anyway, so a future identity path cannot
+     reopen this quietly; search needed it for the same reason, forwarding the
+     same id to the same filter. The refusal is byte-identical to
+     `require_authentication`'s, so a subject-less credential learns "not
+     authenticated" rather than "your token's shape was the problem". It
+     REFUSES without NORMALISING: the id it returns is the principal's own
+     bytes, because the four sibling ownership checks on that router compare
+     unstripped, and a scope that stripped while they did not would answer a
+     padded caller an empty listing while its per-session routes still worked.
+
+  3. Both `list_sessions` implementations key on `is not None` rather than
+     truthiness, so a filter that was SUPPLIED is honoured literally. `None`
+     still means "all" — that is the maintenance API several callers use.
+
+HOW REACHABLE IS IT, stated exactly rather than rounded up, because the answer
+changes how this reads. PyJWT's `require` list asserts a claim is PRESENT, not
+that it says anything: measured on PyJWT 2.13.0, `sub: ""` decodes clean and
+arrives as an empty string, while `sub: null` and an absent `sub` are both
+refused — the control showing `require` works, and what it works on. What
+could NOT be established is a path by which a caller WITHOUT the signing key
+obtains such a token: every mint reads `user.user_id` off a persisted row, and
+no route was found that produces an empty one. So this is a fail-open on a
+value the system has no known way to produce — not a second live enumeration —
+and it is fixed because one `if` stands between "the caller's sessions" and
+"everyone's", which is too little to leave resting on an unproven scarcity.
+
+`/admin/optimization/trigger-cleanup` IS IN THIS CHANGE THOUGH IT IS NOT A
+SESSION ROUTE, because the root #1447 names is not about sessions: there is no
+global authentication gate, every route is individually responsible for its
+own auth, and nothing tells you when one forgets. That route forgot. Declared
+on `app` directly in `main.py` rather than on one of the admin routers where
+`require_platform_admin` is the house rule, it let an anonymous caller drive an
+aggressive resource cleanup and a full `gc.collect()` on the running API — a
+write effect and a denial-of-service lever, not a disclosure. It was found by
+the guard this change installs, on the commit that installs it, which is the
+argument for the guard. No client calls it: outside `main.py` the only
+occurrences of the path are the generated `api.generated.ts` declarations in
+faultmaven-copilot and faultmaven-dashboard, and a declaration is what a
+generator emits, not what a client sends.
+
+IT ALSO STOPS BEING A `GET`. The method was part of the defect rather than a
+detail beside it: a GET is prefetchable by a browser or a link scanner,
+followable by a proxy, and replayable from history, and this operation runs an
+aggressive resource cleanup and a full `gc.collect()` on the live API.
+Publishing a non-safe operation under a safe verb invites exactly the
+accidental trip an operator lever must not have. Doing it now costs nothing —
+the bump is MAJOR already and nothing sends it — and doing it later would cost
+a deprecation cycle. The gate is a router-level `dependencies=[...]` rather
+than an unused handler parameter, matching the OAuth and SSO rate limiters:
+what the route needs from `require_platform_admin` is the refusal, not the
+principal. The emitted `security` is the same either way.
+
+WHAT IT DOES NOT GAIN IS AN AUDIT ROW, and that is a decision rather than an
+omission. `operator_access_audit`'s vocabulary is a closed four: `LIST` and
+`CONTENT_OPEN` (operator reads of TENANT DATA — the D8/D9 boundary) and
+`ROLE_GRANTED` / `ROLE_REVOKED` (changes to who is an operator). Its own
+docstring reads the enum as "operator events, of which data access is two".
+This route reads no tenant data and grants no role, so a row would mean
+inventing a fifth member and widening the table to "every platform-admin
+action" — a decision about what the trail is FOR, which should not be taken as
+a side effect of adding a gate. Its neighbours agree: the four
+`require_platform_admin` routes in `api/routes/admin_config.py` write no audit
+row either.
+
+THE GUARD. `tests/integration/api/test_no_unauthenticated_operations.py` reads
+the committed `docs/reference/api/openapi.json`, collects every operation that
+declares no `security`, and diffs it against a committed allowlist carrying a
+reason per entry. It fails in BOTH directions — an unlisted open operation is
+an unreviewed one, and a listed operation that has since gained auth is a
+stale entry, which is a green test asserting nothing. The two routes deferred
+above are listed as `_DEFERRED` carrying #1460, so closing them turns the
+guard red and forces the entries out. It is the first thing in this repository
+that asks whether an operation is ALLOWED to be open; the two existing
+implementations of the neighbouring rule
+(`tests/integration/api/test_openapi_documents_auth.py` and
+`tests/unit/modules/case/api/test_session_is_not_identity.py`) both ask
+whether a route that requires auth SAYS SO, which is a different question and
+is why this class was found by reading rather than by CI.
+
+THE GUARD'S OWN BLIND SPOT WAS BIGGER THAN IT FIRST CLAIMED, and the answer is
+reach rather than a narrower claim. It delegated "served but not documented"
+to two sibling guards, and both build their app under the generator's pinned
+`ENVIRONMENT=production` — which exists precisely to exclude the debug router
+— so a route that mounts only outside production is missing from their route
+tables too, and their counts agree about it vacuously. Measured under
+`ENVIRONMENT=development`, the shipped default: `/debug/routes`,
+`/debug/health`, `/debug/config` and `/debug/llm-providers` WERE served with
+no auth dependency, and `GET /debug/config` answered an anonymous caller 200
+with a six-key configuration summary. Past tense since #1474 closed them with
+`require_platform_admin`; the entry stays because it is what this version
+number records, and a changelog that silently acquires today's behaviour is
+not one.
+
+They are covered now by the same rule applied to the served app rather than to
+the artifact. Asserting the gate those entries lean on corrected a second
+mistake: `_is_debug_enabled()` is a DISJUNCTION — `env in (development,
+testing, test) OR enable_debug_endpoints` — so `ENABLE_DEBUG_ENDPOINTS=true`
+mounts the router IN PRODUCTION. A test that varied only `ENVIRONMENT`
+asserted "absent in production", which is false on exactly the flag that
+matters. Both halves of the real property are asserted now: production is
+closed by DEFAULT, and the way past it is one named operator switch. The
+allowlist's reasons say that and no more.""",
+    ),
+    ContractChange(
+        version="6.2.0",
+        level="MINOR",
+        title=(
+            "`GET /api/v1/auth/config` gains TWO booleans on the `oauth` block: "
+            "`supports_screen_hint` (does `hosted_login_url` honour the `screen_hint` "
+            "added in 6.1.0) and `self_service_signup_enabled` (can a person with no "
+            "account actually finish). Additive; a client that ignores them is "
+            "unaffected."
+        ),
+        body=r"""They are separate because they are different facts and conflating them
+builds a dead end one step further down. A deployment can forward the hint
+perfectly while self-service sign-up is off — the shipped default — in
+which case an org-less identity reaches the sign-up screen, completes it,
+and is refused at the callback with `sso_org_unmapped` (ADR-017 / #1045).
+A client gating a "create an account" control on the hint alone would send
+someone through a form to an error. Offer the control only when BOTH are
+true.
+
+It exists because 6.1.0 shipped a capability clients could not detect, and
+that cost something immediately. faultmaven-dashboard#161 added a "Create an
+account" button alongside "Sign In", merged, and deployed against an API
+that did not yet have 6.1.0 — which accepts an unknown query parameter,
+drops it, and serves the sign-in screen. The result was two buttons doing
+exactly the same thing, with no signal anywhere that anything was wrong:
+every test in three repositories was green, and the only way to tell was to
+send a deliberately invalid value and see whether it 422'd.
+
+So the capability is advertised rather than inferred. This is the same rule
+the Dashboard already applies to the browser extension (ADR-019:
+"CAPABILITIES beat the version", "the Dashboard DEGRADES, never requires") —
+it simply had not been applied to the backend it talks to.
+
+`False` by default, not `Optional[bool]`. An older API sends no such field,
+and absent must read as "no": a client treating a missing value as
+unknown-therefore-fine renders the dead control again, which is the whole
+failure being closed.""",
+    ),
+    ContractChange(
+        version="6.1.0",
+        level="MINOR",
+        title=(
+            "`GET /api/v1/auth/sso/login` accepts an optional `screen_hint` query "
+            "parameter, `sign-in | sign-up`. Omitted, the request is byte-identical to "
+            "before, so every existing client survives untouched."
+        ),
+        body=r"""It exists because a hosted login opens on its SIGN-IN screen by default, and
+self-service sign-up went live with the ADR-017 cutover. A first-time visitor
+following "try it" from the marketing site was therefore shown a form asking
+for an account they do not have, with a sign-up link somewhere on it — which
+is the defect faultmaven-website#42 describes, and the reason it was blocked
+on fm#1045 until that landed.
+
+The parameter is a `Literal`, not a string, and the reason is worth stating
+precisely because the obvious one is wrong: it is NOT injection. The shipped
+WorkOS adapter urlencodes its parameters, so a free string could not append
+query material to the authorization URL. It is closed because only two values
+mean anything to the IdP — a third is a caller's bug, and forwarding it
+silently would surface as "the hint does not work" rather than as a 422 at
+the caller — and because the accepted values of a published parameter are
+part of the contract clients read.
+
+It chooses a screen and nothing else. It is not persisted with the login
+state and is not consulted on the callback leg, because whether an account
+may be created is the IdP's and the sign-up policy's decision — a hint that
+could move that would be an authorization parameter taking instructions from
+the query string.
+
+Adopted by faultmaven-dashboard in the same batch (a `/signup` route that
+hands off with the hint). faultmaven-copilot and faultmaven-slack-agent do
+not call this endpoint.""",
+    ),
+    ContractChange(
+        version="6.0.0",
+        level="MAJOR",
+        title=(
+            "Two REMOVALS that together close one gap: a caller could name the "
+            "identity a session was minted for, and then spend that session id as "
+            "proof of it."
+        ),
+        body=r"""  * `POST /api/v1/sessions` loses its `user_id` QUERY PARAMETER. It resolved
+    FIRST — the handler read `if not user_id: <consult the bearer>`, so a
+    supplied value won unconditionally and the authenticated user was never
+    looked at, let alone compared. The docstring called it "Priority 1:
+    `user_id` query parameter (explicit override)" one line above a comment
+    claiming Priority 2 "prevents anonymous session creation"; both were
+    published, and the first was true.
+  * `POST /api/v1/cases/sessions/{session_id}/case` is REMOVED. It took
+    `get_current_user_optional` and resolved
+    `user_id = current_user.user_id if current_user else session.user_id`, so
+    with no `Authorization` header the owner of the created case came from
+    the session id in the path. Its 401/503/500 arms are gone with it
+    (#1398), as is `AuthSessionService.get_user_from_session`, which had zero
+    callers in `faultmaven/` and a docstring advertising exactly this use.
+
+ONE bump, because they are one chain. Separately each is a smell; together
+they are a two-step to writing cases under a chosen identity with no
+credential at all — mint a session naming the victim, then present that
+session id. Severity is HIGH self-hosted, where the API publishes 8090 on
+0.0.0.0 with no proxy in front of it; MEDIUM in cloud. It is
+write-with-forged-attribution and identity confusion, NOT exfiltration:
+there is no unauthenticated path to READ another user's case or KB content,
+because every read route scopes at the repository layer.
+
+WHY REMOVE THE PARAMETER RATHER THAN CONSTRAIN IT. The obvious repair is to
+keep `user_id` and reject it when it disagrees with the bearer. But then its
+only legal value is one the server already holds, so every accepted request
+carries redundant information and every rejected one carries wrong
+information — the parameter can no longer say anything. That is not a
+hardening, it is a parameter with no remaining purpose, kept alive to be
+validated. It is also how this got here: the parameter was presumably added
+when the server could not yet see the bearer, and it outlived the reason.
+The same argument does not reach the ROUTE, which had a purpose; see below.
+
+WHY REMOVE THE ROUTE RATHER THAN REPAIR IT. Repairing it means
+`require_authentication` plus dropping the session fallback — and what
+remains then does nothing `POST /api/v1/cases` does not already do: that
+route accepts the same `session_id`, validates it against the same session
+service, requires a bearer, and creates the case with
+`owner_id=current_user.user_id`, writing the same
+`session:{id}:current_case_id` pointer. What the removed route added over it
+was get-or-create and `force_new` — reachable only by a caller who already
+holds the session id, and called by nothing. A second door to case creation
+that no client opens is what 4.0.0 and 5.0.0 have been closing.
+
+Repair would also have left the route half-gated. With a bearer required but
+no `session.user_id != current_user.user_id` check, an authenticated caller
+naming somebody else's session still retargets that session's
+`current_case_id` pointer — the identical defect #1390/#1393 fixed one route
+over, on `POST /cases/sessions/{id}/resume/{case_id}`.
+
+AND POINTING CALLERS AT `POST /api/v1/cases` DID NOT ANSWER THAT, because
+that route HAD THE SAME DEFECT. It took `session_id` from the body, asked
+only `if not session: 401`, and handed the id to `CaseService.create_case`,
+which writes the pointer — so the argument above ("what remains does nothing
+`POST /api/v1/cases` does not already do") was true of the retarget as well.
+Removing one door while the surviving one stands open is not a fix, it is a
+relocation. So the gate is ADDED to `create_case` in this same change, and
+only then does the removal answer the half-gating without a third copy of
+the two-gate rule. The gate mirrors the resume route's: `get_session` may
+RAISE rather than return None (`ServiceException("Session store not
+configured")`, or `SessionStoreException` for a configured-but-unreachable
+store — two families, one meaning), and an unevaluable gate answers 503
+rather than the 500 it used to; "no such session" and "not yours" answer
+identically, as this route's existing 401 SESSION_EXPIRED, because the first
+was already published here and the two must not be distinguishable. It is
+resolved BEFORE the service is called, because the pointer write is inside
+`create_case` and ahead of its own `repository.save`, so a later refusal
+would leave the retarget done.
+
+`CaseCreateRequest.session_id`'s DESCRIPTION changes with it: it said
+"Session ID for authentication and case association", which is the exact
+claim this entry exists to retire. Prose only — `check_contract_version.py`
+strips descriptions before comparing, so it moves no version — but it is
+published to every client that regenerates its types, and leaving it would
+have shipped the contradiction inside the fix.
+
+THE CLIENT-FIRST EVIDENCE, gathered before either removal rather than assumed
+(`docs/development/api-contract-changes.md`: "Never remove something still
+being read"; "Nobody should still be using it" is not evidence). What was
+checked, in all four client repositories:
+
+  * The `user_id` query parameter. faultmaven-copilot posts to
+    `/api/v1/sessions` from ONE place,
+    `packages/copilot-ui/lib/session/client-session-manager.ts`, with a JSON
+    body and NO query string; the Dashboard reaches the same code through the
+    shared package. Both repositories' `api.generated.ts` DECLARE the
+    parameter (`create_session_api_v1_sessions_post.parameters.query.user_id`)
+    and nothing populates it — a declaration is what a generator emits, not
+    what a client sends. Neither faultmaven-slack-agent nor
+    faultmaven-website posts to the route at all — the slack agent's
+    `faultmaven/client.py` reaches `/api/v1/cases` and
+    `/api/v1/cases/{id}/turns` and no session route.
+    It is not a field on `AuthSessionCreateRequest`, so no body
+    carries it either: `tests/load/locustfile.py` puts `user_id` in the JSON,
+    where Pydantic's default `extra='ignore'` has always dropped it. No test
+    in this repository passes it as a query parameter.
+  * The removed route. Case creation goes through `POST /api/v1/cases` in
+    both clients that create cases — `packages/copilot-ui/lib/api/services/
+    case-service.ts` and faultmaven-slack-agent's `faultmaven/client.py`. The
+    only occurrences of `cases/sessions` in either frontend are the generated
+    type declarations; there is no runtime caller in any of the four repos.
+
+WHAT IS DELIBERATELY NOT IN THIS CHANGE. `POST /api/v1/sessions` still does
+not require authentication, and that is not an oversight — adding it is a
+COORDINATED two-repository release, not a server fix. `getAuthHeaders()` in
+faultmaven-copilot (`packages/copilot-ui/lib/api/fetch-utils.ts`) catches a
+failed `transport.accessToken()`, logs a warning and returns headers WITHOUT
+`Authorization` — "the request goes out unauthenticated", in its own comment
+— so a signed-in user whose token refresh stumbles mints header-less today
+and the server rescues them anonymously. `client.ts` then treats a 401 with
+no credential as the RECOVERABLE path and re-mints rather than signing out,
+deliberately, citing copilot issue #99. Requiring auth at the mint converts
+that silent rescue into a retry loop in the field.
+
+The remaining unauthenticated session routes are filed as #1447, and ONE of
+them is not a future hazard. `GET /api/v1/sessions` declares no auth
+dependency at all and accepts a `user_id` FILTER, and the enumeration it
+performs is already live — not, as this entry first claimed, pending "the day
+`RedisSessionStore.list_sessions()` stops being a stub". That store's stub is
+only one of two implementations. `MinimalSessionService`
+(`_container_impl._create_minimal_session_service`) ships a WORKING
+`list_sessions`, filtered by `user_id`, and `create_session_service` installs
+it whenever the real service cannot be constructed — "Reachable in
+PRODUCTION, not only under test", in its own docstring — as does
+`_create_minimal_container()` outright. Measured on that path with no
+`Authorization` header: `GET /api/v1/sessions?user_id=<victim>` returns that
+user's session ids, and the unfiltered call returns EVERY session id with the
+user it is bound to. By this entry's own thesis a session id is worth
+something on its own, so that is a list of credentials and of the identities
+they carry. Cloud fails the boot rather than degrading
+(`settings.must_not_degrade`), so the exposure is self-hosted. Re-filed at
+that severity in #1447 rather than fixed here: it is a different route on a
+different router.
+
+‼ CORRECTED AGAIN, by 7.0.0. This entry went on to say the listing "needs the
+same coordinated release the mint does", and that is wrong for the same
+reason the "stops being a stub" claim above it was: it was inherited from the
+mint rather than checked against the listing. The coupling is a property of
+the MINT — `getAuthHeaders()` sends header-less on a stumbled refresh and
+`client.ts` re-mints on a credential-less 401 — and no client calls
+`GET /api/v1/sessions` at all, in any of the four client repositories. So it
+needed no coordination and 7.0.0 closed it outright. Corrected in place
+rather than left standing, on this entry's own precedent: a wrong deferral
+reads as a decision somebody made.""",
+    ),
+    ContractChange(
+        version="5.0.0",
+        level="MAJOR",
+        title=(
+            "Five published operations that do nothing they claim are REMOVED from the "
+            "session router, along with the request model one of them required (#1425, "
+            "#1431). One bump, because they are one defect wearing five hats, and a "
+            "client should adopt the answer once."
+        ),
+        body=r"""  * `GET /api/v1/sessions/{session_id}/cases`. CLAIMED: this session's cases,
+    narrowed by `include_empty`, `include_terminal` and `include_deleted`.
+    DID: `case_service.list_user_cases(current_user.user_id, filters)` — the
+    bearer's cases, under its own comment reading `Architecture: Session →
+    User → User's Cases (indirect relationship)`. The same rows
+    `GET /api/v1/cases` returns, minus `state`, `source`, `team_id` and the
+    creation-date window, which this route never accepted.
+  * `POST /api/v1/sessions/{session_id}/restore`. CLAIMED: `"status":
+    "restored"`, a message naming the restoration type, and an
+    `items_restored` count. DID: loaded the session, 404'd if absent, mutated
+    NOTHING, and reported success (#1425).
+  * `GET /api/v1/sessions/{session_id}/recovery-info`. CLAIMED:
+    `can_restore: true`, `backup_available: true`, `data_integrity: "good"`,
+    three `restoration_options` all true. DID: returned those as literals.
+    There is no backup.
+  * `GET /api/v1/sessions/{session_id}/stats`. CLAIMED: per-session query,
+    upload, heartbeat and stats-request counts, plus a latest confidence
+    score. DID: counted `session.case_history`, which is always empty (below).
+  * `POST /api/v1/sessions/cleanup`, BOTH definitions of it — the route was
+    declared twice in one file, and that is its own entry below.
+  * `SessionRestoreRequest`, the schema `restore` took. Its `restore_point`
+    was `Field(..., min_length=1)`: REQUIRED, validated, and read by nothing.
+
+`restore` AND `stats` REST ON A LIST THAT IS ALWAYS EMPTY, and this is what
+turns #1425 from a dead field into a dead endpoint. `AuthSession.case_history`
+and `.data_uploads` are initialised to `[]` by the Redis store and NOTHING IN
+THE REPOSITORY EVER APPENDS TO EITHER. There is no `add_case_history` and no
+`add_data_upload` anywhere — the two call sites that reach for
+`session_manager.add_case_history` guard with `hasattr` and have always found
+nothing — and `AuthSessionService.update_session` names both in its
+`forbidden_fields` set, so a caller cannot write them either. The consequences
+are worse than the issues report: `items_restored` was not "a count of items
+the session already had", it was `{0, 0}` on every call in the product's
+history, and every statistic `/stats` published was likewise always zero. The
+endpoints did not degrade; they never worked.
+
+THE ALWAYS-ZERO REPORTING DID NOT STOP AT `/stats`, and the sweep was not
+finished until it did. `GET /sessions/{session_id}` published
+`metadata.data_uploads_count` and `metadata.case_history_count`, and
+`GET /sessions` the same pair per row — `len()` of the same never-appended
+lists, so always 0, on two operations this change KEEPS. Removing `/stats`
+for always-zero statistics while leaving those two would have left a client
+the same wrong conclusion on an endpoint it has more reason to call. They are
+gone, and no published schema moves with them: `SessionResponse.metadata` is
+`Optional[Dict[str, Any]]` and the list route declares no `response_model`.
+The dead `add_case_history` block went from `session_heartbeat` for the same
+reason — the guard has always been False, and it was doing the work on the
+busiest route on the router.
+
+WHY DELETE RATHER THAN RETURN 501, which #1425 offered as its third option.
+501 keeps a promise alive, so it is worth something only if the promise has a
+referent. Session restoration has none. The nearest thing in the codebase was
+`CaseCheckpoint`, and it was a different noun: a snapshot of a CASE, with no
+session dimension at all. It was written and never read, so it could not
+restore a session even if a session were the thing it snapshotted (case
+checkpoints were retired in #1882 for that reason). A 501 here would be a
+promise pointing at nothing, which is the same defect this entry is about
+with a different status code.
+
+THE CASES ROUTE HAD THREE FAULTS, NOT ONE, and each alone would have been a
+reason to change it:
+
+  1. `include_terminal` and `include_deleted` were handed to `CaseListFilter`,
+     which declares neither and sets no `model_config`, so Pydantic's default
+     `extra='ignore'` dropped both without a word (#1431) — the identical
+     mechanism as 4.0.0's `include_archived`, one route over. The seventh
+     recorded instance of this defect class.
+  2. It never compared `session.user_id` to `current_user.user_id`. It 404s on
+     a session that does not exist and answers for one belonging to somebody
+     else — harmlessly, because it ignores the session entirely, which is the
+     only reason this is a design smell rather than a disclosure.
+  3. Its outer handler turned EVERY exception into `200 []` with
+     `X-Total-Count: 0`, "for robustness per OpenAPI requirement". A failed
+     case lookup was indistinguishable from an empty account.
+
+It also imported `SessionCasesResponse` and never used it — the route carried
+no `response_model` and returned a bare `JSONResponse` list, so the one schema
+describing its own shape was dead on arrival. That model is deleted with it;
+it had no other importer and was never in the published document.
+
+`POST /api/v1/sessions/cleanup` WAS DEFINED TWICE, and the two halves of the
+system disagreed about which one existed. Starlette matches in registration
+order, so the FIRST definition served every request; FastAPI's OpenAPI
+generator writes each path once and the LAST writer wins, so the document
+published the SECOND — its `operationId` (`cleanup_expired_sessions_v2`), its
+summary and its description ("admin/testing endpoint ... In production, this
+runs automatically every 30 minutes"). The served handler is the other one,
+and it returns a `timestamp` the documented one does not. A client generating
+an operation from this contract named a handler that never ran.
+
+`api-contract-drift` COULD NOT SEE THAT, and the reason is structural rather
+than an oversight: the check regenerates the document and diffs it, and the
+document IS `app.openapi()`. Both sides of the comparison come from the same
+generator, which has the same last-writer-wins blind spot, so a shadowed route
+is invisible to it by construction. `ruff` does flag the shadowing — `F811
+Redefinition of unused 'cleanup_expired_sessions'` — but CI runs
+`ruff check --select E9,F63,F7,F82,I`, and F811 is not in that set. The rule
+that would have caught it was there all along, switched off.
+
+BOTH DEFINITIONS GO, rather than one surviving. The operation is
+unauthenticated, has no client caller in any of the three repositories, and
+deletes nothing Redis has not already dropped: sessions are stored with a TTL
+(`redis_session_store`, `ex=ttl`), and `cleanup_expired_sessions` walks the
+store deleting rows whose `expires_at` has passed — rows the TTL has evicted.
+Keeping one would mean choosing which of two identical bodies is canonical and
+publishing an unauthenticated maintenance verb to justify the choice.
+
+WHAT REMOVING THEM EXPOSED, and it is not a regression this change caused.
+`AuthSessionService.cleanup_expired_sessions` now has NO CALLER — the two
+routes were the only ones. The method was kept rather than deleted with them,
+because the missing caller is the actual defect: `SessionSettings`
+declares `cleanup_interval_minutes` (default 15, bound to
+`SESSION_CLEANUP_INTERVAL_MINUTES`) and **no scheduler, task or loop reads
+it**. Its only reader is a `field_validator` that REFUSES TO START the app
+when the interval exceeds `SESSION_TIMEOUT_MINUTES`, on the stated ground
+that "Cleanup should run at least as often as session expiration" — a
+startup constraint enforcing a cadence for a pass nothing schedules, so an
+operator who tunes this knob can be denied a boot over a loop that does not
+exist. Measured: `SESSION_CLEANUP_INTERVAL_MINUTES=60` on its own makes
+`FaultMavenSettings()` raise rather than construct.
+
+AND THAT LONE READER MIS-KEYS ITS OWN COMPARISON. `validate_cleanup_interval`
+falls back to `values.get("timeout_minutes", 180)`, but that field has
+declared `default=30` for its entire history, and the sibling validator five
+lines above (`validate_heartbeat_vs_timeout`) reads the same field with 30.
+The fallback is reached only when `timeout_minutes` is absent from
+`info.data`, which — Pydantic validating in declaration order, that field
+declared first — means only when it FAILED its own `ge=1, le=1440` or parsed
+as a non-integer. Merely leaving it unset delivers the default, so the
+refusal above is genuinely keyed to `SESSION_TIMEOUT_MINUTES` on every boot
+that could otherwise have succeeded. What the stray 180 corrupts is the
+DIAGNOSTIC on a boot already failing for another reason, and it corrupts it
+in both directions: measured, `SESSION_TIMEOUT_MINUTES=2000` with the
+interval at 200 reports "should not exceed SESSION_TIMEOUT_MINUTES (180)",
+naming a timeout the operator never set; at interval 60 the cleanup error
+vanishes entirely, where the sibling's constant would have raised it. Left
+alone here deliberately: this entry is prose, and correcting the constant
+adds errors to runs that today report one — a behaviour change owed its own
+diff. The deleted v2 route's own description asserted "In production,
+this runs automatically every 30 minutes", which was false in two ways at
+once. The project has the machinery (`infrastructure/tasks/case_cleanup.py`
+runs a `BackgroundScheduler` for cases); it was never wired to sessions, and
+`cleanup_inactive_sessions` beside it runs only from the lifespan SHUTDOWN.
+Redis expiry covers the shipped configuration, which is why this is a gap
+rather than an outage — a non-Redis store would never expire a session. The
+scheduler is deliberately NOT built here: it is a behaviour change with its
+own blast radius and belongs in its own change, and the method stays so that
+change has something to call. This is the same defect class as the rest of
+this entry, one level up: declared in configuration, accepted, never applied.
+(Later, #2297 removed `cleanup_expired_sessions` and `cleanup_inactive_sessions`:
+the store's listing they walked was a stub, so neither could ever read a
+session, and Redis TTL expires sessions. #2301 then removed
+`cleanup_interval_minutes` and its validator: nothing scheduled on it.)
+
+THE CLIENT-FIRST STEP WAS ALREADY SATISFIED, and here is the evidence rather
+than the assertion. `docs/development/api-contract-changes.md` orders a REMOVE
+client-first, so all three client repositories were grepped for every removed
+path, for `SessionRestoreRequest`, and for `restore_point` / `recovery-info` /
+`include_terminal` / `include_deleted`, excluding the generated artifacts —
+`src/types/api.generated.ts` and `faultmaven/api_generated.py` are outputs of
+this contract, not callers of it:
+
+  * faultmaven-dashboard makes NO hand-written call to `/api/v1/sessions` at
+    all. Its only trace of any removed operation is the generated types file.
+  * faultmaven-copilot calls exactly two session routes, both of which survive:
+    `POST /api/v1/sessions` (`packages/copilot-ui/lib/session/client-session-manager.ts`)
+    and `POST /api/v1/sessions/{id}/heartbeat`
+    (`packages/copilot-ui/lib/api/services/session-service.ts`). Its e2e mock,
+    playground stub and API tests mirror those two and nothing else.
+  * faultmaven-slack-agent makes no session call. `SessionRestoreRequest`
+    exists in its `api_generated.py` and nowhere else.
+
+WHAT THIS EVIDENCE IS NOT, stated deliberately rather than left implied.
+`docs/development/api-contract-changes.md` sets a higher bar for a REMOVE
+than a grep: "Count arrivals of the old form — a Prometheus counter on
+requests in the legacy shape — and contract when it reads zero across a full
+deploy cycle of every client. 'Nobody should still be using it' is not
+evidence." That was NOT done here, and the gap is widest exactly where it
+matters: FOUR of the five removed operations were unauthenticated
+(`restore`, `recovery-info`, `stats`, `cleanup`), so their plausible callers
+— an operator's cron, a monitoring probe, anything a self-hosted admin wired
+to a published maintenance verb — are precisely the population a grep of
+three first-party repositories cannot see.
+
+The judgement is that measurement would not change the answer, because the
+thing being measured cannot work: `restore` mutates nothing, `stats` and the
+`items_restored` count read lists that are always empty, `recovery-info`
+returns literals, and `cleanup` deletes what Redis has already evicted. A
+counter proving somebody calls `/restore` would establish that they are being
+lied to more often, not that the endpoint should stay. That is the argument
+for removing without instrumenting, and it is recorded here so a reader can
+disagree with the reasoning rather than discover the rule was skipped.
+
+So each client's adoption PR is a regeneration: five path entries and one
+schema leave the typed surface, and no hand-written line changes. Both
+TypeScript clients derive their filter types from the generated `operations`
+type, which is what makes a removed parameter a COMPILER error there rather
+than a silent no-op — the property 4.0.0 relied on and the reason MAJOR is the
+right call even where nothing on the wire moves.
+
+ONE INTERNAL FIX SHIPS BESIDE THE REMOVAL, and it is the same defect with its
+sign reversed. `MinimalCaseService` — the stand-in the DI container falls back
+to when no case repository is available, so every line of it runs in production
+the moment the repository is missing — filtered on
+`getattr(filters, "include_deleted", False)` and
+`getattr(filters, "include_terminal", False)`. `CaseListFilter` declares
+neither, so neither `getattr` could ever see anything but its default: the
+stand-in dropped every RESOLVED and CLOSED case UNCONDITIONALLY, where
+`CaseService.list_user_cases` excludes no terminal state at all. Its
+no-filters branch said the same thing without a filter object to blame it on,
+narrowing to INQUIRY/INVESTIGATING and dropping empty cases where the real
+service passes `state=None` and `include_empty=True`. Both are gone, from
+`list_user_cases` and `count_user_cases` together so the page and its count
+cannot disagree, and
+`tests/unit/container/test_minimal_case_service_terminal_parity.py` pins it.
+Not contract surface — `MinimalCaseService` is not published — but the same
+sweep found it, and a filter nobody asked for is the same lie as a filter
+nobody applies.
+
+ONE DOCUMENT WAS ARGUING WITH ITSELF and is corrected here.
+`docs/architecture/case-and-session/case-and-session-concepts.md` listed
+"Cases as session sub-resources" as **ELIMINATED** in its migration section
+while, 500 lines earlier, requiring that
+`GET /api/v1/sessions/{session_id}/cases` and `GET /api/v1/cases` "return
+identical results for the same user", with client code and a test checklist to
+match. The first statement is now true, and the second is deleted: a route
+whose entire specification is "answer what another route answers" was the
+argument for removing it.
+
+MAJOR because published operations DISAPPEAR. Five paths and one schema leave
+`docs/reference/api/openapi.json`; a client generating types from this
+contract stops being able to name them. Nothing that worked stops working,
+because none of the five did what it said.
+
+Sequencing note, in the spirit of the two this file already carries: this
+stacks straight on 4.0.0 (#1427) rather than amending it. `check_contract_version.py`
+refuses a structural change whose version stood still, and two contracts must
+never share a number. Stacking costs the clients nothing here, because NONE
+HAS ADOPTED 4.0.0: faultmaven-dashboard and faultmaven-copilot pin 3.8.0 and
+faultmaven-slack-agent pins 3.0.0, so each adoption PR crosses 4.0.0 and 5.0.0
+in the same move whether or not they are separate numbers. Amending 4.0.0
+would buy nothing and cost the record of which change was which.""",
+    ),
+    ContractChange(
+        version="4.0.0",
+        level="MAJOR",
+        title=(
+            "Three published filters that were never applied are REMOVED, not "
+            "implemented. Batched into one bump because they are one defect, and a "
+            "client should adopt the answer once."
+        ),
+        body=r"""  * `include_archived` on `GET /api/v1/cases` (#1413). The `Query` parameter
+    and the argument it fed to `CaseListFilter`, which declares no such field
+    and sets no `model_config` — so Pydantic's default `extra='ignore'` had
+    been dropping it without a word, and no repository carried the predicate
+    either.
+  * `CaseSearchRequest.user_id` and `CaseSearchRequest.organization_id`
+    (#1416). Both published, both read by nothing.
+
+WHY REMOVE RATHER THAN IMPLEMENT, one at a time.
+
+`include_archived` has nothing behind it. There is no storage representation
+of an archived case: the `cases` table has no archived column, `alembic/`
+contains no archive migration, and
+`postgresql_hybrid_case_repository._row_to_case` states outright that
+`is_archived` / `archived_at` are gone. Implementing it is not a bug fix, it
+is the archival epic — see below, which is where that intent is now recorded
+in full.
+
+`user_id` is worse than dead. `search_cases(self, search_request,
+user_id=None)` already receives the AUTHENTICATED caller from the route, so
+`search_request.user_id` is a SECOND, client-supplied user id beside it.
+Inert, it is merely a lie; honoured, it is a cross-tenant read. There is no
+version of this field that both works and is safe on a caller-scoped
+endpoint.
+
+`organization_id` contradicts ADR-017. The organization answers "who pays for
+these accounts" and is never a visibility predicate — the ENTERPRISE is the
+isolation tenant. So there is no correct WHERE clause to write for it, which
+makes "implement it" not a smaller version of the same decision but a
+different and wrong one.
+
+THE CLIENT-FIRST STEP WAS ALREADY SATISFIED, and this is how that was
+established rather than assumed. `docs/development/api-contract-changes.md`
+orders a REMOVE client-first — never remove something still being read — so
+all three client repositories were grepped:
+
+  * faultmaven-dashboard sends none of them. It has a standing GUARD TEST,
+    `src/lib/cases/api.test.ts` ("never sends include_archived on the list
+    endpoint"), and `src/lib/cases/api.ts` sends `{query, limit, team_id}` to
+    `/cases/search` under a comment explaining that it deliberately omits
+    `state` because the field was declared and not applied — pointing here.
+  * faultmaven-copilot sends none of them from production code: all three
+    `getUserCases` call sites pass only `limit`/`offset`. One nuance worth
+    stating, because it is what this MAJOR bump exists to surface — its
+    `CaseListFilters` type is DERIVED from the generated operations type, so
+    `include_archived` is expressible there and one test
+    (`src/test/api/services/case-service.test.ts`) passes it explicitly and
+    asserts it reaches the query string. Nothing on the wire changes for that
+    client, but its adoption PR has to delete that line, and the compiler will
+    say so. That is the derived type working exactly as intended.
+  * faultmaven-slack-agent never lists and never searches: `POST
+    /api/v1/cases` and `POST /api/v1/cases/{id}/turns`, plus auth and health.
+
+WHAT A REMOVED QUERY PARAMETER DOES AND DOES NOT BUY. `?include_archived=true`
+will still be ACCEPTED after this — FastAPI drops an unknown query parameter
+silently and there is no way to make it refuse one. Likewise an unknown key in
+a `CaseSearchRequest` body, which `extra='ignore'` discards. What changes is
+that the CONTRACT no longer promises anything about them: a client reading this
+document is no longer told a filter exists, which is the whole of the lie. The
+request validation is deliberately not tightened alongside — that is a separate
+decision with its own blast radius, and tightening only the body half would
+leave the two halves of one removal behaving differently.
+
+WHAT THE MODELS' DOCSTRINGS NOW SAY, and deliberately do not say. Both were
+nearly used to assert the invariant — "every field here reaches the repository
+query" — and neither says it.
+
+For `CaseListFilter` the claim is simply FALSE: it has two readers with
+different appetites. `list_user_cases` reads every field; `list_all_cases`,
+behind `GET /api/v1/admin/cases`, reads only `state`, `source`, `limit` and
+`offset` and says in its own docstring that it deliberately ignores
+`include_empty`. So the docstring states the invariant PER READER and names
+the guard's two rule tables.
+
+For `CaseSearchRequest` the claim is now TRUE — 3.9.0 landed first and `state`
+is applied — and it is still not made, for a reason that does not depend on
+merge order. This text is published verbatim as the schema's description, and
+a description is the one part of the contract nothing checks:
+`check_contract_version.py` strips prose before comparing, precisely because
+no client breaks on a reworded sentence. A blanket guarantee written there
+would go stale the first time someone adds a field and forgets to wire it,
+with every gate still green and the published contract asserting exactly the
+thing #1416 was. So the docstring records what was REMOVED and why — history,
+which cannot rot — and points at
+`tests/unit/modules/case/test_declared_filters_reach_the_query.py`, which
+classifies every field PER SURFACE and goes red on one that reaches no query.
+An assertion that moves when the code does, rather than a sentence that does
+not, which is the whole difference this version is about.
+
+TWO INTERNAL FIELDS GO WITH THEM, and cost no contract surface at all:
+`CaseListFilter.user_id` and `CaseListFilter.organization_id`. `CaseListFilter`
+is NOT in `docs/reference/api/openapi.json` — it is a service-layer model, not
+a request body — so no client can see either one. They are the same defect,
+found by the same sweep, and `grep -rn 'filters\.user_id\|filters\.organization_id'
+faultmaven/` returns nothing. The route stops passing
+`user_id=current_user.user_id` into the constructor: `list_user_cases` takes
+the principal as its own argument and reads only `state`, `source`, `team_id`,
+`limit`, `offset`, `include_empty` and the creation-date window off the filter,
+so the constructor argument was a second copy that changed no answer.
+
+WHAT ARCHIVING WAS, carried forward here because deleting the parameter deletes
+one of the three places it survived (the other two: a note in the case-service
+tests, and a design document, both named below). Archiving was a first-class case state
+with `is_archived` / `archived_at` columns; it was DROPPED in the schema
+redesign (commit `7b5a1b93`), and the note left in
+`tests/unit/modules/case/domain/services/test_case_service.py` beside the
+removed `test_excludes_archived_cases_by_default` records the intent verbatim:
+it "will be reintroduced as a deliberate epic with retention policy, scheduled
+archival, and list-view filter UI". That is still the plan and this entry does
+not cancel it. `closed_at` and the terminal states are the nearest thing today
+and they are NOT the same concept — a case you have finished with is not a case
+you have put away. The parameter comes back when there is something behind it,
+as part of that epic, with a storage representation, a retention policy and a
+migration; until then an affordance that does nothing is worse than no
+affordance, and faultmaven-dashboard#51 is the evidence.
+
+ONE SECURITY PROBE CHANGES SHAPE, and it is worth saying why that is not a
+loss. `tests/integration/security/test_two_enterprise_surface_probe.py` injected
+`user_id` and `organization_id` into a `POST /cases/search` body to prove a
+request-supplied principal never widens the caller's scope. With the fields
+gone, that injection sends keys pydantic drops before any handler sees them —
+which the probe's own guard, `test_the_search_injection_names_only_real_request
+_fields`, correctly FAILS on: an injection naming an undeclared field measures
+the parser, not the boundary. (It failed in CI, on the `postgres` lane, which
+is exactly where a probe like that earns its keep.) So the injection now names
+only `team_id`, and the boundary those two stood for is closed BY CONSTRUCTION
+rather than by behaviour — the stronger of the two. The behavioural claim moves
+to the unit tier, and the guard's BACKWARD half still fails the moment a new
+tenant-shaped selector appears on the model without someone deciding whether it
+is attackable.
+
+The third trace is the one that was actively wrong, and it is corrected in the
+same change: `docs/architecture/specifications/llm-configuration-design.md`
+described the reverted Phase-1 archival implementation in the present tense,
+with `include_archived` and four other components marked "Done". It now says
+what is true, and points here. The design text is kept — it is still the plan
+— but a specification that describes a reverted feature as shipped is the same
+lie this entry is about, one document over.
+
+MAJOR because published surface DISAPPEARS. A request body is validated
+against a narrower schema and a query parameter leaves the document, so a
+client generating types from this contract stops being able to name them —
+which is the point: a name that cannot be typed cannot be sent in the belief
+that it does something. Nothing that worked stops working, because none of
+the three ever worked.
+
+Sequencing note, because this file has been bitten twice and says so: 3.9.0
+(#1416's ADD) merged first, as #1426, and this is rebased on top of it. The
+two entries sit side by side rather than colliding, which is what the ordering
+was for — 3.9.0 makes `state` work, 4.0.0 removes the three fields that never
+could.""",
+    ),
+    ContractChange(
+        version="3.9.0",
+        level="MINOR",
+        title=(
+            "`POST /api/v1/cases/search` applies the `state` it has always declared. "
+            "`CaseSearchRequest.state` was published in this document, accepted by "
+            "Pydantic, and read by nothing: `CaseService.search_cases` called "
+            "`repository.search(query=, user_id=, limit=, shared_case_ids=, "
+            "restrict_case_ids=)` and looked at no other field, and "
+            "`ICaseRepository.search` declared no `state` parameter for it to reach. "
+            'So `{"query": "db", "state": "resolved"}` answered **200 with resolved '
+            "and unresolved cases alike** — no error, no warning, a highlighted filter "
+            "chip over an unfiltered list (#1416)."
+        ),
+        body=r"""DECLARING A FIELD IS NOT APPLYING IT, and this is the third recorded instance
+of the same defect: faultmaven-dashboard#51 (a date picker that did nothing
+for months and was eventually deleted as a lie), #1413 (`include_archived` on
+`GET /cases`), and this one. It came within a review of being the fourth:
+faultmaven-dashboard#154 proposed sending `state` during a text search
+BECAUSE THE SCHEMA HAD IT, which would have recreated #51 inside the pull
+request that was closing it. The schema was checked; the service was not.
+
+The predicate lives in the SAME WHERE CLAUSE as the text match and the
+visibility scope. That is the rule #1409 established for the creation-date
+bounds, and it is not a matter of taste here: search applies its `limit` in
+SQL, so a state narrowed afterwards would be narrowing an already-limited
+page — and would answer "no matching cases" whenever the limit happened to be
+filled by rows in other states. Note what is NOT available as a cross-check on
+this surface: search publishes no total (`CaseSearchResponse` is unused; the
+route is `response_model=List[CaseSummary]`), so there is no count for a
+misplaced predicate to visibly disagree with. It is the one filter surface
+where the wrong placement would have stayed silent, which is why the tests
+assert the placement directly, on every repository that can be stood up
+(in-memory, SQLite, and PostgreSQL under the `postgres` marker).
+
+TWO THINGS SHIP BESIDE THE PREDICATE, both of them the same defect one slot
+over. `SessionlessCaseRepository` — the wrapper actually wired in at runtime —
+forwarded to `list` and `search` POSITIONALLY; inserting `state` ahead of
+`limit` is precisely the edit that makes a positional forward bind the wrong
+values, and the #405 rename already shipped that failure once (`list(state=…)`
+against a wrapper still declaring `status`, swallowed into "you have no
+cases"). Both forwards are now by keyword. And `search`'s second return value,
+documented as `(cases, total_count)` since the interface was written, was
+`len(cases)` in three of the four implementations — the page length wearing
+the name of a total. Nothing reads it (`search_cases` discards it and the
+route is `response_model=List[CaseSummary]`), which is exactly why it could
+stay wrong: a DECLARED value that is not the value declared. It is now a true
+COUNT over the same WHERE clause, as `list` has always computed it. Neither is
+a contract change — no published shape moves — but both are the shape of thing
+this version exists to stop.
+
+`state` is the only one of `CaseSearchRequest`'s three inert fields worth
+having. `user_id` and `organization_id` are NOT being implemented: on a
+caller-scoped endpoint the first is a second, client-supplied user id beside
+the authenticated one, and the second contradicts ADR-017, where the
+organization BILLS and is never a visibility predicate. Both are removed in
+4.0.0, together with `include_archived`.
+
+MINOR, AND THE ARGUMENT FOR MAJOR WAS CONSIDERED. It has to be, because this
+entry itself quotes the rule that points the other way:
+`docs/development/api-contract-changes.md` says "a field that keeps its type
+and changes its meaning breaks clients and no tool will say so", and that is
+exactly what applying a previously-ignored field does. The MAJOR case is
+sharper still than for a removal: a REMOVAL reaches a client only when it
+moves the ref it pins, whereas this reaches every deployed client the moment
+the server rolls, with no version for them to gate on. If any client were
+sending `state` and rendering the unfiltered list it got back, this change
+would silently alter what its users see.
+
+It does not bite here, and that is VERIFIED rather than assumed: **no client
+sends the field.** `POST /cases/search` has exactly one caller in the field,
+faultmaven-dashboard, and it sends `query`, `limit` and `team_id` only — it
+deliberately WITHHOLDS `state` behind a comment pointing at #1416
+(`src/lib/cases/api.ts`), and disables its state chips during a text search
+rather than send something that gets dropped. faultmaven-copilot and
+faultmaven-slack-agent never call the route at all: the copilot's three
+`getUserCases` call sites are the list endpoint, and the slack agent only
+creates cases and submits turns. So the population whose behaviour could
+change is empty, and what is left is a surface that grew a working filter.
+
+On the mechanical side the published surface does not change shape either —
+nothing removed, nothing narrowed, nothing made required — so no client can
+fail to parse, or fail to send what it sent yesterday. Adoption on the
+dashboard side is the REMOVAL of a workaround.
+
+WORTH KNOWING FOR NEXT TIME: `check_contract_version.py` reports this as "no
+structural change (a re-publication)", and it is right — the only thing in the
+generated diff besides `info.version` is one reworded description. The version
+moves anyway, for the reason above: what changed is the MEANING of a field
+that was already published, and no differ can see that. This is what the
+tooling deliberately does not decide. A version that stood still here would
+tell a client nothing had happened on the one endpoint whose answers just
+changed — and the next person to weigh MINOR against MAJOR on a
+meaning-change would find no record that the question was asked.""",
+    ),
+    ContractChange(
+        version="3.8.0",
+        level="MINOR",
+        title=(
+            "`GET /api/v1/cases` accepts `created_after` and `created_before`. "
+            "`CaseListFilter` has carried both fields since it was written, and the "
+            "route never bound them as query params — so a client that sent a date got "
+            "no error and no filtering: FastAPI drops an unknown query param silently, "
+            "and the dashboard shipped a date picker that did nothing for long enough "
+            "that it was eventually deleted as a lie (faultmaven-dashboard#51). This "
+            "binds them."
+        ),
+        body=r"""THE WINDOW IS HALF-OPEN: `[created_after, created_before)`, inclusive lower
+and EXCLUSIVE upper. An inclusive upper bound is not expressible by a client
+whose clock stops at milliseconds — which is every browser, because
+`Date.prototype.toISOString` does — while `created_at` keeps microseconds. A
+day bounded at 23:59:59.999 silently drops a case created at 23:59:59.9997,
+which is the same class of quiet row-loss this entry exists to remove. To
+select a calendar day, send that day's first instant and the FOLLOWING day's.
+
+THEY ARE INSTANTS, NOT CALENDAR DAYS. The server cannot know which day
+"2026-09-14" meant, so it does not guess: the client resolves the day in ITS
+OWN timezone. But any offset is NORMALIZED TO UTC before it reaches the query,
+and that is load-bearing rather than tidy — on SQLite `created_at` is stored
+as adapter-rendered TEXT and compared lexicographically, so
+`2026-09-11T00:00:00+05:30` and the identical instant written
+`2026-09-10T18:30:00Z` returned DIFFERENT rows until the bound was converted.
+A naive value is read as UTC, the only reading that does not shift by whatever
+zone the server happens to run in.
+
+An INVERTED window (`created_after > created_before`) is a 422, not an empty
+list: unsatisfiable by construction, it would otherwise answer "you have no
+cases in that range" when the truth is "you swapped the ends".
+
+Both predicates live in the same WHERE clause as every other filter, so
+`total_count` counts the same set the page comes from — the pagination rule
+`include_empty` already follows, and for the same reason: a bound applied
+after the repository paginated would thin an already-sliced page.
+
+Additive: every existing call is unaffected, both params default to None.""",
+    ),
+    ContractChange(
+        version="3.7.0",
+        level="MINOR",
+        title=(
+            "The investigation turn reaches the EVIDENCE surfaces. 3.5.0 gave every "
+            "schema that publishes a turn for display a nullable `investigation_turn`, "
+            "and missed the two that name a turn they do not themselves render: "
+            'evidence rows ("collected at turn N") and uploaded files ("uploaded at '
+            'turn N"). Both carried only the message clock, so on any case with an '
+            "aside a client printed `turn 5` beside an evidence row while its own "
+            "transcript called that same exchange `Turn 4` — the defect #1387 "
+            "described for history, one surface over (#1391)."
+        ),
+        body=r"""`SourceFileReference`, `EvidenceDetailsResponse`, `DerivedEvidenceSummary`,
+`UploadedFileMetadata` and `UploadedFileDetailsResponse` each gain a nullable
+`investigation_turn`: the per-row ORDINAL for the turn the row was collected
+or uploaded at, from `Case.investigation_turn_at` — the same function
+`Message.investigation_turn` uses, so the row and the exchange it belongs to
+cannot disagree.
+
+WHY THE SERVER AND NOT THE CLIENT. A client can only resolve an evidence row's
+ordinal by finding the conversation row on the same clock turn, which means
+holding the conversation. The Dashboard's evidence tab holds none — it is a
+separate fetch on a tab that never loads the transcript — and the copilot's
+store is capped to a recent suffix, so a file uploaded early in a long case
+has no local row either. Both clients would have had to render nothing.
+
+`collected_at_turn` and `uploaded_at_turn` are unchanged and still the message
+clock: they are what anchors and jump-to-turn are keyed on. ADDRESS a turn
+with those, DISPLAY the new one.
+
+Numbered 3.7.0, not 3.6.0, for the reason 3.6.0 itself records: #1388 took
+3.6.0 while this sat in review and merged first. Two different contracts must
+never share a version, so this moves rather than collides and both entries
+stay. They describe unrelated surfaces.""",
+    ),
+    ContractChange(
+        version="3.6.0",
+        level="MINOR",
+        title=(
+            "`POST /knowledge/documents` gains two optional body fields, `scope` and "
+            "`team_id` (#1377). Uploading a finished runbook file was an operator "
+            "privilege hard-wired to the global tier; it is now an input method like "
+            "Convert and Write Runbook, and the operator gate moved to `scope == "
+            '"global"` where it belongs.'
+        ),
+        body=r"""MINOR rather than MAJOR, and the judgement is worth stating because the
+schema alone does not settle it. Two new OPTIONAL fields are textbook MINOR,
+but the DEFAULT BEHAVIOUR changed: a caller that sends no `scope` used to
+publish at global and now publishes at personal. That is a silent semantic
+change, which is usually the worse kind.
+
+It is MINOR because no existing client can observe it. The only product
+caller is faultmaven-dashboard, which adopts the change in the same batch
+(faultmaven-dashboard#142 / #145). faultmaven-copilot names the URL in one
+test and never calls it; faultmaven-slack-agent does not reference it. A
+client that DID rely on the old default would deserve MAJOR — if one appears
+before this is adopted, this entry is the thing to revisit.
+
+`scope` is also now a closed set (`personal | team | global`) rather than a
+free string, so the schema publishes an `enum`. That narrows what is accepted
+— but only to values the server ever handled: anything else reached an
+unguarded `else` branch that wrote into the global runbook tree and then 500'd.
+
+
+Numbered 3.6.0, not 3.5.0, and for the reason 3.4.0 records above: #1389 took
+3.5.0 while this sat in review and merged first. Two different contracts must
+never share a version — a number that cannot tell two contracts apart is not
+doing its job — so this moves rather than collides, and both entries stay.
+They describe unrelated surfaces.""",
+    ),
+    ContractChange(
+        version="3.5.0",
+        level="MINOR",
+        title=(
+            "The investigation turn reaches the surfaces that DISPLAY a turn. 2.7.0 "
+            "put `investigation_turn` on `TurnResponse` (#1329) — the reply to a "
+            "submitted turn, and the one schema no history read and no header read can "
+            "reach. Every other surface therefore went on printing the message clock, "
+            "so an aside still moved the number the user was looking at, which is the "
+            "symptom #1329 set out to remove. Every schema that publishes a turn for "
+            "DISPLAY gains a nullable `investigation_turn` (#1387):"
+        ),
+        body=r"""  * `Message` — the per-row ORDINAL: the message clock at that row minus the
+    out-of-band turns at or before it. Note this is not the case-level total
+    moved onto the row. Attaching that total to every row would print the
+    same number on all of them, because a count of "the turns so far" is only
+    the label of the newest row; the ordinal is what labels the other rows,
+    and the two agree exactly where they should, on the newest one.
+
+    Null on a `system` row. Those are background-job notices (runbook
+    conversion) stamped with whichever turn happened to be OPEN when the job
+    finished, so a number on one asserts membership in an exchange it had no
+    part in — a rule both clients already implement privately, and the kind
+    of duplication a server-computed field exists to remove.
+
+  * `CaseUIResponse_Inquiry`, `_Investigating`, `_Resolved`, and also
+    `CaseSummary` (`GET /cases`), `CaseDetail` (`GET /cases/{id}`) and
+    `AdminCaseMetadata` — the case-level COUNT, the same quantity
+    `TurnResponse.investigation_turn` reports, carried on the case reads so a
+    header, a resolution summary ("12 turns") or an exported archive can show
+    it without having just submitted a turn. All six, not the three the first
+    pass moved: a client reading the clock off whichever one it happens to
+    hold is how the same defect survives in a different corner.
+
+`turn_number` and `current_turn` are unchanged and still mean the message
+clock. That distinction is now load-bearing rather than incidental: the clock
+is what ADDRESSES a turn — conversation anchors, evidence `uploaded_at_turn`,
+suggestion liveness — and re-basing those to the displayed label would break
+jump-to-turn silently, with no error and no failing test. Display the
+ordinal, address by the clock.
+
+MINOR: nullable additions to response-only schemas. A client that ignores
+them renders exactly what it renders today, and one that reads them falls
+back to the clock when the field is absent. Adoption is tracked in
+faultmaven-copilot#251, faultmaven-dashboard#127 and
+faultmaven-slack-agent#64.""",
+    ),
+    ContractChange(
+        version="3.4.0",
+        level="MINOR",
+        title=(
+            "Two amendments to the team-consent surface 3.1.0 published, found by "
+            "review of #1365 after it merged."
+        ),
+        body=r"""Numbered 3.4.0 for a reason that has nothing to do with what it publishes.
+Two versions were taken while this sat in review: #1369 took 3.2.0 (below),
+and #1370 takes 3.3.0 and merges first. Two different contracts must never
+share a version — a number that cannot tell two contracts apart is not doing
+its job, which is the whole reason 2.0.0 exists — so this moves rather than
+collides, and the entries stay separate. They describe unrelated surfaces,
+and merging them would lose which client has to adopt what.
+
+**3.3.0 is deliberately absent from this file right now.** It belongs to
+#1370, which has not merged yet; its entry arrives with it. A gap here is the
+honest record of two changes in flight, and inventing a placeholder to fill
+it would put a version in the changelog that nothing published.
+
+  * `InvitationResponse` gains `revoked_by` and `revoked_at`, both nullable.
+    They are what makes 3.1.0's own design claim checkable from outside:
+    `status` is `revoked` whether the team admin withdrew the offer or the
+    invitee declined it, and comparing `revoked_by` against `invited_by` is
+    the whole of the difference. A field the server writes and no client can
+    read is a record nobody keeps. New nullable fields on a response-only
+    schema: a client that ignores them renders exactly what it renders today.
+
+  * `TeamCreateRequest.name` narrows from `maxLength: 255` to `200`, which is
+    `teams.name`'s width exactly.
+
+The narrowing is the half that needs the argument, because tightening a
+request field is normally where a client breaks. It cannot break one here, on
+the 2.2.0 precedent: **no name between 201 and 255 characters has ever been
+accepted**. `teams.name` is `VARCHAR(200)`, so PostgreSQL refused every one of
+them with `StringDataRightTruncation` — an unhandled 500. A caller that sent
+one was already outside the supported contract and getting undefined
+behaviour; what changes is that it now gets a 422 naming the field. Nothing
+that worked stops working, and the surface the clients generate against gets
+narrower rather than differently shaped.
+
+One behaviour change ships with them and is NOT a schema change, so it is
+recorded here rather than shown by the diff: accepting, declining or revoking
+an invitation that has passed `expires_at` now answers **410
+`invitation_expired`** consistently. 3.1.0 answered 410 or 409
+`invitation_not_pending` depending on whether anything had listed the row
+first, and recorded an elapsed offer as `revoked` — a withdrawal nobody
+performed. Both statuses were already published for these operations, so a
+client's error handling is unchanged; what changes is that it is now
+deterministic.""",
+    ),
+    ContractChange(
+        version="3.3.0",
+        level="MINOR",
+        title=(
+            "A turn says which runbooks informed it (fm#1361). One optional response "
+            "field and two new component schemas; nothing existing changes, so every "
+            "current client survives unchanged."
+        ),
+        body=r"""  * `TurnResponse.sources` — a list, defaulting to empty, of the knowledge
+    the engine put in front of the model for that turn. A client that
+    ignores it sees the response it always saw.
+  * `Source` and `SourceType` join `components`. Both already existed in the
+    API models and were simply never reachable from a published operation;
+    they are published now because `TurnResponse` references them.
+
+Each entry carries the matched excerpt as `content`, the retrieval score as
+`confidence`, and the runbook's `document_id` / `title` / `trigger` under
+`metadata`. `type` is `knowledge_base` for everything emitted today —
+`SourceType`'s other members are published because the enum is, not because
+a turn can currently return them.
+
+⚠ **`SourceType`'s value domain does not match the Copilot's `Source.type`
+union**, and publishing the enum is what makes that a contract question
+rather than an internal detail. The FIELD NAMES agree; the values overlap on
+exactly one member of six:
+
+    published here : documentation, knowledge_base, log_file,
+                     previous_analysis, user_provided, web_search
+    copilot union  : external_api, knowledge_base, log_analysis,
+                     previous_case, system_metrics, user_input
+
+Only `knowledge_base` is emitted, so no client breaks today — but this
+document now licenses five values that client's union rejects, and a future
+emitter choosing one would break it without changing this contract again.
+The reconciliation is a two-repo decision and is deliberately NOT made here;
+until it is, a producer on this surface may emit `knowledge_base` only.
+
+The list is empty whenever the KB pre-fetch admitted nothing, which includes
+every deployment that sets `KB_PREFETCH_ENABLED=false` (fm#1360). A client
+must therefore treat absence as "no citation to show", never as an error or
+as a signal that retrieval failed. Runbooks the model fetched itself through
+the `kb_qa` tool are NOT represented: that tool returns a formatted answer
+string, so their identity does not exist at the tool boundary to publish.""",
+    ),
+    ContractChange(
+        version="3.2.0",
+        level="MINOR",
+        title=(
+            "`LLMProviderDetail` gains an optional, nullable `selected_model_priced` "
+            "(#1359): whether the model this provider will actually call has a rate in "
+            "the cost table. `false` means that provider's calls report $0 spend; "
+            '`null` means no model is resolved yet, which is "nothing to say" rather '
+            'than "unpriced" — an alarm that is always on is not read, so an '
+            "uninitialised provider must not report `false`."
+        ),
+        body=r"""It exists because the unpriced signal was otherwise per-CALL. A model an
+operator pins via `{PROVIDER}_MODEL` is in no `available_models` list and is
+no `default_model`, so the build-time invariants cannot see it, and the
+`llm_unpriced_calls` counter cannot fire until traffic has already been
+billed. This is the same fact, known from the resolved model before a token
+is spent, on the surface an operator reads when choosing one
+(`GET /api/v1/admin/llm/config`). It is deliberately reported rather than
+enforced: pricing is a self-declared estimate, remediable at runtime via
+`LLM_PRICING_OVERRIDES`, and an unpriced model still yields a correct
+investigation — refusing to serve on a missing rate row would take a
+deployment down the day a provider ships a model.
+
+MINOR rather than MAJOR because it is a new optional field on a
+response-only schema reached by one operator endpoint. No request shape
+changes, nothing is removed, and no existing field changes meaning — a
+client that ignores it renders exactly what it renders today. Optional
+rather than required, unlike 2.5.0 and 2.1.0, because the server genuinely
+has nothing to send for a provider it has not initialised.
+
+No client can break on it, verified by reading all three. The Dashboard
+declares the shape by hand as `LLMProvider` in `src/types/llm.ts` — a
+compile-time TypeScript interface it does not validate against, so an extra
+JSON key is inert — and additionally carries the schema in the generated
+`src/types/api.generated.ts`, where a regeneration only widens a response
+type. The Slack agent's `LLMProviderDetail` lives in the generated
+`faultmaven/api_generated.py` and is referenced nowhere outside it; pydantic
+ignores unknown fields besides. The Copilot carries it in the generated
+`packages/copilot-ui/types/api.generated.ts` and nowhere else — same
+widening-only story as the Dashboard's generated copy. (An earlier draft of
+this entry said the Copilot did not reference the schema at all. That was
+false and came from grepping only `faultmaven-copilot/src`, which is not
+where that client keeps its generated types; the MINOR call is unchanged,
+but it now rests on having actually read the file.)""",
+    ),
+    ContractChange(
+        version="3.1.0",
+        level="MINOR",
+        title=(
+            "Teams form by consent (ADR-017 D4). Nine operations are added and nothing "
+            "existing is touched, so every current client survives the change "
+            "unchanged — which is what makes this the minor bump rather than the major "
+            "one 3.0.0 was:"
+        ),
+        body=r"""  * `POST /teams` — any authenticated account creates a team in its own
+    enterprise and is that team's admin;
+  * `GET /teams/{team_id}/members` — the roster, readable by its members;
+  * `DELETE /teams/{team_id}/members/me` — leave; 409 when the leaver is the
+    only admin and other members remain, and the sole member leaving
+    soft-deletes the team;
+  * `POST /teams/{team_id}/invitations`, `GET /teams/{team_id}/invitations`,
+    `DELETE /teams/{team_id}/invitations/{invitation_id}` — the team admin's
+    half: offer an address a place, see what became of every offer, withdraw
+    one;
+  * `GET /invitations`, `POST /invitations/{invitation_id}/accept`,
+    `DELETE /invitations/{invitation_id}` — the invitee's half: the offers
+    addressed to me, accept (which is the only thing on this API that creates
+    a team membership), decline.
+
+Two response schemas join `components`, `InvitationResponse` and
+`TeamMemberResponse`, plus the two request bodies `TeamCreateRequest` and
+`InvitationCreateRequest`. `TeamResponse` is unchanged — it still carries
+`enterprise_id` and no organization, exactly as 3.0.0 published it.
+
+**A refusal on this surface carries a machine-readable reason.** A 403, 404,
+409 or 410 from these routes answers
+`{"error", "detail", "status_code", "reason"}` — the same envelope
+`ConflictError` already emits with `conflict_reason`, with the slug in
+`reason`. `detail` stays the human sentence a client renders. A client has to
+distinguish "you are already a member" from "that address cannot join a team
+in this enterprise" to say anything useful, and parsing prose for that is how
+a UI ends up wrong in a language it was not written in. The slugs are
+`enterprise_is_personal`,
+`address_outside_enterprise_domain`, `already_a_member`, `not_a_team_admin`,
+`not_found`, `invitation_expired`, `invitation_not_pending`,
+`last_admin_cannot_leave`, `single_tenant_has_no_teams` and
+`single_tenant_has_no_invitations`.
+
+Two of those slugs are deliberately ONE answer to two questions.
+`address_outside_enterprise_domain` is returned both for an address on
+another domain and for an address whose account is anchored to another
+enterprise, at the same status and with the same message, because telling
+them apart would answer "does an account exist at this address?" to anybody
+who can create a team — which is everybody. A client must not try to infer
+the difference; there is none to infer.
+
+The routes are published in every deployment and are the same shape in all of
+them, but a single-tenant deployment answers 403 with
+`single_tenant_has_no_teams` / `single_tenant_has_no_invitations`: it has one
+enterprise, one default team and one account (ADR-017 D8), so there is nobody
+to invite. Publishing them unconditionally is what keeps this document one
+contract rather than a function of a deployment's `TENANT_PROVIDER`;
+`GET /api/v1/meta/capabilities` already reports `teamSharing` so a client can
+hide the UI rather than discover the 403.
+
+`GET /teams` is unchanged in shape and in behaviour, including its empty list
+in standalone.""",
+    ),
+    ContractChange(
+        version="3.0.0",
+        level="MAJOR",
+        title=(
+            "The tenant a client reads off a row is the **enterprise**, not the "
+            "organization (ADR-017). Ten schemas move, and SIX of them REMOVE a "
+            "required field, which is why this is a major bump rather than the minor "
+            "one a rename might suggest:"
+        ),
+        body=r"""  * `TeamResponse`, `AdminUserListItem`, `UserDetailResponse`,
+    `InvestigationSessionResponse` — `organization_id` → `enterprise_id`;
+  * `BreakGlassGrant` — `target_organization_id` → `target_enterprise_id`;
+  * `BreakGlassGrantRequest` — the REQUEST field `organization_id` becomes
+    `enterprise_id`, so a client that keeps sending the old name is rejected;
+  * `OperatorAccessAuditEntry` — `target_organization_id` →
+    `target_enterprise_id`, and this one is the seventh rename but NOT a
+    seventh removal of a required field: the old field was optional (a
+    cross-tenant access has no single tenant to name), so a client that read
+    it defensively survives the shape and only loses the value;
+  * `CaseSummary`, `CaseDetail`, `AdminCaseMetadata` — `enterprise_id` is
+    added as required and `organization_id` becomes optional. A case now
+    carries both: the enterprise is what the read was scoped by, and the
+    organization is billing attribution that is absent whenever nobody pays
+    for the account (which, until organization assignment ships, is every
+    account).
+
+Two QUERY parameters are renamed on the operator surfaces, and they are the
+half a schema diff does not show:
+
+  * `GET /admin/grants` — `organization_id` → `enterprise_id`;
+  * `GET /admin/audit/operator-access` — `target_organization_id` →
+    `target_enterprise_id`.
+
+An ignored query parameter is WORSE than a rejected one here, and that is why
+both old names are declared solely so they can be REFUSED with 422. FastAPI
+drops an undeclared parameter silently, so a client still sending the old name
+would get a 200 carrying every row — an unfiltered answer presented as a
+filtered one, on the two surfaces that answer "who reached that tenant's
+data". Nothing is ever served under the old name and neither appears in the
+published schema; the refusal names its replacement.
+
+No path is added or removed and no OTHER status code changes; what changed is what
+a row says about whose data it is. There is deliberately no transitional
+period in which both fields are served: a tolerated old field is what keeps a
+frontend reading it, and the whole point of moving the key is that the
+organization stops answering "who may see this?". The clients adopt by pin
+bump (faultmaven-dashboard, faultmaven-copilot, faultmaven-slack-agent,
+faultmaven-cloud), which is also the cutover for the wipe-and-reprovision this
+ships with — every session is re-established anyway, because the access and
+refresh tokens now carry an `enterprise_id` claim and a token without one is
+refused.""",
+    ),
+    ContractChange(
+        version="2.8.0",
+        level="MINOR",
+        title=(
+            "`POST /cases/{case_id}/turns` accepts an EMPTY turn — no `query`, no "
+            "`files`, no `pasted_content` — and answers it with a state-aware "
+            "orientation (where the investigation stands, what was last asked for, "
+            "what the user can do next). It used to be a 400 the client had to "
+            "swallow, which is how a bare `@FaultMaven` in Slack produced silence. "
+            "Nothing a client sends today is rejected or reshaped, so every existing "
+            "client survives it; a client that previously synthesised text for a bare "
+            "mention can now send the turn as it is. In the same release, `intent.type "
+            '= "greeting"` sent by a client is no longer obeyed: the server derives '
+            "that intent from the text itself (the value stays in the enum for "
+            "generated types), so a client that sent it gets the same answer it would "
+            "have got for the text alone."
+        ),
+        body="",
+    ),
+    ContractChange(
+        version="2.7.0",
+        level="MINOR",
+        title=(
+            "`TurnResponse` gains `investigation_turn` (nullable integer, #1329): how "
+            "many of the case's turns so far were investigation work. `turn_number` "
+            "keeps its meaning as the message clock and still advances on every "
+            "exchange; an out-of-band turn (small talk, trivia, a question about "
+            "FaultMaven itself) is now answered outside the investigation and recorded "
+            'as such, and this is the count a client should display as "Turn N". '
+            'Nullable so an older server that lacks it reads as "absent", not as zero. '
+            "Nothing is removed or reshaped, so every existing client survives it "
+            "unchanged; the clients' adoption is tracked in faultmaven-slack-agent#64, "
+            "faultmaven-dashboard#127 and faultmaven-copilot#251."
+        ),
+        body="",
+    ),
+    ContractChange(
+        version="2.6.0",
+        level="MINOR",
+        title=(
+            "Capability discovery gains a second path, `GET "
+            "/api/v1/meta/capabilities`, served by the same handler as the existing "
+            "`GET /v1/meta/capabilities`; the old path stays, and is published "
+            "`deprecated: true` with a description naming its replacement."
+        ),
+        body=r"""`/v1/meta/capabilities` was the only client-facing route outside `/api`, and
+outside `/api` is where the deployed topology stops carrying it: the ingress
+forwards `/api` (prefix), `/health` and `/metrics` to this service and
+everything else to the Dashboard SPA. A same-origin Dashboard — `VITE_API_URL=""`,
+which is the deployed default — therefore asks its own origin for
+`/v1/meta/capabilities` and is answered with the SPA's HTML, and both clients
+treat that as "no capabilities": the Copilot catches the JSON parse failure
+and serves its degraded self-hosted fallback (`src/lib/capabilities.ts`), and
+the Dashboard's `getCapabilities` rejects (`src/lib/meta/capabilities.ts`).
+The endpoint that exists to say what the deployment supports could not be
+reached by the client that most needs it.
+
+MINOR rather than MAJOR because nothing is removed or changed underneath a
+caller. The old path answers exactly what it answered before — one handler,
+two registrations, held byte-identical by
+`tests/integration/test_main_app.py::test_capabilities_is_the_same_response_under_both_paths`
+— so an extension already installed against it keeps working, which is why
+the alias is kept rather than moved. `deprecated: true` is documentation: it
+is what tells a client reading the spec which of two paths serving one
+response to write against, and OpenAPI generators emit a deprecated operation
+like any other (the Copilot and Dashboard already carry two such operations,
+POST /api/v1/auth/dev-login and /dev-register, in their generated
+`src/types/api.generated.ts`).""",
+    ),
+    ContractChange(
+        version="2.5.0",
+        level="MINOR",
+        title=(
+            "`EnvConfigStatusResponse` gains a required `personal_tenant_limits` "
+            "object, and `PersonalTenantLimitsStatus` joins `components` (#1320, "
+            "#1324). It reports the effective values of the three settings that bound "
+            "self-service sign-up — whether an org-less SSO identity may provision a "
+            "personal tenant, the deployment-wide hourly ceiling on that provisioning, "
+            "and the default daily investigation-turn allowance a personal tenant "
+            "gets. All three were reported nowhere, and all three fail silently: each "
+            "refusal reads to the person refused as something other than a configured "
+            "limit."
+        ),
+        body=r"""MINOR rather than MAJOR because it is a new field on a response-only schema
+reached by one operator endpoint, GET /api/v1/admin/config/status. No request
+shape changes, nothing is removed, and no existing field changes meaning — a
+client that ignores it renders exactly what it renders today. Required rather
+than optional is deliberate and is a strengthened guarantee, the same shape as
+2.1.0: the server sends it on every response, and a block that could be absent
+would read as "nothing to report", which is the failure the field exists to
+close.
+
+No client can break on it, verified by reading them. The Dashboard declares
+`EnvConfigStatus` by hand in `src/types/llm.ts` — a compile-time TypeScript
+shape it does not validate against, so an extra JSON key is inert. The Copilot
+carries the schema only in the generated `src/types/api.generated.ts`, and a
+regeneration widens a response type nothing narrows. The Slack agent's
+`EnvConfigStatusResponse` lives in the generated `faultmaven/api_generated.py`
+and is referenced nowhere outside it; pydantic ignores unknown fields besides.""",
+    ),
+    ContractChange(
+        version="2.4.0",
+        level="MINOR",
+        title=(
+            '`CaseReport.format` widens from `const: "markdown"` to `enum: '
+            '["markdown", "html"]` (#520). `reports_format_check` has admitted both '
+            "since the clean baseline, and the repository hydrates `format=row.format` "
+            "straight into the model — so the narrower type turned a row the database "
+            "accepts into a 500 on READ. The document now says what the storage layer "
+            "has always permitted."
+        ),
+        body=r"""MINOR rather than MAJOR because no existing client can break on it, on two
+independent grounds. First, the server still cannot emit `html`: nothing
+writes it, so the set of values actually returned is unchanged and this is a
+published latitude rather than a behaviour change. Second, no client reads the
+field — verified by reading them: the Dashboard and Copilot carry it only in
+`src/types/api.generated.ts` (TypeScript, compile-time, and widening a
+response type is a superset none of them narrows), and the Slack agent's
+`Literal["markdown"]` lives in `faultmaven/api_generated.py` on a `CaseReport`
+that nothing outside that generated module references. A client that
+regenerates picks up the wider type and compiles unchanged.""",
+    ),
+    ContractChange(
+        version="2.3.0",
+        level="MINOR",
+        title=(
+            "`HypothesisSummary` gains an optional `retirement_reason` (#1142). The "
+            "schema already carried `refutation_reason`, so a client rendering a "
+            "terminal hypothesis could say why one was REFUTED but not why one was "
+            "RETIRED — and retirement is the commoner end (40 retired against 8 "
+            "refuted in the corpus), so the half that was missing was the larger one. "
+            "A hypothesis the engine set aside having never grounded it and one it "
+            "tested and abandoned looked identical at this seam."
+        ),
+        body=r"""MINOR rather than MAJOR because it is a new nullable response field on a
+response-only schema: no request shape changes, no existing field changes
+meaning, and a client that ignores it renders exactly what it renders today.""",
+    ),
+    ContractChange(
+        version="2.2.0",
+        level="MINOR",
+        title=(
+            "`POST /cases/{case_id}/turns` publishes `maxItems: 1` on its `files` "
+            "field (#694). The one-file-per-turn rule was always the supported "
+            "contract — it is what the clarification emitter is written against — but "
+            "it lived as convention plus client-side discipline, so nothing in the "
+            "document said so and a new client could exceed it silently."
+        ),
+        body=r"""MINOR rather than MAJOR because every existing client already sends at most
+one file, verified by reading them: the Copilot builds its payload as
+`payload.files = [selectedFile!]` (UnifiedInputBar.tsx), the Slack agent's
+`download_message_content` returns "at most one real file upload" and routes
+the rest to `skipped_names`, and the Dashboard posts no files to this route.
+No client sends a request this newly refuses. A caller that DID send two was
+already outside the supported contract and getting undefined behaviour —
+only the first attachment's failed classification was ever clarifiable.""",
+    ),
+    ContractChange(
+        version="2.1.0",
+        level="MINOR",
+        title=(
+            '`KnowledgeBaseDocument.scope` became REQUIRED and lost its `"global"` '
+            "default (#1166). This is a write-side hardening surfacing in a read-side "
+            "schema: the default meant a publish path that omitted its knowledge tier "
+            "published to the platform corpus every tenant reads, so the field is now "
+            "a decision every construction has to make. Existing clients survive it — "
+            "the schema is response-only (GET /knowledge/documents/{document_id}) and "
+            "the server already sent `scope` on every real response, because the DTO "
+            "builder reads it off the row. A response field going from "
+            "optional-with-default to required is a strengthened guarantee, not a new "
+            "obligation on the caller."
+        ),
+        body="",
+    ),
+    ContractChange(
+        version="2.0.1",
+        level="PATCH",
+        title=(
+            "`revoke()` was annotated `-> Any` while it still returned a JSONResponse "
+            "for errors; once those moved to a raised exception the annotation was "
+            "merely inaccurate, and it erased `type: object` from the documented 200 "
+            "response. Nothing on the wire changes, so no client can break on this and "
+            "none needs to adopt it urgently — it restores what the document says "
+            "about a response that never varied. Found by the advisory breaking-change "
+            "report on its first real run, and by nothing else."
+        ),
+        body="",
+    ),
+    ContractChange(
+        version="2.0.0",
+        level="MAJOR",
+        title=(
+            "It publishes a change that already shipped. #1152 moved `invalid_grant` "
+            'from 401 to 400, replaced `{"detail": ...}` with the RFC 6749 §5.2 error '
+            "object, and dropped `TokenRequest`/`RevokeRequest` from `components` on "
+            "POST /auth/oauth/token and /auth/oauth/revoke. It merged before this "
+            "machinery existed, so main's contract diverged from the one the clients "
+            "pinned while both still called themselves 1.0.0 — a version that cannot "
+            "tell two contracts apart is not doing its job. The first act of the "
+            "version is therefore to give the contract on main an identity distinct "
+            "from the 1.0.0 the clients are written against."
+        ),
+        body="",
+    ),
+)
+
+validate_contract_changes(CONTRACT_CHANGES)
+
+API_CONTRACT_VERSION = CONTRACT_CHANGES[0].version
