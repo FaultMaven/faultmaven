@@ -654,6 +654,7 @@ except ImportError:
 """Shared pytest fixtures and configuration for FaultMaven tests."""
 
 import asyncio
+import itertools
 import os
 import re
 from unittest.mock import Mock, patch
@@ -716,6 +717,29 @@ def _reset_observability_singletons():
             container = getattr(singleton, field, None)
             if hasattr(container, "clear"):
                 container.clear()
+
+
+@pytest.fixture(scope="session")
+def _kb_index_lock_dir(tmp_path_factory):
+    return tmp_path_factory.mktemp("kb-index-lock")
+
+
+_KB_INDEX_LOCK_IDS = itertools.count()
+
+
+@pytest.fixture(autouse=True)
+def _own_kb_index_host_lock(_kb_index_lock_dir, monkeypatch):
+    """Every test its own KB indexing host lock file (#2055).
+
+    The slot ``flock``s ``tempfile.gettempdir()``'s lock, which every xdist
+    worker, every other pytest run and any local API process on the box share:
+    one holding it fails another's encode deterministically. ``index_slot``
+    imports neither torch nor sentence_transformers.
+    """
+    from faultmaven.infrastructure import index_slot
+
+    path = _kb_index_lock_dir / f"{next(_KB_INDEX_LOCK_IDS)}.lock"
+    monkeypatch.setattr(index_slot, "HOST_LOCK_PATH", str(path))
 
 
 # Session-level fixture to clear .env variables that may have been loaded before tests started

@@ -1220,7 +1220,16 @@ async def fulltext_search_documents(
 @router.put(
     "/documents/{document_id}",
     dependencies=[Depends(require_authentication)],
-    responses=INDEX_REFUSAL_RESPONSES,
+    responses={
+        **INDEX_REFUSAL_RESPONSES,
+        422: {
+            "description": (
+                "Refused; nothing was saved. The new `content` holds a "
+                "credential or a destructive command, or is longer than a "
+                "draft may be (100,000 characters). Or the body did not bind."
+            )
+        },
+    },
 )
 async def update_document(
     document_id: str,

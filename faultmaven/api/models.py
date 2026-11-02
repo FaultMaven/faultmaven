@@ -482,9 +482,9 @@ class KnowledgeIndexingStatus(BaseModel):
     """The KB indexing window and this process's indexing slot (#2055).
 
     Numbers, so not a ``features`` entry. An encode that never returns holds
-    the slot until the process restarts, and every later KB write is refused
-    503 meanwhile: ``encoding_for_seconds`` far past any document's estimate
-    is that state.
+    the slot until the process restarts. Once it is past its time bound, and
+    with a window set, every later KB write is refused 503 meanwhile:
+    ``encoding_for_seconds`` far past any document's estimate is that state.
     """
 
     window_seconds: int = Field(
@@ -505,6 +505,19 @@ class KnowledgeIndexingStatus(BaseModel):
         description=(
             "How long this process's running KB indexing encode has run; null "
             "when none runs."
+        )
+    )
+    host_lock_available: bool = Field(
+        description=(
+            "False once this process could not open or lock the host lock "
+            "file: its KB encodes then run without serialising against the "
+            "other worker processes of the container."
+        )
+    )
+    waiting_for_host_lock: bool = Field(
+        description=(
+            "True while this process's indexing slot is blocked on the host "
+            "lock, behind another worker process's encode."
         )
     )
 

@@ -3836,7 +3836,7 @@
         "type": "object"
       },
       "KnowledgeIndexingStatus": {
-        "description": "The KB indexing window and this process's indexing slot (#2055).\n\nNumbers, so not a ``features`` entry. An encode that never returns holds\nthe slot until the process restarts, and every later KB write is refused\n503 meanwhile: ``encoding_for_seconds`` far past any document's estimate\nis that state.",
+        "description": "The KB indexing window and this process's indexing slot (#2055).\n\nNumbers, so not a ``features`` entry. An encode that never returns holds\nthe slot until the process restarts. Once it is past its time bound, and\nwith a window set, every later KB write is refused 503 meanwhile:\n``encoding_for_seconds`` far past any document's estimate is that state.",
         "properties": {
           "encoding_for_seconds": {
             "anyOf": [
@@ -3850,10 +3850,20 @@
             "description": "How long this process's running KB indexing encode has run; null when none runs.",
             "title": "Encoding For Seconds"
           },
+          "host_lock_available": {
+            "description": "False once this process could not open or lock the host lock file: its KB encodes then run without serialising against the other worker processes of the container.",
+            "title": "Host Lock Available",
+            "type": "boolean"
+          },
           "queued": {
             "description": "KB indexing encodes held in this process: the running one and the ones waiting their turn.",
             "title": "Queued",
             "type": "integer"
+          },
+          "waiting_for_host_lock": {
+            "description": "True while this process's indexing slot is blocked on the host lock, behind another worker process's encode.",
+            "title": "Waiting For Host Lock",
+            "type": "boolean"
           },
           "window_seconds": {
             "description": "INDEX_REQUEST_WINDOW_SECONDS: the seconds a KB upload, update or verify may spend indexing its document. A document that would not fit is refused before anything is written (413 alone, 503 behind other indexing); 0 refuses nothing up front.",
@@ -3864,7 +3874,9 @@
         "required": [
           "window_seconds",
           "queued",
-          "encoding_for_seconds"
+          "encoding_for_seconds",
+          "host_lock_available",
+          "waiting_for_host_lock"
         ],
         "title": "KnowledgeIndexingStatus",
         "type": "object"
@@ -12880,14 +12892,7 @@
             }
           },
           "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
+            "description": "Refused; nothing was saved. The new `content` holds a credential or a destructive command, or is longer than a draft may be (100,000 characters). Or the body did not bind."
           },
           "503": {
             "description": "Unavailable; nothing was saved. `x-error-code: KNOWLEDGE_INDEXING_BUSY`: the indexing already queued on this server leaves no room for this document within the request window; retry after `Retry-After` seconds.",

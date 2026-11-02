@@ -3186,9 +3186,10 @@ class TestDatabaseTimeoutsAreTheOnesInForce:
 
 
 class TestKnowledgeIndexingIsReported:
-    """The window from settings, the queue and the running encode's age from
-    this process's slot: a hung encode holds the slot until restart, and this
-    is where an operator sees it."""
+    """The window from settings; the queue, the running encode's age and the
+    host lock from this process's slot: a hung encode holds the slot until
+    restart, and a slot behind another process's lock shows no age, and this
+    is where an operator sees both."""
 
     @pytest.mark.asyncio
     async def test_the_window_the_queue_and_the_running_encodes_age(
@@ -3213,13 +3214,18 @@ class TestKnowledgeIndexingIsReported:
         idle = await _status()
         running = admission.admit_forced(["a"], 1000)
         admission.admit_forced(["b"], 1000)
-        running._mark_started()
+        running._started()
         clock.return_value = 142.5
+        admission.host_lock_available = False
+        admission.waiting_for_host_lock = True
         busy = await _status()
 
-        assert (idle.window_seconds, idle.queued, idle.encoding_for_seconds) == (
-            600,
-            0,
-            None,
-        )
+        assert idle.model_dump() == {
+            "window_seconds": 600,
+            "queued": 0,
+            "encoding_for_seconds": None,
+            "host_lock_available": True,
+            "waiting_for_host_lock": False,
+        }
         assert (busy.queued, busy.encoding_for_seconds) == (2, 42.5)
+        assert (busy.host_lock_available, busy.waiting_for_host_lock) == (False, True)

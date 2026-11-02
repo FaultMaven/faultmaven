@@ -151,17 +151,17 @@ class TestModelCacheLazyLoading:
 
 
 class TestAsyncEmbedBoundary:
-    """The `aembed_texts`/`aembed_query` async boundary — the single place that
-    runs CPU-bound BGE-M3 `encode()` off the event loop via `asyncio.to_thread`.
+    """The `aembed_query` async boundary — the place that runs a query's
+    CPU-bound BGE-M3 `encode()` off the event loop via `asyncio.to_thread` — and
+    `embed_texts_sync`, the batch encode the indexing slots run on their own
+    threads (#2055).
 
     This is where the cold-start timeout regression is guarded now: a synchronous
     `encode()` on the loop thread froze the request loop and starved the k8s
-    liveness probe. Every embed call site funnels through this boundary, so
-    testing it here covers all of them.
+    liveness probe.
     """
 
-    @pytest.mark.asyncio
-    async def test_aembed_texts_returns_one_vector_per_text(self):
+    def test_embed_texts_sync_returns_one_vector_per_text(self):
         from faultmaven.infrastructure.model_cache import ModelCache
 
         cache = ModelCache()
@@ -169,7 +169,7 @@ class TestAsyncEmbedBoundary:
         mock_model.encode.return_value = np.random.rand(3, 1024)
         cache._models["BAAI/bge-m3"] = mock_model
 
-        result = await cache.aembed_texts(["a", "b", "c"])
+        result = cache.embed_texts_sync(["a", "b", "c"])
 
         assert result is not None
         assert len(result) == 3
@@ -204,7 +204,7 @@ class TestAsyncEmbedBoundary:
             "faultmaven.infrastructure.model_cache.SENTENCE_TRANSFORMERS_AVAILABLE",
             False,
         ):
-            assert await cache.aembed_texts(["a"]) is None
+            assert cache.embed_texts_sync(["a"]) is None
             assert await cache.aembed_query("a") is None
 
     @pytest.mark.asyncio
@@ -223,7 +223,7 @@ class TestAsyncEmbedBoundary:
         loop_thread_id = threading.get_ident()
         encode_thread = {}
 
-        def slow_encode(_texts):
+        def slow_encode(_text):
             # Record the thread encode ran on — must NOT be the loop thread.
             encode_thread["id"] = threading.get_ident()
             time.sleep(0.05)
@@ -241,7 +241,7 @@ class TestAsyncEmbedBoundary:
             await asyncio.sleep(0)
             concurrent_tick["ran"] = True
 
-        await asyncio.gather(cache.aembed_texts(["content"]), concurrent_work())
+        await asyncio.gather(cache.aembed_query("content"), concurrent_work())
 
         assert concurrent_tick["ran"] is True
         assert encode_thread["id"] != loop_thread_id, (

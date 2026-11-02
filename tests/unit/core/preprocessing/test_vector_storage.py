@@ -152,7 +152,7 @@ class TestStoreInVectorDbBackground:
     @patch("faultmaven.infrastructure.model_cache.model_cache")
     async def test_successful_storage_with_bge_m3(self, mock_model_cache):
         # Mock the async embed boundary → two 1024-dim vectors, one per chunk.
-        mock_model_cache.aembed_texts = AsyncMock(
+        mock_model_cache.embed_texts_sync = MagicMock(
             return_value=np.random.rand(2, 1024).tolist()
         )
 
@@ -189,7 +189,7 @@ class TestStoreInVectorDbBackground:
         assert embeddings is not None
         assert len(embeddings) == 2
         assert len(embeddings[0]) == 1024
-        mock_model_cache.aembed_texts.assert_called_once()
+        mock_model_cache.embed_texts_sync.assert_called_once()
 
     @pytest.mark.asyncio
     @patch("faultmaven.infrastructure.model_cache.model_cache")
@@ -204,7 +204,7 @@ class TestStoreInVectorDbBackground:
         case's evidence index for good. Skipping leaves the collection writable
         once the model returns.
         """
-        mock_model_cache.aembed_texts = AsyncMock(return_value=None)
+        mock_model_cache.embed_texts_sync = MagicMock(return_value=None)
 
         mock_store = AsyncMock()
         mock_store.add_documents = AsyncMock()
@@ -240,7 +240,7 @@ class TestStoreInVectorDbBackground:
     @pytest.mark.asyncio
     @patch("faultmaven.infrastructure.model_cache.model_cache")
     async def test_scalar_metadata_filtered(self, mock_model_cache):
-        mock_model_cache.aembed_texts = AsyncMock(
+        mock_model_cache.embed_texts_sync = MagicMock(
             return_value=np.random.rand(1, 1024).tolist()
         )
 
@@ -277,7 +277,7 @@ class TestStoreInVectorDbBackground:
     @pytest.mark.asyncio
     @patch("faultmaven.infrastructure.model_cache.model_cache")
     async def test_error_handled_silently(self, mock_model_cache):
-        mock_model_cache.aembed_texts = AsyncMock(return_value=None)
+        mock_model_cache.embed_texts_sync = MagicMock(return_value=None)
 
         mock_store = AsyncMock()
         mock_store.add_documents = AsyncMock(side_effect=RuntimeError("DB down"))
@@ -295,7 +295,7 @@ class TestStoreInVectorDbBackground:
     @pytest.mark.asyncio
     @patch("faultmaven.infrastructure.model_cache.model_cache")
     async def test_chunk_index_and_total_in_metadata(self, mock_model_cache):
-        mock_model_cache.aembed_texts = AsyncMock(
+        mock_model_cache.embed_texts_sync = MagicMock(
             return_value=np.random.rand(2, 1024).tolist()
         )
 

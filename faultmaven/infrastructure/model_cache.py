@@ -27,7 +27,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from faultmaven.utils.optional_dependency import dependency_is_usable
 
@@ -343,61 +343,39 @@ class ModelCache:
 
         Whether the model is resident is decided by the documented policy
         (``LAZY_LOAD_ML_MODELS`` / ``PRELOAD_MODELS``, applied in the web
-        lifespan) or by the first real ``aembed_*`` call — not by this method.
+        lifespan) or by the first real embed — not by this method.
         """
         return self._models.get(BGE_M3_MODEL_ID)
 
-    async def aembed_texts(self, texts: List[str]) -> Optional[List[List[float]]]:
-        """Embed a LIST of texts with BGE-M3 → one 1024-dim vector per text.
-
-        THE async boundary for embedding: both the (lazy, cached) model load and
-        the CPU-bound ``encode`` run on a worker thread via ``asyncio.to_thread``,
-        so callers NEVER block the event loop. Batched — a single ``encode`` over
-        the list is far cheaper than N per-text passes (sentence-transformers
-        vectorizes). Returns ``None`` if the model is unavailable, so the caller
-        decides what that means — search paths raise (see
-        :mod:`faultmaven.infrastructure.embedding_guard`), the case indexing
-        path skips. What no caller may do is write or query in a *second*
-        embedding space: one space per collection, or the index is incoherent
-        (#941).
-
-        Prefer this / ``aembed_query`` over open-coding
-        ``await asyncio.to_thread(bge_model.encode, ...)`` at call sites: a bare
-        synchronous ``model.encode(...)`` on an async path silently blocks the
-        loop and, on k8s, trips the liveness probe.
-        """
-
-        return await asyncio.to_thread(self.embed_texts_sync, texts)
-
     def embed_texts_sync(self, texts: List[str]) -> Optional[List[List[float]]]:
-        """The body of :meth:`aembed_texts`, on the CALLING thread: the (lazy,
-        cached) load, then one batched ``encode``. None if the model is
-        unavailable.
+        """Embed a LIST of texts with BGE-M3 → one 1024-dim vector per text, on
+        the CALLING thread: the (lazy, cached) load, then one batched
+        ``encode``, far cheaper than N per-text passes.
 
-        For a worker thread only: ``aembed_texts``'s, or the KB indexing slot's
-        (``infrastructure.index_slot``, #2055). Never on the event loop.
+        Called only on an indexing slot's thread (``infrastructure.index_slot``,
+        #2055), through ``embedding_guard.embed_texts_or_raise``; a bare
+        synchronous ``encode`` on an async path blocks the loop and, on k8s,
+        trips the liveness probe. Returns ``None`` if the model is unavailable,
+        and the guard raises: what no caller may do is write in a *second*
+        embedding space (#941).
         """
         model = self.get_bge_m3_model()
         if model is None:
             return None
         return model.encode(texts).tolist()
 
-    def get_bge_m3_tokenizer(self) -> Optional[Tuple[Any, int]]:
-        """BGE-M3's tokenizer and its sequence limit, to count tokens (#2055).
-
-        The resident model's own tokenizer when the model is loaded. Otherwise
-        the tokenizer alone, from the local snapshot the image ships
-        (``local_files_only``: never the network), loaded once and kept for the
-        process. None when neither loads. Blocking: off the event loop.
+    def get_bge_m3_tokenizer(self) -> Optional[Any]:
+        """BGE-M3's tokenizer, to count tokens (#2055): an object of its own,
+        never the resident model's, whose truncation state a concurrent encode
+        changes. Loaded alone from the local snapshot the image ships
+        (``local_files_only``: never the network), once per process, after the
+        thread knobs are pinned, since the import brings torch. None when it
+        will not load. Blocking: off the event loop.
         """
-        model = self.peek_bge_m3_model()
-        tokenizer = getattr(model, "tokenizer", None) if model is not None else None
-        if tokenizer is not None:
-            limit = getattr(model, "max_seq_length", None)
-            return tokenizer, limit if isinstance(limit, int) else BGE_M3_MAX_SEQ_LENGTH
         with _TOKENIZER_LOCK:
             if self._tokenizer is None:
                 try:
+                    pin_thread_env()
                     from transformers import AutoTokenizer
 
                     self._tokenizer = AutoTokenizer.from_pretrained(
@@ -408,13 +386,16 @@ class ModelCache:
                         "BGE-M3 tokenizer unavailable: %s", type(exc).__name__
                     )
                     return None
-            return self._tokenizer, BGE_M3_MAX_SEQ_LENGTH
+            return self._tokenizer
 
     async def aembed_query(self, text: str) -> Optional[List[float]]:
         """Embed a SINGLE text (e.g. a search query) → one 1024-dim vector.
 
-        Same off-the-event-loop guarantees as :meth:`aembed_texts`; returns
-        ``None`` if BGE-M3 is unavailable.
+        The async boundary for queries: the (lazy, cached) load and the
+        CPU-bound ``encode`` run on a worker thread via ``asyncio.to_thread``,
+        so the event loop never blocks. Returns ``None`` if BGE-M3 is
+        unavailable, and the caller decides what that means (search raises,
+        :mod:`faultmaven.infrastructure.embedding_guard`).
         """
 
         def _run() -> Optional[List[float]]:

@@ -19,6 +19,7 @@ from faultmaven.infrastructure.persistence.database import (
     active_database_bounds,
 )
 from faultmaven.infrastructure.redis_client import is_fakeredis
+from faultmaven.models.exceptions import IndexAdmissionRefused
 
 # This module used to re-export ``get_session_id`` (and import
 # ``get_session_service`` without using it) from ``api.v1.dependencies``, to give
@@ -86,19 +87,23 @@ def database_timeouts_status(
 
 
 def knowledge_indexing_status(window_seconds: int) -> KnowledgeIndexingStatus:
-    """The KB indexing window beside this process's slot (#2055): how many
-    encodes it holds, and how long the running one has run."""
+    """The KB indexing window beside this process's slot (#2055): what it
+    holds, how long the running job has run, and its host lock."""
+    slot = index_slot.index_admission
     return KnowledgeIndexingStatus(
         window_seconds=window_seconds,
-        queued=index_slot.index_admission.queued(),
-        encoding_for_seconds=index_slot.index_admission.encoding_for_seconds(),
+        queued=slot.queued(),
+        encoding_for_seconds=slot.encoding_for_seconds(),
+        host_lock_available=slot.host_lock_available,
+        waiting_for_host_lock=slot.waiting_for_host_lock,
     )
 
 
-def indexing_retry_after_seconds() -> int:
-    """When the KB indexing this process holds should be done, in seconds: the
-    ``Retry-After`` of a ``KNOWLEDGE_INDEXING_BUSY`` refusal (#2055)."""
-    return index_slot.index_admission.retry_after_seconds()
+def indexing_busy_refusal(reason: str) -> IndexAdmissionRefused:
+    """A ``KNOWLEDGE_INDEXING_BUSY`` refusal of ``reason``, its wait read from
+    this process's queue as it stands (#2055)."""
+    slot = index_slot.index_admission
+    return index_slot.refusal(reason, wait=slot.retry_after_seconds(reason))
 
 
 def session_storage_backend_name(redis_client: Any) -> str:

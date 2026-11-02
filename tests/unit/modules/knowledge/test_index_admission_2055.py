@@ -126,14 +126,14 @@ def clock(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def world(monkeypatch, tmp_path, clock):
-    """2 cores, the model resident, the encode a double, window 0."""
-    assert index_admission.queued() == 0, "a ticket leaked from another test"
+async def world(monkeypatch, clock):
+    """2 cores, the model resident, the encode a double, window 0. Teardown
+    waits for every held encode to settle, then asserts no ticket leaked into
+    the process's slots, so a failing test cannot fail the next one's setup."""
     monkeypatch.setattr(
         "faultmaven.infrastructure.model_cache._cgroup_cpu_quota", lambda: 2.0
     )
     monkeypatch.setattr(model_cache, "peek_bge_m3_model", lambda: object())
-    monkeypatch.setattr(index_slot, "HOST_LOCK_PATH", str(tmp_path / "kb.lock"))
     encodes = Encodes(clock)
     monkeypatch.setattr(model_cache, "embed_texts_sync", encodes)
     tokens = AsyncMock(return_value=RUNBOOK_TOKENS)
@@ -141,6 +141,11 @@ def world(monkeypatch, tmp_path, clock):
     monkeypatch.setattr(get_settings().knowledge, "index_request_window_seconds", 0)
     yield SimpleNamespace(encodes=encodes, tokens=tokens)
     encodes.release.set()
+    for executor in (index_slot._KB_EXECUTOR, index_slot._EVIDENCE_EXECUTOR):
+        # Bounded: a slot left blocked fails the teardown, not the run.
+        await asyncio.wait_for(asyncio.wrap_future(executor.submit(lambda: None)), 30)
+    assert index_admission.queued() == 0, "a KB ticket leaked"
+    assert index_slot.evidence_slot.queued() == 0, "an evidence ticket leaked"
 
 
 @pytest.fixture

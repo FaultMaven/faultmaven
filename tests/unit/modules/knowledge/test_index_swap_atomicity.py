@@ -30,9 +30,8 @@ from faultmaven.modules.knowledge.domain.services.knowledge_service import (
 
 pytestmark = [pytest.mark.unit]
 
-_EMBED_TEXTS = "faultmaven.infrastructure.model_cache.model_cache.aembed_texts"
-# Update and repair encode on the KB indexing slot's thread (#2055).
-_ENCODE_ON_SLOT = "faultmaven.infrastructure.model_cache.model_cache.embed_texts_sync"
+# Every indexing encode runs on a slot's thread (#2055).
+_EMBED_TEXTS = "faultmaven.infrastructure.model_cache.model_cache.embed_texts_sync"
 #: The generation the indexer writes under (#2388).
 GEN = "9e" * 16
 
@@ -74,7 +73,7 @@ async def test_old_vectors_survive_when_embedding_fails():
     fails, the document is unrecoverable — this is the data loss in #945."""
     service = _service()
 
-    with patch(_EMBED_TEXTS, new=AsyncMock(return_value=None)):
+    with patch(_EMBED_TEXTS, new=MagicMock(return_value=None)):
         with pytest.raises(KnowledgeBaseError):
             await service._index_document_in_vector_store(
                 _document(), enterprise_id=STANDALONE_ENTERPRISE_ID, generation=GEN
@@ -93,7 +92,7 @@ async def test_unchunkable_content_also_deletes_nothing():
     document = _document()
     document.content = "   "
 
-    with patch(_EMBED_TEXTS, new=AsyncMock(return_value=[[0.1] * 1024])):
+    with patch(_EMBED_TEXTS, new=MagicMock(return_value=[[0.1] * 1024])):
         with pytest.raises(KnowledgeBaseError):
             await service._index_document_in_vector_store(
                 document, enterprise_id=STANDALONE_ENTERPRISE_ID, generation=GEN
@@ -109,7 +108,7 @@ async def test_the_success_path_adds_its_generation_and_deletes_nothing():
     chunks are served."""
     service = _service()
 
-    with patch(_EMBED_TEXTS, new=AsyncMock(return_value=[[0.1] * 1024])):
+    with patch(_EMBED_TEXTS, new=MagicMock(return_value=[[0.1] * 1024])):
         chunks = await service._index_document_in_vector_store(
             _document(), enterprise_id=STANDALONE_ENTERPRISE_ID, generation=GEN
         )
@@ -133,7 +132,7 @@ async def test_the_success_path_adds_its_generation_and_deletes_nothing():
 async def test_indexing_failure_raises_rather_than_returning_zero():
     service = _service()
 
-    with patch(_EMBED_TEXTS, new=AsyncMock(return_value=None)):
+    with patch(_EMBED_TEXTS, new=MagicMock(return_value=None)):
         with pytest.raises(KnowledgeBaseError) as excinfo:
             await service._index_document_in_vector_store(
                 _document(), enterprise_id=STANDALONE_ENTERPRISE_ID, generation=GEN
@@ -152,7 +151,7 @@ async def test_the_trailing_blanket_handler_does_not_restore_the_sentinel():
         side_effect=RuntimeError("chromadb unreachable")
     )
 
-    with patch(_EMBED_TEXTS, new=AsyncMock(return_value=[[0.1] * 1024])):
+    with patch(_EMBED_TEXTS, new=MagicMock(return_value=[[0.1] * 1024])):
         result = None
         try:
             result = await service._index_document_in_vector_store(
@@ -200,7 +199,7 @@ async def test_update_document_metadata_does_not_report_success_on_failure():
         "knowledge_item_repository.DatabaseKnowledgeItemRepository",
         return_value=repo,
     ):
-        with patch(_ENCODE_ON_SLOT, new=MagicMock(return_value=None)):
+        with patch(_EMBED_TEXTS, new=MagicMock(return_value=None)):
             with pytest.raises(KnowledgeBaseError):
                 await service.update_document_metadata(
                     document_id="doc-1", content="# New content\n\nUpdated."
@@ -246,7 +245,7 @@ async def test_boot_repair_still_tolerates_an_unavailable_embedder():
     session.__aexit__ = AsyncMock(return_value=False)
     service._db_session_factory = MagicMock(return_value=session)
 
-    with patch(_ENCODE_ON_SLOT, new=MagicMock(return_value=None)):
+    with patch(_EMBED_TEXTS, new=MagicMock(return_value=None)):
         chunks = await service.reindex_missing_vectors("doc-1")
 
     assert chunks == 0, "boot repair must degrade, not raise"
@@ -291,7 +290,7 @@ async def test_boot_repair_counts_a_row_with_no_tenant_as_a_failed_repair(
     service._db_session_factory = MagicMock(return_value=session)
     embed = MagicMock(return_value=[[0.1] * 1024])
 
-    with caplog.at_level("ERROR"), patch(_ENCODE_ON_SLOT, new=embed):
+    with caplog.at_level("ERROR"), patch(_EMBED_TEXTS, new=embed):
         chunks = await service.reindex_missing_vectors("doc-no-tenant")
 
     assert chunks == 0, "a refused repair must degrade to 0, not raise"
@@ -363,7 +362,7 @@ async def test_no_tenant_is_refused_before_the_embedder_is_awaited(enterprise_id
     so the old vectors are untouched. A ``ValueError``: the caller's programming
     error, not the transient ``KNOWLEDGE_INDEXING_FAILED``."""
     service = _service()
-    embed = AsyncMock(return_value=[[0.1] * 1024])
+    embed = MagicMock(return_value=[[0.1] * 1024])
 
     with patch(_EMBED_TEXTS, new=embed):
         with pytest.raises(ValueError, match="carries no enterprise_id"):
@@ -371,7 +370,7 @@ async def test_no_tenant_is_refused_before_the_embedder_is_awaited(enterprise_id
                 _document(), enterprise_id=enterprise_id, generation=GEN
             )
 
-    embed.assert_not_awaited()
+    embed.assert_not_called()
     assert service._vector_store.delete_documents_by_parent_id.await_count == 0
     assert service._vector_store.add_documents.await_count == 0
 
@@ -409,7 +408,7 @@ async def test_a_named_tenant_with_no_store_is_still_the_quiet_zero():
 async def test_every_chunk_carries_the_enterprise_it_was_given():
     service = _service()
 
-    with patch(_EMBED_TEXTS, new=AsyncMock(return_value=[[0.1] * 1024])):
+    with patch(_EMBED_TEXTS, new=MagicMock(return_value=[[0.1] * 1024])):
         await service._index_document_in_vector_store(
             _document(), enterprise_id="ent-given", generation=GEN
         )

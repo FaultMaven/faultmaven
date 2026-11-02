@@ -33,8 +33,8 @@ routes through it (#2055): ``embed_texts_or_raise`` bounds the KB indexer
 (``KnowledgeService._index_document_in_vector_store``, the one #953 was about),
 which runs its encode on the KB indexing slot (``infrastructure.index_slot``),
 and the case evidence indexer (``core/preprocessing/vector_storage.py``, live
-via the ``vectorize_file`` agent tool), which runs on the default executor. The
-bound is sized from the batch's BGE-M3 token count, not its chunk count: a
+via the ``vectorize_file`` agent tool), whose encodes run one at a time on the
+evidence slot beside it, never on the default executor. The bound is sized from the batch's BGE-M3 token count, not its chunk count: a
 chunk can hold 50 tokens or 3,000, and the per-chunk rule allowed a
 97k-character runbook 302 s of the 373 s it took (#2055).
 
@@ -42,7 +42,8 @@ The two bounds are deliberately DIFFERENT numbers, and this module is where
 that stays visible. A query may give up before a cold load finishes, because
 the load continues in the background and the retry finds it warm; an index may
 not, because it fails a write rather than a read. Same policy, same error
-codes, different tolerance — see the constants below.
+codes, different tolerance — see ``EMBED_TIMEOUT_SECONDS`` below and
+``index_slot.EMBED_BATCH_LOAD_SECONDS``.
 
 **Call these BEFORE entering** ``BaseExternalClient.call_external``. The
 embedding is a local model call, not the ChromaDB round-trip the retry and
@@ -56,9 +57,10 @@ turn budget.
 
 import asyncio
 import logging
-import os
+import threading
 from typing import Any, List, Optional, Sequence
 
+from faultmaven.infrastructure import index_slot
 from faultmaven.models.exceptions import KnowledgeBaseError
 
 logger = logging.getLogger(__name__)
@@ -74,50 +76,17 @@ logger = logging.getLogger(__name__)
 EMBED_TIMEOUT_SECONDS = 10.0
 
 # The batch equivalent does NOT reuse that number, because a write is not cheap
-# to repeat. Indexing is the last step before a document is saved, so a bound
-# that fires during a HEALTHY cold load doesn't degrade a read — it fails the
-# write, and on the publish path takes the freshly-created row down with it.
-#
-# So the constant term has to cover the load this repo documents rather than the
-# one the query path is willing to skip: 60-120s cold (`model_cache.py`,
-# `PRELOAD_MODELS`, which is a supported opt-out precisely because operators
-# accept that latency). 180s is that worst case plus headroom.
-EMBED_BATCH_LOAD_SECONDS = 180.0
-
-# Core-seconds BGE-M3 spends encoding one token. Measured on the image under
-# ``--cpus=2 --network none``, model warm, torch pinned to 2 threads (what
-# ``configure_inference_threads`` pins on Cloud), chunked by ``ContentChunker``
-# (round-49 probe, #2055 comment 6542538393):
-#
-#   | document                       | chars  | chunks | tokens | embed | ms/token |
-#   |--------------------------------|--------|--------|--------|-------|----------|
-#   | shipped runbooks, concatenated | 96,737 | 61     | 29,746 | 373 s | 12.5     |
-#   | gateway log extract            | 99,500 | 49     | 45,861 | 504 s | 11.0     |
-#
-# 12.5 ms a token on 2 cores is 25 core-ms, the worse row. Tokens predicted the
-# cost within 14%; bytes under-counted log text by 1.3x; and the 61-chunk
-# document took less time than the 49-chunk one.
-INDEX_CORE_SECONDS_PER_TOKEN = 0.025
-
-# The most cores the rate is credited with. It was measured on 2; encode does
-# not scale linearly past a few threads, so a bigger node is not assumed faster.
-INDEX_MAX_CORES = 4.0
+# to repeat: a bound that fires during a HEALTHY cold load fails the write. So
+# its constant term covers the load the query path is willing to skip
+# (``index_slot.EMBED_BATCH_LOAD_SECONDS``, beside the measured rate the slot's
+# admission shares).
 
 # One-shot flag: the byte fallback is logged once per process, not per embed.
 _byte_fallback_logged = False
 
-
-def index_cores() -> float:
-    """The cores an encode gets: the container's CPU quota (a fraction counts as
-    a fraction), else the node's core count, capped at ``INDEX_MAX_CORES``."""
-    from faultmaven.infrastructure.model_cache import _cgroup_cpu_quota
-
-    return min(_cgroup_cpu_quota() or float(os.cpu_count() or 1), INDEX_MAX_CORES)
-
-
-def index_estimate_seconds(tokens: int) -> float:
-    """Seconds a warm model takes to encode ``tokens`` BGE-M3 tokens here."""
-    return max(tokens, 0) * INDEX_CORE_SECONDS_PER_TOKEN / index_cores()
+# One count at a time: a fast tokenizer's truncation state is per object, and
+# two counts at once on one object corrupt each other's.
+_TOKENIZER_CALLS = threading.Lock()
 
 
 def batch_embed_timeout(tokens: int) -> float:
@@ -136,22 +105,28 @@ def batch_embed_timeout(tokens: int) -> float:
     A process killed mid-swap is not covered by that, or by anything short of
     2PC.
     """
-    return EMBED_BATCH_LOAD_SECONDS + 2.0 * index_estimate_seconds(tokens)
+    return (
+        index_slot.EMBED_BATCH_LOAD_SECONDS
+        + 2.0 * index_slot.index_estimate_seconds(tokens)
+    )
 
 
 def _count_index_tokens_sync(texts: List[str]) -> Optional[int]:
-    from faultmaven.infrastructure.model_cache import model_cache
+    from faultmaven.infrastructure.model_cache import BGE_M3_MAX_SEQ_LENGTH, model_cache
 
     try:
-        loaded = model_cache.get_bge_m3_tokenizer()
-        if loaded is None:
+        tokenizer = model_cache.get_bge_m3_tokenizer()
+        if tokenizer is None:
             return None
-        tokenizer, max_length = loaded
         if not texts:
             return 0
-        encoded = tokenizer(
-            texts, add_special_tokens=True, truncation=True, max_length=max_length
-        )["input_ids"]
+        with _TOKENIZER_CALLS:
+            encoded = tokenizer(
+                texts,
+                add_special_tokens=True,
+                truncation=True,
+                max_length=BGE_M3_MAX_SEQ_LENGTH,
+            )["input_ids"]
         counts = [len(ids) for ids in encoded]
     except Exception as exc:
         logger.debug("BGE-M3 token count failed: %s", type(exc).__name__)
@@ -162,9 +137,10 @@ def _count_index_tokens_sync(texts: List[str]) -> Optional[int]:
 async def count_index_tokens(texts: Sequence[str]) -> Optional[int]:
     """BGE-M3 tokens in ``texts``, counted the way the encode sees them.
 
-    The model's own tokenizer, special tokens included and each text truncated
-    at the model's ``max_seq_length``, summed. Off the event loop. None when the
-    tokenizer cannot load (``ModelCache.get_bge_m3_tokenizer``), which never
+    BGE-M3's tokenizer, special tokens included and each text truncated at the
+    model's sequence limit, summed: a tokenizer object of the count's own, never
+    the resident model's, called one count at a time. Off the event loop. None
+    when it cannot load (``ModelCache.get_bge_m3_tokenizer``), which never
     touches the network.
     """
     return await asyncio.to_thread(_count_index_tokens_sync, list(texts))
@@ -268,7 +244,7 @@ async def embed_texts_or_raise(
     The write-side counterpart to :func:`embed_query_or_raise`. It exists for
     the same reason that one does: the indexing path had its own hand-rolled
     ``if embeddings is None: raise``, which refused correctly but carried no
-    time bound at all — ``aembed_texts`` handled "the model is unavailable" and
+    time bound at all — the batch embed handled "the model is unavailable" and
     not "the model never returns" (#953). One module owning both halves is what
     keeps the query and index paths from drifting into two policies.
 
@@ -281,11 +257,10 @@ async def embed_texts_or_raise(
         operation: Call-site name for the log line (e.g. "update_document").
         log: Logger to report on. Defaults to this module's.
         ticket: The KB indexing slot's ``IndexTicket``
-            (``infrastructure.index_slot``, which imports this module):
-            the encode runs on the slot, one at a time per host, and the bound
-            also covers the guard bounds of the encodes queued ahead of it.
-            None (evidence vectorization) runs on the default executor, bounded
-            by its own estimate alone.
+            (``infrastructure.index_slot``): the encode runs on that slot, one
+            at a time per host. None (evidence vectorization) takes a ticket on
+            the evidence slot, one encode at a time per process. Either way the
+            bound also covers the guard bounds of the encodes queued ahead.
 
     There is no opt-out. #953 asked whether the boot repair path should stay
     unbounded on the grounds that ``kb_init``'s per-boot chunk budget already
@@ -309,30 +284,49 @@ async def embed_texts_or_raise(
 
     Same caveat as the query path: the bound is on the CALLER, not the work.
     An encode that has started runs on its thread to completion, which nothing
-    can cancel. A caller that gives up while still queued cancels its encode,
-    so it never runs. A slot encode keeps the slot until its thread settles,
-    whatever its caller did. What this guarantees is that the caller returns,
+    can cancel. A caller that gives up while its encode is still queued, or
+    still waiting for the host lock, stops it, so it never runs. An encode
+    keeps its slot until its thread settles, whatever its caller did. What this guarantees is that the caller returns,
     not that the encode stops.
     """
-    from faultmaven.infrastructure.model_cache import model_cache
-
     log = log or logger
 
     tokens = await _guard_tokens(texts, ticket.tokens if ticket is not None else None)
     timeout = batch_embed_timeout(tokens)
-    future = None
     if ticket is None:
-        bound = timeout
-        work = model_cache.aembed_texts(texts)
+        async with index_slot.evidence_slot.admit_forced(texts, tokens) as evidence:
+            embeddings = await _encode_on(
+                evidence, texts, timeout, subject, operation, log
+            )
     else:
-        future, ahead = ticket.run(texts, guard_seconds=timeout)
-        bound = timeout + ahead
-        work = asyncio.wrap_future(future)
+        embeddings = await _encode_on(ticket, texts, timeout, subject, operation, log)
+
+    if embeddings is None:
+        log.error(f"BGE-M3 model unavailable for {operation}")
+        raise KnowledgeBaseError(
+            f"{subject} unavailable: the embedding model could not be loaded",
+            error_code="KNOWLEDGE_EMBEDDER_UNAVAILABLE",
+        )
+
+    return embeddings
+
+
+async def _encode_on(
+    ticket: Any,
+    texts: List[str],
+    timeout: float,
+    subject: str,
+    operation: str,
+    log: logging.Logger,
+) -> Optional[List[List[float]]]:
+    """Run the encode on ``ticket``'s slot and wait for it, bounded by its own
+    guard plus the guard bounds still outstanding ahead of it."""
+    future, ahead = ticket.run(texts, guard_seconds=timeout)
+    bound = timeout + ahead
     try:
-        embeddings = await asyncio.wait_for(work, timeout=bound)
+        return await asyncio.wait_for(asyncio.wrap_future(future), timeout=bound)
     except asyncio.TimeoutError:
-        # ``cancel`` succeeds only on an encode that never started.
-        if future is not None and future.cancel():
+        if ticket.abandon():  # still queued, or still waiting for the host lock
             log.error(
                 f"BGE-M3 batch embedding for {operation} waited {bound:.0f}s "
                 f"for other indexing on this server and never started"
@@ -344,7 +338,7 @@ async def embed_texts_or_raise(
             )
         log.error(
             f"BGE-M3 batch embedding timed out after {bound:.0f}s for "
-            f"{operation} ({len(texts)} texts, {tokens} tokens)"
+            f"{operation} ({len(texts)} texts)"
         )
         raise KnowledgeBaseError(
             f"{subject} unavailable: embedding {len(texts)} chunks timed "
@@ -352,16 +346,5 @@ async def embed_texts_or_raise(
             error_code="KNOWLEDGE_EMBEDDER_TIMEOUT",
         )
     except asyncio.CancelledError:
-        # A queued encode of a request that went away never runs.
-        if future is not None:
-            future.cancel()
+        ticket.abandon()  # a request that went away: its queued encode never runs
         raise
-
-    if embeddings is None:
-        log.error(f"BGE-M3 model unavailable for {operation}")
-        raise KnowledgeBaseError(
-            f"{subject} unavailable: the embedding model could not be loaded",
-            error_code="KNOWLEDGE_EMBEDDER_UNAVAILABLE",
-        )
-
-    return embeddings

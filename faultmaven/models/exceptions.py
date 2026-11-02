@@ -83,16 +83,23 @@ class IndexAdmissionRefused(FaultMavenError):
     """A KB document refused before anything is written: indexing it would not
     fit the request window (#2055, ``infrastructure.index_slot``).
 
-    **413** ``KNOWLEDGE_DOCUMENT_TOO_LARGE``: the document alone cannot fit, so
-    no retry can; ``message`` gives its size and the limit, written for the
-    person who sent it. **503** ``KNOWLEDGE_INDEXING_BUSY``: the indexing
-    queued ahead of it is the obstacle, and a retry after
-    ``retry_after_seconds`` may fit. Not a ``KnowledgeBaseError``, so no arm
-    that answers an indexing failure answers this.
+    **413** ``KNOWLEDGE_DOCUMENT_TOO_LARGE`` (``reason`` ``too_large``): the
+    document alone cannot fit, so no retry can; ``message`` gives its size and
+    the limit, written for the person who sent it. **503**
+    ``KNOWLEDGE_INDEXING_BUSY``: the indexing queued ahead (``busy``), the
+    model still loading (``loading``) or an encode stuck past its time bound
+    (``hung``) is the obstacle, and a retry after ``retry_after_seconds`` may
+    fit. Not a ``KnowledgeBaseError``, so no arm that answers an indexing
+    failure answers this. Built by ``index_slot.refusal``.
     """
 
     def __init__(
-        self, message: str, *, status_code: int, retry_after_seconds: Optional[int]
+        self,
+        message: str,
+        *,
+        status_code: int,
+        reason: str,
+        retry_after_seconds: Optional[int],
     ) -> None:
         super().__init__(
             message,
@@ -103,6 +110,7 @@ class IndexAdmissionRefused(FaultMavenError):
             ),
         )
         self.status_code = status_code
+        self.reason = reason
         self.retry_after_seconds = retry_after_seconds
 
 

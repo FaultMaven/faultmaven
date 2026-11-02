@@ -943,8 +943,9 @@ class KnowledgeService:
                 upload/draft path. Per-chunk metadata is derived from the
                 document frontmatter either way (it is not carried in the pack).
             ticket: The KB indexing slot's ticket (:meth:`_index_ticket`,
-                #2055): its chunks are the ones embedded, on the slot. None
-                chunks here and embeds off the slot.
+                #2055): its chunks are the ones embedded, on that slot. None
+                chunks here and embeds with no KB ticket; every production
+                caller passes one.
         Returns:
             Number of chunks indexed. Never 0 for a failure — see Raises.
 

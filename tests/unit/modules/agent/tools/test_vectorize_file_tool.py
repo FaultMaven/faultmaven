@@ -456,7 +456,7 @@ class TestDataTypeReadBoundary:
                 ).store_in_vector_db_background,
             ) as spy,
         ):
-            model_cache.aembed_texts = AsyncMock(
+            model_cache.embed_texts_sync = MagicMock(
                 side_effect=lambda texts: [[0.0] * 4 for _ in texts]
             )
             result = await tool.execute_with_context(

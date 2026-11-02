@@ -2382,22 +2382,27 @@ asked to accept, and it belongs to a person.
 #   `KNOWLEDGE_DOCUMENT_TOO_LARGE` (413) when indexing the document alone would
 #   not fit the window (split it); `KNOWLEDGE_INDEXING_BUSY` (503, with
 #   `Retry-After`) when the indexing already queued on the server leaves no
-#   room for it. Nothing is saved either way. At the default window of 0
-#   neither is sent.
+#   room for it, when it fits only once a cold model has loaded (the load
+#   starts; `Retry-After` is the load's remaining estimate), or while an
+#   encode is stuck past its time bound (`Retry-After: 60`). Nothing is saved
+#   either way. At the default window of 0 neither is sent.
 # * `PUT /knowledge/documents/{document_id}` holds `content` to the draft
 #   bound (100,000 characters), as upload does: **422**, before any embed. A
 #   `ValidationException` there is now the global 422, where it was a 500.
 # * `POST /knowledge/documents/bulk-update` declares its **422**: an `updates`
 #   naming `content` is refused, and nothing is updated; content changes
-#   through `PUT`. The declaration replaces the generated `HTTPValidationError`
-#   one, as `PUT /cases/{case_id}/driver`'s does: the refusal's body is the
-#   global `ValidationException` handler's, not that schema.
+#   through `PUT`.
+# * Both routes' declared 422 replaces the generated `HTTPValidationError`
+#   one, as `PUT /cases/{case_id}/driver`'s does: the refusals' bodies are the
+#   global `ValidationException` handler's (and PUT's credential refusal its
+#   own `detail`), not that schema.
 # * `POST /knowledge/drafts/verify-batch` gains the per-draft status
 #   `deferred` and a `deferred` count: with a window set, the drafts the rest
 #   of the batch's window cannot fit are not verified, and verifying one again
 #   runs it in a fresh window. A draft too large for any window is `failed`.
 # * `GET /admin/config/status` gains `knowledge_indexing` (`window_seconds`,
-#   `queued`, `encoding_for_seconds`), a new `KnowledgeIndexingStatus` schema.
+#   `queued`, `encoding_for_seconds`, `host_lock_available`,
+#   `waiting_for_host_lock`), a new `KnowledgeIndexingStatus` schema.
 #
 # MINOR because every client survives it: no client sends `content` to
 # bulk-update (faultmaven-dashboard, faultmaven-copilot and

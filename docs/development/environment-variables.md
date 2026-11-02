@@ -551,8 +551,11 @@ already queued on the server leaves no room for it, and `verify-batch` returns
 the drafts the rest of its window cannot fit as `deferred`. The estimate is the
 document's BGE-M3 token count at a measured 25 core-ms a token, divided by the
 CPU quota (at most 4 cores). KB indexing encodes run one at a time per
-container. The window, the queue and the running encode's age are reported
-under `knowledge_indexing` on `GET /api/v1/admin/config/status`.
+container. A document that fits only once a cold model has loaded starts the
+load and is answered 503 until it has; while an encode is past its time bound
+every document is answered 503. The window, the queue, the running encode's
+age and the host lock's state are reported under `knowledge_indexing` on
+`GET /api/v1/admin/config/status`.
 
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|

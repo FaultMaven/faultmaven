@@ -508,9 +508,11 @@ async def index_admission_refused_handler(
     **413** ``KNOWLEDGE_DOCUMENT_TOO_LARGE``: the document alone cannot fit;
     the detail is the refusal's own sentence, written for the person who sent
     it (its size and the limit). **503** ``KNOWLEDGE_INDEXING_BUSY`` +
-    ``Retry-After``: the indexing queued ahead of it is the obstacle. The wait
-    is read from the queue as it stands, the figure the refusal was computed
-    from, so nothing the exception carries reaches a 5xx (#1400).
+    ``Retry-After``: the indexing queued ahead, the model loading, or an encode
+    stuck past its time bound is the obstacle. The 503 is rebuilt by the same
+    sentence builder (``index_slot.refusal``) for the refusal's reason, its
+    wait read from the queue at response time, so nothing the exception
+    carries reaches a 5xx (#1400).
     """
     logger.info(
         "Indexing refused (%s): %s %s",
@@ -519,28 +521,28 @@ async def index_admission_refused_handler(
         request.url.path,
     )
     if exc.status_code == 413:
-        refusal = HTTPException(
+        answer = HTTPException(
             status_code=413,
             detail=exc.message,
             headers={"x-error-code": "KNOWLEDGE_DOCUMENT_TOO_LARGE"},
         )
     else:
-        from faultmaven.api.dependencies import indexing_retry_after_seconds
+        from faultmaven.api.dependencies import indexing_busy_refusal
 
-        wait = indexing_retry_after_seconds()
-        refusal = HTTPException(
+        busy = indexing_busy_refusal(
+            "loading"
+            if exc.reason == "loading"
+            else ("hung" if exc.reason == "hung" else "busy")
+        )
+        answer = HTTPException(
             status_code=503,
-            detail=(
-                "Other indexing on this server leaves no room for this document "
-                f"within this request. Nothing was saved; retry in about {wait} "
-                "seconds."
-            ),
+            detail=busy.message,
             headers={
                 "x-error-code": "KNOWLEDGE_INDEXING_BUSY",
-                "Retry-After": str(wait),
+                "Retry-After": str(busy.retry_after_seconds),
             },
         )
-    return await http_exception_handler(request, refusal)
+    return await http_exception_handler(request, answer)
 
 
 async def item_title_scrub_unavailable_handler(
