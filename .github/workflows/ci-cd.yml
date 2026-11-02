@@ -43,6 +43,14 @@ permissions:
 #     a sha-pinned action, so its github-actions entry in .github/dependabot.yml
 #     is what proposes new releases, fixes included.
 
+# No pip cache on any setup-python step (`cache: 'pip'`). Measured
+# 2026-11-02: a dependency install took 75-123 s whether the pip cache was
+# restored or not, while each PR ref saved its own ~2.9 GB copy per lockfile
+# (main never saves one: these jobs are skipped on a push the merge queue
+# verified). Two open PRs held the repository past its 10 GB Actions cache
+# limit, and eviction took main's Docker layer cache with it, so `build`
+# rebuilt the image from scratch (~576 s instead of ~150 s) and twice ran its
+# runner out of disk. Do not re-add it without a cache that main writes.
 jobs:
   # ============================================================================
   # DOCS-ONLY DETECTION
@@ -272,8 +280,6 @@ jobs:
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
-          cache: 'pip'
-          cache-dependency-path: 'requirements/test.txt'
 
       - name: Install Dependencies from Lockfile
         run: |
@@ -394,8 +400,6 @@ jobs:
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
-          cache: 'pip'
-          cache-dependency-path: 'requirements/test.txt'
 
       - name: Install Standalone (minimal deps) from Lockfile
         run: |
@@ -583,8 +587,6 @@ jobs:
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
-          cache: 'pip'
-          cache-dependency-path: 'requirements/cloud.txt'
 
       - name: Install Cloud (full deps) from Lockfile
         run: |
@@ -788,8 +790,6 @@ jobs:
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
-          cache: 'pip'
-          cache-dependency-path: 'requirements/cloud.txt'
 
       - name: Install full deps from Lockfile
         run: |
@@ -882,8 +882,6 @@ jobs:
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
-          cache: 'pip'
-          cache-dependency-path: 'requirements/cloud.txt'
 
       - name: Install full deps from Lockfile
         run: |
@@ -952,8 +950,6 @@ jobs:
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
-          cache: 'pip'
-          cache-dependency-path: 'requirements/dev.txt'
 
       - name: Install Dependencies from Lockfile
         run: |
@@ -1006,8 +1002,6 @@ jobs:
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
-          cache: 'pip'
-          cache-dependency-path: 'requirements/dev.txt'
 
       - name: Install Dependencies from Lockfile
         run: |
@@ -1127,8 +1121,6 @@ jobs:
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
-          cache: 'pip'
-          cache-dependency-path: 'requirements/test.txt'
 
       - name: Run Packaging Tests
         run: |
@@ -1195,12 +1187,13 @@ jobs:
           # install, the ~2GB bundled BGE-M3 model) are content-addressed and
           # only rebuild when requirements/Dockerfile change, so a PR or queue
           # run restores them from main's cache, which publish-docker.yml
-          # writes after every merge. This job writes none. A PR or queue ref's
-          # cache is readable by that ref alone, and each full build here wrote
-          # ~2GB of it (cache-to mode=max). That held the repository over its
-          # 10 GB Actions cache limit (15.8 GB on 2026-11-02), so
-          # least-recently-used eviction dropped main's layers and most builds
-          # rebuilt everything, the full builds that ran the runner out of disk.
+          # writes after every merge. This job writes none: a PR or queue
+          # ref's cache is readable by that ref alone, and each full build here
+          # wrote ~2GB of it (cache-to mode=max). With the per-PR pip caches
+          # (see the note above `jobs:`) that held the repository over its
+          # 10 GB Actions cache limit (15.8 GB on 2026-11-02), so eviction
+          # dropped main's layers and most builds rebuilt everything: the full
+          # builds that ran the runner out of disk.
           cache-from: type=gha
 
   # ============================================================================
@@ -1226,7 +1219,6 @@ jobs:
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
-          cache: 'pip'
 
       - name: Install bandit
         # Pinned: bandit gates on its raw exit code, so an unpinned release
