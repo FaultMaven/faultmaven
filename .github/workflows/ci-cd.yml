@@ -760,7 +760,12 @@ jobs:
       && needs.code-quality.result == 'success'
       && needs.changes.outputs.docs_only != 'true' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # 25, not 15: the job usually takes 6-7 min, but its `pip install -r
+    # requirements/cloud.txt` downloads ~3 GB from PyPI (torch with its CUDA
+    # wheels), and on a slow runner that alone took 589 s (run 41506167045,
+    # job 14.8 min against a 15 min cap). A cancelled required check blocks
+    # the merge with no diagnostic.
+    timeout-minutes: 25
     name: Test PostgreSQL Integration
 
     services:
@@ -849,7 +854,8 @@ jobs:
       && needs.code-quality.result == 'success'
       && needs.changes.outputs.docs_only != 'true' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # 25 for the reason given on test-postgres: the same ~3 GB install.
+    timeout-minutes: 25
     name: Test PostgreSQL Integration (FIPS, PostgreSQL 18)
 
     services:
@@ -1166,12 +1172,12 @@ jobs:
       # then `load: true` and the cache export) has run it out of space,
       # "no space left on device" while writing the model: runs 41396984677
       # and 41439385339, both on 2026-11-02. Remove the preinstalled
-      # toolchains this job never uses before building; the two `df` lines
-      # show what that frees.
-      # In the background: the deletion takes ~60 s and the build's large
-      # writes come minutes later, so it overlaps the buildx setup and the
-      # early layers instead of delaying the build (the job's processes run
-      # until the job ends). "Disk space after the build" shows the result.
+      # toolchains this job never uses (~22 GB). In the background: the
+      # deletion takes ~60 s and the build's large writes come minutes later,
+      # so it overlaps the buildx setup and the early layers instead of
+      # delaying the build (a step's background processes run until the job
+      # ends). The `df` here is before it; "Disk space after the build" shows
+      # what was left once the build finished.
       - name: Free runner disk space
         run: |
           df -h /
