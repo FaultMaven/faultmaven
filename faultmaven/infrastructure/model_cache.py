@@ -227,6 +227,7 @@ class ModelCache:
                     cls._instance._models = {}
                     cls._instance._load_info: Dict[str, ModelLoadInfo] = {}
                     cls._instance._tokenizer = None
+                    cls._instance._bge_m3_loading = False
         return cls._instance
 
     def __init__(self):
@@ -276,6 +277,7 @@ class ModelCache:
             if model_key in self._models:
                 return self._models[model_key]
 
+            self._bge_m3_loading = True
             start_time = time.time()
             try:
                 # Resolve the class FIRST. This is the only step that proves
@@ -327,6 +329,13 @@ class ModelCache:
                 )
                 self.logger.error(f"Failed to load BGE-M3 model: {e}")
                 return None
+            finally:
+                self._bge_m3_loading = False
+
+    def is_bge_m3_loading(self) -> bool:
+        """Whether a BGE-M3 load is running now, from its start under the
+        load lock until it records its ``ModelLoadInfo`` (#2055)."""
+        return self._bge_m3_loading
 
     def peek_bge_m3_model(self) -> Optional["SentenceTransformer"]:
         """Return BGE-M3 **only if it is already resident**; never load it.

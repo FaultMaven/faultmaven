@@ -14,6 +14,7 @@ import os
 import subprocess
 import sys
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -26,9 +27,14 @@ from faultmaven.core.preprocessing.vector_storage import (
     store_in_vector_db_background,
 )
 from faultmaven.infrastructure import embedding_guard, index_slot
+from faultmaven.infrastructure import model_cache as model_cache_module
 from faultmaven.infrastructure.embedding_guard import embed_texts_or_raise
 from faultmaven.infrastructure.index_slot import IndexAdmission, index_max_tokens
-from faultmaven.infrastructure.model_cache import model_cache
+from faultmaven.infrastructure.model_cache import (
+    BGE_M3_MODEL_ID,
+    ModelLoadInfo,
+    model_cache,
+)
 from faultmaven.models.exceptions import IndexAdmissionRefused, KnowledgeBaseError
 
 pytestmark = [pytest.mark.unit]
@@ -203,6 +209,8 @@ def cold(cloud, monkeypatch):
     monkeypatch.setattr(
         model_cache, "peek_bge_m3_model", lambda: object() if state.resident else None
     )
+    monkeypatch.setattr(model_cache, "_load_info", {})
+    monkeypatch.setattr(model_cache, "_bge_m3_loading", False)
     yield state
     state.loaded.set()
 
@@ -232,6 +240,77 @@ async def test_a_cold_band_refusal_starts_one_load_and_a_retry_after_it_fits(
     assert (second.reason, second.retry_after_seconds) == ("loading", 130)
     assert (cold.loads, cold.triggered_by) == (1, "index-admission")
     assert ticket.estimate_seconds == pytest.approx(tokens * 0.025 / 2)
+
+
+def test_after_a_failed_load_a_document_that_fits_with_the_load_is_admitted(
+    cloud, monkeypatch
+):
+    """The failed-load refusal is the cold band's alone: a small document that
+    fits with the load charge is admitted as before, and its encode loads."""
+    failed = ModelLoadInfo(
+        model_name=BGE_M3_MODEL_ID,
+        loaded_at=datetime.now(timezone.utc),
+        load_time_seconds=0.0,
+        error="OSError",
+    )
+    monkeypatch.setattr(model_cache, "peek_bge_m3_model", lambda: None)
+    monkeypatch.setattr(model_cache, "_load_info", {BGE_M3_MODEL_ID: failed})
+    monkeypatch.setattr(model_cache, "_bge_m3_loading", False)
+
+    ticket = IndexAdmission().admit(["c"], 1_000, window_seconds=WINDOW)
+
+    assert ticket.estimate_seconds == pytest.approx(12.5 + 180)
+
+
+@pytest.fixture
+def real_load(monkeypatch, clock):
+    """The real ``get_bge_m3_model`` on an empty cache, its model class a
+    stand-in (no torch): it raises while ``fails``, else waits for
+    ``release`` and returns a model."""
+    state = SimpleNamespace(
+        fails=True, started=threading.Event(), release=threading.Event()
+    )
+
+    def _model_class(_name):
+        if state.fails:
+            raise OSError("no snapshot")
+        state.started.set()
+        state.release.wait(30)
+        return object()
+
+    monkeypatch.setattr(
+        "faultmaven.infrastructure.model_cache._cgroup_cpu_quota", lambda: 2.0
+    )
+    monkeypatch.setattr(model_cache_module, "SENTENCE_TRANSFORMERS_AVAILABLE", True)
+    monkeypatch.setattr(
+        model_cache_module, "_sentence_transformer_class", lambda: _model_class
+    )
+    monkeypatch.setattr(model_cache_module, "pin_thread_env", lambda: 2)
+    monkeypatch.setattr(model_cache_module, "configure_inference_threads", lambda: 2)
+    monkeypatch.setattr(model_cache, "_models", {})
+    monkeypatch.setattr(model_cache, "_load_info", {})
+    monkeypatch.setattr(model_cache, "_bge_m3_loading", False)
+    yield state
+    state.release.set()
+
+
+async def test_a_retry_load_in_progress_after_a_failed_one_answers_loading(real_load):
+    admission = IndexAdmission()
+    assert model_cache.get_bge_m3_model("search") is None  # the failed load
+    real_load.fails = False
+    retry = threading.Thread(target=model_cache.get_bge_m3_model, args=("search",))
+    retry.start()
+    await asyncio.to_thread(real_load.started.wait, 30)
+
+    loading = _refused(admission, 40_000)
+    real_load.release.set()
+    await asyncio.to_thread(retry.join, 30)
+    await _settled(admission)
+    ticket = admission.admit(["c"], 40_000, window_seconds=WINDOW)
+
+    assert (loading.status_code, loading.reason) == (503, "loading")
+    assert model_cache.is_bge_m3_loading() is False
+    assert ticket.estimate_seconds == pytest.approx(500.0)
 
 
 # ---------------------------------------------------------------------------

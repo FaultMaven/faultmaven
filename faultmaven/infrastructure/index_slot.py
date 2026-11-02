@@ -449,11 +449,13 @@ class IndexAdmission(EncodeSlot):
 
     @staticmethod
     def _load_failed() -> bool:
-        """The latest BGE-M3 load recorded an error."""
+        """The latest BGE-M3 load recorded an error, and no load is in
+        progress: a retry another path is running may still succeed."""
         from faultmaven.infrastructure.model_cache import model_cache
 
         info = model_cache.get_model_load_info()
-        return info is not None and info.error is not None
+        failed = info is not None and info.error is not None
+        return failed and not model_cache.is_bge_m3_loading()
 
     def _start_load(self) -> None:
         """Start the model load on the slot, once: a forced ticket the queue
