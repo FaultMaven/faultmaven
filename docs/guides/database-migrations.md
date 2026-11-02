@@ -248,7 +248,17 @@ def downgrade() -> None:
 Every migration runs on **both** dialects. CI checks both: the test suites
 migrate a SQLite file (`tests/integration/test_alembic_migrations.py`),
 and the *Test PostgreSQL Integration* job applies `alembic upgrade head` to a
-PostgreSQL 16 service before running the tests marked `postgres`.
+PostgreSQL 16 service before running the tests marked `postgres`. A second
+job, *Test PostgreSQL Integration (FIPS, PostgreSQL 18)*, does the same on
+PostgreSQL 18 with OpenSSL in FIPS mode (#2463); both gate the merge.
+
+- **Use no digest FIPS mode refuses.** A FIPS-mode server (the Bitnami image
+  and Helm chart's default) raises `could not compute MD5 hash: unsupported`
+  on `md5()`. pgcrypto's `digest(…, 'md5')` raises too, and so does
+  `crypt()` with an MD5 salt (`gen_salt('md5')` itself only makes the salt).
+  For a random fill, use `sha256()` (built in since PostgreSQL 11) or
+  `gen_random_uuid()` (since 13); revision 022 had to be rewritten for this
+  (#2462).
 
 - **Guard PostgreSQL-only DDL on the dialect.** The baseline reads
   `op.get_context().dialect.name` and branches: RLS
@@ -522,8 +532,9 @@ other way round.
 | Triggers | PL/pgSQL functions | SQLite trigger syntax; dropped by a batch rebuild |
 | `ALTER COLUMN` | Supported | Needs batch mode |
 
-**Solution**: Test against PostgreSQL before pushing (CI's PostgreSQL job uses
-`postgres:16`):
+**Solution**: Test against PostgreSQL before pushing (CI's PostgreSQL jobs run
+`postgres:16` and, in the FIPS job, `bitnami/postgresql` with
+`OPENSSL_FIPS=yes`; the digest is in `.github/workflows/ci-cd.yml`):
 
 ```bash
 # Use Docker for local PostgreSQL testing
@@ -534,6 +545,18 @@ docker run -d --name faultmaven-pg \
   postgres:16
 
 export DATABASE_URL=postgresql+asyncpg://postgres:test@localhost:5432/faultmaven
+alembic upgrade head
+
+# The FIPS job's server: md5() and other non-approved digests raise here
+docker run -d --name faultmaven-pg-fips \
+  -e POSTGRES_USER=postgres \
+  -e POSTGRES_PASSWORD=test \
+  -e POSTGRES_DB=faultmaven \
+  -e OPENSSL_FIPS=yes \
+  -p 5433:5432 \
+  docker.io/bitnami/postgresql@<the digest in ci-cd.yml>
+
+export DATABASE_URL=postgresql+asyncpg://postgres:test@localhost:5433/faultmaven
 alembic upgrade head
 ```
 

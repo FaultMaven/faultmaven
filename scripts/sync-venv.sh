@@ -40,7 +40,8 @@ if [ -z "$EXTRA" ]; then
     echo "  dev    requirements/dev.txt    — Architecture Boundary Check, API Contract Drift Check" >&2
     echo "  test   requirements/test.txt   — Test Standalone, Code Quality Checks," >&2
     echo "                                   Test Packaging Configuration, Environment Smoke Check" >&2
-    echo "  cloud  requirements/cloud.txt  — Test Cloud, Test PostgreSQL Integration" >&2
+    echo "  cloud  requirements/cloud.txt  — Test Cloud, Test PostgreSQL Integration," >&2
+    echo "                                   Test PostgreSQL Integration (FIPS, PostgreSQL 18)" >&2
     echo "" >&2
     echo "  (Security Scanning installs no lockfile — it audits the files themselves.)" >&2
     exit 1

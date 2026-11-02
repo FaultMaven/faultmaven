@@ -1137,6 +1137,7 @@ These tests run in the suite CI already runs. There is no logging-specific workf
   coverage, under the `env:` block each job sets. `Test Standalone` selects
   `-m "not cloud and not benchmark and not performance"`, `Test Cloud`
   `-m "not benchmark and not performance"`, and `Test PostgreSQL Integration`
+  and its FIPS job (`Test PostgreSQL Integration (FIPS, PostgreSQL 18)`)
   `-m postgres`.
 - **`.github/workflows/benchmarks.yml`:** per PR, outside the required jobs, runs
   `pytest tests/benchmarks/ -m benchmark` and the wall-clock tests

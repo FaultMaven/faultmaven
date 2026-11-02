@@ -6,7 +6,8 @@ The enterprise is the isolation boundary: every scoped table carries
 organization beside it is billing attribution the policies never read.
 
 CRITICAL: a PostgreSQL **superuser** and a **table owner** BYPASS RLS. The CI
-``fmtest`` role is the superuser that ran the migration (and owns the tables), so a
+job's role (``fmtest`` in Test PostgreSQL Integration, ``postgres`` in its FIPS
+job) is the superuser that ran the migration (and owns the tables), so a
 test connecting as it would read everything and prove nothing. These tests therefore
 create their **own non-superuser, non-owner role** and query as it — that is the only
 way to exercise RLS truthfully.

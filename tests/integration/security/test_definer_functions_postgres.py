@@ -649,12 +649,19 @@ async def test_revision_005_warns_when_the_migrator_cannot_close_public():
             may_create = await _public_may_create(su_url)
 
             # The revision's own statement again, as the migrating role, with
-            # the server's messages to the client collected.
+            # the server's messages to the client collected. client_min_messages
+            # is pinned on this connection, not left to the server's default: a
+            # server may set it above WARNING (the Bitnami image sets `error`,
+            # and CI's FIPS job runs that image, #2463), and the warning would
+            # then never reach a client. The operator still sees it, because
+            # the revision also logs it (PUBLIC_CREATE_WARNING via alembic's
+            # logger), which the stderr assertion below checks.
             messages = []
             connection = await asyncpg.connect(
                 make_url(migrator_url)
                 .set(drivername="postgresql")
-                .render_as_string(hide_password=False)
+                .render_as_string(hide_password=False),
+                server_settings={"client_min_messages": "warning"},
             )
             try:
                 connection.add_log_listener(
