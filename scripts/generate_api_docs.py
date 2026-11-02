@@ -110,7 +110,7 @@ def _vocabularies(spec: Dict[str, Any]) -> Dict[str, List[Dict[str, str]]]:
     vocabularies = {}
     for name, schema in spec.get("components", {}).get("schemas", {}).items():
         meanings = schema.get("x-enum-descriptions")
-        if not meanings:
+        if meanings is None:
             continue
         values = schema.get("enum", [])
         if len(values) != len(meanings):
@@ -453,6 +453,13 @@ def main() -> int:
                 "installed:\n"
                 "\n    pip install -r requirements/dev.txt\n"
             )
+            if NOTES_PATH in stale:
+                print(
+                    f"{NOTES_PATH.relative_to(PROJECT_ROOT)} is built from "
+                    "CONTRACT_CHANGES in faultmaven/api/contract_version.py and "
+                    "the spec's enum meanings, so a changelog edit is regenerated "
+                    "with the same command.\n"
+                )
             return 1
         print("✅ API reference matches the running app.")
         return 0

@@ -102,11 +102,16 @@ def test_notes_carry_every_change_and_only_the_meant_vocabularies():
     }
 
 
-def test_an_enum_whose_meanings_do_not_pair_with_its_values_fails():
-    lopsided = dict(_CLOSURE, **{"x-enum-descriptions": ["Closed during inquiry."]})
+@pytest.mark.parametrize(
+    "meanings", [["Closed during inquiry."], []], ids=["one-short", "empty-list"]
+)
+def test_an_enum_whose_meanings_do_not_pair_with_its_values_fails(meanings):
+    # An empty list is published meanings that pair with nothing, not an
+    # absent key: it is refused, where an enum without the key is left out.
+    lopsided = dict(_CLOSURE, **{"x-enum-descriptions": meanings})
     done = _run(_NOTES, json.dumps(_spec({"ClosureReason": lopsided})))
     assert done.returncode != 0
-    assert "ClosureReason publishes 2 enum values but 1" in done.stderr
+    assert f"ClosureReason publishes 2 enum values but {len(meanings)}" in done.stderr
 
 
 def test_a_spec_version_without_its_contract_change_fails():
@@ -129,3 +134,7 @@ def test_check_fails_on_stale_notes_alone(tmp_path, stale):
     assert "README.md does not match" not in done.stdout
     git_add = next(line for line in done.stdout.splitlines() if "git add" in line)
     assert "docs/reference/api/contract-notes.json" in git_add
+    assert (
+        "docs/reference/api/contract-notes.json is built from CONTRACT_CHANGES in "
+        "faultmaven/api/contract_version.py and the spec's enum meanings"
+    ) in done.stdout

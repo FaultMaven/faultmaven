@@ -23,8 +23,8 @@ pytestmark = pytest.mark.unit
 NOTES = Path(__file__).resolve().parents[3] / "docs/reference/api/contract-notes.json"
 
 
-def _c(version: str, level: str, title: str = "Something moved.") -> ContractChange:
-    return ContractChange(version=version, level=level, title=title, body="")
+def _c(version, level, title="Something moved.", body="") -> ContractChange:
+    return ContractChange(version=version, level=level, title=title, body=body)
 
 
 _MAJOR_1 = _c("1.0.0", "MAJOR")
@@ -56,6 +56,38 @@ _REFUSED = {
     "not-semver": (
         (_c("1.1", "MINOR"),),
         r"'1\.1': the version is not MAJOR\.MINOR\.PATCH",
+    ),
+    "trailing-suffix": ((_c("1.1.0x", "MINOR"),), r"'1\.1\.0x': the version is not"),
+    "leading-zero": ((_c("1.01.0", "MINOR"),), r"'1\.01\.0': the version is not"),
+    "non-ascii-digit": (
+        (_c("1.\u0661.0", "MINOR"),),
+        r"'1\.\u0661\.0': the version is not",
+    ),
+    "unknown-level-on-the-oldest": (
+        (_c("1.0.0", "MAJR"),),
+        r"1\.0\.0: the level 'MAJR' is not MAJOR, MINOR or PATCH",
+    ),
+    "unknown-level-on-a-newer": (
+        (_c("1.1.0", "MINR"), _MAJOR_1),
+        r"1\.1\.0: the level 'MINR' is not MAJOR, MINOR or PATCH",
+    ),
+    "version-not-a-str": (
+        (_c((1, 1, 0), "MINOR"),),
+        r"\(1, 1, 0\): the version is not",
+    ),
+    "empty": ((), r"CONTRACT_CHANGES is empty"),
+    # A stray comma in a parenthesized title makes it a tuple.
+    "title-not-a-str": (
+        (_c("1.1.0", "MINOR", ("Something ", "moved.")), _MAJOR_1),
+        r"1\.1\.0: the title is a tuple, not a str",
+    ),
+    "title-on-two-lines": (
+        (_c("1.1.0", "MINOR", "Something\n\nmoved."), _MAJOR_1),
+        r"1\.1\.0: the title holds a line break",
+    ),
+    "body-not-a-str": (
+        (_c("1.1.0", "MINOR", body=("a\n", "b")), _MAJOR_1),
+        r"1\.1\.0: the body is a tuple, not a str",
     ),
 }
 

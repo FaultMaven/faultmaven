@@ -77,7 +77,8 @@ be using it" is not evidence.
    `faultmaven/api/contract_version.py`: the new version, its level, a title
    saying what moved, and a body with the reasoning (or `""`).
    `API_CONTRACT_VERSION` follows from it, and the import-time validator
-   refuses a level that does not match the bump from the entry before.
+   refuses a level that does not match the bump from the previous version's
+   entry.
 4. Regenerate, with the lockfile installed — the document depends on FastAPI's
    and Pydantic's versions as well as on the code, so an ambient environment
    produces a valid-looking artifact CI rejects:

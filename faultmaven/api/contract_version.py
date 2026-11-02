@@ -30,11 +30,11 @@ Each version is one ``ContractChange`` at the head of ``CONTRACT_CHANGES``
 below: its version, its level, a title and a body. ``API_CONTRACT_VERSION`` is
 derived from the newest entry, so the version cannot move without one, and
 ``validate_contract_changes`` refuses at import an entry whose level does not
-match its bump from the entry before it. ``scripts/generate_api_docs.py``
-publishes the entries, beside each published value's meaning, in
-``docs/reference/api/contract-notes.json``, the file faultmaven-copilot and
-faultmaven-dashboard read at their pinned ref to list the entries a pin bump
-crosses.
+match its bump from the previous version's entry.
+``scripts/generate_api_docs.py`` publishes the entries, beside each published
+value's meaning, in ``docs/reference/api/contract-notes.json``, the file
+faultmaven-copilot and faultmaven-dashboard read at their pinned ref to list
+the entries a pin bump crosses.
 
 ``scripts/check_contract_version.py`` fails a pull request whose structural
 surface differs from the base branch while this stays put, so a surface change
@@ -65,15 +65,19 @@ class ContractChange:
     body: str
 
 
-_VERSION_PATTERN = re.compile(r"(\d+)\.(\d+)\.(\d+)")
+# ASCII digits with no leading zero: ``\d`` would admit ``1.01.0`` and any
+# script's digits, and a client cannot order either.
+_PART = r"(0|[1-9][0-9]*)"
+_VERSION_PATTERN = re.compile(rf"{_PART}\.{_PART}\.{_PART}")
 
 
 def validate_contract_changes(changes: tuple[ContractChange, ...]) -> None:
     """Refuse a changelog a client could not read a pin bump from.
 
     ``changes`` runs newest first. Each version is ``MAJOR.MINOR.PATCH`` and
-    appears once, the order is strictly descending, every title says
-    something, and each entry's level is the bump from the entry after it:
+    appears once, the order is strictly descending, every title is a
+    non-empty string on one line, every body a string, and each entry's level
+    is the bump from the entry after it:
     MAJOR is ``(a+1, 0, 0)``, MINOR ``(a, b+1, 0)``, PATCH ``(a, b, c+1)``. The
     oldest entry has nothing to be a bump from, so its level stands as written.
 
@@ -85,7 +89,11 @@ def validate_contract_changes(changes: tuple[ContractChange, ...]) -> None:
     parsed: list[tuple[int, int, int]] = []
     seen: set[str] = set()
     for change in changes:
-        match = _VERSION_PATTERN.fullmatch(change.version)
+        match = (
+            _VERSION_PATTERN.fullmatch(change.version)
+            if isinstance(change.version, str)
+            else None
+        )
         if match is None:
             raise ValueError(
                 f"contract change {change.version!r}: the version is not "
@@ -101,8 +109,23 @@ def validate_contract_changes(changes: tuple[ContractChange, ...]) -> None:
                 f"contract change {change.version}: the level {change.level!r} "
                 "is not MAJOR, MINOR or PATCH"
             )
+        if not isinstance(change.title, str):
+            raise ValueError(
+                f"contract change {change.version}: the title is a "
+                f"{type(change.title).__name__}, not a str"
+            )
         if not change.title.strip():
             raise ValueError(f"contract change {change.version}: the title is empty")
+        if "\n" in change.title:
+            raise ValueError(
+                f"contract change {change.version}: the title holds a line break; "
+                "it is one paragraph on one line"
+            )
+        if not isinstance(change.body, str):
+            raise ValueError(
+                f"contract change {change.version}: the body is a "
+                f"{type(change.body).__name__}, not a str"
+            )
         major, minor, patch = (int(part) for part in match.groups())
         parsed.append((major, minor, patch))
 
