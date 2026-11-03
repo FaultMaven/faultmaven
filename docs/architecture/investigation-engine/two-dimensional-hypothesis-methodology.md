@@ -1013,11 +1013,12 @@ records only what it can substantiate:
     at or after the cause's removal, in a turn after the fix's execution turn
     (a row in that turn may quote pre-fix lines from the same paste), up to
     and including the next fix's execution turn (there, "it's back" is this
-    window's relapse, not the next fix's failure). The windows bind cause
-    rows against the WINDOW pool — the confirmation pool plus the roots the
-    last recompute identified and any root carrying M6's own
-    disconfirmation — so a failure stays observed across a demotion, while
-    the cause leg binds against the confirmation pool only. A
+    window's relapse, not the next fix's failure). The windows' FAILED and
+    observed readings bind cause rows against the WINDOW pool — the
+    confirmation pool plus the roots the last recompute identified and any
+    root carrying M6's own disconfirmation — so a failure stays observed
+    across a demotion, while SUCCEEDED and the cause leg bind against the
+    confirmation pool only. A
     symptom about a sibling candidate, a refuted guess or a probe's own
     failure names no verifying row and fails nothing; with no cause in the
     pool, nothing binds to the cause and the window records no failure.
@@ -1029,8 +1030,11 @@ records only what it can substantiate:
     ambiguity resolves toward the confirmation, as for the disconfirmation
     window and the mixed single-turn shape. A relief followed by a later
     persistence is a relapse, FAILED for the gate; M6 reads it below.
-    **SUCCEEDED** needs the cause seen removed in the window too; otherwise
-    the window stays UNKNOWN.
+    **SUCCEEDED** needs the cause seen removed in the window too, by a cause
+    row bound against the confirmation pool (`FixWindow.confirmed_cause_rows`):
+    a re-check of a fallen cause, bound only through the window pool, can
+    fail the window but never make it SUCCEEDED. Otherwise the window stays
+    UNKNOWN.
 
   The readiness gate confirms a resolution only inside the **latest observed
   window** (`confirming_window`), and not when that window FAILED. A window

@@ -699,8 +699,10 @@ def _cause_pool(case: "Case") -> tuple[frozenset, frozenset, frozenset]:
        carrying the engine's failed-fix disconfirmation (only M6 mints one,
        on the identified cause it demoted) — only when nothing above stands
        AND no other standing hypothesis is rooted elsewhere: a cause re-fixed
-       after it fell can still be shown removed, while a newer candidate,
-       however unproven, is never confirmed through the fallen one;
+       after it fell can still be shown removed, while nothing is confirmed
+       through the fallen one past a newer standing hypothesis. A root no
+       hypothesis names does not count, so a fallen cause can still confirm
+       past such an orphan root (#2485);
     4. a VALIDATED hypothesis with no root node (inert while a rootless
        hypothesis cannot validate).
 

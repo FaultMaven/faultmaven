@@ -59,8 +59,12 @@ from faultmaven.modules.case.contracts import (
     EvidenceCategory,
     EvidenceSourceType,
     EvidenceStance,
+    Hypothesis,
+    HypothesisCategory,
+    HypothesisGenerationMode,
     HypothesisState,
     InvestigationActionType,
+    InvestigationStage,
     MitigationRecord,
     NodeEvidenceLink,
     NodeState,
@@ -70,6 +74,9 @@ from faultmaven.modules.case.contracts import (
 )
 from faultmaven.modules.case.contracts import (
     KnowledgeResolution as KnowledgeResolutionRecord,
+)
+from faultmaven.modules.report.domain.services.report_generation_service import (
+    ReportGenerationService,
 )
 from tests.unit.core.investigation.bound_rows import VERIFYING_ID, upload
 from tests.unit.core.investigation.fix_turns_2039 import _TSU, _engine_rows
@@ -851,13 +858,15 @@ async def test_a_fallen_causes_removal_still_proves_the_problem_existed():
 
 
 @pytest.mark.parametrize(
-    "ruled_out_sibling", [False, True], ids=["alone", "beside-a-ruled-out-one"]
+    "beside",
+    [None, "ruled-out", "rootless"],
+    ids=["alone", "beside-a-ruled-out-one", "beside-a-rootless-one"],
 )
-async def test_the_only_cause_refuted_then_re_fixed_still_resolves(ruled_out_sibling):
+async def test_the_only_cause_refuted_then_re_fixed_still_resolves(beside):
     """#1927's shape: the sole cause fell to its failed fix; re-fixed and
-    re-checked, it is the case's cause again (the pool's third leg). A
-    candidate already ruled out elsewhere does not stand, so it does not take
-    the leg away (only a standing one does, F2)."""
+    re-checked, it is the case's cause again (the pool's third leg). Only a
+    standing hypothesis ROOTED elsewhere takes the leg away (F2): a candidate
+    already ruled out does not stand, and a rootless one names no root."""
     eng, case, root, hyp = _fixed(6)
     await _record(
         eng,
@@ -867,9 +876,20 @@ async def test_the_only_cause_refuted_then_re_fixed_still_resolves(ruled_out_sib
         _obs(_PRESENT, "checkout still returns 503", VERIFYING_ID),
     )
     assert hyp.state == HypothesisState.REFUTED
-    if ruled_out_sibling:
+    if beside == "ruled-out":
         _add_sibling_chain(case)
         case.hypotheses["hyp_00000000eeee"].state = HypothesisState.REFUTED
+    elif beside == "rootless":
+        case.hypotheses["hyp_00000000f1a7"] = Hypothesis(
+            hypothesis_id="hyp_00000000f1a7",
+            statement="a DNS flap",
+            category=HypothesisCategory.CODE,
+            state=HypothesisState.ACTIVE,
+            generation_mode=HypothesisGenerationMode.OPPORTUNISTIC,
+            rationale="a flat guess",
+            initial_likelihood=0.2,
+            generated_at_turn=7,
+        )
     _accept(case, InvestigationActionType.SOLUTION, 10)
     await _record(
         eng,
@@ -1183,7 +1203,9 @@ async def test_f1_a_fallen_causes_recheck_never_makes_anothers_fix_succeed():
 
 
 @pytest.mark.parametrize(
-    "supports, terminal", [(1, False), (0, True)], ids=["non-terminal-b", "bare-b"]
+    "supports, terminal",
+    [(1, False), (0, True), (2, False)],
+    ids=["non-terminal-b", "bare-b", "validated-non-terminal-b"],
 )
 async def test_f2_a_fallen_cause_is_not_confirmed_past_a_newer_candidate(
     supports, terminal
@@ -1322,15 +1344,139 @@ async def test_f3_the_report_cites_nothing_while_identification_is_held_open():
     assert _polarity_ids(case) == []
 
 
-@pytest.mark.parametrize("stage", ["mitigation", "treatment"])
-def test_f5_the_checklist_asks_for_rechecks_only_after_a_fix(stage):
-    case, _root_node, _hyp = _identified_case()
-    if stage == "treatment":
-        case.progress.solution_accepted = True
-    else:
-        case.progress.mitigation = MitigationRecord(
-            proposed_at_turn=case.current_turn, accepted=True
+async def test_f3_a_newer_window_holding_only_a_disconfirmation_cites_nothing():
+    """The report's window is the latest one holding any causal_absence row,
+    as main's confirming window was, not the latest holding a qualifying one:
+    a newer fix's window whose only row is a failed-fix disconfirmation
+    cites nothing, even though an older window holds a qualifying row."""
+    case, root, _hyp = _identified_case()
+    engine_row = Evidence(
+        summary="Engine inference (M6): the fix did not hold",
+        primary_purpose="engine inference",
+        category=_CAUSE_GONE,
+        source_type=EvidenceSourceType.ENGINE_INFERENCE,
+        collected_by=ENGINE_EVIDENCE_AUTHOR,
+        collected_at_turn=5,
+    )
+    case.evidence.append(engine_row)
+    root.evidence_links.append(
+        NodeEvidenceLink(
+            evidence_id=engine_row.evidence_id,
+            stance=EvidenceStance.REFUTES,
+            reasoning="failed treatment",
+            linked_at_turn=5,
         )
+    )
+    eng = _engine()
+    (older,), _ = await _record(eng, case, 6, _obs(_CAUSE_GONE, "reads 100"))
+    assert _polarity_ids(case) == [older.evidence_id]
+    _accept(case, InvestigationActionType.SOLUTION, 8)
+    (refuting,), _ = await _record(
+        eng, case, 9, _obs(_CAUSE_GONE, "the fix did not remove it")
+    )
+    root.evidence_links.append(
+        NodeEvidenceLink(
+            evidence_id=refuting.evidence_id,
+            stance=EvidenceStance.REFUTES,
+            reasoning="failed treatment",
+            linked_at_turn=9,
+        )
+    )
+    assert _polarity_ids(case) == []
+
+
+async def test_f3_the_report_window_is_chosen_by_the_datas_turn():
+    """A row recorded after a new fix, read from data uploaded before it,
+    belongs to the older window: that window stays the report's."""
+    eng, case, _root_node, _hyp = _fixed(6)
+    (first,), _ = await _record(eng, case, 7, _obs(_CAUSE_GONE, "reads 100"))
+    early = case.uploaded_files[-1].file_id
+    _accept(case, InvestigationActionType.SOLUTION, 9)
+    (late,), _ = await _record(
+        eng, case, 10, _obs(_CAUSE_GONE, "reads 100 (the same file)", file_id=early)
+    )
+    assert observed_turn(case, late) == 7
+    assert _polarity_ids(case) == [first.evidence_id, late.evidence_id]
+
+
+def _confirming_section(case) -> str:
+    text = "\n".join(
+        ReportGenerationService()._fix_and_confirming_evidence(case, ended="resolved")
+    )
+    return text[text.find("## Confirming Evidence") :]
+
+
+@pytest.mark.parametrize("shape", ["second-fix", "stamp-lag"])
+async def test_the_report_renders_the_row_the_resolution_was_stamped_on(shape):
+    """Exception round, finding 1. The gate confirms on an older window while a
+    newer one holds only an unnamed causal_absence row: a second fix after
+    the confirmation, or the execution stamp lagging the user's report. The
+    report cites the cause leg's row, the one the stamp stamped, not the
+    unnamed one."""
+    if shape == "second-fix":
+        eng, case, _root_node, _hyp = _fixed(6)
+        turn = 7
+    else:
+        case, _root_node, _hyp = _identified_case()
+        eng, turn = _engine(), 6
+    (stamped, _gone), _ = await _record(
+        eng,
+        case,
+        turn,
+        _obs(_CAUSE_GONE, "max_connections reads 100", _SUPPORT),
+        _obs(_GONE, "checkout 200 again", VERIFYING_ID),
+    )
+    _accept(case, InvestigationActionType.SOLUTION, turn + 1)
+    await _record(eng, case, turn + 2, _obs(_CAUSE_GONE, "the old cron entry is gone"))
+    assert assess_resolution_readiness(case).verdict == ResolutionReadiness.READY
+    assert [e.evidence_id for e in cause_elimination_rows(case)] == [
+        stamped.evidence_id
+    ]
+    assert confirm_root_from_resolution_absence(case)
+    section = _confirming_section(case)
+    assert "max_connections reads 100" in section
+    assert "the old cron entry is gone" not in section
+
+
+async def test_a_newer_fix_observed_only_through_a_fallen_cause_still_answers():
+    """A fell; B is identified, fixed at 11 and re-checked at 12. A second fix
+    at 14, then a re-check of A's old support and the problem gone. Window 14
+    was looked at (the re-check is in the window pool), so window 11's
+    confirmation no longer answers, and window 14 holds no confirmation-bound
+    cause row: nothing confirms."""
+    eng, case, _root_a, b, b_support = await _a_fell_then_b(supports=2)
+    assert b.is_identified_root
+    _accept(case, InvestigationActionType.SOLUTION, 11)
+    await _record(
+        eng, case, 12, _obs(_CAUSE_GONE, "RSS flat after the patch", b_support)
+    )
+    _accept(case, InvestigationActionType.SOLUTION, 14)
+    await _record(
+        eng,
+        case,
+        15,
+        _obs(_CAUSE_GONE, "max_connections still reads 100", _SUPPORT),
+        _obs(_GONE, "checkout 200 again", VERIFYING_ID),
+    )
+    latest = fix_windows(case)[-1]
+    assert latest.fix_turn == 14 and latest.observed
+    assert not latest.confirmed_cause_rows and not cause_elimination_rows(case)
+    assert assess_resolution_readiness(case).verdict != ResolutionReadiness.READY
+
+
+@pytest.mark.parametrize("fix_recorded", [True, False], ids=["fix", "no-fix"])
+def test_f5_the_checklist_asks_for_rechecks_only_after_a_recorded_fix(fix_recorded):
+    """Keyed on the fix record, as the unbound-row feedback is, not on the
+    stage label: MITIGATION outranks TREATMENT while a workaround is pending,
+    so a fix executed meanwhile still asks for ``rechecks``."""
+    case, _root_node, _hyp = _identified_case()
+    case.progress.mitigation = MitigationRecord(
+        proposed_at_turn=case.current_turn, accepted=True
+    )
+    if fix_recorded:
+        _accept(case, InvestigationActionType.SOLUTION, case.current_turn)
+        case.progress.solution_accepted = True
+    assert case.current_stage == InvestigationStage.MITIGATION
     block = _build_evidence_needs_block(case)
     assert "Re-verification checklist" in block
-    assert ("rechecks" in block) is (stage == "treatment")
+    assert ("rechecks" in block) is fix_recorded

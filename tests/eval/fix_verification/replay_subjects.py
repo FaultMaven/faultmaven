@@ -14,15 +14,17 @@ isolate what the rules do:
   switch counts every post-fix symptom row, so it is the stricter reading.
 - ``--mode simulated-naming``: each case's verifying row is recorded by the
   verifying-turn fallback (exactly one symptom row written in the turn the
-  symptom claim landed). Only rows observed after a RECORDED fix are named:
-  a symptom_absence row names the verifying row, a causal_absence row the
-  first row supporting the confirmation pool alone (ROOT-only, one cluster).
-  Persistence rows stay unnamed, so over the cases with a recorded fix the
-  figure is an UPPER BOUND on what naming earns (a perfect model, no failure
-  ever named). Out-of-band cases (no recorded fix) are NOT simulated: the
-  model is asked to name rows after an out-of-band fix too, but where such a
-  check begins cannot be told from the stored rows, so none is named. It
-  shows whether the rules admit the systemd floor.
+  symptom claim landed). Only rows observed at or after the latest recorded
+  fix's turn (``fix_application_turn``) are named: a symptom_absence row names
+  the verifying row, a causal_absence row the first row supporting the
+  confirmation pool alone (ROOT-only, one cluster). Persistence rows stay
+  unnamed. Where every check follows the recorded fix, the figure is an UPPER
+  BOUND on what naming earns (a perfect model, no failure ever named). It is
+  no bound where a check the rules admit is left unnamed: a check observed
+  before a fix that was recorded late, which window 0 still admits
+  (``case_d252bedf6642``), and every check after an out-of-band fix (no
+  recorded fix: nothing is named, as where such a check begins cannot be told
+  from the stored rows). It shows whether the rules admit the systemd floor.
 
 Per case it reports the two legs (cause rows, symptom rows), every fix window's
 state (FIX_FAILED outcomes), readiness, and the fallback's outcome.
@@ -165,9 +167,10 @@ def _fallback(case, verifying_turn_rows) -> str | None:
 
 
 def _simulate_naming(case, verifying: str | None) -> None:
-    """Name what a perfect model would name after a RECORDED fix (the upper
-    bound over those cases). A case with no recorded fix is left as stored:
-    its out-of-band checks are not simulated."""
+    """Name the rows observed at or after the latest recorded fix's turn, as
+    a perfect model would. A check before that turn (a fix recorded late) and
+    a case with no recorded fix (an out-of-band fix) are left as stored: they
+    are not simulated, so the figure is no upper bound for them."""
     from faultmaven.core.investigation.cause_assurance import (
         ENGINE_EVIDENCE_AUTHOR,
         fix_application_turn,
@@ -179,7 +182,7 @@ def _simulate_naming(case, verifying: str | None) -> None:
         case.problem_verification.verifying_evidence_ids = [verifying]
     fix_turn = fix_application_turn(case)
     if fix_turn is None:
-        return  # no recorded fix: nothing is a post-fix observation
+        return  # no recorded fix: out-of-band checks are not simulated
     subjects = subject_index(case)
     _problem, cause = subjects.bindable_rows()
     support = cause[0].evidence_id if cause else None

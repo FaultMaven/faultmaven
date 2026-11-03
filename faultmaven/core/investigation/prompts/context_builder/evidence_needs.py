@@ -331,9 +331,16 @@ def _build_evidence_needs_block(case: Case) -> str:
         if outstanding or exhausted:
             lines.append("")
         lines.append("Re-verification checklist (confirmed findings — re-check each to")
-        if case.current_stage == InvestigationStage.TREATMENT:
-            # After a fix, a re-check names what it re-checks (#1906 D1); a
-            # mitigation's relief does not (the mitigation template).
+        from faultmaven.core.investigation.cause_assurance import (
+            fix_application_turn,
+        )
+
+        if fix_application_turn(case) is not None:
+            # After a recorded fix, a re-check names what it re-checks (#1906
+            # D1), whatever the stage label (MITIGATION outranks TREATMENT
+            # while a workaround is pending); a mitigation's relief does not
+            # (the mitigation template). The same test as the unbound-row
+            # feedback (``_flag_unbound_post_fix_rows``).
             lines.append(
                 "confirm the fix held; emit *_absence_evidence when a signature "
                 "is gone,"
