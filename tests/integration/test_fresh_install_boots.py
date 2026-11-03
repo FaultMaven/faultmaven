@@ -37,6 +37,15 @@ _MARKER = "RESULT "
 _CHILD = textwrap.dedent("""
     import json, os, sys
 
+    # The suite's network guard, in this interpreter too: the child runs
+    # outside the test process, so nothing else stops it reaching the network.
+    # It downloaded BGE-M3 (~2 GB) from huggingface.co on every CI run, and a
+    # stalled download hung the boot past the 600 s timeout. Its refusals are
+    # reported below, and the test requires there are none.
+    from tests import network_guard
+
+    network_guard.install()
+
     from fastapi.testclient import TestClient
 
     from faultmaven.bootstrap.composition import _is_test_environment
@@ -74,6 +83,7 @@ _CHILD = textwrap.dedent("""
         result["token_revocations_exists"] = False
         result["llm_usage_tables"] = []
         result["table_count"] = 0
+    result["network_refusals"] = network_guard.drain_refusals()
     print("RESULT " + json.dumps(result))
     """)
 
@@ -108,16 +118,47 @@ def _boot_a_fresh_install(root: Path) -> dict:
         # credential gate beside it is live too. Presence is what it checks.
         "CHAT_PROVIDER": "gemini",
         "GEMINI_API_KEY": "dummy-key-for-boot-probe",
+        # No model preload: the startup preload of BGE-M3 fetched it from
+        # huggingface.co on every CI run (~2 GB; the image bakes it in), and
+        # it is not what this probe tests. The app's own opt-out; the value
+        # is JSON, so an empty string would fail settings construction.
+        "PRELOAD_MODELS": "[]",
+        # And if anything else loads a model: offline, as the shipped image
+        # runs (its Dockerfile's runtime ENV), from an empty cache, so the
+        # load fails fast and the boot is the same on every machine.
+        "HF_HUB_OFFLINE": "1",
+        "TRANSFORMERS_OFFLINE": "1",
+        "HF_HOME": str(root / "hf-home"),
+        # The parent's Redis, which the suite's steps leave empty
+        # (tests/conftest.py): otherwise the client resolves the default host
+        # (faultmaven-redis-master) first.
+        "REDIS_HOST": os.environ.get("REDIS_HOST", ""),
     }
 
-    completed = subprocess.run(
-        [sys.executable, str(script)],
-        cwd=run_dir,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=600,
-    )
+    try:
+        completed = subprocess.run(
+            [sys.executable, str(script)],
+            cwd=run_dir,
+            env=env,
+            capture_output=True,
+            text=True,
+            # An offline boot takes ~45 s. 240 fails a hung boot in minutes
+            # rather than holding a CI slice for ten, and says where it was.
+            timeout=240,
+        )
+    except subprocess.TimeoutExpired as exc:
+        # The output a timeout carries is bytes even under text=True: CPython
+        # decodes only a run that completes.
+        def tail(data) -> str:
+            if isinstance(data, bytes):
+                data = data.decode(errors="replace")
+            return (data or "")[-2000:]
+
+        raise AssertionError(
+            f"the child did not finish in {exc.timeout} s:\n"
+            f"stdout tail:\n{tail(exc.stdout)}\n"
+            f"stderr tail:\n{tail(exc.stderr)}"
+        ) from exc
     for line in completed.stdout.splitlines():
         if line.startswith(_MARKER):
             return json.loads(line[len(_MARKER) :])
@@ -164,6 +205,15 @@ class TestAFirstEverInstallBoots:
             "bootstrap did not create the schema, so nothing about the gate's "
             f"position was exercised: {result}"
         )
+
+    def test_the_boot_reaches_no_network(self, fresh_boot):
+        """A fresh install boots offline: the image runs with HF_HUB_OFFLINE
+        and the model baked in, and a test reaches no network (CLAUDE.md).
+        The child runs the suite's guard; anything it refused is listed."""
+        # Refusals first: when a refused call is what broke the boot, they
+        # name its call sites, which `error` alone does not.
+        assert fresh_boot["network_refusals"] == [], fresh_boot.get("error")
+        assert fresh_boot["booted"] is True, fresh_boot.get("error")
 
     def test_the_usage_ledger_lives_as_long_as_the_app(self, fresh_boot):
         """#640: a fresh install migrates to the ledger's tables, the composition

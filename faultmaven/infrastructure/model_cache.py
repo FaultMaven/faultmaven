@@ -16,7 +16,7 @@ Key Features:
 Configuration:
 - LAZY_LOAD_ML_MODELS=true (default): Models load on first use
 - LAZY_LOAD_ML_MODELS=false: Models pre-load at startup
-- PRELOAD_MODELS=['BAAI/bge-m3']: Specific models to pre-load
+- PRELOAD_MODELS='["BAAI/bge-m3"]': Specific models to pre-load (JSON)
 """
 
 import asyncio
