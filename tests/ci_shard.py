@@ -22,9 +22,10 @@ costs, by path. A file's expected time is its selected item count times its
 measured seconds per test, from ``tests/ci_shard_durations.json`` (written by
 ``scripts/ci_shard_durations.py`` from CI's logs); a file with no measurement
 is costed at the measured mean. Balancing by count alone left one Standalone
-slice with 1.5-2x the time of the others on every run (2026-11-02/03): a few
-files, the migration and boot-refusal tests above all, cost seconds per test
-where most cost milliseconds. The assignment runs after every other
+slice the heaviest on all three runs measured (2026-11-02/03), at 1.15-2.1x
+the summed time of each of the others: a few files, the migration and
+boot-refusal tests above all, cost seconds per test where most cost
+milliseconds. The assignment runs after every other
 ``pytest_collection_modifyitems`` (``trylast``), so the counts are of what
 ``-m`` and the conftest's opt-in lanes left, the items that will actually run.
 Stale measurements cost balance, never correctness.

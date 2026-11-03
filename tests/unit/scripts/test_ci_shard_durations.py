@@ -1,8 +1,8 @@
 """``scripts/ci_shard_durations.py``: per-file seconds from a slice job's log.
 
 The parser is run on log text shaped like the Actions logs API returns it
-(timestamped lines, a BOM at each step's start, the xdist ``-v`` report
-lines); nothing is fetched.
+(timestamped lines, a BOM at the start and another mid-log on a report
+line, the xdist ``-v`` report lines); nothing is fetched.
 """
 
 from __future__ import annotations
@@ -27,16 +27,16 @@ def gen():
 
 
 LOG = (
-    "﻿2026-11-03T01:28:24.0000000Z ##[group]Run pytest tests/\n"
+    "\ufeff2026-11-03T01:28:24.0000000Z ##[group]Run pytest tests/\n"
     "2026-11-03T01:29:59.0000000Z created: 2/2 workers\n"
     "2026-11-03T01:30:00.0000000Z 2 workers [5 items]\n"
     "2026-11-03T01:30:01.5000000Z [gw0] [ 20%] PASSED tests/a.py::test_one \n"
     "2026-11-03T01:30:04.0000000Z [gw1] [ 40%] PASSED tests/b.py::test_x[case with spaces] \n"
-    "2026-11-03T01:30:02.0000000Z [gw0] [ 60%] SKIPPED tests/a.py::test_two \n"
+    "\ufeff2026-11-03T01:30:02.0000000Z [gw0] [ 60%] SKIPPED tests/a.py::test_two \n"
     "2026-11-03T01:30:12.0000000Z [gw0] [ 80%] FAILED tests/c.py::T::test_slow \n"
     "2026-11-03T01:30:05.0000000Z [gw1] [100%] XFAIL tests/b.py::test_y \n"
     "2026-11-03T01:30:05.1000000Z tests/b.py::test_not_a_worker_line PASSED\n"
-    "﻿2026-11-03T01:31:00.0000000Z ============ 4 passed in 65.00s ============\n"
+    "2026-11-03T01:31:00.0000000Z ============ 4 passed in 65.00s ============\n"
 )
 
 
