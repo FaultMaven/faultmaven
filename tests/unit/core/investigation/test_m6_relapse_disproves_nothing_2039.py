@@ -16,6 +16,11 @@ counterfactual basis — act on a disconfirmation only
 (``FixWindow.disconfirmation``, the pair of observations it rests on), which
 is what INV-42 and the provenance row M6 writes already said. In the incident a diagnostic curl run without the client
 certificate, recorded after two reliefs, refuted the correct root at belief 0.
+
+Since #1906 D1 that probe's row, naming none of the rows that showed the
+problem, is not the problem back at all (the residual #2039 left; pinned in
+``test_fix_verification_subjects_1906``): the relapse here is the problem
+re-observed by a row that names a verifying row.
 """
 
 from unittest.mock import patch
@@ -66,27 +71,17 @@ from tests.unit.core.investigation.test_refutation_needs_data_1911 import _judge
 pytestmark = pytest.mark.unit
 
 
-def _probe_failure(turn=13) -> object:
-    """A check that failed for its own reason, in the problem's nouns: what
-    the incident's curl without ``--cert`` was."""
-    return _row(
-        "probe_failure",
-        EvidenceCategory.SYMPTOM_EVIDENCE,
-        turn,
-        "curl to checkout returned 503 because the probe omitted the session cookie",
-    )
-
-
 def _relapsed_case():
     """The incident's shape: the fix runs at 6; at 7 the cause and the problem
-    are both seen gone, at 12 the problem again; at 13 a symptom row."""
+    are both seen gone, at 12 gone again; at 13 the problem is re-observed
+    (a row naming the one that showed it, #1906 D1)."""
     case, root, hyp = _identified_case()
     _accept(case, InvestigationActionType.SOLUTION, 6)
     case.evidence += [
         _cause_gone(7),
         _problem_gone(7, label="relief_7"),
         _problem_gone(12, label="relief_12"),
-        _probe_failure(13),
+        _still_failing(13, label="back_13"),
     ]
     return case, root, hyp
 

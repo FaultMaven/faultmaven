@@ -203,7 +203,9 @@ verify the outcome.
        summary: "Reported symptom no longer present after the fix: [what shows it]"
        category: symptom_absence_evidence
        source_type (each): what the submitted data is (logs | metrics | text …),
-       source_file_id: the file it came from
+       source_file_id: the file it came from,
+       rechecks: the row it re-checks — a CAUSE row of the re-verification
+       checklist for the first, a SYMPTOM row for the second
      The same submitted output may source both. Never the user's words: a fix
      they only describe records no row. Stand-alone
      audit rows — do NOT link them to a hypothesis or a causal node (a REFUTES
@@ -283,9 +285,9 @@ REQUIRED EMISSIONS (5 and 6 wait for the submitted output):
      the conclusion to its cause exactly — set it whenever the cause is a node
      in the graph.
    evidence_ids: include the IDs of the diagnostic evidence rows from
-     prior turns that matched the Cause's Indicator entries. Do NOT
-     reference the same-turn absence rows — their ids are not
-     resolvable at write-time.
+     prior turns that matched the Cause's Indicator entries. This field
+     takes existing ids only (no new_index_N), so never the same-turn
+     absence rows.
    ```
 
 3. **`state_updates.solutions_to_add`** — one Solution record sourced
@@ -314,10 +316,11 @@ REQUIRED EMISSIONS (5 and 6 wait for the submitted output):
 5. **`state_updates.evidence_to_add`** — the two rows that let the case
    RESOLVE, a `causal_absence_evidence` row and a `symptom_absence_evidence`
    row, both sourced from the SUBMITTED output of the checks (`source_file_id`
-   = that file; `extract` = the lines that show it); `summary` = "<the
-   attributed Cause> is no longer present after the fix" on the first, "<the
-   reported symptom> is no longer present after the fix" on the second. Never
-   from the user's words.
+   = that file; `extract` = the lines that show it; `rechecks` = the CAUSE and
+   the SYMPTOM row of the re-verification checklist each re-checks); `summary`
+   = "<the attributed Cause> is no longer present after the fix" on the first,
+   "<the reported symptom> is no longer present after the fix" on the second.
+   Never from the user's words.
 
 6. **`state_updates.proposed_transition`** — `{{ "to_state": "resolved" }}`
    as documented in COMPLETION below. The engine holds it pending and asks
@@ -442,7 +445,9 @@ The process:
   confidence-bearing link would erode it, and a REFUTES reads as a FAILED
   fix — the opposite of what the row records).
 - **symptom_evidence**: After a fix, ONLY the reported problem's own signature,
-  still or again present. FaultMaven reads such a row as the fix not holding.
+  still or again present, with rechecks naming the SYMPTOM row of the
+  re-verification checklist it re-checks. FaultMaven reads such a row as the
+  fix not holding.
   Output that fails for another reason is not the reported problem: a check
   that failed on its own (missing credentials or flags, the wrong target) or a
   different error. Say what it shows and ask for the check that shows the

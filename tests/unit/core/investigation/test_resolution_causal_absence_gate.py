@@ -27,6 +27,12 @@ from faultmaven.modules.case.contracts import (
     EvidenceStance,
     ProblemStatus,
 )
+from tests.unit.core.investigation.bound_rows import (
+    SUPPORT_ID,
+    VERIFYING_ID,
+    bound_row,
+    ensure_subjects,
+)
 
 #: Both legs of a resolution confirmation: the cause gone, the problem gone.
 CONFIRMED = (
@@ -36,19 +42,27 @@ CONFIRMED = (
 
 
 def _case(*, cats=(), solutions=1, cause=True):
-    return SimpleNamespace(
+    """A stand-in case; its absence rows are bound to the subject they
+    re-check (#1906 D1), so each one means a confirmation."""
+    case = SimpleNamespace(
         problem_verification=SimpleNamespace(symptom_statement="writes failing"),
         root_cause_conclusion=(
             SimpleNamespace(root_cause="NVMe hardware failure") if cause else None
         ),
         working_conclusion=None,
         solutions=[SimpleNamespace(title="failover") for _ in range(solutions)],
-        evidence=[SimpleNamespace(category=c) for c in cats],
+        evidence=[],
         hypotheses={},
         progress=SimpleNamespace(
             completed_milestones=[], problem_status=ProblemStatus.VERIFIED
         ),
     )
+    for c in cats:
+        if c in CONFIRMED:
+            bound_row(case, c, turn=6)
+        else:
+            case.evidence.append(SimpleNamespace(category=c))
+    return case
 
 
 class TestResolutionGate:
@@ -126,12 +140,12 @@ class TestCauseStateAuthoritative:
     def _identified_case(cats):
         from faultmaven.modules.case.contracts import CauseState
 
-        return SimpleNamespace(
+        case = SimpleNamespace(
             problem_verification=SimpleNamespace(symptom_statement="pvc pending"),
             root_cause_conclusion=None,  # LLM left the documented conclusion empty
             working_conclusion=SimpleNamespace(statement="x", likelihood=0.167),
             solutions=[SimpleNamespace(title="fix storageclass")],
-            evidence=[SimpleNamespace(category=c) for c in cats],
+            evidence=[],
             hypotheses={},
             progress=SimpleNamespace(
                 completed_milestones=[],
@@ -139,6 +153,12 @@ class TestCauseStateAuthoritative:
                 problem_status=ProblemStatus.VERIFIED,
             ),
         )
+        for c in cats:
+            if c in CONFIRMED:
+                bound_row(case, c, turn=6)
+            else:
+                case.evidence.append(SimpleNamespace(category=c))
+        return case
 
     def test_identified_with_both_absence_legs_is_ready(self):
         # k8s-pvc shape: cause known via cause_state, both absence rows
@@ -236,11 +256,18 @@ class TestConfirmationRowQualification:
         evidence_id="ev_a",
         category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
     ):
+        # Bound (#1906 D1): it names the row it re-checks, which
+        # ``_case_with`` puts on the case (``ensure_subjects``).
         return SimpleNamespace(
             category=category,
             collected_by=collected_by,
             collected_at_turn=turn,
             evidence_id=evidence_id,
+            rechecks_evidence_id=(
+                SUPPORT_ID
+                if category == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
+                else VERIFYING_ID
+            ),
         )
 
     @staticmethod
@@ -259,6 +286,7 @@ class TestConfirmationRowQualification:
             self._absence(collected_by="engine"),
             self._symptom_absence(),
         ]
+        ensure_subjects(case)
         r = assess_resolution_readiness(case)
         assert r.verdict == ResolutionReadiness.NEEDS_INFO
         assert "confirmation the problem is now resolved" in r.missing
@@ -269,6 +297,7 @@ class TestConfirmationRowQualification:
             self._absence(collected_by="engine"),
             self._symptom_absence(),
         ]
+        ensure_subjects(case)
         r = assess_closure_readiness(case)
         assert r.verdict != ClosureReadiness.SUGGEST_RESOLVE
 
@@ -305,15 +334,12 @@ class TestConfirmationRowQualification:
                 )
             )
         case.evidence = rows
-        case.causal_nodes = {
-            "cn_1": SimpleNamespace(
-                evidence_links=[
-                    SimpleNamespace(
-                        stance=EvidenceStance.REFUTES, evidence_id="ev_failed"
-                    )
-                ]
-            )
-        }
+        ensure_subjects(case)
+        case.causal_nodes["cn_1"] = SimpleNamespace(
+            evidence_links=[
+                SimpleNamespace(stance=EvidenceStance.REFUTES, evidence_id="ev_failed")
+            ]
+        )
         return case
 
     def test_premature_row_from_failed_fix_window_is_not_ready(self):
@@ -347,6 +373,7 @@ class TestTheProblemLegIsRequired:
     def _case_with(self, *rows):
         case = _case(cats=[])
         case.evidence = list(rows)
+        ensure_subjects(case)
         return case
 
     def test_the_cause_leg_alone_is_not_ready(self):
@@ -438,6 +465,7 @@ class TestTheProblemLegIsAnchoredOnTheFix:
         case = _case(cats=[])
         case.evidence = list(rows)
         case.proposed_actions = list(actions)
+        ensure_subjects(case)
         return case
 
     def test_the_symptom_checked_before_the_cause_counts_after_a_recorded_fix(self):

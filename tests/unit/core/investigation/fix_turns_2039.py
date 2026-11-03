@@ -23,6 +23,7 @@ from faultmaven.modules.case.contracts import (
     SolutionType,
     UploadedFile,
 )
+from tests.unit.core.investigation.bound_rows import bound_to_add
 from tests.unit.core.investigation.test_m6_cause_gone_problem_persists_1927 import (
     _FILE_ID,
     _identified_case,
@@ -49,8 +50,21 @@ def _ev(category, summary) -> EvidenceToAdd:
     )
 
 
+#: What a post-fix row re-checks is recorded (#1906 D1), and its data's upload
+#: turn dates it (#2145): ``_turn`` builds each such row on its own turn.
+_POST_FIX = (_CAUSE_GONE, _GONE, _PRESENT)
+
+
 async def _turn(eng, case, turn, *rows, **updates) -> dict:
     case.current_turn = turn
+    rows = [
+        (
+            bound_to_add(case, row.category, row.summary, turn=turn)
+            if row.category in _POST_FIX and row.rechecks is None
+            else row
+        )
+        for row in rows
+    ]
     return await _apply(eng, case, _TSU(evidence_to_add=list(rows), **updates))
 
 

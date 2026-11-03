@@ -796,8 +796,17 @@ class EvidenceReclassifier:
         # without this the persisted row holds a live reference into the
         # preprocessing result.
         if new_evidence_metadata is not None:
+            replacement = copy.deepcopy(new_evidence_metadata)
+            # Not a preprocessing key: what the row re-observes (#1906) is
+            # claim content, like ``summary``, and a reclassification of its
+            # file does not change it.
+            kept = (new_evidence_list[evidence_index].metadata or {}).get(
+                "fix_verification"
+            )
+            if kept is not None:
+                replacement["fix_verification"] = copy.deepcopy(kept)
             updated_evidence = new_evidence_list[evidence_index].model_copy(
-                update={"metadata": copy.deepcopy(new_evidence_metadata)},
+                update={"metadata": replacement},
                 deep=True,
             )
             new_evidence_list[evidence_index] = updated_evidence

@@ -109,6 +109,7 @@ from faultmaven.core.investigation.terminal_transitions import (  # noqa: E402
 )
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.evidence import Evidence, EvidenceSourceType
+from tests.unit.core.investigation.bound_rows import ensure_subjects  # noqa: E402
 
 _FILE_ID = "file_0123456789ab"
 
@@ -128,12 +129,28 @@ def _ev(category: EvidenceCategory, idx: int = 1) -> Evidence:
 
 
 def _case(*evidence: Evidence) -> Case:
-    return make_case(
+    """A case whose absence rows name what they re-check (#1906 D1): the
+    cause's own support and the row that showed the problem
+    (``ensure_subjects``)."""
+    case = make_case(
         user_id="u1",
         enterprise_id="o1",
         description="Pods are crashing",
         evidence=list(evidence),
     )
+    absence = (
+        EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+        EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+    )
+    if not any(row.category in absence for row in evidence):
+        return case
+    verifying, support = ensure_subjects(case, turn=0)
+    for row in evidence:
+        if row.category == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE:
+            row.record_rechecks(support, named=support)
+        elif row.category == EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE:
+            row.record_rechecks(verifying, named=verifying)
+    return case
 
 
 def test_the_absence_pair_makes_case_resolution_ready():

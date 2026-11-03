@@ -514,6 +514,19 @@ class ProblemVerification(BaseModel):
         description="Why the reported symptom was found never to have been present.",
     )
 
+    # The rows that showed the problem (#1906 D1). A post-fix observation of
+    # the problem counts only when it names one of them
+    # (``cause_assurance.observation_subject``). Empty when the verification
+    # cited none: a legacy case, or one verified by a knowledge resolution.
+    verifying_evidence_ids: List[str] = Field(
+        default_factory=list,
+        description=(
+            "The symptom_evidence rows the verification of the statement in "
+            "force cited. Written by core/investigation/problem_status and the "
+            "verifying turn only."
+        ),
+    )
+
     # ============================================================
     # Computed Properties
     # ============================================================

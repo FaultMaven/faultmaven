@@ -47,6 +47,7 @@ from faultmaven.modules.case.infrastructure.case_repository import (
     InMemoryCaseRepository,
 )
 from tests.case_builders import investigating_case
+from tests.unit.core.investigation.bound_rows import bound_row
 
 _FILE_ID = "file_0123456789ab"
 
@@ -121,35 +122,21 @@ def _attach_confirmation(case: Case) -> None:
     after the fix (a ``causal_absence_evidence`` row) and the reported
     symptom confirmed gone with it (a ``symptom_absence_evidence`` row at
     the same turn, #1906)."""
-    case.evidence.append(
-        Evidence(
-            summary="Post-fix verification: root cause no longer present",
-            category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
-            source_type=EvidenceSourceType.LOGS,
-            collected_at=datetime.now(UTC),
-            collected_by="user_test",
-            primary_purpose="Confirm root cause eliminated",
-            preprocessed_content="cause absent after fix",
-            content_size_bytes=80,
-            preprocessing_method="manual",
-            source_file_id="file_postfix000001",
-            collected_at_turn=3,
-        )
+    bound_row(
+        case,
+        EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+        turn=3,
+        summary="Post-fix verification: root cause no longer present",
+        primary_purpose="Confirm root cause eliminated",
+        collected_by="user_test",
     )
-    case.evidence.append(
-        Evidence(
-            summary="Post-fix check: the reported symptom no longer occurs",
-            category=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
-            source_type=EvidenceSourceType.LOGS,
-            collected_at=datetime.now(UTC),
-            collected_by="user_test",
-            primary_purpose="Confirm the reported symptom is gone",
-            preprocessed_content="cause absent after fix",
-            content_size_bytes=80,
-            preprocessing_method="manual",
-            source_file_id="file_postfix000001",
-            collected_at_turn=3,
-        )
+    bound_row(
+        case,
+        EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+        turn=3,
+        summary="Post-fix check: the reported symptom no longer occurs",
+        primary_purpose="Confirm the reported symptom is gone",
+        collected_by="user_test",
     )
 
 

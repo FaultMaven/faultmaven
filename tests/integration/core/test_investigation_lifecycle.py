@@ -73,6 +73,7 @@ def _cited_upload() -> UploadedFile:
 from faultmaven.modules.case.infrastructure.case_repository import (
     InMemoryCaseRepository,
 )
+from tests.unit.core.investigation.bound_rows import ensure_subjects
 
 # ============================================================
 # Helpers
@@ -305,7 +306,9 @@ def _investigation_verification_response() -> InvestigationResponse_Diagnosis:
     )
 
 
-def _investigation_propose_resolved_response() -> InvestigationResponse_Treatment:
+def _investigation_propose_resolved_response(
+    verifying: str | None = None, support: str | None = None
+) -> InvestigationResponse_Treatment:
     """Investigation response: agent proposes resolution.
 
     Co-emits the backing ``causal_absence_evidence`` and
@@ -315,7 +318,8 @@ def _investigation_propose_resolved_response() -> InvestigationResponse_Treatmen
     accordingly — which is what these tests used to produce, and they then
     confirmed it anyway through the dropdown arm that did not re-read
     readiness. The bar is the rows; a fixture that proposes without them is
-    testing the bypass.
+    testing the bypass. Each row names the row it re-checks (#1906 D1):
+    ``support`` for the cause, ``verifying`` for the problem.
     """
     return InvestigationResponse_Treatment(
         agent_response=(
@@ -344,6 +348,7 @@ def _investigation_propose_resolved_response() -> InvestigationResponse_Treatmen
                     source_type=EvidenceSourceType.LOGS,
                     source_file_id=_CITED_UPLOAD_ID,
                     extract="no further connection errors since the rollback",
+                    rechecks=support,
                 ),
                 EvidenceToAdd(
                     summary=(
@@ -354,6 +359,7 @@ def _investigation_propose_resolved_response() -> InvestigationResponse_Treatmen
                     source_type=EvidenceSourceType.LOGS,
                     source_file_id=_CITED_UPLOAD_ID,
                     extract="p99 is back to 200ms",
+                    rechecks=verifying,
                 ),
             ],
             proposed_transition=ProposedTransition(
@@ -621,13 +627,16 @@ class TestInvestigationLifecycle:
             )
         case = result["case_updated"]
         assert case.progress.symptom_verified is True
+        # The turn-3 row showed the problem (the claim's single symptom row);
+        # the cause the rows name is put on record (#1906 D1).
+        verifying, support = ensure_subjects(case)
 
         # === Turn 4: Agent proposes resolution ===
         case.current_turn = 4
         with patch.object(
             engine.generator,
             "generate_structured_output",
-            return_value=_investigation_propose_resolved_response(),
+            return_value=_investigation_propose_resolved_response(verifying, support),
         ):
             result = await engine.process_turn(
                 case,
@@ -834,13 +843,15 @@ class TestTransitionsAreRecorded:
                 longterm_fix="Update application config",
             )
         ]
+        # What the proposal's rows re-check (#1906 D1).
+        verifying, support = ensure_subjects(case)
         await case_repo.save(case)
 
         # Turn 1: the agent proposes — does NOT execute
         with patch.object(
             engine.generator,
             "generate_structured_output",
-            return_value=_investigation_propose_resolved_response(),
+            return_value=_investigation_propose_resolved_response(verifying, support),
         ):
             result = await engine.process_turn(
                 case,

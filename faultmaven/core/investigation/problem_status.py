@@ -128,6 +128,27 @@ def unverify_problem(case: Case, *, via: str) -> bool:
     return _move(case, ProblemStatus.UNVERIFIED, via=via)
 
 
+def cited_symptom_rows(case: Case, evidence_ids: list[str]) -> list[str]:
+    """``evidence_ids`` narrowed to this case's symptom_evidence rows, in the
+    order cited, once each: the only rows that can have shown the problem."""
+    symptom = {
+        e.evidence_id
+        for e in case.evidence
+        if e.category == EvidenceCategory.SYMPTOM_EVIDENCE
+    }
+    return list(dict.fromkeys(i for i in evidence_ids if i in symptom))
+
+
+def record_verifying_rows(case: Case, evidence_ids: list[str]) -> None:
+    """Record the rows that showed the problem (#1906 D1), narrowed by
+    ``cited_symptom_rows``. A post-fix observation of the problem counts only
+    when it names one of them (``cause_assurance.observation_subject``)."""
+    if case.problem_verification is not None:
+        case.problem_verification.verifying_evidence_ids = cited_symptom_rows(
+            case, evidence_ids
+        )
+
+
 def current_statement(case: Case) -> str:
     """The problem statement in force."""
     pv = case.problem_verification
@@ -211,7 +232,8 @@ def revision_refusal(
 def invalidation_refusal(case: Case, evidence_ids: list[str], basis: str) -> str | None:
     """Why the problem cannot be found a false alarm now, or None."""
     from faultmaven.core.investigation.cause_assurance import (
-        ENGINE_EVIDENCE_AUTHOR,
+        SUBJECT_CAUSE,
+        subject_index,
     )
 
     status = case.progress.problem_status
@@ -230,11 +252,11 @@ def invalidation_refusal(case: Case, evidence_ids: list[str], basis: str) -> str
     # Any cause observed removed, from any fix window: a failed fix's rows
     # prove the problem existed at least as strongly as a successful one's, so
     # this reads the raw rows, not the resolution leg (which excludes what a
-    # failed fix window holds, #1927).
+    # failed fix window holds, #1927). Only a row bound to the case's cause
+    # (#1906 D1): one naming nothing observed nothing the finding contradicts.
+    subjects = subject_index(case)
     if any(
-        getattr(e, "category", None) == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
-        and getattr(e, "collected_by", None) != ENGINE_EVIDENCE_AUTHOR
-        for e in case.evidence or []
+        subjects.subject(e, windows=True) == SUBJECT_CAUSE for e in case.evidence or []
     ):
         return "a cause was confirmed eliminated, so the problem existed"
     return None
@@ -365,6 +387,8 @@ def commit_revision(case: Case, *, via: AnswerVia) -> PendingRevision:
         )
     )
     pv.invalidation = None
+    # The rows the revision cited showed the problem as it now reads.
+    record_verifying_rows(case, list(pending.evidence_ids))
     _supersede_symptom_needs(
         case, f"problem statement revised at turn {case.current_turn}"
     )
@@ -587,6 +611,9 @@ def _move(case: Case, to: ProblemStatus, *, via: str) -> bool:
     if before == to:
         return False
     progress.problem_status = to
+    if to == ProblemStatus.UNVERIFIED and case.problem_verification is not None:
+        # Whatever withdrew it, nothing on record shows the problem now (#1906).
+        case.problem_verification.verifying_evidence_ids = []
     logger.info(
         "Case %s: problem_status %s -> %s at turn %s (via %s)",
         case.case_id,

@@ -37,6 +37,7 @@ from faultmaven.modules.case.domain.models.conclusion import (
 from faultmaven.modules.case.domain.models.evidence import Evidence
 from faultmaven.modules.case.domain.models.solution import Solution, SolutionType
 from tests.case_builders import investigating_case
+from tests.unit.core.investigation.bound_rows import bound_row
 
 _FILE_ID = "file_0123456789ab"
 
@@ -97,37 +98,27 @@ def _attach_confirmation(case: Case) -> None:
     """The RESOLVED proof, gone ⇒ gone: the root cause confirmed eliminated
     after the fix (a ``causal_absence_evidence`` row) and the reported
     symptom confirmed gone with it (a ``symptom_absence_evidence`` row at
-    the same turn, #1906)."""
-    case.evidence.append(
-        Evidence(
-            summary="Post-fix logs confirm pool exhaustion no longer occurs",
-            category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
-            source_type=EvidenceSourceType.LOGS,
-            collected_at=datetime.now(UTC),
+    the same turn, #1906), each naming the row it re-checks (#1906 D1)."""
+    for category, summary, purpose in (
+        (
+            EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+            "Post-fix logs confirm pool exhaustion no longer occurs",
+            "Confirm root cause eliminated",
+        ),
+        (
+            EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+            "Post-fix check: the reported symptom no longer occurs",
+            "Confirm the reported symptom is gone",
+        ),
+    ):
+        bound_row(
+            case,
+            category,
+            turn=3,
+            summary=summary,
+            primary_purpose=purpose,
             collected_by="user_test",
-            primary_purpose="Confirm root cause eliminated",
-            preprocessed_content="no pool exhaustion after fix",
-            content_size_bytes=80,
-            preprocessing_method="manual",
-            source_file_id="file_postfix000001",
-            collected_at_turn=3,
         )
-    )
-    case.evidence.append(
-        Evidence(
-            summary="Post-fix check: the reported symptom no longer occurs",
-            category=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
-            source_type=EvidenceSourceType.LOGS,
-            collected_at=datetime.now(UTC),
-            collected_by="user_test",
-            primary_purpose="Confirm the reported symptom is gone",
-            preprocessed_content="no pool exhaustion after fix",
-            content_size_bytes=80,
-            preprocessing_method="manual",
-            source_file_id="file_postfix000001",
-            collected_at_turn=3,
-        )
-    )
 
 
 # ---------------------------------------------------------------------------

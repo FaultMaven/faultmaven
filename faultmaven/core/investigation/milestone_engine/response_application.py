@@ -51,6 +51,7 @@ from faultmaven.core.investigation.problem_status import (
     is_false_alarm_close,
     pending_revision,
     propose_revision,
+    record_verifying_rows,
     revision_refusal,
     stage_cause_work,
     unverify_problem,
@@ -179,6 +180,76 @@ def _reclassify_premature_causal_absence(case: Case, metadata: dict[str, Any]) -
         "was verified and were recorded as symptom_absence_evidence: a cause can "
         "only be shown eliminated once the problem it caused is verified.",
     )
+
+
+def _record_rechecks(case: Case, items: list, slots: list[str]) -> None:
+    """Store what each of this response's rows re-observes (#1906 D1), once
+    every row has its slot, so a forward ``new_index_N`` resolves. A ref that
+    names no row of the case, a refused slot, the row itself or an absence row
+    (absence rows carry no links, so nothing binds through one) is stored
+    unbound. ``slots`` is ``metadata["evidence_slots"]``, positional with
+    ``items``."""
+    rows = {e.evidence_id: e for e in case.evidence}
+    for item, slot in zip(items, slots):
+        row = rows.get(slot)
+        if row is None or not getattr(item, "rechecks", None):
+            continue
+        target = _resolve_id_ref(item.rechecks, slots, "ev_")
+        named = rows.get(target)
+        bound = (
+            named is not None
+            and named is not row
+            and named.category
+            not in (
+                EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+                EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+            )
+        )
+        row.record_rechecks(target if bound else None, named=str(item.rechecks))
+
+
+def _record_verifying_rows(case: Case, updates: Any, metadata: dict[str, Any]) -> None:
+    """Step 2e: the rows that showed the problem (#1906 D1), once this turn's
+    verification is final.
+
+    On the verifying EDGE (the symptom claim survived step 2b and 2c, or a
+    knowledge resolution verified this turn): the claim's cited
+    ``symptom_verification_evidence_ids``; when it cites none, the single
+    symptom_evidence row the turn wrote, only when there is exactly one — the
+    claim is checked by category (``validate_milestone_claims``), so reading
+    more would re-import that proxy. A knowledge resolution records rows only
+    through a symptom claim made in the same turn.
+
+    On a later turn (ruled 2026-11-03): an explicit citation fills an EMPTY
+    list, never a non-empty one, and with no fallback."""
+    if case.progress.problem_status != ProblemStatus.VERIFIED:
+        return
+    pv = case.problem_verification
+    m = getattr(updates, "milestones", None)
+    slots = metadata.get("evidence_slots", [])
+    cited = [
+        _resolve_id_ref(ref, slots, "ev_")
+        for ref in (getattr(m, "symptom_verification_evidence_ids", None) or [])
+    ]
+    claimed = "symptom_verified" in metadata["milestones_completed"] or (
+        metadata.get("verified_by_knowledge_resolution")
+        and getattr(m, "symptom_verified", None) is True
+    )
+    if claimed:
+        if not cited:
+            written = set(metadata.get("evidence_added") or [])
+            cited = [
+                e.evidence_id
+                for e in case.evidence
+                if e.evidence_id in written
+                and e.category == EvidenceCategory.SYMPTOM_EVIDENCE
+            ]
+            cited = cited if len(cited) == 1 else []
+        record_verifying_rows(case, cited)
+    elif metadata.get("verified_by_knowledge_resolution"):
+        record_verifying_rows(case, [])
+    elif pv is not None and not pv.verifying_evidence_ids and cited:
+        record_verifying_rows(case, cited)
 
 
 #: The state-update fields that are cause work. While a revised statement
@@ -1001,8 +1072,10 @@ class ResponseApplier:
             # gates (which require a verified symptom for the RCC signal).
             # Not appended to ``milestones_completed``: that list is reviewed
             # against cited evidence at step 2b, and this verification rests
-            # on the user's confirmation, not on a citation.
-            verify_problem(case, via="knowledge_resolution")
+            # on the user's confirmation, not on a citation. Its verifying
+            # rows are recorded at step 2e, from this turn's symptom claim.
+            if verify_problem(case, via="knowledge_resolution"):
+                metadata["verified_by_knowledge_resolution"] = True
             logger.info(
                 "Case %s: knowledge_resolution signalled during INVESTIGATING; "
                 "match_id=%s, type=%s. Standard ProposedTransition handshake handles disposition.",
@@ -1138,6 +1211,7 @@ class ResponseApplier:
                     f"source_file_id={ev.source_file_id}, "
                     f"summary='{ev.summary[:80]}...'"
                 )
+            _record_rechecks(case, updates.evidence_to_add, metadata["evidence_slots"])
 
         # 2b. Validate Milestone Claims Against Cited Evidence
         # Milestones are applied optimistically from LLM output (step 1 above),
@@ -1211,6 +1285,8 @@ class ResponseApplier:
         # both. Nothing between step 1 and here reads these fields.
         if not staging:
             self._apply_cause_claims(case, updates, metadata)
+        # And the rows that showed the problem, on the same final status.
+        _record_verifying_rows(case, updates, metadata)
 
         # 3. Add/Update Hypotheses
         #

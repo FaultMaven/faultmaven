@@ -946,6 +946,26 @@ class Evidence(BaseModel):
         max_length=50,
     )
 
+    # ``metadata["fix_verification"]`` (#1906 D1), beside the preprocessing
+    # namespaces registered in case-schema.md §4.3: what a post-fix
+    # observation re-observes. ``rechecks`` is the evidence id it names, or
+    # None when what it named binds to no row (an unresolvable ref, a refused
+    # slot, an absence row); ``named`` keeps the model's ref for the audit.
+    # No key at all: the row named nothing. No SQL reads it.
+
+    @property
+    def rechecks_evidence_id(self) -> Optional[str]:
+        """The row this observation re-observes, or None."""
+        recorded = (self.metadata or {}).get("fix_verification")
+        value = recorded.get("rechecks") if isinstance(recorded, dict) else None
+        return value if isinstance(value, str) else None
+
+    def record_rechecks(self, evidence_id: Optional[str], named: str) -> None:
+        self.metadata = {
+            **(self.metadata or {}),
+            "fix_verification": {"rechecks": evidence_id, "named": named},
+        }
+
     @model_validator(mode="after")
     def _source_requires_file_unless_engine_inference(self) -> "Evidence":
         """Mirror of the DB ``evidence_source_invariant`` CHECK: every

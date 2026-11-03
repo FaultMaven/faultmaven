@@ -40,17 +40,23 @@ from faultmaven.core.investigation.prompts.context_builder.evidence_needs import
 from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
+    CausalNode,
     Evidence,
     EvidenceCategory,
     EvidenceNeed,
     EvidenceSourceType,
+    EvidenceStance,
     InvestigationStage,
     MitigationRecord,
     NeedObtainability,
     NeedPriority,
     NeedPurpose,
     NeedState,
+    NodeEvidenceLink,
+    NodeState,
+    NodeType,
     ProblemStatus,
+    ValidationMethod,
 )
 from tests.case_builders import investigating_case
 
@@ -145,6 +151,31 @@ def _make_evidence(
         collected_at_turn=case.current_turn,
     )
     case.evidence.append(ev)
+    if category == EvidenceCategory.CAUSAL_EVIDENCE:
+        # The checklist lists a cause row a re-check can bind to (#1906 D1):
+        # one supporting the identified root alone.
+        root = case.causal_nodes.setdefault(
+            "cn_00000000c0de",
+            CausalNode(
+                metadata={"root_terminal": True},
+                node_id="cn_00000000c0de",
+                statement="the identified root cause",
+                node_type=NodeType.ROOT,
+                node_state=NodeState.VALIDATED,
+                validation_method=ValidationMethod.EMPIRICAL,
+                belief=0.9,
+                actionable=True,
+                generated_at_turn=1,
+            ),
+        )
+        root.evidence_links.append(
+            NodeEvidenceLink(
+                evidence_id=ev.evidence_id,
+                stance=EvidenceStance.SUPPORTS,
+                reasoning="supports the root",
+                linked_at_turn=case.current_turn,
+            )
+        )
     return ev
 
 

@@ -29,8 +29,8 @@ from typing import Any, Iterable, Optional
 
 from faultmaven.core.investigation.cause_assurance import (
     CONFIRMED_RCC_LIKELIHOOD_FLOOR,
-    ENGINE_EVIDENCE_AUTHOR,
     FIX_FAILED,
+    SUBJECT_PROBLEM,
     CauseAssuranceGrade,
     _graph_hooks,
     cause_elimination_rows,
@@ -42,6 +42,7 @@ from faultmaven.core.investigation.cause_assurance import (
     has_resolution_confirmation,
     has_root_cause_record,
     latest_fix_window,
+    subject_index,
 )
 from faultmaven.core.investigation.lifecycle_metrics import (
     close_pivoted_to_resolve_total,
@@ -1111,22 +1112,19 @@ def _relief_without_cause_recheck(case: "Case", window) -> bool:
     """The latest fix window's latest observation of the problem is a
     problem-gone row, and the window holds no cause re-check (#1927): the one
     leg the user still owes is the cause. Not when the problem was seen again
-    after the relief — then it is not gone."""
-    if window.fix_turn is None or window.cause_rows:
+    after the relief — then it is not gone. Both observations are bound to
+    the problem and dated by their data (#1906 D1, #2145), as the windows
+    read them. A cause re-check counts only when it could confirm
+    (``FixWindow.confirmed_cause_rows``): a re-check of a fallen cause after
+    another cause's fix still leaves the cause leg owed."""
+    if window.fix_turn is None or window.confirmed_cause_rows:
         return False
+    subjects = subject_index(case)
     latest: dict = {}
     for e in case.evidence or []:
         category = getattr(e, "category", None)
-        turn = getattr(e, "collected_at_turn", 0) or 0
-        if (
-            category
-            in (
-                EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
-                EvidenceCategory.SYMPTOM_EVIDENCE,
-            )
-            and getattr(e, "collected_by", None) != ENGINE_EVIDENCE_AUTHOR
-            and window.holds(turn)
-        ):
+        turn = subjects.observed(e)
+        if subjects.subject(e) == SUBJECT_PROBLEM and window.holds(turn):
             latest[category] = max(latest.get(category, -1), turn)
     gone = latest.get(EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE)
     return gone is not None and gone >= latest.get(
@@ -1279,6 +1277,25 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
                 "showing the original problem is now gone (e.g. the latest "
                 "output, with the error no longer in it)."
             )
+    pv = case.problem_verification
+    if (
+        case.progress.problem_status == ProblemStatus.VERIFIED
+        and pv is not None
+        and not getattr(pv, "verifying_evidence_ids", None)
+        and not any(
+            getattr(e, "category", None) == EvidenceCategory.SYMPTOM_EVIDENCE
+            for e in case.evidence or []
+        )
+    ):
+        # Nothing on record showed the problem (#1906, ruled 2026-11-03): no
+        # re-check can bind to it until the original failing output is cited.
+        # With a symptom row on record the model cites that row instead
+        # (the prompt says so), so the user is not asked to paste it again.
+        asks.append(
+            "- **The check that showed the problem** — the original failing "
+            "output isn't on record as what showed the problem; submit it as "
+            "data (pasted or attached) so the fix can be confirmed against it."
+        )
     return ResolutionReadiness(
         verdict=ResolutionReadiness.NEEDS_INFO,
         message=(

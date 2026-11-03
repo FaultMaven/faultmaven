@@ -1124,19 +1124,24 @@ class ReportGenerationService:
 
         # INV-30 polarity guard on BOTH branches (the evidence_basis list is
         # LLM-authored and can cite anything): an absence row renders as
-        # "confirming" only when it qualifies as the cause leg of a resolution
-        # confirmation — engine-authored M6 rows are failed-fix
-        # DISCONFIRMATIONS (the opposite polarity) and premature rows from a
-        # failed fix window confirm nothing. Same shared predicate as the
-        # readiness gate's cause leg and the confirm-stamp (function-local
-        # import: the _assurance_note precedent for report → core.investigation
-        # reads).
+        # "confirming" only when its polarity is a confirmation's —
+        # engine-authored M6 rows are failed-fix DISCONFIRMATIONS (the
+        # opposite polarity) and premature rows from a failed fix window
+        # confirm nothing. The rows the resolution's cause leg stands on
+        # (``cause_elimination_rows``) qualify first, so the report cites the
+        # row the gate confirmed on and the stamp stamped; a case with no such
+        # rows (every case recorded before #1906 2a) falls back to the same
+        # bars without the binding (``confirming_polarity_rows``).
+        # Function-local import: the _assurance_note precedent for report →
+        # core.investigation reads.
         from faultmaven.core.investigation.cause_assurance import (
             cause_elimination_rows,
+            confirming_polarity_rows,
         )
 
         qualified_absence_ids = {
-            getattr(e, "evidence_id", None) for e in cause_elimination_rows(case)
+            getattr(e, "evidence_id", None)
+            for e in (cause_elimination_rows(case) or confirming_polarity_rows(case))
         }
 
         def _confirming_polarity(ev) -> bool:

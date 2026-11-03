@@ -116,6 +116,7 @@ from faultmaven.modules.report.domain.services.report_generation_service import 
     ReportGenerationService,
 )
 from tests.case_builders import investigating_case, with_open_offer
+from tests.unit.core.investigation.bound_rows import bound_row, ensure_subjects
 
 _FILE_ID = "file_0123456789ab"
 
@@ -348,17 +349,25 @@ class TestInvalidationGuard:
     def test_a_confirmed_elimination_proves_the_problem_existed(self):
         case = _case(ProblemStatus.VERIFIED)
         absent = _with(case, _evidence(EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE, "a"))
-        case.evidence.append(_evidence(EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE, "g"))
+        bound_row(case, EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE, turn=3)
         assert "eliminated" in invalidation_refusal(case, absent, "nothing failed")
+
+    def test_a_cause_row_naming_nothing_does_not_bar_the_finding(self):
+        """#1906 D1: only a row bound to the case's cause shows a cause
+        removed; one naming nothing observed nothing the finding contradicts."""
+        case = _case(ProblemStatus.VERIFIED)
+        absent = _with(case, _evidence(EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE, "a"))
+        ensure_subjects(case)
+        case.evidence.append(_evidence(EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE, "g"))
+        assert invalidation_refusal(case, absent, "nothing failed") is None
 
     def test_the_cause_leg_alone_proves_the_problem_existed(self):
         """#1906: a cause observed removed is not yet a resolution confirmation
         (the problem leg is missing), but it still proves there was a problem."""
         case = _case(ProblemStatus.VERIFIED)
         absent = _with(case, _evidence(EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE, "a"))
-        cause_gone = _evidence(EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE, "g")
-        cause_gone.collected_at_turn = 5  # after the quiet reading at turn 3
-        case.evidence.append(cause_gone)
+        # After the quiet reading at turn 3.
+        bound_row(case, EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE, turn=5)
         assert not has_resolution_confirmation(case)
         assert invalidation_refusal(case, absent, "nothing failed") == (
             "a cause was confirmed eliminated, so the problem existed"

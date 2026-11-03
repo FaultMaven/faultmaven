@@ -72,6 +72,7 @@ from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 from faultmaven.modules.case.domain.models.solution import Solution, SolutionType
 from tests.case_builders import with_declined_offer, with_open_offer
 from tests.source_tree import parse_file
+from tests.unit.core.investigation.bound_rows import bound_row
 
 _FILE_ID = "file_0123456789ab"
 
@@ -207,27 +208,21 @@ def _investigating(*, cause: bool = False, absence: bool = False) -> Case:
             )
         ]
     if absence:
-        case.evidence.append(
-            Evidence(
-                category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
-                primary_purpose="confirm the cause was eliminated",
-                summary="After the pool fix the 503s stopped and did not return.",
-                source_type=EvidenceSourceType.LOGS,
-                source_file_id=_FILE_ID,
-                collected_by="user",
-                collected_at_turn=1,
-            )
+        bound_row(
+            case,
+            EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+            turn=1,
+            summary="After the pool fix the 503s stopped and did not return.",
+            primary_purpose="confirm the cause was eliminated",
+            collected_by="user",
         )
-        case.evidence.append(
-            Evidence(
-                category=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
-                primary_purpose="re-check the reported symptom after the fix",
-                summary="The checkout requests return 200 again; no 503s since the fix.",
-                source_type=EvidenceSourceType.LOGS,
-                source_file_id=_FILE_ID,
-                collected_by="user",
-                collected_at_turn=1,
-            )
+        bound_row(
+            case,
+            EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+            turn=1,
+            summary="The checkout requests return 200 again; no 503s since the fix.",
+            primary_purpose="re-check the reported symptom after the fix",
+            collected_by="user",
         )
     return case
 

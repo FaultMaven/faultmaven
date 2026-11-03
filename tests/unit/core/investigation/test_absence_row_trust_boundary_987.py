@@ -59,6 +59,12 @@ from faultmaven.modules.case.contracts import (
     UploadedFile,
 )
 from tests.case_builders import investigating_case
+from tests.unit.core.investigation.bound_rows import (
+    SUPPORT_ID,
+    VERIFYING_ID,
+    bound_evidence,
+    ensure_subjects,
+)
 
 _FILE_ID = "file_0123456789ab"
 
@@ -81,7 +87,26 @@ def _case() -> Case:
     )
 
 
+#: What a post-fix row re-checks (#1906 D1); ``_fix_applied`` puts both rows
+#: on the case (``ensure_subjects``).
+_RECHECKS = {
+    EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE: SUPPORT_ID,
+    EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE: VERIFYING_ID,
+    EvidenceCategory.SYMPTOM_EVIDENCE: VERIFYING_ID,
+}
+
+
 def _evidence(ev_id, category, turn, summary, collected_by="llm") -> Evidence:
+    if collected_by != "engine" and category in _RECHECKS:
+        return bound_evidence(
+            category,
+            turn=turn,
+            evidence_id=ev_id,
+            rechecks=_RECHECKS[category],
+            summary=summary,
+            primary_purpose="diagnosis",
+            source_file_id=_FILE_ID,
+        )
     return Evidence(
         evidence_id=ev_id,
         summary=summary,
@@ -100,9 +125,9 @@ def _evidence(ev_id, category, turn, summary, collected_by="llm") -> Evidence:
     )
 
 
-def _success_absence_row(turn=9) -> Evidence:
+def _success_absence_row(turn=9, rechecks=None) -> Evidence:
     """The row at the heart of the incident: a SUCCESS confirmation."""
-    return _evidence(
+    row = _evidence(
         "ev_47b2f3337ffc",
         EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
         turn,
@@ -110,6 +135,9 @@ def _success_absence_row(turn=9) -> Evidence:
         "sts.amazonaws.com, web-identity credentials and chained role "
         "assumption succeeded; S3 processing completed successfully.",
     )
+    if rechecks is not None:
+        row.record_rechecks(rechecks, named=rechecks)
+    return row
 
 
 def _hypothesis(hypothesis_id, state, *, root_node_id=None, refutation_reason=None):
@@ -349,8 +377,14 @@ def _fix_applied(case, turn=8, action_type=InvestigationActionType.SOLUTION):
     ``accepted_in_turn`` is the execution turn — ``proposed_in_turn`` is the
     OFFER, one turn earlier in the ordinary flow. Keying the persistence window
     on the proposal let evidence from the offering turn (recorded before the fix
-    ever ran) read as a post-fix outcome.
+    ever ran) read as a post-fix outcome. The case is given a cause and a row
+    that showed the problem, for its post-fix rows to name (#1906 D1).
     """
+    ensure_subjects(case)
+    _record_fix(case, turn, action_type)
+
+
+def _record_fix(case, turn, action_type=InvestigationActionType.SOLUTION):
     case.proposed_actions.append(
         ProposedAction(
             case_id=case.case_id,
@@ -624,15 +658,25 @@ def _counterfactual_case(*, with_persistence: bool):
     from faultmaven.modules.case.contracts import NodeEvidenceLink
 
     case = _case()
-    _fix_applied(case, turn=8)
+    _record_fix(case, turn=8)
+    # The root's own support, which the cause re-check names (#1906 D1).
+    support = _evidence(
+        "ev_7e57e0000001",
+        EvidenceCategory.CAUSAL_EVIDENCE,
+        5,
+        "the OIDC provider audience lists only sts.amazonaws.com.cn",
+    )
+    case.evidence.append(support)
     if with_persistence:
+        cause_gone = _evidence(
+            "ev_c0a5e000000f",
+            EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+            9,
+            "the OIDC provider audience now lists sts.amazonaws.com",
+        )
+        cause_gone.record_rechecks(support.evidence_id, named=support.evidence_id)
         case.evidence += [
-            _evidence(
-                "ev_c0a5e000000f",
-                EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
-                9,
-                "the OIDC provider audience now lists sts.amazonaws.com",
-            ),
+            cause_gone,
             _evidence(
                 "ev_a1b2c3d4e5f6",
                 EvidenceCategory.SYMPTOM_EVIDENCE,
@@ -673,6 +717,15 @@ def _counterfactual_case(*, with_persistence: bool):
     root = case.causal_nodes[created[0]]
     root.node_state = NodeState.VALIDATED
     root.record_root_terminal(True, "nothing upstream sets the audience", 7)
+    root.evidence_links.append(
+        NodeEvidenceLink(
+            evidence_id=support.evidence_id,
+            stance=EvidenceStance.SUPPORTS,
+            reasoning="the audience mismatch",
+            linked_at_turn=5,
+        )
+    )
+    ensure_subjects(case)  # the row that showed the problem
     case.progress.cause_state = CauseState.IDENTIFIED
     case.progress.identified_cause_root_ids = [root.node_id]
     return case
@@ -883,7 +936,7 @@ def test_resolved_case_truth_surfaces_agree_with_the_confirmed_cause():
 
     # Turn 9: the fix worked. The model records its success confirmation AND
     # (contract violation) REFUTES-links it to the very root it confirms.
-    case.evidence.append(_success_absence_row(turn=9))
+    case.evidence.append(_success_absence_row(turn=9, rechecks="ev_bf208c13b2b7"))
     ingest_emitted_chain(
         case,
         nodes_to_add=[],

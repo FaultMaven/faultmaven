@@ -275,3 +275,16 @@ async def test_no_provenance_line_when_none_recorded():
     service = ReportGenerationService()
     summary = await service._generate_resolution_summary(case, {"duration": "2h"})
     assert "Established by:" not in summary
+
+
+@pytest.mark.asyncio
+async def test_a_regenerated_report_keeps_the_stamped_confirmation_row():
+    """#1906 review (R5): the polarity guard is not the resolution's cause leg.
+    A case resolved on a row recorded before rows named what they re-check —
+    here the confirm-stamp's own SUPPORTS-linked causal_absence row — still
+    cites it when its report is regenerated."""
+    case = _resolved_case(with_root=True, confirmed=True)
+    summary = await ReportGenerationService()._generate_resolution_summary(
+        case, {"duration": "2h"}
+    )
+    assert "**[causal absence evidence]** an observed fact" in summary

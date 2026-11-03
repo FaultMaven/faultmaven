@@ -45,7 +45,7 @@ def _render_need_line(need) -> tuple[str, str]:
     return header, motivator_line
 
 
-def _render_finding_line(ev) -> str:
+def _render_finding_line(ev, label: str | None = None) -> str:
     """Render one confirmed presence-evidence row as a re-check line.
 
     The re-verification checklist (MITIGATION/TREATMENT) is anchored on
@@ -57,12 +57,37 @@ def _render_finding_line(ev) -> str:
     already-available data. Evidence rows exist for every confirmed
     finding, so this checklist is complete.
     """
-    label = "SYMPTOM" if ev.category == EvidenceCategory.SYMPTOM_EVIDENCE else "CAUSE"
+    if label is None:
+        label = (
+            "SYMPTOM" if ev.category == EvidenceCategory.SYMPTOM_EVIDENCE else "CAUSE"
+        )
     summary = ev.summary or ev.extract or "(no summary)"
     return (
         f"  - [{ev.evidence_id}] {_truncate_request_text(summary)} "
         f"({label}, established turn {ev.collected_at_turn})"
     )
+
+
+def _rows_a_recheck_binds(case: Case) -> list[tuple[str, object]]:
+    """The re-verification checklist, narrowed to the rows a re-check can name
+    in ``rechecks`` and bind to (#1906 D1, ``SubjectIndex.bindable_rows``):
+    the rows that showed the problem, and the rows supporting the cause pool
+    alone. With no verifying row on record (a legacy case) the problem half is
+    every symptom_evidence row, as before: the model is asked to cite one."""
+    from faultmaven.core.investigation.cause_assurance import subject_index
+
+    subjects = subject_index(case)
+    problem, cause = subjects.bindable_rows()
+    if not subjects.verifying:
+        problem = sorted(
+            (
+                ev
+                for ev in case.evidence
+                if ev.category == EvidenceCategory.SYMPTOM_EVIDENCE
+            ),
+            key=lambda ev: ev.collected_at_turn,
+        )
+    return [("SYMPTOM", ev) for ev in problem] + [("CAUSE", ev) for ev in cause]
 
 
 #: Heading for the suppressed-asks section of ``<evidence_needs>`` (#1079).
@@ -98,10 +123,9 @@ def _build_evidence_needs_block(case: Case) -> str:
       FULFILLED and SUPERSEDED are excluded to save tokens.
     - MITIGATION / TREATMENT: render two clearly-labelled sections —
       outstanding needs as above, plus a "re-verification checklist"
-      built from the confirmed presence-evidence rows
-      (``symptom_evidence`` / ``causal_evidence``) so the agent can
-      confirm the fix held by re-checking the data that established each
-      symptom/cause. The checklist is anchored on evidence rows, NOT on
+      built from the confirmed presence-evidence rows a re-check can bind
+      to (``_rows_a_recheck_binds``) so the agent can confirm the fix held
+      by re-checking the data that established each symptom/cause. The checklist is anchored on evidence rows, NOT on
       FULFILLED needs: needs are gap-conditional (created only when the
       verifying data wasn't already in hand), so a need-anchored
       checklist omits every finding confirmed from already-available
@@ -222,26 +246,15 @@ def _build_evidence_needs_block(case: Case) -> str:
         or n.need_id in _surfaced_causal_ids
     ]
     # Re-verification checklist is anchored on confirmed presence-evidence
-    # rows (symptom/causal), NOT FULFILLED needs. Evidence rows exist for
-    # every confirmed finding; FULFILLED needs are gap-conditional and
-    # gap-rare, so a need-anchored checklist silently omits findings
-    # confirmed from already-available data. See _render_finding_line.
-    re_verification = (
-        [
-            ev
-            for ev in case.evidence
-            if ev.category
-            in (EvidenceCategory.SYMPTOM_EVIDENCE, EvidenceCategory.CAUSAL_EVIDENCE)
-        ]
-        if in_post_diagnosis
-        else []
-    )
+    # rows, NOT FULFILLED needs. Evidence rows exist for every confirmed
+    # finding; FULFILLED needs are gap-conditional and gap-rare, so a
+    # need-anchored checklist silently omits findings confirmed from
+    # already-available data. Narrowed to the rows a re-check binds to
+    # (#1906 D1): symptom rows first, then cause rows, each chronological.
+    re_verification = _rows_a_recheck_binds(case) if in_post_diagnosis else []
 
     if not outstanding and not re_verification and not exhausted:
         return ""
-
-    # Re-verification findings: chronological by the turn they were established.
-    re_verification.sort(key=lambda ev: ev.collected_at_turn)
 
     # Render-cap budget: up to _EVIDENCE_NEEDS_RENDER_CAP entries per section so neither
     # starves the other — generous enough that real cases never hit the cap.
@@ -318,12 +331,29 @@ def _build_evidence_needs_block(case: Case) -> str:
         if outstanding or exhausted:
             lines.append("")
         lines.append("Re-verification checklist (confirmed findings — re-check each to")
-        lines.append(
-            "confirm the fix held; emit *_absence_evidence when a signature is gone):"
+        from faultmaven.core.investigation.cause_assurance import (
+            fix_application_turn,
         )
+
+        if fix_application_turn(case) is not None:
+            # After a recorded fix, a re-check names what it re-checks (#1906
+            # D1), whatever the stage label (MITIGATION outranks TREATMENT
+            # while a workaround is pending); a mitigation's relief does not
+            # (the mitigation template). The same test as the unbound-row
+            # feedback (``_flag_unbound_post_fix_rows``).
+            lines.append(
+                "confirm the fix held; emit *_absence_evidence when a signature "
+                "is gone,"
+            )
+            lines.append("naming the row it re-checks in rechecks):")
+        else:
+            lines.append(
+                "confirm the fix held; emit *_absence_evidence when a signature "
+                "is gone):"
+            )
         lines.append("")
-        for ev in reverif_rendered:
-            lines.append(_render_finding_line(ev))
+        for label, ev in reverif_rendered:
+            lines.append(_render_finding_line(ev, label))
         if reverif_overflow > 0:
             lines.append("")
             lines.append(

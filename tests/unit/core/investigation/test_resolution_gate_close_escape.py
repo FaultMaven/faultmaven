@@ -43,6 +43,7 @@ from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.domain.models.problem import ProblemVerification
 from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 from faultmaven.modules.case.domain.models.solution import Solution, SolutionType
+from tests.unit.core.investigation.bound_rows import bound_row, ensure_subjects
 
 _FILE_ID = "file_0123456789ab"
 
@@ -189,16 +190,13 @@ async def test_ready_case_resolves_guard_does_not_interfere():
         (EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE, "queries use the new index"),
         (EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE, "p99 back to 40ms"),
     ):
-        case.evidence.append(
-            Evidence(
-                summary=summary,
-                category=category,
-                source_type=EvidenceSourceType.LOGS,
-                collected_by="user_test",
-                primary_purpose="confirm the fix",
-                source_file_id=_FILE_ID,
-                collected_at_turn=2,
-            )
+        bound_row(
+            case,
+            category,
+            turn=2,
+            summary=summary,
+            collected_by="user_test",
+            primary_purpose="confirm the fix",
         )
     metadata = _llm_proposes_resolved()
 
@@ -291,6 +289,7 @@ async def test_steps_zero_ready_reproposal_stands_on_a_real_turn(model_proposes)
     case = _needs_info_case()
     case.current_turn = 2
     _asked_last_turn(case)
+    verifying, support = ensure_subjects(case)
     engine.generator.generate_structured_output = AsyncMock(
         return_value=InvestigationResponse_Diagnosis(
             agent_response="Good, the index removed the full scans.",
@@ -302,6 +301,7 @@ async def test_steps_zero_ready_reproposal_stands_on_a_real_turn(model_proposes)
                         category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
                         source_type=EvidenceSourceType.LOGS,
                         source_file_id=_FILE_ID,
+                        rechecks=support,
                     ),
                     EvidenceToAdd(
                         summary="p99 back to 40ms since the index was created",
@@ -309,6 +309,7 @@ async def test_steps_zero_ready_reproposal_stands_on_a_real_turn(model_proposes)
                         category=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
                         source_type=EvidenceSourceType.LOGS,
                         source_file_id=_FILE_ID,
+                        rechecks=verifying,
                     ),
                 ],
                 "proposed_transition": ProposedTransition(to_state=model_proposes),

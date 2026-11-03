@@ -37,6 +37,7 @@ from faultmaven.modules.case.domain.models.evidence import (
 )
 from faultmaven.modules.case.domain.models.solution import Solution, SolutionType
 from tests.case_builders import investigating_case
+from tests.unit.core.investigation.bound_rows import bound_row
 
 _FILE_ID = "file_0123456789ab"
 
@@ -108,30 +109,27 @@ def _case(*, confirmed: bool) -> Case:
     if confirmed:
         # Gone ⇒ gone (#1906): the cause observed removed, and the reported
         # problem observed gone with it.
-        case.evidence.append(
-            Evidence(
-                category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
-                primary_purpose="confirm the cause was eliminated",
-                summary=(
-                    "After the provider client-ID correction the pods obtained "
-                    "credentials and the AssumeRole failures stopped."
-                ),
-                source_type=EvidenceSourceType.LOGS,
-                source_file_id=_FILE_ID,
-                collected_by="user",
-                collected_at_turn=1,
-            )
+        # Each names the row it re-checks (#1906 D1).
+        bound_row(
+            case,
+            EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+            turn=1,
+            summary=(
+                "After the provider client-ID correction the pods obtained "
+                "credentials and the AssumeRole failures stopped."
+            ),
+            primary_purpose="confirm the cause was eliminated",
+            collected_by="user",
+            source_file_id=_FILE_ID,
         )
-        case.evidence.append(
-            Evidence(
-                category=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
-                primary_purpose="re-check the reported symptom after the fix",
-                summary="AssumeRoleWithWebIdentity succeeds for the pods again.",
-                source_type=EvidenceSourceType.LOGS,
-                source_file_id=_FILE_ID,
-                collected_by="user",
-                collected_at_turn=1,
-            )
+        bound_row(
+            case,
+            EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+            turn=1,
+            summary="AssumeRoleWithWebIdentity succeeds for the pods again.",
+            primary_purpose="re-check the reported symptom after the fix",
+            collected_by="user",
+            source_file_id=_FILE_ID,
         )
     return case
 

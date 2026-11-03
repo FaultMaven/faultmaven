@@ -24,6 +24,7 @@ from faultmaven.core.investigation.causal_graph.clusters import (
     mece_contested_root_ids,
 )
 from faultmaven.core.investigation.causal_graph.rcc import retract_stale_engine_rcc
+from faultmaven.core.investigation.cause_assurance import subject_index
 from faultmaven.core.investigation.milestone_engine.cause_state import (
     _recompute_cause_state_from_chain,
 )
@@ -52,6 +53,7 @@ from faultmaven.modules.case.contracts import (
     ValidationMethod,
 )
 from tests.case_builders import investigating_case
+from tests.unit.core.investigation.bound_rows import bound_evidence
 
 _FILE_ID = "file_0123456789ab"
 
@@ -460,8 +462,17 @@ def test_llm_authored_conclusion_survives_contest():
 
 
 def _resolution_absence_row(case, label="ev_resolution_confirm"):
-    row = _evidence(label, EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE)
-    object.__setattr__(row, "collected_at_turn", 8)
+    """The confirmation, naming the row it re-checks (#1906 D1): the first row
+    supporting the case's cause alone."""
+    _problem, cause = subject_index(case).bindable_rows()
+    row = bound_evidence(
+        EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+        turn=8,
+        evidence_id=_eid(label),
+        rechecks=cause[0].evidence_id if cause else None,
+        summary=f"fact-{label} metric-{label} reading-{label}",
+        source_file_id=_FILE_ID,
+    )
     case.evidence.append(row)
     return row
 

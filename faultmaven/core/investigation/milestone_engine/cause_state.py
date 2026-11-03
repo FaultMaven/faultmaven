@@ -46,6 +46,7 @@ from faultmaven.modules.case.contracts import Case, CauseState
 
 from .stage_gates import (
     _flag_absence_inside_a_failed_fix_window,
+    _flag_unbound_post_fix_rows,
     _refresh_working_conclusion,
     _withdraw_unlicensed_solution_offers,
 )
@@ -578,6 +579,7 @@ def _recompute_assessment_state(
     _refresh_working_conclusion(case)
     _withdraw_unlicensed_solution_offers(case, metadata)
     _flag_absence_inside_a_failed_fix_window(case, metadata)
+    _flag_unbound_post_fix_rows(case, metadata)
     derive_solution_surface(case)
 
     # Assurance grade + verification status LAST — after the cause_state

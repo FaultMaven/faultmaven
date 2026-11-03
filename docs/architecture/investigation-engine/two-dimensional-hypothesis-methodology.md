@@ -1004,22 +1004,24 @@ records only what it can substantiate:
     that runs to the next one; rows before any dated fix are window 0, which
     never fails (nothing dated was seen failing).
   - Inside a window, read in turn order from the window's raw, non-engine
-    rows: the cause seen removed (a `causal_absence` row); the problem seen
-    gone (a `symptom_absence` row); the problem seen **persisting** — a
-    `symptom_evidence` row at or after the cause's removal, in a turn after
-    the fix's execution turn (a row in that turn may quote pre-fix lines from
-    the same paste), up to and including the next fix's execution turn
-    (there, "it's back" is this window's relapse, not the next fix's
-    failure), bearing on the problem (≥2 shared content tokens with the
-    problem anchors plus the identified cause's chain and hypotheses — the
-    VALIDATED roots and any root carrying M6's own disconfirmation, so the
-    frame is stable across a demotion — plus the chain the window's own
-    cause rows are about, the cause the fix addressed, validated or not;
-    with no cause identified at all, every candidate's chain, since nothing
-    tells which one the fix addressed and M6 has no identified cause to
-    demote: 134 of 136 stored symptom rows on cases with a validated root
-    bear; once a cause is identified, a symptom about a sibling candidate or
-    a refuted guess does not fail the fix).
+    rows, each bound to the subject it names (#1906 D1,
+    `observation_subject`) and placed by its data's upload turn
+    (`observed_turn`, #2145): the cause seen removed (a cause-bound
+    `causal_absence` row); the problem seen gone (a problem-bound
+    `symptom_absence` row); the problem seen **persisting** — a
+    `symptom_evidence` row naming one of the rows that showed the problem,
+    at or after the cause's removal, in a turn after the fix's execution turn
+    (a row in that turn may quote pre-fix lines from the same paste), up to
+    and including the next fix's execution turn (there, "it's back" is this
+    window's relapse, not the next fix's failure). The windows' FAILED and
+    observed readings bind cause rows against the WINDOW pool — the
+    confirmation pool plus the roots the last recompute identified and any
+    root carrying M6's own disconfirmation — so a failure stays observed
+    across a demotion, while SUCCEEDED and the cause leg bind against the
+    confirmation pool only. A
+    symptom about a sibling candidate, a refuted guess or a probe's own
+    failure names no verifying row and fails nothing; with no cause in the
+    pool, nothing binds to the cause and the window records no failure.
   - The first persistence makes the window **FAILED**, and FAILED is final:
     no later relief — a workaround, a delayed effect, a re-check of the
     cause — makes a fix that was seen failing a success. Only a new fix opens
@@ -1028,8 +1030,11 @@ records only what it can substantiate:
     ambiguity resolves toward the confirmation, as for the disconfirmation
     window and the mixed single-turn shape. A relief followed by a later
     persistence is a relapse, FAILED for the gate; M6 reads it below.
-    **SUCCEEDED** needs the cause seen removed in the window too; otherwise
-    the window stays UNKNOWN.
+    **SUCCEEDED** needs the cause seen removed in the window too, by a cause
+    row bound against the confirmation pool (`FixWindow.confirmed_cause_rows`):
+    a re-check of a fallen cause, bound only through the window pool, can
+    fail the window but never make it SUCCEEDED. Otherwise the window stays
+    UNKNOWN.
 
   The readiness gate confirms a resolution only inside the **latest observed
   window** (`confirming_window`), and not when that window FAILED. A window
@@ -1091,8 +1096,10 @@ records only what it can substantiate:
   Costs, by ruling rather than gap: a fix that took effect late after it was
   seen failing cannot resolve without a new recorded fix; a persistence row
   in the fix's own turn fails nothing; a same-turn relief beside a
-  persistence reads as success; a persistence row sharing fewer than two
-  content tokens with the problem frame fails nothing; a newer recorded fix
+  persistence reads as success; a persistence row that names none of the
+  rows that showed the problem fails nothing (ruled 2026-10-31: an unnamed
+  row never disconfirms, so M6's record arm waits on the model naming rows);
+  a newer recorded fix
   needs its own cause and problem observations before it resolves. Window 0
   — the rows before any dated fix — never fails: there a causal_absence row
   is as likely a diagnosis-time exclusion ("DNS ruled out") as a fix's
@@ -1823,8 +1830,14 @@ the cited row must be NEWER than any refutation recorded against the root
 being confirmed — any author, any confidence. A hedged self-claimed failed
 fix neither demotes the root nor counts against it (§7.2, #2106), but the top
 grade is never minted from a row recorded at-or-before it; only the user's strictly-newer post-refute
-gone⇒gone completes `CONFIRMED`. And **content-level bearing**
-(`_select_bearing_row`): the citation is the NEWEST candidate not
+gone⇒gone completes `CONFIRMED`. The candidates are bound rows naming a
+support of the cause being confirmed (#1906 D1): a row re-checking one
+SUPPORTS-linked to an intermediate rung binds to no cause, however worded —
+the reversal of the stance `test_absence_bearing_calibration` pinned, by
+link shape (`test_a_recheck_of_a_rung_linked_row_binds_to_nothing`), while a
+rung-WORDED row naming a root-only support is still cited. And
+**content-level bearing** (`_select_bearing_row`, ranking bound rows by
+`collected_at_turn`): the citation is the NEWEST candidate not
 affirmatively **about a different chain** (≥2 shared content tokens with
 another chain's statements while <2 with the frame — the root statement, its
 mechanism rungs, its attached hypotheses, the problem anchors — is refused,
