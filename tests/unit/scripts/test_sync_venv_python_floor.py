@@ -30,15 +30,24 @@ exec(compile(code, "<string>", "exec"), {"__name__": "__main__"})
 """
 
 # What the script and the stub call by name; their PATH holds nothing else.
-_TOOLS = ("dirname", "sha256sum", "mkdir", "cp")
+_TOOLS = ("dirname", "sha256sum", "mkdir", "cp", "grep", "mktemp", "rm")
 
-# Records each call; `uv venv` makes the venv a stand-in reporting the floor.
+# Records each call; `uv venv` makes the venv a stand-in reporting the floor,
+# `uv pip sync` keeps a copy of what it was given, and the CPU-index torch
+# install fails when FAIL_TORCH is set.
 _UV = """\
 #!/bin/sh
 printf '%s\\n' "$*" >> "{log}"
 if [ "$1" = venv ]; then
     mkdir -p "$2/bin" && cp "{at_floor}" "$2/bin/python"
 fi
+if [ "$1 $2" = "pip sync" ]; then
+    cp "$5" "{synced}"
+fi
+case "$*" in
+    *--index-url*) [ -n "$FAIL_TORCH" ] && exit 2 ;;
+esac
+exit 0
 """
 
 
@@ -63,7 +72,10 @@ def run(tmp_path):
     at_floor = _interpreter(tmp_path / "at-floor" / "python", stand_in, "3.11.5")
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    stub = _executable(bin_dir / "uv", _UV.format(log=log, at_floor=at_floor))
+    stub = _executable(
+        bin_dir / "uv",
+        _UV.format(log=log, at_floor=at_floor, synced=tmp_path / "synced.txt"),
+    )
     if not os.access(stub, os.X_OK):
         pytest.skip("tmp_path does not allow executing the stubs")
     bash = shutil.which("bash")
@@ -75,12 +87,12 @@ def run(tmp_path):
     # The stub's directory is the whole PATH, so no real uv can be reached.
     env = {**os.environ, "PATH": str(bin_dir)}
 
-    def _run(venv: Path, version: str = ""):
+    def _run(venv: Path, version: str = "", fail_torch: bool = False):
         if version:
             _interpreter(venv / "bin" / "python", stand_in, version)
         result = subprocess.run(
             [bash, str(SCRIPT), "test", str(venv)],
-            env=env,
+            env={**env, "FAIL_TORCH": "1" if fail_torch else ""},
             capture_output=True,
             text=True,
             timeout=60,
@@ -121,4 +133,58 @@ class TestSyncVenvPythonFloor:
         assert [call.split()[:2] for call in calls] == [
             ["pip", "sync"],
             ["pip", "install"],
+            ["pip", "install"],
         ]
+
+
+@pytest.mark.unit
+class TestSyncVenvInstallsCpuTorch:
+    """The same torch CI and the image install (scripts/install-lockfile.sh)."""
+
+    def test_torch_is_the_cpu_build_at_the_lockfiles_pin(self, run, tmp_path):
+        venv = tmp_path / "venv"
+        pin = next(
+            line
+            for line in (REPO_ROOT / "requirements" / "test.txt")
+            .read_text()
+            .splitlines()
+            if line.startswith("torch==")
+        )
+
+        result, calls = run(venv, "3.11.5")
+
+        assert result.returncode == 0, result.stderr
+        assert calls[1] == (
+            f"pip install --python {venv}/bin/python --no-deps "
+            f"--index-url https://download.pytorch.org/whl/cpu {pin} --quiet"
+        )
+        assert (
+            calls[2] == f"pip install --python {venv}/bin/python -e . --no-deps --quiet"
+        )
+
+    def test_the_sync_leaves_out_torch_and_its_gpu_stack(self, run, tmp_path):
+        result, _ = run(tmp_path / "venv", "3.11.5")
+
+        assert result.returncode == 0, result.stderr
+        synced = (tmp_path / "synced.txt").read_text().splitlines()
+        assert not [
+            line
+            for line in synced
+            if line.startswith(("torch==", "triton==", "nvidia-", "cuda-"))
+        ]
+        assert "sentence-transformers" in "\n".join(synced)
+
+    def test_a_failed_torch_install_leaves_no_stamp_to_vouch_for_the_venv(
+        self, run, tmp_path
+    ):
+        """The sync has already removed torch by then. A stamp from an earlier
+        sync would still validate, and the staleness hooks would stay quiet."""
+        venv = tmp_path / "venv"
+        first, _ = run(venv, "3.11.5")
+        assert first.returncode == 0, first.stderr
+        assert (venv / ".locksum").exists()
+
+        again, _ = run(venv, fail_torch=True)
+
+        assert again.returncode != 0
+        assert not (venv / ".locksum").exists()

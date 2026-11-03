@@ -83,7 +83,7 @@ Integration test configuration and fixtures:
 Install test dependencies:
 ```bash
 # from the repository root: the lockfile pins the dependencies, not the package
-pip install -r requirements/test.txt
+sh scripts/install-lockfile.sh requirements/test.txt
 pip install -e . --no-deps
 ```
 

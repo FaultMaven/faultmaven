@@ -9,7 +9,7 @@ for the FaultMaven platform.
 
 ```bash
 # Install dependencies (if not already installed)
-pip install -r requirements/test.txt
+sh scripts/install-lockfile.sh requirements/test.txt
 pip install -e . --no-deps
 
 # Run all benchmarks

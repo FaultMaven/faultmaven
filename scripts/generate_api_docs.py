@@ -451,7 +451,7 @@ def main() -> int:
                 "AND the pinned toolchain, because FastAPI and Pydantic decide "
                 "how schemas are emitted. Regenerate with the lockfile "
                 "installed:\n"
-                "\n    pip install -r requirements/dev.txt\n"
+                "\n    sh scripts/install-lockfile.sh requirements/dev.txt\n"
             )
             if NOTES_PATH in stale:
                 print(

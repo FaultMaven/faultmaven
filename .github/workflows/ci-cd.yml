@@ -1380,7 +1380,8 @@ jobs:
           tags: faultmaven:ci
           # GitHub Actions layer cache, READ-ONLY here. The heavy layers (deps
           # install, the ~2GB bundled BGE-M3 model) are content-addressed and
-          # only rebuild when requirements/Dockerfile change, so a PR or queue
+          # only rebuild when requirements/, the Dockerfile or
+          # scripts/install-lockfile.sh change, so a PR or queue
           # run restores them from main's cache, which publish-docker.yml
           # writes after every merge. This job writes none: a PR or queue
           # ref's cache is readable by that ref alone, and each full build here

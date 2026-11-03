@@ -128,7 +128,7 @@ def test_torch_comes_from_the_cpu_index_at_the_locked_version_then_the_rest(
         f"-m pip install --no-deps --index-url {CPU_INDEX} torch==2.13.0"
     )
     assert re.fullmatch(r"-m pip install -r \S+", calls[1]), calls
-    assert calls[2:] == ["-m pip check"]
+    assert calls[2:] == []
     assert "torch 2.13.0+cpu, no GPU packages" in proc.stdout
 
 
@@ -175,7 +175,7 @@ def test_a_gpu_package_that_got_installed_fails_the_install(tmp_path):
     assert "GPU packages were installed: nvidia-cublas, triton" in proc.stderr
 
 
-@pytest.mark.parametrize("step", ["install --no-deps", "install -r", "check"])
+@pytest.mark.parametrize("step", ["install --no-deps", "install -r"])
 def test_a_failing_pip_step_fails_the_install(tmp_path, step):
     proc, calls = _run(tmp_path, fail_on=step)
 
@@ -183,22 +183,63 @@ def test_a_failing_pip_step_fails_the_install(tmp_path, step):
     assert step in calls[-1], "the script ran on past the failed step"
 
 
+# A pip install from a requirements file, in any spelling: `-r FILE`,
+# `-rFILE`, `--requirement FILE`, `--requirement=FILE`.
+_FROM_A_FILE = re.compile(r"\bpip3? install\b.*\s(?:-r|--requirement\b)")
+
+
+def _logical_lines(text: str) -> list[str]:
+    """Lines with shell (and Dockerfile) `\\` continuations joined."""
+    return re.sub(r"\\\n", " ", text).splitlines()
+
+
 def test_ci_and_the_image_install_lockfiles_only_through_the_script():
     """A job copied from one written before the script would install the CUDA
     build again. Nothing would fail; every job would just be 3 GB slower."""
-    plain = re.compile(r"pip install\b[^\n]*-r\s+\S*requirements/\w+\.txt")
     offenders = [
-        f"{path.relative_to(REPO_ROOT)}:{n}: {line.strip()}"
+        f"{path.relative_to(REPO_ROOT)}: {line.strip()}"
         for path in sorted((REPO_ROOT / ".github" / "workflows").glob("*.y*ml"))
-        for n, line in enumerate(path.read_text().splitlines(), 1)
+        for line in _logical_lines(path.read_text())
         # A --dry-run only resolves the lockfile as written; it installs nothing.
-        if plain.search(line) and "--dry-run" not in line
+        if _FROM_A_FILE.search(line) and "--dry-run" not in line
     ]
     assert offenders == []
 
-    dockerfile = (REPO_ROOT / "Dockerfile").read_text()
-    assert "scripts/install-lockfile.sh" in dockerfile
-    assert not re.search(r"pip install[^\n]*-r ", dockerfile)
+    runs = [
+        line
+        for line in _logical_lines((REPO_ROOT / "Dockerfile").read_text())
+        if line.startswith("RUN ")
+    ]
+    assert [line for line in runs if _FROM_A_FILE.search(line)] == []
+    assert any(
+        re.search(r"\bsh \S*install-lockfile\.sh requirements\.txt\b", line)
+        for line in runs
+    ), "the Dockerfile installs its lockfile some other way"
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "pip install -r requirements/test.txt",
+        "pip install -rrequirements/test.txt",
+        "pip install --requirement requirements/test.txt",
+        "pip install --requirement=requirements/test.txt",
+        "pip install --no-cache-dir \\\n    -r requirements.txt",
+        "python -m pip install -q -r /tmp/req.txt",
+    ],
+)
+def test_the_guard_recognises_every_spelling(line):
+    assert any(_FROM_A_FILE.search(joined) for joined in _logical_lines(line))
+
+
+def test_the_guard_passes_the_scripts_own_calls():
+    for line in (
+        "sh scripts/install-lockfile.sh requirements/test.txt",
+        'sh "$GITHUB_WORKSPACE/scripts/install-lockfile.sh" requirements/test.txt',
+        "pip install -e . --no-deps",
+        "pip install \"$(grep -E '^coverage==' requirements/test.txt)\"",
+    ):
+        assert not _FROM_A_FILE.search(line), line
 
 
 def test_the_local_sync_strips_and_installs_the_same_way():

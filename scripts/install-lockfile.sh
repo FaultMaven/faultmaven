@@ -17,9 +17,13 @@
 # lockfile, from PyPI, without the GPU-only lines. The order matters:
 # sentence-transformers requires torch, so with torch absent pip would resolve
 # PyPI's CUDA build for it. Every removed line is required only by torch's
-# CUDA build ("via torch", "via cuda-toolkit", ...), and torch's own
-# requirements are in the lockfile; `pip check` below fails the install if
-# either stops being true.
+# CUDA build ("via torch", "via cuda-toolkit", ...). Were a kept package ever
+# to need one, pip would fetch it from PyPI anyway, and the check at the end
+# refuses the install.
+#
+# No `pip check`: benchmarks.yml installs the head's lockfile over the base's,
+# where packages the head dropped are still installed and may conflict. A
+# plain `pip install -r` only warns about that, and so does this.
 
 set -eu
 
@@ -41,7 +45,6 @@ grep -vE "$gpu_only" "$lockfile" > "$rest"
 python -m pip install --no-deps --index-url "$cpu_index" "$torch_pin"
 python -m pip install -r "$rest"
 
-python -m pip check
 # The property this script exists for, checked on what was installed rather
 # than on what was asked for.
 python - <<'EOF'
