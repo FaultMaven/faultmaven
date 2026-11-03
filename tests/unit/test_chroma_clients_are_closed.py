@@ -9,8 +9,15 @@ later test that opened a file under a soft ``ulimit -n`` of 1024 with EMFILE
 A test cannot watch its own teardown, so a two-test suite runs in a child
 process with the root conftest loaded, as ``test_reset_container_fixture.py``
 does. The first test opens a real client under its ``tmp_path`` and checks
-that it holds descriptors there. The second test then checks that none are
-left.
+that it holds descriptors there. The child's own conftest records what is
+still held once that test's teardown has finished, which also catches a
+close deferred to the next test's setup. The second test asserts what was
+released.
+
+``close()`` stops the System and releases the HNSW segment files at once.
+chromadb's two SQLite handles go when the closed client's objects are
+garbage-collected, so they are bounded and do not pile up. Before
+``close()`` the collector cannot reach any of it.
 """
 
 from __future__ import annotations
@@ -39,6 +46,7 @@ from faultmaven.infrastructure.persistence.chromadb_store import (
 from tests.chroma_clients import closed_at_teardown
 
 OPENED = {}
+HELD_AFTER_TEARDOWN = {}
 
 
 def _descriptors_under(path):
@@ -64,8 +72,30 @@ def test_a_test_opens_a_client_and_registers_it(tmp_path):
     assert _descriptors_under(path)
 
 
-def test_the_next_test_finds_every_descriptor_released():
-    assert _descriptors_under(OPENED["path"]) == []
+def test_the_first_tests_teardown_released_its_client():
+    at_teardown = HELD_AFTER_TEARDOWN["at_teardown"]
+    assert [f for f in at_teardown if not f.endswith("/chroma.sqlite3")] == []
+    assert HELD_AFTER_TEARDOWN["after_gc"] == []
+"""
+
+# Runs after the whole of a test's teardown, the root conftest's autouse close
+# included, so a close deferred to the next test's setup is caught too.
+_CONFTEST = """
+import gc
+
+import pytest
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_teardown(item, nextitem):
+    result = yield
+    path = item.module.OPENED.get("path")
+    held = item.module.HELD_AFTER_TEARDOWN
+    if path is not None and not held:
+        held["at_teardown"] = item.module._descriptors_under(path)
+        gc.collect()
+        held["after_gc"] = item.module._descriptors_under(path)
+    return result
 """
 
 
@@ -77,6 +107,7 @@ def test_a_registered_client_releases_its_descriptors_at_teardown(
         "PYTHONPATH",
         os.pathsep.join(filter(None, [str(REPO_ROOT), os.environ.get("PYTHONPATH")])),
     )
+    pytester.makeconftest(textwrap.dedent(_CONFTEST))
     pytester.makepyfile(textwrap.dedent(_SUITE))
 
     result = pytester.runpytest_subprocess(
