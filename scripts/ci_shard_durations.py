@@ -63,8 +63,8 @@ def parse_log(text: str) -> Costs:
     last: Dict[str, float] = {}
     for raw in text.splitlines():
         # The logs API's text carries a BOM at its start and another where it
-        # joins two stored chunks: mid-step, and on every slice log read so
-        # far it fell on a report line, which `match` would otherwise miss.
+        # joins two stored chunks, mid-step. That one is often on a report
+        # line, which `match` would otherwise miss.
         line = raw.lstrip("\ufeff")
         session = _SESSION.match(line)
         if session:
