@@ -1122,3 +1122,18 @@ async def test_the_window_pool_keeps_a_cause_that_lost_its_verdict_this_turn():
         _obs(_PRESENT, "checkout still returns 503", VERIFYING_ID),
     )
     assert hyp_a.state == HypothesisState.REFUTED and _engine_rows(case)
+
+
+async def test_an_out_of_band_fix_resolves_in_window_0_on_named_rows():
+    """No fix recorded here (window 0): the checks the user submits after an
+    out-of-band fix, each naming what it re-checks, confirm the resolution."""
+    case, _root_node, _hyp = _identified_case()
+    await _record(
+        _engine(),
+        case,
+        7,
+        _obs(_CAUSE_GONE, "max_connections reads 100", _SUPPORT),
+        _obs(_GONE, "checkout 200 again", VERIFYING_ID),
+    )
+    assert [w.fix_turn for w in fix_windows(case)] == [None]
+    assert assess_resolution_readiness(case).verdict == ResolutionReadiness.READY

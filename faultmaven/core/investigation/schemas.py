@@ -784,7 +784,8 @@ class EvidenceToAdd(NullTolerantModel):
     rechecks: Optional[IdRef] = Field(
         default=None,
         description=(
-            "On an observation after a recorded fix (symptom_absence_evidence, "
+            "On an observation made after the fix, whether recorded here or "
+            "done out of band (symptom_absence_evidence, "
             "causal_absence_evidence, or symptom_evidence showing the problem "
             "still present): the id of the row it re-checks, or new_index_N "
             "for a row of this response. For the problem, a row that showed "
