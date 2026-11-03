@@ -58,7 +58,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements/test.txt
+          sh scripts/install-lockfile.sh requirements/test.txt
           pip install -e . --no-deps
 
       - name: Cleanup pip cache
@@ -244,7 +244,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements/test.txt
+          sh scripts/install-lockfile.sh requirements/test.txt
           pip install -e . --no-deps
 
       - name: Run benchmarks against raw targets
@@ -521,9 +521,12 @@ jobs:
       - name: Install dependencies (base)
         if: steps.base.outputs.comparable == 'true'
         working-directory: ${{ runner.temp }}/base
+        # The base's lockfile through the HEAD's helper: the base is an
+        # arbitrary commit on main and may predate scripts/install-lockfile.sh,
+        # and both sides must run on the same torch build.
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements/test.txt
+          sh "$GITHUB_WORKSPACE/scripts/install-lockfile.sh" requirements/test.txt
           pip install -e . --no-deps
 
       # Base runs FIRST so it runs against its own pinned dependencies;
@@ -562,7 +565,7 @@ jobs:
       - name: Install dependencies (head)
         if: steps.base.outputs.comparable == 'true'
         run: |
-          pip install -r requirements/test.txt
+          sh scripts/install-lockfile.sh requirements/test.txt
           pip install -e . --no-deps
 
       - name: Run benchmarks at head
@@ -701,7 +704,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements/test.txt
+          sh scripts/install-lockfile.sh requirements/test.txt
           pip install -e . --no-deps
 
       - name: Cleanup pip cache

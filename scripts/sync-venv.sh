@@ -16,8 +16,8 @@
 # Drift run on dev.txt, Test Cloud on cloud.txt — so one local environment cannot
 # mirror every job.
 #
-# Uses `uv pip sync`, where CI uses `pip install -r`. Same end state on CI's
-# empty runner; different on a reusable environment, which is the point — both
+# Uses `uv pip sync`, where CI uses `pip install -r` (scripts/install-lockfile.sh).
+# Same end state on CI's empty runner, CPU torch included; different on a reusable environment, which is the point — both
 # fix versions (pip does downgrade to an exact pin), but only sync REMOVES
 # packages the lockfile omits. Leftovers matter: a package you have and CI does
 # not can make an optional import succeed locally and fail there.
@@ -115,10 +115,34 @@ else
     fi
 fi
 
-# Two steps, mirroring what CI does: the lockfile decides every version, then the
-# project goes in with --no-deps so the ranges in pyproject.toml never resolve at
-# install time. That is what makes the lockfile the single source of versions.
-uv pip sync --python "$VENV/bin/python" "$LOCKFILE" --quiet
+# Mirroring what CI does: the lockfile decides every version, then the project
+# goes in with --no-deps so the ranges in pyproject.toml never resolve at install
+# time. That is what makes the lockfile the single source of versions.
+#
+# torch is the CPU build, at the lockfile's version, as CI and the image install
+# it (scripts/install-lockfile.sh, whose pattern and index these two lines must
+# match; tests/unit/scripts/test_install_lockfile.py checks they do). The
+# lockfile's own torch is the CUDA build, with ~2.5 GB of GPU libraries that
+# nothing here uses. The sync goes first and without torch, so it also removes
+# the GPU libraries from an environment synced before this.
+GPU_ONLY='^(torch==|triton==|nvidia-|cuda-)'
+CPU_INDEX="https://download.pytorch.org/whl/cpu"
+TORCH_PIN="$(grep -E '^torch==' "$LOCKFILE")" || {
+    echo "✗ $LOCKFILE pins no torch (no 'torch==' line)" >&2
+    exit 1
+}
+REST="$(mktemp)"
+trap 'rm -f "$REST"' EXIT
+grep -vE "$GPU_ONLY" "$LOCKFILE" > "$REST"
+# The sync removes torch and the step after it puts the CPU build back, so a
+# failure in between leaves a venv without torch, which a stamp from an earlier
+# sync would still vouch for. Deleting the stamp is no better: the staleness
+# hooks skip a venv that has none, then and after every later lockfile change.
+# So until the end, the stamp records a hash no lockfile has, and the hooks
+# report the venv as needing a re-sync.
+printf '%064d  %s\n' 0 "$LOCKFILE" > "$VENV/.locksum"
+uv pip sync --python "$VENV/bin/python" "$REST" --quiet
+uv pip install --python "$VENV/bin/python" --no-deps --index-url "$CPU_INDEX" "$TORCH_PIN" --quiet
 uv pip install --python "$VENV/bin/python" -e . --no-deps --quiet
 
 # Stamp what this environment was built from. Written in `sha256sum` format with

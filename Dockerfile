@@ -23,18 +23,13 @@ COPY requirements/cloud.txt requirements.txt
 # The lockfile pins the default (CUDA) torch wheel, which drags in ~4-5GB of
 # nvidia-*/cuda-*/triton libraries. FaultMaven runs BGE-M3 on CPU — there is no
 # GPU code path, and neither local nor cloud requests a GPU — so those are dead
-# weight. Install the CPU torch wheel from the PyTorch CPU index, then the rest
-# of the locked deps with the GPU-only lines stripped (all are "via torch").
-# The torch version is READ from the lockfile rather than repeated here: a
-# second copy of the pin drifts silently, and the copy is what the image
-# actually installs. An empty grep fails the RUN (the `&&` chain breaks on its
-# non-zero status), so a lockfile that stopped pinning torch cannot fall
-# through to an unpinned install.
-RUN TORCH_PIN="$(grep -E '^torch==' requirements.txt)" \
-    && grep -vE '^(torch==|triton==|nvidia-|cuda-)' requirements.txt > /tmp/req-cpu.txt \
-    && pip install --no-cache-dir "$TORCH_PIN" --index-url https://download.pytorch.org/whl/cpu \
-    && pip install --no-cache-dir -r /tmp/req-cpu.txt \
-    && rm -f /tmp/req-cpu.txt
+# weight. scripts/install-lockfile.sh installs the CPU torch wheel at the
+# lockfile's pin, then the rest of the lockfile without the GPU-only lines,
+# and refuses a lockfile that pins no torch. CI installs every lockfile through
+# the same script, so the tests run against the torch this image ships.
+# Bind-mounted for this step only: scripts/ is not part of the image.
+RUN --mount=type=bind,source=scripts/install-lockfile.sh,target=/tmp/install-lockfile.sh \
+    PIP_NO_CACHE_DIR=1 sh /tmp/install-lockfile.sh requirements.txt
 
 # Create the non-root user early so the HuggingFace cache it owns is written
 # once and never re-copied by a later `chown -R /app` (copy-up would otherwise
