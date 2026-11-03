@@ -23,6 +23,7 @@ from faultmaven.core.investigation.causal_graph.projection import (
 from faultmaven.core.investigation.causal_graph.rcc import (
     synthesize_rcc_from_validated_root,
 )
+from faultmaven.core.investigation.cause_assurance import subject_index
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
 from faultmaven.core.investigation.milestone_engine.cause_state import (
     _recompute_assessment_state,
@@ -52,6 +53,11 @@ from faultmaven.modules.case.contracts import (
     ValidationMethod,
 )
 from tests.case_builders import investigating_case
+from tests.unit.core.investigation.bound_rows import (
+    VERIFYING_ID,
+    bound_evidence,
+    ensure_subjects,
+)
 
 _FILE_ID = "file_0123456789ab"
 
@@ -62,12 +68,30 @@ def _eid(label: str) -> str:
     return "ev_" + hashlib.md5(label.encode()).hexdigest()[:12]
 
 
+#: What a post-fix row re-checks (#1906 D1): the chain root's own support, or
+#: the row that showed the problem (``_record_failed_fix`` puts it on record).
+_RECHECKS = {
+    EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE: _eid("ev_root_support"),
+    EvidenceCategory.SYMPTOM_EVIDENCE: VERIFYING_ID,
+}
+
+
 def _evidence(
     label, category=EvidenceCategory.CAUSAL_EVIDENCE, summary=None
 ) -> Evidence:
     # Default summary embeds the label as content tokens so two fixture rows
     # read as INDEPENDENT observations under the §7.1 mirror collapse (INV-29);
     # pass an explicit summary to model near-duplicate rows.
+    if category == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE:
+        return bound_evidence(
+            category,
+            turn=2,
+            evidence_id=_eid(label),
+            rechecks=_RECHECKS[category],
+            summary=summary or f"fact-{label} metric-{label} reading-{label}",
+            primary_purpose="diagnosis",
+            source_file_id=_FILE_ID,
+        )
     return Evidence(
         evidence_id=_eid(label),
         summary=summary or f"fact-{label} metric-{label} reading-{label}",
@@ -197,15 +221,19 @@ def _record_failed_fix(case, *, fix_turn=6, outcome_turn=7):
             state="accepted",
         )
     )
+    ensure_subjects(case)
     cause_gone = _evidence(
         "ev_cause_gone",
         EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
         summary="the root cause is no longer present after the fix",
     )
-    still_failing = _evidence(
-        "ev_still_failing",
+    still_failing = bound_evidence(
         EvidenceCategory.SYMPTOM_EVIDENCE,
+        turn=outcome_turn,
+        evidence_id=_eid("ev_still_failing"),
+        rechecks=VERIFYING_ID,
         summary="orders failing again after the fix, connection pool exhausted",
+        source_file_id=_FILE_ID,
     )
     for row in (cause_gone, still_failing):
         row.collected_at_turn = outcome_turn
@@ -1202,8 +1230,17 @@ def test_no_overclaim_warning_for_grade_consistent_mirror(caplog):
 
 def _standalone_absence(case, label="ev_standalone_absence"):
     """The prompt-contract shape: a causal_absence row on the case, linked to
-    NOTHING."""
-    row = _evidence(label, EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE)
+    NOTHING, naming the row it re-checks (#1906 D1): the first row supporting
+    the case's cause alone."""
+    _problem, cause = subject_index(case).bindable_rows()
+    row = bound_evidence(
+        EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+        turn=2,
+        evidence_id=_eid(label),
+        rechecks=cause[0].evidence_id if cause else None,
+        summary=f"fact-{label} metric-{label} reading-{label}",
+        source_file_id=_FILE_ID,
+    )
     case.evidence.append(row)
     return row
 
@@ -1427,8 +1464,10 @@ def test_overclaim_warning_is_edge_triggered(caplog):
 # ---------------------------------------------------------------------------
 
 
-def _absence_row(label, turn, collected_by="llm"):
+def _absence_row(label, turn, collected_by="llm", rechecks=None):
     row = _evidence(label, EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE)
+    if rechecks is not None:
+        row.record_rechecks(rechecks, named=rechecks)
     object.__setattr__(row, "collected_at_turn", turn)
     object.__setattr__(row, "collected_by", collected_by)
     return row
@@ -1518,7 +1557,7 @@ def test_stamp_prefers_standing_hypothesis_root_over_orphan():
 
     case, rA, rB, hA, hB = _two_validated_root_case()
     hA.state = HypothesisState.RETIRED  # decayed, not disproven — A is an orphan
-    case.evidence.append(_absence_row("ev_confirm_std", 8))
+    case.evidence.append(_absence_row("ev_confirm_std", 8, rechecks=_eid("ev_sb")))
     assert confirm_root_from_resolution_absence(case) is True
     assert any(
         l.stance == EvidenceStance.SUPPORTS and "user-confirmed" in (l.reasoning or "")

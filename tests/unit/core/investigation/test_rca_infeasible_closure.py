@@ -46,6 +46,7 @@ from faultmaven.modules.case.contracts import (
     ProblemVerification,
 )
 from tests.case_builders import investigating_case
+from tests.unit.core.investigation.bound_rows import bound_row
 
 _FILE_ID = "file_0123456789ab"
 
@@ -282,27 +283,21 @@ async def test_a_resolvable_case_is_never_offered_the_stabilized_close(
     answers — the model's own, or the INV-43 backstop's — and one "yes"
     resolves it."""
     case = _turn_case()
-    case.evidence.append(
-        Evidence(
-            category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
-            primary_purpose="confirm the cause was eliminated",
-            summary="after the vendor rolled back their change the 5xx stopped",
-            source_type=EvidenceSourceType.LOGS,
-            source_file_id=_FILE_ID,
-            collected_by="user",
-            collected_at_turn=1,
-        )
+    bound_row(
+        case,
+        EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+        turn=1,
+        summary="after the vendor rolled back their change the 5xx stopped",
+        primary_purpose="confirm the cause was eliminated",
+        collected_by="user",
     )
-    case.evidence.append(
-        Evidence(
-            category=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
-            primary_purpose="re-check the reported symptom after the fix",
-            summary="the 5xx rate is 0 since the vendor rollback",
-            source_type=EvidenceSourceType.LOGS,
-            source_file_id=_FILE_ID,
-            collected_by="user",
-            collected_at_turn=1,
-        )
+    bound_row(
+        case,
+        EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+        turn=1,
+        summary="the 5xx rate is 0 since the vendor rollback",
+        primary_purpose="re-check the reported symptom after the fix",
+        collected_by="user",
     )
     engine = _turn_engine(model_proposes)
     result = await engine.process_turn(

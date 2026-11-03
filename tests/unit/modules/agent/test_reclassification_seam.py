@@ -1264,6 +1264,26 @@ class TestTheAddressedRowKeepsAVerdict:
         assert addressed.metadata is not None
         assert addressed.metadata == sibling.metadata
 
+    @pytest.mark.asyncio
+    async def test_what_the_row_re_checks_survives_the_replacement(self):
+        """#1906 D1: ``fix_verification`` is claim content, not a
+        preprocessing key, so the addressed row's re-extracted metadata keeps
+        it — on both rows, as the merge keeps it on the sibling."""
+        rig = _build(evidence_rows=2)
+        recorded = {"rechecks": "ev_00000000fe01", "named": "ev_00000000fe01"}
+        rig.case.evidence = [
+            e.model_copy(update={"metadata": {"fix_verification": dict(recorded)}})
+            for e in rig.case.evidence
+        ]
+        rig.repo._storage[rig.case.case_id] = rig.case
+
+        saved = await _out_of_band(rig)
+
+        addressed, sibling = saved.evidence
+        assert addressed.metadata["fix_verification"] == recorded
+        assert sibling.metadata["fix_verification"] == recorded
+        assert addressed.rechecks_evidence_id == "ev_00000000fe01"
+
 
 class TestAMissingEvidenceIdIsA404WhateverTheCaseState:
     """The terminal guard must not decide what a missing row is called."""

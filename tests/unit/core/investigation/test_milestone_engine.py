@@ -28,6 +28,7 @@ from faultmaven.modules.case.contracts import (
     UploadedFile,
 )
 from tests.case_builders import with_open_offer
+from tests.unit.core.investigation.bound_rows import bound_row
 
 _FILE_ID = "file_0123456789ab"
 
@@ -143,39 +144,23 @@ def _make_resolution_ready(case):
     ]
     # The required RESOLVED proof: the root cause is confirmed gone after the
     # fix, and the reported symptom with it.
-    case.evidence.append(
-        Evidence(
-            evidence_id="ev_ca5a1ab5e0cf",
-            summary="Post-fix checks: the service answers without timeouts",
-            content_ref="postfix.log",
-            category=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
-            source_type=EvidenceSourceType.LOGS,
-            collected_at=datetime.now(UTC),
-            collected_by="user_123",
-            primary_purpose="Confirm the reported symptom is gone",
-            preprocessed_content="No timeout errors after fix",
-            content_size_bytes=50,
-            preprocessing_method="manual",
-            source_file_id="file_a05f1c000001",
-            collected_at_turn=2,
-        )
+    bound_row(
+        case,
+        EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+        turn=2,
+        summary="Post-fix checks: the service answers without timeouts",
+        evidence_id="ev_ca5a1ab5e0cf",
+        primary_purpose="Confirm the reported symptom is gone",
+        collected_by="user_123",
     )
-    case.evidence.append(
-        Evidence(
-            evidence_id="ev_ca5a1ab5e0ce",
-            summary="Post-fix logs confirm connection pool timeouts no longer occur",
-            content_ref="postfix.log",
-            category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
-            source_type=EvidenceSourceType.LOGS,
-            collected_at=datetime.now(UTC),
-            collected_by="user_123",
-            primary_purpose="Confirm root cause eliminated",
-            preprocessed_content="No timeout errors after fix",
-            content_size_bytes=50,
-            preprocessing_method="manual",
-            source_file_id="file_a05f1c000001",
-            collected_at_turn=2,
-        )
+    bound_row(
+        case,
+        EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+        turn=2,
+        summary="Post-fix logs confirm connection pool timeouts no longer occur",
+        evidence_id="ev_ca5a1ab5e0ce",
+        primary_purpose="Confirm root cause eliminated",
+        collected_by="user_123",
     )
     return case
 

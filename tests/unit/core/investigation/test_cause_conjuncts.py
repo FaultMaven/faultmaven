@@ -491,6 +491,7 @@ def test_a_conjunction_does_not_refuse_the_resolution_confirm_stamp():
         confirm_root_from_resolution_absence,
         evidence_category_map,
         root_counterfactually_confirmed,
+        subject_index,
     )
 
     case, d = _conjunction_case()
@@ -513,6 +514,9 @@ def test_a_conjunction_does_not_refuse_the_resolution_confirm_stamp():
             collected_at=datetime.now(timezone.utc),
         )
     )
+    # It re-checks a support of the conjunction (#1906 D1).
+    _problem, cause = subject_index(case).bindable_rows()
+    case.evidence[-1].record_rechecks(cause[0].evidence_id, named="support")
     case.current_turn = 8
 
     assert confirm_root_from_resolution_absence(case) is True

@@ -33,6 +33,7 @@ from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.domain.models.problem import ProblemVerification
 from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 from faultmaven.modules.case.domain.models.solution import Solution, SolutionType
+from tests.unit.core.investigation.bound_rows import bound_row
 
 
 def _make_repo():
@@ -94,35 +95,21 @@ def _fill_for_resolution_ready(case):
     )
     # The required RESOLVED proof: the root cause is confirmed gone after the
     # fix, and the reported symptom with it.
-    case.evidence.append(
-        Evidence(
-            summary="Post-fix verification confirms the root cause is gone",
-            category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
-            source_type=EvidenceSourceType.LOGS,
-            collected_at=datetime.now(timezone.utc),
-            collected_by="user_test",
-            primary_purpose="Confirm root cause eliminated",
-            preprocessed_content="cause absent after fix",
-            content_size_bytes=80,
-            preprocessing_method="manual",
-            source_file_id="file_a1b2c3d4e5f6",
-            collected_at_turn=2,
-        )
+    bound_row(
+        case,
+        EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+        turn=2,
+        summary="Post-fix verification confirms the root cause is gone",
+        primary_purpose="Confirm root cause eliminated",
+        collected_by="user_test",
     )
-    case.evidence.append(
-        Evidence(
-            summary="Post-fix verification: the reported symptom no longer occurs",
-            category=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
-            source_type=EvidenceSourceType.LOGS,
-            collected_at=datetime.now(timezone.utc),
-            collected_by="user_test",
-            primary_purpose="re-check the reported symptom after the fix",
-            preprocessed_content="cause absent after fix",
-            content_size_bytes=80,
-            preprocessing_method="manual",
-            source_file_id="file_a1b2c3d4e5f6",
-            collected_at_turn=2,
-        )
+    bound_row(
+        case,
+        EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+        turn=2,
+        summary="Post-fix verification: the reported symptom no longer occurs",
+        primary_purpose="re-check the reported symptom after the fix",
+        collected_by="user_test",
     )
     return case
 

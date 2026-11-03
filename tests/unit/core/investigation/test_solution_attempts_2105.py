@@ -1204,6 +1204,10 @@ async def test_an_acceptance_naming_a_workaround_never_registers_its_solution(
     SOLUTION, named by its ACTION_ID or ``new_index_0``, is refused, typed;
     the SOLUTION is not accepted."""
     eng, case = _identified()
+    if not symptom:
+        # No symptom row on the case at all: the workaround is downgraded.
+        case.evidence = [e for e in case.evidence if e.category != _PRESENT]
+        case.problem_verification.verifying_evidence_ids = []
     await _turn(eng, case, 5, solutions_to_add=[_fix(_RESTART, SolutionType.RESTART)])
     (x,) = _solutions(case)
     rows = [_ev(_PRESENT, "checkout returns 503 under load, pool exhausted")]

@@ -676,6 +676,7 @@ class EvidenceMetadata(BaseModel):
 | `extractor` | `PreprocessingService` | observability only (no agent-visible effect) | Phase 1 (minimal) / Phase 2 (full `attempts`) |
 | `entities` | `PreprocessingService` (on cap overflow) | agent tool `find_entity` reads the row-level table; overflow marker tells the agent "not all entities are indexed" | Phase 4 |
 | `coverage` | `PreprocessingService` | none: the context builder and `symptom_currency` read the `coverage_*_ts` and `coverage_source` columns, not this key | Phase 3 |
+| `fix_verification` | the turn's evidence apply (`response_application._record_rechecks`), never preprocessing; a reclassification keeps it | `cause_assurance.SubjectIndex` via `Evidence.rechecks_evidence_id`: `{"rechecks": <evidence id or null>, "named": <the model's ref>}`, what a post-fix row re-observes; `null` when the ref binds to no row (#1906 D1). Not part of `EvidenceMetadata` | #1906 |
 
 **Backward compatibility.** Every key is optional; every existing row has `metadata = NULL` or a shape without these keys. Readers must tolerate missing keys and missing fields within each key without raising.
 

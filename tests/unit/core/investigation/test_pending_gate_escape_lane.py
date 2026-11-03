@@ -55,6 +55,7 @@ from faultmaven.modules.case.domain.models.problem import ProblemVerification
 from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 from faultmaven.modules.case.domain.models.solution import Solution, SolutionType
 from tests.case_builders import with_open_offer
+from tests.unit.core.investigation.bound_rows import bound_row
 
 _FILE_ID = "file_0123456789ab"
 
@@ -109,27 +110,21 @@ def _resolution_ready_case() -> Case:
             longterm_fix="Automate peer-cert rotation before expiry.",
         )
     ]
-    case.evidence.append(
-        Evidence(
-            category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
-            primary_purpose="confirm the cause was eliminated",
-            summary="After the cert rotation the member rejoined and the alerts stopped.",
-            source_type=EvidenceSourceType.LOGS,
-            source_file_id=_FILE_ID,
-            collected_by="user",
-            collected_at_turn=1,
-        )
+    bound_row(
+        case,
+        EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+        turn=1,
+        summary="After the cert rotation the member rejoined and the alerts stopped.",
+        primary_purpose="confirm the cause was eliminated",
+        collected_by="user",
     )
-    case.evidence.append(
-        Evidence(
-            category=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
-            primary_purpose="re-check the reported symptom after the fix",
-            summary="The etcd quorum alerts stopped after the rotation.",
-            source_type=EvidenceSourceType.LOGS,
-            source_file_id=_FILE_ID,
-            collected_by="user",
-            collected_at_turn=1,
-        )
+    bound_row(
+        case,
+        EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+        turn=1,
+        summary="The etcd quorum alerts stopped after the rotation.",
+        primary_purpose="re-check the reported symptom after the fix",
+        collected_by="user",
     )
     return case
 

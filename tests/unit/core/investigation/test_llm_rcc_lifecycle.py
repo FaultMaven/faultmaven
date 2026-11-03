@@ -60,6 +60,7 @@ from faultmaven.modules.case.contracts import (
     WorkingConclusion,
 )
 from tests.case_builders import investigating_case
+from tests.unit.core.investigation.bound_rows import bound_evidence, ensure_subjects
 
 _FILE_ID = "file_0123456789ab"
 
@@ -364,10 +365,23 @@ def _fix_failed_on_the_record(case, *, fix_turn=6, outcome_turn=7):
             state="accepted",
         )
     )
-    cause_gone = _evidence("cause_gone", EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE)
-    cause_gone.summary = "pool connections are released again after the fix"
-    still_failing = _evidence("still_failing", EvidenceCategory.SYMPTOM_EVIDENCE)
-    still_failing.summary = "checkout orders still failing with 500s after the fix"
+    # Each names what it re-checks (#1906 D1): the root's own support, and
+    # the row that showed the problem.
+    verifying, _support = ensure_subjects(case)
+    cause_gone = bound_evidence(
+        EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+        turn=outcome_turn,
+        evidence_id=_eid("cause_gone"),
+        rechecks=_eid("s1"),
+        summary="pool connections are released again after the fix",
+    )
+    still_failing = bound_evidence(
+        EvidenceCategory.SYMPTOM_EVIDENCE,
+        turn=outcome_turn,
+        evidence_id=_eid("still_failing"),
+        rechecks=verifying,
+        summary="checkout orders still failing with 500s after the fix",
+    )
     for row in (cause_gone, still_failing):
         row.collected_at_turn = outcome_turn
         case.evidence.append(row)

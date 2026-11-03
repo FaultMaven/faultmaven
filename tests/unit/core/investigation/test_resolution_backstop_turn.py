@@ -47,6 +47,7 @@ from faultmaven.modules.case.domain.models.evidence import (
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.domain.models.solution import Solution, SolutionType
 from tests.case_builders import investigating_case, with_open_offer
+from tests.unit.core.investigation.bound_rows import bound_row, ensure_subjects
 
 _FILE_ID = "file_0123456789ab"
 
@@ -169,9 +170,31 @@ def _case(
     ]
     case.uploaded_files.append(_file())
     if absence is not None:
-        case.evidence.append(_absence_row(category=absence, collected_by=collected_by))
+        row = _absence_row(category=absence, collected_by=collected_by)
+        if collected_by == "engine":
+            case.evidence.append(row)
+        else:
+            # Bound (#1906 D1): it names the row it re-checks.
+            bound_row(
+                case,
+                absence,
+                turn=1,
+                evidence_id=row.evidence_id,
+                summary=row.summary,
+                collected_by=collected_by,
+                source_file_id=_FILE_ID,
+            )
     if problem_gone:
-        case.evidence.append(_problem_gone_row())
+        row = _problem_gone_row()
+        bound_row(
+            case,
+            row.category,
+            turn=1,
+            evidence_id=row.evidence_id,
+            summary=row.summary,
+            collected_by="user",
+            source_file_id=_FILE_ID,
+        )
     return case
 
 
@@ -447,8 +470,9 @@ async def test_offer_returns_on_the_next_turn():
     assert RESOLVE_LABEL in [s["label"] for s in result["suggested_follow_ups"]]
 
 
-def _recording(category: str, summary: str, extract: str):
-    """A REAL response that records one absence row and proposes nothing."""
+def _recording(category: str, summary: str, extract: str, rechecks: str):
+    """A REAL response that records one absence row, naming the row it
+    re-checks (#1906 D1), and proposes nothing."""
     return InvestigationResponse_Diagnosis(
         agent_response=LLM_ANALYSIS,
         state_updates={
@@ -459,6 +483,7 @@ def _recording(category: str, summary: str, extract: str):
                     "category": category,
                     "source_type": "logs",
                     "source_file_id": _FILE_ID,
+                    "rechecks": rechecks,
                 }
             ]
         },
@@ -473,12 +498,14 @@ async def test_the_cause_shown_gone_alone_brings_no_offer_until_the_problem_is()
     to append "the problem went with it" and the resolve pair to that very
     reply. Only once the reported problem is seen gone does the offer come."""
     case = _case(absence=None)
+    verifying, support = ensure_subjects(case)
     engine = _engine(
         _recording(
             "causal_absence_evidence",
             "Root cause no longer present after the fix: the unit's ExecStart "
             "now names /usr/bin/billing-exporter and the service is running.",
             "Active: active (running) since Mon 2026-09-21 08:11:03 UTC",
+            support,
         )
     )
     case.current_turn = 5
@@ -501,6 +528,7 @@ async def test_the_cause_shown_gone_alone_brings_no_offer_until_the_problem_is()
             "Reported symptom no longer present after the fix: Prometheus shows "
             "the billing target UP.",
             "billing-exporter (1/1 up)",
+            verifying,
         )
     )
     case.current_turn = 6

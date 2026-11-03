@@ -48,6 +48,7 @@ from faultmaven.modules.case.contracts import (
     SolutionType,
 )
 from tests.case_builders import with_open_offer
+from tests.unit.core.investigation.bound_rows import bound_row
 
 _FILE_ID = "file_0123456789ab"
 
@@ -257,28 +258,21 @@ class TestDeferredImplementationClose:
             # engine's M6 failed-fix disconfirmation) causal_absence row and the
             # symptom_absence row beside it (#1906). This is what actually
             # flips assess_closure_readiness to SUGGEST_RESOLVE.
-            case.evidence.append(
-                Evidence(
-                    category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
-                    primary_purpose="confirm the cause was eliminated",
-                    summary="After the provider client-ID correction the pods "
-                    "obtained credentials and the AssumeRole failures stopped.",
-                    source_type=EvidenceSourceType.LOGS,
-                    source_file_id=_FILE_ID,
-                    collected_by="user",
-                    collected_at_turn=9,
-                )
+            bound_row(
+                case,
+                EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+                turn=9,
+                summary="After the provider client-ID correction the pods ",
+                primary_purpose="confirm the cause was eliminated",
+                collected_by="user",
             )
-            case.evidence.append(
-                Evidence(
-                    category=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
-                    primary_purpose="re-check the reported symptom after the fix",
-                    summary="AssumeRoleWithWebIdentity succeeds for the pods again.",
-                    source_type=EvidenceSourceType.LOGS,
-                    source_file_id=_FILE_ID,
-                    collected_by="user",
-                    collected_at_turn=9,
-                )
+            bound_row(
+                case,
+                EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+                turn=9,
+                summary="AssumeRoleWithWebIdentity succeeds for the pods again.",
+                primary_purpose="re-check the reported symptom after the fix",
+                collected_by="user",
             )
         return case
 
@@ -633,28 +627,21 @@ class TestDeferredImplementationClose:
 
         # A qualifying gone=>gone confirmation (both rows) lands after the
         # offer was made.
-        case.evidence.append(
-            Evidence(
-                category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
-                primary_purpose="confirm the cause was eliminated",
-                summary="After the provider client-ID correction the pods "
-                "obtained credentials and the AssumeRole failures stopped.",
-                source_type=EvidenceSourceType.LOGS,
-                source_file_id=_FILE_ID,
-                collected_by="user",
-                collected_at_turn=9,
-            )
+        bound_row(
+            case,
+            EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+            turn=9,
+            summary="After the provider client-ID correction the pods ",
+            primary_purpose="confirm the cause was eliminated",
+            collected_by="user",
         )
-        case.evidence.append(
-            Evidence(
-                category=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
-                primary_purpose="re-check the reported symptom after the fix",
-                summary="AssumeRoleWithWebIdentity succeeds for the pods again.",
-                source_type=EvidenceSourceType.LOGS,
-                source_file_id=_FILE_ID,
-                collected_by="user",
-                collected_at_turn=9,
-            )
+        bound_row(
+            case,
+            EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+            turn=9,
+            summary="AssumeRoleWithWebIdentity succeeds for the pods again.",
+            primary_purpose="re-check the reported symptom after the fix",
+            collected_by="user",
         )
 
         # Confirm pivots CLOSED -> RESOLVED without committing anything.

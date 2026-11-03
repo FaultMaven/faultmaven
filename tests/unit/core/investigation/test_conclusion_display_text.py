@@ -160,6 +160,8 @@ def _confirmed_case():
     _recompute_cause_state_from_chain(case)
     case.evidence.append(_evidence("absence", EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE))
     case.evidence[-1].collected_at_turn = 8
+    # It re-checks the root's own support (#1906 D1).
+    case.evidence[-1].record_rechecks(_eid("a1"), named=_eid("a1"))
     return case, hyp
 
 

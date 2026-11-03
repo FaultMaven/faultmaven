@@ -88,6 +88,7 @@ from faultmaven.modules.case.domain.services.case_action_manager import (
 )
 from tests.case_builders import with_declined_offer, with_open_offer
 from tests.model_content import disabled_redaction
+from tests.unit.core.investigation.bound_rows import SUPPORT_ID, VERIFYING_ID, upload
 from tests.unit.core.investigation.test_deferred_disposition_turn import (
     _case as _deferred_case,
 )
@@ -114,6 +115,7 @@ _ROW = {
     "category": "causal_absence_evidence",
     "source_type": "logs",
     "source_file_id": _FILE_ID,
+    "rechecks": SUPPORT_ID,
 }
 
 #: A long non-question reply to the offer: withdrawn, never declined (#2222),
@@ -263,29 +265,35 @@ def _engine_disconfirmation(turn: int) -> Evidence:
     )
 
 
-def _user_confirmation(turn: int) -> Evidence:
-    return Evidence(
+def _user_confirmation(turn: int, file_id: str = _FILE_ID) -> Evidence:
+    """The cause leg, re-checking the cause's own support (#1906 D1)."""
+    row = Evidence(
         category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
         primary_purpose="confirm the cause was eliminated",
         summary="The nightly job ran clean after the fix; zero AssumeRole errors.",
         source_type=EvidenceSourceType.LOGS,
-        source_file_id=_FILE_ID,
+        source_file_id=file_id,
         collected_by="user",
         collected_at_turn=turn,
     )
+    row.record_rechecks(SUPPORT_ID, named=SUPPORT_ID)
+    return row
 
 
-def _user_problem_gone(turn: int) -> Evidence:
-    """The problem leg of a confirmation (#1906): the reported symptom gone."""
-    return Evidence(
+def _user_problem_gone(turn: int, file_id: str = _FILE_ID) -> Evidence:
+    """The problem leg of a confirmation (#1906): the reported symptom gone,
+    naming the row that showed it."""
+    row = Evidence(
         category=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
         primary_purpose="re-check the reported symptom after the fix",
         summary="The nightly job's AssumeRole calls succeed again.",
         source_type=EvidenceSourceType.LOGS,
-        source_file_id=_FILE_ID,
+        source_file_id=file_id,
         collected_by="user",
         collected_at_turn=turn,
     )
+    row.record_rechecks(VERIFYING_ID, named=VERIFYING_ID)
+    return row
 
 
 def _refute(case, evidence_ids: list) -> str:
@@ -519,7 +527,11 @@ class TestANewConfirmationReEarnsTheOffer:
         """The set shrinks: an older row stops qualifying behind a failed-fix
         window. The decline still covers what qualifies, so nothing re-offers."""
         case = _confirmed_case()
-        case.evidence.extend([_user_confirmation(turn=3), _user_problem_gone(turn=3)])
+        # New data, uploaded at turn 3 (#2145: a row is dated by its data).
+        fresh = upload(case, 3)
+        case.evidence.extend(
+            [_user_confirmation(turn=3, file_id=fresh), _user_problem_gone(3, fresh)]
+        )
         engine = _engine()
         case.current_turn = 3
         await _turn(engine, case, "errors gone")

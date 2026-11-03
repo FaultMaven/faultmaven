@@ -573,6 +573,17 @@ class MilestoneUpdates(NullTolerantModel):
 
     # Progress indicators (LLM-settable, non-stage-driving)
     symptom_verified: Optional[bool] = None
+    # The rows that showed the problem (#1906 D1). IdRef: the verifying-row
+    # writer resolves ``new_index_N`` against this response's evidence rows.
+    symptom_verification_evidence_ids: Optional[List[IdRef]] = Field(
+        default_factory=list,
+        description=(
+            "The symptom_evidence ids (or new_index_N for rows added in this "
+            "response) that show the problem: with symptom_verified, and on "
+            "any later turn while no row is on record as having shown it. A "
+            "post-fix observation names one of them in rechecks."
+        ),
+    )
     # root_cause_identified removed (INV-35): identification is engine-derived
     #   from a validated, uncontested chain root (§9.2), never an LLM self-claim.
     #   The LLM builds and grounds the chain; ``root_cause_likelihood`` carries
@@ -767,6 +778,20 @@ class EvidenceToAdd(NullTolerantModel):
         ),
     )
     likelihood: float = Field(0.8, ge=0.0, le=1.0)
+    # What a post-fix observation re-observes (#1906 D1). IdRef: resolved
+    # after every row of this response has its slot, so a forward
+    # ``new_index_N`` resolves.
+    rechecks: Optional[IdRef] = Field(
+        default=None,
+        description=(
+            "On a post-fix observation (symptom_absence_evidence, "
+            "causal_absence_evidence, or symptom_evidence showing the problem "
+            "still present): the id of the row it re-checks, or new_index_N "
+            "for a row of this response. For the problem, a row that showed "
+            "it; for the cause, a row that supports the root cause alone. An "
+            "observation naming no such row confirms and disconfirms nothing."
+        ),
+    )
 
     @field_validator("summary", mode="before")
     @classmethod

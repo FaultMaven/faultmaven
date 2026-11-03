@@ -10,11 +10,11 @@ from faultmaven.core.investigation.cause_assurance import (
     FIX_FAILED,
     FIX_SUCCEEDED,
     FixWindow,
-    bearing_frame,
     counterfactual_link_decisive,
     fix_windows,
     latest_decided_fix_window,
     stance_declared_confident,
+    subject_index,
 )
 from faultmaven.core.investigation.cause_assurance import (
     ENGINE_RCC_AUTHOR as _ENGINE_RCC_AUTHOR,
@@ -199,16 +199,16 @@ def failed_fix_of(case: Case, hyp: Hypothesis) -> FixWindow | None:
     persisting, with no problem-gone row in between — a newer fix still waiting
     on its first observation does not erase that); the fix ran at/after the
     hypothesis existed (a fix can only have addressed a cause that existed when
-    it ran); and the fix was a fix OF this cause — not every one of its cause
-    rows is affirmatively about another candidate chain
-    (``BearingFrame.about_another_chain``). The window's outcome is shared with
+    it ran); and the fix was a fix OF this cause — one of the window's cause
+    rows names a row supporting this root's cause (#1906 D1,
+    ``SubjectIndex.addresses``; the rows' wording decides nothing). The
+    window's outcome is shared with
     the readiness gate, which also stops reading a RELAPSED fix as a
     resolution; M6 does not demote on one, because the problem seen gone after
     the cause went is the counterfactual holding (#2039). The attribution is
     M6's own, because a failed fix of another candidate disconfirms that
-    candidate, not this one. The VALIDATED root is what keeps that attribution
-    off a competitor: a terse cause row bears on no chain, so the bearing test
-    alone would hand the identified cause's failed fix to every candidate."""
+    candidate, not this one. The persistence row is bound too: it names a row that showed the problem,
+    so a probe's own failure is not "the problem is back" (#2039)."""
     root = case.causal_nodes.get(hyp.root_node_id) if hyp.root_node_id else None
     if root is None or hyp.state.is_terminal or root.node_state != NodeState.VALIDATED:
         return None
@@ -217,8 +217,8 @@ def failed_fix_of(case: Case, hyp: Hypothesis) -> FixWindow | None:
         return None
     if (getattr(hyp, "generated_at_turn", 0) or 0) > window.fix_turn:
         return None
-    bearing = bearing_frame(case, root)
-    if all(bearing.about_another_chain(row) for row in window.cause_rows):
+    subjects = subject_index(case)
+    if not any(subjects.addresses(row, {root.node_id}) for row in window.cause_rows):
         return None
     return window
 

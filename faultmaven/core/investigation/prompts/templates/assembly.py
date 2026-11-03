@@ -193,6 +193,25 @@ mitigations are not accepted. Two things move the case:
     return ""
 
 
+def _verifying_rows_missing_emphasis(case) -> str:
+    """One line while the problem is verified but no row is on record as having
+    shown it (#1906, ruled 2026-11-03): no post-fix re-check can bind to the
+    problem until one is cited. Appended to the focus block on every stage."""
+    pv = case.problem_verification
+    if (
+        case.progress.problem_status != ProblemStatus.VERIFIED
+        or pv is None
+        or getattr(pv, "verifying_evidence_ids", None)
+    ):
+        return ""
+    return (
+        "\nNo row is on record as what showed the problem: cite the "
+        "symptom_evidence rows already on record that showed it in "
+        "symptom_verification_evidence_ids. Until then no re-check can confirm "
+        "the problem gone.\n"
+    )
+
+
 def _get_diagnosis_focus_emphasis(progress: "InvestigationProgress", case=None) -> str:
     """Compute focus zone from progress milestones (Framework §8.5).
 
@@ -225,7 +244,8 @@ def _get_diagnosis_focus_emphasis(progress: "InvestigationProgress", case=None) 
 **INVESTIGATION PROGRESS: Symptom verification pending**
 No symptoms have been formally confirmed. Check the data against the confirmed
 problem statement and reach one of three verdicts:
-- It shows the stated symptom → symptom_verified, with the symptom_evidence.
+- It shows the stated symptom → symptom_verified, with the symptom_evidence,
+  citing its ids in symptom_verification_evidence_ids.
 - It shows a real problem the statement describes INACCURATELY — a different
   symptom, component, scope or time, such that the statement would misdirect
   the investigation → verification_updates.revised_problem_statement, citing
@@ -521,6 +541,8 @@ def get_prompt_for_case(
                 else:
                     adaptive_instr = rca_diagnosis_block(given_tools)
             focus_emphasis += _resolve_declined_emphasis(case)
+            if processing_mode != "knowledge_query" and not is_agent_meta:
+                focus_emphasis += _verifying_rows_missing_emphasis(case)
 
             # Add stage to context for schema reference
             ctx["stage"] = stage.value if stage else "diagnosis"

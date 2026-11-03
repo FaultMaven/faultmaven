@@ -43,6 +43,7 @@ from faultmaven.modules.case.contracts import (
     MitigationRecord,
     OfferBasis,
     OfferKind,
+    ProblemStatus,
     SolutionType,
     WorkingConclusion,
 )
@@ -708,6 +709,71 @@ def _flag_absence_inside_a_failed_fix_window(
         "cause gone and the problem gone after it. If the problem is only "
         "quiet after a workaround, offer to close instead.",
         prepend=True,
+    )
+    return True
+
+
+def _flag_unbound_post_fix_rows(case: Case, metadata: dict[str, Any] | None) -> bool:
+    """One same-turn line when this turn recorded a post-fix observation that
+    binds to nothing (#1906 D1.5): an absence row, or a symptom_evidence row
+    after a dated fix, naming no ``rechecks`` or one that binds to no subject
+    (``cause_assurance.SubjectIndex.subject``). Such a row confirms and
+    disconfirms nothing, so the model is told which ids WOULD bind — the list
+    the re-verification checklist renders (``SubjectIndex.bindable_rows``).
+    A row cited as having shown the problem is not flagged as persistence.
+    Only on a verified problem: before it, nothing can bind. Returns whether
+    the line was added."""
+    from faultmaven.core.investigation.cause_assurance import (
+        SUBJECT_UNBOUND,
+        fix_application_turn,
+        subject_index,
+    )
+
+    if metadata is None or case.progress.problem_status != ProblemStatus.VERIFIED:
+        return False
+    subjects = subject_index(case)
+    fix_turn = fix_application_turn(case)
+    absence = (
+        EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+        EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+    )
+    unbound = [
+        e.evidence_id
+        for e in subjects.rows.values()
+        if e.collected_at_turn == case.current_turn
+        and (
+            e.category in absence
+            or (
+                e.category == EvidenceCategory.SYMPTOM_EVIDENCE
+                and fix_turn is not None
+                and subjects.observed(e) > fix_turn
+                and e.evidence_id not in subjects.verifying
+            )
+        )
+        and subjects.subject(e) == SUBJECT_UNBOUND
+    ]
+    if not unbound:
+        return False
+    problem, cause = subjects.bindable_rows()
+    problem_ids = ", ".join(e.evidence_id for e in problem[:5])
+    cause_ids = ", ".join(e.evidence_id for e in cause[:5])
+    _add_system_feedback(
+        metadata,
+        f"SYSTEM: Post-fix row(s) {', '.join(unbound[:5])} name nothing they "
+        "re-check that binds, so they confirm and disconfirm nothing. Set "
+        "rechecks — symptom rows: "
+        + (
+            f"one of {problem_ids}"
+            if problem_ids
+            else "none is on record as having shown the problem; cite those "
+            "rows in symptom_verification_evidence_ids"
+        )
+        + "; causal_absence rows: "
+        + (
+            f"one of {cause_ids}."
+            if cause_ids
+            else "none supports the root cause alone yet."
+        ),
     )
     return True
 

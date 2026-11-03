@@ -63,6 +63,11 @@ from faultmaven.modules.case.domain.models.hypothesis import (
 )
 from faultmaven.modules.case.domain.models.solution import Solution, SolutionType
 from tests.case_builders import investigating_case
+from tests.unit.core.investigation.bound_rows import (
+    SUPPORT_ID,
+    VERIFYING_ID,
+    ensure_subjects,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -86,8 +91,16 @@ _FALSE_ALARM_FEEDBACK = "the user declined closing on this finding"
 # ---------------------------------------------------------------------------
 
 
+#: What a post-fix row re-checks (#1906 D1): a support of the cause alone, or
+#: the row that showed the problem (``ensure_subjects`` puts both on record).
+_RECHECKS = {
+    EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE: SUPPORT_ID,
+    EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE: VERIFYING_ID,
+}
+
+
 def _row(category: EvidenceCategory, turn: int, summary: str, **kw) -> Evidence:
-    return Evidence(
+    row = Evidence(
         category=category,
         primary_purpose="observe",
         summary=summary,
@@ -97,6 +110,9 @@ def _row(category: EvidenceCategory, turn: int, summary: str, **kw) -> Evidence:
         collected_at_turn=turn,
         **kw,
     )
+    if row.collected_by != "engine" and category in _RECHECKS:
+        row.record_rechecks(_RECHECKS[category], named=_RECHECKS[category])
+    return row
 
 
 def _to_add(category: str, summary: str) -> dict:
@@ -106,6 +122,7 @@ def _to_add(category: str, summary: str) -> dict:
         "category": category,
         "source_type": "logs",
         "source_file_id": _FILE_ID,
+        "rechecks": _RECHECKS.get(EvidenceCategory(category)),
     }
 
 
@@ -207,6 +224,9 @@ def _resolvable_case():
     """Gone => gone twice over: two cause re-checks and the problem gone after
     them, so one row can be disqualified and the case still confirms."""
     case = _base_case()
+    # The cause and the row that showed the problem, on record from turn 0,
+    # the turn of the data the post-fix rows are read from (#2145).
+    ensure_subjects(case, turn=0)
     case.evidence += [
         _row(
             EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,

@@ -67,6 +67,7 @@ from faultmaven.modules.case.contracts import (
     ProposedAction,
     ValidationMethod,
 )
+from tests.unit.core.investigation.bound_rows import VERIFYING_ID, bound_evidence
 
 _FILE_ID = "file_0123456789ab"
 
@@ -80,7 +81,32 @@ def _eid(label: str) -> str:
     return "ev_" + hashlib.md5(label.encode()).hexdigest()[:12]
 
 
-def _row(label, category, turn, summary, collected_by="llm") -> Evidence:
+#: A post-fix row names what it re-checks (#1906 D1): the row that showed the
+#: problem, or the root's own support. ``_UNNAMED`` builds one naming nothing.
+_POST_FIX = (
+    EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+    EvidenceCategory.SYMPTOM_EVIDENCE,
+    EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+)
+_UNNAMED = "unnamed"
+
+
+def _row(label, category, turn, summary, collected_by="llm", rechecks=None) -> Evidence:
+    if collected_by != "engine" and category in _POST_FIX:
+        if rechecks is None:
+            rechecks = (
+                _eid("pool_log")
+                if category == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
+                else VERIFYING_ID
+            )
+        return bound_evidence(
+            category,
+            turn=turn,
+            evidence_id=_eid(label),
+            rechecks=None if rechecks == _UNNAMED else rechecks,
+            summary=summary,
+            source_file_id=_FILE_ID,
+        )
     return Evidence(
         evidence_id=_eid(label),
         summary=summary,
@@ -177,9 +203,20 @@ def _identified_case(*, hypothesis_turn=1) -> tuple[Case, CausalNode, Hypothesis
         ),
     )
     case.causal_nodes = {_ROOT_ID: root}
-    case.evidence = list(supports)
+    verifying = Evidence(
+        evidence_id=VERIFYING_ID,
+        summary="checkout returns 503 on every request",
+        primary_purpose="diagnosis",
+        category=EvidenceCategory.SYMPTOM_EVIDENCE,
+        source_type=EvidenceSourceType.LOGS,
+        source_file_id=_FILE_ID,
+        collected_by="llm",
+        collected_at_turn=2,
+    )
+    case.evidence = [verifying, *supports]
     case.hypotheses = {_HYP_ID: hyp}
     case.progress.problem_status = ProblemStatus.VERIFIED
+    case.problem_verification.verifying_evidence_ids = [VERIFYING_ID]
     problem = seed_problem_node(case)
     case.causal_edges = [
         CausalEdge(cause_node_id=_ROOT_ID, effect_node_id=problem.node_id)
@@ -715,8 +752,8 @@ def test_persistence_and_a_fresh_confirmation_in_one_turn_withhold_it():
 def test_a_symptom_the_cause_does_not_explain_is_not_persistence():
     """The fix worked (the cause seen gone at 9), and at 10 the user mentions
     an unrelated symptom. The record arm demotes with no model judgment, so a
-    symptom row sharing nothing with the problem or the cause is not the
-    problem persisting."""
+    symptom row naming none of the rows that showed the problem is not the
+    problem persisting (#1906 D1)."""
     case, root, hyp = _identified_case()
     _accept(case, InvestigationActionType.SOLUTION, 8)
     case.evidence += [
@@ -726,6 +763,7 @@ def test_a_symptom_the_cause_does_not_explain_is_not_persistence():
             EvidenceCategory.SYMPTOM_EVIDENCE,
             10,
             "also seeing latency on the billing service",
+            rechecks=_UNNAMED,
         ),
     ]
     _recompute_at(case, 10)
@@ -766,18 +804,31 @@ def _add_sibling_chain(case) -> CausalNode:
 
 def test_a_fix_of_another_candidate_does_not_disconfirm_the_identified_cause():
     """The latest fix addressed another candidate in the graph: its cause row
-    is about that chain and nothing in the identified cause's frame. That
-    cause going away while the problem stays says nothing about the
+    names a row supporting that chain, not the identified cause (#1906 D1).
+    That cause going away while the problem stays says nothing about the
     identified cause."""
     case, root, hyp = _identified_case()
-    _add_sibling_chain(case)
+    sibling = _add_sibling_chain(case)
+    leak = _row(
+        "leak_rss", EvidenceCategory.CAUSAL_EVIDENCE, 4, "worker RSS grows 40MB/h"
+    )
+    sibling.evidence_links.append(
+        NodeEvidenceLink(
+            evidence_id=leak.evidence_id,
+            stance=EvidenceStance.SUPPORTS,
+            reasoning="bears on the sibling",
+            linked_at_turn=4,
+        )
+    )
     _accept(case, InvestigationActionType.SOLUTION, 8)
     case.evidence += [
+        leak,
         _row(
             "leak_gone",
             EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
             9,
             "gunicorn worker memory leak patched, worker RSS now flat",
+            rechecks=leak.evidence_id,
         ),
         _still_failing(10),
     ]
@@ -1140,9 +1191,9 @@ def test_m6_reads_the_latest_fix_not_an_earlier_one():
 def test_a_symptom_about_another_candidate_is_not_the_problem_persisting(
     statement, symptom
 ):
-    """The persistence frame is the problem plus the identified cause's chain,
-    not every candidate's: a symptom that speaks to a sibling candidate or a
-    refuted guess does not fail the fix that removed the identified cause."""
+    """A symptom that speaks to a sibling candidate or a refuted guess names
+    none of the rows that showed the problem (#1906 D1), so it does not fail
+    the fix that removed the identified cause."""
     case, root, hyp = _identified_case()
     sibling = _add_sibling_chain(case)
     sibling.statement = statement
@@ -1151,7 +1202,13 @@ def test_a_symptom_about_another_candidate_is_not_the_problem_persisting(
     _accept(case, InvestigationActionType.SOLUTION, 8)
     case.evidence += [
         _cause_gone(9),
-        _row("other_symptom", EvidenceCategory.SYMPTOM_EVIDENCE, 10, symptom),
+        _row(
+            "other_symptom",
+            EvidenceCategory.SYMPTOM_EVIDENCE,
+            10,
+            symptom,
+            rechecks=_UNNAMED,
+        ),
     ]
     _recompute_at(case, 10)
 
@@ -1354,6 +1411,7 @@ def test_a_later_fix_seen_only_by_a_relief_or_an_aside_keeps_the_resolution(late
                 EvidenceCategory.SYMPTOM_EVIDENCE,
                 12,
                 "also seeing latency on the billing service",
+                rechecks=_UNNAMED,
             )
         )
 
@@ -1410,13 +1468,15 @@ def test_after_a_failure_a_relief_alone_asks_for_the_cause_recheck():
     assert assess_resolution_readiness(case).verdict == ResolutionReadiness.READY
 
 
-def test_a_failure_in_the_fixed_causes_own_terms_counts_without_a_validated_root():
-    """No root is validated (the cause was never grounded), so the frame has
-    no identified chain. The persistence row speaks in the terms of the cause
-    the fix addressed — the chain its cause row is about — so it still fails
-    the fix, and a later relief resolves nothing."""
+def test_with_no_validated_root_nothing_binds_to_the_cause_and_nothing_resolves():
+    """No root is validated (the cause was never grounded), so there is no
+    cause a cause row can be about (ruled 2026-10-27: no cause record, nothing
+    binds). The fix's window records no failure, and a later relief resolves
+    nothing: the case can close, never resolve. Replaced the token frame's
+    "a failure in the fixed cause's own terms counts" (#1906 D1)."""
     case, root, hyp = _identified_case()
     root.node_state = NodeState.CANDIDATE
+    case.progress.identified_cause_root_ids = []  # never identified
     _accept(case, InvestigationActionType.SOLUTION, 8)
     case.evidence += [
         _row(
@@ -1435,18 +1495,19 @@ def test_a_failure_in_the_fixed_causes_own_terms_counts_without_a_validated_root
     _accept(case, InvestigationActionType.MITIGATION, 10)
     case.evidence.append(_problem_gone(11, label="restart_relief"))
 
-    assert _window_states(case)[-1] == (8, FIX_FAILED)
+    assert _window_states(case)[-1] == (8, FIX_UNKNOWN)
+    assert cause_elimination_rows(case) == []
     assert has_resolution_confirmation(case) is False
 
 
-def test_with_no_cause_identified_a_failure_in_any_candidates_terms_counts():
+def test_with_no_cause_identified_a_terse_cause_row_binds_to_nothing():
     """No root validated and the fix's cause row too terse to say which chain
-    it removed: the frame holds every candidate's chain, so a persistence row
-    phrased in the cause's own terms still fails the fix, and a later relief
-    resolves nothing. M6 has no identified cause to demote, so the wider frame
-    only makes the gate more careful."""
+    it removed: with no cause on record it binds to nothing (ruled
+    2026-10-27), so the window records no failure and a later relief resolves
+    nothing. Replaced the token frame's "every candidate's chain" (#1906 D1)."""
     case, root, hyp = _identified_case()
     root.node_state = NodeState.CANDIDATE
+    case.progress.identified_cause_root_ids = []  # never identified
     _accept(case, InvestigationActionType.SOLUTION, 8)
     case.evidence += [
         _cause_gone(9),
@@ -1460,7 +1521,7 @@ def test_with_no_cause_identified_a_failure_in_any_candidates_terms_counts():
     _accept(case, InvestigationActionType.MITIGATION, 10)
     case.evidence.append(_problem_gone(11, label="restart_relief"))
 
-    assert _window_states(case)[-1] == (8, FIX_FAILED)
+    assert _window_states(case)[-1] == (8, FIX_UNKNOWN)
     assert has_resolution_confirmation(case) is False
 
 
@@ -1475,11 +1536,12 @@ def test_the_cause_recheck_ask_is_not_used_once_the_problem_is_back():
     assert "cause re-checked after the fix" not in message
 
 
-def test_a_siblings_fix_failing_in_the_siblings_terms_fails_its_window():
-    """The case identifies A, but the latest fix addressed candidate B: its
-    cause row is about B's chain, so B's chain is in the window's frame and a
-    persistence row in B's terms fails the fix. The gate resolves nothing on
-    it; M6 leaves A alone, since a failed fix of B disconfirms B, not A."""
+def test_a_siblings_fix_binds_to_nothing_and_resolves_nothing():
+    """The case identifies A, but the latest fix addressed candidate B, which
+    is no cause on record: its cause row names nothing the engine can bind
+    (#1906 D1), and so does the "back" row, so the window records no outcome
+    of the fix. The gate resolves nothing on it, and M6 leaves A alone.
+    Replaced the token frame's "fails in the sibling's terms"."""
     case, root, hyp = _identified_case()
     _add_sibling_chain(case)
     _accept(case, InvestigationActionType.SOLUTION, 8)
@@ -1489,18 +1551,20 @@ def test_a_siblings_fix_failing_in_the_siblings_terms_fails_its_window():
             EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
             9,
             "gunicorn worker memory leak patched, worker RSS now flat",
+            rechecks=_UNNAMED,
         ),
         _row(
             "leak_back",
             EvidenceCategory.SYMPTOM_EVIDENCE,
             10,
             "gunicorn worker memory is climbing again",
+            rechecks=_UNNAMED,
         ),
     ]
     _recompute_at(case, 10)
     _mitigate(case, accepted_turn=11, relief_turn=12)
 
-    assert _window_states(case)[-1] == (8, FIX_FAILED)
+    assert _window_states(case)[-1] == (8, FIX_UNKNOWN)
     assert has_resolution_confirmation(case) is False
     assert hyp.state != HypothesisState.REFUTED
 

@@ -66,15 +66,22 @@ from faultmaven.modules.case.contracts import (
     EvidenceSourceType,
     HypothesisState,
     InvestigationActionType,
+    NodeState,
     NodeType,
     ProblemStatus,
     ProposedAction,
     RootCauseConclusion,
     WorkingConclusion,
 )
+from tests.unit.core.investigation.bound_rows import (
+    VERIFYING_ID,
+    bound_evidence,
+    ensure_subjects,
+)
 from tests.unit.core.investigation.test_chain_cause_state import (
     _FILE_ID,
     _chain_case,
+    _eid,
     _root,
 )
 
@@ -90,21 +97,28 @@ def _open_chain_case():
 
 
 def _absence(category: EvidenceCategory, turn: int, summary: str) -> Evidence:
-    return Evidence(
+    """A post-fix row naming what it re-checks (#1906 D1): the chain root's
+    own support, or the row that showed the problem."""
+    return bound_evidence(
+        category,
+        turn=turn,
+        evidence_id=_eid(f"{category.value}-{turn}-{summary}"),
+        rechecks=(
+            _eid("ev_root_support")
+            if category == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
+            else VERIFYING_ID
+        ),
         summary=summary,
         primary_purpose="post-fix check",
-        category=category,
-        source_type=EvidenceSourceType.LOGS,
-        source_file_id=_FILE_ID,
         collected_by="user",
-        collected_at_turn=turn,
-        collected_at=datetime.now(UTC),
+        source_file_id=_FILE_ID,
     )
 
 
 def _renewal_rows(case, turn: int) -> None:
     """What the #2036 runs recorded after a renewed credential: the issuer and
     the certificate seen back, and the reported 503s gone."""
+    ensure_subjects(case)
     case.evidence += [
         _absence(
             EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
@@ -237,9 +251,11 @@ def test_rows_from_before_the_cause_was_posited_do_not_confirm_it():
 
 
 def test_with_no_rooted_hypothesis_every_row_counts():
-    """Unchanged where the case has no chain at all: an out-of-band fix still
-    resolves on the output of the checks."""
-    case, _root_node, hyp = _chain_case()
+    """With no hypothesis rooted on the cause, no turn bounds the cause leg:
+    an out-of-band fix still resolves on the output of the checks. The root
+    itself stays identified, the cause the rows name (#1906 D1)."""
+    case, root_node, hyp = _chain_case()
+    root_node.node_state = NodeState.VALIDATED
     hyp.root_node_id = None
     case.progress.cause_identification_held_open = False
     _renewal_rows(case, turn=2)
@@ -595,14 +611,17 @@ def test_the_bound_reads_the_identified_root_not_a_later_competitor():
 
 def test_the_bound_reads_the_cause_the_conclusion_names():
     """No identified root: the backstop leg's cause is what the conclusion
-    names, so a competitor rooted later does not move the bound."""
+    names, so a competitor rooted later does not move the bound. The cause
+    rows bind to A, held from VALIDATED by its one support alone (the pool's
+    count-held leg, #1906 D1); with no cause in the pool nothing would bind."""
     case, hyp_a, root_b = _two_rooted_hypotheses()
-    # No verdicts and no support: nothing is identified or held.
-    case.causal_nodes[hyp_a.root_node_id].metadata.pop("root_terminal")
-    case.causal_nodes[hyp_a.root_node_id].evidence_links = []
+    # One support: A is count-held, not identified; B has no verdict.
+    root_a = case.causal_nodes[hyp_a.root_node_id]
+    root_a.evidence_links = root_a.evidence_links[:1]
     root_b.metadata.pop("root_terminal")
     _recompute_cause_state_from_chain(case)
     assert case.progress.cause_identification_held_open is False
+    assert case.progress.cause_state != CauseState.IDENTIFIED
     assert cause_elimination_rows(case) == []  # max: the later competitor
     case.root_cause_conclusion = RootCauseConclusion(
         root_cause="the root cause",

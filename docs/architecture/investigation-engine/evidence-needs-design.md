@@ -308,8 +308,10 @@ The need's `status` does not flip back to PENDING for re-verification
 > rows** (`source_file_id` + extract) — NOT linked to a need *or* a
 > hypothesis. (A successful fix *confirms* the root-cause hypothesis; a
 > confidence-bearing link would erode the very hypothesis it proves — see
-> §11.6.) The before/after presence↔absence pairing is deferred. See
-> §7.5, §8.4, and §11.6.
+> §11.6.) The before/after presence↔absence pairing is recorded since
+> #1906 D1: a post-fix row names the presence row it re-checks
+> (`rechecks`), and the re-check list is narrowed to the rows such a
+> reference binds to. See §7.5, §8.4, and §11.6.
 
 ### 4.5 Re-Verification Is Judgment, Not Mechanism
 
@@ -706,8 +708,9 @@ re-verification records that the fix held, it does not re-litigate the
 diagnosis. The absence row is the positive audit record of resolution.
 (Any FULFILLED need that does exist keeps its status — needs are never
 auto-reopened — but the need is not what drives re-verification. The
-before/after presence↔absence *pairing* is deferred to a later step,
-since the data model has no evidence↔evidence link yet.)
+before/after presence↔absence *pairing* is the evidence↔evidence link
+#1906 D1 added: `evidence.metadata["fix_verification"]["rechecks"]`, the
+presence row a post-fix row re-checks, which decides what it confirms.)
 
 ---
 
@@ -1373,8 +1376,11 @@ authoritative**.
   (a fix confirms the root-cause hypothesis; a confidence-bearing link
   would erode it, and the apply-layer (`milestone_engine/evidence_need_updates.py`
   `_apply_evidence_need_updates`) coerces any non-SUPPORTS stance to a likelihood penalty). Before/after
-  presence↔absence pairing is deferred to a later step (no
-  evidence↔evidence link in the model yet).
+  presence↔absence pairing (#1906 D1): `EvidenceToAdd.rechecks`, resolved
+  by `milestone_engine.response_application._record_rechecks`; the list
+  renders only the rows a re-check binds to (`_rows_a_recheck_binds` over
+  `cause_assurance.SubjectIndex.bindable_rows`: the verifying rows, unnarrowed
+  while none is recorded, and the cause pool's root-only supports).
   `context_builder.evidence_needs._build_evidence_needs_block` (re-verification
   section) + `templates.diagnosis._EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM` + the
   per-stage EVIDENCE-TYPES sections and the classification decision-tree

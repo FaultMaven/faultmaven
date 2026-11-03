@@ -14,6 +14,14 @@ Two coupled surfaces, pinned against realistic row content:
    (``has_resolution_confirmation``) put that row on the case, so the
    assertion turns on the cause row under test.
 
+Since #1906 D1 this file is also the subject resolver's corpus (design R5):
+every confirmation row names the row it re-checks (``rechecks``) — the cause
+rows a support of the target root alone, the problem rows the row that showed
+the problem — so what a row is ABOUT is decided by that link, and the wording
+cases below are ranking and mis-citation pins over bound rows. One stance is
+reversed by link shape (``test_a_recheck_of_a_rung_linked_row_binds_to_nothing``,
+formerly ``test_mechanism_rung_confirmation_is_frame_bearing``).
+
 Calibration figures (the ``_BEARING_MIN_SHARED_TOKENS`` floor, the accepted
 lexical limits) live HERE as executable pins; methodology prose: §9.5.
 Accepted limits, pinned deliberately:
@@ -61,6 +69,7 @@ from faultmaven.modules.case.contracts import (
     ProblemVerification,
     ValidationMethod,
 )
+from tests.unit.core.investigation.bound_rows import bound_evidence
 
 _FILE_ID = "file_0123456789ab"
 
@@ -71,7 +80,21 @@ def _eid(label: str) -> str:
     return "ev_" + hashlib.md5(label.encode()).hexdigest()[:12]
 
 
-def _absence_row(label, summary, *, turn=6, collected_by="llm") -> Evidence:
+def _absence_row(
+    label, summary, *, turn=6, collected_by="llm", rechecks=None
+) -> Evidence:
+    if collected_by != "engine":
+        # Bound (#1906 D1): by default it re-checks the target's own support.
+        return bound_evidence(
+            EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+            turn=turn,
+            evidence_id=_eid(label),
+            rechecks=rechecks or _eid("target_support"),
+            summary=summary,
+            primary_purpose="resolution verification",
+            collected_by=collected_by,
+            source_file_id=_FILE_ID,
+        )
     return Evidence(
         evidence_id=_eid(label),
         summary=summary,
@@ -91,19 +114,44 @@ def _absence_row(label, summary, *, turn=6, collected_by="llm") -> Evidence:
 
 
 def _problem_gone(label, *, turn) -> Evidence:
-    """The problem leg (#1906): the reported symptom observed gone. Placed
-    beside a cause row so a whole-bar assertion turns on that row alone."""
-    return Evidence(
+    """The problem leg (#1906): the reported symptom observed gone, naming the
+    row that showed it. Placed beside a cause row so a whole-bar assertion
+    turns on that row alone."""
+    return bound_evidence(
+        EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+        turn=turn,
         evidence_id=_eid(label),
+        rechecks=_eid("verifying"),
         summary="payments pods Running, no CrashLoopBackOff",
         primary_purpose="resolution verification",
-        category=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+        source_file_id=_FILE_ID,
+    )
+
+
+def _diagnosis_row(label, category, summary) -> Evidence:
+    return Evidence(
+        evidence_id=_eid(label),
+        summary=summary,
+        primary_purpose="diagnosis",
+        category=category,
         source_type=EvidenceSourceType.LOGS,
         source_file_id=_FILE_ID,
         collected_by="llm",
-        collected_at_turn=turn,
+        collected_at_turn=2,
         collected_at=datetime.now(timezone.utc),
     )
+
+
+def _supports(node, *rows) -> None:
+    for row in rows:
+        node.evidence_links.append(
+            NodeEvidenceLink(
+                evidence_id=row.evidence_id,
+                stance=EvidenceStance.SUPPORTS,
+                reasoning="bears on it",
+                linked_at_turn=2,
+            )
+        )
 
 
 def _node(node_id, statement, node_type, *, validated=False) -> CausalNode:
@@ -188,14 +236,41 @@ def _incident_case():
     )
     case.hypotheses = {hyp.hypothesis_id: hyp}
     case.progress.problem_status = ProblemStatus.VERIFIED
+    # What a re-check names (#1906 D1): the row that showed the problem; a
+    # support of the target alone; and one supporting the rung as well (the
+    # #2036 shape, which binds to nothing).
+    verifying = _diagnosis_row(
+        "verifying",
+        EvidenceCategory.SYMPTOM_EVIDENCE,
+        "payments pods in CrashLoopBackOff, restarting every 30s",
+    )
+    target_support = _diagnosis_row(
+        "target_support",
+        EvidenceCategory.CAUSAL_EVIDENCE,
+        "pod spec resolv.conf lists five nameservers",
+    )
+    rung_support = _diagnosis_row(
+        "rung_support",
+        EvidenceCategory.CAUSAL_EVIDENCE,
+        "dig from a payments pod times out after 5s",
+    )
+    case.evidence = [verifying, target_support, rung_support]
+    case.problem_verification.verifying_evidence_ids = [verifying.evidence_id]
+    _supports(target, target_support, rung_support)
+    _supports(rung, rung_support)
     return case, target, sibling
 
 
 def _stamped_row_id(case, root):
+    absence = {
+        e.evidence_id
+        for e in case.evidence
+        if e.category == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
+    }
     supports = [
         link.evidence_id
         for link in root.evidence_links
-        if link.stance == EvidenceStance.SUPPORTS
+        if link.stance == EvidenceStance.SUPPORTS and link.evidence_id in absence
     ]
     assert len(supports) == 1
     return supports[0]
@@ -235,9 +310,10 @@ def test_symptom_side_confirmation_bears_via_problem_anchor():
     assert _stamped_row_id(case, target) == row.evidence_id
 
 
-def test_mechanism_rung_confirmation_is_frame_bearing():
-    """A row about the target chain's RUNG (its mechanism) is the target's
-    story, not another chain's — frame-bearing, never vetoed."""
+def test_mechanism_rung_worded_confirmation_is_frame_bearing():
+    """A row WORDED about the target chain's RUNG (its mechanism) that
+    re-checks a support of the root alone is the target's story, not another
+    chain's — frame-bearing, never vetoed (a ranking pin over bound rows)."""
     case, target, _ = _incident_case()
     row = _absence_row(
         "rung_side",
@@ -246,6 +322,24 @@ def test_mechanism_rung_confirmation_is_frame_bearing():
     case.evidence.append(row)
     assert confirm_root_from_resolution_absence(case) is True
     assert _stamped_row_id(case, target) == row.evidence_id
+
+
+def test_a_recheck_of_a_rung_linked_row_binds_to_nothing():
+    """REVERSAL of the stance this test replaced (#1906 D1, ruled 2026-10-31
+    Q2), by LINK SHAPE, not wording: a row re-checking one SUPPORTS-linked to
+    the INTERMEDIATE rung is about the consequence as much as the cause (the
+    #2036 renewal), so it binds to no cause — no cause leg, no stamp — however
+    it is worded."""
+    case, target, _ = _incident_case()
+    row = _absence_row(
+        "rung_linked",
+        "resolv.conf trimmed to two nameservers; CrashLoopBackOff gone",
+        rechecks=_eid("rung_support"),
+    )
+    case.evidence.extend([row, _problem_gone("rung_linked_gone", turn=6)])
+    assert cause_elimination_rows(case) == []
+    assert has_resolution_confirmation(case) is False
+    assert confirm_root_from_resolution_absence(case) is False
 
 
 def test_row_mentioning_both_chains_counts_as_frame_bearing():

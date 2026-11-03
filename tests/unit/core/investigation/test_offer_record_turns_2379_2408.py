@@ -45,6 +45,7 @@ from faultmaven.modules.case.domain.models.evidence import (
     EvidenceCategory,
     EvidenceSourceType,
 )
+from tests.unit.core.investigation.bound_rows import ensure_subjects
 from tests.unit.core.investigation.test_offer_record_declines_bind_2379 import (
     _DSU,
     _FILE_ID,
@@ -157,6 +158,9 @@ class TestANeedsInfoProposalIsARequest:
 
     async def test_the_next_turn_offers_the_resolve_once_it_is_earned(self):
         case, _ = _needs_info_case()
+        # What the turn's rows name (#1906 D1): the cause and the row that
+        # showed the problem, on record from the data's turn.
+        ensure_subjects(case, turn=0)
         engine = _engine()
         await _asked(engine, case)
 
