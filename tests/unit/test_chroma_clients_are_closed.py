@@ -68,8 +68,9 @@ def test_a_test_opens_a_client_and_registers_it(tmp_path):
         ids=["a"], embeddings=[[0.1, 0.2]]
     )
     OPENED["path"] = path
-    # Positive control: the open client holds files under its path.
-    assert _descriptors_under(path)
+    # Positive control: the open client holds a segment file, the kind the
+    # teardown check below expects to find released.
+    assert [f for f in _descriptors_under(path) if not f.endswith("/chroma.sqlite3")]
 
 
 def test_the_first_tests_teardown_released_its_client():
@@ -143,9 +144,9 @@ def test_every_client_is_closed_newest_first_and_the_registry_emptied():
     assert isinstance(first, _Client)  # handed back unchanged
 
 
-def test_a_close_that_raises_still_closes_the_rest_and_is_raised():
+def test_a_close_that_raises_still_closes_the_rest_and_is_raised_as_itself():
     closed: list[str] = []
-    closed_at_teardown(_Client("first", closed, RuntimeError("first failed")))
+    closed_at_teardown(_Client("first", closed))
     closed_at_teardown(_Client("second", closed, ValueError("second failed")))
     closed_at_teardown(_Client("third", closed))
 
@@ -155,3 +156,18 @@ def test_a_close_that_raises_still_closes_the_rest_and_is_raised():
     assert closed == ["third", "second", "first"]
     close_the_clients_opened()  # nothing left for the next test's teardown
     assert closed == ["third", "second", "first"]
+
+
+def test_several_closes_that_raise_are_all_reported():
+    closed: list[str] = []
+    closed_at_teardown(_Client("first", closed, RuntimeError("first failed")))
+    closed_at_teardown(_Client("second", closed, ValueError("second failed")))
+
+    with pytest.raises(ExceptionGroup) as raised:
+        close_the_clients_opened()
+
+    assert [str(e) for e in raised.value.exceptions] == [
+        "second failed",
+        "first failed",
+    ]
+    assert closed == ["second", "first"]

@@ -49,8 +49,9 @@ def test_ephemeral_client_raises_not_found_for_a_missing_collection():
 
 
 def test_persistent_client_raises_not_found_for_a_missing_collection():
-    # Closed before the directory goes: an open client keeps its deleted
-    # files' descriptors for the rest of the process.
+    # Closed before the directory goes. Left open, the client would keep its
+    # deleted files' descriptors for the rest of the process. Closed, it keeps
+    # only chromadb's SQLite handles, until it is garbage-collected.
     with (
         tempfile.TemporaryDirectory() as path,
         chromadb.PersistentClient(path) as client,
