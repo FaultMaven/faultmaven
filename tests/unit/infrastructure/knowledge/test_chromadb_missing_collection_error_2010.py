@@ -4,9 +4,11 @@ Both vector stores import ``NotFoundError`` and treat it as "no collection".
 ``pyproject.toml`` once declared ``chromadb>=0.5.3``, where the name does not
 import (<= 0.5.5) or ``get_collection`` raises something else (0.5.7 - 0.6.3:
 ``InvalidCollectionException``), so an install near the floor could not use the
-stores. The floor is the earliest release that exports the class AND raises
-it, found by running the releases (1.0.0). This pins the installed client's
-behaviour so a lockfile move to a client that raises another type fails here.
+stores. The earliest release that exports the class AND raises it is 1.0.0,
+found by running the releases. The floor now sits higher, at 1.5.2, for
+``Client.close()`` (``tests/unit/container/test_container_shutdown.py``). This
+pins the installed client's behaviour so a lockfile move to a client that
+raises another type fails here.
 """
 
 import tempfile
@@ -62,7 +64,7 @@ def test_persistent_client_raises_not_found_for_a_missing_collection():
 
 def test_the_declared_floor_admits_only_versions_that_raise_not_found():
     """0.6.3 and below raise ``InvalidCollectionException`` (or cannot import
-    the class), so the declared specifier must exclude them and admit 1.0.0."""
+    the class), so the declared specifier must exclude them."""
     root = Path(__file__).resolve().parents[4]
     project = tomllib.loads((root / "pyproject.toml").read_text())["project"]
     (requirement,) = [
@@ -73,4 +75,3 @@ def test_the_declared_floor_admits_only_versions_that_raise_not_found():
 
     assert not requirement.specifier.contains(Version("0.6.3"), prereleases=True)
     assert not requirement.specifier.contains(Version("0.5.3"), prereleases=True)
-    assert requirement.specifier.contains(Version("1.0.0"))

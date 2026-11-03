@@ -1813,24 +1813,55 @@ class DIContainer(BaseDIContainer):
         client, shared beyond this container with everything else on that loop,
         and never its to close.
 
+        The KB and evidence ChromaDB clients are the container's too:
+        ``register_infrastructure`` built them. chromadb keeps a local client's
+        System (its SQLite pool, HNSW segment files and a Rust runtime: about ten
+        descriptors and fifty threads) in a process-wide cache until the client
+        is closed, so a composition over a store left it open for the rest of the
+        process. ``close()`` is refcounted per path: a System that another holder
+        of the same path still uses stays open. They are closed even when the
+        Redis close raises or is cancelled.
+
         Then the container is reset, so it is never left holding a closed client:
-        the next ``initialize()`` composes afresh, with a new Redis client. A
-        second lifespan in the same process (the test suite runs several) would
+        the next ``initialize()`` composes afresh, with new clients. A second
+        lifespan in the same process (the test suite runs several) would
         otherwise find it still marked initialized, return early, and publish no
-        Redis client at all. Idempotent.
+        Redis client at all. A close that raises is raised after the reset; when
+        several raise, they are raised together. Idempotent.
         """
-        client = getattr(self, "redis_client", None)
+        redis_client = getattr(self, "redis_client", None)
         self.redis_client = None
+        chroma_clients = [
+            chroma_client
+            for chroma_client in (
+                getattr(self, "kb_chromadb_client", None),
+                getattr(self, "evidence_chromadb_client", None),
+            )
+            if chroma_client is not None
+        ]
+        errors: list[Exception] = []
         try:
-            if client is not None:
+            if redis_client is not None:
                 from faultmaven.infrastructure.redis_client import is_fakeredis
 
-                if not is_fakeredis(client):
-                    await client.aclose()
+                if not is_fakeredis(redis_client):
+                    try:
+                        await redis_client.aclose()
+                    except Exception as exc:
+                        errors.append(exc)
         finally:
+            for chroma_client in chroma_clients:
+                try:
+                    chroma_client.close()
+                except Exception as exc:
+                    errors.append(exc)
             # A close that raises still leaves nothing behind for the next
             # initialize to return early on.
             self.reset()
+        if len(errors) == 1:
+            raise errors[0]
+        if errors:
+            raise ExceptionGroup("closing what the container opened failed", errors)
 
     def reset(self):
         """Return the container to what construction built.

@@ -1,4 +1,4 @@
-"""The container closes the Redis client it opened, only that one, and resets.
+"""The container closes the clients it opened, only those, and resets.
 
 ``register_infrastructure`` builds the shared Redis client, so the container
 owns it. A real client's pool is bound to the event loop it was opened on, and
@@ -8,6 +8,10 @@ real Redis as ``ResourceWarning: unclosed transport``. The FakeRedis stand-in is
 the event loop's client, shared beyond any one container, so shutdown leaves it
 alone.
 
+It builds the KB and evidence ChromaDB clients too. chromadb keeps a local
+client's System in a process-wide cache until the client is closed, and
+nothing closed them either.
+
 Shutdown also resets the container. Left marked initialized, a second lifespan
 in the same process returned early from ``initialize()`` and published no Redis
 client at all.
@@ -16,13 +20,19 @@ client at all.
 from __future__ import annotations
 
 import asyncio
+import gc
 import logging
+import os
 import sys
+import tomllib
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 from fastapi import FastAPI
+from packaging.requirements import Requirement
+from packaging.version import Version
 
 from faultmaven.container import DIContainer
 from faultmaven.infrastructure.llm import usage_ledger
@@ -30,6 +40,8 @@ from faultmaven.infrastructure.redis_client import get_fakeredis_client
 from tests.unit.container.conftest import make_private_container
 
 pytestmark = pytest.mark.unit
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def _constructed_names() -> set[str]:
@@ -141,6 +153,132 @@ async def test_shutdown_without_a_client_does_nothing(container):
     await container.shutdown()
 
     assert getattr(container, "redis_client", None) is None
+
+
+class _ChromaClient:
+    """Stands in for a chromadb ``ClientAPI``, whose ``close()`` is synchronous."""
+
+    def __init__(self, error: Exception | None = None):
+        self.close = Mock(side_effect=error)
+
+
+async def test_shutdown_closes_both_chromadb_clients_it_opened(container):
+    kb, evidence = _ChromaClient(), _ChromaClient()
+    container.kb_chromadb_client = kb
+    container.evidence_chromadb_client = evidence
+
+    await container.shutdown()
+
+    kb.close.assert_called_once_with()
+    evidence.close.assert_called_once_with()
+    assert getattr(container, "kb_chromadb_client", None) is None
+    assert getattr(container, "evidence_chromadb_client", None) is None
+
+
+async def test_a_redis_close_that_raises_still_closes_the_chromadb_clients(container):
+    client = _RealClient()
+    client.aclose.side_effect = RuntimeError("the pool would not close")
+    container.redis_client = client
+    kb = _ChromaClient()
+    container.kb_chromadb_client = kb
+    container._initialized = True
+
+    with pytest.raises(RuntimeError, match="the pool would not close"):
+        await container.shutdown()
+
+    kb.close.assert_called_once_with()
+    assert container._initialized is False
+
+
+async def test_a_cancelled_redis_close_still_closes_the_chromadb_clients(container):
+    client = _RealClient()
+    client.aclose.side_effect = asyncio.CancelledError()
+    container.redis_client = client
+    evidence = _ChromaClient()
+    container.evidence_chromadb_client = evidence
+    container._initialized = True
+
+    with pytest.raises(asyncio.CancelledError):
+        await container.shutdown()
+
+    evidence.close.assert_called_once_with()
+    assert container._initialized is False
+
+
+async def test_every_close_that_raises_is_raised_after_the_reset(container):
+    """One failure is raised as itself (above); several are raised together,
+    so the second is not lost behind the first."""
+    container.kb_chromadb_client = _ChromaClient(RuntimeError("kb would not close"))
+    container.evidence_chromadb_client = _ChromaClient(
+        ValueError("evidence would not close")
+    )
+    container._initialized = True
+
+    with pytest.raises(ExceptionGroup) as raised:
+        await container.shutdown()
+
+    assert [str(e) for e in raised.value.exceptions] == [
+        "kb would not close",
+        "evidence would not close",
+    ]
+    assert container._initialized is False
+
+
+def _held_under(root: str) -> list[str]:
+    held = []
+    for fd in os.listdir("/proc/self/fd"):
+        try:
+            target = os.readlink(f"/proc/self/fd/{fd}")
+        except OSError:
+            continue
+        if target.startswith(root):
+            held.append(target)
+    return held
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc/self/fd")
+async def test_a_local_store_holds_nothing_once_the_container_is_shut_down(
+    container, tmp_path
+):
+    """The leak the close removes, on real clients. Without it, chromadb's
+    process-wide cache keeps each System, and every file under the store stays
+    open for the rest of the process: a test process that composed over many
+    stores ran out of descriptors. ``close()`` releases the segment files at
+    once and the SQLite handles when the closed client is collected."""
+    from faultmaven.infrastructure.persistence.chromadb_store import (
+        create_persistent_client,
+    )
+
+    for name in ("kb", "evidence"):
+        client = create_persistent_client(str(tmp_path / name))
+        client.get_or_create_collection("shutdown-probe").add(
+            ids=["a"], embeddings=[[0.1, 0.2]]
+        )
+        setattr(container, f"{name}_chromadb_client", client)
+    del client
+    assert _held_under(str(tmp_path))  # positive control: the stores are open
+
+    await container.shutdown()
+    gc.collect()
+
+    assert _held_under(str(tmp_path)) == []
+
+
+def test_the_declared_chromadb_floor_has_the_close_shutdown_calls():
+    """``Client.close()`` first shipped in chromadb 1.5.2; 1.5.1 and earlier
+    have no way to release a System short of clearing every one."""
+    import chromadb.api.client
+
+    project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())["project"]
+    (requirement,) = [
+        Requirement(r)
+        for r in project["dependencies"]
+        if Requirement(r).name == "chromadb"
+    ]
+
+    assert not requirement.specifier.contains(Version("1.5.1"))
+    assert requirement.specifier.contains(Version("1.5.2"))
+    assert callable(getattr(chromadb.api.client.Client, "close", None))
 
 
 @pytest.fixture
