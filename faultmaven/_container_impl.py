@@ -1826,16 +1826,22 @@ class DIContainer(BaseDIContainer):
         the next ``initialize()`` composes afresh, with new clients. A second
         lifespan in the same process (the test suite runs several) would
         otherwise find it still marked initialized, return early, and publish no
-        Redis client at all. A close that raises is raised after the reset; when
-        several raise, they are raised together. Idempotent.
+        Redis client at all. The reset runs whatever a close did, an interrupt
+        included.
+
+        Each close that raises is logged here with its traceback: a cancelled
+        Redis close propagates past the raise below, and every caller's teardown
+        logs what it is handed by message alone. Then, after the reset, one is
+        raised as itself and several together. Idempotent.
         """
+        logger = logging.getLogger(__name__)
         redis_client = getattr(self, "redis_client", None)
         self.redis_client = None
         chroma_clients = [
-            chroma_client
-            for chroma_client in (
-                getattr(self, "kb_chromadb_client", None),
-                getattr(self, "evidence_chromadb_client", None),
+            (label, chroma_client)
+            for label, chroma_client in (
+                ("KB", getattr(self, "kb_chromadb_client", None)),
+                ("evidence", getattr(self, "evidence_chromadb_client", None)),
             )
             if chroma_client is not None
         ]
@@ -1848,16 +1854,27 @@ class DIContainer(BaseDIContainer):
                     try:
                         await redis_client.aclose()
                     except Exception as exc:
+                        logger.warning(
+                            "Closing the container's Redis client failed",
+                            exc_info=True,
+                        )
                         errors.append(exc)
         finally:
-            for chroma_client in chroma_clients:
-                try:
-                    chroma_client.close()
-                except Exception as exc:
-                    errors.append(exc)
-            # A close that raises still leaves nothing behind for the next
-            # initialize to return early on.
-            self.reset()
+            try:
+                for label, chroma_client in chroma_clients:
+                    try:
+                        chroma_client.close()
+                    except Exception as exc:
+                        logger.warning(
+                            "Closing the container's %s ChromaDB client failed",
+                            label,
+                            exc_info=True,
+                        )
+                        errors.append(exc)
+            finally:
+                # A close that raises, or is interrupted, still leaves nothing
+                # behind for the next initialize to return early on.
+                self.reset()
         if len(errors) == 1:
             raise errors[0]
         if errors:

@@ -47,37 +47,6 @@ async def test_container_built_knowledge_service_can_reach_the_database(
     assert knowledge_service._db_session_factory is get_db_session
 
 
-@pytest.fixture
-def service_checks_on(monkeypatch, tmp_path):
-    """Compose with ``SKIP_SERVICE_CHECKS=false``, whatever the ambient value.
-
-    Every CI pytest job sets it ``true``, and under ``true`` both vector-store
-    factories return None — so a pin that followed the ambient value would
-    skip (or pass vacuously) in exactly the place it has to bite. This builds
-    its own composition instead: standalone, with the two local ChromaDB
-    ``PersistentClient`` trees in ``tmp_path``, so it needs no server and runs
-    anywhere. The settings singleton is rebuilt from the patched environment
-    and rebuilt again afterwards, before ``monkeypatch`` restores it.
-    """
-    from faultmaven.config.settings import reset_settings
-
-    monkeypatch.setenv("SKIP_SERVICE_CHECKS", "false")
-    monkeypatch.setenv("DEPLOYMENT_MODE", "standalone")
-    # With checks on and protection on (the Cloud job), the composed
-    # DataSanitizer health-checks the Presidio services at their default
-    # in-cluster URLs, which is a real network call from a test that says it
-    # needs no server. The composition under test has no use for them.
-    monkeypatch.setenv("PROTECTION_ENABLED", "false")
-    monkeypatch.setenv("SANITIZE_PII", "false")
-    monkeypatch.setenv("CHROMADB_KB_PERSIST_DIR", str(tmp_path / "chroma-kb"))
-    monkeypatch.setenv(
-        "CHROMADB_EVIDENCE_PERSIST_DIR", str(tmp_path / "chroma-evidence")
-    )
-    reset_settings()
-    yield
-    reset_settings()
-
-
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_the_composed_knowledge_service_writes_only_through_the_guarded_store(

@@ -94,7 +94,7 @@ CHROMA_EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="chroma-h
 _DOOR_MARK = "_faultmaven_built_by_door"
 
 # The client-side token auth provider. ``chromadb.auth.token`` was renamed to
-# ``chromadb.auth.token_authn`` in ChromaDB 0.5 — below our ``>= 1.0.0`` floor,
+# ``chromadb.auth.token_authn`` in ChromaDB 0.5 — far below our version floor,
 # so the old path never imports and must not appear anywhere. It once did, in
 # the container provider, guarded by ``except Exception: pass`` — which
 # silently produced an unauthenticated client for over a year (#1173).

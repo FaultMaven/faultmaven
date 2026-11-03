@@ -224,6 +224,66 @@ async def test_every_close_that_raises_is_raised_after_the_reset(container):
     assert container._initialized is False
 
 
+async def test_an_interrupted_chromadb_close_still_resets(container):
+    """A second Ctrl+C during an ``fm-*`` command's teardown raises
+    ``KeyboardInterrupt`` wherever the main thread is: inside a close, it must
+    not leave the container marked initialized."""
+    container.kb_chromadb_client = _ChromaClient(KeyboardInterrupt())
+    container._initialized = True
+
+    with pytest.raises(KeyboardInterrupt):
+        await container.shutdown()
+
+    assert container._initialized is False
+    assert getattr(container, "kb_chromadb_client", None) is None
+
+
+async def test_a_failed_chromadb_close_is_logged_even_when_the_redis_close_is_cancelled(
+    container, caplog
+):
+    """The cancellation propagates past the raise, so the log is the only place
+    the close's failure can be seen."""
+    client = _RealClient()
+    client.aclose.side_effect = asyncio.CancelledError()
+    container.redis_client = client
+    container.kb_chromadb_client = _ChromaClient(RuntimeError("kb would not close"))
+
+    with caplog.at_level(logging.WARNING, logger="faultmaven._container_impl"):
+        with pytest.raises(asyncio.CancelledError):
+            await container.shutdown()
+
+    (record,) = [r for r in caplog.records if "ChromaDB client failed" in r.message]
+    assert record.getMessage() == "Closing the container's KB ChromaDB client failed"
+    assert str(record.exc_info[1]) == "kb would not close"
+
+
+async def test_each_failed_close_is_logged_with_its_own_error(container, caplog):
+    """Every production caller hands the shutdown to a teardown that logs an
+    exception by its message alone, and a group's message names no member."""
+    client = _RealClient()
+    client.aclose.side_effect = RuntimeError("the pool would not close")
+    container.redis_client = client
+    container.evidence_chromadb_client = _ChromaClient(
+        ValueError("evidence would not close")
+    )
+
+    with caplog.at_level(logging.WARNING, logger="faultmaven._container_impl"):
+        with pytest.raises(ExceptionGroup):
+            await container.shutdown()
+
+    logged = {
+        r.getMessage(): str(r.exc_info[1])
+        for r in caplog.records
+        if r.getMessage().startswith("Closing the container's")
+    }
+    assert logged == {
+        "Closing the container's Redis client failed": "the pool would not close",
+        "Closing the container's evidence ChromaDB client failed": (
+            "evidence would not close"
+        ),
+    }
+
+
 def _held_under(root: str) -> list[str]:
     held = []
     for fd in os.listdir("/proc/self/fd"):

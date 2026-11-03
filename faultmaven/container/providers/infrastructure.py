@@ -724,9 +724,11 @@ async def register_infrastructure(container: BaseDIContainer) -> None:
     # The factories own the SKIP_SERVICE_CHECKS branch (returning None on
     # standalone, refusing under cloud) so the skip path cannot bypass the
     # deployment gate — see _create_chromadb_client.
+    # Each is set on the container as soon as it is built, so that a failure
+    # building the next leaves it where shutdown() closes it.
     kb_chromadb_client = create_kb_chromadb_client(settings)
-    evidence_chromadb_client = create_evidence_chromadb_client(settings)
     container.kb_chromadb_client = kb_chromadb_client
+    evidence_chromadb_client = create_evidence_chromadb_client(settings)
     container.evidence_chromadb_client = evidence_chromadb_client
     if kb_chromadb_client is not None:
         container._register_service("kb_chromadb_client", kb_chromadb_client)
