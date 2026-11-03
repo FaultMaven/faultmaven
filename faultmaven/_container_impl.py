@@ -1819,66 +1819,74 @@ class DIContainer(BaseDIContainer):
         descriptors and fifty threads) in a process-wide cache until the client
         is closed, so a composition over a store left it open for the rest of the
         process. ``close()`` is refcounted per path: a System that another holder
-        of the same path still uses stays open. They are closed even when the
-        Redis close raises or is cancelled.
+        of the same path still uses stays open. A server-backed client's
+        ``httpx`` session is closed too (``close_chroma_client``).
 
-        Then the container is reset, so it is never left holding a closed client:
-        the next ``initialize()`` composes afresh, with new clients. A second
-        lifespan in the same process (the test suite runs several) would
-        otherwise find it still marked initialized, return early, and publish no
-        Redis client at all. The reset runs whatever a close did, an interrupt
-        included.
+        Every close runs whatever the ones before it did. An interruption (a
+        cancellation, a second Ctrl+C) is held until all have run, as
+        ``run_teardown`` holds one. Then the container is reset, so it is never
+        left holding a closed client: the next ``initialize()`` composes afresh,
+        with new clients. A second lifespan in the same process (the test suite
+        runs several) would otherwise find it still marked initialized, return
+        early, and publish no Redis client at all.
 
-        Each close that raises is logged here with its traceback: a cancelled
-        Redis close propagates past the raise below, and every caller's teardown
-        logs what it is handed by message alone. Then, after the reset, one is
-        raised as itself and several together. Idempotent.
+        Then an interruption is re-raised, after the failed closes are logged,
+        because nothing else would report them. Otherwise one failed close is
+        raised as itself, and several together, under a message naming each:
+        every caller's teardown logs what it is handed by its message alone.
+        Idempotent.
         """
-        logger = logging.getLogger(__name__)
         redis_client = getattr(self, "redis_client", None)
         self.redis_client = None
         chroma_clients = [
-            (label, chroma_client)
+            (f"the {label} ChromaDB client", chroma_client)
             for label, chroma_client in (
                 ("KB", getattr(self, "kb_chromadb_client", None)),
                 ("evidence", getattr(self, "evidence_chromadb_client", None)),
             )
             if chroma_client is not None
         ]
-        errors: list[Exception] = []
+        errors: list[tuple[str, Exception]] = []
+        interrupted: BaseException | None = None
         try:
             if redis_client is not None:
-                from faultmaven.infrastructure.redis_client import is_fakeredis
+                try:
+                    from faultmaven.infrastructure.redis_client import is_fakeredis
 
-                if not is_fakeredis(redis_client):
-                    try:
+                    if not is_fakeredis(redis_client):
                         await redis_client.aclose()
-                    except Exception as exc:
-                        logger.warning(
-                            "Closing the container's Redis client failed",
-                            exc_info=True,
-                        )
-                        errors.append(exc)
+                except Exception as exc:
+                    errors.append(("the Redis client", exc))
+                except BaseException as exc:
+                    interrupted = exc
+            for what, chroma_client in chroma_clients:
+                try:
+                    from faultmaven.infrastructure.chroma_client import (
+                        close_chroma_client,
+                    )
+
+                    close_chroma_client(chroma_client)
+                except Exception as exc:
+                    errors.append((what, exc))
+                except BaseException as exc:
+                    interrupted = interrupted or exc
         finally:
-            try:
-                for label, chroma_client in chroma_clients:
-                    try:
-                        chroma_client.close()
-                    except Exception as exc:
-                        logger.warning(
-                            "Closing the container's %s ChromaDB client failed",
-                            label,
-                            exc_info=True,
-                        )
-                        errors.append(exc)
-            finally:
-                # A close that raises, or is interrupted, still leaves nothing
-                # behind for the next initialize to return early on.
-                self.reset()
+            # Whatever a close did, nothing is left behind for the next
+            # initialize to return early on.
+            self.reset()
+        if interrupted is not None:
+            logger = logging.getLogger(__name__)
+            for what, exc in errors:
+                logger.warning("Closing %s failed", what, exc_info=exc)
+            raise interrupted
         if len(errors) == 1:
-            raise errors[0]
+            raise errors[0][1]
         if errors:
-            raise ExceptionGroup("closing what the container opened failed", errors)
+            raise ExceptionGroup(
+                "closing what the container opened failed: "
+                + "; ".join(f"{what}: {exc}" for what, exc in errors),
+                [exc for _what, exc in errors],
+            )
 
     def reset(self):
         """Return the container to what construction built.

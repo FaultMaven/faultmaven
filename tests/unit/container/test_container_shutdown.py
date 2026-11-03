@@ -22,7 +22,6 @@ from __future__ import annotations
 import asyncio
 import gc
 import logging
-import os
 import sys
 import tomllib
 from pathlib import Path
@@ -37,6 +36,7 @@ from packaging.version import Version
 from faultmaven.container import DIContainer
 from faultmaven.infrastructure.llm import usage_ledger
 from faultmaven.infrastructure.redis_client import get_fakeredis_client
+from tests.chroma_clients import closed_at_teardown, descriptors_under
 from tests.unit.container.conftest import make_private_container
 
 pytestmark = pytest.mark.unit
@@ -238,6 +238,20 @@ async def test_an_interrupted_chromadb_close_still_resets(container):
     assert getattr(container, "kb_chromadb_client", None) is None
 
 
+async def test_an_interrupted_kb_close_still_closes_the_evidence_client(container):
+    """The interruption is held until every close has run, as ``run_teardown``
+    holds one: raised at once, it would leave the evidence client's System open
+    for the rest of the process, with the reset dropping the last reference."""
+    container.kb_chromadb_client = _ChromaClient(KeyboardInterrupt())
+    evidence = _ChromaClient()
+    container.evidence_chromadb_client = evidence
+
+    with pytest.raises(KeyboardInterrupt):
+        await container.shutdown()
+
+    evidence.close.assert_called_once_with()
+
+
 async def test_a_failed_chromadb_close_is_logged_even_when_the_redis_close_is_cancelled(
     container, caplog
 ):
@@ -253,13 +267,16 @@ async def test_a_failed_chromadb_close_is_logged_even_when_the_redis_close_is_ca
             await container.shutdown()
 
     (record,) = [r for r in caplog.records if "ChromaDB client failed" in r.message]
-    assert record.getMessage() == "Closing the container's KB ChromaDB client failed"
+    assert record.getMessage() == "Closing the KB ChromaDB client failed"
     assert str(record.exc_info[1]) == "kb would not close"
 
 
-async def test_each_failed_close_is_logged_with_its_own_error(container, caplog):
-    """Every production caller hands the shutdown to a teardown that logs an
-    exception by its message alone, and a group's message names no member."""
+async def test_several_failures_are_raised_under_a_message_naming_each(
+    container, caplog
+):
+    """Every production caller hands the shutdown to a teardown that logs what
+    it is handed by its message alone, so the group's message names each
+    failure. Raised, not also logged here, so one event is one log line."""
     client = _RealClient()
     client.aclose.side_effect = RuntimeError("the pool would not close")
     container.redis_client = client
@@ -268,32 +285,15 @@ async def test_each_failed_close_is_logged_with_its_own_error(container, caplog)
     )
 
     with caplog.at_level(logging.WARNING, logger="faultmaven._container_impl"):
-        with pytest.raises(ExceptionGroup):
+        with pytest.raises(ExceptionGroup) as raised:
             await container.shutdown()
 
-    logged = {
-        r.getMessage(): str(r.exc_info[1])
-        for r in caplog.records
-        if r.getMessage().startswith("Closing the container's")
-    }
-    assert logged == {
-        "Closing the container's Redis client failed": "the pool would not close",
-        "Closing the container's evidence ChromaDB client failed": (
-            "evidence would not close"
-        ),
-    }
-
-
-def _held_under(root: str) -> list[str]:
-    held = []
-    for fd in os.listdir("/proc/self/fd"):
-        try:
-            target = os.readlink(f"/proc/self/fd/{fd}")
-        except OSError:
-            continue
-        if target.startswith(root):
-            held.append(target)
-    return held
+    assert raised.value.message == (
+        "closing what the container opened failed: "
+        "the Redis client: the pool would not close; "
+        "the evidence ChromaDB client: evidence would not close"
+    )
+    assert [r for r in caplog.records if r.getMessage().startswith("Closing")] == []
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc/self/fd")
@@ -310,18 +310,19 @@ async def test_a_local_store_holds_nothing_once_the_container_is_shut_down(
     )
 
     for name in ("kb", "evidence"):
-        client = create_persistent_client(str(tmp_path / name))
+        # Registered too, so a failure before the shutdown leaks neither.
+        client = closed_at_teardown(create_persistent_client(str(tmp_path / name)))
         client.get_or_create_collection("shutdown-probe").add(
             ids=["a"], embeddings=[[0.1, 0.2]]
         )
         setattr(container, f"{name}_chromadb_client", client)
     del client
-    assert _held_under(str(tmp_path))  # positive control: the stores are open
+    assert descriptors_under(str(tmp_path))  # positive control: the stores are open
 
     await container.shutdown()
     gc.collect()
 
-    assert _held_under(str(tmp_path)) == []
+    assert descriptors_under(str(tmp_path)) == []
 
 
 def test_the_declared_chromadb_floor_has_the_close_shutdown_calls():

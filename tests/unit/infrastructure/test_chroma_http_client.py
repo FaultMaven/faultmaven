@@ -61,6 +61,7 @@ from faultmaven.infrastructure.chroma_client import (
     ChromaUnavailableError,
     blocking_executor_for,
     build_http_client,
+    close_chroma_client,
     is_http_client,
 )
 from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
@@ -511,6 +512,38 @@ def test_a_persistent_client_cannot_be_turned_into_an_http_one_by_the_env(
     assert is_http_client(client) is False
     assert blocking_executor_for(client) is None
     assert stub.requests == []
+
+
+def test_closing_a_door_built_client_closes_the_session_it_bounded(
+    stub: _StubChroma,
+) -> None:
+    """chromadb's ``close()`` releases nothing on an HTTP client: its HTTP
+    component has no ``stop``, so the session the door bounded stayed open with
+    its keep-alive connections for the life of the process."""
+    client = _build(stub)
+    session = client._server._session
+    sent = len(stub.requests)
+
+    close_chroma_client(client)
+
+    assert session.is_closed
+    assert len(stub.requests) == sent  # closing sends nothing
+
+
+async def test_the_container_shutdown_closes_its_http_clients_sessions(
+    stub: _StubChroma,
+) -> None:
+    from tests.unit.container.conftest import make_private_container
+
+    kb, evidence = _build(stub), _build(stub)
+    container = make_private_container()
+    container.kb_chromadb_client = kb
+    container.evidence_chromadb_client = evidence
+
+    await container.shutdown()
+
+    assert kb._server._session.is_closed
+    assert evidence._server._session.is_closed
 
 
 # --------------------------------------------------------------------------- #

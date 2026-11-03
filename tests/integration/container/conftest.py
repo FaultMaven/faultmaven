@@ -22,7 +22,7 @@ async def fresh_container():
 
 
 @pytest.fixture
-def service_checks_on(monkeypatch, tmp_path):
+def checks_on_over_tmp_path_stores(monkeypatch, tmp_path):
     """Compose with ``SKIP_SERVICE_CHECKS=false``, whatever the ambient value.
 
     Every CI pytest job sets it ``true``, and under ``true`` both vector-store

@@ -38,27 +38,13 @@ pytestmark = pytest.mark.unit
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 _SUITE = """
-import os
-
 from faultmaven.infrastructure.persistence.chromadb_store import (
     create_persistent_client,
 )
-from tests.chroma_clients import closed_at_teardown
+from tests.chroma_clients import closed_at_teardown, descriptors_under
 
 OPENED = {}
 HELD_AFTER_TEARDOWN = {}
-
-
-def _descriptors_under(path):
-    held = []
-    for fd in os.listdir("/proc/self/fd"):
-        try:
-            target = os.readlink(f"/proc/self/fd/{fd}")
-        except OSError:
-            continue
-        if target.startswith(path):
-            held.append(target)
-    return held
 
 
 def test_a_test_opens_a_client_and_registers_it(tmp_path):
@@ -70,7 +56,7 @@ def test_a_test_opens_a_client_and_registers_it(tmp_path):
     OPENED["path"] = path
     # Positive control: the open client holds a segment file, the kind the
     # teardown check below expects to find released.
-    assert [f for f in _descriptors_under(path) if not f.endswith("/chroma.sqlite3")]
+    assert [f for f in descriptors_under(path) if not f.endswith("/chroma.sqlite3")]
 
 
 def test_the_first_tests_teardown_released_its_client():
@@ -93,9 +79,9 @@ def pytest_runtest_teardown(item, nextitem):
     path = item.module.OPENED.get("path")
     held = item.module.HELD_AFTER_TEARDOWN
     if path is not None and not held:
-        held["at_teardown"] = item.module._descriptors_under(path)
+        held["at_teardown"] = item.module.descriptors_under(path)
         gc.collect()
-        held["after_gc"] = item.module._descriptors_under(path)
+        held["after_gc"] = item.module.descriptors_under(path)
     return result
 """
 

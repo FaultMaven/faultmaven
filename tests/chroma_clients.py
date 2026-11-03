@@ -31,6 +31,7 @@ not be registered: it would be closed under every test after the first.
 
 from __future__ import annotations
 
+import os
 from typing import Protocol, TypeVar
 
 
@@ -69,3 +70,21 @@ def close_the_clients_opened() -> None:
         raise errors[0]
     if errors:
         raise ExceptionGroup("closing the test's ChromaDB clients failed", errors)
+
+
+def descriptors_under(root: str) -> list[str]:
+    """The files this process holds open under the directory ``root``.
+
+    Read from ``/proc/self/fd``, so Linux only. Matched on the directory and a
+    separator, so ``.../chroma-kb`` does not also claim ``.../chroma-kb2``.
+    """
+    prefix = root.rstrip(os.sep) + os.sep
+    held = []
+    for fd in os.listdir("/proc/self/fd"):
+        try:
+            target = os.readlink(f"/proc/self/fd/{fd}")
+        except OSError:
+            continue
+        if target.startswith(prefix):
+            held.append(target)
+    return held

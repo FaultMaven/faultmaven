@@ -748,8 +748,9 @@ async def decompose_application(app: FastAPI, published: Mapping[str, Any]) -> N
         # The LLM config watcher (cloud multi-replica propagation). The lifespan
         # has stopped it already on the serving path; this is then a no-op.
         ("Stopping the LLM config watcher", lambda: stop_config_watcher(app)),
-        # Close what the container opened and owns: the shared Redis client's
-        # pool is bound to this event loop, and nothing else closes it.
+        # Close what the container opened and owns: the shared Redis client,
+        # whose pool is bound to this event loop, and the KB and evidence
+        # ChromaDB clients. Nothing else closes them.
         ("Container shutdown", _shut_down_the_container),
         # The usage ledger composition installed (#640). On the serving path
         # the lifespan's drain has already uninstalled it, and this is a no-op.
@@ -776,7 +777,9 @@ def unpublish_composition(app: FastAPI, published: Mapping[str, Any]) -> None:
     A step of :func:`decompose_application`, after the container's shutdown.
     The services published here hold what that shutdown closed: the
     container's Redis client, directly or
-    through a session store, a knowledge service or an investigation engine.
+    through a session store, a knowledge service or an investigation engine,
+    and its ChromaDB clients (``kb_chromadb_client``,
+    ``evidence_chromadb_client``), on which any data call now raises.
     Left in place, a later request served without a lifespan reads them as
     the application's own: the protection middleware borrows the closed client
     as shared, a route hands it to a service, and redis-py reopens it on that

@@ -348,6 +348,27 @@ def is_http_client(client: Any) -> bool:
     )
 
 
+def close_chroma_client(client: Any) -> None:
+    """Release what a ChromaDB client holds: ``DIContainer.shutdown`` calls it.
+
+    ``close()`` stops a local client's System once the last client over its path
+    closes, releasing its files and runtime (chromadb 1.5.2+). On a server-backed
+    client it releases nothing: chromadb's HTTP component has no ``stop``, so the
+    ``httpx`` session :func:`build_http_client` bounded stays open with its
+    keep-alive connections. That session is closed here too. A later request
+    on it raises instead of reopening a connection nobody would close.
+    """
+    import httpx
+
+    client.close()
+    if is_http_client(client):
+        session = getattr(getattr(client, "_server", None), "_session", None)
+        # The door builds only the synchronous client. An async session's
+        # close is a coroutine that this synchronous teardown cannot await.
+        if isinstance(session, httpx.Client):
+            session.close()
+
+
 def blocking_executor_for(client: Any) -> Optional[Executor]:
     """The ``blocking_executor`` a vector store over ``client`` must use.
 

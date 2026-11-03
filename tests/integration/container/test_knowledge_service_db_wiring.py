@@ -50,7 +50,7 @@ async def test_container_built_knowledge_service_can_reach_the_database(
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_the_composed_knowledge_service_writes_only_through_the_guarded_store(
-    service_checks_on,
+    checks_on_over_tmp_path_stores,
     fresh_container,
 ):
     """The KB writer is ``KnowledgeVectorStore`` — the store whose
@@ -60,7 +60,7 @@ async def test_the_composed_knowledge_service_writes_only_through_the_guarded_st
     collection.
 
     Runs under either ambient ``SKIP_SERVICE_CHECKS`` value (see
-    ``service_checks_on``): it never skips, because a skipped pin would let the
+    ``checks_on_over_tmp_path_stores``): it never skips, because a skipped pin would let the
     service's store change with CI still green.
     """
     from faultmaven.config.settings import get_settings

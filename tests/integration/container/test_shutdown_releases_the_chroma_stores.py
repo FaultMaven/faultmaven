@@ -12,10 +12,11 @@ collection.
 from __future__ import annotations
 
 import gc
-import os
 import sys
 
 import pytest
+
+from tests.chroma_clients import descriptors_under
 
 pytestmark = [
     pytest.mark.integration,
@@ -23,37 +24,25 @@ pytestmark = [
 ]
 
 
-def _held_under(root: str) -> list[str]:
-    held = []
-    for fd in os.listdir("/proc/self/fd"):
-        try:
-            target = os.readlink(f"/proc/self/fd/{fd}")
-        except OSError:
-            continue
-        if target.startswith(root):
-            held.append(target)
-    return held
-
-
 async def test_a_composition_holds_no_store_file_once_shut_down(
-    service_checks_on, fresh_container, tmp_path
+    checks_on_over_tmp_path_stores, fresh_container, tmp_path
 ):
     await fresh_container.initialize()
     assert fresh_container.kb_chromadb_client is not None
     assert fresh_container.evidence_chromadb_client is not None
     # Positive control: both stores are open under this test's tmp_path.
-    assert _held_under(str(tmp_path / "chroma-kb"))
-    assert _held_under(str(tmp_path / "chroma-evidence"))
+    assert descriptors_under(str(tmp_path / "chroma-kb"))
+    assert descriptors_under(str(tmp_path / "chroma-evidence"))
 
     await fresh_container.shutdown()
     gc.collect()
 
-    assert _held_under(str(tmp_path / "chroma-kb")) == []
-    assert _held_under(str(tmp_path / "chroma-evidence")) == []
+    assert descriptors_under(str(tmp_path / "chroma-kb")) == []
+    assert descriptors_under(str(tmp_path / "chroma-evidence")) == []
 
 
 async def test_the_kb_store_is_released_when_the_evidence_client_cannot_be_built(
-    service_checks_on, fresh_container, tmp_path, monkeypatch
+    checks_on_over_tmp_path_stores, fresh_container, tmp_path, monkeypatch
 ):
     """The KB client is built first. Were it set on the container only after the
     evidence client, a failure building that one would leave the KB client
@@ -68,9 +57,9 @@ async def test_the_kb_store_is_released_when_the_evidence_client_cannot_be_built
     )
 
     await fresh_container.initialize(allow_degraded=True)
-    assert _held_under(str(tmp_path / "chroma-kb"))  # positive control
+    assert descriptors_under(str(tmp_path / "chroma-kb"))  # positive control
 
     await fresh_container.shutdown()
     gc.collect()
 
-    assert _held_under(str(tmp_path / "chroma-kb")) == []
+    assert descriptors_under(str(tmp_path / "chroma-kb")) == []
