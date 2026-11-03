@@ -286,7 +286,7 @@ jobs:
       - name: Install Dependencies from Lockfile
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements/test.txt
+          sh scripts/install-lockfile.sh requirements/test.txt
           pip install -e . --no-deps
 
       - name: Run Code Quality Checks
@@ -334,7 +334,9 @@ jobs:
   #
   # Split three ways (`--shard=K/3`, tests/ci_shard.py): each slice job
   # collects the whole selection and runs the files assigned to it, so every
-  # test runs in exactly one slice and no file is split. The required check
+  # test runs in exactly one slice and no file is split. Files are balanced by
+  # measured time (tests/ci_shard_durations.json; refresh it with
+  # scripts/ci_shard_durations.py when the slices drift apart). The required check
   # keeps this job's name: the aggregate job below, which fails unless every
   # slice passed and combines their coverage for the threshold. A 4-vCPU
   # runner's pytest phase was the whole wall clock of a CI run (Test Cloud's
@@ -425,7 +427,7 @@ jobs:
       - name: Install Standalone (minimal deps) from Lockfile
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements/test.txt
+          sh scripts/install-lockfile.sh requirements/test.txt
           pip install -e . --no-deps
 
       - name: Verify Standalone Dependencies
@@ -599,7 +601,9 @@ jobs:
   #
   # Split three ways (`--shard=K/3`, tests/ci_shard.py): each slice job
   # collects the whole selection and runs the files assigned to it, so every
-  # test runs in exactly one slice and no file is split. The required check
+  # test runs in exactly one slice and no file is split. Files are balanced by
+  # measured time (tests/ci_shard_durations.json; refresh it with
+  # scripts/ci_shard_durations.py when the slices drift apart). The required check
   # keeps this job's name: the aggregate job below, which fails unless every
   # slice passed and combines their coverage for the threshold. A 4-vCPU
   # runner's pytest phase was the whole wall clock of a CI run (this job's
@@ -703,7 +707,7 @@ jobs:
       - name: Install Cloud (full deps) from Lockfile
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements/cloud.txt
+          sh scripts/install-lockfile.sh requirements/cloud.txt
           pip install -e . --no-deps
 
       - name: Verify Cloud Dependencies
@@ -940,11 +944,13 @@ jobs:
       && needs.code-quality.result == 'success'
       && needs.changes.outputs.docs_only != 'true' }}
     runs-on: ubuntu-24.04
-    # 25, not 15: the job usually takes 6-7 min, but its `pip install -r
-    # requirements/cloud.txt` downloads ~3 GB from PyPI (torch with its CUDA
+    # 25, not 15: the job usually takes 6-7 min, but its install of
+    # requirements/cloud.txt downloaded ~3 GB from PyPI (torch with its CUDA
     # wheels), and on a slow runner that alone took 589 s (run 41506167045,
     # job 14.8 min against a 15 min cap). A cancelled required check blocks
-    # the merge with no diagnostic.
+    # the merge with no diagnostic. scripts/install-lockfile.sh has since
+    # dropped the CUDA wheels (~0.6 GB now); the cap stays until runs show
+    # what a slow runner takes without them.
     timeout-minutes: 25
     name: Test PostgreSQL Integration
 
@@ -981,7 +987,7 @@ jobs:
       - name: Install full deps from Lockfile
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements/cloud.txt
+          sh scripts/install-lockfile.sh requirements/cloud.txt
           pip install -e . --no-deps
 
       - name: Apply Migrations to PostgreSQL
@@ -1034,7 +1040,7 @@ jobs:
       && needs.code-quality.result == 'success'
       && needs.changes.outputs.docs_only != 'true' }}
     runs-on: ubuntu-24.04
-    # 25 for the reason given on test-postgres: the same ~3 GB install.
+    # 25 for the reason given on test-postgres: the same install.
     timeout-minutes: 25
     name: Test PostgreSQL Integration (FIPS, PostgreSQL 18)
 
@@ -1074,7 +1080,7 @@ jobs:
       - name: Install full deps from Lockfile
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements/cloud.txt
+          sh scripts/install-lockfile.sh requirements/cloud.txt
           pip install -e . --no-deps
 
       # A positive control: this job exists to run against a server that
@@ -1142,7 +1148,7 @@ jobs:
       - name: Install Dependencies from Lockfile
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements/dev.txt
+          sh scripts/install-lockfile.sh requirements/dev.txt
           pip install -e . --no-deps
 
       - name: Run Import Linter
@@ -1194,7 +1200,7 @@ jobs:
       - name: Install Dependencies from Lockfile
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements/dev.txt
+          sh scripts/install-lockfile.sh requirements/dev.txt
           pip install -e . --no-deps
 
       - name: Check API reference matches the app
@@ -1312,7 +1318,7 @@ jobs:
 
       - name: Run Packaging Tests
         run: |
-          pip install -r requirements/test.txt
+          sh scripts/install-lockfile.sh requirements/test.txt
           pip install -e . --no-deps
           pytest tests/installation/ -v
 
@@ -1378,7 +1384,8 @@ jobs:
           tags: faultmaven:ci
           # GitHub Actions layer cache, READ-ONLY here. The heavy layers (deps
           # install, the ~2GB bundled BGE-M3 model) are content-addressed and
-          # only rebuild when requirements/Dockerfile change, so a PR or queue
+          # only rebuild when requirements/, the Dockerfile or
+          # scripts/install-lockfile.sh change, so a PR or queue
           # run restores them from main's cache, which publish-docker.yml
           # writes after every merge. This job writes none: a PR or queue
           # ref's cache is readable by that ref alone, and each full build here
