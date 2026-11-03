@@ -334,7 +334,9 @@ jobs:
   #
   # Split three ways (`--shard=K/3`, tests/ci_shard.py): each slice job
   # collects the whole selection and runs the files assigned to it, so every
-  # test runs in exactly one slice and no file is split. The required check
+  # test runs in exactly one slice and no file is split. Files are balanced by
+  # measured time (tests/ci_shard_durations.json; refresh it with
+  # scripts/ci_shard_durations.py when the slices drift apart). The required check
   # keeps this job's name: the aggregate job below, which fails unless every
   # slice passed and combines their coverage for the threshold. A 4-vCPU
   # runner's pytest phase was the whole wall clock of a CI run (Test Cloud's
@@ -599,7 +601,9 @@ jobs:
   #
   # Split three ways (`--shard=K/3`, tests/ci_shard.py): each slice job
   # collects the whole selection and runs the files assigned to it, so every
-  # test runs in exactly one slice and no file is split. The required check
+  # test runs in exactly one slice and no file is split. Files are balanced by
+  # measured time (tests/ci_shard_durations.json; refresh it with
+  # scripts/ci_shard_durations.py when the slices drift apart). The required check
   # keeps this job's name: the aggregate job below, which fails unless every
   # slice passed and combines their coverage for the threshold. A 4-vCPU
   # runner's pytest phase was the whole wall clock of a CI run (this job's
