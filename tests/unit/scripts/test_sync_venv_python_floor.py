@@ -6,6 +6,7 @@ a stub ``uv`` that records its calls and a stand-in interpreter that reports a
 chosen version, so nothing is created or installed.
 """
 
+import hashlib
 import os
 import shutil
 import subprocess
@@ -174,17 +175,25 @@ class TestSyncVenvInstallsCpuTorch:
         ]
         assert "sentence-transformers" in "\n".join(synced)
 
-    def test_a_failed_torch_install_leaves_no_stamp_to_vouch_for_the_venv(
+    def test_a_failed_torch_install_leaves_a_stamp_that_matches_no_lockfile(
         self, run, tmp_path
     ):
-        """The sync has already removed torch by then. A stamp from an earlier
-        sync would still validate, and the staleness hooks would stay quiet."""
+        """The sync has already removed torch by then. The earlier stamp would
+        still vouch for the venv, and a missing one makes the staleness hooks
+        skip it for good; a stamp that matches nothing makes them say re-sync."""
         venv = tmp_path / "venv"
         first, _ = run(venv, "3.11.5")
         assert first.returncode == 0, first.stderr
-        assert (venv / ".locksum").exists()
+        lockfile = REPO_ROOT / "requirements" / "test.txt"
+        good = hashlib.sha256(lockfile.read_bytes()).hexdigest()
+        assert (venv / ".locksum").read_text().split() == [
+            good,
+            "requirements/test.txt",
+        ]
 
         again, _ = run(venv, fail_torch=True)
 
         assert again.returncode != 0
-        assert not (venv / ".locksum").exists()
+        recorded, path = (venv / ".locksum").read_text().split()
+        assert path == "requirements/test.txt"
+        assert recorded != good

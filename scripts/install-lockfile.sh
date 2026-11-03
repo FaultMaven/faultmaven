@@ -58,6 +58,10 @@ gpu = sorted(
     if re.match(r"(nvidia-|cuda-|triton$)", (d.metadata["Name"] or "").lower())
 )
 if gpu:
-    sys.exit(f"install-lockfile: GPU packages were installed: {', '.join(gpu)}")
+    sys.exit(
+        f"install-lockfile: GPU packages are installed: {', '.join(gpu)}. "
+        "If this environment already had torch's CUDA build, pip kept it: "
+        "use a fresh environment, or scripts/sync-venv.sh, which removes them."
+    )
 print(f"install-lockfile: torch {importlib.metadata.version('torch')}, no GPU packages")
 EOF

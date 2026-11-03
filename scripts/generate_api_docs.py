@@ -449,9 +449,10 @@ def main() -> int:
                 "then the artifact was generated against different library "
                 "versions than CI uses. The document is a function of the code "
                 "AND the pinned toolchain, because FastAPI and Pydantic decide "
-                "how schemas are emitted. Regenerate with the lockfile "
-                "installed:\n"
-                "\n    sh scripts/install-lockfile.sh requirements/dev.txt\n"
+                "how schemas are emitted. Regenerate in a venv at exactly "
+                "what the lockfile pins:\n"
+                "\n    ./scripts/sync-venv.sh dev"
+                "\n    .venv-dev/bin/python scripts/generate_api_docs.py\n"
             )
             if NOTES_PATH in stale:
                 print(

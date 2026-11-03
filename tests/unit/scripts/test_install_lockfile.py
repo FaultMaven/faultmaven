@@ -172,7 +172,7 @@ def test_a_gpu_package_that_got_installed_fails_the_install(tmp_path):
     )
 
     assert proc.returncode != 0
-    assert "GPU packages were installed: nvidia-cublas, triton" in proc.stderr
+    assert "GPU packages are installed: nvidia-cublas, triton." in proc.stderr
 
 
 @pytest.mark.parametrize("step", ["install --no-deps", "install -r"])
@@ -183,9 +183,11 @@ def test_a_failing_pip_step_fails_the_install(tmp_path, step):
     assert step in calls[-1], "the script ran on past the failed step"
 
 
-# A pip install from a requirements file, in any spelling: `-r FILE`,
-# `-rFILE`, `--requirement FILE`, `--requirement=FILE`.
-_FROM_A_FILE = re.compile(r"\bpip3? install\b.*\s(?:-r|--requirement\b)")
+# pip installing or syncing, by any name: `pip`, `pip3`, `pip3.11`, `uv pip`.
+_PIP = re.compile(r"\bpip[\d.]*\s+(install|sync)\b(.*)")
+# A requirements file to install from: `-r FILE`, `-rFILE`, `-qr FILE`,
+# `--requirement FILE`, `--requirement=FILE`. (`pip sync` takes it bare.)
+_REQUIREMENT = re.compile(r"\s(?:-[a-zA-Z]*r|--requirement\b)")
 
 
 def _logical_lines(text: str) -> list[str]:
@@ -193,15 +195,26 @@ def _logical_lines(text: str) -> list[str]:
     return re.sub(r"\\\n", " ", text).splitlines()
 
 
+def _installs_from_a_file(line: str) -> bool:
+    """Whether a pip command on this line installs from a requirements file.
+    Judged per command, so a `grep -r` or `rm -rf` after `&&` is not one."""
+    for command in re.split(r"&&|\|\||;|\|", line):
+        pip = _PIP.search(command)
+        if pip and (pip.group(1) == "sync" or _REQUIREMENT.search(pip.group(2))):
+            # A --dry-run resolves the lockfile as written; it installs nothing.
+            return "--dry-run" not in command
+    return False
+
+
 def test_ci_and_the_image_install_lockfiles_only_through_the_script():
     """A job copied from one written before the script would install the CUDA
     build again. Nothing would fail; every job would just be 3 GB slower."""
+    github = REPO_ROOT / ".github"
     offenders = [
         f"{path.relative_to(REPO_ROOT)}: {line.strip()}"
-        for path in sorted((REPO_ROOT / ".github" / "workflows").glob("*.y*ml"))
+        for path in sorted([*github.rglob("*.yml"), *github.rglob("*.yaml")])
         for line in _logical_lines(path.read_text())
-        # A --dry-run only resolves the lockfile as written; it installs nothing.
-        if _FROM_A_FILE.search(line) and "--dry-run" not in line
+        if _installs_from_a_file(line)
     ]
     assert offenders == []
 
@@ -210,7 +223,7 @@ def test_ci_and_the_image_install_lockfiles_only_through_the_script():
         for line in _logical_lines((REPO_ROOT / "Dockerfile").read_text())
         if line.startswith("RUN ")
     ]
-    assert [line for line in runs if _FROM_A_FILE.search(line)] == []
+    assert [line for line in runs if _installs_from_a_file(line)] == []
     assert any(
         re.search(r"\bsh \S*install-lockfile\.sh requirements\.txt\b", line)
         for line in runs
@@ -222,24 +235,37 @@ def test_ci_and_the_image_install_lockfiles_only_through_the_script():
     [
         "pip install -r requirements/test.txt",
         "pip install -rrequirements/test.txt",
+        "pip install -qr requirements/test.txt",
+        "pip install -Ur requirements/test.txt",
         "pip install --requirement requirements/test.txt",
         "pip install --requirement=requirements/test.txt",
+        "pip  install -r requirements/test.txt",
+        "pip3.11 install -r requirements/test.txt",
+        "uv pip sync requirements/test.txt",
         "pip install --no-cache-dir \\\n    -r requirements.txt",
         "python -m pip install -q -r /tmp/req.txt",
+        "cd base && pip install -r requirements/test.txt",
     ],
 )
 def test_the_guard_recognises_every_spelling(line):
-    assert any(_FROM_A_FILE.search(joined) for joined in _logical_lines(line))
+    assert any(_installs_from_a_file(joined) for joined in _logical_lines(line))
 
 
-def test_the_guard_passes_the_scripts_own_calls():
-    for line in (
+@pytest.mark.parametrize(
+    "line",
+    [
         "sh scripts/install-lockfile.sh requirements/test.txt",
         'sh "$GITHUB_WORKSPACE/scripts/install-lockfile.sh" requirements/test.txt',
         "pip install -e . --no-deps",
         "pip install \"$(grep -E '^coverage==' requirements/test.txt)\"",
-    ):
-        assert not _FROM_A_FILE.search(line), line
+        "pip install -r requirements/test.txt --dry-run --quiet 2>&1 | tail -5",
+        "pip install --no-deps . \\\n    && rm -rf /root/.cache",
+        "pip install -e . --no-deps; grep -r pattern docs/",
+        "pip list | sort -r",
+    ],
+)
+def test_the_guard_passes_what_is_not_a_lockfile_install(line):
+    assert not any(_installs_from_a_file(joined) for joined in _logical_lines(line))
 
 
 def test_the_local_sync_strips_and_installs_the_same_way():

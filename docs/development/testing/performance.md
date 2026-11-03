@@ -8,9 +8,9 @@ for the FaultMaven platform.
 ### Run All Benchmarks
 
 ```bash
-# Install dependencies (if not already installed)
-sh scripts/install-lockfile.sh requirements/test.txt
-pip install -e . --no-deps
+# A venv at exactly what the lockfile pins (.venv-test), torch's CPU build included
+./scripts/sync-venv.sh test
+. .venv-test/bin/activate
 
 # Run all benchmarks
 pytest tests/benchmarks/ -m benchmark -v

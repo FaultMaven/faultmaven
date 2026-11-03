@@ -135,10 +135,12 @@ REST="$(mktemp)"
 trap 'rm -f "$REST"' EXIT
 grep -vE "$GPU_ONLY" "$LOCKFILE" > "$REST"
 # The sync removes torch and the step after it puts the CPU build back, so a
-# failure in between leaves a venv without torch. The stamp from an earlier
-# sync would still validate it, and the staleness hooks would say nothing: it
-# goes before anything changes and is written again only at the end.
-rm -f "$VENV/.locksum"
+# failure in between leaves a venv without torch, which a stamp from an earlier
+# sync would still vouch for. Deleting the stamp is no better: the staleness
+# hooks skip a venv that has none, then and after every later lockfile change.
+# So until the end, the stamp records a hash no lockfile has, and the hooks
+# report the venv as needing a re-sync.
+printf '%064d  %s\n' 0 "$LOCKFILE" > "$VENV/.locksum"
 uv pip sync --python "$VENV/bin/python" "$REST" --quiet
 uv pip install --python "$VENV/bin/python" --no-deps --index-url "$CPU_INDEX" "$TORCH_PIN" --quiet
 uv pip install --python "$VENV/bin/python" -e . --no-deps --quiet

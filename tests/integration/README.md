@@ -82,9 +82,9 @@ Integration test configuration and fixtures:
 
 Install test dependencies:
 ```bash
-# from the repository root: the lockfile pins the dependencies, not the package
-sh scripts/install-lockfile.sh requirements/test.txt
-pip install -e . --no-deps
+# from the repository root: a venv at exactly what the lockfile pins (.venv-test)
+./scripts/sync-venv.sh test
+. .venv-test/bin/activate
 ```
 
 **No environment variables are required.** These tests run in-process — they
