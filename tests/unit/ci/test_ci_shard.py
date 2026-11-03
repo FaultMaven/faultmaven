@@ -72,13 +72,18 @@ def test_a_file_costs_its_tests_times_its_rate_or_the_default():
 
 def test_slow_files_are_spread_across_slices_even_with_few_tests():
     """What counting got wrong: three files of two slow tests each, among
-    files of many fast ones. By count they are the smallest files and pile
-    onto whichever slice is short; by time each heads its own slice."""
+    files of many fast ones. By count they are the smallest files and fill
+    in behind the big ones, two to a slice; by time each heads its own."""
     counts = {"slow_1.py": 2, "slow_2.py": 2, "slow_3.py": 2}
-    counts.update({f"fast_{i}.py": 40 for i in range(9)})
+    counts.update({f"fast_{i}.py": 40 for i in range(4)})
     rates = {f"slow_{i}.py": 10.0 for i in (1, 2, 3)}
-    assignment = assign_files(file_costs(counts, 0.01, rates), 3)
-    assert sorted(assignment[f"slow_{i}.py"] for i in (1, 2, 3)) == [1, 2, 3]
+    slow = [f"slow_{i}.py" for i in (1, 2, 3)]
+
+    by_count = assign_files(counts, 3)
+    by_time = assign_files(file_costs(counts, 0.01, rates), 3)
+
+    assert len({by_count[f] for f in slow}) < 3  # the case counting stacks
+    assert sorted(by_time[f] for f in slow) == [1, 2, 3]
 
 
 def test_the_committed_durations_load():
