@@ -14,10 +14,12 @@ isolate what the rules do:
   switch counts every post-fix symptom row, so it is the stricter reading.
 - ``--mode simulated-naming``: each case's verifying row is recorded by the
   verifying-turn fallback (exactly one symptom row written in the turn the
-  symptom claim landed), every symptom_absence row names it, and every
-  causal_absence row names the first row supporting the cause pool alone
-  (ROOT-only, one cluster). Persistence rows stay unnamed. It shows whether
-  the rules admit the systemd floor once the model names rows.
+  symptom claim landed). Only rows observed after a RECORDED fix are named,
+  as the model is asked to: a symptom_absence row names the verifying row,
+  a causal_absence row the first row supporting the confirmation pool alone
+  (ROOT-only, one cluster). Persistence rows stay unnamed, so the figure is
+  an UPPER BOUND on what naming earns: a perfect model, no failure ever
+  named. It shows whether the rules admit the systemd floor.
 
 Per case it reports the two legs (cause rows, symptom rows), every fix window's
 state (FIX_FAILED outcomes), readiness, and the fallback's outcome.
@@ -126,7 +128,7 @@ def _unnamed_as_today() -> None:
 
     bound = ca.SubjectIndex.subject
 
-    def subject(self, row):
+    def subject(self, row, windows=False):
         if (
             getattr(row, "rechecks_evidence_id", None) is None
             and getattr(row, "collected_by", None) != ca.ENGINE_EVIDENCE_AUTHOR
@@ -139,7 +141,7 @@ def _unnamed_as_today() -> None:
                 return ca.SUBJECT_PROBLEM
             if category == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE:
                 return ca.SUBJECT_CAUSE
-        return bound(self, row)
+        return bound(self, row, windows)
 
     ca.SubjectIndex.subject = subject
 
@@ -162,16 +164,23 @@ def _fallback(case, verifying_turn_rows) -> str | None:
 def _simulate_naming(case, verifying: str | None) -> None:
     from faultmaven.core.investigation.cause_assurance import (
         ENGINE_EVIDENCE_AUTHOR,
+        fix_application_turn,
         subject_index,
     )
     from faultmaven.modules.case.contracts import EvidenceCategory
 
     if case.problem_verification is not None and verifying:
         case.problem_verification.verifying_evidence_ids = [verifying]
-    _problem, cause = subject_index(case).bindable_rows()
+    fix_turn = fix_application_turn(case)
+    if fix_turn is None:
+        return  # no recorded fix: nothing is a post-fix observation
+    subjects = subject_index(case)
+    _problem, cause = subjects.bindable_rows()
     support = cause[0].evidence_id if cause else None
     for row in case.evidence:
         if row.collected_by == ENGINE_EVIDENCE_AUTHOR:
+            continue
+        if subjects.observed(row) < fix_turn:
             continue
         if row.category == EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE and verifying:
             row.record_rechecks(verifying, named=verifying)

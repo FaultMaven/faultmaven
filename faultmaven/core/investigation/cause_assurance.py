@@ -73,6 +73,7 @@ __all__ = [
     "cause_elimination_rows",
     "conclusion_overclaims",
     "confirm_root_from_resolution_absence",
+    "confirming_polarity_rows",
     "content_tokens",
     "counterfactual_link_decisive",
     "evidence_category_map",
@@ -525,13 +526,21 @@ def observed_turn(case: "Case", row) -> int:
 @dataclass
 class SubjectIndex:
     """One pass over a case for the subject reads of a turn: the rows, the
-    verifying ids, the cause pool and the SUPPORTS links. Built by
-    ``subject_index``; a reader that loops over rows builds it once."""
+    verifying ids (in their recorded order), the two cause pools
+    (``_cause_pool``) and the SUPPORTS links. Built by ``subject_index``; a
+    reader that loops over rows builds it once.
+
+    ``windows`` picks the pool a read binds a cause observation against: the
+    CONFIRMATION pool by default (what a resolution can confirm, what the
+    re-check list offers), the WINDOW pool for the readers that decide what a
+    fix's window observed (``fix_windows``, ``failed_fix_of``, the false-alarm
+    refusal, the unbound-row feedback)."""
 
     case: "Case"
     rows: dict
-    verifying: frozenset
+    verifying: tuple
     pool_roots: frozenset
+    window_roots: frozenset
     pool_hypotheses: frozenset
     node_supports: dict
     hypothesis_supports: dict
@@ -554,21 +563,22 @@ class SubjectIndex:
             return collected
         return turn
 
-    def cause_targets(self, evidence_id: str) -> frozenset:
+    def cause_targets(self, evidence_id: str, windows: bool = False) -> frozenset:
         """What a cause observation naming ``evidence_id`` re-observes: the
         ROOT nodes that row supports, when they are one cause and touch the
         pool; or, when the pool is a rootless hypothesis, that hypothesis.
-        Empty when it binds to none.
+        Empty when it binds to none, and always for an absence row (absence
+        rows carry no links).
 
-        The pool is the first non-empty leg (``_cause_pool``). Only node-axis
-        SUPPORTS count for a rooted cause. The row's SUPPORTS links may touch
-        only ROOT nodes, all in one cluster (``sole_cluster_origin``, ruled
-        2026-10-27: a cluster counts as one cause): a row SUPPORTS-linked to an
-        INTERMEDIATE rung is about the consequence as much as the cause, so a
-        re-check of it (a renewed certificate) does not show the cause gone
-        (#2036, c1021-1)."""
-        if evidence_id in self._bound:
-            return self._bound[evidence_id]
+        Only node-axis SUPPORTS count for a rooted cause. The row's SUPPORTS
+        links may touch only ROOT nodes, all in one cluster
+        (``sole_cluster_origin``, ruled 2026-10-27: a cluster counts as one
+        cause): a row SUPPORTS-linked to an INTERMEDIATE rung is about the
+        consequence as much as the cause, so a re-check of it (a renewed
+        certificate) does not show the cause gone (#2036, c1021-1)."""
+        key = (evidence_id, windows)
+        if key in self._bound:
+            return self._bound[key]
         target = self.rows.get(evidence_id)
         bound: frozenset = frozenset()
         if (
@@ -577,9 +587,10 @@ class SubjectIndex:
         ):
             nodes = getattr(self.case, "causal_nodes", None) or {}
             linked = self.node_supports.get(evidence_id, frozenset())
-            if self.pool_roots:
+            roots = self.window_roots if windows else self.pool_roots
+            if roots:
                 if (
-                    linked & self.pool_roots
+                    linked & roots
                     and all(nodes[n].node_type == NodeType.ROOT for n in linked)
                     and _one_cause(self.case, linked)
                 ):
@@ -589,10 +600,10 @@ class SubjectIndex:
                 hits &= self.pool_hypotheses
                 if len(hits) == 1 and not linked:
                     bound = hits
-        self._bound[evidence_id] = bound
+        self._bound[key] = bound
         return bound
 
-    def subject(self, row) -> str:
+    def subject(self, row, windows: bool = False) -> str:
         """What ``row`` observes: ``SUBJECT_PROBLEM``, ``SUBJECT_CAUSE`` or
         ``SUBJECT_UNBOUND``.
 
@@ -602,43 +613,44 @@ class SubjectIndex:
         - cause: it names a row of the cause pool (``cause_targets``), and it
           is a causal_absence row;
         - unbound: anything else — a row that names nothing (ruled 2026-10-31,
-          enforcement), names an absence row or no row of the case, or names
-          a subject its category does not observe; and an engine-authored
-          row, which observes nothing."""
+          enforcement), names no row of the case, or names a subject its
+          category does not observe; and an engine-authored row, which
+          observes nothing. A ref to the row itself or to an absence row is
+          stored unbound when the turn records it
+          (``response_application._record_rechecks``)."""
         target_id = getattr(row, "rechecks_evidence_id", None)
         if (
             not isinstance(target_id, str)
             or target_id not in self.rows
-            or target_id == getattr(row, "evidence_id", None)
             or getattr(row, "collected_by", None) == ENGINE_EVIDENCE_AUTHOR
         ):
-            return SUBJECT_UNBOUND
-        if getattr(self.rows[target_id], "category", None) in _ABSENCE_CATEGORIES:
             return SUBJECT_UNBOUND
         category = getattr(row, "category", None)
         if category in _PROBLEM_OBSERVATIONS:
             return SUBJECT_PROBLEM if target_id in self.verifying else SUBJECT_UNBOUND
         if category == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE and (
-            self.cause_targets(target_id)
+            self.cause_targets(target_id, windows)
         ):
             return SUBJECT_CAUSE
         return SUBJECT_UNBOUND
 
-    def addresses(self, row, root_ids) -> bool:
+    def addresses(self, row, root_ids, windows: bool = False) -> bool:
         """Whether a cause-bound ``row`` re-observes the cause ``root_ids``
         stand for: what it names supports a member of that cause, or a root
         in one cluster with it."""
-        target = self.cause_targets(getattr(row, "rechecks_evidence_id", "") or "")
+        named = getattr(row, "rechecks_evidence_id", "") or ""
+        target = self.cause_targets(named, windows)
         roots = set(root_ids)
         return bool(target) and bool(
             target & roots or _one_cause(self.case, target | roots)
         )
 
     def bindable_rows(self) -> tuple[list, list]:
-        """The rows a re-check could name and bind to: the verifying rows, and
-        the rows supporting the cause pool alone (``cause_targets``), each in
-        the order recorded. The narrowed re-verification checklist and the
-        unbound-row feedback both render this."""
+        """The rows a re-check could name and bind to, against the
+        confirmation pool: the verifying rows in their recorded order, and
+        the rows supporting the cause alone (``cause_targets``) in the order
+        recorded. The narrowed re-verification checklist and the unbound-row
+        feedback both render this."""
         problem = [self.rows[i] for i in self.verifying if i in self.rows]
         cause = [
             row
@@ -646,7 +658,7 @@ class SubjectIndex:
             if evidence_id not in self.verifying and self.cause_targets(evidence_id)
         ]
         order = lambda row: getattr(row, "collected_at_turn", 0) or 0  # noqa: E731
-        return sorted(problem, key=order), sorted(cause, key=order)
+        return problem, sorted(cause, key=order)
 
 
 @lru_cache(maxsize=4096)
@@ -672,23 +684,33 @@ def _one_cause(case: "Case", root_ids) -> bool:
     return arbitrate is not None and arbitrate(case, set(root_ids)) is not None
 
 
-def _cause_pool(case: "Case") -> tuple[frozenset, frozenset]:
-    """The cause a cause observation can be about, as ``(root ids, rootless
-    hypothesis ids)``: the first non-empty leg, in ``_cause_posited_turn``'s
-    order (ruled 2026-10-27):
+def _cause_pool(case: "Case") -> tuple[frozenset, frozenset, frozenset]:
+    """The causes a cause observation can be about, as ``(confirmation roots,
+    window roots, rootless hypothesis ids)``.
 
-    1. the identified roots (``CausalNode.is_identified_root``), with the
-       roots the last recompute recorded as identified
-       (``progress.identified_cause_root_ids``: a verdict the same turn turns
-       over does not hide that turn's failed fix, #2042) and the roots
-       carrying the engine's own failed-fix disconfirmation (only M6 mints
-       one, on the identified cause it demoted, so a failure observed through
-       that cause stays observed once it falls; the windows read this pool);
+    The CONFIRMATION pool is the first non-empty leg, in the ruled order
+    (2026-10-27, ``_cause_posited_turn``'s):
+
+    1. the identified roots (``CausalNode.is_identified_root``);
     2. the count-held roots whose hypothesis marked them terminal
        (``support_count_held_root_ids``, as the confirm-stamp admits them);
-    3. a VALIDATED hypothesis with no root node.
+    3. only when nothing above stands, the case's own failed cause: the roots
+       the last recompute recorded as identified
+       (``progress.identified_cause_root_ids``) and the roots carrying the
+       engine's failed-fix disconfirmation (only M6 mints one, on the
+       identified cause it demoted) — a cause re-fixed after it fell can
+       still be shown removed;
+    4. a VALIDATED hypothesis with no root node (inert while a rootless
+       hypothesis cannot validate).
 
-    With none, nothing binds to the cause: the case can close, never resolve."""
+    The WINDOW pool is the confirmation roots plus the leg-3 roots, always.
+    A fix's window must keep observing the cause it addressed when that cause
+    falls (M6 demotes it) or loses its verdict in the very turn its fix is
+    seen failing (#2042); but a re-check of a fallen cause never confirms
+    another one's resolution, so the confirmation reads only the ruled order.
+
+    With no confirmation pool nothing confirms the cause: the case can close,
+    never resolve."""
     nodes = getattr(case, "causal_nodes", None) or {}
     engine_ids = _engine_absence_row_ids(case)
     recorded = set(
@@ -699,29 +721,40 @@ def _cause_pool(case: "Case") -> tuple[frozenset, frozenset]:
         node_id
         for node_id, node in nodes.items()
         if getattr(node, "is_identified_root", False)
-        or (node_id in recorded and getattr(node, "node_type", None) == NodeType.ROOT)
-        or (
-            getattr(node, "node_type", None) == NodeType.ROOT
-            and any(
+    }
+    fallen = {
+        node_id
+        for node_id, node in nodes.items()
+        if getattr(node, "node_type", None) == NodeType.ROOT
+        and (
+            node_id in recorded
+            or any(
                 link.stance == EvidenceStance.REFUTES and link.evidence_id in engine_ids
                 for link in node.evidence_links
             )
         )
     }
     if identified:
-        return frozenset(identified), frozenset()
+        return frozenset(identified), frozenset(identified | fallen), frozenset()
     count_held_fn = _graph_hooks().get("count_held") if nodes else None
     held = {
         node_id
         for node_id in (count_held_fn(case) if count_held_fn is not None else ())
         if node_id in nodes and nodes[node_id].root_terminal is True
     }
-    if held:
-        return frozenset(held), frozenset()
-    return frozenset(), frozenset(
-        h.hypothesis_id
-        for h in (getattr(case, "hypotheses", None) or {}).values()
-        if h is not None and h.state == HypothesisState.VALIDATED and not h.root_node_id
+    if held or fallen:
+        roots = frozenset(held or fallen)
+        return roots, roots | frozenset(fallen), frozenset()
+    return (
+        frozenset(),
+        frozenset(),
+        frozenset(
+            h.hypothesis_id
+            for h in (getattr(case, "hypotheses", None) or {}).values()
+            if h is not None
+            and h.state == HypothesisState.VALIDATED
+            and not h.root_node_id
+        ),
     )
 
 
@@ -740,7 +773,7 @@ def subject_index(case: "Case") -> SubjectIndex:
                 hypothesis_supports.setdefault(link.evidence_id, set()).add(
                     hyp.hypothesis_id
                 )
-    pool_roots, pool_hypotheses = _cause_pool(case)
+    pool_roots, window_roots, pool_hypotheses = _cause_pool(case)
     return SubjectIndex(
         case=case,
         rows={
@@ -749,8 +782,11 @@ def subject_index(case: "Case") -> SubjectIndex:
             if getattr(e, "evidence_id", None)
             and getattr(e, "collected_by", None) != ENGINE_EVIDENCE_AUTHOR
         },
-        verifying=frozenset(getattr(pv, "verifying_evidence_ids", None) or ()),
+        verifying=tuple(
+            dict.fromkeys(getattr(pv, "verifying_evidence_ids", None) or ())
+        ),
         pool_roots=pool_roots,
+        window_roots=window_roots,
         pool_hypotheses=pool_hypotheses,
         node_supports={k: frozenset(v) for k, v in node_supports.items()},
         hypothesis_supports={k: frozenset(v) for k, v in hypothesis_supports.items()},
@@ -763,8 +799,9 @@ def subject_index(case: "Case") -> SubjectIndex:
 
 
 def observation_subject(case: "Case", row) -> str:
-    """What a post-fix observation is about: ``"problem"``, ``"cause"`` or
-    ``"unbound"`` (``SubjectIndex.subject``)."""
+    """What a post-fix observation confirms: ``"problem"``, ``"cause"`` or
+    ``"unbound"`` (``SubjectIndex.subject``, against the confirmation
+    pool)."""
     return subject_index(case).subject(row)
 
 
@@ -940,6 +977,35 @@ def cause_elimination_rows(case: "Case") -> list:
         and subjects.subject(e) == SUBJECT_CAUSE
         and subjects.observed(e) >= max(last_disconfirm, posited)
         and window.holds(subjects.observed(e))
+    ]
+
+
+def confirming_polarity_rows(case: "Case") -> list:
+    """The causal_absence rows a report may render as confirming evidence:
+    INV-30's polarity guard, the bars ``cause_elimination_rows`` held before
+    #1906 2a. Not engine-authored and not a failed-fix disconfirmation (the
+    opposite polarity), at or after the latest engine-known disconfirmation
+    and the turn the case's cause was posited, not while identification is
+    held open, and not inside a FAILED fix window.
+
+    Deliberately not the resolution's cause leg: that one also needs the row
+    bound to the cause and in the confirming window, which a row recorded
+    before 2a never is. A regenerated report of a case resolved on such rows,
+    its stamped confirmation included, keeps citing them (#1906 review R5).
+    Turns are the data's (``observed_turn``)."""
+    if getattr(case.progress, "cause_identification_held_open", False):
+        return []
+    subjects = subject_index(case)
+    disconfirmation_ids = _disconfirmation_row_ids(case)
+    floor = max(latest_disconfirmation_turn(case), _cause_posited_turn(case))
+    failed = [w for w in fix_windows(case) if w.state == FIX_FAILED]
+    return [
+        e
+        for e in subjects.rows.values()
+        if e.category == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
+        and e.evidence_id not in disconfirmation_ids
+        and subjects.observed(e) >= floor
+        and not any(w.holds(subjects.observed(e)) for w in failed)
     ]
 
 
@@ -1147,7 +1213,7 @@ def fix_windows(case: "Case") -> list[FixWindow]:
     bound = [
         (e.category, subject, subjects.observed(e), e)
         for e in subjects.rows.values()
-        if (subject := subjects.subject(e)) != SUBJECT_UNBOUND
+        if (subject := subjects.subject(e, windows=True)) != SUBJECT_UNBOUND
     ]
     starts: list[int | None] = [None, *fixes]
     ends: list[int | None] = [*fixes, None]

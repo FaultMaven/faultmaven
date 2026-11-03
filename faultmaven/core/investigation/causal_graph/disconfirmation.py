@@ -218,7 +218,10 @@ def failed_fix_of(case: Case, hyp: Hypothesis) -> FixWindow | None:
     if (getattr(hyp, "generated_at_turn", 0) or 0) > window.fix_turn:
         return None
     subjects = subject_index(case)
-    if not any(subjects.addresses(row, {root.node_id}) for row in window.cause_rows):
+    if not any(
+        subjects.addresses(row, {root.node_id}, windows=True)
+        for row in window.cause_rows
+    ):
         return None
     return window
 

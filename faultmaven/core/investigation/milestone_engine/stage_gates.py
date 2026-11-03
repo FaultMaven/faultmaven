@@ -715,42 +715,59 @@ def _flag_absence_inside_a_failed_fix_window(
 
 def _flag_unbound_post_fix_rows(case: Case, metadata: dict[str, Any] | None) -> bool:
     """One same-turn line when this turn recorded a post-fix observation that
-    binds to nothing (#1906 D1.5): an absence row, or a symptom_evidence row
-    after a dated fix, naming no ``rechecks`` or one that binds to no subject
-    (``cause_assurance.SubjectIndex.subject``). Such a row confirms and
-    disconfirms nothing, so the model is told which ids WOULD bind — the list
-    the re-verification checklist renders (``SubjectIndex.bindable_rows``).
-    A row cited as having shown the problem is not flagged as persistence.
+    binds to nothing (#1906 D1.5), naming no ``rechecks`` or one that binds to
+    no subject (``cause_assurance.SubjectIndex.subject``, the window pool).
+    Such a row confirms and disconfirms nothing, so the model is told which
+    ids WOULD bind — the list the re-verification checklist renders
+    (``SubjectIndex.bindable_rows``).
+
+    Post-fix means after a RECORDED fix, by the data's turn: an absence row
+    in the fix's window (from its execution turn, as ``FixWindow.holds``), a
+    symptom_evidence row after its execution turn (as persistence reads it)
+    and not cited as having shown the problem. Never before any fix — a
+    diagnosis-time exclusion or a mitigation's relief observes no fix — and
+    never inside a FAILED window, where nothing confirms and the failed-fix
+    notice (``_flag_absence_inside_a_failed_fix_window``) says what to do.
     Only on a verified problem: before it, nothing can bind. Returns whether
     the line was added."""
     from faultmaven.core.investigation.cause_assurance import (
+        FIX_FAILED,
         SUBJECT_UNBOUND,
         fix_application_turn,
+        fix_windows,
         subject_index,
     )
 
     if metadata is None or case.progress.problem_status != ProblemStatus.VERIFIED:
         return False
-    subjects = subject_index(case)
     fix_turn = fix_application_turn(case)
+    if fix_turn is None:
+        return False
+    subjects = subject_index(case)
+    failed = [w for w in fix_windows(case) if w.state == FIX_FAILED]
     absence = (
         EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
         EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
     )
+
+    def after_the_fix(row) -> bool:
+        turn = subjects.observed(row)
+        if any(window.holds(turn) for window in failed):
+            return False
+        if row.category in absence:
+            return turn >= fix_turn
+        return (
+            row.category == EvidenceCategory.SYMPTOM_EVIDENCE
+            and turn > fix_turn
+            and row.evidence_id not in subjects.verifying
+        )
+
     unbound = [
         e.evidence_id
         for e in subjects.rows.values()
         if e.collected_at_turn == case.current_turn
-        and (
-            e.category in absence
-            or (
-                e.category == EvidenceCategory.SYMPTOM_EVIDENCE
-                and fix_turn is not None
-                and subjects.observed(e) > fix_turn
-                and e.evidence_id not in subjects.verifying
-            )
-        )
-        and subjects.subject(e) == SUBJECT_UNBOUND
+        and after_the_fix(e)
+        and subjects.subject(e, windows=True) == SUBJECT_UNBOUND
     ]
     if not unbound:
         return False

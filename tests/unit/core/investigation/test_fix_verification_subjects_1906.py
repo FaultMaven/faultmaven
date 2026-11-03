@@ -14,20 +14,24 @@ import pytest
 from faultmaven.core.investigation.cause_assurance import (
     FIX_FAILED,
     FIX_SUCCEEDED,
+    FIX_UNKNOWN,
     SUBJECT_CAUSE,
     SUBJECT_PROBLEM,
     SUBJECT_UNBOUND,
     cause_elimination_rows,
+    confirm_root_from_resolution_absence,
     fix_windows,
     has_resolution_confirmation,
     observation_subject,
     observed_turn,
+    subject_index,
     symptom_elimination_rows,
 )
 from faultmaven.core.investigation.milestone_engine import response_application
 from faultmaven.core.investigation.milestone_engine.statement_revision import (
     confirm_revision,
 )
+from faultmaven.core.investigation.problem_status import invalidation_refusal
 from faultmaven.core.investigation.prompts.context_builder.evidence_needs import (
     _build_evidence_needs_block,
 )
@@ -65,6 +69,7 @@ from tests.unit.core.investigation.fix_turns_2039 import _TSU, _engine_rows
 from tests.unit.core.investigation.test_m6_cause_gone_problem_persists_1927 import (
     _ROOT_ID,
     _accept,
+    _add_sibling_chain,
     _eid,
     _identified_case,
 )
@@ -83,6 +88,7 @@ _PRESENT = EvidenceCategory.SYMPTOM_EVIDENCE
 _CAUSAL = EvidenceCategory.CAUSAL_EVIDENCE
 _SUPPORT = _eid("pool_log")  # the identified root's own support
 _ASK = "The check that showed the problem"
+_RECHECK_ASK = "The cause re-checked after the fix"
 
 
 class _KRUpdate(_TSU):
@@ -225,6 +231,26 @@ async def test_1_an_absence_row_a_refused_slot_or_no_row_is_stored_unbound():
         assert observation_subject(case, row) == SUBJECT_UNBOUND
 
 
+async def test_1_a_row_naming_itself_is_stored_unbound():
+    """Refused when the turn records it (the one place: the read does not
+    repeat it), even for a row the same turn cites as showing the problem."""
+    eng, case, _root_node, _hyp = _fixed()
+    case.problem_verification.verifying_evidence_ids = []
+    (row,), _ = await _record(
+        eng,
+        case,
+        7,
+        _obs(_PRESENT, "checkout returned 503 (the original)", "new_index_0"),
+        milestones=MilestoneUpdates(symptom_verification_evidence_ids=["new_index_0"]),
+    )
+    assert case.problem_verification.verifying_evidence_ids == [row.evidence_id]
+    assert row.metadata["fix_verification"] == {
+        "rechecks": None,
+        "named": "new_index_0",
+    }
+    assert observation_subject(case, row) == SUBJECT_UNBOUND
+
+
 async def test_1_a_subject_its_category_does_not_observe_is_unbound():
     eng, case, _root_node, _hyp = _fixed()
     rows, _ = await _record(
@@ -233,8 +259,9 @@ async def test_1_a_subject_its_category_does_not_observe_is_unbound():
         7,
         _obs(_CAUSE_GONE, "checkout 200 again", VERIFYING_ID),
         _obs(_GONE, "max_connections reads 100", _SUPPORT),
+        _obs(_CAUSAL, "the pool limit is the cause", _SUPPORT),
     )
-    assert [observation_subject(case, r) for r in rows] == [SUBJECT_UNBOUND] * 2
+    assert [observation_subject(case, r) for r in rows] == [SUBJECT_UNBOUND] * 3
 
 
 def _gateway_case():
@@ -537,7 +564,7 @@ async def test_5_a_knowledge_resolution_records_rows_only_through_a_claim(_kr_re
         eng,
         case,
         5,
-        _obs(_PRESENT, "logins fail with 401"),
+        _obs(_CAUSAL, "the runbook's indicator matched: audience mismatch"),
         update=_KRUpdate,
         knowledge_resolution=_kr(),
     )
@@ -670,9 +697,14 @@ async def test_8_an_unbound_row_gets_one_line_listing_what_would_bind(rechecks):
 # ---------------------------------------------------------------------------
 
 
-async def test_10_a_verified_problem_with_no_verifying_row_is_asked_for_it():
-    eng, case, _root_node, _hyp = _fixed(6)
+def _no_symptom_rows(case) -> None:
+    case.evidence = [e for e in case.evidence if e.category != _PRESENT]
     case.problem_verification.verifying_evidence_ids = []
+
+
+async def test_10_with_no_symptom_row_on_record_the_ask_shows_until_one_is_cited():
+    eng, case, _root_node, _hyp = _fixed(6)
+    _no_symptom_rows(case)
     await _record(
         eng, case, 7, _obs(_CAUSE_GONE, "max_connections reads 100", _SUPPORT)
     )
@@ -683,8 +715,26 @@ async def test_10_a_verified_problem_with_no_verifying_row_is_asked_for_it():
         "or attached) so the fix can be confirmed against it."
     ) in message
 
-    cite = MilestoneUpdates(symptom_verification_evidence_ids=[VERIFYING_ID])
-    await _record(eng, case, 8, milestones=cite)
+    await _record(
+        eng,
+        case,
+        8,
+        _obs(_PRESENT, "checkout returned 503 on every request (the original)"),
+        milestones=MilestoneUpdates(symptom_verification_evidence_ids=["new_index_0"]),
+    )
+    assert case.problem_verification.verifying_evidence_ids
+    assert _ASK not in assess_resolution_readiness(case).message
+
+
+async def test_10_with_a_symptom_row_on_record_the_ask_is_absent():
+    """Ruled 2026-11-03 (#2481 review, R3): with the row that showed the
+    problem on record but not cited, the model cites it; the user is not asked
+    to paste it again."""
+    eng, case, _root_node, _hyp = _fixed(6)
+    case.problem_verification.verifying_evidence_ids = []
+    await _record(
+        eng, case, 7, _obs(_CAUSE_GONE, "max_connections reads 100", _SUPPORT)
+    )
     assert _ASK not in assess_resolution_readiness(case).message
 
 
@@ -706,3 +756,369 @@ async def test_11_a_bound_relief_then_an_unnamed_return_keeps_ready_and_m6_quiet
     assert assess_resolution_readiness(case).verdict == ResolutionReadiness.READY
     assert fix_windows(case)[-1].state == FIX_SUCCEEDED
     assert hyp.state != HypothesisState.REFUTED and _engine_rows(case) == []
+
+
+# ---------------------------------------------------------------------------
+# The two cause pools (#2481 review, R1 + R2)
+# ---------------------------------------------------------------------------
+
+
+async def _a_fell_then_b(validate_b: bool):
+    """A identified, its fix (8) seen failing at 9 — the cause re-checked gone,
+    the problem still there — so M6 demotes A. Then B, another candidate,
+    gets its own supports: two (validated, identified) or one (count-held)."""
+    eng, case, root_a, hyp_a = _fixed(8)
+    await _record(
+        eng,
+        case,
+        9,
+        _obs(_CAUSE_GONE, "max_connections reads 100", _SUPPORT),
+        _obs(_PRESENT, "checkout still returns 503", VERIFYING_ID),
+    )
+    assert hyp_a.state == HypothesisState.REFUTED and _engine_rows(case)
+    b = _add_sibling_chain(case)
+    problem = next(
+        n for n in case.causal_nodes.values() if n.node_type == NodeType.PROBLEM
+    )
+    case.causal_edges.append(
+        CausalEdge(cause_node_id=b.node_id, effect_node_id=problem.node_id)
+    )
+    labels = ["worker RSS grows 40MB/h", "OOM killer log for gunicorn workers"]
+    supports = [_support(case, label, 10) for label in labels[: 2 if validate_b else 1]]
+    for evidence_id in supports:
+        b.evidence_links.append(
+            NodeEvidenceLink(
+                evidence_id=evidence_id,
+                stance=EvidenceStance.SUPPORTS,
+                reasoning="bears on B",
+                linked_at_turn=10,
+            )
+        )
+    await _record(eng, case, 10)
+    return eng, case, root_a, b, supports[0]
+
+
+async def _fix_b_and_recheck(eng, case, support):
+    _accept(case, InvestigationActionType.SOLUTION, 12)
+    rows, meta = await _record(
+        eng,
+        case,
+        13,
+        _obs(_CAUSE_GONE, "the re-check of the cause", support),
+        _obs(_GONE, "checkout 200 again", VERIFYING_ID),
+    )
+    return rows[0], meta
+
+
+async def test_p1_a_refuted_causes_recheck_never_confirms_another_cause():
+    eng, case, root_a, b, _b_support = await _a_fell_then_b(validate_b=True)
+    assert b.is_identified_root
+    _problem, cause = subject_index(case).bindable_rows()
+    assert _SUPPORT not in [e.evidence_id for e in cause]
+    a_recheck, meta = await _fix_b_and_recheck(eng, case, _SUPPORT)
+    assert observation_subject(case, a_recheck) == SUBJECT_UNBOUND
+    assert assess_resolution_readiness(case).verdict != ResolutionReadiness.READY
+    # The window still sees it, so the model is not told it names nothing.
+    assert "Post-fix row(s)" not in (meta.get("system_feedback") or "")
+
+
+async def test_p2_a_count_held_cause_binds_after_another_cause_fell():
+    eng, case, root_a, b, b_support = await _a_fell_then_b(validate_b=False)
+    assert b.node_state == NodeState.INCONCLUSIVE  # count-held, not identified
+    b_recheck, _meta = await _fix_b_and_recheck(eng, case, b_support)
+    assert observation_subject(case, b_recheck) == SUBJECT_CAUSE
+    assert assess_resolution_readiness(case).verdict == ResolutionReadiness.READY
+
+
+async def test_a_fallen_causes_removal_still_proves_the_problem_existed():
+    """The false-alarm refusal reads the window pool: the cause A's failed fix
+    showed it removed, so the problem existed, whatever cause stands now."""
+    eng, case, _root_a, _b, _b_support = await _a_fell_then_b(validate_b=False)
+    (quiet,), _ = await _record(eng, case, 11, _obs(_GONE, "no 503 in the window"))
+    assert invalidation_refusal(case, [quiet.evidence_id], "nothing failed") == (
+        "a cause was confirmed eliminated, so the problem existed"
+    )
+
+
+async def test_the_only_cause_refuted_then_re_fixed_still_resolves():
+    """#1927's shape: the sole cause fell to its failed fix; re-fixed and
+    re-checked, it is the case's cause again (the pool's third leg)."""
+    eng, case, root, hyp = _fixed(6)
+    await _record(
+        eng,
+        case,
+        7,
+        _obs(_CAUSE_GONE, "max_connections reads 100", _SUPPORT),
+        _obs(_PRESENT, "checkout still returns 503", VERIFYING_ID),
+    )
+    assert hyp.state == HypothesisState.REFUTED
+    _accept(case, InvestigationActionType.SOLUTION, 10)
+    await _record(
+        eng,
+        case,
+        11,
+        _obs(_CAUSE_GONE, "max_connections reads 200 and pgbouncer pools", _SUPPORT),
+        _obs(_GONE, "checkout 200 again", VERIFYING_ID),
+    )
+    assert assess_resolution_readiness(case).verdict == ResolutionReadiness.READY
+
+
+async def test_a_failed_fix_of_a_fallen_cause_is_not_the_identified_causes():
+    """The window pool sees the fallen cause A's re-check after B's fix, and
+    the window FAILS; but the fix it failed was not a fix of B, so M6 leaves
+    B standing (``failed_fix_of``'s attribution)."""
+    eng, case, root_a, b, _b_support = await _a_fell_then_b(validate_b=True)
+    hyp_b = case.hypotheses["hyp_00000000eeee"]
+    _accept(case, InvestigationActionType.SOLUTION, 12)
+    await _record(
+        eng,
+        case,
+        13,
+        _obs(_CAUSE_GONE, "max_connections reads 100", _SUPPORT),
+        _obs(_PRESENT, "checkout still returns 503", VERIFYING_ID),
+    )
+    assert fix_windows(case)[-1].state == FIX_FAILED
+    assert hyp_b.state != HypothesisState.REFUTED and b.is_identified_root
+
+
+async def test_the_stamp_cites_only_a_row_about_the_cause_it_confirms():
+    """A stays identified with its hypothesis retired, B is the standing cause:
+    a row re-checking A's support is in the cause leg, but the stamp confirming
+    B does not cite it."""
+    case, root_a, hyp_a = _identified_case()
+    b = _add_sibling_chain(case)
+    problem = next(
+        n for n in case.causal_nodes.values() if n.node_type == NodeType.PROBLEM
+    )
+    case.causal_edges.append(
+        CausalEdge(cause_node_id=b.node_id, effect_node_id=problem.node_id)
+    )
+    for label in ("worker RSS grows 40MB/h", "OOM killer log for gunicorn workers"):
+        b.evidence_links.append(
+            NodeEvidenceLink(
+                evidence_id=_support(case, label, 3),
+                stance=EvidenceStance.SUPPORTS,
+                reasoning="bears on B",
+                linked_at_turn=3,
+            )
+        )
+    eng = _engine()
+    await _record(eng, case, 5)
+    hyp_a.state = HypothesisState.RETIRED
+    assert root_a.is_identified_root and b.is_identified_root
+    await _record(
+        eng,
+        case,
+        6,
+        _obs(_CAUSE_GONE, "max_connections reads 100", _SUPPORT),
+        _obs(_GONE, "checkout 200 again", VERIFYING_ID),
+    )
+    assert cause_elimination_rows(case)
+    assert confirm_root_from_resolution_absence(case) is False
+
+
+# ---------------------------------------------------------------------------
+# Readings the windows, legs and asks take from the data's turn (#2145)
+# ---------------------------------------------------------------------------
+
+
+async def test_the_cause_leg_needs_data_from_after_the_cause_was_posited():
+    case, root, _hyp = _identified_case()
+    root.metadata["root_attached_turn"] = 7
+    eng = _engine()
+    early = upload(case, 5, "turn-5 reading")
+    await _record(eng, case, 8, _obs(_CAUSE_GONE, "reads 100", _SUPPORT, file_id=early))
+    assert cause_elimination_rows(case) == []
+    await _record(eng, case, 8, _obs(_CAUSE_GONE, "reads 100 now", _SUPPORT))
+    assert len(cause_elimination_rows(case)) == 1
+
+
+async def test_a_persistence_after_the_causes_data_fails_the_window():
+    """The cause row is recorded after the persistence, from data uploaded
+    before it: by the data, the cause went first and the problem stayed."""
+    eng, case, _root_node, _hyp = _fixed(6)
+    await _record(eng, case, 8, _obs(_PRESENT, "checkout still 503", VERIFYING_ID))
+    early = upload(case, 7, "turn-7 config")
+    await _record(eng, case, 9, _obs(_CAUSE_GONE, "reads 100", _SUPPORT, file_id=early))
+    assert fix_windows(case)[-1].state == FIX_FAILED
+
+
+async def test_an_unnamed_relief_is_no_relief():
+    eng, case, _root_node, _hyp = _fixed(6)
+    await _record(
+        eng,
+        case,
+        7,
+        _obs(_CAUSE_GONE, "reads 100", _SUPPORT),
+        _obs(_GONE, "checkout fine now"),
+    )
+    assert fix_windows(case)[-1].state == FIX_UNKNOWN
+
+
+async def test_the_cause_recheck_ask_reads_a_bound_relief_from_after_the_fix():
+    eng, case, _root_node, _hyp = _fixed(9)
+    await _record(eng, case, 10, _obs(_GONE, "checkout fine now"))
+    assert _RECHECK_ASK not in assess_resolution_readiness(case).message
+    early = upload(case, 7, "turn-7 relief")
+    await _record(
+        eng, case, 10, _obs(_GONE, "503 rate 0.0/s", VERIFYING_ID, file_id=early)
+    )
+    assert _RECHECK_ASK not in assess_resolution_readiness(case).message
+    await _record(eng, case, 11, _obs(_GONE, "checkout 200 again", VERIFYING_ID))
+    assert _RECHECK_ASK in assess_resolution_readiness(case).message
+
+
+def test_the_stamp_never_cites_data_from_before_a_refutation_of_its_root():
+    """The per-root refutation window reads the data's turn: a confirmation
+    recorded after a (hedged) refutation of the root, but read from data
+    uploaded before it, does not mint the top grade."""
+    case, root, _hyp = _identified_case()
+    refute = Evidence(
+        evidence_id=_eid("hedged refute"),
+        summary="not sure the fix helped",
+        primary_purpose="post-fix check",
+        category=_CAUSE_GONE,
+        source_type=EvidenceSourceType.LOGS,
+        source_file_id=upload(case, 8, "turn-8 refute"),
+        collected_by="llm",
+        collected_at_turn=8,
+    )
+    root.evidence_links.append(
+        NodeEvidenceLink(
+            evidence_id=refute.evidence_id,
+            stance=EvidenceStance.REFUTES,
+            reasoning="uncertain failed fix",
+            stance_confidence=0.4,
+            linked_at_turn=8,
+        )
+    )
+    early = Evidence(
+        evidence_id=_eid("early confirm"),
+        summary="reads 100",
+        primary_purpose="post-fix check",
+        category=_CAUSE_GONE,
+        source_type=EvidenceSourceType.LOGS,
+        source_file_id=upload(case, 7, "turn-7 confirm"),
+        collected_by="llm",
+        collected_at_turn=9,
+    )
+    early.record_rechecks(_SUPPORT, named=_SUPPORT)
+    case.evidence += [refute, early]
+    assert early in cause_elimination_rows(case)
+    assert confirm_root_from_resolution_absence(case) is False
+
+
+async def test_a_count_held_root_with_no_terminal_verdict_is_no_cause():
+    case, root, _hyp = _identified_case()
+    root.evidence_links = root.evidence_links[:1]  # count-held
+    root.record_root_terminal(False, "a job rewrites the limit", 4)
+    case.progress.identified_cause_root_ids = []
+    (row,), _ = await _record(
+        _engine(), case, 7, _obs(_CAUSE_GONE, "reads 100", _SUPPORT)
+    )
+    assert root.node_state == NodeState.INCONCLUSIVE
+    assert observation_subject(case, row) == SUBJECT_UNBOUND
+
+
+# ---------------------------------------------------------------------------
+# The unbound-row feedback reads only rows after a recorded fix (R4)
+# ---------------------------------------------------------------------------
+
+
+def _post_fix_line(meta) -> bool:
+    return "Post-fix row(s)" in (meta.get("system_feedback") or "")
+
+
+async def test_no_line_for_an_exclusion_before_any_fix():
+    case, _root_node, _hyp = _identified_case()
+    _, meta = await _record(
+        _engine(), case, 6, _obs(_CAUSE_GONE, "DNS resolves fine: ruled out")
+    )
+    assert not _post_fix_line(meta)
+
+
+async def test_no_line_for_data_from_before_the_recorded_fix():
+    eng, case, _root_node, _hyp = _fixed(9)
+    early = upload(case, 7, "turn-7 relief")
+    _, meta = await _record(eng, case, 10, _obs(_GONE, "503 rate 0.0/s", file_id=early))
+    assert not _post_fix_line(meta)
+    _, meta = await _record(
+        eng, case, 9, _obs(_PRESENT, "checkout 503 (the fix's turn)")
+    )
+    assert not _post_fix_line(meta)
+
+
+async def test_no_line_for_the_failing_output_cited_as_having_shown_the_problem():
+    eng, case, _root_node, _hyp = _fixed(6)
+    case.problem_verification.verifying_evidence_ids = []
+    _, meta = await _record(
+        eng,
+        case,
+        7,
+        _obs(_PRESENT, "checkout returned 503 (the original)"),
+        milestones=MilestoneUpdates(symptom_verification_evidence_ids=["new_index_0"]),
+    )
+    assert not _post_fix_line(meta)
+
+
+async def test_no_line_inside_a_failed_window():
+    eng, case, _root_node, _hyp = _fixed(6)
+    await _record(eng, case, 7, _obs(_CAUSE_GONE, "reads 100", _SUPPORT))
+    await _record(eng, case, 8, _obs(_PRESENT, "checkout still 503", VERIFYING_ID))
+    assert fix_windows(case)[-1].state == FIX_FAILED
+    _, meta = await _record(eng, case, 10, _obs(_GONE, "checkout fine now"))
+    assert "did not hold" in meta["system_feedback"]
+    assert not _post_fix_line(meta)
+
+
+# ---------------------------------------------------------------------------
+# The verifying rows render in their recorded order (R8)
+# ---------------------------------------------------------------------------
+
+
+def test_the_verifying_rows_render_in_the_order_recorded():
+    case, _root_node, _hyp = _identified_case()
+    case.progress.solution_accepted = True  # TREATMENT
+    later = [_support(case, f"symptom {i}", 6 - i) for i in range(5)]
+    for evidence_id in later:
+        row = next(e for e in case.evidence if e.evidence_id == evidence_id)
+        row.category = _PRESENT
+    case.problem_verification.verifying_evidence_ids = list(later)
+    block = _build_evidence_needs_block(case)
+    assert sorted(later, key=block.index) == later
+    problem, _cause = subject_index(case).bindable_rows()
+    assert [e.evidence_id for e in problem] == later
+
+
+async def test_the_window_pool_keeps_a_cause_that_lost_its_verdict_this_turn():
+    """#2042 beside a count-held candidate B. The identified cause A loses its
+    terminal verdict in the very turn its fix is seen failing, so B, not A,
+    is the confirmation pool. The window pool keeps A, the cause the last
+    recompute identified, so its failed fix still demotes it."""
+    eng, case, root_a, hyp_a = _fixed(8)
+    b = _add_sibling_chain(case)
+    problem = next(
+        n for n in case.causal_nodes.values() if n.node_type == NodeType.PROBLEM
+    )
+    case.causal_edges.append(
+        CausalEdge(cause_node_id=b.node_id, effect_node_id=problem.node_id)
+    )
+    b.evidence_links.append(
+        NodeEvidenceLink(
+            evidence_id=_support(case, "worker RSS grows 40MB/h", 7),
+            stance=EvidenceStance.SUPPORTS,
+            reasoning="bears on B",
+            linked_at_turn=7,
+        )
+    )
+    await _record(eng, case, 8)
+    assert root_a.is_identified_root and b.node_state == NodeState.INCONCLUSIVE
+    root_a.record_root_terminal(False, "something upstream resets the limit", 9)
+    await _record(
+        eng,
+        case,
+        9,
+        _obs(_CAUSE_GONE, "max_connections reads 100", _SUPPORT),
+        _obs(_PRESENT, "checkout still returns 503", VERIFYING_ID),
+    )
+    assert hyp_a.state == HypothesisState.REFUTED and _engine_rows(case)

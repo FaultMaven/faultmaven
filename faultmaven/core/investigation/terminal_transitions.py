@@ -1280,9 +1280,15 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
         case.progress.problem_status == ProblemStatus.VERIFIED
         and pv is not None
         and not getattr(pv, "verifying_evidence_ids", None)
+        and not any(
+            getattr(e, "category", None) == EvidenceCategory.SYMPTOM_EVIDENCE
+            for e in case.evidence or []
+        )
     ):
         # Nothing on record showed the problem (#1906, ruled 2026-11-03): no
         # re-check can bind to it until the original failing output is cited.
+        # With a symptom row on record the model cites that row instead
+        # (the prompt says so), so the user is not asked to paste it again.
         asks.append(
             "- **The check that showed the problem** — the original failing "
             "output isn't on record as what showed the problem; submit it as "

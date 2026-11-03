@@ -255,7 +255,9 @@ def invalidation_refusal(case: Case, evidence_ids: list[str], basis: str) -> str
     # failed fix window holds, #1927). Only a row bound to the case's cause
     # (#1906 D1): one naming nothing observed nothing the finding contradicts.
     subjects = subject_index(case)
-    if any(subjects.subject(e) == SUBJECT_CAUSE for e in case.evidence or []):
+    if any(
+        subjects.subject(e, windows=True) == SUBJECT_CAUSE for e in case.evidence or []
+    ):
         return "a cause was confirmed eliminated, so the problem existed"
     return None
 

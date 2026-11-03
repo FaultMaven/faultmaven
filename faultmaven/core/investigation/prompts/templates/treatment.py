@@ -98,7 +98,6 @@ goal is to stabilize the situation, NOT to find or fix the root cause.
         category: symptom_absence_evidence
         source_type: what the submitted data is (logs | metrics | text …)
         source_file_id: the file it came from
-        rechecks: the SYMPTOM row of the re-verification checklist it re-checks
         Stand-alone audit row — do NOT link it to a hypothesis or a causal
         node. Never from the user's words ("It's stable" is their account, not
         evidence). Skip this step

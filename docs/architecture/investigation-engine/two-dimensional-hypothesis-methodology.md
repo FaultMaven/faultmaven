@@ -1013,9 +1013,11 @@ records only what it can substantiate:
     at or after the cause's removal, in a turn after the fix's execution turn
     (a row in that turn may quote pre-fix lines from the same paste), up to
     and including the next fix's execution turn (there, "it's back" is this
-    window's relapse, not the next fix's failure). The cause pool keeps the
-    roots the last recompute identified and any root carrying M6's own
-    disconfirmation, so a failure stays observed across a demotion. A
+    window's relapse, not the next fix's failure). The windows bind cause
+    rows against the WINDOW pool — the confirmation pool plus the roots the
+    last recompute identified and any root carrying M6's own
+    disconfirmation — so a failure stays observed across a demotion, while
+    the cause leg binds against the confirmation pool only. A
     symptom about a sibling candidate, a refuted guess or a probe's own
     failure names no verifying row and fails nothing; with no cause in the
     pool, nothing binds to the cause and the window records no failure.
