@@ -22,8 +22,8 @@ chromadb's SQLite handles go when the closed client is garbage-collected.
 An ``EphemeralClient`` needs none of this: every one in the process shares a
 single in-memory System that holds no files.
 
-``Client.close()`` first shipped in chromadb 1.5.2, above the ``>=1.0.0`` floor
-in ``pyproject.toml``. The suite runs on the lockfile's version.
+``Client.close()`` first shipped in chromadb 1.5.2. The suite runs on the
+lockfile's version.
 
 Function scope only. A client held by a module- or session-scoped fixture must
 not be registered: it would be closed under every test after the first.
