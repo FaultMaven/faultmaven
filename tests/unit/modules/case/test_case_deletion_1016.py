@@ -52,6 +52,7 @@ from faultmaven.modules.evidence.domain.services.file_storage_service import (
 from faultmaven.modules.knowledge.domain.services.conversion_service.case_erasure import (
     RunbookConversionEraser,
 )
+from tests.chroma_clients import closed_at_teardown
 
 pytestmark = [pytest.mark.unit]
 
@@ -248,7 +249,9 @@ async def test_an_update_that_loses_the_race_with_a_delete_is_not_found():
 
 class TestCaseVectors:
     async def test_absent_present_and_unreachable(self, tmp_path: Path):
-        client = chromadb.PersistentClient(path=str(tmp_path / "chroma"))
+        client = closed_at_teardown(
+            chromadb.PersistentClient(path=str(tmp_path / "chroma"))
+        )
         store = CaseVectorStore(client)
         assert await store.erase_case("case_none", ENTERPRISE) == 0
 
@@ -469,7 +472,9 @@ class TestComposition:
         assert service.stores_not_configured == ("case_vectors",)
 
     def test_production_binds_the_real_vector_eraser(self, tmp_path):
-        vectors = CaseVectorStore(chromadb.PersistentClient(path=str(tmp_path / "c")))
+        vectors = CaseVectorStore(
+            closed_at_teardown(chromadb.PersistentClient(path=str(tmp_path / "c")))
+        )
         service = self._build(tmp_path, skip=False, case_vector_store=vectors)
         assert isinstance(service, CaseService)
         assert service.store_erasers[3] is vectors

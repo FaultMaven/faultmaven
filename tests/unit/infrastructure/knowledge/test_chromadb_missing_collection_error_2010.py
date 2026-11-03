@@ -49,8 +49,12 @@ def test_ephemeral_client_raises_not_found_for_a_missing_collection():
 
 
 def test_persistent_client_raises_not_found_for_a_missing_collection():
-    with tempfile.TemporaryDirectory() as path:
-        client = chromadb.PersistentClient(path)
+    # Closed before the directory goes: an open client keeps its deleted
+    # files' descriptors for the rest of the process.
+    with (
+        tempfile.TemporaryDirectory() as path,
+        chromadb.PersistentClient(path) as client,
+    ):
         with pytest.raises(NotFoundError):
             client.get_collection("missing-2010")
 

@@ -91,6 +91,8 @@ Outcome-based helpers live in `tests/integration/real_llm/helpers.py` — extend
 
 A run whose warnings summary is not empty fails, even when every test passes. `pytest.ini` raises what it can at the test that caused it: any warning from `faultmaven` code, and a coroutine nobody awaited. A `ResourceWarning` or a thread's unhandled exception surfaces at garbage collection, inside whichever test happens to be running, so `pytest_sessionfinish` in `tests/conftest.py` fails the run instead and leaves every test's outcome alone. Fix a warning where it arises; never filter it. A warning from an installed package that CI does not show usually means the virtualenv is off the lockfile: rebuild it with `./scripts/sync-venv.sh`.
 
+An unclosed ChromaDB client raises no warning at all. chromadb holds a local client's System (SQLite pool, HNSW segment files, Rust runtime: about ten descriptors and fifty threads) in a process-wide cache until `close()` is called, so the garbage collector never reaches it. Unclosed clients once held 1,130 descriptors in a serial run, which then failed with EMFILE under the common soft `ulimit -n` of 1024. A test, fixture or helper that opens a client wraps it in `closed_at_teardown` (`tests/chroma_clients.py`), or opens it with `with`.
+
 ---
 
 ## **Testing Architecture Standards**

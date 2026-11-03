@@ -29,6 +29,7 @@ from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
     KB_COLLECTION,
     KnowledgeVectorStore,
 )
+from tests.chroma_clients import closed_at_teardown
 
 pytestmark = [pytest.mark.unit]
 
@@ -36,14 +37,16 @@ UNKNOWN = {"enterprise_id": {"$nin": ["ent-1", "ent-2"]}}
 
 
 def _client(tmp_path: Path) -> Any:
-    client = chromadb.PersistentClient(
-        path=str(tmp_path / "chroma"),
-        settings=ChromaSettings(
-            anonymized_telemetry=False,
-            allow_reset=False,
-            environment="",
-            is_persistent=True,
-        ),
+    client = closed_at_teardown(
+        chromadb.PersistentClient(
+            path=str(tmp_path / "chroma"),
+            settings=ChromaSettings(
+                anonymized_telemetry=False,
+                allow_reset=False,
+                environment="",
+                is_persistent=True,
+            ),
+        )
     )
     client.get_or_create_collection(KB_COLLECTION).add(
         ids=["A_chunk_0", "A_chunk_1", "B_chunk_0"],

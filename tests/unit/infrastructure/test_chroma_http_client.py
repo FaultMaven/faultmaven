@@ -72,6 +72,7 @@ from faultmaven.infrastructure.persistence.chromadb_store import (
     create_persistent_client,
 )
 from faultmaven.jobs.run import run_job
+from tests.chroma_clients import closed_at_teardown
 from tests.unit.container.conftest import make_chroma_settings
 
 pytestmark = [pytest.mark.unit]
@@ -420,8 +421,10 @@ def _stores(client: Any) -> List[Any]:
 def test_is_http_client_is_decided_by_the_client_object(
     stub: _StubChroma, tmp_path: Any
 ) -> None:
+    local = closed_at_teardown(create_persistent_client(str(tmp_path / "chroma")))
+
     assert is_http_client(_build(stub)) is True
-    assert is_http_client(create_persistent_client(str(tmp_path / "chroma"))) is False
+    assert is_http_client(local) is False
     assert is_http_client(None) is False
     assert is_http_client(MagicMock()) is False
 
@@ -433,7 +436,7 @@ def test_each_store_runs_off_the_loop_only_over_an_http_client(
     # ChromaDBVectorStore opens its collection at construction (boot); the
     # stub holds that request, and this test is about the arm, not the call.
     http.get_or_create_collection = MagicMock()
-    local = create_persistent_client(str(tmp_path / "chroma"))
+    local = closed_at_teardown(create_persistent_client(str(tmp_path / "chroma")))
 
     assert [s.blocking_executor for s in _stores(http)] == [CHROMA_EXECUTOR] * 3
     assert [s.blocking_executor for s in _stores(local)] == [None] * 3
@@ -503,7 +506,7 @@ def test_a_persistent_client_cannot_be_turned_into_an_http_one_by_the_env(
     monkeypatch.setenv("CHROMA_SERVER_HOST", "127.0.0.1")
     monkeypatch.setenv("CHROMA_SERVER_HTTP_PORT", str(stub.port))
 
-    client = create_persistent_client(str(tmp_path / "chroma"))
+    client = closed_at_teardown(create_persistent_client(str(tmp_path / "chroma")))
 
     assert is_http_client(client) is False
     assert blocking_executor_for(client) is None

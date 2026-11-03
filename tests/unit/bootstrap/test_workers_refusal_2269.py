@@ -33,6 +33,7 @@ from faultmaven.config.worker_stores import (
     configured_per_process_stores,
     refuse_configured_per_process_stores,
 )
+from tests.chroma_clients import closed_at_teardown
 
 pytestmark = pytest.mark.unit
 
@@ -226,7 +227,9 @@ async def test_the_configuration_check_never_refuses_what_would_be_built_shared(
         if any("FakeRedis" in what for what in verdict):
             assert is_fakeredis(await create_redis_client(settings)), environ
         if any("PersistentClient" in what for what in verdict):
-            client = _create_chromadb_client(settings, str(tmp_path / "kb"), "KB")
+            client = closed_at_teardown(
+                _create_chromadb_client(settings, str(tmp_path / "kb"), "KB")
+            )
             assert chroma_client_kind(client) == "persistent", environ
 
 
@@ -280,7 +283,7 @@ async def clients(tmp_path):
         return client
 
     def local_chroma(name):
-        return create_persistent_client(str(tmp_path / name))
+        return closed_at_teardown(create_persistent_client(str(tmp_path / name)))
 
     yield SimpleNamespace(
         fake_redis=fake_redis,
@@ -427,7 +430,9 @@ def test_an_unreachable_chroma_server_is_refused_end_to_end(
     settings = settings_from()
     refuse_configured_per_process_stores(settings)  # it selects a server
 
-    kb = _create_chromadb_client(settings, str(tmp_path / "kb"), "KB")
+    kb = closed_at_teardown(
+        _create_chromadb_client(settings, str(tmp_path / "kb"), "KB")
+    )
     built = _built(redis=clients.server_redis(), kb=kb)
 
     with pytest.raises(PerProcessStoresError, match="KB client fell back"):

@@ -49,6 +49,7 @@ from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
 )
 from faultmaven.infrastructure.persistence.models import Base
 from tests import kb_orphan_sweep_scenario as sc
+from tests.chroma_clients import closed_at_teardown
 
 pytestmark = [pytest.mark.unit]
 
@@ -74,14 +75,16 @@ class World:
 
 def chroma_client(path: Path) -> Any:
     """A ChromaDB of this test's own (a path no other test uses)."""
-    return chromadb.PersistentClient(
-        path=str(path),
-        settings=ChromaSettings(
-            anonymized_telemetry=False,
-            allow_reset=False,
-            environment="",
-            is_persistent=True,
-        ),
+    return closed_at_teardown(
+        chromadb.PersistentClient(
+            path=str(path),
+            settings=ChromaSettings(
+                anonymized_telemetry=False,
+                allow_reset=False,
+                environment="",
+                is_persistent=True,
+            ),
+        )
     )
 
 
