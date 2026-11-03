@@ -20,7 +20,8 @@ from typing import Set
 
 import pytest
 
-from tests.ci_shard import assign_files, parse_shard
+from tests import ci_shard
+from tests.ci_shard import assign_files, file_costs, load_rates, parse_shard
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -55,6 +56,81 @@ def test_slices_differ_by_at_most_the_largest_file():
 
 def test_one_slice_takes_everything():
     assert set(assign_files({"a.py": 3, "b.py": 1}, 1).values()) == {1}
+
+
+# --- the costs -----------------------------------------------------------------
+
+
+def test_a_file_costs_its_tests_times_its_rate_or_the_default():
+    costs = file_costs(
+        {"a.py": 10, "b.py": 3, "c.py": 2},
+        default=0.1,
+        rates={"a.py": 0.01, "b.py": 2.0},
+    )
+    assert costs == pytest.approx({"a.py": 0.1, "b.py": 6.0, "c.py": 0.2})
+
+
+def test_slow_files_are_spread_across_slices_even_with_few_tests():
+    """What counting got wrong: three files of two slow tests each, among
+    files of many fast ones. By count they are the smallest files and fill
+    in behind the big ones, two of them in one slice; by time each heads its
+    own."""
+    counts = {"slow_1.py": 2, "slow_2.py": 2, "slow_3.py": 2}
+    counts.update({f"fast_{i}.py": 40 for i in range(4)})
+    rates = {f"slow_{i}.py": 10.0 for i in (1, 2, 3)}
+    slow = [f"slow_{i}.py" for i in (1, 2, 3)]
+
+    by_count = assign_files(counts, 3)
+    by_time = assign_files(file_costs(counts, 0.01, rates), 3)
+
+    assert len({by_count[f] for f in slow}) < 3  # the case counting stacks
+    assert sorted(by_time[f] for f in slow) == [1, 2, 3]
+
+
+def test_the_committed_durations_load():
+    default, rates = load_rates()
+    assert default > 0
+    assert rates, "no files measured"
+    assert all(path.startswith("tests/") and path.endswith(".py") for path in rates)
+    assert all(rate >= 0 for rate in rates.values())
+
+
+class _Item:
+    def __init__(self, nodeid: str):
+        self.nodeid = nodeid
+
+
+class _Config:
+    def __init__(self, shard: str):
+        self._shard = shard
+        self.deselected: list = []
+        outer = self
+
+        class _Hook:
+            @staticmethod
+            def pytest_deselected(items):
+                outer.deselected.extend(items)
+
+        self.hook = _Hook()
+
+    def getoption(self, name):
+        assert name == "--shard"
+        return self._shard
+
+
+def test_the_plugin_assigns_by_measured_time(monkeypatch):
+    """The hook costs files from the durations file, not by count: one slow
+    test outweighs four files of five fast ones and takes a slice alone."""
+    monkeypatch.setattr(ci_shard, "load_rates", lambda: (0.1, {"slow.py": 100.0}))
+    items = [_Item("slow.py::t")] + [
+        _Item(f"fast_{i}.py::t{j}") for i in range(4) for j in range(5)
+    ]
+    config = _Config("1/2")
+
+    ci_shard.pytest_collection_modifyitems(config, items)
+
+    assert [item.nodeid for item in items] == ["slow.py::t"]
+    assert len(config.deselected) == 20
 
 
 @pytest.mark.parametrize("value,expected", [("1/3", (1, 3)), (" 3/3 ", (3, 3))])
