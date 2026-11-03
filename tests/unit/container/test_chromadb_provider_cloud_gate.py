@@ -26,6 +26,7 @@ from faultmaven.infrastructure.chroma_client import (
     ChromaUnavailableError,
     is_external_chroma_configured,
 )
+from tests.chroma_clients import closed_at_teardown
 from tests.unit.container.conftest import make_chroma_settings as _settings
 
 pytestmark = [pytest.mark.unit, pytest.mark.security]
@@ -127,7 +128,9 @@ def test_standalone_unreachable_server_falls_back_to_persistent(monkeypatch, tmp
     monkeypatch.setattr(chromadb, "HttpClient", _ExplodingHttpClient)
     settings = _settings(cloud=False, chromadb_url="http://chromadb:8000")
 
-    client = _create_chromadb_client(settings, str(tmp_path / "chroma"), "KB")
+    client = closed_at_teardown(
+        _create_chromadb_client(settings, str(tmp_path / "chroma"), "KB")
+    )
 
     assert type(client).__name__ != "_ExplodingHttpClient"
     assert (tmp_path / "chroma").exists()
@@ -136,7 +139,9 @@ def test_standalone_unreachable_server_falls_back_to_persistent(monkeypatch, tmp
 def test_standalone_without_url_gets_persistent_client(tmp_path):
     settings = _settings(cloud=False, chromadb_url="")
 
-    client = _create_chromadb_client(settings, str(tmp_path / "chroma"), "KB")
+    client = closed_at_teardown(
+        _create_chromadb_client(settings, str(tmp_path / "chroma"), "KB")
+    )
 
     assert client is not None
     assert (tmp_path / "chroma").exists()

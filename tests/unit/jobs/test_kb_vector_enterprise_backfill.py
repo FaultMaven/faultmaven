@@ -32,6 +32,7 @@ from faultmaven.infrastructure.persistence import database
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.jobs import kb_vector_enterprise_backfill as job
 from tests import kb_orphan_sweep_scenario as sc
+from tests.chroma_clients import closed_at_teardown
 
 pytestmark = [pytest.mark.unit]
 
@@ -76,14 +77,16 @@ async def make_world(tmp_path: Path, monkeypatch):
             await conn.run_sync(Base.metadata.create_all)
             await sc.insert_enterprises(conn, ["ent-1", "ent-2"])
             await sc.insert_rows(conn, docs)
-        client = chromadb.PersistentClient(
-            path=str(tmp_path / "chroma"),
-            settings=ChromaSettings(
-                anonymized_telemetry=False,
-                allow_reset=False,
-                environment="",
-                is_persistent=True,
-            ),
+        client = closed_at_teardown(
+            chromadb.PersistentClient(
+                path=str(tmp_path / "chroma"),
+                settings=ChromaSettings(
+                    anonymized_telemetry=False,
+                    allow_reset=False,
+                    environment="",
+                    is_persistent=True,
+                ),
+            )
         )
         sc.add_chunks(client, docs)
         # The job's row and enterprise reads go through the app's session factory.

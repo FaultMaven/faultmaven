@@ -80,6 +80,7 @@ from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repo
 )
 from faultmaven.modules.knowledge.taxonomy import KnowledgeScope
 from faultmaven.utils.runbook_id import item_id_from_runbook_id
+from tests.chroma_clients import closed_at_teardown
 from tests.integration.security.test_case_kb_scope_and_source_gate import (
     _case as _resolved_content_case,
 )
@@ -207,9 +208,11 @@ async def _index_with_no_ingest(service, item_id, marker):
 
 @pytest.fixture
 async def kb(factory, tmp_path):
-    chroma = chromadb.PersistentClient(
-        path=str(tmp_path / "chroma"),
-        settings=ChromaSettings(anonymized_telemetry=False, allow_reset=False),
+    chroma = closed_at_teardown(
+        chromadb.PersistentClient(
+            path=str(tmp_path / "chroma"),
+            settings=ChromaSettings(anonymized_telemetry=False, allow_reset=False),
+        )
     )
     store = KnowledgeVectorStore(chroma)
     service = KnowledgeService(
@@ -669,9 +672,11 @@ async def _crowd(
     whose ``retired_chunks`` chunks outrank it (none when 0), unpublished by
     the real delete (a SQL-only flip, so its vectors stay until the next
     pack-loading bootstrap)."""
-    chroma = chromadb.PersistentClient(
-        path=str(tmp_path / "chroma"),
-        settings=ChromaSettings(anonymized_telemetry=False, allow_reset=False),
+    chroma = closed_at_teardown(
+        chromadb.PersistentClient(
+            path=str(tmp_path / "chroma"),
+            settings=ChromaSettings(anonymized_telemetry=False, allow_reset=False),
+        )
     )
     store = KnowledgeVectorStore(chroma)
     service = KnowledgeService(

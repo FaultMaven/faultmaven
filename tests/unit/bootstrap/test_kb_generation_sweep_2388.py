@@ -54,6 +54,7 @@ from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repo
 )
 from faultmaven.modules.knowledge.taxonomy import KnowledgeScope
 from faultmaven.utils.runbook_id import is_builtin_item_id
+from tests.chroma_clients import closed_at_teardown
 from tests.utils import seed_enterprises
 
 pytestmark = [pytest.mark.unit, pytest.mark.knowledge_base]
@@ -80,9 +81,11 @@ async def world(tmp_path):
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with factory() as session:
         await seed_enterprises(session, [STANDALONE_ENTERPRISE_ID])
-    chroma = chromadb.PersistentClient(
-        path=str(tmp_path / "chroma"),
-        settings=ChromaSettings(anonymized_telemetry=False, allow_reset=False),
+    chroma = closed_at_teardown(
+        chromadb.PersistentClient(
+            path=str(tmp_path / "chroma"),
+            settings=ChromaSettings(anonymized_telemetry=False, allow_reset=False),
+        )
     )
     store = KnowledgeVectorStore(chroma)
 

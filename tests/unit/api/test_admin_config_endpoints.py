@@ -23,6 +23,7 @@ from faultmaven.api.routes.admin_config import (
 from faultmaven.config.settings import LLM_MODEL_TASKS, Environment, LLMProvider
 from faultmaven.infrastructure.llm.providers.registry import ProviderRegistry
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
+from tests.chroma_clients import closed_at_teardown
 
 SETTINGS_PATCH = "faultmaven.config.settings.get_settings"
 
@@ -929,7 +930,7 @@ async def live_backends(monkeypatch, tmp_path):
         return client
 
     def local_chroma(name):
-        return chromadb.PersistentClient(path=str(tmp_path / name))
+        return closed_at_teardown(chromadb.PersistentClient(path=str(tmp_path / name)))
 
     def install(app, *, engine, redis, kb, evidence):
         monkeypatch.setattr(database, "_engine", engine)

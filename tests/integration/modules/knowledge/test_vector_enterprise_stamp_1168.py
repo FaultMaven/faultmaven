@@ -64,6 +64,7 @@ from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repo
     DatabaseKnowledgeItemRepository,
 )
 from faultmaven.utils.runbook_id import item_id_from_runbook_id
+from tests.chroma_clients import closed_at_teardown
 from tests.utils import record_nothing
 
 pytestmark = pytest.mark.integration
@@ -121,9 +122,11 @@ async def session_factory():
 @pytest.fixture
 def chroma(tmp_path):
     """A real on-disk ChromaDB, private to this test (its own path)."""
-    return chromadb.PersistentClient(
-        path=str(tmp_path / "chroma"),
-        settings=ChromaSettings(anonymized_telemetry=False, allow_reset=False),
+    return closed_at_teardown(
+        chromadb.PersistentClient(
+            path=str(tmp_path / "chroma"),
+            settings=ChromaSettings(anonymized_telemetry=False, allow_reset=False),
+        )
     )
 
 

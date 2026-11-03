@@ -61,6 +61,7 @@ from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repo
 from faultmaven.modules.knowledge.taxonomy import KnowledgeScope
 from faultmaven.utils.runbook_id import item_id_from_runbook_id
 from faultmaven.utils.serialization import decode_json_blob
+from tests.chroma_clients import closed_at_teardown
 from tests.integration.modules.knowledge.test_row_checked_retrieval_2397 import (
     OWNER,
     QUERY,
@@ -113,9 +114,11 @@ def _markers(text_: str) -> set[str]:
 
 
 def _world(factory_, tmp_path) -> SimpleNamespace:
-    chroma = chromadb.PersistentClient(
-        path=str(tmp_path / "chroma"),
-        settings=ChromaSettings(anonymized_telemetry=False, allow_reset=False),
+    chroma = closed_at_teardown(
+        chromadb.PersistentClient(
+            path=str(tmp_path / "chroma"),
+            settings=ChromaSettings(anonymized_telemetry=False, allow_reset=False),
+        )
     )
     store = KnowledgeVectorStore(chroma)
     service = KnowledgeService(

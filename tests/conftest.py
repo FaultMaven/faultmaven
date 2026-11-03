@@ -87,6 +87,9 @@ from tests import offline_tiktoken  # noqa: E402
 
 offline_tiktoken.install()
 
+# ChromaDB clients a test opened, closed at its end (``tests/chroma_clients.py``).
+from tests import chroma_clients  # noqa: E402
+
 # ``--shard=K/N`` runs one slice of the selection (``tests/ci_shard.py``): CI
 # splits Test Standalone and Test Cloud across jobs with it. Registered here,
 # not with ``-p``, because the ``pytest`` console script does not put the
@@ -724,6 +727,20 @@ def _reset_observability_singletons():
             container = getattr(singleton, field, None)
             if hasattr(container, "clear"):
                 container.clear()
+
+
+@pytest.fixture(autouse=True)
+def _close_the_chroma_clients_the_test_opened():
+    """Close each ChromaDB client the test registered with ``closed_at_teardown``.
+
+    chromadb keeps every local client's System, about ten file descriptors and
+    fifty threads, until that client is closed. Unclosed, they piled up to
+    1,130 descriptors in a serial run (``tests/chroma_clients.py``). Autouse,
+    so it is torn down after the test's own fixtures have finished with the
+    client.
+    """
+    yield
+    chroma_clients.close_the_clients_opened()
 
 
 @pytest.fixture(scope="session")
