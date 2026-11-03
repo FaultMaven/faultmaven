@@ -14,12 +14,15 @@ isolate what the rules do:
   switch counts every post-fix symptom row, so it is the stricter reading.
 - ``--mode simulated-naming``: each case's verifying row is recorded by the
   verifying-turn fallback (exactly one symptom row written in the turn the
-  symptom claim landed). Only rows observed after a RECORDED fix are named,
-  as the model is asked to: a symptom_absence row names the verifying row,
-  a causal_absence row the first row supporting the confirmation pool alone
-  (ROOT-only, one cluster). Persistence rows stay unnamed, so the figure is
-  an UPPER BOUND on what naming earns: a perfect model, no failure ever
-  named. It shows whether the rules admit the systemd floor.
+  symptom claim landed). Only rows observed after a RECORDED fix are named:
+  a symptom_absence row names the verifying row, a causal_absence row the
+  first row supporting the confirmation pool alone (ROOT-only, one cluster).
+  Persistence rows stay unnamed, so over the cases with a recorded fix the
+  figure is an UPPER BOUND on what naming earns (a perfect model, no failure
+  ever named). Out-of-band cases (no recorded fix) are NOT simulated: the
+  model is asked to name rows after an out-of-band fix too, but where such a
+  check begins cannot be told from the stored rows, so none is named. It
+  shows whether the rules admit the systemd floor.
 
 Per case it reports the two legs (cause rows, symptom rows), every fix window's
 state (FIX_FAILED outcomes), readiness, and the fallback's outcome.
@@ -162,6 +165,9 @@ def _fallback(case, verifying_turn_rows) -> str | None:
 
 
 def _simulate_naming(case, verifying: str | None) -> None:
+    """Name what a perfect model would name after a RECORDED fix (the upper
+    bound over those cases). A case with no recorded fix is left as stored:
+    its out-of-band checks are not simulated."""
     from faultmaven.core.investigation.cause_assurance import (
         ENGINE_EVIDENCE_AUTHOR,
         fix_application_turn,

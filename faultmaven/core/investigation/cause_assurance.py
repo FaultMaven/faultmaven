@@ -694,20 +694,22 @@ def _cause_pool(case: "Case") -> tuple[frozenset, frozenset, frozenset]:
     1. the identified roots (``CausalNode.is_identified_root``);
     2. the count-held roots whose hypothesis marked them terminal
        (``support_count_held_root_ids``, as the confirm-stamp admits them);
-    3. only when nothing above stands, the case's own failed cause: the roots
-       the last recompute recorded as identified
-       (``progress.identified_cause_root_ids``) and the roots carrying the
-       engine's failed-fix disconfirmation (only M6 mints one, on the
-       identified cause it demoted) — a cause re-fixed after it fell can
-       still be shown removed;
+    3. the case's own FALLEN cause — the roots the last recompute recorded as
+       identified (``progress.identified_cause_root_ids``) and the roots
+       carrying the engine's failed-fix disconfirmation (only M6 mints one,
+       on the identified cause it demoted) — only when nothing above stands
+       AND no other standing hypothesis is rooted elsewhere: a cause re-fixed
+       after it fell can still be shown removed, while a newer candidate,
+       however unproven, is never confirmed through the fallen one;
     4. a VALIDATED hypothesis with no root node (inert while a rootless
        hypothesis cannot validate).
 
-    The WINDOW pool is the confirmation roots plus the leg-3 roots, always.
-    A fix's window must keep observing the cause it addressed when that cause
-    falls (M6 demotes it) or loses its verdict in the very turn its fix is
-    seen failing (#2042); but a re-check of a fallen cause never confirms
-    another one's resolution, so the confirmation reads only the ruled order.
+    The WINDOW pool is the confirmation roots plus the fallen roots, always
+    (on leg 4 too). A fix's window must keep observing the cause it addressed
+    when that cause falls (M6 demotes it) or loses its verdict in the very
+    turn its fix is seen failing (#2042), so a re-check of it can still fail
+    the window (``FixWindow.cause_rows``); only a confirmation-bound cause
+    row can make a window SUCCEEDED (``FixWindow.confirmed_cause_rows``).
 
     With no confirmation pool nothing confirms the cause: the case can close,
     never resolve."""
@@ -742,12 +744,21 @@ def _cause_pool(case: "Case") -> tuple[frozenset, frozenset, frozenset]:
         for node_id in (count_held_fn(case) if count_held_fn is not None else ())
         if node_id in nodes and nodes[node_id].root_terminal is True
     }
-    if held or fallen:
-        roots = frozenset(held or fallen)
-        return roots, roots | frozenset(fallen), frozenset()
+    if held:
+        return frozenset(held), frozenset(held | fallen), frozenset()
+    other_standing = any(
+        h is not None
+        and h.state in _STANDING_HYP_STATES
+        and h.root_node_id
+        and h.root_node_id not in fallen
+        for h in (getattr(case, "hypotheses", None) or {}).values()
+    )
+    if fallen and not other_standing:
+        roots = frozenset(fallen)
+        return roots, roots, frozenset()
     return (
         frozenset(),
-        frozenset(),
+        frozenset(fallen),
         frozenset(
             h.hypothesis_id
             for h in (getattr(case, "hypotheses", None) or {}).values()
@@ -982,30 +993,50 @@ def cause_elimination_rows(case: "Case") -> list:
 
 def confirming_polarity_rows(case: "Case") -> list:
     """The causal_absence rows a report may render as confirming evidence:
-    INV-30's polarity guard, the bars ``cause_elimination_rows`` held before
-    #1906 2a. Not engine-authored and not a failed-fix disconfirmation (the
-    opposite polarity), at or after the latest engine-known disconfirmation
-    and the turn the case's cause was posited, not while identification is
-    held open, and not inside a FAILED fix window.
+    INV-30's polarity guard, ``cause_elimination_rows``' bars before #1906 2a
+    without the binding. Each row is:
 
-    Deliberately not the resolution's cause leg: that one also needs the row
-    bound to the cause and in the confirming window, which a row recorded
-    before 2a never is. A regenerated report of a case resolved on such rows,
-    its stamped confirmation included, keeps citing them (#1906 review R5).
-    Turns are the data's (``observed_turn``)."""
+    - not engine-authored, and not a failed-fix disconfirmation (the
+      opposite polarity);
+    - at or after the latest engine-known disconfirmation and the turn the
+      case's cause was posited;
+    - not recorded while identification is held open;
+    - in the latest fix window holding a causal_absence row, and that window
+      did not FAIL. This stands for main's confirming window (the latest
+      observed window, none when it failed) minus its persistence-only arm,
+      which read the token frame 2a removed: a newer window observed only by
+      the problem persisting no longer shadows the older window's rows.
+
+    Deliberately not the resolution's cause leg, which also needs the row
+    bound to the cause, as no row recorded before 2a is. A regenerated report
+    of a case resolved on such rows, its stamped confirmation included, keeps
+    citing them (#1906 review R5). Turns are the data's (``observed_turn``)."""
     if getattr(case.progress, "cause_identification_held_open", False):
         return []
     subjects = subject_index(case)
-    disconfirmation_ids = _disconfirmation_row_ids(case)
-    floor = max(latest_disconfirmation_turn(case), _cause_posited_turn(case))
-    failed = [w for w in fix_windows(case) if w.state == FIX_FAILED]
-    return [
+    rows = [
         e
         for e in subjects.rows.values()
         if e.category == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
+    ]
+    latest = next(
+        (
+            window
+            for window in reversed(fix_windows(case))
+            if any(window.holds(subjects.observed(e)) for e in rows)
+        ),
+        None,
+    )
+    if latest is None or latest.state == FIX_FAILED:
+        return []
+    disconfirmation_ids = _disconfirmation_row_ids(case)
+    floor = max(latest_disconfirmation_turn(case), _cause_posited_turn(case))
+    return [
+        e
+        for e in rows
+        if latest.holds(subjects.observed(e))
         and e.evidence_id not in disconfirmation_ids
         and subjects.observed(e) >= floor
-        and not any(w.holds(subjects.observed(e)) for w in failed)
     ]
 
 
@@ -1124,8 +1155,12 @@ class FixWindow:
     ``fix_turn`` is the fix's execution turn (``accepted_in_turn``); ``None``
     for window 0, the rows before any dated fix (an out-of-band fix leaves no
     execution record). ``end_turn`` is the next fix's execution turn, or None
-    for the latest. ``cause_rows`` are the window's non-engine causal_absence
-    rows; ``failure_turn`` is the turn the problem was observed persisting
+    for the latest. ``cause_rows`` are the window's causal_absence rows bound
+    to a cause of the window pool, ``confirmed_cause_rows`` those bound to the
+    confirmation pool (``_cause_pool``): any re-check of the cause the fix
+    addressed can FAIL the window, but only one of the case's confirmable
+    cause can make it SUCCEEDED. ``failure_turn`` is the turn the problem was
+    observed persisting
     after the cause's removal, when ``state`` is ``FIX_FAILED``.
     ``relief_turn`` is the first turn the problem was observed gone in the
     window, before any failure. ``disconfirmation`` is the earliest
@@ -1142,6 +1177,7 @@ class FixWindow:
     observed: bool = False
     relief_turn: int | None = None
     disconfirmation: tuple[int, int] | None = None
+    confirmed_cause_rows: tuple = ()
 
     def holds(self, turn: int) -> bool:
         """Whether an observation at ``turn`` belongs to this window."""
@@ -1200,7 +1236,10 @@ def fix_windows(case: "Case") -> list[FixWindow]:
     relapse, FAILED: the gate reads it as a failed fix, a destructive reader
     does not, unless the cause was observed removed after the relief and the
     problem present after that (``FixWindow.disconfirms_cause``). SUCCEEDED
-    needs the cause observed removed as well;
+    needs the cause observed removed as well, by a row bound to the
+    confirmation pool (``FixWindow.confirmed_cause_rows``): a re-check of a
+    fallen cause after another cause's fix fails that fix's window like any
+    re-check, but never confirms it;
     without a cause row the window stays UNKNOWN ("I ran it, still failing"
     with no cause re-check may be an implementation error).
 
@@ -1268,7 +1307,10 @@ def fix_windows(case: "Case") -> list[FixWindow]:
             else:
                 state, failure_turn = FIX_FAILED, turn
                 break
-        if state != FIX_FAILED and relief_turn is not None and cause_rows:
+        confirmed_cause_rows = tuple(
+            row for row in cause_rows if subjects.subject(row) == SUBJECT_CAUSE
+        )
+        if state != FIX_FAILED and relief_turn is not None and confirmed_cause_rows:
             state = FIX_SUCCEEDED
         windows.append(
             FixWindow(
@@ -1280,6 +1322,7 @@ def fix_windows(case: "Case") -> list[FixWindow]:
                 observed=bool(cause_rows or after_fix),
                 relief_turn=relief_turn,
                 disconfirmation=disconfirmation,
+                confirmed_cause_rows=confirmed_cause_rows,
             )
         )
     return windows

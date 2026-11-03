@@ -331,10 +331,19 @@ def _build_evidence_needs_block(case: Case) -> str:
         if outstanding or exhausted:
             lines.append("")
         lines.append("Re-verification checklist (confirmed findings — re-check each to")
-        lines.append(
-            "confirm the fix held; emit *_absence_evidence when a signature is gone,"
-        )
-        lines.append("naming the row it re-checks in rechecks):")
+        if case.current_stage == InvestigationStage.TREATMENT:
+            # After a fix, a re-check names what it re-checks (#1906 D1); a
+            # mitigation's relief does not (the mitigation template).
+            lines.append(
+                "confirm the fix held; emit *_absence_evidence when a signature "
+                "is gone,"
+            )
+            lines.append("naming the row it re-checks in rechecks):")
+        else:
+            lines.append(
+                "confirm the fix held; emit *_absence_evidence when a signature "
+                "is gone):"
+            )
         lines.append("")
         for label, ev in reverif_rendered:
             lines.append(_render_finding_line(ev, label))

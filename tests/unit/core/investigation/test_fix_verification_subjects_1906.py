@@ -12,14 +12,17 @@ from functools import partial
 import pytest
 
 from faultmaven.core.investigation.cause_assurance import (
+    ENGINE_EVIDENCE_AUTHOR,
     FIX_FAILED,
     FIX_SUCCEEDED,
     FIX_UNKNOWN,
     SUBJECT_CAUSE,
     SUBJECT_PROBLEM,
     SUBJECT_UNBOUND,
+    _cause_pool,
     cause_elimination_rows,
     confirm_root_from_resolution_absence,
+    confirming_polarity_rows,
     fix_windows,
     has_resolution_confirmation,
     observation_subject,
@@ -32,6 +35,9 @@ from faultmaven.core.investigation.milestone_engine.statement_revision import (
     confirm_revision,
 )
 from faultmaven.core.investigation.problem_status import invalidation_refusal
+from faultmaven.core.investigation.prompts.context_builder.causal_graph_block import (
+    fix_confirmed,
+)
 from faultmaven.core.investigation.prompts.context_builder.evidence_needs import (
     _build_evidence_needs_block,
 )
@@ -55,6 +61,7 @@ from faultmaven.modules.case.contracts import (
     EvidenceStance,
     HypothesisState,
     InvestigationActionType,
+    MitigationRecord,
     NodeEvidenceLink,
     NodeState,
     NodeType,
@@ -763,10 +770,11 @@ async def test_11_a_bound_relief_then_an_unnamed_return_keeps_ready_and_m6_quiet
 # ---------------------------------------------------------------------------
 
 
-async def _a_fell_then_b(validate_b: bool):
+async def _a_fell_then_b(supports: int, terminal: bool = True):
     """A identified, its fix (8) seen failing at 9 — the cause re-checked gone,
     the problem still there — so M6 demotes A. Then B, another candidate,
-    gets its own supports: two (validated, identified) or one (count-held)."""
+    gets its own supports: two (validated, identified), one (count-held) or
+    none; ``terminal=False`` leaves B with no why-stopping verdict."""
     eng, case, root_a, hyp_a = _fixed(8)
     await _record(
         eng,
@@ -777,6 +785,8 @@ async def _a_fell_then_b(validate_b: bool):
     )
     assert hyp_a.state == HypothesisState.REFUTED and _engine_rows(case)
     b = _add_sibling_chain(case)
+    if not terminal:
+        b.metadata.pop("root_terminal", None)
     problem = next(
         n for n in case.causal_nodes.values() if n.node_type == NodeType.PROBLEM
     )
@@ -784,8 +794,8 @@ async def _a_fell_then_b(validate_b: bool):
         CausalEdge(cause_node_id=b.node_id, effect_node_id=problem.node_id)
     )
     labels = ["worker RSS grows 40MB/h", "OOM killer log for gunicorn workers"]
-    supports = [_support(case, label, 10) for label in labels[: 2 if validate_b else 1]]
-    for evidence_id in supports:
+    rows = [_support(case, label, 10) for label in labels[:supports]]
+    for evidence_id in rows:
         b.evidence_links.append(
             NodeEvidenceLink(
                 evidence_id=evidence_id,
@@ -795,7 +805,7 @@ async def _a_fell_then_b(validate_b: bool):
             )
         )
     await _record(eng, case, 10)
-    return eng, case, root_a, b, supports[0]
+    return eng, case, root_a, b, (rows[0] if rows else None)
 
 
 async def _fix_b_and_recheck(eng, case, support):
@@ -811,7 +821,7 @@ async def _fix_b_and_recheck(eng, case, support):
 
 
 async def test_p1_a_refuted_causes_recheck_never_confirms_another_cause():
-    eng, case, root_a, b, _b_support = await _a_fell_then_b(validate_b=True)
+    eng, case, root_a, b, _b_support = await _a_fell_then_b(supports=2)
     assert b.is_identified_root
     _problem, cause = subject_index(case).bindable_rows()
     assert _SUPPORT not in [e.evidence_id for e in cause]
@@ -823,7 +833,7 @@ async def test_p1_a_refuted_causes_recheck_never_confirms_another_cause():
 
 
 async def test_p2_a_count_held_cause_binds_after_another_cause_fell():
-    eng, case, root_a, b, b_support = await _a_fell_then_b(validate_b=False)
+    eng, case, root_a, b, b_support = await _a_fell_then_b(supports=1)
     assert b.node_state == NodeState.INCONCLUSIVE  # count-held, not identified
     b_recheck, _meta = await _fix_b_and_recheck(eng, case, b_support)
     assert observation_subject(case, b_recheck) == SUBJECT_CAUSE
@@ -833,16 +843,21 @@ async def test_p2_a_count_held_cause_binds_after_another_cause_fell():
 async def test_a_fallen_causes_removal_still_proves_the_problem_existed():
     """The false-alarm refusal reads the window pool: the cause A's failed fix
     showed it removed, so the problem existed, whatever cause stands now."""
-    eng, case, _root_a, _b, _b_support = await _a_fell_then_b(validate_b=False)
+    eng, case, _root_a, _b, _b_support = await _a_fell_then_b(supports=1)
     (quiet,), _ = await _record(eng, case, 11, _obs(_GONE, "no 503 in the window"))
     assert invalidation_refusal(case, [quiet.evidence_id], "nothing failed") == (
         "a cause was confirmed eliminated, so the problem existed"
     )
 
 
-async def test_the_only_cause_refuted_then_re_fixed_still_resolves():
+@pytest.mark.parametrize(
+    "ruled_out_sibling", [False, True], ids=["alone", "beside-a-ruled-out-one"]
+)
+async def test_the_only_cause_refuted_then_re_fixed_still_resolves(ruled_out_sibling):
     """#1927's shape: the sole cause fell to its failed fix; re-fixed and
-    re-checked, it is the case's cause again (the pool's third leg)."""
+    re-checked, it is the case's cause again (the pool's third leg). A
+    candidate already ruled out elsewhere does not stand, so it does not take
+    the leg away (only a standing one does, F2)."""
     eng, case, root, hyp = _fixed(6)
     await _record(
         eng,
@@ -852,6 +867,9 @@ async def test_the_only_cause_refuted_then_re_fixed_still_resolves():
         _obs(_PRESENT, "checkout still returns 503", VERIFYING_ID),
     )
     assert hyp.state == HypothesisState.REFUTED
+    if ruled_out_sibling:
+        _add_sibling_chain(case)
+        case.hypotheses["hyp_00000000eeee"].state = HypothesisState.REFUTED
     _accept(case, InvestigationActionType.SOLUTION, 10)
     await _record(
         eng,
@@ -867,7 +885,7 @@ async def test_a_failed_fix_of_a_fallen_cause_is_not_the_identified_causes():
     """The window pool sees the fallen cause A's re-check after B's fix, and
     the window FAILS; but the fix it failed was not a fix of B, so M6 leaves
     B standing (``failed_fix_of``'s attribution)."""
-    eng, case, root_a, b, _b_support = await _a_fell_then_b(validate_b=True)
+    eng, case, root_a, b, _b_support = await _a_fell_then_b(supports=2)
     hyp_b = case.hypotheses["hyp_00000000eeee"]
     _accept(case, InvestigationActionType.SOLUTION, 12)
     await _record(
@@ -1137,3 +1155,182 @@ async def test_an_out_of_band_fix_resolves_in_window_0_on_named_rows():
     )
     assert [w.fix_turn for w in fix_windows(case)] == [None]
     assert assess_resolution_readiness(case).verdict == ResolutionReadiness.READY
+
+
+# ---------------------------------------------------------------------------
+# The delta round: F1, F2, F3, F5
+# ---------------------------------------------------------------------------
+
+
+async def test_f1_a_fallen_causes_recheck_never_makes_anothers_fix_succeed():
+    """A fell, B is identified and fixed at 12. At 13: the problem gone, and
+    a re-check of A's old support. The re-check is in the window pool (it can
+    still fail B's window) but not the confirmation pool: B's fix is not
+    confirmed, and the user is still asked for B's cause re-check."""
+    eng, case, _root_a, b, _b_support = await _a_fell_then_b(supports=2)
+    _accept(case, InvestigationActionType.SOLUTION, 12)
+    await _record(
+        eng,
+        case,
+        13,
+        _obs(_GONE, "checkout 200 again", VERIFYING_ID),
+        _obs(_CAUSE_GONE, "max_connections still reads 100", _SUPPORT),
+    )
+    window = fix_windows(case)[-1]
+    assert window.cause_rows and not window.confirmed_cause_rows
+    assert window.state != FIX_SUCCEEDED and not fix_confirmed(case)
+    assert _RECHECK_ASK in assess_resolution_readiness(case).message
+
+
+@pytest.mark.parametrize(
+    "supports, terminal", [(1, False), (0, True)], ids=["non-terminal-b", "bare-b"]
+)
+async def test_f2_a_fallen_cause_is_not_confirmed_past_a_newer_candidate(
+    supports, terminal
+):
+    """A fell; B stands as a candidate that is neither identified nor
+    count-held terminal. The fallen-cause leg does not serve confirmation
+    while B stands: A's re-check confirms nothing and A's supports are not
+    offered. The window pool still holds A (the pool's last leg too), so the
+    window sees the re-check and the model is not told it names nothing."""
+    eng, case, _root_a, b, _b_support = await _a_fell_then_b(supports, terminal)
+    assert not b.is_identified_root
+    _problem, cause = subject_index(case).bindable_rows()
+    assert _SUPPORT not in [e.evidence_id for e in cause]
+    a_recheck, meta = await _fix_b_and_recheck(eng, case, _SUPPORT)
+    assert observation_subject(case, a_recheck) == SUBJECT_UNBOUND
+    assert assess_resolution_readiness(case).verdict != ResolutionReadiness.READY
+    assert a_recheck in fix_windows(case)[-1].cause_rows
+    assert "Post-fix row(s)" not in (meta.get("system_feedback") or "")
+
+
+async def test_f2_the_fallen_causes_own_hypothesis_is_not_another_candidate():
+    """Only ANOTHER standing hypothesis takes the fallen leg away. In the turn
+    A loses its verdict, before the recompute re-records the identified roots,
+    A is fallen (recorded) while its own hypothesis still stands: A still
+    serves confirmation, and its support is still offered for a re-check."""
+    eng, case, root_a, hyp_a = _fixed(8)
+    await _record(eng, case, 8)
+    root_a.record_root_terminal(False, "something upstream resets the limit", 9)
+    assert not root_a.is_identified_root and hyp_a.state == HypothesisState.VALIDATED
+    assert _cause_pool(case)[0] == {root_a.node_id}
+    _problem, cause = subject_index(case).bindable_rows()
+    assert _SUPPORT in [e.evidence_id for e in cause]
+
+
+def _polarity_ids(case) -> list:
+    return [e.evidence_id for e in confirming_polarity_rows(case)]
+
+
+async def test_f3_the_report_cites_rows_of_the_latest_window_holding_one():
+    eng, case, _root_node, _hyp = _fixed(6)
+    (first,), _ = await _record(eng, case, 7, _obs(_CAUSE_GONE, "reads 100"))
+    _accept(case, InvestigationActionType.SOLUTION, 9)
+    assert _polarity_ids(case) == [first.evidence_id]  # the new window holds none
+    (second,), _ = await _record(eng, case, 10, _obs(_CAUSE_GONE, "reads 200"))
+    assert _polarity_ids(case) == [second.evidence_id]
+
+
+@pytest.mark.parametrize("same_turn", [False, True], ids=["next-turn", "same-turn"])
+async def test_f3_the_report_cites_nothing_from_a_failed_window(same_turn):
+    """Seen failing a turn later, M6's disconfirmation also floors the row;
+    seen failing in the row's own turn, only the FAILED-window bar keeps the
+    row out (the floor is ``>=``)."""
+    eng, case, _root_node, _hyp = _fixed(6)
+    gone = _obs(_CAUSE_GONE, "reads 100", _SUPPORT)
+    present = _obs(_PRESENT, "checkout still 503", VERIFYING_ID)
+    if same_turn:
+        await _record(eng, case, 7, gone, present)
+    else:
+        (row,), _ = await _record(eng, case, 7, gone)
+        assert _polarity_ids(case) == [row.evidence_id]
+        await _record(eng, case, 8, present)
+    assert fix_windows(case)[-1].state == FIX_FAILED
+    assert _polarity_ids(case) == []
+
+
+async def test_f3_the_report_cites_nothing_from_before_the_cause_was_posited():
+    case, root, _hyp = _identified_case()
+    root.metadata["root_attached_turn"] = 7
+    early = upload(case, 5, "turn-5 reading")
+    eng = _engine()
+    await _record(eng, case, 8, _obs(_CAUSE_GONE, "reads 100", file_id=early))
+    assert _polarity_ids(case) == []
+    (fresh,), _ = await _record(eng, case, 8, _obs(_CAUSE_GONE, "reads 100 now"))
+    assert _polarity_ids(case) == [fresh.evidence_id]
+
+
+async def test_f3_the_report_cites_no_failed_fix_disconfirmation():
+    """M6 demoted A at 7 (its engine row and REFUTES link). After a new fix,
+    a row the model REFUTES-linked to A is a disconfirmation, never cited; a
+    plain re-check is."""
+    eng, case, root, _hyp = _fixed(6)
+    await _record(
+        eng,
+        case,
+        7,
+        _obs(_CAUSE_GONE, "reads 100", _SUPPORT),
+        _obs(_PRESENT, "checkout still 503", VERIFYING_ID),
+    )
+    assert _engine_rows(case)
+    _accept(case, InvestigationActionType.SOLUTION, 9)
+    (refuting, plain), _ = await _record(
+        eng,
+        case,
+        10,
+        _obs(_CAUSE_GONE, "the fix did not remove it"),
+        _obs(_CAUSE_GONE, "pgbouncer pools connections"),
+    )
+    root.evidence_links.append(
+        NodeEvidenceLink(
+            evidence_id=refuting.evidence_id,
+            stance=EvidenceStance.REFUTES,
+            reasoning="failed treatment",
+            linked_at_turn=10,
+        )
+    )
+    assert _polarity_ids(case) == [plain.evidence_id]
+
+
+async def test_f3_the_report_cites_nothing_older_than_a_disconfirmation():
+    """No fix recorded (window 0); the engine recorded a failed-fix
+    disconfirmation at 5. A row read from data older than it is premature."""
+    case, _root_node, _hyp = _identified_case()
+    case.evidence.append(
+        Evidence(
+            summary="Engine inference (M6): the fix did not hold",
+            primary_purpose="engine inference",
+            category=_CAUSE_GONE,
+            source_type=EvidenceSourceType.ENGINE_INFERENCE,
+            collected_by=ENGINE_EVIDENCE_AUTHOR,
+            collected_at_turn=5,
+        )
+    )
+    early = upload(case, 4, "turn-4 reading")
+    eng = _engine()
+    await _record(eng, case, 6, _obs(_CAUSE_GONE, "reads 100", file_id=early))
+    assert _polarity_ids(case) == []
+    (fresh,), _ = await _record(eng, case, 6, _obs(_CAUSE_GONE, "reads 100 now"))
+    assert _polarity_ids(case) == [fresh.evidence_id]
+
+
+async def test_f3_the_report_cites_nothing_while_identification_is_held_open():
+    eng, case, _root_node, _hyp = _fixed(6)
+    (gone,), _ = await _record(eng, case, 7, _obs(_CAUSE_GONE, "reads 100"))
+    assert _polarity_ids(case) == [gone.evidence_id]
+    case.progress.cause_identification_held_open = True
+    assert _polarity_ids(case) == []
+
+
+@pytest.mark.parametrize("stage", ["mitigation", "treatment"])
+def test_f5_the_checklist_asks_for_rechecks_only_after_a_fix(stage):
+    case, _root_node, _hyp = _identified_case()
+    if stage == "treatment":
+        case.progress.solution_accepted = True
+    else:
+        case.progress.mitigation = MitigationRecord(
+            proposed_at_turn=case.current_turn, accepted=True
+        )
+    block = _build_evidence_needs_block(case)
+    assert "Re-verification checklist" in block
+    assert ("rechecks" in block) is (stage == "treatment")

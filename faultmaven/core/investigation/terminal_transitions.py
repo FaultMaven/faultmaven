@@ -1114,8 +1114,10 @@ def _relief_without_cause_recheck(case: "Case", window) -> bool:
     leg the user still owes is the cause. Not when the problem was seen again
     after the relief — then it is not gone. Both observations are bound to
     the problem and dated by their data (#1906 D1, #2145), as the windows
-    read them."""
-    if window.fix_turn is None or window.cause_rows:
+    read them. A cause re-check counts only when it could confirm
+    (``FixWindow.confirmed_cause_rows``): a re-check of a fallen cause after
+    another cause's fix still leaves the cause leg owed."""
+    if window.fix_turn is None or window.confirmed_cause_rows:
         return False
     subjects = subject_index(case)
     latest: dict = {}
