@@ -233,7 +233,10 @@ def _held_mark(case: Case, need) -> str:
 def build_fix_verification_block(case: Case) -> str:
     """The block, or ``""``: in TREATMENT, and in MITIGATION once a SOLUTION is
     dated (mitigation attempts are not records until #1906 Phase 4, D3). One
-    ``SubjectIndex`` and one ``fix_windows`` list serve the whole build."""
+    ``SubjectIndex`` and one ``fix_windows`` list serve the attempts, the legs
+    and the held need (``pending_symptom_check``); a held need's mark reads
+    the resolve decline (``declined_resolve_entry``, through the closure
+    verdict), which builds its own."""
     stage = case.current_stage if case.state == CaseState.INVESTIGATING else None
     attempts = _dated_fixes(case)
     if stage != InvestigationStage.TREATMENT and not (

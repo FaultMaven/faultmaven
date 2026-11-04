@@ -318,22 +318,32 @@ def test_the_block_marks_the_check_that_holds_the_offer(fulfilled):
     assert f"  - [{need.need_id}] {_ASK}{mark}\n" in build_fix_verification_block(case)
 
 
+@pytest.mark.parametrize("fulfilled", [False, True])
 @pytest.mark.parametrize("declined", [False, True])
-def test_the_held_mark_promises_no_offer_a_decline_still_binds(declined):
+def test_the_held_mark_promises_no_offer_a_decline_still_binds(declined, fulfilled):
     """Under a standing resolve decline the answer alone does not bring the
     offer back (it lapses only on a new confirmation row), and the mark says
-    so; without one it is unchanged."""
+    so, for a pending need and for one FULFILLED on a row from before its
+    ask; without a decline it is unchanged."""
     case = _case("treatment", problem=True)
     need = _held(case, 5)
+    why = ""
+    if fulfilled:
+        need.state = NeedState.FULFILLED
+        need.fulfilling_evidence_ids = list(
+            case.problem_verification.verifying_evidence_ids
+        )
+        why = ": the rows it cites predate the ask"
     if declined:
         with_declined_offer(case, kind="resolve", basis="backstop")
-    mark = _HOLDS
-    if declined:
-        mark = (
-            " (holds the resolution offer until answered; the user's decline of "
-            "the resolution still binds after it, unless the answer is a new "
-            "problem-bound row showing the problem gone)"
-        )
+    decline = (
+        "; the user's decline of the resolution still binds after it, unless the "
+        "answer is a new problem-bound row showing the problem gone"
+        if declined
+        else ""
+    )
+    mark = f" (holds the resolution offer until answered{why}{decline})"
+    assert pending_symptom_check(case) is need, "premise: held"
     assert f"  - [{need.need_id}] {_ASK}{mark}\n" in build_fix_verification_block(case)
 
 

@@ -268,9 +268,10 @@ async def test_1_the_check_asked_with_the_legs_holds_the_backstop(caplog):
     feedback = result["case_updated"].turn_history[-1].system_feedback
     assert (
         f"RESOLUTION HELD: the check you asked for is still pending "
-        f"([{need.need_id}] {_ASK}). The resolution is offered once its answer is "
-        "on record: record the row and mark the need FULFILLED citing it. If the "
-        "user cannot run the check, SUPERSEDE the need with the reason."
+        f"([{need.need_id}] {_ASK}). The resolution is offered once an answer "
+        "showing the problem gone is on record: record the row and mark the need "
+        "FULFILLED citing it. If the user cannot run the check, SUPERSEDE the need "
+        "with the reason."
     ) in feedback
     assert _compliance(caplog, 7) == {need.need_id}
 
@@ -359,49 +360,103 @@ async def test_3_the_models_resolved_while_held_gets_feedback_and_no_request(
     assert case.offer_record.open is None
 
 
+#: The decline-aware clause both feedback callers carry under a standing
+#: resolve decline, and what they carry without one.
+_DECLINE_CLAUSE = (
+    "The user declined the resolution. Once an answer showing the problem gone "
+    "is on record, a new problem-bound row showing it lapses that decline; on "
+    "any other row the decline still binds, and the user re-opens the "
+    "resolution with 'Mark it resolved'."
+)
+_EXITS = (
+    "mark the need FULFILLED citing it. If the user cannot run the check, "
+    "SUPERSEDE the need with the reason."
+)
+_PROMISES = {
+    "RESOLUTION HELD": "The resolution is offered once",
+    "RESOLVED NOT PROPOSED": "Propose resolved once",
+}
+
+
+@pytest.mark.parametrize("fulfilled", [False, True])
 @pytest.mark.parametrize("declined", [False, True])
-async def test_3_the_feedback_promises_no_offer_a_decline_still_binds(declined):
+async def test_3_the_feedback_promises_no_offer_a_decline_still_binds(
+    declined, fulfilled
+):
     """A resolve decline lapses only when the confirmation rows gain one, so
     under a standing decline the answer alone (a need marked FULFILLED on any
     other row) brings no offer back: the backstop's and step 2's feedback say
-    what does, and promise nothing. Without a decline, the text is as before.
-    Real turns: the backstop at 8, the model's ``resolved`` at 9."""
+    what does, and promise nothing, for a pending need and for one FULFILLED
+    on a row from before its ask. Without a decline, the promise is scoped to
+    an answer showing the problem gone. Real turns: the backstop at 8, the
+    model's ``resolved`` at 9."""
     engine = _engine()
-    case, _, need, _ = await _asked_at_7(engine)
+    case, _, need, verifying = await _asked_at_7(engine)
     if declined:
         with_declined_offer(case, kind="resolve", basis="backstop")
-    await _turn(engine, case, 8, "checking the targets page")
+    needs = [_mark(need, "fulfilled", verifying)] if fulfilled else []
+    await _turn(engine, case, 8, "checking the targets page", needs=needs)
     held = case.turn_history[-1].system_feedback
     await _turn(engine, case, 9, "mark it resolved", propose="resolved")
     refused = case.turn_history[-1].system_feedback
     assert case.offer_record.open is None, "premise: still held"
-    named = f"the check you asked for is still pending ([{need.need_id}] {_ASK})."
-    exits = (
-        "mark the need FULFILLED citing it. If the user cannot run the check, "
-        "SUPERSEDE the need with the reason."
+    assert (need.state == NeedState.FULFILLED) is fulfilled, "premise"
+    named = f"[{need.need_id}] {_ASK}"
+    status = (
+        f"the check you asked for ({named}) is marked FULFILLED, but the rows you "
+        "cited predate the ask."
+        if fulfilled
+        else f"the check you asked for is still pending ({named})."
     )
-    decline = (
-        "The user declined the resolution, and once the answer is on record that "
-        "decline still binds unless the answer is a new problem-bound row showing "
-        "the problem gone, which lapses it; otherwise the user re-opens the "
-        "resolution with 'Mark it resolved'."
-    )
-    for feedback, lead, promise in (
-        (held, "RESOLUTION HELD", "The resolution is offered once"),
-        (refused, "RESOLVED NOT PROPOSED", "Propose resolved once"),
+    for feedback, lead in (
+        (held, "RESOLUTION HELD"),
+        (refused, "RESOLVED NOT PROPOSED"),
     ):
+        promise = _PROMISES[lead]
         if declined:
-            assert f"{lead}: {named} Record its answer as a row and {exits} " in (
-                feedback
+            assert (
+                f"{lead}: {status} Record its answer as a row and {_EXITS} "
+                f"{_DECLINE_CLAUSE}" in feedback
             )
-            assert decline in feedback
             assert promise not in feedback
         else:
             assert (
-                f"{lead}: {named} {promise} its answer is on record: record the row "
-                f"and {exits}" in feedback
+                f"{lead}: {status} {promise} an answer showing the problem gone is "
+                f"on record: record the row and {_EXITS}" in feedback
             )
             assert "The user declined the resolution" not in feedback
+
+
+async def test_3_an_answer_showing_the_problem_present_reopens_nothing():
+    """Item 2's other shape: under a standing decline, the held turn's clause
+    is scoped to an answer showing the problem gone. The answer at 8 shows it
+    still present, a dated fix's window fails, the legs fall, and nothing is
+    offered or re-opened: no held feedback, no offer, no "Mark it resolved"
+    chip."""
+    engine = _engine()
+    case, result, need, verifying = await _asked_at_7(engine)
+    with_declined_offer(case, kind="resolve", basis="backstop")
+    await _turn(engine, case, 8, "checking the targets page")
+    assert _DECLINE_CLAUSE in case.turn_history[-1].system_feedback, "premise"
+    data = upload(case, 9, "prometheus targets")
+    await _turn(
+        engine,
+        case,
+        9,
+        "the targets page",
+        rows=[
+            _row(_PRESENT, "Prometheus still shows job=billing DOWN", data, verifying)
+        ],
+    )
+    feedback = case.turn_history[-1].system_feedback or ""
+    readiness = assess_resolution_readiness(case)
+    assert readiness.verdict == ResolutionReadiness.NEEDS_INFO
+    assert readiness.missing[0] == "a new fix after the one that did not hold"
+    assert pending_symptom_check(case) is None
+    assert case.offer_record.open is None
+    assert project_offers(case).reopen_chip is None
+    for promise in ("RESOLUTION HELD", "Mark it resolved", "is offered once"):
+        assert promise not in feedback
 
 
 async def test_4_step_zero_opens_no_close_on_a_check_that_became_pending():

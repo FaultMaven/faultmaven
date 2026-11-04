@@ -810,13 +810,16 @@ def resolve_declined_actions(case: Case) -> str:
     return RESOLVE_DECLINED_ACTIONS
 
 
-#: What follows the answer while the user's decline of the resolution stands:
-#: it lapses only when the confirmation rows gain one (``offers.decline_stands``),
-#: so a need marked FULFILLED on any other row leaves it binding.
+#: What follows an answer showing the problem gone while the user's decline of
+#: the resolution stands: it lapses only when the confirmation rows gain one
+#: (``offers.decline_stands``), so a need marked FULFILLED on any other row
+#: leaves it binding. Scoped to that answer: it promises nothing on one
+#: showing the problem still present (after a dated fix, a problem-bound one
+#: fails the fix's window, leaving nothing to re-open).
 PENDING_CHECK_DECLINE_CLAUSE = (
-    "The user declined the resolution, and once the answer is on record that "
-    "decline still binds unless the answer is a new problem-bound row showing "
-    "the problem gone, which lapses it; otherwise the user re-opens the "
+    "The user declined the resolution. Once an answer showing the problem gone "
+    "is on record, a new problem-bound row showing it lapses that decline; on "
+    "any other row the decline still binds, and the user re-opens the "
     "resolution with 'Mark it resolved'."
 )
 
@@ -827,10 +830,11 @@ def pending_check_feedback(case: Case, check: EvidenceNeed, *, proposed: bool) -
     superseded. ``proposed``: its ``resolved`` was refused (ruling 3); else
     the backstop held the offer. A held FULFILLED need cites only rows from
     turns before the ask (``pending_symptom_check``), and the feedback says
-    so. While a resolve decline stands (``declined_resolve_entry``), the
-    answer does not by itself bring the resolution back, so the feedback
-    promises no offer or proposal and says what does
-    (``PENDING_CHECK_DECLINE_CLAUSE``)."""
+    so, with a decline or without. While a resolve decline stands
+    (``declined_resolve_entry``), the answer does not by itself bring the
+    resolution back, so the feedback promises no offer or proposal and says
+    what does (``PENDING_CHECK_DECLINE_CLAUSE``). What it promises is scoped to
+    an answer showing the problem gone."""
     named = f"[{check.need_id}] {check.request_text}"
     if check.state == NeedState.FULFILLED:
         status = (
@@ -849,10 +853,14 @@ def pending_check_feedback(case: Case, check: EvidenceNeed, *, proposed: bool) -
             f"{lead}: {status}. Record its answer as a row and {exits} "
             f"{PENDING_CHECK_DECLINE_CLAUSE}"
         )
+    # Scoped like the clause: it promises nothing on an answer showing the
+    # problem still present (after a dated fix, a problem-bound one fails the
+    # fix's window).
     then = (
-        "Propose resolved once its answer is on record"
+        "Propose resolved once an answer showing the problem gone is on record"
         if proposed
-        else "The resolution is offered once its answer is on record"
+        else "The resolution is offered once an answer showing the problem gone "
+        "is on record"
     )
     return f"{lead}: {status}. {then}: record the row and {exits}"
 
