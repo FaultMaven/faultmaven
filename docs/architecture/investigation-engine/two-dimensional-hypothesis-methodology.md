@@ -1047,7 +1047,15 @@ records only what it can substantiate:
   and a problem-gone row alone (possibly a workaround's relief) does not
   look at the fix. When the latest fix shows only that relief, the gate asks
   for the cause re-check, the one leg still owed. The problem leg counts
-  from the confirming window's fix. The gate reads a failed fix the same
+  from the confirming window's fix. When the model declares that the user
+  reported the fix in their previous message (`accepted_fix_reported_in`,
+  #2427), the fix is dated to that message, within a bound that moves no
+  observation out of the window that judged it: with a fix dated before, its
+  window FAILED before the report message and its disconfirmation reads the
+  same either way, or the declaration is ignored. The fix's window then holds
+  that message's rows, all post-fix: its cause row and a later problem-present
+  row (the registration turn's paste included) are a disconfirmation
+  (INV-42). The gate reads a failed fix the same
   whether or not M6 could act on it, so the two cannot disagree about
   whether a fix failed. M6's record trigger demotes the identified
   (validated, still-standing) cause when the latest window *with a verdict*
@@ -1055,7 +1063,7 @@ records only what it can substantiate:
   seen present, never seen gone in between (`FixWindow.disconfirmation`, the
   pair M6's row names; a newer fix still unobserved does not erase it: "still
   503, so I'm putting pgbouncer in" records the failure and the next fix in
-  one turn), the fix ran at or after the hypothesis was proposed, and the fix was a fix
+  one turn), the fix ran (or, dated to an earlier report, registered) at or after the hypothesis was proposed, and the fix was a fix
   *of* that cause — not every cause row of the window is affirmatively about
   another candidate chain (`BearingFrame.about_another_chain`, the confirm
   stamp's mis-citation guard); a failed fix of another candidate is no

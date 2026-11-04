@@ -215,7 +215,7 @@ def failed_fix_of(case: Case, hyp: Hypothesis) -> FixWindow | None:
     window = latest_decided_fix_window(case)
     if window is None or not window.disconfirms_cause:
         return None
-    if (getattr(hyp, "generated_at_turn", 0) or 0) > window.fix_turn:
+    if (getattr(hyp, "generated_at_turn", 0) or 0) > _registration_turn(case, window):
         return None
     subjects = subject_index(case)
     if not any(
@@ -224,6 +224,22 @@ def failed_fix_of(case: Case, hyp: Hypothesis) -> FixWindow | None:
     ):
         return None
     return window
+
+
+def _registration_turn(case: Case, window: FixWindow) -> int:
+    """The turn the window's fix registered in: its ``registered_in_turn`` when
+    the fix is dated to the user's earlier report (#2427), else its execution
+    turn. A cause re-asserted on a new hypothesis in the registration turn, as
+    the failed-fix notice asks, is still one that fix addressed."""
+    return max(
+        (
+            getattr(a, "registered_in_turn", None) or window.fix_turn
+            for a in getattr(case, "proposed_actions", None) or []
+            if getattr(a, "state", None) == "accepted"
+            and getattr(a, "accepted_in_turn", None) == window.fix_turn
+        ),
+        default=window.fix_turn,
+    )
 
 
 def refuting_evidence_on_record(case: Case, hyp: Hypothesis) -> list[str]:

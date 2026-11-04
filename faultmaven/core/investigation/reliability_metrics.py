@@ -45,7 +45,8 @@ Read as rates, never the numerator alone:
   ``pruned`` (part of the body was discarded to keep the rest: an invalid list
   entry or optional sub-object quarantined, or a state field reset to its
   default, or an out-of-range confidence removed — dropped from an
-  update-shaped record, or set aside for ingest to decide on a link),
+  update-shaped record, or set aside for ingest to decide on a link — or an
+  off-enum ``MilestoneUpdates.accepted_fix_reported_in`` dropped, #2427),
   ``state_dropped`` (state_updates unrecoverable, conversational fallback),
   ``response_synthesized`` (required agent_response missing, placeholder
   filled, state_updates KEPT),
@@ -76,12 +77,15 @@ Read as rates, never the numerator alone:
   it cares about.
 
 - ``faultmaven_schema_field_repairs_total``: every out-of-range confidence the
-  engine acted on, by ``schema`` (the model class owning the field, e.g.
+  engine acted on, and every off-enum ``MilestoneUpdates.accepted_fix_reported_in``
+  it dropped (#2427), by ``schema`` (the model class owning the field, e.g.
   ``HypothesisToAdd``), ``field`` and ``action`` — ``rescaled`` (a value in
   ``(1, 100]`` read as a percentage), ``coerced`` (a ``bool``), ``dropped``
-  (removed from an update-shaped record, the stored value kept) or ``pruned``
-  (the record carrying it removed). Field-level where the outcome above is
-  body-level, so a repair and a drop are counted separately (fm#1502). Link
+  (removed from an update-shaped record, the stored value kept; for
+  ``accepted_fix_reported_in``, the value is dropped and the fix is dated to
+  the registration turn) or ``pruned`` (the record carrying it removed).
+  Field-level where the outcome above is body-level, so a repair and a drop
+  are counted separately (fm#1502). Link
   confidences are counted at INGEST, the only point that knows whether the link
   is new; a body that never reaches ingest (a retried or failed generation)
   contributes nothing for them. One schema outside the engine is counted here
@@ -157,9 +161,11 @@ SCHEMA_FIELD_REPAIR_ACTIONS = ("rescaled", "coerced", "dropped", "pruned", "defa
 
 schema_field_repairs_total = Counter(
     "faultmaven_schema_field_repairs_total",
-    "Out-of-range confidence values the engine acted on, labeled by ``schema`` "
-    "(owning model class), ``field`` and ``action`` (rescaled | coerced | "
-    "dropped | pruned | defaulted). Link confidences are counted at ingest.",
+    "Out-of-range confidence values the engine acted on, and off-enum "
+    "MilestoneUpdates.accepted_fix_reported_in values it dropped, labeled by "
+    "``schema`` (owning model class), ``field`` and ``action`` (rescaled | "
+    "coerced | dropped | pruned | defaulted). Link confidences are counted at "
+    "ingest.",
     ["schema", "field", "action"],
 )
 

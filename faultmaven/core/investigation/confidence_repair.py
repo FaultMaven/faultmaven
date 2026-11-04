@@ -1,4 +1,6 @@
-"""Out-of-range confidence from a provider that does not enforce the bound (fm#1502).
+"""Out-of-range confidence from a provider that does not enforce the bound (fm#1502),
+and the one non-confidence value recorded the same way: an off-enum fix report
+(#2427, below).
 
 Every probability-shaped field the engine asks the model for is
 ``Field(ge=0, le=1)``, and that bound reaches the wire (fm#355, pinned by
@@ -20,8 +22,8 @@ field's ROLE, never by its value:
   non-number) prunes **that record only**.
 - **UPDATE-shaped** — the field's absence means "keep the stored value", so the
   field is dropped and the record kept. Only where absence means *keep*:
-  dropping a field whose absence means a *default* silently writes the default,
-  which is the clamp the ruling rejected.
+  dropping a confidence whose absence means a *default* silently writes the
+  default, which is the clamp the ruling rejected.
 - **Links** — absence means full confidence on a NEW link and "keep" on a
   re-emitted one, and only ingest knows which it is. So validation sets the
   value aside (outside the schema, the bound left intact) and ingest decides:
@@ -40,6 +42,15 @@ refutation. Clamping overstates (a falsely certain hypothesis steers the
 investigation); a sentinel understates, and on a refutation understating is the
 unsafe direction. Both were built and rejected on #1498.
 
+**The fix report** (``MilestoneUpdates.accepted_fix_reported_in``, #2427) is not
+a confidence: it names the user message that reported carrying the fix out,
+``this_message`` or ``previous_message``. An off-enum value is DROPPED, the
+field alone, so the acceptance and the fix it names stand. There the field's
+absence is the inert reading (the fix is dated to the registration turn, and
+nothing is inferred), so dropping it writes no claim, unlike a confidence's
+default. Its note says so in its own words (``ConfidenceRepair.detail``), and
+the apply step also tells the model the value was ignored.
+
 Every action is observable twice: a per-field Prometheus counter
 (``faultmaven_schema_field_repairs_total``) and a note on the turn's
 ``validation_repairs``. Validators cannot see the engine, so they report through
@@ -57,9 +68,10 @@ from typing import Any, Optional
 
 from faultmaven.core.investigation import reliability_metrics
 
-#: Validation-context key a confidence validator appends its
-#: :class:`ConfidenceRepair` records to. Absent context (a direct construction
-#: in code or a test) repairs identically and simply reports nowhere.
+#: Validation-context key a confidence validator, or the fix-report validator
+#: (#2427), appends its :class:`ConfidenceRepair` records to. Absent context (a
+#: direct construction in code or a test) repairs identically and simply
+#: reports nowhere.
 CONFIDENCE_REPAIRS_CONTEXT_KEY = "fm_confidence_repairs"
 
 #: Pydantic error ``type`` raised for an ADD-shaped confidence nothing can
@@ -68,8 +80,8 @@ CONFIDENCE_REPAIRS_CONTEXT_KEY = "fm_confidence_repairs"
 #: caused it rather than inferred from the ``loc``.
 CONFIDENCE_UNREPAIRABLE = "confidence_unrepairable"
 
-#: How much of a raw value a note or a log line quotes. A model can put
-#: anything in a number's place, including a paragraph.
+#: How much of a raw value a note, a log line or a feedback line quotes. A model
+#: can put anything in a number's or an enum's place, including a paragraph.
 _RAW_REPR_MAX = 40
 
 #: The private attribute a link schema keeps a set-aside confidence on. Private
@@ -79,11 +91,14 @@ LINK_SET_ASIDE_ATTR = "_stance_confidence_set_aside"
 
 
 class ConfidenceAction(str, Enum):
-    """What happened to one out-of-range confidence value."""
+    """What happened to one value the engine acted on: an out-of-range
+    confidence, or an off-enum fix report (only ever DROPPED, #2427)."""
 
     RESCALED = "rescaled"  # (1, 100] read as a percentage
     COERCED = "coerced"  # bool -> 1.0 / 0.0
-    DROPPED = "dropped"  # field removed; the stored value stands
+    # Field removed. For a confidence, the stored value stands; for the fix
+    # report, the fix is dated to the registration turn.
+    DROPPED = "dropped"
     PRUNED = "pruned"  # the record carrying it was removed
     # Treated as absent, so the field's default applies. No engine schema uses
     # it — the ruling above rejects a default there. Document triage does
@@ -94,9 +109,9 @@ class ConfidenceAction(str, Enum):
     SET_ASIDE = "set_aside"
 
 
-#: Actions that keep what the model meant. A body whose every confidence action
-#: is one of these is ``repaired``; anything else lost part of what the model
-#: said.
+#: Actions that keep what the model meant. A body whose every recorded action
+#: (on a confidence, or the fix report's drop) is one of these is ``repaired``;
+#: anything else lost part of what the model said.
 MEANING_PRESERVING_ACTIONS = frozenset(
     {ConfidenceAction.RESCALED, ConfidenceAction.COERCED}
 )
@@ -104,7 +119,8 @@ MEANING_PRESERVING_ACTIONS = frozenset(
 
 @dataclass(frozen=True)
 class ConfidenceRepair:
-    """One confidence value the engine had to act on."""
+    """One value the engine had to act on: an out-of-range confidence, or an
+    off-enum ``MilestoneUpdates.accepted_fix_reported_in``, dropped (#2427)."""
 
     schema: str  # the model class that owns the field, e.g. "HypothesisToAdd"
     field: str  # e.g. "likelihood"
@@ -112,10 +128,16 @@ class ConfidenceRepair:
     raw: Any
     value: Optional[float] = None
     where: Optional[str] = None  # where the value sat, when it is known
+    # What the note says after the value, for the one field that is not a
+    # confidence (``MilestoneUpdates.accepted_fix_reported_in``, #2427): the
+    # value is dropped and the fix is dated to the registration turn.
+    detail: Optional[str] = None
 
     def note(self) -> str:
         """The line this repair contributes to the turn's ``validation_repairs``."""
         head = f"{self.schema}.{self.field}: {short_repr(self.raw)}"
+        if self.detail:
+            return f"{head} {self.detail}"
         if self.action is ConfidenceAction.RESCALED:
             return f"{head} read as a percentage, rescaled to {self.value:.4g}"
         if self.action is ConfidenceAction.COERCED:

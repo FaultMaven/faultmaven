@@ -636,6 +636,17 @@ class MilestoneUpdates(NullTolerantModel):
             "with solution_accepted."
         ),
     )
+    # The message that reported the fix dates it (#2427). Read only with
+    # solution_accepted. An enum, not a boolean: not a milestone.
+    accepted_fix_reported_in: Optional[Literal["this_message", "previous_message"]] = (
+        Field(
+            None,
+            description=(
+                "Which user message reported carrying out the fix: this one "
+                "(default) or the previous one."
+            ),
+        )
+    )
 
     # UPDATE-shaped (fm#1502): ``None`` keeps ``progress.root_cause_likelihood``
     # as it stands, so an out-of-range value costs this field and nothing else.
@@ -643,6 +654,29 @@ class MilestoneUpdates(NullTolerantModel):
     @classmethod
     def _drop_root_cause_likelihood(cls, v: Any, info: ValidationInfo) -> Any:
         return _drop_update_confidence(cls, v, info)
+
+    # An off-enum value costs this field alone (#2427): unset dates the fix to
+    # this turn, and ``solution_accepted`` with ``accepted_action_ref`` stand.
+    # Reported as a confidence drop is (fm#1502); the apply step tells the model.
+    @field_validator("accepted_fix_reported_in", mode="before")
+    @classmethod
+    def _drop_unknown_fix_report(cls, v: Any, info: ValidationInfo) -> Any:
+        if v is None or v in ("this_message", "previous_message"):
+            return v
+        report(
+            info.context,
+            ConfidenceRepair(
+                schema=cls.__name__,
+                field=info.field_name or "?",
+                action=ConfidenceAction.DROPPED,
+                raw=v,
+                detail=(
+                    "is not this_message or previous_message; field dropped, "
+                    "the fix is dated to this turn"
+                ),
+            ),
+        )
+        return None
 
 
 # The docstring and the field descriptions below are sent to the model. Keep
