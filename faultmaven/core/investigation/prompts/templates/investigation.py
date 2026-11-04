@@ -386,7 +386,7 @@ evidence_trail:
       same response). Each fix registers once; a fix after an earlier one
       registers only when named, and is justified like the first. If the user
       reported carrying out the fix in their previous message, set
-      accepted_fix_reported_in to previous_message.
+      state_updates.milestones.accepted_fix_reported_in to previous_message.
 
     Example (completing a milestone):
     ✅ {{
@@ -495,7 +495,9 @@ You MUST respond with valid JSON matching these fields:
 - **state_updates**:
   - milestones: Map of milestone flags (True where data allows). Set stage-gate milestones
     when you detect user compliance with a pending action (see <pending_action> in context);
-    with solution_accepted, set accepted_action_ref to that action's ACTION_ID.
+    with solution_accepted, set accepted_action_ref to that action's ACTION_ID, and
+    accepted_fix_reported_in (this_message or previous_message) to the user message
+    that reported carrying it out.
   - outcome: REQUIRED — exactly one of the values below. Pick the most
     specific one that fits this turn; ``other`` only when none apply.
 """ + _OUTCOME_PROMPT_BLOCK + "\n"

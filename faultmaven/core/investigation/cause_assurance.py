@@ -1361,10 +1361,11 @@ def confirming_window(case: "Case") -> FixWindow | None:
     then "checkout works"), and a problem-gone row alone — a relief, possibly
     a workaround's — does not look at the fix. When the model declares that the
     user reported the fix in their previous message
-    (``accepted_fix_reported_in``, #2427), the fix is dated to that message, so
-    its window holds that message's rows and the registration turn's paste is
-    post-fix. Read off ``fix_windows`` alone,
-    so the gate reads a failed fix the same whether or not M6 could act on
+    (``accepted_fix_reported_in``, #2427), the fix is dated to that message
+    within its bound (``stage_gates._date_to_the_report``), so its window holds
+    that message's rows and the registration turn's paste is post-fix. Read
+    off ``fix_windows`` alone, so the gate reads a failed fix the same whether
+    or not M6 could act on
     it. With no dated fix it is window 0, the whole case, and an out-of-band
     fix confirms as before. None when nothing was observed at all (no leg can
     stand then)."""

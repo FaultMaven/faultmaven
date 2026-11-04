@@ -1049,10 +1049,13 @@ records only what it can substantiate:
   for the cause re-check, the one leg still owed. The problem leg counts
   from the confirming window's fix. When the model declares that the user
   reported the fix in their previous message (`accepted_fix_reported_in`,
-  #2427), the fix is dated to that message, if it is later than every fix
-  already dated: its window holds that message's rows, and the registration
-  turn's paste is post-fix (a problem-present row there, with a cause
-  re-check, disconfirms). The gate reads a failed fix the same
+  #2427), the fix is dated to that message, within a bound that moves no
+  observation out of the window that judged it: with a fix dated before, its
+  window FAILED before the report message and its disconfirmation reads the
+  same either way, or the declaration is ignored. The fix's window then holds
+  that message's rows, all post-fix: its cause row and a later problem-present
+  row (the registration turn's paste included) are a disconfirmation
+  (INV-42). The gate reads a failed fix the same
   whether or not M6 could act on it, so the two cannot disagree about
   whether a fix failed. M6's record trigger demotes the identified
   (validated, still-standing) cause when the latest window *with a verdict*

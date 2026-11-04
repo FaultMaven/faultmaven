@@ -655,6 +655,22 @@ class MilestoneUpdates(NullTolerantModel):
     def _drop_root_cause_likelihood(cls, v: Any, info: ValidationInfo) -> Any:
         return _drop_update_confidence(cls, v, info)
 
+    # An off-enum value costs this field alone (#2427): unset dates the fix to
+    # this turn, and ``solution_accepted`` with ``accepted_action_ref`` stand.
+    @field_validator("accepted_fix_reported_in", mode="before")
+    @classmethod
+    def _drop_unknown_fix_report(cls, v: Any) -> Any:
+        if v is None or v in ("this_message", "previous_message"):
+            return v
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Dropped accepted_fix_reported_in %r: not this_message or "
+            "previous_message",
+            v,
+        )
+        return None
+
 
 # The docstring and the field descriptions below are sent to the model. Keep
 # them free of the vocabulary ``test_evidence_trail_wording_1751`` audits

@@ -1319,6 +1319,7 @@ def decide_fix_acceptance(
     a hold cannot change and carries the rest, justified, on its bundle; the
     replay applies the same state rule (``_register_carried_fix``)."""
     ref = _normalise_id_ref(getattr(m, "accepted_action_ref", None)) or None
+    declared = getattr(m, "accepted_fix_reported_in", None) == "previous_message"
     if not getattr(m, "solution_accepted", False):
         if ref:
             _add_system_feedback(
@@ -1327,6 +1328,8 @@ def decide_fix_acceptance(
                 "with solution_accepted. Set both only when the user reports "
                 "carrying out that fix.",
             )
+        if declared:
+            _ignore_fix_report(case, metadata, "it is read only with solution_accepted")
         return None
     entries = _fix_entries(proposals, held, fixes)
     resolved = _resolve_fix_identity(
@@ -1340,6 +1343,13 @@ def decide_fix_acceptance(
             return None
         if _registration_justified(case, metadata):
             _carry_fix(case, identity, user_message, metadata)
+            if declared:
+                _ignore_fix_report(
+                    case,
+                    metadata,
+                    "a fix carried through a revision hold is dated to its hold "
+                    f"turn, {case.current_turn}",
+                )
         return None
     bearer = _newest_fix_bearer(case, identity, fixes)
     if bearer is None:
@@ -1370,29 +1380,70 @@ def _register_carried_fix(
     return bearer if _bearer_registers(case, bearer, metadata, carried=True) else None
 
 
-def _declared_fix_turn(case: Case, reported_in: Optional[str]) -> Optional[int]:
-    """The previous turn, when the model declares that the user reported
-    carrying the fix out in their previous message (``accepted_fix_reported_in``,
-    #2427), else None: the fix is dated to this turn. The previous turn must be
-    at least 1 and later than every fix already dated, so the windows stay in
-    order and distinct; a declaration outside those bounds is logged and
-    ignored. Nothing is inferred from the evidence."""
-    if reported_in != "previous_message":
-        return None
-    from faultmaven.core.investigation.cause_assurance import fix_application_turn
-
-    previous, latest = case.current_turn - 1, fix_application_turn(case)
-    if previous >= 1 and (latest is None or previous > latest):
-        return previous
+def _ignore_fix_report(case: Case, metadata: dict[str, Any], reason: str) -> None:
+    """``accepted_fix_reported_in`` previous_message was not applied (#2427):
+    logged, and one line so the model does not go on reading the fix as dated
+    to the previous message, as for an ignored ``accepted_action_ref``."""
     logger.info(
-        "Case %s: accepted_fix_reported_in=previous_message ignored at turn %s: "
-        "turn %s is not after the latest dated fix (%s)",
+        "Case %s: accepted_fix_reported_in=previous_message ignored at turn %s: %s",
         case.case_id,
         case.current_turn,
-        previous,
-        latest,
+        reason,
     )
-    return None
+    _add_system_feedback(
+        metadata,
+        f"SYSTEM: accepted_fix_reported_in previous_message was ignored: {reason}.",
+    )
+
+
+def _date_to_the_report(case: Case, target: Any, metadata: dict[str, Any]) -> None:
+    """Date ``target``, a live SOLUTION registration stamped this turn, to the
+    previous turn: the model declared that the user reported carrying it out
+    in their previous message (``accepted_fix_reported_in``, #2427). Nothing is
+    inferred from the evidence; ``registered_in_turn`` keeps this turn.
+
+    Bounded so that no observation leaves the window that judged it. With no
+    fix dated before, the previous turn's rows leave window 0, which never
+    fails. With one, its window must have FAILED before the previous turn (a
+    failure is final), and its disconfirmation must read the same with this
+    fix dated either way. Otherwise the declaration is ignored, with a line."""
+    from faultmaven.core.investigation.cause_assurance import FIX_FAILED, fix_windows
+
+    turn, previous = case.current_turn, case.current_turn - 1
+    dated_here = f"the fix is dated to turn {turn}"
+    if previous < 1:
+        _ignore_fix_report(
+            case, metadata, f"there is no message before turn {turn}; {dated_here}"
+        )
+        return
+    # The window before this fix, ending at this turn.
+    judged = fix_windows(case)[-2]
+    if judged.fix_turn is not None and (
+        judged.state != FIX_FAILED or judged.failure_turn >= previous
+    ):
+        _ignore_fix_report(
+            case,
+            metadata,
+            f"the fix executed at turn {judged.fix_turn} was not seen failing "
+            f"before turn {previous}, so turn {previous}'s observations stay "
+            f"with it; {dated_here}",
+        )
+        return
+    target.accepted_in_turn = previous
+    if (
+        judged.fix_turn is not None
+        and fix_windows(case)[-2].disconfirmation != judged.disconfirmation
+    ):
+        target.accepted_in_turn = turn
+        _ignore_fix_report(
+            case,
+            metadata,
+            f"turn {previous}'s observations decide whether the fix executed at "
+            f"turn {judged.fix_turn} was disconfirmed, so they stay with it; "
+            f"{dated_here}",
+        )
+        return
+    target.registered_in_turn = turn
 
 
 def _apply_stage_gate_side_effects(
@@ -1421,8 +1472,10 @@ def _apply_stage_gate_side_effects(
        at the accept step).
     2. For a SOLUTION (#2105): a superseded action is restored first; the stamp
        and the attempt's message are a ``carried`` decision's hold turn's, else
-       this turn's, or the previous turn's when ``fix_reported_in`` declares
-       the report there (``_declared_fix_turn``, #2427); and
+       this turn's. On a live turn whose ``fix_reported_in`` declares the
+       report in the previous message, the stamp alone moves to the previous
+       turn, within its bound (``_date_to_the_report``, #2427); the attempt's
+       message stays this turn's. And
        ``progress.solution_accepted`` plus one ``milestones_completed`` entry
        record each registration.
     3. Create an ActionAttempt audit record per accepted action.
@@ -1448,12 +1501,6 @@ def _apply_stage_gate_side_effects(
             )
         if target is None:
             continue
-        # Bounded by the fixes dated before this registration joins them.
-        declared = (
-            _declared_fix_turn(case, fix_reported_in)
-            if is_solution and carried is None
-            else None
-        )
         if target.state == "superseded":
             # Restored to pending, then accepted: the user ran the fix named.
             logger.info(
@@ -1473,9 +1520,8 @@ def _apply_stage_gate_side_effects(
         # executed at its hold turn, not at the replay.
         by_carry = is_solution and carried is not None
         target.accepted_in_turn = carried.turn if by_carry else case.current_turn
-        if declared is not None:
-            target.accepted_in_turn = declared
-            target.registered_in_turn = case.current_turn
+        if is_solution and not by_carry and fix_reported_in == "previous_message":
+            _date_to_the_report(case, target, metadata)
         # INV-33: a SOLUTION acceptance moves the case to TREATMENT (verify the
         # executed fix). Retire the DIAGNOSTIC asks the offer shadowed so an
         # earlier pre-fix ask cannot resurface in <pending_action> once the

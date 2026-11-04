@@ -251,9 +251,12 @@ class ProposedAction(BaseModel):
     accepted_in_turn: Optional[int] = Field(
         default=None,
         description=(
-            "Turn in which compliance detection observed the user EXECUTE this "
-            "action (state='accepted'). Distinct from ``proposed_in_turn``, "
-            "which is when the action was OFFERED — the user executes it a "
+            "Turn the user carried this action out (state='accepted'): the turn "
+            "the acceptance registered in, or the previous one when the model "
+            "declared the user reported it in their previous message (#2427), "
+            "so it can precede ``proposed_in_turn``. Distinct from "
+            "``proposed_in_turn``, which is when the action was OFFERED — the "
+            "user executes it a "
             "turn later in the ordinary flow (#987). Anything reasoning about "
             "what happened *after the fix* must key on this, not on the "
             "proposal turn, or pre-execution evidence from the offering turn "
