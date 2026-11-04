@@ -235,7 +235,10 @@ class TestTheModelsProposalIsQuiet:
     ):
         """The user's question withdraws the false-alarm close; the model
         withdraws the finding and proposes in the same reply. A withdrawn
-        finding is not a new one: no close re-opens (review of 63619934c)."""
+        finding is not a new one: its ``closed`` re-opens no close (review of
+        63619934c). Its ``resolved`` never reaches the writer: with the finding
+        gone the case reads NEEDS_INFO, so it is a request (#2408), as on
+        ``main``."""
         case = _false_alarm_case(model_close=False)
         engine = _false_alarm_engine()
         engine.generator.generate_structured_output = AsyncMock(
@@ -261,6 +264,9 @@ class TestTheModelsProposalIsQuiet:
         assert case.offer_record.open is None
         if propose == "closed":
             assert _quiet("close") in _feedback(result)
+        else:
+            assert case.offer_record.resolve_request is not None
+            assert _quiet("resolve") not in _feedback(result)
 
     async def test_a_standing_deferred_decline_still_reports_itself(self, caplog):
         """The deferred side of #1889: beside a close the user set aside this
