@@ -699,19 +699,12 @@ def _cause_pool(case: "Case") -> tuple[frozenset, frozenset, frozenset]:
        identified (``progress.identified_cause_root_ids``) and the roots
        carrying the engine's failed-fix disconfirmation (only M6 mints one,
        on the identified cause it demoted) — only when nothing above stands
-       AND no other candidate cause stands: a cause re-fixed after it fell
-       can still be shown removed, while nothing is confirmed through the
-       fallen one past another candidate. Another candidate is any other
-       standing hypothesis rooted elsewhere (its root, by node id, is not a
-       fallen one), whatever its age; or an orphan candidate (#2485): a ROOT
-       node not fallen, not REFUTED, on no hypothesis's path or root (in any
-       state), and not one cause with any fallen root, taken pairwise
-       (``_one_cause``). On the fallen cause's line only a node below it or a
-       duplicate of it is the same cause: the cluster walk does not expand a
-       REFUTED node, so a root above the fallen one is distinct and blocks,
-       as a standing hypothesis rooted there does. With the
-       ``sole_cluster_origin`` hook missing, ``_one_cause`` refuses, so every
-       such root counts and the fallen cause confirms nothing;
+       AND no other standing hypothesis is rooted elsewhere: a cause re-fixed
+       after it fell can still be shown removed, while nothing is confirmed
+       through the fallen one past any other standing hypothesis rooted
+       elsewhere (by node id, whatever its age). A root no hypothesis names
+       does not count, so a fallen cause can still confirm past such an
+       orphan root (#2485);
     4. a VALIDATED hypothesis with no root node (inert while a rootless
        hypothesis cannot validate).
 
@@ -757,37 +750,25 @@ def _cause_pool(case: "Case") -> tuple[frozenset, frozenset, frozenset]:
     }
     if held:
         return frozenset(held), frozenset(held | fallen), frozenset()
-    hypotheses = [
-        h for h in (getattr(case, "hypotheses", None) or {}).values() if h is not None
-    ]
     other_standing = any(
-        h.state in _STANDING_HYP_STATES
+        h is not None
+        and h.state in _STANDING_HYP_STATES
         and h.root_node_id
         and h.root_node_id not in fallen
-        for h in hypotheses
+        for h in (getattr(case, "hypotheses", None) or {}).values()
     )
     if fallen and not other_standing:
-        on_a_path = {h.root_node_id for h in hypotheses} | {
-            n for h in hypotheses for n in getattr(h, "path", None) or ()
-        }
-        orphan_candidate = any(
-            node.node_type == NodeType.ROOT
-            and node_id not in fallen
-            and node_id not in on_a_path
-            and node.node_state != NodeState.REFUTED
-            and not any(_one_cause(case, {f, node_id}) for f in fallen)
-            for node_id, node in nodes.items()
-        )
-        if not orphan_candidate:
-            roots = frozenset(fallen)
-            return roots, roots, frozenset()
+        roots = frozenset(fallen)
+        return roots, roots, frozenset()
     return (
         frozenset(),
         frozenset(fallen),
         frozenset(
             h.hypothesis_id
-            for h in hypotheses
-            if h.state == HypothesisState.VALIDATED and not h.root_node_id
+            for h in (getattr(case, "hypotheses", None) or {}).values()
+            if h is not None
+            and h.state == HypothesisState.VALIDATED
+            and not h.root_node_id
         ),
     )
 
@@ -1095,12 +1076,16 @@ def confirming_polarity_rows(case: "Case") -> list:
 
 def confirmation_stamp_rows(case: "Case") -> list:
     """The confirm-stamp's record: the causal_absence rows SUPPORTS-linked on
-    a ROOT node, the link ``root_counterfactually_confirmed`` reads. Its one
-    writer is the stamp (``confirm_root_from_resolution_absence``), which
-    runs only at the RESOLVED transition; engine-authored rows, the M6
-    disconfirmations, are left out. Read off the record, not a re-derived
-    pool: the stamp's count-held re-derive can narrow the pool so the row it
-    just recorded no longer binds to it (#2487)."""
+    a ROOT node, the link ``root_counterfactually_confirmed`` reads; engine
+    rows, the M6 disconfirmations, are left out. Read off the record, not a
+    re-derived pool: the stamp's count-held re-derive can narrow the pool so
+    the row it just recorded no longer binds to it (#2487).
+
+    The stamp (``confirm_root_from_resolution_absence``, at the RESOLVED
+    transition) has been the link's one writer since #663's ingest refusal.
+    A model-authored link from before it can still be on a stored case,
+    so a reader passes these rows only through the polarity bars
+    (``confirming_polarity_rows``), as the report does."""
     stamped = {
         link.evidence_id
         for node in (getattr(case, "causal_nodes", None) or {}).values()

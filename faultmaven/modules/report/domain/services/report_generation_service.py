@@ -1127,13 +1127,16 @@ class ReportGenerationService:
         # "confirming" only when its polarity is a confirmation's —
         # engine-authored M6 rows are failed-fix DISCONFIRMATIONS (the
         # opposite polarity) and premature rows from a failed fix window
-        # confirm nothing. The rows the confirm-stamp recorded on a root
-        # qualify, read off its record (``confirmation_stamp_rows``): the
-        # stamp's re-derive can narrow the pool so its row leaves the cause
-        # leg (#2487). So do the rows the resolution's cause leg stands on
-        # (``cause_elimination_rows``), the rows the gate confirmed on; a case
-        # with no such rows (every case recorded before #1906 2a) falls back
-        # to the same bars without the binding (``confirming_polarity_rows``).
+        # confirm nothing. The rows the resolution's cause leg stands on
+        # (``cause_elimination_rows``) qualify, the rows the gate confirmed
+        # on; a case with no such rows (every case recorded before #1906 2a)
+        # falls back to the same bars without the binding
+        # (``confirming_polarity_rows``). The rows the confirm-stamp recorded
+        # on a root qualify too, read off its record
+        # (``confirmation_stamp_rows``: the stamp's re-derive can narrow the
+        # pool so its row leaves the cause leg, #2487), but only through the
+        # polarity bars: a model-authored link from before #663's refusal can
+        # sit on a row from a failed window.
         # Function-local import: the _assurance_note precedent for report →
         # core.investigation reads.
         from faultmaven.core.investigation.cause_assurance import (
@@ -1142,11 +1145,14 @@ class ReportGenerationService:
             confirming_polarity_rows,
         )
 
+        polarity = confirming_polarity_rows(case)
         qualified_absence_ids = {
             getattr(e, "evidence_id", None)
-            for e in confirmation_stamp_rows(case)
-            + (cause_elimination_rows(case) or confirming_polarity_rows(case))
-        }
+            for e in (cause_elimination_rows(case) or polarity)
+        } | (
+            {getattr(e, "evidence_id", None) for e in polarity}
+            & {e.evidence_id for e in confirmation_stamp_rows(case)}
+        )
 
         def _confirming_polarity(ev) -> bool:
             if getattr(getattr(ev, "category", None), "value", None) != (
