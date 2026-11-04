@@ -48,6 +48,7 @@ from faultmaven.core.investigation.turn_budget import (
     TURN_COMMIT_RESERVE_SECONDS,
     bind_turn_deadline,
 )
+from faultmaven.infrastructure.concurrency import inflight
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.models.api_models import QueryIntent, TurnResponse
 from faultmaven.modules.agent.domain.services.investigation_service import (
@@ -196,9 +197,9 @@ async def _turn(
         service = _service(repository, engine)
         if lose_the_race:
             repository.lose_the_next_race()
-        # The task set is module-global: another test on this worker may have
+        # The record is process-wide: another test on this worker may have
         # left its own entries (doubles included). Wait only for this turn's.
-        tasks_before = set(runbook_creation._CONVERSION_TASKS)
+        tasks_before = inflight.tracked("runbook conversion")
         try:
             response = await service.process_turn(
                 case_id=CASE_ID,
@@ -210,7 +211,7 @@ async def _turn(
             # repository; production's is sessionless, this one is not, so let
             # it finish before the session closes.
             await asyncio.gather(
-                *(set(runbook_creation._CONVERSION_TASKS) - tasks_before),
+                *(inflight.tracked("runbook conversion") - tasks_before),
                 return_exceptions=True,
             )
     return response, repository
@@ -390,7 +391,7 @@ class TestAFailedCommitLeavesNothing:
         _make_runbook_ready(case)
         await _seed(sessions, case)
 
-        tasks_before = set(runbook_creation._CONVERSION_TASKS)
+        tasks_before = inflight.tracked("runbook conversion")
         with pytest.raises(StaleCaseException):
             await _turn(
                 sessions,
@@ -399,7 +400,7 @@ class TestAFailedCommitLeavesNothing:
                 conversion_service=conversion_service,
             )
         conversion_service.convert_from_case.assert_not_awaited()
-        assert set(runbook_creation._CONVERSION_TASKS) <= tasks_before
+        assert inflight.tracked("runbook conversion") <= tasks_before
 
         # Control: the same click on a turn that commits starts it.
         await _turn(
@@ -811,7 +812,7 @@ class TestAHungPostCommitStep:
         assert storage.stored, "positive control: a blob was stored"
         [row] = (await _committed(sessions))["case"].uploaded_files
         assert row.uploaded_at_turn == 5
-        pending = list(turn_settlement._POST_COMMIT_TASKS)
+        pending = list(inflight.tracked("mark_linked"))
         assert pending, "positive control: the link is still waiting on storage"
         for task in pending:
             task.cancel()

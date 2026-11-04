@@ -5,6 +5,7 @@ import json
 import logging
 from typing import Any
 
+from faultmaven.infrastructure.concurrency import inflight
 from faultmaven.modules.agent.tools.vectorize_file_tool import (
     append_vectorization_advisory,
 )
@@ -74,8 +75,15 @@ class EvidenceVectorizer:
                 )
                 continue
 
-            task = asyncio.create_task(
-                self._vectorize_evidence(ev.evidence_id, tool_context)
+            # Held by the in-flight record, with the case's lease, until it
+            # ends; the dict is for dedup only.
+            task = inflight.track(
+                asyncio.create_task(
+                    self._vectorize_evidence(ev.evidence_id, tool_context)
+                ),
+                what=f"vectorization of evidence {ev.evidence_id}",
+                case=(case.enterprise_id, case.case_id),
+                kind=inflight.Kind.CANCELLABLE,
             )
             self._inflight_vectorize[ev.evidence_id] = task
             # Remove from registry once the task settles (success,

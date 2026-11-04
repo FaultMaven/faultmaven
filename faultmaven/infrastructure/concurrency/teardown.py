@@ -37,7 +37,7 @@ async def cancel_and_wait(task: "asyncio.Task[Any]") -> Optional[BaseException]:
     return None if task.cancelled() else task.exception()
 
 
-async def _teardown_step(what: str, step: Callable[[], Any]) -> Optional[BaseException]:
+async def teardown_step(what: str, step: Callable[[], Any]) -> Optional[BaseException]:
     """Run one step of a teardown, so that it cannot stop the steps after it.
 
     ``step`` may return an awaitable, which is awaited. An ``Exception`` is
@@ -61,12 +61,12 @@ async def _teardown_step(what: str, step: Callable[[], Any]) -> Optional[BaseExc
 async def run_teardown(steps: Iterable[tuple[str, Callable[[], Any]]]) -> None:
     """Run every ``(what, step)`` of a teardown, whatever the ones before it did.
 
-    Each step runs through :func:`_teardown_step`. The first interruption
+    Each step runs through :func:`teardown_step`. The first interruption
     deferred is re-raised once the last step has run.
     """
     deferred: Optional[BaseException] = None
     for what, step in steps:
-        interrupted = await _teardown_step(what, step)
+        interrupted = await teardown_step(what, step)
         if deferred is None:
             deferred = interrupted
     if deferred is not None:
@@ -79,10 +79,11 @@ class ContainerRelease:
     Every composer releases its hold with the container's ``shutdown()``, then
     disposes the process-global database engine. Another composition live in
     the process may still serve from that engine (#1843), and ``shutdown()``
-    answers ``False`` while one does. Only ``False`` means another holds: any
-    other answer, or none (the step failed or was interrupted first), runs the
-    steps gated on the release, as before. ``shutdown`` is a passed container's;
-    by default the singleton's is resolved inside the step.
+    answers ``False`` while one does. Only that, or a failed or interrupted
+    shutdown whose container is still held (a composition began during its
+    drain), means another holds; anything else runs the gated steps.
+    ``shutdown`` is a passed container's; by default the singleton's is
+    resolved inside the step.
     """
 
     def __init__(self, shutdown: Optional[Callable[[], Any]] = None) -> None:
@@ -95,7 +96,12 @@ class ContainerRelease:
             from faultmaven.container import container
 
             shutdown = container.shutdown
-        self._others_hold = (await shutdown()) is False
+        try:
+            self._others_hold = (await shutdown()) is False
+        except BaseException:
+            held = getattr(getattr(shutdown, "__self__", None), "is_held", None)
+            self._others_hold = bool(held is not None and held())
+            raise
 
     def if_last(self, step: Callable[[], Any]) -> Callable[[], Any]:
         """``step``, run only when the release was the last (or did not say)."""

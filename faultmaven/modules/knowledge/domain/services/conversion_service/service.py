@@ -27,6 +27,7 @@ from faultmaven.exceptions import (
     ValidationException,
 )
 from faultmaven.infrastructure import index_slot
+from faultmaven.infrastructure.concurrency import inflight
 from faultmaven.infrastructure.llm.dispatch import (
     route_model_call,
 )
@@ -508,18 +509,23 @@ class ConversionService:
         pattern on MilestoneEngine.
         """
         # Short-circuit if a conversion for this case is already running.
-        inflight = self._inflight_runbook.get(request.case_id)
-        if inflight is not None and not inflight.done():
+        running = self._inflight_runbook.get(request.case_id)
+        if running is not None and not running.done():
             logger.info(
                 "case_conversion_dedup_hit",
                 extra={"case_id": request.case_id},
             )
-            return await inflight
+            return await running
 
         # Wrap the actual work in a Task so other concurrent callers can
-        # await the same result.
-        task = asyncio.create_task(
-            self._convert_from_case_impl(request, user_id, enterprise_id, team_id)
+        # await the same result. The record holds it; its caller holds the
+        # case's lease (the turn's conversion task, #2096).
+        task = inflight.track(
+            asyncio.create_task(
+                self._convert_from_case_impl(request, user_id, enterprise_id, team_id)
+            ),
+            what=f"case conversion of case {request.case_id}",
+            kind=inflight.Kind.CANCELLABLE,
         )
         self._inflight_runbook[request.case_id] = task
         try:

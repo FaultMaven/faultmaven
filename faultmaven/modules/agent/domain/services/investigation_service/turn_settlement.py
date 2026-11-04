@@ -42,6 +42,7 @@ from faultmaven.core.investigation.milestone_engine.turn_commit import (
     commit_turn_plan,
 )
 from faultmaven.core.investigation.schemas import TurnPayload
+from faultmaven.infrastructure.concurrency import inflight
 from faultmaven.models.api_models import TurnResponse
 from faultmaven.modules.agent.domain.services.investigation_service.attachments import (
     _mark_turn_uploads_linked,
@@ -158,6 +159,7 @@ async def settle_turn(
                 file_storage_service, prepared.preprocess_results
             ),
             what=f"mark_linked for case {prepared.case.case_id}",
+            case=(prepared.case.enterprise_id, prepared.case.case_id),
         )
 
     # (3) Never raises by contract (both halves catch); guarded anyway, because
@@ -172,24 +174,22 @@ async def settle_turn(
         )
 
 
-#: Post-commit background work in flight (#1882): the upload links. Held so the
-#: event loop's weak reference cannot drop a task before it ran; each removes
-#: itself when done.
-_POST_COMMIT_TASKS: set["asyncio.Task[None]"] = set()
-
-
-def _spawn_post_commit(coro, *, what: str) -> None:
+def _spawn_post_commit(coro, *, what: str, case: inflight.CaseKey) -> None:
     """Run ``coro`` after the turn's commit, off the response path.
 
     Only ever called once the commit has returned, so it can never act for a
     turn that did not commit. A failure is logged here and never reaches the
-    request: the work spawned here is best effort by contract.
+    request: the work spawned here is best effort by contract. The in-flight
+    record holds it, with the case's lease, until it ends (#1882, #2096).
     """
-    task = asyncio.ensure_future(coro)
-    _POST_COMMIT_TASKS.add(task)
+    task = inflight.track(
+        asyncio.ensure_future(coro),
+        what=what,
+        case=case,
+        kind=inflight.Kind.CANCELLABLE,
+    )
 
     def _done(finished: "asyncio.Task[None]") -> None:
-        _POST_COMMIT_TASKS.discard(finished)
         if not finished.cancelled() and finished.exception() is not None:
             logger.warning(
                 "Post-commit step failed (%s): %r", what, finished.exception()
@@ -198,17 +198,10 @@ def _spawn_post_commit(coro, *, what: str) -> None:
     task.add_done_callback(_done)
 
 
-#: Settlements in flight. The event loop holds only a weak reference to a task;
-#: this keeps a shielded settlement alive until it finishes, including one
-#: whose caller was cancelled and no longer awaits it.
-_SETTLEMENTS: set["asyncio.Task[None]"] = set()
-
-
 def _settlement_finished(task: "asyncio.Task[None]") -> None:
-    """Drop the finished settlement and retrieve its outcome, so one whose
-    caller had gone and that then failed is logged here rather than as
-    "Task exception was never retrieved"."""
-    _SETTLEMENTS.discard(task)
+    """Retrieve the finished settlement's outcome, so one whose caller had gone
+    and that then failed is logged here rather than as "Task exception was
+    never retrieved"."""
     if task.cancelled():
         return
     error = task.exception()
@@ -223,11 +216,15 @@ async def run_settlement_shielded(
 
     If the caller is cancelled, ``CancelledError`` reaches it unchanged and the
     settlement carries on to its end: the commit lands (or fails) and the plan
-    is settled by the settlement itself, never by the caller (R1).
+    is settled by the settlement itself, never by the caller (R1). The in-flight
+    record holds it until then, with the case's lease, and a shutdown's drain
+    awaits it to its end, never cancelling it (``must_finish``).
     """
-    task = asyncio.ensure_future(
-        settle_turn(repository, file_storage_service, prepared)
+    task = inflight.track(
+        asyncio.ensure_future(settle_turn(repository, file_storage_service, prepared)),
+        what=f"settlement of case {prepared.case.case_id}",
+        case=(prepared.case.enterprise_id, prepared.case.case_id),
+        kind=inflight.Kind.MUST_FINISH,
     )
-    _SETTLEMENTS.add(task)
     task.add_done_callback(_settlement_finished)
     await asyncio.shield(task)

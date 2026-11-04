@@ -35,7 +35,9 @@ class CaseDeletion:
 
     The audit row's ``not_cleared`` list holds content-bearing stores only.
     Left out on purpose: TTL claims and locks that carry no content
-    (``turn-inflight:…`` claims, ``turn_idempotency.py``;
+    (``turn-inflight:…`` claims, ``turn_idempotency.py``; the case's
+    ``case-inflight:…`` lease and the delete's own ``case-deleting:…``
+    tombstone, ``infrastructure/concurrency/inflight.py``, #2096;
     ``lock:report_generation:case:…``, ``report_lock_manager.py``) and audit
     trails that must outlive the case (``operator_access_audit``,
     ``operator_access_grants.target_case_id``). Opik traces are #2102.

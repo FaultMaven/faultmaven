@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 14.13.0
+**Version:** 14.14.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -1751,6 +1751,14 @@ request naming a case the caller cannot see.
 Only the case's CREATOR may delete it: delete is governance (ADR-020 D2).
 Any other reader — the driver included — is refused with 403.
 
+While a turn on the case, or work one started (its upload links, evidence
+indexing, a runbook draft), is still running, on any server, the delete
+answers 409 `CASE_WORK_IN_PROGRESS` with `Retry-After` and clears nothing.
+A turn sent while the delete runs is refused with 409
+`CASE_DELETE_IN_PROGRESS`. If whether work is in flight cannot be read,
+the delete answers 503 `CASE_DELETE_UNAVAILABLE` with `Retry-After` and
+clears nothing (#2096).
+
 Returns 204 No Content on success.
 
 **Tags:** `cases`
@@ -1764,7 +1772,9 @@ Returns 204 No Content on success.
 **Responses:**
 
 - `204` — Case deleted successfully
+- `409` — `CASE_WORK_IN_PROGRESS`: a turn on the case, or work one started, is still running, or another delete of it is. Nothing was cleared; retry after `Retry-After` seconds.
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
+- `503` — `CASE_DELETE_UNAVAILABLE`: whether work on the case is in flight could not be read. Nothing was cleared; retry after `Retry-After` seconds.
 
 ---
 
@@ -2430,6 +2440,12 @@ A response lost after the commit (a disconnect, a timeout on the client's
 side) is recovered by retrying with the same key. Without a key, every
 request runs as a new turn.
 
+**A case being deleted.** A turn holds the case's in-flight lease from
+here to its end, so a delete of the case refuses while it runs; one that
+starts while a delete runs → **409** `x-error-code:
+CASE_DELETE_IN_PROGRESS`, with no `Retry-After`: nothing ran, reload the
+case (#2096).
+
 **Timing.** `limits.turnResponseBoundSeconds` on
 `GET /api/v1/meta/capabilities` is the NOMINAL bound on this route's answer
 (the turn ceiling plus the commit reserve and the auto-title bound after
@@ -2457,7 +2473,7 @@ likely to do so again, so retry at most once (it carries no `Retry-After`);
 **Responses:**
 
 - `200` — The turn's response. A retry of a committed turn under the same `Idempotency-Key` is answered with that turn's response, and carries `X-Idempotency-Replayed: true`. ([`TurnResponse`](#turnresponse))
-- `409` — Conflict. Told apart by `x-error-code`: `TURN_IN_PROGRESS` (a turn with this `Idempotency-Key` is still running: retry with the same key after `Retry-After` seconds, the longest the running turn can still hold its claim — an upper bound, not when it finishes; it may finish sooner); `IDEMPOTENCY_KEY_REUSE` (the key was used for a different turn); `IDEMPOTENCY_REPLAY_UNAVAILABLE` (the turn committed but its response can no longer be replayed: reload the case); `CASE_VERSION_CONFLICT` (another writer changed the case while this turn ran; nothing committed); `CASE_TERMINAL` (the case is resolved or closed and refuses new data, a status change or a file reclassification; a text-only question is still answered).
+- `409` — Conflict. Told apart by `x-error-code`: `TURN_IN_PROGRESS` (a turn with this `Idempotency-Key` is still running: retry with the same key after `Retry-After` seconds, the longest the running turn can still hold its claim — an upper bound, not when it finishes; it may finish sooner); `IDEMPOTENCY_KEY_REUSE` (the key was used for a different turn); `IDEMPOTENCY_REPLAY_UNAVAILABLE` (the turn committed but its response can no longer be replayed: reload the case); `CASE_VERSION_CONFLICT` (another writer changed the case while this turn ran; nothing committed); `CASE_TERMINAL` (the case is resolved or closed and refuses new data, a status change or a file reclassification; a text-only question is still answered); `CASE_DELETE_IN_PROGRESS` (a delete of the case is running; nothing of the turn ran: reload the case, which is gone once the delete succeeds).
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 - `503` — Unavailable; nothing of the turn committed, and a retry after `Retry-After` seconds is safe. Told apart by `x-error-code`: `DATABASE_UNAVAILABLE` (the database did not answer while the turn was being prepared); `TENANT_TURN_CAP_UNAVAILABLE` (the usage allowance could not be checked); `LLM_OVER_CAPACITY`, `LLM_PROVIDER_UNAVAILABLE` and `LLM_INVALID_RESPONSE` (the AI provider could not answer usably); `REVOCATION_STATE_UNKNOWN` (the authentication every route requires could not read the token revocation store).
 - `504` — Timeout; nothing of the turn committed. Told apart by `x-error-code`: `REQUEST_TIMEOUT` (the turn used its whole ceiling, `limits.turnCeilingSeconds` on `GET /api/v1/meta/capabilities`, on this input; the same input is likely to exhaust it again, so a client retries at most once, and no `Retry-After` is sent); `LLM_TIMEOUT` (the AI provider timed out: transient, retry after `Retry-After` seconds).

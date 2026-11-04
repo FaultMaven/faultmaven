@@ -6,6 +6,7 @@ Production operations documentation.
 
 | Section | Description |
 |---------|-------------|
+| [Case Deletion](./case-deletion.md) | What a case delete clears, why it refuses while work is in flight (409/503), and its residuals |
 | [Data & Storage Management](./data-storage-management.md) | Data directory layout, KB runbook management, backup/restore |
 | [Deployment Wipe](./deployment-wipe.md) | Returning a deployment to a clean slate, and verifying it (`fm-wipe-deployment`) |
 | [Operator CLI](./operator-cli.md) | Every `fm-*` console entrypoint, what it does, and where its procedure lives |

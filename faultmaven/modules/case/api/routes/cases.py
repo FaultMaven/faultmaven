@@ -35,6 +35,13 @@ from faultmaven.exceptions import (
     SessionException,
     ValidationException,
 )
+from faultmaven.infrastructure.concurrency.inflight import (
+    CASE_DELETE_UNAVAILABLE,
+    CASE_WORK_IN_PROGRESS,
+    DELETE_UNAVAILABLE_RETRY_AFTER_SECONDS,
+    CaseDeleteUnavailable,
+    CaseWorkInProgress,
+)
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models.api import ErrorDetail, ErrorResponse, TitleResponse
 from faultmaven.models.api_models import (
@@ -88,7 +95,40 @@ logger = logging.getLogger(__name__)
                     "schema": {"type": "string"},
                 }
             },
-        }
+        },
+        409: {
+            "description": (
+                f"`{CASE_WORK_IN_PROGRESS}`: a turn on the case, or work one "
+                "started, is still running, or another delete of it is. "
+                "Nothing was cleared; retry after `Retry-After` seconds."
+            ),
+            "headers": {
+                "x-error-code": {
+                    "schema": {"type": "string", "enum": [CASE_WORK_IN_PROGRESS]}
+                },
+                "Retry-After": {
+                    "description": (
+                        "Seconds until the work's current lease lapses unless "
+                        "renewed: the work may run longer, and a retry may be "
+                        "refused again."
+                    ),
+                    "schema": {"type": "integer"},
+                },
+            },
+        },
+        503: {
+            "description": (
+                f"`{CASE_DELETE_UNAVAILABLE}`: whether work on the case is in "
+                "flight could not be read. Nothing was cleared; retry after "
+                "`Retry-After` seconds."
+            ),
+            "headers": {
+                "x-error-code": {
+                    "schema": {"type": "string", "enum": [CASE_DELETE_UNAVAILABLE]}
+                },
+                "Retry-After": {"schema": {"type": "integer"}},
+            },
+        },
     },
     dependencies=[Depends(require_authentication)],
 )
@@ -119,6 +159,14 @@ async def delete_case(
 
     Only the case's CREATOR may delete it: delete is governance (ADR-020 D2).
     Any other reader — the driver included — is refused with 403.
+
+    While a turn on the case, or work one started (its upload links, evidence
+    indexing, a runbook draft), is still running, on any server, the delete
+    answers 409 `CASE_WORK_IN_PROGRESS` with `Retry-After` and clears nothing.
+    A turn sent while the delete runs is refused with 409
+    `CASE_DELETE_IN_PROGRESS`. If whether work is in flight cannot be read,
+    the delete answers 503 `CASE_DELETE_UNAVAILABLE` with `Retry-After` and
+    clears nothing (#2096).
 
     Returns 204 No Content on success.
     """
@@ -155,6 +203,42 @@ async def delete_case(
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     except HTTPException:
         raise
+    except CaseWorkInProgress as busy:
+        logger.info(f"Refused delete of case {case_id}: work on it is in flight")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=ErrorResponse(
+                schema_version="3.1.0",
+                error=ErrorDetail(
+                    code=CASE_WORK_IN_PROGRESS,
+                    message=(
+                        "Work on this case is still running. Nothing was "
+                        "deleted; try again shortly."
+                    ),
+                ),
+            ).model_dump(),
+            headers={
+                "x-error-code": CASE_WORK_IN_PROGRESS,
+                "Retry-After": str(busy.retry_after),
+            },
+        )
+    except CaseDeleteUnavailable as unavailable:
+        # Logged with its cause, never sent: the response names only the code.
+        logger.error(f"Refused delete of case {case_id}: {unavailable.__cause__!r}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=ErrorResponse(
+                schema_version="3.1.0",
+                error=ErrorDetail(
+                    code=CASE_DELETE_UNAVAILABLE,
+                    message="The case could not be deleted just now; try again.",
+                ),
+            ).model_dump(),
+            headers={
+                "x-error-code": CASE_DELETE_UNAVAILABLE,
+                "Retry-After": str(DELETE_UNAVAILABLE_RETRY_AFTER_SECONDS),
+            },
+        )
     except AuthorizationError as e:
         # Authorization errors should not be treated as idempotent success
         logger.warning(

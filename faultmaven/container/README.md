@@ -126,24 +126,51 @@ to its event loop and is never recorded. `shutdown()` names no resource.
   shutdown releases.
 - **A composition in progress** holds nothing yet. A context that holds nothing,
   shutting down meanwhile, resets that composition mid-way and closes what it
-  has recorded. That needs a shutdown while a composition is still running: a
-  second composition in the process, or an `initialize()` in a task its
-  creator does not await. No production composer does either, so it never
+  has recorded. That needs a shutdown from another context while a
+  composition is still running. No production composer does that, so it never
   happens in production.
 - **The last release.** `shutdown()` returns `False`, closing nothing, while a
-  hold remains anywhere (#1843). With none left it resets first, so an
-  `initialize()` during the closes composes afresh and keeps its hold. Then it
-  closes everything owned, newest first, through `run_teardown`'s rules (every
-  close runs, a failed one is logged, an interruption is held until all have
-  run), and returns `True`. With no hold anywhere it closes whatever is owned,
-  which is how a refused composition is undone.
+  hold remains anywhere (#1843). With none left it runs, in order:
+  1. **the in-flight drain** (`concurrency/inflight.py`, #2490): every task
+     that outlived its request (a settlement, an upload's `mark_linked`,
+     vectorization, a runbook conversion) is awaited up to 10 s, then the
+     cancellable rest is cancelled; a settlement is awaited to its end. The
+     drained work still reads the container, so this comes before the reset.
+     A hold taken during the drain makes this release not the last: from
+     then on it cancels, resets and closes nothing, and returns `False` or
+     raises the interruption, read as not the last;
+  2. **the lease stop and the reset**: every case-lease renewal on this loop
+     stops (a holder left lets its lease lapse). If the drain was interrupted,
+     the cancellable rest is cancelled with the grace instead (a second
+     interruption ends it), and the leases of the work still running keep
+     renewing, through the Redis client closed next. A hold taken during that
+     grace makes this release not the last: it resets and closes nothing, and
+     raises the interruption, read as not the last. Then the reset, so an
+     `initialize()` during the closes composes afresh and keeps its hold;
+  3. **the closes**: everything owned, newest first, through `run_teardown`'s
+     rules (every close runs, a failed one is logged, an interruption, the
+     drain's included, is held until all have run). It returns `True`.
+
+  With no hold anywhere it closes whatever is owned, which is how a refused
+  composition is undone. A release that is not the last drains nothing: the
+  record is the process's, and another live composition's work is not this
+  one's to cancel.
+- **The lifespan's shutdown order.** `_serving_stops` (protection, the
+  lifespan's ledger drain, the background tasks, the schedulers), then
+  `decompose_application`: the config watcher, the container's shutdown
+  (drain → lease stop, or cancel if interrupted → reset → owned closes),
+  then, on the last release, the ledger uninstall, the ledger drain and the APM
+  stop, the unpublishing, and the database engine last. The ledger is still
+  installed while drained work runs, so an LLM call it makes is metered, and
+  the drain after it writes the row.
 - **Resets.** `reset()` raises while anything is owned, naming it: shut down
   first. The record and the holds are the container instance's, rebuilt by a
   reset, so a hold taken before a reset is void after it. Tests end every hold
   with `release_every_hold()` (the `reset_container` fixture).
 - **What is the process's** goes only on the last release. Every composer
   releases through `ContainerRelease` (`concurrency/teardown.py`), and only
-  when `shutdown()` does not answer `False` does it dispose the
+  when `shutdown()` neither answers `False` nor fails with the container still
+  held does it dispose the
   process-global database engine. The lifespan's decomposition also uninstalls
   the usage ledger, drains its writes, and stops the APM export then. The hold
   count is a proxy for "the process is done serving", not a count of the

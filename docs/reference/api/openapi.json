@@ -7196,7 +7196,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "14.13.0"
+    "version": "14.14.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -10022,7 +10022,7 @@
     },
     "/api/v1/cases/{case_id}": {
       "delete": {
-        "description": "Permanently delete a case and all associated data, or fail and keep it.\n\nEvery store that holds the case's data is cleared before the case itself:\nits evidence search index, its uploaded files, its PII redaction\nregistry, the sessions pointing at it, its team shares and its runbook\nconversion jobs and drafts (a published runbook is kept). An audit record\nnames who deleted it and what was cleared.\n\nIf any store cannot be cleared, the request answers 500\n`DELETE_CASE_ERROR` and the case stays, so the delete can be retried. A\nfailed delete can leave a case that reads normally while some of its\nfiles and its evidence search are already gone, until a retry completes\nthe delete.\n\nThe operation is idempotent - subsequent requests will return\n204 No Content even if the case has already been deleted, and so does a\nrequest naming a case the caller cannot see.\n\nOnly the case's CREATOR may delete it: delete is governance (ADR-020 D2).\nAny other reader \u2014 the driver included \u2014 is refused with 403.\n\nReturns 204 No Content on success.",
+        "description": "Permanently delete a case and all associated data, or fail and keep it.\n\nEvery store that holds the case's data is cleared before the case itself:\nits evidence search index, its uploaded files, its PII redaction\nregistry, the sessions pointing at it, its team shares and its runbook\nconversion jobs and drafts (a published runbook is kept). An audit record\nnames who deleted it and what was cleared.\n\nIf any store cannot be cleared, the request answers 500\n`DELETE_CASE_ERROR` and the case stays, so the delete can be retried. A\nfailed delete can leave a case that reads normally while some of its\nfiles and its evidence search are already gone, until a retry completes\nthe delete.\n\nThe operation is idempotent - subsequent requests will return\n204 No Content even if the case has already been deleted, and so does a\nrequest naming a case the caller cannot see.\n\nOnly the case's CREATOR may delete it: delete is governance (ADR-020 D2).\nAny other reader \u2014 the driver included \u2014 is refused with 403.\n\nWhile a turn on the case, or work one started (its upload links, evidence\nindexing, a runbook draft), is still running, on any server, the delete\nanswers 409 `CASE_WORK_IN_PROGRESS` with `Retry-After` and clears nothing.\nA turn sent while the delete runs is refused with 409\n`CASE_DELETE_IN_PROGRESS`. If whether work is in flight cannot be read,\nthe delete answers 503 `CASE_DELETE_UNAVAILABLE` with `Retry-After` and\nclears nothing (#2096).\n\nReturns 204 No Content on success.",
         "operationId": "delete_case_api_v1_cases__case_id__delete",
         "parameters": [
           {
@@ -10047,6 +10047,25 @@
               }
             }
           },
+          "409": {
+            "description": "`CASE_WORK_IN_PROGRESS`: a turn on the case, or work one started, is still running, or another delete of it is. Nothing was cleared; retry after `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the work's current lease lapses unless renewed: the work may run longer, and a retry may be refused again.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "x-error-code": {
+                "schema": {
+                  "enum": [
+                    "CASE_WORK_IN_PROGRESS"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
+          },
           "422": {
             "content": {
               "application/json": {
@@ -10056,6 +10075,24 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "description": "`CASE_DELETE_UNAVAILABLE`: whether work on the case is in flight could not be read. Nothing was cleared; retry after `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "x-error-code": {
+                "schema": {
+                  "enum": [
+                    "CASE_DELETE_UNAVAILABLE"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -11393,7 +11430,7 @@
     },
     "/api/v1/cases/{case_id}/turns": {
       "post": {
-        "description": "Submit a turn to a case investigation.\n\nA turn consists of an optional query and/or optional attachments.\nAttachments are preprocessed through Tier 0+1 before the LLM sees them.\nIf no query is provided with attachments, an implicit query is generated.\n\n**One file per turn.** `files` accepts at most one item (`maxItems: 1`);\nmore than one is rejected with 422. Submit each additional file as its own\nturn. `pasted_content` is a separate field and does not count against this\nlimit, so a turn may legitimately carry one file *and* a paste.\n\n**Auto-titling:** a case still carrying its auto-generated `Case-YYMMDD-N`\nplaceholder is named from its own content as part of processing the turn, if\nit now has enough substance to name \u2014 so the name is already in place when\nthis responds. Clients do not need to call `POST /cases/{case_id}/title` for\nthis; that endpoint remains for user-initiated (re)naming. A case is\nauto-titled at most once \u2014 the moment a real title lands, later turns leave\nit alone. Naming is best-effort and time-bounded: it can never fail or\ndelay the turn itself.\n\n**Retries (`Idempotency-Key`).** A turn sent with an `Idempotency-Key`\ncommits a receipt with the turn, in the same transaction. A request with a\nkey this caller already used on this case:\n\n- for the same turn (same fields, same file content), once it committed \u2192\n  **200** with that turn's response, unchanged, and\n  `X-Idempotency-Replayed: true`. Nothing runs and nothing is charged.\n- for a different turn \u2192 **409** `x-error-code: IDEMPOTENCY_KEY_REUSE`.\n- while the first is still running \u2192 **409** `x-error-code:\n  TURN_IN_PROGRESS` with `Retry-After`; retry with the same key after it.\n  `Retry-After` is the longest the first can still hold its claim, an upper\n  bound, not when it finishes.\n\nA response lost after the commit (a disconnect, a timeout on the client's\nside) is recovered by retrying with the same key. Without a key, every\nrequest runs as a new turn.\n\n**Timing.** `limits.turnResponseBoundSeconds` on\n`GET /api/v1/meta/capabilities` is the NOMINAL bound on this route's answer\n(the turn ceiling plus the commit reserve and the auto-title bound after\nit). It leaves out short steps (the case and receipt lookups before the\ndeadline starts, the commit's actual duration), so size a client timeout as\nthat plus a network margin that covers them, and re-read it per session,\nbecause an operator can switch the chat provider and with it the ceiling. A **504** commits nothing:\n`REQUEST_TIMEOUT` means the turn used its whole ceiling on this input and is\nlikely to do so again, so retry at most once (it carries no `Retry-After`);\n`LLM_TIMEOUT` is a transient provider timeout, retried after `Retry-After`.",
+        "description": "Submit a turn to a case investigation.\n\nA turn consists of an optional query and/or optional attachments.\nAttachments are preprocessed through Tier 0+1 before the LLM sees them.\nIf no query is provided with attachments, an implicit query is generated.\n\n**One file per turn.** `files` accepts at most one item (`maxItems: 1`);\nmore than one is rejected with 422. Submit each additional file as its own\nturn. `pasted_content` is a separate field and does not count against this\nlimit, so a turn may legitimately carry one file *and* a paste.\n\n**Auto-titling:** a case still carrying its auto-generated `Case-YYMMDD-N`\nplaceholder is named from its own content as part of processing the turn, if\nit now has enough substance to name \u2014 so the name is already in place when\nthis responds. Clients do not need to call `POST /cases/{case_id}/title` for\nthis; that endpoint remains for user-initiated (re)naming. A case is\nauto-titled at most once \u2014 the moment a real title lands, later turns leave\nit alone. Naming is best-effort and time-bounded: it can never fail or\ndelay the turn itself.\n\n**Retries (`Idempotency-Key`).** A turn sent with an `Idempotency-Key`\ncommits a receipt with the turn, in the same transaction. A request with a\nkey this caller already used on this case:\n\n- for the same turn (same fields, same file content), once it committed \u2192\n  **200** with that turn's response, unchanged, and\n  `X-Idempotency-Replayed: true`. Nothing runs and nothing is charged.\n- for a different turn \u2192 **409** `x-error-code: IDEMPOTENCY_KEY_REUSE`.\n- while the first is still running \u2192 **409** `x-error-code:\n  TURN_IN_PROGRESS` with `Retry-After`; retry with the same key after it.\n  `Retry-After` is the longest the first can still hold its claim, an upper\n  bound, not when it finishes.\n\nA response lost after the commit (a disconnect, a timeout on the client's\nside) is recovered by retrying with the same key. Without a key, every\nrequest runs as a new turn.\n\n**A case being deleted.** A turn holds the case's in-flight lease from\nhere to its end, so a delete of the case refuses while it runs; one that\nstarts while a delete runs \u2192 **409** `x-error-code:\nCASE_DELETE_IN_PROGRESS`, with no `Retry-After`: nothing ran, reload the\ncase (#2096).\n\n**Timing.** `limits.turnResponseBoundSeconds` on\n`GET /api/v1/meta/capabilities` is the NOMINAL bound on this route's answer\n(the turn ceiling plus the commit reserve and the auto-title bound after\nit). It leaves out short steps (the case and receipt lookups before the\ndeadline starts, the commit's actual duration), so size a client timeout as\nthat plus a network margin that covers them, and re-read it per session,\nbecause an operator can switch the chat provider and with it the ceiling. A **504** commits nothing:\n`REQUEST_TIMEOUT` means the turn used its whole ceiling on this input and is\nlikely to do so again, so retry at most once (it carries no `Retry-After`);\n`LLM_TIMEOUT` is a transient provider timeout, retried after `Retry-After`.",
         "operationId": "submit_turn_api_v1_cases__case_id__turns_post",
         "parameters": [
           {
@@ -11459,7 +11496,7 @@
             }
           },
           "409": {
-            "description": "Conflict. Told apart by `x-error-code`: `TURN_IN_PROGRESS` (a turn with this `Idempotency-Key` is still running: retry with the same key after `Retry-After` seconds, the longest the running turn can still hold its claim \u2014 an upper bound, not when it finishes; it may finish sooner); `IDEMPOTENCY_KEY_REUSE` (the key was used for a different turn); `IDEMPOTENCY_REPLAY_UNAVAILABLE` (the turn committed but its response can no longer be replayed: reload the case); `CASE_VERSION_CONFLICT` (another writer changed the case while this turn ran; nothing committed); `CASE_TERMINAL` (the case is resolved or closed and refuses new data, a status change or a file reclassification; a text-only question is still answered).",
+            "description": "Conflict. Told apart by `x-error-code`: `TURN_IN_PROGRESS` (a turn with this `Idempotency-Key` is still running: retry with the same key after `Retry-After` seconds, the longest the running turn can still hold its claim \u2014 an upper bound, not when it finishes; it may finish sooner); `IDEMPOTENCY_KEY_REUSE` (the key was used for a different turn); `IDEMPOTENCY_REPLAY_UNAVAILABLE` (the turn committed but its response can no longer be replayed: reload the case); `CASE_VERSION_CONFLICT` (another writer changed the case while this turn ran; nothing committed); `CASE_TERMINAL` (the case is resolved or closed and refuses new data, a status change or a file reclassification; a text-only question is still answered); `CASE_DELETE_IN_PROGRESS` (a delete of the case is running; nothing of the turn ran: reload the case, which is gone once the delete succeeds).",
             "headers": {
               "Retry-After": {
                 "description": "Seconds, on `TURN_IN_PROGRESS` only: the longest the running turn can still hold its claim (an upper bound, not when it finishes).",
@@ -11475,7 +11512,8 @@
                     "IDEMPOTENCY_KEY_REUSE",
                     "IDEMPOTENCY_REPLAY_UNAVAILABLE",
                     "CASE_VERSION_CONFLICT",
-                    "CASE_TERMINAL"
+                    "CASE_TERMINAL",
+                    "CASE_DELETE_IN_PROGRESS"
                   ],
                   "type": "string"
                 }

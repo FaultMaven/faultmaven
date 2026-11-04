@@ -151,6 +151,29 @@ def validate_contract_changes(changes: tuple[ContractChange, ...]) -> None:
 
 CONTRACT_CHANGES: tuple[ContractChange, ...] = (
     ContractChange(
+        version="14.14.0",
+        level="MINOR",
+        title=(
+            "A case delete refuses while work on the case is in flight, and a turn "
+            "refuses while a delete of its case runs (#2096)."
+        ),
+        body=r"""* `DELETE /cases/{case_id}` declares a **409** and a **503**, each with
+  `Retry-After`, and clears nothing either way: `CASE_WORK_IN_PROGRESS` (409)
+  while a turn on the case, or work one started (upload links, evidence
+  indexing, a runbook draft), is still running on any server, or another
+  delete of it runs; `CASE_DELETE_UNAVAILABLE` (503) when whether work is in
+  flight cannot be read. `Retry-After` on the 409 is when the work's current
+  lease lapses unless renewed: the work may run longer.
+* `POST /cases/{case_id}/turns` gains the 409 `CASE_DELETE_IN_PROGRESS`, with
+  no `Retry-After`: a delete of the case is running and nothing of the turn
+  ran. The client reloads the case, as for `IDEMPOTENCY_REPLAY_UNAVAILABLE`;
+  it is gone once the delete succeeds.
+
+MINOR because every client survives it: each new answer is a refusal that
+changed nothing, and a client that does not know a code shows its generic
+error for it.""",
+    ),
+    ContractChange(
         version="14.13.0",
         level="MINOR",
         title=(

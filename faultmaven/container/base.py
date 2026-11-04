@@ -23,7 +23,7 @@ class _Holds:
 
     A hold is its caller's context's, so only that context releases it: a
     context that took none (a run that never initialized) releases nothing.
-    The context is the holder, not the composer. One that no context releases
+    The context is the holder, not the composer. A hold that no context releases
     keeps every later release from being the last, until a reset. The context
     variable is this instance's, so a new instance voids every hold taken on
     the old one.
@@ -137,6 +137,10 @@ class BaseDIContainer:
 
         self._initialized = True
         self._logger.info("Base container initialized with mock services")
+
+    def is_held(self) -> bool:
+        """Whether any context still holds the container."""
+        return self._holds.total > 0
 
     def own(self, resource: Any, *, close: Callable[[Any], Any], what: str) -> Any:
         """Record that the composition opened ``resource``, and return it.

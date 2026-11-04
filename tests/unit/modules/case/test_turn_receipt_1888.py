@@ -59,6 +59,7 @@ from faultmaven.core.investigation.milestone_engine.terminal_replies import (
 from faultmaven.core.investigation.offer_projection import project_offers
 from faultmaven.core.investigation.schemas import InvestigationResponse_Diagnosis
 from faultmaven.exceptions import CASE_TERMINAL
+from faultmaven.infrastructure.concurrency import inflight
 from faultmaven.infrastructure.concurrency.request_fingerprint import (
     request_fingerprint,
 )
@@ -361,7 +362,7 @@ async def world(tmp_path, monkeypatch):
     app.dependency_overrides[get_investigation_service] = lambda: service
 
     title = AsyncMock()
-    tasks_before = set(runbook_creation._CONVERSION_TASKS)
+    tasks_before = inflight.tracked("runbook conversion")
     with patch.object(conversation_module, "_auto_title_case_if_default", new=title):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://testserver"
@@ -382,7 +383,7 @@ async def world(tmp_path, monkeypatch):
             w.user = user
             yield w
     await asyncio.gather(
-        *(set(runbook_creation._CONVERSION_TASKS) - tasks_before),
+        *(inflight.tracked("runbook conversion") - tasks_before),
         return_exceptions=True,
     )
     await engine.dispose()
@@ -392,7 +393,9 @@ async def _conversions_settled() -> None:
     """Let a released runbook conversion run (it is spawned, not awaited)."""
     for _ in range(5):
         await asyncio.sleep(0)
-    await asyncio.gather(*runbook_creation._CONVERSION_TASKS, return_exceptions=True)
+    await asyncio.gather(
+        *inflight.tracked("runbook conversion"), return_exceptions=True
+    )
 
 
 def _confirm_click(case: Case) -> dict:
