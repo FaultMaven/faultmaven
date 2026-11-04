@@ -147,10 +147,12 @@ class DIContainer(BaseDIContainer):
     async def initialize(self, allow_degraded: bool = False):
         """Initialize all dependencies with proper error handling (async for proper event loop handling).
 
-        Every call takes one hold for its caller's context, at entry, whatever
-        it then returns or raises: the composition, a later call that finds it
-        initialized and shares it (#1843), one that finds it still initializing,
-        and one that fails. The same context's ``shutdown()`` releases it.
+        A call that leaves the container initialized takes one hold for its
+        caller's context, which the same context's ``shutdown()`` releases: the
+        composition, and a later call that finds it initialized and shares it
+        (#1843). A call that raises, returns degraded or finds a composition in
+        progress takes none: its composer's shutdown closes nothing beside a
+        live holder, and closes what is recorded when no hold exists.
 
         Args:
             allow_degraded: opt in to the lenient path under pytest, where a
@@ -159,10 +161,10 @@ class DIContainer(BaseDIContainer):
                 deployment that must not degrade refuses either way.
         """
         logger = logging.getLogger(__name__)
-        self._holds.take()
 
         if self._initialized:
             logger.debug("Container already initialized, skipping")
+            self._holds.take()
             return
 
         if self._initializing:
@@ -195,6 +197,7 @@ class DIContainer(BaseDIContainer):
 
             self._initialized = True
             self._initializing = False
+            self._holds.take()
             logger.info("✅ DI Container initialized successfully")
 
         except Exception as e:
@@ -295,6 +298,7 @@ class DIContainer(BaseDIContainer):
                 )
                 self._create_minimal_container()
                 self._initialized = True
+                self._holds.take()
             else:
                 import traceback
 

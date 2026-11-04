@@ -23,8 +23,9 @@ class _Holds:
 
     A hold is its caller's context's, so only that context releases it: a
     composer that took none (a run that never initialized) releases nothing.
-    The context variable is this instance's, so a new instance voids every hold
-    taken on the old one; a context that set it keeps it until that context ends.
+    One that no context releases keeps every later release from being the last,
+    until a reset. The context variable is this instance's, so a new instance
+    voids every hold taken on the old one.
     """
 
     def __init__(self) -> None:

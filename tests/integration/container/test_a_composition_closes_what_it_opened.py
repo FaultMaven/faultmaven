@@ -138,15 +138,18 @@ async def test_without_its_registration_a_store_is_left_open(
 class _ServerRedis(FakeRedis):
     """A client the container must close: ``is_fakeredis`` reads it as real.
     While ``stall`` is set, its ping waits on it, as a Redis that does not
-    answer."""
+    answer; with ``fails``, its ping is refused."""
 
     closes = 0
     stall = None
+    fails = False
 
     async def ping(self, *args, **kwargs):
         if self.stall is not None:
             self.pinging.set()
             await self.stall.wait()
+        if self.fails:
+            raise ConnectionError("Connection refused")
         return await super().ping(*args, **kwargs)
 
     async def aclose(self, *args, **kwargs):
@@ -204,13 +207,17 @@ async def test_the_shutdown_closes_what_holds_no_descriptor_yet(
     assert closes() == (1 if registered else 0)
 
 
-async def test_a_cancellation_during_the_redis_ping_strands_nothing(
-    stores_at, fresh_container, monkeypatch
+@pytest.mark.parametrize("ping", ["cancelled", "refused"])
+async def test_a_client_whose_ping_does_not_answer_is_closed_once(
+    ping, stores_at, fresh_container, monkeypatch
 ):
     """The client was recorded once the factory had pinged it, so a cancellation
-    during the ping (a SIGTERM at startup) left it where no shutdown reached."""
+    during the ping (a SIGTERM at startup) left it where no shutdown reached. A
+    refused ping falls back to FakeRedis, and leaves the close to the owner."""
     client = _server_redis(monkeypatch)
     client.stall, client.pinging = asyncio.Event(), asyncio.Event()
+    if ping == "refused":
+        client.stall, client.fails = None, True
     stores_at("store")
 
     async def _compose_in_one_context():
@@ -220,11 +227,12 @@ async def test_a_cancellation_during_the_redis_ping_strands_nothing(
             await fresh_container.shutdown()
 
     composer = asyncio.create_task(_compose_in_one_context())
-    await client.pinging.wait()
-    composer.cancel()
+    if ping == "cancelled":
+        await client.pinging.wait()
+        composer.cancel()
     await asyncio.wait({composer})
 
-    assert composer.cancelled()
+    assert composer.cancelled() is (ping == "cancelled")
     assert client.closes == 1
 
 

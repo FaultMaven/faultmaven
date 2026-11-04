@@ -109,14 +109,19 @@ The composition owns the real Redis client, the KB and evidence ChromaDB
 clients and the sanitizer's Presidio session. The FakeRedis stand-in belongs
 to its event loop and is never recorded. `shutdown()` names no resource.
 
-- **Holds belong to the caller's context.** Every `initialize()` takes one
-  hold for its caller's context at entry, whatever it then returns or raises.
-  The same context's `shutdown()` releases it, so a composer that never
-  initialized releases nothing. A lifespan, a job run and an `fm-*` command
+- **Holds belong to the caller's context.** An `initialize()` that leaves the
+  container initialized takes one hold for its caller's context: the
+  composition, and a later call that finds it initialized and shares it. One
+  that raises, returns degraded or finds a composition in progress takes none.
+  The same context's `shutdown()` releases the hold, so a composer that holds
+  nothing releases nobody else's. A lifespan, a job run and an `fm-*` command
   each compose and shut down in one context. Two lifespans nested in one
-  coroutine share a context and hold twice. An `initialize()` run in a task
-  of its own (`create_task`, or `wait_for` on Python 3.11) holds in that
-  task's context, which no other context's shutdown releases.
+  coroutine share a context and hold twice.
+- **A stranded hold:** a successful composition whose context never shuts down
+  keeps every later release from being the last, until a reset. One case is an
+  `initialize()` run in a task of its own (`create_task`, or `wait_for` on
+  Python 3.11): it holds in that task's context, which no other context's
+  shutdown releases.
 - **The last release.** `shutdown()` returns `False`, closing nothing, while a
   hold remains anywhere (#1843). With none left it resets first, so an
   `initialize()` during the closes composes afresh and keeps its hold. Then it

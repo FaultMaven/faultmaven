@@ -231,38 +231,38 @@ async def test_a_context_that_holds_nothing_closes_nothing_beside_a_holder(
     client.aclose.assert_awaited_once()
 
 
-async def test_a_call_that_finds_the_container_initializing_holds_it(container):
-    """It gets an uninitialized container back, and held nothing: its
-    composer's shutdown then released the composing one's hold, and closed
-    what that one had opened."""
-    composing, b_ended, client = asyncio.Event(), asyncio.Event(), _RealClient()
+@pytest.mark.parametrize("composes", [True, False], ids=["beside", "alone"])
+async def test_a_call_that_finds_the_container_initializing_holds_nothing(
+    container, composes
+):
+    """It gets an uninitialized container back. Beside the composition, once
+    that holds it, its composer's shutdown closes nothing; if that composition
+    fails, nothing holds, and it closes what that one opened."""
+    composing, client = asyncio.Event(), _RealClient()
 
     async def _register(c):
         _own(c, client)
         await composing.wait()
-
-    async def _compose_then_end():
-        await container.initialize()
-        await b_ended.wait()
-        return await container.shutdown()
+        if not composes:
+            raise ValueError("planted part-way failure")
 
     with _composing(_register):
-        first = asyncio.create_task(_compose_then_end())
+        first = asyncio.create_task(container.initialize(allow_degraded=True))
         await asyncio.sleep(0)
         await container.initialize()
         assert container.is_initialized is False
         composing.set()
-        assert await container.shutdown() is False
-        client.aclose.assert_not_awaited()
-        b_ended.set()
-        assert await first is True
-    client.aclose.assert_awaited_once()
+        await first
+
+    assert await container.shutdown() is not composes
+    assert client.aclose.await_count == (0 if composes else 1)
 
 
-async def test_a_degraded_call_holds_it_too(container):
-    """The lenient path returns it uninitialized, and a later call composes
-    afresh. Holding nothing, the degraded composer's shutdown released the
-    later one's hold and closed its clients."""
+@pytest.mark.parametrize("beside", [True, False], ids=["beside", "alone"])
+async def test_a_degraded_call_holds_nothing(container, beside):
+    """The lenient path returns it uninitialized. Beside a composition that holds
+    it, the degraded composer's shutdown closes nothing; alone, it closes what
+    the degraded composition opened."""
     degraded, serving = _RealClient(), _RealClient()
     built = iter([degraded, serving])
 
@@ -271,15 +271,16 @@ async def test_a_degraded_call_holds_it_too(container):
             raise ValueError("planted part-way failure")
 
     with _composing(_register):
-        await container.initialize(allow_degraded=True)
-        assert container.is_initialized is False
-        await container.initialize()
+        await _elsewhere(container.initialize(allow_degraded=True))
+        if beside:
+            await container.initialize()
 
-    assert await container.shutdown() is False
-    serving.aclose.assert_not_awaited()
-    assert await container.shutdown() is True
-    degraded.aclose.assert_awaited_once()
-    serving.aclose.assert_awaited_once()
+    assert await _elsewhere(container.shutdown()) is not beside
+    assert degraded.aclose.await_count == (0 if beside else 1)
+    if beside:
+        assert await container.shutdown() is True
+        degraded.aclose.assert_awaited_once()
+        serving.aclose.assert_awaited_once()
 
 
 async def test_a_composition_begun_during_the_last_closes_keeps_its_hold(container):
@@ -479,11 +480,17 @@ async def test_the_last_release_writes_what_was_metered_before_the_engine_goes(
     container, monkeypatch, ledger_restored
 ):
     """The ledger is the process's, installed until the last release, so a call
-    metered after the lifespan's own drain schedules a write. It is drained,
-    and not written against a closed engine."""
+    metered after the lifespan's own drain schedules a write. The ledger is
+    uninstalled, then drained, so nothing is written against a closed engine."""
     from faultmaven.bootstrap.composition import decompose_application
 
     order = []
+    install = usage_ledger.install_usage_ledger
+    monkeypatch.setattr(
+        usage_ledger,
+        "install_usage_ledger",
+        lambda ledger: (order.append("uninstall"), install(ledger)),
+    )
 
     async def _write():
         for _ in range(100):  # still writing when the steps before it end
@@ -504,7 +511,7 @@ async def test_the_last_release_writes_what_was_metered_before_the_engine_goes(
 
     await decompose_application(FastAPI(), {})
 
-    assert order == ["write", "close_database"]
+    assert order == ["uninstall", "write", "close_database"]
 
 
 async def test_the_shutdown_stops_the_config_watcher_before_the_schedulers(
