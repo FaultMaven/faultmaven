@@ -1519,7 +1519,10 @@ def pending_symptom_check(
 ) -> "EvidenceNeed | None":
     """The check of the problem the model asked for after the fix that is still
     unanswered, or None (#1906 D5.2, rulings of 2026-11-04). While one is held,
-    no resolve offer opens; a close still pivots to the resolve (ruling 2).
+    no resolve offer opens. A close is read as on any resolvable case (ruling
+    2): without a standing resolve decline, the user's or the model's close
+    pivots to the resolve offer; under one, the user's close closes (#2360)
+    and the model's is refused.
 
     - **Candidates:** the case's ``symptom_verification`` needs that are
       outstanding (PENDING or PARTIALLY_MET), or FULFILLED (below). A

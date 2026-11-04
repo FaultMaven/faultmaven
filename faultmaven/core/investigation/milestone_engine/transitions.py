@@ -387,8 +387,8 @@ class TransitionManager:
         if readiness.pending_check is not None:
             # A check the model asked for after the fix is still unanswered
             # (#1906 D5.2): the request ends, and no needs-info-unmet close
-            # follows (ruling 3). The offer comes once the answer lands, from
-            # the backstop.
+            # follows (ruling 3). Once the answer lands, the offer is the
+            # backstop's, which a standing resolve decline still binds.
             metadata["resolution_pending_check"] = readiness.pending_check.need_id
             logger.info(
                 f"Case {case.case_id}: the resolution request ends on a pending "

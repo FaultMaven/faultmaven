@@ -140,8 +140,8 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
         if pending_symptom_check(case) is not None:
             # A check the model asked for after the fix is still unanswered
             # (#1906 D5.2, ruling 4): no offer this turn. Not the CLOSE
-            # branch either, which would record a false label on a
-            # confirmed case.
+            # branch either, whose "can't be applied or verified" close is
+            # false on a confirmed case.
             return
         kind = OfferKind.RESOLVE
         # Purpose-written, NOT `closure.message`. That text is a pivot-FROM-a-

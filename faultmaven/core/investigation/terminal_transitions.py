@@ -1292,8 +1292,10 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
         # A check of the problem the model asked for after the fix, still
         # unanswered, holds the offer (#1906 D5.2, ruling 4): the reply is
         # asking for evidence the offer would claim. The frame below without
-        # its close paragraph, which would be false here: a close of a
-        # confirmed case pivots to the resolve (ruling 2, INV-37).
+        # its close paragraph: without a standing resolve decline a close of a
+        # confirmed case pivots to the resolve (ruling 2, INV-37), and under
+        # one the turn's "Close without resolving" chip carries the close
+        # (#2360).
         check = pending_symptom_check(case)
         if check is not None:
             return ResolutionReadiness(
@@ -1544,8 +1546,9 @@ def assess_closure_readiness(case: "Case") -> ClosureReadiness:
     # Gate on the resolution confirmation — the SAME bar as
     # assess_resolution_readiness READY (both legs: cause gone, problem gone),
     # less READY's hold on a check the model asked for after the fix
-    # (``pending_symptom_check``): a close still pivots while one is pending
-    # (#1906 D5.2, ruling 2).
+    # (``pending_symptom_check``): the verdict stays SUGGEST_RESOLVE while one
+    # is pending, so a close is read as on any resolvable case (#1906 D5.2,
+    # ruling 2; ``close_pivots_to_resolve`` applies a standing decline).
     # A close request on a resolution-ready case pivots to resolve: "resolved" is
     # a closed case WITH a resolution, and it is always safe to resolve a case the
     # user moved to close. We do NOT require a separate root-cause/solution record
