@@ -762,20 +762,28 @@ def close_pivots_to_resolve(case: Case, verdict: str) -> bool:
 
 
 #: What binds the model while a resolve decline stands (#1895): the ONE rule the
-#: step-2 refusal's feedback and the prompt line both state. The model never
-#: proposes on a request; a user who changes their mind has the engine's chip.
-#: A new solution lapses the decline too (``offers.decline_stands``, ruling 3
-#: of #2379), but it earns READY only with a verification of its own, so the
-#: rule names the verification alone.
+#: step-2 refusal's feedback and the prompt line both state, whenever the
+#: decline stands. The model never proposes on a request. A new solution lapses
+#: the decline too (``offers.decline_stands``, ruling 3 of #2379), but it earns
+#: READY only with a verification of its own, so the rule names the
+#: verification alone.
 RESOLVE_DECLINED_RULE = (
     "Do not propose resolved on the evidence already on record. If the user "
     "reports a NEW verification that the fix held, record it (the cause gone "
     "as causal_absence_evidence, the problem gone as symptom_absence_evidence) "
-    "and propose resolved in the same turn. A user who "
-    "changes their mind without one uses the engine's 'Mark it resolved' "
-    "action: point them to it, and never record a confirmation row from a "
-    "request. A user who wants to close the case instead uses the engine's "
-    "'Close without resolving' action: point them to it."
+    "and propose resolved in the same turn. A request is not a verification: "
+    "never record a confirmation row from a request."
+)
+
+#: Where the rule points a user who changes their mind or wants to close: the
+#: engine's two chips (#2472). Stated only when the reply carries them
+#: (``offer_projection.project_offers(case).reopen_chip``): a hold or an open
+#: offer leaves both off.
+RESOLVE_DECLINED_ACTIONS = (
+    "A user who changes their mind without a new verification uses the "
+    "engine's 'Mark it resolved' action: point them to it. A user who wants to "
+    "close the case instead uses the engine's 'Close without resolving' "
+    "action: point them to it."
 )
 
 

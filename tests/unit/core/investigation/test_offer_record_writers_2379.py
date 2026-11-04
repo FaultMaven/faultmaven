@@ -16,14 +16,22 @@ import pytest
 from pydantic import ValidationError
 
 from faultmaven.core.investigation import terminal_transitions
+from faultmaven.core.investigation.cause_assurance import (
+    resolution_confirmation_rows,
+)
 from faultmaven.core.investigation.offers import (
     MAX_ANSWERS,
     answer_offer,
+    binding_decline,
     lapse_offers,
     open_offer,
+    set_aside_this_turn,
     standing_resolve_decline,
 )
-from faultmaven.core.investigation.problem_status import propose_revision
+from faultmaven.core.investigation.problem_status import (
+    invalidate_problem,
+    propose_revision,
+)
 from faultmaven.core.investigation.terminal_transitions import (
     confirm_open_offer,
     execute_user_closure,
@@ -33,15 +41,18 @@ from faultmaven.modules.case.contracts import (
     AnswerVia,
     CaseState,
     ClosureReason,
+    EvidenceCategory,
     OfferBasis,
     OfferKind,
     ProblemStatus,
 )
+from faultmaven.modules.case.domain.models.solution import Solution, SolutionType
 from tests.case_builders import (
     investigating_case,
     with_declined_offer,
     with_open_offer,
 )
+from tests.unit.core.investigation.bound_rows import bound_row
 
 pytestmark = pytest.mark.unit
 
@@ -260,11 +271,112 @@ class TestRevisionAnswers:
         assert revision.prior_status == ProblemStatus.VERIFIED
 
 
+def _set_aside(case, *, kind: str, answer=AnswerKind.WITHDRAWN, basis="model"):
+    """Open a ``kind`` offer and set it aside on the current turn."""
+    offer = with_open_offer(case, kind=kind, basis=basis)
+    case.offer_record = answer_offer(
+        case, proposal_id=offer.proposal_id, answer=answer, via=AnswerVia.TYPED
+    )
+
+
+def _open(case, kind: str, basis: str = "model"):
+    return terminal_transitions.open_disposition_offer(
+        case, kind=OfferKind(kind), basis=OfferBasis(basis)
+    )
+
+
+class TestTheTurnQuiet:
+    """#2471: an offer set aside on a turn (withdrawn, or declined without
+    binding) stays quiet for the rest of it, at the writer, for every opener
+    but the user's own, until a confirmation or a finding it never saw."""
+
+    @pytest.mark.parametrize(
+        "kind, answer",
+        [
+            ("resolve", AnswerKind.WITHDRAWN),
+            ("close", AnswerKind.WITHDRAWN),
+            ("close", AnswerKind.DECLINED),
+        ],
+    )
+    def test_the_same_kind_is_refused_and_returns_next_turn(self, kind, answer):
+        case = _case()
+        _set_aside(case, kind=kind, answer=answer)
+        assert (
+            binding_decline(case, kind=OfferKind(kind), basis=OfferBasis.MODEL) is None
+        ), "premise: no decline binds it"
+        before = case.offer_record
+        assert _open(case, kind) is None
+        assert case.offer_record is before
+
+        case.current_turn += 1
+        assert _open(case, kind) is not None
+
+    def test_the_other_kind_opens(self):
+        case = _case()
+        _set_aside(case, kind="close")
+        assert _open(case, "resolve") is not None
+
+    def test_the_engine_proposers_stay_quiet_on_either_kind(self):
+        """Their stricter rule, now the writer's (``backstop``, ``deferred``)."""
+        case = _case()
+        _set_aside(case, kind="close")
+        assert _open(case, "resolve", "backstop") is None
+        assert _open(case, "resolve", "deferred") is None
+
+    @pytest.mark.parametrize(
+        "kind, basis",
+        [("close", "menu"), ("resolve", "reopen"), ("close", "rca_infeasible")],
+    )
+    def test_the_users_own_offers_and_the_stabilized_close_open(self, kind, basis):
+        case = _case()
+        _set_aside(case, kind=kind)
+        assert _open(case, kind, basis) is not None
+
+    def test_a_new_confirmation_opens(self):
+        """INV-43: a turn that records one re-offers on that same turn."""
+        case = _case()
+        _set_aside(case, kind="resolve")
+        bound_row(case, EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE, turn=4)
+        bound_row(case, EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE, turn=4)
+        assert resolution_confirmation_rows(case), "premise: a new confirmation"
+        assert _open(case, "resolve") is not None
+
+    def test_a_new_solution_does_not_open(self):
+        case = _case()
+        _set_aside(case, kind="resolve")
+        case.solutions.append(
+            Solution(
+                solution_type=SolutionType.CONFIG_CHANGE,
+                title="Raise max_connections",
+                longterm_fix="Set max_connections above the worker pool size.",
+            )
+        )
+        assert _open(case, "resolve") is None
+
+    def test_a_close_set_aside_leaves_the_false_alarm_close_on_a_new_finding(self):
+        """The false-alarm close is offered once, on the turn its finding is
+        made: an ordinary close set aside earlier that turn did not see it."""
+        case = _case()
+        absent = bound_row(case, turn=4)
+        _set_aside(case, kind="close")
+        invalidate_problem(case, evidence_ids=[absent.evidence_id], basis="no 502s")
+        # Only the finding differs: the confirmations are the ones it saw.
+        assert set_aside_this_turn(case, OfferKind.CLOSE) is not None
+        assert (
+            set_aside_this_turn(case, OfferKind.CLOSE, ClosureReason.CLOSED_FALSE_ALARM)
+            is None
+        )
+        offer = _open(case, "close", "false_alarm").open
+        assert offer.closure_reason == ClosureReason.CLOSED_FALSE_ALARM
+
+
 class TestTheHistoryIsBounded:
     def test_the_cap_never_evicts_a_standing_decline(self):
         case = _case()
         decline = with_declined_offer(case, kind="resolve", basis="backstop")
         for _ in range(MAX_ANSWERS + 6):
+            # One offer a turn: a close set aside stays quiet for its turn.
+            case.current_turn += 1
             offer = with_open_offer(case, kind="close", basis="model")
             case.offer_record = answer_offer(
                 case,

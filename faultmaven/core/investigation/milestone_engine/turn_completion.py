@@ -582,6 +582,11 @@ async def _compose_turn_reply(
                 metadata.get("declined_close_card")
                 or ("resolve" if metadata.get("declined_resolve_card") else None)
             ),
+            # The model's proposal named an offer the user set aside this
+            # turn, and the turn quiet held it (#2471).
+            "transition_quiet_this_turn": bool(
+                metadata.get("transition_quiet_this_turn")
+            ),
             "user_confirmed_investigation_emitted": bool(
                 getattr(
                     getattr(response_obj, "state_updates", None),

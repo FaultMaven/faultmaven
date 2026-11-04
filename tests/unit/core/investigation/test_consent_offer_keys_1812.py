@@ -252,6 +252,8 @@ class TestTheOfferKeys:
         case.offer_record = answer_offer(
             case, proposal_id=first, answer=AnswerKind.WITHDRAWN, via=AnswerVia.TYPED
         )
+        # Re-proposed on a later turn: one set aside stays quiet for its turn.
+        case.current_turn += 1
         second = with_open_offer(case, kind="resolve", basis="model").proposal_id
         assert second != first, "a re-proposal is a new offer; its key must be fresh"
 

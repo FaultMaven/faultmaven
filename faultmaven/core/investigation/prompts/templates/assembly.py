@@ -11,7 +11,10 @@ from faultmaven.core.investigation.prompts.context_builder.assembly import (
 from faultmaven.core.investigation.prompts.context_builder.entity_highlights import (
     EntityHighlightGroup,
 )
-from faultmaven.core.investigation.terminal_transitions import RESOLVE_DECLINED_RULE
+from faultmaven.core.investigation.terminal_transitions import (
+    RESOLVE_DECLINED_ACTIONS,
+    RESOLVE_DECLINED_RULE,
+)
 from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
@@ -100,8 +103,9 @@ def _false_alarm_declined_line(turn: int) -> str:
 #: The line the prompt carries while the user's decline of the resolution
 #: stands (#1895): ``RESOLVE_DECLINED_RULE``, the same rule the step-2
 #: refusal's feedback states. A NEW verification is evidence, recorded and
-#: then proposed on; a request is not, and a user who changes their mind is
-#: pointed at the engine's "Mark it resolved" action.
+#: then proposed on; a request is not. Where to point the user
+#: (``RESOLVE_DECLINED_ACTIONS``) follows it only while the chips it names
+#: are on the reply (``_resolve_declined_emphasis``, #2472).
 RESOLVE_DECLINED_LINE = (
     "**THE USER DECLINED MARKING THIS CASE RESOLVED.** It stays open on their "
     "answer. " + RESOLVE_DECLINED_RULE + " Do not narrate the case as resolved."
@@ -134,7 +138,15 @@ def _resolve_declined_emphasis(case) -> str:
     ``RESOLVE_DECLINED_THIS_TURN_LINE`` after it when that decline was given
     on the current turn (#2223). One read decides both lines, so they cannot
     disagree. Appended to the focus block on every stage and processing mode,
-    never replacing it."""
+    never replacing it.
+
+    ``RESOLVE_DECLINED_ACTIONS`` (point the user at "Mark it resolved" and
+    "Close without resolving") follows the line only when the projection builds
+    those chips (``project_offers(case).reopen_chip``, #2472): no offer open,
+    the problem not on hold. The prompt predicts the reply's chips from the
+    case as the turn starts; a revision the model proposes this turn puts the
+    problem on hold and suppresses them afterwards."""
+    from faultmaven.core.investigation.offer_projection import project_offers
     from faultmaven.core.investigation.terminal_transitions import (
         declined_resolve_entry,
     )
@@ -142,9 +154,12 @@ def _resolve_declined_emphasis(case) -> str:
     entry = declined_resolve_entry(case)
     if entry is None:
         return ""
+    line = RESOLVE_DECLINED_LINE
+    if project_offers(case).reopen_chip is not None:
+        line = f"{line} {RESOLVE_DECLINED_ACTIONS}"
     if entry.at_turn == case.current_turn:
-        return f"\n{RESOLVE_DECLINED_LINE}\n{RESOLVE_DECLINED_THIS_TURN_LINE}\n"
-    return f"\n{RESOLVE_DECLINED_LINE}\n"
+        return f"\n{line}\n{RESOLVE_DECLINED_THIS_TURN_LINE}\n"
+    return f"\n{line}\n"
 
 
 def _problem_hold_emphasis(case) -> str:

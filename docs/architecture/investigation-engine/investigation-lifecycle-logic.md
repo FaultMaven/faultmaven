@@ -448,15 +448,24 @@ not revive it).
   decline (not substantive, no upload) never forces tools; any other turn that
   answers an offer is forced as before. The reply carries the chips. While the decline stands the prompt and the refusal's feedback state one
   rule (`RESOLVE_DECLINED_RULE`): do not propose on the evidence on record;
-  record a NEW verification as evidence and propose in the same turn; point a
-  user who changes their mind at the **Mark it resolved** action, and one who
-  wants to close at the **Close without resolving** action, never
-  proposing on, or recording a row from, a request.
-- **The decline turn is read from the record.** Whether an offer was answered
-  this turn is the record's (`offers.terminal_offer_answered_this_turn`), so the
-  apply step's proposers read it with no turn markers: a question about a
-  standing deferred offer withdraws it for the turn, and a decline is not
-  re-offered on its own turn.
+  record a NEW verification as evidence and propose in the same turn; never
+  propose on, or record a row from, a request. Where to point the user
+  (`RESOLVE_DECLINED_ACTIONS`: one who changes their mind at the **Mark it
+  resolved** action, one who wants to close at the **Close without resolving**
+  action) follows only while the projection builds those chips: no offer open,
+  the problem not on hold (#2472). The prompt predicts the reply's chips from
+  the turn's start; a revision the model proposes that turn hides them.
+- **The decline turn is read from the record, by its writer.** An offer the
+  user set aside (withdrawn, or declined without binding) stays quiet for the
+  rest of the turn: `offers.open_offer` refuses an offer of the same kind
+  unless the turn recorded a confirmation the answer never saw (INV-43), and
+  the model's refused proposal gets feedback and `transition_quiet_this_turn`
+  on the `transition_compliance` line (#2471). The backstop and the deferred
+  proposer keep a stricter rule in the same writer: any terminal answer this
+  turn quiets them (`offers.terminal_offer_answered_this_turn`). So a question
+  about a standing deferred offer withdraws it for the turn, and a decline is
+  not re-offered on its own turn. The user's own offers and the rca_infeasible
+  stabilized close are exempt.
 
 **Why RESOLVED left the status menu.** It was listed in `USER_SELECTABLE_ACTIONS`
 until the engine could see the readiness bar for itself, and the listing was

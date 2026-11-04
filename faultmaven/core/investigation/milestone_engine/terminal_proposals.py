@@ -8,10 +8,7 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     engine_proposed_resolution_total,
     evidence_need_status_changed_total,
 )
-from faultmaven.core.investigation.offers import (
-    awaiting_request_recheck,
-    terminal_offer_answered_this_turn,
-)
+from faultmaven.core.investigation.offers import awaiting_request_recheck
 from faultmaven.core.investigation.problem_status import problem_on_hold
 from faultmaven.core.investigation.terminal_transitions import open_disposition_offer
 from faultmaven.modules.case.contracts import (
@@ -119,16 +116,14 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
     # fixes is therefore path INCONSISTENCY (one proposer disagreeing with the
     # other two), not a reconstructed history of that case. What kept those
     # five turns going is the re-proposal loop, which is a separate concern.
-    # An offer was answered on this turn (a decline, a question, a long
-    # non-answer, a contradicting status pick): the turn began inside a
-    # disposition handshake, or the engine withdrew its own offer. Offering
-    # now would put an offer back in front of a user who just acted on one,
-    # or substitute a DIFFERENT target (this proposer's SUGGEST_RESOLVE pivot
-    # offers RESOLVED) into a channel they were mid-answer on. Turn-scoped: an
-    # offer the user only asked about returns on the next turn.
-    if terminal_offer_answered_this_turn(case):
-        return
-
+    # An offer answered on this turn (a decline, a question, a long
+    # non-answer, a contradicting status pick) quiets this proposer for the
+    # rest of it, whatever the offer's kind: offering now would put an offer
+    # back in front of a user who just acted on one, or substitute a DIFFERENT
+    # target (this proposer's SUGGEST_RESOLVE pivot offers RESOLVED) into a
+    # channel they were mid-answer on. The writer holds that quiet
+    # (``offers.open_offer``, the turn quiet); an offer the user only asked
+    # about returns on the next turn.
     closure = assess_closure_readiness(case)
     # A decline POSTPONES the offer until the case changes underneath it
     # (fm#1122: five identical offers against five explicit declines), and the
@@ -235,13 +230,12 @@ def _maybe_propose_confirmed_resolution(case: "Case", metadata: dict) -> None:
         return
     if case.state != CaseState.INVESTIGATING:
         return
-    # An offer was answered on this turn: whatever became of it — withdrawn on
-    # a question, declined, contradicted — the channel was the user's this
-    # turn, and opening a different target into it is how a "yes" meant for
-    # the offer they were reading lands on the one the engine substituted
-    # underneath it.
-    if terminal_offer_answered_this_turn(case):
-        return
+    # An offer answered on this turn, whatever became of it (withdrawn on a
+    # question, declined, contradicted), quiets this backstop for the rest of
+    # it: the channel was the user's this turn, and opening a different
+    # target into it is how a "yes" meant for the offer they were reading
+    # lands on the one the engine substituted underneath it. The writer holds
+    # that quiet (``offers.open_offer``, the turn quiet).
 
     from faultmaven.core.investigation.terminal_transitions import (
         ResolutionReadiness,
