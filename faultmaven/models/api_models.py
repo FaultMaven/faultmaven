@@ -60,7 +60,10 @@ DISPOSITION_ELIGIBILITY_DESCRIPTION = (
     "proposal). A decline stands until a new solution or a new confirmation "
     "that the fix held is recorded; nothing else lapses it. A request for what "
     "a resolution still needs is not a proposal: it carries no confirmation "
-    "chips, and Close stays.\n\n"
+    "chips, and Close stays, except while a check the agent asked for after the "
+    "fix is unanswered on a resolvable case: ``resolved`` then reads "
+    "``needs_info``, and a close becomes a resolve proposal, so ``closed`` reads "
+    "``suggests_alternative``.\n\n"
 )
 
 #: The delta paragraph appended to ``disposition_eligibility`` descriptions.

@@ -43,6 +43,7 @@ from faultmaven.core.investigation.cause_assurance import (
     has_resolution_confirmation,
     has_root_cause_record,
     latest_fix_window,
+    pending_symptom_check,
     resolution_confirmation_rows,
     subject_index,
 )
@@ -75,6 +76,7 @@ from faultmaven.modules.case.contracts import (
     ClosureReason,
     DispositionEligibility,
     EvidenceCategory,
+    EvidenceNeed,
     InvestigationActionType,
     OfferAnswer,
     OfferBasis,
@@ -1135,10 +1137,33 @@ class ResolutionReadiness:
     NEEDS_INFO = "needs_info"
     SUGGEST_CLOSE = "suggest_close"
 
-    def __init__(self, verdict: str, message: str, missing: list[str]):
+    def __init__(
+        self,
+        verdict: str,
+        message: str,
+        missing: list[str],
+        *,
+        pending_check: EvidenceNeed | None = None,
+    ):
         self.verdict = verdict
         self.message = message
         self.missing = missing
+        # NEEDS_INFO on a confirmed case: the check the model asked for after
+        # the fix, still unanswered (``pending_symptom_check``, #1906 D5.2).
+        # The readers branch on it, never on the message.
+        self.pending_check = pending_check
+
+
+#: The NEEDS_INFO frame's opening line and its data sentence, shared by the
+#: documentation-gap ask and the held check (#1906 D5.2).
+_NEEDS_INFO_INTRO = (
+    "To mark this **resolved** and write up the resolution summary, I just need "
+    "a few essentials:\n\n"
+)
+_SUBMIT_AS_DATA = (
+    "Submit check output as data (pasted or attached, not typed into your "
+    "message): what you write is your account, and the output is what shows it."
+)
 
 
 def _relief_without_cause_recheck(
@@ -1217,6 +1242,24 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
     resolution_confirmed = _resolution_confirmed(case)
 
     if resolution_confirmed:
+        # A check of the problem the model asked for after the fix, still
+        # unanswered, holds the offer (#1906 D5.2, ruling 4): the reply is
+        # asking for evidence the offer would claim. The frame below without
+        # its close paragraph, which would be false here: a close of a
+        # confirmed case pivots to the resolve (ruling 2, INV-37).
+        check = pending_symptom_check(case)
+        if check is not None:
+            return ResolutionReadiness(
+                verdict=ResolutionReadiness.NEEDS_INFO,
+                message=(
+                    _NEEDS_INFO_INTRO
+                    + f"- **The check you asked for** — {check.request_text}"
+                    + "\n\n"
+                    + _SUBMIT_AS_DATA
+                ),
+                missing=["the check you asked for"],
+                pending_check=check,
+            )
         return ResolutionReadiness(
             verdict=ResolutionReadiness.READY,
             message="",
@@ -1334,12 +1377,11 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
     return ResolutionReadiness(
         verdict=ResolutionReadiness.NEEDS_INFO,
         message=(
-            "To mark this **resolved** and write up the resolution summary, I "
-            "just need a few essentials:\n\n"
+            _NEEDS_INFO_INTRO
             + "\n".join(asks)
-            + "\n\nSubmit check output as data (pasted or attached, not typed "
-            "into your message): what you write is your account, and the output "
-            "is what shows it. If the problem was already fixed outside this "
+            + "\n\n"
+            + _SUBMIT_AS_DATA
+            + " If the problem was already fixed outside this "
             "session, the same applies, and I'll document it.\n\n"
             "If it was only **stabilized** (a workaround/failover while the root "
             "cause is still pending) or the real fix is **deferred** (a change "
@@ -1453,7 +1495,10 @@ def assess_closure_readiness(case: "Case") -> ClosureReadiness:
     # Symmetric to ResolutionReadiness.SUGGEST_CLOSE.
     #
     # Gate on the resolution confirmation — the SAME bar as
-    # assess_resolution_readiness READY (both legs: cause gone, problem gone).
+    # assess_resolution_readiness READY (both legs: cause gone, problem gone),
+    # less READY's hold on a check the model asked for after the fix
+    # (``pending_symptom_check``): a close still pivots while one is pending
+    # (#1906 D5.2, ruling 2).
     # A close request on a resolution-ready case pivots to resolve: "resolved" is
     # a closed case WITH a resolution, and it is always safe to resolve a case the
     # user moved to close. We do NOT require a separate root-cause/solution record

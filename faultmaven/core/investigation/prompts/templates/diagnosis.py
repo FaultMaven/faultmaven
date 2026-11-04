@@ -160,6 +160,15 @@ confirm the symptom (or cause) it captured is no longer present.
   re-checked cause (causal_absence) and a re-checked symptom (symptom_absence)
   at or after it. A cause re-checked gone with the reported symptom not yet
   re-checked is not proof of resolution: ask for the symptom's check.
+- **The post-fix check is a need.** A post-fix check of the reported problem
+  that you ask the user for is a NEW `symptom_verification` need in
+  `evidence_need_updates`, even when an older need asked the same; surface it
+  as the EVIDENCE suggestion with `evidence_need_id` set to its `new_index_N`.
+  While it is open no resolution is offered, and an ask the engine has stopped
+  surfacing still holds: do not propose `resolved` meanwhile. When its answer
+  arrives as data, record the row and mark the need FULFILLED with that row in
+  `fulfilling_evidence_ids` (a row from before the ask does not answer it). If
+  the user cannot run the check, SUPERSEDE the need and give the reason.
 - If the original signature REAPPEARS, the fix did not hold —
   surface that as a new finding rather than declaring success.
 """

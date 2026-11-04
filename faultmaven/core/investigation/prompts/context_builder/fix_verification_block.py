@@ -11,7 +11,8 @@ hold (#2427, turn 11). It shows, one line each:
 - the two legs a resolution reads (``cause_elimination_rows`` and
   ``symptom_elimination_rows``), by row id, and the rows that showed the
   problem with no re-check in the problem leg;
-- the outstanding symptom-verification needs.
+- the outstanding symptom-verification needs, the one that holds the resolve
+  offer (``pending_symptom_check``) first and marked.
 
 Informational: no gate reads it. It cites ids and never repeats the
 re-verification checklist's row texts (``evidence_needs``).
@@ -32,6 +33,7 @@ from faultmaven.core.investigation.cause_assurance import (
     SUBJECT_PROBLEM,
     cause_recheck_status,
     fix_windows,
+    pending_symptom_check,
     subject_index,
     symptom_elimination_rows,
 )
@@ -46,6 +48,7 @@ from faultmaven.modules.case.contracts import (
     InvestigationActionType,
     InvestigationStage,
     NeedPurpose,
+    NeedState,
 )
 
 from .budget import TokenBudget
@@ -171,16 +174,21 @@ def _leg_lines(case: Case, windows, subjects, status, cause_rows, problem_rows):
     return lines
 
 
-def _need_lines(case: Case) -> list[str]:
+def _need_lines(case: Case, held) -> list[str]:
     """The outstanding symptom-verification needs the engine still puts to the
     user; ask-exhausted ones are counted, in ``<evidence_needs>``'s own words,
-    not listed as live asks (#1079)."""
+    not listed as live asks (#1079). The ``held`` need
+    (``pending_symptom_check``) is listed first and marked, exhausted or
+    FULFILLED on rows from before its ask, so the model is shown which need to
+    dispose of (#1906 D5.2)."""
     needs = [
         n
         for n in case.evidence_needs
-        if n.is_outstanding and n.purpose == NeedPurpose.SYMPTOM_VERIFICATION
+        if n is held
+        or (n.is_outstanding and n.purpose == NeedPurpose.SYMPTOM_VERIFICATION)
     ]
-    live = [n for n in needs if not is_ask_exhausted(n, case.current_turn)]
+    live = [n for n in needs if n is held or not is_ask_exhausted(n, case.current_turn)]
+    live.sort(key=lambda n: n is not held)
     stopped = len(needs) - len(live)
     if not live:
         lines = ["Outstanding symptom-verification needs: none"]
@@ -188,6 +196,7 @@ def _need_lines(case: Case) -> list[str]:
         lines = ["Outstanding symptom-verification needs:"]
         lines += [
             f"  - [{n.need_id}] {_truncate_request_text(n.request_text)}"
+            + (_held_mark(n) if n is held else "")
             for n in live[:MAX_NEEDS]
         ]
         if len(live) > MAX_NEEDS:
@@ -197,6 +206,15 @@ def _need_lines(case: Case) -> list[str]:
             f"  ({stopped} the engine has STOPPED surfacing: see <evidence_needs>)"
         )
     return lines
+
+
+def _held_mark(need) -> str:
+    if need.state == NeedState.FULFILLED:
+        return (
+            " (holds the resolution offer until answered: the rows it cites "
+            "predate the ask)"
+        )
+    return " (holds the resolution offer until answered)"
 
 
 def build_fix_verification_block(case: Case) -> str:
@@ -230,7 +248,9 @@ def build_fix_verification_block(case: Case) -> str:
             else ["Fix attempts: none recorded"]
         ),
         *_leg_lines(case, windows, subjects, status, cause_rows, problem_rows),
-        *_need_lines(case),
+        *_need_lines(
+            case, pending_symptom_check(case, subjects=subjects, windows=windows)
+        ),
         CLOSE_TAG,
     ]
     return "\n".join(lines)

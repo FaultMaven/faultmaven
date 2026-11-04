@@ -4,6 +4,7 @@ from datetime import (
     datetime,
 )
 
+from faultmaven.core.investigation.cause_assurance import pending_symptom_check
 from faultmaven.core.investigation.lifecycle_metrics import (
     engine_proposed_resolution_total,
     evidence_need_status_changed_total,
@@ -136,6 +137,12 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
     # giving up would be the engine steering toward abandonment (D4
     # soft-collapse).
     if closure.verdict == closure.SUGGEST_RESOLVE:
+        if pending_symptom_check(case) is not None:
+            # A check the model asked for after the fix is still unanswered
+            # (#1906 D5.2, ruling 4): no offer this turn. Not the CLOSE
+            # branch either, which would record a false label on a
+            # confirmed case.
+            return
         kind = OfferKind.RESOLVE
         # Purpose-written, NOT `closure.message`. That text is a pivot-FROM-a-
         # close ("Closing would close it without marking it resolved; the
@@ -209,7 +216,9 @@ def _maybe_propose_confirmed_resolution(case: "Case", metadata: dict) -> None:
 
     The trigger is the resolution bar itself, ``assess_resolution_readiness``
     READY — gone=>gone: a QUALIFYING ``causal_absence_evidence`` row and a
-    ``symptom_absence_evidence`` row at or after it. Not a
+    ``symptom_absence_evidence`` row at or after it, with no check the model
+    asked for after the fix still unanswered (``pending_symptom_check``,
+    #1906 D5.2: the reply would be asking for what the offer claims). Not a
     second, looser reading of "looks finished": a stabilized case carries
     ``symptom_absence`` and is correctly left alone, and the engine's own M6
     failed-fix rows are excluded by ``resolution_confirmation_rows``.

@@ -41,6 +41,8 @@ from faultmaven.modules.case.contracts import (
     EvidenceStance,
     HypothesisState,
     InvestigationActionType,
+    NeedPurpose,
+    NeedState,
     NodeEvidenceLink,
     NodeState,
     NodeType,
@@ -50,7 +52,7 @@ from faultmaven.modules.case.contracts import (
 )
 
 if TYPE_CHECKING:
-    from faultmaven.modules.case.contracts import Case, CausalNode
+    from faultmaven.modules.case.contracts import Case, CausalNode, EvidenceNeed
 
 __all__ = [
     "CONFIRMED_RCC_LIKELIHOOD_FLOOR",
@@ -91,7 +93,9 @@ __all__ = [
     "latest_fix_window",
     "observation_subject",
     "observed_turn",
+    "pending_symptom_check",
     "problem_anchor_statements",
+    "problem_leg_anchor",
     "resolution_confirmation_rows",
     "root_counterfactually_confirmed",
     "runbook_conversion_ready",
@@ -999,7 +1003,9 @@ def cause_recheck_status(
     disconfirmation_ids = _disconfirmation_row_ids(case)
     last_disconfirm = latest_disconfirmation_turn(case)
     posited = _cause_posited_turn(case)
+    windows = fix_windows(case, subjects) if windows is None else windows
     window = confirming_window(case, windows=windows, subjects=subjects)
+    no_window = None if window is not None else _no_confirming_window(windows)
     out = []
     for e in getattr(case, "evidence", None) or []:
         if subjects.subject(e) != SUBJECT_CAUSE:
@@ -1014,13 +1020,31 @@ def cause_recheck_status(
         elif turn < last_disconfirm:
             why = f"its data predates the failed fix seen at turn {last_disconfirm}"
         elif window is None:
-            why = "the latest fix was seen failing; only a new fix can confirm"
+            why = no_window
         elif not window.holds(turn):
             why = "it is outside the latest observed fix's window"
         else:
             why = None
         out.append((e, why))
     return out
+
+
+def _no_confirming_window(windows: list) -> str:
+    """Why no window confirms (``confirming_window`` is None): the latest
+    observed fix failed. When a newer fix is recorded that nobody has
+    observed yet, it is named as the one still to re-check, not as missing
+    (#2495)."""
+    observed = [i for i, w in enumerate(windows) if w.observed]
+    if observed and windows[observed[-1]].state == FIX_FAILED:
+        failed = windows[observed[-1]]
+        newer = [w for w in windows[observed[-1] + 1 :] if w.fix_turn is not None]
+        if newer:
+            return (
+                f"the fix executed at turn {failed.fix_turn} was seen failing at "
+                f"turn {failed.failure_turn}; the newer fix (executed turn "
+                f"{newer[-1].fix_turn}) is not re-checked yet"
+            )
+    return "the latest fix was seen failing; only a new fix can confirm"
 
 
 def confirming_polarity_rows(case: "Case") -> list:
@@ -1457,16 +1481,9 @@ def symptom_elimination_rows(
     subjects = subject_index(case) if subjects is None else subjects
     if cause_rows is None:
         cause_rows = cause_elimination_rows(case, subjects=subjects, windows=windows)
-    if not cause_rows:
+    anchor = problem_leg_anchor(case, cause_rows, subjects=subjects, windows=windows)
+    if anchor is None:
         return []
-    anchor = min(subjects.observed(e) for e in cause_rows)
-    window = confirming_window(case, windows=windows, subjects=subjects)
-    if window is not None and window.fix_turn is not None:
-        anchor = min(anchor, window.fix_turn)
-    # No window check of its own: the cause leg admits rows only from the
-    # confirming window (``confirming_window``), and the anchor is at or after
-    # that window's start (its fix's execution turn).
-    anchor = max(anchor, latest_disconfirmation_turn(case))
     return [
         e
         for e in (getattr(case, "evidence", None) or [])
@@ -1474,6 +1491,96 @@ def symptom_elimination_rows(
         and subjects.subject(e) == SUBJECT_PROBLEM
         and subjects.observed(e) >= anchor
     ]
+
+
+def problem_leg_anchor(
+    case: "Case", cause_rows: list, *, subjects: "SubjectIndex", windows=None
+) -> int | None:
+    """The turn the problem leg is read from (``symptom_elimination_rows``),
+    or None when no cause leg stands (``cause_rows`` empty): the earlier of
+    the confirming fix's execution and the earliest cause row's data, and not
+    before the latest engine-known failed-fix disconfirmation. The one owner of
+    "after the fix" for the problem leg and for the checks the model asked for
+    after it (``pending_symptom_check``)."""
+    if not cause_rows:
+        return None
+    anchor = min(subjects.observed(e) for e in cause_rows)
+    window = confirming_window(case, windows=windows, subjects=subjects)
+    if window is not None and window.fix_turn is not None:
+        anchor = min(anchor, window.fix_turn)
+    # No window check of its own: the cause leg admits rows only from the
+    # confirming window (``confirming_window``), and the anchor is at or after
+    # that window's start (its fix's execution turn).
+    return max(anchor, latest_disconfirmation_turn(case))
+
+
+def pending_symptom_check(
+    case: "Case", *, subjects: "SubjectIndex | None" = None, windows=None
+) -> "EvidenceNeed | None":
+    """The check of the problem the model asked for after the fix that is still
+    unanswered, or None (#1906 D5.2, rulings of 2026-11-04). While one is held,
+    no resolve offer opens; a close still pivots to the resolve (ruling 2).
+
+    - **Candidates:** the case's ``symptom_verification`` needs that are
+      outstanding (PENDING or PARTIALLY_MET), or FULFILLED (below). A
+      SUPERSEDED need releases the hold: the model's way out when the user
+      cannot run the check.
+    - **Asked:** the first of ``created_at_turn`` and ``surfaced_turns`` at or
+      after the problem leg's anchor (``problem_leg_anchor``), so a re-ask in
+      the answer's own turn does not un-answer it. A need with no such turn
+      (asked only before the fix) is not held.
+    - **Answered (ruling 1):** a problem-bound row (``SubjectIndex.subject``,
+      either category) whose data is from a turn strictly after the ask; or
+      the need FULFILLED citing at least one row (``fulfilling_evidence_ids``)
+      whose data is from a turn strictly after the ask. A FULFILLED need
+      citing only rows from before the ask still holds, and its state is not
+      demoted. A row in the ask's own turn does not answer it: the model asked
+      because that turn's data did not show it. Engine-authored rows are
+      unbound (``SubjectIndex.subject``), so no exclusion is needed for them.
+
+    Returns the earliest-asked held need. None when no cause leg stands, since
+    there is no anchor then. ``subjects`` and ``windows`` are the caller's
+    ``subject_index(case)`` and ``fix_windows(case)`` when it has them."""
+    candidates = [
+        n
+        for n in (getattr(case, "evidence_needs", None) or [])
+        if n.purpose == NeedPurpose.SYMPTOM_VERIFICATION
+        and (n.is_outstanding or n.state == NeedState.FULFILLED)
+    ]
+    if not candidates:
+        return None
+    subjects = subject_index(case) if subjects is None else subjects
+    cause_rows = cause_elimination_rows(case, subjects=subjects, windows=windows)
+    anchor = problem_leg_anchor(case, cause_rows, subjects=subjects, windows=windows)
+    if anchor is None:
+        return None
+    latest_answer = max(
+        (
+            subjects.observed(e)
+            for e in subjects.rows.values()
+            if subjects.subject(e) == SUBJECT_PROBLEM
+        ),
+        default=-1,
+    )
+    observed = {
+        e.evidence_id: subjects.observed(e)
+        for e in (getattr(case, "evidence", None) or [])
+        if getattr(e, "evidence_id", None)
+    }
+    held = []
+    for need in candidates:
+        asked = min(
+            (t for t in (need.created_at_turn, *need.surfaced_turns) if t >= anchor),
+            default=None,
+        )
+        if asked is None or latest_answer > asked:
+            continue
+        if need.state == NeedState.FULFILLED and any(
+            observed.get(i, -1) > asked for i in need.fulfilling_evidence_ids
+        ):
+            continue
+        held.append((asked, need))
+    return min(held, key=lambda pair: pair[0])[1] if held else None
 
 
 def resolution_confirmation_rows(case: "Case") -> list:

@@ -431,12 +431,18 @@ def _resolve_on_reopen_chip(*, case, upload_report, user_message):
             f"Reopen chip for case {case.case_id} refused: resolution readiness "
             f"is {readiness.verdict} (missing: {readiness.missing})."
         )
-        agent_response = (
-            "This case can't be marked resolved right now: the confirmation "
-            "that earned the resolution no longer stands."
-        )
-        if readiness.message:
-            agent_response = f"{agent_response}\n\n{readiness.message}"
+        if readiness.pending_check is not None:
+            # The confirmation stands; a check the agent asked for after the
+            # fix is pending (#1906 D5.2), and the ask says so. The chip
+            # stays: Slack's close chip is built only beside it (#2222).
+            agent_response = readiness.message
+        else:
+            agent_response = (
+                "This case can't be marked resolved right now: the confirmation "
+                "that earned the resolution no longer stands."
+            )
+            if readiness.message:
+                agent_response = f"{agent_response}\n\n{readiness.message}"
         follow_ups: list = []
     else:
         agent_response = _build_resolution_confirmation(case)
