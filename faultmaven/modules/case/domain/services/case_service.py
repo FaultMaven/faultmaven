@@ -32,6 +32,7 @@ from faultmaven.exceptions import (
     ServiceException,
     ValidationException,
 )
+from faultmaven.infrastructure.concurrency.inflight import CaseDeleteGate
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models.api import Source
 from faultmaven.models.api_models import (
@@ -136,6 +137,7 @@ class CaseService(CaseDriverMixin, ICaseService):
         account_reader: Optional[ICaseAccountReader] = None,
         store_erasers: Sequence[ICaseStoreEraser] = (),
         stores_not_configured: Sequence[str] = (),
+        delete_gate: Optional[CaseDeleteGate] = None,
     ):
         """
         Initialize the Case Service
@@ -158,11 +160,15 @@ class CaseService(CaseDriverMixin, ICaseService):
                 data, run in this order before the row is deleted (#1016).
             stores_not_configured: Stores this deployment does not have, named
                 as such in the ``case_deleted`` audit row.
+            delete_gate: Where a delete writes its tombstone and reads the
+                case's in-flight lease (#2096). The composition always wires
+                one; ``None`` (a service a test builds) leaves deletes ungated.
         """
         self.repository = case_repository
         self.session_store = session_store
         self.store_erasers = tuple(store_erasers)
         self.stores_not_configured = tuple(stores_not_configured)
+        self.delete_gate = delete_gate
         self._settings = settings
         self.team_service = team_service
         self.share_repository = share_repository
@@ -941,6 +947,15 @@ class CaseService(CaseDriverMixin, ICaseService):
     ) -> bool:
         """Delete a case completely, or fail and keep it (#1016).
 
+        First the delete writes the case's tombstone and reads its in-flight
+        lease (``delete_gate``, #2096). A turn on the case, or a task one
+        spawned (its settlement, upload links, vectorization, runbook
+        conversion), holds the lease on any replica from before it writes
+        anything to its end, so while one is in flight the delete refuses and
+        clears nothing. A turn that starts meanwhile reads the tombstone and
+        refuses itself. The tombstone is deleted on every outcome but a
+        deleted row, so a failed delete never holds turns off.
+
         Every store that holds the case's data is cleared BEFORE the row, by
         ``store_erasers`` in their bound order: session pointers, runbook
         conversion, uploads, case vectors, PII registry. The first eraser that
@@ -950,25 +965,16 @@ class CaseService(CaseDriverMixin, ICaseService):
         go by their FK cascade. A save of a copy loaded before the delete is
         refused rather than re-inserting it.
 
-        Residual: writers that can land after the erasers ran, among them
-        (#2096 tracks refusing the delete while a turn is in flight):
+        Residual: writers that can land after the erasers ran:
 
-        - a turn already past its load can still write a vector collection or
-          an upload blob, although its save is refused;
-        - a turn re-saves the PII redaction registry during its preparation,
-          without waiting for its commit
-          (``investigation_service/service.py``,
-          ``milestone_engine/turn_completion.py``), which re-creates
-          ``redaction:registry:{case_id}``;
+        - a turn that started while the lease store was unreachable runs
+          without a lease (ruled, 2026-11-04), so a delete that runs once the
+          store is back can race it (``docs/operations/case-deletion.md``);
+        - a holder whose process stalls past the lease's TTL without renewing
+          it loses its lease;
         - a resume (``link_session_to_case``) that passed its access check
-          before the delete re-writes the session pointer;
-        - proactive vectorization (``milestone_engine/vectorization.py``) runs
-          as an asyncio task that outlives its turn, so it can re-create the
-          ``case_{id}`` collection with no turn in flight;
-        - a background conversion
-          (``core/investigation/milestone_engine/runbook_creation.py``) can
-          persist its job between the conversion eraser and the row delete;
-          that job survives with ``case_id`` NULL.
+          before the delete re-writes the session pointer: a resume is not a
+          turn, and holds no lease.
 
         Returns:
             True when deleted, False when ``user_id`` can see the case but did
@@ -977,6 +983,10 @@ class CaseService(CaseDriverMixin, ICaseService):
         Raises:
             NotFoundError: no such case, or ``user_id`` cannot see it (the
                 route answers 204, as for a case already deleted).
+            CaseWorkInProgress: work on the case is in flight, or another
+                delete of it runs; nothing is cleared.
+            CaseDeleteUnavailable: the lease store is unreachable; nothing is
+                cleared.
             Anything a store or the repository raises: the case is kept.
         """
         if not case_id:
@@ -990,20 +1000,29 @@ class CaseService(CaseDriverMixin, ICaseService):
             )
             return False
 
-        cleared: Dict[str, int] = {}
-        for eraser in self.store_erasers:
-            cleared[eraser.store_name] = await eraser.erase_case(
-                case_id, case.enterprise_id
+        tombstone = None
+        if self.delete_gate is not None:
+            tombstone = await self.delete_gate.begin((case.enterprise_id, case_id))
+        deleted = False
+        try:
+            cleared: Dict[str, int] = {}
+            for eraser in self.store_erasers:
+                cleared[eraser.store_name] = await eraser.erase_case(
+                    case_id, case.enterprise_id
+                )
+            deletion = CaseDeletion(
+                case_id=case_id,
+                enterprise_id=case.enterprise_id,
+                actor_user_id=user_id,
+                cleared=cleared,
+                not_configured=self.stores_not_configured,
             )
-        deletion = CaseDeletion(
-            case_id=case_id,
-            enterprise_id=case.enterprise_id,
-            actor_user_id=user_id,
-            cleared=cleared,
-            not_configured=self.stores_not_configured,
-        )
-        if await self.repository.delete(case_id, deletion=deletion):
-            logger.info(f"Hard deleted case {case_id}: cleared {cleared}")
+            if await self.repository.delete(case_id, deletion=deletion):
+                logger.info(f"Hard deleted case {case_id}: cleared {cleared}")
+            deleted = True
+        finally:
+            if tombstone is not None:
+                await tombstone.end(deleted=deleted)
         return True
 
     @trace("case_service_close_case")

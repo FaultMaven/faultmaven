@@ -920,3 +920,130 @@ async def test_the_config_watcher_is_stopped_once_and_taken_off_app_state(caplog
 
     assert "llm_config_watch_task" not in app.state
     assert caplog.text.count("the watcher blew up") == 1
+
+
+# ---------------------------------------------------------------------------
+# The last release drains the work in flight first (#2490 flaw 2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def record(monkeypatch):
+    """The in-flight record, this test's own."""
+    from faultmaven.infrastructure.concurrency import inflight
+
+    monkeypatch.setattr(inflight, "_TRACKED", {})
+    monkeypatch.setattr(inflight, "_LEASES", {})
+    monkeypatch.setattr(inflight, "_RELEASES", set())
+    return inflight
+
+
+def _work(record, order, *, kind=None, steps=50, then=None):
+    """A tracked task still running when the shutdown begins."""
+
+    async def _run():
+        for _ in range(steps):
+            await asyncio.sleep(0)
+        if then is not None:
+            await then()
+        order.append("work ends")
+
+    return record.track(
+        asyncio.create_task(_run()),
+        what="work",
+        kind=kind or record.Kind.CANCELLABLE,
+    )
+
+
+async def test_the_last_release_drains_then_resets_then_closes_then_stops_the_process(
+    container, monkeypatch, ledger_restored, record
+):
+    """Drained work still reads the container and writes through what it owns,
+    and an LLM call it makes is metered while the ledger is installed."""
+    from faultmaven.bootstrap.composition import decompose_application
+
+    order = []
+
+    async def _recorded(name):
+        order.append(name)
+
+    monkeypatch.setattr(
+        usage_ledger,
+        "install_usage_ledger",
+        lambda ledger: order.append("ledger uninstall"),
+    )
+    monkeypatch.setattr(
+        usage_ledger,
+        "drain_pending_usage_writes",
+        lambda **_: _recorded("ledger drain"),
+    )
+    monkeypatch.setattr(
+        "faultmaven.infrastructure.persistence.database.close_database",
+        lambda: _recorded("Database close"),
+    )
+    monkeypatch.setattr("faultmaven.container.container", container)
+    reset = container.reset
+    monkeypatch.setattr(container, "reset", lambda: (order.append("reset"), reset())[1])
+    await _hold(container, 1)
+    _own(container, _RealClient()).aclose.side_effect = lambda: order.append("close")
+    _work(record, order)
+
+    await decompose_application(FastAPI(), {})
+
+    assert order == [
+        "work ends",
+        "reset",
+        "close",
+        "ledger uninstall",
+        "ledger drain",
+        "Database close",
+    ]
+
+
+async def test_a_release_that_is_not_the_last_drains_nothing(container, record):
+    """#1843: the record is the process's, and another live composition's work
+    is not this one's to cancel."""
+    order = []
+    await _hold(container, 2)
+    work = _work(record, order, steps=10**6)
+
+    assert await container.shutdown() is False
+    assert not work.done() and record.draining() is False
+    work.cancel()
+
+
+async def test_a_hold_taken_during_the_drain_makes_the_release_not_the_last(
+    container, record
+):
+    """The drain runs before the reset, so a composition that starts meanwhile
+    shares the container: the release then resets and closes nothing."""
+    order = []
+    await _hold(container, 1)
+    client = _own(container, _RealClient())
+    _work(record, order, then=container.initialize)
+
+    assert await container.shutdown() is False
+    assert order == ["work ends"]
+    client.aclose.assert_not_awaited()
+    assert container.is_initialized is True
+
+
+async def test_the_stores_wait_for_a_settlement_past_the_bound(
+    container, monkeypatch, record
+):
+    """R1: a cancel never reaches a settlement's commit, so its stores stay
+    open until it ends."""
+    monkeypatch.setattr(record, "DRAIN_BOUND_SECONDS", 0)
+    order, commit = [], asyncio.Event()
+    await _hold(container, 1)
+    _own(container, _RealClient()).aclose.side_effect = lambda: order.append("close")
+    settlement = _work(record, order, kind=record.Kind.MUST_FINISH, then=commit.wait)
+
+    closing = asyncio.create_task(container.shutdown())
+    for _ in range(100):
+        await asyncio.sleep(0)
+    assert order == [] and not settlement.cancelled() and not closing.done()
+
+    commit.set()
+    assert await closing is True
+    assert order == ["work ends", "close"]

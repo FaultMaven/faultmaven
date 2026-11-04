@@ -37,7 +37,7 @@ async def cancel_and_wait(task: "asyncio.Task[Any]") -> Optional[BaseException]:
     return None if task.cancelled() else task.exception()
 
 
-async def _teardown_step(what: str, step: Callable[[], Any]) -> Optional[BaseException]:
+async def teardown_step(what: str, step: Callable[[], Any]) -> Optional[BaseException]:
     """Run one step of a teardown, so that it cannot stop the steps after it.
 
     ``step`` may return an awaitable, which is awaited. An ``Exception`` is
@@ -61,12 +61,12 @@ async def _teardown_step(what: str, step: Callable[[], Any]) -> Optional[BaseExc
 async def run_teardown(steps: Iterable[tuple[str, Callable[[], Any]]]) -> None:
     """Run every ``(what, step)`` of a teardown, whatever the ones before it did.
 
-    Each step runs through :func:`_teardown_step`. The first interruption
+    Each step runs through :func:`teardown_step`. The first interruption
     deferred is re-raised once the last step has run.
     """
     deferred: Optional[BaseException] = None
     for what, step in steps:
-        interrupted = await _teardown_step(what, step)
+        interrupted = await teardown_step(what, step)
         if deferred is None:
             deferred = interrupted
     if deferred is not None:

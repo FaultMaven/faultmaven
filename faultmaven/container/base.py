@@ -23,7 +23,7 @@ class _Holds:
 
     A hold is its caller's context's, so only that context releases it: a
     context that took none (a run that never initialized) releases nothing.
-    The context is the holder, not the composer. One that no context releases
+    The context is the holder, not the composer. A hold that no context releases
     keeps every later release from being the last, until a reset. The context
     variable is this instance's, so a new instance voids every hold taken on
     the old one.

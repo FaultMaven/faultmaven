@@ -46,6 +46,7 @@ from faultmaven.core.investigation.milestone_engine.runbook_creation import (
     RunbookCreator,
 )
 from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommitPlan
+from faultmaven.infrastructure.concurrency import inflight
 from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
@@ -1198,12 +1199,13 @@ class TestRunbookConversionCarriesOrg:
             return MagicMock()
 
         plan = TurnCommitPlan()
-        # The double returned for the task is held in the module's task set and
-        # its done-callback never fires; give the call its own set so the double
-        # does not outlive this test on the worker.
+        # The double returned for the task is held by the in-flight record and
+        # its done-callback never fires; give the call its own record so the
+        # double does not outlive this test on the worker.
         with (
             patch("asyncio.create_task", side_effect=_capture),
-            patch.object(runbook_creation, "_CONVERSION_TASKS", set()),
+            patch.object(inflight, "_TRACKED", {}),
+            patch.object(inflight, "_LEASES", {}),
         ):
             await engine.runbooks.handle_runbook_creation(case, metadata={}, plan=plan)
 
@@ -1407,7 +1409,7 @@ async def _kickoff_and_notice(mock_llm, driver_id, *, existing: bool = False):
     messages_before = len(case.messages)
     result = await engine.runbooks.handle_runbook_creation(case, metadata={}, plan=plan)
     plan.release_gates()
-    await asyncio.gather(*list(runbook_creation._CONVERSION_TASKS))
+    await asyncio.gather(*inflight.tracked("runbook conversion"))
     notice = (
         case.messages[-1]["content"] if len(case.messages) > messages_before else None
     )

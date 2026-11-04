@@ -29,6 +29,7 @@ from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.config.tenant_context import set_current_enterprise_id
 from faultmaven.container.providers.services import create_case_service
 from faultmaven.exceptions import NotFoundError, ServiceError, ServiceException
+from faultmaven.infrastructure.concurrency.inflight import CaseDeleteGate
 from faultmaven.infrastructure.persistence.case_vector_store import CaseVectorStore
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.infrastructure.security.case_redaction import (
@@ -448,7 +449,7 @@ class TestComposition:
 
         settings = get_settings().model_copy(deep=True)
         settings.server.skip_service_checks = skip
-        redis = fakeredis_aio.FakeRedis(decode_responses=True)
+        redis = self.redis = fakeredis_aio.FakeRedis(decode_responses=True)
         storage = FileStorageService(backend=FilesystemStorageBackend(str(tmp_path)))
         return create_case_service(
             InMemoryCaseRepository(),
@@ -470,6 +471,10 @@ class TestComposition:
             "pii_redaction_registry",
         ]
         assert service.stores_not_configured == ("case_vectors",)
+        # The delete is gated on the case's in-flight lease, in the shared
+        # Redis client (#2096).
+        assert isinstance(service.delete_gate, CaseDeleteGate)
+        assert service.delete_gate._redis is self.redis
 
     def test_production_binds_the_real_vector_eraser(self, tmp_path):
         vectors = CaseVectorStore(

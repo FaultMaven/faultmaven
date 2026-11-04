@@ -11,6 +11,7 @@ from faultmaven.core.investigation.milestone_engine.retrieval_scope import (
     case_retrieval_scope,
 )
 from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommitPlan
+from faultmaven.infrastructure.concurrency import inflight
 from faultmaven.modules.case.contracts import (
     Case,
     MessageRowKind,
@@ -23,13 +24,6 @@ from .terminal_replies import (
 )
 
 logger = logging.getLogger(__name__)
-
-#: Strong references to the conversion tasks in flight. The event loop keeps
-#: only a weak reference to a task, and a conversion task spends its first
-#: moments parked on its turn's commit gate, so without this a task could be
-#: collected before it ever ran. Each removes itself when done.
-_CONVERSION_TASKS: set["asyncio.Task[None]"] = set()
-
 
 #: Where a case-generated runbook draft lands: always the case CREATOR's
 #: personal KB (ADR-020 D6; the conversion runs as ``case.user_id``). Every
@@ -210,18 +204,24 @@ class RunbookCreator:
             request = CaseConversionRequest.from_case(case, scope="personal")
             # Don't await the full pipeline — fire and forget, behind the
             # turn's commit gate. A spawn failure stays here, before the
-            # commit, and keeps its "Failed to start" reply below.
-            task = asyncio.create_task(
-                self._run_runbook_conversion(
-                    conversion_service,
-                    request,
-                    case.user_id,
-                    case.enterprise_id,
-                    committed=plan.gate(),
-                )
+            # commit, and keeps its "Failed to start" reply below. The record
+            # holds the task (the loop keeps only a weak reference, and it
+            # parks first on the gate) and, for its whole run, the case's
+            # lease: this outer task is the only caller of the conversion.
+            inflight.track(
+                asyncio.create_task(
+                    self._run_runbook_conversion(
+                        conversion_service,
+                        request,
+                        case.user_id,
+                        case.enterprise_id,
+                        committed=plan.gate(),
+                    )
+                ),
+                what=f"runbook conversion for case {case.case_id}",
+                case=(case.enterprise_id, case.case_id),
+                kind=inflight.Kind.CANCELLABLE,
             )
-            _CONVERSION_TASKS.add(task)
-            task.add_done_callback(_CONVERSION_TASKS.discard)
 
             # Name only what the reader can act on while reading this turn.
             #

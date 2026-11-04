@@ -607,6 +607,16 @@ llm_usage_unpersisted_calls = Counter(
     labelnames=["reason"],
 )
 
+# Turns that ran with no per-case in-flight lease (#2096): a delete of their
+# case cannot see them (``infrastructure/concurrency/inflight.py``).
+case_unleased_turns = Counter(
+    "case_unleased_turns_total",
+    "Turns that ran without a per-case in-flight lease, so a case delete could "
+    "not see them, by reason. no_store: no Redis client; store_error: the lease "
+    "or tombstone command failed.",
+    labelnames=["reason"],
+)
+
 # SLA gauges — exported from the SLA tracker at /metrics scrape time so the
 # values behind /health/sla become alertable. Status mapping: 3=meeting,
 # 2=at_risk, 1=breached, 0=unknown (alert on `sla_status < 3`).

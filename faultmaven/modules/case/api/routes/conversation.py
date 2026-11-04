@@ -64,6 +64,7 @@ from faultmaven.exceptions import (
     SessionException,
     ValidationException,
 )
+from faultmaven.infrastructure.concurrency import inflight
 from faultmaven.infrastructure.concurrency.request_fingerprint import (
     request_fingerprint,
 )
@@ -417,7 +418,10 @@ _TURN_RESPONSES: Dict[int | str, Dict[str, Any]] = {
             "this turn ran; nothing committed); "
             f"`{CASE_TERMINAL}` (the case is resolved or closed and refuses "
             "new data, a status change or a file reclassification; a "
-            "text-only question is still answered)."
+            "text-only question is still answered); "
+            f"`{inflight.CASE_DELETE_IN_PROGRESS}` (a delete of the case is "
+            "running; nothing of the turn ran: reload the case, which is gone "
+            "once the delete succeeds)."
         ),
         "headers": {
             "x-error-code": {
@@ -430,6 +434,7 @@ _TURN_RESPONSES: Dict[int | str, Dict[str, Any]] = {
                         IDEMPOTENCY_REPLAY_UNAVAILABLE,
                         "CASE_VERSION_CONFLICT",
                         CASE_TERMINAL,
+                        inflight.CASE_DELETE_IN_PROGRESS,
                     ],
                 },
             },
@@ -600,6 +605,12 @@ async def submit_turn(
     side) is recovered by retrying with the same key. Without a key, every
     request runs as a new turn.
 
+    **A case being deleted.** A turn holds the case's in-flight lease from
+    here to its end, so a delete of the case refuses while it runs; one that
+    starts while a delete runs → **409** `x-error-code:
+    CASE_DELETE_IN_PROGRESS`, with no `Retry-After`: nothing ran, reload the
+    case (#2096).
+
     **Timing.** `limits.turnResponseBoundSeconds` on
     `GET /api/v1/meta/capabilities` is the NOMINAL bound on this route's answer
     (the turn ceiling plus the commit reserve and the auto-title bound after
@@ -615,6 +626,8 @@ async def submit_turn(
     # The keyed turn's claim, held from the idempotency step until the turn is
     # fully answered (released in ``finally``, #1888).
     keyed: Optional[KeyedTurn] = None
+    # The case's in-flight lease, held from after a replay to the same end.
+    case_hold: Optional[inflight.CaseHold] = None
 
     try:
         # An EMPTY turn — no query, no file, no paste — is accepted: it is a
@@ -730,6 +743,22 @@ async def submit_turn(
                 if http_response is not None:
                     http_response.headers[IDEMPOTENCY_REPLAYED_HEADER] = "true"
                 return await _turn_gated_for_viewer(request, current_user, keyed.replay)
+
+        # The case's in-flight lease (#2096): taken before anything of the turn
+        # runs, after a replay (which writes nothing), then the delete's
+        # tombstone is read. A delete of the case refuses while it stands, and
+        # the tasks this turn spawns hold it on after the turn ends.
+        try:
+            case_hold = await inflight.hold_case(
+                getattr(request.app.state, "redis_client", None),
+                (case.enterprise_id, case.case_id),
+            )
+        except inflight.CaseDeleteInProgress:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This case is being deleted. Reload the case.",
+                headers={"x-error-code": inflight.CASE_DELETE_IN_PROGRESS},
+            ) from None
 
         # Terminal cases: allow text-only Q&A, block evidence and state
         # transitions. Each refusal is labelled `CASE_TERMINAL` (#1907).
@@ -1090,6 +1119,8 @@ async def submit_turn(
         # and run the turn again (#1888).
         if keyed is not None:
             await keyed.release()
+        if case_hold is not None:
+            await case_hold.release()
 
 
 @router.post("/{case_id}/queries")

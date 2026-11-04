@@ -19,6 +19,7 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 
 from faultmaven.core.preprocessing.models import Chunk, UnifiedDataType
+from faultmaven.infrastructure.concurrency import inflight
 from faultmaven.infrastructure.embedding_guard import embed_texts_or_raise
 from faultmaven.models.exceptions import KnowledgeBaseError
 from faultmaven.utils.token_estimation import _get_tiktoken_encoder
@@ -196,8 +197,9 @@ class VectorIndexOutcome(str, Enum):
     NOTHING_TO_INDEX = "nothing_to_index"
     #: BGE-M3 could not be loaded. Nothing written; retry once it is back.
     EMBEDDER_UNAVAILABLE = "embedder_unavailable"
-    #: Chunking, embedding, or the ChromaDB write raised, or the embed timed
-    #: out. Nothing guaranteed written.
+    #: Chunking, embedding, or the ChromaDB write raised, the embed timed
+    #: out, or a shutdown's drain began before the write. Nothing guaranteed
+    #: written.
     FAILED = "failed"
 
 
@@ -330,7 +332,12 @@ async def store_in_vector_db_background(
             f"Generated BGE-M3 embeddings for {len(texts)} chunks ({evidence_id})"
         )
 
-        # 4. Store in vector DB
+        # 4. Store in vector DB, unless a shutdown's drain has begun: a cancel
+        # stops the task but not a thread, so no write starts once the stores
+        # may close under it (#2490). The embed above ran; nothing is written.
+        if inflight.draining():
+            logger.info(f"Not storing {evidence_id}: the process is draining")
+            return VectorIndexOutcome.FAILED
         await case_vector_store.add_documents(
             case_id=case_id,
             documents=documents,

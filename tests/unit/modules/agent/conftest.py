@@ -410,9 +410,7 @@ async def drain_post_commit() -> None:
     after the turn, as a client never has to."""
     import asyncio
 
-    from faultmaven.modules.agent.domain.services.investigation_service import (
-        turn_settlement,
-    )
+    from faultmaven.infrastructure.concurrency import inflight
 
-    while turn_settlement._POST_COMMIT_TASKS:
-        await asyncio.gather(*list(turn_settlement._POST_COMMIT_TASKS))
+    while inflight.tracked("mark_linked"):
+        await asyncio.gather(*inflight.tracked("mark_linked"))

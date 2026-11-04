@@ -1,0 +1,68 @@
+# Case deletion
+
+What `DELETE /api/v1/cases/{case_id}` does, when it refuses, and what it can
+still miss. The full contract of each answer is in the generated
+[API reference](../reference/api/README.md).
+
+## What a delete clears
+
+Only the case's creator may delete it. The delete clears every store that
+holds the case's data before it deletes the row:
+
+- the session pointers to the case;
+- its runbook conversion jobs and drafts (a published runbook is kept);
+- its uploaded files;
+- its evidence search index (the `case_{case_id}` ChromaDB collection);
+- its PII redaction registry.
+
+Then the row goes, in one transaction with its team shares and a
+`case_deleted` audit row. If a store cannot be cleared, the delete answers
+**500** `DELETE_CASE_ERROR` and keeps the row, so a retry can finish it (#1016).
+
+## Work in flight holds a delete off (#2096)
+
+A turn on the case holds the case's **in-flight lease** from before it writes
+anything until it has answered. So does every task a turn starts that outlives
+it: the turn's commit, its upload links, evidence vectorization and a runbook
+draft. The lease is shared by every API replica: a Redis sorted set,
+`case-inflight:{enterprise_id}:{case_id}`, of one member per process, renewed
+every 10 s and lapsing 30 s after its last renewal.
+
+| Answer | `x-error-code` | `Retry-After` | Meaning | Client action |
+|---|---|---|---|---|
+| Delete **409** | `CASE_WORK_IN_PROGRESS` | yes | A turn on the case, or work one started, is still running, or another delete of the case is. Nothing was cleared. | Retry after `Retry-After`; the work may run longer, so the retry may be refused again. |
+| Turn **409** | `CASE_DELETE_IN_PROGRESS` | no | A delete of the case is running. Nothing of the turn ran. | Reload the case: it is gone once the delete succeeds. |
+| Delete **503** | `CASE_DELETE_UNAVAILABLE` | yes | Whether work is in flight could not be read: Redis is unreachable. Nothing was cleared. | Retry after `Retry-After`. |
+
+How the two sides avoid a race: the delete first writes a tombstone,
+`case-deleting:{enterprise_id}:{case_id}`, and only then reads the lease; a
+turn first takes the lease, and only then reads the tombstone. Each writes
+before it reads, so they cannot both proceed. Both can refuse at once, which
+is safe: nothing runs and nothing is cleared, and a retry decides. The
+tombstone is held while the delete runs and is removed on every outcome except
+a deleted row, so a failed delete never holds the case's turns off. After a
+successful delete it lapses on its own within 30 s.
+
+## Residuals
+
+- **Redis unreachable (ruled 2026-11-04).** The delete fails closed with 503,
+  but a turn runs without a lease. It is logged once per process and counted
+  on `case_unleased_turns_total{reason}` (`no_store`, `store_error`). A delete
+  issued once Redis is back can then race a turn that started without a lease,
+  and that turn's vectors or upload can land after the delete. Standalone
+  cannot reach this: its Redis runs in-process.
+- **A stalled holder.** A process that stops renewing for longer than 30 s
+  (a frozen event loop, a paused pod) loses its lease, and a delete can then
+  proceed under its work.
+- **A resume.** Resuming a session on the case
+  (`POST /cases/sessions/{session_id}/resume/{case_id}`) is not a turn and
+  holds no lease. One that passed its access check before the delete can
+  re-write the session pointer.
+
+## At shutdown
+
+The same record of in-flight work is drained when the process stops: the
+container's last release waits up to 10 s for it, cancels what may be
+cancelled, and waits for a turn's commit to end, before it closes Redis,
+ChromaDB and the database (#2490). See `faultmaven/container/README.md`,
+"Ownership and shutdown".

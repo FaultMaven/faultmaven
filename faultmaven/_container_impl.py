@@ -36,7 +36,10 @@ from faultmaven.container.providers import (
     register_services,
     register_tools,
 )
-from faultmaven.infrastructure.concurrency.teardown import run_teardown
+from faultmaven.infrastructure.concurrency.teardown import (
+    run_teardown,
+    teardown_step,
+)
 from faultmaven.utils.serialization import to_json_compatible
 
 # Import interfaces with graceful fallback for testing environments
@@ -1822,31 +1825,48 @@ class DIContainer(BaseDIContainer):
         process-global database engine or stop the serving state (#1843). A
         context that took no hold releases nothing.
 
-        With no hold left anywhere it returns ``True``. It resets first, so an
+        With no hold left anywhere it first drains the work in flight
+        (``inflight.drain``, #2490): that work still reads the container and
+        writes through what it owns. A hold taken during the drain makes this
+        release not the last: it then resets nothing, closes nothing and returns
+        ``False``. Otherwise it returns ``True``. It resets, so an
         ``initialize()`` during the closes composes afresh and keeps its hold.
         Then it closes everything recorded with :meth:`own`, newest first,
         through ``run_teardown``: every close runs, a failed one is logged, and
-        an interruption is held until all have run. Whoever composes shuts down
-        on every path, while the loop the clients are bound to still runs.
+        an interruption (the drain's included) is held until all have run.
+        Whoever composes shuts down on every path, while the loop the clients
+        are bound to still runs.
         """
         if not self._holds.release():
+            return False
+        interrupted = await teardown_step(
+            "Draining the work in flight", _drain_work_in_flight
+        )
+        if self._holds.total:
+            if interrupted is not None:
+                raise interrupted
             return False
         owned = self._owned[::-1]
         self._owned.clear()  # closed once, whatever the closes do
         self.reset()
-        await run_teardown(
-            [
-                (f"Closing {what}", functools.partial(close, resource))
-                for what, resource, close in owned
-            ]
-        )
+        try:
+            await run_teardown(
+                [
+                    (f"Closing {what}", functools.partial(close, resource))
+                    for what, resource, close in owned
+                ]
+            )
+        finally:
+            if interrupted is not None:
+                raise interrupted
         return True
 
     async def release_every_hold(self) -> bool:
         """Void every hold on the container, then shut it down. For tests only.
 
         A test's holds can sit in contexts its fixtures never enter (a fixture's
-        setup, the test's own task), and they all end with the test.
+        setup, the test's own task), and they all end with the test. The
+        shutdown is a last release, so it drains the work in flight first.
         """
         self._holds = type(self._holds)()
         return await self.shutdown()
@@ -1873,6 +1893,13 @@ class DIContainer(BaseDIContainer):
             delattr(self, name)
         for name, factory in self._CONSTRUCTED_STATE:
             setattr(self, name, factory())
+
+
+async def _drain_work_in_flight() -> None:
+    """The last release's drain, importing it in the step (#2267)."""
+    from faultmaven.infrastructure.concurrency.inflight import drain
+
+    await drain()
 
 
 # Global container access - always returns the current singleton instance

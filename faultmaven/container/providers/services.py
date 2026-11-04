@@ -106,6 +106,7 @@ def create_case_service(
         return minimal_factory()
 
     try:
+        from faultmaven.infrastructure.concurrency.inflight import CaseDeleteGate
         from faultmaven.modules.case.domain.services.case_service import CaseService
 
         erasers, not_configured = case_store_erasers(
@@ -125,6 +126,9 @@ def create_case_service(
             share_repository=share_repository,  # Case read allowlist source (ADR-013 §D4)
             # Display names and driver candidacy (ADR-020 D4/D5).
             account_reader=account_reader,
+            # The delete refuses while work on the case is in flight (#2096),
+            # and fails closed without its store.
+            delete_gate=CaseDeleteGate(redis_client),
         )
     except Exception as e:
         raise RequiredServiceConstructionError(
