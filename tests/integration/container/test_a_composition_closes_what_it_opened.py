@@ -12,6 +12,7 @@ has no real Redis, so their rows check that a stand-in is closed instead.
 
 from __future__ import annotations
 
+import asyncio
 import gc
 import inspect
 import os
@@ -28,6 +29,7 @@ from faultmaven.config.settings import reset_settings
 from faultmaven.container.base import BaseDIContainer
 from faultmaven.container.providers import infrastructure
 from faultmaven.infrastructure.llm import usage_ledger
+from faultmaven.infrastructure.redis_client import RedisClientFactory
 from tests.chroma_clients import systems_open_under
 
 pytestmark = [
@@ -134,13 +136,31 @@ async def test_without_its_registration_a_store_is_left_open(
 
 
 class _ServerRedis(FakeRedis):
-    """A client the container must close: ``is_fakeredis`` reads it as real."""
+    """A client the container must close: ``is_fakeredis`` reads it as real.
+    While ``stall`` is set, its ping waits on it, as a Redis that does not
+    answer."""
 
     closes = 0
+    stall = None
+
+    async def ping(self, *args, **kwargs):
+        if self.stall is not None:
+            self.pinging.set()
+            await self.stall.wait()
+        return await super().ping(*args, **kwargs)
 
     async def aclose(self, *args, **kwargs):
         self.closes += 1
         await super().aclose(*args, **kwargs)
+
+
+def _server_redis(monkeypatch) -> _ServerRedis:
+    """What the factory builds, so the client goes the real path: the ping."""
+    client = _ServerRedis(server=FakeServer(), decode_responses=True)
+    monkeypatch.setattr(
+        RedisClientFactory, "create_client", staticmethod(lambda **_: client)
+    )
+    return client
 
 
 def _stand_in_session(monkeypatch):
@@ -158,10 +178,7 @@ def _stand_in_session(monkeypatch):
 
 
 def _stand_in_redis(monkeypatch):
-    client = _ServerRedis(server=FakeServer(), decode_responses=True)
-    monkeypatch.setattr(
-        infrastructure, "create_redis_client", AsyncMock(return_value=client)
-    )
+    client = _server_redis(monkeypatch)
     return lambda: client.closes
 
 
@@ -174,26 +191,55 @@ _STAND_INS = {
 @pytest.mark.parametrize("registered", [True, False], ids=["owned", "dropped"])
 @pytest.mark.parametrize("what", sorted(_STAND_INS))
 async def test_the_shutdown_closes_what_holds_no_descriptor_yet(
-    what, registered, reset_container, drop_registration, monkeypatch
+    what, registered, stores_at, fresh_container, drop_registration, monkeypatch
 ):
     closes = _STAND_INS[what](monkeypatch)
     if not registered:
         drop_registration(what)
+    stores_at("store")
 
-    await reset_container.initialize()
-    await reset_container.shutdown()
+    await fresh_container.initialize()
+    await fresh_container.shutdown()
 
     assert closes() == (1 if registered else 0)
 
 
-async def test_the_loops_fakeredis_is_not_the_compositions_to_close(
-    reset_container,
+async def test_a_cancellation_during_the_redis_ping_strands_nothing(
+    stores_at, fresh_container, monkeypatch
 ):
-    await reset_container.initialize()
-    client = reset_container.redis_client
-    assert all(owned is not client for _what, owned, _close in BaseDIContainer._owned)
+    """The client was recorded once the factory had pinged it, so a cancellation
+    during the ping (a SIGTERM at startup) left it where no shutdown reached."""
+    client = _server_redis(monkeypatch)
+    client.stall, client.pinging = asyncio.Event(), asyncio.Event()
+    stores_at("store")
 
-    await reset_container.shutdown()
+    async def _compose_in_one_context():
+        try:
+            await fresh_container.initialize()
+        finally:
+            await fresh_container.shutdown()
+
+    composer = asyncio.create_task(_compose_in_one_context())
+    await client.pinging.wait()
+    composer.cancel()
+    await asyncio.wait({composer})
+
+    assert composer.cancelled()
+    assert client.closes == 1
+
+
+async def test_the_loops_fakeredis_is_not_the_compositions_to_close(
+    stores_at, fresh_container, monkeypatch
+):
+    """Through the factory's own fallback: no Redis is configured."""
+    monkeypatch.setenv("REDIS_HOST", "")
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    stores_at("store")
+    await fresh_container.initialize()
+    client = fresh_container.redis_client
+    assert all(owned is not client for _what, owned, _close in fresh_container._owned)
+
+    await fresh_container.shutdown()
 
     assert await client.ping()
 
@@ -214,7 +260,7 @@ async def test_a_composition_refused_part_way_strands_nothing(
 
     with pytest.raises(RuntimeError, match="the evidence store cannot be opened"):
         await fresh_container.initialize()
-    assert "the KB ChromaDB client" in [w for w, _r, _c in BaseDIContainer._owned]
+    assert "the KB ChromaDB client" in [w for w, _r, _c in fresh_container._owned]
     assert _descriptors_under(tmp_path / "store" / "kb")  # positive control
 
     await fresh_container.shutdown()
@@ -228,8 +274,12 @@ async def test_two_live_lifespans_close_nothing_until_the_last_ends(
 ):
     """#1843: the second lifespan's ``initialize()`` returns early and shares
     the first one's clients. Its shutdown disposed the engine the first still
-    served from, and would have closed the first one's ChromaDB clients."""
+    served from, uninstalled the usage ledger it metered through, stopped the
+    APM export, and would have closed the first one's ChromaDB clients."""
     from faultmaven.bootstrap import lifespan as lifespan_module
+    from faultmaven.infrastructure.observability.apm_integration import (
+        apm_integration,
+    )
     from faultmaven.infrastructure.persistence import database
 
     monkeypatch.setattr(lifespan_module, "_bootstrap_kb_step", AsyncMock())
@@ -247,6 +297,10 @@ async def test_two_live_lifespans_close_nothing_until_the_last_ends(
         assert database._engine is engine, "the second lifespan disposed it"
         async with engine.connect() as connection:
             await connection.execute(text("SELECT 1"))
+        assert usage_ledger.get_installed_usage_ledger() is not None
+        assert apm_integration.is_running
 
     assert systems_open_under(tmp_path) == []
     assert database._engine is None
+    assert usage_ledger.get_installed_usage_ledger() is None
+    assert not apm_integration.is_running

@@ -77,22 +77,27 @@ def close_the_clients_opened() -> None:
 
 
 def systems_open_under(root: os.PathLike[str] | str) -> list[str]:
-    """The paths under ``root`` that chromadb still holds a local System for.
+    """The persist paths under ``root`` that chromadb still holds a local System for.
 
     Reads ``SharedSystemClient._identifier_to_system``, chromadb's private
-    process-wide cache: a local client's absolute path is its key until the
-    last client over it closes, and is popped then (verified on 1.5.8). An HTTP
-    client's key is a UUID and an ``EphemeralClient``'s is ``"ephemeral"``, so
-    only absolute keys are read; a relative persist path is not seen. Nothing
-    is open when chromadb was never imported.
+    process-wide cache: a local client's persist path, as it was passed, is its
+    key until the last client over it closes, and is popped then (verified on
+    1.5.8). Only persistent Systems are read: an HTTP client's key is a UUID and
+    an ``EphemeralClient``'s is ``"ephemeral"``. A relative key is resolved
+    against ``root``, as opened by a test that ``chdir``s there (the shipped
+    ``./data`` defaults). Residual: a relative open made from another working
+    directory is read as if made at ``root``, and one that climbs out of a
+    subdirectory of ``root`` with ``..`` is missed. Nothing is open when
+    chromadb was never imported.
     """
     cache = sys.modules.get("chromadb.api.shared_system_client")
     if cache is None:
         return []
-    prefix = os.path.realpath(root)
+    prefix = os.path.realpath(root) + os.sep
+    systems = cache.SharedSystemClient._identifier_to_system
     return sorted(
         key
-        for key in cache.SharedSystemClient._identifier_to_system
-        if os.path.isabs(key)
-        and (os.path.realpath(key) + os.sep).startswith(prefix + os.sep)
+        for key, system in list(systems.items())
+        if system.settings.is_persistent
+        and (os.path.realpath(os.path.join(prefix, key)) + os.sep).startswith(prefix)
     )

@@ -109,25 +109,38 @@ The composition owns the real Redis client, the KB and evidence ChromaDB
 clients and the sanitizer's Presidio session. The FakeRedis stand-in belongs
 to its event loop and is never recorded. `shutdown()` names no resource.
 
-- **Holders.** Each `initialize()` that leaves the container initialized is a
-  holder: the composition, and every later call that finds it initialized and
-  shares it (a second lifespan in the process, a job beside one). A call that
-  finds it still initializing holds nothing. `shutdown()` releases one and
-  returns whether it was the last.
-- **The last release** closes everything owned, newest first, through
-  `run_teardown`'s rules (every close runs, a failed one is logged, an
-  interruption is held until all have run), then resets. A shutdown with no
-  holder closes whatever is owned, which is how a refused composition is
-  undone. Earlier releases close nothing (#1843).
-- **Resets.** `reset()` and `reset_singleton()` raise while anything is owned,
-  naming it: shut down first. The record and the count are process state on
-  `BaseDIContainer`, beside `_instance`, so a reset does not rebuild them.
-- **The database engine** stays process-global, outside the record. Every
-  composer (`decompose_application`, `run_with_container`, the jobs runner)
-  disposes it only when `shutdown()` returns True. The holder count is a proxy
-  for "the process is done serving", not a count of the engine's users:
-  `get_engine()` opens it lazily for any caller. `run_command` composes no
-  container and disposes it directly.
+- **Holds belong to the caller's context.** Every `initialize()` takes one
+  hold for its caller's context at entry, whatever it then returns or raises.
+  The same context's `shutdown()` releases it, so a composer that never
+  initialized releases nothing. A lifespan, a job run and an `fm-*` command
+  each compose and shut down in one context. Two lifespans nested in one
+  coroutine share a context and hold twice. An `initialize()` run in a task
+  of its own (`create_task`, or `wait_for` on Python 3.11) holds in that
+  task's context, which no other context's shutdown releases.
+- **The last release.** `shutdown()` returns `False`, closing nothing, while a
+  hold remains anywhere (#1843). With none left it resets first, so an
+  `initialize()` during the closes composes afresh and keeps its hold. Then it
+  closes everything owned, newest first, through `run_teardown`'s rules (every
+  close runs, a failed one is logged, an interruption is held until all have
+  run), and returns `True`. With no hold anywhere it closes whatever is owned,
+  which is how a refused composition is undone.
+- **Resets.** `reset()` raises while anything is owned, naming it: shut down
+  first. The record and the holds are the container instance's, rebuilt by a
+  reset, so a hold taken before a reset is void after it. Tests end every hold
+  with `release_every_hold()` (the `reset_container` fixture).
+- **What is the process's** goes only on the last release. Every composer
+  releases through `ContainerRelease` (`concurrency/teardown.py`), and only
+  when `shutdown()` does not answer `False` does it dispose the
+  process-global database engine. The lifespan's decomposition also uninstalls
+  the usage ledger, drains its writes, and stops the APM export then. The hold
+  count is a proxy for "the process is done serving", not a count of the
+  engine's users: `get_engine()` opens it lazily for any caller. `run_command`
+  composes no container and disposes it directly.
+- **Residual: the event loop.** With holders on two loops, the last release
+  closes the Redis client on its own loop, which need not be the one the
+  client was opened on, and each lifespan's ledger drain cancels the other
+  loop's pending writes. A production process runs one loop, and no test
+  overlaps holders over a real Redis client.
 
 ### Exceptions
 

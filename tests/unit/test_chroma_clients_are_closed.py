@@ -139,6 +139,12 @@ def test_a_test_leaves_a_client_open(tmp_path):
 
 def test_a_test_that_closes_its_client_passes(tmp_path):
     closed_at_teardown(create_persistent_client(str(tmp_path / "chroma")))
+
+
+def test_a_test_leaves_the_default_relative_path_open(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    LEFT_OPEN.append(create_persistent_client("./data/chroma-kb"))
+    assert systems_open_under(tmp_path) == ["./data/chroma-kb"]  # positive control
 """
 
 
@@ -158,7 +164,7 @@ def test_a_client_left_open_under_the_tests_tmp_path_fails_that_test(
         "-p", "no:cacheprovider", "-p", "tests.conftest", timeout=600
     )
 
-    result.assert_outcomes(passed=2, errors=1)
+    result.assert_outcomes(passed=3, errors=2)
     result.stdout.fnmatch_lines(
         ["*the test left ChromaDB clients open under its tmp_path*"]
     )

@@ -42,7 +42,7 @@ from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 from typing import Any, Dict, Iterator, List, Optional, Tuple
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import chromadb
 import httpx
@@ -528,6 +528,18 @@ def test_closing_a_door_built_client_closes_the_session_it_bounded(
 
     assert session.is_closed
     assert len(stub.requests) == sent  # closing sends nothing
+
+
+def test_a_client_whose_close_raises_still_has_its_session_closed(
+    stub: _StubChroma, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = _build(stub)
+    monkeypatch.setattr(client, "close", Mock(side_effect=RuntimeError("stuck")))
+
+    with pytest.raises(RuntimeError, match="stuck"):
+        close_chroma_client(client)
+
+    assert client._server._session.is_closed
 
 
 # --------------------------------------------------------------------------- #

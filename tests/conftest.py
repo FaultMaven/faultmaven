@@ -743,9 +743,10 @@ def _close_the_chroma_clients_the_test_opened(request):
 
     The check reads chromadb's System cache, a private API
     (``chroma_clients.systems_open_under``). It sees only what is opened under
-    the test's ``tmp_path``, by design: a client opened under
-    ``tempfile.mkdtemp()`` or ``tmp_path_factory`` passes, so the module- and
-    session-scoped fixtures that share one client across tests do too.
+    the test's ``tmp_path``, a relative path resolved against it, by design: a
+    client opened under ``tempfile.mkdtemp()`` or ``tmp_path_factory`` passes,
+    so the module- and session-scoped fixtures that share one client across
+    tests do too.
     """
     yield
     chroma_clients.close_the_clients_opened()
@@ -1837,8 +1838,8 @@ async def reset_container(monkeypatch):
     from this test's environment, with ``SKIP_SERVICE_CHECKS=true``: set with
     ``monkeypatch``, so the next test's environment is its own again (#2283),
     and read through fresh settings, so it takes effect whatever was cached.
-    A test that initializes the container owns what that opened: each
-    ``initialize()`` is a hold, and releasing the last closes what the
+    A test that initializes the container owns what that opened: every hold it
+    took ends with it, and the shutdown that follows closes what the
     composition owns (a real Redis client on the loop the test ran on). The
     reset before the test refuses while an earlier one left anything owned.
     """
@@ -1852,8 +1853,7 @@ async def reset_container(monkeypatch):
 
     yield container
 
-    while not await container.shutdown():
-        pass
+    await container.release_every_hold()
     reset_settings()
 
 

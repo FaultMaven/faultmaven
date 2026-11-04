@@ -6,7 +6,8 @@ the jobs runner (``faultmaven/jobs/run.py``) and the ``fm-*`` commands
 (``faultmaven/cli/_container.py``). Each step runs whatever the ones before it
 did. One that raises an ``Exception`` is logged. One that is interrupted (a
 cancellation, a ``KeyboardInterrupt``, a ``SystemExit``) lets the rest run, and
-the first interruption is then re-raised: deferred, never swallowed.
+the first interruption is then re-raised: deferred, never swallowed. Each
+releases the container and disposes the engine through :class:`ContainerRelease`.
 """
 
 import asyncio
@@ -70,3 +71,50 @@ async def run_teardown(steps: Iterable[tuple[str, Callable[[], Any]]]) -> None:
             deferred = interrupted
     if deferred is not None:
         raise deferred
+
+
+class ContainerRelease:
+    """A composer's release of the container, and what only the last may stop.
+
+    Every composer releases its hold with the container's ``shutdown()``, then
+    disposes the process-global database engine. Another composition live in
+    the process may still serve from that engine (#1843), and ``shutdown()``
+    answers ``False`` while one does. Only ``False`` means another holds: any
+    other answer, or none (the step failed or was interrupted first), runs the
+    steps gated on the release, as before. ``shutdown`` is a passed container's;
+    by default the singleton's is resolved inside the step.
+    """
+
+    def __init__(self, shutdown: Optional[Callable[[], Any]] = None) -> None:
+        self._shutdown = shutdown
+        self._others_hold = False
+
+    async def release(self) -> None:
+        shutdown = self._shutdown
+        if shutdown is None:
+            from faultmaven.container import container
+
+            shutdown = container.shutdown
+        self._others_hold = (await shutdown()) is False
+
+    def if_last(self, step: Callable[[], Any]) -> Callable[[], Any]:
+        """``step``, run only when the release was the last (or did not say)."""
+
+        def _gated() -> Any:
+            return None if self._others_hold else step()
+
+        return _gated
+
+    def steps(self) -> tuple[tuple[str, Callable[[], Any]], ...]:
+        """The release, then the engine's disposal: a run's whole teardown."""
+        return (
+            ("Container shutdown", self.release),
+            ("Database close", self.if_last(close_the_database)),
+        )
+
+
+async def close_the_database() -> None:
+    """Dispose the process-global database engine, importing it in the step."""
+    from faultmaven.infrastructure.persistence.database import close_database
+
+    await close_database()

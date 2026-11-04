@@ -360,13 +360,15 @@ def close_chroma_client(client: Any) -> None:
     """
     import httpx
 
-    client.close()
-    if is_http_client(client):
-        session = getattr(getattr(client, "_server", None), "_session", None)
-        # The door builds only the synchronous client. An async session's
-        # close is a coroutine that this synchronous teardown cannot await.
-        if isinstance(session, httpx.Client):
-            session.close()
+    try:
+        client.close()
+    finally:
+        if is_http_client(client):
+            session = getattr(getattr(client, "_server", None), "_session", None)
+            # The door builds only the synchronous client. An async session's
+            # close is a coroutine that this synchronous teardown cannot await.
+            if isinstance(session, httpx.Client):
+                session.close()
 
 
 def blocking_executor_for(client: Any) -> Optional[Executor]:

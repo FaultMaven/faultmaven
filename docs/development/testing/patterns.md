@@ -570,10 +570,9 @@ async def reset_container(monkeypatch):
 
     yield container
 
-    # Release every hold the test took: the last closes what its
-    # compositions opened, on the test's loop, and resets the container
-    while not await container.shutdown():
-        pass
+    # End every hold the test took, closing what its compositions opened,
+    # on the test's loop, and resetting the container
+    await container.release_every_hold()
     reset_settings()
 ```
 

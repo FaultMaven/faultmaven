@@ -5,6 +5,7 @@ registry and utilities for clean dependency injection.
 """
 
 import logging
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Any, Callable, ClassVar, Dict, List, Optional, Tuple
 
@@ -15,6 +16,32 @@ from faultmaven.container.errors import (
 )
 from faultmaven.container.registry import DependencyRegistry, ServiceStatus
 from faultmaven.container.utils import LazyService
+
+
+class _Holds:
+    """The holds on one container: a count per caller's context, and their total.
+
+    A hold is its caller's context's, so only that context releases it: a
+    composer that took none (a run that never initialized) releases nothing.
+    The context variable is this instance's, so a new instance voids every hold
+    taken on the old one; a context that set it keeps it until that context ends.
+    """
+
+    def __init__(self) -> None:
+        self._mine: ContextVar[int] = ContextVar("container_holds", default=0)
+        self.total = 0
+
+    def take(self) -> None:
+        self._mine.set(self._mine.get() + 1)
+        self.total += 1
+
+    def release(self) -> bool:
+        """Release the calling context's hold, if it took one; whether none is left."""
+        mine = self._mine.get()
+        if mine:
+            self._mine.set(mine - 1)
+            self.total -= 1
+        return self.total == 0
 
 
 class BaseDIContainer:
@@ -29,13 +56,8 @@ class BaseDIContainer:
 
     _instance: Optional["BaseDIContainer"] = None
 
-    #: What the compositions opened and own, oldest first, as
-    #: ``(what, resource, close)`` (:meth:`own`), and how many compositions hold
-    #: it. Process state beside ``_instance``, not constructed state:
-    #: ``reset()`` rebuilds every ``_CONSTRUCTED_STATE`` name, and it refuses
-    #: while anything is owned. Read and written through this class only.
-    _owned: ClassVar[List[Tuple[str, Any, Callable[[Any], Any]]]] = []
-    _holders: ClassVar[int] = 0
+    _owned: List[Tuple[str, Any, Callable[[Any], Any]]]
+    _holds: _Holds
 
     #: What construction gives the singleton, as ``(name, factory)``. The one
     #: source of it: ``__new__`` builds each name from its factory, and
@@ -48,6 +70,12 @@ class BaseDIContainer:
         ("_registry", DependencyRegistry),
         ("_logger", lambda: logging.getLogger(__name__)),
         ("settings", lambda: None),  # Will be set during initialization
+        # What the compositions opened and own, oldest first, as
+        # ``(what, resource, close)`` (``own``). A reset refuses while it is
+        # non-empty, so rebuilding it drops nothing.
+        ("_owned", list),
+        # Who holds the container (#1843). Rebuilt by a reset, which voids them.
+        ("_holds", _Holds),
     )
 
     def __new__(cls) -> "BaseDIContainer":
@@ -119,20 +147,17 @@ class BaseDIContainer:
         nothing) is not recorded.
         """
         if resource is not None:
-            BaseDIContainer._owned.append((what, resource, close))
+            self._owned.append((what, resource, close))
         return resource
 
-    @staticmethod
-    def _refuse_while_owned() -> None:
+    def _refuse_while_owned(self) -> None:
         """Raise if anything a composition opened is still owned.
 
         A reset drops what it is not handed back, so a reset over an open
         composition would leave each resource where nothing can close it.
         """
-        if BaseDIContainer._owned:
-            owned = "; ".join(
-                what for what, _resource, _close in BaseDIContainer._owned
-            )
+        if self._owned:
+            owned = "; ".join(what for what, _resource, _close in self._owned)
             raise ContainerError(
                 f"The container still owns what a composition opened ({owned}): "
                 "shut it down (await container.shutdown()) before resetting it"
@@ -330,10 +355,10 @@ class BaseDIContainer:
         """Reset container state.
 
         Clears all registered services and resets initialization state, and
-        no holder is left. Refuses while anything is owned (:meth:`own`).
+        voids every hold. Refuses while anything is owned (:meth:`own`).
         """
         self._refuse_while_owned()
-        BaseDIContainer._holders = 0
+        self._holds = _Holds()
         self._initialized = False
         self._initializing = False
 
@@ -349,9 +374,9 @@ class BaseDIContainer:
     def reset_singleton(cls) -> None:
         """Reset the singleton instance completely.
 
-        This is primarily for testing purposes. Refuses while anything is owned.
+        This is primarily for testing purposes. Refuses while the singleton
+        owns anything: its ``reset()`` refuses before the instance is dropped.
         """
-        cls._refuse_while_owned()
         if cls._instance is not None:
             cls._instance.reset()
             cls._instance = None

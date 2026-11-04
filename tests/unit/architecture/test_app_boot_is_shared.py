@@ -239,8 +239,9 @@ EXPECTED: dict[str, dict[str, tuple[str, int]]] = {
         # ``_served_under`` under a pinned environment, which is the subject of
         # the test. It pays a full lifespan on its own app object, which the
         # app-object guard does not see. Its composition and the shared boot's
-        # still share the process-global container and engine; an overlap is
-        # safe because only the last holder's shutdown closes them (#1843). It
+        # still share the process-global container, engine, usage ledger and
+        # APM export; an overlap is safe because each lifespan holds the
+        # container, and only the last release closes or stops them (#1843). It
         # was written as ``client_cm = TestClient(...)`` then ``with
         # client_cm``, which the grep census could not see; it now reads
         # ``with TestClient(...)``.

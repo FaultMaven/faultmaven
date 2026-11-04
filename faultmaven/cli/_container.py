@@ -29,9 +29,13 @@ is resolved when the shutdown runs, as the command resolved it.
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Callable, Coroutine, TypeVar
+from typing import Any, Coroutine, TypeVar
 
-from faultmaven.infrastructure.concurrency.teardown import run_teardown
+from faultmaven.infrastructure.concurrency.teardown import (
+    ContainerRelease,
+    close_the_database,
+    run_teardown,
+)
 
 T = TypeVar("T")
 
@@ -53,44 +57,14 @@ async def _run_then_tear_down(
         return await main
     finally:
         # Each step imports what it needs, so a failed import is that step's
-        # failure alone (#2267). The engine goes only once the container's
-        # shutdown released its last holder (#1843); one that did not return
-        # says nothing, and the engine goes.
-        last_holder = True
-
-        async def _shut_down(shutdown: Callable[[], Any]) -> None:
-            nonlocal last_holder
-            last_holder = await shutdown()
-
-        async def _close_the_database() -> None:
-            if last_holder:
-                await _dispose_the_engine()
-
-        steps: list[tuple[str, Callable[[], Any]]] = []
-        if composed:
-            if container is None:
-                # The singleton is imported, and its shutdown resolved, inside
-                # the step: a failure there is that step's alone.
-                steps.append(
-                    ("Container shutdown", lambda: _shut_down(_singleton_shutdown()))
-                )
-            else:
-                # A passed container's shutdown is resolved here: a container
-                # without one is the caller's defect, which surfaces rather
-                # than being logged as a failed step.
-                shutdown = container.shutdown
-                steps.append(("Container shutdown", lambda: _shut_down(shutdown)))
-        steps.append(("Database close", _close_the_database))
-        await run_teardown(steps)
-
-
-def _singleton_shutdown() -> Callable[[], Any]:
-    from faultmaven.container import container
-
-    return container.shutdown
-
-
-async def _dispose_the_engine() -> None:
-    from faultmaven.infrastructure.persistence.database import close_database
-
-    await close_database()
+        # failure alone (#2267). The engine goes unless the container's
+        # shutdown says another composition still holds it (#1843).
+        if not composed:
+            await run_teardown((("Database close", close_the_database),))
+        else:
+            # A passed container's shutdown is resolved here: a container
+            # without one is the caller's defect, which surfaces rather than
+            # being logged as a failed step. The singleton's is resolved inside
+            # the step, so a failure there is that step's alone.
+            shutdown = None if container is None else container.shutdown
+            await run_teardown(ContainerRelease(shutdown).steps())

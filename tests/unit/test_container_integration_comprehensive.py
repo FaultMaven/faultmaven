@@ -59,10 +59,9 @@ async def reset_container_before_test(monkeypatch):
 
     yield
 
-    # Release every hold the test's compositions took: the last closes what
-    # they opened, which dropping the singleton would leave owned.
-    while not await DIContainer().shutdown():
-        pass
+    # End every hold the test's compositions took, closing what they opened,
+    # which dropping the singleton would leave owned.
+    await DIContainer().release_every_hold()
     DIContainer._instance = None
     reset_settings()
 

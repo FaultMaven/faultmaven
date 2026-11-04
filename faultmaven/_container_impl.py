@@ -147,10 +147,10 @@ class DIContainer(BaseDIContainer):
     async def initialize(self, allow_degraded: bool = False):
         """Initialize all dependencies with proper error handling (async for proper event loop handling).
 
-        Each call that leaves the container initialized is a holder, released
-        by one ``shutdown()``: the composition, and every later call that finds
-        it initialized and shares it (#1843). A call that finds it still
-        initializing gets an uninitialized container and holds nothing.
+        Every call takes one hold for its caller's context, at entry, whatever
+        it then returns or raises: the composition, a later call that finds it
+        initialized and shares it (#1843), one that finds it still initializing,
+        and one that fails. The same context's ``shutdown()`` releases it.
 
         Args:
             allow_degraded: opt in to the lenient path under pytest, where a
@@ -159,10 +159,10 @@ class DIContainer(BaseDIContainer):
                 deployment that must not degrade refuses either way.
         """
         logger = logging.getLogger(__name__)
+        self._holds.take()
 
         if self._initialized:
             logger.debug("Container already initialized, skipping")
-            BaseDIContainer._holders += 1
             return
 
         if self._initializing:
@@ -195,7 +195,6 @@ class DIContainer(BaseDIContainer):
 
             self._initialized = True
             self._initializing = False
-            BaseDIContainer._holders += 1
             logger.info("✅ DI Container initialized successfully")
 
         except Exception as e:
@@ -296,7 +295,6 @@ class DIContainer(BaseDIContainer):
                 )
                 self._create_minimal_container()
                 self._initialized = True
-                BaseDIContainer._holders += 1
             else:
                 import traceback
 
@@ -1811,40 +1809,42 @@ class DIContainer(BaseDIContainer):
         }
 
     async def shutdown(self) -> bool:
-        """Release one holder. The last closes what the compositions own, and resets.
+        """Release the calling context's hold. With none left anywhere, close and reset.
 
-        Returns whether it was the last, the only release after which whoever
-        composed may dispose the process-global database engine (#1843). Two
-        live lifespans share this container, the second ``initialize()``
-        returning early, so the first one's shutdown closes nothing.
+        Returns ``False`` while another context still holds the container: two
+        live lifespans share it (the second ``initialize()`` returns early), so
+        the first to end closes nothing, nor may its composer dispose the
+        process-global database engine or stop the serving state (#1843). A
+        context that took no hold releases nothing.
 
-        The last release closes everything recorded with :meth:`own`, newest
-        first, through ``run_teardown``: every close runs whatever the ones
-        before it did, a failed one is logged, and an interruption (a
-        cancellation, a second Ctrl+C) is held until all have run. Whoever
-        composes shuts down on every path, while the loop the clients are bound
-        to still runs. Then the container is reset, so the next ``initialize()``
-        composes afresh rather than returning early over closed clients.
-
-        With no holder (a composition refused part-way acquires none), it closes
-        whatever is recorded; with nothing recorded either, it only resets.
+        With no hold left anywhere it returns ``True``. It resets first, so an
+        ``initialize()`` during the closes composes afresh and keeps its hold.
+        Then it closes everything recorded with :meth:`own`, newest first,
+        through ``run_teardown``: every close runs, a failed one is logged, and
+        an interruption is held until all have run. Whoever composes shuts down
+        on every path, while the loop the clients are bound to still runs.
         """
-        if BaseDIContainer._holders > 1:
-            BaseDIContainer._holders -= 1
+        if not self._holds.release():
             return False
-        owned = BaseDIContainer._owned[::-1]
-        BaseDIContainer._owned.clear()  # closed once, whatever the closes do
-        steps = [
-            (f"Closing {what}", functools.partial(close, resource))
-            for what, resource, close in owned
-        ]
-        try:
-            await run_teardown(steps)
-        finally:
-            # An interrupted close still leaves nothing behind for the next
-            # initialize to return early on, and no holder.
-            self.reset()
+        owned = self._owned[::-1]
+        self._owned.clear()  # closed once, whatever the closes do
+        self.reset()
+        await run_teardown(
+            [
+                (f"Closing {what}", functools.partial(close, resource))
+                for what, resource, close in owned
+            ]
+        )
         return True
+
+    async def release_every_hold(self) -> bool:
+        """Void every hold on the container, then shut it down. For tests only.
+
+        A test's holds can sit in contexts its fixtures never enter (a fixture's
+        setup, the test's own task), and they all end with the test.
+        """
+        self._holds = type(self._holds)()
+        return await self.shutdown()
 
     def reset(self):
         """Return the container to what construction built.
