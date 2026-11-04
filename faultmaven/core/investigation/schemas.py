@@ -636,6 +636,17 @@ class MilestoneUpdates(NullTolerantModel):
             "with solution_accepted."
         ),
     )
+    # The message that reported the fix dates it (#2427). Read only with
+    # solution_accepted. An enum, not a boolean: not a milestone.
+    accepted_fix_reported_in: Optional[Literal["this_message", "previous_message"]] = (
+        Field(
+            None,
+            description=(
+                "Which user message reported carrying out the fix: this one "
+                "(default) or the previous one."
+            ),
+        )
+    )
 
     # UPDATE-shaped (fm#1502): ``None`` keeps ``progress.root_cause_likelihood``
     # as it stands, so an out-of-range value costs this field and nothing else.

@@ -262,6 +262,16 @@ class ProposedAction(BaseModel):
         ),
     )
 
+    registered_in_turn: Optional[int] = Field(
+        default=None,
+        description=(
+            "Turn the acceptance registered in, set only when it is later than "
+            "``accepted_in_turn``: the model declared that the user reported "
+            "carrying the fix out in their previous message (#2427). A cause "
+            "posited by then can still have been the one the fix addressed."
+        ),
+    )
+
     superseded_in_turn: Optional[int] = Field(
         default=None,
         description=(

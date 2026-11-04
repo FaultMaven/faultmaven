@@ -1370,6 +1370,31 @@ def _register_carried_fix(
     return bearer if _bearer_registers(case, bearer, metadata, carried=True) else None
 
 
+def _declared_fix_turn(case: Case, reported_in: Optional[str]) -> Optional[int]:
+    """The previous turn, when the model declares that the user reported
+    carrying the fix out in their previous message (``accepted_fix_reported_in``,
+    #2427), else None: the fix is dated to this turn. The previous turn must be
+    at least 1 and later than every fix already dated, so the windows stay in
+    order and distinct; a declaration outside those bounds is logged and
+    ignored. Nothing is inferred from the evidence."""
+    if reported_in != "previous_message":
+        return None
+    from faultmaven.core.investigation.cause_assurance import fix_application_turn
+
+    previous, latest = case.current_turn - 1, fix_application_turn(case)
+    if previous >= 1 and (latest is None or previous > latest):
+        return previous
+    logger.info(
+        "Case %s: accepted_fix_reported_in=previous_message ignored at turn %s: "
+        "turn %s is not after the latest dated fix (%s)",
+        case.case_id,
+        case.current_turn,
+        previous,
+        latest,
+    )
+    return None
+
+
 def _apply_stage_gate_side_effects(
     case: Case,
     completed_gates: set[str],
@@ -1377,6 +1402,7 @@ def _apply_stage_gate_side_effects(
     metadata: dict[str, Any],
     *,
     solution_action: Any = None,
+    fix_reported_in: Optional[str] = None,
     carried: Any = None,
 ) -> None:
     """Apply side effects when stage-gate milestones are completed.
@@ -1395,7 +1421,8 @@ def _apply_stage_gate_side_effects(
        at the accept step).
     2. For a SOLUTION (#2105): a superseded action is restored first; the stamp
        and the attempt's message are a ``carried`` decision's hold turn's, else
-       this turn's; and
+       this turn's, or the previous turn's when ``fix_reported_in`` declares
+       the report there (``_declared_fix_turn``, #2427); and
        ``progress.solution_accepted`` plus one ``milestones_completed`` entry
        record each registration.
     3. Create an ActionAttempt audit record per accepted action.
@@ -1421,6 +1448,12 @@ def _apply_stage_gate_side_effects(
             )
         if target is None:
             continue
+        # Bounded by the fixes dated before this registration joins them.
+        declared = (
+            _declared_fix_turn(case, fix_reported_in)
+            if is_solution and carried is None
+            else None
+        )
         if target.state == "superseded":
             # Restored to pending, then accepted: the user ran the fix named.
             logger.info(
@@ -1440,6 +1473,9 @@ def _apply_stage_gate_side_effects(
         # executed at its hold turn, not at the replay.
         by_carry = is_solution and carried is not None
         target.accepted_in_turn = carried.turn if by_carry else case.current_turn
+        if declared is not None:
+            target.accepted_in_turn = declared
+            target.registered_in_turn = case.current_turn
         # INV-33: a SOLUTION acceptance moves the case to TREATMENT (verify the
         # executed fix). Retire the DIAGNOSTIC asks the offer shadowed so an
         # earlier pre-fix ask cannot resurface in <pending_action> once the
@@ -1727,6 +1763,7 @@ def _apply_stage_gate_signals(
             user_message,
             metadata,
             solution_action=solution_action,
+            fix_reported_in=getattr(m, "accepted_fix_reported_in", None),
             carried=carried,
         )
 
