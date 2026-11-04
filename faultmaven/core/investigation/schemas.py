@@ -657,17 +657,24 @@ class MilestoneUpdates(NullTolerantModel):
 
     # An off-enum value costs this field alone (#2427): unset dates the fix to
     # this turn, and ``solution_accepted`` with ``accepted_action_ref`` stand.
+    # Reported as a confidence drop is (fm#1502); the apply step tells the model.
     @field_validator("accepted_fix_reported_in", mode="before")
     @classmethod
-    def _drop_unknown_fix_report(cls, v: Any) -> Any:
+    def _drop_unknown_fix_report(cls, v: Any, info: ValidationInfo) -> Any:
         if v is None or v in ("this_message", "previous_message"):
             return v
-        import logging
-
-        logging.getLogger(__name__).warning(
-            "Dropped accepted_fix_reported_in %r: not this_message or "
-            "previous_message",
-            v,
+        report(
+            info.context,
+            ConfidenceRepair(
+                schema=cls.__name__,
+                field=info.field_name or "?",
+                action=ConfidenceAction.DROPPED,
+                raw=v,
+                detail=(
+                    "is not this_message or previous_message; field dropped, "
+                    "the fix is dated to this turn"
+                ),
+            ),
         )
         return None
 

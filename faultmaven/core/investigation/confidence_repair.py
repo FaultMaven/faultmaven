@@ -112,10 +112,15 @@ class ConfidenceRepair:
     raw: Any
     value: Optional[float] = None
     where: Optional[str] = None  # where the value sat, when it is known
+    # What the note says after the value, for a field that is not a confidence
+    # (``MilestoneUpdates.accepted_fix_reported_in``, #2427).
+    detail: Optional[str] = None
 
     def note(self) -> str:
         """The line this repair contributes to the turn's ``validation_repairs``."""
         head = f"{self.schema}.{self.field}: {short_repr(self.raw)}"
+        if self.detail:
+            return f"{head} {self.detail}"
         if self.action is ConfidenceAction.RESCALED:
             return f"{head} read as a percentage, rescaled to {self.value:.4g}"
         if self.action is ConfidenceAction.COERCED:

@@ -8,6 +8,7 @@ from uuid import uuid4
 from faultmaven.core.investigation.causal_graph.similarity import (
     find_duplicate_hypothesis,
 )
+from faultmaven.core.investigation.confidence_repair import short_repr
 from faultmaven.core.investigation.lifecycle_metrics import (
     hypothesis_dedup_skipped_total,
     inquiry_classified_without_statement_total,
@@ -335,11 +336,19 @@ class ResponseApplier:
         # this is the first point with both the accepted response and the
         # turn's metadata in hand; ingest adds its link decisions to the same
         # list.
-        confidence_notes = [
-            repair.note() for repair in getattr(response_obj, "_confidence_repairs", [])
-        ]
+        repairs = getattr(response_obj, "_confidence_repairs", [])
+        confidence_notes = [repair.note() for repair in repairs]
         if confidence_notes:
             metadata["validation_repairs"] = confidence_notes
+        for repair in repairs:
+            # The one dropped value the model is told about, as every ignored
+            # declaration is (#2427).
+            if repair.field == "accepted_fix_reported_in":
+                _add_system_feedback(
+                    metadata,
+                    f"SYSTEM: accepted_fix_reported_in {short_repr(repair.raw)} "
+                    "was ignored: it is this_message or previous_message.",
+                )
 
         # POST-PROCESSING: Apply LLM failure mitigation (Pattern-based fallback)
         # This repairs LLM classification failures before applying state updates
@@ -1699,10 +1708,10 @@ class ResponseApplier:
                 # Nothing is accepted or verified against a symptom the
                 # evidence showed was never present — and a verified mitigation
                 # would bar the very finding it was recorded under. The ref
-                # goes with the acceptance it names.
+                # and the report turn go with the acceptance they qualify.
                 gate_signals = gate_signals.model_copy(
                     update={name: None for name in refused_signals}
-                    | {"accepted_action_ref": None}
+                    | {"accepted_action_ref": None, "accepted_fix_reported_in": None}
                 )
                 _add_system_feedback(
                     metadata,

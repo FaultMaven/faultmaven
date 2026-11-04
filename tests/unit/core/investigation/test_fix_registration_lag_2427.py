@@ -44,6 +44,7 @@ from faultmaven.modules.case.contracts import (
     CauseState,
     HypothesisState,
     InvestigationActionType,
+    ProblemStatus,
     SolutionType,
     UploadedFile,
 )
@@ -418,10 +419,40 @@ async def test_a_declaration_moving_the_rows_that_failed_the_last_fix_is_ignored
 
     assert _stamps(case) == [(6, None), (11, None)]
     assert _judged(case) == ("failed", 10, (10, 10))
-    assert _IGNORED in meta["system_feedback"]
+    assert f"{_IGNORED}: {_not_failing_before(10)}" in meta["system_feedback"]
     await _turn(eng, case, 12, _ev(_GONE, "checkout returns 200, 503 rate 0.0/s"))
     verdict = assess_resolution_readiness(case).verdict
     assert verdict == ResolutionReadiness.NEEDS_INFO
+
+
+def _not_failing_before(previous: int) -> str:
+    """The bound's reason for a first fix (at 6) not seen failing before the
+    report turn, for a declaration at ``previous + 1``."""
+    return (
+        f"the fix executed at turn 6 was not seen failing before turn {previous}, "
+        f"so turn {previous}'s observations stay with it; the fix is dated to turn "
+        f"{previous + 1}."
+    )
+
+
+async def test_a_fix_failing_in_the_report_turn_bounds_the_declaration():
+    """The boundary: the cause seen removed at 7, the problem present at 10, so
+    the fix FAILED at 10 on (7, 10), which reads the same with a second fix
+    dated 10 or 11. A failure in the report turn is not one before it, so the
+    declaration at 11 is refused by the bound."""
+    eng, case, hyp = _identified()
+    await _turn(eng, case, 6, solutions_to_add=[_fix()], milestones=_accepted())
+    await _turn(
+        eng, case, 7, _ev(_CAUSE_GONE, "max_connections reads 100 after the change")
+    )
+    await _turn(eng, case, 10, _ev(_PRESENT, "checkout returns 503 again"))
+    assert _judged(case) == ("failed", 10, (7, 10))
+
+    meta = await _second_fix_declared(eng, case)
+
+    assert _stamps(case) == [(6, None), (11, None)]
+    assert _judged(case) == ("failed", 10, (7, 10))
+    assert f"{_IGNORED}: {_not_failing_before(10)}" in meta["system_feedback"]
 
 
 async def test_a_declaration_moving_a_disconfirmation_is_ignored():
@@ -447,7 +478,8 @@ async def test_a_declaration_moving_a_disconfirmation_is_ignored():
     assert _judged(case) == ("failed", 8, (10, 10))
     assert (
         f"{_IGNORED}: turn 10's observations decide whether the fix executed at "
-        "turn 6 was disconfirmed" in meta["system_feedback"]
+        "turn 6 was disconfirmed, so they stay with it; the fix is dated to turn "
+        "11." in meta["system_feedback"]
     )
     await _turn(eng, case, 12, _ev(_GONE, "checkout returns 200, 503 rate 0.0/s"))
     verdict = assess_resolution_readiness(case).verdict
@@ -512,6 +544,21 @@ async def test_a_declaration_without_an_acceptance_is_ignored_with_a_line():
     )
 
 
+async def test_a_refused_acceptance_takes_its_declaration_with_it():
+    """On a problem found never present the acceptance is refused, and the
+    declaration goes with it: one NOT ACCEPTED line, no line on the
+    declaration."""
+    eng, case, _hyp = _identified()
+    await _turn(eng, case, 6, solutions_to_add=[_fix()])
+    case.progress.problem_status = ProblemStatus.INVALIDATED
+
+    meta = await _turn(eng, case, 7, milestones=_accepted(_PREVIOUS))
+
+    assert _stamps(case) == []
+    assert "solution_accepted NOT ACCEPTED" in meta["system_feedback"]
+    assert "accepted_fix_reported_in" not in meta["system_feedback"]
+
+
 async def test_a_declaration_on_a_revision_hold_turn_is_ignored_with_a_line():
     """A fix carried through a revision hold registers at the replay, dated to
     its hold turn, as the carried path does; the declaration is not carried."""
@@ -531,25 +578,53 @@ async def test_a_declaration_on_a_revision_hold_turn_is_ignored_with_a_line():
 
 
 @pytest.mark.parametrize("value", ["previous", "previous_turn", "PREVIOUS_MESSAGE"])
-def test_an_unknown_report_value_costs_that_field_alone(value):
-    """Through the degradation ladder: an off-enum value is dropped by its own
-    validator, so the acceptance and the fix it names stand."""
+async def test_an_unknown_report_value_costs_that_field_alone(value):
+    """Through the degradation ladder and the apply: an off-enum value is
+    dropped by its own validator and recorded as a repair, the model is told,
+    and the acceptance and the fix it names stand."""
+    eng, case, _hyp = _identified()
+    await _turn(eng, case, 6, solutions_to_add=[_fix()])
+    (fix,) = [
+        a
+        for a in case.proposed_actions
+        if a.action_type == InvestigationActionType.SOLUTION
+    ]
+    case.current_turn = 7
     body = {
-        "agent_response": "ok",
+        "agent_response": "Noted.",
+        "evidence_trail": {
+            "evidence_analyzed": [],
+            "milestone_justifications": {
+                "solution_accepted": "the user reports running the change"
+            },
+        },
         "state_updates": {
             "milestones": {
                 "solution_accepted": True,
-                "accepted_action_ref": "new_index_0",
+                "accepted_action_ref": fix.action_id,
                 "accepted_fix_reported_in": value,
             }
         },
     }
 
     parsed = _validate_with_degradation(body, InvestigationResponse_Diagnosis)
-
     m = parsed.state_updates.milestones
-    assert (m.solution_accepted, m.accepted_action_ref) == (True, "new_index_0")
+    assert (m.solution_accepted, m.accepted_action_ref) == (True, fix.action_id)
     assert m.accepted_fix_reported_in is None
+    _case, meta = await eng.responses.process_response_structured(
+        case, "I ran it", parsed
+    )
+
+    assert _stamps(case) == [(7, None)]
+    assert (
+        f"MilestoneUpdates.accepted_fix_reported_in: {value!r} is not "
+        "this_message or previous_message; field dropped, the fix is dated to "
+        "this turn" in meta["validation_repairs"]
+    )
+    assert (
+        f"SYSTEM: accepted_fix_reported_in {value!r} was ignored: it is "
+        "this_message or previous_message." in meta["system_feedback"]
+    )
 
 
 # ---------------------------------------------------------------------------
