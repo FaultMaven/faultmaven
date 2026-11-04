@@ -104,7 +104,8 @@ MEANING_PRESERVING_ACTIONS = frozenset(
 
 @dataclass(frozen=True)
 class ConfidenceRepair:
-    """One confidence value the engine had to act on."""
+    """One value the engine had to act on: an out-of-range confidence, or an
+    off-enum ``MilestoneUpdates.accepted_fix_reported_in``, dropped (#2427)."""
 
     schema: str  # the model class that owns the field, e.g. "HypothesisToAdd"
     field: str  # e.g. "likelihood"
@@ -112,8 +113,9 @@ class ConfidenceRepair:
     raw: Any
     value: Optional[float] = None
     where: Optional[str] = None  # where the value sat, when it is known
-    # What the note says after the value, for a field that is not a confidence
-    # (``MilestoneUpdates.accepted_fix_reported_in``, #2427).
+    # What the note says after the value, for the one field that is not a
+    # confidence (``MilestoneUpdates.accepted_fix_reported_in``, #2427): the
+    # value is dropped and the fix is dated to the registration turn.
     detail: Optional[str] = None
 
     def note(self) -> str:
