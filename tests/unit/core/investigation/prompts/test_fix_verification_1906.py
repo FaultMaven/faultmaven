@@ -15,6 +15,7 @@ import inspect
 
 import pytest
 
+from faultmaven.core.investigation.cause_assurance import pending_symptom_check
 from faultmaven.core.investigation.prompts.context_builder.assembly import (
     _allocate_sections,
 )
@@ -42,10 +43,11 @@ from faultmaven.modules.case.contracts import (
     MitigationRecord,
     NeedPriority,
     NeedPurpose,
+    NeedState,
     ProblemStatus,
     ProposedAction,
 )
-from tests.case_builders import investigating_case
+from tests.case_builders import investigating_case, with_declined_offer
 from tests.unit.core.investigation.bound_rows import bound_row, ensure_subjects
 from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
 
@@ -269,16 +271,187 @@ def test_pending_re_checks_overflow_like_every_list():
 
 def test_an_ask_the_engine_stopped_surfacing_is_not_listed_as_live():
     """``<evidence_needs>`` says the engine stopped putting it to the user
-    (#1079); the block must not list it as an outstanding ask."""
+    (#1079); the block must not list it as an outstanding ask. Asked before
+    the fix, so it holds no offer (``pending_symptom_check``)."""
     case = _case("treatment")
     need = case.evidence_needs[0]
-    need.surfaced_turns = [3, 4, 5]
+    need.created_at_turn = 1
+    need.surfaced_turns = [1, 2]
     prompt = _prompt(case)
     assert "Asks the engine has STOPPED surfacing" in prompt, "premise"
     block = _block(prompt)
     assert need.need_id not in block
     assert "Outstanding symptom-verification needs: none" in block
     assert "(1 the engine has STOPPED surfacing: see <evidence_needs>)" in block
+
+
+_HOLDS = " (holds the resolution offer until answered)"
+
+
+def _held(case, asked: int):
+    """``case`` (both legs: the cause at 4, the problem at 5) with its need
+    asked at ``asked``."""
+    need = case.evidence_needs[0]
+    need.created_at_turn = asked
+    return need
+
+
+@pytest.mark.parametrize("fulfilled", [False, True])
+def test_the_block_marks_the_check_that_holds_the_offer(fulfilled):
+    """Asked at 5, with both legs standing and nothing since (#1906 D5.2). A
+    FULFILLED need citing only a row from before its ask still holds, and the
+    mark says why."""
+    case = _case("treatment", problem=True)
+    need = _held(case, 5)
+    if fulfilled:
+        need.state = NeedState.FULFILLED
+        need.fulfilling_evidence_ids = list(
+            case.problem_verification.verifying_evidence_ids
+        )
+    assert pending_symptom_check(case) is need, "premise: held"
+    mark = (
+        " (holds the resolution offer until answered: the rows it cites "
+        "predate the ask)"
+        if fulfilled
+        else _HOLDS
+    )
+    assert f"  - [{need.need_id}] {_ASK}{mark}\n" in build_fix_verification_block(case)
+
+
+@pytest.mark.parametrize("fulfilled", [False, True])
+@pytest.mark.parametrize("declined", [False, True])
+def test_the_held_mark_promises_no_offer_a_decline_still_binds(declined, fulfilled):
+    """Under a standing resolve decline the answer alone does not bring the
+    offer back (it lapses only on a new confirmation row), and the mark says
+    so, for a pending need and for one FULFILLED on a row from before its
+    ask; without a decline it is unchanged."""
+    case = _case("treatment", problem=True)
+    need = _held(case, 5)
+    why = ""
+    if fulfilled:
+        need.state = NeedState.FULFILLED
+        need.fulfilling_evidence_ids = list(
+            case.problem_verification.verifying_evidence_ids
+        )
+        why = ": the rows it cites predate the ask"
+    if declined:
+        with_declined_offer(case, kind="resolve", basis="backstop")
+    decline = (
+        "; the user's decline of the resolution still binds after it, unless the "
+        "answer is a new problem-bound row showing the problem gone"
+        if declined
+        else ""
+    )
+    mark = f" (holds the resolution offer until answered{why}{decline})"
+    assert pending_symptom_check(case) is need, "premise: held"
+    assert f"  - [{need.need_id}] {_ASK}{mark}\n" in build_fix_verification_block(case)
+
+
+def test_a_need_on_the_cause_leg_alone_is_not_marked():
+    """Fix list 6: with no problem leg, answering the need releases nothing,
+    so the block does not say it holds the offer."""
+    case = _case("treatment")
+    need = case.evidence_needs[0]
+    assert pending_symptom_check(case) is None
+    block = build_fix_verification_block(case)
+    assert f"  - [{need.need_id}] {_ASK}\n" in block
+    assert "holds the resolution offer" not in block
+
+
+def test_a_held_check_is_listed_when_the_engine_stopped_surfacing_it():
+    """Asked at 7 and 8, the block at 9: ask-exhausted (#1079), and still the
+    need that holds the offer, so it is listed by id for the model to
+    dispose of (critique 6)."""
+    case = _case("treatment", problem=True)
+    case.current_turn = 9
+    need = _held(case, 7)
+    need.surfaced_turns = [7, 8]
+    prompt = _prompt(case)
+    assert "Asks the engine has STOPPED surfacing" in prompt, "premise"
+    block = _block(prompt)
+    assert f"  - [{need.need_id}] {_ASK}{_HOLDS}" in block
+    assert "the engine has STOPPED surfacing: see" not in block
+
+
+#: The post-fix check as a need (#1906 D5.2), whitespace-normalised: the rule
+#: in RE-VERIFICATION, rendered in both stages.
+_NEED_RULE = (
+    "A post-fix check of the reported problem that you ask the user for is a "
+    "NEW `symptom_verification` need in `evidence_need_updates`, even when an "
+    "older need asked the same: SUPERSEDE that older need in the same update, "
+    'with `superseded_reason` "replaced by the new ask".',
+    "an ask the engine has stopped surfacing still holds: do not propose "
+    "`resolved` meanwhile",
+    "mark the need FULFILLED with that row in `fulfilling_evidence_ids` (a row "
+    "from before the ask does not answer it)",
+    "If the user cannot run the check, SUPERSEDE the need and give the reason.",
+)
+
+
+def _flat(text: str) -> str:
+    return " ".join(text.split())
+
+
+@pytest.mark.parametrize("stage", ["treatment", "mitigation"])
+def test_the_prompt_makes_the_post_fix_check_a_need(stage):
+    prompt = _flat(_prompt(_case(stage)))
+    for clause in _NEED_RULE:
+        assert clause in prompt
+    # The MITIGATION gate allows the re-check's need; the text it replaced
+    # allowed a new symptom only.
+    assert (
+        "Fresh symptom-purpose needs are still allowed if mitigation work "
+        "surfaces a NEW symptom" not in prompt
+    )
+    if stage == "mitigation":
+        assert (
+            "Fresh symptom-purpose needs are still allowed: for a NEW symptom "
+            "the original problem didn't cover, and for the re-check of the "
+            "reported one (RE-VERIFICATION)." in prompt
+        )
+
+
+def test_the_treatment_prompt_holds_the_proposal_on_the_open_check():
+    prompt = _flat(_prompt(_case("treatment")))
+    assert "ask for that check, and do not propose a transition" not in prompt
+    assert (
+        "ask for that check as a NEW `symptom_verification` need "
+        "(RE-VERIFICATION), and do not propose a transition" in prompt
+    )
+    # COMPLETION: the "propose and let the confirmation step ask" bullet's
+    # exception, and the answer marked FULFILLED or the need superseded.
+    assert (
+        "do not). The exception: do not propose while a symptom check you "
+        "asked for is still open; the engine refuses it." in prompt
+    )
+    assert (
+        "The answer to a symptom check you asked for arrives as data → record "
+        "its row (`rechecks` naming the SYMPTOM row it re-checks, where one "
+        "shows it) and mark the need FULFILLED with that row in "
+        "`fulfilling_evidence_ids`; a row from before the ask does not answer "
+        "it. If the user cannot run the check, SUPERSEDE the need and give the "
+        "reason." in prompt
+    )
+
+
+def test_the_treatment_rules_that_propose_resolved_keep_the_hold():
+    """Fix list 7: CO-EMIT ALL, the success turn and the user's transition
+    intent each carry the exception, so no rule tells the model to propose
+    while its check is open."""
+    prompt = _flat(_prompt(_case("treatment")))
+    assert (
+        "the case meets the resolution criteria, and no symptom check you asked "
+        "for is still open." in prompt
+    )
+    assert (
+        "emit all three this turn or emit none. The exception: while a symptom "
+        "check you asked for is still open, record the rows and do not propose "
+        "resolved (the engine refuses it); the check is what is left." in prompt
+    )
+    assert (
+        '"issue is gone"), and not while a symptom check you asked for is still '
+        "open: the engine refuses it, so say the check is what is left." in prompt
+    )
 
 
 def _fix(case, turn: int) -> None:
@@ -297,8 +470,10 @@ def _fix(case, turn: int) -> None:
 def test_no_re_check_is_owed_on_a_ready_case():
     """The cause re-checked at 2, the fix stamped at 3, the problem gone at 4:
     window 0 confirms (the stamp lags the report), readiness is READY, and
-    nothing is owed."""
+    nothing is owed. The need is asked at 3, at the fix, so the turn-4 row
+    answers it (#1906 D5.2)."""
     case = _case("treatment", cause=False)
+    case.evidence_needs[0].created_at_turn = 3
     bound_row(case, EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE, turn=2)
     bound_row(case, EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE, turn=4)
     assert assess_resolution_readiness(case).verdict == ResolutionReadiness.READY

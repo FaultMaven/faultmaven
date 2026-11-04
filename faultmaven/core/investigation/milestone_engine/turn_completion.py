@@ -612,6 +612,8 @@ async def _compose_turn_reply(
             "resolution_readiness_missing": metadata.get(
                 "resolution_readiness_missing"
             ),
+            # The need whose pending check held a resolve (#1906 D5.2).
+            "resolution_pending_check": metadata.get("resolution_pending_check"),
             "closure_readiness_verdict": metadata.get("closure_readiness_verdict"),
         },
     )

@@ -151,6 +151,30 @@ def validate_contract_changes(changes: tuple[ContractChange, ...]) -> None:
 
 CONTRACT_CHANGES: tuple[ContractChange, ...] = (
     ContractChange(
+        version="14.13.0",
+        level="MINOR",
+        title=(
+            "`disposition_eligibility.resolved` reads `needs_info` while a check the "
+            "agent asked for after the fix is unanswered; `closed` keeps the "
+            "resolvable case's value (#1906)."
+        ),
+        body=r"""A case whose fix is confirmed (the cause shown removed and the reported
+problem shown gone) read `resolved: ready`, and the agent offered the
+resolution, even in the reply that asked the user for another check of the
+problem. While a check the agent asked for after the fix is unanswered, the
+case now reads `resolved: needs_info`: no resolve proposal is made until the
+check's output is on record. `closed` keeps the resolvable case's value:
+`suggests_alternative` (a close becomes a resolve proposal), or `ready` while
+the user's decline of the resolution stands (14.8.0). The
+`disposition_eligibility` description says so. Neither enum gains a value or
+a meaning.
+
+MINOR because every client survives it, as 14.8.0's description change for
+the same key did: a client that renders Close on `ready`, as both do, shows
+none while the check is pending on a case whose resolution was not declined,
+and a close the user types there is offered the resolution.""",
+    ),
+    ContractChange(
         version="14.12.0",
         level="MINOR",
         title=(

@@ -156,8 +156,9 @@ Do NOT continue proposing further variants after offering this choice.
 - Do NOT pursue root cause analysis in this stage — do not form hypotheses
   (hypotheses_to_add), classify causal_evidence, or emit causal-purpose
   evidence_need_updates here; all three are gated and that work is for DIAGNOSIS.
-  Fresh symptom-purpose needs are still allowed if mitigation work surfaces a
-  NEW symptom the original problem didn't cover.
+  Fresh symptom-purpose needs are still allowed: for a NEW symptom the original
+  problem didn't cover, and for the re-check of the reported one
+  (RE-VERIFICATION).
 """
         + "\n"
         + _EVIDENCE_NEEDS_LIFECYCLE_BLOCK
@@ -213,8 +214,9 @@ verify the outcome.
    - The cause is shown gone, but the reported symptom is not yet re-checked
      (the process runs again; the alert, check or error the user reported has
      not been looked at since the fix): record the `causal_absence_evidence`
-     row only, ask for that check, and do not propose a transition. The case
-     is not resolved until the problem the user reported is seen gone.
+     row only, ask for that check as a NEW `symptom_verification` need
+     (RE-VERIFICATION), and do not propose a transition. The case is not
+     resolved until the problem the user reported is seen gone.
    - Only the symptom was relieved while the cause persists: record
      `symptom_absence_evidence` only and propose CLOSED (see COMPLETION).
    - Partial success: → Identify what remains and provide specific next steps to complete
@@ -493,7 +495,13 @@ record a VERIFICATION — never a mere application or a bare request:
   fabricate the rows; propose the transition and let the confirmation step ask
   for the output of the checks showing the cause and the reported problem gone
   (the engine solicits it; the output they submit becomes the rows, their words
-  do not).
+  do not). The exception: do not propose while a symptom check you asked for
+  is still open; the engine refuses it.
+- The answer to a symptom check you asked for arrives as data → record its row
+  (`rechecks` naming the SYMPTOM row it re-checks, where one shows it) and mark
+  the need FULFILLED with that row in `fulfilling_evidence_ids`; a row from
+  before the ask does not answer it. If the user cannot run the check,
+  SUPERSEDE the need and give the reason.
 - Case only stabilized/deferred (symptom relieved, cause persists) → emit
   `symptom_absence_evidence` and propose `closed`, not resolved.
 
@@ -502,7 +510,7 @@ This is a two-step process. You MUST follow these steps exactly:
 **TURN WHERE YOU DETECT SOLUTION SUCCESS (solution_verified is not yet True):**
 Set state_updates.proposed_transition = {{ "to_state": "resolved" }} when
 verification evidence shows the fix has held and the case meets the
-resolution criteria.
+resolution criteria, and no symptom check you asked for is still open.
 
 In agent_response, provide a brief contextual lead-in that frames the
 situation as awaiting user confirmation, for example:
@@ -516,7 +524,9 @@ on the next turn.
 
 CO-EMIT ALL, OR NARRATE NONE: the `proposed_transition` and its backing
 `causal_absence_evidence` and `symptom_absence_evidence` rows are one unit — emit
-all three this turn or emit none. Never let your prose call the case
+all three this turn or emit none. The exception: while a symptom check you
+asked for is still open, record the rows and do not propose resolved (the
+engine refuses it); the check is what is left. Never let your prose call the case
 resolved/closed/fixed/done while those fields are absent: the engine cannot honor an unbacked disposition
 claim, so it holds the case open while the user reads "resolved" — a false
 statement the engine then has to append a correction beneath. If you are
@@ -549,7 +559,9 @@ field; do not narrate the transition.
 - INVESTIGATING → RESOLVED:
   Set state_updates.proposed_transition = {{ "to_state": "resolved" }} ONLY IF
   the user explicitly directs you to mark the case resolved (e.g., "mark
-  as resolved", "the fix worked", "issue is gone").
+  as resolved", "the fix worked", "issue is gone"), and not while a symptom
+  check you asked for is still open: the engine refuses it, so say the check
+  is what is left.
   If ambiguous, apply the Ambiguity-First Rule.
   If triggered, use agent_response to acknowledge the user's claim and
   describe the act of proposing resolution, with an explicit signal that

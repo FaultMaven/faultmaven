@@ -4,6 +4,7 @@ from datetime import (
     datetime,
 )
 
+from faultmaven.core.investigation.cause_assurance import pending_symptom_check
 from faultmaven.core.investigation.lifecycle_metrics import (
     engine_proposed_resolution_total,
     evidence_need_status_changed_total,
@@ -25,7 +26,7 @@ from faultmaven.modules.case.contracts import (
     SolutionFeasible,
 )
 
-from .stage_gates import _solution_cause_validated
+from .stage_gates import _add_system_feedback, _solution_cause_validated
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +137,12 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
     # giving up would be the engine steering toward abandonment (D4
     # soft-collapse).
     if closure.verdict == closure.SUGGEST_RESOLVE:
+        if pending_symptom_check(case) is not None:
+            # A check the model asked for after the fix is still unanswered
+            # (#1906 D5.2, ruling 4): no offer this turn. Not the CLOSE
+            # branch either, whose "can't be applied or verified" close is
+            # false on a confirmed case.
+            return
         kind = OfferKind.RESOLVE
         # Purpose-written, NOT `closure.message`. That text is a pivot-FROM-a-
         # close ("Closing would close it without marking it resolved; the
@@ -209,7 +216,9 @@ def _maybe_propose_confirmed_resolution(case: "Case", metadata: dict) -> None:
 
     The trigger is the resolution bar itself, ``assess_resolution_readiness``
     READY — gone=>gone: a QUALIFYING ``causal_absence_evidence`` row and a
-    ``symptom_absence_evidence`` row at or after it. Not a
+    ``symptom_absence_evidence`` row at or after it, with no check the model
+    asked for after the fix still unanswered (``pending_symptom_check``,
+    #1906 D5.2: the reply would be asking for what the offer claims). Not a
     second, looser reading of "looks finished": a stabilized case carries
     ``symptom_absence`` and is correctly left alone, and the engine's own M6
     failed-fix rows are excluded by ``resolution_confirmation_rows``.
@@ -244,6 +253,7 @@ def _maybe_propose_confirmed_resolution(case: "Case", metadata: dict) -> None:
         ResolutionReadiness,
         assess_resolution_readiness,
         cause_identification_leg,
+        pending_check_feedback,
     )
 
     if not getattr(case, "progress", None):
@@ -251,6 +261,16 @@ def _maybe_propose_confirmed_resolution(case: "Case", metadata: dict) -> None:
 
     readiness = assess_resolution_readiness(case)
     if readiness.verdict != ResolutionReadiness.READY:
+        check = readiness.pending_check
+        if check is not None and not metadata.get("resolution_needs_info_first_pass"):
+            # Held by a check the model asked for after the fix (#1906 D5.2):
+            # the model is told, on every stage (the ``<fix_verification>``
+            # block renders only after DIAGNOSIS), unless step 2 already
+            # answered its ``resolved`` with the same need.
+            _add_system_feedback(
+                metadata, pending_check_feedback(case, check, proposed=False)
+            )
+            metadata["resolution_pending_check"] = check.need_id
         return
 
     # The "still open until you confirm" clause is load-bearing, not padding.

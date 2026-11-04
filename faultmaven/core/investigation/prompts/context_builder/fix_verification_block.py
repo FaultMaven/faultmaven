@@ -11,7 +11,8 @@ hold (#2427, turn 11). It shows, one line each:
 - the two legs a resolution reads (``cause_elimination_rows`` and
   ``symptom_elimination_rows``), by row id, and the rows that showed the
   problem with no re-check in the problem leg;
-- the outstanding symptom-verification needs.
+- the outstanding symptom-verification needs, the one that holds the resolve
+  offer (``pending_symptom_check``) first and marked.
 
 Informational: no gate reads it. It cites ids and never repeats the
 re-verification checklist's row texts (``evidence_needs``).
@@ -32,12 +33,14 @@ from faultmaven.core.investigation.cause_assurance import (
     SUBJECT_PROBLEM,
     cause_recheck_status,
     fix_windows,
+    pending_symptom_check,
     subject_index,
     symptom_elimination_rows,
 )
 from faultmaven.core.investigation.evidence_need_surfacing import is_ask_exhausted
 from faultmaven.core.investigation.terminal_transitions import (
     _relief_without_cause_recheck,
+    declined_resolve_entry,
 )
 from faultmaven.modules.case.contracts import (
     Case,
@@ -46,6 +49,7 @@ from faultmaven.modules.case.contracts import (
     InvestigationActionType,
     InvestigationStage,
     NeedPurpose,
+    NeedState,
 )
 
 from .budget import TokenBudget
@@ -171,16 +175,21 @@ def _leg_lines(case: Case, windows, subjects, status, cause_rows, problem_rows):
     return lines
 
 
-def _need_lines(case: Case) -> list[str]:
+def _need_lines(case: Case, held) -> list[str]:
     """The outstanding symptom-verification needs the engine still puts to the
     user; ask-exhausted ones are counted, in ``<evidence_needs>``'s own words,
-    not listed as live asks (#1079)."""
+    not listed as live asks (#1079). The ``held`` need
+    (``pending_symptom_check``) is listed first and marked, exhausted or
+    FULFILLED on rows from before its ask, so the model is shown which need to
+    dispose of (#1906 D5.2)."""
     needs = [
         n
         for n in case.evidence_needs
-        if n.is_outstanding and n.purpose == NeedPurpose.SYMPTOM_VERIFICATION
+        if n is held
+        or (n.is_outstanding and n.purpose == NeedPurpose.SYMPTOM_VERIFICATION)
     ]
-    live = [n for n in needs if not is_ask_exhausted(n, case.current_turn)]
+    live = [n for n in needs if n is held or not is_ask_exhausted(n, case.current_turn)]
+    live.sort(key=lambda n: n is not held)
     stopped = len(needs) - len(live)
     if not live:
         lines = ["Outstanding symptom-verification needs: none"]
@@ -188,6 +197,7 @@ def _need_lines(case: Case) -> list[str]:
         lines = ["Outstanding symptom-verification needs:"]
         lines += [
             f"  - [{n.need_id}] {_truncate_request_text(n.request_text)}"
+            + (_held_mark(case, n) if n is held else "")
             for n in live[:MAX_NEEDS]
         ]
         if len(live) > MAX_NEEDS:
@@ -199,10 +209,34 @@ def _need_lines(case: Case) -> list[str]:
     return lines
 
 
+#: The held mark's addition while the user's decline of the resolution
+#: stands: the answer alone does not lapse it (``offers.decline_stands``).
+DECLINE_STILL_BINDS = (
+    "; the user's decline of the resolution still binds after it, unless the "
+    "answer is a new problem-bound row showing the problem gone"
+)
+
+
+def _held_mark(case: Case, need) -> str:
+    """The held need's mark. Under a standing resolve decline
+    (``declined_resolve_entry``) it says the decline outlives the answer, so
+    the mark promises no offer the decline would refuse."""
+    why = (
+        ": the rows it cites predate the ask"
+        if need.state == NeedState.FULFILLED
+        else ""
+    )
+    decline = DECLINE_STILL_BINDS if declined_resolve_entry(case) is not None else ""
+    return f" (holds the resolution offer until answered{why}{decline})"
+
+
 def build_fix_verification_block(case: Case) -> str:
     """The block, or ``""``: in TREATMENT, and in MITIGATION once a SOLUTION is
     dated (mitigation attempts are not records until #1906 Phase 4, D3). One
-    ``SubjectIndex`` and one ``fix_windows`` list serve the whole build."""
+    ``SubjectIndex`` and one ``fix_windows`` list serve the attempts, the legs
+    and the held need (``pending_symptom_check``); a held need's mark reads
+    the resolve decline (``declined_resolve_entry``, through the closure
+    verdict), which builds its own."""
     stage = case.current_stage if case.state == CaseState.INVESTIGATING else None
     attempts = _dated_fixes(case)
     if stage != InvestigationStage.TREATMENT and not (
@@ -230,7 +264,9 @@ def build_fix_verification_block(case: Case) -> str:
             else ["Fix attempts: none recorded"]
         ),
         *_leg_lines(case, windows, subjects, status, cause_rows, problem_rows),
-        *_need_lines(case),
+        *_need_lines(
+            case, pending_symptom_check(case, subjects=subjects, windows=windows)
+        ),
         CLOSE_TAG,
     ]
     return "\n".join(lines)

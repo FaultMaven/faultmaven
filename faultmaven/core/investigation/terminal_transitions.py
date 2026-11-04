@@ -43,6 +43,7 @@ from faultmaven.core.investigation.cause_assurance import (
     has_resolution_confirmation,
     has_root_cause_record,
     latest_fix_window,
+    pending_symptom_check,
     resolution_confirmation_rows,
     subject_index,
 )
@@ -75,7 +76,9 @@ from faultmaven.modules.case.contracts import (
     ClosureReason,
     DispositionEligibility,
     EvidenceCategory,
+    EvidenceNeed,
     InvestigationActionType,
+    NeedState,
     OfferAnswer,
     OfferBasis,
     OfferKind,
@@ -783,12 +786,83 @@ RESOLVE_DECLINED_RULE = (
 #: engine's two chips (#2472). Stated only when the reply carries them
 #: (``offer_projection.project_offers(case).reopen_chip``): a hold or an open
 #: offer leaves both off.
-RESOLVE_DECLINED_ACTIONS = (
+RESOLVE_DECLINED_REOPEN_ACTION = (
     "A user who changes their mind without a new verification uses the "
-    "engine's 'Mark it resolved' action: point them to it. A user who wants to "
-    "close the case instead uses the engine's 'Close without resolving' "
-    "action: point them to it."
+    "engine's 'Mark it resolved' action: point them to it."
 )
+RESOLVE_DECLINED_CLOSE_ACTION = (
+    "A user who wants to close the case instead uses the engine's 'Close "
+    "without resolving' action: point them to it."
+)
+RESOLVE_DECLINED_ACTIONS = (
+    f"{RESOLVE_DECLINED_REOPEN_ACTION} {RESOLVE_DECLINED_CLOSE_ACTION}"
+)
+
+
+def resolve_declined_actions(case: Case) -> str:
+    """``RESOLVE_DECLINED_ACTIONS`` for ``case``, for a caller that already
+    knows the chips are built: the close action alone while a check the model
+    asked for after the fix holds the case (``pending_symptom_check``, #1906
+    D5.2), since "Mark it resolved" then answers with that check, not an
+    offer."""
+    if pending_symptom_check(case) is not None:
+        return RESOLVE_DECLINED_CLOSE_ACTION
+    return RESOLVE_DECLINED_ACTIONS
+
+
+#: What follows an answer showing the problem gone while the user's decline of
+#: the resolution stands: it lapses only when the confirmation rows gain one
+#: (``offers.decline_stands``), so a need marked FULFILLED on any other row
+#: leaves it binding. Scoped to that answer: it promises nothing on one
+#: showing the problem still present (after a dated fix, a problem-bound one
+#: fails the fix's window, leaving nothing to re-open).
+PENDING_CHECK_DECLINE_CLAUSE = (
+    "The user declined the resolution. Once an answer showing the problem gone "
+    "is on record, a new problem-bound row showing it lapses that decline; on "
+    "any other row the decline still binds, and the user re-opens the "
+    "resolution with 'Mark it resolved'."
+)
+
+
+def pending_check_feedback(case: Case, check: EvidenceNeed, *, proposed: bool) -> str:
+    """What the model is told while its own check holds the resolution
+    (#1906 D5.2), naming both ways out: the answer on record, or the need
+    superseded. ``proposed``: its ``resolved`` was refused (ruling 3); else
+    the backstop held the offer. A held FULFILLED need cites only rows from
+    turns before the ask (``pending_symptom_check``), and the feedback says
+    so, with a decline or without. While a resolve decline stands
+    (``declined_resolve_entry``), the answer does not by itself bring the
+    resolution back, so the feedback promises no offer or proposal and says
+    what does (``PENDING_CHECK_DECLINE_CLAUSE``). What it promises is scoped to
+    an answer showing the problem gone."""
+    named = f"[{check.need_id}] {check.request_text}"
+    if check.state == NeedState.FULFILLED:
+        status = (
+            f"the check you asked for ({named}) is marked FULFILLED, but the "
+            "rows you cited predate the ask"
+        )
+    else:
+        status = f"the check you asked for is still pending ({named})"
+    lead = "RESOLVED NOT PROPOSED" if proposed else "RESOLUTION HELD"
+    exits = (
+        "mark the need FULFILLED citing it. If the user cannot run the check, "
+        "SUPERSEDE the need with the reason."
+    )
+    if declined_resolve_entry(case) is not None:
+        return (
+            f"{lead}: {status}. Record its answer as a row and {exits} "
+            f"{PENDING_CHECK_DECLINE_CLAUSE}"
+        )
+    # Scoped like the clause: it promises nothing on an answer showing the
+    # problem still present (after a dated fix, a problem-bound one fails the
+    # fix's window).
+    then = (
+        "Propose resolved once an answer showing the problem gone is on record"
+        if proposed
+        else "The resolution is offered once an answer showing the problem gone "
+        "is on record"
+    )
+    return f"{lead}: {status}. {then}: record the row and {exits}"
 
 
 def open_disposition_offer(
@@ -1135,10 +1209,33 @@ class ResolutionReadiness:
     NEEDS_INFO = "needs_info"
     SUGGEST_CLOSE = "suggest_close"
 
-    def __init__(self, verdict: str, message: str, missing: list[str]):
+    def __init__(
+        self,
+        verdict: str,
+        message: str,
+        missing: list[str],
+        *,
+        pending_check: EvidenceNeed | None = None,
+    ):
         self.verdict = verdict
         self.message = message
         self.missing = missing
+        # NEEDS_INFO on a confirmed case: the check the model asked for after
+        # the fix, still unanswered (``pending_symptom_check``, #1906 D5.2).
+        # The readers branch on it, never on the message.
+        self.pending_check = pending_check
+
+
+#: The NEEDS_INFO frame's opening line and its data sentence, shared by the
+#: documentation-gap ask and the held check (#1906 D5.2).
+_NEEDS_INFO_INTRO = (
+    "To mark this **resolved** and write up the resolution summary, I just need "
+    "a few essentials:\n\n"
+)
+_SUBMIT_AS_DATA = (
+    "Submit check output as data (pasted or attached, not typed into your "
+    "message): what you write is your account, and the output is what shows it."
+)
 
 
 def _relief_without_cause_recheck(
@@ -1217,6 +1314,26 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
     resolution_confirmed = _resolution_confirmed(case)
 
     if resolution_confirmed:
+        # A check of the problem the model asked for after the fix, still
+        # unanswered, holds the offer (#1906 D5.2, ruling 4): the reply is
+        # asking for evidence the offer would claim. The frame below without
+        # its close paragraph: without a standing resolve decline a close of a
+        # confirmed case pivots to the resolve (ruling 2, INV-37), and under
+        # one the turn's "Close without resolving" chip carries the close
+        # (#2360).
+        check = pending_symptom_check(case)
+        if check is not None:
+            return ResolutionReadiness(
+                verdict=ResolutionReadiness.NEEDS_INFO,
+                message=(
+                    _NEEDS_INFO_INTRO
+                    + f"- **The check I asked for** — {check.request_text}"
+                    + "\n\n"
+                    + _SUBMIT_AS_DATA
+                ),
+                missing=["the check you asked for"],
+                pending_check=check,
+            )
         return ResolutionReadiness(
             verdict=ResolutionReadiness.READY,
             message="",
@@ -1334,12 +1451,11 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
     return ResolutionReadiness(
         verdict=ResolutionReadiness.NEEDS_INFO,
         message=(
-            "To mark this **resolved** and write up the resolution summary, I "
-            "just need a few essentials:\n\n"
+            _NEEDS_INFO_INTRO
             + "\n".join(asks)
-            + "\n\nSubmit check output as data (pasted or attached, not typed "
-            "into your message): what you write is your account, and the output "
-            "is what shows it. If the problem was already fixed outside this "
+            + "\n\n"
+            + _SUBMIT_AS_DATA
+            + " If the problem was already fixed outside this "
             "session, the same applies, and I'll document it.\n\n"
             "If it was only **stabilized** (a workaround/failover while the root "
             "cause is still pending) or the real fix is **deferred** (a change "
@@ -1453,7 +1569,11 @@ def assess_closure_readiness(case: "Case") -> ClosureReadiness:
     # Symmetric to ResolutionReadiness.SUGGEST_CLOSE.
     #
     # Gate on the resolution confirmation — the SAME bar as
-    # assess_resolution_readiness READY (both legs: cause gone, problem gone).
+    # assess_resolution_readiness READY (both legs: cause gone, problem gone),
+    # less READY's hold on a check the model asked for after the fix
+    # (``pending_symptom_check``): the verdict stays SUGGEST_RESOLVE while one
+    # is pending, so a close is read as on any resolvable case (#1906 D5.2,
+    # ruling 2; ``close_pivots_to_resolve`` applies a standing decline).
     # A close request on a resolution-ready case pivots to resolve: "resolved" is
     # a closed case WITH a resolution, and it is always safe to resolve a case the
     # user moved to close. We do NOT require a separate root-cause/solution record

@@ -14,11 +14,12 @@ from faultmaven.core.investigation.problem_status import (
     record_confirmed_statement,
 )
 from faultmaven.core.investigation.terminal_transitions import (
-    RESOLVE_DECLINED_ACTIONS,
     RESOLVE_DECLINED_RULE,
     declined_resolve_entry,
     disposition_refusal,
     open_disposition_offer,
+    pending_check_feedback,
+    resolve_declined_actions,
 )
 from faultmaven.modules.case.contracts import (
     Case,
@@ -101,7 +102,7 @@ DECLINED_RESOLVE_FEEDBACK = (
 #: Added to it only when the reply carries the engine's two chips (#2472).
 _DECLINED_RESOLVE_CHIPS_FEEDBACK = (
     "The engine has attached its 'Mark it resolved' and 'Close without "
-    "resolving' actions to this reply. " + RESOLVE_DECLINED_ACTIONS
+    "resolving' actions to this reply."
 )
 
 _QUIET = (
@@ -139,7 +140,10 @@ def declined_resolution_reask(case: Case) -> str | None:
         return None
     if project_offers(case).reopen_chip is None:
         return DECLINED_RESOLVE_FEEDBACK
-    return f"{DECLINED_RESOLVE_FEEDBACK} {_DECLINED_RESOLVE_CHIPS_FEEDBACK}"
+    return (
+        f"{DECLINED_RESOLVE_FEEDBACK} {_DECLINED_RESOLVE_CHIPS_FEEDBACK} "
+        f"{resolve_declined_actions(case)}"
+    )
 
 
 def _refuse_declined_reask(metadata: dict[str, Any], side: str, feedback: str) -> None:
@@ -341,7 +345,9 @@ class TransitionManager:
         refusal feedback and the reopen chip. SUGGEST_CLOSE, or still
         NEEDS_INFO, opens the close offer (``needs_info_unmet``): the user was
         asked once and did not (or could not) supply it, so the case does not
-        loop on the ask (#656).
+        loop on the ask (#656). Not on a pending check the model asked for
+        after the fix (``ResolutionReadiness.pending_check``, #1906 D5.2):
+        the request ends and nothing opens (ruling 3).
         """
         from faultmaven.core.investigation.terminal_transitions import (
             assess_resolution_readiness,
@@ -376,6 +382,17 @@ class TransitionManager:
             logger.info(
                 f"Case {case.case_id}: the resolution request is met — "
                 f"presenting the confirmation"
+            )
+            return
+        if readiness.pending_check is not None:
+            # A check the model asked for after the fix is still unanswered
+            # (#1906 D5.2): the request ends, and no needs-info-unmet close
+            # follows (ruling 3). Once the answer lands, the offer is the
+            # backstop's, which a standing resolve decline still binds.
+            metadata["resolution_pending_check"] = readiness.pending_check.need_id
+            logger.info(
+                f"Case {case.case_id}: the resolution request ends on a pending "
+                f"check ({readiness.pending_check.need_id}); no close offered"
             )
             return
         if readiness.verdict == readiness.SUGGEST_CLOSE:
@@ -534,8 +551,9 @@ class TransitionManager:
 
         # Readiness decides what the proposal earns:
         #   resolved: SUGGEST_CLOSE → a close offer; NEEDS_INFO → a request,
-        #             not an offer (no chips; ruling 1, #2408); READY → a
-        #             resolve offer.
+        #             not an offer (no chips; ruling 1, #2408), or feedback
+        #             alone on the model's own pending check (#1906 D5.2);
+        #             READY → a resolve offer.
         #   closed:   SUGGEST_RESOLVE → a resolve offer (INV-37); otherwise a
         #             close offer with the summary of what was found.
         kind = OfferKind.CLOSE if proposed.to_state == "closed" else OfferKind.RESOLVE
@@ -553,8 +571,20 @@ class TransitionManager:
                 )
             elif readiness.verdict == readiness.NEEDS_INFO:
                 # A request, not an offer: the ask goes below the reply with
-                # no chips, and the next turn re-checks it (step 0).
-                case.offer_record = remember_resolve_request(case, readiness.missing)
+                # no chips, and the next turn re-checks it (step 0). Not while
+                # the model's own check is pending (#1906 D5.2, ruling 3): it
+                # is told why, and nothing is remembered, so no
+                # needs-info-unmet close follows.
+                check = readiness.pending_check
+                if check is None:
+                    case.offer_record = remember_resolve_request(
+                        case, readiness.missing
+                    )
+                else:
+                    _add_system_feedback(
+                        metadata, pending_check_feedback(case, check, proposed=True)
+                    )
+                    metadata["resolution_pending_check"] = check.need_id
                 metadata["resolution_needs_info_first_pass"] = True
                 metadata["resolution_needs_info_message"] = readiness.message
                 logger.info(
