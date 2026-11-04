@@ -327,9 +327,7 @@ advances the investigation to Treatment.
 **INVESTIGATION PROGRESS: Solution proposal issued — awaiting execution**
 A fix has been proposed and is awaiting execution. If the user reports executing
 it, set solution_accepted=True with accepted_action_ref naming its ACTION_ID
-(<pending_action>), and infer the transition to TREATMENT. If the user reported
-carrying out the fix in their previous message, set accepted_fix_reported_in to
-previous_message.
+(<pending_action>), and infer the transition to TREATMENT.
 This hold is NOT a freeze. If the user's reply instead brings new evidence,
 questions the fix, or points at a different cause, resume root-cause analysis on
 that signal — investigate it rather than repeating the standby. A pending

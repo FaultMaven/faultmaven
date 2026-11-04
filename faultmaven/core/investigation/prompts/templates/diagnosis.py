@@ -818,9 +818,7 @@ The signal is EXECUTION of the proposed fix, not merely new data on the case:
 When you detect these positive signals for a proposed solution, you MUST set
 solution_accepted=True in your state updates, with accepted_action_ref set to
 that solution's ACTION_ID from <pending_action> (each fix the user runs is
-registered once, for the fix named). If the user reported carrying out the fix
-in their previous message, set accepted_fix_reported_in to previous_message.
-The stage transition to TREATMENT
+registered once, for the fix named). The stage transition to TREATMENT
 happens only when this variable is set — conversational text alone is not enough.
 A fix that was executed but FAILED is still compliance — set solution_accepted
 and let TREATMENT run the failure analysis; do not keep it pending.

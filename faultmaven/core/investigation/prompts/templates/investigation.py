@@ -384,7 +384,9 @@ evidence_trail:
     * solution_accepted is set with accepted_action_ref naming the SOLUTION the
       user carried out (its ACTION_ID, or new_index_N for one proposed in the
       same response). Each fix registers once; a fix after an earlier one
-      registers only when named, and is justified like the first.
+      registers only when named, and is justified like the first. If the user
+      reported carrying out the fix in their previous message, set
+      accepted_fix_reported_in to previous_message.
 
     Example (completing a milestone):
     ✅ {{

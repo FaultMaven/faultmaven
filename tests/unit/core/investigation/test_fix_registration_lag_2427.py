@@ -24,6 +24,12 @@ from faultmaven.core.investigation.causal_graph.disconfirmation import (
     failed_fix_of,
 )
 from faultmaven.core.investigation.cause_assurance import fix_windows
+from faultmaven.core.investigation.prompts.templates.assembly import (
+    get_prompt_for_case,
+)
+from faultmaven.core.investigation.prompts.templates.investigation import (
+    INVESTIGATION_BASE,
+)
 from faultmaven.core.investigation.schemas import MilestoneUpdates, SolutionToAdd
 from faultmaven.core.investigation.terminal_transitions import (
     ResolutionReadiness,
@@ -57,6 +63,10 @@ _FIX = "raise max_connections to 100"
 _SECOND = "raise max_connections to 200 and cap the pool per worker"
 _PROBLEM_LEG = "Confirmation the original problem is gone"
 _PREVIOUS = "previous_message"
+_DECLARE = (
+    "If the user reported carrying out the fix in their previous message, set "
+    "accepted_fix_reported_in to previous_message."
+)
 
 
 def _fix(description: str = _FIX) -> SolutionToAdd:
@@ -338,3 +348,39 @@ async def test_a_cause_reasserted_in_the_registration_turn_is_still_judged():
     window = failed_fix_of(case, reasserted)
     assert window is not None
     assert (window.fix_turn, window.disconfirmation) == (9, (11, 11))
+
+
+# ---------------------------------------------------------------------------
+# The prompt names the declaration once.
+# ---------------------------------------------------------------------------
+
+
+def _count(text: str) -> int:
+    """Occurrences of the declaration line, the template's line wraps folded."""
+    return " ".join(text.split()).count(_DECLARE)
+
+
+def test_the_investigation_base_teaches_the_declaration_once():
+    """The line sits beside ``accepted_action_ref`` in the milestone
+    justifications, where a fix minted and accepted in one response
+    (``new_index_N``) is taught, and nowhere else in the base."""
+    justifications = INVESTIGATION_BASE.split("milestone_justifications:", 1)[1]
+    justifications = justifications.split("uncertainties:", 1)[0]
+
+    assert _count(INVESTIGATION_BASE) == 1
+    assert _count(justifications) == 1
+
+
+async def test_a_diagnosis_turn_with_a_pending_fix_renders_the_declaration_once():
+    """The fix proposed and awaiting execution: the turn renders the
+    awaiting-execution focus and the compliance block together, and the
+    declaration once, from the base."""
+    eng, case, _hyp = _identified()
+    await _turn(eng, case, 6, solutions_to_add=[_fix()])
+    case.current_turn = 7
+
+    prompt = get_prompt_for_case(case, user_message="I've applied the change")
+
+    assert "awaiting execution" in prompt
+    assert "COMPLIANCE DETECTION" in prompt
+    assert _count(prompt) == 1
