@@ -419,7 +419,11 @@ class TestDIContainerHealthCheck:
 
 
 class TestDIContainerReset:
-    """Test container reset functionality and state management"""
+    """Test container reset functionality and state management.
+
+    A composed container is reset by its shutdown: a bare ``reset()`` refuses
+    while the composition still owns what it opened.
+    """
 
     @pytest.mark.asyncio
     async def test_reset_clears_initialization_state(self):
@@ -430,8 +434,7 @@ class TestDIContainerReset:
         # Verify initialized
         assert container._initialized
 
-        # Reset
-        container.reset()
+        await container.shutdown()
 
         # Verify reset state
         assert not container._initialized
@@ -449,8 +452,7 @@ class TestDIContainerReset:
         assert hasattr(container, "llm_provider")
         assert hasattr(container, "agent_service")
 
-        # Reset
-        container.reset()
+        await container.shutdown()
 
         # Verify components are cleared
         assert not hasattr(container, "llm_provider")
@@ -466,8 +468,8 @@ class TestDIContainerReset:
         await container.initialize()
         first_agent_service = container.get_agent_service()
 
-        # Reset and initialize again
-        container.reset()
+        # Shut down and initialize again
+        await container.shutdown()
         await container.initialize()
         second_agent_service = container.get_agent_service()
 
@@ -481,8 +483,7 @@ class TestDIContainerReset:
         container1 = DIContainer()
         await container1.initialize()
 
-        # Reset
-        container1.reset()
+        await container1.shutdown()
 
         # New reference should still be same singleton
         container2 = DIContainer()

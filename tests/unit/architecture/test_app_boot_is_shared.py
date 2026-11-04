@@ -41,10 +41,10 @@ lifespan starts, one function may hold two sites, and a site the census reads
 real app inside a module that also uses ``booted_app_client`` must take the
 ``unshared_app_boot`` fixture, which stands the shared boot down for the
 duration. Two lifespans live on one app object otherwise: the second
-re-composes ``app.state`` onto its own event loop, and its shutdown disposes the
-database engine the first client is still serving from. That is enforced at
-runtime, by object identity, in ``tests/conftest.py`` (fm#1628). The wrapped
-``TestClient.__enter__`` and ``__exit__`` resolve the client's application to
+re-composes ``app.state`` onto its own event loop, and its shutdown stops the
+app's protection middleware the first client is still serving through. That is
+enforced at runtime, by object identity, in ``tests/conftest.py`` (fm#1628). The
+wrapped ``TestClient.__enter__`` and ``__exit__`` resolve the client's application to
 ``faultmaven.main.app`` itself, through any middleware wrapped around it,
 whatever name, alias or entry form reached it. They refuse an entry from a
 fixture scoped wider than one test, an undeclared entry in a borrowing module,
@@ -237,10 +237,14 @@ EXPECTED: dict[str, dict[str, tuple[str, int]]] = {
         "test_a_gate_declared_after_a_service_parameter_is_not_a_gate": ("scratch", 1),
         # NOT faultmaven.main.app: a fresh application rebuilt by
         # ``_served_under`` under a pinned environment, which is the subject of
-        # the test. It pays a full lifespan, but on its own app object, so it
-        # cannot overlap the shared boot. It was written as
-        # ``client_cm = TestClient(...)`` then ``with client_cm``, which the
-        # grep census could not see; it now reads ``with TestClient(...)``.
+        # the test. It pays a full lifespan on its own app object, which the
+        # app-object guard does not see. Its composition and the shared boot's
+        # still share the process-global container, engine, usage ledger and
+        # APM export; an overlap is safe because each lifespan holds the
+        # container, and only the last release closes or stops them (#1843). It
+        # was written as ``client_cm = TestClient(...)`` then ``with
+        # client_cm``, which the grep census could not see; it now reads
+        # ``with TestClient(...)``.
         "test_the_debug_routes_refuse_anonymous_and_non_operator_callers": (
             "scratch",
             1,

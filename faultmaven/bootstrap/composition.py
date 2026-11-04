@@ -31,7 +31,12 @@ from typing import TYPE_CHECKING, Any, Callable, Mapping, Optional
 
 from fastapi import FastAPI
 
-from faultmaven.infrastructure.concurrency.teardown import cancel_and_wait, run_teardown
+from faultmaven.infrastructure.concurrency.teardown import (
+    ContainerRelease,
+    cancel_and_wait,
+    close_the_database,
+    run_teardown,
+)
 
 if TYPE_CHECKING:
     from faultmaven.config.settings import FaultMavenSettings
@@ -716,46 +721,60 @@ async def stop_config_watcher(app: FastAPI) -> None:
 async def decompose_application(app: FastAPI, published: Mapping[str, Any]) -> None:
     """Take back everything composition installed. The one teardown of it.
 
-    Stops the config watcher composition started, shuts the container down,
-    uninstalls the LLM usage ledger, takes what composition published back off
-    ``app.state`` (``published``, as :func:`compose_application` returns it),
-    and, last, disposes the database engine. ``app.extra["di_container"]`` is
-    the container singleton itself, which its shutdown resets, and stays.
+    Stops the config watcher composition started, releases the container, takes
+    what composition published back off ``app.state`` (``published``, as
+    :func:`compose_application` returns it), and, last, disposes the database
+    engine. ``app.extra["di_container"]`` is the container singleton itself,
+    which its last shutdown resets, and stays.
 
     Each step runs whatever the one before it did (:func:`run_teardown`). One
     that raises is logged, so a refusal being undone propagates as itself. One
     that is interrupted (a cancellation included) lets the rest finish, and the
     interruption is then re-raised. Each step imports what it needs, so a
     failed import is that step's failure alone (#2267).
+
+    What is the process's rather than this composition's goes only when the
+    release says no other composition holds the container (#1843): the usage
+    ledger, the APM export and the database engine.
     """
-
-    async def _shut_down_the_container() -> None:
-        from faultmaven.container import container
-
-        await container.shutdown()
+    release = ContainerRelease()
 
     def _uninstall_the_usage_ledger() -> None:
         from faultmaven.infrastructure.llm.usage_ledger import install_usage_ledger
 
         install_usage_ledger(None)
 
-    async def _close_the_database() -> None:
-        from faultmaven.infrastructure.persistence.database import close_database
+    async def _drain_the_usage_ledger() -> None:
+        from faultmaven.infrastructure.llm.usage_ledger import (
+            drain_pending_usage_writes,
+        )
 
-        await close_database()
+        await drain_pending_usage_writes(timeout_s=5)
+
+    def _stop_the_apm_export() -> None:
+        from faultmaven.infrastructure.observability.apm_integration import (
+            apm_integration,
+        )
+
+        apm_integration.stop_background_export()
 
     steps: tuple[tuple[str, Callable[[], Any]], ...] = (
         # The LLM config watcher (cloud multi-replica propagation). The lifespan
         # has stopped it already on the serving path; this is then a no-op.
         ("Stopping the LLM config watcher", lambda: stop_config_watcher(app)),
-        # Close what the container opened and owns: the shared Redis client's
-        # pool is bound to this event loop, and nothing else closes it.
-        ("Container shutdown", _shut_down_the_container),
-        # The usage ledger composition installed (#640). On the serving path
-        # the lifespan's drain has already uninstalled it, and this is a no-op.
-        # It is what uninstalls the ledger of a refused composition, which
-        # served no call to drain.
-        ("LLM usage ledger uninstall", _uninstall_the_usage_ledger),
+        # Release this composition's hold on the container. The last holder's
+        # shutdown closes what it owns (``DIContainer.own``): the Redis client,
+        # whose pool is bound to this event loop, the ChromaDB clients and the
+        # sanitizer's session. Nothing else closes them.
+        ("Container shutdown", release.release),
+        # The usage ledger (#640), process-global: a later composition installs
+        # its own over it. Uninstalled, then drained, before the engine goes:
+        # a call metered since the lifespan's own drain is written, and one
+        # metered after is counted as not persisted, never written against a
+        # closed engine.
+        ("LLM usage ledger uninstall", release.if_last(_uninstall_the_usage_ledger)),
+        ("LLM usage ledger drain", release.if_last(_drain_the_usage_ledger)),
+        ("APM export stop", release.if_last(_stop_the_apm_export)),
         # The services the composition root published hold what that shutdown
         # closed; a request served after this point must not find them.
         (
@@ -765,7 +784,7 @@ async def decompose_application(app: FastAPI, published: Mapping[str, Any]) -> N
         # Dispose the canonical async engine, last. The user store no longer
         # owns a session (sessionless repository per #703), so there is nothing
         # to release here beyond the engine.
-        ("Database close", _close_the_database),
+        ("Database close", release.if_last(close_the_database)),
     )
     await run_teardown(steps)
 
@@ -774,9 +793,9 @@ def unpublish_composition(app: FastAPI, published: Mapping[str, Any]) -> None:
     """Take what composition published back off ``app.state``.
 
     A step of :func:`decompose_application`, after the container's shutdown.
-    The services published here hold what that shutdown closed: the
-    container's Redis client, directly or
-    through a session store, a knowledge service or an investigation engine.
+    The services published here hold what the last holder's shutdown closes:
+    the container's Redis client, directly or through a session store, a
+    knowledge service or an investigation engine, and its ChromaDB clients.
     Left in place, a later request served without a lifespan reads them as
     the application's own: the protection middleware borrows the closed client
     as shared, a route hands it to a service, and redis-py reopens it on that

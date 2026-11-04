@@ -12,7 +12,7 @@ import asyncio
 import contextlib
 import logging
 import threading
-from typing import Optional
+from typing import Any, Callable, Optional
 from urllib.parse import urlparse
 
 from faultmaven.config.deployment_coherence import DeploymentCoherenceError
@@ -396,7 +396,9 @@ def resolve_redis_client(request, injected=None, redis_url: Optional[str] = None
     return client
 
 
-async def get_async_redis_client(redis_url: Optional[str] = None) -> object:
+async def get_async_redis_client(
+    redis_url: Optional[str] = None, *, on_built: Optional[Callable[[Any], Any]] = None
+) -> object:
     """Create an async Redis client and prove it answers before handing it out.
 
     This is the primary entry point for the DI container. Construction is
@@ -408,19 +410,27 @@ async def get_async_redis_client(redis_url: Optional[str] = None) -> object:
 
     Standalone returns FakeRedis when real Redis is unusable; cloud raises
     :class:`RedisUnavailableError` (see :func:`fakeredis_or_fail`).
+
+    ``on_built`` is handed a real client as soon as it is built, before the
+    ping awaits anything: its owner records it there, so a cancellation during
+    the ping strands nothing. That owner then closes a client that did not
+    answer; without one, it is closed here.
     """
     client = RedisClientFactory.create_client(redis_url=redis_url)
     if is_fakeredis(client):
         # Already through the gate: standalone chose the stand-in, cloud raised.
         return client
+    if on_built is not None:
+        on_built(client)
 
     try:
         await client.ping()
     except Exception as e:
-        try:
-            await client.aclose()
-        except Exception:  # pragma: no cover - close failures are not actionable
-            pass
+        if on_built is None:
+            try:
+                await client.aclose()
+            except Exception:  # pragma: no cover - close failures are not actionable
+                pass
         config = RedisClientFactory._build_config(redis_url, None, None, None)
         return fakeredis_or_fail(_scrub_redis_secrets(str(e), config))
 

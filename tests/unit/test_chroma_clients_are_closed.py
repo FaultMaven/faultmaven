@@ -122,6 +122,54 @@ def test_a_registered_client_releases_its_descriptors_at_teardown(
     result.assert_outcomes(passed=2)
 
 
+_LEAKING_SUITE = """
+from faultmaven.infrastructure.persistence.chromadb_store import (
+    create_persistent_client,
+)
+from tests.chroma_clients import closed_at_teardown, systems_open_under
+
+LEFT_OPEN = []
+
+
+def test_a_test_leaves_a_client_open(tmp_path):
+    LEFT_OPEN.append(create_persistent_client(str(tmp_path / "chroma")))
+    # Positive control: the reader the teardown check uses sees it open.
+    assert systems_open_under(tmp_path) == [str(tmp_path / "chroma")]
+
+
+def test_a_test_that_closes_its_client_passes(tmp_path):
+    closed_at_teardown(create_persistent_client(str(tmp_path / "chroma")))
+
+
+def test_a_test_leaves_the_default_relative_path_open(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    LEFT_OPEN.append(create_persistent_client("./data/chroma-kb"))
+    assert systems_open_under(tmp_path) == ["./data/chroma-kb"]  # positive control
+"""
+
+
+def test_a_client_left_open_under_the_tests_tmp_path_fails_that_test(
+    pytester, monkeypatch
+):
+    """#2490: closing was opt-in at each call site, and nothing failed a test
+    that skipped ``closed_at_teardown``. The root conftest's autouse teardown
+    now fails it, naming the path; a test that closes its client passes."""
+    monkeypatch.setenv(
+        "PYTHONPATH",
+        os.pathsep.join(filter(None, [str(REPO_ROOT), os.environ.get("PYTHONPATH")])),
+    )
+    pytester.makepyfile(textwrap.dedent(_LEAKING_SUITE))
+
+    result = pytester.runpytest_subprocess(
+        "-p", "no:cacheprovider", "-p", "tests.conftest", timeout=600
+    )
+
+    result.assert_outcomes(passed=3, errors=2)
+    result.stdout.fnmatch_lines(
+        ["*the test left ChromaDB clients open under its tmp_path*"]
+    )
+
+
 class _Client:
     def __init__(self, name: str, closed: list[str], error: Exception | None = None):
         self.name, self.closed, self.error = name, closed, error

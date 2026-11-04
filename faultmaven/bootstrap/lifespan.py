@@ -475,7 +475,8 @@ def _serving_stops(app: FastAPI) -> tuple[tuple[str, Callable[[], Any]], ...]:
             apm_integration,
         )
 
-        apm_integration.stop_background_export()
+        # The background export is the process's: the composition's last
+        # release stops it (decompose_application).
         await apm_integration.flush_metrics()
         logger.info("✅ Phase 2 monitoring components cleaned up")
 
@@ -486,24 +487,17 @@ def _serving_stops(app: FastAPI) -> tuple[tuple[str, Callable[[], Any]], ...]:
 
         await drain_pending_usage_writes(timeout_s=5)
 
-    def _uninstall_usage_ledger() -> None:
-        from faultmaven.infrastructure.llm.usage_ledger import install_usage_ledger
-
-        install_usage_ledger(None)
-
     return (
         # Owned clients first, then the shared one, then the engine. The
         # protection middleware closes only a Redis client it built for itself;
         # the shared client is the container's, closed by the decomposition.
         ("Protection middleware shutdown", _shutdown_protection),
         # Finish the LLM usage ledger's in-flight own-row writes (#640) while the
-        # database is still open, then uninstall it, whatever the drain did:
-        # calls metered after this point are counted as not persisted rather
-        # than scheduled against a closing engine. A write still pending at the
-        # timeout is counted. This is the uninstall on the serving path;
-        # decompose_application's own is then a no-op.
+        # database is still open. A write still pending at the timeout is
+        # counted. The ledger is the process's, so it stays installed for any
+        # other composition still serving: decompose_application uninstalls it
+        # on the last release, and drains again before the engine goes.
         ("LLM usage ledger drain", _drain_usage_ledger),
-        ("LLM usage ledger uninstall", _uninstall_usage_ledger),
         (
             "Stopping the funnel metrics collector",
             _unpublish_then_stop(app, "funnel_metrics_task", cancel_and_wait),

@@ -83,7 +83,10 @@ import sys
 from typing import Any, Dict, List, Optional
 
 from faultmaven.config.deployment_coherence import DeploymentCoherenceError
-from faultmaven.infrastructure.concurrency.teardown import run_teardown
+from faultmaven.infrastructure.concurrency.teardown import (
+    ContainerRelease,
+    run_teardown,
+)
 from faultmaven.infrastructure.logging.url_redaction import RedactingFormatter
 from faultmaven.providers.tenancy.factory import TenancyConfigurationError
 
@@ -529,20 +532,10 @@ async def run_job(
         # the engine's connections are bound to is still running. Each step
         # runs whatever the one before it did, and a failure to close does not
         # change what the run reported. Each step imports what it needs, so a
-        # failed import is that step's failure alone (#2267).
-        async def _close_the_database() -> None:
-            from faultmaven.infrastructure.persistence.database import (
-                close_database,
-            )
-
-            await close_database()
-
-        await run_teardown(
-            (
-                ("Container shutdown", lambda: container.shutdown()),
-                ("Database close", _close_the_database),
-            )
-        )
+        # failed import is that step's failure alone (#2267). The engine goes
+        # unless the shutdown says another composition still holds the
+        # container (#1843).
+        await run_teardown(ContainerRelease(container.shutdown).steps())
 
 
 def _ttl_hours_arg(value: str) -> int:

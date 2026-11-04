@@ -101,7 +101,9 @@ dependencies = [
     "opentelemetry-api>=1.45.1",
 
     # Knowledge base and embeddings (ChromaDB + sentence transformers)
-    "chromadb>=1.0.0",
+    # >=1.5.2: the first release with Client.close(), which the container's
+    # shutdown calls to release a local client's System (1.5.1 and earlier have none).
+    "chromadb>=1.5.2",
     # Floored at the release the lockfiles pin and the image is built with.
     # The security floor is 5.6.0: below it, loading a model from a path that
     # exists on local disk runs that directory's Python even with

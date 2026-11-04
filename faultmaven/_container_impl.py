@@ -18,6 +18,7 @@ Key Components:
 - Proper interface implementations and dependency injection
 """
 
+import functools
 import logging
 import sys
 from datetime import datetime, timezone
@@ -35,6 +36,7 @@ from faultmaven.container.providers import (
     register_services,
     register_tools,
 )
+from faultmaven.infrastructure.concurrency.teardown import run_teardown
 from faultmaven.utils.serialization import to_json_compatible
 
 # Import interfaces with graceful fallback for testing environments
@@ -145,6 +147,14 @@ class DIContainer(BaseDIContainer):
     async def initialize(self, allow_degraded: bool = False):
         """Initialize all dependencies with proper error handling (async for proper event loop handling).
 
+        A call that leaves the container initialized takes one hold for its
+        caller's context, which the same context's ``shutdown()`` releases: the
+        composition, and a later call that finds it initialized and shares it
+        (#1843). A call that raises, returns degraded or finds a composition in
+        progress takes none: its composer's shutdown closes nothing beside a
+        live holder in another context, and closes what is recorded when no
+        hold exists.
+
         Args:
             allow_degraded: opt in to the lenient path under pytest, where a
                 composition failure otherwise raises so it names itself (#823).
@@ -155,6 +165,7 @@ class DIContainer(BaseDIContainer):
 
         if self._initialized:
             logger.debug("Container already initialized, skipping")
+            self._holds.take()
             return
 
         if self._initializing:
@@ -187,6 +198,7 @@ class DIContainer(BaseDIContainer):
 
             self._initialized = True
             self._initializing = False
+            self._holds.take()
             logger.info("✅ DI Container initialized successfully")
 
         except Exception as e:
@@ -287,6 +299,7 @@ class DIContainer(BaseDIContainer):
                 )
                 self._create_minimal_container()
                 self._initialized = True
+                self._holds.take()
             else:
                 import traceback
 
@@ -1800,37 +1813,43 @@ class DIContainer(BaseDIContainer):
             "registry": base_health,
         }
 
-    async def shutdown(self) -> None:
-        """Close what ``initialize`` opened that this container owns, and reset.
+    async def shutdown(self) -> bool:
+        """Release the calling context's hold. With none left anywhere, close and reset.
 
-        The Redis client is the container's: ``register_infrastructure`` built it
-        and every Redis-backed store shares it. A real client holds a connection
-        pool bound to the event loop it was opened on, so whoever composes for a
-        run shuts the container down at the run's end, on every path, while that
-        loop still runs: the API lifespan (a refused composition included), the
-        jobs runner, and the ``fm-*`` commands and dev scripts that compose
-        (``cli/_container.py``). The FakeRedis stand-in is the event loop's
-        client, shared beyond this container with everything else on that loop,
-        and never its to close.
+        Returns ``False`` while another context still holds the container: two
+        live lifespans share it (the second ``initialize()`` returns early), so
+        the first to end closes nothing, nor may its composer dispose the
+        process-global database engine or stop the serving state (#1843). A
+        context that took no hold releases nothing.
 
-        Then the container is reset, so it is never left holding a closed client:
-        the next ``initialize()`` composes afresh, with a new Redis client. A
-        second lifespan in the same process (the test suite runs several) would
-        otherwise find it still marked initialized, return early, and publish no
-        Redis client at all. Idempotent.
+        With no hold left anywhere it returns ``True``. It resets first, so an
+        ``initialize()`` during the closes composes afresh and keeps its hold.
+        Then it closes everything recorded with :meth:`own`, newest first,
+        through ``run_teardown``: every close runs, a failed one is logged, and
+        an interruption is held until all have run. Whoever composes shuts down
+        on every path, while the loop the clients are bound to still runs.
         """
-        client = getattr(self, "redis_client", None)
-        self.redis_client = None
-        try:
-            if client is not None:
-                from faultmaven.infrastructure.redis_client import is_fakeredis
+        if not self._holds.release():
+            return False
+        owned = self._owned[::-1]
+        self._owned.clear()  # closed once, whatever the closes do
+        self.reset()
+        await run_teardown(
+            [
+                (f"Closing {what}", functools.partial(close, resource))
+                for what, resource, close in owned
+            ]
+        )
+        return True
 
-                if not is_fakeredis(client):
-                    await client.aclose()
-        finally:
-            # A close that raises still leaves nothing behind for the next
-            # initialize to return early on.
-            self.reset()
+    async def release_every_hold(self) -> bool:
+        """Void every hold on the container, then shut it down. For tests only.
+
+        A test's holds can sit in contexts its fixtures never enter (a fixture's
+        setup, the test's own task), and they all end with the test.
+        """
+        self._holds = type(self._holds)()
+        return await self.shutdown()
 
     def reset(self):
         """Return the container to what construction built.
@@ -1844,6 +1863,9 @@ class DIContainer(BaseDIContainer):
         ``_create_minimal_case_service``. One left behind is handed to the next
         composition as-is, built over the previous one's Redis client, which
         the shutdown that preceded this reset closed.
+
+        Refuses while anything is owned (``own``), naming it: whatever it
+        dropped could no longer be closed. Only ``shutdown()`` and tests call it.
         """
         super().reset()
         constructed = {name for name, _factory in self._CONSTRUCTED_STATE}

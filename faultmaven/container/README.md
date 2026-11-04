@@ -32,6 +32,9 @@ sanitizer = container.get_sanitizer()
 
 # Check health
 health = container.health_check()
+
+# Release the hold; the last one closes what the composition opened
+await container.shutdown()
 ```
 
 ## Architecture
@@ -89,6 +92,69 @@ async def register_infrastructure(container):
     container._register_service("llm_provider", llm)
 ```
 
+### Ownership and shutdown
+
+A provider records each resource it opens with `own()`, on the line that opens
+it, so a composition refused part-way strands nothing it built:
+
+```python
+kb_client = container.own(
+    create_kb_chromadb_client(settings),
+    close=close_chroma_client,
+    what="the KB ChromaDB client",
+)
+```
+
+The composition owns the real Redis client, the KB and evidence ChromaDB
+clients and the sanitizer's Presidio session. The FakeRedis stand-in belongs
+to its event loop and is never recorded. `shutdown()` names no resource.
+
+- **Holds belong to the caller's context.** An `initialize()` that leaves the
+  container initialized takes one hold for its caller's context: the
+  composition, and a later call that finds it initialized and shares it. One
+  that raises, returns degraded or finds a composition in progress takes none.
+  The same context's `shutdown()` releases the hold, so a composer that holds
+  nothing releases no other context's hold. The context is the holder, not the
+  composer: a degraded composer sharing a context with a later holder releases
+  that holder's hold. A lifespan, a job run and an `fm-*` command each compose
+  and shut down in one context. Two lifespans nested in one coroutine share a
+  context and hold twice.
+- **A stranded hold:** a successful composition whose context never shuts down
+  keeps every later release from being the last, until a reset. One case is an
+  `initialize()` run in a task of its own (`create_task`, or `wait_for` on
+  Python 3.11): it holds in that task's context, which no other context's
+  shutdown releases.
+- **A composition in progress** holds nothing yet. A context that holds nothing,
+  shutting down meanwhile, resets that composition mid-way and closes what it
+  has recorded. That needs a shutdown while a composition is still running: a
+  second composition in the process, or an `initialize()` in a task its
+  creator does not await. No production composer does either, so it never
+  happens in production.
+- **The last release.** `shutdown()` returns `False`, closing nothing, while a
+  hold remains anywhere (#1843). With none left it resets first, so an
+  `initialize()` during the closes composes afresh and keeps its hold. Then it
+  closes everything owned, newest first, through `run_teardown`'s rules (every
+  close runs, a failed one is logged, an interruption is held until all have
+  run), and returns `True`. With no hold anywhere it closes whatever is owned,
+  which is how a refused composition is undone.
+- **Resets.** `reset()` raises while anything is owned, naming it: shut down
+  first. The record and the holds are the container instance's, rebuilt by a
+  reset, so a hold taken before a reset is void after it. Tests end every hold
+  with `release_every_hold()` (the `reset_container` fixture).
+- **What is the process's** goes only on the last release. Every composer
+  releases through `ContainerRelease` (`concurrency/teardown.py`), and only
+  when `shutdown()` does not answer `False` does it dispose the
+  process-global database engine. The lifespan's decomposition also uninstalls
+  the usage ledger, drains its writes, and stops the APM export then. The hold
+  count is a proxy for "the process is done serving", not a count of the
+  engine's users: `get_engine()` opens it lazily for any caller. `run_command`
+  composes no container and disposes it directly.
+- **Residual: the event loop.** With holders on two loops, the last release
+  closes the Redis client on its own loop, which need not be the one the
+  client was opened on, and each lifespan's ledger drain cancels the other
+  loop's pending writes. A production process runs one loop, and no test
+  overlaps holders over a real Redis client.
+
 ### Exceptions
 
 ```python
@@ -142,12 +208,8 @@ health = container.health_check()
 
 ## Testing
 
-Reset container between tests:
-
-```python
-@pytest.fixture(autouse=True)
-def reset_container():
-    DIContainer.reset_singleton()
-    yield
-    DIContainer.reset_singleton()
-```
+Take the `reset_container` fixture (`tests/conftest.py`): it resets the
+container before the test and releases every hold the test took after it, so
+the last release closes what the test's compositions opened. A test that
+composes without it shuts the container down itself; a reset over what it
+left owned is refused.

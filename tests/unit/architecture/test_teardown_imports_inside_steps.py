@@ -31,6 +31,7 @@ _DEFERRED = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
 #: Every module that runs a teardown. A new one fails the count test below, so
 #: the scan is known to have looked at it.
 _TEARDOWN_RUNNERS = {
+    "_container_impl.py",
     "bootstrap/composition.py",
     "bootstrap/lifespan.py",
     "cli/_container.py",
