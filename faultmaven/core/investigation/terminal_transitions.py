@@ -1540,7 +1540,11 @@ def resolution_record_lines(case) -> str:
 def _suggest_resolve_message(case: "Case", has_solutions: bool) -> str:
     """The closure→resolve pivot's prompt: the rows it rests on, cited (#1906
     D5.1), and only the root cause and fix the record holds."""
+    # Named only when a cause-identification leg stands on it, as the record
+    # lines decide.
     rc = getattr(case.root_cause_conclusion, "root_cause", None)
+    if cause_identification_leg(case) is None:
+        rc = None
     detail = f"- **Root cause**: {rc}\n" if rc else ""
     if has_solutions:
         detail += (

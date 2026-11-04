@@ -4,7 +4,10 @@ from faultmaven.core.investigation.cause_assurance import runbook_conversion_rea
 from faultmaven.core.investigation.prompts.templates.terminal import (
     TerminalAffordances,
 )
-from faultmaven.core.investigation.terminal_transitions import resolution_record_lines
+from faultmaven.core.investigation.terminal_transitions import (
+    cause_identification_leg,
+    resolution_record_lines,
+)
 from faultmaven.modules.case.contracts import (
     CaseState,
     ClosureReason,
@@ -29,9 +32,16 @@ def _build_resolution_confirmation(case) -> str:
     that, and ``Solution.verification_method`` is written by no investigation
     path.
     """
+    # One source for the cause on every line (#1906 D5.1): with no
+    # cause-identification leg, no conclusion is named as the root cause.
+    root = (
+        _get_root_cause_summary(case)
+        if cause_identification_leg(case) is not None
+        else "no root cause on record"
+    )
     parts = [
         "Here's what I have on record:\n",
-        f"- **Root cause**: {_get_root_cause_summary(case)}",
+        f"- **Root cause**: {root}",
         f"- **Solution**: {_get_solution_summary(case)}",
     ]
     record = resolution_record_lines(case)

@@ -1,5 +1,6 @@
 """The ``<fix_verification>`` block: what the engine holds about the fix, shown
-to the model on every MITIGATION and TREATMENT turn (#1906 D7).
+to the model on TREATMENT turns, and on MITIGATION turns once a fix is dated
+(#1906 D7).
 
 Without it no prompt showed the model its fix attempts or which leg of a
 resolution stands, so a model could narrate a readiness the engine did not
@@ -87,22 +88,25 @@ def _dated_fixes(case: Case) -> list:
     )
 
 
-def _window_state(case: Case, window, subjects) -> str:
+def _window_state(case: Case, window, subjects, owing) -> str:
+    """``owing`` is the one window that can owe a cause re-check: the latest,
+    and only while the legs do not stand (readiness's ask)."""
     if window is None:
         return "not yet observed"
     if window.state == FIX_SUCCEEDED:
         return "succeeded"
     if window.state == FIX_FAILED:
         return f"failed at turn {window.failure_turn}"
-    if _relief_without_cause_recheck(case, window, subjects):
+    if window is owing and _relief_without_cause_recheck(case, window, subjects):
         return (
             f"problem re-checked gone at turn {window.relief_turn}; "
             "cause re-check owed"
         )
-    return "observed, no verdict yet" if window.observed else "not yet observed"
+    seen = window.observed or window.relief_turn is not None
+    return "observed, no verdict yet" if seen else "not yet observed"
 
 
-def _attempt_lines(case: Case, attempts: list, windows, subjects) -> list[str]:
+def _attempt_lines(case: Case, attempts: list, windows, subjects, owing) -> list[str]:
     by_turn = {w.fix_turn: w for w in windows if w.fix_turn is not None}
     lines = [f"Fix attempts (latest {MAX_ATTEMPTS}, oldest first):"]
     if len(attempts) > MAX_ATTEMPTS:
@@ -111,7 +115,7 @@ def _attempt_lines(case: Case, attempts: list, windows, subjects) -> list[str]:
         description = " ".join((a.description or "").split())
         if len(description) > _DESCRIPTION_CHARS:
             description = description[: _DESCRIPTION_CHARS - 1].rstrip() + "…"
-        state = _window_state(case, by_turn.get(a.accepted_in_turn), subjects)
+        state = _window_state(case, by_turn.get(a.accepted_in_turn), subjects, owing)
         lines.append(
             f"  - [{a.action_id}] {description} — executed turn "
             f"{a.accepted_in_turn}: {state}"
@@ -119,9 +123,7 @@ def _attempt_lines(case: Case, attempts: list, windows, subjects) -> list[str]:
     return lines
 
 
-def _leg_lines(case: Case, windows, subjects) -> list[str]:
-    status = cause_recheck_status(case, subjects=subjects, windows=windows)
-    cause_rows = [row for row, why in status if why is None]
+def _leg_lines(case: Case, windows, subjects, status, cause_rows, problem_rows):
     lines = ["Resolution legs (RESOLVED needs both):"]
     if cause_rows:
         lines.append("  - cause: " + _ids([r.evidence_id for r in cause_rows]))
@@ -131,10 +133,16 @@ def _leg_lines(case: Case, windows, subjects) -> list[str]:
         cause = "  - cause: missing"
         if status:
             pending = [f"{row.evidence_id} ({why})" for row, why in status]
-            cause += "; re-checked, not counted yet: " + ", ".join(pending[:MAX_IDS])
+            cause += "; re-checked, not counted yet: " + _ids(pending)
         lines.append(cause)
         latest = windows[-1]
-        if _relief_without_cause_recheck(case, latest, subjects):
+        if latest.state == FIX_FAILED:
+            # As readiness asks (``assess_resolution_readiness``).
+            lines.append(
+                f"  - problem: the latest fix was seen failing at turn "
+                f"{latest.failure_turn}; a new fix is needed"
+            )
+        elif _relief_without_cause_recheck(case, latest, subjects):
             # The symptom checked before the cause (#1906): the problem is
             # shown gone after the fix, and the cause re-check is owed.
             gone = [
@@ -152,9 +160,6 @@ def _leg_lines(case: Case, windows, subjects) -> list[str]:
         else:
             lines.append("  - problem: read once the cause leg stands")
         return lines
-    problem_rows = symptom_elimination_rows(
-        case, cause_rows, subjects=subjects, windows=windows
-    )
     problem = "  - problem: " + (
         _ids([r.evidence_id for r in problem_rows]) or "missing"
     )
@@ -206,15 +211,25 @@ def build_fix_verification_block(case: Case) -> str:
         return ""
     subjects = subject_index(case)
     windows = fix_windows(case, subjects)
+    status = cause_recheck_status(case, subjects=subjects, windows=windows)
+    cause_rows = [row for row, why in status if why is None]
+    problem_rows = (
+        symptom_elimination_rows(case, cause_rows, subjects=subjects, windows=windows)
+        if cause_rows
+        else []
+    )
+    # A cause re-check is owed only where readiness would ask for one: in the
+    # latest window, while the legs do not stand.
+    owing = None if problem_rows else windows[-1]
     lines = [
         OPEN_TAG,
         "The engine's record of the fix (informational; ids name evidence rows):",
         *(
-            _attempt_lines(case, attempts, windows, subjects)
+            _attempt_lines(case, attempts, windows, subjects, owing)
             if attempts
             else ["Fix attempts: none recorded"]
         ),
-        *_leg_lines(case, windows, subjects),
+        *_leg_lines(case, windows, subjects, status, cause_rows, problem_rows),
         *_need_lines(case),
         CLOSE_TAG,
     ]

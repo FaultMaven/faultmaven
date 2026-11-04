@@ -3,9 +3,9 @@ what the engine holds about the fix.
 
 1. Each contradiction is pinned on both sides on the RENDERED prompt: the
    losing text is gone, the kept rule is there.
-2. The ``<fix_verification>`` block renders in MITIGATION and TREATMENT with
-   the attempts and their window state, the legs, and the open asks, and is
-   absent in DIAGNOSIS. Without it a model narrated a readiness the engine did
+2. The ``<fix_verification>`` block renders in TREATMENT, and in MITIGATION
+   once a fix is dated, with the attempts and their window state, the legs,
+   and the open asks; it is absent in DIAGNOSIS. Without it a model narrated a readiness the engine did
    not hold (#2427, turn 11).
 3. The allocator reserves it within its own fixed budget, so the pressure that
    drops the variable sections leaves it whole.
@@ -30,6 +30,10 @@ from faultmaven.core.investigation.prompts.context_builder.fix_verification_bloc
 )
 from faultmaven.core.investigation.prompts.templates.assembly import (
     get_prompt_for_case,
+)
+from faultmaven.core.investigation.terminal_transitions import (
+    ResolutionReadiness,
+    assess_resolution_readiness,
 )
 from faultmaven.modules.case.contracts import (
     EvidenceCategory,
@@ -255,6 +259,14 @@ def test_a_cause_re_check_that_does_not_count_says_why(hold, reason):
     )
 
 
+def test_pending_re_checks_overflow_like_every_list():
+    case = _case("treatment")
+    case.progress.cause_identification_held_open = True
+    for turn in range(5, 11):
+        bound_row(case, EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE, turn=turn)
+    assert "held open) (+1 more)\n" in build_fix_verification_block(case)
+
+
 def test_an_ask_the_engine_stopped_surfacing_is_not_listed_as_live():
     """``<evidence_needs>`` says the engine stopped putting it to the user
     (#1079); the block must not list it as an outstanding ask."""
@@ -269,19 +281,62 @@ def test_an_ask_the_engine_stopped_surfacing_is_not_listed_as_live():
     assert "(1 the engine has STOPPED surfacing: see <evidence_needs>)" in block
 
 
+def _fix(case, turn: int) -> None:
+    case.proposed_actions.append(
+        ProposedAction(
+            case_id=case.case_id,
+            action_type=InvestigationActionType.SOLUTION,
+            description=f"fix {turn}",
+            proposed_in_turn=turn - 1,
+            accepted_in_turn=turn,
+            state="accepted",
+        )
+    )
+
+
+def test_no_re_check_is_owed_on_a_ready_case():
+    """The cause re-checked at 2, the fix stamped at 3, the problem gone at 4:
+    window 0 confirms (the stamp lags the report), readiness is READY, and
+    nothing is owed."""
+    case = _case("treatment", cause=False)
+    bound_row(case, EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE, turn=2)
+    bound_row(case, EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE, turn=4)
+    assert assess_resolution_readiness(case).verdict == ResolutionReadiness.READY
+    block = build_fix_verification_block(case)
+    assert "owed" not in block
+    assert "executed turn 3: observed, no verdict yet" in block
+
+
+def test_a_failed_latest_fix_needs_a_new_fix():
+    """Fix at 3, the cause re-checked at 4, the problem back at 5 and gone at
+    6: the window FAILED, and readiness asks for a new fix."""
+    case = _case("treatment", persists=True)
+    bound_row(case, EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE, turn=6)
+    block = build_fix_verification_block(case)
+    assert "executed turn 3: failed at turn 5" in block
+    assert (
+        "  - problem: the latest fix was seen failing at turn 5; a new fix is "
+        "needed" in block
+    )
+    assert "None" not in block and "owed" not in block
+
+
+def test_only_the_latest_window_can_owe_a_re_check():
+    """Fix 1 at 3, the problem gone at 4, fix 2 at 5: fix 1's window takes no
+    later data, so it shows its state and owes nothing."""
+    case = _case("treatment", cause=False)
+    bound_row(case, EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE, turn=4)
+    _fix(case, 5)
+    block = build_fix_verification_block(case)
+    assert "executed turn 3: observed, no verdict yet" in block
+    assert "executed turn 5: not yet observed" in block
+    assert "owed" not in block
+
+
 def test_older_attempts_are_counted_not_dropped():
     case = _case("treatment", cause=False)
     for turn in (4, 5, 6):
-        case.proposed_actions.append(
-            ProposedAction(
-                case_id=case.case_id,
-                action_type=InvestigationActionType.SOLUTION,
-                description=f"fix {turn}",
-                proposed_in_turn=turn - 1,
-                accepted_in_turn=turn,
-                state="accepted",
-            )
-        )
+        _fix(case, turn)
     block = build_fix_verification_block(case)
     assert "  …and 1 earlier\n" in block
     assert "executed turn 3" not in block

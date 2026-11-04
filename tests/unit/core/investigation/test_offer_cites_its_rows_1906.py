@@ -106,6 +106,19 @@ def _root_statements(case) -> list[str]:
     return [n.statement for n in case.causal_nodes.values()]
 
 
+def _cause_texts(case) -> list[str]:
+    """Everything a line could name as the cause: the roots, the hypotheses,
+    the working conclusion and the conclusion."""
+    texts = _root_statements(case) + [h.statement for h in case.hypotheses.values()]
+    for record, field in (
+        (case.working_conclusion, "statement"),
+        (case.root_cause_conclusion, "root_cause"),
+    ):
+        if getattr(record, field, None):
+            texts.append(getattr(record, field))
+    return texts
+
+
 def _assert_cites_its_rows(text: str, case, leg: bool) -> None:
     rows = resolution_confirmation_rows(case)
     subjects = subject_index(case)
@@ -121,9 +134,13 @@ def _assert_cites_its_rows(text: str, case, leg: bool) -> None:
     if leg:
         assert any(statement in cause for statement in _root_statements(case))
     else:
+        # One source for the cause on every line (``cause_identification_leg``).
         assert cause.startswith("- **The cause** — no root cause on record:")
-        for statement in _root_statements(case):
+        for statement in _cause_texts(case):
             assert statement not in text
+        for line in lines:
+            if line.startswith("- **Root cause**:"):
+                assert line == "- **Root cause**: no root cause on record"
     for phrase in _OLD:
         assert phrase not in text
 
@@ -298,6 +315,18 @@ async def test_a_close_pivot_states_only_what_the_record_holds(path, leg):
     assert "Closing would close it without marking it resolved" in text
     assert ("- **Root cause**:" in text) is leg
     assert "the identified root cause" not in text
+
+
+def test_a_contested_conclusion_names_no_root_in_the_pivot():
+    """A conclusion is on record, but contested: no leg stands on it."""
+    case = _ready_case()
+    case.progress.cause_identification_contested = True
+    assert cause_identification_leg(case) is None, "premise"
+    message = assess_closure_readiness(case).message
+    assert "- **The cause** — no root cause on record:" in message
+    assert "**Root cause**" not in message
+    for text in _cause_texts(case):
+        assert text not in message
 
 
 def test_the_pivot_claims_a_confirmed_fix_only_with_one_on_record():
