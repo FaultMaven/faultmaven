@@ -22,10 +22,11 @@ class _Holds:
     """The holds on one container: a count per caller's context, and their total.
 
     A hold is its caller's context's, so only that context releases it: a
-    composer that took none (a run that never initialized) releases nothing.
-    One that no context releases keeps every later release from being the last,
-    until a reset. The context variable is this instance's, so a new instance
-    voids every hold taken on the old one.
+    context that took none (a run that never initialized) releases nothing.
+    The context is the holder, not the composer. One that no context releases
+    keeps every later release from being the last, until a reset. The context
+    variable is this instance's, so a new instance voids every hold taken on
+    the old one.
     """
 
     def __init__(self) -> None:

@@ -126,7 +126,9 @@ to its event loop and is never recorded. `shutdown()` names no resource.
   shutdown releases.
 - **A composition in progress** holds nothing yet. A context that holds nothing,
   shutting down meanwhile, resets that composition mid-way and closes what it
-  has recorded. That needs two compositions in one process, so it never
+  has recorded. That needs a shutdown while a composition is still running: a
+  second composition in the process, or an `initialize()` in a task its
+  creator does not await. No production composer does either, so it never
   happens in production.
 - **The last release.** `shutdown()` returns `False`, closing nothing, while a
   hold remains anywhere (#1843). With none left it resets first, so an
