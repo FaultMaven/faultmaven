@@ -727,12 +727,18 @@ async def decompose_application(app: FastAPI, published: Mapping[str, Any]) -> N
     that is interrupted (a cancellation included) lets the rest finish, and the
     interruption is then re-raised. Each step imports what it needs, so a
     failed import is that step's failure alone (#2267).
+
+    The engine is disposed only when the container's shutdown released its
+    last holder: another lifespan live in the process still serves from it
+    (#1843). A shutdown that did not return says nothing, and the engine goes.
     """
+    last_holder = True
 
     async def _shut_down_the_container() -> None:
+        nonlocal last_holder
         from faultmaven.container import container
 
-        await container.shutdown()
+        last_holder = await container.shutdown()
 
     def _uninstall_the_usage_ledger() -> None:
         from faultmaven.infrastructure.llm.usage_ledger import install_usage_ledger
@@ -740,6 +746,8 @@ async def decompose_application(app: FastAPI, published: Mapping[str, Any]) -> N
         install_usage_ledger(None)
 
     async def _close_the_database() -> None:
+        if not last_holder:
+            return
         from faultmaven.infrastructure.persistence.database import close_database
 
         await close_database()
@@ -748,8 +756,10 @@ async def decompose_application(app: FastAPI, published: Mapping[str, Any]) -> N
         # The LLM config watcher (cloud multi-replica propagation). The lifespan
         # has stopped it already on the serving path; this is then a no-op.
         ("Stopping the LLM config watcher", lambda: stop_config_watcher(app)),
-        # Close what the container opened and owns: the shared Redis client's
-        # pool is bound to this event loop, and nothing else closes it.
+        # Release this composition's hold on the container. The last holder's
+        # shutdown closes what it owns (``DIContainer.own``): the Redis client,
+        # whose pool is bound to this event loop, the ChromaDB clients and the
+        # sanitizer's session. Nothing else closes them.
         ("Container shutdown", _shut_down_the_container),
         # The usage ledger composition installed (#640). On the serving path
         # the lifespan's drain has already uninstalled it, and this is a no-op.
@@ -762,9 +772,9 @@ async def decompose_application(app: FastAPI, published: Mapping[str, Any]) -> N
             "Unpublishing the composition",
             lambda: unpublish_composition(app, published),
         ),
-        # Dispose the canonical async engine, last. The user store no longer
-        # owns a session (sessionless repository per #703), so there is nothing
-        # to release here beyond the engine.
+        # Dispose the canonical async engine, last, once no holder remains. The
+        # user store no longer owns a session (sessionless repository per
+        # #703), so there is nothing to release here beyond the engine.
         ("Database close", _close_the_database),
     )
     await run_teardown(steps)
@@ -774,9 +784,9 @@ def unpublish_composition(app: FastAPI, published: Mapping[str, Any]) -> None:
     """Take what composition published back off ``app.state``.
 
     A step of :func:`decompose_application`, after the container's shutdown.
-    The services published here hold what that shutdown closed: the
-    container's Redis client, directly or
-    through a session store, a knowledge service or an investigation engine.
+    The services published here hold what the last holder's shutdown closes:
+    the container's Redis client, directly or through a session store, a
+    knowledge service or an investigation engine, and its ChromaDB clients.
     Left in place, a later request served without a lifespan reads them as
     the application's own: the protection middleware borrows the closed client
     as shared, a route hands it to a service, and redis-py reopens it on that

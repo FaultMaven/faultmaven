@@ -18,6 +18,7 @@ Key Components:
 - Proper interface implementations and dependency injection
 """
 
+import functools
 import logging
 import sys
 from datetime import datetime, timezone
@@ -35,6 +36,7 @@ from faultmaven.container.providers import (
     register_services,
     register_tools,
 )
+from faultmaven.infrastructure.concurrency.teardown import run_teardown
 from faultmaven.utils.serialization import to_json_compatible
 
 # Import interfaces with graceful fallback for testing environments
@@ -145,6 +147,11 @@ class DIContainer(BaseDIContainer):
     async def initialize(self, allow_degraded: bool = False):
         """Initialize all dependencies with proper error handling (async for proper event loop handling).
 
+        Each call that leaves the container initialized is a holder, released
+        by one ``shutdown()``: the composition, and every later call that finds
+        it initialized and shares it (#1843). A call that finds it still
+        initializing gets an uninitialized container and holds nothing.
+
         Args:
             allow_degraded: opt in to the lenient path under pytest, where a
                 composition failure otherwise raises so it names itself (#823).
@@ -155,6 +162,7 @@ class DIContainer(BaseDIContainer):
 
         if self._initialized:
             logger.debug("Container already initialized, skipping")
+            BaseDIContainer._holders += 1
             return
 
         if self._initializing:
@@ -187,6 +195,7 @@ class DIContainer(BaseDIContainer):
 
             self._initialized = True
             self._initializing = False
+            BaseDIContainer._holders += 1
             logger.info("✅ DI Container initialized successfully")
 
         except Exception as e:
@@ -287,6 +296,7 @@ class DIContainer(BaseDIContainer):
                 )
                 self._create_minimal_container()
                 self._initialized = True
+                BaseDIContainer._holders += 1
             else:
                 import traceback
 
@@ -1800,37 +1810,41 @@ class DIContainer(BaseDIContainer):
             "registry": base_health,
         }
 
-    async def shutdown(self) -> None:
-        """Close what ``initialize`` opened that this container owns, and reset.
+    async def shutdown(self) -> bool:
+        """Release one holder. The last closes what the compositions own, and resets.
 
-        The Redis client is the container's: ``register_infrastructure`` built it
-        and every Redis-backed store shares it. A real client holds a connection
-        pool bound to the event loop it was opened on, so whoever composes for a
-        run shuts the container down at the run's end, on every path, while that
-        loop still runs: the API lifespan (a refused composition included), the
-        jobs runner, and the ``fm-*`` commands and dev scripts that compose
-        (``cli/_container.py``). The FakeRedis stand-in is the event loop's
-        client, shared beyond this container with everything else on that loop,
-        and never its to close.
+        Returns whether it was the last, the only release after which whoever
+        composed may dispose the process-global database engine (#1843). Two
+        live lifespans share this container, the second ``initialize()``
+        returning early, so the first one's shutdown closes nothing.
 
-        Then the container is reset, so it is never left holding a closed client:
-        the next ``initialize()`` composes afresh, with a new Redis client. A
-        second lifespan in the same process (the test suite runs several) would
-        otherwise find it still marked initialized, return early, and publish no
-        Redis client at all. Idempotent.
+        The last release closes everything recorded with :meth:`own`, newest
+        first, through ``run_teardown``: every close runs whatever the ones
+        before it did, a failed one is logged, and an interruption (a
+        cancellation, a second Ctrl+C) is held until all have run. Whoever
+        composes shuts down on every path, while the loop the clients are bound
+        to still runs. Then the container is reset, so the next ``initialize()``
+        composes afresh rather than returning early over closed clients.
+
+        With no holder (a composition refused part-way acquires none), it closes
+        whatever is recorded; with nothing recorded either, it only resets.
         """
-        client = getattr(self, "redis_client", None)
-        self.redis_client = None
+        if BaseDIContainer._holders > 1:
+            BaseDIContainer._holders -= 1
+            return False
+        owned = BaseDIContainer._owned[::-1]
+        BaseDIContainer._owned.clear()  # closed once, whatever the closes do
+        steps = [
+            (f"Closing {what}", functools.partial(close, resource))
+            for what, resource, close in owned
+        ]
         try:
-            if client is not None:
-                from faultmaven.infrastructure.redis_client import is_fakeredis
-
-                if not is_fakeredis(client):
-                    await client.aclose()
+            await run_teardown(steps)
         finally:
-            # A close that raises still leaves nothing behind for the next
-            # initialize to return early on.
+            # An interrupted close still leaves nothing behind for the next
+            # initialize to return early on, and no holder.
             self.reset()
+        return True
 
     def reset(self):
         """Return the container to what construction built.
@@ -1844,6 +1858,9 @@ class DIContainer(BaseDIContainer):
         ``_create_minimal_case_service``. One left behind is handed to the next
         composition as-is, built over the previous one's Redis client, which
         the shutdown that preceded this reset closed.
+
+        Refuses while anything is owned (``own``), naming it: whatever it
+        dropped could no longer be closed. Only ``shutdown()`` and tests call it.
         """
         super().reset()
         constructed = {name for name, _factory in self._CONSTRUCTED_STATE}

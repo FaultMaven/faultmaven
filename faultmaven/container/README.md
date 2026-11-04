@@ -32,6 +32,9 @@ sanitizer = container.get_sanitizer()
 
 # Check health
 health = container.health_check()
+
+# Release the hold; the last one closes what the composition opened
+await container.shutdown()
 ```
 
 ## Architecture
@@ -89,6 +92,43 @@ async def register_infrastructure(container):
     container._register_service("llm_provider", llm)
 ```
 
+### Ownership and shutdown
+
+A provider records each resource it opens with `own()`, on the line that opens
+it, so a composition refused part-way strands nothing it built:
+
+```python
+kb_client = container.own(
+    create_kb_chromadb_client(settings),
+    close=close_chroma_client,
+    what="the KB ChromaDB client",
+)
+```
+
+The composition owns the real Redis client, the KB and evidence ChromaDB
+clients and the sanitizer's Presidio session. The FakeRedis stand-in belongs
+to its event loop and is never recorded. `shutdown()` names no resource.
+
+- **Holders.** Each `initialize()` that leaves the container initialized is a
+  holder: the composition, and every later call that finds it initialized and
+  shares it (a second lifespan in the process, a job beside one). A call that
+  finds it still initializing holds nothing. `shutdown()` releases one and
+  returns whether it was the last.
+- **The last release** closes everything owned, newest first, through
+  `run_teardown`'s rules (every close runs, a failed one is logged, an
+  interruption is held until all have run), then resets. A shutdown with no
+  holder closes whatever is owned, which is how a refused composition is
+  undone. Earlier releases close nothing (#1843).
+- **Resets.** `reset()` and `reset_singleton()` raise while anything is owned,
+  naming it: shut down first. The record and the count are process state on
+  `BaseDIContainer`, beside `_instance`, so a reset does not rebuild them.
+- **The database engine** stays process-global, outside the record. Every
+  composer (`decompose_application`, `run_with_container`, the jobs runner)
+  disposes it only when `shutdown()` returns True. The holder count is a proxy
+  for "the process is done serving", not a count of the engine's users:
+  `get_engine()` opens it lazily for any caller. `run_command` composes no
+  container and disposes it directly.
+
 ### Exceptions
 
 ```python
@@ -142,12 +182,8 @@ health = container.health_check()
 
 ## Testing
 
-Reset container between tests:
-
-```python
-@pytest.fixture(autouse=True)
-def reset_container():
-    DIContainer.reset_singleton()
-    yield
-    DIContainer.reset_singleton()
-```
+Take the `reset_container` fixture (`tests/conftest.py`): it resets the
+container before the test and releases every hold the test took after it, so
+the last release closes what the test's compositions opened. A test that
+composes without it shuts the container down itself; a reset over what it
+left owned is refused.

@@ -135,6 +135,7 @@ def container(monkeypatch):
             loops[name] = asyncio.get_running_loop()
             if raises is not None:
                 raise raises
+            return True  # a shutdown's answer: it released the last holder
 
         return _record
 
@@ -352,4 +353,28 @@ def test_the_engine_is_disposed_when_the_container_module_will_not_import(
         assert run_with_container(_no_work()) == 0
 
     assert "Container shutdown failed (non-critical)" in caplog.text
+    close_database.assert_awaited_once()
+
+
+def test_a_run_beside_a_live_composition_leaves_it_the_engine(monkeypatch):
+    """#1843: a command sharing the container with a composition still serving
+    (another lifespan in the process) holds it too. Its shutdown is not the last
+    holder's, so the engine that composition serves from is not disposed; the
+    last holder's run disposes it."""
+    close_database = AsyncMock()
+    monkeypatch.setattr(database, "close_database", close_database)
+    monkeypatch.setattr(DIContainer, "_instance", None)
+    composed = DIContainer()
+    composed._initialized = True
+    asyncio.run(composed.initialize())  # the live composition's hold
+
+    async def _shares_it():
+        await composed.initialize()
+        return 0
+
+    assert run_with_container(_shares_it(), container=composed) == 0
+    close_database.assert_not_awaited()
+    assert composed.is_initialized
+
+    assert run_with_container(_no_work(), container=composed) == 0
     close_database.assert_awaited_once()

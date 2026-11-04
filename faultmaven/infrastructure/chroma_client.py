@@ -94,7 +94,7 @@ CHROMA_EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="chroma-h
 _DOOR_MARK = "_faultmaven_built_by_door"
 
 # The client-side token auth provider. ``chromadb.auth.token`` was renamed to
-# ``chromadb.auth.token_authn`` in ChromaDB 0.5 — below our ``>= 1.0.0`` floor,
+# ``chromadb.auth.token_authn`` in ChromaDB 0.5 — far below our version floor,
 # so the old path never imports and must not appear anywhere. It once did, in
 # the container provider, guarded by ``except Exception: pass`` — which
 # silently produced an unauthenticated client for over a year (#1173).
@@ -346,6 +346,27 @@ def is_http_client(client: Any) -> bool:
         getattr(client, "_server", None),
         (chromadb.api.fastapi.FastAPI, chromadb.api.async_fastapi.AsyncFastAPI),
     )
+
+
+def close_chroma_client(client: Any) -> None:
+    """Release what a ChromaDB client holds: the container owns each it builds with it.
+
+    ``close()`` stops a local client's System once the last client over its path
+    closes, releasing its files and runtime (chromadb 1.5.2+). On a server-backed
+    client it releases nothing: chromadb's HTTP component has no ``stop``, so the
+    ``httpx`` session :func:`build_http_client` bounded stays open with its
+    keep-alive connections. That session is closed here too. A later request
+    on it raises instead of reopening a connection nobody would close.
+    """
+    import httpx
+
+    client.close()
+    if is_http_client(client):
+        session = getattr(getattr(client, "_server", None), "_session", None)
+        # The door builds only the synchronous client. An async session's
+        # close is a coroutine that this synchronous teardown cannot await.
+        if isinstance(session, httpx.Client):
+            session.close()
 
 
 def blocking_executor_for(client: Any) -> Optional[Executor]:

@@ -730,17 +730,33 @@ def _reset_observability_singletons():
 
 
 @pytest.fixture(autouse=True)
-def _close_the_chroma_clients_the_test_opened():
-    """Close each ChromaDB client the test registered with ``closed_at_teardown``.
+def _close_the_chroma_clients_the_test_opened(request):
+    """Close each ChromaDB client the test registered with ``closed_at_teardown``,
+    then fail the test if it left one open under its own ``tmp_path``.
 
     chromadb keeps every local client's System, about ten file descriptors and
     fifty threads, until that client is closed. Unclosed, they piled up to
     1,130 descriptors in a serial run (``tests/chroma_clients.py``). Autouse,
     so it is torn down after the test's own fixtures have finished with the
-    client.
+    client: a ``reset_container`` or ``fresh_container`` shutdown has closed
+    the container's clients by then.
+
+    The check reads chromadb's System cache, a private API
+    (``chroma_clients.systems_open_under``). It sees only what is opened under
+    the test's ``tmp_path``, by design: a client opened under
+    ``tempfile.mkdtemp()`` or ``tmp_path_factory`` passes, so the module- and
+    session-scoped fixtures that share one client across tests do too.
     """
     yield
     chroma_clients.close_the_clients_opened()
+    tmp_path = request.node.funcargs.get("tmp_path")
+    if tmp_path is not None:
+        left = chroma_clients.systems_open_under(tmp_path)
+        assert left == [], (
+            f"the test left ChromaDB clients open under its tmp_path: {left}. "
+            "Close each (chroma_clients.closed_at_teardown), or shut down the "
+            "container that opened it."
+        )
 
 
 @pytest.fixture(scope="session")
@@ -815,8 +831,8 @@ def clean_test_environment():
 # that by taking ``unshared_app_boot``, which stands the shared boot down for
 # the duration. Without that declaration the two boots overlap on one
 # app object: the second lifespan re-composes ``app.state`` with services bound
-# to its own event loop, and its shutdown disposes the database engine the
-# first client is still serving from.
+# to its own event loop, and its shutdown stops the app's protection middleware
+# the first client is still serving through.
 #
 # Both are enforced at runtime, by object identity, by the ``TestClient`` guard
 # below (fm#1628). It counts the lifespans live on ``faultmaven.main.app`` and
@@ -1018,8 +1034,8 @@ APP_BOOT_GUIDANCE = textwrap.dedent("""
         entered.
     Two lifespans on one app object is the failure this prevents (fm#1569):
     the second re-composes app.state onto its own event loop, and its
-    shutdown disposes the database engine the first client is still serving
-    from.
+    shutdown stops the app's protection middleware the first client is still
+    serving through.
     """)
 
 #: How many ``.app`` hops the guard follows from a client's application to the
@@ -1821,8 +1837,10 @@ async def reset_container(monkeypatch):
     from this test's environment, with ``SKIP_SERVICE_CHECKS=true``: set with
     ``monkeypatch``, so the next test's environment is its own again (#2283),
     and read through fresh settings, so it takes effect whatever was cached.
-    A test that initializes the container owns what that opened: shutting it
-    down closes a real Redis client on the loop the test ran on.
+    A test that initializes the container owns what that opened: each
+    ``initialize()`` is a hold, and releasing the last closes what the
+    composition owns (a real Redis client on the loop the test ran on). The
+    reset before the test refuses while an earlier one left anything owned.
     """
     # Import here to avoid circular dependencies
     from faultmaven.config.settings import reset_settings
@@ -1834,8 +1852,8 @@ async def reset_container(monkeypatch):
 
     yield container
 
-    await container.shutdown()
-    container.reset()
+    while not await container.shutdown():
+        pass
     reset_settings()
 
 

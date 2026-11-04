@@ -1,16 +1,15 @@
-"""The container closes the Redis client it opened, only that one, and resets.
+"""The container closes what its compositions own, once, on the last holder's shutdown.
 
-``register_infrastructure`` builds the shared Redis client, so the container
-owns it. A real client's pool is bound to the event loop it was opened on, and
-nothing else closed it: the API lifespan, the jobs runner and every test that
-initialized a container left it open, which surfaced on the Test Cloud job's
-real Redis as ``ResourceWarning: unclosed transport``. The FakeRedis stand-in is
-the event loop's client, shared beyond any one container, so shutdown leaves it
-alone.
+A provider records each resource it opens with ``container.own``. Before,
+``shutdown()`` closed a hand-kept list naming only the Redis client, and the
+rest stayed open until a symptom found it (#2490). A second lifespan's
+``initialize()`` returns early and shares the container: each is a holder, and
+only the last one's shutdown closes anything (#1843).
 
 Shutdown also resets the container. Left marked initialized, a second lifespan
 in the same process returned early from ``initialize()`` and published no Redis
-client at all.
+client at all. A reset over what is still owned is refused: nothing could close
+it afterwards.
 """
 
 from __future__ import annotations
@@ -25,8 +24,8 @@ import pytest
 from fastapi import FastAPI
 
 from faultmaven.container import DIContainer
+from faultmaven.container.errors import ContainerError
 from faultmaven.infrastructure.llm import usage_ledger
-from faultmaven.infrastructure.redis_client import get_fakeredis_client
 from tests.unit.container.conftest import make_private_container
 
 pytestmark = pytest.mark.unit
@@ -37,9 +36,15 @@ def _constructed_names() -> set[str]:
 
 
 @pytest.fixture
-def container():
-    """A container of this test's own; the process singleton is untouched."""
-    yield make_private_container()
+async def container():
+    """A container of this test's own; the process singleton is untouched.
+
+    What a container owns is process state, so whatever the test left owned
+    is closed after it, as a later test's reset would otherwise refuse."""
+    instance = make_private_container()
+    yield instance
+    while not await instance.shutdown():
+        pass
 
 
 class _RealClient:
@@ -49,17 +54,29 @@ class _RealClient:
         self.aclose = AsyncMock()
 
 
-async def test_shutdown_closes_the_real_client_it_opened(container):
-    client = _RealClient()
-    container._register_service("redis_client", client)
-    container.redis_client = client
+def _own(container, client, what="the Redis client"):
+    """Record ``client`` as the Redis registration does."""
+    return container.own(client, close=lambda c: c.aclose(), what=what)
 
-    await container.shutdown()
 
-    client.aclose.assert_awaited_once()
-    # Nothing hands the closed client out again.
-    assert getattr(container, "redis_client", None) is None
-    assert container.get_service("redis_client") is None
+async def _hold(container, holders):
+    """Take ``holders`` holds on ``container``, as overlapping compositions do:
+    each later ``initialize()`` finds it initialized and shares it."""
+    container._initialized = True
+    for _ in range(holders):
+        await container.initialize()
+
+
+async def test_the_last_shutdown_closes_what_is_owned_newest_first(container):
+    closed = []
+    for what in ("first", "second", "third"):
+        client = _own(container, _RealClient(), what)
+        client.aclose.side_effect = lambda what=what: closed.append(what)
+
+    assert await container.shutdown() is True
+
+    assert closed == ["third", "second", "first"]
+    assert container.is_initialized is False
 
 
 async def test_shutdown_leaves_the_container_re_initializable(container):
@@ -75,20 +92,42 @@ async def test_shutdown_leaves_the_container_re_initializable(container):
     assert container._initializing is False
 
 
-async def test_a_close_that_raises_still_resets(container):
-    """Otherwise the container stays marked initialized, and the next
-    ``initialize()`` returns early and publishes no client."""
-    client = _RealClient()
-    client.aclose.side_effect = RuntimeError("the pool would not close")
-    container._register_service("redis_client", client)
-    container.redis_client = client
+async def test_a_failed_close_is_logged_and_every_other_still_closes(container, caplog):
+    """Through ``run_teardown``'s rules: a close that raises is that close's
+    failure alone, and the container is still reset."""
+    first, failing, last = _RealClient(), _RealClient(), _RealClient()
+    _own(container, first, "the first client")
+    _own(container, failing, "the Redis client")
+    _own(container, last, "the last client")
+    failing.aclose.side_effect = RuntimeError("the pool would not close")
     container._initialized = True
 
-    with pytest.raises(RuntimeError, match="the pool would not close"):
+    with caplog.at_level(
+        logging.WARNING, logger="faultmaven.infrastructure.concurrency.teardown"
+    ):
+        assert await container.shutdown() is True
+
+    assert "Closing the Redis client failed" in caplog.text
+    assert "the pool would not close" in caplog.text
+    first.aclose.assert_awaited_once()
+    last.aclose.assert_awaited_once()
+    assert container._initialized is False
+
+
+async def test_an_interrupted_close_still_closes_the_rest_and_resets(container):
+    """The interruption is held until every close has run, then raised."""
+    first, interrupted = _RealClient(), _RealClient()
+    _own(container, first, "the first client")
+    _own(container, interrupted, "the interrupted client")
+    interrupted.aclose.side_effect = asyncio.CancelledError()
+    container._initialized = True
+
+    with pytest.raises(asyncio.CancelledError):
         await container.shutdown()
 
+    first.aclose.assert_awaited_once()
     assert container._initialized is False
-    assert container.get_service("redis_client") is None
+    container.reset()  # nothing is left owned
 
 
 async def test_reset_drops_every_cache_and_attribute_composition_left(container):
@@ -116,31 +155,79 @@ async def test_reset_drops_every_cache_and_attribute_composition_left(container)
 
 
 async def test_shutdown_is_idempotent(container):
-    client = _RealClient()
-    container.redis_client = client
+    client = _own(container, _RealClient())
 
-    await container.shutdown()
-    await container.shutdown()
+    assert await container.shutdown() is True
+    assert await container.shutdown() is True
 
     client.aclose.assert_awaited_once()
 
 
-async def test_shutdown_leaves_the_shared_fakeredis_open(container, monkeypatch):
-    stand_in = get_fakeredis_client()
-    closed = AsyncMock()
-    monkeypatch.setattr(stand_in, "aclose", closed)
-    container.redis_client = stand_in
-
-    await container.shutdown()
-
-    closed.assert_not_awaited()
-    assert get_fakeredis_client() is stand_in
-
-
 async def test_shutdown_without_a_client_does_nothing(container):
-    await container.shutdown()
+    assert await container.shutdown() is True
 
     assert getattr(container, "redis_client", None) is None
+
+
+async def test_a_shutdown_that_is_not_the_last_closes_nothing(container):
+    """#1843: two lifespans hold one container. The first to end closes
+    nothing, so the other keeps serving; the last closes everything, once."""
+    await _hold(container, 2)
+    client = _own(container, _RealClient())
+
+    assert await container.shutdown() is False
+    client.aclose.assert_not_awaited()
+    assert container.is_initialized is True
+
+    assert await container.shutdown() is True
+    client.aclose.assert_awaited_once()
+    assert container.is_initialized is False
+    await _hold(container, 1)
+    assert await container.shutdown() is True, "the last release left a holder"
+
+
+async def test_a_shutdown_with_no_holder_leaves_none_owed(container):
+    """At no holder a shutdown is a no-op, not a debt: two of them, then two
+    holders, and the first holder's shutdown is still not the last."""
+    assert await container.shutdown() is True
+    assert await container.shutdown() is True
+    await _hold(container, 2)
+    client = _own(container, _RealClient())
+
+    assert await container.shutdown() is False
+    client.aclose.assert_not_awaited()
+
+
+async def test_a_call_that_finds_the_container_initializing_holds_nothing(
+    container,
+):
+    """It gets an un-initialized container back. Counted, it would leave a
+    holder that no shutdown releases, and the last close would never run."""
+    container._initializing = True
+    await container.initialize()
+    container._initializing = False
+    await _hold(container, 1)
+    client = _own(container, _RealClient())
+
+    assert await container.shutdown() is True
+    client.aclose.assert_awaited_once()
+
+
+async def test_a_reset_is_refused_while_anything_is_owned(container):
+    """A reset drops what it is not handed back: the fixture setup that reset
+    over an earlier test's open composition left its clients unclosed."""
+    client = _own(container, _RealClient(), "the KB ChromaDB client")
+    container._initialized = True
+
+    with pytest.raises(ContainerError, match="the KB ChromaDB client"):
+        container.reset()
+    with pytest.raises(ContainerError, match="the KB ChromaDB client"):
+        DIContainer.reset_singleton()
+
+    assert container.is_initialized is True
+    await container.shutdown()
+    client.aclose.assert_awaited_once()
+    container.reset()
 
 
 @pytest.fixture
@@ -260,7 +347,7 @@ async def test_decompose_closes_the_client_then_unpublishes_then_disposes_the_en
     async def _close_database():
         order.append(("close_database", "redis_client" in app.state))
 
-    container.redis_client = client
+    _own(container, client)
     app.state.redis_client = client
     monkeypatch.setattr("faultmaven.container.container", container)
     monkeypatch.setattr(
@@ -627,7 +714,7 @@ async def test_a_decomposition_step_whose_import_fails_fails_alone(
 
     app = FastAPI()
     client = _RealClient()
-    container.redis_client = client
+    _own(container, client)
     app.state.redis_client = client
     close_database = AsyncMock()
     monkeypatch.setattr("faultmaven.container.container", container)

@@ -50,6 +50,11 @@ class _RealClient:
         self.aclose = AsyncMock()
 
 
+def _own(container, client):
+    """Record ``client`` as the composition's Redis registration does."""
+    container.own(client, close=lambda c: c.aclose(), what="the Redis client")
+
+
 @pytest.fixture
 def container(monkeypatch):
     """A singleton of this test's own, built by the real ``__new__``; the
@@ -90,6 +95,7 @@ def composition(container, database, monkeypatch):
             client.aclose.side_effect = wiring.close_failure
             container._register_service("redis_client", client)
             container.redis_client = client
+            _own(container, client)
             wiring.clients.append(client)
         usage_ledger.install_usage_ledger(usage_ledger.InMemoryUsageLedger())
         app.state.redis_client = container.redis_client
@@ -187,11 +193,13 @@ async def test_a_refused_composition_shuts_down_a_container_it_found_initialized
 ):
     """One owner rule: whoever composes for a run shuts the container down at the
     run's end, on every path. A refused composition shuts it down even when it
-    found it already initialized, as the end of a lifespan always has."""
+    found it already initialized, as the end of a lifespan always has. Held by
+    no live composition, it is then closed; one still held is not (#1843)."""
     owner_client = _RealClient()
     container._initialized = True
     container._register_service("redis_client", owner_client)
     container.redis_client = owner_client
+    _own(container, owner_client)
     composition.refusal = RuntimeError("Critical bootstrap failure: planted")
     app = FastAPI()
 

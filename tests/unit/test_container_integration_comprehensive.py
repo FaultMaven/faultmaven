@@ -49,8 +49,8 @@ except ImportError:
 
 
 @pytest.fixture(autouse=True)
-def reset_container_before_test(monkeypatch):
-    """Reset container and settings before each test."""
+async def reset_container_before_test(monkeypatch):
+    """Reset container and settings before each test, and shut it down after."""
     # Set with monkeypatch, so the next test's environment is its own (#2283).
     monkeypatch.setenv("SKIP_SERVICE_CHECKS", "true")
     # Reset container singleton
@@ -59,7 +59,10 @@ def reset_container_before_test(monkeypatch):
 
     yield
 
-    # Reset after test
+    # Release every hold the test's compositions took: the last closes what
+    # they opened, which dropping the singleton would leave owned.
+    while not await DIContainer().shutdown():
+        pass
     DIContainer._instance = None
     reset_settings()
 

@@ -639,8 +639,18 @@ async def register_infrastructure(container: BaseDIContainer) -> None:
     logger.info(f"🔍 CHAT_PROVIDER = {settings.llm.provider}")
     logger.info(f"🔍 SKIP_SERVICE_CHECKS = {settings.server.skip_service_checks}")
 
-    # Core security
+    # What the composition opens, it owns (``container.own``), on the line that
+    # opens it: the last holder's shutdown closes each, newest first.
+    from faultmaven.infrastructure.chroma_client import close_chroma_client
+    from faultmaven.infrastructure.redis_client import is_fakeredis
+
+    # Core security. The sanitizer's Presidio session has no other closer.
     sanitizer = create_sanitizer(settings)
+    container.own(
+        sanitizer.session,
+        close=lambda session: session.close(),
+        what="the sanitizer's HTTP session",
+    )
     container._register_service("sanitizer", sanitizer)
 
     # Observability
@@ -724,8 +734,16 @@ async def register_infrastructure(container: BaseDIContainer) -> None:
     # The factories own the SKIP_SERVICE_CHECKS branch (returning None on
     # standalone, refusing under cloud) so the skip path cannot bypass the
     # deployment gate — see _create_chromadb_client.
-    kb_chromadb_client = create_kb_chromadb_client(settings)
-    evidence_chromadb_client = create_evidence_chromadb_client(settings)
+    kb_chromadb_client = container.own(
+        create_kb_chromadb_client(settings),
+        close=close_chroma_client,
+        what="the KB ChromaDB client",
+    )
+    evidence_chromadb_client = container.own(
+        create_evidence_chromadb_client(settings),
+        close=close_chroma_client,
+        what="the evidence ChromaDB client",
+    )
     container.kb_chromadb_client = kb_chromadb_client
     container.evidence_chromadb_client = evidence_chromadb_client
     if kb_chromadb_client is not None:
@@ -757,8 +775,14 @@ async def register_infrastructure(container: BaseDIContainer) -> None:
     else:
         container.case_vector_store = None
 
-    # Redis client (always available: real Redis or FakeRedis)
+    # Redis client (always available: real Redis or FakeRedis). A real client's
+    # pool is bound to the loop it was opened on. The FakeRedis stand-in is that
+    # loop's, shared beyond this composition, and never its to close.
     redis_client = await create_redis_client(settings)
+    if not is_fakeredis(redis_client):
+        container.own(
+            redis_client, close=lambda client: client.aclose(), what="the Redis client"
+        )
     container._register_service("redis_client", redis_client)
     container.redis_client = redis_client
 

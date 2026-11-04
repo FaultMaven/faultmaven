@@ -61,6 +61,7 @@ from faultmaven.infrastructure.chroma_client import (
     ChromaUnavailableError,
     blocking_executor_for,
     build_http_client,
+    close_chroma_client,
     is_http_client,
 )
 from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
@@ -513,6 +514,22 @@ def test_a_persistent_client_cannot_be_turned_into_an_http_one_by_the_env(
     assert stub.requests == []
 
 
+def test_closing_a_door_built_client_closes_the_session_it_bounded(
+    stub: _StubChroma,
+) -> None:
+    """chromadb's ``close()`` releases nothing on an HTTP client: its HTTP
+    component has no ``stop``, so the session the door bounded stayed open with
+    its keep-alive connections for the life of the process."""
+    client = _build(stub)
+    session = client._server._session
+    sent = len(stub.requests)
+
+    close_chroma_client(client)
+
+    assert session.is_closed
+    assert len(stub.requests) == sent  # closing sends nothing
+
+
 # --------------------------------------------------------------------------- #
 # Configuration refusals: never a fallback, never a degraded mode
 # --------------------------------------------------------------------------- #
@@ -572,20 +589,23 @@ def _real_container_refusing(settings: Any) -> Iterator[MagicMock]:
     def _must_not_be_called(**kwargs: Any) -> None:  # pragma: no cover
         raise AssertionError("no client may be built with a malformed token")
 
-    try:
-        with (
-            patch("faultmaven._container_impl.get_settings", return_value=settings),
-            patch.object(chromadb, "HttpClient", _must_not_be_called),
-            patch("faultmaven._container_impl.register_tools") as tools,
-            patch("faultmaven._container_impl.register_services") as services,
-        ):
-            yield services
-        tools.assert_not_called()
-        assert container._initialized is False
-    finally:
-        # The refused composition left what it registered before the refusal
-        # on the process-wide singleton; no later test may inherit it.
-        container.reset()
+    with (
+        patch("faultmaven._container_impl.get_settings", return_value=settings),
+        patch.object(chromadb, "HttpClient", _must_not_be_called),
+        patch("faultmaven._container_impl.register_tools") as tools,
+        patch("faultmaven._container_impl.register_services") as services,
+    ):
+        yield services
+    tools.assert_not_called()
+    assert container._initialized is False
+
+
+@pytest.fixture
+async def shut_down_after():
+    """A refused composition leaves what it built before the refusal on the
+    process-wide singleton, owned; no later test may inherit it."""
+    yield
+    await DIContainer().shutdown()
 
 
 _MODES = pytest.mark.parametrize(
@@ -595,7 +615,7 @@ _MODES = pytest.mark.parametrize(
 
 @_MODES
 async def test_the_container_refuses_to_initialize(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Any, cloud: bool
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any, cloud: bool, shut_down_after
 ) -> None:
     """R7. On standalone development ``initialize()`` swallows a composition
     failure and returns, leaving a container with no service layer."""
@@ -610,7 +630,7 @@ async def test_the_container_refuses_to_initialize(
 
 @_MODES
 async def test_the_web_boot_refuses(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Any, cloud: bool
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any, cloud: bool, shut_down_after
 ) -> None:
     """R2.1. ``compose_application`` treats only a ``RuntimeError`` as
     terminal. Anything else it wraps on cloud, and on standalone development
@@ -629,7 +649,7 @@ _REFUSAL_JOB_MODULE = "tests._chroma_refusal_job"
 
 @_MODES
 async def test_a_job_refuses(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Any, cloud: bool
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any, cloud: bool, shut_down_after
 ) -> None:
     """R2.1. The jobs runner treats only a ``RuntimeError`` (and the tenancy
     refusal) as terminal. Anything else it logs as a warning and runs the

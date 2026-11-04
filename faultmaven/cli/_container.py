@@ -53,29 +53,44 @@ async def _run_then_tear_down(
         return await main
     finally:
         # Each step imports what it needs, so a failed import is that step's
-        # failure alone (#2267).
+        # failure alone (#2267). The engine goes only once the container's
+        # shutdown released its last holder (#1843); one that did not return
+        # says nothing, and the engine goes.
+        last_holder = True
+
+        async def _shut_down(shutdown: Callable[[], Any]) -> None:
+            nonlocal last_holder
+            last_holder = await shutdown()
+
+        async def _close_the_database() -> None:
+            if last_holder:
+                await _dispose_the_engine()
+
         steps: list[tuple[str, Callable[[], Any]]] = []
         if composed:
             if container is None:
                 # The singleton is imported, and its shutdown resolved, inside
                 # the step: a failure there is that step's alone.
-                steps.append(("Container shutdown", _shut_down_the_container))
+                steps.append(
+                    ("Container shutdown", lambda: _shut_down(_singleton_shutdown()))
+                )
             else:
                 # A passed container's shutdown is resolved here: a container
                 # without one is the caller's defect, which surfaces rather
                 # than being logged as a failed step.
-                steps.append(("Container shutdown", container.shutdown))
+                shutdown = container.shutdown
+                steps.append(("Container shutdown", lambda: _shut_down(shutdown)))
         steps.append(("Database close", _close_the_database))
         await run_teardown(steps)
 
 
-async def _shut_down_the_container() -> None:
+def _singleton_shutdown() -> Callable[[], Any]:
     from faultmaven.container import container
 
-    await container.shutdown()
+    return container.shutdown
 
 
-async def _close_the_database() -> None:
+async def _dispose_the_engine() -> None:
     from faultmaven.infrastructure.persistence.database import close_database
 
     await close_database()

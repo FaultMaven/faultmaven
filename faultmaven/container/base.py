@@ -29,6 +29,14 @@ class BaseDIContainer:
 
     _instance: Optional["BaseDIContainer"] = None
 
+    #: What the compositions opened and own, oldest first, as
+    #: ``(what, resource, close)`` (:meth:`own`), and how many compositions hold
+    #: it. Process state beside ``_instance``, not constructed state:
+    #: ``reset()`` rebuilds every ``_CONSTRUCTED_STATE`` name, and it refuses
+    #: while anything is owned. Read and written through this class only.
+    _owned: ClassVar[List[Tuple[str, Any, Callable[[Any], Any]]]] = []
+    _holders: ClassVar[int] = 0
+
     #: What construction gives the singleton, as ``(name, factory)``. The one
     #: source of it: ``__new__`` builds each name from its factory, and
     #: ``DIContainer.reset`` keeps exactly these names. Everything else on the
@@ -99,6 +107,36 @@ class BaseDIContainer:
 
         self._initialized = True
         self._logger.info("Base container initialized with mock services")
+
+    def own(self, resource: Any, *, close: Callable[[Any], Any], what: str) -> Any:
+        """Record that the composition opened ``resource``, and return it.
+
+        Called on the line that builds it, so a composition refused part-way
+        strands nothing: whatever it built is already recorded. The last
+        holder's ``shutdown()`` calls ``close(resource)``, newest first; a
+        ``close`` that returns an awaitable is awaited. ``what`` names it in a
+        failed close and in a refused reset. ``None`` (a factory that built
+        nothing) is not recorded.
+        """
+        if resource is not None:
+            BaseDIContainer._owned.append((what, resource, close))
+        return resource
+
+    @staticmethod
+    def _refuse_while_owned() -> None:
+        """Raise if anything a composition opened is still owned.
+
+        A reset drops what it is not handed back, so a reset over an open
+        composition would leave each resource where nothing can close it.
+        """
+        if BaseDIContainer._owned:
+            owned = "; ".join(
+                what for what, _resource, _close in BaseDIContainer._owned
+            )
+            raise ContainerError(
+                f"The container still owns what a composition opened ({owned}): "
+                "shut it down (await container.shutdown()) before resetting it"
+            )
 
     def _register_service(
         self,
@@ -291,9 +329,11 @@ class BaseDIContainer:
     def reset(self) -> None:
         """Reset container state.
 
-        Clears all registered services and resets initialization state.
-        Useful for testing.
+        Clears all registered services and resets initialization state, and
+        no holder is left. Refuses while anything is owned (:meth:`own`).
         """
+        self._refuse_while_owned()
+        BaseDIContainer._holders = 0
         self._initialized = False
         self._initializing = False
 
@@ -309,8 +349,9 @@ class BaseDIContainer:
     def reset_singleton(cls) -> None:
         """Reset the singleton instance completely.
 
-        This is primarily for testing purposes.
+        This is primarily for testing purposes. Refuses while anything is owned.
         """
+        cls._refuse_while_owned()
         if cls._instance is not None:
             cls._instance.reset()
             cls._instance = None

@@ -1114,6 +1114,34 @@ class TestTheRunDisposesTheEngine:
         assert database._engine is None, "the run left the database engine in place"
         mock_container.shutdown.assert_awaited_once()
 
+    @pytest.mark.asyncio
+    async def test_a_run_beside_a_live_composition_leaves_it_the_engine(
+        self, mock_settings, engine, monkeypatch
+    ):
+        """#1843: beside a composition still serving (another lifespan in the
+        process) the run shares the container. Its shutdown is not the last
+        holder's, so the engine the other serves from stays open."""
+        from sqlalchemy import text
+
+        from faultmaven.container import DIContainer
+        from faultmaven.infrastructure.persistence import database
+        from faultmaven.jobs.run import run_job
+
+        monkeypatch.setattr(DIContainer, "_instance", None)
+        composed = DIContainer()
+        composed._initialized = True
+        await composed.initialize()  # the live composition's hold
+        live = database.get_engine(engine.url)
+        with _fake_job("tenant_neutral", composed, mock_settings, "single"):
+            result = await run_job("fake_job")
+
+        assert result["status"] == "completed"
+        assert engine.disposals == [] and database._engine is live
+        async with live.connect() as connection:
+            await connection.execute(text("SELECT 1"))
+        assert await composed.shutdown() is True
+        await database.close_database()
+
 
 class TestATeardownStepWhoseImportFailsFailsAlone:
     """#2267: the runner imported the database module outside its teardown
