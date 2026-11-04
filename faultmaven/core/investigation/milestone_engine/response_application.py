@@ -347,7 +347,8 @@ class ResponseApplier:
                 _add_system_feedback(
                     metadata,
                     f"SYSTEM: accepted_fix_reported_in {short_repr(repair.raw)} "
-                    "was ignored: it is this_message or previous_message.",
+                    "was ignored: it is this_message or previous_message; the "
+                    "fix is dated to this turn.",
                 )
 
         # POST-PROCESSING: Apply LLM failure mitigation (Pattern-based fallback)

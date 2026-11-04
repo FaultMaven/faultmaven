@@ -45,7 +45,8 @@ Read as rates, never the numerator alone:
   ``pruned`` (part of the body was discarded to keep the rest: an invalid list
   entry or optional sub-object quarantined, or a state field reset to its
   default, or an out-of-range confidence removed — dropped from an
-  update-shaped record, or set aside for ingest to decide on a link),
+  update-shaped record, or set aside for ingest to decide on a link — or an
+  off-enum ``MilestoneUpdates.accepted_fix_reported_in`` dropped, #2427),
   ``state_dropped`` (state_updates unrecoverable, conversational fallback),
   ``response_synthesized`` (required agent_response missing, placeholder
   filled, state_updates KEPT),

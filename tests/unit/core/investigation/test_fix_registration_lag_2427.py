@@ -623,7 +623,8 @@ async def test_an_unknown_report_value_costs_that_field_alone(value):
     )
     assert (
         f"SYSTEM: accepted_fix_reported_in {value!r} was ignored: it is "
-        "this_message or previous_message." in meta["system_feedback"]
+        "this_message or previous_message; the fix is dated to this turn."
+        in meta["system_feedback"]
     )
 
 
