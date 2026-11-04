@@ -227,7 +227,8 @@ async def test_confirmed_case_is_offered_resolve_when_the_model_stays_silent():
     assert case.offer_record.open.kind == "resolve"
     assert labels == [RESOLVE_LABEL, DECLINE_LABEL]
     assert LLM_ANALYSIS in text, "the model's reply must survive the gate turn"
-    assert "confirmed eliminated" in text, "an engine offer must say why"
+    # It says why by citing its rows (#1906 D5.1).
+    assert "The record shows:" in text, "an engine offer must say why"
     assert "---" in text, "the reason belongs BELOW the reply, not over it"
 
 
@@ -496,7 +497,8 @@ async def test_the_cause_shown_gone_alone_brings_no_offer_until_the_problem_is()
     status (the unit running, ExecStart naming the installed binary), records
     the cause gone and asks whether the scrape target is back. The engine used
     to append "the problem went with it" and the resolve pair to that very
-    reply. Only once the reported problem is seen gone does the offer come."""
+    reply. Only once the reported problem is seen gone does the offer come,
+    citing the re-check."""
     case = _case(absence=None)
     verifying, support = ensure_subjects(case)
     engine = _engine(
@@ -519,7 +521,7 @@ async def test_the_cause_shown_gone_alone_brings_no_offer_until_the_problem_is()
     ), "premise: the cause leg was recorded"
     assert case.offer_record.open is None
     assert RESOLVE_LABEL not in labels
-    assert "problem went with it" not in result["agent_response"]
+    assert "The record shows:" not in result["agent_response"]
     assert assess_resolution_readiness(case).verdict == ResolutionReadiness.NEEDS_INFO
 
     engine.generator.generate_structured_output = AsyncMock(
@@ -539,4 +541,5 @@ async def test_the_cause_shown_gone_alone_brings_no_offer_until_the_problem_is()
     labels = [s["label"] for s in result["suggested_follow_ups"]]
     assert case.offer_record.open.kind == "resolve"
     assert labels == [RESOLVE_LABEL, DECLINE_LABEL]
-    assert "problem went with it" in result["agent_response"]
+    assert "**The problem** —" in result["agent_response"]
+    assert "Prometheus shows the billing target UP" in result["agent_response"]

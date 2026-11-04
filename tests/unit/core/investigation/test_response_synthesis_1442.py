@@ -380,7 +380,7 @@ class TestThroughAProcessedTurn:
 
         text = result["agent_response"]
         # Positive control: the INV-43 gate really composed on this turn.
-        assert "confirmed eliminated" in text
+        assert "The record shows:" in text
         assert RESPONSE_WITHHELD_TEXT not in text
         assert not text.startswith("---")
         assert MESSAGE_METADATA_AGENT_SYNTHESIZED not in result["metadata"]
@@ -722,10 +722,8 @@ async def test_engine_prose_on_a_placeholder_turn_is_the_whole_reply(site):
     if site == "gate1":
         expected = _gate1_statement_presentation(case_updated)
     elif site == "resolution_ready_for_confirmation":
-        expected = (
-            "Thanks for the additional details.\n\n"
-            + _build_resolution_confirmation(case_updated)
-        )
+        # No fixed thanks (#2428).
+        expected = _build_resolution_confirmation(case_updated)
     else:
         expected = GATE_NOTICE
     assert reply == expected, "the notice must be the whole reply"

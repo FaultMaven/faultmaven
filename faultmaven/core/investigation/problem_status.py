@@ -258,7 +258,7 @@ def invalidation_refusal(case: Case, evidence_ids: list[str], basis: str) -> str
     if any(
         subjects.subject(e, windows=True) == SUBJECT_CAUSE for e in case.evidence or []
     ):
-        return "a cause was confirmed eliminated, so the problem existed"
+        return "a cause was observed removed, so the problem existed"
     return None
 
 

@@ -350,7 +350,9 @@ class TestInvalidationGuard:
         case = _case(ProblemStatus.VERIFIED)
         absent = _with(case, _evidence(EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE, "a"))
         bound_row(case, EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE, turn=3)
-        assert "eliminated" in invalidation_refusal(case, absent, "nothing failed")
+        assert "observed removed" in invalidation_refusal(
+            case, absent, "nothing failed"
+        )
 
     def test_a_cause_row_naming_nothing_does_not_bar_the_finding(self):
         """#1906 D1: only a row bound to the case's cause shows a cause
@@ -370,7 +372,7 @@ class TestInvalidationGuard:
         bound_row(case, EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE, turn=5)
         assert not has_resolution_confirmation(case)
         assert invalidation_refusal(case, absent, "nothing failed") == (
-            "a cause was confirmed eliminated, so the problem existed"
+            "a cause was observed removed, so the problem existed"
         )
 
     def test_only_an_unverified_or_verified_problem_is_found_false(self):

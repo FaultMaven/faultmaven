@@ -1096,7 +1096,7 @@ def test_a_failed_fix_still_proves_the_problem_existed():
     assert cause_elimination_rows(case) == []
 
     refusal = invalidation_refusal(case, [_eid("never_there")], "logs are clean")
-    assert refusal == "a cause was confirmed eliminated, so the problem existed"
+    assert refusal == "a cause was observed removed, so the problem existed"
 
 
 def test_a_relief_without_a_cause_recheck_is_not_a_successful_fix():

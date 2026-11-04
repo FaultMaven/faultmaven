@@ -853,7 +853,7 @@ async def test_a_fallen_causes_removal_still_proves_the_problem_existed():
     eng, case, _root_a, _b, _b_support = await _a_fell_then_b(supports=1)
     (quiet,), _ = await _record(eng, case, 11, _obs(_GONE, "no 503 in the window"))
     assert invalidation_refusal(case, [quiet.evidence_id], "nothing failed") == (
-        "a cause was confirmed eliminated, so the problem existed"
+        "a cause was observed removed, so the problem existed"
     )
 
 

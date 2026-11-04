@@ -235,10 +235,11 @@ async def _compose_turn_reply(
         (metadata[key] for key in _OFFER_PROSE if metadata.get(key)), None
     )
     if metadata.get("resolution_ready_for_confirmation"):
+        # No fixed thanks: the user's message may have carried no details at
+        # all (#2428).
         agent_response_text = _prose_with_gate_notice(
             agent_response_text,
-            "Thanks for the additional details.\n\n"
-            + _build_resolution_confirmation(case_updated),
+            _build_resolution_confirmation(case_updated),
         )
         follow_ups = projection.pair
         gate_prose_appended = True
