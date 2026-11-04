@@ -254,6 +254,43 @@ async def test_a_renewal_writes_a_lapsed_member_again(monkeypatch):
     assert await _live(redis) == 0
 
 
+async def test_a_renewals_rewrite_in_flight_lands_before_the_release(monkeypatch):
+    """The rewrite was not among the writes the release waits for: still on
+    the server at the release, it landed after the member's removal."""
+    monkeypatch.setattr(inflight, "LEASE_RENEW_SECONDS", 0.01)
+    redis = fakeredis_aio.FakeRedis(decode_responses=True)
+    sent: list = []
+
+    class _Server:
+        """A rewrite once sent runs on the server, whoever stops waiting."""
+
+        def __getattr__(self, command):
+            return getattr(redis, command)
+
+        async def eval(self, script, *args):
+            sent.append(args[4])
+            if args[4] != "" or len(sent) == 1:
+                return await redis.eval(script, *args)
+
+            async def _on_the_wire():
+                await asyncio.sleep(0.05)
+                return await redis.eval(script, *args)
+
+            return await asyncio.shield(asyncio.ensure_future(_on_the_wire()))
+
+    hold = await inflight.hold_case(_Server(), CASE)
+    await redis.delete(inflight.lease_key(CASE))
+
+    async def _rewrite_sent():
+        while sent.count("") < 2:
+            await asyncio.sleep(0.005)
+
+    await asyncio.wait_for(_rewrite_sent(), timeout=5)
+    await hold.release()
+    await asyncio.sleep(0.1)  # past the rewrite's landing
+    assert await redis.zcard(inflight.lease_key(CASE)) == 0
+
+
 async def test_a_task_spawned_in_a_turn_holds_the_lease_before_its_first_step():
     """``spawn → route release → delete → task's first step``: the count rose
     when the task was tracked, so the turn's release removed no member, and the

@@ -972,6 +972,9 @@ class CaseService(CaseDriverMixin, ICaseService):
           (``docs/operations/case-deletion.md``);
         - a holder whose process stalls past the lease's TTL without renewing
           it loses its lease;
+        - between a member's loss from Redis (an eviction, a failover that
+          loses data) and the next renewal, at most ``LEASE_RENEW_SECONDS``
+          (10 s), a delete can pass under running holders;
         - a resume (``link_session_to_case``) that passed its access check
           before the delete re-writes the session pointer: a resume is not a
           turn, and holds no lease.

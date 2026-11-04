@@ -32,7 +32,7 @@ import enum
 import logging
 import math
 import secrets
-from typing import Any, Dict, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Optional, Set, Tuple
 
 from faultmaven.infrastructure.concurrency.owned_claim import (
     OwnedClaim,
@@ -161,17 +161,20 @@ def draining() -> bool:
     return _draining > 0
 
 
-async def drain(timeout_s: Optional[float] = None) -> int:
+async def drain(
+    timeout_s: Optional[float] = None, last: Callable[[], bool] = lambda: True
+) -> int:
     """Finish the work in flight on this loop. Returns how many were cancelled.
 
     Waits for every tracked task, those spawned meanwhile included, up to
     ``timeout_s`` (default ``DRAIN_BOUND_SECONDS``). Then it cancels the
     ``cancellable`` rest, gives them ``CANCEL_GRACE_SECONDS``, and awaits the
     ``must_finish`` ones with no bound. Last, the case leases being released
-    get the same grace. Interrupted, it still cancels the ``cancellable`` rest
-    and gives it the grace before the interruption propagates. **Residual:** an
-    interrupted shutdown does not wait for a settlement, which can then meet
-    closed stores.
+    get the same grace. Past the bound with ``last()`` false (the release is
+    no longer the last), it returns, cancelling nothing. Interrupted, it
+    cancels nothing and re-raises: a last release then calls
+    :func:`cancel_cancellable`. **Residual:** an interrupted shutdown does not
+    wait for a settlement, which can then meet closed stores.
     """
     global _draining
     loop = asyncio.get_running_loop()
@@ -187,6 +190,8 @@ async def drain(timeout_s: Optional[float] = None) -> int:
             if loop.time() < deadline:
                 await asyncio.wait(pending, timeout=deadline - loop.time())
                 continue
+            if not last():
+                return cancelled
             late = await _cancel_late(loop, abandoned)
             cancelled += len(late)
             finishing = [t for t in pending if t not in late]
@@ -195,14 +200,15 @@ async def drain(timeout_s: Optional[float] = None) -> int:
         releases = [t for t in _RELEASES if t.get_loop() is loop]
         if releases:
             await asyncio.wait(releases, timeout=CANCEL_GRACE_SECONDS)
-    except GeneratorExit:
-        raise
-    except BaseException:
-        await _cancel_late(loop, abandoned)
-        raise
     finally:
         _draining -= 1
     return cancelled
+
+
+async def cancel_cancellable() -> int:
+    """Cancel this loop's ``cancellable`` work and give it the grace, which a
+    second interruption ends. A last release whose drain was interrupted."""
+    return len(await _cancel_late(asyncio.get_running_loop(), set()))
 
 
 async def _cancel_late(loop: asyncio.AbstractEventLoop, abandoned: Set[Any]) -> list:
@@ -239,7 +245,7 @@ def _pending_on(loop: asyncio.AbstractEventLoop) -> list:
 
 
 def let_leases_lapse() -> None:
-    """Stop every lease renewal on this loop: the last release, before it closes.
+    """Stop every lease renewal on this loop: a last release whose drain ended.
 
     A holder left (work the drain abandoned) writes nothing more, and its lease
     lapses on its TTL; a later turn starts a fresh one.
@@ -335,7 +341,8 @@ class _CaseLease:
             try:
                 if not await self._script("XX"):
                     logger.warning("Lease %s lapsed while held: rewriting", self.key)
-                    await self._script("")
+                    if not await self.write():
+                        logger.warning("Could not rewrite %s: %r", self.key, self.error)
             except Exception as exc:  # noqa: BLE001 - retried next interval
                 logger.warning("Could not renew the lease %s: %r", self.key, exc)
 

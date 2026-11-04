@@ -1828,26 +1828,35 @@ class DIContainer(BaseDIContainer):
         With no hold left anywhere it first drains the work in flight
         (``inflight.drain``, #2490): that work still reads the container and
         writes through what it owns. A hold taken during the drain makes this
-        release not the last: it then resets nothing, closes nothing and returns
-        ``False`` (or raises the drain's interruption). Otherwise it stops the
-        case-lease renewals and resets, so an ``initialize()`` during the closes
-        composes afresh and keeps its hold. Then it closes everything recorded
-        with :meth:`own`, newest first, through ``run_teardown`` (every close
-        runs, a failed one is logged, an interruption, the drain's included, is
-        held until all have run), and returns ``True``. Whoever composes shuts
-        down on every path, while the loop the clients are bound to still runs.
+        release not the last: from then on it cancels, resets and closes
+        nothing, and returns ``False`` (or raises the drain's interruption).
+        Otherwise it stops the case-lease renewals, unless the drain was
+        interrupted: it then cancels the cancellable rest with the grace, which
+        a second interruption ends, and the leases of the work still running
+        keep renewing, through the Redis client it closes. It resets, so an
+        ``initialize()`` during the closes composes afresh and keeps its hold.
+        Then it closes everything recorded with :meth:`own`, newest first,
+        through ``run_teardown`` (every close runs, a failed one is logged, an
+        interruption, the drain's included, is held until all have run), and
+        returns ``True``. Whoever composes shuts down on every path, while the
+        loop the clients are bound to still runs.
         """
         if not self._holds.release():
             return False
         interrupted = await teardown_step(
-            "Draining the work in flight", _drain_work_in_flight
+            "Draining the work in flight",
+            functools.partial(_drain_work_in_flight, lambda: not self._holds.total),
         )
         if self._holds.total:
             if interrupted is not None:
                 raise interrupted
             return False
-        lapse = await teardown_step("Letting the case leases lapse", _let_leases_lapse)
-        interrupted = interrupted or lapse
+        if interrupted is None:
+            interrupted = await teardown_step(
+                "Letting the case leases lapse", _let_leases_lapse
+            )
+        else:
+            await teardown_step("Cancelling the cancellable rest", _cancel_cancellable)
         owned = self._owned[::-1]
         self._owned.clear()  # closed once, whatever the closes do
         self.reset()
@@ -1897,17 +1906,23 @@ class DIContainer(BaseDIContainer):
             setattr(self, name, factory())
 
 
-async def _drain_work_in_flight() -> None:
+async def _drain_work_in_flight(last) -> None:
     """The last release's drain, importing it in the step (#2267)."""
     from faultmaven.infrastructure.concurrency.inflight import drain
 
-    await drain()
+    await drain(last=last)
 
 
 def _let_leases_lapse() -> None:
     from faultmaven.infrastructure.concurrency.inflight import let_leases_lapse
 
     let_leases_lapse()
+
+
+async def _cancel_cancellable() -> None:
+    from faultmaven.infrastructure.concurrency.inflight import cancel_cancellable
+
+    await cancel_cancellable()
 
 
 # Global container access - always returns the current singleton instance

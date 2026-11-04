@@ -1028,6 +1028,26 @@ async def test_a_hold_taken_during_the_drain_makes_the_release_not_the_last(
     assert container.is_initialized is True
 
 
+async def test_a_hold_taken_before_the_bound_leaves_the_cancellable_work_running(
+    container, monkeypatch, record
+):
+    """Past the bound, the drain cancelled the live composition's work although
+    the release was no longer the last."""
+    monkeypatch.setattr(record, "DRAIN_BOUND_SECONDS", 0.2)
+    parked = asyncio.Event()
+
+    async def _compose_then_run():
+        await container.initialize()
+        await parked.wait()
+
+    await _hold(container, 1)
+    work = _work(record, [], then=_compose_then_run)
+
+    assert await container.shutdown() is False
+    assert not work.done()
+    work.cancel()
+
+
 async def test_the_stores_wait_for_a_settlement_past_the_bound(
     container, monkeypatch, record
 ):
@@ -1049,12 +1069,13 @@ async def test_the_stores_wait_for_a_settlement_past_the_bound(
     assert order == ["work ends", "close"]
 
 
-async def test_an_interrupted_release_that_is_not_the_last_disposes_nothing(
+async def test_an_interrupted_release_that_is_not_the_last_stops_nothing(
     container, monkeypatch, record
 ):
     """A composition takes a hold during the drain, then the shutdown is
     interrupted: the release is still not the last, so no step of the
-    process's runs under the live composition, and the interruption goes on."""
+    process's runs and none of the live composition's work is cancelled, and
+    the interruption goes on."""
     from faultmaven.infrastructure.concurrency import teardown
 
     closed = []
@@ -1070,15 +1091,18 @@ async def test_an_interrupted_release_that_is_not_the_last_disposes_nothing(
 
     with pytest.raises(asyncio.CancelledError):
         await releasing
+    await asyncio.sleep(0)
     assert closed == [] and container.is_initialized
-    assert work.cancelled()
+    assert not work.done()
+    work.cancel()
 
 
-async def test_an_interrupted_drain_cancels_cancellable_work_before_the_closes(
+async def test_an_interrupted_last_release_cancels_cancellable_work_before_the_closes(
     container, record
 ):
-    """It cancels and waits the grace before the interruption propagates; a
-    settlement is still never cancelled (R1): the written residual."""
+    """After the interrupted drain, the release, still the last, cancels the
+    cancellable rest with the grace; a settlement is never cancelled (R1):
+    the written residual."""
     order, commit = [], asyncio.Event()
     await _hold(container, 1)
     work = _work(record, order, then=commit.wait)
@@ -1128,8 +1152,12 @@ async def test_the_last_release_stops_the_lease_renewals_before_the_closes(
     left = await record.hold_case(redis, ("ent", "case"))
     assert await container.shutdown() is False
     renewed = redis.calls
-    while redis.calls == renewed:
-        await asyncio.sleep(0.01)
+
+    async def _renewing():
+        while redis.calls == renewed:
+            await asyncio.sleep(0.01)
+
+    await asyncio.wait_for(_renewing(), timeout=5)
 
     _own(container, _RealClient()).aclose.side_effect = lambda: at_close.append(
         redis.calls
@@ -1138,3 +1166,44 @@ async def test_the_last_release_stops_the_lease_renewals_before_the_closes(
     await asyncio.sleep(0.1)
     await left.release()
     assert redis.calls == at_close[0]
+
+
+async def test_an_interrupted_last_release_keeps_a_running_settlements_lease(
+    container, monkeypatch, record
+):
+    """Its renewal stopped, the lease lapsed under the settlement, which is
+    never cancelled, and a delete then passed while its commit could land."""
+    import fakeredis.aioredis as fakeredis_aio
+
+    from faultmaven.infrastructure.concurrency.inflight import (
+        CaseDeleteGate,
+        CaseWorkInProgress,
+    )
+
+    monkeypatch.setattr(record, "LEASE_TTL_MS", 300)
+    monkeypatch.setattr(record, "LEASE_KEY_MARGIN_MS", 100)
+    monkeypatch.setattr(record, "LEASE_RENEW_SECONDS", 0.05)
+    redis, case, commit = fakeredis_aio.FakeRedis(), ("ent", "case"), asyncio.Event()
+    await _hold(container, 1)
+    turn = await record.hold_case(redis, case)
+    settlement = record.track(
+        asyncio.ensure_future(commit.wait()),
+        what="settlement",
+        case=case,
+        kind=record.Kind.MUST_FINISH,
+    )
+    await turn.release()
+    closing = asyncio.create_task(container.shutdown())
+    for _ in range(5):
+        await asyncio.sleep(0)
+    closing.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await closing
+
+    await asyncio.sleep(0.8)  # past the lease's TTL and its key's margin
+    try:
+        with pytest.raises(CaseWorkInProgress):
+            await CaseDeleteGate(redis).begin(case)
+    finally:
+        commit.set()
+        await settlement
