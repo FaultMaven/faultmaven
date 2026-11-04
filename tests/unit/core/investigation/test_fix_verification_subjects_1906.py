@@ -859,14 +859,20 @@ async def test_a_fallen_causes_removal_still_proves_the_problem_existed():
 
 @pytest.mark.parametrize(
     "beside",
-    [None, "ruled-out", "rootless"],
-    ids=["alone", "beside-a-ruled-out-one", "beside-a-rootless-one"],
+    [None, "ruled-out", "rootless", "on-its-path"],
+    ids=[
+        "alone",
+        "beside-a-ruled-out-one",
+        "beside-a-rootless-one",
+        "beside-a-root-on-its-path",
+    ],
 )
 async def test_the_only_cause_refuted_then_re_fixed_still_resolves(beside):
     """#1927's shape: the sole cause fell to its failed fix; re-fixed and
-    re-checked, it is the case's cause again (the pool's third leg). Only a
-    standing hypothesis ROOTED elsewhere takes the leg away (F2): a candidate
-    already ruled out does not stand, and a rootless one names no root."""
+    re-checked, it is the case's cause again (the pool's third leg). Only
+    another candidate takes the leg away (F2, #2485): a candidate already
+    ruled out does not stand, a rootless one names no root, and a root on a
+    hypothesis's path is no orphan, even off the fallen cause's line."""
     eng, case, root, hyp = _fixed(6)
     await _record(
         eng,
@@ -890,6 +896,21 @@ async def test_the_only_cause_refuted_then_re_fixed_still_resolves(beside):
             initial_likelihood=0.2,
             generated_at_turn=7,
         )
+    elif beside == "on-its-path":
+        other = CausalNode(
+            node_id="cn_00000000ab1e",
+            statement="a DNS flap between the app and the database",
+            node_type=NodeType.ROOT,
+            node_state=NodeState.CANDIDATE,
+            validation_method=ValidationMethod.NONE,
+            belief=0.3,
+            generated_at_turn=7,
+        )
+        case.causal_nodes[other.node_id] = other
+        problem = next(
+            n for n in case.causal_nodes.values() if n.node_type == NodeType.PROBLEM
+        )
+        hyp.path = [root.node_id, other.node_id, problem.node_id]
     _accept(case, InvestigationActionType.SOLUTION, 10)
     await _record(
         eng,
@@ -898,6 +919,8 @@ async def test_the_only_cause_refuted_then_re_fixed_still_resolves(beside):
         _obs(_CAUSE_GONE, "max_connections reads 200 and pgbouncer pools", _SUPPORT),
         _obs(_GONE, "checkout 200 again", VERIFYING_ID),
     )
+    if beside == "on-its-path":
+        assert "cn_00000000ab1e" in hyp.path, "premise: the path is the reason"
     assert assess_resolution_readiness(case).verdict == ResolutionReadiness.READY
 
 
