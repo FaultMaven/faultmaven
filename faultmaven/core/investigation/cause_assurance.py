@@ -997,45 +997,32 @@ def cause_recheck_status(
     kind, so the model asks for what is missing, not for a re-check already on
     record (#1906 D7)."""
     subjects = subject_index(case) if subjects is None else subjects
-    why = _cause_leg_bars(case, subjects, windows)
-    return [
-        (e, why(e))
-        for e in getattr(case, "evidence", None) or []
-        if subjects.subject(e) == SUBJECT_CAUSE
-    ]
-
-
-def _cause_leg_bars(case: "Case", subjects: "SubjectIndex", windows=None):
-    """The cause leg's row bars, the binding aside, as ``row -> why``: None
-    when the row passes, else why it does not count yet. The one owner of
-    the bars ``cause_recheck_status`` applies to cause-bound rows and
-    ``confirmation_stamp_rows`` to the stamp's record: in the confirming
-    window (``confirming_window``), not a failed-fix disconfirmation, at or
-    after the latest disconfirmation and the cause's positing, and not while
-    identification is held open."""
     held_open = getattr(case.progress, "cause_identification_held_open", False)
     disconfirmation_ids = _disconfirmation_row_ids(case)
     last_disconfirm = latest_disconfirmation_turn(case)
     posited = _cause_posited_turn(case)
     window = confirming_window(case, windows=windows, subjects=subjects)
-
-    def why(e) -> str | None:
+    out = []
+    for e in getattr(case, "evidence", None) or []:
+        if subjects.subject(e) != SUBJECT_CAUSE:
+            continue
         turn = subjects.observed(e)
         if held_open:
-            return "the cause's identification is held open"
-        if e.evidence_id in disconfirmation_ids:
-            return "it is a failed fix's disconfirmation"
-        if turn < posited:
-            return f"its data predates the cause's positing (turn {posited})"
-        if turn < last_disconfirm:
-            return f"its data predates the failed fix seen at turn {last_disconfirm}"
-        if window is None:
-            return "the latest fix was seen failing; only a new fix can confirm"
-        if not window.holds(turn):
-            return "it is outside the latest observed fix's window"
-        return None
-
-    return why
+            why = "the cause's identification is held open"
+        elif e.evidence_id in disconfirmation_ids:
+            why = "it is a failed fix's disconfirmation"
+        elif turn < posited:
+            why = f"its data predates the cause's positing (turn {posited})"
+        elif turn < last_disconfirm:
+            why = f"its data predates the failed fix seen at turn {last_disconfirm}"
+        elif window is None:
+            why = "the latest fix was seen failing; only a new fix can confirm"
+        elif not window.holds(turn):
+            why = "it is outside the latest observed fix's window"
+        else:
+            why = None
+        out.append((e, why))
+    return out
 
 
 def confirming_polarity_rows(case: "Case") -> list:
@@ -1088,22 +1075,18 @@ def confirming_polarity_rows(case: "Case") -> list:
 
 
 def confirmation_stamp_rows(case: "Case") -> list:
-    """The rows the confirm-stamp recorded that stand as a confirmation: the
-    causal_absence rows SUPPORTS-linked on a ROOT node (the link
-    ``root_counterfactually_confirmed`` reads), engine rows left out, that
-    pass the cause leg's row bars without the binding (``_cause_leg_bars``):
-    in the confirming window, not a failed-fix disconfirmation, at or after
-    the latest disconfirmation and the cause's positing, not while
-    identification is held open. The stamp picked its row from the cause leg,
-    so that row passed these bars then. They are read off the record, not a
-    re-derived pool: the stamp's count-held re-derive can narrow the pool so
-    the row it just recorded no longer binds to it (#2487).
+    """The confirm-stamp's record: the causal_absence rows SUPPORTS-linked on
+    a ROOT node, the link ``root_counterfactually_confirmed`` reads; engine
+    rows, the M6 disconfirmations, are left out. Read off the record, not a
+    re-derived pool or window: the stamp's count-held re-derive can narrow
+    the pool so the row it just recorded no longer binds, and every window
+    reading after the stamp sees that narrowed pool (#2487).
 
     The stamp (``confirm_root_from_resolution_absence``, at the RESOLVED
     transition) has been the link's one writer since #663's ingest refusal.
-    A model-authored link from before it can still be on a stored case; the
-    bars keep its row out unless it passes them, the confirming window
-    included."""
+    Residual, accepted (ruled 2026-11-04 on #2487): a model-authored link
+    written before that refusal would be read as the stamp's too. No stored
+    case carries one, and no current writer produces one."""
     stamped = {
         link.evidence_id
         for node in (getattr(case, "causal_nodes", None) or {}).values()
@@ -1111,17 +1094,13 @@ def confirmation_stamp_rows(case: "Case") -> list:
         for link in node.evidence_links
         if link.stance == EvidenceStance.SUPPORTS
     }
-    rows = [
+    return [
         e
         for e in getattr(case, "evidence", None) or []
         if e.evidence_id in stamped
         and e.category == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
         and getattr(e, "collected_by", None) != ENGINE_EVIDENCE_AUTHOR
     ]
-    if not rows:
-        return []
-    why = _cause_leg_bars(case, subject_index(case))
-    return [e for e in rows if why(e) is None]
 
 
 def _cause_posited_turn(case: "Case") -> int:

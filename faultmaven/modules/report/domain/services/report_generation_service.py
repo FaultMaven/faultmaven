@@ -1133,9 +1133,9 @@ class ReportGenerationService:
         # on (#2487). A case with no such rows (every case recorded before
         # #1906 2a) falls back to the same bars without the binding
         # (``confirming_polarity_rows``). The rows the confirm-stamp recorded
-        # on a root qualify too (``confirmation_stamp_rows``): read off its
-        # record, through the cause leg's row bars without the binding, the
-        # confirming window included.
+        # on a root qualify too, read off its record
+        # (``confirmation_stamp_rows``), since any window re-derived after
+        # the stamp sees the pool it narrowed.
         # Function-local import: the _assurance_note precedent for report →
         # core.investigation reads.
         from faultmaven.core.investigation.cause_assurance import (
@@ -1146,8 +1146,8 @@ class ReportGenerationService:
 
         qualified_absence_ids = {
             getattr(e, "evidence_id", None)
-            for e in (cause_elimination_rows(case) or confirming_polarity_rows(case))
-            + confirmation_stamp_rows(case)
+            for e in confirmation_stamp_rows(case)
+            + (cause_elimination_rows(case) or confirming_polarity_rows(case))
         }
 
         def _confirming_polarity(ev) -> bool:

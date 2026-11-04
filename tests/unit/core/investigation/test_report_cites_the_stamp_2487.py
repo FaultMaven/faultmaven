@@ -5,8 +5,9 @@ The report qualified a causal_absence row by the cause leg, re-derived after
 the stamp ran. The stamp's count-held re-derive can narrow the pool (R1
 validates, its same-cause sibling R2 stays INCONCLUSIVE), so the row it had
 just recorded on R1 no longer bound and the section showed no causal_absence
-row on a CONFIRMED case. The report now also admits the stamp's record
-(``confirmation_stamp_rows``), through the polarity bars (INV-30).
+row on a CONFIRMED case. The report now admits the stamp's record as
+recorded (``confirmation_stamp_rows``) beside the cause leg or the polarity set,
+a plain union (INV-30, ruled 2026-11-04).
 
 Rows enter through the real turn application, as in
 ``test_fix_verification_subjects_1906``.
@@ -15,14 +16,9 @@ Rows enter through the real turn application, as in
 import pytest
 
 from faultmaven.core.investigation.cause_assurance import (
-    FIX_FAILED,
     cause_elimination_rows,
     confirmation_stamp_rows,
     confirming_polarity_rows,
-    confirming_window,
-    evidence_category_map,
-    fix_windows,
-    root_counterfactually_confirmed,
 )
 from faultmaven.core.investigation.terminal_transitions import (
     ResolutionReadiness,
@@ -50,10 +46,7 @@ from tests.unit.core.investigation.bound_rows import VERIFYING_ID, bound_evidenc
 from tests.unit.core.investigation.test_fix_verification_subjects_1906 import (
     _CAUSE_GONE,
     _GONE,
-    _PRESENT,
-    _SUPPORT,
     _confirming_section,
-    _fixed,
     _obs,
     _record,
 )
@@ -70,6 +63,15 @@ pytestmark = pytest.mark.unit
 
 _C_B = "pg_stat_activity: 12 of 100 slots used"
 _UNNAMED = "the old cron entry is gone"
+#: shape: (fix turns, c_a's turn, c_b's turn, a newer fix's turn)
+_SHAPES = {
+    "one-fix": ((6,), 7, 8, None),
+    "second-fix": ((6,), 7, 8, 9),
+    "stamp-lag": ((), 7, 8, 9),
+    "ca-older-window": ((6, 8), 7, 9, None),
+    "cb-only+newer-unnamed": ((6,), None, 7, 9),
+    "ca-older+newer-unnamed": ((6, 8), 7, 9, 11),
+}
 
 
 def _link(node, evidence_id, stance=EvidenceStance.SUPPORTS) -> None:
@@ -80,16 +82,18 @@ def _link(node, evidence_id, stance=EvidenceStance.SUPPORTS) -> None:
     )
 
 
-@pytest.mark.parametrize("shape", ["one-fix", "second-fix", "stamp-lag"])
+@pytest.mark.parametrize("shape", list(_SHAPES))
 @pytest.mark.parametrize("same_line", [True, False], ids=["same-line", "duplicate"])
 async def test_the_report_renders_the_row_the_stamp_recorded(same_line, shape):
     """R1 (the hypothesis's root) and R2 (on its line, or a duplicate of it),
-    both count-held terminal on one support each. Fixed at 6 (none recorded
-    on ``stamp-lag``); c_a re-checks R1's support at 7, c_b R2's at 8 beside
-    a bound relief. ``second-fix`` and ``stamp-lag`` then record a fix at 9
-    and an unnamed causal_absence row at 10, so the latest window holding a
-    causal_absence row is not the confirming one. The stamp records c_b on
-    R1, whose validation narrows the pool to R1."""
+    both count-held terminal on one support each. c_a re-checks R1's support,
+    and c_b re-checks R2's beside a bound relief, in the fix windows the
+    shape gives (``stamp-lag``: the only fix registered after the re-checks;
+    ``ca-older``: c_a in an older fix's window). A newer fix with only an
+    unnamed causal_absence row follows where the shape says so. The stamp
+    records c_b on R1, whose validation narrows the pool to R1, and every
+    window re-derived after it sees that pool: the re-derived cause leg and
+    polarity set omit c_b, and the section still renders it."""
     case, r1, _hyp = _identified_case()
     r2_links, r1.evidence_links = r1.evidence_links[1:], r1.evidence_links[:1]
     r2 = CausalNode(
@@ -120,23 +124,25 @@ async def test_the_report_renders_the_row_the_stamp_recorded(same_line, shape):
             CausalEdge(cause_node_id=r1.node_id, effect_node_id=r2.node_id)
         )
     eng, r1_support = _engine(), r1.evidence_links[0].evidence_id
+    fixes, a_turn, b_turn, newer = _SHAPES[shape]
     await _record(eng, case, 5)
-    if shape != "stamp-lag":
-        _accept(case, InvestigationActionType.SOLUTION, 6)
-    (c_a,), _ = await _record(eng, case, 7, _obs(_CAUSE_GONE, "reads 100", r1_support))
+    for turn in range(6, b_turn):
+        if turn in fixes:
+            _accept(case, InvestigationActionType.SOLUTION, turn)
+        elif turn == a_turn:
+            await _record(eng, case, turn, _obs(_CAUSE_GONE, "reads 100", r1_support))
     (c_b, _gone), _ = await _record(
         eng,
         case,
-        8,
+        b_turn,
         _obs(_CAUSE_GONE, _C_B, r2_links[0].evidence_id),
         _obs(_GONE, "checkout 200 again", VERIFYING_ID),
     )
-    if shape != "one-fix":
-        _accept(case, InvestigationActionType.SOLUTION, 9)
-        await _record(eng, case, 10, _obs(_CAUSE_GONE, _UNNAMED))
-        assert c_b not in confirming_polarity_rows(case), "premise"
+    if newer:
+        _accept(case, InvestigationActionType.SOLUTION, newer)
+        await _record(eng, case, newer + 1, _obs(_CAUSE_GONE, _UNNAMED))
     assert assess_resolution_readiness(case).verdict == ResolutionReadiness.READY
-    assert cause_elimination_rows(case) == [c_a, c_b], "premise"
+    assert c_b in cause_elimination_rows(case), "premise: the gate confirmed on it"
 
     assert finalize_resolution_truth_surface(case)
     assert any(link.evidence_id == c_b.evidence_id for link in r1.evidence_links)
@@ -144,7 +150,8 @@ async def test_the_report_renders_the_row_the_stamp_recorded(same_line, shape):
         NodeState.VALIDATED,
         NodeState.INCONCLUSIVE,
     )
-    assert cause_elimination_rows(case) == [c_a], "the issue's narrowing"
+    rederived = cause_elimination_rows(case) or confirming_polarity_rows(case)
+    assert c_b not in rederived, "the issue's narrowing"
     assert confirmation_stamp_rows(case) == [c_b]
     assert c_b.evidence_id in case.root_cause_conclusion.evidence_basis
     section = _confirming_section(case)
@@ -183,43 +190,6 @@ def test_the_stamp_record_is_a_user_absence_row_supporting_a_root():
     _link(root, rows["refutes"].evidence_id, EvidenceStance.REFUTES)
     _link(root, rows["support"].evidence_id)
     assert confirmation_stamp_rows(case) == [rows["stamped"]]
-
-
-@pytest.mark.parametrize("window", ["failed", "older"])
-async def test_a_stamp_style_link_outside_the_confirming_window_does_not_render(
-    window,
-):
-    """A model-authored SUPPORTS link on a causal_absence row, as a case
-    stored before #663's refusal can carry. On a row whose fix window FAILED,
-    or on one from an older window that is not the confirming one (fixed at
-    6 and re-checked at 7, fixed again at 9 and re-checked at 10), the row is
-    on the stamp's record but no confirmation, and the section does not
-    render it."""
-    eng, case, root, _hyp = _fixed(6)
-    outcome = _PRESENT if window == "failed" else _GONE
-    (row, _outcome), _ = await _record(
-        eng,
-        case,
-        7,
-        _obs(_CAUSE_GONE, "max_connections reads 100 (legacy)", _SUPPORT),
-        _obs(outcome, "checkout after the fix", VERIFYING_ID),
-    )
-    if window == "older":
-        _accept(case, InvestigationActionType.SOLUTION, 9)
-        await _record(eng, case, 10, _obs(_CAUSE_GONE, "reads 200 now", _SUPPORT))
-        # The conclusion's basis cites the row, as an agent-authored one can.
-        case.root_cause_conclusion.evidence_basis.append(row.evidence_id)
-    fix_6 = next(w for w in fix_windows(case) if w.fix_turn == 6)
-    assert (fix_6.state == FIX_FAILED) is (window == "failed"), "premise"
-    confirming = confirming_window(case)
-    assert (confirming is None) if window == "failed" else (confirming.fix_turn == 9)
-    _link(root, row.evidence_id)
-    assert root_counterfactually_confirmed(root, evidence_category_map(case))
-    assert confirmation_stamp_rows(case) == []
-
-    section = _confirming_section(case)
-    assert section.startswith("## Confirming Evidence"), "premise"
-    assert "(legacy)" not in section
 
 
 @pytest.mark.parametrize("leg", [True, False], ids=["cause-leg", "polarity"])
