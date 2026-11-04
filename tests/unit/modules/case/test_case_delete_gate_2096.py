@@ -314,3 +314,25 @@ async def test_an_unreachable_lease_store_answers_503_and_clears_nothing(world):
     assert answer.headers["x-error-code"] == "CASE_DELETE_UNAVAILABLE"
     assert int(answer.headers["Retry-After"]) >= 1
     assert await world.stored() == ALL_PRESENT
+
+
+async def test_an_interrupted_keyed_release_still_releases_the_case_lease(
+    world, monkeypatch
+):
+    """Skipped, the case's count never reached 0: renewed forever, and every
+    delete of the case answered 409 until the process restarted."""
+    from faultmaven.modules.case.api.turn_idempotency import KeyedTurn
+
+    async def _interrupted(self):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(KeyedTurn, "release", _interrupted)
+
+    with pytest.raises(asyncio.CancelledError):
+        await world.client.post(
+            f"{CASE}/turns",
+            data={"query": "why 503?"},
+            headers={"Idempotency-Key": "opt_msg_1759900000000_7"},
+        )
+    assert (ENTERPRISE, CASE_ID) not in inflight._LEASES
+    assert not await world.redis.zcard(inflight.lease_key((ENTERPRISE, CASE_ID)))

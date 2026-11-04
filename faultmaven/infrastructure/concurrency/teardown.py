@@ -79,10 +79,11 @@ class ContainerRelease:
     Every composer releases its hold with the container's ``shutdown()``, then
     disposes the process-global database engine. Another composition live in
     the process may still serve from that engine (#1843), and ``shutdown()``
-    answers ``False`` while one does. Only ``False`` means another holds: any
-    other answer, or none (the step failed or was interrupted first), runs the
-    steps gated on the release, as before. ``shutdown`` is a passed container's;
-    by default the singleton's is resolved inside the step.
+    answers ``False`` while one does. Only that, or a failed or interrupted
+    shutdown whose container is still held (a composition began during its
+    drain), means another holds; anything else runs the gated steps.
+    ``shutdown`` is a passed container's; by default the singleton's is
+    resolved inside the step.
     """
 
     def __init__(self, shutdown: Optional[Callable[[], Any]] = None) -> None:
@@ -95,7 +96,12 @@ class ContainerRelease:
             from faultmaven.container import container
 
             shutdown = container.shutdown
-        self._others_hold = (await shutdown()) is False
+        try:
+            self._others_hold = (await shutdown()) is False
+        except BaseException:
+            held = getattr(getattr(shutdown, "__self__", None), "is_held", None)
+            self._others_hold = bool(held is not None and held())
+            raise
 
     def if_last(self, step: Callable[[], Any]) -> Callable[[], Any]:
         """``step``, run only when the release was the last (or did not say)."""

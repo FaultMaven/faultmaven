@@ -135,12 +135,66 @@ async def test_the_draining_flag_skips_the_evidence_vector_write(monkeypatch):
             "c1", "ev1", "## A\nline\n", UnifiedDataType.LOGS, {}, _Store()
         )
 
-    monkeypatch.setattr(inflight, "_draining", True)
+    monkeypatch.setattr(inflight, "_draining", 1)
     assert await _store() is vector_storage.VectorIndexOutcome.FAILED
     assert written == []
-    monkeypatch.setattr(inflight, "_draining", False)
+    monkeypatch.setattr(inflight, "_draining", 0)
     assert await _store() is vector_storage.VectorIndexOutcome.INDEXED
     assert written == ["c1"]
+
+
+async def test_overlapping_drains_keep_the_flag_until_both_end():
+    """The first drain to end must not clear the flag under the other."""
+    finish = asyncio.Event()
+    inflight.track(
+        asyncio.create_task(finish.wait()), what="settlement", kind=Kind.MUST_FINISH
+    )
+    first = asyncio.create_task(inflight.drain())
+    second = asyncio.create_task(inflight.drain())
+    await asyncio.sleep(0)
+    second.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await second
+
+    assert inflight.draining() is True
+    finish.set()
+    await first
+    assert inflight.draining() is False
+
+
+async def test_another_live_loops_settlement_is_left_to_finish():
+    """Not this drain's to cancel, from the wrong thread, mid-commit (R1)."""
+    other, outcome, commit = asyncio.new_event_loop(), {}, threading.Event()
+
+    def _run_other():
+        async def _settle():
+            try:
+                await asyncio.get_running_loop().run_in_executor(None, commit.wait)
+                outcome["settlement"] = "committed"
+            except asyncio.CancelledError:
+                outcome["settlement"] = "cancelled"
+
+        async def _spawn():
+            task = inflight.track(
+                asyncio.ensure_future(_settle()), what="s", kind=Kind.MUST_FINISH
+            )
+            outcome["tracked"] = True
+            await task
+
+        other.run_until_complete(_spawn())
+        other.close()
+
+    thread = threading.Thread(target=_run_other)
+    thread.start()
+    while "tracked" not in outcome:
+        await asyncio.sleep(0.01)
+
+    try:
+        drained, still = await inflight.drain(), len(inflight.tracked())
+    finally:
+        commit.set()
+        thread.join()
+    assert (drained, still, outcome["settlement"]) == (0, 1, "committed")
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +219,37 @@ async def test_a_lease_renewed_past_its_initial_ttl_still_reads_one(monkeypatch)
     await asyncio.sleep(1.0)  # past the take's 600 ms and its key's 700 ms
 
     assert await _live(redis) == 1
+    await hold.release()
+    assert await _live(redis) == 0
+
+
+async def test_every_turn_writes_its_member_so_a_lapsed_one_comes_back():
+    """A member gone from Redis (an eviction, a failover) under a live hold: a
+    turn that only joined the landed lease wrote nothing, and a delete then
+    passed under both turns."""
+    redis = fakeredis_aio.FakeRedis(decode_responses=True)
+    first = await inflight.hold_case(redis, CASE)
+    await redis.delete(inflight.lease_key(CASE))
+
+    second = await inflight.hold_case(redis, CASE)
+
+    with pytest.raises(CaseWorkInProgress):
+        await CaseDeleteGate(redis).begin(CASE)
+    await second.release()
+    await first.release()
+
+
+async def test_a_renewal_writes_a_lapsed_member_again(monkeypatch):
+    monkeypatch.setattr(inflight, "LEASE_RENEW_SECONDS", 0.01)
+    redis = fakeredis_aio.FakeRedis(decode_responses=True)
+    hold = await inflight.hold_case(redis, CASE)
+    await redis.delete(inflight.lease_key(CASE))
+
+    async def _back():
+        while not await _live(redis):
+            await asyncio.sleep(0.01)
+
+    await asyncio.wait_for(_back(), timeout=5)
     await hold.release()
     assert await _live(redis) == 0
 

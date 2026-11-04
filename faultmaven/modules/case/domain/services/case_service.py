@@ -967,9 +967,9 @@ class CaseService(CaseDriverMixin, ICaseService):
 
         Residual: writers that can land after the erasers ran:
 
-        - a turn that started while the lease store was unreachable runs
-          without a lease (ruled, 2026-11-04), so a delete that runs once the
-          store is back can race it (``docs/operations/case-deletion.md``);
+        - a turn whose lease write or tombstone read fails runs unguarded
+          (ruled, 2026-11-04), and a delete that passes meanwhile can race it
+          (``docs/operations/case-deletion.md``);
         - a holder whose process stalls past the lease's TTL without renewing
           it loses its lease;
         - a resume (``link_session_to_case``) that passed its access check

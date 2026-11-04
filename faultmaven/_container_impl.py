@@ -1829,13 +1829,13 @@ class DIContainer(BaseDIContainer):
         (``inflight.drain``, #2490): that work still reads the container and
         writes through what it owns. A hold taken during the drain makes this
         release not the last: it then resets nothing, closes nothing and returns
-        ``False``. Otherwise it returns ``True``. It resets, so an
-        ``initialize()`` during the closes composes afresh and keeps its hold.
-        Then it closes everything recorded with :meth:`own`, newest first,
-        through ``run_teardown``: every close runs, a failed one is logged, and
-        an interruption (the drain's included) is held until all have run.
-        Whoever composes shuts down on every path, while the loop the clients
-        are bound to still runs.
+        ``False`` (or raises the drain's interruption). Otherwise it stops the
+        case-lease renewals and resets, so an ``initialize()`` during the closes
+        composes afresh and keeps its hold. Then it closes everything recorded
+        with :meth:`own`, newest first, through ``run_teardown`` (every close
+        runs, a failed one is logged, an interruption, the drain's included, is
+        held until all have run), and returns ``True``. Whoever composes shuts
+        down on every path, while the loop the clients are bound to still runs.
         """
         if not self._holds.release():
             return False
@@ -1846,6 +1846,8 @@ class DIContainer(BaseDIContainer):
             if interrupted is not None:
                 raise interrupted
             return False
+        lapse = await teardown_step("Letting the case leases lapse", _let_leases_lapse)
+        interrupted = interrupted or lapse
         owned = self._owned[::-1]
         self._owned.clear()  # closed once, whatever the closes do
         self.reset()
@@ -1900,6 +1902,12 @@ async def _drain_work_in_flight() -> None:
     from faultmaven.infrastructure.concurrency.inflight import drain
 
     await drain()
+
+
+def _let_leases_lapse() -> None:
+    from faultmaven.infrastructure.concurrency.inflight import let_leases_lapse
+
+    let_leases_lapse()
 
 
 # Global container access - always returns the current singleton instance

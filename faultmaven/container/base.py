@@ -138,6 +138,10 @@ class BaseDIContainer:
         self._initialized = True
         self._logger.info("Base container initialized with mock services")
 
+    def is_held(self) -> bool:
+        """Whether any context still holds the container."""
+        return self._holds.total > 0
+
     def own(self, resource: Any, *, close: Callable[[Any], Any], what: str) -> Any:
         """Record that the composition opened ``resource``, and return it.
 

@@ -46,11 +46,11 @@ successful delete it lapses on its own within 30 s.
 ## Residuals
 
 - **Redis unreachable (ruled 2026-11-04).** The delete fails closed with 503,
-  but a turn runs without a lease. It is logged once per process and counted
-  on `case_unleased_turns_total{reason}` (`no_store`, `store_error`). A delete
-  issued once Redis is back can then race a turn that started without a lease,
-  and that turn's vectors or upload can land after the delete. Standalone
-  cannot reach this: its Redis runs in-process.
+  but a turn whose lease write or tombstone read fails runs unguarded. It is
+  logged once per process and counted on `case_unleased_turns_total{reason}`
+  (`no_store`, `store_error`). A delete that passes meanwhile can race that
+  turn, and its vectors or upload can land after the delete. Standalone cannot
+  reach this: its Redis runs in-process.
 - **A stalled holder.** A process that stops renewing for longer than 30 s
   (a frozen event loop, a paused pod) loses its lease, and a delete can then
   proceed under its work.

@@ -1117,10 +1117,12 @@ async def submit_turn(
         # and the auto-title has landed, so a duplicate let in from here on
         # finds the receipt. Released any earlier, it could miss the receipt
         # and run the turn again (#1888).
-        if keyed is not None:
-            await keyed.release()
-        if case_hold is not None:
-            await case_hold.release()
+        try:
+            if keyed is not None:
+                await keyed.release()
+        finally:
+            if case_hold is not None:
+                await case_hold.release()
 
 
 @router.post("/{case_id}/queries")

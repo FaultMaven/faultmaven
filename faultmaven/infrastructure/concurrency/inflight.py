@@ -8,25 +8,23 @@ in flight never meets a closed Redis client, ChromaDB client or engine.
 ``cancellable`` work is cancelled once the bound has passed; ``must_finish``
 work (the settlement: no cancellation may reach its commit, R1) is awaited with
 no bound, which the database's command timeout supplies (#2280). A cancel does
-not stop a thread, so :func:`draining` is set while a drain runs and the
-evidence vector write reads it first. **Residual:** a write already inside its
-thread when the bound passes finishes into the client after it.
+not stop a thread, so :func:`draining` holds while a drain runs and the vector
+write reads it first. **Residual:** a write already in its thread at the bound
+finishes into the client after it.
 
 **Per case, across replicas.** A case's lease is the Redis sorted set
-``case-inflight:{enterprise_id}:{case_id}``: holder tokens scored by their
-expiry on the Redis clock (``TIME``). A process holds ONE member per case,
-counted here: a turn takes it (:func:`hold_case`), and :func:`track` with
-``case=`` counts the task synchronously, before its first step can run, so no
-window opens between a turn's release and its task's start. The member goes
-with the last local holder. Renewals and releases are never tracked: the drain
-cannot wait on its own holders. A delete (:class:`CaseDeleteGate`) writes a
-tombstone and then reads the lease; a turn takes the lease and then reads the
-tombstone. Each writes before it reads, so both cannot pass; both may refuse.
+``case-inflight:{enterprise_id}:{case_id}``: holder tokens scored by expiry on
+the Redis clock (``TIME``). A process has ONE member per case, counted here.
+Every turn writes it (:func:`hold_case`), joining or not, before it reads the
+tombstone; :func:`track` with ``case=`` counts a task synchronously, before its
+first step, so no window opens at a turn's release. The member goes with the
+last local holder. Renewals and releases are never tracked. A delete
+(:class:`CaseDeleteGate`) writes a tombstone and then reads the lease. Each
+side writes before it reads, so both cannot pass; both may refuse.
 
-**Residual, ruled (2026-11-04):** with the store unreachable a turn runs
-without a lease, logged once and counted, while a delete fails closed (503). A
-delete once the store is back can race such a turn. Standalone cannot reach
-this: its Redis runs in-process.
+**Residual, ruled (2026-11-04):** a turn whose lease write or tombstone read
+fails runs unguarded (logged once, counted) while a delete fails closed (503);
+a delete that passes meanwhile can race it. Standalone's Redis is in-process.
 """
 
 import asyncio
@@ -70,10 +68,9 @@ CASE_DELETE_UNAVAILABLE = "CASE_DELETE_UNAVAILABLE"
 #: ``(enterprise_id, case_id)``.
 CaseKey = Tuple[str, str]
 
-#: Take (``ARGV[3]`` empty) or renew (``"XX"``) one member, scored by its expiry
-#: on the Redis clock, then re-arm the key's TTL to the latest expiry plus a
-#: margin: ``ZADD`` never touches a key's TTL, so a long holder's key would
-#: expire under it. A renewal never re-adds a member that is gone: 0.
+#: Write (``ARGV[3]`` empty) or renew (``"XX"``) one member, scored by its
+#: expiry on the Redis clock, then re-arm the key's TTL to the latest expiry
+#: plus a margin (``ZADD`` never touches it). A renewal of a member gone: 0.
 TAKE_OR_RENEW = """
 local t = redis.call('TIME')
 local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
@@ -115,7 +112,7 @@ class Kind(enum.Enum):
 _TRACKED: Dict["asyncio.Task[Any]", Tuple[str, Kind]] = {}
 _RELEASES: Set["asyncio.Task[None]"] = set()
 _LEASES: Dict[CaseKey, "_CaseLease"] = {}
-_draining = False
+_draining = 0  # a count: drains may overlap
 _REPORTED: Set[str] = set()
 
 
@@ -161,7 +158,7 @@ def tracked(what_prefix: str = "") -> Set["asyncio.Task[Any]"]:
 
 def draining() -> bool:
     """Whether a drain runs: a store write that has not started must not start."""
-    return _draining
+    return _draining > 0
 
 
 async def drain(timeout_s: Optional[float] = None) -> int:
@@ -170,16 +167,18 @@ async def drain(timeout_s: Optional[float] = None) -> int:
     Waits for every tracked task, those spawned meanwhile included, up to
     ``timeout_s`` (default ``DRAIN_BOUND_SECONDS``). Then it cancels the
     ``cancellable`` rest, gives them ``CANCEL_GRACE_SECONDS``, and awaits the
-    ``must_finish`` ones with no bound. A task of another loop (one that has
-    closed) is dropped, its cancel guarded. Last, the case leases being
-    released get the same grace.
+    ``must_finish`` ones with no bound. Last, the case leases being released
+    get the same grace. Interrupted, it still cancels the ``cancellable`` rest
+    and gives it the grace before the interruption propagates. **Residual:** an
+    interrupted shutdown does not wait for a settlement, which can then meet
+    closed stores.
     """
     global _draining
     loop = asyncio.get_running_loop()
     deadline = loop.time() + (DRAIN_BOUND_SECONDS if timeout_s is None else timeout_s)
     abandoned: Set["asyncio.Task[Any]"] = set()
     cancelled = 0
-    _draining = True
+    _draining += 1
     try:
         while True:
             pending = [t for t in _pending_on(loop) if t not in abandoned]
@@ -188,39 +187,70 @@ async def drain(timeout_s: Optional[float] = None) -> int:
             if loop.time() < deadline:
                 await asyncio.wait(pending, timeout=deadline - loop.time())
                 continue
-            late = [t for t in pending if _TRACKED[t][1] is Kind.CANCELLABLE]
-            for task in late:
-                logger.warning("Cancelling %s: still running", _TRACKED[task][0])
-                task.cancel()
+            late = await _cancel_late(loop, abandoned)
             cancelled += len(late)
-            if late:
-                await asyncio.wait(late, timeout=CANCEL_GRACE_SECONDS)
-                abandoned.update(t for t in late if not t.done())
             finishing = [t for t in pending if t not in late]
             if finishing:
                 await asyncio.wait(finishing)
         releases = [t for t in _RELEASES if t.get_loop() is loop]
         if releases:
             await asyncio.wait(releases, timeout=CANCEL_GRACE_SECONDS)
+    except GeneratorExit:
+        raise
+    except BaseException:
+        await _cancel_late(loop, abandoned)
+        raise
     finally:
-        _draining = False
+        _draining -= 1
     return cancelled
 
 
+async def _cancel_late(loop: asyncio.AbstractEventLoop, abandoned: Set[Any]) -> list:
+    """Cancel this loop's ``cancellable`` rest and give it the grace."""
+    late = [
+        t
+        for t in _pending_on(loop)
+        if t not in abandoned and _TRACKED[t][1] is Kind.CANCELLABLE
+    ]
+    for task in late:
+        logger.warning("Cancelling %s: still running", _TRACKED[task][0])
+        task.cancel()
+    if late:
+        await asyncio.wait(late, timeout=CANCEL_GRACE_SECONDS)
+        abandoned.update(t for t in late if not t.done())
+    return late
+
+
 def _pending_on(loop: asyncio.AbstractEventLoop) -> list:
-    """This loop's unfinished tracked tasks. Another loop's are dropped."""
+    """This loop's unfinished tracked tasks. A closed loop's are dropped (the
+    cancel guarded); another live loop's are left to its own drain."""
     ours = []
     for task in list(_TRACKED):
-        if task.get_loop() is not loop:
-            _TRACKED.pop(task, None)
+        if task.get_loop() is loop:
             if not task.done():
-                try:
-                    task.cancel()
-                except Exception:  # noqa: BLE001 - its loop has closed
-                    pass
-        elif not task.done():
-            ours.append(task)
+                ours.append(task)
+        elif task.get_loop().is_closed():
+            _TRACKED.pop(task, None)
+            try:
+                task.cancel()
+            except Exception:  # noqa: BLE001 - cancelling it raises
+                pass
     return ours
+
+
+def let_leases_lapse() -> None:
+    """Stop every lease renewal on this loop: the last release, before it closes.
+
+    A holder left (work the drain abandoned) writes nothing more, and its lease
+    lapses on its TTL; a later turn starts a fresh one.
+    """
+    loop = asyncio.get_running_loop()
+    for case, lease in list(_LEASES.items()):
+        if lease.loop is loop:
+            del _LEASES[case]
+            lease.ended, lease.redis = True, None
+            if lease.renewal is not None:
+                lease.renewal.cancel()
 
 
 # ---------------------------------------------------------------------------
@@ -271,23 +301,21 @@ class _CaseLease:
         self.member = secrets.token_hex(16)
         self.count = 0
         self.ended = False
-        self.taken: "Optional[asyncio.Task[bool]]" = None
+        self.writes: Set["asyncio.Task[Any]"] = set()
         self.renewal: "Optional[asyncio.Task[None]]" = None
         self.error: Optional[BaseException] = None
 
-    async def take(self) -> bool:
-        """Join the take in flight, or start one: the first, or after a failed one."""
-        taken = self.taken
-        if taken is None or (taken.done() and not _landed(taken)):
-            taken = self.taken = asyncio.ensure_future(self._take())
-        await asyncio.shield(taken)
-        return _landed(taken)
-
-    async def _take(self) -> bool:
+    async def write(self) -> bool:
+        """Write the member (a lapsed one comes back), and whether it landed."""
         if self.redis is None:
             return False
+        write = asyncio.ensure_future(self._script(""))
+        self.writes.add(write)
+        write.add_done_callback(
+            lambda w: self.writes.discard(w) or w.cancelled() or w.exception()
+        )
         try:
-            await self._script("")
+            await asyncio.shield(write)
         except Exception as exc:  # noqa: BLE001 - the turn runs unleased (ruled)
             self.error = exc
             return False
@@ -305,30 +333,25 @@ class _CaseLease:
         while True:
             await asyncio.sleep(LEASE_RENEW_SECONDS)
             try:
-                held = await self._script("XX")
+                if not await self._script("XX"):
+                    logger.warning("Lease %s lapsed while held: rewriting", self.key)
+                    await self._script("")
             except Exception as exc:  # noqa: BLE001 - retried next interval
                 logger.warning("Could not renew the lease %s: %r", self.key, exc)
-                continue
-            if not held:
-                logger.warning("The lease %s lapsed while held", self.key)
-                return
 
     async def give_up(self) -> None:
-        """Stop renewing and remove the member, after the take has landed."""
+        """Stop renewing, then remove the member once every write has landed."""
         if self.renewal is not None:
             self.renewal.cancel()
-        if self.taken is not None:
-            await asyncio.wait({self.taken})
+            await asyncio.wait({self.renewal})
+        if self.writes:
+            await asyncio.wait(set(self.writes))
         if self.redis is None:
             return
         try:
             await self.redis.zrem(self.key, self.member)
         except Exception as exc:  # noqa: BLE001 - the TTL is the backstop
             logger.warning("Could not release the lease %s: %r", self.key, exc)
-
-
-def _landed(taken: "asyncio.Task[bool]") -> bool:
-    return taken.done() and not taken.cancelled() and taken.result() is True
 
 
 def _join(case: CaseKey, redis: Any = None) -> _CaseLease:
@@ -385,16 +408,16 @@ class CaseHold:
 
 
 async def hold_case(redis: Any, case: CaseKey) -> CaseHold:
-    """Take ``case``'s lease for a turn, then read its tombstone.
+    """Write ``case``'s lease member for a turn, then read its tombstone.
 
     Raises :class:`CaseDeleteInProgress`, having let the lease go, while a
-    delete of the case runs. With no store, or one that fails, the turn holds
-    no lease and proceeds (the module docstring's residual).
+    delete of the case runs. If either command fails the turn proceeds
+    unguarded (the module docstring's residual).
     """
     lease = _join(case, redis)
     hold = CaseHold(lease)
     try:
-        landed = await lease.take()
+        landed = await lease.write()
         deleting = await redis.exists(tombstone_key(case)) if redis else False
     except Exception as exc:  # noqa: BLE001 - the turn runs unguarded (ruled)
         landed, deleting, lease.error = False, False, exc

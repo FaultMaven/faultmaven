@@ -1047,3 +1047,94 @@ async def test_the_stores_wait_for_a_settlement_past_the_bound(
     commit.set()
     assert await closing is True
     assert order == ["work ends", "close"]
+
+
+async def test_an_interrupted_release_that_is_not_the_last_disposes_nothing(
+    container, monkeypatch, record
+):
+    """A composition takes a hold during the drain, then the shutdown is
+    interrupted: the release is still not the last, so no step of the
+    process's runs under the live composition, and the interruption goes on."""
+    from faultmaven.infrastructure.concurrency import teardown
+
+    closed = []
+    monkeypatch.setattr(teardown, "close_the_database", lambda: closed.append(1))
+    await _hold(container, 1)
+    work = _work(record, [], steps=10**6)
+    releasing = asyncio.create_task(
+        teardown.run_teardown(teardown.ContainerRelease(container.shutdown).steps())
+    )
+    await asyncio.sleep(0)
+    await _elsewhere(container.initialize())
+    releasing.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await releasing
+    assert closed == [] and container.is_initialized
+    assert work.cancelled()
+
+
+async def test_an_interrupted_drain_cancels_cancellable_work_before_the_closes(
+    container, record
+):
+    """It cancels and waits the grace before the interruption propagates; a
+    settlement is still never cancelled (R1): the written residual."""
+    order, commit = [], asyncio.Event()
+    await _hold(container, 1)
+    work = _work(record, order, then=commit.wait)
+    settlement = _work(record, order, kind=record.Kind.MUST_FINISH, then=commit.wait)
+    _own(container, _RealClient()).aclose.side_effect = lambda: order.append(
+        ("close", work.done(), settlement.cancelled())
+    )
+    closing = asyncio.create_task(container.shutdown())
+    for _ in range(60):
+        await asyncio.sleep(0)
+    closing.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await closing
+    commit.set()
+    await settlement
+    assert order[0] == ("close", True, False) and work.cancelled()
+
+
+class _CountedRedis:
+    """FakeRedis that counts the commands sent to it."""
+
+    def __init__(self):
+        import fakeredis.aioredis as fakeredis_aio
+
+        self._redis, self.calls = fakeredis_aio.FakeRedis(), 0
+
+    def __getattr__(self, command):
+        call = getattr(self._redis, command)
+
+        async def _counted(*args, **kwargs):
+            self.calls += 1
+            return await call(*args, **kwargs)
+
+        return _counted
+
+
+async def test_the_last_release_stops_the_lease_renewals_before_the_closes(
+    container, monkeypatch, record
+):
+    """A holder left after the drain renewed into the Redis client the last
+    release closed, and redis-py reopened it; a release not the last stops
+    none."""
+    monkeypatch.setattr(record, "LEASE_RENEW_SECONDS", 0.01)
+    redis, at_close = _CountedRedis(), []
+    await _hold(container, 2)
+    left = await record.hold_case(redis, ("ent", "case"))
+    assert await container.shutdown() is False
+    renewed = redis.calls
+    while redis.calls == renewed:
+        await asyncio.sleep(0.01)
+
+    _own(container, _RealClient()).aclose.side_effect = lambda: at_close.append(
+        redis.calls
+    )
+    assert await container.shutdown() is True
+    await asyncio.sleep(0.1)
+    await left.release()
+    assert redis.calls == at_close[0]

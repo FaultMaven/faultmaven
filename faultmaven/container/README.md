@@ -134,12 +134,14 @@ to its event loop and is never recorded. `shutdown()` names no resource.
   1. **the in-flight drain** (`concurrency/inflight.py`, #2490): every task
      that outlived its request (a settlement, an upload's `mark_linked`,
      vectorization, a runbook conversion) is awaited up to 10 s, then the
-     cancellable rest is cancelled; a settlement is awaited to its end. The
-     drained work still reads the container, so this comes before the reset.
-     A hold taken during the drain makes this release not the last: it resets
-     nothing, closes nothing and returns `False`;
-  2. **the reset**, so an `initialize()` during the closes composes afresh and
-     keeps its hold;
+     cancellable rest is cancelled (also when the drain is interrupted); a
+     settlement is awaited to its end. The drained work still reads the
+     container, so this comes before the reset. A hold taken during the drain
+     makes this release not the last: it resets and closes nothing, and
+     returns `False` or raises the interruption, read as not the last;
+  2. **the lease stop and the reset**: every case-lease renewal on this loop
+     stops (a holder left lets its lease lapse), then the reset, so an
+     `initialize()` during the closes composes afresh and keeps its hold;
   3. **the closes**: everything owned, newest first, through `run_teardown`'s
      rules (every close runs, a failed one is logged, an interruption, the
      drain's included, is held until all have run). It returns `True`.
@@ -151,9 +153,9 @@ to its event loop and is never recorded. `shutdown()` names no resource.
 - **The lifespan's shutdown order.** `_serving_stops` (protection, the
   lifespan's ledger drain, the background tasks, the schedulers), then
   `decompose_application`: the config watcher, the container's shutdown
-  (drain → reset → owned closes), then, on the last release, the ledger
-  uninstall, the ledger drain and the APM stop, the unpublishing, and the
-  database engine last. The ledger is still installed while drained work runs,
+  (drain → lease stop → reset → owned closes), then, on the last release,
+  the ledger uninstall, the ledger drain and the APM stop, the unpublishing,
+  and the database engine last. The ledger is still installed while drained work runs,
   so an LLM call it makes is metered, and the drain after it writes the row.
 - **Resets.** `reset()` raises while anything is owned, naming it: shut down
   first. The record and the holds are the container instance's, rebuilt by a
@@ -161,7 +163,8 @@ to its event loop and is never recorded. `shutdown()` names no resource.
   with `release_every_hold()` (the `reset_container` fixture).
 - **What is the process's** goes only on the last release. Every composer
   releases through `ContainerRelease` (`concurrency/teardown.py`), and only
-  when `shutdown()` does not answer `False` does it dispose the
+  when `shutdown()` neither answers `False` nor fails with the container still
+  held does it dispose the
   process-global database engine. The lifespan's decomposition also uninstalls
   the usage ledger, drains its writes, and stops the APM export then. The hold
   count is a proxy for "the process is done serving", not a count of the
