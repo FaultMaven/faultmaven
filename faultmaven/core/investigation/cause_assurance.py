@@ -73,6 +73,7 @@ __all__ = [
     "cause_elimination_rows",
     "conclusion_overclaims",
     "confirm_root_from_resolution_absence",
+    "confirmation_stamp_rows",
     "confirming_polarity_rows",
     "content_tokens",
     "counterfactual_link_decisive",
@@ -700,9 +701,10 @@ def _cause_pool(case: "Case") -> tuple[frozenset, frozenset, frozenset]:
        on the identified cause it demoted) — only when nothing above stands
        AND no other standing hypothesis is rooted elsewhere: a cause re-fixed
        after it fell can still be shown removed, while nothing is confirmed
-       through the fallen one past a newer standing hypothesis. A root no
-       hypothesis names does not count, so a fallen cause can still confirm
-       past such an orphan root (#2485);
+       through the fallen one past any other standing hypothesis rooted
+       elsewhere (by node id, whatever its age). A root no hypothesis names
+       does not count, so a fallen cause can still confirm past such an
+       orphan root (#2485);
     4. a VALIDATED hypothesis with no root node (inert while a rootless
        hypothesis cannot validate).
 
@@ -1069,6 +1071,35 @@ def confirming_polarity_rows(case: "Case") -> list:
         if latest.holds(subjects.observed(e))
         and e.evidence_id not in disconfirmation_ids
         and subjects.observed(e) >= floor
+    ]
+
+
+def confirmation_stamp_rows(case: "Case") -> list:
+    """The confirm-stamp's record: the causal_absence rows SUPPORTS-linked on
+    a ROOT node, the link ``root_counterfactually_confirmed`` reads; engine
+    rows, the M6 disconfirmations, are left out. Read off the record, not a
+    re-derived pool or window: the stamp's count-held re-derive can narrow
+    the pool so the row it just recorded no longer binds, and every window
+    reading after the stamp sees that narrowed pool (#2487).
+
+    The stamp (``confirm_root_from_resolution_absence``, at the RESOLVED
+    transition) has been the link's one writer since #663's ingest refusal.
+    Residual, accepted (ruled 2026-11-04 on #2487): a model-authored link
+    written before that refusal would be read as the stamp's too. No stored
+    case carries one, and no current writer produces one."""
+    stamped = {
+        link.evidence_id
+        for node in (getattr(case, "causal_nodes", None) or {}).values()
+        if node.node_type == NodeType.ROOT
+        for link in node.evidence_links
+        if link.stance == EvidenceStance.SUPPORTS
+    }
+    return [
+        e
+        for e in getattr(case, "evidence", None) or []
+        if e.evidence_id in stamped
+        and e.category == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
+        and getattr(e, "collected_by", None) != ENGINE_EVIDENCE_AUTHOR
     ]
 
 

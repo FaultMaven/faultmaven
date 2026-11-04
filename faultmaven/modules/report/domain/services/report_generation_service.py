@@ -1128,20 +1128,26 @@ class ReportGenerationService:
         # engine-authored M6 rows are failed-fix DISCONFIRMATIONS (the
         # opposite polarity) and premature rows from a failed fix window
         # confirm nothing. The rows the resolution's cause leg stands on
-        # (``cause_elimination_rows``) qualify first, so the report cites the
-        # row the gate confirmed on and the stamp stamped; a case with no such
-        # rows (every case recorded before #1906 2a) falls back to the same
-        # bars without the binding (``confirming_polarity_rows``).
+        # (``cause_elimination_rows``) qualify. The leg is re-derived here, so
+        # after the stamp it can be narrower than the rows the gate confirmed
+        # on (#2487). A case with no such rows (every case recorded before
+        # #1906 2a) falls back to the same bars without the binding
+        # (``confirming_polarity_rows``). The rows the confirm-stamp recorded
+        # on a root qualify too, read off its record
+        # (``confirmation_stamp_rows``), since any window re-derived after
+        # the stamp sees the pool it narrowed.
         # Function-local import: the _assurance_note precedent for report →
         # core.investigation reads.
         from faultmaven.core.investigation.cause_assurance import (
             cause_elimination_rows,
+            confirmation_stamp_rows,
             confirming_polarity_rows,
         )
 
         qualified_absence_ids = {
             getattr(e, "evidence_id", None)
-            for e in (cause_elimination_rows(case) or confirming_polarity_rows(case))
+            for e in confirmation_stamp_rows(case)
+            + (cause_elimination_rows(case) or confirming_polarity_rows(case))
         }
 
         def _confirming_polarity(ev) -> bool:
