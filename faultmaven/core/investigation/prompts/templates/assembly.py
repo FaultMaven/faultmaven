@@ -12,8 +12,8 @@ from faultmaven.core.investigation.prompts.context_builder.entity_highlights imp
     EntityHighlightGroup,
 )
 from faultmaven.core.investigation.terminal_transitions import (
-    RESOLVE_DECLINED_ACTIONS,
     RESOLVE_DECLINED_RULE,
+    resolve_declined_actions,
 )
 from faultmaven.modules.case.contracts import (
     Case,
@@ -143,7 +143,9 @@ def _resolve_declined_emphasis(case) -> str:
     ``RESOLVE_DECLINED_ACTIONS`` (point the user at "Mark it resolved" and
     "Close without resolving") follows the line only when the projection builds
     those chips (``project_offers(case).reopen_chip``, #2472): no offer open,
-    the problem not on hold. The prompt predicts the reply's chips from the
+    the problem not on hold. While a check the model asked for after the fix
+    holds the case it points at "Close without resolving" only
+    (``resolve_declined_actions``, #1906 D5.2). The prompt predicts the reply's chips from the
     case as the turn starts. Three same-turn events can remove them after the
     prompt has pointed at them: a revision the model proposes (the problem goes
     on hold), a disqualification that ends the resolve decline's entry (the
@@ -159,7 +161,7 @@ def _resolve_declined_emphasis(case) -> str:
         return ""
     line = RESOLVE_DECLINED_LINE
     if project_offers(case).reopen_chip is not None:
-        line = f"{line} {RESOLVE_DECLINED_ACTIONS}"
+        line = f"{line} {resolve_declined_actions(case)}"
     if entry.at_turn == case.current_turn:
         return f"\n{line}\n{RESOLVE_DECLINED_THIS_TURN_LINE}\n"
     return f"\n{line}\n"

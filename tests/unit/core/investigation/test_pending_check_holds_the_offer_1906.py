@@ -27,35 +27,54 @@ from faultmaven.core.investigation.cause_assurance import (
     pending_symptom_check,
 )
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
-from faultmaven.core.investigation.offer_projection import project_offers
+from faultmaven.core.investigation.milestone_engine.transitions import (
+    declined_resolution_reask,
+)
+from faultmaven.core.investigation.offer_projection import (
+    DECLINED_RESOLVE_CARD_LABEL,
+    DECLINED_RESOLVE_CLOSE_LABEL,
+    project_offers,
+)
+from faultmaven.core.investigation.prompts.context_builder.fix_verification_block import (
+    build_fix_verification_block,
+)
+from faultmaven.core.investigation.prompts.templates.assembly import (
+    get_prompt_for_case,
+)
 from faultmaven.core.investigation.schemas import (
     EvidenceNeedUpdate,
     InvestigationResponse_Diagnosis,
     SuggestedFollowUp,
 )
 from faultmaven.core.investigation.terminal_transitions import (
+    RESOLVE_DECLINED_ACTIONS,
+    RESOLVE_DECLINED_CLOSE_ACTION,
+    RESOLVE_DECLINED_REOPEN_ACTION,
     ClosureReadiness,
     ResolutionReadiness,
     assess_resolution_readiness,
     closure_verdict,
+    derive_disposition_eligibility,
 )
 from faultmaven.models.api_models import DISPOSITION_ELIGIBILITY_DESCRIPTION
 from faultmaven.modules.case.contracts import (
     EvidenceCategory,
     EvidenceNeed,
     InvestigationActionType,
+    InvestigationStage,
     NeedPurpose,
     NeedState,
     ProposedAction,
 )
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
-from tests.case_builders import with_open_offer
+from tests.case_builders import with_declined_offer, with_open_offer
 from tests.unit.core.investigation.bound_rows import (
     VERIFYING_ID,
     bound_row,
     ensure_subjects,
     upload,
 )
+from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
 from tests.unit.core.investigation.test_deferred_disposition_turn import (
     _case as _deferred_case,
 )
@@ -84,7 +103,7 @@ pytestmark = pytest.mark.unit
 
 #: The check #1906's model asked for, in the same reply the backstop offered.
 _ASK = "Prometheus targets page showing job=billing UP"
-_HELD_ASK = f"- **The check you asked for** — {_ASK}"
+_HELD_ASK = f"- **The check I asked for** — {_ASK}"
 _HELD_FEEDBACK = "RESOLVED NOT PROPOSED: the check you asked for is still pending"
 _CLOSE_PARAGRAPH = "close** the case instead"
 
@@ -227,9 +246,15 @@ async def _asked_at_7(engine):
     return case, result, need, verifying
 
 
-async def test_1_the_check_asked_with_the_legs_holds_the_backstop():
+async def test_1_the_check_asked_with_the_legs_holds_the_backstop(caplog):
+    """The held backstop tells the model the need and its two exits, on a
+    DIAGNOSIS-stage case too, where no ``<fix_verification>`` block or
+    RE-VERIFICATION rule renders (fix list 2)."""
+    caplog.set_level(logging.INFO)
     case, result, need, _ = await _asked_at_7(_engine())
     assert has_resolution_confirmation(case), "premise: both legs stand at 7"
+    assert case.current_stage == InvestigationStage.DIAGNOSIS, "premise"
+    assert build_fix_verification_block(case) == "", "premise: no block"
     # Linking ran in the real order: the suggestion named the new need.
     assert (need.created_at_turn, need.surfaced_turns) == (7, [7])
     readiness = assess_resolution_readiness(case)
@@ -240,6 +265,23 @@ async def test_1_the_check_asked_with_the_legs_holds_the_backstop():
     assert _CLOSE_PARAGRAPH not in readiness.message
     assert case.offer_record.open is None
     assert "Shall I mark this case resolved?" not in result["agent_response"]
+    feedback = result["case_updated"].turn_history[-1].system_feedback
+    assert (
+        f"RESOLUTION HELD: the check you asked for is still pending "
+        f"([{need.need_id}] {_ASK}). The resolution is offered once its answer is "
+        "on record: record the row and mark the need FULFILLED citing it. If the "
+        "user cannot run the check, SUPERSEDE the need with the reason."
+    ) in feedback
+    assert _compliance(caplog, 7) == {need.need_id}
+
+
+def _compliance(caplog, turn: int) -> set:
+    """``resolution_pending_check`` on turn ``turn``'s ``transition_compliance``."""
+    return {
+        r.resolution_pending_check
+        for r in caplog.records
+        if r.msg == "transition_compliance" and r.turn == turn
+    }
 
 
 @pytest.mark.parametrize("answer", ["bound row", "need fulfilled"])
@@ -267,18 +309,18 @@ async def test_1_its_answer_at_8_releases_it_and_the_backstop_offers(answer):
 
 
 async def test_2_fulfilled_on_a_row_from_before_the_ask_still_holds():
-    """The answer is cited data (ruling 1, made exact): the turn-7 row the
-    model cites predates its own ask, so the need holds, its state is not
-    demoted, and the model's ``resolved`` is told the rows predate the ask."""
+    """The answer is cited data (ruling 1, made exact): the row the model
+    cites is from turn 1, before its own ask at 7, so the need holds, its
+    state is not demoted, and the model's ``resolved`` is told the rows
+    predate the ask."""
     engine = _engine()
-    case, _, need, _ = await _asked_at_7(engine)
-    early = next(e for e in case.evidence if e.category == _GONE)
+    case, _, need, verifying = await _asked_at_7(engine)
     result = await _turn(
         engine,
         case,
         8,
         "already sent it",
-        needs=[_mark(need, "fulfilled", early.evidence_id)],
+        needs=[_mark(need, "fulfilled", verifying)],
         propose="resolved",
     )
     assert need.state == NeedState.FULFILLED
@@ -305,16 +347,13 @@ async def test_3_the_models_resolved_while_held_gets_feedback_and_no_request(
     assert f"{_HELD_FEEDBACK} ([{need.need_id}] {_ASK})." in feedback
     assert "mark the need FULFILLED citing it" in feedback
     assert "SUPERSEDE the need with the reason" in feedback
+    # Told once: the backstop does not repeat step 2's feedback.
+    assert "RESOLUTION HELD" not in feedback
     assert case.offer_record.resolve_request is None
     assert case.offer_record.open is None
     assert _HELD_ASK in result["agent_response"]
     assert _CLOSE_PARAGRAPH not in result["agent_response"]
-    compliance = {
-        r.resolution_pending_check
-        for r in caplog.records
-        if r.msg == "transition_compliance" and r.turn == 8
-    }
-    assert compliance == {need.need_id}
+    assert _compliance(caplog, 8) == {need.need_id}
 
     await _turn(engine, case, 9, "still checking")
     assert case.offer_record.open is None
@@ -350,17 +389,18 @@ async def test_4_step_zero_opens_no_close_on_a_check_that_became_pending():
     assert case.offer_record.open is None
 
 
-def _held_case():
-    """``_asked_at_7``'s record, built without a turn: the legs and the ask at
-    7, no offer open. Test 5's controls start here, so they read the same
-    with the hold reverted."""
+def _held_case(asked: bool = True):
+    """``_asked_at_7``'s record, built without a turn: the legs and (with
+    ``asked``) the ask at 7, no offer open. Test 5's controls start here, so
+    they read the same with the hold reverted."""
     case, verifying, support = _fixed_case()
     bound_row(case, _CAUSE_GONE, turn=7, rechecks=support)
     bound_row(case, _GONE, turn=7, rechecks=verifying)
-    need = _need(case, 7, 7)
-    case.evidence_needs.append(need)
     case.current_turn = 7
-    assert pending_symptom_check(case) is need, "premise: held"
+    if asked:
+        need = _need(case, 7, 7)
+        case.evidence_needs.append(need)
+        assert pending_symptom_check(case) is need, "premise: held"
     return case
 
 
@@ -390,8 +430,9 @@ async def test_5_the_confirm_time_pivot_is_unchanged():
 
 async def test_6_the_reopen_chip_while_held_answers_with_the_pending_ask():
     """The confirmation still stands, so "no longer stands" would be false;
-    the reply is the held ask alone, and the chip is still built (Slack's
-    close chip is built only beside it, #2222)."""
+    the reply is the held ask alone, and it carries the case's chips: Slack
+    has no other way to close, and its close chip is built only beside the
+    reopen chip (#2222, fix list 5)."""
     engine = _engine()
     case, verifying, support = _fixed_case()
     data = upload(case, 7, "status")
@@ -425,7 +466,26 @@ async def test_6_the_reopen_chip_while_held_answers_with_the_pending_ask():
     assert "no longer stands" not in reply
     assert _CLOSE_PARAGRAPH not in reply
     assert case.offer_record.open is None
-    assert project_offers(case).reopen_chip is not None
+    assert [f["label"] for f in result["suggested_follow_ups"]] == [
+        DECLINED_RESOLVE_CARD_LABEL,
+        DECLINED_RESOLVE_CLOSE_LABEL,
+    ]
+
+
+@pytest.mark.parametrize("held", [True, False])
+def test_6_while_held_the_decline_points_only_at_close(held):
+    """Under a standing resolve decline, the prompt line and the refusal
+    point the user at "Close without resolving" only while a check holds the
+    case: "Mark it resolved" would answer with the check (fix list 5)."""
+    case = _held_case() if held else _held_case(asked=False)
+    with_declined_offer(case, kind="resolve", basis="backstop")
+    assert project_offers(case).reopen_chip is not None, "premise: chips built"
+    prompt = get_prompt_for_case(case, "what now?", given_tools=DEFAULT_GIVEN)
+    feedback = declined_resolution_reask(case)
+    for text in (prompt, feedback):
+        assert RESOLVE_DECLINED_CLOSE_ACTION in text
+        assert (RESOLVE_DECLINED_REOPEN_ACTION in text) is not held
+        assert (RESOLVE_DECLINED_ACTIONS in text) is not held
 
 
 @pytest.mark.parametrize("asked", [True, False])
@@ -453,22 +513,30 @@ def _engine_with(response) -> MilestoneEngine:
     return engine
 
 
-async def test_11_a_held_case_persists_needs_info_and_no_close():
-    """Ruling 2 under the published contract: a close becomes a resolve
-    proposal, so ``closed`` reads ``suggests_alternative``, and the
-    description says so."""
+@pytest.mark.parametrize("declined", [False, True])
+async def test_11_a_held_case_persists_needs_info_and_the_close_it_would_get(
+    declined,
+):
+    """Ruling 2 under the published contract: ``closed`` keeps the
+    resolvable case's value, ``suggests_alternative`` (a close becomes a
+    resolve proposal), or ``ready`` while the user's decline stands (#2360,
+    fix list 3); the description says both."""
     case, _, _, _ = await _asked_at_7(_engine())
+    if declined:
+        with_declined_offer(case, kind="resolve", basis="backstop")
     CaseRepository.prepare_for_save(case)
     assert case.disposition_eligibility == {
         "resolved": "needs_info",
-        "closed": "suggests_alternative",
+        "closed": "ready" if declined else "suggests_alternative",
     }
+    assert case.disposition_eligibility == derive_disposition_eligibility(case)
     text = " ".join(DISPOSITION_ELIGIBILITY_DESCRIPTION.split())
     assert (
-        "except while a check the agent asked for after the fix is unanswered on "
-        "a resolvable case: ``resolved`` then reads ``needs_info``, and a close "
-        "becomes a resolve proposal, so ``closed`` reads ``suggests_alternative``"
-        in text
+        "The exception is a resolvable case on which a check the agent asked for "
+        "after the fix is unanswered: ``resolved`` reads ``needs_info`` there, "
+        "and ``closed`` follows the resolvable case's rule above: "
+        "``suggests_alternative`` (a close would become a resolve proposal), or "
+        "``ready`` while the user's decline of the resolution stands." in text
     )
 
 
@@ -593,6 +661,59 @@ async def test_2_fulfilled_on_dangling_ids_is_demoted_and_still_holds():
     )
     assert need.state == NeedState.PARTIALLY_MET
     assert _verdict(case) == ResolutionReadiness.NEEDS_INFO
+
+
+async def test_2_a_need_declared_and_fulfilled_in_one_response_releases_it():
+    """Fix list 1: the model judged the ask turn's own row the answer."""
+    eng, case, *_ = _fixed(6)
+    await _legs(
+        eng,
+        case,
+        7,
+        evidence_need_updates=[
+            _ask(),
+            EvidenceNeedUpdate(
+                need_id="new_index_0",
+                state="fulfilled",
+                fulfilling_evidence_ids=["new_index_1"],
+            ),
+        ],
+    )
+    assert case.evidence_needs[-1].state == NeedState.FULFILLED, "premise"
+    assert _verdict(case) == ResolutionReadiness.READY
+
+
+async def test_2_a_missed_attachment_cited_the_next_turn_releases_it():
+    """Fix list 1: the ask turn's upload held the answer, recorded at 8 from
+    that file (its data dated 7, the ask's turn) and cited as fulfilling."""
+    eng, case, *_ = _fixed(6)
+    await _legs(eng, case, 7, evidence_need_updates=[_ask()])
+    need = case.evidence_needs[-1]
+    missed = upload(case, 7, "the targets screenshot")
+    await _record(
+        eng,
+        case,
+        8,
+        _obs(_GONE, "Prometheus shows job=billing UP", file_id=missed),
+        evidence_need_updates=[_mark(need, "fulfilled", "new_index_0")],
+    )
+    assert need.state == NeedState.FULFILLED, "premise"
+    assert _verdict(case) == ResolutionReadiness.READY
+
+
+async def test_2_without_the_problem_leg_nothing_is_held():
+    """Fix list 6: the cause leg alone, and a need asked after it. Readiness
+    asks for the problem's answer itself; the block marks nothing."""
+    eng, case, *_ = _fixed(6)
+    await _record(
+        eng,
+        case,
+        7,
+        _obs(_CAUSE_GONE, "max_connections now reads 100", _SUPPORT),
+        evidence_need_updates=[_ask()],
+    )
+    assert pending_symptom_check(case) is None
+    assert assess_resolution_readiness(case).pending_check is None
 
 
 async def test_2_no_cause_leg_holds_nothing():

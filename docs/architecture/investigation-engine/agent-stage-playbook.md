@@ -409,7 +409,7 @@ The **mitigation insert**: apply a temporary fix to stop active impact when an A
 2. Provide numbered steps framed as user instructions, not agent actions.
 3. State rollback: what to do if the fix makes things worse. State the fix is temporary.
 4. Request post-fix data — metrics, error rates, user observation — confirming the symptom has stopped.
-5. Accept subjective confirmation for `mitigation.verified`. When confirmed: (1) record a `symptom_absence_evidence` row in `evidence_to_add` (the symptom is no longer present, while the cause may persist), (2) emit `mitigation_verified=True` (materializes `mitigation.verified` + `completed_at_turn`).
+5. Accept subjective confirmation for `mitigation.verified`: it is the user's call for the milestone, never a row. When confirmed: (1) only when the user submitted post-mitigation data, record a `symptom_absence_evidence` row in `evidence_to_add` (the symptom is no longer present, while the cause may persist), (2) emit `mitigation_verified=True` (materializes `mitigation.verified` + `completed_at_turn`).
 6. Iterate if ineffective — propose a modified approach, stay in the mitigation insert.
 7. Whether to form hypotheses here follows the single rule: do so iff `cause_state ∈ {UNKNOWN, CANDIDATES}`. There is no separate ban tied to being mid-mitigation.
 
@@ -442,7 +442,7 @@ Verify that the applied fix resolves the problem. If it does not, diagnose the f
 #### Agent Duties — Primary path (fix verification)
 
 1. Search post-fix data for resolution signals — error rate drop, latency return to baseline, service health restored.
-2. Accept subjective confirmation for initial verification.
+2. The user's words ("it's working", "looks good") are their account, a claim: they confirm nothing and record no row. Only output the user submitted (a file or pasted data) becomes a row.
 3. Connect the dots explicitly: "The [evidence] confirms [hypothesis] was correct and the fix resolved it."
 
 #### Agent Duties — Failure path (fix did not work)
@@ -455,14 +455,14 @@ Verify that the applied fix resolves the problem. If it does not, diagnose the f
 #### Agent Duties — Primary path (fix verified successfully)
 
 1. Analyze post-fix data from the structural index; call `search_file` if specific patterns are needed.
-2. When outcome is confirmed — the cause is gone and the problem the user reported is gone with it: record two rows in `evidence_to_add`, a `causal_absence_evidence` row (the root cause eliminated; summary "Cause eliminated: [what changed]") and a `symptom_absence_evidence` row (the reported symptom gone; summary "Symptom gone: [what shows it]"), source_type: logs | metrics | text; the same output or words may source both. RESOLVED needs both (#1906). If the cause is shown gone but the reported symptom is not yet re-checked, record the cause row only and ask for that check as a new `symptom_verification` need; no resolution is offered while it is open, and its answer marks it FULFILLED (or the model supersedes it when the user cannot run the check) (#1906 D5.2). If only the symptom was relieved while the cause persists, record `symptom_absence_evidence` only. Then proceed to completion.
-3. Accept subjective confirmation: "it's working", "looks good" is sufficient.
+2. When outcome is confirmed — the cause is gone and the problem the user reported is gone with it: record two rows in `evidence_to_add`, a `causal_absence_evidence` row (the root cause eliminated; summary "Cause eliminated: [what changed]") and a `symptom_absence_evidence` row (the reported symptom gone; summary "Symptom gone: [what shows it]"), source_type: logs | metrics | text; the same submitted output may source both, and the user's words source neither. RESOLVED needs both (#1906). If the cause is shown gone but the reported symptom is not yet re-checked, record the cause row only and ask for that check as a new `symptom_verification` need; no resolution is offered while it is open, and its answer marks it FULFILLED (or the model supersedes it when the user cannot run the check) (#1906 D5.2). If only the symptom was relieved while the cause persists, record `symptom_absence_evidence` only. Then proceed to completion.
+3. "It's working" or "looks good" is the user's account, a claim: it records no row and confirms nothing until the output of the checks is submitted.
 
 #### Agent Duties — Completion (two-step handshake)
 
 **`solution_verified`** requires the explicit User-Agent Handshake. Cannot be set from ambiguous confirmation.
 
-1. When evidence confirms resolution, set `proposed_transition` to RESOLVED.
+1. When evidence confirms resolution, set `proposed_transition` to RESOLVED — not while a symptom check the agent asked for is still open (the engine refuses it, #1906 D5.2).
 2. Offer exactly two DECIDE suggestions: "Yes, mark as resolved" / "Not yet, I want to investigate further."
 3. After user confirms: the backend sets `solution_verified=True` via `confirm_open_offer`. The agent's job ends at setting `proposed_transition`. Remind the user to revert any mitigation workaround still in place.
 

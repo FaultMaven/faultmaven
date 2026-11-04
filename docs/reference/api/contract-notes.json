@@ -2,9 +2,9 @@
   "contractVersion": "14.13.0",
   "entries": [
     {
-      "body": "A case whose fix is confirmed (the cause shown removed and the reported\nproblem shown gone) read `resolved: ready`, and the agent offered the\nresolution, even in the reply that asked the user for another check of the\nproblem. While a check the agent asked for after the fix is unanswered, the\ncase now reads `resolved: needs_info`: no resolve proposal is made until the\ncheck's output is on record. A close still becomes a resolve proposal on such\na case, so `closed` reads `suggests_alternative`, and the\n`disposition_eligibility` description says so. Neither enum gains a value or a\nmeaning.\n\nMINOR because every client survives it, as 14.8.0's description change for\nthe same key did: a client that renders Close on `ready`, as both do, shows\nnone while the check is pending; a close the user types is offered the\nresolution.",
+      "body": "A case whose fix is confirmed (the cause shown removed and the reported\nproblem shown gone) read `resolved: ready`, and the agent offered the\nresolution, even in the reply that asked the user for another check of the\nproblem. While a check the agent asked for after the fix is unanswered, the\ncase now reads `resolved: needs_info`: no resolve proposal is made until the\ncheck's output is on record. `closed` keeps the resolvable case's value:\n`suggests_alternative` (a close becomes a resolve proposal), or `ready` while\nthe user's decline of the resolution stands (14.8.0). The\n`disposition_eligibility` description says so. Neither enum gains a value or\na meaning.\n\nMINOR because every client survives it, as 14.8.0's description change for\nthe same key did: a client that renders Close on `ready`, as both do, shows\nnone while the check is pending on a case whose resolution was not declined,\nand a close the user types there is offered the resolution.",
       "level": "MINOR",
-      "title": "`disposition_eligibility` reads `{resolved: needs_info, closed: suggests_alternative}` while a check the agent asked for after the fix is unanswered (#1906).",
+      "title": "`disposition_eligibility.resolved` reads `needs_info` while a check the agent asked for after the fix is unanswered; `closed` keeps the resolvable case's value (#1906).",
       "version": "14.13.0"
     },
     {

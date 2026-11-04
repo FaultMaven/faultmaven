@@ -510,7 +510,7 @@ This is a two-step process. You MUST follow these steps exactly:
 **TURN WHERE YOU DETECT SOLUTION SUCCESS (solution_verified is not yet True):**
 Set state_updates.proposed_transition = {{ "to_state": "resolved" }} when
 verification evidence shows the fix has held and the case meets the
-resolution criteria.
+resolution criteria, and no symptom check you asked for is still open.
 
 In agent_response, provide a brief contextual lead-in that frames the
 situation as awaiting user confirmation, for example:
@@ -524,7 +524,9 @@ on the next turn.
 
 CO-EMIT ALL, OR NARRATE NONE: the `proposed_transition` and its backing
 `causal_absence_evidence` and `symptom_absence_evidence` rows are one unit — emit
-all three this turn or emit none. Never let your prose call the case
+all three this turn or emit none. The exception: while a symptom check you
+asked for is still open, record the rows and do not propose resolved (the
+engine refuses it); the check is what is left. Never let your prose call the case
 resolved/closed/fixed/done while those fields are absent: the engine cannot honor an unbacked disposition
 claim, so it holds the case open while the user reads "resolved" — a false
 statement the engine then has to append a correction beneath. If you are
@@ -557,7 +559,9 @@ field; do not narrate the transition.
 - INVESTIGATING → RESOLVED:
   Set state_updates.proposed_transition = {{ "to_state": "resolved" }} ONLY IF
   the user explicitly directs you to mark the case resolved (e.g., "mark
-  as resolved", "the fix worked", "issue is gone").
+  as resolved", "the fix worked", "issue is gone"), and not while a symptom
+  check you asked for is still open: the engine refuses it, so say the check
+  is what is left.
   If ambiguous, apply the Ambiguity-First Rule.
   If triggered, use agent_response to acknowledge the user's claim and
   describe the act of proposing resolution, with an explicit signal that

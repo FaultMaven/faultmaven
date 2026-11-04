@@ -288,21 +288,26 @@ def test_an_ask_the_engine_stopped_surfacing_is_not_listed_as_live():
 _HOLDS = " (holds the resolution offer until answered)"
 
 
+def _held(case, asked: int):
+    """``case`` (both legs: the cause at 4, the problem at 5) with its need
+    asked at ``asked``."""
+    need = case.evidence_needs[0]
+    need.created_at_turn = asked
+    return need
+
+
 @pytest.mark.parametrize("fulfilled", [False, True])
 def test_the_block_marks_the_check_that_holds_the_offer(fulfilled):
-    """Asked at 4 with the cause leg at 4 and nothing since (#1906 D5.2). A
-    FULFILLED need citing only a row from its ask's turn still holds, and
-    the mark says why."""
-    case = _case("treatment")
-    need = case.evidence_needs[0]
+    """Asked at 5, with both legs standing and nothing since (#1906 D5.2). A
+    FULFILLED need citing only a row from before its ask still holds, and the
+    mark says why."""
+    case = _case("treatment", problem=True)
+    need = _held(case, 5)
     if fulfilled:
-        cause_row = next(
-            e
-            for e in case.evidence
-            if e.category == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
-        )
         need.state = NeedState.FULFILLED
-        need.fulfilling_evidence_ids = [cause_row.evidence_id]
+        need.fulfilling_evidence_ids = list(
+            case.problem_verification.verifying_evidence_ids
+        )
     assert pending_symptom_check(case) is need, "premise: held"
     mark = (
         " (holds the resolution offer until answered: the rows it cites "
@@ -313,14 +318,24 @@ def test_the_block_marks_the_check_that_holds_the_offer(fulfilled):
     assert f"  - [{need.need_id}] {_ASK}{mark}\n" in build_fix_verification_block(case)
 
 
+def test_a_need_on_the_cause_leg_alone_is_not_marked():
+    """Fix list 6: with no problem leg, answering the need releases nothing,
+    so the block does not say it holds the offer."""
+    case = _case("treatment")
+    need = case.evidence_needs[0]
+    assert pending_symptom_check(case) is None
+    block = build_fix_verification_block(case)
+    assert f"  - [{need.need_id}] {_ASK}\n" in block
+    assert "holds the resolution offer" not in block
+
+
 def test_a_held_check_is_listed_when_the_engine_stopped_surfacing_it():
     """Asked at 7 and 8, the block at 9: ask-exhausted (#1079), and still the
     need that holds the offer, so it is listed by id for the model to
     dispose of (critique 6)."""
-    case = _case("treatment")
+    case = _case("treatment", problem=True)
     case.current_turn = 9
-    need = case.evidence_needs[0]
-    need.created_at_turn = 7
+    need = _held(case, 7)
     need.surfaced_turns = [7, 8]
     prompt = _prompt(case)
     assert "Asks the engine has STOPPED surfacing" in prompt, "premise"
@@ -334,7 +349,8 @@ def test_a_held_check_is_listed_when_the_engine_stopped_surfacing_it():
 _NEED_RULE = (
     "A post-fix check of the reported problem that you ask the user for is a "
     "NEW `symptom_verification` need in `evidence_need_updates`, even when an "
-    "older need asked the same",
+    "older need asked the same: SUPERSEDE that older need in the same update, "
+    'with `superseded_reason` "replaced by the new ask".',
     "an ask the engine has stopped surfacing still holds: do not propose "
     "`resolved` meanwhile",
     "mark the need FULFILLED with that row in `fulfilling_evidence_ids` (a row "
@@ -386,6 +402,26 @@ def test_the_treatment_prompt_holds_the_proposal_on_the_open_check():
         "`fulfilling_evidence_ids`; a row from before the ask does not answer "
         "it. If the user cannot run the check, SUPERSEDE the need and give the "
         "reason." in prompt
+    )
+
+
+def test_the_treatment_rules_that_propose_resolved_keep_the_hold():
+    """Fix list 7: CO-EMIT ALL, the success turn and the user's transition
+    intent each carry the exception, so no rule tells the model to propose
+    while its check is open."""
+    prompt = _flat(_prompt(_case("treatment")))
+    assert (
+        "the case meets the resolution criteria, and no symptom check you asked "
+        "for is still open." in prompt
+    )
+    assert (
+        "emit all three this turn or emit none. The exception: while a symptom "
+        "check you asked for is still open, record the rows and do not propose "
+        "resolved (the engine refuses it); the check is what is left." in prompt
+    )
+    assert (
+        '"issue is gone"), and not while a symptom check you asked for is still '
+        "open: the engine refuses it, so say the check is what is left." in prompt
     )
 
 

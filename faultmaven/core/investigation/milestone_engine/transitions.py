@@ -14,19 +14,18 @@ from faultmaven.core.investigation.problem_status import (
     record_confirmed_statement,
 )
 from faultmaven.core.investigation.terminal_transitions import (
-    RESOLVE_DECLINED_ACTIONS,
     RESOLVE_DECLINED_RULE,
     declined_resolve_entry,
     disposition_refusal,
     open_disposition_offer,
+    pending_check_feedback,
+    resolve_declined_actions,
 )
 from faultmaven.modules.case.contracts import (
     Case,
     CaseAction,
     CaseState,
-    EvidenceNeed,
     InvestigationProgress,
-    NeedState,
     OfferBasis,
     OfferKind,
     ProblemVerification,
@@ -48,27 +47,6 @@ _DIRECTED_ONLY = (
     "Propose {what} only if the user directs it; the engine then attaches the "
     "Close action to your reply. Do not propose it unprompted."
 )
-
-
-def pending_check_feedback(check: EvidenceNeed) -> str:
-    """Why the model's ``resolved`` opened nothing while its own check is
-    pending (#1906 D5.2, ruling 3), naming both ways out: the answer on
-    record, or the need superseded. A held FULFILLED need cites only rows
-    from before the ask (``pending_symptom_check``), and the feedback says
-    so."""
-    named = f"[{check.need_id}] {check.request_text}"
-    if check.state == NeedState.FULFILLED:
-        status = (
-            f"the check you asked for ({named}) is marked FULFILLED, but the "
-            "rows you cited predate the ask"
-        )
-    else:
-        status = f"the check you asked for is still pending ({named})"
-    return (
-        f"RESOLVED NOT PROPOSED: {status}. Propose resolved once its answer is "
-        "on record: record the row and mark the need FULFILLED citing it. If "
-        "the user cannot run the check, SUPERSEDE the need with the reason."
-    )
 
 
 def declined_close_reask(
@@ -124,7 +102,7 @@ DECLINED_RESOLVE_FEEDBACK = (
 #: Added to it only when the reply carries the engine's two chips (#2472).
 _DECLINED_RESOLVE_CHIPS_FEEDBACK = (
     "The engine has attached its 'Mark it resolved' and 'Close without "
-    "resolving' actions to this reply. " + RESOLVE_DECLINED_ACTIONS
+    "resolving' actions to this reply."
 )
 
 _QUIET = (
@@ -162,7 +140,10 @@ def declined_resolution_reask(case: Case) -> str | None:
         return None
     if project_offers(case).reopen_chip is None:
         return DECLINED_RESOLVE_FEEDBACK
-    return f"{DECLINED_RESOLVE_FEEDBACK} {_DECLINED_RESOLVE_CHIPS_FEEDBACK}"
+    return (
+        f"{DECLINED_RESOLVE_FEEDBACK} {_DECLINED_RESOLVE_CHIPS_FEEDBACK} "
+        f"{resolve_declined_actions(case)}"
+    )
 
 
 def _refuse_declined_reask(metadata: dict[str, Any], side: str, feedback: str) -> None:
@@ -600,7 +581,9 @@ class TransitionManager:
                         case, readiness.missing
                     )
                 else:
-                    _add_system_feedback(metadata, pending_check_feedback(check))
+                    _add_system_feedback(
+                        metadata, pending_check_feedback(check, proposed=True)
+                    )
                     metadata["resolution_pending_check"] = check.need_id
                 metadata["resolution_needs_info_first_pass"] = True
                 metadata["resolution_needs_info_message"] = readiness.message

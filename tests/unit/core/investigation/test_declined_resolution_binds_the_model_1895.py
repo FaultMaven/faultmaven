@@ -764,9 +764,12 @@ class TestTheChip:
         assert case.offer_record.open.kind == "resolve"
 
     async def test_a_chip_is_refused_unless_resolution_readiness_is_ready(self):
-        """B2. Today SUGGEST_RESOLVE and READY share one predicate, so this
-        state is constructed by reading readiness as NEEDS_INFO: the handler
-        reads resolution readiness, not the closure verdict."""
+        """B2. Readiness is read as NEEDS_INFO under a standing decline: the
+        handler reads resolution readiness, not the closure verdict. The two
+        differ on a real case only while a check the agent asked for after the
+        fix is pending (#1906 D5.2), which
+        ``test_pending_check_holds_the_offer_1906.py`` drives; here the state
+        is constructed."""
         engine, case, _ = await _offered_then_declined()
         intent = _chip_intent(case)
         not_ready = ResolutionReadiness(

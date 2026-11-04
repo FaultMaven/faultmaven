@@ -78,6 +78,7 @@ from faultmaven.modules.case.contracts import (
     EvidenceCategory,
     EvidenceNeed,
     InvestigationActionType,
+    NeedState,
     OfferAnswer,
     OfferBasis,
     OfferKind,
@@ -785,12 +786,58 @@ RESOLVE_DECLINED_RULE = (
 #: engine's two chips (#2472). Stated only when the reply carries them
 #: (``offer_projection.project_offers(case).reopen_chip``): a hold or an open
 #: offer leaves both off.
-RESOLVE_DECLINED_ACTIONS = (
+RESOLVE_DECLINED_REOPEN_ACTION = (
     "A user who changes their mind without a new verification uses the "
-    "engine's 'Mark it resolved' action: point them to it. A user who wants to "
-    "close the case instead uses the engine's 'Close without resolving' "
-    "action: point them to it."
+    "engine's 'Mark it resolved' action: point them to it."
 )
+RESOLVE_DECLINED_CLOSE_ACTION = (
+    "A user who wants to close the case instead uses the engine's 'Close "
+    "without resolving' action: point them to it."
+)
+RESOLVE_DECLINED_ACTIONS = (
+    f"{RESOLVE_DECLINED_REOPEN_ACTION} {RESOLVE_DECLINED_CLOSE_ACTION}"
+)
+
+
+def resolve_declined_actions(case: Case) -> str:
+    """``RESOLVE_DECLINED_ACTIONS`` for ``case``, for a caller that already
+    knows the chips are built: the close action alone while a check the model
+    asked for after the fix holds the case (``pending_symptom_check``, #1906
+    D5.2), since "Mark it resolved" then answers with that check, not an
+    offer."""
+    if pending_symptom_check(case) is not None:
+        return RESOLVE_DECLINED_CLOSE_ACTION
+    return RESOLVE_DECLINED_ACTIONS
+
+
+def pending_check_feedback(check: EvidenceNeed, *, proposed: bool) -> str:
+    """What the model is told while its own check holds the resolution
+    (#1906 D5.2), naming both ways out: the answer on record, or the need
+    superseded. ``proposed``: its ``resolved`` was refused (ruling 3); else
+    the backstop held the offer. A held FULFILLED need cites only rows from
+    turns before the ask (``pending_symptom_check``), and the feedback says
+    so."""
+    named = f"[{check.need_id}] {check.request_text}"
+    if check.state == NeedState.FULFILLED:
+        status = (
+            f"the check you asked for ({named}) is marked FULFILLED, but the "
+            "rows you cited predate the ask"
+        )
+    else:
+        status = f"the check you asked for is still pending ({named})"
+    lead, then = (
+        ("RESOLVED NOT PROPOSED", "Propose resolved once its answer is on record")
+        if proposed
+        else (
+            "RESOLUTION HELD",
+            "The resolution is offered once its answer is on record",
+        )
+    )
+    return (
+        f"{lead}: {status}. {then}: record the row and mark the need FULFILLED "
+        "citing it. If the user cannot run the check, SUPERSEDE the need with "
+        "the reason."
+    )
 
 
 def open_disposition_offer(
@@ -1253,7 +1300,7 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
                 verdict=ResolutionReadiness.NEEDS_INFO,
                 message=(
                     _NEEDS_INFO_INTRO
-                    + f"- **The check you asked for** — {check.request_text}"
+                    + f"- **The check I asked for** — {check.request_text}"
                     + "\n\n"
                     + _SUBMIT_AS_DATA
                 ),

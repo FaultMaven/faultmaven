@@ -1530,17 +1530,23 @@ def pending_symptom_check(
       the answer's own turn does not un-answer it. A need with no such turn
       (asked only before the fix) is not held.
     - **Answered (ruling 1):** a problem-bound row (``SubjectIndex.subject``,
-      either category) whose data is from a turn strictly after the ask; or
-      the need FULFILLED citing at least one row (``fulfilling_evidence_ids``)
-      whose data is from a turn strictly after the ask. A FULFILLED need
-      citing only rows from before the ask still holds, and its state is not
-      demoted. A row in the ask's own turn does not answer it: the model asked
-      because that turn's data did not show it. Engine-authored rows are
-      unbound (``SubjectIndex.subject``), so no exclusion is needed for them.
+      either category) whose data is from a turn strictly after the ask: a
+      row in the ask's own turn does not answer it, because the model asked
+      when that turn's data did not show it. Or the need FULFILLED citing at
+      least one row (``fulfilling_evidence_ids``) whose data is from the ask's
+      turn or later: there the model judged that row the answer (a need
+      declared and fulfilled in one response, an attachment of the ask's turn
+      cited on the next). A FULFILLED need citing only rows from turns before
+      the ask still holds, and its state is not demoted. Engine-authored rows
+      are unbound (``SubjectIndex.subject``), so no exclusion is needed for
+      them.
 
-    Returns the earliest-asked held need. None when no cause leg stands, since
-    there is no anchor then. ``subjects`` and ``windows`` are the caller's
-    ``subject_index(case)`` and ``fix_windows(case)`` when it has them."""
+    Returns the earliest-asked held need. None unless both legs stand
+    (``symptom_elimination_rows``): without the cause leg there is no anchor,
+    and without the problem leg nothing is held, since the problem's answer
+    is then still what readiness asks for. ``subjects`` and ``windows`` are
+    the caller's ``subject_index(case)`` and ``fix_windows(case)`` when it has
+    them."""
     candidates = [
         n
         for n in (getattr(case, "evidence_needs", None) or [])
@@ -1552,7 +1558,9 @@ def pending_symptom_check(
     subjects = subject_index(case) if subjects is None else subjects
     cause_rows = cause_elimination_rows(case, subjects=subjects, windows=windows)
     anchor = problem_leg_anchor(case, cause_rows, subjects=subjects, windows=windows)
-    if anchor is None:
+    if anchor is None or not symptom_elimination_rows(
+        case, cause_rows, subjects=subjects, windows=windows
+    ):
         return None
     latest_answer = max(
         (
@@ -1576,7 +1584,7 @@ def pending_symptom_check(
         if asked is None or latest_answer > asked:
             continue
         if need.state == NeedState.FULFILLED and any(
-            observed.get(i, -1) > asked for i in need.fulfilling_evidence_ids
+            observed.get(i, -1) >= asked for i in need.fulfilling_evidence_ids
         ):
             continue
         held.append((asked, need))

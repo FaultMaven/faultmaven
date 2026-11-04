@@ -26,7 +26,7 @@ from faultmaven.modules.case.contracts import (
     SolutionFeasible,
 )
 
-from .stage_gates import _solution_cause_validated
+from .stage_gates import _add_system_feedback, _solution_cause_validated
 
 logger = logging.getLogger(__name__)
 
@@ -253,6 +253,7 @@ def _maybe_propose_confirmed_resolution(case: "Case", metadata: dict) -> None:
         ResolutionReadiness,
         assess_resolution_readiness,
         cause_identification_leg,
+        pending_check_feedback,
     )
 
     if not getattr(case, "progress", None):
@@ -260,6 +261,16 @@ def _maybe_propose_confirmed_resolution(case: "Case", metadata: dict) -> None:
 
     readiness = assess_resolution_readiness(case)
     if readiness.verdict != ResolutionReadiness.READY:
+        check = readiness.pending_check
+        if check is not None and not metadata.get("resolution_needs_info_first_pass"):
+            # Held by a check the model asked for after the fix (#1906 D5.2):
+            # the model is told, on every stage (the ``<fix_verification>``
+            # block renders only after DIAGNOSIS), unless step 2 already
+            # answered its ``resolved`` with the same need.
+            _add_system_feedback(
+                metadata, pending_check_feedback(check, proposed=False)
+            )
+            metadata["resolution_pending_check"] = check.need_id
         return
 
     # The "still open until you confirm" clause is load-bearing, not padding.
