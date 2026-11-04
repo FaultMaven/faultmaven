@@ -922,7 +922,9 @@ def _disconfirmation_row_ids(case: "Case") -> set:
     return disconfirmations
 
 
-def cause_elimination_rows(case: "Case") -> list:
+def cause_elimination_rows(
+    case: "Case", *, subjects: "SubjectIndex | None" = None, windows=None
+) -> list:
     """The case's causal_absence rows that stand as the CAUSE leg of a
     resolution confirmation — the cause was observed removed:
 
@@ -973,24 +975,52 @@ def cause_elimination_rows(case: "Case") -> list:
 
     A cause-side observation only: "the config now reads 100", "ExecStart now
     names the installed binary". Whether the reported problem went with the
-    cause is the other leg, ``symptom_elimination_rows`` (#1906)."""
-    if getattr(case.progress, "cause_identification_held_open", False):
-        return []
+    cause is the other leg, ``symptom_elimination_rows`` (#1906).
+
+    ``subjects`` and ``windows`` are the caller's ``subject_index(case)`` and
+    ``fix_windows(case)`` when it already has them."""
+    return [
+        e
+        for e, why in cause_recheck_status(case, subjects=subjects, windows=windows)
+        if why is None
+    ]
+
+
+def cause_recheck_status(
+    case: "Case", *, subjects: "SubjectIndex | None" = None, windows=None
+) -> list:
+    """Every cause-bound causal_absence row, as ``(row, why)``: ``why`` is
+    None for a row of the cause leg (``cause_elimination_rows``), else why it
+    does not count yet. The ``<fix_verification>`` block shows the second
+    kind, so the model asks for what is missing, not for a re-check already on
+    record (#1906 D7)."""
+    subjects = subject_index(case) if subjects is None else subjects
+    held_open = getattr(case.progress, "cause_identification_held_open", False)
     disconfirmation_ids = _disconfirmation_row_ids(case)
     last_disconfirm = latest_disconfirmation_turn(case)
     posited = _cause_posited_turn(case)
-    window = confirming_window(case)
-    if window is None:
-        return []
-    subjects = subject_index(case)
-    return [
-        e
-        for e in (getattr(case, "evidence", None) or [])
-        if getattr(e, "evidence_id", None) not in disconfirmation_ids
-        and subjects.subject(e) == SUBJECT_CAUSE
-        and subjects.observed(e) >= max(last_disconfirm, posited)
-        and window.holds(subjects.observed(e))
-    ]
+    window = confirming_window(case, windows=windows, subjects=subjects)
+    out = []
+    for e in getattr(case, "evidence", None) or []:
+        if subjects.subject(e) != SUBJECT_CAUSE:
+            continue
+        turn = subjects.observed(e)
+        if held_open:
+            why = "the cause's identification is held open"
+        elif e.evidence_id in disconfirmation_ids:
+            why = "it is a failed fix's disconfirmation"
+        elif turn < posited:
+            why = f"its data predates the cause's positing (turn {posited})"
+        elif turn < last_disconfirm:
+            why = f"its data predates the failed fix seen at turn {last_disconfirm}"
+        elif window is None:
+            why = "the latest fix was seen failing; only a new fix can confirm"
+        elif not window.holds(turn):
+            why = "it is outside the latest observed fix's window"
+        else:
+            why = None
+        out.append((e, why))
+    return out
 
 
 def confirming_polarity_rows(case: "Case") -> list:
@@ -1203,7 +1233,9 @@ class FixWindow:
         return self.disconfirmation is not None
 
 
-def fix_windows(case: "Case") -> list[FixWindow]:
+def fix_windows(
+    case: "Case", subjects: "SubjectIndex | None" = None
+) -> list[FixWindow]:
     """Every fix window on the case, oldest first: window 0 (the rows before any
     dated fix — an out-of-band fix leaves no execution record), then one per
     dated fix (``_dated_fix_turns``).
@@ -1249,7 +1281,7 @@ def fix_windows(case: "Case") -> list[FixWindow]:
     likely a diagnosis-time exclusion ("DNS ruled out") as a fix's outcome, and
     the problem is ongoing by definition."""
     fixes = _dated_fix_turns(case)
-    subjects = subject_index(case)
+    subjects = subject_index(case) if subjects is None else subjects
     # (category, subject, observed turn) of every bound row.
     bound = [
         (e.category, subject, subjects.observed(e), e)
@@ -1346,7 +1378,9 @@ def latest_decided_fix_window(case: "Case") -> FixWindow | None:
     return None
 
 
-def confirming_window(case: "Case") -> FixWindow | None:
+def confirming_window(
+    case: "Case", *, windows=None, subjects: "SubjectIndex | None" = None
+) -> FixWindow | None:
     """The fix window a resolution must be confirmed in, or None.
 
     "Did the latest fix work?" is the question, so it is the latest window
@@ -1363,14 +1397,22 @@ def confirming_window(case: "Case") -> FixWindow | None:
     so the gate reads a failed fix the same whether or not M6 could act on
     it. With no dated fix it is window 0, the whole case, and an out-of-band
     fix confirms as before. None when nothing was observed at all (no leg can
-    stand then)."""
-    for window in reversed(fix_windows(case)):
+    stand then). ``windows`` is the caller's ``fix_windows(case)``."""
+    if windows is None:
+        windows = fix_windows(case, subjects)
+    for window in reversed(windows):
         if window.observed:
             return None if window.state == FIX_FAILED else window
     return None
 
 
-def symptom_elimination_rows(case: "Case", cause_rows: list | None = None) -> list:
+def symptom_elimination_rows(
+    case: "Case",
+    cause_rows: list | None = None,
+    *,
+    subjects: "SubjectIndex | None" = None,
+    windows=None,
+) -> list:
     """The case's symptom_absence rows that stand as the PROBLEM leg of a
     resolution confirmation — the reported problem was observed gone after the
     fix.
@@ -1403,15 +1445,17 @@ def symptom_elimination_rows(case: "Case", cause_rows: list | None = None) -> li
       (``latest_disconfirmation_turn``), as for the cause leg: a "looks
       stable" row from a fix window that later failed confirms nothing.
 
-    Empty when no cause leg stands. ``cause_rows`` is the caller's
-    ``cause_elimination_rows(case)`` when it already has it."""
+    Empty when no cause leg stands. ``cause_rows``, ``subjects`` and
+    ``windows`` are the caller's ``cause_elimination_rows(case)``,
+    ``subject_index(case)`` and ``fix_windows(case)`` when it already has
+    them."""
+    subjects = subject_index(case) if subjects is None else subjects
     if cause_rows is None:
-        cause_rows = cause_elimination_rows(case)
+        cause_rows = cause_elimination_rows(case, subjects=subjects, windows=windows)
     if not cause_rows:
         return []
-    subjects = subject_index(case)
     anchor = min(subjects.observed(e) for e in cause_rows)
-    window = confirming_window(case)
+    window = confirming_window(case, windows=windows, subjects=subjects)
     if window is not None and window.fix_turn is not None:
         anchor = min(anchor, window.fix_turn)
     # No window check of its own: the cause leg admits rows only from the

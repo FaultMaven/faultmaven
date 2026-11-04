@@ -13,8 +13,10 @@ from faultmaven.core.investigation.offers import (
     terminal_offer_answered_this_turn,
 )
 from faultmaven.core.investigation.problem_status import problem_on_hold
-from faultmaven.core.investigation.resolution_record import resolution_record_lines
-from faultmaven.core.investigation.terminal_transitions import open_disposition_offer
+from faultmaven.core.investigation.terminal_transitions import (
+    open_disposition_offer,
+    resolution_record_lines,
+)
 from faultmaven.modules.case.contracts import (
     TERMINAL_HYPOTHESIS_STATES,
     Case,
@@ -288,7 +290,7 @@ def _maybe_propose_confirmed_resolution(case: "Case", metadata: dict) -> None:
             "The case is still open until you confirm: marking it resolved "
             "writes up what happened."
         )
-    record = resolution_record_lines(case, cause_on_record=cause_on_record)
+    record = resolution_record_lines(case)
     gate_message = (
         f"The record shows:\n\n{record}\n\n{still_open} "
         "Shall I mark this case resolved?"

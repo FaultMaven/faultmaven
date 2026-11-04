@@ -133,11 +133,10 @@ _CONTRADICTIONS = {
         "     `accepted_action_ref` naming its ACTION_ID",
     ),
     # Ids are cited where a field asks for them.
+    # Ids go where a field asks for them; the two named are examples.
     "evidence ids": (
         "You don't need to cite evidence IDs.",
-        "Cite evidence IDs only where a field asks\nfor them: "
-        "`symptom_verification_evidence_ids` with the symptom claim, and\n"
-        "`rechecks` on a post-fix observation.",
+        "A field that asks for evidence IDs takes\nthem, as its description says",
     ),
 }
 
@@ -158,6 +157,8 @@ def test_the_symptom_absence_category_never_takes_the_users_words():
     assert "defense-in-depth confirmation" not in source
     assert '("the dashboard loads now" is a claim)' in source
     assert "one of the two rows RESOLVED needs" in source
+    # The anchor ``symptom_elimination_rows`` implements.
+    assert "the earlier\n    of the data of the causal-absence row" in source
 
 
 # ---------------------------------------------------------------------------
@@ -204,8 +205,110 @@ def test_an_attempt_carries_its_window_state(shape, state):
 
 def test_a_missing_cause_leg_does_not_read_the_problem_leg():
     block = build_fix_verification_block(_case("treatment", cause=False))
-    assert "  - cause: missing" in block
-    assert "  - problem: not read until the cause leg stands" in block
+    assert "  - cause: missing\n" in block
+    assert "  - problem: read once the cause leg stands" in block
+
+
+def test_the_problem_checked_before_the_cause_is_shown_checked():
+    """The symptom re-checked first (turn 5), the cause not yet: what the gate
+    asks for is the cause re-check (``_relief_without_cause_recheck``), not
+    the problem's check again."""
+    case = _case("treatment", cause=False, problem=True)
+    gone = next(
+        e
+        for e in case.evidence
+        if e.category == EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE
+    )
+    block = build_fix_verification_block(case)
+    assert (
+        "executed turn 3: problem re-checked gone at turn 5; cause re-check owed"
+        in block
+    )
+    assert f"  - problem: re-checked gone at turn 5 ({gone.evidence_id})" in block
+    assert "not yet observed" not in block
+    assert "read once the cause leg stands" not in block
+
+
+@pytest.mark.parametrize(
+    "hold, reason",
+    [
+        ("held open", "the cause's identification is held open"),
+        ("posited later", "its data predates the cause's positing (turn 5)"),
+    ],
+)
+def test_a_cause_re_check_that_does_not_count_says_why(hold, reason):
+    case = _case("treatment")
+    if hold == "held open":
+        case.progress.cause_identification_held_open = True
+    else:
+        for node in case.causal_nodes.values():
+            node.metadata["root_attached_turn"] = 5
+    row = next(
+        e
+        for e in case.evidence
+        if e.category == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
+    )
+    block = build_fix_verification_block(case)
+    assert (
+        f"  - cause: missing; re-checked, not counted yet: {row.evidence_id} "
+        f"({reason})" in block
+    )
+
+
+def test_an_ask_the_engine_stopped_surfacing_is_not_listed_as_live():
+    """``<evidence_needs>`` says the engine stopped putting it to the user
+    (#1079); the block must not list it as an outstanding ask."""
+    case = _case("treatment")
+    need = case.evidence_needs[0]
+    need.surfaced_turns = [3, 4, 5]
+    prompt = _prompt(case)
+    assert "Asks the engine has STOPPED surfacing" in prompt, "premise"
+    block = _block(prompt)
+    assert need.need_id not in block
+    assert "Outstanding symptom-verification needs: none" in block
+    assert "(1 the engine has STOPPED surfacing: see <evidence_needs>)" in block
+
+
+def test_older_attempts_are_counted_not_dropped():
+    case = _case("treatment", cause=False)
+    for turn in (4, 5, 6):
+        case.proposed_actions.append(
+            ProposedAction(
+                case_id=case.case_id,
+                action_type=InvestigationActionType.SOLUTION,
+                description=f"fix {turn}",
+                proposed_in_turn=turn - 1,
+                accepted_in_turn=turn,
+                state="accepted",
+            )
+        )
+    block = build_fix_verification_block(case)
+    assert "  …and 1 earlier\n" in block
+    assert "executed turn 3" not in block
+    assert "executed turn 6" in block
+
+
+@pytest.mark.parametrize("shape", [dict(problem=True), dict(cause=False, problem=True)])
+def test_one_build_reads_one_index_and_one_window_list(monkeypatch, shape):
+    from faultmaven.core.investigation import cause_assurance, terminal_transitions
+    from faultmaven.core.investigation.prompts.context_builder import (
+        fix_verification_block as block_module,
+    )
+
+    case = _case("treatment", **shape)
+    calls = {"subject_index": 0, "fix_windows": 0}
+    for name in calls:
+        real = getattr(cause_assurance, name)
+
+        def counted(*args, _real=real, _name=name, **kwargs):
+            calls[_name] += 1
+            return _real(*args, **kwargs)
+
+        for module in (cause_assurance, block_module, terminal_transitions):
+            if hasattr(module, name):
+                monkeypatch.setattr(module, name, counted)
+    build_fix_verification_block(case)
+    assert calls == {"subject_index": 1, "fix_windows": 1}
 
 
 @pytest.mark.parametrize("stage", ["treatment", "mitigation"])
@@ -217,6 +320,14 @@ def test_diagnosis_has_no_block():
     case = _case("diagnosis")
     assert build_fix_verification_block(case) == ""
     assert OPEN_TAG not in _prompt(case)
+
+
+def test_a_mitigation_before_any_dated_fix_has_no_block():
+    """Mitigation attempts are not records until Phase 4 (D3); the block
+    would point a workaround at RESOLVED's legs."""
+    case = _case("mitigation", cause=False)
+    case.proposed_actions.clear()
+    assert build_fix_verification_block(case) == ""
 
 
 # ---------------------------------------------------------------------------

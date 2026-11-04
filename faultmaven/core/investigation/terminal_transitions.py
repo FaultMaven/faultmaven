@@ -25,13 +25,14 @@ Reference: investigation-lifecycle-logic.md Section 1.4
 
 import logging
 from datetime import UTC, datetime
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 from faultmaven.core.investigation.cause_assurance import (
     CONFIRMED_RCC_LIKELIHOOD_FLOOR,
     FIX_FAILED,
     SUBJECT_PROBLEM,
     CauseAssuranceGrade,
+    SubjectIndex,
     _graph_hooks,
     cause_elimination_rows,
     conclusion_overclaims,
@@ -42,6 +43,7 @@ from faultmaven.core.investigation.cause_assurance import (
     has_resolution_confirmation,
     has_root_cause_record,
     latest_fix_window,
+    resolution_confirmation_rows,
     subject_index,
 )
 from faultmaven.core.investigation.lifecycle_metrics import (
@@ -55,7 +57,6 @@ from faultmaven.core.investigation.offers import (
     require_answerer,
     standing_resolve_decline,
 )
-from faultmaven.core.investigation.resolution_record import resolution_record_lines
 from faultmaven.core.investigation.verification_status import (
     assess_verification_status,
     restatement_hold_governs,
@@ -1109,7 +1110,9 @@ class ResolutionReadiness:
         self.missing = missing
 
 
-def _relief_without_cause_recheck(case: "Case", window) -> bool:
+def _relief_without_cause_recheck(
+    case: "Case", window, subjects: "SubjectIndex | None" = None
+) -> bool:
     """The latest fix window's latest observation of the problem is a
     problem-gone row, and the window holds no cause re-check (#1927): the one
     leg the user still owes is the cause. Not when the problem was seen again
@@ -1120,7 +1123,7 @@ def _relief_without_cause_recheck(case: "Case", window) -> bool:
     another cause's fix still leaves the cause leg owed."""
     if window.fix_turn is None or window.confirmed_cause_rows:
         return False
-    subjects = subject_index(case)
+    subjects = subject_index(case) if subjects is None else subjects
     latest: dict = {}
     for e in case.evidence or []:
         category = getattr(e, "category", None)
@@ -1344,9 +1347,16 @@ class ClosureReadiness:
     TRIVIAL = "trivial"
     SUGGEST_RESOLVE = "suggest_resolve"
 
-    def __init__(self, verdict: str, message: str):
+    def __init__(self, verdict: str, message: "str | Callable[[], str]"):
         self.verdict = verdict
-        self.message = message
+        self._message = message
+
+    @property
+    def message(self) -> str:
+        """The prompt, built on first read when given as a callable."""
+        if callable(self._message):
+            self._message = self._message()
+        return self._message
 
 
 def _solution_display_titles(solutions: list) -> list[str]:
@@ -1426,33 +1436,128 @@ def assess_closure_readiness(case: "Case") -> ClosureReadiness:
         case.progress.problem_status != ProblemStatus.INVALIDATED
         and _resolution_confirmed(case)
     ):
-        rc = (
-            getattr(case.root_cause_conclusion, "root_cause", None)
-            or "the identified root cause"
-        )
-        detail = f"- **Root cause**: {rc}\n"
-        if has_solutions:
-            detail += (
-                "- **Solution**: "
-                + ", ".join(_solution_display_titles(case.solutions))
-                + "\n"
-            )
+        # Built only when read: verdict-only callers (``closure_verdict``,
+        # disposition eligibility on every save) never compose it.
         return ClosureReadiness(
             verdict=ClosureReadiness.SUGGEST_RESOLVE,
-            message=(
-                "This case qualifies for **resolved** status rather than "
-                "closed. Closing would close it without marking it resolved; "
-                "the confirmed fix stays on record.\n\n"
-                # The rows the pivot rests on, cited (#1906 D5.1).
-                "The record shows:\n\n"
-                + resolution_record_lines(case)
-                + "\n"
-                + detail
-                + "\nWould you like to mark it **resolved** instead?"
-            ),
+            message=lambda: _suggest_resolve_message(case, has_solutions),
         )
 
     return assess_close_summary(case)
+
+
+#: How much of a row's summary (or a cause's statement) a record line quotes.
+RECORD_TEXT_CHARS = 120
+
+
+def _clip(text: str | None) -> str:
+    text = " ".join((text or "").split()).rstrip(" .")
+    if len(text) <= RECORD_TEXT_CHARS:
+        return text
+    return text[: RECORD_TEXT_CHARS - 1].rstrip() + "…"
+
+
+def _row_text(row) -> str:
+    return _clip(getattr(row, "summary", None) or getattr(row, "extract", None))
+
+
+def resolution_record_lines(case) -> str:
+    """The rows a resolve offer cites (#1906 D5.1), as markdown bullets; ``""``
+    when the case confirms no resolution.
+
+    Every resolve offer and close→resolve pivot says what the record shows and
+    nothing stronger (design P3): for each cause the cause leg re-observed, its
+    latest row; for each row that showed the problem and was re-checked, its
+    latest re-check; then each row that showed the problem with no re-check in
+    the problem leg. Read only from the confirmation's legs
+    (``resolution_confirmation_rows``), the rows' data turns and subjects
+    (``subject_index``), the verifying rows, and whether a root cause is on
+    record (``cause_identification_leg``, the one source every surface reads:
+    without a leg the cause line says "no root cause on record" instead of
+    naming the root the row re-checked). Here, beside the closure pivot that
+    composes with it, because the replies in ``milestone_engine`` import this
+    module.
+
+    Residual, stated: "Not re-checked since the fix" names only RECORDED
+    verifying rows; a signal the user reported but never submitted as data
+    (#1906's Prometheus target) has no row to name.
+    """
+    rows = resolution_confirmation_rows(case)
+    if not rows:
+        return ""
+    cause_on_record = cause_identification_leg(case) is not None
+    subjects = subject_index(case)
+    nodes = getattr(case, "causal_nodes", None) or {}
+    hypotheses = getattr(case, "hypotheses", None) or {}
+
+    def latest(by: dict, key, row) -> None:
+        if key not in by or subjects.observed(row) >= subjects.observed(by[key]):
+            by[key] = row
+
+    causes: dict = {}
+    rechecked: dict = {}
+    for row in rows:
+        named = getattr(row, "rechecks_evidence_id", None)
+        if row.category == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE:
+            latest(causes, subjects.cause_targets(named), row)
+        else:
+            latest(rechecked, named, row)
+
+    lines = []
+    for targets, row in causes.items():
+        if not cause_on_record:
+            label = "no root cause on record"
+        else:
+            # A rootless pool binds to its hypothesis (``cause_targets``).
+            label = " / ".join(
+                _clip(
+                    nodes[t].statement
+                    if t in nodes
+                    else getattr(hypotheses.get(t), "statement", None)
+                )
+                for t in sorted(targets)
+            )
+        lines.append(
+            f"- **The cause** — {label}: {_row_text(row)} "
+            f"(turn {subjects.observed(row)})"
+        )
+    for verifying_id in subjects.verifying:
+        if verifying_id in rechecked:
+            row = rechecked[verifying_id]
+            lines.append(
+                f"- **The problem** — {_row_text(subjects.rows[verifying_id])}, "
+                f"re-checked: {_row_text(row)} (turn {subjects.observed(row)})"
+            )
+    for verifying_id in subjects.verifying:
+        if verifying_id not in rechecked and verifying_id in subjects.rows:
+            lines.append(
+                "- **Not re-checked since the fix** — "
+                + _row_text(subjects.rows[verifying_id])
+            )
+    return "\n".join(lines)
+
+
+def _suggest_resolve_message(case: "Case", has_solutions: bool) -> str:
+    """The closure→resolve pivot's prompt: the rows it rests on, cited (#1906
+    D5.1), and only the root cause and fix the record holds."""
+    rc = getattr(case.root_cause_conclusion, "root_cause", None)
+    detail = f"- **Root cause**: {rc}\n" if rc else ""
+    if has_solutions:
+        detail += (
+            "- **Solution**: "
+            + ", ".join(_solution_display_titles(case.solutions))
+            + "\n"
+        )
+    kept = "; the confirmed fix stays on record." if has_solutions else "."
+    return (
+        "This case qualifies for **resolved** status rather than closed. "
+        f"Closing would close it without marking it resolved{kept}\n\n"
+        "The record shows:\n\n"
+        + resolution_record_lines(case)
+        + "\n"
+        + detail
+        + "\nWould you like to mark it **resolved** instead?"
+    )
 
 
 def assess_close_summary(case: "Case") -> ClosureReadiness:

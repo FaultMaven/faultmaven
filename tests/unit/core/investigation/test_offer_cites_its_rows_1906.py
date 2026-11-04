@@ -6,34 +6,42 @@ Every opener used to assert a cause "confirmed eliminated" and a problem that
 the user "the problem went with it" in the same reply that asked them to
 check whether it had (#1906). Each path below is driven through
 ``MilestoneEngine.process_turn`` with only the LLM seam replaced. Each offer
-must carry the cause row's and the problem row's summaries with their turns,
-name the verifying row nobody re-checked (here the Prometheus target), and
-contain neither old phrase. The backstop keeps the "still open until you
-confirm" clause INV-40's suppression rests on.
+must carry the cause row's and the problem row's summaries, each with its own
+turn, name the verifying row nobody re-checked (here the Prometheus target),
+and contain neither old phrase. Whether a root cause is on record is one
+answer on every surface (``cause_identification_leg``). The backstop keeps
+the "still open until you confirm" clause INV-40's suppression rests on.
 
 #2428: the READY confirmation asked "how you verified the fix worked", keyed
-on a ``Solution.verification_method`` no investigation path writes, under a
-fixed "Thanks for the additional details." whatever the user wrote.
+on a ``Solution.verification_method`` no investigation path writes, and step
+0's reply opened with a fixed "Thanks for the additional details." whatever
+the user wrote.
 """
+
+from unittest.mock import patch
 
 import pytest
 
+from faultmaven.core.investigation import terminal_transitions
 from faultmaven.core.investigation.cause_assurance import (
     resolution_confirmation_rows,
     subject_index,
 )
 from faultmaven.core.investigation.offers import remember_resolve_request
+from faultmaven.core.investigation.schemas import InvestigationResponse_Diagnosis
 from faultmaven.core.investigation.terminal_transitions import (
     ResolutionReadiness,
+    assess_closure_readiness,
     assess_resolution_readiness,
     cause_identification_leg,
+    closure_verdict,
 )
 from faultmaven.modules.case.contracts import EvidenceCategory
 from tests.case_builders import with_open_offer
 from tests.unit.core.investigation import (
     test_declined_resolution_binds_the_model_1895 as t1895,
 )
-from tests.unit.core.investigation.bound_rows import bound_evidence, upload
+from tests.unit.core.investigation.bound_rows import bound_evidence, bound_row, upload
 from tests.unit.core.investigation.test_deferred_disposition_turn import (
     _case as _deferred_case,
 )
@@ -41,10 +49,9 @@ from tests.unit.core.investigation.test_deferred_disposition_turn import (
     _deferred_response,
 )
 from tests.unit.core.investigation.test_resolution_backstop_turn import (
+    LLM_ANALYSIS,
     _case,
-    _confirmed_case,
     _engine,
-    _recording,
     _silent_response,
 )
 
@@ -53,15 +60,25 @@ pytestmark = pytest.mark.unit
 #: The second signal the user reported, recorded as a verifying row and never
 #: re-checked after the fix: #1906's scrape target.
 _UNCHECKED = "Prometheus shows the billing scrape target DOWN"
+_CAUSE_ROW = "ExecStart now names /usr/bin/billing-exporter and the unit runs"
+_PROBLEM_ROW = "AssumeRoleWithWebIdentity succeeds for the data-processor pods"
 _STILL_OPEN = "still open until you confirm"
 _OLD = ("confirmed eliminated", "went with it")
-_HOW_VERIFIED = "how you verified"
-_THANKS = "Thanks for the additional details."
 
 
-def _with_an_unchecked_signal(case):
-    """``case`` plus a second row that showed the problem, which no post-fix
-    row re-checks."""
+def _confirm(case, *, problem: bool = True):
+    """The legs at distinct data turns (the cause at 2, the problem at 3), and
+    a second row that showed the problem, which nothing re-checks."""
+    bound_row(
+        case, EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE, turn=2, summary=_CAUSE_ROW
+    )
+    if problem:
+        bound_row(
+            case,
+            EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+            turn=3,
+            summary=_PROBLEM_ROW,
+        )
     row = bound_evidence(
         EvidenceCategory.SYMPTOM_EVIDENCE,
         turn=1,
@@ -72,45 +89,56 @@ def _with_an_unchecked_signal(case):
     )
     case.evidence.append(row)
     case.problem_verification.verifying_evidence_ids.append(row.evidence_id)
+    case.current_turn = 3
     return case
 
 
-def _ready_case():
-    return _with_an_unchecked_signal(_confirmed_case())
+def _ready_case(leg: bool = True, *, problem: bool = True):
+    case = _confirm(_case(absence=None), problem=problem)
+    if not leg:
+        # The count-held root stays in the cause pool, so READY holds; no
+        # cause-identification leg names a root cause.
+        case.root_cause_conclusion = None
+    return case
 
 
-def _assert_cites_its_rows(text: str, case) -> None:
+def _root_statements(case) -> list[str]:
+    return [n.statement for n in case.causal_nodes.values()]
+
+
+def _assert_cites_its_rows(text: str, case, leg: bool) -> None:
     rows = resolution_confirmation_rows(case)
-    categories = {row.category for row in rows}
-    assert categories == {
-        EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
-        EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
-    }, "premise: both legs stand"
     subjects = subject_index(case)
+    turns = {row.category: subjects.observed(row) for row in rows}
+    assert len(set(turns.values())) == 2, "premise: the legs at distinct turns"
+    lines = text.splitlines()
     for row in rows:
-        assert row.summary.rstrip(".") in text, row.category
-        assert f"(turn {subjects.observed(row)})" in text
-    assert "**The cause** —" in text
-    assert "**The problem** —" in text
-    assert f"**Not re-checked since the fix** — {_UNCHECKED}" in text
+        (line,) = [ln for ln in lines if row.summary.rstrip(".") in ln]
+        assert line.endswith(f"(turn {subjects.observed(row)})"), line
+    (cause,) = [ln for ln in lines if ln.startswith("- **The cause** —")]
+    assert any(ln.startswith("- **The problem** —") for ln in lines)
+    assert f"- **Not re-checked since the fix** — {_UNCHECKED}" in lines
+    if leg:
+        assert any(statement in cause for statement in _root_statements(case))
+    else:
+        assert cause.startswith("- **The cause** — no root cause on record:")
+        for statement in _root_statements(case):
+            assert statement not in text
     for phrase in _OLD:
         assert phrase not in text
 
 
-async def _backstop(*, root: bool):
-    case = _ready_case()
-    if not root:
-        case.root_cause_conclusion = None
+async def _backstop(leg: bool):
+    case = _ready_case(leg)
     result = await _engine(_silent_response()).process_turn(
         case=case, user_message="the errors are gone", redaction_ctx=None
     )
-    assert (cause_identification_leg(case) is not None) is root, "premise"
     assert case.offer_record.open.basis == "backstop"
     return result["agent_response"], case
 
 
-async def _deferred_pivot():
-    case = _with_an_unchecked_signal(_deferred_case(confirmed=True))
+async def _deferred_pivot(leg: bool):
+    case = _confirm(_deferred_case(confirmed=False))
     result = await _engine(_deferred_response()).process_turn(
         case=case, user_message="the platform team ships it", redaction_ctx=None
     )
@@ -121,10 +149,9 @@ async def _deferred_pivot():
     return result["agent_response"], case
 
 
-async def _model_proposes(to_state: str):
-    case = _ready_case()
-    engine = t1895._engine()
-    await t1895._turn(engine, case, "all clear", propose=to_state)
+async def _model_proposes(to_state: str, leg: bool):
+    case = _ready_case(leg)
+    await t1895._turn(t1895._engine(), case, "all clear", propose=to_state)
     offer = case.offer_record.open
     assert (offer.kind, offer.basis) == ("resolve", "model")
     # The model's offer composes no prose; its summary is what the user is
@@ -132,8 +159,8 @@ async def _model_proposes(to_state: str):
     return offer.summary, case
 
 
-async def _menu_pivot():
-    case = _ready_case()
+async def _menu_pivot(leg: bool):
+    case = _ready_case(leg)
     result = await t1895._turn(
         t1895._engine(),
         case,
@@ -148,8 +175,8 @@ async def _menu_pivot():
     return result["agent_response"], case
 
 
-async def _confirm_time_pivot():
-    case = _ready_case()
+async def _confirm_time_pivot(leg: bool):
+    case = _ready_case(leg)
     key = with_open_offer(case, kind="close", basis="model").proposal_id
     result = await t1895._turn(
         t1895._engine(),
@@ -162,27 +189,31 @@ async def _confirm_time_pivot():
     return result["agent_response"], case
 
 
-async def _step_zero_ready():
+async def _step_zero_ready(leg: bool):
     """#2428's turn-13 shape (c1030-o3): the user was asked for the problem's
     check, and this turn pastes it; the model records the re-check, and step
     0 finds the request met."""
-    case = _with_an_unchecked_signal(
-        _case(absence=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE)
-    )
+    case = _ready_case(leg, problem=False)
     case.offer_record = remember_resolve_request(
         case, ["confirmation the problem is now resolved"]
     )
-    case.current_turn += 1
-    verifying = case.problem_verification.verifying_evidence_ids[0]
-    engine = _engine(
-        _recording(
-            "symptom_absence_evidence",
-            "AssumeRoleWithWebIdentity succeeds for the data-processor pods",
-            "AssumeRoleWithWebIdentity: 200 OK",
-            verifying,
-        )
+    case.current_turn = 4
+    response = InvestigationResponse_Diagnosis(
+        agent_response=LLM_ANALYSIS,
+        state_updates={
+            "evidence_to_add": [
+                {
+                    "summary": _PROBLEM_ROW,
+                    "extract": "AssumeRoleWithWebIdentity: 200 OK",
+                    "category": "symptom_absence_evidence",
+                    "source_type": "logs",
+                    "source_file_id": upload(case, 4),
+                    "rechecks": case.problem_verification.verifying_evidence_ids[0],
+                }
+            ]
+        },
     )
-    result = await engine.process_turn(
+    result = await _engine(response).process_turn(
         case=case,
         user_message="Confirmation the original problem is gone:\n<pasted check>",
         redaction_ctx=None,
@@ -195,8 +226,8 @@ async def _step_zero_ready():
     return result["agent_response"], case
 
 
-async def _reopen_chip():
-    case = _ready_case()
+async def _reopen_chip(leg: bool):
+    case = _ready_case(leg)
     engine = t1895._engine()
     await t1895._turn(engine, case, "errors gone")
     await t1895._turn(engine, case, "no")
@@ -212,60 +243,98 @@ async def _reopen_chip():
 
 
 _PATHS = {
-    "backstop with a root": lambda: _backstop(root=True),
-    "backstop without a root": lambda: _backstop(root=False),
+    "backstop": _backstop,
     "deferred pivot": _deferred_pivot,
-    "model closed pivot": lambda: _model_proposes("closed"),
+    "model closed pivot": lambda leg: _model_proposes("closed", leg),
     "menu pivot": _menu_pivot,
     "confirm-time pivot": _confirm_time_pivot,
     "step 0 READY": _step_zero_ready,
-    "model resolved READY": lambda: _model_proposes("resolved"),
+    "model resolved READY": lambda leg: _model_proposes("resolved", leg),
     "reopen chip": _reopen_chip,
 }
+
+#: Every surface on both shapes, except the deferred pivot without a leg: the
+#: deferred proposer offers only on an identified cause
+#: (``stage_gates._solution_cause_validated``, which reads the same leg).
+_SHAPES = [
+    (path, leg)
+    for path in _PATHS
+    for leg in (True, False)
+    if leg or path != "deferred pivot"
+]
 
 #: The paths that compose the READY confirmation (#2428).
 _CONFIRMATIONS = ("step 0 READY", "model resolved READY", "reopen chip")
 
 
-@pytest.mark.parametrize("path", list(_PATHS))
-async def test_every_resolve_offer_cites_the_rows_that_earn_it(path):
-    text, case = await _PATHS[path]()
-    _assert_cites_its_rows(text, case)
+@pytest.mark.parametrize("path, leg", _SHAPES)
+async def test_every_resolve_offer_cites_the_rows_that_earn_it(path, leg):
+    text, case = await _PATHS[path](leg)
+    assert (cause_identification_leg(case) is not None) is leg, "premise"
+    _assert_cites_its_rows(text, case, leg)
 
 
-@pytest.mark.parametrize("root", [True, False])
-async def test_the_backstop_keeps_its_still_open_clause(root):
+@pytest.mark.parametrize("leg", [True, False])
+async def test_the_backstop_keeps_its_still_open_clause(leg):
     """INV-40's suppression rests on the clause, not on the offer's other
     words (``turn_completion._narration_overclaim_notice``)."""
-    text, _ = await _backstop(root=root)
+    text, _ = await _backstop(leg)
     assert _STILL_OPEN in text
     assert text.rstrip().endswith("Shall I mark this case resolved?")
 
 
-async def test_a_backstop_with_no_cause_on_record_names_no_root():
-    text, case = await _backstop(root=False)
-    assert "**The cause** — no root cause on record:" in text
-    for node in case.causal_nodes.values():
-        assert node.statement not in text
-
-
 async def test_the_deferred_pivot_keeps_its_out_of_band_reason():
-    text, _ = await _deferred_pivot()
+    text, _ = await _deferred_pivot(True)
     assert "out-of-band" in text
     assert "Closing would" not in text
 
 
 @pytest.mark.parametrize("path", ["menu pivot", "confirm-time pivot"])
-async def test_a_close_pivot_keeps_what_closing_would_do(path):
-    text, _ = await _PATHS[path]()
+@pytest.mark.parametrize("leg", [True, False])
+async def test_a_close_pivot_states_only_what_the_record_holds(path, leg):
+    """It keeps what closing would do; the root-cause line renders only with
+    a conclusion on record, never as a placeholder."""
+    text, _ = await _PATHS[path](leg)
     assert "Closing would close it without marking it resolved" in text
+    assert ("- **Root cause**:" in text) is leg
+    assert "the identified root cause" not in text
+
+
+def test_the_pivot_claims_a_confirmed_fix_only_with_one_on_record():
+    case = _ready_case(False)
+    case.solutions = []
+    message = assess_closure_readiness(case).message
+    assert "Closing would close it without marking it resolved.\n" in message
+    assert "the confirmed fix stays on record" not in message
+
+
+def test_a_verdict_only_read_composes_nothing():
+    """Disposition eligibility reads the closure verdict on every save; the
+    pivot's rows are composed only when its message is read."""
+    case = _ready_case()
+    with patch.object(
+        terminal_transitions, "resolution_record_lines", return_value="ROWS"
+    ) as compose:
+        assert closure_verdict(case) == "suggest_resolve"
+        readiness = assess_closure_readiness(case)
+        compose.assert_not_called()
+        assert "ROWS" in readiness.message
+        assert "ROWS" in readiness.message
+    compose.assert_called_once_with(case)
 
 
 @pytest.mark.parametrize("path", _CONFIRMATIONS)
 async def test_the_confirmation_asks_nothing_the_record_holds(path):
-    """#2428: no "how you verified" hint and no fixed thanks; the commands
-    hint, which the record does not hold, stays."""
-    text, _ = await _PATHS[path]()
-    assert _HOW_VERIFIED not in text
-    assert _THANKS not in text
+    """#2428: no "how you verified" hint; the commands hint, which the record
+    does not hold, stays."""
+    text, _ = await _PATHS[path](True)
+    assert "how you verified" not in text
     assert "specific commands or steps you used" in text
+
+
+async def test_step_zero_ready_opens_with_no_fixed_thanks():
+    """#2428: the one path that carried the prefix (``turn_completion``)."""
+    text, _ = await _step_zero_ready(True)
+    assert "Thanks for the additional details." not in text
+    assert text.startswith(LLM_ANALYSIS)
+    assert "Here's what I have on record:" in text

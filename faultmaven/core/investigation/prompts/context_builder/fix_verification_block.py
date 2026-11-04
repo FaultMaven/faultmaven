@@ -28,14 +28,20 @@ the long post-fix cases that need this block bring.
 from faultmaven.core.investigation.cause_assurance import (
     FIX_FAILED,
     FIX_SUCCEEDED,
-    cause_elimination_rows,
+    SUBJECT_PROBLEM,
+    cause_recheck_status,
     fix_windows,
     subject_index,
     symptom_elimination_rows,
 )
+from faultmaven.core.investigation.evidence_need_surfacing import is_ask_exhausted
+from faultmaven.core.investigation.terminal_transitions import (
+    _relief_without_cause_recheck,
+)
 from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
+    EvidenceCategory,
     InvestigationActionType,
     InvestigationStage,
     NeedPurpose,
@@ -65,20 +71,10 @@ def _ids(ids: list[str]) -> str:
     return f"{shown} (+{more} more)" if more > 0 else shown
 
 
-def _window_state(window) -> str:
-    if window is None:
-        return "not yet observed"
-    if window.state == FIX_SUCCEEDED:
-        return "succeeded"
-    if window.state == FIX_FAILED:
-        return f"failed at turn {window.failure_turn}"
-    return "observed, no verdict yet" if window.observed else "not yet observed"
-
-
-def _attempt_lines(case: Case) -> list[str]:
-    """The accepted SOLUTIONs with an execution turn, as the fix windows date
-    them (``cause_assurance._dated_fix_turns``), the latest ``MAX_ATTEMPTS``."""
-    attempts = sorted(
+def _dated_fixes(case: Case) -> list:
+    """The accepted SOLUTIONs with an execution turn, oldest first: what the
+    fix windows date (``cause_assurance._dated_fix_turns``)."""
+    return sorted(
         (
             a
             for a in case.proposed_actions or []
@@ -88,37 +84,80 @@ def _attempt_lines(case: Case) -> list[str]:
             and a.accepted_in_turn is not None
         ),
         key=lambda a: a.accepted_in_turn,
-    )[-MAX_ATTEMPTS:]
-    if not attempts:
-        return ["Fix attempts: none recorded"]
-    windows = {w.fix_turn: w for w in fix_windows(case) if w.fix_turn is not None}
+    )
+
+
+def _window_state(case: Case, window, subjects) -> str:
+    if window is None:
+        return "not yet observed"
+    if window.state == FIX_SUCCEEDED:
+        return "succeeded"
+    if window.state == FIX_FAILED:
+        return f"failed at turn {window.failure_turn}"
+    if _relief_without_cause_recheck(case, window, subjects):
+        return (
+            f"problem re-checked gone at turn {window.relief_turn}; "
+            "cause re-check owed"
+        )
+    return "observed, no verdict yet" if window.observed else "not yet observed"
+
+
+def _attempt_lines(case: Case, attempts: list, windows, subjects) -> list[str]:
+    by_turn = {w.fix_turn: w for w in windows if w.fix_turn is not None}
     lines = [f"Fix attempts (latest {MAX_ATTEMPTS}, oldest first):"]
-    for a in attempts:
+    if len(attempts) > MAX_ATTEMPTS:
+        lines.append(f"  …and {len(attempts) - MAX_ATTEMPTS} earlier")
+    for a in attempts[-MAX_ATTEMPTS:]:
         description = " ".join((a.description or "").split())
         if len(description) > _DESCRIPTION_CHARS:
             description = description[: _DESCRIPTION_CHARS - 1].rstrip() + "…"
+        state = _window_state(case, by_turn.get(a.accepted_in_turn), subjects)
         lines.append(
             f"  - [{a.action_id}] {description} — executed turn "
-            f"{a.accepted_in_turn}: {_window_state(windows.get(a.accepted_in_turn))}"
+            f"{a.accepted_in_turn}: {state}"
         )
     return lines
 
 
-def _leg_lines(case: Case) -> list[str]:
-    cause_rows = cause_elimination_rows(case)
-    problem_rows = symptom_elimination_rows(case, cause_rows)
-    lines = [
-        "Resolution legs (RESOLVED needs both):",
-        "  - cause: " + (_ids([r.evidence_id for r in cause_rows]) or "missing"),
-    ]
-    if not cause_rows:
-        # The problem leg is read from the cause leg's turn on.
-        lines.append("  - problem: not read until the cause leg stands")
+def _leg_lines(case: Case, windows, subjects) -> list[str]:
+    status = cause_recheck_status(case, subjects=subjects, windows=windows)
+    cause_rows = [row for row, why in status if why is None]
+    lines = ["Resolution legs (RESOLVED needs both):"]
+    if cause_rows:
+        lines.append("  - cause: " + _ids([r.evidence_id for r in cause_rows]))
+    else:
+        # A bound re-check that does not count yet says why, so the model asks
+        # for what is missing rather than for the re-check again.
+        cause = "  - cause: missing"
+        if status:
+            pending = [f"{row.evidence_id} ({why})" for row, why in status]
+            cause += "; re-checked, not counted yet: " + ", ".join(pending[:MAX_IDS])
+        lines.append(cause)
+        latest = windows[-1]
+        if _relief_without_cause_recheck(case, latest, subjects):
+            # The symptom checked before the cause (#1906): the problem is
+            # shown gone after the fix, and the cause re-check is owed.
+            gone = [
+                e.evidence_id
+                for e in subjects.rows.values()
+                if e.category == EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE
+                and subjects.subject(e) == SUBJECT_PROBLEM
+                and latest.holds(subjects.observed(e))
+            ]
+            lines.append(
+                f"  - problem: re-checked gone at turn {latest.relief_turn} "
+                f"({_ids(gone)}); counted once the cause is re-checked after "
+                "the fix"
+            )
+        else:
+            lines.append("  - problem: read once the cause leg stands")
         return lines
+    problem_rows = symptom_elimination_rows(
+        case, cause_rows, subjects=subjects, windows=windows
+    )
     problem = "  - problem: " + (
         _ids([r.evidence_id for r in problem_rows]) or "missing"
     )
-    subjects = subject_index(case)
     named = {getattr(r, "rechecks_evidence_id", None) for r in problem_rows}
     unchecked = [v for v in subjects.verifying if v in subjects.rows and v not in named]
     if unchecked:
@@ -128,36 +167,54 @@ def _leg_lines(case: Case) -> list[str]:
 
 
 def _need_lines(case: Case) -> list[str]:
+    """The outstanding symptom-verification needs the engine still puts to the
+    user; ask-exhausted ones are counted, in ``<evidence_needs>``'s own words,
+    not listed as live asks (#1079)."""
     needs = [
         n
         for n in case.evidence_needs
         if n.is_outstanding and n.purpose == NeedPurpose.SYMPTOM_VERIFICATION
     ]
-    if not needs:
-        return ["Outstanding symptom-verification needs: none"]
-    lines = ["Outstanding symptom-verification needs:"]
-    lines += [
-        f"  - [{n.need_id}] {_truncate_request_text(n.request_text)}"
-        for n in needs[:MAX_NEEDS]
-    ]
-    if len(needs) > MAX_NEEDS:
-        lines.append(f"  …and {len(needs) - MAX_NEEDS} more")
+    live = [n for n in needs if not is_ask_exhausted(n, case.current_turn)]
+    stopped = len(needs) - len(live)
+    if not live:
+        lines = ["Outstanding symptom-verification needs: none"]
+    else:
+        lines = ["Outstanding symptom-verification needs:"]
+        lines += [
+            f"  - [{n.need_id}] {_truncate_request_text(n.request_text)}"
+            for n in live[:MAX_NEEDS]
+        ]
+        if len(live) > MAX_NEEDS:
+            lines.append(f"  …and {len(live) - MAX_NEEDS} more")
+    if stopped:
+        lines.append(
+            f"  ({stopped} the engine has STOPPED surfacing: see <evidence_needs>)"
+        )
     return lines
 
 
 def build_fix_verification_block(case: Case) -> str:
-    """The block, or ``""`` outside MITIGATION and TREATMENT (the stages the
-    re-verification checklist renders in)."""
-    if case.state != CaseState.INVESTIGATING or case.current_stage not in (
-        InvestigationStage.MITIGATION,
-        InvestigationStage.TREATMENT,
+    """The block, or ``""``: in TREATMENT, and in MITIGATION once a SOLUTION is
+    dated (mitigation attempts are not records until #1906 Phase 4, D3). One
+    ``SubjectIndex`` and one ``fix_windows`` list serve the whole build."""
+    stage = case.current_stage if case.state == CaseState.INVESTIGATING else None
+    attempts = _dated_fixes(case)
+    if stage != InvestigationStage.TREATMENT and not (
+        stage == InvestigationStage.MITIGATION and attempts
     ):
         return ""
+    subjects = subject_index(case)
+    windows = fix_windows(case, subjects)
     lines = [
         OPEN_TAG,
         "The engine's record of the fix (informational; ids name evidence rows):",
-        *_attempt_lines(case),
-        *_leg_lines(case),
+        *(
+            _attempt_lines(case, attempts, windows, subjects)
+            if attempts
+            else ["Fix attempts: none recorded"]
+        ),
+        *_leg_lines(case, windows, subjects),
         *_need_lines(case),
         CLOSE_TAG,
     ]

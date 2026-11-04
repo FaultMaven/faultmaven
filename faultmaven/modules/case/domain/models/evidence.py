@@ -78,8 +78,9 @@ class EvidenceCategory(str, Enum):
 
     Collected during MITIGATION (the relief a workaround brought) and
     during TREATMENT, where it is one of the two rows RESOLVED needs: the
-    reported problem gone, at or after the causal-absence row that shows
-    the cause gone. After a fix it names, in ``rechecks``, a row that
+    reported problem gone, its data submitted no earlier than the earlier
+    of the data of the causal-absence row (the cause gone) and the fix's
+    execution turn. After a fix it names, in ``rechecks``, a row that
     showed the problem.
 
     Examples, each from submitted data (pasted or attached), never from the

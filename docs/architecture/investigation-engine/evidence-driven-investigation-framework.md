@@ -1170,7 +1170,7 @@ Attempts are recorded for SOLUTIONs (TREATMENT cycles); a MITIGATION keeps a sin
 
 This is not used for escalation thresholds (escalation is based on capability exhaustion, not a fixed counter). It provides:
 
-- **LLM context**: On every MITIGATION and TREATMENT turn the `<fix_verification>` block (`prompts/context_builder/fix_verification_block.py`, #1906 D7) shows the latest SOLUTION attempts with their window state, the legs a resolution reads, and the outstanding symptom-verification needs, so the agent can avoid repeating a failed approach and cannot narrate a readiness the engine does not hold. Mitigations are not listed: they are a record, not attempts, until D3
+- **LLM context**: The `<fix_verification>` block (`prompts/context_builder/fix_verification_block.py`, #1906 D7) shows the agent the latest SOLUTION attempts with their window state, the legs a resolution reads, and the outstanding symptom-verification needs, so it can avoid repeating a failed approach. It is informational: no gate reads it. It renders on TREATMENT turns, and on MITIGATION turns once a SOLUTION is dated; the minimal fallback prompt does not carry it. Mitigations are not listed: they are a record, not attempts, until D3
 - **Analytics**: Time-per-cycle, failure categorization, investigation thoroughness, mitigation effectiveness
 - **Progress monitor input**: The progress monitor can use attempt history to detect fix-failure cycles and repeated execution paths (see [Progress Transparency](./progress-transparency.md) repair patterns)
 - **Audit trail**: Complete record of all mitigation and solution actions, indexed per-attempt regardless of which milestone flags are set

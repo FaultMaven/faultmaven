@@ -4,7 +4,7 @@ from faultmaven.core.investigation.cause_assurance import runbook_conversion_rea
 from faultmaven.core.investigation.prompts.templates.terminal import (
     TerminalAffordances,
 )
-from faultmaven.core.investigation.resolution_record import resolution_record_lines
+from faultmaven.core.investigation.terminal_transitions import resolution_record_lines
 from faultmaven.modules.case.contracts import (
     CaseState,
     ClosureReason,

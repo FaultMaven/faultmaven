@@ -401,9 +401,9 @@ evidence_trail:
   uncertainties: [what remains unclear]
 
 Milestone validation is CATEGORY-BASED: Creating evidence with the right category
-automatically validates milestones. Cite evidence IDs only where a field asks
-for them: `symptom_verification_evidence_ids` with the symptom claim, and
-`rechecks` on a post-fix observation.
+automatically validates milestones. A field that asks for evidence IDs takes
+them, as its description says: `symptom_verification_evidence_ids` with the
+symptom claim and `rechecks` on a post-fix observation are two of them.
 ⚠️ HARD RULE: Never set a milestone to True without creating corresponding evidence
 in evidence_to_add. No evidence = indicator stays False.
 

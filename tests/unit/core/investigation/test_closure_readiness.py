@@ -196,9 +196,9 @@ class TestSuggestResolveVerdict:
 
     def test_pivot_template_is_otherwise_unchanged(self):
         assert self._pivot_message(with_solution=False) == (
+            # No Solution on record: no "confirmed fix" to keep (#1906 D5.1).
             "This case qualifies for **resolved** status rather than closed. "
-            "Closing would close it without marking it resolved; the confirmed "
-            "fix stays on record.\n\n"
+            "Closing would close it without marking it resolved.\n\n"
             "The record shows:\n\n"
             "- **The cause** — max_connections is set to 20, below the worker "
             "pool size: Post-fix logs confirm pool exhaustion no longer occurs "
