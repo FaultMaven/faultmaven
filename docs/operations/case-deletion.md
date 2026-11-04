@@ -54,10 +54,10 @@ successful delete it lapses on its own within 30 s.
 - **A stalled holder.** A process that stops renewing for longer than 30 s
   (a frozen event loop, a paused pod) loses its lease, and a delete can then
   proceed under its work.
-- **A lost member.** Between a member's loss from Redis (an eviction, a
-  failover that loses data) and the next renewal, at most 10 s, a delete can
-  pass under running holders. The renewal, or the case's next turn, writes the
-  member again.
+- **A lost member.** From a member's loss from Redis (an eviction, a failover
+  that loses data) until the holder's next successful renewal (every 10 s), a
+  delete can pass under running holders. The renewal, or the case's next turn,
+  writes the member again.
 - **A resume.** Resuming a session on the case
   (`POST /cases/sessions/{session_id}/resume/{case_id}`) is not a turn and
   holds no lease. One that passed its access check before the delete can

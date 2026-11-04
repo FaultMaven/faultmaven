@@ -1833,7 +1833,9 @@ class DIContainer(BaseDIContainer):
         Otherwise it stops the case-lease renewals, unless the drain was
         interrupted: it then cancels the cancellable rest with the grace, which
         a second interruption ends, and the leases of the work still running
-        keep renewing, through the Redis client it closes. It resets, so an
+        keep renewing, through the Redis client it closes. A hold taken during
+        that grace makes it not the last: it resets and closes nothing, and
+        raises the interruption, read as not the last. Else it resets, so an
         ``initialize()`` during the closes composes afresh and keeps its hold.
         Then it closes everything recorded with :meth:`own`, newest first,
         through ``run_teardown`` (every close runs, a failed one is logged, an
@@ -1852,11 +1854,14 @@ class DIContainer(BaseDIContainer):
                 raise interrupted
             return False
         if interrupted is None:
+            # Synchronous: no hold can be taken between the check and the reset.
             interrupted = await teardown_step(
                 "Letting the case leases lapse", _let_leases_lapse
             )
         else:
             await teardown_step("Cancelling the cancellable rest", _cancel_cancellable)
+            if self._holds.total:  # a hold taken during the grace
+                raise interrupted
         owned = self._owned[::-1]
         self._owned.clear()  # closed once, whatever the closes do
         self.reset()

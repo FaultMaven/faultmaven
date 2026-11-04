@@ -1122,6 +1122,47 @@ async def test_an_interrupted_last_release_cancels_cancellable_work_before_the_c
     assert order[0] == ("close", True, False) and work.cancelled()
 
 
+async def test_a_hold_taken_during_the_cancel_grace_keeps_its_composition(
+    container, monkeypatch, record
+):
+    """The grace ran after the holds check: the reset voided an initialize()
+    taken meanwhile, the stores closed under it, and the process's steps ran."""
+    from faultmaven.infrastructure.concurrency import teardown
+
+    closed, started, in_grace, gate = [], *(asyncio.Event() for _ in range(3))
+    monkeypatch.setattr(teardown, "close_the_database", lambda: closed.append(1))
+    await _hold(container, 1)
+    client = _own(container, _RealClient())
+
+    async def _slow_to_end():
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            in_grace.set()
+            await gate.wait()
+            raise
+
+    record.track(
+        asyncio.create_task(_slow_to_end()), what="w", kind=record.Kind.CANCELLABLE
+    )
+    releasing = asyncio.create_task(
+        teardown.run_teardown(teardown.ContainerRelease(container.shutdown).steps())
+    )
+    await started.wait()
+    for _ in range(3):
+        await asyncio.sleep(0)
+    releasing.cancel()
+    await asyncio.wait_for(in_grace.wait(), timeout=5)
+    await _elsewhere(container.initialize())
+    gate.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await releasing
+    assert closed == [] and container.is_initialized and container.is_held()
+    client.aclose.assert_not_awaited()
+
+
 class _CountedRedis:
     """FakeRedis that counts the commands sent to it."""
 

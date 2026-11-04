@@ -143,7 +143,9 @@ to its event loop and is never recorded. `shutdown()` names no resource.
      stops (a holder left lets its lease lapse). If the drain was interrupted,
      the cancellable rest is cancelled with the grace instead (a second
      interruption ends it), and the leases of the work still running keep
-     renewing, through the Redis client closed next. Then the reset, so an
+     renewing, through the Redis client closed next. A hold taken during that
+     grace makes this release not the last: it resets and closes nothing, and
+     raises the interruption, read as not the last. Then the reset, so an
      `initialize()` during the closes composes afresh and keeps its hold;
   3. **the closes**: everything owned, newest first, through `run_teardown`'s
      rules (every close runs, a failed one is logged, an interruption, the
