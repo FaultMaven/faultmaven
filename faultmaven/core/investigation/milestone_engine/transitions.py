@@ -582,7 +582,7 @@ class TransitionManager:
                     )
                 else:
                     _add_system_feedback(
-                        metadata, pending_check_feedback(check, proposed=True)
+                        metadata, pending_check_feedback(case, check, proposed=True)
                     )
                     metadata["resolution_pending_check"] = check.need_id
                 metadata["resolution_needs_info_first_pass"] = True

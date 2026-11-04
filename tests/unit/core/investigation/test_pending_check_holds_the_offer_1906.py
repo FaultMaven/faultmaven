@@ -359,6 +359,51 @@ async def test_3_the_models_resolved_while_held_gets_feedback_and_no_request(
     assert case.offer_record.open is None
 
 
+@pytest.mark.parametrize("declined", [False, True])
+async def test_3_the_feedback_promises_no_offer_a_decline_still_binds(declined):
+    """A resolve decline lapses only when the confirmation rows gain one, so
+    under a standing decline the answer alone (a need marked FULFILLED on any
+    other row) brings no offer back: the backstop's and step 2's feedback say
+    what does, and promise nothing. Without a decline, the text is as before.
+    Real turns: the backstop at 8, the model's ``resolved`` at 9."""
+    engine = _engine()
+    case, _, need, _ = await _asked_at_7(engine)
+    if declined:
+        with_declined_offer(case, kind="resolve", basis="backstop")
+    await _turn(engine, case, 8, "checking the targets page")
+    held = case.turn_history[-1].system_feedback
+    await _turn(engine, case, 9, "mark it resolved", propose="resolved")
+    refused = case.turn_history[-1].system_feedback
+    assert case.offer_record.open is None, "premise: still held"
+    named = f"the check you asked for is still pending ([{need.need_id}] {_ASK})."
+    exits = (
+        "mark the need FULFILLED citing it. If the user cannot run the check, "
+        "SUPERSEDE the need with the reason."
+    )
+    decline = (
+        "The user declined the resolution, and once the answer is on record that "
+        "decline still binds unless the answer is a new problem-bound row showing "
+        "the problem gone, which lapses it; otherwise the user re-opens the "
+        "resolution with 'Mark it resolved'."
+    )
+    for feedback, lead, promise in (
+        (held, "RESOLUTION HELD", "The resolution is offered once"),
+        (refused, "RESOLVED NOT PROPOSED", "Propose resolved once"),
+    ):
+        if declined:
+            assert f"{lead}: {named} Record its answer as a row and {exits} " in (
+                feedback
+            )
+            assert decline in feedback
+            assert promise not in feedback
+        else:
+            assert (
+                f"{lead}: {named} {promise} its answer is on record: record the row "
+                f"and {exits}" in feedback
+            )
+            assert "The user declined the resolution" not in feedback
+
+
 async def test_4_step_zero_opens_no_close_on_a_check_that_became_pending():
     """A request remembered at 7 (the cause leg alone), re-checked at 8: the
     problem's check lands, and the model asks for another one in that turn.

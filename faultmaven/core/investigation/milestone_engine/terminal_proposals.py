@@ -268,7 +268,7 @@ def _maybe_propose_confirmed_resolution(case: "Case", metadata: dict) -> None:
             # block renders only after DIAGNOSIS), unless step 2 already
             # answered its ``resolved`` with the same need.
             _add_system_feedback(
-                metadata, pending_check_feedback(check, proposed=False)
+                metadata, pending_check_feedback(case, check, proposed=False)
             )
             metadata["resolution_pending_check"] = check.need_id
         return

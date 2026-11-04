@@ -40,6 +40,7 @@ from faultmaven.core.investigation.cause_assurance import (
 from faultmaven.core.investigation.evidence_need_surfacing import is_ask_exhausted
 from faultmaven.core.investigation.terminal_transitions import (
     _relief_without_cause_recheck,
+    declined_resolve_entry,
 )
 from faultmaven.modules.case.contracts import (
     Case,
@@ -196,7 +197,7 @@ def _need_lines(case: Case, held) -> list[str]:
         lines = ["Outstanding symptom-verification needs:"]
         lines += [
             f"  - [{n.need_id}] {_truncate_request_text(n.request_text)}"
-            + (_held_mark(n) if n is held else "")
+            + (_held_mark(case, n) if n is held else "")
             for n in live[:MAX_NEEDS]
         ]
         if len(live) > MAX_NEEDS:
@@ -208,13 +209,25 @@ def _need_lines(case: Case, held) -> list[str]:
     return lines
 
 
-def _held_mark(need) -> str:
-    if need.state == NeedState.FULFILLED:
-        return (
-            " (holds the resolution offer until answered: the rows it cites "
-            "predate the ask)"
-        )
-    return " (holds the resolution offer until answered)"
+#: The held mark's addition while the user's decline of the resolution
+#: stands: the answer alone does not lapse it (``offers.decline_stands``).
+DECLINE_STILL_BINDS = (
+    "; the user's decline of the resolution still binds after it, unless the "
+    "answer is a new problem-bound row showing the problem gone"
+)
+
+
+def _held_mark(case: Case, need) -> str:
+    """The held need's mark. Under a standing resolve decline
+    (``declined_resolve_entry``) it says the decline outlives the answer, so
+    the mark promises no offer the decline would refuse."""
+    why = (
+        ": the rows it cites predate the ask"
+        if need.state == NeedState.FULFILLED
+        else ""
+    )
+    decline = DECLINE_STILL_BINDS if declined_resolve_entry(case) is not None else ""
+    return f" (holds the resolution offer until answered{why}{decline})"
 
 
 def build_fix_verification_block(case: Case) -> str:

@@ -810,13 +810,27 @@ def resolve_declined_actions(case: Case) -> str:
     return RESOLVE_DECLINED_ACTIONS
 
 
-def pending_check_feedback(check: EvidenceNeed, *, proposed: bool) -> str:
+#: What follows the answer while the user's decline of the resolution stands:
+#: it lapses only when the confirmation rows gain one (``offers.decline_stands``),
+#: so a need marked FULFILLED on any other row leaves it binding.
+PENDING_CHECK_DECLINE_CLAUSE = (
+    "The user declined the resolution, and once the answer is on record that "
+    "decline still binds unless the answer is a new problem-bound row showing "
+    "the problem gone, which lapses it; otherwise the user re-opens the "
+    "resolution with 'Mark it resolved'."
+)
+
+
+def pending_check_feedback(case: Case, check: EvidenceNeed, *, proposed: bool) -> str:
     """What the model is told while its own check holds the resolution
     (#1906 D5.2), naming both ways out: the answer on record, or the need
     superseded. ``proposed``: its ``resolved`` was refused (ruling 3); else
     the backstop held the offer. A held FULFILLED need cites only rows from
     turns before the ask (``pending_symptom_check``), and the feedback says
-    so."""
+    so. While a resolve decline stands (``declined_resolve_entry``), the
+    answer does not by itself bring the resolution back, so the feedback
+    promises no offer or proposal and says what does
+    (``PENDING_CHECK_DECLINE_CLAUSE``)."""
     named = f"[{check.need_id}] {check.request_text}"
     if check.state == NeedState.FULFILLED:
         status = (
@@ -825,19 +839,22 @@ def pending_check_feedback(check: EvidenceNeed, *, proposed: bool) -> str:
         )
     else:
         status = f"the check you asked for is still pending ({named})"
-    lead, then = (
-        ("RESOLVED NOT PROPOSED", "Propose resolved once its answer is on record")
-        if proposed
-        else (
-            "RESOLUTION HELD",
-            "The resolution is offered once its answer is on record",
+    lead = "RESOLVED NOT PROPOSED" if proposed else "RESOLUTION HELD"
+    exits = (
+        "mark the need FULFILLED citing it. If the user cannot run the check, "
+        "SUPERSEDE the need with the reason."
+    )
+    if declined_resolve_entry(case) is not None:
+        return (
+            f"{lead}: {status}. Record its answer as a row and {exits} "
+            f"{PENDING_CHECK_DECLINE_CLAUSE}"
         )
+    then = (
+        "Propose resolved once its answer is on record"
+        if proposed
+        else "The resolution is offered once its answer is on record"
     )
-    return (
-        f"{lead}: {status}. {then}: record the row and mark the need FULFILLED "
-        "citing it. If the user cannot run the check, SUPERSEDE the need with "
-        "the reason."
-    )
+    return f"{lead}: {status}. {then}: record the row and {exits}"
 
 
 def open_disposition_offer(

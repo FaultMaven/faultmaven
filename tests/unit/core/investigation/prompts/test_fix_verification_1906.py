@@ -47,7 +47,7 @@ from faultmaven.modules.case.contracts import (
     ProblemStatus,
     ProposedAction,
 )
-from tests.case_builders import investigating_case
+from tests.case_builders import investigating_case, with_declined_offer
 from tests.unit.core.investigation.bound_rows import bound_row, ensure_subjects
 from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
 
@@ -315,6 +315,25 @@ def test_the_block_marks_the_check_that_holds_the_offer(fulfilled):
         if fulfilled
         else _HOLDS
     )
+    assert f"  - [{need.need_id}] {_ASK}{mark}\n" in build_fix_verification_block(case)
+
+
+@pytest.mark.parametrize("declined", [False, True])
+def test_the_held_mark_promises_no_offer_a_decline_still_binds(declined):
+    """Under a standing resolve decline the answer alone does not bring the
+    offer back (it lapses only on a new confirmation row), and the mark says
+    so; without one it is unchanged."""
+    case = _case("treatment", problem=True)
+    need = _held(case, 5)
+    if declined:
+        with_declined_offer(case, kind="resolve", basis="backstop")
+    mark = _HOLDS
+    if declined:
+        mark = (
+            " (holds the resolution offer until answered; the user's decline of "
+            "the resolution still binds after it, unless the answer is a new "
+            "problem-bound row showing the problem gone)"
+        )
     assert f"  - [{need.need_id}] {_ASK}{mark}\n" in build_fix_verification_block(case)
 
 
