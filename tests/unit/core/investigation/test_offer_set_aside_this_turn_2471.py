@@ -20,12 +20,16 @@ from faultmaven.core.investigation.milestone_engine.transitions import (
     DECLINED_RESOLVE_FEEDBACK,
     TRANSITION_QUIET_FEEDBACK,
 )
-from faultmaven.core.investigation.schemas import InvestigationResponse_Diagnosis
+from faultmaven.core.investigation.schemas import (
+    InvestigationResponse_Diagnosis,
+    ProblemVerificationUpdate,
+    ProposedTransition,
+)
 from faultmaven.core.investigation.terminal_transitions import (
     ResolutionReadiness,
     assess_resolution_readiness,
 )
-from faultmaven.modules.case.contracts import EvidenceCategory
+from faultmaven.modules.case.contracts import EvidenceCategory, OfferKind
 from tests.case_builders import with_open_offer
 from tests.unit.core.investigation.bound_rows import bound_row
 from tests.unit.core.investigation.test_declined_resolution_binds_the_model_1895 import (
@@ -34,6 +38,19 @@ from tests.unit.core.investigation.test_declined_resolution_binds_the_model_1895
     _engine,
     _feedback,
     _qualifying,
+)
+from tests.unit.core.investigation.test_deferred_disposition_turn import (
+    _case as _deferred_case,
+)
+from tests.unit.core.investigation.test_deferred_disposition_turn import (
+    _deferred_response,
+)
+from tests.unit.core.investigation.test_problem_statement_revision_and_false_alarm import (
+    _DSU,
+    _false_alarm_case,
+)
+from tests.unit.core.investigation.test_problem_statement_revision_and_false_alarm import (
+    _engine as _false_alarm_engine,
 )
 from tests.unit.core.investigation.test_rca_infeasible_closure import (
     _turn_case as _rca_case,
@@ -106,7 +123,7 @@ async def _backstop_offered():
 
 
 def _quiet(kind: str) -> str:
-    return TRANSITION_QUIET_FEEDBACK.format(kind=kind)
+    return TRANSITION_QUIET_FEEDBACK[OfferKind(kind)]
 
 
 def _compliance(caplog):
@@ -210,6 +227,66 @@ class TestTheModelsProposalIsQuiet:
         assert _quiet("resolve") not in _feedback(result)
         line = _compliance(caplog)
         assert line.transition_refused_as_declined == "resolve"
+        assert line.transition_quiet_this_turn is False
+
+    @pytest.mark.parametrize("propose", ["closed", "resolved"])
+    async def test_a_finding_withdrawn_with_the_question_keeps_the_close_quiet(
+        self, propose
+    ):
+        """The user's question withdraws the false-alarm close; the model
+        withdraws the finding and proposes in the same reply. A withdrawn
+        finding is not a new one: no close re-opens (review of 63619934c)."""
+        case = _false_alarm_case(model_close=False)
+        engine = _false_alarm_engine()
+        engine.generator.generate_structured_output = AsyncMock(
+            return_value=InvestigationResponse_Diagnosis(
+                agent_response="Noted.",
+                state_updates=_DSU(
+                    verification_updates=ProblemVerificationUpdate(
+                        invalidation_withdrawn=True,
+                        withdrawal_basis="the user has customer tickets from then",
+                    ),
+                    proposed_transition=ProposedTransition(to_state=propose),
+                ),
+            )
+        )
+        case.current_turn += 1
+        result = await engine.process_turn(
+            case=case,
+            user_message="Why call it a false alarm? We have tickets from then.",
+            redaction_ctx=None,
+        )
+        assert case.problem_verification.invalidation is None, "premise"
+        assert (_last(case).kind, _last(case).answer) == ("close", "withdrawn")
+        assert case.offer_record.open is None
+        if propose == "closed":
+            assert _quiet("close") in _feedback(result)
+
+    async def test_a_standing_deferred_decline_still_reports_itself(self, caplog):
+        """The deferred side of #1889: beside a close the user set aside this
+        turn, the model's ``closed`` is refused as the declined deferred close
+        it is, with its card, not as the quiet."""
+        case = _deferred_case(confirmed=False)
+        engine = _engine()
+        engine.generator.generate_structured_output = AsyncMock(
+            return_value=_deferred_response()
+        )
+        await engine.process_turn(
+            case=case, user_message="the platform team ships it", redaction_ctx=None
+        )
+        assert case.offer_record.open.basis == "deferred", "premise"
+        case.current_turn += 1
+        await engine.process_turn(case=case, user_message="no", redaction_ctx=None)
+        assert _last(case).answer == "declined", "premise: the deferred decline"
+        with_open_offer(case, kind="close", basis="menu")
+        with caplog.at_level("INFO"):
+            result = await _turn(engine, case, _QUESTION, propose="closed")
+        assert (_last(case).basis, _last(case).answer) == ("menu", "withdrawn")
+        assert case.offer_record.open is None
+        assert "deferred-implementation close" in _feedback(result)
+        assert _quiet("close") not in _feedback(result)
+        line = _compliance(caplog)
+        assert line.transition_refused_as_declined == "deferred"
         assert line.transition_quiet_this_turn is False
 
     async def test_a_close_declined_with_an_upload_is_not_re_opened(self, caplog):

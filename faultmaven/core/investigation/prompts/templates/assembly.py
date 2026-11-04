@@ -144,8 +144,11 @@ def _resolve_declined_emphasis(case) -> str:
     "Close without resolving") follows the line only when the projection builds
     those chips (``project_offers(case).reopen_chip``, #2472): no offer open,
     the problem not on hold. The prompt predicts the reply's chips from the
-    case as the turn starts; a revision the model proposes this turn puts the
-    problem on hold and suppresses them afterwards."""
+    case as the turn starts. Three same-turn events can remove them after the
+    prompt has pointed at them: a revision the model proposes (the problem goes
+    on hold), a disqualification that ends the resolve decline's entry (the
+    closure verdict leaves SUGGEST_RESOLVE), and a false-alarm finding (the
+    problem goes on hold)."""
     from faultmaven.core.investigation.offer_projection import project_offers
     from faultmaven.core.investigation.terminal_transitions import (
         declined_resolve_entry,

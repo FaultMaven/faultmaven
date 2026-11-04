@@ -49,7 +49,9 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     resolution_cause_leg_total,
 )
 from faultmaven.core.investigation.offers import (
+    OfferRefusal,
     answer_offer,
+    offer_refusal,
     open_offer,
     open_terminal_offer,
     require_answerer,
@@ -799,7 +801,8 @@ def open_disposition_offer(
 ) -> Optional[OfferRecord]:
     """``offers.open_offer`` for a resolve or close offer: a close carries the
     reason derived from the case as it stands (``derive_closure_reason``).
-    Returns the new record, or None when a standing decline binds the offer.
+    Returns the new record, or None when a standing decline binds the offer or
+    the turn quiet holds it (``disposition_refusal`` names which).
     """
     return open_offer(
         case,
@@ -811,6 +814,26 @@ def open_disposition_offer(
             derive_closure_reason(case) if kind == OfferKind.CLOSE else None
         ),
         pivoted_from_close=pivoted_from_close,
+        readiness_pivot=readiness_pivot,
+    )
+
+
+def disposition_refusal(
+    case: Case,
+    *,
+    kind: OfferKind,
+    basis: OfferBasis,
+    readiness_pivot: bool = False,
+) -> Optional[OfferRefusal]:
+    """Why ``open_disposition_offer`` refuses this offer, or None: the
+    writer's own decision (``offers.offer_refusal``) on the same arguments."""
+    return offer_refusal(
+        case,
+        kind=kind,
+        basis=basis,
+        closure_reason=(
+            derive_closure_reason(case) if kind == OfferKind.CLOSE else None
+        ),
         readiness_pivot=readiness_pivot,
     )
 

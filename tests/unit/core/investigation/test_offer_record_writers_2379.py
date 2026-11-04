@@ -31,6 +31,7 @@ from faultmaven.core.investigation.offers import (
 from faultmaven.core.investigation.problem_status import (
     invalidate_problem,
     propose_revision,
+    withdraw_invalidation,
 )
 from faultmaven.core.investigation.terminal_transitions import (
     confirm_open_offer,
@@ -272,8 +273,13 @@ class TestRevisionAnswers:
 
 
 def _set_aside(case, *, kind: str, answer=AnswerKind.WITHDRAWN, basis="model"):
-    """Open a ``kind`` offer and set it aside on the current turn."""
-    offer = with_open_offer(case, kind=kind, basis=basis)
+    """Open a ``kind`` offer and set it aside on the current turn (``basis``
+    None: the offer already open)."""
+    offer = (
+        case.offer_record.open
+        if basis is None
+        else with_open_offer(case, kind=kind, basis=basis)
+    )
     case.offer_record = answer_offer(
         case, proposal_id=offer.proposal_id, answer=answer, via=AnswerVia.TYPED
     )
@@ -368,6 +374,52 @@ class TestTheTurnQuiet:
         )
         offer = _open(case, "close", "false_alarm").open
         assert offer.closure_reason == ClosureReason.CLOSED_FALSE_ALARM
+
+    def _false_alarm_set_aside(self, *, confirmed: bool):
+        """A false-alarm close opened on turn 4 and withdrawn on turn 5."""
+        case = _case()
+        if confirmed:
+            for category in (
+                EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+                EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+            ):
+                bound_row(case, category, turn=3)
+        absent = bound_row(case, turn=4)
+        invalidate_problem(case, evidence_ids=[absent.evidence_id], basis="no 502s")
+        with_open_offer(case, kind="close", basis="false_alarm")
+        case.current_turn += 1
+        _set_aside(case, kind="close", basis=None)
+        return case
+
+    def test_a_false_alarm_close_on_the_same_finding_stays_quiet(self):
+        """Its premise holds no confirmations to compare: the finding decides,
+        on a case that holds confirmation rows too (review of 63619934c)."""
+        case = self._false_alarm_set_aside(confirmed=True)
+        assert resolution_confirmation_rows(case), "premise: confirmations"
+        assert _open(case, "close") is None
+
+    def test_a_new_finding_lifts_it(self):
+        case = self._false_alarm_set_aside(confirmed=False)
+        assert withdraw_invalidation(case, basis="the user saw 502s at 9am")
+        absent = bound_row(case, turn=5)
+        invalidate_problem(case, evidence_ids=[absent.evidence_id], basis="none")
+        offer = _open(case, "close", "false_alarm").open
+        assert offer.closure_reason == ClosureReason.CLOSED_FALSE_ALARM
+
+    def test_a_withdrawn_finding_does_not_lift_it(self):
+        case = self._false_alarm_set_aside(confirmed=True)
+        assert withdraw_invalidation(case, basis="the user saw 502s at 9am")
+        assert _open(case, "close") is None
+
+    @pytest.mark.parametrize("basis", [OfferBasis.MODEL, OfferBasis.DEFERRED])
+    def test_the_inv37_pivot_is_exempt(self, basis):
+        """The resolve opened for the close the user accepted is theirs."""
+        case = _case()
+        _set_aside(case, kind="resolve")
+        record = open_offer(
+            case, kind=OfferKind.RESOLVE, basis=basis, pivoted_from_close=True
+        )
+        assert record is not None
 
 
 class TestTheHistoryIsBounded:

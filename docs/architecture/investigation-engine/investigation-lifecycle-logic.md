@@ -456,15 +456,18 @@ not revive it).
   the problem not on hold (#2472). The prompt predicts the reply's chips from
   the turn's start; a revision the model proposes that turn hides them.
 - **The decline turn is read from the record, by its writer.** An offer the
-  user set aside (withdrawn, or declined without binding) stays quiet for the
-  rest of the turn: `offers.open_offer` refuses an offer of the same kind
-  unless the turn recorded a confirmation the answer never saw (INV-43), and
-  the model's refused proposal gets feedback and `transition_quiet_this_turn`
-  on the `transition_compliance` line (#2471). The backstop and the deferred
-  proposer keep a stricter rule in the same writer: any terminal answer this
-  turn quiets them (`offers.terminal_offer_answered_this_turn`). So a question
-  about a standing deferred offer withdraws it for the turn, and a decline is
-  not re-offered on its own turn. The user's own offers and the rca_infeasible
+  user set aside (withdrawn or declined) stays quiet for the rest of the turn:
+  `offers.open_offer` refuses an offer of the same kind unless the turn
+  recorded a confirmation the answer never saw (INV-43; for a false-alarm
+  close, a new finding), and the model's refused proposal gets feedback and
+  `transition_quiet_this_turn` on the `transition_compliance` line (#2471). A
+  binding decline is checked first, and is what a refusal reports. The
+  backstop and the deferred proposer keep a stricter rule in the same writer:
+  any terminal answer this turn quiets them, a new confirmation included
+  (`offers.terminal_offer_answered_this_turn`), so on such a turn only the
+  model's proposal re-offers. So a question about a standing deferred offer
+  withdraws it for the turn, and a decline is not re-offered on its own turn.
+  The user's own offers, the INV-37 pivot's resolve and the rca_infeasible
   stabilized close are exempt.
 
 **Why RESOLVED left the status menu.** It was listed in `USER_SELECTABLE_ACTIONS`

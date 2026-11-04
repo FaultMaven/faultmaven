@@ -67,20 +67,23 @@ automatic transitions read the record, and again on every save.
 **The turn quiet** (fm#1122, #2471). An offer the user set aside stays quiet
 for the rest of that turn: ``open_offer`` refuses a resolve or close offer of
 the same kind as one withdrawn or declined on the current turn, while that
-answer still covers the case (``set_aside_this_turn``): every
-resolution-confirmation row on record is one it was given against, and the new
-offer rests on the same false-alarm finding, or on none. A solution recorded
-since does not lift it. A new confirmation does (INV-43: a turn that records
-one re-offers on that same turn), and so does a new finding (the false-alarm
-close is offered once, on the turn the finding is made). The engine's
-proposers, the backstop and the deferred close, keep their stricter rule: any
-terminal answer given on the turn quiets them, whatever its kind, a new
-confirmation included (``terminal_offer_answered_this_turn``); the INV-37
-pivot of an accepted close is not one of them. Exempt: the user's own offers,
-as from a decline, and the rca-infeasible stabilized close, opened only on
-the turn a mitigation is verified: that verification earns it, as a new
-confirmation earns a resolve. The check runs after the decline check, so a
-binding decline is what a refusal reports.
+answer still covers the case (``set_aside_this_turn``). A false-alarm close is
+covered while the finding is the one the answer saw: a new finding lifts it
+(the close is offered once, on the turn the finding is made). Any other resolve
+or close is covered while every resolution-confirmation row on record is one
+the answer saw: a new confirmation lifts it (INV-43), a solution or a withdrawn
+finding does not. Every terminal answer's premise records the confirmation ids
+for this, a false-alarm close's included; what its decline binds still reads
+the finding alone. The engine's proposers, the backstop and the deferred
+close, keep their stricter rule: any terminal answer given on the turn quiets
+them, whatever its kind, a new confirmation included
+(``terminal_offer_answered_this_turn``). Exempt from both: the user's own
+offers, as from a decline; the resolve the INV-37 pivot opens in place of the
+close the user accepted (``pivoted_from_close``); and the rca-infeasible
+stabilized close, opened only on the turn a mitigation is verified, which
+earns it as a new confirmation earns a resolve. The decline is checked first,
+so a binding decline is what a refusal reports (``offer_refusal`` names the
+reason).
 
 **The request** (ruling 1). A model ``resolved`` the case has not earned
 (``NEEDS_INFO``) opens no offer and shows no chips: the readiness ask goes
@@ -104,6 +107,7 @@ decline stands and the problem is not on hold).
 
 import logging
 import secrets
+from enum import StrEnum
 from typing import TYPE_CHECKING, Iterable, Optional
 
 from faultmaven.core.investigation.cause_assurance import (
@@ -234,11 +238,15 @@ def _premise(
     closure_reason: Optional[ClosureReason],
     wording_key: Optional[str] = None,
 ) -> OfferPremise:
-    """The state an answer of ``kind`` is given against: only its own parts."""
+    """The state an answer of ``kind`` is given against: only its own parts,
+    and for a false-alarm close the confirmation ids beside its finding, which
+    the turn quiet reads (``set_aside_this_turn``) and its decline does not."""
     if kind == OfferKind.REVISION:
         return OfferPremise(wording_key=wording_key)
     if _is_false_alarm(kind, closure_reason):
-        return OfferPremise(finding_turn=_finding_turn(case))
+        return OfferPremise(
+            finding_turn=_finding_turn(case), confirmation_ids=_confirmation_ids(case)
+        )
     return OfferPremise(
         solution_ids=_solution_ids(case), confirmation_ids=_confirmation_ids(case)
     )
@@ -369,47 +377,87 @@ def set_aside_this_turn(
     """The newest answer that set a ``kind`` offer aside on the current turn
     (withdrawn or declined) and still covers the case, or None (#2471).
 
-    It covers the case when every resolution-confirmation row on record is
-    inside its premise, and the false-alarm finding a ``kind`` offer with
-    ``closure_reason`` would rest on (or none) is the one it was answered
-    against. Solutions are not compared: a solution is not a confirmation.
+    Opening a false-alarm close (``closure_reason``), it covers the case while
+    its finding is the current one: a new finding lifts it. Opening any other
+    resolve or close, it covers the case while every resolution-confirmation
+    row on record is inside its premise: a new confirmation lifts it, and a
+    solution or a withdrawn finding does not.
     """
-    if kind not in TERMINAL_KINDS:
+    answers = [
+        answer
+        for answer in reversed(case.offer_record.answers)
+        if answer.at_turn == case.current_turn
+        and answer.kind == kind
+        and answer.answer in _SET_ASIDE
+    ]
+    if kind not in TERMINAL_KINDS or not answers:
         return None
+    if _is_false_alarm(kind, closure_reason):
+        finding = _finding_turn(case)
+        return next((a for a in answers if a.premise.finding_turn == finding), None)
     confirmations = set(_confirmation_ids(case))
-    finding = _premise(case, kind, closure_reason).finding_turn
-    for answer in reversed(case.offer_record.answers):
-        if (
-            answer.at_turn == case.current_turn
-            and answer.kind == kind
-            and answer.answer in _SET_ASIDE
-            and confirmations <= set(answer.premise.confirmation_ids)
-            and answer.premise.finding_turn == finding
-        ):
-            return answer
-    return None
+    return next(
+        (a for a in answers if confirmations <= set(a.premise.confirmation_ids)),
+        None,
+    )
 
 
-def _quiet_this_turn(
+class OfferRefusal(StrEnum):
+    """Why ``open_offer`` writes nothing (``offer_refusal``)."""
+
+    #: A standing decline binds it (``binding_decline``).
+    DECLINED = "declined"
+    #: The engine proposers' kind-blind quiet: an offer was answered this turn.
+    ANSWERED_THIS_TURN = "answered_this_turn"
+    #: The same-kind quiet: an offer of this kind was set aside this turn.
+    SET_ASIDE_THIS_TURN = "set_aside_this_turn"
+
+
+_REFUSAL_LOG = {
+    OfferRefusal.DECLINED: "a standing decline binds it",
+    OfferRefusal.ANSWERED_THIS_TURN: "an offer was answered this turn",
+    OfferRefusal.SET_ASIDE_THIS_TURN: "an offer of this kind was set aside this turn",
+}
+
+
+def offer_refusal(
     case: "Case",
     *,
     kind: OfferKind,
     basis: OfferBasis,
-    closure_reason: Optional[ClosureReason],
-    pivoted_from_close: bool,
-) -> bool:
-    """Whether the turn quiet holds a ``kind`` offer opened as ``basis``: the
-    engine proposers' kind-blind rule, else the same-kind rule. The user's own
-    offers and the rca-infeasible close are exempt."""
+    closure_reason: Optional[ClosureReason] = None,
+    wording_key: Optional[str] = None,
+    readiness_pivot: bool = False,
+    pivoted_from_close: bool = False,
+) -> Optional[OfferRefusal]:
+    """Why ``open_offer`` refuses a ``kind`` offer opened as ``basis``, or
+    None when it opens. The writer's own decision, so a caller that branches
+    on the reason reads the writer's, never a re-derivation of it: a standing
+    decline first, then the turn quiet (the module docstring's rules)."""
+    if (
+        binding_decline(
+            case,
+            kind=kind,
+            basis=basis,
+            wording_key=wording_key,
+            readiness_pivot=readiness_pivot,
+        )
+        is not None
+    ):
+        return OfferRefusal.DECLINED
     if (
         kind not in TERMINAL_KINDS
         or basis.origin == OfferOrigin.USER
         or basis == OfferBasis.RCA_INFEASIBLE
+        or pivoted_from_close
     ):
-        return False
-    if basis in _KIND_BLIND_BASES and not pivoted_from_close:
-        return terminal_offer_answered_this_turn(case)
-    return set_aside_this_turn(case, kind, closure_reason) is not None
+        return None
+    if basis in _KIND_BLIND_BASES:
+        answered = terminal_offer_answered_this_turn(case)
+        return OfferRefusal.ANSWERED_THIS_TURN if answered else None
+    if set_aside_this_turn(case, kind, closure_reason) is not None:
+        return OfferRefusal.SET_ASIDE_THIS_TURN
+    return None
 
 
 # --------------------------------------------------------------------------
@@ -461,9 +509,8 @@ def open_offer(
     readiness_pivot: bool = False,
 ) -> Optional[OfferRecord]:
     """The record with a new ``kind`` offer open, or None when a standing
-    decline binds it (``binding_decline``) or the turn quiet holds it (an
-    offer set aside this turn, the module docstring's rule), in which case
-    nothing is written.
+    decline binds it or the turn quiet holds it (``offer_refusal`` names
+    which), in which case nothing is written.
 
     Raises ``ValueError`` when an offer is already open (answer or lapse it
     first), and when ``closure_reason`` is missing from a close offer or given
@@ -483,36 +530,22 @@ def open_offer(
             f"case {case.case_id}: a close offer carries its closure_reason, "
             f"and only a close offer does (kind={kind.value})"
         )
-    wording_key = revision.wording_key if revision is not None else None
-    if (
-        binding_decline(
-            case,
-            kind=kind,
-            basis=basis,
-            wording_key=wording_key,
-            readiness_pivot=readiness_pivot,
-        )
-        is not None
-    ):
-        logger.info(
-            "Case %s: %s offer (%s) not opened: a standing decline binds it",
-            case.case_id,
-            kind.value,
-            basis.value,
-        )
-        return None
-    if _quiet_this_turn(
+    refusal = offer_refusal(
         case,
         kind=kind,
         basis=basis,
         closure_reason=closure_reason,
+        wording_key=revision.wording_key if revision is not None else None,
+        readiness_pivot=readiness_pivot,
         pivoted_from_close=pivoted_from_close,
-    ):
+    )
+    if refusal is not None:
         logger.info(
-            "Case %s: %s offer (%s) not opened: an offer was set aside this turn",
+            "Case %s: %s offer (%s) not opened: %s",
             case.case_id,
             kind.value,
             basis.value,
+            _REFUSAL_LOG[refusal],
         )
         return None
     offer = Offer(
