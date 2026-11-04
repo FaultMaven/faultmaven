@@ -3,7 +3,9 @@
 import logging
 from typing import Any
 
+from faultmaven.core.investigation.offer_projection import project_offers
 from faultmaven.core.investigation.offers import (
+    OfferRefusal,
     remember_resolve_request,
     standing_deferred_decline,
 )
@@ -11,7 +13,13 @@ from faultmaven.core.investigation.problem_status import (
     false_alarm_close_declined_at,
     record_confirmed_statement,
 )
-from faultmaven.core.investigation.terminal_transitions import open_disposition_offer
+from faultmaven.core.investigation.terminal_transitions import (
+    RESOLVE_DECLINED_ACTIONS,
+    RESOLVE_DECLINED_RULE,
+    declined_resolve_entry,
+    disposition_refusal,
+    open_disposition_offer,
+)
 from faultmaven.modules.case.contracts import (
     Case,
     CaseAction,
@@ -81,23 +89,36 @@ def declined_close_reask(
     return None
 
 
-#: The feedback when step 2 refuses a resolution the user declined (#1895).
-#: The rule is ``RESOLVE_DECLINED_RULE``, the same text the prompt line states;
-#: the chip is on this turn's reply, as on every turn the decline stands.
-def _declined_resolve_feedback() -> str:
-    from faultmaven.core.investigation.terminal_transitions import (
-        RESOLVE_DECLINED_RULE,
-    )
+#: The feedback when step 2 refuses a resolution the user declined (#1895),
+#: the part that holds on every case: ``RESOLVE_DECLINED_RULE``, the binding
+#: half the prompt line states too.
+DECLINED_RESOLVE_FEEDBACK = (
+    "TRANSITION NOT PROPOSED: the user declined marking this case resolved, "
+    "and no new confirmation that the fix held has been recorded since. "
+    + RESOLVE_DECLINED_RULE
+)
 
-    return (
-        "TRANSITION NOT PROPOSED: the user declined marking this case resolved, "
-        "and no new confirmation that the fix held has been recorded since. "
-        "The engine has attached its 'Mark it resolved' and 'Close without "
-        "resolving' actions to this reply. " + RESOLVE_DECLINED_RULE
-    )
+#: Added to it only when the reply carries the engine's two chips (#2472).
+_DECLINED_RESOLVE_CHIPS_FEEDBACK = (
+    "The engine has attached its 'Mark it resolved' and 'Close without "
+    "resolving' actions to this reply. " + RESOLVE_DECLINED_ACTIONS
+)
 
+_QUIET = (
+    "TRANSITION NOT PROPOSED: the user set aside the {} offer this turn, so it "
+    "was not opened again this turn. Propose it again on a later turn if it is "
+    "still earned"
+)
 
-DECLINED_RESOLVE_FEEDBACK = _declined_resolve_feedback()
+#: The feedback when the turn quiet holds the model's proposal (#2471), by the
+#: offer's kind. A new verification re-earns a resolve on the same turn
+#: (INV-43); a close is never earned by one, so its line does not ask for it.
+TRANSITION_QUIET_FEEDBACK = {
+    OfferKind.RESOLVE: _QUIET.format("resolve")
+    + "; if the user reports a new verification, record it and propose in the "
+    "same turn.",
+    OfferKind.CLOSE: _QUIET.format("close") + ".",
+}
 
 
 def declined_resolution_reask(case: Case) -> str | None:
@@ -110,15 +131,15 @@ def declined_resolution_reask(case: Case) -> str | None:
     declines and a shrinking set of rows move nothing, ruling 3). Until then
     the model's re-proposal is the question the user just answered.
     The model is not left as the only way back: the refused turn carries the
-    "Mark it resolved" chip (the offer projection's ``reopen_chip``).
+    "Mark it resolved" and "Close without resolving" chips when the offer
+    projection builds them (no offer open, the problem not on hold), and only
+    then does the feedback name them (#2472).
     """
-    from faultmaven.core.investigation.terminal_transitions import (
-        declined_resolve_entry,
-    )
-
     if declined_resolve_entry(case) is None:
         return None
-    return DECLINED_RESOLVE_FEEDBACK
+    if project_offers(case).reopen_chip is None:
+        return DECLINED_RESOLVE_FEEDBACK
+    return f"{DECLINED_RESOLVE_FEEDBACK} {_DECLINED_RESOLVE_CHIPS_FEEDBACK}"
 
 
 def _refuse_declined_reask(metadata: dict[str, Any], side: str, feedback: str) -> None:
@@ -342,7 +363,9 @@ class TransitionManager:
             if record is None:
                 # A resolve decline binds it: the request turned READY on the
                 # rows the user declined (#1895). Refused as step 2 refuses
-                # the model's own re-proposal.
+                # the model's own re-proposal. Never the turn quiet: a request
+                # and an open offer are exclusive, so no offer was answered on
+                # a turn that re-checks one.
                 reask = declined_resolution_reask(case)
                 if reask is not None:
                     _add_system_feedback(metadata, reask)
@@ -375,6 +398,7 @@ class TransitionManager:
             summary=summary,
         )
         if record is None:
+            # A decline binds it (the quiet cannot meet step 0, as above).
             return
         case.offer_record = record
         metadata["resolution_suggest_close"] = True
@@ -556,15 +580,45 @@ class TransitionManager:
         # closure check kept at CLOSED is bound by the user's decline of the
         # engine's deferred close; a ``resolved`` the readiness check pivots
         # to CLOSED is not (``offers.binding_decline``, as on main).
+        readiness_pivot = proposed.to_state == "resolved" and kind == OfferKind.CLOSE
         record = open_disposition_offer(
             case,
             kind=kind,
             basis=OfferBasis.MODEL,
             summary=summary,
             evidence_ids=getattr(proposed, "evidence_ids", None) or (),
-            readiness_pivot=proposed.to_state == "resolved" and kind == OfferKind.CLOSE,
+            readiness_pivot=readiness_pivot,
         )
-        if record is None and kind == OfferKind.CLOSE:
+        # Why the writer refused it, as the writer decided.
+        refusal = (
+            None
+            if record is not None
+            else disposition_refusal(
+                case,
+                kind=kind,
+                basis=OfferBasis.MODEL,
+                readiness_pivot=readiness_pivot,
+            )
+        )
+        if refusal in (
+            OfferRefusal.SET_ASIDE_THIS_TURN,
+            OfferRefusal.ANSWERED_THIS_TURN,
+        ):
+            # The turn quiet (#2471): the user set aside an offer of this kind
+            # this turn, and nothing it never saw has been recorded since.
+            # Reached after readiness, so a NEEDS_INFO request is still
+            # remembered (#2408); the decline is the writer's first check, so
+            # a binding decline is what a refusal reports (#1895).
+            _add_system_feedback(metadata, TRANSITION_QUIET_FEEDBACK[kind])
+            # Read by ``transition_compliance``, which reports the refusal.
+            metadata["transition_quiet_this_turn"] = True
+            logger.info(
+                f"Case {case.case_id}: model proposed {proposed.to_state!r} "
+                f"(effective {kind.value}) after the user set that offer aside "
+                f"this turn — not opened again this turn."
+            )
+            return
+        if refusal is OfferRefusal.DECLINED and kind == OfferKind.CLOSE:
             reask = declined_close_reask(case, closing=True)
             if reask is not None:
                 _refuse_declined_reask(metadata, *reask)
@@ -573,7 +627,7 @@ class TransitionManager:
                 f"decline of the deferred close stands — refused."
             )
             return
-        if record is None:
+        if refusal is OfferRefusal.DECLINED:
             # The resolve side (#1895): the model's ``resolved`` on a READY
             # case, and its ``closed`` the closure check pivots to RESOLVED
             # (INV-37), are one question — the resolution the user declined.

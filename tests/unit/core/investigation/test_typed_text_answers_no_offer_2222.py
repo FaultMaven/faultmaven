@@ -35,6 +35,7 @@ from faultmaven.core.investigation.milestone_engine.transition_turns import (
 )
 from faultmaven.core.investigation.milestone_engine.transitions import (
     DECLINED_RESOLVE_FEEDBACK,
+    declined_resolution_reask,
 )
 from faultmaven.core.investigation.offer_projection import project_offers
 from faultmaven.core.investigation.offers import confirmation_pair
@@ -526,7 +527,10 @@ def test_the_decline_prompt_and_feedback_name_the_close_chip():
     prompt = get_prompt_for_case(case, "what now?")
     assert RESOLVE_DECLINED_LINE in prompt
     assert "'Close without resolving'" in prompt
+    # The chips are on this reply, so the refusal names them (#2472).
+    feedback = declined_resolution_reask(case)
+    assert feedback.startswith(DECLINED_RESOLVE_FEEDBACK)
     assert (
         "attached its 'Mark it resolved' and 'Close without resolving' actions"
-        in DECLINED_RESOLVE_FEEDBACK
+        in feedback
     )

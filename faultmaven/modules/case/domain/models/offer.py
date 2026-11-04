@@ -120,7 +120,9 @@ class AnswerVia(StrEnum):
 class OfferPremise(BaseModel):
     """The state an answer was given against. A kind reads only its own parts:
     a resolve or close answer its solution and confirmation ids, a false-alarm
-    close the finding's turn, a revision its wording key.
+    close the finding's turn, a revision its wording key. A false-alarm close
+    also records the confirmation ids, which only the turn quiet reads
+    (``offers.set_aside_this_turn``).
 
     The ids are sorted and complete. A decline given on turn N is widened to
     cover what turn N itself recorded (``offers.lapse_offers``), so the

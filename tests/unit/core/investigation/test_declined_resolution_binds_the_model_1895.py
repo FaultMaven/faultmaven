@@ -30,6 +30,7 @@ from faultmaven.core.investigation.intent_resolver import IntentResolver
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.milestone_engine.transitions import (
     DECLINED_RESOLVE_FEEDBACK,
+    declined_resolution_reask,
 )
 from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommitPlan
 from faultmaven.core.investigation.milestone_engine.turn_completion import (
@@ -50,6 +51,7 @@ from faultmaven.core.investigation.schemas import (
     SuggestedFollowUp,
 )
 from faultmaven.core.investigation.terminal_transitions import (
+    RESOLVE_DECLINED_ACTIONS,
     RESOLVE_DECLINED_RULE,
     ClosureReadiness,
     ResolutionReadiness,
@@ -1031,17 +1033,58 @@ class TestThePromptLine:
 
     def test_the_line_and_the_refusal_state_one_rule_and_name_the_chip(self):
         """A NEW verification is evidence: record it, then propose. A request
-        is not: the model points the user at the chip and never proposes on it
-        (A1/A6), so the prompt and the step-2 feedback cannot disagree."""
+        is not: the model never proposes on it (A1/A6), so the prompt and the
+        step-2 feedback cannot disagree. Where to point the user is its own
+        part, which names both chips and is added only where they are
+        (#2472)."""
         assert RESOLVE_DECLINED_RULE in RESOLVE_DECLINED_LINE
         assert RESOLVE_DECLINED_RULE in DECLINED_RESOLVE_FEEDBACK
-        assert "'Mark it resolved'" in RESOLVE_DECLINED_RULE
-        assert "point them to it" in RESOLVE_DECLINED_RULE
         assert "never record a confirmation row from a request" in RESOLVE_DECLINED_RULE
         assert "propose resolved in the same turn" in RESOLVE_DECLINED_RULE
+        assert "'Mark it resolved'" in RESOLVE_DECLINED_ACTIONS
+        assert "'Close without resolving'" in RESOLVE_DECLINED_ACTIONS
+        assert RESOLVE_DECLINED_ACTIONS.count("point them to it") == 2
         for text in (RESOLVE_DECLINED_LINE, DECLINED_RESOLVE_FEEDBACK):
+            assert "point them to" not in text
+        for text in (
+            RESOLVE_DECLINED_LINE,
+            DECLINED_RESOLVE_FEEDBACK,
+            RESOLVE_DECLINED_ACTIONS,
+        ):
             assert "asks to mark it resolved" not in text
             assert "if the user asks" not in text.lower()
+
+
+class TestThePointersFollowTheChips:
+    """#2472: the "point them to ..." sentences name the engine's two chips, so
+    they reach the model only when the reply carries them. A hold (a revision
+    awaiting the user) hides both chips; the binding half still renders while
+    the decline stands."""
+
+    @staticmethod
+    def _declined(*, on_hold: bool):
+        case = _confirmed_case()
+        with_declined_offer(case, kind="resolve", basis="backstop")
+        if on_hold:
+            case.progress.problem_status = ProblemStatus.REVISION_PENDING
+        chips = project_offers(case).reopen_chip is not None
+        assert chips is not on_hold, "premise: the hold hides the chips"
+        return case
+
+    @pytest.mark.parametrize("on_hold", [False, True])
+    def test_the_prompt_points_at_the_chips_only_when_they_project(self, on_hold):
+        prompt = get_prompt_for_case(self._declined(on_hold=on_hold), "what now?")
+        assert RESOLVE_DECLINED_LINE in prompt
+        assert (RESOLVE_DECLINED_ACTIONS in prompt) is not on_hold
+        for chip in ("'Mark it resolved'", "'Close without resolving'"):
+            assert (chip in prompt) is not on_hold
+
+    @pytest.mark.parametrize("on_hold", [False, True])
+    def test_the_refusal_names_the_chips_only_when_they_project(self, on_hold):
+        feedback = declined_resolution_reask(self._declined(on_hold=on_hold))
+        assert feedback.startswith(DECLINED_RESOLVE_FEEDBACK)
+        assert (RESOLVE_DECLINED_ACTIONS in feedback) is not on_hold
+        assert ("attached its 'Mark it resolved'" in feedback) is not on_hold
 
 
 # ---------------------------------------------------------------------------
