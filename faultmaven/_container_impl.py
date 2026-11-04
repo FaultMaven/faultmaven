@@ -152,7 +152,8 @@ class DIContainer(BaseDIContainer):
         composition, and a later call that finds it initialized and shares it
         (#1843). A call that raises, returns degraded or finds a composition in
         progress takes none: its composer's shutdown closes nothing beside a
-        live holder, and closes what is recorded when no hold exists.
+        live holder in another context, and closes what is recorded when no
+        hold exists.
 
         Args:
             allow_degraded: opt in to the lenient path under pytest, where a

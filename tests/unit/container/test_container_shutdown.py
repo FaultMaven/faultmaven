@@ -235,9 +235,10 @@ async def test_a_context_that_holds_nothing_closes_nothing_beside_a_holder(
 async def test_a_call_that_finds_the_container_initializing_holds_nothing(
     container, composes
 ):
-    """It gets an uninitialized container back. Beside the composition, once
-    that holds it, its composer's shutdown closes nothing; if that composition
-    fails, nothing holds, and it closes what that one opened."""
+    """It gets an uninitialized container back, and holds nothing. Beside the
+    composition, once that holds it, its composer's shutdown closes nothing.
+    Alone, the failing composer's own shutdown is the last, and closes what
+    that composition opened."""
     composing, client = asyncio.Event(), _RealClient()
 
     async def _register(c):
@@ -246,15 +247,22 @@ async def test_a_call_that_finds_the_container_initializing_holds_nothing(
         if not composes:
             raise ValueError("planted part-way failure")
 
+    async def _compose():
+        await container.initialize(allow_degraded=True)
+        return None if composes else await container.shutdown()
+
     with _composing(_register):
-        first = asyncio.create_task(container.initialize(allow_degraded=True))
+        first = asyncio.create_task(_compose())
         await asyncio.sleep(0)
         await container.initialize()
         assert container.is_initialized is False
         composing.set()
-        await first
+        failed_composers_shutdown = await first
 
-    assert await container.shutdown() is not composes
+    if composes:
+        assert await container.shutdown() is False
+    else:
+        assert failed_composers_shutdown is True
     assert client.aclose.await_count == (0 if composes else 1)
 
 
