@@ -147,9 +147,9 @@ class TestSuggestResolveVerdict:
         assert readiness.verdict == ClosureReadiness.SUGGEST_RESOLVE
         # Message names the pivot rationale + presents root cause + solution
         assert "qualifies for **resolved**" in readiness.message
-        assert (
-            "confirmed to" in readiness.message
-        )  # "...a fix confirmed to have eliminated it..."
+        # It cites the rows that earn the pivot (#1906 D5.1).
+        assert "**The cause** —" in readiness.message
+        assert "**The problem** —" in readiness.message
         assert "Connection pool exhaustion" in readiness.message
         assert "Increase connection pool to 100" in readiness.message
         assert "mark it **resolved** instead" in readiness.message
@@ -196,10 +196,16 @@ class TestSuggestResolveVerdict:
 
     def test_pivot_template_is_otherwise_unchanged(self):
         assert self._pivot_message(with_solution=False) == (
-            "This case has a fix confirmed to have eliminated the root cause — "
-            "it qualifies for **resolved** status rather than closed. Closing "
-            "would close it without marking it resolved; the confirmed fix "
-            "stays on record.\n\n"
+            "This case qualifies for **resolved** status rather than closed. "
+            "Closing would close it without marking it resolved; the confirmed "
+            "fix stays on record.\n\n"
+            "The record shows:\n\n"
+            "- **The cause** — max_connections is set to 20, below the worker "
+            "pool size: Post-fix logs confirm pool exhaustion no longer occurs "
+            "(turn 3)\n"
+            "- **The problem** — the reported problem, as first shown, "
+            "re-checked: Post-fix check: the reported symptom no longer occurs "
+            "(turn 3)\n"
             "- **Root cause**: Connection pool exhaustion under load\n"
             "\nWould you like to mark it **resolved** instead?"
         )

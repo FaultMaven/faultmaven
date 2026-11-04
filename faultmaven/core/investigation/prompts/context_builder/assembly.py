@@ -49,6 +49,10 @@ from .evidence import (
     _symptom_currency_note,
 )
 from .evidence_needs import _build_evidence_needs_block
+from .fix_verification_block import (
+    build_fix_verification_block,
+    cap_fix_verification_block,
+)
 from .history import _build_compact_history, _build_graduated_history
 from .text_shaping import sanitize_user_input
 
@@ -152,6 +156,8 @@ def _allocate_sections(
     hypothesis_str: str,
     evidence_needs_str: str,
     entity_highlights_str: str,
+    # reserved, with a fixed budget of its own (#1906 D7)
+    fix_verification_str: str = "",
 ) -> Dict[str, str]:
     """Priority-greedy allocation of ``budget`` across the prompt sections.
 
@@ -206,6 +212,12 @@ def _allocate_sections(
     # tag termination below. Bounded: at most MAX_NAMED_EXCLUSIONS ids and two
     # fixed sentences.
     ctx["exclusions"] = _reserve(exclusions_str)
+    # Reserved within its own fixed budget (#1906 D7), not a floor-0 variable
+    # section: those are dropped first under pressure, and pressure is what
+    # the long post-fix cases that need the block bring.
+    ctx["fix_verification"] = _reserve(
+        cap_fix_verification_block(fix_verification_str, budget)
+    )
     ctx["user_message"] = _reserve(user_message_block)
 
     reserve_tokens = budget.used_tokens
@@ -1000,6 +1012,8 @@ def build_investigation_context(
     # the pool has no visible needs for this stage (progressive
     # activation; design §10.6).
     evidence_needs_str = _build_evidence_needs_block(case)
+    # The fix, its legs and the open asks (#1906 D7): MITIGATION and TREATMENT.
+    fix_verification_str = build_fix_verification_block(case)
 
     # =====================================================================
     # Budget allocation
@@ -1031,6 +1045,7 @@ def build_investigation_context(
         hypothesis_str=hypothesis_str,
         evidence_needs_str=evidence_needs_str,
         entity_highlights_str=entity_highlights_str,
+        fix_verification_str=fix_verification_str,
     )
     if kb_rendered is not None:
         kb_rendered[:] = kb_entries_rendered(

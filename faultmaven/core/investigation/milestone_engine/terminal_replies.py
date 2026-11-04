@@ -4,6 +4,7 @@ from faultmaven.core.investigation.cause_assurance import runbook_conversion_rea
 from faultmaven.core.investigation.prompts.templates.terminal import (
     TerminalAffordances,
 )
+from faultmaven.core.investigation.resolution_record import resolution_record_lines
 from faultmaven.modules.case.contracts import (
     CaseState,
     ClosureReason,
@@ -19,15 +20,23 @@ from .cause_state import (
 def _build_resolution_confirmation(case) -> str:
     """Build the resolution confirmation prompt with optional enrichment hints.
 
-    Shows what we have on record (root cause + solution) and suggests
-    additional details that would improve the resolution documentation
-    and any runbook generated from it. Makes clear these are optional.
+    Shows what we have on record (root cause, solution, and the rows that
+    confirm the resolution, ``resolution_record_lines``) and suggests
+    additional details that would improve the resolution documentation and
+    any runbook generated from it. Makes clear these are optional.
+
+    It never asks how the fix was verified (#2428): the record lines show
+    that, and ``Solution.verification_method`` is written by no investigation
+    path.
     """
     parts = [
         "Here's what I have on record:\n",
         f"- **Root cause**: {_get_root_cause_summary(case)}",
         f"- **Solution**: {_get_solution_summary(case)}",
     ]
+    record = resolution_record_lines(case)
+    if record:
+        parts.append(record)
 
     # Check what enrichment data is missing — these improve docs but don't block resolution
     enrichment_hints = []
@@ -35,14 +44,6 @@ def _build_resolution_confirmation(case) -> str:
     evidence_count = len(case.evidence) if case.evidence else 0
     if evidence_count == 0:
         enrichment_hints.append("diagnostic evidence (logs, metrics, error messages)")
-
-    has_verification = False
-    if case.solutions:
-        has_verification = any(
-            getattr(s, "verification_method", None) for s in case.solutions
-        )
-    if not has_verification:
-        enrichment_hints.append("how you verified the fix worked")
 
     has_commands = False
     if case.solutions:

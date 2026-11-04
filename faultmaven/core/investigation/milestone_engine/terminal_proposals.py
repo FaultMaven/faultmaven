@@ -13,6 +13,7 @@ from faultmaven.core.investigation.offers import (
     terminal_offer_answered_this_turn,
 )
 from faultmaven.core.investigation.problem_status import problem_on_hold
+from faultmaven.core.investigation.resolution_record import resolution_record_lines
 from faultmaven.core.investigation.terminal_transitions import open_disposition_offer
 from faultmaven.modules.case.contracts import (
     TERMINAL_HYPOTHESIS_STATES,
@@ -147,14 +148,14 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
         # presuppose a close the user never asked for and would never state the
         # deferred-implementation reason: the same prose/affordance incoherence
         # this function is being fixed to stop producing.
+        # The record's rows, not a claim stronger than them (#1906 D5.1).
         gate_message = (
-            "The fix on this case is confirmed to have eliminated the root "
-            "cause — the cause was removed and the problem went with it — so "
-            "it qualifies for **resolved**. The implementation work you "
-            "flagged as out-of-band (a change request, maintenance window, or "
-            "another team) is follow-up: it stays documented on the resolved "
-            "case and does not need the incident held open. Shall I mark this "
-            "case resolved?"
+            "The record shows:\n\n"
+            + resolution_record_lines(case)
+            + "\n\nThe implementation work you flagged as out-of-band (a change "
+            "request, maintenance window, or another team) is follow-up: it "
+            "stays documented on the resolved case and does not need the "
+            "incident held open. Shall I mark this case resolved?"
         )
     else:
         kind = OfferKind.CLOSE
@@ -269,29 +270,29 @@ def _maybe_propose_confirmed_resolution(case: "Case", metadata: dict) -> None:
     # contradict rather than merely sit beside.
     # READY is a confirmed ELIMINATION, which is not the same as a confirmed
     # CAUSE: ``assess_resolution_readiness`` deliberately does not require a
-    # root-cause record, so an out-of-band fix reported verbally resolves on
-    # the absence row alone (INV-41 names this the ``none`` leg). Saying "the
-    # root cause is confirmed eliminated ... records the attribution" on such
-    # a case names something the case does not hold — and because composing
-    # this prose suppresses the INV-40 over-claim notice, nothing downstream
-    # would correct it. This is the one opener with no model involvement, so
-    # the claim would be entirely engine-authored.
-    if cause_identification_leg(case) is not None:
-        confirmed = (
-            "The root cause is confirmed eliminated — it was removed and the "
-            "problem went with it — which is the bar for **resolved**. The "
-            "case is still open until you confirm: marking it resolved records "
-            "the attribution and writes up the resolution summary."
+    # root-cause record (INV-41 names this the ``none`` leg). Naming the root
+    # or "recording the attribution" on such a case names something the case
+    # does not hold — and because composing this prose suppresses the INV-40
+    # over-claim notice, nothing downstream would correct it. This is the one
+    # opener with no model involvement, so the claim would be entirely
+    # engine-authored. Either way the offer states only what its rows show
+    # (#1906 D5.1).
+    cause_on_record = cause_identification_leg(case) is not None
+    if cause_on_record:
+        still_open = (
+            "The case is still open until you confirm: marking it resolved "
+            "records the attribution and writes up the resolution summary."
         )
     else:
-        confirmed = (
-            "You've confirmed the problem is gone after the fix, which is the "
-            "bar for **resolved**. The case is still open until you confirm: "
-            "marking it resolved writes up what happened. No root cause is on "
-            "record, so the write-up will say so — if you can name what caused "
-            "it, tell me and I'll record that first."
+        still_open = (
+            "The case is still open until you confirm: marking it resolved "
+            "writes up what happened."
         )
-    gate_message = f"{confirmed} Shall I mark this case resolved?"
+    record = resolution_record_lines(case, cause_on_record=cause_on_record)
+    gate_message = (
+        f"The record shows:\n\n{record}\n\n{still_open} "
+        "Shall I mark this case resolved?"
+    )
     record = open_disposition_offer(
         case, kind=OfferKind.RESOLVE, basis=OfferBasis.BACKSTOP, summary=gate_message
     )

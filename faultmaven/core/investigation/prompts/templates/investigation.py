@@ -146,6 +146,10 @@ an evidence row.
      in place: symptom_absence only. When the fix also removed that cause
      (auto-renewal shown enabled, the rotation shown running), the
      causal_absence row records THAT cause gone.
+   After a fix, each absence row names in `rechecks` the row it re-checks:
+   for symptom_absence a row that showed the problem, for causal_absence a
+   row that supports the root cause alone (the re-verification checklist
+   lists both). A post-fix row naming none confirms nothing.
    RESOLVED needs BOTH rows: the system marks a case RESOLVED only when a
    `causal_absence_evidence` row AND a `symptom_absence_evidence` row
    recorded at or after it are on record — the cause removed, and the
@@ -397,7 +401,9 @@ evidence_trail:
   uncertainties: [what remains unclear]
 
 Milestone validation is CATEGORY-BASED: Creating evidence with the right category
-automatically validates milestones. You don't need to cite evidence IDs.
+automatically validates milestones. Cite evidence IDs only where a field asks
+for them: `symptom_verification_evidence_ids` with the symptom claim, and
+`rechecks` on a post-fix observation.
 ⚠️ HARD RULE: Never set a milestone to True without creating corresponding evidence
 in evidence_to_add. No evidence = indicator stays False.
 
@@ -418,6 +424,8 @@ STATE: INVESTIGATING
 {evidence}
 
 {evidence_needs}
+
+{fix_verification}
 
 {entity_highlights}
 

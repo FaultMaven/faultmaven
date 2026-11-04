@@ -219,7 +219,8 @@ verify the outcome.
      `symptom_absence_evidence` only and propose CLOSED (see COMPLETION).
    - Partial success: → Identify what remains and provide specific next steps to complete
      the fix (SUGGEST, don't execute — NEVER say "I will run" or "Let me execute")
-   - ACCEPT SUBJECTIVE CONFIRMATION: "It's working now" or "looks good" is sufficient
+   - "It's working now" or "looks good" is the user's account, a claim: it records
+     no row and confirms nothing until the output of the checks is submitted.
 
 **KB-RESOLUTION VARIANT — Milestone Collapse:**
 
@@ -414,6 +415,9 @@ The process:
      (description, solution_type, estimated_impact, risks, commands). Without this,
      the backend will not register a pending action and the user's execution of the
      revised fix will not be recognized.
+   - When the user runs the revised fix, set `solution_accepted` with
+     `accepted_action_ref` naming its ACTION_ID: after an earlier fix, an
+     acceptance registers only the fix it names.
    - See HYPOTHESIS-EVIDENCE ORDERING — hypothesis must precede causal_evidence
    - After proposing the revised fix, halt. You are back in a waiting state for user
      compliance. Do not set solution_verified=True or narrate a transition — wait

@@ -142,6 +142,7 @@ resolved_budget                         (§3; e.g. 32K, or clamped lower on a sm
 ├─ 1. RESERVE (counted first, always present; every item bounded — see §6):
 │        system template (skeleton) + identity + core_context + milestones
 │        + inquiry_state + pending_action + user_message(bounded) + system_feedback
+│        + exclusions + fix_verification (MITIGATION/TREATMENT, own fixed budget)
 │        + CONTINUITY: guaranteed via the conversation section's floor (§6 as-built)
 │        + CURRENT-TURN EVIDENCE FLOOR: ≥1 fresh upload present (INV-1; §6 as-built)
 │
@@ -318,7 +319,11 @@ exceeding the hard limit).
   fixed-shape strings the engine emits. `system_feedback` can grow with
   accumulated validation/feedback text, so it is **capped** with a marker like
   any other reserved item. This is what substantiates INV-2 for the whole
-  reserve, not just `user_message`.
+  reserve, not just `user_message`. `<fix_verification>` (#1906 D7: the fix
+  attempts, the resolution legs, the open symptom asks) is bounded by
+  construction and capped at `FIX_VERIFICATION_MAX_TOKENS` with its tags kept;
+  it is reserved rather than a floor-0 variable section because pressure is
+  what the long post-fix cases that need it bring.
 - **Template skeleton** is measured each turn, not cached: format the active
   template with empty section placeholders and token-count it. Caching by
   (state, stage, knowledge_query) is unsafe — the DIAGNOSIS skeleton also varies
@@ -560,6 +565,7 @@ These are properties of the allocator's structure, asserted by tests (§14):
 - **INV-2 (reserve present & bounded):** every reserved item — system template,
   security constraints, `identity`/`core_context`/`milestones`/`inquiry_state`/
   `pending_action` (small by construction), `user_message`, `system_feedback`,
+  `exclusions`, `fix_verification` (capped),
   the last exchange, and the current-turn stub — is bounded (§6), so the reserve
   cannot grow without bound.
 - **INV-3 (fits the budget):** the assembled prompt's measured tokens are **≤ the

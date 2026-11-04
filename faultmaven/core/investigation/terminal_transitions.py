@@ -55,6 +55,7 @@ from faultmaven.core.investigation.offers import (
     require_answerer,
     standing_resolve_decline,
 )
+from faultmaven.core.investigation.resolution_record import resolution_record_lines
 from faultmaven.core.investigation.verification_status import (
     assess_verification_status,
     restatement_hold_governs,
@@ -1439,10 +1440,13 @@ def assess_closure_readiness(case: "Case") -> ClosureReadiness:
         return ClosureReadiness(
             verdict=ClosureReadiness.SUGGEST_RESOLVE,
             message=(
-                "This case has a fix confirmed to have eliminated the root "
-                "cause — it qualifies for **resolved** status rather than "
+                "This case qualifies for **resolved** status rather than "
                 "closed. Closing would close it without marking it resolved; "
                 "the confirmed fix stays on record.\n\n"
+                # The rows the pivot rests on, cited (#1906 D5.1).
+                "The record shows:\n\n"
+                + resolution_record_lines(case)
+                + "\n"
                 + detail
                 + "\nWould you like to mark it **resolved** instead?"
             ),

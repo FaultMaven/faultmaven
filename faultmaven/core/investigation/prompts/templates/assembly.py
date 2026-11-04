@@ -696,6 +696,7 @@ _RESERVE_KEYS = (
     "pending_action",
     "system_feedback",
     "exclusions",
+    "fix_verification",
     "user_message",
 )
 

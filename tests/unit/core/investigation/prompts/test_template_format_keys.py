@@ -142,6 +142,7 @@ EXPECTED_KEYS: dict[str, set[str]] = {
         "evidence_needs",
         "exclusions",
         "fetch_next_data_point",
+        "fix_verification",
         "focus_emphasis",
         "hypotheses",
         "identity",

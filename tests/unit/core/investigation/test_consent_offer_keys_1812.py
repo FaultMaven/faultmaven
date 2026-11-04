@@ -597,7 +597,7 @@ class TestAClickAnswersOnlyTheOfferItNames:
         offer = case.offer_record.open
         assert (offer.kind, offer.basis) == ("resolve", "model")
         assert offer.summary == _build_resolution_confirmation(case)
-        assert "Thanks for the additional details." in ready["agent_response"]
+        assert "Thanks for the additional details." not in ready["agent_response"]
         assert _keys(ready["suggested_follow_ups"]) == [offer.proposal_id] * 2
         refused.labels.assert_not_called()
 

@@ -146,7 +146,10 @@ confirm the symptom (or cause) it captured is no longer present.
 - If the signature is GONE: emit an `evidence_to_add` row with
   `category=symptom_absence_evidence` (or `causal_absence_evidence`
   when re-checking a cause) and `source_file_id` pointing at the file
-  you re-checked. Both absence categories are STAND-ALONE audit rows —
+  you re-checked. After a fix, also name in `rechecks` the checklist row
+  it re-checks (a SYMPTOM row for symptom_absence, a CAUSE row for
+  causal_absence): a post-fix row naming none confirms nothing. Both
+  absence categories are STAND-ALONE audit rows —
   do NOT link them to a hypothesis OR to a causal node (neither
   `hypothesis_evidence_links` nor `node_evidence_links`). A successful fix
   confirms the root-cause hypothesis, so a confidence-bearing link would

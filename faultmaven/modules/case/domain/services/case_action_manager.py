@@ -160,7 +160,8 @@ _EARNED_EDGE_REASON: Mapping[CaseState, str] = MappingProxyType(
         ),
         CaseState.RESOLVED: (
             "reached by confirming the resolution the agent proposes once the "
-            "root cause is confirmed eliminated, not by requesting the state. "
+            "record shows the cause and the reported problem gone after the "
+            "fix, not by requesting the state. "
             "Tell the agent the issue is resolved and it will check, then "
             "either propose the transition or ask for what is missing"
         ),
