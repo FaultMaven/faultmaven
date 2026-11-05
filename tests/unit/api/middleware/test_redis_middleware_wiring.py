@@ -25,7 +25,7 @@ from starlette.responses import PlainTextResponse
 
 import faultmaven.api.middleware.rate_limiting as rate_limiting
 import faultmaven.infrastructure.protection.rate_limiter as rate_limiter_module
-from faultmaven.api.middleware.deduplication import DeduplicationMiddleware
+from faultmaven.api.middleware.deduplication import DeduplicationMiddleware, _Claim
 from faultmaven.api.middleware.idempotency import IdempotencyMiddleware
 from faultmaven.api.middleware.rate_limiting import RateLimitMiddleware
 from faultmaven.config.protection import get_development_protection_settings
@@ -138,10 +138,11 @@ async def test_dedup_detects_duplicate_after_lazy_init():
     )
     await mw._initialize(_request_with_state_client(fake))
 
-    # Same session + endpoint + body hashes to the same dedup key.
+    # Same session + endpoint + body hashes to the same dedup key; each request
+    # claims it with a value of its own.
     key = f"{mw.redis_key_prefix}:fixed-hash"
-    first = await mw._check_redis_duplicate(key, ttl=60)
-    second = await mw._check_redis_duplicate(key, ttl=60)
+    first = await mw._check_redis_duplicate(_Claim(mw._redis, key, "t|first", 60))
+    second = await mw._check_redis_duplicate(_Claim(mw._redis, key, "t|second", 60))
 
     assert first[0] is False  # first request is not a duplicate
     assert second[0] is True  # identical follow-up is detected as duplicate

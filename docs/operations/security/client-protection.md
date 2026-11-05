@@ -167,7 +167,9 @@ never having been told the bucket exists.
 **Purpose**: Prevent processing identical requests within short time windows.
 
 **Scope**:
-- Blocks a resubmit of the *exact* same request within the endpoint's TTL
+- Blocks an *exact* resubmit that arrives within the endpoint's TTL of the
+  first request's arrival, while that request is running, once it was
+  answered 2xx, or while it left its claim standing (see Cache Strategy)
 - Hash-based identification: SHA-256 over length-prefixed
   (session_id, method, path, canonical query, raw body bytes)
 - Keyed on the session — a request with no session id is not deduplicated
@@ -176,8 +178,18 @@ never having been told the bucket exists.
 
 A duplicate is answered **409** with `Retry-After` and an `x-error-code`.
 
-**Cache Strategy**: Redis with TTL-based expiration. The stored value is the
-first request's timestamp, which is what `Retry-After` counts down from; no
+**Cache Strategy**: Redis with TTL-based expiration. The key is claimed when the
+request arrives, for a fixed window that is never renewed (#2508). A 2xx keeps the
+claim; any other answer, a route exception, or the fail-closed 503 of a failed
+check releases it at once (a compare-and-delete, so a request never releases a
+newer request's claim), and an identical retry reaches the route. A claim also
+stands for up to its TTL without a 2xx after a cancellation, an exception raised
+after the response started, or a failed release. So `DUPLICATE_REQUEST` means an
+identical request arrived within the TTL and is still running, was answered
+2xx, or left its claim standing (a cancellation, an exception after the
+response started, a failed release). Its `Retry-After` counts down from
+that arrival and is an upper bound: the running request may answer sooner. The
+stored value is the claiming request's timestamp plus a random token. No
 response body is cached.
 
 #### 3. Agent Execution Timeouts
