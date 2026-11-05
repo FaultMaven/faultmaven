@@ -318,7 +318,7 @@ A certificate is meant to be renewed, so the expiry fails clause (b) of the
 ROOT-CAUSE TEST: ask what renews it before proposing a fix. The turn the renewal
 config shows why it did not, deepen the chain:
   evidence_to_add:
-    [0] {summary:"auto-renewal disabled by hand on 3 Oct; no pipeline manages that setting", category:"causal_evidence",
+    [0] {summary:"change log: auto-renewal on api-tls set to false by a manual edit on 3 Oct", category:"causal_evidence",
          source_type:"configuration", source_file_id:"file_...changelog", extract:"2026-10-03 ops: autoRenew=false on api-tls (manual edit)"}
   causal_nodes_to_add:
     [0] {statement:"cert auto-renewal was disabled in the 3 Oct config change", node_type:"root", produces:"cn_...certexpired"}

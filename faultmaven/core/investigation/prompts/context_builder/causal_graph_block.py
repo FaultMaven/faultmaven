@@ -1,7 +1,10 @@
 import logging
 
 from faultmaven.core.investigation.causal_graph.clusters import mece_contested_root_ids
-from faultmaven.core.investigation.causal_graph.projection import held_open_root_ids
+from faultmaven.core.investigation.causal_graph.projection import (
+    _standing_hypotheses,
+    held_open_root_ids,
+)
 from faultmaven.core.investigation.causal_graph.support import (
     BLOCK_REASON_COUNT,
     BLOCK_REASON_HEDGED,
@@ -174,9 +177,10 @@ _MECE_CONTESTED = "mece_contested"
 # marked it terminal holds identification. The S3 question for that node,
 # rendered on it, is the hold's recovery.
 _WHY_OPEN = "why_open"
-# D6 (#2036): a ``true`` verdict refused for want of a cited row, on a root
-# the open-WHY hold does not cover (not yet validated). Render only: the hold
-# population is unchanged.
+# D6 (#2036): a ``true`` verdict refused for want of a cited row, on the
+# current root of a STANDING (ACTIVE or VALIDATED) hypothesis that the open-WHY
+# hold does not cover (not yet validated). Render only: the hold population is
+# unchanged.
 _VERDICT_REFUSED = "verdict_refused"
 
 # Every hold's recovery note, by reason: the §7.1 grounding reasons, the §7.1
@@ -267,12 +271,16 @@ _RECOVERY_NOTES: dict[str, str] = {
 
 
 def refused_verdict_root_ids(case: Case) -> set[str]:
-    """The roots whose last ``true`` verdict was refused for want of a cited
-    row (``root_terminal_refused_turn``) and that stand without a ``True``."""
+    """The STANDING hypotheses' current roots whose last ``true`` verdict was
+    refused for want of a cited row (``root_terminal_refused_turn``) and that
+    stand without a ``True``. A hypothesis no longer standing takes no update,
+    so its root is never asked."""
+    nodes = case.causal_nodes or {}
     return {
-        node_id
-        for node_id, node in (case.causal_nodes or {}).items()
-        if node.node_type == NodeType.ROOT
+        h.root_node_id
+        for h in _standing_hypotheses(case)
+        if (node := nodes.get(h.root_node_id or "")) is not None
+        and node.node_type == NodeType.ROOT
         and "root_terminal_refused_turn" in node.metadata
         and node.root_terminal is not True
         and node.node_state != NodeState.REFUTED
@@ -409,9 +417,13 @@ def _build_causal_graph_block(case: Case) -> str:
     def _node_line(indent: str, n, node_type: str | None = None) -> str:
         note = "".join(_RECOVERY_NOTES.get(r, "") for r in reasons.get(n.node_id, ()))
         shown = node_type or n.node_type.value
-        # D6's floor: a verdict cites rows recorded since the root was posited.
+        # D6's floor: a verdict cites rows recorded since a hypothesis first
+        # attached to the root. A root never attached has no floor yet.
+        attached = {"root_first_attached_turn", "root_attached_turn"} & set(n.metadata)
         posited = (
-            f" (posited turn {n.root_first_attached_turn})" if shown == "root" else ""
+            f" (posited turn {n.root_first_attached_turn})"
+            if shown == "root" and attached
+            else ""
         )
         return (
             f"{indent}{n.node_id} [{shown}/"

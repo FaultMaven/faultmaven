@@ -336,7 +336,8 @@ def _record_verdict_on_root(
 ) -> None:
     """Record ``verdict`` on ``hyp``'s root. A ``True`` verdict stands only on
     a cited row that qualifies (``_terminal_basis``, D6); its new rows extend a
-    ``True`` that already stands, and one that adds none leaves it as it is.
+    ``True`` that already stands, and one that adds none leaves it as it is
+    (any rows it cited that do not qualify are named).
     One citing none on a root without a standing ``True`` is refused with a
     feedback line, marked on the node (``root_terminal_refused_turn``, read by
     the graph block's note), and the root's why stays open."""
@@ -358,6 +359,12 @@ def _record_verdict_on_root(
         added = [ref for ref in kept if ref not in standing]
         if added or not standing:
             node.record_root_terminal(True, standing + added, case.current_turn)
+        if refused and not kept:
+            _add_system_feedback(
+                metadata,
+                f"Root {node.node_id}: not qualifying: {'; '.join(refused)} "
+                "(the root's verdict stands on its cited rows).",
+            )
         return
     node.metadata["root_terminal_refused_turn"] = case.current_turn
     _add_system_feedback(

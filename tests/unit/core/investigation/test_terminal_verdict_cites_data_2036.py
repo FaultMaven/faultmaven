@@ -45,21 +45,28 @@ from faultmaven.core.investigation.prompts.context_builder.causal_graph_block im
 from faultmaven.core.investigation.prompts.templates.diagnosis import (
     _CHAIN_EMISSION_BLOCK,
 )
-from faultmaven.core.investigation.schemas import EvidenceToAdd, HypothesisUpdate
+from faultmaven.core.investigation.schemas import (
+    CausalNodeToAdd,
+    EvidenceToAdd,
+    HypothesisUpdate,
+)
 from faultmaven.core.investigation.terminal_transitions import (
     cause_identification_leg,
 )
 from faultmaven.modules.case.contracts import (
     CausalEdge,
+    CausalNode,
     CauseState,
     ConfidenceLevel,
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
     EvidenceStance,
+    HypothesisState,
     InvestigationActionType,
     NodeEvidenceLink,
     NodeState,
+    NodeType,
     ProposedAction,
     RootCauseConclusion,
 )
@@ -237,6 +244,13 @@ def test_a_true_re_sent_on_a_cited_root_is_absorbed_or_extends_it():
     meta = _mark_terminal(case, hyp, [])  # nothing qualifying: absorbed
     assert _REFUSED not in meta.get("system_feedback", "")
     assert root.metadata["root_terminal_evidence_ids"] == [basis]
+    before = _row(case, 3, "the secret_id expired")
+    meta = _mark_terminal(case, hyp, [before])  # named, still absorbed
+    feedback = meta["system_feedback"]
+    assert _REFUSED not in feedback
+    assert f"{before} (recorded at turn 3, before the root was posited)" in feedback
+    assert "(the root's verdict stands on its cited rows)" in feedback
+    assert root.metadata["root_terminal_evidence_ids"] == [basis]
     assert "root_terminal_refused_turn" not in root.metadata
     assert case.progress.cause_state == CauseState.IDENTIFIED
     more = _row(case, 6, "the issuer role pins secret_id_ttl")
@@ -270,11 +284,81 @@ def test_a_refused_true_on_a_root_outside_the_hold_still_renders_the_ask():
     assert "root_terminal_refused_turn" not in root.metadata
 
 
-def test_every_root_line_shows_the_turn_it_was_posited():
-    case, root, _hyp = _d6_case()
+def _refused_count_held():
+    """A count-held (INCONCLUSIVE) root whose ``true`` was refused."""
+    case, root, hyp = _d6_case()
+    root.evidence_links = root.evidence_links[:1]
     _recompute_cause_state_from_chain(case)
-    line = _root_line(_build_causal_graph_block(case), root.node_id)
-    assert f"(posited turn {_ATTACH})" in line
+    _mark_terminal(case, hyp, [])
+    assert "root_terminal_refused_turn" in root.metadata
+    return case, root, hyp
+
+
+@pytest.mark.parametrize("change", ["refuted", "retired", "moved off the root"])
+def test_the_ask_renders_only_on_a_standing_hypothesis_current_root(change):
+    case, root, hyp = _refused_count_held()
+    assert cgb._RECOVERY_NOTES[cgb._VERDICT_REFUSED] in _build_causal_graph_block(case)
+    if change == "refuted":
+        hyp.state = HypothesisState.REFUTED
+        hyp.refutation_reason = "the fix of it failed"
+    elif change == "retired":
+        hyp.state = HypothesisState.RETIRED
+    else:
+        other = root.model_copy(update={"node_id": "cn_0000000000b2", "metadata": {}})
+        case.causal_nodes[other.node_id] = other
+        hyp.root_node_id = other.node_id
+    assert cgb._RECOVERY_NOTES[cgb._VERDICT_REFUSED] not in (
+        _build_causal_graph_block(case)
+    )
+
+
+@pytest.mark.parametrize("how", ["a false verdict", "a deepening"])
+def test_a_false_verdict_clears_the_refused_mark(how):
+    case, root, hyp = _refused_count_held()
+    if how == "a false verdict":
+        update = HypothesisUpdate(
+            hypothesis_id=hyp.hypothesis_id, root_is_terminal=False
+        )
+        _apply(case, hypotheses_to_update=[update])
+    else:  # the deepening writer marks the root deepened past not terminal
+        _apply(
+            case,
+            causal_nodes_to_add=[
+                CausalNodeToAdd(
+                    statement="nothing rotates the secret_id",
+                    node_type="root",
+                    produces=root.node_id,
+                )
+            ],
+            hypotheses_to_update=[
+                HypothesisUpdate(
+                    hypothesis_id=hyp.hypothesis_id, root_node_ref="new_index_0"
+                )
+            ],
+        )
+        assert hyp.root_node_id != root.node_id
+    assert root.root_terminal is False
+    assert "root_terminal_refused_turn" not in root.metadata
+
+
+def test_an_attached_root_line_shows_the_turn_it_was_posited():
+    case, root, _hyp = _d6_case()
+    d = next(n for n in case.causal_nodes.values() if n.node_type == NodeType.PROBLEM)
+    orphan = CausalNode(
+        node_id="cn_00000000000f",
+        statement="an orphan cause",
+        node_type=NodeType.ROOT,
+        generated_at_turn=2,
+    )
+    case.causal_nodes[orphan.node_id] = orphan
+    case.causal_edges.append(
+        CausalEdge(cause_node_id=orphan.node_id, effect_node_id=d.node_id)
+    )
+    _recompute_cause_state_from_chain(case)
+    block = _build_causal_graph_block(case)
+    assert f"(posited turn {_ATTACH})" in _root_line(block, root.node_id)
+    # No hypothesis attached to the orphan: it has no floor to show yet.
+    assert "posited turn" not in _root_line(block, orphan.node_id)
 
 
 def test_the_prompt_example_basis_row_is_a_valid_evidence_to_add():
