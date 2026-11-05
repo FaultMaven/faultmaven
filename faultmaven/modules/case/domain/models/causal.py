@@ -302,12 +302,13 @@ class CausalNode(BaseModel):
     ) -> None:
         """Record the verdict. ``evidence_ids`` are the rows a ``True``
         verdict cites, already checked by the caller; a ``False`` verdict
-        cites none."""
+        cites none. A recorded verdict supersedes a refused one."""
         self.metadata["root_terminal"] = verdict
         self.metadata["root_terminal_evidence_ids"] = (
             list(evidence_ids or []) if verdict else []
         )
         self.metadata["root_terminal_turn"] = turn
+        self.metadata.pop("root_terminal_refused_turn", None)
 
     @property
     def root_attached_turn(self) -> int:

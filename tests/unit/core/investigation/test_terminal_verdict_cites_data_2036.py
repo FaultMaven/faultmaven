@@ -36,8 +36,14 @@ from faultmaven.core.investigation.milestone_engine.response_application import 
 from faultmaven.core.investigation.milestone_engine.stage_gates import (
     _withdraw_unlicensed_solution_offers,
 )
+from faultmaven.core.investigation.prompts.context_builder import (
+    causal_graph_block as cgb,
+)
 from faultmaven.core.investigation.prompts.context_builder.causal_graph_block import (
     _build_causal_graph_block,
+)
+from faultmaven.core.investigation.prompts.templates.diagnosis import (
+    _CHAIN_EMISSION_BLOCK,
 )
 from faultmaven.core.investigation.schemas import EvidenceToAdd, HypothesisUpdate
 from faultmaven.core.investigation.terminal_transitions import (
@@ -221,6 +227,67 @@ def test_a_stored_true_without_a_citation_reads_none_and_is_held():
     _recompute_cause_state_from_chain(case)
     assert root.is_identified_root is False
     _assert_held(case, root)
+
+
+def test_a_true_re_sent_on_a_cited_root_is_absorbed_or_extends_it():
+    case, root, hyp = _d6_case()
+    basis = _row(case, _ATTACH, "no rotation job renews the secret_id")
+    _mark_terminal(case, hyp, [basis])
+    case.current_turn = 6
+    meta = _mark_terminal(case, hyp, [])  # nothing qualifying: absorbed
+    assert _REFUSED not in meta.get("system_feedback", "")
+    assert root.metadata["root_terminal_evidence_ids"] == [basis]
+    assert "root_terminal_refused_turn" not in root.metadata
+    assert case.progress.cause_state == CauseState.IDENTIFIED
+    more = _row(case, 6, "the issuer role pins secret_id_ttl")
+    _mark_terminal(case, hyp, [more])
+    assert root.metadata["root_terminal_evidence_ids"] == [basis, more]
+
+
+def _root_line(block, node_id):
+    return next(ln for ln in block.splitlines() if ln.strip().startswith(node_id))
+
+
+def test_a_refused_true_on_a_root_outside_the_hold_still_renders_the_ask():
+    """Render only (#2036 review): the root is not validated, so not held open,
+    and the refusal moves no hold."""
+    case, root, hyp = _d6_case()
+    root.evidence_links = root.evidence_links[:1]  # count-held, not validated
+    _recompute_cause_state_from_chain(case)
+    assert root.node_state == NodeState.INCONCLUSIVE
+    held = (held_open_root_ids(case), case.progress.cause_identification_held_open)
+    _mark_terminal(case, hyp, [])
+    assert root.metadata["root_terminal_refused_turn"] == 5
+    assert (
+        held_open_root_ids(case),
+        case.progress.cause_identification_held_open,
+    ) == held
+    line = _root_line(_build_causal_graph_block(case), root.node_id)
+    assert cgb._RECOVERY_NOTES[cgb._VERDICT_REFUSED] in line
+    assert "terminal_basis_evidence_ids" in line
+    # A recorded verdict clears the mark.
+    _mark_terminal(case, hyp, [_row(case, 5, "TTL fixed at issue")])
+    assert "root_terminal_refused_turn" not in root.metadata
+
+
+def test_every_root_line_shows_the_turn_it_was_posited():
+    case, root, _hyp = _d6_case()
+    _recompute_cause_state_from_chain(case)
+    line = _root_line(_build_causal_graph_block(case), root.node_id)
+    assert f"(posited turn {_ATTACH})" in line
+
+
+def test_the_prompt_example_basis_row_is_a_valid_evidence_to_add():
+    """#1930: a model copying the example's row must not be refused."""
+    import json
+    import re
+
+    block = _CHAIN_EMISSION_BLOCK.split("terminal_basis_evidence_ids:[")[0]
+    body = block.rsplit("evidence_to_add:", 1)[1].split("causal_nodes_to_add:")[0]
+    raw = re.sub(r"\s+", " ", body.strip().removeprefix("[0]").strip())
+    row = EvidenceToAdd.model_validate(json.loads(re.sub(r"(\w+):\"", r'"\1":"', raw)))
+    assert row.category == EvidenceCategory.CAUSAL_EVIDENCE
+    assert row.source_file_id and row.source_type and row.extract
 
 
 # ---------------------------------------------------------------------------

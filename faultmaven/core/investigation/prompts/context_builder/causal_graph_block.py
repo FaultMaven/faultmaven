@@ -18,7 +18,7 @@ from faultmaven.core.investigation.problem_status import (
     cause_work_accepted,
     cause_work_staged,
 )
-from faultmaven.modules.case.contracts import Case, CaseState
+from faultmaven.modules.case.contracts import Case, CaseState, NodeState, NodeType
 
 logger = logging.getLogger(__name__)
 
@@ -167,17 +167,21 @@ def exclusions_reminder(case: Case) -> str:
 # lines, reads the cause as settled, and never runs the test that
 # separates them. Rendered through the SAME per-node reason → note maps
 # as the §7.1 recovery notes; ``_root_recovery_reasons`` declares the
-# order (a contested VALIDATED root shows the discrimination ask alone, even
+# order (a contested VALIDATED root leads with the discrimination ask, even
 # if a future block reason ever annotates validated roots too).
 _MECE_CONTESTED = "mece_contested"
 # M1's terminal clause (#2036): a validated root whose hypothesis has not
 # marked it terminal holds identification. The S3 question for that node,
 # rendered on it, is the hold's recovery.
 _WHY_OPEN = "why_open"
+# D6 (#2036): a ``true`` verdict refused for want of a cited row, on a root
+# the open-WHY hold does not cover (not yet validated). Render only: the hold
+# population is unchanged.
+_VERDICT_REFUSED = "verdict_refused"
 
 # Every hold's recovery note, by reason: the §7.1 grounding reasons, the §7.1
-# restatement hold, the §7.1.2 MECE contest and M1's open WHY. Which of them a
-# root under more than one hold carries, ``_root_recovery_reasons`` decides.
+# restatement hold, the §7.1.2 MECE contest, M1's open WHY and a refused
+# verdict. ``_root_recovery_reasons`` decides which a root carries.
 _RECOVERY_NOTES: dict[str, str] = {
     # §7.1/INV-29 elicitation: a ROOT held from VALIDATED only by the
     # causal-grounding bar gets its REASON-SPECIFIC recovery action rendered
@@ -253,13 +257,33 @@ _RECOVERY_NOTES: dict[str, str] = {
         "renews or re-creates it. The cause is not identified until one of them "
         "is done"
     ),
+    _VERDICT_REFUSED: (
+        " — its root_is_terminal true was refused: it cited no causal_evidence "
+        "row recorded since this root was posited. Cite in "
+        "terminal_basis_evidence_ids the row that shows nothing renews or "
+        "re-creates it"
+    ),
 }
 
 
-# The four hold populations ``_root_recovery_reasons`` reads, each named by
-# the predicate that produces it.
+def refused_verdict_root_ids(case: Case) -> set[str]:
+    """The roots whose last ``true`` verdict was refused for want of a cited
+    row (``root_terminal_refused_turn``) and that stand without a ``True``."""
+    return {
+        node_id
+        for node_id, node in (case.causal_nodes or {}).items()
+        if node.node_type == NodeType.ROOT
+        and "root_terminal_refused_turn" in node.metadata
+        and node.root_terminal is not True
+        and node.node_state != NodeState.REFUTED
+    }
+
+
+# The populations ``_root_recovery_reasons`` reads, each named by the
+# predicate that produces it.
 _MECE_POPULATION = "mece_contested_root_ids"
 _WHY_POPULATION = "held_open_root_ids"
+_REFUSED_POPULATION = "refused_verdict_root_ids"
 _RESTATEMENT_POPULATION = "restatement_held_root_ids"
 _GROUNDING_POPULATION = "root_support_block_reasons"
 
@@ -281,42 +305,53 @@ def _root_recovery_reasons(case: Case) -> dict[str, list[str]]:
 
     Rendering only: it feeds the per-root note in
     ``_build_causal_graph_block`` and nothing else, and no decision path (a
-    gate, a transition, a disposition, a metric) may read it. The contest's
-    note hides the open-WHY note, so a decision made from it would act on a
-    partial view, and #1141's review asked that this classification never be
-    exported where it could start influencing state.
+    gate, a transition, a disposition, a metric) may read it: it adds a
+    render-only note (``verdict_refused``) to the holds, and #1141's review
+    asked that this classification never be exported where it could start
+    influencing state.
 
-    A root under more than one hold carries the note of each, in one declared
-    order, except that the MECE contest's note stands alone:
+    A root under more than one hold carries the note of each, concatenated in
+    one declared order, so every note says what still blocks it:
 
     1. ``mece_contested``: several validated, mutually-exclusive roots hold
        identification whatever any root's terminal verdict, so discriminating
        between them is the move that advances the case.
     2. ``why_open``, which holds two slices of roots.
        - A validated root without a ``True`` verdict: identification needs its
-         WHY answered. The grounding and restatement holds exclude validated
-         roots, so no other note exists.
+         WHY answered too, so on a contested root this note follows the
+         contest's. The grounding and restatement holds exclude validated
+         roots.
        - A root its hypothesis marked non-terminal: the model has said
          something produces it, so a re-root is what identification needs. On
          a root that is not validated the grounding or restatement hold still
          blocks it too, so that note follows (#2059).
-    3. ``restates_frame``, then the grounding reasons (``count``,
+    3. ``verdict_refused``: a root outside the WHY hold whose ``true`` was
+       refused for want of a cited row (D6); the note says what the verdict
+       needs. Render only: no hold reads it.
+    4. ``restates_frame``, then the grounding reasons (``count``,
        ``mirror_collapse``, ``hedged_only``). These two never meet.
 
-    Pairs that can co-occur: why_open with mece_contested (the contest's note
-    alone), and why_open with a grounding reason or with restates_frame (both
-    notes). The other three pairs are disjoint by their predicates'
-    definitions (``_DISJOINT_POPULATIONS``). A root found in one of them is
-    logged at ERROR as ``recovery_note_population_collision``, once per root,
-    naming every population it is in. Its notes are still the ones this order
+    Pairs that can co-occur, rendering both notes: why_open with
+    mece_contested, with a grounding reason and with restates_frame, and
+    verdict_refused with a grounding reason and with restates_frame.
+    verdict_refused excludes why_open by construction. The grounding,
+    restatement and contest populations are pairwise disjoint by their
+    predicates' definitions (``_DISJOINT_POPULATIONS``). A root found in one of them is logged at
+    ERROR as ``recovery_note_population_collision``, once per root, naming
+    every population it is in. Its notes are still the ones this order
     renders, and building the prompt never raises.
     """
+    why = held_open_root_ids(case)
     populations = (  # in render order
         (
             _MECE_POPULATION,
             dict.fromkeys(mece_contested_root_ids(case), _MECE_CONTESTED),
         ),
-        (_WHY_POPULATION, dict.fromkeys(held_open_root_ids(case), _WHY_OPEN)),
+        (_WHY_POPULATION, dict.fromkeys(why, _WHY_OPEN)),
+        (
+            _REFUSED_POPULATION,
+            dict.fromkeys(refused_verdict_root_ids(case) - why, _VERDICT_REFUSED),
+        ),
         (
             _RESTATEMENT_POPULATION,
             dict.fromkeys(restatement_held_root_ids(case), BLOCK_REASON_RESTATEMENT),
@@ -327,9 +362,7 @@ def _root_recovery_reasons(case: Case) -> dict[str, list[str]]:
     found_in: dict[str, list[str]] = {}
     for name, population in populations:
         for root_id, reason in population.items():
-            notes = reasons.setdefault(root_id, [])
-            if _MECE_CONTESTED not in notes:
-                notes.append(reason)
+            reasons.setdefault(root_id, []).append(reason)
             found_in.setdefault(root_id, []).append(name)
     for root_id, names in found_in.items():
         if any(pair <= set(names) for pair in _DISJOINT_POPULATIONS):
@@ -375,9 +408,14 @@ def _build_causal_graph_block(case: Case) -> str:
 
     def _node_line(indent: str, n, node_type: str | None = None) -> str:
         note = "".join(_RECOVERY_NOTES.get(r, "") for r in reasons.get(n.node_id, ()))
+        shown = node_type or n.node_type.value
+        # D6's floor: a verdict cites rows recorded since the root was posited.
+        posited = (
+            f" (posited turn {n.root_first_attached_turn})" if shown == "root" else ""
+        )
         return (
-            f"{indent}{n.node_id} [{node_type or n.node_type.value}/"
-            f"{n.node_state.value}] {_one_line(n.statement)}{note}"
+            f"{indent}{n.node_id} [{shown}/"
+            f"{n.node_state.value}] {_one_line(n.statement)}{posited}{note}"
         )
 
     on_path: set[str] = set()

@@ -204,9 +204,7 @@ def _apply_chain_emission(
                 and stale.node_type == NodeType.ROOT
                 and old_root in new_path
             ):
-                stale.record_root_terminal(
-                    False, f"deepened past, to {root_id}", case.current_turn
-                )
+                stale.record_root_terminal(False, None, case.current_turn)
         return old_path if (old_root and old_root != root_id) else []
 
     # One cause, one chain (M3/§7.8.1): a chain root belongs to exactly ONE
@@ -337,8 +335,11 @@ def _record_verdict_on_root(
     case: "Case", hyp: Any, verdict: bool, cited: list, metadata: dict[str, Any]
 ) -> None:
     """Record ``verdict`` on ``hyp``'s root. A ``True`` verdict stands only on
-    a cited row that qualifies (``_terminal_basis``, D6); one citing none is
-    refused with a feedback line, and the root's why stays open."""
+    a cited row that qualifies (``_terminal_basis``, D6); its new rows extend a
+    ``True`` that already stands, and one that adds none leaves it as it is.
+    One citing none on a root without a standing ``True`` is refused with a
+    feedback line, marked on the node (``root_terminal_refused_turn``, read by
+    the graph block's note), and the root's why stays open."""
     node = case.causal_nodes.get(hyp.root_node_id or "")
     if node is None or node.node_type != NodeType.ROOT:
         return
@@ -348,9 +349,17 @@ def _record_verdict_on_root(
     kept, refused = _terminal_basis(
         case, node, cited, metadata.get("evidence_slots", [])
     )
-    if kept:
-        node.record_root_terminal(True, kept, case.current_turn)
+    standing = (
+        list(node.metadata.get("root_terminal_evidence_ids") or [])
+        if node.root_terminal is True
+        else []
+    )
+    if kept or standing:
+        added = [ref for ref in kept if ref not in standing]
+        if added or not standing:
+            node.record_root_terminal(True, standing + added, case.current_turn)
         return
+    node.metadata["root_terminal_refused_turn"] = case.current_turn
     _add_system_feedback(
         metadata,
         f"Root {node.node_id} was NOT marked terminal: root_is_terminal true "

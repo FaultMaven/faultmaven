@@ -538,16 +538,22 @@ def test_a_re_root_update_carries_its_verdict_to_the_new_root():
 )
 def test_a_verdict_is_refused_with_the_rest_of_the_cause_work(status):
     """Before the problem is verified, or while a revision awaits the user, a
-    verdict-only update on an already-rooted hypothesis records nothing."""
+    verdict-only update on an already-rooted hypothesis records nothing, even
+    one citing a qualifying row."""
     case, root, hyp = _open_chain_case()
     case.progress.problem_status = status
     _turn(
         case,
         hypotheses_to_update=[
-            HypothesisUpdate(hypothesis_id=hyp.hypothesis_id, root_is_terminal=True)
+            HypothesisUpdate(
+                hypothesis_id=hyp.hypothesis_id,
+                root_is_terminal=True,
+                terminal_basis_evidence_ids=[_eid("ev_root_support")],
+            )
         ],
     )
     assert root.root_terminal is None
+    assert "root_terminal" not in root.metadata
 
 
 def test_an_explicit_not_terminal_holds_a_root_with_one_support():
