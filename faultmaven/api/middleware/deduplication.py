@@ -42,6 +42,9 @@ end
 return 0
 """
 
+#: A release may meet the store that just failed: bound it, not a second retry budget.
+_RELEASE_TIMEOUT_SECONDS = 0.5
+
 
 class _Claim(NamedTuple):
     """A request's claim: the client it is taken on, its key, value and TTL."""
@@ -140,15 +143,16 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
         never renewed, recorded before the arrival script runs. A 2xx keeps it;
         any other answer, an exception through ``call_next`` and a fail-closed
         503 release it, so a request that changed nothing does not block its own
-        retry. ``DUPLICATE_REQUEST`` thus means an identical request arrived
-        within the TTL and is still running or was answered 2xx; its
-        ``Retry-After`` is an upper bound. Every non-2xx releases, not only a
-        4xx: the claim only ever delayed a repeat; only the copilot keys every
-        request, and its keyed writes are retry-safe; no client resends a 5xx.
-        A claim stands for its TTL without a 2xx after a cancellation or
-        disconnect (the route may have committed), an exception raised after
-        the response started (Starlette raises it once ``dispatch`` returned),
-        or a failed release.
+        retry. Every non-2xx releases, not only a 4xx: the claim only ever
+        delayed a repeat; only the copilot keys every request, and its keyed
+        writes are retry-safe; no client resends a 5xx automatically. A claim
+        stands for its TTL without a 2xx after a cancellation (the route may
+        have committed), an exception raised after the response started
+        (Starlette raises it once ``dispatch`` returned), or a failed release.
+        ``DUPLICATE_REQUEST`` thus means an identical request arrived within the
+        TTL and is still running, was answered 2xx, or left its claim standing
+        (a cancellation, an exception after the response started, a failed
+        release); its ``Retry-After`` is an upper bound.
         """
         start_time = time.time()
         duplicate: Optional[Response] = None
@@ -208,7 +212,9 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
         if claim is None:
             return
         try:
-            await self._release_claim(claim)
+            await asyncio.wait_for(
+                self._release_claim(claim), timeout=_RELEASE_TIMEOUT_SECONDS
+            )
         except Exception as e:
             self.logger.warning(
                 f"Releasing a deduplication claim failed: {type(e).__name__}: {e}"

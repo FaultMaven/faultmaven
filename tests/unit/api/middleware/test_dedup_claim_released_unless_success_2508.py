@@ -135,6 +135,15 @@ class _LostReply(fakeredis_aio.FakeRedis):
         return result
 
 
+class _ReleaseHangs(fakeredis_aio.FakeRedis):
+    """Its release script never completes."""
+
+    async def eval(self, script, *args):
+        if "DEL" in script:
+            await asyncio.Event().wait()
+        return await super().eval(script, *args)
+
+
 def _clients_held(app) -> list:
     """Every Redis client the protection middleware serving ``app`` holds."""
     nodes = live_protection_middleware(app)
@@ -321,6 +330,18 @@ async def test_the_release_uses_the_client_the_claim_was_taken_on():
         assert (await dedup.delete()).status_code == 204
         await dedup.assert_refused_as_duplicate()
     assert dedup.middleware.metrics["errors"] == 0
+
+
+async def test_a_release_that_never_completes_is_bounded(monkeypatch):
+    """The answer still goes out, the miss is counted, the claim lapses."""
+    monkeypatch.setattr(
+        "faultmaven.api.middleware.deduplication._RELEASE_TIMEOUT_SECONDS", 0.01
+    )
+    dedup = _Dedup(_answer(401), store=_ReleaseHangs)
+    async with dedup.client:
+        assert (await dedup.delete()).status_code == 401
+        await dedup.assert_refused_as_duplicate()
+    assert dedup.middleware.metrics["errors"] == 1
 
 
 async def test_the_retry_after_reads_the_timestamp_the_claim_stores():
