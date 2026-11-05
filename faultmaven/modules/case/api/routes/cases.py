@@ -164,9 +164,10 @@ async def delete_case(
     indexing, a runbook draft), is still running, on any server, the delete
     answers 409 `CASE_WORK_IN_PROGRESS` with `Retry-After` and clears nothing.
     A turn sent while the delete runs is refused with 409
-    `CASE_DELETE_IN_PROGRESS`. If whether work is in flight cannot be read,
-    the delete answers 503 `CASE_DELETE_UNAVAILABLE` with `Retry-After` and
-    clears nothing (#2096).
+    `CASE_DELETE_IN_PROGRESS`, and `GET /cases/{case_id}` reads
+    `deleting: true` until the case is gone (404) or the delete fails (#2510).
+    If whether work is in flight cannot be read, the delete answers 503
+    `CASE_DELETE_UNAVAILABLE` with `Retry-After` and clears nothing (#2096).
 
     Returns 204 No Content on success.
     """
@@ -715,6 +716,10 @@ async def get_case(
 
     Returns full case details with milestone progress, investigation stage,
     and completion percentage.
+
+    While a delete of the case runs, `deleting` is true: show the case
+    read-only and read it again until it is gone (404) or `deleting` clears
+    (#2510).
     """
     case_service = check_case_service_available(case_service)
 
@@ -744,6 +749,10 @@ async def get_case(
         detail.shared_team_ids = await case_service.get_case_team_ids(case_id)
         # Creator and driver names (ADR-020 D5).
         await case_service.fill_display_names([detail])
+        # A delete of the case runs (#2510): the client reads it again.
+        detail.deleting = await case_service.delete_in_progress(
+            case_id, case.enterprise_id
+        )
         return detail
 
     except HTTPException:

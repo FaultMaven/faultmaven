@@ -128,6 +128,9 @@ def mock_case_service():
     # Team-share enrichment on the case-detail read path (ADR-013 §D4): default to
     # no shares so CaseDetail.shared_team_ids serializes as [] not a raw AsyncMock.
     service.get_case_team_ids = AsyncMock(return_value=[])
+    # No delete runs (#2510): a real bool, as the service returns, so the
+    # detail read serializes as it does for a case nobody is deleting.
+    service.delete_in_progress = AsyncMock(return_value=False)
     return service
 
 
@@ -363,6 +366,18 @@ class TestCreateCase:
 # GET /api/v1/cases/{case_id} Tests
 # ============================================================
 
+#: ``CaseDetail``'s keys on ``main`` before #2510 added ``deleting``.
+CASE_DETAIL_KEYS_BEFORE_2510 = {
+    *("case_id", "title", "description", "state", "created_at", "updated_at"),
+    *("last_activity_at", "resolved_at", "closed_at", "user_id", "driver_id"),
+    *("creator_display_name", "driver_display_name", "enterprise_id"),
+    *("organization_id", "source", "closure_reason", "current_turn"),
+    *("investigation_turn", "turns_without_progress", "current_stage"),
+    *("milestones_completed", "pending_milestones", "evidence_count"),
+    *("hypothesis_count", "solution_count", "is_terminal", "escalated"),
+    *("shared_team_ids", "valid_next_states"),
+}
+
 
 class TestGetCase:
     """Tests for GET /api/v1/cases/{case_id} endpoint."""
@@ -383,6 +398,20 @@ class TestGetCase:
         assert data["case_id"] == "case_123abc"
         # v2.0 API passes user_id (from current_user), not a tenant id
         mock_case_service.get_case.assert_called_once_with("case_123abc", "user_789")
+
+    async def test_a_case_nobody_deletes_reads_todays_keys_and_deleting_false(
+        self, client, mock_case_service, mock_case, headers
+    ):
+        """#2510 adds one key and nothing else to the detail read."""
+        mock_case_service.get_case.return_value = mock_case
+
+        data = (await client.get("/api/v1/cases/case_123abc", headers=headers)).json()
+
+        assert set(data) == CASE_DETAIL_KEYS_BEFORE_2510 | {"deleting"}
+        assert data["deleting"] is False
+        mock_case_service.delete_in_progress.assert_awaited_once_with(
+            "case_123abc", "ent_456"
+        )
 
     async def test_get_case_not_found(self, client, mock_case_service, headers):
         """Test case not found - v2.0 API returns FastAPI standard error format."""

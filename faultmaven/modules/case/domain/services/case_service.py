@@ -1029,6 +1029,13 @@ class CaseService(CaseDriverMixin, ICaseService):
                 await tombstone.end(deleted=deleted)
         return True
 
+    async def delete_in_progress(self, case_id: str, enterprise_id: str) -> bool:
+        """Whether a delete of the case runs (``delete_gate``, #2510); ``False``
+        with no gate, as a delete then holds no tombstone."""
+        if self.delete_gate is None:
+            return False
+        return await self.delete_gate.deleting((enterprise_id, case_id))
+
     @trace("case_service_close_case")
     async def close_case(self, case_id: str, user_id: str) -> Case:
         """Close a case from the API surface (user-initiated, no chat gate).

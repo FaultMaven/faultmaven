@@ -243,6 +243,7 @@ class TestCloudRequiresALiveGrant:
         assert body["grant"]["grant_id"] == "grant-1"
         assert body["grant"]["is_live"] is True
         assert body["case"]["title"] == "payments API 5xx spike"
+        assert body["case"]["deleting"] is False  # set on GET /cases/{id} only
 
     def test_a_live_grant_opens_the_transcript(self, client, cloud, grant_repo):
         grant_repo.find_live_grant = AsyncMock(return_value=_grant())
