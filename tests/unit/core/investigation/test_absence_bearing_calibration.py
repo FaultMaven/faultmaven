@@ -70,6 +70,7 @@ from faultmaven.modules.case.contracts import (
     ValidationMethod,
 )
 from tests.unit.core.investigation.bound_rows import bound_evidence
+from tests.utils import terminal_verdict
 
 _FILE_ID = "file_0123456789ab"
 
@@ -156,7 +157,7 @@ def _supports(node, *rows) -> None:
 
 def _node(node_id, statement, node_type, *, validated=False) -> CausalNode:
     return CausalNode(
-        metadata={"root_terminal": True},
+        metadata=terminal_verdict(),
         node_id=node_id,
         statement=statement,
         node_type=node_type,

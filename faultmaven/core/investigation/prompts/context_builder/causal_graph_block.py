@@ -167,7 +167,7 @@ def exclusions_reminder(case: Case) -> str:
 # lines, reads the cause as settled, and never runs the test that
 # separates them. Rendered through the SAME per-node reason → note maps
 # as the §7.1 recovery notes; ``_root_recovery_reasons`` declares the
-# precedence (a contested VALIDATED root shows the discrimination ask even
+# order (a contested VALIDATED root shows the discrimination ask alone, even
 # if a future block reason ever annotates validated roots too).
 _MECE_CONTESTED = "mece_contested"
 # M1's terminal clause (#2036): a validated root whose hypothesis has not
@@ -176,9 +176,8 @@ _MECE_CONTESTED = "mece_contested"
 _WHY_OPEN = "why_open"
 
 # Every hold's recovery note, by reason: the §7.1 grounding reasons, the §7.1
-# restatement hold, the §7.1.2 MECE contest and M1's open WHY. A root under
-# more than one hold carries ONE of them, which ``_root_recovery_reasons``
-# chooses.
+# restatement hold, the §7.1.2 MECE contest and M1's open WHY. Which of them a
+# root under more than one hold carries, ``_root_recovery_reasons`` decides.
 _RECOVERY_NOTES: dict[str, str] = {
     # §7.1/INV-29 elicitation: a ROOT held from VALIDATED only by the
     # causal-grounding bar gets its REASON-SPECIFIC recovery action rendered
@@ -248,10 +247,11 @@ _RECOVERY_NOTES: dict[str, str] = {
     _WHY_OPEN: (
         " — its WHY is open (ROOT-CAUSE TEST, clause b): ask for "
         "what produced this state and whether it returns once corrected. Then "
-        "re-root this hypothesis onto that cause, or mark this root terminal "
-        "(root_is_terminal true, with root_terminal_basis) on its "
-        "hypotheses_to_update entry. The cause is not identified until one of "
-        "them is done"
+        "re-root this hypothesis onto that cause, or mark this root terminal on "
+        "its hypotheses_to_update entry: root_is_terminal true, citing in "
+        "terminal_basis_evidence_ids the causal_evidence row that shows nothing "
+        "renews or re-creates it. The cause is not identified until one of them "
+        "is done"
     ),
 }
 
@@ -276,18 +276,18 @@ _DISJOINT_POPULATIONS = (
 )
 
 
-def _root_recovery_reasons(case: Case) -> dict[str, str]:
-    """The one recovery note each root carries, by root node id.
+def _root_recovery_reasons(case: Case) -> dict[str, list[str]]:
+    """The recovery notes each root carries, by root node id, in render order.
 
     Rendering only: it feeds the per-root note in
     ``_build_causal_graph_block`` and nothing else, and no decision path (a
-    gate, a transition, a disposition, a metric) may read it. The choice hides
-    every lower hold a root is under, so a decision made from it would act on
-    a partial view, and #1141's review asked that this classification never be
+    gate, a transition, a disposition, a metric) may read it. The contest's
+    note hides the open-WHY note, so a decision made from it would act on a
+    partial view, and #1141's review asked that this classification never be
     exported where it could start influencing state.
 
-    A root under more than one hold carries ONE note, chosen by one declared
-    precedence (highest first):
+    A root under more than one hold carries the note of each, in one declared
+    order, except that the MECE contest's note stands alone:
 
     1. ``mece_contested``: several validated, mutually-exclusive roots hold
        identification whatever any root's terminal verdict, so discriminating
@@ -295,25 +295,23 @@ def _root_recovery_reasons(case: Case) -> dict[str, str]:
     2. ``why_open``, which holds two slices of roots.
        - A validated root without a ``True`` verdict: identification needs its
          WHY answered. The grounding and restatement holds exclude validated
-         roots, so no competing note exists.
+         roots, so no other note exists.
        - A root its hypothesis marked non-terminal: the model has said
-         something produces it, so a re-root is what identification needs,
-         which more evidence for this node or a restatement of it does not
-         give. On a root that is not validated this hides the grounding or
-         restatement note; that trade-off is #2059's.
+         something produces it, so a re-root is what identification needs. On
+         a root that is not validated the grounding or restatement hold still
+         blocks it too, so that note follows (#2059).
     3. ``restates_frame``, then the grounding reasons (``count``,
-       ``mirror_collapse``, ``hedged_only``). These two never meet, so their
-       relative order is immaterial.
+       ``mirror_collapse``, ``hedged_only``). These two never meet.
 
-    Pairs that can co-occur, and resolve silently by that order: why_open with
-    mece_contested, with a grounding reason, and with restates_frame. The
-    other three pairs are disjoint by their predicates' definitions
-    (``_DISJOINT_POPULATIONS``). A root found in one of them is logged at ERROR
-    as ``recovery_note_population_collision``, once per root, naming every
-    population it is in. Its note is still the one this order picks, and
-    building the prompt never raises.
+    Pairs that can co-occur: why_open with mece_contested (the contest's note
+    alone), and why_open with a grounding reason or with restates_frame (both
+    notes). The other three pairs are disjoint by their predicates'
+    definitions (``_DISJOINT_POPULATIONS``). A root found in one of them is
+    logged at ERROR as ``recovery_note_population_collision``, once per root,
+    naming every population it is in. Its notes are still the ones this order
+    renders, and building the prompt never raises.
     """
-    populations = (  # highest precedence first
+    populations = (  # in render order
         (
             _MECE_POPULATION,
             dict.fromkeys(mece_contested_root_ids(case), _MECE_CONTESTED),
@@ -325,17 +323,19 @@ def _root_recovery_reasons(case: Case) -> dict[str, str]:
         ),
         (_GROUNDING_POPULATION, root_support_block_reasons(case)),
     )
-    reasons: dict[str, str] = {}
+    reasons: dict[str, list[str]] = {}
     found_in: dict[str, list[str]] = {}
     for name, population in populations:
         for root_id, reason in population.items():
-            reasons.setdefault(root_id, reason)
+            notes = reasons.setdefault(root_id, [])
+            if _MECE_CONTESTED not in notes:
+                notes.append(reason)
             found_in.setdefault(root_id, []).append(name)
     for root_id, names in found_in.items():
         if any(pair <= set(names) for pair in _DISJOINT_POPULATIONS):
             logger.error(
                 "recovery_note_population_collision: root %s is in %s, which "
-                "include a pair declared disjoint; rendering its %r note",
+                "include a pair declared disjoint; rendering its %r notes",
                 root_id,
                 names,
                 reasons[root_id],
@@ -374,7 +374,7 @@ def _build_causal_graph_block(case: Case) -> str:
     reasons = _root_recovery_reasons(case)
 
     def _node_line(indent: str, n, node_type: str | None = None) -> str:
-        note = _RECOVERY_NOTES.get(reasons.get(n.node_id), "")
+        note = "".join(_RECOVERY_NOTES.get(r, "") for r in reasons.get(n.node_id, ()))
         return (
             f"{indent}{n.node_id} [{node_type or n.node_type.value}/"
             f"{n.node_state.value}] {_one_line(n.statement)}{note}"

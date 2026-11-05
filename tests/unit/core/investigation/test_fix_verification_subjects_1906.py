@@ -86,6 +86,7 @@ from tests.unit.core.investigation.test_refutation_needs_data_1911 import (
     _engine,
     _Response,
 )
+from tests.utils import terminal_verdict
 
 pytestmark = pytest.mark.unit
 
@@ -132,7 +133,7 @@ def _fixed(turn=6):
 
 def _root(node_id, statement, *supports, node_type=NodeType.ROOT, terminal=True):
     return CausalNode(
-        metadata={"root_terminal": True} if terminal else {},
+        metadata=terminal_verdict() if terminal else {},
         node_id=node_id,
         statement=statement,
         node_type=node_type,
@@ -985,7 +986,7 @@ def test_the_stamp_never_cites_data_from_before_a_refutation_of_its_root():
 async def test_a_count_held_root_with_no_terminal_verdict_is_no_cause():
     case, root, _hyp = _identified_case()
     root.evidence_links = root.evidence_links[:1]  # count-held
-    root.record_root_terminal(False, "a job rewrites the limit", 4)
+    root.record_root_terminal(False, None, 4)
     case.progress.identified_cause_root_ids = []
     (row,), _ = await _record(
         _engine(), case, 7, _obs(_CAUSE_GONE, "reads 100", _SUPPORT)
@@ -1087,7 +1088,7 @@ async def test_the_window_pool_keeps_a_cause_that_lost_its_verdict_this_turn():
     )
     await _record(eng, case, 8)
     assert root_a.is_identified_root and b.node_state == NodeState.INCONCLUSIVE
-    root_a.record_root_terminal(False, "something upstream resets the limit", 9)
+    root_a.record_root_terminal(False, None, 9)
     await _record(
         eng,
         case,
@@ -1169,7 +1170,7 @@ async def test_f2_the_fallen_causes_own_hypothesis_is_not_another_candidate():
     serves confirmation, and its support is still offered for a re-check."""
     eng, case, root_a, hyp_a = _fixed(8)
     await _record(eng, case, 8)
-    root_a.record_root_terminal(False, "something upstream resets the limit", 9)
+    root_a.record_root_terminal(False, None, 9)
     assert not root_a.is_identified_root and hyp_a.state == HypothesisState.VALIDATED
     assert _cause_pool(case)[0] == {root_a.node_id}
     _problem, cause = subject_index(case).bindable_rows()

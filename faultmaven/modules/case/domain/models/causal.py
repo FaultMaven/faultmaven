@@ -270,20 +270,22 @@ class CausalNode(BaseModel):
     # system that the graph does not hold, so it is the model's verdict, given
     # with the hypothesis rooted here and kept in ``metadata`` (no SQL reads it).
     # Absent means the why-question is still open: the engine identifies a
-    # cause only at a validated root whose verdict is ``True``.
+    # cause only at a validated root whose verdict is ``True``. A ``True``
+    # verdict cites the causal_evidence rows it rests on
+    # (``root_terminal_evidence_ids``, D6): the writer in chain emission checks
+    # them against the case's evidence, which this module cannot read.
 
     @property
     def root_terminal(self) -> Optional[bool]:
         """The why-stopping verdict on this root: ``True`` nothing the user's
         side controls will produce it again once corrected, ``False``
-        something will, ``None`` not yet given."""
+        something will, ``None`` not yet given. A ``True`` stored without a
+        cited row reads ``None``: the why is unanswered until data answers
+        it."""
         verdict = self.metadata.get("root_terminal")
+        if verdict is True and not self.metadata.get("root_terminal_evidence_ids"):
+            return None
         return verdict if isinstance(verdict, bool) else None
-
-    @property
-    def root_terminal_basis(self) -> Optional[str]:
-        basis = self.metadata.get("root_terminal_basis")
-        return basis if isinstance(basis, str) else None
 
     @property
     def is_identified_root(self) -> bool:
@@ -296,10 +298,15 @@ class CausalNode(BaseModel):
         )
 
     def record_root_terminal(
-        self, verdict: bool, basis: Optional[str], turn: int
+        self, verdict: bool, evidence_ids: Optional[List[str]], turn: int
     ) -> None:
+        """Record the verdict. ``evidence_ids`` are the rows a ``True``
+        verdict cites, already checked by the caller; a ``False`` verdict
+        cites none."""
         self.metadata["root_terminal"] = verdict
-        self.metadata["root_terminal_basis"] = basis
+        self.metadata["root_terminal_evidence_ids"] = (
+            list(evidence_ids or []) if verdict else []
+        )
         self.metadata["root_terminal_turn"] = turn
 
     @property

@@ -612,9 +612,11 @@ def _withdraw_unlicensed_solution_offers(
                     "it targets validated, but its why is open (ROOT-CAUSE TEST, "
                     "clause b), so the fix would only intercept a state that comes "
                     "back. Ask for what produced that state; then re-root onto that "
-                    "cause or mark the root terminal (root_is_terminal true, with "
-                    "root_terminal_basis) and re-propose. To restore service now, "
-                    "propose it as a temporary mitigation (WORKAROUND)."
+                    "cause or mark the root terminal (root_is_terminal true, "
+                    "citing the causal_evidence row in "
+                    "terminal_basis_evidence_ids) and re-propose. To restore "
+                    "service now, propose it as a temporary mitigation "
+                    "(WORKAROUND)."
                 )
                 if case.progress.cause_identification_held_open
                 else (

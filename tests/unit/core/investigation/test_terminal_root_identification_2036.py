@@ -84,6 +84,7 @@ from tests.unit.core.investigation.test_chain_cause_state import (
     _eid,
     _root,
 )
+from tests.utils import TERMINAL_BASIS_ID
 
 pytestmark = pytest.mark.unit
 
@@ -94,6 +95,23 @@ def _open_chain_case():
     case, root, hyp = _chain_case()
     root.metadata.clear()
     return case, root, hyp
+
+
+def _basis_row(case, turn: int, label: str = "basis") -> str:
+    """A causal_evidence row recorded at ``turn``, for a verdict to cite (D6)."""
+    row = Evidence(
+        evidence_id=_eid(f"{label}-{turn}"),
+        summary="secret_id issued by hand with a fixed TTL; no rotation job",
+        primary_purpose="diagnosis",
+        category=EvidenceCategory.CAUSAL_EVIDENCE,
+        source_type=EvidenceSourceType.LOGS,
+        source_file_id=_FILE_ID,
+        collected_by="llm",
+        collected_at_turn=turn,
+        collected_at=datetime.now(UTC),
+    )
+    case.evidence.append(row)
+    return row.evidence_id
 
 
 def _absence(category: EvidenceCategory, turn: int, summary: str) -> Evidence:
@@ -152,7 +170,7 @@ def test_a_validated_root_whose_why_is_open_is_held():
 
 def test_marking_the_root_terminal_identifies_it():
     case, root, _hyp = _open_chain_case()
-    root.record_root_terminal(True, "a one-off manual edit", case.current_turn)
+    root.record_root_terminal(True, [TERMINAL_BASIS_ID], case.current_turn)
     _recompute_cause_state_from_chain(case)
     assert case.progress.cause_state == CauseState.IDENTIFIED
     assert case.progress.cause_identification_held_open is False
@@ -169,16 +187,16 @@ def test_the_mirror_names_only_a_terminal_root():
 
     # A mirror minted while the root was marked terminal is retracted when the
     # verdict is withdrawn.
-    root.record_root_terminal(True, "a one-off manual edit", case.current_turn)
+    root.record_root_terminal(True, [TERMINAL_BASIS_ID], case.current_turn)
     assert synthesize_rcc_from_validated_root(case) is True
-    root.record_root_terminal(False, "nothing rotates it", case.current_turn)
+    root.record_root_terminal(False, None, case.current_turn)
     assert retract_stale_engine_rcc(case) is True
     assert case.root_cause_conclusion is None
 
 
 def test_a_root_marked_not_terminal_stays_held():
     case, root, _hyp = _open_chain_case()
-    root.record_root_terminal(False, "nothing rotates the secret_id", 5)
+    root.record_root_terminal(False, None, 5)
     _recompute_cause_state_from_chain(case)
     assert case.progress.cause_state == CauseState.CANDIDATES
     assert case.progress.cause_identification_held_open is True
@@ -217,7 +235,7 @@ def test_a_held_case_does_not_resolve_on_a_renewal():
 def test_the_same_rows_resolve_a_terminal_root():
     """The contrast: with the root marked terminal, the same rows confirm."""
     case, root, _hyp = _open_chain_case()
-    root.record_root_terminal(True, "a one-off manual edit", case.current_turn)
+    root.record_root_terminal(True, [TERMINAL_BASIS_ID], case.current_turn)
     _recompute_cause_state_from_chain(case)
     _renewal_rows(case, turn=case.current_turn)
     assert cause_elimination_rows(case)
@@ -274,7 +292,7 @@ def test_the_stamp_never_confirms_an_open_root():
     _renewal_rows(case, turn=case.current_turn)
     assert confirm_root_from_resolution_absence(case) is False
 
-    root.record_root_terminal(True, "a one-off manual edit", case.current_turn)
+    root.record_root_terminal(True, [TERMINAL_BASIS_ID], case.current_turn)
     assert confirm_root_from_resolution_absence(case) is True
 
 
@@ -323,22 +341,26 @@ def test_a_verdict_lands_on_the_root_its_entry_named():
         hyp,
         nodes=[_node("the AppRole secret_id expired", "D")],
         ref="new_index_0",
-        entry=SimpleNamespace(root_is_terminal=False, root_terminal_basis=" ttl "),
+        entry=SimpleNamespace(root_is_terminal=False),
         created=True,
     )
     root = case.causal_nodes[hyp.root_node_id]
-    assert (root.root_terminal, root.root_terminal_basis) == (False, "ttl")
+    assert root.root_terminal is False
 
     # A verdict-only update applies to the hypothesis's current root.
+    basis = _basis_row(case, case.current_turn)
     _emit(
         case,
         hyp,
         nodes=[],
         ref=None,
-        entry=SimpleNamespace(root_is_terminal=True, root_terminal_basis=None),
+        entry=SimpleNamespace(
+            root_is_terminal=True, terminal_basis_evidence_ids=[basis]
+        ),
         created=False,
     )
     assert root.root_terminal is True
+    assert root.metadata["root_terminal_evidence_ids"] == [basis]
 
 
 def test_a_verdict_sent_with_a_declined_re_root_is_dropped():
@@ -359,7 +381,10 @@ def test_a_verdict_sent_with_a_declined_re_root_is_dropped():
         hyp,
         nodes=[_node("nothing rotates the secret_id", None)],  # reaches nothing
         ref="new_index_0",
-        entry=SimpleNamespace(root_is_terminal=True, root_terminal_basis="b"),
+        entry=SimpleNamespace(
+            root_is_terminal=True,
+            terminal_basis_evidence_ids=[_basis_row(case, case.current_turn)],
+        ),
         created=False,
     )
     assert hyp.root_node_id == old_root.node_id
@@ -458,21 +483,22 @@ def _turn(case, **fields):
 
 
 def test_a_verdict_only_update_lands_on_the_hypothesis_root():
+    """D6 is a floor: the root's own support, recorded since it was posited,
+    qualifies as the cited basis."""
     case, root, hyp = _open_chain_case()
+    support = _eid("ev_root_support")
     _turn(
         case,
         hypotheses_to_update=[
             HypothesisUpdate(
                 hypothesis_id=hyp.hypothesis_id,
                 root_is_terminal=True,
-                root_terminal_basis="a one-off manual edit",
+                terminal_basis_evidence_ids=[support],
             )
         ],
     )
-    assert (root.root_terminal, root.root_terminal_basis) == (
-        True,
-        "a one-off manual edit",
-    )
+    assert root.root_terminal is True
+    assert root.metadata["root_terminal_evidence_ids"] == [support]
     assert case.progress.cause_state == CauseState.IDENTIFIED
 
 
@@ -481,6 +507,7 @@ def test_a_re_root_update_carries_its_verdict_to_the_new_root():
     past is marked not terminal, and the new root is dated from this turn."""
     case, old_root, hyp = _open_chain_case()
     case.current_turn = 7
+    basis = _basis_row(case, 7)
     _turn(
         case,
         causal_nodes_to_add=[
@@ -495,7 +522,7 @@ def test_a_re_root_update_carries_its_verdict_to_the_new_root():
                 hypothesis_id=hyp.hypothesis_id,
                 root_node_ref="new_index_0",
                 root_is_terminal=True,
-                root_terminal_basis="issued by hand with a fixed TTL",
+                terminal_basis_evidence_ids=[basis],
             )
         ],
     )
@@ -528,7 +555,7 @@ def test_an_explicit_not_terminal_holds_a_root_with_one_support():
     whatever the root's evidence: one support is the #2036 shape too."""
     case, root, _hyp = _open_chain_case()
     root.evidence_links = root.evidence_links[:1]
-    root.record_root_terminal(False, "nothing rotates the secret_id", 5)
+    root.record_root_terminal(False, None, 5)
     _recompute_cause_state_from_chain(case)
     assert root.node_state.value != "validated"
     assert case.progress.cause_identification_held_open is True
@@ -556,7 +583,10 @@ def test_a_verdict_waits_for_the_orphan_pass_to_give_its_root():
     record_root_verdict(
         metadata,
         hyp.hypothesis_id,
-        SimpleNamespace(root_is_terminal=True, root_terminal_basis="b"),
+        SimpleNamespace(
+            root_is_terminal=True,
+            terminal_basis_evidence_ids=[_basis_row(case, 5)],
+        ),
     )
     _apply_chain_emission(
         case,

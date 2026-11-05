@@ -12,6 +12,7 @@ from faultmaven.core.investigation.causal_graph.pruning import (
     prune_abandoned_nodes,
     resolve_orphan_chains,
 )
+from faultmaven.core.investigation.cause_assurance import ENGINE_EVIDENCE_AUTHOR
 from faultmaven.core.investigation.lifecycle_metrics import (
     hypothesis_root_adoption_refused_total,
 )
@@ -21,6 +22,7 @@ from faultmaven.core.investigation.problem_status import (
 )
 from faultmaven.modules.case.contracts import (
     Case,
+    EvidenceCategory,
     NodeType,
 )
 
@@ -28,6 +30,7 @@ from .cause_work import refuse_cause_work
 from .stage_gates import (
     _add_system_feedback,
 )
+from .turn_records import _resolve_id_ref
 
 logger = logging.getLogger(__name__)
 
@@ -36,13 +39,17 @@ def record_root_verdict(metadata: dict[str, Any], hyp_id: str, entry: Any) -> No
     """Carry a hypothesis entry's why-stopping verdict (``root_is_terminal``)
     to chain emission, which records it on the hypothesis's root once that root
     is resolved: the root is commonly emitted, or re-rooted onto, in the same
-    turn (#2036)."""
+    turn (#2036). The rows the verdict cites resolve here, through this turn's
+    evidence slots, like every other cited id."""
     verdict = getattr(entry, "root_is_terminal", None)
     if not isinstance(verdict, bool):
         return
-    basis = getattr(entry, "root_terminal_basis", None)
-    basis = basis.strip() if isinstance(basis, str) and basis.strip() else None
-    metadata.setdefault("hyp_root_verdicts", {})[hyp_id] = (verdict, basis)
+    slots = metadata.get("evidence_slots", [])
+    cited = [
+        _resolve_id_ref(ref, slots, "ev_")
+        for ref in getattr(entry, "terminal_basis_evidence_ids", None) or []
+    ]
+    metadata.setdefault("hyp_root_verdicts", {})[hyp_id] = (verdict, cited)
 
 
 def _apply_chain_emission(
@@ -273,16 +280,16 @@ def _apply_chain_emission(
     # A hypothesis still flat here may gain its root in the orphan pass
     # (``_nudge_ambiguous_orphan_chains``); its verdict waits for that.
     pending: dict[str, tuple] = {}
-    for hyp_id, (verdict, basis) in verdicts.items():
+    for hyp_id, (verdict, cited) in verdicts.items():
         hyp = case.hypotheses.get(hyp_id)
         if hyp is None:
             continue
         if not hyp.root_node_id:
-            pending[hyp_id] = (verdict, basis)
+            pending[hyp_id] = (verdict, cited)
             continue
         if hyp_id in root_refs and _resolve_root(root_refs[hyp_id]) != hyp.root_node_id:
             continue
-        _record_verdict_on_root(case, hyp, verdict, basis)
+        _record_verdict_on_root(case, hyp, verdict, cited, metadata)
     metadata["hyp_root_verdicts_pending"] = pending
 
     # B1 (#695): mirror each hypothesis's flat causal SUPPORTS links onto its
@@ -326,10 +333,67 @@ def _apply_chain_emission(
         metadata["deductive_survivor_ids"] = survivor_ids
 
 
-def _record_verdict_on_root(case: "Case", hyp: Any, verdict: bool, basis) -> None:
+def _record_verdict_on_root(
+    case: "Case", hyp: Any, verdict: bool, cited: list, metadata: dict[str, Any]
+) -> None:
+    """Record ``verdict`` on ``hyp``'s root. A ``True`` verdict stands only on
+    a cited row that qualifies (``_terminal_basis``, D6); one citing none is
+    refused with a feedback line, and the root's why stays open."""
     node = case.causal_nodes.get(hyp.root_node_id or "")
-    if node is not None and node.node_type == NodeType.ROOT:
-        node.record_root_terminal(verdict, basis, case.current_turn)
+    if node is None or node.node_type != NodeType.ROOT:
+        return
+    if not verdict:
+        node.record_root_terminal(False, None, case.current_turn)
+        return
+    kept, refused = _terminal_basis(
+        case, node, cited, metadata.get("evidence_slots", [])
+    )
+    if kept:
+        node.record_root_terminal(True, kept, case.current_turn)
+        return
+    _add_system_feedback(
+        metadata,
+        f"Root {node.node_id} was NOT marked terminal: root_is_terminal true "
+        "must cite, in terminal_basis_evidence_ids, a causal_evidence row "
+        f"recorded since this root was posited (turn "
+        f"{node.root_first_attached_turn}) showing that nothing controllable "
+        "produces its state (how it was issued or set, its lifetime, that "
+        "nothing renews it). "
+        + (f"Not qualifying: {'; '.join(refused)}. " if refused else "None cited. ")
+        + "Its why stays open.",
+    )
+
+
+def _terminal_basis(
+    case: "Case", node: Any, cited: list, emitted: list
+) -> tuple[list, list]:
+    """The rows a ``True`` verdict on ``node`` cites, split into those that
+    qualify and why each other does not. A row qualifies when it is a
+    non-engine causal_evidence row recorded (``collected_at_turn``, not the
+    upload's date) at or after the root was first posited, or in the same
+    emission (``emitted``: a staged turn replayed after its revision is
+    confirmed attaches the root a turn after its rows). This is a floor: it
+    cannot judge what the row says, so a row showing only that the state
+    exists still qualifies."""
+    rows = {e.evidence_id: e for e in case.evidence}
+    floor = node.root_first_attached_turn
+    kept, refused = [], []
+    for ref in dict.fromkeys(cited):
+        row = rows.get(ref)
+        if row is None:
+            refused.append(f"{ref} (not on record)")
+        elif row.category != EvidenceCategory.CAUSAL_EVIDENCE:
+            refused.append(f"{ref} ({row.category.value}, not causal_evidence)")
+        elif row.collected_by == ENGINE_EVIDENCE_AUTHOR:
+            refused.append(f"{ref} (recorded by the engine)")
+        elif row.collected_at_turn < floor and ref not in emitted:
+            refused.append(
+                f"{ref} (recorded at turn {row.collected_at_turn}, before the "
+                "root was posited)"
+            )
+        else:
+            kept.append(ref)
+    return kept, refused
 
 
 def _nudge_ambiguous_orphan_chains(case: "Case", metadata: dict[str, Any]) -> None:
@@ -342,12 +406,12 @@ def _nudge_ambiguous_orphan_chains(case: "Case", metadata: dict[str, Any]) -> No
     A verdict sent with a hypothesis that was still flat at chain emission is
     recorded on the root T1 gave it (#2036)."""
     ambiguous = resolve_orphan_chains(case)
-    for hyp_id, (verdict, basis) in (
+    for hyp_id, (verdict, cited) in (
         metadata.pop("hyp_root_verdicts_pending", None) or {}
     ).items():
         hyp = case.hypotheses.get(hyp_id)
         if hyp is not None and hyp.root_node_id:
-            _record_verdict_on_root(case, hyp, verdict, basis)
+            _record_verdict_on_root(case, hyp, verdict, cited, metadata)
     if not ambiguous:
         return
     lines = [

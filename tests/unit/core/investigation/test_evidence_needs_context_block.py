@@ -59,6 +59,7 @@ from faultmaven.modules.case.contracts import (
     ValidationMethod,
 )
 from tests.case_builders import investigating_case
+from tests.utils import terminal_verdict
 
 # ============================================================
 # Fixtures
@@ -157,7 +158,7 @@ def _make_evidence(
         root = case.causal_nodes.setdefault(
             "cn_00000000c0de",
             CausalNode(
-                metadata={"root_terminal": True},
+                metadata=terminal_verdict(),
                 node_id="cn_00000000c0de",
                 statement="the identified root cause",
                 node_type=NodeType.ROOT,

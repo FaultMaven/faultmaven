@@ -142,8 +142,9 @@ WHY_OPEN_DOWNGRADE_REASON = (
     "why was open (ROOT-CAUSE TEST, clause b), so a fix acting on it would only "
     "intercept a state that comes back. Ask for what produced the state, then "
     "re-root onto that cause or mark the root terminal (root_is_terminal true, "
-    "with root_terminal_basis) and re-propose the fix. To restore service now, "
-    "propose it as a WORKAROUND mitigation."
+    "citing the causal_evidence row in terminal_basis_evidence_ids) and "
+    "re-propose the fix. To restore service now, propose it as a WORKAROUND "
+    "mitigation."
 )
 
 

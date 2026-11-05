@@ -61,6 +61,7 @@ from faultmaven.modules.case.contracts import (
 )
 from tests.case_builders import investigating_case
 from tests.unit.core.investigation.bound_rows import bound_evidence, ensure_subjects
+from tests.utils import terminal_verdict
 
 _FILE_ID = "file_0123456789ab"
 
@@ -98,7 +99,7 @@ def _root(node_id, statement, *, support_labels=()) -> CausalNode:
         for label in support_labels
     ]
     return CausalNode(
-        metadata={"root_terminal": True},
+        metadata=terminal_verdict(),
         node_id=node_id,
         statement=statement,
         node_type=NodeType.ROOT,

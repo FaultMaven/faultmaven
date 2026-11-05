@@ -323,8 +323,9 @@ is not occurring at this moment.
 Symptoms are confirmed. When evaluating evidence, focus on hypotheses
 explaining the root cause. Two independent causal observations grounding a
 hypothesis's chain root, and that hypothesis marking the root terminal
-(root_is_terminal: the ROOT-CAUSE TEST's why-stopping verdict), are what let
-the engine mark the cause identified.
+(root_is_terminal: the ROOT-CAUSE TEST's why-stopping verdict, citing its
+causal_evidence in terminal_basis_evidence_ids), are what let the engine mark
+the cause identified.
 
 If new data shows the symptom claim itself was wrong — misread data, the wrong
 system, an artefact — do not absorb it as noise. Say so, record it, and set
