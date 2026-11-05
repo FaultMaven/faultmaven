@@ -146,7 +146,7 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
         retry. Every non-2xx releases, not only a 4xx: the claim only ever
         delayed a repeat; only the copilot keys every request, and its keyed
         writes are retry-safe; no client resends a 5xx automatically. A claim
-        stands for its TTL without a 2xx after a cancellation (the route may
+        stands for up to its TTL without a 2xx after a cancellation (the route may
         have committed), an exception raised after the response started
         (Starlette raises it once ``dispatch`` returned), or a failed release.
         ``DUPLICATE_REQUEST`` thus means an identical request arrived within the
@@ -208,7 +208,7 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
 
     async def _release_quietly(self, claim: Optional[_Claim]) -> None:
         """Release ``claim`` best-effort: an error is logged and counted, never
-        the answer, and the claim then lapses at its TTL."""
+        the answer, and the claim then stands for up to its TTL."""
         if claim is None:
             return
         try:
