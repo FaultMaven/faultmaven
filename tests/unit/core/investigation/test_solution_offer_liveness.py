@@ -793,8 +793,8 @@ class TestTerminalSolutionStateMirror:
 @pytest.mark.asyncio
 class TestSameTurnGateBundles:
     async def test_same_turn_solution_and_accept_registers(self):
-        # The KB-resolution flow mandates SolutionToAdd + solution_accepted
-        # in ONE response; the guard must see the action created this turn.
+        # One response may carry SolutionToAdd + solution_accepted; the
+        # guard must see the action created this turn.
         case = _make_case()
         updates = _Updates(
             solutions_to_add=_solution_updates().solutions_to_add,

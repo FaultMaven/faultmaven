@@ -7,8 +7,6 @@ recompute) and is judged by the real gate (``assess_resolution_readiness``,
 ``fix_windows``, M6). Numbered as the round-57 plan's tests.
 """
 
-from functools import partial
-
 import pytest
 
 from faultmaven.core.investigation.cause_assurance import (
@@ -30,7 +28,6 @@ from faultmaven.core.investigation.cause_assurance import (
     subject_index,
     symptom_elimination_rows,
 )
-from faultmaven.core.investigation.milestone_engine import response_application
 from faultmaven.core.investigation.milestone_engine.statement_revision import (
     confirm_revision,
 )
@@ -43,7 +40,6 @@ from faultmaven.core.investigation.prompts.context_builder.evidence_needs import
 )
 from faultmaven.core.investigation.schemas import (
     EvidenceToAdd,
-    KnowledgeResolution,
     MilestoneUpdates,
     ProblemVerificationUpdate,
 )
@@ -71,9 +67,6 @@ from faultmaven.modules.case.contracts import (
     NodeType,
     ProblemStatus,
     ValidationMethod,
-)
-from faultmaven.modules.case.contracts import (
-    KnowledgeResolution as KnowledgeResolutionRecord,
 )
 from faultmaven.modules.report.domain.services.report_generation_service import (
     ReportGenerationService,
@@ -103,13 +96,6 @@ _CAUSAL = EvidenceCategory.CAUSAL_EVIDENCE
 _SUPPORT = _eid("pool_log")  # the identified root's own support
 _ASK = "The check that showed the problem"
 _RECHECK_ASK = "The cause re-checked after the fix"
-
-
-class _KRUpdate(_TSU):
-    """A turn carrying a knowledge resolution: the investigating apply step
-    reads it when present."""
-
-    knowledge_resolution: KnowledgeResolution | None = None
 
 
 def _obs(category, summary, rechecks=None, file_id="") -> EvidenceToAdd:
@@ -547,56 +533,6 @@ async def test_5_any_unverify_clears_them():
     )
     assert case.progress.problem_status == ProblemStatus.UNVERIFIED
     assert case.problem_verification.verifying_evidence_ids == []
-
-
-def _kr() -> KnowledgeResolution:
-    return KnowledgeResolution(
-        match_id="rb-oidc",
-        match_type="runbook",
-        solution_applied="fix",
-        user_confirmation="it worked",
-    )
-
-
-@pytest.fixture
-def _kr_record(monkeypatch):
-    """The investigating apply step builds the case's resolution record
-    without the ``resolution_turn`` the model requires, so the branch raises
-    before it verifies anything; and no investigating schema carries
-    ``knowledge_resolution``. Both reported, not fixed here: the record is
-    built with the turn, so the branch's verifying-row write can be reached."""
-    monkeypatch.setattr(
-        response_application,
-        "KnowledgeResolution",
-        partial(KnowledgeResolutionRecord, resolution_turn=5),
-    )
-
-
-async def test_5_a_knowledge_resolution_records_rows_only_through_a_claim(_kr_record):
-    eng, case = _engine(), _case(ProblemStatus.UNVERIFIED)
-    await _record(
-        eng,
-        case,
-        5,
-        _obs(_CAUSAL, "the runbook's indicator matched: audience mismatch"),
-        update=_KRUpdate,
-        knowledge_resolution=_kr(),
-    )
-    assert case.progress.problem_status == ProblemStatus.VERIFIED
-    assert case.problem_verification.verifying_evidence_ids == []
-    assert _ASK in assess_resolution_readiness(case).message
-
-    eng, case = _engine(), _case(ProblemStatus.UNVERIFIED)
-    (shown,), _ = await _record(
-        eng,
-        case,
-        5,
-        _obs(_PRESENT, "logins fail with 401"),
-        update=_KRUpdate,
-        knowledge_resolution=_kr(),
-        milestones=_claim("new_index_0"),
-    )
-    assert case.problem_verification.verifying_evidence_ids == [shown.evidence_id]
 
 
 async def test_5_a_later_citation_fills_an_empty_list_never_a_full_one():

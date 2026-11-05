@@ -2195,10 +2195,7 @@ class HypothesisEvidenceModel(Base):
 
 
 class SolutionModel(Base):
-    """Proposed and applied solution. May or may not link to a hypothesis;
-    KB-resolved cases populate Solution from the matched runbook Cause's
-    Mitigation/Resolution blocks without going through hypothesis
-    formulation (see indicator-resolution.md + KB-Resolution Path)."""
+    """Proposed and applied solution. May or may not link to a hypothesis."""
 
     __tablename__ = "solutions"
 

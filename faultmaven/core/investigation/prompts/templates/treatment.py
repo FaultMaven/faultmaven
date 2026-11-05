@@ -38,19 +38,6 @@ def _specific_patterns(given: GivenTools) -> str:
     )
 
 
-def _kb_resolution_trigger(given: GivenTools) -> str:
-    source = (
-        "by kb_qa or in <knowledge_context>"
-        if has(given, "kb_qa")
-        else "in <knowledge_context>, or by a knowledge-base search on an earlier turn"
-    )
-    return (
-        f"1. A runbook delivered to this case ({source})\n"
-        "   carried at least one `### Cause <X>` subsection that you proposed as the\n"
-        "   fix.\n"
-    )
-
-
 def mitigation_instructions(given: GivenTools) -> str:
     """The MITIGATION stage instructions, naming only the tools ``given``."""
     return (
@@ -224,144 +211,6 @@ verify the outcome.
    - "It's working now" or "looks good" is the user's account, a claim: it records
      no row and confirms nothing until the output of the checks is submitted.
 
-**KB-RESOLUTION VARIANT — Milestone Collapse:**
-
-This variant applies when ALL of the following hold:
-"""
-        + _kb_resolution_trigger(given)
-        + """2. The user has now confirmed in this turn that the proposed fix worked
-   ("That fixed it", "It worked", "Yes — resolved", or equivalent).
-
-When triggered, INVESTIGATING's structured state collapses: the runbook
-Cause supplies the root cause, and the output of the checks supplies the
-verification. The user's "it worked" message is their claim that the fix
-worked; it is NOT the verification. The verification is data the user
-SUBMITTED (an uploaded file or pasted data with a file_id) showing the cause
-gone and the reported problem gone with it — for example the runbook
-Cause's verification command re-run after the fix.
-- Submitted with the confirmation (this turn carries that output): emit all
-  six items below in this turn.
-- Not submitted (only their words): emit items 1–4, skip 5 and 6, and name
-  the output of the checks that show the cause gone and the problem gone in
-  `system_state_report` (from the runbook Cause when it has them); FaultMaven
-  asks the user for it. When that output arrives on a later turn, record item 5
-  from it and emit item 6.
-Neither is consent to the irreversible RESOLVED transition: the disposition
-still requires the standard confirmation turn — the engine holds your
-`proposed_transition` pending and presents the confirm/decline pair
-(see `docs/architecture/investigation-engine/investigation-lifecycle-logic.md`
-§1.2 "KB-Resolution Path (Milestone-Collapse Variant)").
-
-When the attributed Cause fails the ROOT-CAUSE TEST (its Statement names a
-state with a cause above it, and the chain has not been deepened past it),
-the fix only intercepted that state: emit items 1, 3 and 4 and the
-`symptom_absence_evidence` row of item 5. Skip item 2, the
-`causal_absence_evidence` row and item 6, and ask why the state arose.
-
-REQUIRED EMISSIONS (5 and 6 wait for the submitted output):
-
-1. **`state_updates.knowledge_resolution`** — the attribution signal:
-   ```
-   match_id: the runbook's id (e.g., "pg-connection-pool-exhaustion")
-   match_type: "runbook" | "past_case" | "documentation" (same as the
-     earlier knowledge_match emission)
-   solution_applied: brief description of what the user actually ran
-   user_confirmation: the user's exact confirmation statement, quoted
-   ```
-
-2. **`state_updates.root_cause_conclusion`** — populated by DIRECT COPY
-   from the hypothesis you wrote in DIAGNOSIS when you attributed the
-   Cause (per the DIAGNOSIS "Cause attribution" rule — that hypothesis
-   has `statement` = Cause Statement verbatim and `description` = Cause
-   Mechanism verbatim). Do NOT paraphrase, summarize, or rephrase. The
-   engine uses these as the authoritative root-cause record that
-   appears in the Resolution Summary report.
-   ```
-   root_cause: copy from hypothesis.statement (the Cause's Statement
-     field; ≤300 chars; verbatim)
-   mechanism: copy from hypothesis.description (the Cause's chain summary;
-     ≤800 chars; verbatim)
-   likelihood: 0.85+ (KB-attributed causes with user-confirmed fix are
-     high-confidence by construction)
-   names_root_node_id: the cn_... id of that Cause's root node in
-     <causal_graph> (the node you rooted the hypothesis on). This attributes
-     the conclusion to its cause exactly — set it whenever the cause is a node
-     in the graph.
-   evidence_ids: include the IDs of the diagnostic evidence rows from
-     prior turns that matched the Cause's Indicator entries. This field
-     takes existing ids only (no new_index_N), so never the same-turn
-     absence rows.
-   ```
-
-3. **`state_updates.solutions_to_add`** — one Solution record sourced
-   from the attributed Cause's fix blocks (verbatim where practical):
-   ```
-   description: a one-sentence summary of the applied fix
-   solution_type: per existing SolutionType enum
-   commands: copy from the attributed **Interventions:** code block(s)
-     (the proposed quadrant's fix command)
-   risks: copy from the `mitigation` intervention's **Risk:** field
-   estimated_impact: brief
-   ```
-
-4. **`state_updates.milestones.solution_accepted`** — set to True (the
-   user applied the proposed fix; their confirmation is the compliance
-   signal), with `accepted_action_ref` set to `new_index_0`, naming the
-   Solution of step 3 (after an earlier fix, an acceptance registers only
-   the fix it names). The engine handles the other two gate milestones automatically:
-   `solution_proposed` is derived by the engine from the standing
-   SolutionToAdd proposal from step 3, and `solution_verified` is set when
-   the user confirms the proposed_transition in step 6 below (see
-   investigation-lifecycle-logic.md §1.4.1). Do NOT set those two
-   yourself — `MilestoneUpdates` rejects `solution_verified`, and
-   `solution_proposed` is engine-derived.
-
-5. **`state_updates.evidence_to_add`** — the two rows that let the case
-   RESOLVE, a `causal_absence_evidence` row and a `symptom_absence_evidence`
-   row, both sourced from the SUBMITTED output of the checks (`source_file_id`
-   = that file; `extract` = the lines that show it; `rechecks` = the CAUSE and
-   the SYMPTOM row of the re-verification checklist each re-checks); `summary`
-   = "<the attributed Cause> is no longer present after the fix" on the first,
-   "<the reported symptom> is no longer present after the fix" on the second.
-   Never from the user's words.
-
-6. **`state_updates.proposed_transition`** — `{{ "to_state": "resolved" }}`
-   as documented in COMPLETION below. The engine holds it pending and asks
-   the user to confirm on the next turn — the "One click to confirm" in
-   your prose is literal. The user's "it worked" message is neither the
-   verification nor the disposition confirmation.
-
-CRITICAL DIRECT-COPY RULE: The Statement and Mechanism fields you saw in
-the runbook Cause are length-bounded (≤300 / ≤800 chars) so they can be
-copied verbatim into engine state without truncation. Paraphrasing
-defeats the purpose of the v3 structure — the engine reads these fields
-as the authoritative root-cause attribution. If you find yourself
-tempted to rewrite a Cause's Statement "more clearly", stop: the SME who
-authored the runbook chose those words, and your rewrite will diverge
-from the runbook the next investigator retrieves.
-
-AGENT RESPONSE (prose to the user):
-Reference the runbook by id or title so the user knows what was attributed.
-With the output submitted, acknowledge the resolution in 1–2 sentences:
-  "Glad to hear it — the [runbook title] fix resolved this. I'll propose
-   marking the case resolved. One click to confirm."
-With only their words, acknowledge the fix and say it will be resolved once
-the checks show it (FaultMaven asks for their output):
-  "Good news — that's the [runbook title] fix. Once the checks show the cause
-   and the problem gone, I'll propose marking this resolved."
-
-Do NOT write the confirmation question; do NOT imply the case is already
-resolved; do NOT re-explain the mechanism (it's now in
-root_cause_conclusion.mechanism).
-
-ATTRIBUTION AMBIGUITY:
-If two or more retrieved Causes both plausibly fit the case and you
-cannot tell which one the user actually applied, DO NOT emit
-knowledge_resolution this turn. Instead, ask the user one clarifying
-question identifying which fix they ran (referencing the Cause name or
-Resolution command). Wait for their answer before emitting the
-attribution.
-
 **FAILURE PATH — Extended Diagnosis:**
 
 When verification shows the fix failed, you must obtain NEW evidence before proposing
@@ -474,12 +323,7 @@ If you cannot formulate a new hypothesis or identify new evidence to request:
 
 **COMPLETION (User-Agent Handshake):**
 
-This section specifies the generic INVESTIGATING → RESOLVED / CLOSED transitions.
-When the KB-RESOLUTION VARIANT preconditions above are met, the variant's required
-emissions (knowledge_resolution + root_cause_conclusion + solutions_to_add +
-solution_accepted=True) are **additive** to the proposed_transition emitted here —
-not alternative. The variant adds structured attribution; COMPLETION fires the
-transition handshake either way.
+This section specifies the INVESTIGATING → RESOLVED / CLOSED transitions.
 
 **RESOLVED IS BACKED BY BOTH ABSENCE ROWS (the cause AND the reported problem VERIFIED gone):**
 Propose `to_state: resolved` only once the fix is VERIFIED — the cause is gone AND

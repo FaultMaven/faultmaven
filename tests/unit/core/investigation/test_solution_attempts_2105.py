@@ -340,7 +340,8 @@ async def test_a_reassertion_naming_the_registered_fix_is_absorbed(window):
 
 
 async def test_a_first_fix_without_a_ref_registers_as_before():
-    """Control: the first-fix flow and the KB-resolution bundle are unchanged."""
+    """Control: the first-fix flow and the same-turn fix-and-accept bundle are
+    unchanged."""
     _eng, case, _root, _hyp = await _fixed_and_relieved()
 
     (first,) = _solutions(case)
@@ -1831,9 +1832,6 @@ async def test_every_prompt_site_that_registers_a_fix_names_the_ref():
         failed["system_feedback"],
         no_pending["system_feedback"],
         downgraded.proposed_actions[0].downgrade_reason,
-        _between(
-            treatment, "4. **`state_updates.milestones.solution_accepted`", "5. **"
-        ),
         _between(treatment, "User only APPLIED the fix", "User ASKS to resolve"),
         _between(
             rca_diagnosis_block(DEFAULT_GIVEN),

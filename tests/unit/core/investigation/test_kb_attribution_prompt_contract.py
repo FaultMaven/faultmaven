@@ -1,4 +1,4 @@
-"""Characterization tests for the KB-resolution prompt contract.
+"""Characterization tests for the KB-attribution prompt contract.
 
 The DIAGNOSIS-stage ``KNOWLEDGE & RUNBOOK AUTHORITY`` block instructs the LLM to
 collapse a *matched runbook Cause* into a *single hypothesis* and skip
@@ -34,7 +34,7 @@ from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
 
 
 @pytest.mark.unit
-class TestKBResolutionPromptContract:
+class TestKBAttributionPromptContract:
     """Pin the runbook-Cause → single-hypothesis attribution contract."""
 
     def test_knowledge_authority_section_present(self):
@@ -57,12 +57,10 @@ class TestKBResolutionPromptContract:
         assert "disambiguating question" in rca_diagnosis_block(DEFAULT_GIVEN)
         assert "No Cause" in rca_diagnosis_block(DEFAULT_GIVEN)
 
-    def test_knowledge_match_signal_emitted_for_treatment_handoff(self):
-        # The attribution persists a knowledge_match signal the TREATMENT-stage
-        # KB-RESOLUTION variant reads back (Statement/mechanism direct-copy).
+    def test_knowledge_match_signal_emitted(self):
+        # The attribution emits a knowledge_match signal naming the Cause.
         assert "knowledge_match" in rca_diagnosis_block(DEFAULT_GIVEN)
         assert "match_likelihood" in rca_diagnosis_block(DEFAULT_GIVEN)
-        assert "root_cause_conclusion" in rca_diagnosis_block(DEFAULT_GIVEN)
 
 
 def _diagnosis_case() -> Case:

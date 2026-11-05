@@ -3,9 +3,9 @@
 ``problem_status`` says where the confirmed problem statement stands against the
 evidence. ``symptom_verified`` is its derived boolean view, so it cannot drift
 from it. Every transition goes through a function here, which is what lets a
-reader trust the value: four places used to assign the old boolean directly
-(the milestone loop, the KB-resolution collapse, the evidence-citation revert
-and the retraction), each with its own idea of what a change meant.
+reader trust the value: several places used to assign the old boolean
+directly (the milestone loop, the evidence-citation revert and the retraction
+among them), each with its own idea of what a change meant.
 ``tests/unit/core/investigation/test_problem_status.py`` scans the package and
 fails on any other assignment.
 

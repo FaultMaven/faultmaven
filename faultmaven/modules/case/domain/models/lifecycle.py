@@ -31,13 +31,12 @@ class CaseState(str, Enum):
     Case Actions (phase transitions and dispositions):
       INQUIRY → INVESTIGATING  (phase transition)
       INQUIRY → CLOSED         (disposition)
-      INVESTIGATING → RESOLVED (disposition; includes the KB-resolution milestone-collapse variant)
+      INVESTIGATING → RESOLVED (disposition)
       INVESTIGATING → CLOSED   (disposition)
 
-    v3: INQUIRY → RESOLVED edge removed. KB-driven cases collapse INVESTIGATING
-    to one or two turns via per-runbook Cause attribution rather than skipping
-    the phase. See docs/architecture/investigation-engine/investigation-lifecycle-logic.md
-    §1.2 INVESTIGATING → RESOLVED → KB-Resolution Path.
+    v3: INQUIRY → RESOLVED edge removed. KB-driven cases follow the standard
+    INVESTIGATING path rather than skipping the phase. See
+    docs/architecture/investigation-engine/investigation-lifecycle-logic.md §1.2.
     """
 
     INQUIRY = "inquiry"
@@ -214,9 +213,8 @@ class CaseAction(BaseModel):
 #: eliminated and the problem gone with it — which the engine reads for itself
 #: and offers on (INV-43).
 #:
-#: v3: INQUIRY → RESOLVED removed. KB-resolution flows through INVESTIGATING via
-#: the milestone collapse — state authored in one turn, disposition still
-#: confirmed on the next (investigation-lifecycle-logic.md §1.2).
+#: v3: INQUIRY → RESOLVED removed. KB-driven cases follow the standard
+#: INVESTIGATING path (investigation-lifecycle-logic.md §1.2).
 #: Frozen deliberately. The graph this replaced was a function-local dict
 #: rebuilt on every call, so it could not be widened at runtime; a plain module
 #: dict of lists can be, by any importer — including a test that mutates and
@@ -241,7 +239,7 @@ def is_valid_action(from_state: CaseState, to_state: CaseState) -> bool:
     Valid Case Actions:
     - INQUIRY → INVESTIGATING (phase transition: start investigation)
     - INQUIRY → CLOSED (disposition: no investigation needed)
-    - INVESTIGATING → RESOLVED (disposition: solution verified; includes KB-resolution milestone collapse)
+    - INVESTIGATING → RESOLVED (disposition: solution verified)
     - INVESTIGATING → CLOSED (disposition: abandoned/escalated)
 
     Invalid:

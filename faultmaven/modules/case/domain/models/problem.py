@@ -192,16 +192,6 @@ class ProblemConfirmation(BaseModel):
         return v
 
 
-class KnowledgeResolution(BaseModel):
-    """Records instant resolution via KB match during INQUIRY phase."""
-
-    match_id: str  # ID of case/runbook that solved it
-    match_type: str  # "past_case" | "runbook" | "documentation"
-    solution_applied: str  # What user actually did
-    user_confirmation: str  # User's message confirming fix
-    resolution_turn: int  # Turn when confirmed
-
-
 class PreliminaryUrgency(BaseModel):
     """Early urgency assessment using semantic business impact."""
 
@@ -269,10 +259,6 @@ class InquiryData(BaseModel):
 
     knowledge_matches: List[KnowledgeMatch] = Field(
         default_factory=list, description="Potential solutions found in KB"
-    )
-
-    knowledge_resolution: Optional[KnowledgeResolution] = Field(
-        default=None, description="Resolution details if fixed via KB match"
     )
 
     preliminary_urgency: Optional[PreliminaryUrgency] = Field(
@@ -517,7 +503,7 @@ class ProblemVerification(BaseModel):
     # The rows that showed the problem (#1906 D1). A post-fix observation of
     # the problem counts only when it names one of them
     # (``cause_assurance.observation_subject``). Empty when the verification
-    # cited none: a legacy case, or one verified by a knowledge resolution.
+    # cited none: a legacy case.
     verifying_evidence_ids: List[str] = Field(
         default_factory=list,
         description=(

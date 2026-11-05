@@ -1418,14 +1418,9 @@ class MilestoneEngine:
     # =========================================================================
 
     # v3: `_check_fast_track_resolution` and `KB_FAST_TRACK_THRESHOLD` removed.
-    # KB-driven cases route through INVESTIGATING via the KB-resolution
-    # milestone collapse. See indicator-resolution.md +
-    # investigation-lifecycle-logic.md §1.2 INVESTIGATING → RESOLVED →
-    # KB-Resolution Path. The collapse is state authoring only, applied in
-    # `_apply_investigation_updates`'s `knowledge_resolution` branch (gate
-    # milestones set there); RootCauseConclusion + Solution are populated
-    # from the LLM's structured emissions in the same turn. The RESOLVED
-    # disposition still requires the explicit confirm turn (#722).
+    # KB-driven cases follow the standard INVESTIGATING path
+    # (investigation-lifecycle-logic.md §1.2), and the RESOLVED disposition
+    # requires the explicit confirm turn (#722).
 
     # =========================================================================
     # Helper Methods

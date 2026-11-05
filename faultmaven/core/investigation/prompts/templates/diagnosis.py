@@ -628,8 +628,7 @@ for the user to execute — their compliance implies acceptance and transitions 
     (verbatim) and `description` summarizes the Cause's **Chain:** as the causal
     pathway from root to the problem (≤800 chars; if the Cause has no Chain, restate
     the Statement). Set initial state=ACTIVE; it will become VALIDATED at resolution
-    time. Also emit `knowledge_match` in state_updates so the TREATMENT-stage
-    KB-RESOLUTION VARIANT can reference the attribution later:
+    time. Also emit `knowledge_match` in state_updates:
       match_type: "runbook" | "past_case" | "documentation"
       match_likelihood: 0.0–1.0 (your confidence the Cause applies)
       match_summary: "Cause <X>: <name> — <one-sentence summary>"
@@ -650,14 +649,6 @@ for the user to execute — their compliance implies acceptance and transitions 
     or only the `Cause Z: Unidentified` fallback applies): proceed with the standard
     discovery flow in YOUR PROGRESSION below — form hypotheses independently from
     the evidence. Do not force-fit a retrieved Cause.
-
-□ **Persistence for TREATMENT direct-copy.** The hypothesis record you wrote in the
-  attribution step above IS the persistence the TREATMENT-stage KB-RESOLUTION
-  VARIANT reads from. It will copy Cause Statement back from `hypothesis.statement`
-  into `root_cause_conclusion.root_cause`, and the Cause's chain summary back from
-  `hypothesis.description` into `root_cause_conclusion.mechanism` (verbatim, no
-  paraphrasing). The original Cause text may not be in context by the
-  resolution turn; the hypothesis fields are. Get them right here.
 
 □ **Conflict adaptation.** If new case evidence contradicts the matched Cause's
   assumptions (wrong technology, different architecture), note the conflict and

@@ -2038,7 +2038,7 @@
         "type": "object"
       },
       "CaseState": {
-        "description": "Case lifecycle state \u2014 passive label describing a case's current condition.\n\nValues fall into two categories:\n- **Phases** (active work): INQUIRY, INVESTIGATING\n- **Dispositions** (terminal resolution): RESOLVED, CLOSED\n\nCase Actions (phase transitions and dispositions):\n  INQUIRY \u2192 INVESTIGATING  (phase transition)\n  INQUIRY \u2192 CLOSED         (disposition)\n  INVESTIGATING \u2192 RESOLVED (disposition; includes the KB-resolution milestone-collapse variant)\n  INVESTIGATING \u2192 CLOSED   (disposition)\n\nv3: INQUIRY \u2192 RESOLVED edge removed. KB-driven cases collapse INVESTIGATING\nto one or two turns via per-runbook Cause attribution rather than skipping\nthe phase. See docs/architecture/investigation-engine/investigation-lifecycle-logic.md\n\u00a71.2 INVESTIGATING \u2192 RESOLVED \u2192 KB-Resolution Path.",
+        "description": "Case lifecycle state \u2014 passive label describing a case's current condition.\n\nValues fall into two categories:\n- **Phases** (active work): INQUIRY, INVESTIGATING\n- **Dispositions** (terminal resolution): RESOLVED, CLOSED\n\nCase Actions (phase transitions and dispositions):\n  INQUIRY \u2192 INVESTIGATING  (phase transition)\n  INQUIRY \u2192 CLOSED         (disposition)\n  INVESTIGATING \u2192 RESOLVED (disposition)\n  INVESTIGATING \u2192 CLOSED   (disposition)\n\nv3: INQUIRY \u2192 RESOLVED edge removed. KB-driven cases follow the standard\nINVESTIGATING path rather than skipping the phase. See\ndocs/architecture/investigation-engine/investigation-lifecycle-logic.md \u00a71.2.",
         "enum": [
           "inquiry",
           "investigating",

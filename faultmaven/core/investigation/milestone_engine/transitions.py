@@ -266,14 +266,11 @@ class TransitionManager:
         - INQUIRY -> INVESTIGATING when problem_statement_confirmed=True
           (Gate 1 — the single condition; see gate1_passed below)
 
-        v3: INQUIRY -> RESOLVED edge removed. KB-driven cases route through
-        INVESTIGATING via the KB-resolution milestone collapse — the
-        structured attribution (RootCauseConclusion + Solution + gate
-        milestones) is authored in one turn, but the RESOLVED disposition
-        still requires the explicit confirm turn like every other terminal
-        transition (#722) — see
+        v3: INQUIRY -> RESOLVED edge removed. KB-driven cases follow the
+        standard INVESTIGATING path, and the RESOLVED disposition requires the
+        explicit confirm turn like every other terminal transition (#722) — see
         docs/architecture/investigation-engine/investigation-lifecycle-logic.md
-        §1.2 INVESTIGATING -> RESOLVED -> KB-Resolution Path.
+        §1.2.
 
         User-Agent Handshake Transitions (terminal), on the case's offer
         record (``core/investigation/offers.py``):
@@ -294,11 +291,11 @@ class TransitionManager:
             self._recheck_resolve_request(case, metadata)
 
         # 1. INQUIRY transitions
-        # v3: INQUIRY → RESOLVED edge removed. KB-driven cases route through
-        # INVESTIGATING via the KB-resolution milestone collapse documented in
-        # docs/architecture/investigation-engine/investigation-lifecycle-logic.md
-        # §1.2 INVESTIGATING → RESOLVED → KB-Resolution Path. Confirming the
-        # problem statement is mandatory even when a runbook applies cleanly.
+        # v3: INQUIRY → RESOLVED edge removed. KB-driven cases follow the
+        # standard INVESTIGATING path
+        # (docs/architecture/investigation-engine/investigation-lifecycle-logic.md
+        # §1.2). Confirming the problem statement is mandatory even when a
+        # runbook applies cleanly.
         #
         # INV-19: INQUIRY → INVESTIGATING requires Gate 1 only (problem
         # statement confirmation). Gate 2 (path selection) is no longer a

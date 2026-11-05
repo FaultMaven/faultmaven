@@ -1,17 +1,15 @@
 """#2418: a REST close of a case that qualifies for RESOLVED records the
 declined resolution (rulings (b), 2026-11-03, and 2026-11-05).
 
-"Qualifies" is the chat path's own predicate: a close on the case would pivot
-to the resolve offer (INV-37, ``close_pivots_to_resolve``), a confirmed case
-still holding a check asked after the fix included. Over REST the close is the
-user's answer to that offer: the record holds the resolve offer declined, via
-the menu, by the driver, and the case closes as ``resolution_declined``, the
-record the chat path's decline-then-close leaves. A case that does not qualify
-keeps the reason it gets today.
+"Qualifies" is the chat path's predicate: a close would pivot to the resolve
+offer (INV-37, ``close_pivots_to_resolve``), a confirmed case still holding a
+check asked after the fix included. Over REST the close is the user's answer
+to that offer: the resolve offer is declined, via the menu, by the driver, and
+the case closes as ``resolution_declined``. A case that does not qualify keeps
+the reason it gets today.
 
 Driven through ``CaseService.close_case`` (the route's one call) over the
-in-memory repository, with the case handed to a driver who is not its creator.
-No LLM.
+in-memory repository, the case driven by someone other than its creator.
 """
 
 from __future__ import annotations
@@ -24,13 +22,7 @@ from faultmaven.core.investigation.terminal_transitions import (
     close_pivots_to_resolve,
     closure_verdict,
 )
-from faultmaven.modules.case.contracts import (
-    AnswerKind,
-    AnswerVia,
-    Case,
-    CaseState,
-    OfferKind,
-)
+from faultmaven.modules.case.contracts import Case, CaseState
 from faultmaven.modules.case.domain.services.case_service import CaseService
 from faultmaven.modules.case.infrastructure.case_repository import (
     InMemoryCaseRepository,
@@ -60,6 +52,7 @@ from tests.unit.modules.case.test_case_driver_1898 import (
 pytestmark = pytest.mark.unit
 
 _DECLINED = "resolution_declined"
+_RESOLVE_DECLINED = ("resolve", "declined", "menu", DRIVER)
 
 
 @pytest.fixture(autouse=True)
@@ -71,8 +64,8 @@ def _tenant():
 
 @pytest.fixture
 def world():
-    """``CaseService`` over the in-memory repository: CREATOR shared the case
-    with ``t1``, where DRIVER (who drives it) reads it."""
+    """CREATOR shared the case with ``t1``, where DRIVER, who drives it,
+    reads it."""
     repository = InMemoryCaseRepository()
     service = CaseService(
         repository,
@@ -84,19 +77,10 @@ def world():
 
 
 async def _close(world, case: Case) -> Case:
-    """Save ``case`` as CREATOR's case driven by DRIVER, and close it over the
-    service as DRIVER."""
+    """Save ``case`` as CREATOR's, driven by DRIVER; close it as DRIVER."""
     service, repository = world
-    await repository.save(
-        case.model_copy(
-            update={
-                "case_id": CASE_ID,
-                "user_id": CREATOR,
-                "driver_id": DRIVER,
-                "enterprise_id": ENTERPRISE,
-            }
-        )
-    )
+    ids = dict(case_id=CASE_ID, user_id=CREATOR, driver_id=DRIVER)
+    await repository.save(case.model_copy(update={**ids, "enterprise_id": ENTERPRISE}))
     closed = await service.close_case(CASE_ID, DRIVER)
     assert closed.state == CaseState.CLOSED
     assert (await repository.get(CASE_ID)).closure_reason == closed.closure_reason
@@ -129,24 +113,6 @@ def _answers(case: Case) -> list[tuple[str, str, str, str | None]]:
     ]
 
 
-_RESOLVE_DECLINED = ("resolve", "declined", "menu", DRIVER)
-
-
-async def _ready_in_window_zero() -> Case:
-    _, case = await _record_ready()
-    return case
-
-
-async def _relapse_after_an_out_of_band_fix() -> Case:
-    _, case = await _relapsed()
-    return case
-
-
-# ============================================================
-# 1. A qualifying case closes as the declined resolution
-# ============================================================
-
-
 class TestAQualifyingCaseRecordsTheDecline:
     @pytest.mark.parametrize(
         "build, today",
@@ -171,20 +137,15 @@ class TestAQualifyingCaseRecordsTheDecline:
         assert closed.action_history[-1].triggered_by == DRIVER
 
     async def test_an_out_of_band_fix_ready_in_window_zero(self, world):
-        """#2501's positive control: no fix dated, the cause and the problem
-        both shown gone. It qualifies, so its close is the decline."""
-        case = await _ready_in_window_zero()
+        """#2501's positive control for the relapse below: no fix dated, the
+        cause and the problem both shown gone."""
+        _, case = await _record_ready()
         assert _qualifies(case), "premise"
 
         closed = await _close(world, case)
 
         assert closed.closure_reason == _DECLINED
         assert _answers(closed)[-1] == _RESOLVE_DECLINED
-
-
-# ============================================================
-# 2. The close answers the open offer it is the answer to
-# ============================================================
 
 
 class TestAnOpenOffer:
@@ -198,24 +159,16 @@ class TestAnOpenOffer:
         assert _answers(closed) == [_RESOLVE_DECLINED]
         assert closed.offer_record.answers[0].proposal_id == offered
 
-    async def test_an_open_close_offer_lapses_and_the_resolve_is_declined(self, world):
+    async def test_an_open_close_offer_lapses_and_a_resolve_is_declined(self, world):
         case = _fixed()
         offered = with_open_offer(case, kind="close", basis="model").proposal_id
 
         closed = await _close(world, case)
 
         assert closed.closure_reason == _DECLINED
-        assert _answers(closed) == [
-            ("close", "lapsed", "menu", None),
-            _RESOLVE_DECLINED,
-        ]
-        lapsed, declined = closed.offer_record.answers
-        assert lapsed.proposal_id == offered != declined.proposal_id
-
-
-# ============================================================
-# 3. A case that does not qualify keeps its reason
-# ============================================================
+        lapsed = ("close", "lapsed", "menu", None)
+        assert _answers(closed) == [lapsed, _RESOLVE_DECLINED]
+        assert closed.offer_record.answers[0].proposal_id == offered
 
 
 class TestACaseThatDoesNotQualify:
@@ -242,7 +195,7 @@ class TestACaseThatDoesNotQualify:
 
     async def test_a_relapse_after_an_out_of_band_fix(self, world):
         """#2501: window 0 failed, so nothing is resolvable to decline."""
-        case = await _relapse_after_an_out_of_band_fix()
+        _, case = await _relapsed()
         assert not _qualifies(case), "premise"
         before = _answers(case)
 
@@ -252,9 +205,9 @@ class TestACaseThatDoesNotQualify:
         assert _answers(closed) == before
 
     async def test_a_standing_decline_lapses_the_reopen_offer(self, world):
-        """The decline already stands, so the close is not a new answer to
-        the resolution: the reopen offer lapses (nobody answered it), and the
-        reason is the decline on record."""
+        """The close is not a new answer to a resolution already declined: the
+        reopen offer lapses (nobody answered it), and the reason is the
+        decline on record."""
         case = _fixed()
         with_declined_offer(case, kind="resolve", basis="backstop")
         with_open_offer(case, kind="resolve", basis="reopen")
@@ -266,31 +219,19 @@ class TestACaseThatDoesNotQualify:
 
         assert closed.closure_reason == _DECLINED
         assert _answers(closed) == [*before, ("resolve", "lapsed", "menu", None)]
-        assert closed.offer_record.answers[-1].answer == AnswerKind.LAPSED
 
 
-# ============================================================
-# 4. The closure report names the fix and what confirmed it
-# ============================================================
+@pytest.mark.parametrize("solution", [True, False], ids=["solution", "out-of-band"])
+async def test_the_closure_report_renders_the_fix_and_what_confirmed_it(
+    world, solution
+):
+    closed = await _close(world, _fixed(solution=solution))
+    assert closed.closure_reason == _DECLINED, "premise"
 
+    svc = object.__new__(ReportGenerationService)
+    summary = await svc._generate_closure_summary(closed, {})
 
-class TestTheClosureReport:
-    @pytest.mark.parametrize(
-        "solution", [True, False], ids=["with-solution", "out-of-band-fix"]
-    )
-    async def test_it_renders_the_fix_and_its_confirming_evidence(
-        self, world, solution
-    ):
-        closed = await _close(world, _fixed(solution=solution))
-        assert closed.closure_reason == _DECLINED, "premise"
-        assert closed.offer_record.answers[-1].kind == OfferKind.RESOLVE
-        assert closed.offer_record.answers[-1].via == AnswerVia.MENU
-
-        svc = object.__new__(ReportGenerationService)
-        summary = await svc._generate_closure_summary(closed, {})
-
-        assert "## Confirming Evidence\n" in summary
-        assert "Post-fix logs confirm pool exhaustion no longer occurs" in summary
-        assert ("## Solution Applied\n" in summary) is solution
-        if solution:
-            assert "Increase connection pool to 100" in summary
+    assert "## Confirming Evidence\n" in summary
+    assert "Post-fix logs confirm pool exhaustion no longer occurs" in summary
+    assert ("## Solution Applied\n" in summary) is solution
+    assert ("Increase connection pool to 100" in summary) is solution

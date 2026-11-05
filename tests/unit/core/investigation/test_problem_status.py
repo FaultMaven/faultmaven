@@ -1,8 +1,7 @@
 """``problem_status`` has one writer, and ``symptom_verified`` is its view.
 
-The boolean used to be assigned in four places (the milestone loop, the
-KB-resolution collapse, the evidence-citation revert, the retraction). It is now
-derived, and every transition goes through ``core/investigation/problem_status``.
+The boolean used to be assigned in several places (the milestone loop, the
+evidence-citation revert and the retraction among them). It is now derived, and every transition goes through ``core/investigation/problem_status``.
 The scan below fails on any other assignment in the package.
 """
 

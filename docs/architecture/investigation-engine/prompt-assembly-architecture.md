@@ -403,7 +403,6 @@ The current design prioritizes signal density over example coverage in shared bl
 For any rendering audit (e.g., regression testing the templates after edits), the following invariants should hold across the 8 dispatch paths (INQUIRY, INV_kq, DIAG_Z1/Z2/Z3, MITIGATION, TREATMENT, TERMINAL):
 
 - No stale v2 references (`_check_fast_track_resolution`, `KB_FAST_TRACK`, `INQUIRY → RESOLVED` edge).
-- `**KB-RESOLUTION VARIANT` only in TREATMENT.
 - `EVIDENCE GROUNDING (CRITICAL - Anti-Hallucination):` only in case-investigating modes (DIAG, MIT, TRE) — absent from INV_kq, INQUIRY, TERMINAL.
 - `DIAGNOSTIC REASONING REQUIREMENTS (Anti-Hallucination):` only in case-investigating modes — absent from INV_kq, INQUIRY, TERMINAL.
 - Next-data-point procedure present in DIAG_Z1/Z2/Z3, MITIGATION, TREATMENT: four steps (`1. Identify the next data point` ... `4. Only ask the user`) when a search tool is given, three (`2. If it is in <evidence_collected>, use it.`, `3. Otherwise ask the user for it`) when none is.

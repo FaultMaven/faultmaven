@@ -1662,9 +1662,8 @@ def _apply_stage_gate_signals(
     """Apply stage-gate compliance signals (Framework §4.1).
 
     Runs AFTER the solutions step of ``_apply_investigation_updates`` so the
-    guards see ProposedActions created THIS turn: the prompt's KB-resolution
-    flow mandates SolutionToAdd + ``solution_accepted`` in ONE response, and
-    evaluating these signals before the solutions step deterministically
+    guards see ProposedActions created THIS turn: one response may carry
+    SolutionToAdd + ``solution_accepted``, and evaluating these signals before the solutions step deterministically
     rejected that bundle (the guard read a pre-solutions snapshot) while
     telling the LLM to re-propose what it had just proposed.
 

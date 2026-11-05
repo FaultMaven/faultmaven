@@ -5165,13 +5165,12 @@ Values fall into two categories:
 Case Actions (phase transitions and dispositions):
   INQUIRY → INVESTIGATING  (phase transition)
   INQUIRY → CLOSED         (disposition)
-  INVESTIGATING → RESOLVED (disposition; includes the KB-resolution milestone-collapse variant)
+  INVESTIGATING → RESOLVED (disposition)
   INVESTIGATING → CLOSED   (disposition)
 
-v3: INQUIRY → RESOLVED edge removed. KB-driven cases collapse INVESTIGATING
-to one or two turns via per-runbook Cause attribution rather than skipping
-the phase. See docs/architecture/investigation-engine/investigation-lifecycle-logic.md
-§1.2 INVESTIGATING → RESOLVED → KB-Resolution Path.
+v3: INQUIRY → RESOLVED edge removed. KB-driven cases follow the standard
+INVESTIGATING path rather than skipping the phase. See
+docs/architecture/investigation-engine/investigation-lifecycle-logic.md §1.2.
 
 **Values:** `inquiry`, `investigating`, `resolved`, `closed`
 

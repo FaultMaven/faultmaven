@@ -638,6 +638,23 @@ def test_every_prompt_states_the_turns_tools(row: str) -> None:
         assert line.startswith("No investigation tools are available on this turn")
 
 
+@pytest.mark.parametrize("row", sorted(ROWS))
+def test_no_turn_asks_for_the_deleted_runbook_fix_field(row: str) -> None:
+    """#2482: no response schema carries the runbook-fix confirmation field
+    any more, so neither the DIAGNOSIS nor the TREATMENT render asks for it or
+    carries the variant that did. Each column still renders its block (the
+    controls)."""
+    texts = renders(ROWS[row])
+    for column, block in (
+        ("diagnosis", "Cause attribution"),
+        ("diagnosis_directed", "Cause attribution"),
+        ("treatment", "FOCUS: TREATMENT"),
+    ):
+        assert block in texts[column], (column, "premise")
+        assert "knowledge_resolution" not in texts[column], column
+        assert "KB-RESOLUTION VARIANT" not in texts[column], column
+
+
 #: Phrases that point at a tool without naming it. Text must not instruct a
 #: tool the turn lacks under a synonym either (#1939 review), so a tool-less
 #: turn renders none of them, and a turn missing one tool renders none of that

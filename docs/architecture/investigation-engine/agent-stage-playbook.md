@@ -86,7 +86,7 @@ TERMINAL — immutable; Q&A only
   CLOSED   — closure_summary generated when investigation has substance (evidence/hypotheses/milestones); no runbook generation
 ```
 
-> **No INQUIRY → RESOLVED edge.** Every RESOLVED case passes through INVESTIGATING. For KB-matched cases where the user confirms the runbook fixed the issue in one exchange, the state machine still follows INQUIRY → DIAGNOSIS → TERMINAL/RESOLVED — but the engine collapses both transitions into a single turn via the same-turn KB-Resolution path (see `investigation-lifecycle-logic.md` §1.2 *KB-Resolution Path* and matrix invariants INV-04 + INV-06 for canonical specification + enforcement). The UX appears "fast"; the state path is not short-circuited.
+> **No INQUIRY → RESOLVED edge.** Every RESOLVED case passes through INVESTIGATING. KB-matched cases follow the standard INVESTIGATING path: INQUIRY → DIAGNOSIS → TERMINAL/RESOLVED (see `investigation-lifecycle-logic.md` §1.2 and matrix invariant INV-04 for canonical specification + enforcement).
 
 ### Key Definitions
 
@@ -192,7 +192,7 @@ Establish a shared understanding of the problem before investigation begins. The
 | DIAGNOSIS | User-Agent Handshake | `problem_statement_confirmed = True` — user explicitly confirms the problem statement |
 | TERMINAL (CLOSED) | User-Agent Handshake | User declines to investigate |
 
-> The INQUIRY stage has **no direct edge to TERMINAL (RESOLVED)**. KB-matched cases that the user confirms are resolved still pass through INVESTIGATING — both transitions are collapsed into a single turn via the same-turn KB-Resolution path (see `investigation-lifecycle-logic.md` §1.2; matrix INV-04 + INV-06).
+> The INQUIRY stage has **no direct edge to TERMINAL (RESOLVED)**. KB-matched cases follow the standard INVESTIGATING path (see `investigation-lifecycle-logic.md` §1.2; matrix INV-04).
 
 #### Anti-Patterns
 
