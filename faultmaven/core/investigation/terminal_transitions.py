@@ -1169,7 +1169,7 @@ def execute_user_closure(case: Case, user_id: str) -> ClosureReason:
     answered ``declined``. The reason then derives as
     ``resolution_declined``, the reason the chat path's decline-then-close
     records; the record here is a MENU decline of the resolve offer, with no
-    close offer answered.
+    close offer accepted (an open one lapses).
 
     Mutates ``case`` in place; the caller owns persistence. Returns the
     derived closure_reason. ``user_id`` must be the case's effective driver:
