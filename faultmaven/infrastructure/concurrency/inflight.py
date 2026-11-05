@@ -8,9 +8,10 @@ in flight never meets a closed Redis client, ChromaDB client or engine.
 ``cancellable`` work is cancelled once the bound has passed; ``must_finish``
 work (the settlement: no cancellation may reach its commit, R1) is awaited with
 no bound, which the database's command timeout supplies (#2280). A cancel does
-not stop a thread, so :func:`draining` holds while a drain runs and the vector
-write reads it first. **Residual:** a write already in its thread at the bound
-finishes into the client after it.
+not stop a thread, so :func:`draining` holds while a drain that is still the
+last runs, and the vector write reads it first. **Residual:** a write already in
+its thread at the bound finishes into the client after it. So does one started
+under a hold taken and released between two of the drain's wakes.
 
 **Per case, across replicas.** A case's lease is the Redis sorted set
 ``case-inflight:{enterprise_id}:{case_id}``: holder tokens scored by expiry on
@@ -45,6 +46,8 @@ logger = logging.getLogger(__name__)
 DRAIN_BOUND_SECONDS = 10.0
 #: How long a cancelled task is given to end once cancelled.
 CANCEL_GRACE_SECONDS = 1.0
+#: The longest the drain waits before it re-reads whether its release is the last.
+DRAIN_POLL_SECONDS = 0.05
 
 #: A case lease's life without a renewal, and the wait between two renewals.
 LEASE_TTL_MS = 30_000
@@ -112,7 +115,7 @@ class Kind(enum.Enum):
 _TRACKED: Dict["asyncio.Task[Any]", Tuple[str, Kind]] = {}
 _RELEASES: Set["asyncio.Task[None]"] = set()
 _LEASES: Dict[CaseKey, "_CaseLease"] = {}
-_draining = 0  # a count: drains may overlap
+_DRAINS: list[Callable[[], bool]] = []  # each running drain's last(); they overlap
 _REPORTED: Set[str] = set()
 
 
@@ -157,8 +160,9 @@ def tracked(what_prefix: str = "") -> Set["asyncio.Task[Any]"]:
 
 
 def draining() -> bool:
-    """Whether a drain runs: a store write that has not started must not start."""
-    return _draining > 0
+    """Whether a drain whose release is still the last runs: a store write that
+    has not started must not start. A drain no longer the last closes nothing."""
+    return any(last() for last in list(_DRAINS))
 
 
 async def drain(
@@ -170,28 +174,29 @@ async def drain(
     ``timeout_s`` (default ``DRAIN_BOUND_SECONDS``). Then it cancels the
     ``cancellable`` rest, gives them ``CANCEL_GRACE_SECONDS``, and awaits the
     ``must_finish`` ones with no bound. Last, the case leases being released
-    get the same grace. Past the bound with ``last()`` false (the release is
-    no longer the last), it returns, cancelling nothing. Interrupted, it
+    get the same grace. It re-reads ``last()`` at every wake (before the bound,
+    every ``DRAIN_POLL_SECONDS`` at most): once it reads false (the release is
+    no longer the last), it returns, cancelling nothing more. Interrupted, it
     cancels nothing and re-raises: a last release then calls
     :func:`cancel_cancellable`. **Residual:** an interrupted shutdown does not
     wait for a settlement, which can then meet closed stores.
     """
-    global _draining
     loop = asyncio.get_running_loop()
     deadline = loop.time() + (DRAIN_BOUND_SECONDS if timeout_s is None else timeout_s)
     abandoned: Set["asyncio.Task[Any]"] = set()
     cancelled = 0
-    _draining += 1
+    _DRAINS.append(last)
     try:
         while True:
+            if not last():
+                return cancelled
             pending = [t for t in _pending_on(loop) if t not in abandoned]
             if not pending:
                 break
             if loop.time() < deadline:
-                await asyncio.wait(pending, timeout=deadline - loop.time())
+                wait = min(DRAIN_POLL_SECONDS, deadline - loop.time())
+                await asyncio.wait(pending, timeout=wait)
                 continue
-            if not last():
-                return cancelled
             late = await _cancel_late(loop, abandoned)
             cancelled += len(late)
             finishing = [t for t in pending if t not in late]
@@ -201,7 +206,7 @@ async def drain(
         if releases:
             await asyncio.wait(releases, timeout=CANCEL_GRACE_SECONDS)
     finally:
-        _draining -= 1
+        _DRAINS.remove(last)
     return cancelled
 
 

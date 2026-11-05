@@ -1048,6 +1048,29 @@ async def test_a_hold_taken_before_the_bound_leaves_the_cancellable_work_running
     work.cancel()
 
 
+async def test_a_hold_taken_during_the_drain_ends_it_before_the_bound(
+    container, monkeypatch, record
+):
+    """#2506: the drain read whether its release was the last only past its
+    bound, so the shutdown waited the bound out, and the draining flag refused
+    the live composition's vector writes all that time."""
+    monkeypatch.setattr(record, "DRAIN_BOUND_SECONDS", 3600)
+    parked = asyncio.Event()
+
+    async def _compose_then_park():
+        await container.initialize()
+        await parked.wait()
+
+    await _hold(container, 1)
+    work = _work(record, [], then=_compose_then_park)
+
+    try:  # the fixture's last release would otherwise drain it for the bound
+        assert await asyncio.wait_for(container.shutdown(), 10) is False
+        assert record.draining() is False and not work.done()
+    finally:
+        work.cancel()
+
+
 async def test_the_stores_wait_for_a_settlement_past_the_bound(
     container, monkeypatch, record
 ):
