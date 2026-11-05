@@ -94,6 +94,7 @@ async def world():
         yield SimpleNamespace(
             read=read,
             delete=delete,
+            service=service,
             gate=gate,
             redis=redis,
             key=(ENTERPRISE, case.case_id),
@@ -161,6 +162,15 @@ async def test_a_tombstone_lapsed_under_a_running_delete_reads_false(world):
     assert await _deleting(world) is False
     world.gate.release.set()
     assert (await deleting).status_code == 204
+
+
+async def test_an_unreadable_tombstone_store_still_answers_the_read(world, monkeypatch):
+    """A tombstone store whose ``exists`` raises is the read's ``false``,
+    never its 500."""
+    monkeypatch.setattr(inflight, "_REPORTED", set())
+    world.service.delete_gate = CaseDeleteGate(_unreachable())
+
+    assert await _deleting(world) is False
 
 
 # ============================================================

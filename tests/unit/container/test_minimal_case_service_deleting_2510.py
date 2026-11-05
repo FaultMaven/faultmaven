@@ -1,9 +1,10 @@
-"""The degraded case service answers the detail read's delete question (#2510).
+"""The degraded case service's ``delete_in_progress`` matches the interface (#2510).
 
-``GET /cases/{case_id}`` asks the case service ``delete_in_progress``.
-``MinimalCaseService`` is duck-typed, so without the method the read would raise
-there. Its delete is one synchronous step that holds no tombstone, so it never
-sees one running.
+``MinimalCaseService`` is duck-typed, so only a test holds it to
+``ICaseService``. This pins its ``delete_in_progress``: the interface's
+parameters, and ``False``, as its delete is one synchronous step that holds no
+tombstone. It does not make ``GET /cases/{case_id}`` work on the stand-in: that
+read raises earlier, at ``get_case_team_ids``, which the stand-in lacks (#2548).
 """
 
 import inspect

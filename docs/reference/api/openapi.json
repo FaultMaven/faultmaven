@@ -1515,7 +1515,7 @@
           },
           "deleting": {
             "default": false,
-            "description": "True while a delete of this case runs (#2510). Show the case read-only and read it again, backing off from 2 s to at most every 10 s for at most 60 s, until it is gone (404) or this clears; then keep it read-only until the next user action reads it again. Best-effort: false means no delete is known to run, so a turn can still meet 409 `CASE_DELETE_IN_PROGRESS` or 404. Set on `GET /cases/{case_id}`; false on every other surface that embeds `CaseDetail`.",
+            "description": "True while a delete of this case runs (#2510). Show the case read-only and read it again, backing off from 2 s to at most every 10 s for at most 60 s, until it is gone (404) or this clears; then keep it read-only until the next user action reads it again. Best-effort both ways, as it reports the delete's tombstone: true can stand briefly while a delete is refused, or up to 30 s after a failed one whose tombstone could not be removed; false means no delete is known to run, so a turn can still meet 409 `CASE_DELETE_IN_PROGRESS` or 404. Set on `GET /cases/{case_id}`; false on every other surface that embeds `CaseDetail`.",
             "title": "Deleting",
             "type": "boolean"
           },

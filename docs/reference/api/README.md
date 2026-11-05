@@ -5001,7 +5001,7 @@ Detailed case information for single case view.
 - `creator_display_name` (object, optional)
 - `current_stage` (object, required)
 - `current_turn` (integer, required) — The MESSAGE clock: every persisted exchange advances it, asides included. It is what `Message.turn_number`, evidence `uploaded_at_turn` and the conversation anchors are keyed on, so keep using it to ADDRESS a turn — and prefer `investigation_turn` to DISPLAY one.
-- `deleting` (boolean, optional) — True while a delete of this case runs (#2510). Show the case read-only and read it again, backing off from 2 s to at most every 10 s for at most 60 s, until it is gone (404) or this clears; then keep it read-only until the next user action reads it again. Best-effort: false means no delete is known to run, so a turn can still meet 409 `CASE_DELETE_IN_PROGRESS` or 404. Set on `GET /cases/{case_id}`; false on every other surface that embeds `CaseDetail`.
+- `deleting` (boolean, optional) — True while a delete of this case runs (#2510). Show the case read-only and read it again, backing off from 2 s to at most every 10 s for at most 60 s, until it is gone (404) or this clears; then keep it read-only until the next user action reads it again. Best-effort both ways, as it reports the delete's tombstone: true can stand briefly while a delete is refused, or up to 30 s after a failed one whose tombstone could not be removed; false means no delete is known to run, so a turn can still meet 409 `CASE_DELETE_IN_PROGRESS` or 404. Set on `GET /cases/{case_id}`; false on every other surface that embeds `CaseDetail`.
 - `description` (string, required)
 - `driver_display_name` (object, optional)
 - `driver_id` (object, optional)
