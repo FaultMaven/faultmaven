@@ -20,6 +20,8 @@ import pytest
 from faultmaven.core.investigation.causal_graph.disconfirmation import (
     _fix_failure_refusal,
 )
+from faultmaven.core.investigation.causal_graph.ingestion import seed_problem_node
+from faultmaven.core.investigation.causal_graph.pruning import resolve_orphan_chains
 from faultmaven.core.investigation.cause_assurance import (
     cause_recheck_status,
     fix_windows,
@@ -40,6 +42,7 @@ from faultmaven.core.investigation.terminal_transitions import (
     assess_resolution_readiness,
 )
 from faultmaven.modules.case.contracts import (
+    CausalEdge,
     CausalNode,
     CauseState,
     Evidence,
@@ -84,6 +87,15 @@ from tests.unit.core.investigation.test_fix_verification_subjects_1906 import (
 from tests.unit.core.investigation.test_m6_cause_gone_problem_persists_1927 import (
     _accept,
     _identified_case,
+)
+from tests.unit.core.investigation.test_orphan_chain_resolution import (
+    _add_orphan_chain,
+)
+from tests.unit.core.investigation.test_orphan_chain_resolution import (
+    _hyp as _orphan_hyp,
+)
+from tests.unit.core.investigation.test_orphan_chain_resolution import (
+    _investigating_case as _orphan_case,
 )
 from tests.unit.core.investigation.test_refutation_needs_data_1911 import _engine
 from tests.unit.core.investigation.test_resolution_backstop_turn import _make_repo
@@ -171,58 +183,173 @@ async def test_1_a_relapse_after_an_out_of_band_fix_fails_window_0():
     assert case.offer_record.open is None
 
 
-async def test_1_a_later_attach_of_the_root_keeps_window_0_failed():
-    """The failure is final: after the relapse the identified root is handed to
-    a new hypothesis through chain emission (its owner moves to another
-    chain), which re-stamps the root's attach turn. A cause and problem
-    re-check at 9 then confirm nothing: window 0 stays FAILED, readiness asks
-    for a new fix, and no resolve offer opens."""
-    case, root, owner = _identified_case()
-    # As the root's first attach through chain emission records it.
-    root.metadata["root_first_attached_turn"] = 1
-    eng, case = await _relapsed(case=case)
+def _emit_roots(case, turn: int, refs: dict, *, new=()) -> None:
+    """One chain emission at ``turn``: ``refs`` maps each hypothesis to its
+    root (a node id, or ``new_index_N`` for the Nth statement of ``new``, a
+    root on its own chain to the problem)."""
+    case.current_turn = turn
+    nodes = [
+        SimpleNamespace(
+            statement=text, node_type=NodeType.ROOT, produces="D", and_group=None
+        )
+        for text in new
+    ]
+    _apply_chain_emission(
+        case,
+        SimpleNamespace(
+            causal_nodes_to_add=nodes, causal_edges_to_add=[], node_evidence_links=[]
+        ),
+        {
+            "hypotheses_generated": [
+                h for h in refs if not case.hypotheses[h].root_node_id
+            ],
+            "hyp_root_refs": refs,
+        },
+    )
+
+
+def _heir(case, turn: int):
+    """A new hypothesis re-asserting the identified cause, on the case."""
     heir = Hypothesis(
         statement="the postgres connection limit starves the checkout pool",
         category=HypothesisCategory.DATABASE,
         state=HypothesisState.ACTIVE,
         generation_mode=HypothesisGenerationMode.OPPORTUNISTIC,
         rationale="re-asserted after the relapse",
-        generated_at_turn=8,
+        generated_at_turn=turn,
     )
     case.hypotheses[heir.hypothesis_id] = heir
-    case.current_turn = 8
-    elsewhere = SimpleNamespace(
-        statement="pgbouncer runs in session mode",
-        node_type=NodeType.ROOT,
-        produces="D",
-        and_group=None,
-    )
-    _apply_chain_emission(
-        case,
-        SimpleNamespace(
-            causal_nodes_to_add=[elsewhere],
-            causal_edges_to_add=[],
-            node_evidence_links=[],
-        ),
-        {
-            "hypotheses_generated": [heir.hypothesis_id],
-            "hyp_root_refs": {
-                owner.hypothesis_id: "new_index_0",
-                heir.hypothesis_id: root.node_id,
-            },
-        },
-    )
-    assert heir.root_node_id == root.node_id, "premise: handed off"
-    assert root.root_attached_turn == 8, "premise: re-stamped"
+    return heir
 
-    await _record(eng, case, 9, _cause_gone("max_connections reads 100"), _gone())
+
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_1_a_later_attach_of_the_root_keeps_window_0_failed(legacy):
+    """The identified root, emitted at 1, is attached through chain emission
+    at 4: its first attach is 4, or 2 when it was last attached at 2 before
+    the first attach was recorded. After the relapse it is handed to a new
+    hypothesis twice (its owner moves to another chain, at 8 and at 9), which
+    re-stamps its attach turn each time but never its first. A cause and
+    problem re-check at 10 then confirm nothing: window 0 stays FAILED,
+    readiness asks for a new fix, and no resolve offer opens."""
+    case, root, owner = _identified_case()
+    owner.root_node_id, owner.path = None, []
+    if legacy:
+        root.metadata["root_attached_turn"] = 2
+    first = 2 if legacy else 4
+    _emit_roots(case, 4, {owner.hypothesis_id: root.node_id})
+    assert root.metadata["root_first_attached_turn"] == first
+    eng, case = await _relapsed(case=case)
+    for turn, elsewhere in ((8, "pgbouncer runs in session mode"), (9, "a leak")):
+        heir = _heir(case, turn)
+        _emit_roots(
+            case,
+            turn,
+            {owner.hypothesis_id: "new_index_0", heir.hypothesis_id: root.node_id},
+            new=[elsewhere],
+        )
+        assert heir.root_node_id == root.node_id, "premise: handed off"
+        owner = heir
+    assert (root.root_attached_turn, root.root_first_attached_turn) == (9, first)
+
+    await _record(eng, case, 10, _cause_gone("max_connections reads 100"), _gone())
 
     assert _window_zero(case)[:3] == ("failed", 5, 6)
     readiness = assess_resolution_readiness(case)
     assert readiness.verdict == ResolutionReadiness.NEEDS_INFO
     assert readiness.missing[0] == _NEW_FIX
-    await _silent_turn(case, 10, "is it resolved?")
+    await _silent_turn(case, 11, "is it resolved?")
     assert case.offer_record.open is None
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_1_an_orphan_adoption_records_the_first_attach_once(legacy):
+    """The orphan pass (``resolve_orphan_chains``) adopts an orphan root at 4,
+    then again at 6 and 8 after its hypothesis left it: its first attach stays
+    4, or 2 when it was last attached at 2 before the first was recorded."""
+    hyp = _orphan_hyp("connection pool exhausted by a leaked database connection")
+    case = _orphan_case()
+    case.hypotheses = {hyp.hypothesis_id: hyp}
+    seed_problem_node(case)
+    root_id = _add_orphan_chain(case, "a leaked database connection exhausts the pool")
+    root = case.causal_nodes[root_id]
+    if legacy:
+        root.metadata["root_attached_turn"] = 2
+    for turn in (4, 6, 8):
+        case.current_turn = turn
+        assert resolve_orphan_chains(case) == []
+        assert hyp.root_node_id == root_id, "premise: adopted"
+        assert root.metadata["root_first_attached_turn"] == (2 if legacy else 4)
+        hyp.root_node_id, hyp.path = None, []
+    assert root.root_attached_turn == 8
+
+
+async def test_1_a_cluster_is_floored_at_its_earliest_first_attach():
+    """A cause row naming a support of two roots of one cluster (one causal
+    line): the identified root first attached at 7, the root below it at 1.
+    The cluster is one cause, posited at 1, so the row at 3, the relief at 4
+    and the problem back at 5 are a relapse."""
+    case, deepest, upper = _cluster_case()
+    deepest.metadata["root_first_attached_turn"] = 7
+    upper.metadata["root_first_attached_turn"] = 1
+    eng = _engine()
+    await _record(eng, case, 3, _obs(_CAUSE_GONE, "pool size reads 100", _ROOTS))
+    await _record(eng, case, 4, _gone())
+    await _record(eng, case, 5, _back())
+
+    window = fix_windows(case)[0]
+    assert {r.evidence_id for r in window.confirmed_cause_rows}, "premise: binds"
+    assert _window_zero(case)[:3] == ("failed", 4, 5)
+
+
+_ROOTS = "ev_0000c1a5e001"
+
+
+def _cluster_case():
+    """The #1927 case with a second root on the identified root's causal line
+    (the identified root causes it, it causes the problem), and a row
+    supporting both roots alone."""
+    case, deepest, hyp = _identified_case()
+    upper = CausalNode(
+        node_id="cn_0000c1a5e000",
+        statement="the checkout pool waits on connections the limit refuses",
+        node_type=NodeType.ROOT,
+        node_state=NodeState.INCONCLUSIVE,
+        validation_method=ValidationMethod.NONE,
+        belief=0.5,
+        metadata={"root_terminal": False},
+        generated_at_turn=1,
+    )
+    case.causal_nodes[upper.node_id] = upper
+    problem = next(
+        n for n in case.causal_nodes.values() if n.node_type == NodeType.PROBLEM
+    )
+    case.causal_edges = [
+        CausalEdge(cause_node_id=deepest.node_id, effect_node_id=upper.node_id),
+        CausalEdge(cause_node_id=upper.node_id, effect_node_id=problem.node_id),
+    ]
+    hyp.path = [deepest.node_id, upper.node_id, problem.node_id]
+    case.evidence.append(
+        Evidence(
+            evidence_id=_ROOTS,
+            summary="max_connections 20 and the pool waiting on it",
+            primary_purpose="diagnosis",
+            category=EvidenceCategory.CAUSAL_EVIDENCE,
+            source_type=EvidenceSourceType.LOGS,
+            source_file_id=case.evidence[0].source_file_id,
+            collected_by="llm",
+            collected_at_turn=2,
+        )
+    )
+    for node in (deepest, upper):
+        node.evidence_links.append(
+            NodeEvidenceLink(
+                evidence_id=_ROOTS,
+                stance=EvidenceStance.SUPPORTS,
+                reasoning="supports both roots",
+                linked_at_turn=2,
+            )
+        )
+    return case, deepest, upper
 
 
 async def test_2_under_a_decline_no_reopen_chip_and_its_click_opens_nothing():
@@ -381,6 +508,21 @@ async def test_3_a_turn_holding_gone_and_present_after_the_relief_reads_gone():
     assert _window_zero(case) == ("succeeded", 5, None, None)
 
 
+async def test_3_a_root_attached_before_the_first_attach_was_recorded():
+    """A root emitted at 1 and attached at 4, stored before its first attach
+    was recorded: its first posit reads 4, not its emission. A "not it" row at
+    2, a restart's relief at 3 and the problem back at 5 fail nothing."""
+    case, root, _hyp = _identified_case()
+    root.metadata["root_attached_turn"] = 4
+    eng = _engine()
+    await _record(eng, case, 2, _cause_gone("pool size reads 100, not it"))
+    await _record(eng, case, 3, _gone("checkout returns 200 after the restart"))
+    await _record(eng, case, 5, _back())
+
+    assert fix_windows(case)[0].confirmed_cause_rows, "premise: the row binds"
+    assert _window_zero(case)[0] != "failed"
+
+
 async def test_3_a_fallen_causes_pre_posit_row_anchors_nothing():
     """A "not it" row at 3 naming the support of a cause first posited at 7, a
     restart's relief at 4, the problem back at 6; then the cause falls, so the
@@ -460,7 +602,12 @@ async def test_a_late_registered_fix_counts_as_one_failed_attempt():
         (None, "failed", 11),
         (11, "failed", 13),
     ], "premise"
-    assert ProgressMonitor()._detect_fix_failure_cycle(case, "solution") is False
+    monitor = ProgressMonitor()
+    assert monitor._detect_fix_failure_cycle(case, "solution") is False
+    repair = monitor._repair_fix_failure_cycle(case, "solution")
+    assert repair.message == (
+        f"Fix failure cycle: 1 attempts in {case.current_stage.value}."
+    )
 
 
 @pytest.mark.parametrize("undatable", [False, True])

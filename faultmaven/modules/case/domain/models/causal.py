@@ -313,11 +313,10 @@ class CausalNode(BaseModel):
     @property
     def root_first_attached_turn(self) -> int:
         """The turn a hypothesis FIRST attached to this node as its root, else
-        the turn the node was posited. Unlike ``root_attached_turn`` a
-        re-attach never moves it, so a window-0 relapse read on it stays
-        failed (#2501)."""
+        ``root_attached_turn`` (a node attached before this was recorded).
+        Unlike ``root_attached_turn`` a later attach never moves it (#2501)."""
         turn = self.metadata.get("root_first_attached_turn")
-        return turn if isinstance(turn, int) else self.generated_at_turn
+        return turn if isinstance(turn, int) else self.root_attached_turn
 
 
 class CausalEdge(BaseModel):
