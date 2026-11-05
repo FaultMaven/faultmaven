@@ -19,11 +19,17 @@ from faultmaven.core.investigation.cause_assurance import (
 from faultmaven.core.investigation.milestone_engine.statement_revision import (
     confirm_revision,
 )
-from faultmaven.core.investigation.schemas import EvidenceToAdd
+from faultmaven.core.investigation.schemas import (
+    EvidenceToAdd,
+    MilestoneUpdates,
+    SolutionToAdd,
+)
 from faultmaven.modules.case.contracts import (
     AnswerVia,
+    CauseState,
     EvidenceCategory,
     EvidenceSourceType,
+    HypothesisState,
     ProblemStatus,
 )
 from tests.unit.core.investigation import (
@@ -53,19 +59,35 @@ async def _record(engine, case, turn: int, *rows) -> None:
     await revision._apply(engine, case, revision._DSU(evidence_to_add=list(rows)))
 
 
-async def _replayed(data_turn: int = _STAGED):
+def _solution(solution_type: str, description: str) -> SolutionToAdd:
+    return SolutionToAdd(
+        solution_type=solution_type,
+        description=description,
+        estimated_impact="orders answer again",
+        risks="none",
+    )
+
+
+async def _replayed(data_turn=_STAGED, *, edit=None, held=(), confirmed=None):
     """The cause, its chain and its rows staged at 4 from data uploaded at
-    ``data_turn``, replayed on the "yes" at 5. Returns the engine, the case,
-    the hypothesis, its root, the staged rows' ids (the symptom row, then the
-    root's two supports) and the file."""
+    ``data_turn`` (``edit`` changes the staged turn, ``held`` are the next
+    hold turns), replayed on the "yes" at ``confirmed``, by default the turn
+    after them. Returns the engine, the case, the hypothesis, its root, the
+    staged rows' ids (the symptom row, then the root's two supports) and the
+    file."""
     engine, case = revision._engine(), revision._case()
     file_id = upload(case, data_turn)
     dsu = revision._revision_turn_with_cause_work()
     for row in dsu.evidence_to_add:
         row.source_file_id = file_id
+    if edit is not None:
+        edit(dsu)
     meta = await revision._apply(engine, case, dsu)
+    for turn, later in enumerate(held, _STAGED + 1):
+        case.current_turn = turn
+        await revision._apply(engine, case, later)
     assert case.hypotheses == {}, "premise: staged"
-    case.current_turn = _STAGED + 1
+    case.current_turn = confirmed or _STAGED + 1 + len(held)
     await confirm_revision(engine.responses, case, {}, via=AnswerVia.CLICK)
     (hyp,) = case.hypotheses.values()
     root = case.causal_nodes[hyp.root_node_id]
@@ -155,3 +177,70 @@ async def test_live_cause_work_is_dated_at_the_current_turn():
     assert root.metadata["root_attached_turn"] == 7
     assert root.metadata["root_first_attached_turn"] == 7
     assert hyp.generated_at_turn == root.generated_at_turn == 7
+
+
+async def test_a_staged_verdict_on_a_root_the_orphan_pass_adopts_stands():
+    """The hypothesis is staged flat beside its root. On the replay the orphan
+    pass (T1) adopts the root, dated at the staged turn, so the verdict the
+    hypothesis carried, citing that turn's row, is recorded on it."""
+
+    def flat(dsu):
+        dsu.hypotheses_to_add[0].root_node_ref = None
+
+    *_, root, _slots, _file = await _replayed(edit=flat)
+
+    assert root.root_first_attached_turn == _STAGED
+    assert root.root_terminal is True
+
+
+async def test_a_held_fix_seen_failing_disconfirms_a_cause_replayed_before_it():
+    """The cause staged at 4, then the fix the user ran at 5, held with it and
+    registered at 5 (#2105). The cause is now posited at 4, before the fix,
+    as on a live turn. The cause seen removed at 7 and the problem still there
+    at 8 is a failed fix of that cause, so M6 demotes it (``failed_fix_of``).
+    Dated at the confirmation (6), the cause read as posited after the fix."""
+    fix = revision._DSU(
+        solutions_to_add=[_solution("config_change", "raise the pool to 50")],
+        milestones=MilestoneUpdates(solution_accepted=True),
+    )
+    engine, case, hyp, _root, (shown, support, _), _ = await _replayed(held=[fix])
+    assert [a.accepted_in_turn for a in case.proposed_actions] == [_STAGED + 1]
+    assert case.progress.cause_state == CauseState.IDENTIFIED
+
+    await _record(
+        engine,
+        case,
+        7,
+        _obs(_CAUSE_GONE, "the orders pool reads 50", support, upload(case, 7)),
+    )
+    await _record(
+        engine,
+        case,
+        8,
+        _obs(
+            EvidenceCategory.SYMPTOM_EVIDENCE,
+            "orders still time out after 30s",
+            shown,
+            upload(case, 8),
+        ),
+    )
+
+    assert fix_windows(case)[-1].disconfirms_cause
+    assert hyp.state == HypothesisState.REFUTED
+    assert case.progress.cause_state != CauseState.IDENTIFIED
+
+
+async def test_a_staged_mitigation_verification_is_dated_at_its_hold_turn():
+    """A workaround run and verified on the staged turn, held with it and
+    confirmed two turns later: the pre-mitigation boundary is the hold turn."""
+
+    def mitigated(dsu):
+        dsu.solutions_to_add = [_solution("workaround", "route orders to the replica")]
+        dsu.milestones = MilestoneUpdates(
+            mitigation_accepted=True, mitigation_verified=True
+        )
+
+    _, case, *_ = await _replayed(edit=mitigated, confirmed=_STAGED + 2)
+
+    assert case.progress.mitigation.verified is True
+    assert case.progress.mitigation.completed_at_turn == _STAGED
