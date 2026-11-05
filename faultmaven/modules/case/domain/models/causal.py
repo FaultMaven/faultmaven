@@ -314,7 +314,11 @@ class CausalNode(BaseModel):
     def root_first_attached_turn(self) -> int:
         """The turn a hypothesis FIRST attached to this node as its root, else
         ``root_attached_turn`` (a node attached before this was recorded).
-        Unlike ``root_attached_turn`` a later attach never moves it (#2501)."""
+        Unlike ``root_attached_turn`` a later attach does not move it (#2501).
+        A root stored with neither key (attached before #2036, 2026-10-16) is
+        floored at its ``generated_at_turn`` until its next attach, which
+        records that turn, so its floor can move once; readiness stays held
+        there, because the cause leg's floor moves with it."""
         turn = self.metadata.get("root_first_attached_turn")
         return turn if isinstance(turn, int) else self.root_attached_turn
 

@@ -20,8 +20,6 @@ import pytest
 from faultmaven.core.investigation.causal_graph.disconfirmation import (
     _fix_failure_refusal,
 )
-from faultmaven.core.investigation.causal_graph.ingestion import seed_problem_node
-from faultmaven.core.investigation.causal_graph.pruning import resolve_orphan_chains
 from faultmaven.core.investigation.cause_assurance import (
     cause_recheck_status,
     fix_windows,
@@ -62,7 +60,7 @@ from faultmaven.modules.case.contracts import (
     ValidationMethod,
 )
 from tests.case_builders import inquiry_case, with_declined_offer
-from tests.unit.core.investigation.bound_rows import VERIFYING_ID
+from tests.unit.core.investigation.bound_rows import VERIFYING_ID, bound_row
 from tests.unit.core.investigation.fix_turns_2039 import _engine_rows
 from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
 from tests.unit.core.investigation.test_fix_registration_lag_2427 import (
@@ -87,15 +85,7 @@ from tests.unit.core.investigation.test_fix_verification_subjects_1906 import (
 from tests.unit.core.investigation.test_m6_cause_gone_problem_persists_1927 import (
     _accept,
     _identified_case,
-)
-from tests.unit.core.investigation.test_orphan_chain_resolution import (
-    _add_orphan_chain,
-)
-from tests.unit.core.investigation.test_orphan_chain_resolution import (
-    _hyp as _orphan_hyp,
-)
-from tests.unit.core.investigation.test_orphan_chain_resolution import (
-    _investigating_case as _orphan_case,
+    _recompute_at,
 )
 from tests.unit.core.investigation.test_refutation_needs_data_1911 import _engine
 from tests.unit.core.investigation.test_resolution_backstop_turn import _make_repo
@@ -262,25 +252,95 @@ async def test_1_a_later_attach_of_the_root_keeps_window_0_failed(legacy):
 
 
 @pytest.mark.parametrize("legacy", [False, True])
-def test_1_an_orphan_adoption_records_the_first_attach_once(legacy):
-    """The orphan pass (``resolve_orphan_chains``) adopts an orphan root at 4,
-    then again at 6 and 8 after its hypothesis left it: its first attach stays
-    4, or 2 when it was last attached at 2 before the first was recorded."""
-    hyp = _orphan_hyp("connection pool exhausted by a leaked database connection")
-    case = _orphan_case()
-    case.hypotheses = {hyp.hypothesis_id: hyp}
-    seed_problem_node(case)
-    root_id = _add_orphan_chain(case, "a leaked database connection exhausts the pool")
-    root = case.causal_nodes[root_id]
+async def test_1_an_orphan_adoption_records_the_first_attach_once(legacy):
+    """The identified root, emitted at 1, left unlinked by its hypothesis: a
+    "not it" row naming its support at 2 and a restart's relief at 3. The
+    apply's orphan pass (``resolve_orphan_chains``) adopts it at 4, and again
+    at 6 and 8 after its hypothesis left it: its first attach stays 4, so the
+    row at 2 predates the cause and the problem back at 5 fails nothing. On a
+    root last attached at 2 before the first attach was recorded, it stays 2,
+    and the same rows are a relapse."""
+    case, root, hyp = _identified_case()
+    hyp.statement = root.statement
+    hyp.root_node_id, hyp.path = None, []
     if legacy:
         root.metadata["root_attached_turn"] = 2
-    for turn in (4, 6, 8):
-        case.current_turn = turn
-        assert resolve_orphan_chains(case) == []
-        assert hyp.root_node_id == root_id, "premise: adopted"
-        assert root.metadata["root_first_attached_turn"] == (2 if legacy else 4)
+    first = 2 if legacy else 4
+    window = ("failed", 3, 5, None) if legacy else ("succeeded", 3, None, None)
+    bound_row(case, _CAUSE_GONE, turn=2, rechecks=_SUPPORT, summary="not it")
+    bound_row(case, _GONE, turn=3, rechecks=VERIFYING_ID, summary="after restart")
+    eng = _engine()
+    await _record(eng, case, 4)
+    assert hyp.root_node_id == root.node_id, "premise: adopted"
+    await _record(eng, case, 5, _back())
+    assert root.metadata["root_first_attached_turn"] == first
+    assert _window_zero(case) == window
+
+    for turn in (6, 8):
         hyp.root_node_id, hyp.path = None, []
-    assert root.root_attached_turn == 8
+        await _record(eng, case, turn)
+        assert hyp.root_node_id == root.node_id, "premise: adopted again"
+    assert (root.root_attached_turn, root.root_first_attached_turn) == (8, first)
+    assert _window_zero(case) == window
+
+
+async def test_1_a_relapse_on_a_row_the_deeper_cause_shares_stands():
+    """After the relapse (5, 6) the cause is deepened at 8 onto a root above,
+    and the row the relapse re-checked supports that root too. The row binds
+    to their cluster, floored at its earliest first attach, so when the new
+    root's own support is re-checked gone at 10 with the problem gone, window
+    0 stays FAILED: no new out-of-band fix is read there."""
+    case, root, owner = _identified_case()
+    eng, case = await _relapsed(case=case)
+    deeper_support = Evidence(
+        evidence_id="ev_00000000beef",
+        summary="pgbouncer pool_mode=session in pgbouncer.ini",
+        primary_purpose="diagnosis",
+        category=EvidenceCategory.CAUSAL_EVIDENCE,
+        source_type=EvidenceSourceType.LOGS,
+        source_file_id=case.evidence[0].source_file_id,
+        collected_by="llm",
+        collected_at_turn=7,
+    )
+    case.evidence.append(deeper_support)
+    deeper = CausalNode(
+        node_id="cn_00000000beef",
+        statement="pgbouncer runs in session mode",
+        node_type=NodeType.ROOT,
+        node_state=NodeState.VALIDATED,
+        validation_method=ValidationMethod.EMPIRICAL,
+        belief=0.9,
+        actionable=True,
+        metadata={"root_terminal": True},
+        generated_at_turn=8,
+        evidence_links=[
+            NodeEvidenceLink(
+                evidence_id=evidence_id,
+                stance=EvidenceStance.SUPPORTS,
+                reasoning="bears on the deeper cause",
+                linked_at_turn=8,
+            )
+            for evidence_id in (deeper_support.evidence_id, _SUPPORT)
+        ],
+    )
+    case.causal_nodes[deeper.node_id] = deeper
+    case.causal_edges.append(
+        CausalEdge(cause_node_id=deeper.node_id, effect_node_id=root.node_id)
+    )
+    _emit_roots(case, 8, {owner.hypothesis_id: deeper.node_id})
+    _recompute_at(case, 8)
+    assert owner.root_node_id == deeper.node_id, "premise: deepened"
+    assert root.root_terminal is False, "premise: the old root deepened past"
+
+    await _record(
+        eng,
+        case,
+        10,
+        _obs(_CAUSE_GONE, "pool_mode=transaction now", deeper_support.evidence_id),
+        _gone(),
+    )
+
+    assert _window_zero(case)[:3] == ("failed", 5, 6)
 
 
 async def test_1_a_cluster_is_floored_at_its_earliest_first_attach():
@@ -520,7 +580,7 @@ async def test_3_a_root_attached_before_the_first_attach_was_recorded():
     await _record(eng, case, 5, _back())
 
     assert fix_windows(case)[0].confirmed_cause_rows, "premise: the row binds"
-    assert _window_zero(case)[0] != "failed"
+    assert _window_zero(case) == ("succeeded", 3, None, None)
 
 
 async def test_3_a_fallen_causes_pre_posit_row_anchors_nothing():
@@ -538,7 +598,7 @@ async def test_3_a_fallen_causes_pre_posit_row_anchors_nothing():
     case.progress.identified_cause_root_ids = [root.node_id]
 
     assert fix_windows(case)[0].confirmed_cause_rows, "premise: the row binds"
-    assert _window_zero(case)[0] != "failed"
+    assert _window_zero(case) == ("succeeded", 4, None, None)
 
 
 # ---------------------------------------------------------------------------

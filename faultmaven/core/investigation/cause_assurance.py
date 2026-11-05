@@ -1343,10 +1343,16 @@ def fix_windows(
 
     Window 0 fails only on a relapse (#2501, ``_window_zero_relapse``): the
     identified cause shown removed after it was first posited, then the
-    problem gone, then present. A later attach of the same root never moves
-    that floor; deepening the cause re-scopes window 0 to the new root, so
-    that root's removal, then the problem gone, reads as a new out-of-band fix
-    it can confirm (a window read against its fix's own cause is #2036 D2.3).
+    problem gone, then present. A later attach of the same root does not move
+    that floor (save once on a root stored with neither key,
+    ``CausalNode.root_first_attached_turn``). Deepening the cause re-scopes
+    window 0 to the new root only when the relapse's cause row re-checked a
+    row supporting the old root alone: then the new root's removal, then the
+    problem gone, reads as a new out-of-band fix window 0 can confirm. A row
+    that also supports the new root binds to their cluster, is floored at the
+    cluster's earliest first attach, and its relapse stands until a dated fix.
+    A window read against the cause its fix named is deferred to #2036
+    (Phase 3, D2.3).
     Persistence with no such relief fails nothing: before any dated fix, a
     causal_absence row is as likely a diagnosis-time exclusion ("DNS ruled
     out") as a fix's outcome. It never carries a disconfirmation, so nothing
@@ -1486,7 +1492,8 @@ def _first_posited_turn(case: "Case", subjects, row) -> int | None:
     (a cluster counts as one cause), or a rootless pool hypothesis's
     ``generated_at_turn``; None when it binds to nothing. Unlike
     ``_cause_posited_turn``, the cause leg's floor, a later attach of the same
-    root never moves it."""
+    root does not move it, save once on a root stored with neither key
+    (``CausalNode.root_first_attached_turn``)."""
     nodes = getattr(case, "causal_nodes", None) or {}
     hypotheses = getattr(case, "hypotheses", None) or {}
     turns = [

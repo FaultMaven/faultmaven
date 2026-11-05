@@ -1112,16 +1112,19 @@ records only what it can substantiate:
   — the rows before any dated fix, where an out-of-band fix lands — fails
   only on a relapse (#2501): the identified cause shown removed after it was
   first posited (`CausalNode.root_first_attached_turn`, which a later attach
-  of the same root never moves), then the problem seen gone, then seen
-  present, up to and including the first fix's execution turn. Deepening the
-  cause re-scopes window 0 to the new root: its removal, then the problem
-  gone, is a new out-of-band fix that window 0 can confirm (reading a window
-  against its fix's own cause is #2036 D2.3). Persistence with no such
-  relief fails nothing, since there a causal_absence row is as likely a
-  diagnosis-time exclusion ("DNS ruled out") as a fix's outcome, and window 0
-  never carries a disconfirmation, so M6 acts on no undated fix. One more
-  reader of the
-  rows remains by design: the evidence arm's engine row still sets the
+  of the same root does not move, save once on a root stored before #2036),
+  then the problem seen gone, then seen present, up to and including the
+  first fix's execution turn. Deepening the cause re-scopes window 0 to the
+  new root only when the relapse's cause row re-checked a row supporting the
+  old root alone: then the new root's removal, then the problem gone, is a
+  new out-of-band fix that window 0 can confirm. A row that also supports the
+  new root binds to their cluster, is floored at the cluster's earliest first
+  attach, and its relapse stands until a dated fix. Reading a window against
+  its fix's own cause is deferred to #2036 (Phase 3, D2.3). Persistence with
+  no such relief fails nothing, since there a causal_absence row is as likely
+  a diagnosis-time exclusion ("DNS ruled out") as a fix's outcome, and window
+  0 never carries a disconfirmation, so M6 acts on no undated fix. One more
+  reader of the rows remains by design: the evidence arm's engine row still sets the
   disconfirmation window (§9.5), which can hold a SUCCEEDED window's rows
   back when the cause is refuted by the evidence on its chain.
 
