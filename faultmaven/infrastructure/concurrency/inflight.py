@@ -10,7 +10,10 @@ work (the settlement: no cancellation may reach its commit, R1) is awaited with
 no bound, which the database's command timeout supplies (#2280). A cancel does
 not stop a thread, so :func:`draining` holds while a drain that is still the
 last runs, and the vector write reads it first. **Residual:** a write already
-in its thread at the bound finishes into the client after it.
+in its thread at the bound finishes into the client after it. **Residual (two
+loops):** a drain superseded by a hold from another loop leaves the flag down
+while its own loop's work runs; if that hold's release closes the stores first,
+that work's writes are not refused (#2532).
 
 **Per case, across replicas.** A case's lease is the Redis sorted set
 ``case-inflight:{enterprise_id}:{case_id}``: holder tokens scored by expiry on
@@ -158,8 +161,10 @@ def tracked(what_prefix: str = "") -> Set["asyncio.Task[Any]"]:
 
 def draining() -> bool:
     """Whether a drain runs whose release no hold has superseded: a store write
-    that has not started must not start. It drops the moment a hold is taken,
-    and stays down: a drain no longer the last closes nothing."""
+    that has not started must not start. A drain stops counting toward it once
+    a hold is taken after its release, and never counts again (a drain no
+    longer the last closes nothing); another drain still the last keeps it
+    raised."""
     return any(last() for last in list(_DRAINS))
 
 
@@ -173,8 +178,9 @@ async def drain(
     ``cancellable`` rest, gives them ``CANCEL_GRACE_SECONDS``, and awaits the
     ``must_finish`` ones with no bound. Last, the case leases being released
     get the same grace. Once ``last()`` turns false (the release is no longer
-    the last), :func:`draining` drops at once, while the drain still waits for
-    this loop's work up to its bound and then returns, cancelling nothing.
+    the last), this drain stops counting toward :func:`draining` at once,
+    while it still waits for this loop's work up to its bound; past the bound
+    it returns, cancelling nothing more.
     Interrupted, it cancels nothing and re-raises: a last release then calls
     :func:`cancel_cancellable`. **Residual:** an interrupted shutdown does not
     wait for a settlement, which can then meet closed stores.

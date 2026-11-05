@@ -136,17 +136,19 @@ to its event loop and is never recorded. `shutdown()` names no resource.
      vectorization, a runbook conversion) is awaited up to 10 s, then the
      cancellable rest is cancelled; a settlement is awaited to its end. The
      drained work still reads the container, so this comes before the reset.
-     A hold taken during the drain makes this release not the last: from
-     then on it cancels, resets and closes nothing, and returns `False` or
-     raises the interruption, read as not the last;
+     A hold taken during the drain makes this release not the last, even if
+     it is released before the drain ends: this release cancels, resets and
+     closes nothing, and returns `False` or raises the interruption, read as
+     not the last; that hold's own release drains and closes;
   2. **the lease stop and the reset**: every case-lease renewal on this loop
      stops (a holder left lets its lease lapse). If the drain was interrupted,
      the cancellable rest is cancelled with the grace instead (a second
      interruption ends it), and the leases of the work still running keep
      renewing, through the Redis client closed next. A hold taken during that
-     grace makes this release not the last: it resets and closes nothing, and
-     raises the interruption, read as not the last. Then the reset, so an
-     `initialize()` during the closes composes afresh and keeps its hold;
+     grace makes this release not the last, even once it is released: it
+     resets and closes nothing, and raises the interruption, read as not the
+     last. Then the reset, so an `initialize()` during the closes composes
+     afresh and keeps its hold;
   3. **the closes**: everything owned, newest first, through `run_teardown`'s
      rules (every close runs, a failed one is logged, an interruption, the
      drain's included, is held until all have run). It returns `True`.
@@ -169,9 +171,10 @@ to its event loop and is never recorded. `shutdown()` names no resource.
   with `release_every_hold()` (the `reset_container` fixture).
 - **What is the process's** goes only on the last release. Every composer
   releases through `ContainerRelease` (`concurrency/teardown.py`), and only
-  when `shutdown()` neither answers `False` nor fails with the container still
-  held does it dispose the
-  process-global database engine. The lifespan's decomposition also uninstalls
+  when `shutdown()` neither answers `False` nor fails having decided it was
+  not the last (`released_last()`; one that fails before deciding reads
+  whether the container is still held) does it dispose the process-global
+  database engine. The lifespan's decomposition also uninstalls
   the usage ledger, drains its writes, and stops the APM export then. The hold
   count is a proxy for "the process is done serving", not a count of the
   engine's users: `get_engine()` opens it lazily for any caller. `run_command`

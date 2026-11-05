@@ -21,8 +21,9 @@ Key Components:
 import functools
 import logging
 import sys
+from contextvars import ContextVar
 from datetime import datetime, timezone
-from typing import Any, List, Optional
+from typing import Any, ClassVar, List, Optional
 
 from faultmaven.config.settings import FaultMavenSettings, get_settings
 from faultmaven.container.base import BaseDIContainer
@@ -1816,6 +1817,18 @@ class DIContainer(BaseDIContainer):
             "registry": base_health,
         }
 
+    #: Whether the calling context's latest ``shutdown()`` was the last release,
+    #: once it decided. On the class: a reset rebuilds what is on the instance,
+    #: and a last release's closes come after its reset.
+    _last_release: ClassVar[ContextVar[Optional[bool]]] = ContextVar(
+        "container_last_release", default=None
+    )
+
+    def released_last(self) -> Optional[bool]:
+        """Whether this context's latest :meth:`shutdown` decided it was the last
+        release, ``None`` if it ended before deciding. Read when it raised."""
+        return self._last_release.get()
+
     async def shutdown(self) -> bool:
         """Release the calling context's hold. With none left anywhere, close and reset.
 
@@ -1836,16 +1849,22 @@ class DIContainer(BaseDIContainer):
         interrupted: it then cancels the cancellable rest with the grace, which
         a second interruption ends, and the leases of the work still running
         keep renewing, through the Redis client it closes. A hold taken during
-        that grace makes it not the last: it resets and closes nothing, and
-        raises the interruption, read as not the last. Else it resets, so an
-        ``initialize()`` during the closes composes afresh and keeps its hold.
+        that grace makes it not the last, even once it is released: it resets
+        and closes nothing, and raises the interruption, read as not the last.
+        Else it resets, so an ``initialize()`` during the closes composes
+        afresh and keeps its hold.
         Then it closes everything recorded with :meth:`own`, newest first,
         through ``run_teardown`` (every close runs, a failed one is logged, an
         interruption, the drain's included, is held until all have run), and
-        returns ``True``. Whoever composes shuts down on every path, while the
-        loop the clients are bound to still runs.
+        returns ``True``. Once it has decided, it records for the calling
+        context whether it was the last (:meth:`released_last`): a composer
+        whose shutdown raised reads that decision, not the holds left. Whoever
+        composes shuts down on every path, while the loop the clients are bound
+        to still runs.
         """
+        self._last_release.set(None)
         if not self._holds.release():
+            self._last_release.set(False)
             return False
         holds = self._holds
         taken = holds.takes
@@ -1857,6 +1876,7 @@ class DIContainer(BaseDIContainer):
             functools.partial(_drain_work_in_flight, last),
         )
         if not last():
+            self._last_release.set(False)
             if interrupted is not None:
                 raise interrupted
             return False
@@ -1868,7 +1888,9 @@ class DIContainer(BaseDIContainer):
         else:
             await teardown_step("Cancelling the cancellable rest", _cancel_cancellable)
             if not last():  # a hold taken during the grace
+                self._last_release.set(False)
                 raise interrupted
+        self._last_release.set(True)
         owned = self._owned[::-1]
         self._owned.clear()  # closed once, whatever the closes do
         self.reset()
