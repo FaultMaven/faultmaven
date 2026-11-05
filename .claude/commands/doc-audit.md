@@ -172,7 +172,7 @@ Before sending, substitute **every** `<...>` placeholder: `<sha>` / `<N>` / `<is
 > # absence assertion MUST use `absent` mode (or the EXISTS/MISSING form)
 > # to be staleness-detecting.
 > check() {
->   local -a a=("$@"); local id="${a[0]}" cmd="${a[1]}" expected="${a[2]}" mode="${a[3]:-contains}"
+>   local id="${@:1:1}" cmd="${@:2:1}" expected="${@:3:1}" mode="${@:4:1}"; mode="${mode:-contains}"
 >   local actual; actual=$(eval "$cmd" 2>&1 || true)
 >   local pass=false
 >   if [[ "$mode" == "absent" ]]; then
