@@ -146,10 +146,20 @@ an evidence row.
      in place: symptom_absence only. When the fix also removed that cause
      (auto-renewal shown enabled, the rotation shown running), the
      causal_absence row records THAT cause gone.
-   After a fix, each absence row names in `rechecks` the row it re-checks:
-   for symptom_absence a row that showed the problem, for causal_absence a
-   row that supports the root cause alone (the re-verification checklist
-   lists both). A post-fix row naming none confirms nothing.
+   After a fix, one recorded here or one the user reports carrying out
+   outside the case, each absence row names in `rechecks` the row it
+   re-checks: for symptom_absence a row that showed the problem, for
+   causal_absence a row that supports the root cause alone (the
+   re-verification checklist lists both); a symptom_evidence row showing
+   the problem still present or back names the row that showed the
+   problem. A post-fix row naming none confirms nothing.
+   A fix the user reports carrying out outside the case is registered in
+   the same response, when the root cause stands established: propose it
+   as a SolutionToAdd and set solution_accepted with accepted_action_ref
+   new_index_N naming it, and accepted_fix_reported_in as for any fix. Its
+   outcome is then judged on what is seen after it. A restart, a failover
+   or another workaround is a mitigation, recorded as one (symptom_absence
+   only), never registered as a SOLUTION.
    RESOLVED needs BOTH rows: the system marks a case RESOLVED only when a
    `causal_absence_evidence` row AND a `symptom_absence_evidence` row
    recorded at or after it are on record — the cause removed, and the

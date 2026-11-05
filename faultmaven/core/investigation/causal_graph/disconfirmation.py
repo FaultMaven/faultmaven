@@ -378,9 +378,15 @@ def _fix_failure_refusal(case: Case, decided: FixWindow | None) -> str | None:
     latest window with a verdict (``latest_decided_fix_window``) FAILED by
     persistence. A newer window still waiting on its first observation does
     not erase it. A relapse — the problem seen gone after the fix, then seen
-    again — establishes no disconfirmation (``FixWindow.disconfirms_cause``)."""
+    again — establishes no disconfirmation (``FixWindow.disconfirms_cause``).
+    A relapsed window 0 on a case with an undatable acceptance keeps that
+    label, so the transition series stays visible (#2501)."""
     if decided is not None and decided.state == FIX_FAILED:
-        return None if decided.disconfirms_cause else "relapse"
+        if decided.disconfirms_cause:
+            return None
+        if decided.fix_turn is None and _has_undatable_solution_acceptance(case):
+            return "undatable_acceptance"
+        return "relapse"
     latest = fix_windows(case)[-1]
     if latest.fix_turn is None:
         # Two different worlds, separately labeled: nothing was ever tried, vs

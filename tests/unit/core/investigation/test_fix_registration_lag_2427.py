@@ -203,7 +203,7 @@ async def test_undeclared_a_cause_recheck_on_the_registration_turn_asks_again(
         ),
         (
             None,
-            [(None, "succeeded"), (11, "unknown")],
+            [(None, "failed"), (11, "unknown")],
             CauseState.IDENTIFIED,
         ),
     ],
@@ -215,7 +215,9 @@ async def test_declared_a_problem_present_beside_a_cause_recheck_fails_the_fix(
     reported at 10, the fix's window holds both: the cause seen removed, then
     the problem present, so the window FAILED on a disconfirmation and M6
     demotes the cause (INV-42), a turn earlier than main. Undeclared, the
-    problem row is in the fix's own turn and reads as on main."""
+    problem row is in the fix's own turn, so it is window 0's relapse (its end
+    is inclusive, #2501): the cause and the problem gone at 10, then the
+    problem present. A relapse demotes nothing."""
     eng, case, hyp = _identified()
     await _reported(eng, case)
 

@@ -179,9 +179,14 @@ def _apply_chain_emission(
         hyp.root_node_id = root_id
         hyp.path = new_path
         if old_root != root_id:
-            case.causal_nodes[root_id].metadata[
-                "root_attached_turn"
-            ] = case.current_turn
+            attached = case.causal_nodes[root_id].metadata
+            # The first attach never moves; a node attached before it was
+            # recorded keeps its last attach as the first (#2501).
+            attached.setdefault(
+                "root_first_attached_turn",
+                attached.get("root_attached_turn", case.current_turn),
+            )
+            attached["root_attached_turn"] = case.current_turn
             # Deepening the hypothesis past its old root (the new root's path
             # runs through it) says a cause sits above that node: clause b
             # fails for it, whatever was recorded before. A move to another

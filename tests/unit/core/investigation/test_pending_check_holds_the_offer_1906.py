@@ -364,9 +364,9 @@ async def test_3_the_models_resolved_while_held_gets_feedback_and_no_request(
 #: resolve decline, and what they carry without one.
 _DECLINE_CLAUSE = (
     "The user declined the resolution. Once an answer showing the problem gone "
-    "is on record, a new problem-bound row showing it lapses that decline; on "
-    "any other row the decline still binds, and the user re-opens the "
-    "resolution with 'Mark it resolved'."
+    "is on record, a new problem-bound row showing it lapses that decline; if "
+    "that answer is on any other row, the decline still binds, and the user "
+    "re-opens the resolution with 'Mark it resolved'."
 )
 _EXITS = (
     "mark the need FULFILLED citing it. If the user cannot run the check, "
@@ -429,7 +429,7 @@ async def test_3_the_feedback_promises_no_offer_a_decline_still_binds(
 
 async def test_3_an_answer_showing_the_problem_present_reopens_nothing():
     """Item 2's other shape: under a standing decline, the held turn's clause
-    is scoped to an answer showing the problem gone. The answer at 8 shows it
+    is scoped to an answer showing the problem gone. The answer at 9 shows it
     still present, a dated fix's window fails, the legs fall, and nothing is
     offered or re-opened: no held feedback, no offer, no "Mark it resolved"
     chip."""

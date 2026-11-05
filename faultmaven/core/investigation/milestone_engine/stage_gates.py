@@ -691,16 +691,23 @@ def _flag_absence_inside_a_failed_fix_window(
             f"the problem was seen gone at turn {window.relief_turn}, then seen "
             "again"
         )
+        if window.fix_turn is None:
+            shape += f" at turn {window.failure_turn}"
         cause = (
             " — a problem that went away after the fix and came back does not "
             "by itself disprove the cause the fix addressed: if that cause still "
             "stands, no new hypothesis is needed; if it no longer stands, "
             "re-assert it with a root_cause_conclusion on a new hypothesis — then"
         )
+    # Window 0 (#2501): a fix done outside the case carries no execution turn.
+    which = (
+        "The fix done outside the case"
+        if window.fix_turn is None
+        else f"The fix executed at turn {window.fix_turn}"
+    )
     _add_system_feedback(
         metadata,
-        "SYSTEM: The fix executed at turn "
-        f"{window.fix_turn} did not hold: {shape}. Absence evidence recorded "
+        f"SYSTEM: {which} did not hold: {shape}. Absence evidence recorded "
         "after that cannot confirm a resolution. If the user has applied (or "
         "will apply) a new fix, record it: propose it as a SolutionToAdd and, "
         "once the user says it ran, set solution_accepted with "
@@ -1403,10 +1410,15 @@ def _date_to_the_report(case: Case, target: Any, metadata: dict[str, Any]) -> No
     inferred from the evidence; ``registered_in_turn`` keeps this turn.
 
     Bounded so that no observation leaves the window that judged it. With no
-    fix dated before, the previous turn's rows leave window 0, which never
-    fails. With one, its window must have FAILED before the previous turn (a
-    failure is final), and its disconfirmation must read the same with this
-    fix dated either way. Otherwise the declaration is ignored, with a line."""
+    fix dated before, window 0 takes no bound (#2501): a relapse of it before
+    the previous turn reads the same (its end is inclusive, and the rows it
+    read are all before it); a mixed paste in the previous turn (the problem
+    gone and present) can become its relapse once dating moves the gone rows
+    into the new window, the conservative direction; and a persistence row of
+    this turn is judged in the new window. With one, its window must have
+    FAILED before the previous turn (a failure is final), and its
+    disconfirmation must read the same with this fix dated either way.
+    Otherwise the declaration is ignored, with a line."""
     from faultmaven.core.investigation.cause_assurance import FIX_FAILED, fix_windows
 
     turn, previous = case.current_turn, case.current_turn - 1

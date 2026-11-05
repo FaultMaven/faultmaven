@@ -65,6 +65,16 @@ from faultmaven.modules.case.contracts import (
 logger = logging.getLogger(__name__)
 
 
+def _failed_attempts(windows) -> int:
+    """The FAILED windows of recorded fixes: window 0 (no dated fix) is not
+    one (#2501)."""
+    return sum(
+        1
+        for window in windows
+        if window.fix_turn is not None and window.state == FIX_FAILED
+    )
+
+
 # Hypothesis states that count as a "spent" theory — one that was pursued and is
 # no longer standing — for exhaustion/anchoring work-gates. RETIRED is included
 # alongside REFUTED/INCONCLUSIVE (#695 Defect A): removing the flat-likelihood
@@ -650,18 +660,19 @@ class ProgressMonitor:
         Detect repeated fix attempts that don't work.
 
         A SOLUTION attempt is a record with its own fix window (#2105), so for
-        ``solution`` this triggers on N+ FAILED windows (``fix_windows``), unless
-        the latest window SUCCEEDED: a fix that worked after the failed ones is
-        no failure cycle. A latest window not yet observed (UNKNOWN) does not
-        lift it — that fix's outcome is still to be seen. A mitigation keeps the
-        older reading: N+ accepted MITIGATION actions with the record not
-        verified.
+        ``solution`` this triggers on N+ FAILED dated windows (``fix_windows``),
+        unless the latest window SUCCEEDED: a fix that worked after the failed
+        ones is no failure cycle. A relapsed window 0 is no recorded attempt,
+        and a late-registered fix can fail both it and its own window (#2501).
+        A latest window not yet observed (UNKNOWN) does not lift it — that
+        fix's outcome is still to be seen. A mitigation keeps the older
+        reading: N+ accepted MITIGATION actions with the record not verified.
         """
         if action_type == "solution":
             windows = fix_windows(case)
             if windows[-1].state == FIX_SUCCEEDED:
                 return False
-            failed = sum(1 for window in windows if window.state == FIX_FAILED)
+            failed = _failed_attempts(windows)
             if failed < self.fix_failure_threshold:
                 return False
             logger.warning(f"Fix failure cycle detected: {failed} fix windows failed")
@@ -800,13 +811,13 @@ class ProgressMonitor:
     def _repair_fix_failure_cycle(self, case: Case, action_type: str) -> RepairAction:
         """
         Handle repeated fix attempts that don't work. A solution's count is its
-        FAILED fix windows, as the detector reads them (#2105).
+        FAILED dated fix windows, as the detector reads them (#2105).
         """
         stage = case.current_stage
         stage_name = stage.value if stage else "current"
 
         failed_count = (
-            sum(1 for window in fix_windows(case) if window.state == FIX_FAILED)
+            _failed_attempts(fix_windows(case))
             if action_type == "solution"
             else sum(1 for a in case.proposed_actions if a.state == "accepted")
         )

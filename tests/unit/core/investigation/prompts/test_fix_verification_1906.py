@@ -130,7 +130,8 @@ _CONTRADICTIONS = {
     ),
     "base step 3": (
         "causal_absence row records THAT cause gone.\n   RESOLVED needs BOTH rows",
-        "After a fix, each absence row names in `rechecks` the row it re-checks",
+        "After a fix, one recorded here or one the user reports carrying out\n"
+        "   outside the case, each absence row names in `rechecks` the row it",
     ),
     # FAILURE PATH step 4 registers the revised fix by its action.
     "failure path": (
