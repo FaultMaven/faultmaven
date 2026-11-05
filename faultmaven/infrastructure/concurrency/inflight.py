@@ -8,9 +8,12 @@ in flight never meets a closed Redis client, ChromaDB client or engine.
 ``cancellable`` work is cancelled once the bound has passed; ``must_finish``
 work (the settlement: no cancellation may reach its commit, R1) is awaited with
 no bound, which the database's command timeout supplies (#2280). A cancel does
-not stop a thread, so :func:`draining` holds while a drain runs and the vector
-write reads it first. **Residual:** a write already in its thread at the bound
-finishes into the client after it.
+not stop a thread, so :func:`draining` holds while a drain that is still the
+last runs, and the vector write reads it first. **Residual:** a write already
+in its thread at the bound finishes into the client after it. **Residual (two
+loops):** a drain superseded by a hold from another loop leaves the flag down
+while its own loop's work runs; if that hold's release closes the stores first,
+that work's writes are not refused (#2532).
 
 **Per case, across replicas.** A case's lease is the Redis sorted set
 ``case-inflight:{enterprise_id}:{case_id}``: holder tokens scored by expiry on
@@ -112,7 +115,7 @@ class Kind(enum.Enum):
 _TRACKED: Dict["asyncio.Task[Any]", Tuple[str, Kind]] = {}
 _RELEASES: Set["asyncio.Task[None]"] = set()
 _LEASES: Dict[CaseKey, "_CaseLease"] = {}
-_draining = 0  # a count: drains may overlap
+_DRAINS: list[Callable[[], bool]] = []  # each running drain's last(); they overlap
 _REPORTED: Set[str] = set()
 
 
@@ -157,8 +160,12 @@ def tracked(what_prefix: str = "") -> Set["asyncio.Task[Any]"]:
 
 
 def draining() -> bool:
-    """Whether a drain runs: a store write that has not started must not start."""
-    return _draining > 0
+    """Whether a drain runs whose release no hold has superseded: a store write
+    that has not started must not start. A drain stops counting toward it once
+    a hold is taken after its release, and never counts again (a drain no
+    longer the last closes nothing); another drain still the last keeps it
+    raised."""
+    return any(last() for last in list(_DRAINS))
 
 
 async def drain(
@@ -170,18 +177,20 @@ async def drain(
     ``timeout_s`` (default ``DRAIN_BOUND_SECONDS``). Then it cancels the
     ``cancellable`` rest, gives them ``CANCEL_GRACE_SECONDS``, and awaits the
     ``must_finish`` ones with no bound. Last, the case leases being released
-    get the same grace. Past the bound with ``last()`` false (the release is
-    no longer the last), it returns, cancelling nothing. Interrupted, it
-    cancels nothing and re-raises: a last release then calls
+    get the same grace. Once ``last()`` turns false (the release is no longer
+    the last), this drain stops counting toward :func:`draining` at once,
+    while it still waits for this loop's work up to its bound; past the bound
+    it waits for the ``must_finish`` work it has not cancelled, then returns,
+    cancelling nothing more.
+    Interrupted, it cancels nothing and re-raises: a last release then calls
     :func:`cancel_cancellable`. **Residual:** an interrupted shutdown does not
     wait for a settlement, which can then meet closed stores.
     """
-    global _draining
     loop = asyncio.get_running_loop()
     deadline = loop.time() + (DRAIN_BOUND_SECONDS if timeout_s is None else timeout_s)
     abandoned: Set["asyncio.Task[Any]"] = set()
     cancelled = 0
-    _draining += 1
+    _DRAINS.append(last)
     try:
         while True:
             pending = [t for t in _pending_on(loop) if t not in abandoned]
@@ -201,7 +210,7 @@ async def drain(
         if releases:
             await asyncio.wait(releases, timeout=CANCEL_GRACE_SECONDS)
     finally:
-        _draining -= 1
+        _DRAINS.remove(last)
     return cancelled
 
 

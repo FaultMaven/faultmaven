@@ -1048,6 +1048,167 @@ async def test_a_hold_taken_before_the_bound_leaves_the_cancellable_work_running
     work.cancel()
 
 
+async def test_a_hold_taken_and_released_during_the_drain_closes_nothing(
+    container, monkeypatch, record
+):
+    """#2506: the drain's flag stayed raised to the bound once a hold was taken,
+    and the release re-read the total after it, so a hold released meanwhile
+    let it close. The flag and the release now read one sticky predicate."""
+    monkeypatch.setattr(record, "DRAIN_BOUND_SECONDS", 0.2)
+    await _hold(container, 1)
+    client = _own(container, _RealClient())
+    parked = record.track(
+        asyncio.create_task(asyncio.Event().wait()),
+        what="parked",
+        kind=record.Kind.CANCELLABLE,
+    )
+    holder = contextvars.Context()
+    try:
+        closing = asyncio.create_task(container.shutdown())
+        for _ in range(10):
+            await asyncio.sleep(0)
+        assert record.draining() is True
+
+        await asyncio.create_task(container.initialize(), context=holder)
+        assert record.draining() is False
+        holder.run(container._holds.release)
+        assert record.draining() is False
+
+        assert await asyncio.wait_for(closing, 10) is False  # a hang guard
+        client.aclose.assert_not_awaited()
+        assert not parked.done()
+    finally:
+        parked.cancel()
+
+
+async def test_a_superseded_drain_still_waits_for_its_own_loops_work(
+    container, monkeypatch, record
+):
+    """The hold that supersedes the release may be another loop's, so the
+    drain still waits, to its bound, for this loop's work (a task spawned
+    meanwhile included) and cancels none of it."""
+    monkeypatch.setattr(record, "DRAIN_BOUND_SECONDS", 3600)
+    order, spawned = [], []
+    await _hold(container, 1)
+
+    async def _compose_then_spawn():
+        await container.initialize()
+        spawned.append(_work(record, order))
+
+    first = _work(record, order, then=_compose_then_spawn)
+
+    assert await asyncio.wait_for(container.shutdown(), 10) is False  # hang guard
+    assert order == ["work ends", "work ends"]
+    assert not first.cancelled() and not spawned[0].cancelled()
+
+
+async def test_a_hold_taken_and_released_during_the_grace_resets_and_closes_nothing(
+    container, monkeypatch, record
+):
+    """The grace check read the holds left, so a hold released before the grace
+    ended let the interrupted release reset and close under it."""
+    from faultmaven.infrastructure.concurrency import teardown
+
+    closed, started, in_grace, gate = [], *(asyncio.Event() for _ in range(3))
+    monkeypatch.setattr(teardown, "close_the_database", lambda: closed.append(1))
+    await _hold(container, 1)
+    client = _own(container, _RealClient())
+
+    async def _slow_to_end():
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            in_grace.set()
+            await gate.wait()
+            raise
+
+    record.track(
+        asyncio.create_task(_slow_to_end()), what="w", kind=record.Kind.CANCELLABLE
+    )
+    releasing = asyncio.create_task(
+        teardown.run_teardown(teardown.ContainerRelease(container.shutdown).steps())
+    )
+    await started.wait()
+    for _ in range(3):
+        await asyncio.sleep(0)
+    releasing.cancel()
+    await asyncio.wait_for(in_grace.wait(), timeout=5)
+    holder = contextvars.Context()
+    await asyncio.create_task(container.initialize(), context=holder)
+    holder.run(container._holds.release)
+    gate.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await releasing
+    assert closed == [] and container.is_initialized
+    client.aclose.assert_not_awaited()
+
+
+async def test_a_shutdown_from_a_context_that_holds_nothing_beside_a_last_release(
+    container, monkeypatch, record
+):
+    """A context that took no hold releases as if it were the last (none is
+    left). Both drain; only the release that resets first closes, and the other
+    reads the holds it snapshotted as gone."""
+    monkeypatch.setattr(record, "DRAIN_BOUND_SECONDS", 3600)
+    resets = []
+    reset = container.reset
+    monkeypatch.setattr(container, "reset", lambda: (resets.append(1), reset())[1])
+    await _hold(container, 1)
+    client = _own(container, _RealClient())
+    gate = asyncio.Event()
+    record.track(
+        asyncio.create_task(gate.wait()), what="w", kind=record.Kind.CANCELLABLE
+    )
+    first = asyncio.create_task(container.shutdown())
+    for _ in range(5):
+        await asyncio.sleep(0)
+    second = _elsewhere(container.shutdown())
+    for _ in range(5):
+        await asyncio.sleep(0)
+    gate.set()
+
+    assert await asyncio.wait_for(asyncio.gather(first, second), 10) == [True, False]
+    assert len(resets) == 1 and client.aclose.await_count == 1
+
+
+async def test_an_interrupted_release_superseded_by_a_released_hold_disposes_nothing(
+    container, monkeypatch, record
+):
+    """The composer read the holds left when the shutdown raised, so a hold
+    taken and released during the drain let it dispose the process's engine
+    while that hold's own release drained."""
+    from faultmaven.infrastructure.concurrency import teardown
+
+    closed = []
+    monkeypatch.setattr(teardown, "close_the_database", lambda: closed.append(1))
+    await _hold(container, 1)
+    client = _own(container, _RealClient())
+    parked = record.track(
+        asyncio.create_task(asyncio.Event().wait()),
+        what="parked",
+        kind=record.Kind.CANCELLABLE,
+    )
+    holder = contextvars.Context()
+    try:
+        releasing = asyncio.create_task(
+            teardown.run_teardown(teardown.ContainerRelease(container.shutdown).steps())
+        )
+        for _ in range(10):
+            await asyncio.sleep(0)
+        await asyncio.create_task(container.initialize(), context=holder)
+        holder.run(container._holds.release)
+        releasing.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await releasing
+        assert closed == [] and not parked.done()
+        client.aclose.assert_not_awaited()
+    finally:
+        parked.cancel()
+
+
 async def test_the_stores_wait_for_a_settlement_past_the_bound(
     container, monkeypatch, record
 ):
@@ -1120,6 +1281,56 @@ async def test_an_interrupted_last_release_cancels_cancellable_work_before_the_c
     commit.set()
     await settlement
     assert order[0] == ("close", True, False) and work.cancelled()
+
+
+async def test_an_interrupted_last_release_spares_a_composition_begun_during_its_closes(
+    container, monkeypatch
+):
+    """The release decided it was the last before its reset, and the composer
+    read that decision alone when it raised: it disposed the engine under a
+    composition begun during the closes."""
+    from faultmaven.infrastructure.concurrency import teardown
+
+    closed, entered, gate = [], asyncio.Event(), asyncio.Event()
+    monkeypatch.setattr(teardown, "close_the_database", lambda: closed.append(1))
+
+    async def _slow_close(_resource):
+        entered.set()
+        await gate.wait()
+
+    await _hold(container, 1)
+    container.own(object(), close=_slow_close, what="a Redis pool draining")
+    releasing = asyncio.create_task(
+        teardown.run_teardown(teardown.ContainerRelease(container.shutdown).steps())
+    )
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    with _composing(AsyncMock()):
+        await _elsewhere(container.initialize())
+    releasing.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await releasing
+    assert closed == [] and container.is_held()
+
+
+async def test_a_release_that_fails_before_deciding_yields_to_a_holder(monkeypatch):
+    """With no decision recorded, whether the container is held is the answer."""
+    from faultmaven.infrastructure.concurrency import teardown
+
+    closed = []
+    monkeypatch.setattr(teardown, "close_the_database", lambda: closed.append(1))
+
+    class _HeldContainer:
+        def is_held(self) -> bool:
+            return True
+
+        async def shutdown(self) -> bool:
+            raise RuntimeError("refused before it decided")
+
+    await teardown.run_teardown(
+        teardown.ContainerRelease(_HeldContainer().shutdown).steps()
+    )
+    assert closed == []
 
 
 async def test_a_hold_taken_during_the_cancel_grace_keeps_its_composition(

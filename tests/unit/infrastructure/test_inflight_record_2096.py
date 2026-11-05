@@ -135,10 +135,10 @@ async def test_the_draining_flag_skips_the_evidence_vector_write(monkeypatch):
             "c1", "ev1", "## A\nline\n", UnifiedDataType.LOGS, {}, _Store()
         )
 
-    monkeypatch.setattr(inflight, "_draining", 1)
+    monkeypatch.setattr(inflight, "_DRAINS", [lambda: True])
     assert await _store() is vector_storage.VectorIndexOutcome.FAILED
     assert written == []
-    monkeypatch.setattr(inflight, "_draining", 0)
+    monkeypatch.setattr(inflight, "_DRAINS", [])
     assert await _store() is vector_storage.VectorIndexOutcome.INDEXED
     assert written == ["c1"]
 
@@ -160,6 +160,50 @@ async def test_overlapping_drains_keep_the_flag_until_both_end():
     finish.set()
     await first
     assert inflight.draining() is False
+
+
+async def test_a_hold_taken_during_the_drain_lowers_the_flag_for_good():
+    """#2506: the flag stayed raised to the bound once a hold was taken. It
+    reads the release's sticky predicate now ("no hold taken since this
+    release began"), so it drops at once and stays down after the release."""
+    holds = {"total": 0, "takes": 0}
+    taken = holds["takes"]
+    gate = asyncio.Event()
+    work = inflight.track(
+        asyncio.create_task(gate.wait()), what="w", kind=Kind.CANCELLABLE
+    )
+    draining = asyncio.create_task(
+        inflight.drain(timeout_s=0.2, last=lambda: holds["takes"] == taken)
+    )
+    await asyncio.sleep(0)
+    assert inflight.draining() is True
+
+    holds["total"] += 1  # another composition takes a hold
+    holds["takes"] += 1
+    assert inflight.draining() is False
+    holds["total"] -= 1  # and releases it before the drain ends
+    assert inflight.draining() is False
+    assert await asyncio.wait_for(draining, 10) == 0  # a hang guard
+    assert not work.done()
+    gate.set()
+    await work
+
+
+async def test_a_drain_still_the_last_keeps_the_flag_raised_to_its_end():
+    """The control, as on main: with no hold taken, the flag stays raised while
+    the drain runs, and past the bound the drain cancels the cancellable work."""
+    gate = asyncio.Event()
+    work = inflight.track(
+        asyncio.create_task(gate.wait()), what="w", kind=Kind.CANCELLABLE
+    )
+    draining = asyncio.create_task(inflight.drain(timeout_s=0.2, last=lambda: True))
+    await asyncio.sleep(0)
+    while not draining.done():
+        assert inflight.draining() is True
+        await asyncio.sleep(0.01)
+
+    assert await draining == 1
+    assert work.cancelled() and inflight.draining() is False
 
 
 async def test_another_live_loops_settlement_is_left_to_finish():

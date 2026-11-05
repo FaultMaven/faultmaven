@@ -26,16 +26,18 @@ class _Holds:
     The context is the holder, not the composer. A hold that no context releases
     keeps every later release from being the last, until a reset. The context
     variable is this instance's, so a new instance voids every hold taken on
-    the old one.
+    the old one. ``takes`` counts every hold ever taken on this instance.
     """
 
     def __init__(self) -> None:
         self._mine: ContextVar[int] = ContextVar("container_holds", default=0)
         self.total = 0
+        self.takes = 0
 
     def take(self) -> None:
         self._mine.set(self._mine.get() + 1)
         self.total += 1
+        self.takes += 1
 
     def release(self) -> bool:
         """Release the calling context's hold, if it took one; whether none is left."""
