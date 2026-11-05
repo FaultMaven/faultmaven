@@ -167,8 +167,9 @@ never having been told the bucket exists.
 **Purpose**: Prevent processing identical requests within short time windows.
 
 **Scope**:
-- Blocks an *exact* resubmit while the first request is still running, or
-  within the endpoint's TTL after it was answered 2xx
+- Blocks an *exact* resubmit that arrives within the endpoint's TTL of the
+  first request's arrival, while that request is running or once it was
+  answered 2xx
 - Hash-based identification: SHA-256 over length-prefixed
   (session_id, method, path, canonical query, raw body bytes)
 - Keyed on the session — a request with no session id is not deduplicated
@@ -178,12 +179,16 @@ never having been told the bucket exists.
 A duplicate is answered **409** with `Retry-After` and an `x-error-code`.
 
 **Cache Strategy**: Redis with TTL-based expiration. The key is claimed when the
-request arrives. It stands for the TTL only behind a 2xx; any other answer, or a
-route exception, releases it at once (a compare-and-delete, so a request never
-releases a newer request's claim), and an identical retry reaches the route. So
-`DUPLICATE_REQUEST` means an identical request is still running or succeeded
-within the TTL (#2508). The stored value is the claiming request's timestamp
-plus a random token; the timestamp is what `Retry-After` counts down from. No
+request arrives, for a fixed window that is never renewed. A 2xx keeps the
+claim; any other answer, a route exception, or the fail-closed 503 of a failed
+check releases it at once (a compare-and-delete, so a request never releases a
+newer request's claim), and an identical retry reaches the route. A claim also
+stands for its TTL without a 2xx after a cancellation or client disconnect, an
+exception raised after the response started, or a failed release. So
+`DUPLICATE_REQUEST` means an identical request arrived within the TTL and is
+still running or was answered 2xx (#2508). Its `Retry-After` counts down from
+that arrival and is an upper bound: the running request may answer sooner. The
+stored value is the claiming request's timestamp plus a random token. No
 response body is cached.
 
 #### 3. Agent Execution Timeouts

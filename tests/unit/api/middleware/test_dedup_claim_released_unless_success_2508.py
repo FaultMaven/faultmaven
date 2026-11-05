@@ -10,7 +10,8 @@ both inviting a retry with ``Retry-After``) were answered 409
 
 Now the answer decides: a 2xx keeps the claim for its TTL, anything else or a
 route exception releases it. The real app's 401 resend, the delete gate's
-refusals, the route exception and the failing release fail on the old
+refusals, the route exception, the failing release, a re-sent arrival script,
+a claim the failed check wrote and a release after a shutdown fail on the old
 middleware; a success, two requests in flight and a late release pin what must
 not change.
 
@@ -31,7 +32,7 @@ import pytest
 from fastapi import FastAPI, Response
 
 from faultmaven.api.middleware.deduplication import DeduplicationMiddleware
-from faultmaven.api.protection import live_protection_middleware
+from faultmaven.api.protection import live_protection_middleware, shutdown_protection
 from faultmaven.config.protection import get_development_protection_settings
 from faultmaven.utils.serialization import to_json_compatible
 
@@ -54,16 +55,16 @@ class _Dedup:
     holds every request inside it until the event fires.
     """
 
-    def __init__(self, *answers):
+    def __init__(self, *answers, store=fakeredis_aio.FakeRedis, fail_open=False):
         self.answers = list(answers)
         self.entries = 0
         self.entered = asyncio.Event()
         self.gate = None
-        self.redis = fakeredis_aio.FakeRedis(decode_responses=True)
+        self.redis = store(decode_responses=True)
 
         settings = get_development_protection_settings()
         settings.deduplication_enabled = True
-        settings.fail_open_on_redis_error = False
+        settings.fail_open_on_redis_error = fail_open
         self.app = FastAPI()
         self.app.state.redis_client = self.redis
         self.app.add_middleware(DeduplicationMiddleware, settings=settings)
@@ -100,6 +101,7 @@ class _Dedup:
 
     async def held_in_route(self) -> asyncio.Task:
         """Send a request and return once the route holds it, with no clock."""
+        self.entered.clear()
         self.gate = asyncio.Event()
         sent = asyncio.create_task(self.delete())
         entered = asyncio.create_task(self.entered.wait())
@@ -108,6 +110,38 @@ class _Dedup:
         )
         assert entered in done, "the request never reached the route"
         return sent
+
+
+class _ResentArrival(fakeredis_aio.FakeRedis):
+    """Runs the arrival script twice: redis-py re-sends an EVAL after a
+    connection error, and the first send may already have run."""
+
+    async def eval(self, script, *args):
+        if "SETEX" in script:
+            await super().eval(script, *args)
+        return await super().eval(script, *args)
+
+
+class _LostReply(fakeredis_aio.FakeRedis):
+    """The first arrival script runs, then its reply is lost."""
+
+    lost = False
+
+    async def eval(self, script, *args):
+        result = await super().eval(script, *args)
+        if "SETEX" in script and not self.lost:
+            self.lost = True
+            raise ConnectionError("the reply was lost")
+        return result
+
+
+def _clients_held(app) -> list:
+    """Every Redis client the protection middleware serving ``app`` holds."""
+    nodes = live_protection_middleware(app)
+    limiters = [getattr(node, "rate_limiter", None) for node in nodes]
+    return [getattr(node, "_redis", None) for node in nodes + limiters] + [
+        getattr(node, "redis_client", None) for node in nodes
+    ]
 
 
 def _is_duplicate_refusal(response) -> bool:
@@ -123,7 +157,9 @@ def test_the_real_app_lets_a_resend_after_a_401_reach_the_route(booted_app_clien
     The held client is reset first, as ``shutdown`` does: ``_initialize`` keeps
     a client it already holds before it reads ``app.state``, so it would
     re-adopt one bound to an earlier loop and, failing open, pass both
-    requests whatever the rule. ``metrics["errors"]`` shows it did not.
+    requests whatever the rule. ``metrics["errors"]`` shows it did not. The
+    protection layer is shut down afterwards, so no middleware on the shared
+    app keeps the test's store once ``app.state`` is restored.
     """
     from faultmaven.main import app
 
@@ -133,7 +169,7 @@ def test_the_real_app_lets_a_resend_after_a_401_reach_the_route(booted_app_clien
         for node in live_protection_middleware(app)
         if isinstance(node, DeduplicationMiddleware)
     ]
-    app.state.redis_client = fakeredis_aio.FakeRedis(decode_responses=True)
+    store = app.state.redis_client = fakeredis_aio.FakeRedis(decode_responses=True)
     middleware._redis = middleware._injected_redis
     middleware._initialized = False
     try:
@@ -163,8 +199,8 @@ def test_the_real_app_lets_a_resend_after_a_401_reach_the_route(booted_app_clien
 
         assert middleware.metrics["errors"] == errors_before
     finally:
-        middleware._redis = middleware._injected_redis
-        middleware._initialized = False
+        client.portal.call(shutdown_protection, app)
+    assert all(held is not store for held in _clients_held(app))
 
 
 @pytest.mark.parametrize(
@@ -236,7 +272,7 @@ async def test_a_late_release_never_deletes_a_newer_claim():
 async def test_a_failing_release_changes_no_answer(monkeypatch):
     """Best-effort: counted, swallowed, never the answer and never the error."""
 
-    async def _store_down(self, key, value):
+    async def _store_down(self, claim):
         raise ConnectionError("the store is down")
 
     monkeypatch.setattr(DeduplicationMiddleware, "_release_claim", _store_down)
@@ -250,6 +286,41 @@ async def test_a_failing_release_changes_no_answer(monkeypatch):
         with pytest.raises(RuntimeError, match="the route broke"):
             await dedup.delete(session="another-session")
     assert dedup.middleware.metrics["errors"] == 2
+
+
+async def test_a_resent_arrival_script_recognises_its_own_claim():
+    dedup = _Dedup(_answer(401), _answer(204), store=_ResentArrival)
+    async with dedup.client:
+        assert (await dedup.delete()).status_code == 401
+        assert (await dedup.delete()).status_code == 204
+        assert dedup.entries == 2
+        await dedup.assert_refused_as_duplicate()
+    assert dedup.middleware.metrics["errors"] == 0
+
+
+@pytest.mark.parametrize("fail_open, first", [(False, 503), (True, 401)])
+async def test_a_claim_the_failed_check_wrote_is_released(fail_open, first):
+    """Fail-closed answers 503 with nothing run; fail-open runs the route."""
+    answers = [_answer(401)] if fail_open else []
+    dedup = _Dedup(*answers, _answer(204), store=_LostReply, fail_open=fail_open)
+    async with dedup.client:
+        assert (await dedup.delete()).status_code == first
+        assert (await dedup.delete()).status_code == 204
+        await dedup.assert_refused_as_duplicate()
+    assert dedup.middleware.metrics["errors"] == 1
+
+
+async def test_the_release_uses_the_client_the_claim_was_taken_on():
+    """A shutdown while the request runs does not strand its claim."""
+    dedup = _Dedup(_answer(401), _answer(204))
+    async with dedup.client:
+        first = await dedup.held_in_route()
+        await dedup.middleware.shutdown()
+        dedup.gate.set()
+        assert (await first).status_code == 401
+        assert (await dedup.delete()).status_code == 204
+        await dedup.assert_refused_as_duplicate()
+    assert dedup.middleware.metrics["errors"] == 0
 
 
 async def test_the_retry_after_reads_the_timestamp_the_claim_stores():
