@@ -38,9 +38,10 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def seed_problem_node(case: Case) -> CausalNode | None:
+def seed_problem_node(case: Case, turn: int | None = None) -> CausalNode | None:
     """Return the case's single PROBLEM node ``D``, creating it from the
-    confirmed problem statement when absent.
+    confirmed problem statement when absent, dated ``turn`` (the current turn
+    by default).
 
     ``D`` is engine-owned (deterministic), not LLM-emitted: it anchors every
     chain. Returns None when there is no problem statement to anchor on yet.
@@ -59,7 +60,7 @@ def seed_problem_node(case: Case) -> CausalNode | None:
     problem_node = CausalNode(
         statement=statement[:500],
         node_type=NodeType.PROBLEM,
-        generated_at_turn=case.current_turn,
+        generated_at_turn=case.current_turn if turn is None else turn,
     )
     case.causal_nodes[problem_node.node_id] = problem_node
     return problem_node
@@ -161,7 +162,7 @@ def ingest_emitted_chain(
     statement exists, otherwise ingestion is a no-op.
     """
     evidence_created_ids = evidence_created_ids or []
-    problem = seed_problem_node(case)
+    problem = seed_problem_node(case, current_turn)
     if problem is None:
         return []
     d_id = problem.node_id

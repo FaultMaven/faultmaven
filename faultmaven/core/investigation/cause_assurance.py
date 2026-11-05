@@ -1141,7 +1141,9 @@ def _cause_posited_turn(case: "Case") -> int:
     in order: the identified root; else the root the root-cause conclusion names
     (the backstop leg's cause); else the latest-attached standing root, the
     conservative reading when nothing names one. With no rooted standing
-    hypothesis, every turn (0).
+    hypothesis, every turn (0). An attach is dated at the turn the work was
+    emitted, a replayed bundle's own turn (#2537), so the rows recorded with
+    the cause count.
 
     A row recorded earlier observed something else gone: a renewed credential or
     a restarted issuer, before the chain was deepened to what produced it. A
@@ -1490,10 +1492,11 @@ def _first_posited_turn(case: "Case", subjects, row) -> int | None:
     """The first turn what cause-bound ``row`` re-checks was posited: the
     earliest ``CausalNode.root_first_attached_turn`` of the roots it binds to
     (a cluster counts as one cause), or a rootless pool hypothesis's
-    ``generated_at_turn``; None when it binds to nothing. Unlike
-    ``_cause_posited_turn``, the cause leg's floor, a later attach of the same
-    root does not move it, save once on a root stored with neither key
-    (``CausalNode.root_first_attached_turn``)."""
+    ``generated_at_turn``; None when it binds to nothing. Both are dated at
+    the turn the work was emitted, a replayed bundle's own turn (#2537).
+    Unlike ``_cause_posited_turn``, the cause leg's floor, a later attach of
+    the same root does not move it, save once on a root stored with neither
+    key (``CausalNode.root_first_attached_turn``)."""
     nodes = getattr(case, "causal_nodes", None) or {}
     hypotheses = getattr(case, "hypotheses", None) or {}
     turns = [

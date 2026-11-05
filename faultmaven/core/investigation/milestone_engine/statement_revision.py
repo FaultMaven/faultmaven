@@ -58,6 +58,10 @@ REPLAY_METADATA_KEY = "replaying_staged_cause_work"
 #: from fix entries so far, which the stage gate weighs as fix bearers (#2105).
 REPLAY_FIX_SLOTS_KEY = "replay_fix_slots"
 
+#: Set on a replayed bundle's metadata to the turn it was staged in: the turn
+#: the cause work it carries was emitted (``emission_turn``, #2537).
+REPLAY_TURN_KEY = "replay_emission_turn"
+
 #: The prose an offer made inside the replay writes beside it. Carried into the
 #: turn's own metadata whenever the replay leaves an offer open, whichever
 #: proposer made it, so the offer reaches the user with its reason; its card
@@ -88,6 +92,14 @@ REPLAYED_KEYS = (
     "milestones_completed",
     "validation_repairs",
 )
+
+
+def emission_turn(case: "Case", metadata: dict) -> int:
+    """The turn the cause work being applied was emitted in: a replayed
+    bundle's own turn, else the current one. Its posited stamps (a root's
+    attach, its nodes, a hypothesis's ``generated_at_turn``) read it, so a row
+    recorded with the cause counts as recorded with it (#2537)."""
+    return metadata.get(REPLAY_TURN_KEY, case.current_turn)
 
 
 def revision_pending(case: "Case") -> bool:
@@ -184,6 +196,7 @@ async def confirm_revision(
             "status_transitioned": False,
             REPLAY_METADATA_KEY: True,
             REPLAY_FIX_SLOTS_KEY: fix_slots,
+            REPLAY_TURN_KEY: bundle.turn,
         }
         if bundle.held_fix:
             bundle_metadata[CARRIED_FIX_KEY] = bundle

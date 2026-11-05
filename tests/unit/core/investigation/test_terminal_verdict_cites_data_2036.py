@@ -400,7 +400,8 @@ async def _staged_then_confirmed(cited=None):
 
 async def test_a_staged_revision_citing_new_index_identifies_on_confirmation():
     case, root = await _staged_then_confirmed()
-    assert root.root_first_attached_turn == case.current_turn
+    # Dated at its staged turn, not the confirmation (#2537).
+    assert root.root_first_attached_turn == case.current_turn - 1
     assert root.root_terminal is True
     assert case.progress.cause_state == CauseState.IDENTIFIED
 
