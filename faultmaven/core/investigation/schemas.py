@@ -546,15 +546,6 @@ class KnowledgeMatch(BaseModel):
         return _repair_add_confidence(cls, v, info)
 
 
-class KnowledgeResolution(BaseModel):
-    """Records instant resolution via KB match."""
-
-    match_id: str
-    match_type: Literal["past_case", "runbook", "documentation"]
-    solution_applied: str
-    user_confirmation: str
-
-
 class MilestoneUpdates(NullTolerantModel):
     """Milestones the LLM can set to True (never False).
 
@@ -1994,7 +1985,6 @@ class InquiryResponse(OpenCaseResponse):
         )
         preliminary_urgency: Optional[PreliminaryUrgency] = None
         knowledge_match: Optional[KnowledgeMatch] = None
-        knowledge_resolution: Optional[KnowledgeResolution] = None
         user_confirmed_investigation: bool = Field(
             default=False,
             description=(

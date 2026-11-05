@@ -893,7 +893,7 @@ class UrgencyLevel(str, Enum):
 
 ### 1.7 InquiryData
 
-> **Illustrative subset** — the canonical `InquiryData` in `faultmaven/modules/case/domain/models/problem.py` additionally exposes `knowledge_matches: List[KnowledgeMatch]`, `knowledge_resolution: Optional[KnowledgeResolution]`, and `preliminary_urgency: Optional[PreliminaryUrgency]` (the KB-resolution sub-model).
+> **Illustrative subset** — the canonical `InquiryData` in `faultmaven/modules/case/domain/models/problem.py` additionally exposes `knowledge_matches: List[KnowledgeMatch]` and `preliminary_urgency: Optional[PreliminaryUrgency]`.
 
 ```python
 class InquiryData(BaseModel):

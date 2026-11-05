@@ -503,7 +503,7 @@ class TestPrefixIsByteStableAcrossTurns:
         a = _prompt(False, TURN_A_TIME)
         if change == "stage":
             b = _prompt(True, TURN_B_TIME, solution_accepted=True)
-            assert "KB-RESOLUTION VARIANT" in _prefix(b)  # TREATMENT's block
+            assert "FOCUS: TREATMENT" in _prefix(b)  # TREATMENT's block
         elif change == "processing_mode":
             b = _prompt(True, TURN_B_TIME, processing_mode="knowledge_query")
         else:

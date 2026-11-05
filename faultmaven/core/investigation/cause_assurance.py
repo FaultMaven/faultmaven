@@ -1580,8 +1580,10 @@ def symptom_elimination_rows(
     - Not engine-authored, as for the cause leg.
     - Bound to the problem (#1906 D1, ``SubjectIndex.subject``): it names one
       of the rows that showed the problem. Without a verifying row on record
-      (a legacy case, a knowledge resolution) nothing binds until a later
-      turn cites one, so such a case can close, never resolve.
+      (a legacy case, or a live symptom claim that cited no row on a turn that
+      wrote zero or several symptom rows,
+      ``response_application._record_verifying_rows``) nothing binds until a
+      later turn cites one, so such a case can close, never resolve.
     - At or after the FIX, by the data's turn (``observed_turn``, #2145): the recorded execution of the fix the resolution
       confirms (``confirming_window``) or the earliest cause-elimination row,
       whichever is earlier — the cause row alone for a fix made out of band,

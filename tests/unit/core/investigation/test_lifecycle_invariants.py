@@ -39,7 +39,6 @@ from faultmaven.modules.case.domain.models.lifecycle import (
 )
 from faultmaven.modules.case.domain.models.problem import (
     InquiryData,
-    KnowledgeResolution,
     ProblemVerification,
 )
 from faultmaven.modules.case.domain.services.case_action_manager import (
@@ -202,8 +201,8 @@ class TestINV03_DispositionHandshake:
 # INV-04: INQUIRY → RESOLVED has no direct edge
 # =============================================================================
 #
-# Source: §1.3 line 442 — "There is no INQUIRY → RESOLVED edge. KB-driven
-#   cases route through INVESTIGATING via the same-turn milestone collapse."
+# Source: §1.3 — "There is no INQUIRY → RESOLVED edge. KB-driven cases follow
+#   the standard INVESTIGATING path."
 # Statement: Every RESOLVED case flows through INVESTIGATING — even KB-matched
 #   cases. INQUIRY cannot transition directly to RESOLVED.
 # Enforcement: Code-guarded + Schema (per the matrix).
@@ -524,122 +523,33 @@ class TestINV05_StageGatesAutoFireWithoutHandshake:
 
 
 # =============================================================================
-# INV-06: KB-Resolution path still uses the offer handshake (no auto-resolve)
+# INV-03 / INV-26: an offer is never confirmed by the turn that opened it
 # =============================================================================
 #
-# Source: §1.2 *KB-Resolution Path (Milestone-Collapse Variant)*.
-# Statement: When the LLM emits ``knowledge_resolution`` (runbook fix
-#   confirmed by user), the engine does NOT bypass the disposition
-#   handshake. It populates milestone state from the matched runbook Cause
-#   in one turn and lets the standard ProposedTransition flow handle the
-#   disposition on the NEXT turn. The "collapse" is in milestone-state
-#   authoring only, never in transition timing.
-# Enforcement: Structural — uses the same offer-record mechanism as the
-#   multi-turn path; there is no collapse branch.
+# Statement: a resolve or close offer opened on a turn is answered only at the
+#   gate (0b), at the start of a LATER turn, and the disposition executes only
+#   through ``confirm_open_offer``.
 #
 # History (#722): PR #297 ("Option B") added a same-turn confirm collapse
-# gated on ``transition_proposed_this_turn AND knowledge_resolution_-
-# signalled``. The flow redesign later renamed the LLM-emit path's flag to
-# ``transition_proposed``, leaving the conjunction unsatisfiable in
-# production while the unit test injected both flags directly and stayed
-# green — a fixture-minted dead gate. #722 removed the collapse branch
-# deliberately: the user's "it worked" is the trusted verification claim,
-# never consent to the irreversible RESOLVED transition (INV-26). Since
-# #2379 no step of ``check_automatic_transitions`` answers an offer at all:
-# only the gate (0b), at the start of a LATER turn, does, so a proposal can
-# never be confirmed by the very message that produced it. The tests below
-# pin all of that.
+# gated on a transition proposed this turn AND a runbook-fix signal. The flow
+# redesign later renamed the LLM-emit path's flag, leaving the conjunction
+# unsatisfiable in production while the unit test injected both flags
+# directly and stayed green — a fixture-minted dead gate. #722 removed the
+# collapse branch deliberately: the user's "it worked" is the trusted
+# verification claim, never consent to the irreversible RESOLVED transition
+# (INV-26). Since #2379 no step of ``check_automatic_transitions`` answers an
+# offer at all: only the gate (0b), at the start of a LATER turn, does, so a
+# proposal can never be confirmed by the very message that produced it. The
+# tests below pin all of that.
 
 
-class TestINV06_KBResolutionUsesPendingTransition:
-    """INV-06: knowledge_resolution does not bypass the propose+confirm gate."""
-
-    def test_inv06_an_offer_with_knowledge_resolution_present_does_not_execute(
-        self,
-    ):
-        """Opening a resolve offer behaves identically whether or not
-        ``knowledge_resolution`` is set on the case.
-
-        Pins that the KB-resolution path uses the same structural
-        mechanism as multi-turn resolution. The presence of
-        knowledge_resolution does NOT grant a same-turn execute
-        bypass at the function level.
-        """
-        case = _make_investigating_case()
-        # Simulate the LLM having stored a runbook resolution signal:
-        case.inquiry.knowledge_resolution = KnowledgeResolution(
-            match_id="rb_abc123",
-            match_type="runbook",
-            solution_applied="Restarted the service per runbook",
-            user_confirmation="That fixed it",
-            resolution_turn=2,
-        )
-
-        _open(case, "resolve", "Resolved via runbook rb_abc123")
-
-        # Standard offer — identical to INV-03
-        assert case.offer_record.open is not None
-        assert case.offer_record.open.kind == "resolve"
-        # Status UNCHANGED — no auto-resolve from knowledge_resolution
-        assert case.state == CaseState.INVESTIGATING
-        assert case.resolved_at is None
-        # knowledge_resolution is preserved on the case (audit trail)
-        assert case.inquiry.knowledge_resolution is not None
-        assert case.inquiry.knowledge_resolution.match_id == "rb_abc123"
-
-    def test_inv06_engine_knowledge_resolution_handler_does_not_auto_resolve(self):
-        """The engine's ``_apply_investigation_updates`` knowledge_resolution
-        handler stores the signal but does NOT call confirm or execute.
-
-        This is a code-shape pin: future refactors that add an
-        auto-resolve shortcut inside the knowledge_resolution block would
-        break this test. The pin is on the structural property documented
-        in milestone_engine/engine.py ("Standard ProposedTransition
-        handshake handles disposition").
-        """
-        source = inspect.getsource(ResponseApplier._apply_investigation_updates)
-
-        # Find the knowledge_resolution handling block. The comment
-        # immediately above the if-statement (line 4673-4681 at time of
-        # writing) anchors the block.
-        kr_idx = source.find('if hasattr(updates, "knowledge_resolution")')
-        assert kr_idx >= 0, (
-            "Could not locate knowledge_resolution handling block in "
-            "_apply_investigation_updates. The static check below assumes "
-            "this structure; if the handler moved, this test must move "
-            "with it."
-        )
-
-        # Walk forward until the next top-level comment block or the next
-        # major if-statement to bound the kr handler region. A 1500-char
-        # window is conservative — the actual handler is ~20 lines.
-        kr_region = source[kr_idx : kr_idx + 1500]
-
-        # These calls indicate auto-resolution. None should appear inside
-        # the kr handler:
-        forbidden_calls = [
-            "confirm_open_offer",
-            "_execute_resolved_transition",
-            "_execute_closed_transition",
-            "case.state = CaseState.RESOLVED",
-            "case.atomic_update(\n            state=CaseState.RESOLVED",
-        ]
-        for forbidden in forbidden_calls:
-            assert forbidden not in kr_region, (
-                f"INV-06 violation: knowledge_resolution handler in "
-                f"_apply_investigation_updates contains '{forbidden}'. "
-                f"The engine must not auto-resolve from knowledge_resolution; "
-                f"the standard ProposedTransition handshake handles "
-                f"disposition (see §1.2 KB-Resolution Path)."
-            )
+class TestINV03_INV26_NoSameTurnConfirm:
+    """INV-03 / INV-26: an offer waits for a later turn's explicit consent."""
 
     @pytest.mark.asyncio
-    async def test_inv06_no_same_turn_confirm_even_with_kb_resolution_signal(self):
-        """#722: the same-turn confirm collapse is REMOVED. Even on a turn
-        where the LLM emitted ``knowledge_resolution`` alongside the
-        proposal (the old collapse conjunction — reconstructed here with
-        the legacy metadata flag to prove it carries no power), the
-        pending transition is HELD for the explicit confirm turn.
+    async def test_a_resolve_offer_is_not_confirmed_on_the_turn_it_opened(self):
+        """#722: the same-turn confirm collapse is REMOVED. A resolve offer
+        opened this turn is HELD for the explicit confirm turn.
 
         The user's "it worked" is the trusted verification claim, never
         consent to the irreversible RESOLVED transition (INV-26).
@@ -653,18 +563,14 @@ class TestINV06_KBResolutionUsesPendingTransition:
         assert case.offer_record.open is not None
         assert case.state == CaseState.INVESTIGATING
 
-        metadata = {
-            # Legacy collapse conjunction flag — must be inert (#722).
-            "knowledge_resolution_signalled": True,
-        }
+        metadata: dict = {}
 
         result = await engine.transitions.check_automatic_transitions(case, metadata)
 
         assert result.state == CaseState.INVESTIGATING, (
-            "Same-turn confirm fired on the KB-resolution turn. #722 "
-            "removed the collapse: an irreversible RESOLVED requires the "
-            "explicit confirm turn — the proposal turn can never also be "
-            "the consent turn."
+            "Same-turn confirm fired on the proposal turn. #722 removed the "
+            "collapse: an irreversible RESOLVED requires the explicit confirm "
+            "turn — the proposal turn can never also be the consent turn."
         )
         assert result.resolved_at is None
         # Pending stays — waiting for user confirmation next turn
@@ -672,7 +578,7 @@ class TestINV06_KBResolutionUsesPendingTransition:
         assert metadata.get("status_transitioned") is not True
 
     @pytest.mark.asyncio
-    async def test_inv06_same_turn_proposal_not_confirmed_by_triggering_message(
+    async def test_a_same_turn_close_offer_is_not_confirmed_by_its_trigger(
         self,
     ):
         """#722: a close offered mid-turn by a stage-gate side effect
@@ -714,22 +620,14 @@ class TestINV06_KBResolutionUsesPendingTransition:
         assert result.offer_record.open is not None
         assert metadata.get("status_transitioned") is not True
 
-    def test_inv06_full_kb_resolution_path_requires_explicit_confirm(self):
-        """End-to-end pin: at the FUNCTION level (``open_offer`` +
-        ``confirm_open_offer``), knowledge_resolution presence does not grant
-        a same-turn bypass, and documents the canonical 2-step sequence used
-        by every non-KB path.
+    def test_a_typed_consent_executes_only_through_the_confirm(self):
+        """End-to-end pin at the FUNCTION level (``open_offer`` +
+        ``confirm_open_offer``): the canonical 2-step sequence, with the
+        consent typed (TOKEN) rather than clicked.
         """
         case = _make_investigating_case()
-        case.inquiry.knowledge_resolution = KnowledgeResolution(
-            match_id="rb_abc123",
-            match_type="runbook",
-            solution_applied="Applied runbook fix",
-            user_confirmation="It worked",
-            resolution_turn=2,
-        )
 
-        # Step 1: the model's offer (knowledge_resolution + ProposedTransition)
+        # Step 1: the model's offer (ProposedTransition)
         _open(case, "resolve", "Resolved via runbook")
         assert case.state == CaseState.INVESTIGATING  # NOT yet resolved
         assert case.offer_record.open is not None

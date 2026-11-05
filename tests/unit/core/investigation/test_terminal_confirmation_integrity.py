@@ -6,7 +6,7 @@ the proposal — and nothing may fabricate that consent (or per-action
 compliance) from a message that doesn't carry it.
 
 - #722: no same-turn confirm — pinned in ``test_lifecycle_invariants.py``
-  (INV-06 tests). This file covers the shared substance predicate the
+  (``TestINV03_INV26_NoSameTurnConfirm``). This file covers the shared substance predicate the
   handshake's confirm lanes rely on.
 - #721 (widened by fm#918, narrowed by #2222): the IntentResolver must not
   mint GATE consent from typed text. It never mints an offer's chip at all

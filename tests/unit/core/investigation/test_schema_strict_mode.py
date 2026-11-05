@@ -412,7 +412,6 @@ def test_the_engine_parses_a_fully_populated_strict_response():
                 "proposed_problem_statement": None,
                 "preliminary_urgency": None,
                 "knowledge_match": None,
-                "knowledge_resolution": None,
                 "user_confirmed_investigation": None,
             },
         }

@@ -459,31 +459,9 @@ class TestResolveProposalRequiresCausalAbsence:
     loop (suggest-then-bounce). The user's verbal confirmation is an allowed
     source (``user_description``) so the out-of-band path needs no file.
 
-    These pin the two proposal sites in treatment_instructions(DEFAULT_GIVEN):
-      - the KB-RESOLUTION same-turn variant, and
-      - the generic COMPLETION handshake.
+    This pins the proposal site in treatment_instructions(DEFAULT_GIVEN): the
+    COMPLETION handshake.
     """
-
-    def test_kb_variant_requires_causal_absence(self):
-        # The KB-resolution checklist must list causal_absence as a required
-        # emission alongside the resolved proposal — sourced from the output
-        # the user SUBMITTED, never their "it worked" (#1930).
-        variant_start = treatment_instructions(DEFAULT_GIVEN).index(
-            "KB-RESOLUTION VARIANT"
-        )
-        variant_end = treatment_instructions(DEFAULT_GIVEN).index(
-            "CRITICAL DIRECT-COPY RULE"
-        )
-        variant = treatment_instructions(DEFAULT_GIVEN)[variant_start:variant_end]
-        assert "causal_absence_evidence" in variant, (
-            "KB-RESOLUTION VARIANT proposes resolved but no longer requires "
-            "causal_absence_evidence — the engine will bounce the transition."
-        )
-        assert "SUBMITTED" in variant and "Never" in variant, (
-            "KB-RESOLUTION VARIANT must source the absence rows from submitted "
-            "output and never from the user's words."
-        )
-        assert "user_description" not in variant
 
     def test_completion_block_requires_causal_absence_for_resolved(self):
         # The governing COMPLETION rule must tie any resolved proposal to a

@@ -811,7 +811,7 @@ extraction and its admin review queue were removed in #1897.
 
 **Auto-summary generation**: Terminal cases with investigation substance (evidence / hypotheses / completed milestones) get an auto-generated summary (`RESOLUTION_SUMMARY` or `CLOSURE_SUMMARY`), synthesized synchronously on terminal transition and rendered inline in the closure-turn chat reply. See [Investigation Lifecycle Logic §4.5.0](./investigation-lifecycle-logic.md#450-auto-generated-terminal-summary) for the canonical spec (content-focus table, substance gate, regen rules).
 
-**Flywheel effect**: Runbooks generated from resolved cases are indexed in ChromaDB. When future cases arrive with similar symptoms, the agent's `kb_qa` tool surfaces these runbooks, potentially enabling fast resolution (the KB-resolution path: INQUIRY → INVESTIGATING → RESOLVED with the milestone collapse — state authored in one turn, disposition confirmed on the next; there is no direct INQUIRY → RESOLVED edge, INV-04) without a full investigation cycle.
+**Flywheel effect**: Runbooks generated from resolved cases are indexed in ChromaDB. When future cases arrive with similar symptoms, the agent's `kb_qa` tool surfaces these runbooks, potentially enabling fast resolution along the standard INQUIRY → INVESTIGATING → RESOLVED path (there is no direct INQUIRY → RESOLVED edge, INV-04) without a full investigation cycle.
 
 ---
 
@@ -1192,11 +1192,10 @@ stateDiagram-v2
         ProblemProposed --> ProblemConfirmed: User confirms
         ProblemProposed --> Exploring: User provides<br/>corrections
         Exploring --> KBMatch: KB search finds<br/>high-confidence match
-        KBMatch --> KBConfirmed: User confirms<br/>solution works
+        KBMatch --> ProblemProposed: Match held back —<br/>agent proposes problem statement
     }
 
     INQUIRY --> INVESTIGATING: problem_statement_confirmed
-    INQUIRY --> INVESTIGATING: KB resolution confirmed<br/>rapid completion — no direct<br/>edge to RESOLVED, INV-04
     INQUIRY --> CLOSED: User closes<br/>without investigation
 
     state INVESTIGATING {

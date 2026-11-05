@@ -87,10 +87,13 @@ def test_diagnosis_prompt_does_not_teach_setting_root_cause_identified():
 
 def test_rcc_schemas_carry_names_root_node_id():
     """Both the LLM-emitted update and the stored domain model expose the
-    authoritative attribution hint, and TREATMENT teaches it."""
+    authoritative attribution hint, and the update's schema teaches it (the
+    prompt's one other mention was deleted with TREATMENT's runbook-fix
+    variant, #2482)."""
     assert "names_root_node_id" in RootCauseConclusionUpdate.model_fields
     assert "names_root_node_id" in RootCauseConclusion.model_fields
-    assert "names_root_node_id" in treatment_instructions(DEFAULT_GIVEN)
+    field = RootCauseConclusionUpdate.model_fields["names_root_node_id"]
+    assert "<causal_graph>" in field.description
 
 
 # ---------------------------------------------------------------------------

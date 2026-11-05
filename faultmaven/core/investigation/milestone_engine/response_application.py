@@ -80,7 +80,6 @@ from faultmaven.modules.case.contracts import (
     InvestigationActionType,
     JournalEntry,
     KnowledgeMatch,
-    KnowledgeResolution,
     ProblemStatus,
     ProposedAction,
     RootCauseConclusion,
@@ -213,13 +212,11 @@ def _record_verifying_rows(case: Case, updates: Any, metadata: dict[str, Any]) -
     """Step 2e: the rows that showed the problem (#1906 D1), once this turn's
     verification is final.
 
-    On the verifying EDGE (the symptom claim survived step 2b and 2c, or a
-    knowledge resolution verified this turn): the claim's cited
-    ``symptom_verification_evidence_ids``; when it cites none, the single
-    symptom_evidence row the turn wrote, only when there is exactly one — the
-    claim is checked by category (``validate_milestone_claims``), so reading
-    more would re-import that proxy. A knowledge resolution records rows only
-    through a symptom claim made in the same turn.
+    On the verifying EDGE (the symptom claim survived step 2b and 2c): the
+    claim's cited ``symptom_verification_evidence_ids``; when it cites none,
+    the single symptom_evidence row the turn wrote, only when there is exactly
+    one — the claim is checked by category (``validate_milestone_claims``), so
+    reading more would re-import that proxy.
 
     On a later turn (ruled 2026-11-03): an explicit citation fills an EMPTY
     list, never a non-empty one, and with no fallback."""
@@ -232,11 +229,7 @@ def _record_verifying_rows(case: Case, updates: Any, metadata: dict[str, Any]) -
         _resolve_id_ref(ref, slots, "ev_")
         for ref in (getattr(m, "symptom_verification_evidence_ids", None) or [])
     ]
-    claimed = "symptom_verified" in metadata["milestones_completed"] or (
-        metadata.get("verified_by_knowledge_resolution")
-        and getattr(m, "symptom_verified", None) is True
-    )
-    if claimed:
+    if "symptom_verified" in metadata["milestones_completed"]:
         if not cited:
             written = set(metadata.get("evidence_added") or [])
             cited = [
@@ -247,8 +240,6 @@ def _record_verifying_rows(case: Case, updates: Any, metadata: dict[str, Any]) -
             ]
             cited = cited if len(cited) == 1 else []
         record_verifying_rows(case, cited)
-    elif metadata.get("verified_by_knowledge_resolution"):
-        record_verifying_rows(case, [])
     elif pv is not None and not pv.verifying_evidence_ids and cited:
         record_verifying_rows(case, cited)
 
@@ -686,8 +677,7 @@ class ResponseApplier:
             )
 
         # Store KB match on case when LLM identifies one (Gap #5a)
-        # This populates InquiryData.knowledge_matches so we can validate
-        # confidence thresholds when knowledge_resolution arrives (possibly in a later turn)
+        # This populates InquiryData.knowledge_matches.
         if updates.knowledge_match:
             km = updates.knowledge_match
             case.inquiry.knowledge_matches.append(
@@ -705,25 +695,6 @@ class ResponseApplier:
                 f"KB match stored: type={km.match_type}, "
                 f"likelihood={km.match_likelihood:.2f}, "
                 f"summary={km.match_summary[:80]}"
-            )
-
-        # Check for KB Resolution
-        if updates.knowledge_resolution:
-            case.inquiry.knowledge_resolution = KnowledgeResolution(
-                match_id=updates.knowledge_resolution.match_id,
-                match_type=updates.knowledge_resolution.match_type,
-                solution_applied=updates.knowledge_resolution.solution_applied,
-                user_confirmation=updates.knowledge_resolution.user_confirmation,
-            )
-            # v3: knowledge_resolution received during INQUIRY is stored
-            # for visibility but is NOT a transition trigger. The LLM
-            # should emit knowledge_resolution during INVESTIGATING (when
-            # the user confirms a runbook fix worked), not INQUIRY.
-            logger.warning(
-                "Case %s: knowledge_resolution emitted during INQUIRY; "
-                "v3 expects this during INVESTIGATING (after problem confirmation). "
-                "Storing for audit but not transitioning.",
-                case.case_id,
             )
 
     def _apply_verification_updates(
@@ -762,9 +733,8 @@ class ResponseApplier:
 
         revision = (vu.revised_problem_statement or "").strip()
         invalidated = vu.problem_invalidated is True
-        # Whichever writer verified it — the cited symptom claim or a runbook
-        # fix the user confirmed (knowledge_resolution, which records no
-        # milestone). Either contradicts a false-alarm finding.
+        # The symptom claim verified it this turn, which contradicts a
+        # false-alarm finding.
         verified_this_turn = (
             status_at_start != ProblemStatus.VERIFIED
             and case.progress.problem_status == ProblemStatus.VERIFIED
@@ -1054,46 +1024,6 @@ class ResponseApplier:
                     }
                 )
 
-        # 1b. v3 KB-Resolution signal: milestone collapse (state authoring
-        # only). When the user confirms a runbook fix worked, the LLM emits
-        # `knowledge_resolution` alongside `root_cause_conclusion`,
-        # `solutions_to_add`, and the gate milestones (`solution_accepted`)
-        # — INVESTIGATING's structured state is authored in this one turn.
-        # The RESOLVED disposition is NOT collapsed (#722): the user's "it
-        # worked" is the solution-verification claim (FM trusts it), not
-        # consent to the irreversible terminal transition — that consent
-        # comes from the explicit confirm turn of the standard
-        # ProposedTransition handshake. `KnowledgeResolution` (including
-        # `user_confirmation`) is an attribution/audit record, not consent.
-        # See investigation-lifecycle-logic.md §1.2 →
-        # "KB-Resolution Path (Milestone-Collapse Variant)".
-        if hasattr(updates, "knowledge_resolution") and updates.knowledge_resolution:
-            kr = updates.knowledge_resolution
-            case.inquiry.knowledge_resolution = KnowledgeResolution(
-                match_id=kr.match_id,
-                match_type=kr.match_type,
-                solution_applied=kr.solution_applied,
-                user_confirmation=kr.user_confirmation,
-            )
-            # A runbook matched against the reported symptom, and the user
-            # confirmed its fix worked — the symptom is, by construction, verified.
-            # Establish the cause-identification anchor so the milestone
-            # collapse's RootCauseConclusion is honored by the M5 / readiness
-            # gates (which require a verified symptom for the RCC signal).
-            # Not appended to ``milestones_completed``: that list is reviewed
-            # against cited evidence at step 2b, and this verification rests
-            # on the user's confirmation, not on a citation. Its verifying
-            # rows are recorded at step 2e, from this turn's symptom claim.
-            if verify_problem(case, via="knowledge_resolution"):
-                metadata["verified_by_knowledge_resolution"] = True
-            logger.info(
-                "Case %s: knowledge_resolution signalled during INVESTIGATING; "
-                "match_id=%s, type=%s. Standard ProposedTransition handshake handles disposition.",
-                case.case_id,
-                kr.match_id,
-                kr.match_type,
-            )
-
         # 1. Update Milestones
         # NOTE: solution_verified is excluded — it requires the User-Agent
         # Handshake via ProposedTransition (see terminal_transitions.py).
@@ -1105,9 +1035,9 @@ class ResponseApplier:
             # STAGE-GATE SIGNALS ARE NOT APPLIED HERE. ``solution_accepted``
             # and the mitigation pair are compliance signals whose guards
             # must see the ProposedActions created by THIS turn's solutions
-            # step (the prompt's KB-resolution flow mandates SolutionToAdd +
-            # solution_accepted in one response) — they are applied by
-            # ``_apply_stage_gate_signals`` AFTER step 5 below.
+            # step (one response may carry SolutionToAdd + solution_accepted)
+            # — they are applied by ``_apply_stage_gate_signals`` AFTER step
+            # 5 below.
             # The only progress indicator the LLM claims is the symptom.
             # cause_state is engine-derived from a validated, uncontested chain
             # root at the recompute (§9.2 / INV-35); solution_proposed is
@@ -1678,9 +1608,9 @@ class ResponseApplier:
                 # derivation.
 
         # 5b. Stage-gate compliance signals (Framework §4.1) — AFTER the
-        # solutions step so the guards see actions created this turn (the
-        # prompt's KB-resolution flow emits SolutionToAdd + solution_accepted
-        # in ONE response; see _apply_stage_gate_signals). A replayed bundle
+        # solutions step so the guards see actions created this turn (one
+        # response may carry SolutionToAdd + solution_accepted; see
+        # _apply_stage_gate_signals). A replayed bundle
         # whose hold turn carried a fix acceptance runs the gate with no
         # milestones of its own (#2105).
         if updates.milestones or metadata.get(CARRIED_FIX_KEY) is not None:
