@@ -5,6 +5,7 @@ Records of significant architecture decisions with their context, rationale, and
 ## Records
 
 - **[ADR-001: Monolith Evolution Strategy](./adr-001-monolith-evolution-strategy.md)** — Decision to evolve from `FaultMaven-Mono` toward the current modular monolith
+- **[ADR-021: Earned-Autonomy Direction](./adr-021-earned-autonomy-direction.md)** — The seams Phase 1 leaves open so the roadmap's Phase 2 (Investigator) and Phase 3 (Integrated Agent) extend the engine instead of replacing its loop
 
 ## Format
 
