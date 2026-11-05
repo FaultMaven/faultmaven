@@ -1048,27 +1048,37 @@ async def test_a_hold_taken_before_the_bound_leaves_the_cancellable_work_running
     work.cancel()
 
 
-async def test_a_hold_taken_during_the_drain_ends_it_before_the_bound(
+async def test_a_hold_taken_and_released_during_the_drain_closes_nothing(
     container, monkeypatch, record
 ):
-    """#2506: the drain read whether its release was the last only past its
-    bound, so the shutdown waited the bound out, and the draining flag refused
-    the live composition's vector writes all that time."""
-    monkeypatch.setattr(record, "DRAIN_BOUND_SECONDS", 3600)
-    parked = asyncio.Event()
-
-    async def _compose_then_park():
-        await container.initialize()
-        await parked.wait()
-
+    """#2506: the drain's flag stayed raised to the bound once a hold was taken,
+    and the release re-read the total after it, so a hold released meanwhile
+    let it close. The flag and the release now read one sticky predicate."""
+    monkeypatch.setattr(record, "DRAIN_BOUND_SECONDS", 0.2)
     await _hold(container, 1)
-    work = _work(record, [], then=_compose_then_park)
+    client = _own(container, _RealClient())
+    parked = record.track(
+        asyncio.create_task(asyncio.Event().wait()),
+        what="parked",
+        kind=record.Kind.CANCELLABLE,
+    )
+    holder = contextvars.Context()
+    try:
+        closing = asyncio.create_task(container.shutdown())
+        for _ in range(10):
+            await asyncio.sleep(0)
+        assert record.draining() is True
 
-    try:  # the fixture's last release would otherwise drain it for the bound
-        assert await asyncio.wait_for(container.shutdown(), 10) is False
-        assert record.draining() is False and not work.done()
+        await asyncio.create_task(container.initialize(), context=holder)
+        assert record.draining() is False
+        holder.run(container._holds.release)
+        assert record.draining() is False
+
+        assert await asyncio.wait_for(closing, 10) is False  # a hang guard
+        client.aclose.assert_not_awaited()
+        assert not parked.done()
     finally:
-        work.cancel()
+        parked.cancel()
 
 
 async def test_the_stores_wait_for_a_settlement_past_the_bound(

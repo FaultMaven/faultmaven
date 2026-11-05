@@ -1828,8 +1828,10 @@ class DIContainer(BaseDIContainer):
         With no hold left anywhere it first drains the work in flight
         (``inflight.drain``, #2490): that work still reads the container and
         writes through what it owns. A hold taken during the drain makes this
-        release not the last: from then on it cancels, resets and closes
-        nothing, and returns ``False`` (or raises the drain's interruption).
+        release not the last, even if it is released before the drain ends:
+        this release then cancels, resets and closes nothing, and returns
+        ``False`` (or raises the drain's interruption); that hold's own release
+        drains and closes.
         Otherwise it stops the case-lease renewals, unless the drain was
         interrupted: it then cancels the cancellable rest with the grace, which
         a second interruption ends, and the leases of the work still running
@@ -1845,11 +1847,16 @@ class DIContainer(BaseDIContainer):
         """
         if not self._holds.release():
             return False
+        holds = self._holds
+        taken = holds.takes
+        # No hold taken on this instance since this release began. Sticky: once
+        # false it stays false, so the drain's flag and this release agree.
+        last = lambda: self._holds is holds and holds.takes == taken
         interrupted = await teardown_step(
             "Draining the work in flight",
-            functools.partial(_drain_work_in_flight, lambda: not self._holds.total),
+            functools.partial(_drain_work_in_flight, last),
         )
-        if self._holds.total:
+        if not last():
             if interrupted is not None:
                 raise interrupted
             return False
@@ -1860,7 +1867,7 @@ class DIContainer(BaseDIContainer):
             )
         else:
             await teardown_step("Cancelling the cancellable rest", _cancel_cancellable)
-            if self._holds.total:  # a hold taken during the grace
+            if not last():  # a hold taken during the grace
                 raise interrupted
         owned = self._owned[::-1]
         self._owned.clear()  # closed once, whatever the closes do

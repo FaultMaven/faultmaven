@@ -9,9 +9,8 @@ in flight never meets a closed Redis client, ChromaDB client or engine.
 work (the settlement: no cancellation may reach its commit, R1) is awaited with
 no bound, which the database's command timeout supplies (#2280). A cancel does
 not stop a thread, so :func:`draining` holds while a drain that is still the
-last runs, and the vector write reads it first. **Residual:** a write already in
-its thread at the bound finishes into the client after it. So does one started
-under a hold taken and released between two of the drain's wakes.
+last runs, and the vector write reads it first. **Residual:** a write already
+in its thread at the bound finishes into the client after it.
 
 **Per case, across replicas.** A case's lease is the Redis sorted set
 ``case-inflight:{enterprise_id}:{case_id}``: holder tokens scored by expiry on
@@ -46,8 +45,6 @@ logger = logging.getLogger(__name__)
 DRAIN_BOUND_SECONDS = 10.0
 #: How long a cancelled task is given to end once cancelled.
 CANCEL_GRACE_SECONDS = 1.0
-#: The longest the drain waits before it re-reads whether its release is the last.
-DRAIN_POLL_SECONDS = 0.05
 
 #: A case lease's life without a renewal, and the wait between two renewals.
 LEASE_TTL_MS = 30_000
@@ -160,8 +157,9 @@ def tracked(what_prefix: str = "") -> Set["asyncio.Task[Any]"]:
 
 
 def draining() -> bool:
-    """Whether a drain whose release is still the last runs: a store write that
-    has not started must not start. A drain no longer the last closes nothing."""
+    """Whether a drain runs whose release no hold has superseded: a store write
+    that has not started must not start. It drops the moment a hold is taken,
+    and stays down: a drain no longer the last closes nothing."""
     return any(last() for last in list(_DRAINS))
 
 
@@ -174,10 +172,10 @@ async def drain(
     ``timeout_s`` (default ``DRAIN_BOUND_SECONDS``). Then it cancels the
     ``cancellable`` rest, gives them ``CANCEL_GRACE_SECONDS``, and awaits the
     ``must_finish`` ones with no bound. Last, the case leases being released
-    get the same grace. It re-reads ``last()`` at every wake (before the bound,
-    every ``DRAIN_POLL_SECONDS`` at most): once it reads false (the release is
-    no longer the last), it returns, cancelling nothing more. Interrupted, it
-    cancels nothing and re-raises: a last release then calls
+    get the same grace. Once ``last()`` turns false (the release is no longer
+    the last), :func:`draining` drops at once, while the drain still waits for
+    this loop's work up to its bound and then returns, cancelling nothing.
+    Interrupted, it cancels nothing and re-raises: a last release then calls
     :func:`cancel_cancellable`. **Residual:** an interrupted shutdown does not
     wait for a settlement, which can then meet closed stores.
     """
@@ -188,15 +186,14 @@ async def drain(
     _DRAINS.append(last)
     try:
         while True:
-            if not last():
-                return cancelled
             pending = [t for t in _pending_on(loop) if t not in abandoned]
             if not pending:
                 break
             if loop.time() < deadline:
-                wait = min(DRAIN_POLL_SECONDS, deadline - loop.time())
-                await asyncio.wait(pending, timeout=wait)
+                await asyncio.wait(pending, timeout=deadline - loop.time())
                 continue
+            if not last():
+                return cancelled
             late = await _cancel_late(loop, abandoned)
             cancelled += len(late)
             finishing = [t for t in pending if t not in late]
