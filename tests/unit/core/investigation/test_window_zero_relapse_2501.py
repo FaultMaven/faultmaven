@@ -2,8 +2,8 @@
 steer for a fix done outside the case.
 
 With no dated fix every observation sits in window 0. Once the identified
-cause was shown removed (after it was posited) and then the problem shown
-gone, the problem seen present again is a relapse: window 0 FAILS, readiness
+cause was shown removed (after it was first posited) and then the problem
+shown gone, the problem seen present again is a relapse: window 0 FAILS, readiness
 asks for a new fix, and no resolve offer opens. Persistence with no earlier
 relief still fails nothing (window 0's diagnosis-time reading), and window 0
 never carries a disconfirmation, so M6 acts on nothing.
@@ -12,6 +12,7 @@ Real turns through ``_apply_investigation_updates`` (``_record``), and
 ``MilestoneEngine.process_turn`` where an opener is read. No live LLM.
 """
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -24,8 +25,12 @@ from faultmaven.core.investigation.cause_assurance import (
     fix_windows,
     latest_decided_fix_window,
 )
+from faultmaven.core.investigation.milestone_engine.chain_emission import (
+    _apply_chain_emission,
+)
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.offer_projection import project_offers
+from faultmaven.core.investigation.progress_monitor import ProgressMonitor
 from faultmaven.core.investigation.prompts.templates.assembly import (
     get_prompt_for_case,
 )
@@ -41,12 +46,16 @@ from faultmaven.modules.case.contracts import (
     EvidenceCategory,
     EvidenceSourceType,
     EvidenceStance,
+    Hypothesis,
+    HypothesisCategory,
+    HypothesisGenerationMode,
     HypothesisState,
     InvestigationActionType,
     MitigationRecord,
     NodeEvidenceLink,
     NodeState,
     NodeType,
+    ProposedAction,
     ValidationMethod,
 )
 from tests.case_builders import inquiry_case, with_declined_offer
@@ -56,8 +65,13 @@ from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
 from tests.unit.core.investigation.test_fix_registration_lag_2427 import (
     _PREVIOUS,
     _accepted,
+    _ev,
     _fix,
+    _identified,
+    _registered,
+    _reported,
     _stamps,
+    _turn,
 )
 from tests.unit.core.investigation.test_fix_verification_subjects_1906 import (
     _CAUSE_GONE,
@@ -131,7 +145,8 @@ async def _silent_turn(case, turn: int, message: str, **process) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 1-2. The relapse fails window 0, and nothing offers the resolution.
+# 1-2. The relapse fails window 0, the failure stays, and nothing offers the
+# resolution.
 # ---------------------------------------------------------------------------
 
 
@@ -153,6 +168,60 @@ async def test_1_a_relapse_after_an_out_of_band_fix_fails_window_0():
     assert _engine_rows(case) == []
 
     await _silent_turn(case, 7, "what now?")
+    assert case.offer_record.open is None
+
+
+async def test_1_a_later_attach_of_the_root_keeps_window_0_failed():
+    """The failure is final: after the relapse the identified root is handed to
+    a new hypothesis through chain emission (its owner moves to another
+    chain), which re-stamps the root's attach turn. A cause and problem
+    re-check at 9 then confirm nothing: window 0 stays FAILED, readiness asks
+    for a new fix, and no resolve offer opens."""
+    case, root, owner = _identified_case()
+    # As the root's first attach through chain emission records it.
+    root.metadata["root_first_attached_turn"] = 1
+    eng, case = await _relapsed(case=case)
+    heir = Hypothesis(
+        statement="the postgres connection limit starves the checkout pool",
+        category=HypothesisCategory.DATABASE,
+        state=HypothesisState.ACTIVE,
+        generation_mode=HypothesisGenerationMode.OPPORTUNISTIC,
+        rationale="re-asserted after the relapse",
+        generated_at_turn=8,
+    )
+    case.hypotheses[heir.hypothesis_id] = heir
+    case.current_turn = 8
+    elsewhere = SimpleNamespace(
+        statement="pgbouncer runs in session mode",
+        node_type=NodeType.ROOT,
+        produces="D",
+        and_group=None,
+    )
+    _apply_chain_emission(
+        case,
+        SimpleNamespace(
+            causal_nodes_to_add=[elsewhere],
+            causal_edges_to_add=[],
+            node_evidence_links=[],
+        ),
+        {
+            "hypotheses_generated": [heir.hypothesis_id],
+            "hyp_root_refs": {
+                owner.hypothesis_id: "new_index_0",
+                heir.hypothesis_id: root.node_id,
+            },
+        },
+    )
+    assert heir.root_node_id == root.node_id, "premise: handed off"
+    assert root.root_attached_turn == 8, "premise: re-stamped"
+
+    await _record(eng, case, 9, _cause_gone("max_connections reads 100"), _gone())
+
+    assert _window_zero(case)[:3] == ("failed", 5, 6)
+    readiness = assess_resolution_readiness(case)
+    assert readiness.verdict == ResolutionReadiness.NEEDS_INFO
+    assert readiness.missing[0] == _NEW_FIX
+    await _silent_turn(case, 10, "is it resolved?")
     assert case.offer_record.open is None
 
 
@@ -183,7 +252,8 @@ async def test_2_under_a_decline_no_reopen_chip_and_its_click_opens_nothing():
 
 
 # ---------------------------------------------------------------------------
-# 3-4. What fails nothing: window 0's diagnosis-time reading.
+# 3. What fails nothing: window 0's diagnosis-time reading. Its first case is
+# the shape of plan test 4: no disconfirmation, so M6 demotes nothing.
 # ---------------------------------------------------------------------------
 
 
@@ -301,9 +371,52 @@ async def test_3_a_row_from_before_the_cause_was_posited_anchors_nothing(
     assert _window_zero(case)[0] != "failed"
 
 
+async def test_3_a_turn_holding_gone_and_present_after_the_relief_reads_gone():
+    """The relief at 5, then a turn holding both a problem-gone and a
+    problem-present row: it reads as gone, as in a dated window."""
+    eng, case = await _record_ready()
+
+    await _record(eng, case, 6, _back(), _gone("checkout is fine again"))
+
+    assert _window_zero(case) == ("succeeded", 5, None, None)
+
+
+async def test_3_a_fallen_causes_pre_posit_row_anchors_nothing():
+    """A "not it" row at 3 naming the support of a cause first posited at 7, a
+    restart's relief at 4, the problem back at 6; then the cause falls, so the
+    confirmation pool is its fallen root and no hypothesis stands. The row
+    still predates that cause's first posit: window 0 does not fail."""
+    case, root, hyp = _identified_case(hypothesis_turn=7)
+    eng = _engine()
+    await _record(eng, case, 3, _cause_gone("pool size reads 100, not it"))
+    await _record(eng, case, 4, _gone("checkout returns 200 after the restart"))
+    await _record(eng, case, 6, _back())
+    hyp.state = HypothesisState.REFUTED
+    root.node_state = NodeState.REFUTED
+    case.progress.identified_cause_root_ids = [root.node_id]
+
+    assert fix_windows(case)[0].confirmed_cause_rows, "premise: the row binds"
+    assert _window_zero(case)[0] != "failed"
+
+
 # ---------------------------------------------------------------------------
 # 5-6. The inclusive end, and dating a re-fix after the relapse.
 # ---------------------------------------------------------------------------
+
+
+async def test_5_the_problem_back_in_the_next_fixs_execution_turn_is_a_relapse():
+    """Window 0 ends at the next dated fix's execution turn, inclusive for
+    persistence: the problem present in that turn, after window 0's relief,
+    is window 0's relapse, not the new fix's failure."""
+    eng, case = await _record_ready()
+    _accept(case, InvestigationActionType.SOLUTION, 8)
+
+    await _record(eng, case, 8, _back())
+
+    assert [(w.fix_turn, w.state, w.failure_turn) for w in fix_windows(case)] == [
+        (None, "failed", 8),
+        (8, "unknown", None),
+    ]
 
 
 async def test_6_a_re_fix_dated_to_its_report_keeps_window_0s_failure():
@@ -327,6 +440,50 @@ async def test_6_a_re_fix_dated_to_its_report_keeps_window_0s_failure():
     assert _window_zero(case) == ("failed", 5, 6, None)
     assert [(w.fix_turn, w.state) for w in fix_windows(case)][1:] == [(8, "succeeded")]
     assert assess_resolution_readiness(case).verdict == ResolutionReadiness.READY
+
+
+# ---------------------------------------------------------------------------
+# Readers of a failed window 0: the failure cycle and M6's refusal label.
+# ---------------------------------------------------------------------------
+
+
+async def test_a_late_registered_fix_counts_as_one_failed_attempt():
+    """#2427's undeclared lag: the fix reported at 10, registered at 11 beside
+    a 503 paste (window 0's relapse), 503 again at 13 (the fix's own failure).
+    One recorded attempt failed, so no fix-failure cycle."""
+    eng, case, _hyp = _identified()
+    await _reported(eng, case)
+    await _registered(eng, case, None, _ev(_PRESENT, "checkout returns 503 again"))
+    await _turn(eng, case, 13, _ev(_PRESENT, "checkout still returns 503"))
+
+    assert [(w.fix_turn, w.state, w.failure_turn) for w in fix_windows(case)] == [
+        (None, "failed", 11),
+        (11, "failed", 13),
+    ], "premise"
+    assert ProgressMonitor()._detect_fix_failure_cycle(case, "solution") is False
+
+
+@pytest.mark.parametrize("undatable", [False, True])
+async def test_a_relapse_keeps_the_undatable_acceptance_label(undatable):
+    """With a SOLUTION accepted but undated, every row is in window 0, and its
+    relapse keeps M6's ``undatable_acceptance`` label (a transition series kept
+    visible); without one, it reads ``relapse``."""
+    case, *_ = _identified_case()
+    if undatable:
+        case.proposed_actions.append(
+            ProposedAction(
+                case_id=case.case_id,
+                action_type=InvestigationActionType.SOLUTION,
+                description="raise max_connections to 100",
+                proposed_in_turn=3,
+                state="accepted",
+            )
+        )
+    _, case = await _relapsed(case=case)
+
+    assert _window_zero(case)[0] == "failed"
+    label = "undatable_acceptance" if undatable else "relapse"
+    assert _fix_failure_refusal(case, latest_decided_fix_window(case)) == label
 
 
 # ---------------------------------------------------------------------------
@@ -383,9 +540,18 @@ _MITIGATION = (
     "A restart, a failover or another workaround is a mitigation, recorded as "
     "one (symptom_absence only), never registered as a SOLUTION."
 )
+_SCOPE = (
+    "After a fix, one recorded here or one the user reports carrying out "
+    "outside the case"
+)
 _UNPROPOSED = (
-    "or, for a fix the user carried out that was never proposed, to "
-    "new_index_N naming it in solutions_to_add"
+    "or, for a fix the user carried out that was never proposed and only when "
+    "the root cause stands established, to new_index_N naming it in "
+    "solutions_to_add"
+)
+_UNPROPOSED_MITIGATION = (
+    "A restart, a failover or another workaround the user carried out is a "
+    "mitigation, never registered as a SOLUTION."
 )
 
 
@@ -403,7 +569,9 @@ def _stage_case(stage: str):
 
 @pytest.mark.parametrize("stage", ["diagnosis", "mitigation", "treatment", "inquiry"])
 def test_8_the_tree_steers_an_out_of_band_fix_on_every_investigating_stage(stage):
-    """The steer is scoped to after a fix: rows before any fix get none."""
+    """Every investigating stage renders the steer, DIAGNOSIS with no fix on
+    record included; its own text scopes it to rows after a fix, so a
+    diagnosis-time exclusion is not steered to bind. INQUIRY renders none."""
     case = _stage_case(stage)
     prompt = " ".join(
         get_prompt_for_case(
@@ -413,6 +581,7 @@ def test_8_the_tree_steers_an_out_of_band_fix_on_every_investigating_stage(stage
     investigating = stage != "inquiry"
     if investigating:
         assert case.current_stage.value == stage, "premise"
-    for text in (_RECHECKS_SCOPE, _PRESENT_RECHECKS, _REGISTER, _MITIGATION):
+    for text in (_SCOPE, _RECHECKS_SCOPE, _PRESENT_RECHECKS, _REGISTER, _MITIGATION):
         assert (text in prompt) is investigating
-    assert (_UNPROPOSED in prompt) is (stage == "diagnosis")
+    for text in (_UNPROPOSED, _UNPROPOSED_MITIGATION):
+        assert (text in prompt) is (stage == "diagnosis")

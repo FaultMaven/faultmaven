@@ -1111,10 +1111,12 @@ records only what it can substantiate:
   needs its own cause and problem observations before it resolves. Window 0
   — the rows before any dated fix, where an out-of-band fix lands — fails
   only on a relapse (#2501): the identified cause shown removed after it was
-  posited, then the problem seen gone, then seen present, up to and including
-  the first fix's execution turn. Persistence with no such relief fails
-  nothing, since there a causal_absence row is as likely a diagnosis-time
-  exclusion ("DNS ruled out") as a fix's outcome, and window 0 never carries
+  first posited (`CausalNode.root_first_attached_turn`, which a re-attach
+  never moves, so the failure stays failed), then the problem seen gone, then
+  seen present, up to and including the first fix's execution turn.
+  Persistence with no such relief fails nothing, since there a
+  causal_absence row is as likely a diagnosis-time exclusion ("DNS ruled
+  out") as a fix's outcome, and window 0 never carries
   a disconfirmation, so M6 acts on no undated fix. One more reader of the
   rows remains by design: the evidence arm's engine row still sets the
   disconfirmation window (§9.5), which can hold a SUCCEEDED window's rows

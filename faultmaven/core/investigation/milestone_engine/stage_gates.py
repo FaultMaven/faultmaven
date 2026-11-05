@@ -1410,13 +1410,15 @@ def _date_to_the_report(case: Case, target: Any, metadata: dict[str, Any]) -> No
     inferred from the evidence; ``registered_in_turn`` keeps this turn.
 
     Bounded so that no observation leaves the window that judged it. With no
-    fix dated before, window 0 takes no bound: a relapse of it at or before
+    fix dated before, window 0 takes no bound (#2501): a relapse of it before
     the previous turn reads the same (its end is inclusive, and the rows it
-    read are all at or before it), and a persistence row of this turn is the
-    paste the declaration makes post-fix, judged in the new window (#2501).
-    With one, its window must have FAILED before the previous turn (a failure
-    is final), and its disconfirmation must read the same with this fix dated
-    either way. Otherwise the declaration is ignored, with a line."""
+    read are all before it); a mixed paste in the previous turn (the problem
+    gone and present) can become its relapse once dating moves the gone rows
+    into the new window, the conservative direction; and a persistence row of
+    this turn is judged in the new window. With one, its window must have
+    FAILED before the previous turn (a failure is final), and its
+    disconfirmation must read the same with this fix dated either way.
+    Otherwise the declaration is ignored, with a line."""
     from faultmaven.core.investigation.cause_assurance import FIX_FAILED, fix_windows
 
     turn, previous = case.current_turn, case.current_turn - 1

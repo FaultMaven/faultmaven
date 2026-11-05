@@ -1342,11 +1342,12 @@ def fix_windows(
     with no cause re-check may be an implementation error).
 
     Window 0 fails only on a relapse (#2501, ``_window_zero_relapse``): the
-    identified cause shown removed after it was posited, then the problem
-    gone, then present. Persistence with no such relief fails nothing: before
-    any dated fix, a causal_absence row is as likely a diagnosis-time exclusion
-    ("DNS ruled out") as a fix's outcome. It never carries a disconfirmation,
-    so nothing destructive acts on an undated fix."""
+    identified cause shown removed after it was first posited, then the
+    problem gone, then present. Once failed it stays failed. Persistence with
+    no such relief fails nothing: before any dated fix, a causal_absence row
+    is as likely a diagnosis-time exclusion ("DNS ruled out") as a fix's
+    outcome. It never carries a disconfirmation, so nothing destructive acts
+    on an undated fix."""
     fixes = _dated_fix_turns(case)
     subjects = subject_index(case) if subjects is None else subjects
     # (category, subject, observed turn) of every bound row.
@@ -1441,17 +1442,19 @@ def _window_zero_relapse(
     case: "Case", bound, gone_turns, confirmed_cause_rows, subjects, end_turn
 ) -> tuple[int, int] | None:
     """``(relief_turn, failure_turn)`` when window 0 relapsed, else None
-    (#2501): the identified cause shown removed at or after its positing
-    (``_cause_posited_turn``: an earlier row observed something else gone),
-    then the problem shown gone, then a problem-bound SYMPTOM_EVIDENCE row in
-    a later turn, up to and including the next fix's execution turn. A turn
-    holding both reads as gone, as in a dated window."""
-    posited = _cause_posited_turn(case)
+    (#2501): the identified cause shown removed at or after it was first
+    posited (``_first_posited_turn``: an earlier row observed something else
+    gone), then the problem shown gone, then a problem-bound SYMPTOM_EVIDENCE
+    row in a later turn, up to and including the next fix's execution turn. A
+    turn holding both reads as gone, as in a dated window."""
+    if not confirmed_cause_rows:
+        return None
     removal = min(
         (
             turn
             for row in confirmed_cause_rows
-            if (turn := subjects.observed(row)) >= posited
+            if (floor := _first_posited_turn(case, subjects, row)) is not None
+            and (turn := subjects.observed(row)) >= floor
         ),
         default=None,
     )
@@ -1472,6 +1475,27 @@ def _window_zero_relapse(
         default=None,
     )
     return None if failure is None else (relief, failure)
+
+
+def _first_posited_turn(case: "Case", subjects, row) -> int | None:
+    """The first turn what cause-bound ``row`` re-checks was posited: the
+    earliest ``CausalNode.root_first_attached_turn`` of the roots it binds to
+    (a cluster counts as one cause), or a rootless pool hypothesis's
+    ``generated_at_turn``; None when it binds to nothing. Unlike
+    ``_cause_posited_turn``, the cause leg's floor, it never moves later, so a
+    window-0 failure read on it stays failed."""
+    nodes = getattr(case, "causal_nodes", None) or {}
+    hypotheses = getattr(case, "hypotheses", None) or {}
+    turns = [
+        (
+            nodes[target].root_first_attached_turn
+            if target in nodes
+            else hypotheses[target].generated_at_turn
+        )
+        for target in subjects.cause_targets(row.rechecks_evidence_id)
+        if target in nodes or hypotheses.get(target) is not None
+    ]
+    return min(turns, default=None)
 
 
 def latest_fix_window(case: "Case") -> FixWindow:
