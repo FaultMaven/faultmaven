@@ -90,8 +90,8 @@ Find the newest proposal or result on the Queue, the issue this prints:
      - **Pull it** if it cannot be refreshed (*To pull an item*, step 4, which closes the PR).
 
    If any is still open after that, queued or not, and is neither waiting on `main` or a service nor merge-ready at
-   its vouched head awaiting the owner's merge (carried: the proposal lists it under *Yours to run*), report it and
-   stop.
+   its vouched head awaiting the owner's merge or in the queue at it (carried: the proposal lists it under *Yours to
+   run*), report it and stop.
 2. **Each issue row**, taking the first that matches: **closed**, nothing to do; **open with its PR merged**, close it
    if everything it asked for is delivered, else edit it down to the remainder, title and body; **`pulled`, or its PR
    closed unmerged**, `pile:blocked` with `**Blocked on:** an owner ruling on …` naming what stopped it, unless an
@@ -164,11 +164,11 @@ existing worktree. When only the branch exists, add its worktree as *Lane rules*
 
 1. **Plan** it yourself on `origin/main`, posted on the issue as `## Plan — round <N>`. Items sharing a seam name
    their lead as `Shares lane with #<lead>`. The plan covers:
-   - **the root,** with its code points. The root is where the defect starts, however deep. When investigating
-     shows the cause sits in a deeper layer than the issue names, that deeper cause is this item's root and this
-     PR fixes it. Never fix a symptom and file its root. A root that needs a ruling or will not fit the size budget
-     pulls the item with that question, whose options include "mitigate the symptom now, with the root as its own
-     P1". Only the owner may choose that option;
+   - **the root,** with its code points. The root is where the defect starts, however deep. When investigating shows
+     the cause sits in a deeper layer than the issue names, that deeper cause is this item's root and this PR fixes
+     it. Never fix a symptom and file its root. A root that needs a ruling or will not fit the plan's product budget
+     pulls the item with that question, whose options include "mitigate the symptom now, with the root as its own P1".
+     Only the owner may choose that option;
    - **the change,** and what is out of scope;
    - **N,** for a duplicated rule, with the scan that counted it (run for the plan, not committed as a test);
    - **the consumers,** for a value whose meaning moves (the search that found them);
@@ -336,9 +336,9 @@ Filed: #<n> (P<k>) — <what, found while working on #<m>> — one line each
 Waiting on you: queue each PR at its vouched head: gh pr merge <n> --match-head-commit <sha>
 ```
 
-Post it when every dispatched item is merged, merge-ready, closed, pulled or waiting, or before the session ends, with
-a row per item and its PR or branch. Every report states those four numbers and lists every issue filed. It carries
-forward a row for every PR still open from an earlier round, until that PR merges or closes. Then stop.
+Post it when every dispatched item is merged, merge-ready, closed, pulled or waiting, with a row per item and its PR.
+Every report states those four numbers and lists every issue filed. It carries forward a row for every PR still open
+from an earlier round, until that PR merges or closes. Then stop.
 
 ## Lane rules (sent verbatim)
 
