@@ -71,8 +71,8 @@ Find the newest proposal or result on the Queue, the issue this prints:
      the unreviewed commits, in `pile:blocked` with `**Blocked on:** an owner ruling on how to review them`.
    - **Open, reported `waiting on main` or `waiting on <service>`:** while `main` is red or the service is down,
      leave it open; it does not stop the round. Once it is green or back, refresh it (below).
-   - **Open, with no merge-ready:** if an item it names (`Closes`/`Refs`) is in `pile:blocked`, a pull was
-     interrupted: finish it (*To pull an item*). Every ready item it names is carried and resumes in step 4.
+   - **Open, with no merge-ready:** a pull or a build was interrupted. If its item is in `pile:blocked`, finish the
+     pull (*To pull an item*, step 4). Otherwise report it and stop.
    - **Open after a merge-ready:** read its queue state:
 
      ```bash
@@ -87,9 +87,11 @@ Find the newest proposal or result on the Queue, the issue this prints:
        change made (by a lane, or by you for a conflict); get an independent delta (step 4.5) when code changed;
        re-run CI; post merge-ready again.
      - **In the queue at its vouched head:** leave it alone.
-     - **Pull it** if it cannot be refreshed (*To pull an item*).
+     - **Pull it** if it cannot be refreshed (*To pull an item*, step 4, which closes the PR).
 
-   Every PR still open after that is carried into the proposal and named again in the next result.
+   If any is still open after that, queued or not, and is neither waiting on `main` or a service nor merge-ready at
+   its vouched head awaiting the owner's merge (carried: the proposal lists it under *Yours to run*), report it and
+   stop.
 2. **Each issue row**, taking the first that matches: **closed**, nothing to do; **open with its PR merged**, close it
    if everything it asked for is delivered, else edit it down to the remainder, title and body; **`pulled`, or its PR
    closed unmerged**, `pile:blocked` with `**Blocked on:** an owner ruling on …` naming what stopped it, unless an
@@ -110,8 +112,8 @@ Find the newest proposal or result on the Queue, the issue this prints:
    - From `pile:ready` only. **Design flaws first:** for each item on a seam with earlier fixes, ask whether its root
      keeps producing the same type of defect, naming the chain; confirmed ones come in the order the owner last
      approved. Then `P1`, `P2`, `P3`, oldest first within each. One slot stays reserved for the oldest `P2` waiting
-     over 30 days, even when design flaws could fill it. Skip an item an open PR carries, unless step 1 carried that
-     PR to resume: list it under *Building* as carried.
+     over 30 days, even when design flaws could fill it. Skip an item that an open PR from an earlier
+     round still carries.
    - Items on one seam share a lane and a PR.
    - Size the round by review effort: at most 5 items and 3 lanes, plus up to 3 **Next** items the approval also
      covers, none a migration. An item touching a security boundary or storage takes its own lane and PR; a migration
@@ -140,8 +142,7 @@ Find the newest proposal or result on the Queue, the issue this prints:
 
 Record each ruling on its own issue under `## Ruling`, then place the issue: ready when it implies work (the ruling is
 its spec, with its priority), blocked with a `condition —` line when it defers, closed, quoting it, when it implies
-none, and yours when only the owner can run it. A ruling that resumes a pulled item on its closed
-PR reopens it (a reopen re-runs CI). If you cannot tell where a ruling places the issue, that is the next
+none, and yours when only the owner can run it. If you cannot tell where a ruling places the issue, that is the next
 question; unanswered questions stay where they are.
 
 ## 4. Build
@@ -156,13 +157,10 @@ gh pr list -R FaultMaven/faultmaven --state all --limit 200 --search "created:>=
   --json number,headRefName,state --jq '.[] | select(.state != "CLOSED") | select(.headRefName | test("/<n>-"))'
 ```
 
-A skipped item, or a ready one that an open PR step 1 carried still names, resumes from that PR's newest
-`## Merge-ready`, `## Delta` or `## Review`: at *Fix and delta* (with a fresh lane if its lane has ended) while a
-`fixed` landing is outstanding and no commit follows that head; else only the commits since that head get a delta
-(step 4.5), never a new review, and with none, it resumes at *Verify*, then *Merge-ready*. An item with a
-`## Plan — round <N>` but no PR resumes from that plan, in its existing worktree, unless a later ruling re-plans or
-mitigates it, which builds on a fresh branch (*Lane rules*). When only the branch exists, add its worktree as
-*Lane rules* says.
+A skipped item resumes from its PR's newest `## Merge-ready`, `## Delta` or `## Review`. If that names an older head,
+only the commits since it get a delta (step 4.5), never a new review; with none of them, it resumes at *Verify*.
+An item with a `## Plan — round <N>` but no PR resumes from that plan, in its
+existing worktree. When only the branch exists, add its worktree as *Lane rules* says.
 
 1. **Plan** it yourself on `origin/main`, posted on the issue as `## Plan — round <N>`. Items sharing a seam name
    their lead as `Shares lane with #<lead>`. The plan covers:
@@ -249,10 +247,10 @@ mitigates it, which builds on a fresh branch (*Lane rules*). When only the branc
      finding pulls the item, unless each such finding is a comment, docstring, document or missing test whose fix
      touches only comments, docstrings no code reads (not a model's or a route's), `docs/` or `tests/`: that fix,
      if its commit keeps to them, gets one more delta, once, outside the cap, where a `fixed` finding pulls the item.
-   - **Size.** Passing twice a budget (the plan's product or test lines, or one an owner ruling set; never one you
-     restated) and 50 product or 100 test lines over it pulls the item, as does growth carrying an owner-reserved
-     decision, or a plan with no design critique passing 300 product lines (a ruling to build past 300 first gets the
-     plan its critique). A smaller overrun is stated, with the new estimate, in the delta and the merge-ready.
+   - **Size.** Passing twice the plan's product budget (or one an owner ruling set; never one you restated) and 50
+     lines over it pulls the item, as does growth carrying an owner-reserved decision. Test lines never count
+     against it (#2198). Any smaller overrun, and any test overrun, is stated, with the new estimate, in the delta and
+     the merge-ready.
    - **Never review the same code twice.** An item gets at most one design critique, one adversarial review and two
      fix deltas, plus the text-or-test one above; more fix rounds pull it to the owner. A re-entry, a refresh, a
      conflict resolution or a change the owner asks for is a delta of only what is new, and it does not count against
@@ -304,11 +302,9 @@ To **pull** an item:
 1. stop its lane;
 2. move it to `pile:blocked` with `**Blocked on:** an owner ruling on …`, stating what stopped it and the options.
    For size or a deep root, the options are: build at the new estimate, mitigate now with the root as its own P1,
-   or drop. For the fix cap: one more fix and delta, re-plan, or drop. An item taken out of a shared PR is rebuilt on
-   its own branch on any ruling that builds it;
-3. close its PR with a `## Pulled` comment saying why. On a PR shared with other items, have a lane take the item's
-   part out instead, then remove its `Closes`/`Refs` line (`gh api -X PATCH`, read back); if the PR had a
-   merge-ready, post `## Pulled` on it too, so that merge-ready vouches for nothing.
+   or drop. For the fix cap: one more fix and delta, re-plan, or drop;
+3. close its PR with a `## Pulled` comment saying why. On a PR shared with other items, have the lane take the
+   item's part out instead, and remove its `Closes`/`Refs` line from the PR body (`gh api -X PATCH`, read back).
    Then check that no closing keyword names it, which this must print `none` for:
 
    ```bash
@@ -317,7 +313,8 @@ To **pull** an item:
      | grep -iqE "$re" && echo named || echo none
    ```
 
-   A commit message that names it pulls the whole PR. Then carry on with the others.
+   A commit message that names it pulls the whole PR;
+4. carry on with the others.
 
 **Filing what you find.** Whether a finding turns up while you investigate, plan, build or review:
 - **File it** when it is **true** (reproduced, or shown at `path:line` on `origin/main`), **valid** (a real defect or
@@ -349,10 +346,8 @@ forward a row for every PR still open from an earlier round, until that PR merge
 - **Worktree**, as one command:
   `git fetch origin main && git worktree add -b fix/<n>-<slug> /home/swhouse/product/faultmaven/.claude/worktrees/<n> origin/main`.
   If that worktree exists, work in it. If only the branch exists:
-  `git worktree add /home/swhouse/product/faultmaven/.claude/worktrees/<n> fix/<n>-<slug>`. A pulled item's rebuild (its
-  PR closed, its part taken out of a shared PR, or pulled before its PR opened) uses `<n>-r<r>` for `<n>` in the path
-  and `<slug>-r<r>` for `<slug>`, `<r>` counting rebuilds, on its own lane whatever its plan shares. Never work in the
-  main checkout, and never delete its `./data`.
+  `git worktree add /home/swhouse/product/faultmaven/.claude/worktrees/<n> fix/<n>-<slug>`. Never work in the main
+  checkout, and never delete its `./data`.
 - **Before pushing,** run `black --check faultmaven/ tests/`, `ruff check faultmaven/ tests/`, `lint-imports`, and
   the tests that cover the change, plus `python scripts/check_contract_version.py` if `docs/reference/api/`
   moved. Not the whole suite: CI runs it.
