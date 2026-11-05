@@ -1162,28 +1162,68 @@ def execute_user_closure(case: Case, user_id: str) -> ClosureReason:
     previous REST route mutated ``case.state`` directly and died on the
     terminal-state validator (no ``closed_at``).
 
+    A case the chat path would pivot to a resolve offer (INV-37,
+    ``close_pivots_to_resolve``) is closed as the user's decline of that
+    resolution (#2418): an open resolve offer is answered ``declined``, or,
+    with none open, the resolve offer the pivot would open is opened and
+    answered ``declined``. The reason then derives as
+    ``resolution_declined``, the same record the chat path's
+    decline-then-close leaves.
+
     Mutates ``case`` in place; the caller owns persistence. Returns the
-    derived closure_reason.
+    derived closure_reason. ``user_id`` must be the case's effective driver:
+    the decline is answered as that user (``require_answerer``).
 
     Raises:
         ValueError: If the case is not in a closable (INQUIRY or
             INVESTIGATING) state — callers should pre-check terminal
-            states and surface those as a conflict.
+            states and surface those as a conflict — or, on a case that
+            qualifies for RESOLVED, ``user_id`` is not its effective driver.
     """
     from faultmaven.core.investigation.problem_status import cancel_revision
 
     # The user's own close moves past a revision awaiting re-confirmation: it
     # lapses (it is not declined), and the reason derives from where the case
-    # stood before the revision was proposed. An open resolve or close offer
-    # lapses with it: the case is closing whatever was offered.
+    # stood before the revision was proposed.
     cancel_revision(case, via=AnswerVia.MENU, answer=AnswerKind.LAPSED)
+    qualifies = case.state == CaseState.INVESTIGATING and close_pivots_to_resolve(
+        case, closure_verdict(case)
+    )
+    # An open offer lapses: the case is closing whatever was offered. On a
+    # case that qualifies, an open resolve offer is the one the close answers.
     offer = open_terminal_offer(case)
-    if offer is not None:
+    if offer is not None and not (qualifies and offer.kind == OfferKind.RESOLVE):
         case.offer_record = answer_offer(
             case,
             proposal_id=offer.proposal_id,
             answer=AnswerKind.LAPSED,
             via=AnswerVia.MENU,
+        )
+        offer = None
+    if qualifies:
+        if offer is None:
+            # The resolve offer the chat path's pivot opens. A menu basis is
+            # user-origin, so no decline or turn quiet refuses it.
+            record = open_disposition_offer(
+                case,
+                kind=OfferKind.RESOLVE,
+                basis=OfferBasis.MENU,
+                summary=assess_closure_readiness(case).message,
+                pivoted_from_close=True,
+            )
+            if record is None or record.open is None:
+                raise ValueError(
+                    f"case {case.case_id}: the resolve offer a close declines "
+                    "was refused"
+                )
+            case.offer_record = record
+            offer = record.open
+        case.offer_record = answer_offer(
+            case,
+            proposal_id=offer.proposal_id,
+            answer=AnswerKind.DECLINED,
+            via=AnswerVia.MENU,
+            actor_id=user_id,
         )
     reason = derive_closure_reason(case)
     _execute_closed_transition(case, user_id, reason)

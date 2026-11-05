@@ -2305,7 +2305,12 @@ when the case never left INQUIRY; `closed_false_alarm` when the evidence showed
 the reported symptom was never present (`problem_status` INVALIDATED —
 [§ Verifying the problem statement](#141-verifying-the-problem-statement-three-outcomes));
 `resolution_declined` when the fix was confirmed to work and the user declined to
-mark it resolved (a resolve decline stands, #2360);
+mark it resolved (a resolve decline stands, #2360). A direct REST close
+(`POST /cases/{id}/close`) of a case on which a close would pivot to the resolve
+offer (INV-37, `close_pivots_to_resolve`, a pending check included) is that
+decline: `execute_user_closure` answers the resolve offer `declined` (the open
+one, or the one the pivot would open) before deriving, so it closes as
+`resolution_declined` (#2418);
 `solution_deferred`
 when a fix is documented but was never applied; `closed_rca_infeasible` when RCA
 was declared infeasible with a rationale; `mitigation_sufficient` when a
