@@ -283,7 +283,7 @@ def test_after_a_relapse_of_a_cause_that_already_fell_the_notice_offers_the_re_a
     _failed_fix(case, fix_turn=8, outcome_turn=9)
     _recompute_at(case, 9)
     _assert_demoted(case, root, hyp)
-    _accept(case, InvestigationActionType.SOLUTION, 12)
+    _accept(case, InvestigationActionType.SOLUTION, 12, [root.node_id])
     case.evidence += [
         _row(
             "second_cause_gone",

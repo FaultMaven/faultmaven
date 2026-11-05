@@ -1016,8 +1016,9 @@ records only what it can substantiate:
     window's relapse, not the next fix's failure). The windows' FAILED and
     observed readings bind cause rows against the WINDOW pool — the
     confirmation pool plus the roots the last recompute identified and any
-    root carrying M6's own disconfirmation — so a failure stays observed
-    across a demotion, while SUCCEEDED and the cause leg bind against the
+    root carrying M6's own disconfirmation — and the nodes the window's fix
+    named (below), so a failure stays observed across a demotion and a
+    deepening, while SUCCEEDED and the cause leg bind against the
     confirmation pool only. A
     symptom about a sibling candidate, a refuted guess or a probe's own
     failure names no verifying row and fails nothing; with no cause in the
@@ -1035,6 +1036,18 @@ records only what it can substantiate:
     a re-check of a fallen cause, bound only through the window pool, can
     fail the window but never make it SUCCEEDED. Otherwise the window stays
     UNKNOWN.
+  - **A fix records what it acts on (#2036, D2.3).** Each SOLUTION's
+    `target_ids` is set once, at the end of the turn it is minted or
+    accepted in: the emission's `node_ref`, else the confirmation pool's
+    roots, else the root of the root-cause conclusion, else a validated
+    rootless hypothesis. A window's targets are the union over its turn's
+    fixes, and its **kind** is read at read time: a **remediation** when
+    they meet the confirmation pool, else an **interception** (§7.5), an
+    untargeted fix included. Only a remediation can make its window
+    SUCCEEDED, and a disconfirmation needs the targets to meet the window
+    pool: a renewal of a root later deepened past, or a fix of a sibling or
+    of an intermediate rung, can relieve the problem but confirms and
+    disproves nothing (M6's refusal label `interception`).
 
   The readiness gate confirms a resolution only inside the **latest observed
   window** (`confirming_window`), and not when that window FAILED. A window
@@ -1064,10 +1077,10 @@ records only what it can substantiate:
   pair M6's row names; a newer fix still unobserved does not erase it: "still
   503, so I'm putting pgbouncer in" records the failure and the next fix in
   one turn), the fix ran (or, dated to an earlier report, registered) at or after the hypothesis was proposed, and the fix was a fix
-  *of* that cause — not every cause row of the window is affirmatively about
-  another candidate chain (`BearingFrame.about_another_chain`, the confirm
-  stamp's mis-citation guard); a failed fix of another candidate is no
-  resolution either, but it disconfirms that candidate, not this one. It
+  *of* that cause — its recorded target names the root, and a cause row
+  bound to that root gives the disconfirmation (#2036, D2.3); a failed fix
+  of another candidate is no resolution either, but it disconfirms that
+  candidate, not this one. It
   demotes without waiting for the model to refute (§9.3). It needs the cause
   row: "I ran it, still failing" with no cause re-check may be an
   implementation error (the cause is still present), which disconfirms
@@ -1111,16 +1124,15 @@ records only what it can substantiate:
   needs its own cause and problem observations before it resolves. Window 0
   — the rows before any dated fix, where an out-of-band fix lands — fails
   only on a relapse (#2501): the identified cause shown removed after it was
-  first posited (`CausalNode.root_first_attached_turn`, which a later attach
-  of the same root does not move, save once on a root stored before #2036),
-  then the problem seen gone, then seen present, up to and including the
-  first fix's execution turn. Deepening the cause re-scopes window 0 to the
-  new root only when the relapse's cause row re-checked a row supporting the
-  old root alone: then the new root's removal, then the problem gone, is a
-  new out-of-band fix that window 0 can confirm. A row that also supports the
-  new root binds to their cluster, is floored at the cluster's earliest first
-  attach, and its relapse stands until a dated fix. Reading a window against
-  its fix's own cause is deferred to #2036 (Phase 3, D2.3). Persistence with
+  first posited (the earliest `CausalNode.root_first_attached_turn` of the
+  roots the row supports, which a later attach of the same root does not
+  move, save once on a root stored with neither key: last attached before
+  #2036, or never attached; a re-check after that attach then confirms
+  window 0), then the problem seen gone, then seen present, up to and
+  including the first fix's execution turn. Window 0 binds against the
+  confirmation roots plus every root deepened into one of them
+  (`deepened_to`, transitively), so its relapse stands after the cause is
+  deepened, however often, until a dated fix (#2036, D2.3). Persistence with
   no such relief fails nothing, since there a causal_absence row is as likely
   a diagnosis-time exclusion ("DNS ruled out") as a fix's outcome, and window
   0 never carries a disconfirmation, so M6 acts on no undated fix. One more
@@ -1230,6 +1242,13 @@ feasibility, not strategy**. `post_mortem` cases simply tend to have no Axis-B g
 and feasible RCA (→ pursue the terminal cause); live incidents tend to have an
 Axis-B gap (→ mitigation insert). Strategy *correlates* with the axes; it does not
 override them.
+
+**The engine reads the quadrant off the fix's target (#2036, D2.3).** A fix
+whose recorded node is the case's cause is a **remediation**; one whose node is
+anything else (an intermediate state it renews or restarts, a sibling, a root
+since deepened past) or none is an **interception**. A resolution is confirmed
+only in a remediation's window (§7.3), so an interception relieves `D` but never
+earns RESOLVED, and its failure disproves nothing about the root.
 
 **Quadrant → disposition** (closes the loop with the absence-evidence resolution gate):
 

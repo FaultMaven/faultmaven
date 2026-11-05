@@ -32,6 +32,7 @@ from tests.unit.core.investigation.bound_rows import (
     VERIFYING_ID,
     bound_row,
     ensure_subjects,
+    fix_of_the_cause,
 )
 
 #: Both legs of a resolution confirmation: the cause gone, the problem gone.
@@ -466,6 +467,8 @@ class TestTheProblemLegIsAnchoredOnTheFix:
         case.evidence = list(rows)
         case.proposed_actions = list(actions)
         ensure_subjects(case)
+        for action in actions:
+            action.target_ids = fix_of_the_cause(case)  # a fix of the cause
         return case
 
     def test_the_symptom_checked_before_the_cause_counts_after_a_recorded_fix(self):

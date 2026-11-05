@@ -7,7 +7,9 @@ resolution stands, so a model could narrate a readiness the engine did not
 hold (#2427, turn 11). It shows, one line each:
 
 - the latest fix attempts (accepted SOLUTIONs, by their execution turn) with
-  their window state (``cause_assurance.fix_windows``);
+  what each acts on, its window's kind (a remediation of the root, or an
+  interception elsewhere, #2036 D2.3) and its window state
+  (``cause_assurance.fix_windows``);
 - the two legs a resolution reads (``cause_elimination_rows`` and
   ``symptom_elimination_rows``), by row id, and the rows that showed the
   problem with no re-check in the problem leg;
@@ -29,6 +31,7 @@ the long post-fix cases that need this block bring.
 
 from faultmaven.core.investigation.cause_assurance import (
     FIX_FAILED,
+    FIX_INTERCEPTION,
     FIX_SUCCEEDED,
     SUBJECT_PROBLEM,
     cause_recheck_status,
@@ -119,12 +122,21 @@ def _attempt_lines(case: Case, attempts: list, windows, subjects, owing) -> list
         description = " ".join((a.description or "").split())
         if len(description) > _DESCRIPTION_CHARS:
             description = description[: _DESCRIPTION_CHARS - 1].rstrip() + "…"
-        state = _window_state(case, by_turn.get(a.accepted_in_turn), subjects, owing)
+        window = by_turn.get(a.accepted_in_turn)
+        state = _window_state(case, window, subjects, owing)
         lines.append(
             f"  - [{a.action_id}] {description} — executed turn "
-            f"{a.accepted_in_turn}: {state}"
+            f"{a.accepted_in_turn}, {_kind(a, window)}: {state}"
         )
     return lines
+
+
+def _kind(action, window) -> str:
+    """What the attempt acts on, and its window's kind (#2036 D2.3)."""
+    acted = ", ".join(action.target_ids or []) or "no node recorded"
+    if window is not None and window.kind == FIX_INTERCEPTION:
+        return f"an interception at {acted}, not the root"
+    return f"a remediation of {acted}"
 
 
 def _leg_lines(case: Case, windows, subjects, status, cause_rows, problem_rows):

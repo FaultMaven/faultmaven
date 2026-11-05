@@ -263,9 +263,11 @@ The process:
    - Form new hypotheses if needed (hypotheses_to_add)
    - Link new evidence to hypotheses (hypothesis_evidence_links)
    - Emit a SolutionToAdd record in solutions_to_add describing the revised fix
-     (description, solution_type, estimated_impact, risks, commands). Without this,
-     the backend will not register a pending action and the user's execution of the
-     revised fix will not be recognized.
+     (description, solution_type, estimated_impact, risks, commands, and `node_ref`:
+     the `cn_...` id of the node it acts on, the root cause's for a fix of the root).
+     Without this, the backend will not register a pending action and the user's
+     execution of the revised fix will not be recognized. Only a fix whose
+     node_ref is the root cause can confirm the cause gone.
    - When the user runs the revised fix, set `solution_accepted` with
      `accepted_action_ref` naming its ACTION_ID: after an earlier fix, an
      acceptance registers only the fix it names.

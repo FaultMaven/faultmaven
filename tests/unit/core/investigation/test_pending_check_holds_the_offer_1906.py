@@ -72,6 +72,7 @@ from tests.unit.core.investigation.bound_rows import (
     VERIFYING_ID,
     bound_row,
     ensure_subjects,
+    fix_of_the_cause,
     upload,
 )
 from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
@@ -161,6 +162,7 @@ def _fixed_case(fix_turn: int = 6):
             proposed_in_turn=fix_turn - 1,
             accepted_in_turn=fix_turn,
             state="accepted",
+            target_ids=fix_of_the_cause(case),
         )
     )
     case.current_turn = fix_turn

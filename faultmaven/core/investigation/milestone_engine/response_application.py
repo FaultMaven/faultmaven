@@ -8,6 +8,12 @@ from uuid import uuid4
 from faultmaven.core.investigation.causal_graph.similarity import (
     find_duplicate_hypothesis,
 )
+from faultmaven.core.investigation.cause_assurance import (
+    FIX_INTERCEPTION,
+    default_fix_targets,
+    fix_windows,
+    subject_index,
+)
 from faultmaven.core.investigation.confidence_repair import short_repr
 from faultmaven.core.investigation.lifecycle_metrics import (
     hypothesis_dedup_skipped_total,
@@ -111,6 +117,7 @@ from .milestone_inference import (
 from .stage_gates import (
     CARRIED_FIX_KEY,
     FIX_JUSTIFICATION_KEY,
+    FIX_TARGETS_TO_SETTLE_KEY,
     _add_system_feedback,
     _apply_stage_gate_signals,
     _case_has_symptom_evidence,
@@ -242,6 +249,72 @@ def _record_verifying_rows(case: Case, updates: Any, metadata: dict[str, Any]) -
         record_verifying_rows(case, cited)
     elif pv is not None and not pv.verifying_evidence_ids and cited:
         record_verifying_rows(case, cited)
+
+
+def _settle_fix_targets(case: Case, metadata: dict[str, Any]) -> bool:
+    """Give each SOLUTION this apply minted or accepted, and that has no target
+    yet, what it acts on (``ProposedAction.target_ids``, #2036 D2.3), at
+    settled time: after the recompute, so a cause identified or deepened this
+    turn is the one read. The emission's ``node_ref`` (a ``new_index_N``
+    resolved through this turn's created nodes) when it names a node, else
+    ``cause_assurance.default_fix_targets``. A target is never rewritten: a
+    restatement keeps its action and stashes no ``node_ref``, and a fix of
+    another node is a new action. Returns whether any target was set."""
+    settle = metadata.get(FIX_TARGETS_TO_SETTLE_KEY) or {}
+    created = metadata.get("chain_nodes_created") or []
+    settled = False
+    for action in case.proposed_actions:
+        if (
+            action.action_id not in settle
+            or action.target_ids
+            or action.action_type != InvestigationActionType.SOLUTION
+        ):
+            continue
+        ref = settle[action.action_id]
+        if isinstance(ref, str) and ref.startswith("new_index_"):
+            index = ref[len("new_index_") :]
+            ref = (
+                created[int(index)]
+                if index.isdigit() and int(index) < len(created)
+                else None
+            )
+        action.target_ids = (
+            [ref] if ref in case.causal_nodes else default_fix_targets(case)
+        )
+        settled = settled or bool(action.target_ids)
+    return settled
+
+
+def _flag_interception_fixes(case: Case, metadata: dict[str, Any]) -> None:
+    """One line per fix this apply registered that is an interception
+    (``FixWindow.kind``): it names the node the fix acts on and the root, so
+    the model proposes a fix of the root rather than waiting on a re-check
+    that cannot confirm (#2036 D2.3)."""
+    settle = metadata.get(FIX_TARGETS_TO_SETTLE_KEY) or {}
+    if not settle:
+        return
+    subjects = subject_index(case)
+    windows = {w.fix_turn: w for w in fix_windows(case, subjects)}
+    pool = subjects.pool_roots | subjects.pool_hypotheses
+    root = ", ".join(sorted(pool)) or "none identified yet"
+    for action in case.proposed_actions:
+        window = windows.get(action.accepted_in_turn)
+        if (
+            action.action_id in settle
+            and action.state == "accepted"
+            and window is not None
+            and window.kind == FIX_INTERCEPTION
+        ):
+            acted = ", ".join(action.target_ids) or "no node on record"
+            _add_system_feedback(
+                metadata,
+                f"SYSTEM: The fix registered as {action.action_id} acts on "
+                f"{acted}, not the root cause ({root}): it can relieve the "
+                "problem, but no re-check after it confirms or disproves the "
+                "cause. Once the root's fix is known, propose it as a "
+                "SolutionToAdd with node_ref naming the root, and register it "
+                "once the user says it ran.",
+            )
 
 
 #: The state-update fields that are cause work. While a revised statement
@@ -1597,6 +1670,11 @@ class ResponseApplier:
                     downgrade_reason=downgrade_reason,
                 )
                 case.proposed_actions.append(proposed_action)
+                if action_type == InvestigationActionType.SOLUTION:
+                    # Its target is read at settled time (#2036 D2.3).
+                    metadata.setdefault(FIX_TARGETS_TO_SETTLE_KEY, {})[
+                        proposed_action.action_id
+                    ] = node_ref
                 solution_slots.append(proposed_action)
                 if s_item.solution_type != SolutionType.WORKAROUND:
                     fix_slots.append(proposed_action)
@@ -1724,13 +1802,29 @@ class ResponseApplier:
         # deployment (no provider_name) — the helper reads the configured chat
         # provider off it; a partially constructed engine (some fixtures omit
         # llm_provider) degrades to "unknown" rather than raising.
-        prior_cause_state = _recompute_assessment_state(
-            case,
-            exclusion_survivors=metadata.get("deductive_survivor_ids", frozenset()),
-            rcc_authored_this_turn=metadata.get("rcc_authored_this_turn", False),
-            metadata=metadata,
-            provider_name=_resolve_chat_provider_name(self.deps.llm_provider),
-        )
+        recorded_ids = list(case.progress.identified_cause_root_ids or [])
+        feedback = metadata.get("system_feedback")
+
+        def recompute():
+            return _recompute_assessment_state(
+                case,
+                exclusion_survivors=metadata.get("deductive_survivor_ids", frozenset()),
+                rcc_authored_this_turn=metadata.get("rcc_authored_this_turn", False),
+                metadata=metadata,
+                provider_name=_resolve_chat_provider_name(self.deps.llm_provider),
+            )
+
+        prior_cause_state = recompute()
+        if _settle_fix_targets(case, metadata):
+            # M6 and the windows ran before this turn's fixes had a target:
+            # read the turn once more with them, from the identification it
+            # started from and with the first pass's notices replaced (#2036).
+            case.progress.identified_cause_root_ids = recorded_ids
+            metadata.pop("system_feedback", None)
+            if feedback is not None:
+                metadata["system_feedback"] = feedback
+            recompute()
+        _flag_interception_fixes(case, metadata)
 
         # KB-remediation pre-fetch on the cause_state→IDENTIFIED edge (INV-35):
         # cause_state is engine-derived above, so this warm-up fires the turn it

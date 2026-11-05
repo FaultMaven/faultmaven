@@ -8,6 +8,7 @@ from uuid import uuid4
 from faultmaven.core.investigation.cause_assurance import (
     ENGINE_EVIDENCE_AUTHOR,
     FIX_FAILED,
+    FIX_INTERCEPTION,
     FIX_SUCCEEDED,
     FixWindow,
     counterfactual_link_decisive,
@@ -199,9 +200,11 @@ def failed_fix_of(case: Case, hyp: Hypothesis) -> FixWindow | None:
     persisting, with no problem-gone row in between — a newer fix still waiting
     on its first observation does not erase that); the fix ran at/after the
     hypothesis existed (a fix can only have addressed a cause that existed when
-    it ran); and the fix was a fix OF this cause — one of the window's cause
-    rows names a row supporting this root's cause (#1906 D1,
-    ``SubjectIndex.addresses``; the rows' wording decides nothing). The
+    it ran); and the fix was a fix OF this cause — its recorded target names
+    this root (``FixWindow.targets``, #2036 D2.3), and a cause row bound to it
+    gives the disconfirmation (``FixWindow.disconfirming_rows``,
+    ``SubjectIndex.addresses``; the rows' wording decides nothing): a fix of
+    B followed by a re-check of a fallen A disproves neither. The
     window's outcome is shared with
     the readiness gate, which also stops reading a RELAPSED fix as a
     resolution; M6 does not demote on one, because the problem seen gone after
@@ -217,10 +220,12 @@ def failed_fix_of(case: Case, hyp: Hypothesis) -> FixWindow | None:
         return None
     if (getattr(hyp, "generated_at_turn", 0) or 0) > _registration_turn(case, window):
         return None
+    if root.node_id not in window.targets:
+        return None
     subjects = subject_index(case)
     if not any(
-        subjects.addresses(row, {root.node_id}, windows=True)
-        for row in window.cause_rows
+        subjects.addresses(row, {root.node_id}, roots=window.binding)
+        for row in window.disconfirming_rows
     ):
         return None
     return window
@@ -380,13 +385,15 @@ def _fix_failure_refusal(case: Case, decided: FixWindow | None) -> str | None:
     not erase it. A relapse — the problem seen gone after the fix, then seen
     again — establishes no disconfirmation (``FixWindow.disconfirms_cause``).
     A relapsed window 0 on a case with an undatable acceptance keeps that
-    label, so the transition series stays visible (#2501)."""
+    label, so the transition series stays visible (#2501). A failed
+    interception, a fix of another node or of none recorded, establishes none
+    either (#2036 D2.3)."""
     if decided is not None and decided.state == FIX_FAILED:
         if decided.disconfirms_cause:
             return None
         if decided.fix_turn is None and _has_undatable_solution_acceptance(case):
             return "undatable_acceptance"
-        return "relapse"
+        return "interception" if decided.kind == FIX_INTERCEPTION else "relapse"
     latest = fix_windows(case)[-1]
     if latest.fix_turn is None:
         # Two different worlds, separately labeled: nothing was ever tried, vs

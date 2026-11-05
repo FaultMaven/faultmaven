@@ -300,6 +300,11 @@ node: that splits one cause across duplicate roots and prevents it from validati
    any harvested runbook carry is rendered from these nodes, so a factor you fold
    into prose instead of modelling is a factor the record loses — and a fix that
    addressed two conditions will read as a fix for one.
+5. Every fix you propose in `solutions_to_add` names the node it acts on in
+   `node_ref` (an existing `cn_...` id, or `new_index_N` for a node you emit
+   this turn). Only a fix whose node is the root cause can confirm it: renewing
+   or restarting an intermediate state is an interception, so its node_ref is
+   that state's node, not the root.
 
 Example (TLS handshake failures). The turn the expiry is found, it is the deepest
 cause you can posit:

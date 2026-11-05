@@ -30,6 +30,7 @@ from typing import Any, Callable, Iterable, Optional
 from faultmaven.core.investigation.cause_assurance import (
     CONFIRMED_RCC_LIKELIHOOD_FLOOR,
     FIX_FAILED,
+    FIX_INTERCEPTION,
     SUBJECT_PROBLEM,
     CauseAssuranceGrade,
     SubjectIndex,
@@ -1289,8 +1290,14 @@ def _relief_without_cause_recheck(
     the problem and dated by their data (#1906 D1, #2145), as the windows
     read them. A cause re-check counts only when it could confirm
     (``FixWindow.confirmed_cause_rows``): a re-check of a fallen cause after
-    another cause's fix still leaves the cause leg owed."""
-    if window.fix_turn is None or window.confirmed_cause_rows:
+    another cause's fix still leaves the cause leg owed. Never on an
+    interception (#2036 D2.3): no re-check confirms it, so the ask is a fix
+    of the root."""
+    if (
+        window.fix_turn is None
+        or window.confirmed_cause_rows
+        or window.kind == FIX_INTERCEPTION
+    ):
         return False
     subjects = subject_index(case) if subjects is None else subjects
     latest: dict = {}
@@ -1410,12 +1417,41 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
             missing=missing,
         )
 
+    # The latest fix acted on another node, or on none recorded (#2036 D2.3): an
+    # interception, which nothing after it confirms, so a re-check would loop.
+    # A resolution needs a fix of the root.
+    window = latest_fix_window(case)
+    if window.kind == FIX_INTERCEPTION:
+        nodes = getattr(case, "causal_nodes", None) or {}
+        acted = "; ".join(
+            f'"{_clip(nodes[t].statement)}"' for t in window.targets if t in nodes
+        )
+        what = (
+            f"acted on {acted}, not the root cause"
+            if acted
+            else "isn't recorded as a fix of the root cause"
+        )
+        return ResolutionReadiness(
+            verdict=ResolutionReadiness.NEEDS_INFO,
+            message=(
+                f"The last fix (turn {window.fix_turn}) {what}, so no check after "
+                "it can show the root cause gone. To mark this **resolved** I need "
+                "a **fix of the root cause** — tell me what you changed (or plan "
+                "to change) there, and once it's applied, submit the output of "
+                "checks showing the cause gone and the original problem gone with "
+                "it, as data (pasted or attached, not typed into your message).\n\n"
+                "If the problem is only quiet for now, or the root's fix is "
+                "**deferred**, you can **close** the case instead — that keeps the "
+                "investigation on record without claiming the cause was fixed."
+            ),
+            missing=["a fix of the root cause", *missing],
+        )
+
     # The latest fix was seen failing (#1927): the cause shown removed, then the
     # problem seen again. Nothing observed in that fix's window can confirm a
     # resolution any more — not a relief after a workaround, a later re-check of
     # the cause, or "it's fine now" — so asking the user to confirm again would
     # loop. A resolution needs a NEW fix, recorded, then seen working.
-    window = latest_fix_window(case)
     if window.state == FIX_FAILED:
         return ResolutionReadiness(
             verdict=ResolutionReadiness.NEEDS_INFO,

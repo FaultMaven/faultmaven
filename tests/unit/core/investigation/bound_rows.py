@@ -20,7 +20,10 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from faultmaven.core.investigation.causal_graph.ingestion import seed_problem_node
-from faultmaven.core.investigation.cause_assurance import subject_index
+from faultmaven.core.investigation.cause_assurance import (
+    default_fix_targets,
+    subject_index,
+)
 from faultmaven.core.investigation.schemas import EvidenceToAdd
 from faultmaven.modules.case.contracts import (
     Case,
@@ -230,6 +233,16 @@ def _cause_on_record(case, *, turn: int) -> None:
         case.causal_edges.append(
             CausalEdge(cause_node_id=BOUND_ROOT_ID, effect_node_id=problem.node_id)
         )
+
+
+def fix_of_the_cause(case) -> list[str]:
+    """What a test's "fix of the cause" names (``ProposedAction.target_ids``,
+    #2036 D2.3): what the engine records for a fix that names no node, read
+    when it is called (``default_fix_targets``: the identified root, else the
+    count-held one). A re-fix of a cause that fell names it explicitly. A fix
+    with no target is an interception, which confirms and disconfirms
+    nothing."""
+    return default_fix_targets(case)
 
 
 def _target(case, category, rechecks):

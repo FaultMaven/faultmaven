@@ -658,6 +658,7 @@ def _flag_absence_inside_a_failed_fix_window(
     from faultmaven.core.investigation.cause_assurance import (
         ENGINE_EVIDENCE_AUTHOR,
         FIX_FAILED,
+        FIX_INTERCEPTION,
         latest_fix_window,
     )
 
@@ -685,6 +686,18 @@ def _flag_absence_inside_a_failed_fix_window(
         cause = (
             " — re-assert the cause with a root_cause_conclusion on a new "
             "hypothesis if the same cause was addressed again — then"
+        )
+    elif window.kind == FIX_INTERCEPTION:
+        # #2036 D2.3: what failed was a fix of another node, or of none.
+        acted = ", ".join(window.targets) or "no node on record"
+        shape = (
+            f"it acted on {acted}, not the root cause, and the problem was "
+            f"seen again at turn {window.failure_turn}"
+        )
+        cause = (
+            ", with node_ref naming the root cause (a failed fix of another "
+            "node says nothing about the root, so no new hypothesis is needed) "
+            "— then"
         )
     else:
         shape = (
@@ -723,7 +736,8 @@ def _flag_absence_inside_a_failed_fix_window(
 def _flag_unbound_post_fix_rows(case: Case, metadata: dict[str, Any] | None) -> bool:
     """One same-turn line when this turn recorded a post-fix observation that
     binds to nothing (#1906 D1.5), naming no ``rechecks`` or one that binds to
-    no subject (``cause_assurance.SubjectIndex.subject``, the window pool).
+    no subject (``cause_assurance.SubjectIndex.subject``, against its fix
+    window's ``binding``: the window pool plus what the fix named).
     Such a row confirms and disconfirms nothing, so the model is told which
     ids WOULD bind — the list the re-verification checklist renders
     (``SubjectIndex.bindable_rows``).
@@ -751,7 +765,8 @@ def _flag_unbound_post_fix_rows(case: Case, metadata: dict[str, Any] | None) -> 
     if fix_turn is None:
         return False
     subjects = subject_index(case)
-    failed = [w for w in fix_windows(case) if w.state == FIX_FAILED]
+    windows = fix_windows(case, subjects)
+    failed = [w for w in windows if w.state == FIX_FAILED]
     absence = (
         EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
         EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
@@ -769,12 +784,21 @@ def _flag_unbound_post_fix_rows(case: Case, metadata: dict[str, Any] | None) -> 
             and row.evidence_id not in subjects.verifying
         )
 
+    def binds(row) -> bool:
+        # Against its own window's binding: a re-check of the node its fix
+        # named binds there (#2036 D2.3).
+        turn = subjects.observed(row)
+        return any(
+            w.holds(turn) and subjects.subject(row, roots=w.binding) != SUBJECT_UNBOUND
+            for w in windows
+        )
+
     unbound = [
         e.evidence_id
         for e in subjects.rows.values()
         if e.collected_at_turn == case.current_turn
         and after_the_fix(e)
-        and subjects.subject(e, windows=True) == SUBJECT_UNBOUND
+        and not binds(e)
     ]
     if not unbound:
         return False
@@ -918,6 +942,11 @@ FIX_JUSTIFICATION_KEY = "fix_acceptance_justification_error"
 #: Set on a replayed bundle's metadata to the ``StagedCauseWork`` whose hold
 #: turn carried a fix acceptance (``held_fix``).
 CARRIED_FIX_KEY = "carried_fix_acceptance"
+
+#: The SOLUTIONs this apply minted or accepted, by action id, with the
+#: emission's ``node_ref`` (or None): each one with no target yet takes one at
+#: settled time (``response_application._settle_fix_targets``, #2036 D2.3).
+FIX_TARGETS_TO_SETTLE_KEY = "fix_targets_to_settle"
 
 
 class _FixEntry(NamedTuple):
@@ -1546,6 +1575,9 @@ def _apply_stage_gate_side_effects(
         # genuinely-stale accumulation under a mitigation falls under the general
         # "DIAGNOSTIC asks carry no lifecycle" boundary INV-33 leaves standing.
         if is_solution:
+            metadata.setdefault(FIX_TARGETS_TO_SETTLE_KEY, {}).setdefault(
+                target.action_id, None
+            )
             _retire_shadowed_diagnostic_asks(case, before_turn=target.proposed_in_turn)
             # The persisted projection: True from the first registration on.
             case.progress.solution_accepted = True

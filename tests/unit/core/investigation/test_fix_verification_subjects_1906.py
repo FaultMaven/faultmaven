@@ -826,7 +826,7 @@ async def test_the_only_cause_refuted_then_re_fixed_still_resolves(beside):
             initial_likelihood=0.2,
             generated_at_turn=7,
         )
-    _accept(case, InvestigationActionType.SOLUTION, 10)
+    _accept(case, InvestigationActionType.SOLUTION, 10, [_ROOT_ID])
     await _record(
         eng,
         case,

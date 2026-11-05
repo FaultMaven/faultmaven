@@ -530,7 +530,9 @@ async def test_3_a_fallen_candidates_exclusion_anchors_nothing():
     await _record(eng, case, 7, _back())
 
     window = fix_windows(case)[0]
-    assert window.cause_rows and not window.confirmed_cause_rows, "premise"
+    # Window 0 binds against the confirmation roots and the roots deepened
+    # into them, never a fallen candidate (#2036).
+    assert not window.cause_rows
     assert window.state != "failed"
 
 

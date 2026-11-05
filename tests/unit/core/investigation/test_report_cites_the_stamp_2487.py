@@ -128,7 +128,8 @@ async def test_the_report_renders_the_row_the_stamp_recorded(same_line, shape):
     await _record(eng, case, 5)
     for turn in range(6, b_turn):
         if turn in fixes:
-            _accept(case, InvestigationActionType.SOLUTION, turn)
+            # A fix of the hypothesis's root (#2036 D2.3).
+            _accept(case, InvestigationActionType.SOLUTION, turn, [r1.node_id])
         elif turn == a_turn:
             await _record(eng, case, turn, _obs(_CAUSE_GONE, "reads 100", r1_support))
     (c_b, _gone), _ = await _record(
@@ -139,7 +140,7 @@ async def test_the_report_renders_the_row_the_stamp_recorded(same_line, shape):
         _obs(_GONE, "checkout 200 again", VERIFYING_ID),
     )
     if newer:
-        _accept(case, InvestigationActionType.SOLUTION, newer)
+        _accept(case, InvestigationActionType.SOLUTION, newer, [r1.node_id])
         await _record(eng, case, newer + 1, _obs(_CAUSE_GONE, _UNNAMED))
     assert assess_resolution_readiness(case).verdict == ResolutionReadiness.READY
     assert c_b in cause_elimination_rows(case), "premise: the gate confirmed on it"

@@ -275,6 +275,17 @@ class ProposedAction(BaseModel):
         ),
     )
 
+    target_ids: List[str] = Field(
+        default_factory=list,
+        description=(
+            "SOLUTION only: the causal nodes (or a rootless hypothesis) this fix "
+            "acts on, set once in the turn it is minted or accepted (#2036, "
+            "D2.3). A fix confirms or disconfirms the case's cause only when "
+            "they name it; one aimed elsewhere, or at nothing, is an "
+            "interception."
+        ),
+    )
+
     superseded_in_turn: Optional[int] = Field(
         default=None,
         description=(

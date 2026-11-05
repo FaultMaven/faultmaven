@@ -60,7 +60,11 @@ from faultmaven.modules.case.contracts import (
     WorkingConclusion,
 )
 from tests.case_builders import investigating_case
-from tests.unit.core.investigation.bound_rows import bound_evidence, ensure_subjects
+from tests.unit.core.investigation.bound_rows import (
+    bound_evidence,
+    ensure_subjects,
+    fix_of_the_cause,
+)
 
 _FILE_ID = "file_0123456789ab"
 
@@ -363,6 +367,7 @@ def _fix_failed_on_the_record(case, *, fix_turn=6, outcome_turn=7):
             proposed_in_turn=fix_turn - 1,
             accepted_in_turn=fix_turn,
             state="accepted",
+            target_ids=fix_of_the_cause(case),
         )
     )
     # Each names what it re-checks (#1906 D1): the root's own support, and

@@ -64,6 +64,7 @@ from tests.unit.core.investigation.bound_rows import (
     VERIFYING_ID,
     bound_evidence,
     ensure_subjects,
+    fix_of_the_cause,
 )
 
 _FILE_ID = "file_0123456789ab"
@@ -393,6 +394,7 @@ def _record_fix(case, turn, action_type=InvestigationActionType.SOLUTION):
             proposed_in_turn=turn - 1,
             accepted_in_turn=turn,
             state="accepted",
+            target_ids=fix_of_the_cause(case),
         )
     )
 
@@ -728,6 +730,7 @@ def _counterfactual_case(*, with_persistence: bool):
     ensure_subjects(case)  # the row that showed the problem
     case.progress.cause_state = CauseState.IDENTIFIED
     case.progress.identified_cause_root_ids = [root.node_id]
+    case.proposed_actions[0].target_ids = [root.node_id]  # the fix named it
     return case
 
 

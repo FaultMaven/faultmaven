@@ -48,10 +48,18 @@ from faultmaven.modules.case.contracts import (
     ProposedAction,
 )
 from tests.case_builders import investigating_case, with_declined_offer
-from tests.unit.core.investigation.bound_rows import bound_row, ensure_subjects
+from tests.unit.core.investigation.bound_rows import (
+    BOUND_ROOT_ID,
+    bound_row,
+    ensure_subjects,
+    fix_of_the_cause,
+)
 from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
 
 pytestmark = pytest.mark.unit
+
+#: An attempt's kind on this file's case: a fix of its cause (#2036 D2.3).
+_REMEDIATION = f", a remediation of {BOUND_ROOT_ID}"
 
 _FIX = "Point ExecStart at /usr/bin/billing-exporter and restart the unit"
 _ASK = "Prometheus's view of the billing-exporter scrape target after the fix"
@@ -75,6 +83,7 @@ def _case(stage: str = "treatment", *, cause=True, problem=False, persists=False
             proposed_in_turn=2,
             accepted_in_turn=3,
             state="accepted",
+            target_ids=fix_of_the_cause(case),
         )
     )
     if stage == "treatment":
@@ -187,8 +196,8 @@ def test_the_block_shows_the_attempt_the_legs_and_the_open_ask():
     action = case.proposed_actions[0]
     need = case.evidence_needs[0]
     assert (
-        f"[{action.action_id}] {_FIX} — executed turn 3: observed, no verdict yet"
-        in block
+        f"[{action.action_id}] {_FIX} — executed turn 3{_REMEDIATION}: observed, "
+        "no verdict yet" in block
     )
     assert f"  - cause: {cause_row.evidence_id}" in block
     assert f"  - problem: missing; not re-checked since the fix: {verifying}" in block
@@ -207,7 +216,7 @@ def test_the_block_shows_the_attempt_the_legs_and_the_open_ask():
 )
 def test_an_attempt_carries_its_window_state(shape, state):
     block = build_fix_verification_block(_case("treatment", **shape))
-    assert f"— executed turn 3: {state}" in block
+    assert f"— executed turn 3{_REMEDIATION}: {state}" in block
 
 
 def test_a_missing_cause_leg_does_not_read_the_problem_leg():
@@ -228,8 +237,8 @@ def test_the_problem_checked_before_the_cause_is_shown_checked():
     )
     block = build_fix_verification_block(case)
     assert (
-        "executed turn 3: problem re-checked gone at turn 5; cause re-check owed"
-        in block
+        f"executed turn 3{_REMEDIATION}: problem re-checked gone at turn 5; cause "
+        "re-check owed" in block
     )
     assert f"  - problem: re-checked gone at turn 5 ({gone.evidence_id})" in block
     assert "not yet observed" not in block
@@ -464,6 +473,7 @@ def _fix(case, turn: int) -> None:
             proposed_in_turn=turn - 1,
             accepted_in_turn=turn,
             state="accepted",
+            target_ids=fix_of_the_cause(case),
         )
     )
 
@@ -480,7 +490,7 @@ def test_no_re_check_is_owed_on_a_ready_case():
     assert assess_resolution_readiness(case).verdict == ResolutionReadiness.READY
     block = build_fix_verification_block(case)
     assert "owed" not in block
-    assert "executed turn 3: observed, no verdict yet" in block
+    assert f"executed turn 3{_REMEDIATION}: observed, no verdict yet" in block
 
 
 def test_a_failed_latest_fix_needs_a_new_fix():
@@ -489,7 +499,7 @@ def test_a_failed_latest_fix_needs_a_new_fix():
     case = _case("treatment", persists=True)
     bound_row(case, EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE, turn=6)
     block = build_fix_verification_block(case)
-    assert "executed turn 3: failed at turn 5" in block
+    assert f"executed turn 3{_REMEDIATION}: failed at turn 5" in block
     assert (
         "  - problem: the latest fix was seen failing at turn 5; a new fix is "
         "needed" in block
@@ -504,8 +514,8 @@ def test_only_the_latest_window_can_owe_a_re_check():
     bound_row(case, EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE, turn=4)
     _fix(case, 5)
     block = build_fix_verification_block(case)
-    assert "executed turn 3: observed, no verdict yet" in block
-    assert "executed turn 5: not yet observed" in block
+    assert f"executed turn 3{_REMEDIATION}: observed, no verdict yet" in block
+    assert f"executed turn 5{_REMEDIATION}: not yet observed" in block
     assert "owed" not in block
 
 

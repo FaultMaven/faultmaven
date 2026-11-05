@@ -67,7 +67,11 @@ from faultmaven.modules.case.contracts import (
     ProposedAction,
     ValidationMethod,
 )
-from tests.unit.core.investigation.bound_rows import VERIFYING_ID, bound_evidence
+from tests.unit.core.investigation.bound_rows import (
+    VERIFYING_ID,
+    bound_evidence,
+    fix_of_the_cause,
+)
 
 _FILE_ID = "file_0123456789ab"
 
@@ -125,7 +129,9 @@ def _row(label, category, turn, summary, collected_by="llm", rechecks=None) -> E
     )
 
 
-def _accept(case, action_type, turn):
+def _accept(case, action_type, turn, target=None):
+    """An executed action; a SOLUTION names ``target``, by default the case's
+    cause now (``fix_of_the_cause``)."""
     case.proposed_actions.append(
         ProposedAction(
             case_id=case.case_id,
@@ -134,6 +140,11 @@ def _accept(case, action_type, turn):
             proposed_in_turn=turn - 1,
             accepted_in_turn=turn,
             state="accepted",
+            target_ids=(
+                (fix_of_the_cause(case) if target is None else list(target))
+                if action_type == InvestigationActionType.SOLUTION
+                else []
+            ),
         )
     )
 
@@ -357,7 +368,7 @@ def test_a_fresh_confirmation_after_the_failed_fix_still_resolves():
     case, root, hyp = _identified_case()
     _failed_fix(case)
     _recompute_at(case, 9)
-    _accept(case, InvestigationActionType.SOLUTION, 12)
+    _accept(case, InvestigationActionType.SOLUTION, 12, [_ROOT_ID])
     case.evidence += [
         _row(
             "pgbouncer_gone",
@@ -956,7 +967,7 @@ def test_a_new_fix_after_a_failure_opens_a_window_that_resolves():
     case, root, hyp = _identified_case()
     _failed_fix(case)
     _recompute_at(case, 9)
-    _accept(case, InvestigationActionType.SOLUTION, 12)
+    _accept(case, InvestigationActionType.SOLUTION, 12, [_ROOT_ID])
     case.evidence += [
         _row(
             "pgbouncer_gone",
@@ -1223,7 +1234,7 @@ def test_a_new_fix_and_its_confirmation_in_one_turn_resolve():
     case, root, hyp = _identified_case()
     _failed_fix(case)
     _recompute_at(case, 9)
-    _accept(case, InvestigationActionType.SOLUTION, 10)
+    _accept(case, InvestigationActionType.SOLUTION, 10, [_ROOT_ID])
     case.evidence += [
         _row(
             "pgbouncer_gone",
@@ -1450,7 +1461,7 @@ def test_after_a_failure_a_relief_alone_asks_for_the_cause_recheck():
     case, root, hyp = _identified_case()
     _failed_fix(case)
     _recompute_at(case, 9)
-    _accept(case, InvestigationActionType.SOLUTION, 12)
+    _accept(case, InvestigationActionType.SOLUTION, 12, [_ROOT_ID])
     case.evidence.append(_problem_gone(13, label="up_after_fix_2"))
     readiness = assess_resolution_readiness(case)
 
@@ -1475,8 +1486,11 @@ def test_with_no_validated_root_nothing_binds_to_the_cause_and_nothing_resolves(
     nothing: the case can close, never resolve. Replaced the token frame's
     "a failure in the fixed cause's own terms counts" (#1906 D1)."""
     case, root, hyp = _identified_case()
-    root.node_state = NodeState.CANDIDATE
-    case.progress.identified_cause_root_ids = []  # never identified
+    # Ungrounded through the graph: the recompute derives CANDIDATE and
+    # retracts the engine's conclusion, so nothing names a cause (#2036).
+    root.evidence_links = []
+    _recompute_cause_state_from_chain(case)
+    assert root.node_state == NodeState.CANDIDATE and not case.root_cause_conclusion
     _accept(case, InvestigationActionType.SOLUTION, 8)
     case.evidence += [
         _row(
@@ -1506,8 +1520,11 @@ def test_with_no_cause_identified_a_terse_cause_row_binds_to_nothing():
     2026-10-27), so the window records no failure and a later relief resolves
     nothing. Replaced the token frame's "every candidate's chain" (#1906 D1)."""
     case, root, hyp = _identified_case()
-    root.node_state = NodeState.CANDIDATE
-    case.progress.identified_cause_root_ids = []  # never identified
+    # Ungrounded through the graph: the recompute derives CANDIDATE and
+    # retracts the engine's conclusion, so nothing names a cause (#2036).
+    root.evidence_links = []
+    _recompute_cause_state_from_chain(case)
+    assert root.node_state == NodeState.CANDIDATE and not case.root_cause_conclusion
     _accept(case, InvestigationActionType.SOLUTION, 8)
     case.evidence += [
         _cause_gone(9),

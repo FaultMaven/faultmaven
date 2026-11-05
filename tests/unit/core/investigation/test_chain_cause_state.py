@@ -57,6 +57,7 @@ from tests.unit.core.investigation.bound_rows import (
     VERIFYING_ID,
     bound_evidence,
     ensure_subjects,
+    fix_of_the_cause,
 )
 
 _FILE_ID = "file_0123456789ab"
@@ -219,6 +220,7 @@ def _record_failed_fix(case, *, fix_turn=6, outcome_turn=7):
             proposed_in_turn=fix_turn - 1,
             accepted_in_turn=fix_turn,
             state="accepted",
+            target_ids=fix_of_the_cause(case),
         )
     )
     ensure_subjects(case)

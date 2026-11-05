@@ -121,6 +121,8 @@ def _apply_chain_emission(
         evidence_created_ids=metadata.get("evidence_slots", []),
         validation_repairs=metadata.setdefault("validation_repairs", []),
     )
+    # What a same-turn fix's ``node_ref: new_index_N`` resolves against (#2036).
+    metadata["chain_nodes_created"] = list(created)
 
     def _resolve_root(ref: str | None) -> str | None:
         """Resolve a root_node_ref to a ROOT node id, or None.
@@ -180,8 +182,9 @@ def _apply_chain_emission(
         hyp.path = new_path
         if old_root != root_id:
             attached = case.causal_nodes[root_id].metadata
-            # The first attach never moves; a node attached before it was
-            # recorded keeps its last attach as the first (#2501).
+            # The stored first-attach key never moves once written; a node
+            # attached before it was recorded keeps its last attach as the
+            # first (#2501).
             attached.setdefault(
                 "root_first_attached_turn",
                 attached.get("root_attached_turn", case.current_turn),
@@ -190,16 +193,16 @@ def _apply_chain_emission(
             # Deepening the hypothesis past its old root (the new root's path
             # runs through it) says a cause sits above that node: clause b
             # fails for it, whatever was recorded before. A move to another
-            # chain says nothing about the old root.
+            # chain says nothing about the old root. ``deepened_to`` keeps a
+            # relapse observed on the old root failing window 0 (#2036).
             stale = case.causal_nodes.get(old_root) if old_root else None
             if (
                 stale is not None
                 and stale.node_type == NodeType.ROOT
                 and old_root in new_path
             ):
-                stale.record_root_terminal(
-                    False, f"deepened past, to {root_id}", case.current_turn
-                )
+                stale.record_root_terminal(False, None, case.current_turn)
+                stale.metadata["deepened_to"] = root_id
         return old_path if (old_root and old_root != root_id) else []
 
     # One cause, one chain (M3/§7.8.1): a chain root belongs to exactly ONE

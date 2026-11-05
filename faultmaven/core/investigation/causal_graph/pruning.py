@@ -143,8 +143,9 @@ def resolve_orphan_chains(case: Case) -> list[dict]:
             hyp.root_node_id = root_id
             hyp.path = path
             # The cause this hypothesis names is posited from now (#2036).
-            # The first attach never moves; a node attached before it was
-            # recorded keeps its last attach as the first (#2501).
+            # The stored first-attach key never moves once written; a node
+            # attached before it was recorded keeps its last attach as the
+            # first (#2501). No ``deepened_to``: an adoption deepens nothing.
             node.metadata.setdefault(
                 "root_first_attached_turn",
                 node.metadata.get("root_attached_turn", case.current_turn),
