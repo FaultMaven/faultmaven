@@ -197,14 +197,21 @@ def test_a_duplicate_refusal_names_the_requests_id_not_the_callers(
     booted_app_client,
 ):
     """``DeduplicationMiddleware`` echoed the caller's ``x-correlation-id``
-    header in its 409 body, so a client chose the id the refusal named."""
+    header in its 409 body, so a client chose the id the refusal named.
+
+    The first request is authenticated: only a 2xx keeps its claim, so a
+    repeat of a 401 would reach the route (#2508)."""
+    login = booted_app_client.post("/api/v1/auth/dev-login", json={"username": "admin"})
+    assert login.status_code == 200, login.text
     headers = {
+        "Authorization": f"Bearer {login.json()['access_token']}",
         "X-Session-ID": f"sess-2278-{uuid.uuid4().hex}",
         "x-correlation-id": "chosen-by-the-caller",
     }
     body = {"query": f"dedup-2278-{uuid.uuid4().hex}"}
 
-    booted_app_client.post("/api/v1/cases/search", json=body, headers=headers)
+    first = booted_app_client.post("/api/v1/cases/search", json=body, headers=headers)
+    assert first.status_code == 200, first.text
     duplicate = booted_app_client.post(
         "/api/v1/cases/search", json=body, headers=headers
     )

@@ -8,6 +8,7 @@ Uses Redis (real or FakeRedis) for all storage — no dict fallbacks.
 
 import asyncio
 import logging
+import secrets
 import time
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Optional, Tuple
@@ -29,6 +30,31 @@ from .route_policy import RoutePolicy, normalize_path, policy_for
 #: Shared default so the lookup below needs no branch. Frozen and
 #: withholding nothing, which is what an undeclared route gets.
 _NO_POLICY = RoutePolicy()
+
+#: Joins a claim's timestamp to the token that makes it this request's own. A
+#: character ISO-8601 cannot contain, so the timestamp always parses back out.
+_CLAIM_SEPARATOR = "|"
+
+#: Compare-and-delete: a request that outlived its TTL, whose key another
+#: request has since claimed, must never delete that newer claim.
+_RELEASE_SCRIPT = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+    return redis.call('DEL', KEYS[1])
+end
+return 0
+"""
+
+#: A claim this request made: the key and the value it stored there.
+Claim = Tuple[str, str]
+
+
+def _claimed_at(claim_value: Optional[str]) -> Optional[datetime]:
+    """When a claim was made, read from the value it stored; ``None`` if unreadable."""
+    try:
+        timestamp = claim_value.partition(_CLAIM_SEPARATOR)[0]
+        return datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
 
 
 class DeduplicationMiddleware(BaseHTTPMiddleware):
@@ -105,9 +131,27 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
         fail-closed setting production pins -- and under fail-open the handler
         re-entered ``call_next`` on a request whose body stream had already been
         consumed. A middleware may only answer for its own failures.
+
+        **The answer decides whether the claim stands** (#2508). The key is
+        claimed on arrival, so an identical request arriving while this one runs
+        is refused. A 2xx keeps the claim for its TTL. Any other answer, and an
+        exception raised through ``call_next``, releases it at once, so a
+        request that changed nothing (a 401, the delete gate's 409/503) does
+        not block its own retry. Every non-2xx, not only a 4xx: the claim only
+        ever delayed a repeat, never prevented one; only the copilot keys every
+        request, and its keyed writes are retry-safe; no client resends a 5xx
+        automatically; and a narrower rule would hold the delete's own 500
+        ``DELETE_CASE_ERROR``, "the case kept", for the TTL.
+
+        A cancellation leaves the claim to its TTL: the route is cancelled with
+        this task group and may have committed first. So does an exception
+        raised after the response started (a streaming body,
+        ``BackgroundTasks``): Starlette raises it after ``dispatch`` returns,
+        when the status has already decided the claim.
         """
         start_time = time.time()
         duplicate: Optional[Response] = None
+        claim: Optional[Claim] = None
 
         try:
             # Initialize if needed (resolves the Redis client from app.state,
@@ -120,7 +164,9 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
                 and not self._disabled
                 and not self._should_skip(request)
             ):
-                duplicate = await self._duplicate_response_for(request, start_time)
+                duplicate, claim = await self._duplicate_response_for(
+                    request, start_time
+                )
 
         except Exception as e:
             self.logger.error(
@@ -141,18 +187,47 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
         if duplicate is not None:
             return duplicate
 
-        response = await call_next(request)
+        try:
+            response = await call_next(request)
+        except Exception:
+            await self._release_quietly(claim)
+            raise
+        if not 200 <= response.status_code < 300:
+            await self._release_quietly(claim)
 
         self._update_metrics(time.time() - start_time, duplicate_found=False)
         return response
 
+    async def _release_quietly(self, claim: Optional[Claim]) -> None:
+        """Release ``claim``, best-effort: a store error never changes the answer.
+
+        Logged, counted and swallowed, so it can neither replace the route's
+        response nor mask its exception; the claim then lapses at its TTL.
+        ``fail_open_on_redis_error`` governs only the arrival check.
+        """
+        if claim is None:
+            return
+        try:
+            await self._release_claim(*claim)
+        except Exception as e:
+            self.logger.warning(
+                f"Releasing a deduplication claim failed: {type(e).__name__}: {e}"
+            )
+            self.metrics["errors"] += 1
+
+    async def _release_claim(self, key: str, value: str) -> None:
+        """Delete ``key`` only while it still holds ``value``, this request's claim."""
+        await self._redis.eval(_RELEASE_SCRIPT, 1, key, value)
+
     async def _duplicate_response_for(
         self, request: Request, start_time: float
-    ) -> Optional[Response]:
-        """Return the 409 for a duplicate, or ``None`` to let the request run."""
-        is_duplicate, original_timestamp, ttl = await self._check_duplicate(request)
+    ) -> Tuple[Optional[Response], Optional[Claim]]:
+        """Return the 409 for a duplicate, else the claim this request made, if any."""
+        is_duplicate, original_timestamp, ttl, claim = await self._check_duplicate(
+            request
+        )
         if not is_duplicate:
-            return None
+            return None, claim
 
         self._update_metrics(time.time() - start_time, duplicate_found=True)
 
@@ -164,11 +239,12 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
 
         if ttl_remaining == 0:
             self.logger.debug("Duplicate request TTL expired, allowing request through")
-            return None
+            return None, None
 
-        return self._create_duplicate_response(
+        response = self._create_duplicate_response(
             request, original_timestamp, ttl_remaining
         )
+        return response, None
 
     async def _initialize(self, request: Request) -> None:
         """Resolve the Redis client lazily on the first request.
@@ -322,12 +398,12 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
 
     async def _check_duplicate(
         self, request: Request
-    ) -> Tuple[bool, Optional[datetime], int]:
-        """Check if request is a duplicate"""
+    ) -> Tuple[bool, Optional[datetime], int, Optional[Claim]]:
+        """Check if request is a duplicate; if not, the claim it made"""
         request_hash = await self._generate_request_hash(request)
 
         if not request_hash:
-            return False, None, 0
+            return False, None, 0, None
 
         return await self._check_hash_duplicate(request_hash, request.url.path)
 
@@ -382,7 +458,7 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
 
     async def _check_hash_duplicate(
         self, request_hash: str, endpoint: str
-    ) -> Tuple[bool, Optional[datetime], int]:
+    ) -> Tuple[bool, Optional[datetime], int, Optional[Claim]]:
         """Check if hash represents a duplicate request via Redis.
 
         Redis failures are *not* caught here. They belong to ``dispatch``, which
@@ -401,27 +477,34 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
 
     async def _check_redis_duplicate(
         self, key: str, ttl: int
-    ) -> Tuple[bool, Optional[datetime], int]:
-        """Check for duplicate using Redis (real or FakeRedis)."""
+    ) -> Tuple[bool, Optional[datetime], int, Optional[Claim]]:
+        """Check for duplicate using Redis; claim an absent key for this request.
+
+        The value is the timestamp and a random token, so a release can tell
+        this request's claim from a later one's.
+        """
         lua_script = """
         local key = KEYS[1]
         local ttl = tonumber(ARGV[1])
-        local timestamp = ARGV[2]
+        local claim = ARGV[2]
 
         local existing = redis.call('GET', key)
         if existing then
             return {1, existing}  -- duplicate found
         end
 
-        -- Store timestamp
-        redis.call('SETEX', key, ttl, timestamp)
+        -- Store this request's claim
+        redis.call('SETEX', key, ttl, claim)
         return {0, nil}  -- not duplicate
         """
 
         current_time = datetime.now(timezone.utc)
-        current_time_str = to_json_compatible(current_time)
+        claim_value = (
+            f"{to_json_compatible(current_time)}{_CLAIM_SEPARATOR}"
+            f"{secrets.token_hex(8)}"
+        )
 
-        result = await self._redis.eval(lua_script, 1, key, ttl, current_time_str)
+        result = await self._redis.eval(lua_script, 1, key, ttl, claim_value)
 
         # Redis truncates trailing nils in Lua array replies, so the
         # not-duplicate branch ({0, nil}) comes back as a 1-element array ([0]).
@@ -432,21 +515,15 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
         # which, now that the surrounding catch is gone, 503s every request
         # under the fail-closed setting.
         is_duplicate = bool(result[0]) if result else False
-        # The stored value is the *first* request's timestamp -- it is what the
-        # Retry-After is computed from. It has never been a cached response.
-        stored_timestamp = result[1] if result and len(result) > 1 else None
+        # The stored value is the *first* request's claim; its timestamp is what
+        # the Retry-After is computed from. It has never been a cached response.
+        stored_claim = result[1] if result and len(result) > 1 else None
 
         if is_duplicate:
             self.logger.debug(f"Duplicate request detected: {key}")
-            try:
-                original_timestamp = datetime.fromisoformat(
-                    stored_timestamp.replace("Z", "+00:00")
-                )
-            except (ValueError, AttributeError):
-                original_timestamp = current_time
-            return True, original_timestamp, ttl
+            return True, _claimed_at(stored_claim) or current_time, ttl, None
 
-        return False, None, ttl
+        return False, None, ttl, (key, claim_value)
 
     def _extract_session_id(self, request: Request) -> Optional[str]:
         """Extract session ID from request"""
