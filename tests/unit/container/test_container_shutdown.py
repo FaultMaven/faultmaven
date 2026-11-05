@@ -1283,6 +1283,56 @@ async def test_an_interrupted_last_release_cancels_cancellable_work_before_the_c
     assert order[0] == ("close", True, False) and work.cancelled()
 
 
+async def test_an_interrupted_last_release_spares_a_composition_begun_during_its_closes(
+    container, monkeypatch
+):
+    """The release decided it was the last before its reset, and the composer
+    read that decision alone when it raised: it disposed the engine under a
+    composition begun during the closes."""
+    from faultmaven.infrastructure.concurrency import teardown
+
+    closed, entered, gate = [], asyncio.Event(), asyncio.Event()
+    monkeypatch.setattr(teardown, "close_the_database", lambda: closed.append(1))
+
+    async def _slow_close(_resource):
+        entered.set()
+        await gate.wait()
+
+    await _hold(container, 1)
+    container.own(object(), close=_slow_close, what="a Redis pool draining")
+    releasing = asyncio.create_task(
+        teardown.run_teardown(teardown.ContainerRelease(container.shutdown).steps())
+    )
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    with _composing(AsyncMock()):
+        await _elsewhere(container.initialize())
+    releasing.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await releasing
+    assert closed == [] and container.is_held()
+
+
+async def test_a_release_that_fails_before_deciding_yields_to_a_holder(monkeypatch):
+    """With no decision recorded, whether the container is held is the answer."""
+    from faultmaven.infrastructure.concurrency import teardown
+
+    closed = []
+    monkeypatch.setattr(teardown, "close_the_database", lambda: closed.append(1))
+
+    class _HeldContainer:
+        def is_held(self) -> bool:
+            return True
+
+        async def shutdown(self) -> bool:
+            raise RuntimeError("refused before it decided")
+
+    await teardown.run_teardown(
+        teardown.ContainerRelease(_HeldContainer().shutdown).steps()
+    )
+    assert closed == []
+
+
 async def test_a_hold_taken_during_the_cancel_grace_keeps_its_composition(
     container, monkeypatch, record
 ):

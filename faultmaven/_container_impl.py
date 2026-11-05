@@ -1858,9 +1858,9 @@ class DIContainer(BaseDIContainer):
         interruption, the drain's included, is held until all have run), and
         returns ``True``. Once it has decided, it records for the calling
         context whether it was the last (:meth:`released_last`): a composer
-        whose shutdown raised reads that decision, not the holds left. Whoever
-        composes shuts down on every path, while the loop the clients are bound
-        to still runs.
+        whose shutdown raised reads that decision, and after a last one also
+        any hold taken since the reset. Whoever composes shuts down on every
+        path, while the loop the clients are bound to still runs.
         """
         self._last_release.set(None)
         if not self._holds.release():

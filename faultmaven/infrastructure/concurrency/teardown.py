@@ -79,10 +79,12 @@ class ContainerRelease:
     Every composer releases its hold with the container's ``shutdown()``, then
     disposes the process-global database engine. Another composition live in
     the process may still serve from that engine (#1843), and ``shutdown()``
-    answers ``False`` while one does. Only that, or a failed or interrupted
+    answers ``False`` while one does. That, or a failed or interrupted
     shutdown that decided it was not the last (a hold taken during its drain
-    or grace, even one released since), means another holds; one that failed
-    before deciding falls back to whether the container is still held.
+    or grace, even one released since), means another release is the last.
+    One that failed having decided it was the last still yields to any hold
+    taken since its reset (a composition begun during its closes), and one
+    that failed before deciding reads only whether the container is held.
     Anything else runs the gated steps.
     ``shutdown`` is a passed container's; by default the singleton's is
     resolved inside the step.
@@ -104,11 +106,8 @@ class ContainerRelease:
             owner = getattr(shutdown, "__self__", None)
             decided = getattr(owner, "released_last", None)
             last = decided() if decided is not None else None
-            if isinstance(last, bool):
-                self._others_hold = not last
-            else:  # it failed before deciding
-                held = getattr(owner, "is_held", None)
-                self._others_hold = bool(held is not None and held())
+            held = getattr(owner, "is_held", None)
+            self._others_hold = last is False or bool(held is not None and held())
             raise
 
     def if_last(self, step: Callable[[], Any]) -> Callable[[], Any]:

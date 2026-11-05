@@ -180,7 +180,8 @@ async def drain(
     get the same grace. Once ``last()`` turns false (the release is no longer
     the last), this drain stops counting toward :func:`draining` at once,
     while it still waits for this loop's work up to its bound; past the bound
-    it returns, cancelling nothing more.
+    it waits for the ``must_finish`` work it has not cancelled, then returns,
+    cancelling nothing more.
     Interrupted, it cancels nothing and re-raises: a last release then calls
     :func:`cancel_cancellable`. **Residual:** an interrupted shutdown does not
     wait for a settlement, which can then meet closed stores.
