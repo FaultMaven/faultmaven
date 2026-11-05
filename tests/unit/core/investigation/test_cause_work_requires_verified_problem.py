@@ -54,6 +54,7 @@ from faultmaven.modules.case.contracts import (
     ValidationMethod,
 )
 from tests.case_builders import investigating_case
+from tests.utils import terminal_verdict
 
 _FILE_ID = "file_0123456789ab"
 
@@ -222,7 +223,7 @@ def _seed_root(case: Case) -> str:
     emission can name them without adding nodes."""
     seed_problem_node(case)
     root = CausalNode(
-        metadata={"root_terminal": True},
+        metadata=terminal_verdict(),
         node_id="cn_0000000000aa",
         statement=_CAUSE,
         node_type=NodeType.ROOT,
@@ -378,7 +379,12 @@ async def test_one_turn_verifies_forms_grounds_and_identifies():
                 _row(EvidenceCategory.CAUSAL_EVIDENCE, "a1"),
                 _row(EvidenceCategory.CAUSAL_EVIDENCE, "a2"),
             ],
-            hypotheses_to_add=[_hypothesis(root_node_ref="new_index_0")],
+            hypotheses_to_add=[
+                _hypothesis(
+                    root_node_ref="new_index_0",
+                    terminal_basis_evidence_ids=["new_index_2"],
+                )
+            ],
             causal_nodes_to_add=[
                 CausalNodeToAdd(statement=_CAUSE, node_type="root", produces="D")
             ],

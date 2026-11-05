@@ -68,6 +68,7 @@ from faultmaven.modules.case.contracts import (
     ValidationMethod,
 )
 from tests.unit.core.investigation.bound_rows import VERIFYING_ID, bound_evidence
+from tests.utils import terminal_verdict
 
 _FILE_ID = "file_0123456789ab"
 
@@ -157,7 +158,7 @@ def _identified_case(*, hypothesis_turn=1) -> tuple[Case, CausalNode, Hypothesis
         ),
     ]
     root = CausalNode(
-        metadata={"root_terminal": True},
+        metadata=terminal_verdict(),
         node_id=_ROOT_ID,
         statement="max_connections is set to 20, below the checkout pool size",
         node_type=NodeType.ROOT,
@@ -556,7 +557,7 @@ def _add_proxy_candidate(case, hyp) -> Hypothesis:
     """A second, unvalidated candidate that M6's likelihood proxy picks as the
     representative once no conclusion names the identified cause."""
     other_root = CausalNode(
-        metadata={"root_terminal": True},
+        metadata=terminal_verdict(),
         node_id="cn_00000000ffff",
         statement="a connection leak in the checkout worker",
         node_type=NodeType.ROOT,
@@ -777,7 +778,7 @@ def _add_sibling_chain(case) -> CausalNode:
     """Another candidate cause in the graph, sharing no content with the
     identified one; the conclusion keeps naming the identified cause."""
     sibling = CausalNode(
-        metadata={"root_terminal": True},
+        metadata=terminal_verdict(),
         node_id="cn_00000000eeee",
         statement="a memory leak in the gunicorn worker",
         node_type=NodeType.ROOT,

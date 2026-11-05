@@ -41,6 +41,7 @@ from faultmaven.modules.case.contracts import (
     UploadedFile,
     ValidationMethod,
 )
+from tests.utils import terminal_verdict
 
 #: The cause a case is given when it has none: an identified root.
 BOUND_ROOT_ID = "cn_00000000b0dd"
@@ -190,7 +191,7 @@ def _cause_on_record(case, *, turn: int) -> None:
         summary="postgres log: FATAL too many connections for the worker pool",
     )
     root = CausalNode(
-        metadata={"root_terminal": True},
+        metadata=terminal_verdict(),
         node_id=BOUND_ROOT_ID,
         statement="max_connections is set to 20, below the worker pool size",
         node_type=NodeType.ROOT,

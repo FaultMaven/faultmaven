@@ -53,6 +53,7 @@ from faultmaven.modules.case.contracts import (
     established_by_for_display,
     mechanism_for_display,
 )
+from tests.utils import terminal_verdict
 
 _FILE_ID = "file_0123456789ab"
 
@@ -90,7 +91,7 @@ def _confirmed_case():
     """A validated one-rung chain (root -> rung -> D) the user has confirmed
     resolved — the shape that mints an ``established_by``."""
     root = CausalNode(
-        metadata={"root_terminal": True},
+        metadata=terminal_verdict(),
         node_id=_ROOT,
         statement=_CAUSE_TEXT,
         node_type=NodeType.ROOT,
@@ -110,7 +111,7 @@ def _confirmed_case():
         generated_at_turn=1,
     )
     rung = CausalNode(
-        metadata={"root_terminal": True},
+        metadata=terminal_verdict(),
         node_id=_RUNG,
         statement=_RUNG_TEXT,
         node_type=NodeType.INTERMEDIATE,
@@ -205,7 +206,7 @@ def test_the_arrows_between_real_rungs_survive():
     chain, and dropping them would lose the mechanism."""
     case, hyp = _confirmed_case()
     third = CausalNode(
-        metadata={"root_terminal": True},
+        metadata=terminal_verdict(),
         node_id="cn_0000000000cc",
         statement="the container is OOM-killed",
         node_type=NodeType.INTERMEDIATE,

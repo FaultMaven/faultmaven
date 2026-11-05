@@ -924,14 +924,19 @@ class HypothesisToAdd(BaseModel):
             "or a cause out of their reach). false: something will (a lifetime "
             "nothing renews, a job that rewrites the value), or you have not yet "
             "seen what produced it. The engine identifies the cause only at a "
-            "validated root marked true."
+            "validated root marked true that cites terminal_basis_evidence_ids."
         ),
     )
-    root_terminal_basis: Optional[str] = Field(
+    terminal_basis_evidence_ids: Optional[List[IdRef]] = Field(
         default=None,
         description=(
-            "Why the root's verdict holds: what produced the state and why it "
-            "will not return, or what will reproduce it."
+            "With root_is_terminal true: the causal_evidence rows (ev_... or "
+            "'new_index_N' of a row in evidence_to_add) showing that nothing "
+            "controllable in scope produces this root state, such as how it was "
+            "issued or set, its lifetime, and that nothing renews or rewrites "
+            "it. A row showing only that the state exists is not one. A true "
+            "verdict citing no causal_evidence row recorded since the root was "
+            "posited is refused."
         ),
     )
 
@@ -1001,9 +1006,12 @@ class HypothesisUpdate(BaseModel):
             "null leaves it unchanged. Give it once the why is answered."
         ),
     )
-    root_terminal_basis: Optional[str] = Field(
+    terminal_basis_evidence_ids: Optional[List[IdRef]] = Field(
         default=None,
-        description="Why the root's verdict holds (with root_is_terminal).",
+        description=(
+            "The causal_evidence rows a true root_is_terminal cites (ev_... or "
+            "'new_index_N' of a row in evidence_to_add), as for hypotheses_to_add."
+        ),
     )
 
     # UPDATE-shaped (fm#1502): ``None`` is "no likelihood change", so the

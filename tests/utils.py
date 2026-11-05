@@ -724,6 +724,16 @@ def make_org_knowledge_item(
     )
 
 
+#: The row a fixture's terminal verdict cites (#2036 D6). The node reads only
+#: that its ``True`` verdict cites a row; chain emission checks the row itself.
+TERMINAL_BASIS_ID = "ev_0000000ba515"
+
+
+def terminal_verdict() -> Dict[str, Any]:
+    """Root-node metadata for a verdict marked terminal, citing its basis."""
+    return {"root_terminal": True, "root_terminal_evidence_ids": [TERMINAL_BASIS_ID]}
+
+
 def bridge_flat_hypotheses_to_graph(case) -> None:
     """Test helper: project a case's flat hypotheses into degenerate root->D
     chains (the retired Option-1 bridge, removed from production in PR B2c).
@@ -757,7 +767,7 @@ def bridge_flat_hypotheses_to_graph(case) -> None:
             node_type=NodeType.ROOT,
             # The bridged chain is the hypothesis's whole cause: its root is
             # terminal (the why-stopping verdict, #2036).
-            metadata={"root_terminal": True},
+            metadata=terminal_verdict(),
             category=hyp.category,
             generated_at_turn=hyp.generated_at_turn,
             evidence_links=[

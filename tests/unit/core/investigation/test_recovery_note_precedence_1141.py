@@ -1,15 +1,19 @@
-"""#1141: a root under more than one hold carries ONE recovery note, chosen by
-one declared precedence (``_root_recovery_reasons``): a MECE contest, then an
-open WHY, then the restatement hold, then a grounding-bar reason.
+"""#1141, #2059: a root under more than one hold carries the recovery note of
+each, concatenated in one declared order (``_root_recovery_reasons``): a MECE
+contest, then an open WHY, then a refused verdict's ask (#2036 D6, render
+only), then the restatement hold, then a grounding-bar reason. Every note says
+what still blocks the root: the WHY note alone would say a count-held root is
+identified once its why is answered (#2059), and the contest's alone would hide
+that a contested root's why is open too.
 
 The old code chose by the order of a four-way dict merge, and its comment
 called the populations "disjoint by construction". Since #2036 added the open
 WHY they are not: why_open overlaps the MECE contest and both the grounding and
 the restatement holds. The first block below builds those overlaps from the
-suite's own fixtures; the oracle pins that the declared precedence is the
-merge's old order, and that no real case logs a collision; the table pins the
-declared pairs' order, and that a root in a pair disjoint by definition is
-logged rather than resolved silently.
+suite's own fixtures; the oracle pins that the leading note is the merge's old
+choice, and that no real case logs a collision; the table pins the declared
+pairs' notes, and that a root in a pair disjoint by definition is logged
+rather than resolved silently.
 """
 
 import logging
@@ -39,6 +43,7 @@ from tests.unit.core.investigation.test_mece_arbitration import (
     _SPECIMEN,
     _specimen_case,
 )
+from tests.utils import terminal_verdict
 
 pytestmark = pytest.mark.unit
 
@@ -75,6 +80,8 @@ def _built(members, *, root_terminal="keep"):
         node = case.causal_nodes[member[0]]
         if root_terminal is None:
             node.metadata.pop("root_terminal", None)
+        elif root_terminal is True:
+            node.metadata.update(terminal_verdict())
         elif root_terminal != "keep":
             node.metadata["root_terminal"] = root_terminal
     _recompute_cause_state_from_chain(case)
@@ -121,52 +128,68 @@ def _collisions(caplog):
     return [r for r in caplog.records if getattr(r, "event", None) == _COLLISION_EVENT]
 
 
-# 1. C and D
-def test_contest_wins_over_open_why_and_the_why_note_is_not_rendered():
+# 1. C and D: the contest's note, then the open WHY's
+def test_a_contested_root_whose_why_is_open_renders_both_notes():
     case = _CASES["C+D: contested roots, none terminal"]()
     ids = {m[0] for m in _SPECIMEN}
     assert held_open_root_ids(case) == ids  # the WHY hold stands on all three
     assert mece_contested_root_ids(case) == ids
-    assert cgb._root_recovery_reasons(case) == dict.fromkeys(ids, cgb._MECE_CONTESTED)
+    assert cgb._root_recovery_reasons(case) == {
+        i: [cgb._MECE_CONTESTED, cgb._WHY_OPEN] for i in ids
+    }
     block = cgb._build_causal_graph_block(case)
     assert block.count(_MECE_NOTE_FRAGMENT) == 3
-    assert block.count(_WHY_NOTE_FRAGMENT) == 0
+    assert block.count(_WHY_NOTE_FRAGMENT) == 3
+    for node_id in ids:
+        assert _root_line(block, node_id).endswith(
+            cgb._RECOVERY_NOTES[cgb._MECE_CONTESTED]
+            + cgb._RECOVERY_NOTES[cgb._WHY_OPEN]
+        )
 
 
-# 2. C and A
-def test_open_why_wins_over_a_count_hold():
+# 2. C and A (#2059): the count hold still blocks the root, so its note follows
+def test_a_count_held_root_under_the_why_hold_renders_both_notes():
     case = _CASES["C+A: counted root, non-terminal"]()
     node_id = _ONE_SUPPORT[0]
     assert root_support_block_reasons(case) == {node_id: BLOCK_REASON_COUNT}
     assert node_id in held_open_root_ids(case)
-    assert cgb._root_recovery_reasons(case) == {node_id: cgb._WHY_OPEN}
+    assert cgb._root_recovery_reasons(case) == {
+        node_id: [cgb._WHY_OPEN, BLOCK_REASON_COUNT]
+    }
     line = _root_line(cgb._build_causal_graph_block(case), node_id)
-    assert line.endswith(cgb._RECOVERY_NOTES[cgb._WHY_OPEN])
+    assert line.endswith(
+        cgb._RECOVERY_NOTES[cgb._WHY_OPEN] + cgb._RECOVERY_NOTES[BLOCK_REASON_COUNT]
+    )
 
 
-# 3. C and B
-def test_open_why_wins_over_a_restatement_hold():
+# 3. C and B (#2059)
+def test_a_restatement_held_root_under_the_why_hold_renders_both_notes():
     case = _CASES["C+B: restating root, non-terminal"]()
     node_id = _RESTATING[0]
     assert restatement_held_root_ids(case) == {node_id}
     assert node_id in held_open_root_ids(case)
-    assert cgb._root_recovery_reasons(case) == {node_id: cgb._WHY_OPEN}
+    assert cgb._root_recovery_reasons(case) == {
+        node_id: [cgb._WHY_OPEN, BLOCK_REASON_RESTATEMENT]
+    }
     line = _root_line(cgb._build_causal_graph_block(case), node_id)
-    assert line.endswith(cgb._RECOVERY_NOTES[cgb._WHY_OPEN])
+    assert line.endswith(
+        cgb._RECOVERY_NOTES[cgb._WHY_OPEN]
+        + cgb._RECOVERY_NOTES[BLOCK_REASON_RESTATEMENT]
+    )
 
 
 # 4. each population alone
 def test_each_population_alone_keeps_its_own_note():
     a = _CASES["A only"]()
-    assert cgb._root_recovery_reasons(a) == {_ONE_SUPPORT[0]: BLOCK_REASON_COUNT}
+    assert cgb._root_recovery_reasons(a) == {_ONE_SUPPORT[0]: [BLOCK_REASON_COUNT]}
     b = _CASES["B only"]()
-    assert cgb._root_recovery_reasons(b) == {_RESTATING[0]: BLOCK_REASON_RESTATEMENT}
+    assert cgb._root_recovery_reasons(b) == {_RESTATING[0]: [BLOCK_REASON_RESTATEMENT]}
     d = _CASES["D only"]()
     assert cgb._root_recovery_reasons(d) == {
-        m[0]: cgb._MECE_CONTESTED for m in _SPECIMEN
+        m[0]: [cgb._MECE_CONTESTED] for m in _SPECIMEN
     }
     c = _CASES["C only"]()
-    assert cgb._root_recovery_reasons(c) == {_SPECIMEN[0][0]: cgb._WHY_OPEN}
+    assert cgb._root_recovery_reasons(c) == {_SPECIMEN[0][0]: [cgb._WHY_OPEN]}
 
 
 # 4a. the grounding and restatement holds both non-empty on one case
@@ -176,8 +199,8 @@ def test_a_count_hold_and_a_restatement_hold_each_render_on_their_own_root():
     assert root_support_block_reasons(case) == {count_id: BLOCK_REASON_COUNT}
     assert restatement_held_root_ids(case) == {restating_id}
     assert cgb._root_recovery_reasons(case) == {
-        count_id: BLOCK_REASON_COUNT,
-        restating_id: BLOCK_REASON_RESTATEMENT,
+        count_id: [BLOCK_REASON_COUNT],
+        restating_id: [BLOCK_REASON_RESTATEMENT],
     }
     block = cgb._build_causal_graph_block(case)
     assert _root_line(block, count_id).endswith(cgb._RECOVERY_NOTES[BLOCK_REASON_COUNT])
@@ -188,12 +211,12 @@ def test_a_count_hold_and_a_restatement_hold_each_render_on_their_own_root():
 
 # 5. oracle, and no real case logs a collision
 @pytest.mark.parametrize("name", list(_CASES))
-def test_choice_equals_the_old_merge_order_and_logs_no_collision(name, caplog):
+def test_the_leading_note_is_the_old_merge_choice_and_logs_no_collision(name, caplog):
     caplog.set_level(logging.ERROR, logger=cgb.logger.name)
     case = _CASES[name]()
     reasons = cgb._root_recovery_reasons(case)
     assert reasons  # a case with no note would pin nothing
-    assert reasons == _old_merge(case)
+    assert {root_id: notes[0] for root_id, notes in reasons.items()} == _old_merge(case)
     cgb._build_causal_graph_block(case)  # the path that runs the selector
     assert _collisions(caplog) == []
 
@@ -203,17 +226,28 @@ def test_choice_equals_the_old_merge_order_and_logs_no_collision(name, caplog):
 _POPULATIONS = [
     ("mece_contested_root_ids", cgb._MECE_CONTESTED),
     ("held_open_root_ids", cgb._WHY_OPEN),
+    ("refused_verdict_root_ids", cgb._VERDICT_REFUSED),
     ("restatement_held_root_ids", BLOCK_REASON_RESTATEMENT),
     ("root_support_block_reasons", BLOCK_REASON_COUNT),
 ]
-# why_open with mece_contested, with restates_frame, and with a grounding reason
-_DECLARED_PAIRS = [(0, 1), (1, 2), (1, 3)]
+# Pairs that co-occur, as the indices whose notes render: why_open with
+# mece_contested, restates_frame and a grounding reason, and verdict_refused
+# with restates_frame and a grounding reason (both notes); verdict_refused with
+# why_open renders the WHY note alone (it excludes the WHY hold).
+_DECLARED_PAIRS = {
+    (0, 1): (0, 1),
+    (1, 3): (1, 3),
+    (1, 4): (1, 4),
+    (2, 3): (2, 3),
+    (2, 4): (2, 4),
+    (1, 2): (1,),
+}
 # disjoint by the predicates' definitions
-_IMPOSSIBLE_PAIRS = [(0, 2), (0, 3), (2, 3)]
+_IMPOSSIBLE_PAIRS = [(0, 3), (0, 4), (3, 4)]
 
 
 def _patch_populations(monkeypatch, memberships):
-    """Point the four predicates, in the selector's namespace, at the given
+    """Point the five predicates, in the selector's namespace, at the given
     root ids: ``memberships`` maps each root id to the population indices it
     sits in."""
     for k, (name, _reason) in enumerate(_POPULATIONS):
@@ -230,15 +264,15 @@ def _pair_id(pair):
     return f"cn_pair_{pair[0]}{pair[1]}"
 
 
-def test_declared_pairs_resolve_by_the_precedence_without_a_log(monkeypatch, caplog):
+def test_declared_pairs_render_their_declared_notes_without_a_log(monkeypatch, caplog):
     caplog.set_level(logging.ERROR, logger=cgb.logger.name)
     _patch_populations(
         monkeypatch, {_pair_id(pair): set(pair) for pair in _DECLARED_PAIRS}
     )
     reasons = cgb._root_recovery_reasons(None)
     assert len(reasons) == len(_DECLARED_PAIRS)
-    for i, j in _DECLARED_PAIRS:
-        assert reasons[_pair_id((i, j))] == _POPULATIONS[i][1], (i, j)
+    for pair, rendered in _DECLARED_PAIRS.items():
+        assert reasons[_pair_id(pair)] == [_POPULATIONS[k][1] for k in rendered]
     assert _collisions(caplog) == []
 
 
@@ -261,27 +295,32 @@ def test_every_impossible_pair_logs_naming_both_populations(monkeypatch, caplog)
             _POPULATIONS[i][0],
             _POPULATIONS[j][0],
         ]
-        # still annotated, by one of its two holds: the prompt is built
-        assert reasons[node_id] in {_POPULATIONS[i][1], _POPULATIONS[j][1]}
+        # still annotated, led by the higher of its two holds: the prompt is built
+        assert reasons[node_id][0] == _POPULATIONS[i][1]
 
 
-def test_a_root_in_all_four_still_gets_the_contest_note_and_logs_once(
+def test_a_root_in_every_hold_leads_with_the_contest_note_and_logs_once(
     monkeypatch, caplog
 ):
     caplog.set_level(logging.ERROR, logger=cgb.logger.name)
-    everywhere = "cn_in_all_four"
-    _patch_populations(monkeypatch, {everywhere: {0, 1, 2, 3}})
+    everywhere = "cn_in_every_hold"
+    _patch_populations(monkeypatch, {everywhere: {0, 1, 2, 3, 4}})
     reasons = cgb._root_recovery_reasons(None)
-    assert reasons == {everywhere: cgb._MECE_CONTESTED}
+    # verdict_refused excludes the WHY hold, so its note is not rendered
+    assert reasons == {
+        everywhere: [_POPULATIONS[k][1] for k in (0, 1, 3, 4)],
+    }
     records = _collisions(caplog)
     assert len(records) == 1
     assert records[0].root_id == everywhere
-    assert records[0].populations == [name for name, _ in _POPULATIONS]
+    assert records[0].populations == [
+        name for k, (name, _) in enumerate(_POPULATIONS) if k != 2
+    ]
 
 
 # 7. every reason has a note: every BLOCK_REASON_* the support module defines,
-# found by inspection so a new one cannot render bare, plus the two holds the
-# selector adds
+# found by inspection so a new one cannot render bare, plus the three reasons
+# the selector adds
 _BLOCK_REASONS = sorted(
     value
     for name, value in vars(support).items()
@@ -299,7 +338,8 @@ def test_the_block_reason_scan_finds_the_known_reasons():
 
 
 @pytest.mark.parametrize(
-    "reason", [*_BLOCK_REASONS, cgb._MECE_CONTESTED, cgb._WHY_OPEN]
+    "reason",
+    [*_BLOCK_REASONS, cgb._MECE_CONTESTED, cgb._WHY_OPEN, cgb._VERDICT_REFUSED],
 )
 def test_every_reason_the_choice_can_return_has_a_note(reason):
     assert reason in cgb._RECOVERY_NOTES

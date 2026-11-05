@@ -40,6 +40,7 @@ from tests.unit.core.investigation.test_m6_cause_gone_problem_persists_1927 impo
     _identified_case,
     _recompute_at,
 )
+from tests.utils import terminal_verdict
 
 pytestmark = pytest.mark.unit
 
@@ -169,7 +170,7 @@ def test_a_same_turn_not_terminal_verdict_does_not_hide_a_failed_fix():
     _unlinked_conclusion(case)
     case.root_cause_conclusion.root_cause = "a pool the server starves"
     _failed_fix(case, fix_turn=8, outcome_turn=9)
-    root.record_root_terminal(False, "something upstream resets the limit", 9)
+    root.record_root_terminal(False, None, 9)
 
     assert _representative_cause_hypothesis(case) is hyp
     _recompute_at(case, 9)
@@ -186,7 +187,7 @@ def test_an_orphaned_identified_root_never_stands_in_for_the_cause():
     case, root, hyp = _identified_case()
     hyp.initial_likelihood = 0.5
     old_root = CausalNode(
-        metadata={"root_terminal": True},
+        metadata=terminal_verdict(),
         node_id="cn_0000000000b2",
         statement="the checkout pod's clock runs ahead of the database",
         node_type=NodeType.ROOT,
@@ -232,7 +233,7 @@ def test_a_root_whose_only_hypothesis_fell_grounds_no_identification():
 
     case, root, hyp = _identified_case()
     old_root = CausalNode(
-        metadata={"root_terminal": True},
+        metadata=terminal_verdict(),
         node_id="cn_0000000000b3",
         statement="the checkout pod's clock runs ahead of the database",
         node_type=NodeType.ROOT,

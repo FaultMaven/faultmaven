@@ -58,6 +58,7 @@ from tests.unit.core.investigation.test_m6_cause_gone_problem_persists_1927 impo
 )
 from tests.unit.core.investigation.test_refutation_needs_data_1911 import _engine
 from tests.unit.core.investigation.test_resolution_backstop_turn import _case
+from tests.utils import terminal_verdict
 
 pytestmark = pytest.mark.unit
 
@@ -97,7 +98,7 @@ async def test_the_report_renders_the_row_the_stamp_recorded(same_line, shape):
     case, r1, _hyp = _identified_case()
     r2_links, r1.evidence_links = r1.evidence_links[1:], r1.evidence_links[:1]
     r2 = CausalNode(
-        metadata={"root_terminal": True},
+        metadata=terminal_verdict(),
         node_id="cn_00000000d00b",
         statement=(
             "every checkout worker blocks waiting on a postgres slot"

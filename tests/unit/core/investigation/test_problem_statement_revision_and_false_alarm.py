@@ -117,6 +117,7 @@ from faultmaven.modules.report.domain.services.report_generation_service import 
 )
 from tests.case_builders import investigating_case, with_open_offer
 from tests.unit.core.investigation.bound_rows import bound_row, ensure_subjects
+from tests.utils import terminal_verdict
 
 _FILE_ID = "file_0123456789ab"
 
@@ -848,6 +849,7 @@ def _revision_turn_with_cause_work() -> _DSU:
                 rationale="timeouts start at pool exhaustion",
                 root_node_ref="new_index_0",
                 root_is_terminal=True,
+                terminal_basis_evidence_ids=["new_index_2"],
             )
         ],
         causal_nodes_to_add=[
@@ -1107,7 +1109,7 @@ class TestStagingAcrossTheHandshake:
             generated_at_turn=1,
         )
         root = CausalNode(
-            metadata={"root_terminal": True},
+            metadata=terminal_verdict(),
             node_id="cn_0000000000ee",
             statement="an unrelated root",
             node_type=NodeType.ROOT,
@@ -1584,7 +1586,7 @@ def test_a_node_is_retexted_in_place_so_chains_keep_their_anchor():
         n for n in case.causal_nodes.values() if n.node_type == NodeType.PROBLEM
     )
     root = CausalNode(
-        metadata={"root_terminal": True},
+        metadata=terminal_verdict(),
         node_id="cn_0000000000cc",
         statement=CAUSE,
         node_type=NodeType.ROOT,
