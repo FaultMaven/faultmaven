@@ -1035,17 +1035,25 @@ def _no_confirming_window(windows: list) -> str:
     """Why no window confirms (``confirming_window`` is None): the latest
     observed fix failed. When a newer fix is recorded that nobody has
     observed yet, it is named as the one still to re-check, not as missing
-    (#2495)."""
+    (#2495). A failed window 0 is named as the fix done outside the case
+    (#2501)."""
     observed = [i for i, w in enumerate(windows) if w.observed]
     if observed and windows[observed[-1]].state == FIX_FAILED:
         failed = windows[observed[-1]]
+        which = (
+            "the fix done outside the case"
+            if failed.fix_turn is None
+            else f"the fix executed at turn {failed.fix_turn}"
+        )
+        seen = f"{which} was seen failing at turn {failed.failure_turn}"
         newer = [w for w in windows[observed[-1] + 1 :] if w.fix_turn is not None]
         if newer:
             return (
-                f"the fix executed at turn {failed.fix_turn} was seen failing at "
-                f"turn {failed.failure_turn}; the newer fix (executed turn "
-                f"{newer[-1].fix_turn}) is not re-checked yet"
+                f"{seen}; the newer fix (executed turn {newer[-1].fix_turn}) is "
+                "not re-checked yet"
             )
+        if failed.fix_turn is None:
+            return f"{seen}; only a new fix can confirm"
     return "the latest fix was seen failing; only a new fix can confirm"
 
 
@@ -1250,7 +1258,8 @@ class FixWindow:
     observed persisting
     after the cause's removal, when ``state`` is ``FIX_FAILED``.
     ``relief_turn`` is the first turn the problem was observed gone in the
-    window, before any failure. ``disconfirmation`` is the earliest
+    window, before any failure; on a FAILED window 0, the relief its failure
+    read (``_window_zero_relapse``). ``disconfirmation`` is the earliest
     ``(cause_turn, persistence_turn)`` pair that disconfirms the cause the
     fix addressed (``disconfirms_cause``), or None. ``observed``: the fix's
     outcome was looked at — a cause row in the window, or a persistence row
@@ -1332,9 +1341,12 @@ def fix_windows(
     without a cause row the window stays UNKNOWN ("I ran it, still failing"
     with no cause re-check may be an implementation error).
 
-    Window 0 never fails: before any dated fix, a causal_absence row is as
-    likely a diagnosis-time exclusion ("DNS ruled out") as a fix's outcome, and
-    the problem is ongoing by definition."""
+    Window 0 fails only on a relapse (#2501, ``_window_zero_relapse``): the
+    identified cause shown removed after it was posited, then the problem
+    gone, then present. Persistence with no such relief fails nothing: before
+    any dated fix, a causal_absence row is as likely a diagnosis-time exclusion
+    ("DNS ruled out") as a fix's outcome. It never carries a disconfirmation,
+    so nothing destructive acts on an undated fix."""
     fixes = _dated_fix_turns(case)
     subjects = subject_index(case) if subjects is None else subjects
     # (category, subject, observed turn) of every bound row.
@@ -1379,7 +1391,8 @@ def fix_windows(
         # removed at r, the problem observed present at p >= r, and no
         # problem-gone row of this window in [r, p] — one in r's or p's turn
         # reads as gone, as below; one in the next fix's turn belongs to that
-        # window. The earliest such pair; window 0 has none (no persistence).
+        # window. The earliest such pair; window 0 has none (no ``after_fix``:
+        # its relapse is read apart, ``_window_zero_relapse``).
         cause_turns = sorted({subjects.observed(row) for row in cause_rows})
         disconfirmation: tuple[int, int] | None = None
         for p in sorted(after_fix):
@@ -1401,6 +1414,13 @@ def fix_windows(
         )
         if state != FIX_FAILED and relief_turn is not None and confirmed_cause_rows:
             state = FIX_SUCCEEDED
+        if fix_turn is None:
+            relapse = _window_zero_relapse(
+                case, bound, gone_turns, confirmed_cause_rows, subjects, end_turn
+            )
+            if relapse is not None:
+                state = FIX_FAILED
+                relief_turn, failure_turn = relapse
         windows.append(
             FixWindow(
                 fix_turn,
@@ -1415,6 +1435,43 @@ def fix_windows(
             )
         )
     return windows
+
+
+def _window_zero_relapse(
+    case: "Case", bound, gone_turns, confirmed_cause_rows, subjects, end_turn
+) -> tuple[int, int] | None:
+    """``(relief_turn, failure_turn)`` when window 0 relapsed, else None
+    (#2501): the identified cause shown removed at or after its positing
+    (``_cause_posited_turn``: an earlier row observed something else gone),
+    then the problem shown gone, then a problem-bound SYMPTOM_EVIDENCE row in
+    a later turn, up to and including the next fix's execution turn. A turn
+    holding both reads as gone, as in a dated window."""
+    posited = _cause_posited_turn(case)
+    removal = min(
+        (
+            turn
+            for row in confirmed_cause_rows
+            if (turn := subjects.observed(row)) >= posited
+        ),
+        default=None,
+    )
+    if removal is None:
+        return None
+    relief = min((g for g in gone_turns if g >= removal), default=None)
+    if relief is None:
+        return None
+    failure = min(
+        (
+            turn
+            for category, _, turn, _ in bound
+            if category == EvidenceCategory.SYMPTOM_EVIDENCE
+            and turn > relief
+            and turn not in gone_turns
+            and (end_turn is None or turn <= end_turn)
+        ),
+        default=None,
+    )
+    return None if failure is None else (relief, failure)
 
 
 def latest_fix_window(case: "Case") -> FixWindow:
@@ -1455,9 +1512,10 @@ def confirming_window(
     that message's rows and the registration turn's paste is post-fix. Read
     off ``fix_windows`` alone, so the gate reads a failed fix the same whether
     or not M6 could act on
-    it. With no dated fix it is window 0, the whole case, and an out-of-band
-    fix confirms as before. None when nothing was observed at all (no leg can
-    stand then). ``windows`` is the caller's ``fix_windows(case)``."""
+    it. With no dated fix it is window 0, the whole case: an out-of-band fix
+    confirms on its rows, and nothing once it relapsed (#2501). None when
+    nothing was observed at all (no leg can stand then). ``windows`` is the
+    caller's ``fix_windows(case)``."""
     if windows is None:
         windows = fix_windows(case, subjects)
     for window in reversed(windows):

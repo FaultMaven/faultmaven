@@ -813,14 +813,14 @@ def resolve_declined_actions(case: Case) -> str:
 #: What follows an answer showing the problem gone while the user's decline of
 #: the resolution stands: it lapses only when the confirmation rows gain one
 #: (``offers.decline_stands``), so a need marked FULFILLED on any other row
-#: leaves it binding. Scoped to that answer: it promises nothing on one
-#: showing the problem still present (after a dated fix, a problem-bound one
-#: fails the fix's window, leaving nothing to re-open).
+#: leaves it binding. Scoped to that answer: the clause promises nothing on an
+#: answer showing the problem present (a problem-bound one fails the fix's
+#: window, leaving nothing to re-open).
 PENDING_CHECK_DECLINE_CLAUSE = (
     "The user declined the resolution. Once an answer showing the problem gone "
-    "is on record, a new problem-bound row showing it lapses that decline; on "
-    "any other row the decline still binds, and the user re-opens the "
-    "resolution with 'Mark it resolved'."
+    "is on record, a new problem-bound row showing it lapses that decline; if "
+    "that answer is on any other row, the decline still binds, and the user "
+    "re-opens the resolution with 'Mark it resolved'."
 )
 
 
@@ -854,8 +854,7 @@ def pending_check_feedback(case: Case, check: EvidenceNeed, *, proposed: bool) -
             f"{PENDING_CHECK_DECLINE_CLAUSE}"
         )
     # Scoped like the clause: it promises nothing on an answer showing the
-    # problem still present (after a dated fix, a problem-bound one fails the
-    # fix's window).
+    # problem still present (a problem-bound one fails the fix's window).
     then = (
         "Propose resolved once an answer showing the problem gone is on record"
         if proposed

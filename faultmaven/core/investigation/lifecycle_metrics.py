@@ -408,7 +408,9 @@ cause_identification_held_mece_total = Counter(
 # - ``relapse``          — the window FAILED as a relapse: the problem observed
 #   gone after the fix, then observed again, with no disconfirmation (the cause
 #   observed removed, then the problem present, nothing gone in between). The
-#   problem went with the cause, so nothing disproves it (#2039).
+#   problem went with the cause, so nothing disproves it (#2039). Window 0
+#   counts (an out-of-band fix that relapsed, #2501); as for a dated window,
+#   the latest decided window's label, even while a newer fix is unobserved.
 # - ``resolution_confirmed`` — the window SUCCEEDED: the cause observed removed
 #   and the problem observed gone, with no persistence before the relief. This
 #   is the #987 incident shape, and a nonzero rate here means something
