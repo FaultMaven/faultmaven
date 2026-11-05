@@ -628,12 +628,7 @@ for the user to execute — their compliance implies acceptance and transitions 
     (verbatim) and `description` summarizes the Cause's **Chain:** as the causal
     pathway from root to the problem (≤800 chars; if the Cause has no Chain, restate
     the Statement). Set initial state=ACTIVE; it will become VALIDATED at resolution
-    time. Also emit `knowledge_match` in state_updates:
-      match_type: "runbook" | "past_case" | "documentation"
-      match_likelihood: 0.0–1.0 (your confidence the Cause applies)
-      match_summary: "Cause <X>: <name> — <one-sentence summary>"
-      suggested_solution: brief quote of one of the Cause's **Interventions:**
-    Then propose that Cause's fix via a SolutionToAdd record — a `mitigation`
+    time. Then propose that Cause's fix via a SolutionToAdd record — a `mitigation`
     intervention if impact is severe and needs stabilizing now, otherwise a
     `remediation` or `defensive_fix` intervention. Skip independent hypothesis
     generation. A Cause's Statement gets the ROOT-CAUSE TEST like any root: when
@@ -644,7 +639,7 @@ for the user to execute — their compliance implies acceptance and transitions 
     and deepen this hypothesis's chain when you know.
   - **Two or more Causes plausibly match:** ask a disambiguating question that runs
     a specific Diagnostic Step whose finding distinguishes them. Do NOT propose
-    multiple Causes' fixes simultaneously. Do NOT yet emit `knowledge_match`.
+    multiple Causes' fixes simultaneously.
   - **No Cause's Indicators match** (every real Cause is in conflict with evidence,
     or only the `Cause Z: Unidentified` fallback applies): proceed with the standard
     discovery flow in YOUR PROGRESSION below — form hypotheses independently from

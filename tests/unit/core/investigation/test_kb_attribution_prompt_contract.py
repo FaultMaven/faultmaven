@@ -57,10 +57,11 @@ class TestKBAttributionPromptContract:
         assert "disambiguating question" in rca_diagnosis_block(DEFAULT_GIVEN)
         assert "No Cause" in rca_diagnosis_block(DEFAULT_GIVEN)
 
-    def test_knowledge_match_signal_emitted(self):
-        # The attribution emits a knowledge_match signal naming the Cause.
-        assert "knowledge_match" in rca_diagnosis_block(DEFAULT_GIVEN)
-        assert "match_likelihood" in rca_diagnosis_block(DEFAULT_GIVEN)
+    def test_no_knowledge_match_is_asked_for(self):
+        # Only the INQUIRY schema carries knowledge_match (#2513 review): the
+        # DIAGNOSIS attribution records the Cause as the hypothesis instead.
+        assert "knowledge_match" not in rca_diagnosis_block(DEFAULT_GIVEN)
+        assert "match_likelihood" not in rca_diagnosis_block(DEFAULT_GIVEN)
 
 
 def _diagnosis_case() -> Case:

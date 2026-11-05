@@ -643,8 +643,10 @@ def test_no_turn_asks_for_the_deleted_runbook_fix_field(row: str) -> None:
     """#2482: no response schema carries the runbook-fix confirmation field
     any more, so neither the DIAGNOSIS nor the TREATMENT render asks for it or
     carries the variant that did. Each column still renders its block (the
-    controls)."""
+    controls). Nor does DIAGNOSIS name ``knowledge_match``, which only the
+    INQUIRY schema carries (#2513 review); INQUIRY still does."""
     texts = renders(ROWS[row])
+    assert "knowledge_match" in texts["inquiry"], "premise"
     for column, block in (
         ("diagnosis", "Cause attribution"),
         ("diagnosis_directed", "Cause attribution"),
@@ -653,6 +655,7 @@ def test_no_turn_asks_for_the_deleted_runbook_fix_field(row: str) -> None:
         assert block in texts[column], (column, "premise")
         assert "knowledge_resolution" not in texts[column], column
         assert "KB-RESOLUTION VARIANT" not in texts[column], column
+        assert "knowledge_match" not in texts[column], column
 
 
 #: Phrases that point at a tool without naming it. Text must not instruct a

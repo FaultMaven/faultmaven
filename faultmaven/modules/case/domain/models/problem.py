@@ -503,7 +503,9 @@ class ProblemVerification(BaseModel):
     # The rows that showed the problem (#1906 D1). A post-fix observation of
     # the problem counts only when it names one of them
     # (``cause_assurance.observation_subject``). Empty when the verification
-    # cited none: a legacy case.
+    # cited none: a legacy case, or a live symptom claim that cited no row on a
+    # turn that wrote zero or several symptom rows
+    # (``response_application._record_verifying_rows``).
     verifying_evidence_ids: List[str] = Field(
         default_factory=list,
         description=(

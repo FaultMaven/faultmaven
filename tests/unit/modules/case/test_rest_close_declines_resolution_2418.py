@@ -18,11 +18,19 @@ import pytest
 
 from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.config.tenant_context import set_current_enterprise_id
+from faultmaven.core.investigation.milestone_engine.transition_consent import (
+    revision_offer_key,
+)
+from faultmaven.core.investigation.problem_status import (
+    pending_revision,
+    propose_revision,
+)
 from faultmaven.core.investigation.terminal_transitions import (
     close_pivots_to_resolve,
     closure_verdict,
+    execute_user_closure,
 )
-from faultmaven.modules.case.contracts import Case, CaseState
+from faultmaven.modules.case.contracts import Case, CaseState, ProblemStatus
 from faultmaven.modules.case.domain.services.case_service import CaseService
 from faultmaven.modules.case.infrastructure.case_repository import (
     InMemoryCaseRepository,
@@ -103,6 +111,20 @@ def _fixed(*, solution: bool = True, confirmed: bool = True) -> Case:
         readiness._attach_solution(case)
     if confirmed:
         readiness._attach_confirmation(case)
+    return case
+
+
+def _with_revision(case: Case) -> Case:
+    """``case`` with a revised problem statement awaiting the user."""
+    revised = "Checkout times out at the gateway, not in the database."
+    propose_revision(
+        case,
+        text=revised,
+        evidence_ids=[case.evidence[0].evidence_id],
+        basis="the gateway log shows timeouts with normal DB latency",
+        wording_key=revision_offer_key(revised),
+    )
+    assert case.progress.problem_status == ProblemStatus.REVISION_PENDING
     return case
 
 
@@ -235,3 +257,34 @@ async def test_the_closure_report_renders_the_fix_and_what_confirmed_it(
     assert "Post-fix logs confirm pool exhaustion no longer occurs" in summary
     assert ("## Solution Applied\n" in summary) is solution
     assert ("Increase connection pool to 100" in summary) is solution
+
+
+class TestOnlyTheDriverCloses:
+    """The driver is checked before anything is written (#2513 review), on
+    every branch: a non-driver's close leaves the case as it was."""
+
+    @pytest.mark.parametrize(
+        "confirmed", [True, False], ids=["qualifying", "not-qualifying"]
+    )
+    def test_a_non_driver_raises_and_changes_nothing(self, confirmed):
+        assert _qualifies(_fixed(confirmed=confirmed)) is confirmed, "premise"
+        case = _with_revision(_fixed(confirmed=confirmed))
+        before = case.model_dump()
+
+        with pytest.raises(ValueError, match="only the case's driver"):
+            execute_user_closure(case, "u_not_the_driver")
+
+        assert case.model_dump() == before
+        assert pending_revision(case) is not None
+
+    async def test_the_driver_closes_past_a_pending_revision(self, world):
+        """The revision lapses, then the case qualifies again and its close
+        declines the resolution."""
+        case = _with_revision(_fixed())
+
+        closed = await _close(world, case)
+
+        assert closed.closure_reason == _DECLINED
+        lapsed = ("revision", "lapsed", "menu", None)
+        assert _answers(closed) == [lapsed, _RESOLVE_DECLINED]
+        assert closed.progress.problem_status == ProblemStatus.VERIFIED

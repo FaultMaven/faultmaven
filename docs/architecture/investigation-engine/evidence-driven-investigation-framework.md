@@ -1192,6 +1192,7 @@ stateDiagram-v2
         ProblemProposed --> ProblemConfirmed: User confirms
         ProblemProposed --> Exploring: User provides<br/>corrections
         Exploring --> KBMatch: KB search finds<br/>high-confidence match
+        KBMatch --> ProblemProposed: Match held back —<br/>agent proposes problem statement
     }
 
     INQUIRY --> INVESTIGATING: problem_statement_confirmed

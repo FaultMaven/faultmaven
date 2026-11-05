@@ -31,8 +31,14 @@ from faultmaven.core.investigation.milestone_engine.turn_commit import (
     TurnCommitPlan,
     commit_turn_plan,
 )
-from faultmaven.core.investigation.terminal_transitions import execute_user_closure
+from faultmaven.core.investigation.offers import answer_offer
+from faultmaven.core.investigation.terminal_transitions import (
+    _execute_closed_transition,
+    derive_closure_reason,
+)
 from faultmaven.modules.case.contracts import (
+    AnswerKind,
+    AnswerVia,
     MessageRowKind,
     TurnOutcome,
     append_message_row,
@@ -143,10 +149,18 @@ def _grow_one_turn(case: Case, turn: int, *, terminal: bool) -> TurnCommitPlan:
         )
         case.hypotheses[hypothesis.hypothesis_id] = hypothesis
     if terminal:
-        # The case has no creator row to drive it, so the close runs through
-        # the executor the REST close uses; the open offer is answered with it.
-        with_open_offer(case, kind="close", summary="Close it?")
-        execute_user_closure(case, "user_latency")
+        # The case has no creator row to drive it, so it cannot take the REST
+        # close, which checks the driver first (#2513). The close is made as
+        # that close makes it on a case not resolvable: the open offer lapses
+        # and the same executor closes the case.
+        offer = with_open_offer(case, kind="close", summary="Close it?")
+        case.offer_record = answer_offer(
+            case,
+            proposal_id=offer.proposal_id,
+            answer=AnswerKind.LAPSED,
+            via=AnswerVia.MENU,
+        )
+        _execute_closed_transition(case, "user_latency", derive_closure_reason(case))
         assert case.state == CaseState.CLOSED
         plan.add_reports(
             [

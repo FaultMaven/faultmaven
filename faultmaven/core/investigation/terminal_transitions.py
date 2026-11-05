@@ -1167,21 +1167,23 @@ def execute_user_closure(case: Case, user_id: str) -> ClosureReason:
     resolution (#2418): an open resolve offer is answered ``declined``, or,
     with none open, the resolve offer the pivot would open is opened and
     answered ``declined``. The reason then derives as
-    ``resolution_declined``, the same record the chat path's
-    decline-then-close leaves.
+    ``resolution_declined``, the reason the chat path's decline-then-close
+    records; the record here is a MENU decline of the resolve offer, with no
+    close offer answered.
 
     Mutates ``case`` in place; the caller owns persistence. Returns the
     derived closure_reason. ``user_id`` must be the case's effective driver:
-    the decline is answered as that user (``require_answerer``).
+    the close and any decline are that user's (``require_answerer``).
 
     Raises:
-        ValueError: If the case is not in a closable (INQUIRY or
-            INVESTIGATING) state — callers should pre-check terminal
-            states and surface those as a conflict — or, on a case that
-            qualifies for RESOLVED, ``user_id`` is not its effective driver.
+        ValueError: If ``user_id`` is not the case's effective driver,
+            checked before anything is written; or if the case is not in a
+            closable (INQUIRY or INVESTIGATING) state — callers should
+            pre-check terminal states and surface those as a conflict.
     """
     from faultmaven.core.investigation.problem_status import cancel_revision
 
+    require_answerer(case, user_id)
     # The user's own close moves past a revision awaiting re-confirmation: it
     # lapses (it is not declined), and the reason derives from where the case
     # stood before the revision was proposed.
