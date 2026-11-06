@@ -126,7 +126,7 @@ def _attempt_lines(case: Case, attempts: list, windows, subjects, owing) -> list
         kind = getattr(a, "fix_kind", None)
         acted = ", ".join(getattr(a, "target_ids", None) or ()) or "no node recorded"
         if kind == FIX_INTERCEPTION:
-            relief, present = interception_relief(case, a.accepted_in_turn)
+            relief, present = interception_relief(case, a.accepted_in_turn, subjects)
             if present is not None and (relief is None or present > relief):
                 state = f"problem seen again at turn {present}"
             elif relief is not None:

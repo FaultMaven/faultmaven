@@ -38,6 +38,8 @@ from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
     EvidenceCategory,
+    EvidenceStance,
+    HypothesisState,
     InterventionQuadrant,
     InvestigationActionType,
     MitigationRecord,
@@ -443,13 +445,15 @@ def fix_identity(description: Optional[str]) -> str:
 def standing_fix_action(case: Case, description: Optional[str]) -> Any:
     """The SOLUTION action a re-proposal with ``description`` keeps, or None:
     the pending offer bearing that fix identity, or the latest dated attempt
-    while its own window has not FAILED (#2105); an interception opens no
-    window, so it is kept while it is the latest (#2036 D2.3). After a
-    FAILED window the same fix applied again is a new attempt."""
+    while its own window has not FAILED (#2105). An interception opens no
+    window: it is kept until the problem is seen present after its latest
+    relief, or after it with no relief (#2036 D2.3). After a failure the
+    same fix applied again is a new attempt."""
     from faultmaven.core.investigation.cause_assurance import (
         FIX_FAILED,
         attempt_window,
         fix_application_turn,
+        interception_relief,
     )
 
     identity = fix_identity(description)
@@ -470,7 +474,14 @@ def standing_fix_action(case: Case, description: Optional[str]) -> Any:
             and action.accepted_in_turn == latest
         ):
             window = attempt_window(case, action)
-            if window is None or window.state != FIX_FAILED:
+            if window is not None:
+                if window.state != FIX_FAILED:
+                    return action
+                continue
+            # An interception opens no window: it stands until the problem is
+            # seen present after its latest relief, or after it with none.
+            relief, present = interception_relief(case, action.accepted_in_turn)
+            if present is None or (relief is not None and present <= relief):
                 return action
     return None
 
@@ -1419,19 +1430,36 @@ def _ignore_fix_report(case: Case, metadata: dict[str, Any], reason: str) -> Non
 
 def _cause_work_at(case: Case, turn: int) -> bool:
     """Whether ``turn`` recorded cause work, read from the graph's stamps and
-    the turn record: a node posited, a root attached or given a verdict, a
-    hypothesis posited or validated, or the cause identified."""
+    the turn record: a node posited; a root attached, given a verdict, or
+    refuted by a row linked that turn (the model's, or M6's engine row); a
+    hypothesis posited, validated, or refuted (a refutation stamps
+    ``last_updated_turn``, and retracts a conclusion naming it); or the cause
+    identified.
+
+    Residual, stated: an engine conclusion cleared because its cause became
+    MECE-contested leaves no stamp, so the turn that cleared it reads as no
+    cause work."""
     for node in case.causal_nodes.values():
         if node.node_type == NodeType.PROBLEM:
             continue
         meta = node.metadata or {}
-        if turn in (
+        stamps = (
             node.generated_at_turn,
             meta.get("root_attached_turn"),
             meta.get("root_terminal_turn"),
-        ):
+        )
+        refuted = node.node_type == NodeType.ROOT and any(
+            link.stance == EvidenceStance.REFUTES and link.linked_at_turn == turn
+            for link in node.evidence_links
+        )
+        if turn in stamps or refuted:
             return True
-    if any(h.generated_at_turn == turn for h in case.hypotheses.values() if h):
+    if any(
+        h.generated_at_turn == turn
+        or (h.state == HypothesisState.REFUTED and h.last_updated_turn == turn)
+        for h in case.hypotheses.values()
+        if h is not None
+    ):
         return True
     return any(
         t.turn_number == turn
@@ -1450,12 +1478,6 @@ def _date_to_the_report(case: Case, target: Any, metadata: dict[str, Any]) -> No
     in their previous message (``accepted_fix_reported_in``, #2427). Nothing is
     inferred from the evidence; ``registered_in_turn`` keeps this turn.
 
-    Refused when the previous turn recorded cause work (``_cause_work_at``):
-    the fix's kind is read against the cause pool at the start of this turn
-    (#2036 D2.3), which would then not be the cause the user ran it against.
-    Read before the settle, the new attempt counts as a remediation here,
-    which only widens the window that judged it.
-
     Bounded so that no observation leaves the window that judged it. With no
     fix dated before, window 0 takes no bound (#2501): a relapse of it before
     the previous turn reads the same (its end is inclusive, and the rows it
@@ -1465,6 +1487,11 @@ def _date_to_the_report(case: Case, target: Any, metadata: dict[str, Any]) -> No
     this turn is judged in the new window. With one, its window must have
     FAILED before the previous turn (a failure is final), and its
     disconfirmation must read the same with this fix dated either way.
+    Within those bounds, the previous turn must have recorded no cause work
+    (``_cause_work_at``): the fix's kind is read against the cause pool at
+    the start of this turn (#2036 D2.3), which would then not be the cause
+    the user ran it against. Read before the settle, the new attempt counts
+    as a remediation here, which only widens the window that judged it.
     Otherwise the declaration is ignored, with a line."""
     from faultmaven.core.investigation.cause_assurance import FIX_FAILED, fix_windows
 
@@ -1473,14 +1500,6 @@ def _date_to_the_report(case: Case, target: Any, metadata: dict[str, Any]) -> No
     if previous < 1:
         _ignore_fix_report(
             case, metadata, f"there is no message before turn {turn}; {dated_here}"
-        )
-        return
-    if _cause_work_at(case, previous):
-        _ignore_fix_report(
-            case,
-            metadata,
-            f"turn {previous} recorded cause work, so the cause the fix ran "
-            f"against is the one before it, which is not on record; {dated_here}",
         )
         return
     # The window before this fix, ending at this turn.
@@ -1508,6 +1527,17 @@ def _date_to_the_report(case: Case, target: Any, metadata: dict[str, Any]) -> No
             f"turn {previous}'s observations decide whether the fix executed at "
             f"turn {judged.fix_turn} was disconfirmed, so they stay with it; "
             f"{dated_here}",
+        )
+        return
+    # After the bounds, whose lines are the more specific: a failure seen in
+    # the previous turn is also cause work once M6 demotes on it.
+    if _cause_work_at(case, previous):
+        target.accepted_in_turn = turn
+        _ignore_fix_report(
+            case,
+            metadata,
+            f"turn {previous} recorded cause work, so the cause the fix ran "
+            f"against is the one before it, which is not on record; {dated_here}",
         )
         return
     target.registered_in_turn = turn

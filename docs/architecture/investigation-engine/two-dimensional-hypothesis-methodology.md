@@ -1007,15 +1007,24 @@ records only what it can substantiate:
     settled once, in the turn the user runs it (#2036 D2.3,
     `ProposedAction.target_ids` / `fix_kind`): the node its `node_ref` named,
     else the cause identified at the start of that turn; a remediation when
-    that target is in the cause pool then, else an **interception** (R8). An
-    interception opens no window: it relieves but never resolves, and a later
-    one does not hide an earlier root fix's window. A remediation's window
-    binds its cause rows to its targets and the fallen roots, so a deepening
-    or a demotion since does not re-scope it, and only a re-check of a target
-    still in the confirmation pool confirms it: a renewal of a state later
-    deepened past can fail its window, never succeed. A fix accepted before
-    D2.3, or licensed only by a conclusion naming its cause in words, carries
-    no kind and reads as a remediation bound as below.
+    that target is in the cause pool then, else an **interception** (R8).
+    With no root identified or count-held then, the pool also admits what the
+    fix's licence (M5) names: the conclusion's root, when the pool holds it
+    or a standing hypothesis is rooted there, and the root of every standing
+    rooted hypothesis; the unnamed default is the conclusion's root, else the
+    most likely standing hypothesis's root. A fix named at an intermediate
+    node is an interception. An interception opens no window: it relieves
+    but never resolves, and a later one does not hide an earlier root fix's
+    window. A remediation's window binds its cause rows to its targets and
+    to the roots that fell and are not the cause now, so a deepening or a
+    demotion since does not re-scope it and a re-check of a cause identified
+    since is not its own; only a re-check of a target still in the
+    confirmation pool confirms it: a renewal of a state later deepened past
+    can fail its window, never succeed. A fix accepted before D2.3, or
+    licensed only by a conclusion naming its cause in words, carries no kind
+    and reads as a remediation bound as below; its window ends at the first
+    later attempt of any kind by which it has FAILED, and spans it while
+    live.
   - Inside a window, read in turn order from the window's raw, non-engine
     rows, each bound to the subject it names (#1906 D1,
     `observation_subject`) and placed by its data's upload turn

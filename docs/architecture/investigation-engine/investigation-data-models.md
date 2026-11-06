@@ -323,7 +323,7 @@ The milestone engine validates evidence claims for **progress indicators** (non-
 |---------------------|-----------------|---------|
 | `mitigation_accepted` | `mitigation.accepted` | User acknowledges executing proposed mitigation (workaround) |
 | `mitigation_verified` | `mitigation.verified` (+ `completed_at_turn`) | User confirms the mitigation stabilized the situation |
-| `solution_accepted` (+ `accepted_action_ref`) | the named SOLUTION's `accepted_in_turn` + `ActionAttempt`, then, once chain emission has run, its `target_ids` and `fix_kind` (remediation or interception, against the cause pool at the start of the turn, #2036 D2.3); `solution_accepted` stays True from the first | User acknowledges executing the proposed solution the ref names (an ACTION_ID, or `new_index_N`); each fix registers once, and after the first only when named (#2105) |
+| `solution_accepted` (+ `accepted_action_ref`) | the named SOLUTION's `accepted_in_turn` + `ActionAttempt`, then, once chain emission has run, its `target_ids` and `fix_kind` (remediation or interception, against the cause at the start of the turn, or with none identified the causes the fix's licence names, #2036 D2.3); `solution_accepted` stays True from the first | User acknowledges executing the proposed solution the ref names (an ACTION_ID, or `new_index_N`); each fix registers once, and after the first only when named (#2105) |
 | `solution_verified` | `solution_verified` | User confirmed fix worked (User-Agent Handshake) |
 
 **How progress milestone validation works:**
