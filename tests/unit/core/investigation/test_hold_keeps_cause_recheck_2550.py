@@ -62,6 +62,7 @@ CAUSAL_ABSENCE = EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
 SYMPTOM_ABSENCE = EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE
 SYMPTOM = EvidenceCategory.SYMPTOM_EVIDENCE
 ANSWER = "if the user's answer to the revised statement leaves the problem verified"
+REWORDED = "Checkout requests to /orders time out after 30s at the gateway"
 
 
 def _recheck(case, *, turn: int, of: str):
@@ -81,18 +82,21 @@ async def _revision_turn_with_recheck(engine, case) -> tuple[dict, str]:
     return meta, meta["evidence_added"][-1]
 
 
-async def _propose(engine, case, *rows, **verification) -> dict:
-    """Turn 4: a revision citing a new symptom row, beside ``rows``."""
+async def _propose(engine, case, *rows, symptom="s1", **verification) -> dict:
+    """A revision citing a new symptom row, beside ``rows``; ``verification``
+    adds to or overrides the update's fields."""
+    fields = dict(
+        revised_problem_statement=revision.REVISED,
+        revision_evidence_ids=["new_index_0"],
+        revision_basis="the gateway log shows timeouts with normal DB latency",
+    )
     return await revision._apply(
         engine,
         case,
         revision._DSU(
-            evidence_to_add=[revision._row(SYMPTOM, "s1"), *rows],
+            evidence_to_add=[revision._row(SYMPTOM, symptom), *rows],
             verification_updates=ProblemVerificationUpdate(
-                **verification,
-                revised_problem_statement=revision.REVISED,
-                revision_evidence_ids=["new_index_0"],
-                revision_basis="the gateway log shows timeouts with normal DB latency",
+                **{**fields, **verification}
             ),
         ),
     )
@@ -235,6 +239,20 @@ class TestAnAnswerBackToWhereTheCaseWas:
         assert _row(case, absent).category == SYMPTOM_ABSENCE
 
 
+async def test_a_false_alarms_hold_confirmed_restores_a_row_only_turn():
+    """A hold turn with no cause work stages nothing, so no replay carries its
+    row: only the hold's own restore can, over a false alarm too."""
+    engine, case = revision._engine(), _invalidated()
+    await _propose(engine, case)
+    assert pending_revision(case).prior_status == ProblemStatus.INVALIDATED
+    (absent,) = await _hold_turn(engine, case, revision._row(CAUSAL_ABSENCE, "g"))
+    assert pending_revision(case).staged == ()
+
+    await _confirm(engine, case)
+
+    assert _row(case, absent).category == CAUSAL_ABSENCE
+
+
 async def test_readers_during_the_hold_read_the_row_as_held():
     """A re-check of a pool root's support, beside the problem re-checked
     gone: while the statement is in question nothing reads it as the cause
@@ -320,6 +338,23 @@ async def test_a_confirmation_restores_only_the_holds_rows():
     await _confirm(engine, case)
 
     assert _row(case, held).category == SYMPTOM_ABSENCE
+
+
+async def test_a_reworded_revision_restores_the_rows_from_where_the_hold_began():
+    """A re-wording keeps the turn the hold began, so a confirmation restores
+    a row-only hold turn's row recorded before the re-wording."""
+    engine, case = revision._engine(), revision._case(ProblemStatus.VERIFIED)
+    await _propose(engine, case)
+    (absent,) = await _hold_turn(engine, case, revision._row(CAUSAL_ABSENCE, "g"))
+    case.current_turn = 6
+    await _propose(engine, case, symptom="s6", revised_problem_statement=REWORDED)
+    held = pending_revision(case)
+    assert (held.text, held.held_since_turn, held.proposed_at_turn) == (REWORDED, 4, 6)
+    assert held.staged == ()
+
+    await _confirm(engine, case)
+
+    assert _row(case, absent).category == CAUSAL_ABSENCE
 
 
 async def test_a_menu_close_during_the_hold_declines_the_resolution():
