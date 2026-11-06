@@ -343,6 +343,10 @@ class TestHttpDurationBucketsSpanRealTraffic:
     ORDINARY_READ = 0.4  # a DB-backed read
     HEALTHY_TURN = 14.95  # slowest healthy turn (turn 4, deepest context)
     HUNG_PROVIDER_TURN = 68.7  # retry ladder against a hung provider -> 503
+    # LLM calls (#1529): 8.2s is the Prometheus p95 of llm_request_duration_seconds
+    # reported there, 25.0s the slow-but-succeeding shape the issue names.
+    HEALTHY_LLM_CALL = 8.2
+    SLOW_SUCCEEDING_LLM_CALL = 25.0
 
     @staticmethod
     def _bucket_reached(buckets, observation):
@@ -380,13 +384,15 @@ class TestHttpDurationBucketsSpanRealTraffic:
                 "it. The reach guards themselves still ran."
             )
 
-        from faultmaven.infrastructure.shims.metrics import _HTTP_DURATION_BUCKETS
+        from faultmaven.infrastructure.shims.metrics import _REQUEST_DURATION_BUCKETS
 
         for observation in (
             self.HEALTH_PROBE,
             self.ORDINARY_READ,
             self.HEALTHY_TURN,
             self.HUNG_PROVIDER_TURN,
+            self.HEALTHY_LLM_CALL,
+            self.SLOW_SUCCEEDING_LLM_CALL,
             # Exactly on a bound. The only observation that distinguishes
             # `le` (<=, what Prometheus does: this reaches 10.0) from `<`
             # (which would push it into the 15.0 bucket), so without it the
@@ -397,7 +403,7 @@ class TestHttpDurationBucketsSpanRealTraffic:
             histogram = prometheus_client.Histogram(
                 "probe_duration_seconds",
                 "Bucket-reach probe",
-                buckets=_HTTP_DURATION_BUCKETS,
+                buckets=_REQUEST_DURATION_BUCKETS,
                 registry=registry,
             )
             histogram.observe(observation)
@@ -410,15 +416,15 @@ class TestHttpDurationBucketsSpanRealTraffic:
             )
 
             assert measured == self._bucket_reached(
-                _HTTP_DURATION_BUCKETS, observation
+                _REQUEST_DURATION_BUCKETS, observation
             ), f"the reach rule disagrees with prometheus_client at {observation}s"
 
     def test_a_healthy_turn_and_a_hung_one_are_distinguishable(self):
         """The property the whole decision rests on."""
-        from faultmaven.infrastructure.shims.metrics import _HTTP_DURATION_BUCKETS
+        from faultmaven.infrastructure.shims.metrics import _REQUEST_DURATION_BUCKETS
 
-        healthy = self._bucket_reached(_HTTP_DURATION_BUCKETS, self.HEALTHY_TURN)
-        hung = self._bucket_reached(_HTTP_DURATION_BUCKETS, self.HUNG_PROVIDER_TURN)
+        healthy = self._bucket_reached(_REQUEST_DURATION_BUCKETS, self.HEALTHY_TURN)
+        hung = self._bucket_reached(_REQUEST_DURATION_BUCKETS, self.HUNG_PROVIDER_TURN)
 
         assert healthy != hung, (
             f"a {self.HEALTHY_TURN}s healthy turn and a "
@@ -433,10 +439,10 @@ class TestHttpDurationBucketsSpanRealTraffic:
 
     def test_the_fast_end_keeps_its_resolution(self):
         """Widening the tail must not coarsen probes and ordinary reads."""
-        from faultmaven.infrastructure.shims.metrics import _HTTP_DURATION_BUCKETS
+        from faultmaven.infrastructure.shims.metrics import _REQUEST_DURATION_BUCKETS
 
-        probe = self._bucket_reached(_HTTP_DURATION_BUCKETS, self.HEALTH_PROBE)
-        read = self._bucket_reached(_HTTP_DURATION_BUCKETS, self.ORDINARY_READ)
+        probe = self._bucket_reached(_REQUEST_DURATION_BUCKETS, self.HEALTH_PROBE)
+        read = self._bucket_reached(_REQUEST_DURATION_BUCKETS, self.ORDINARY_READ)
 
         assert probe != read
         assert probe <= 0.05, "a 30ms health probe must not need a 100ms+ bucket"
@@ -446,9 +452,10 @@ class TestHttpDurationBucketsSpanRealTraffic:
 
         Run out of process because the module registers its metrics in
         prometheus_client's global REGISTRY at import, and metrics are
-        disabled in-process here (so ``request_duration`` is a NoOpMetric with
-        no bounds to read). A subprocess with ENABLE_METRICS=true exercises
-        the real call site without contaminating this session's registry.
+        disabled in-process here (so ``request_duration`` and ``llm_latency``
+        are NoOpMetrics with no bounds to read). A subprocess with
+        ENABLE_METRICS=true exercises the real call site without contaminating
+        this session's registry.
 
         ``prometheus_client`` is an OPTIONAL dependency: ``cloud.txt`` carries
         it, ``test.txt`` and ``dev.txt`` do not. The shim gates on
@@ -458,17 +465,16 @@ class TestHttpDurationBucketsSpanRealTraffic:
         Standalone while passing Test Cloud. Rather than skip in the job most
         likely to regress, each world gets the strongest assertion it admits:
         the real bounds where the library is present, the NoOp degradation
-        where it is not. The degraded arm warns, so a run that never checked
-        the bounds says so in its output instead of looking identical to one
-        that did.
+        where it is not.
         """
         import json
         import os
         import subprocess
         import sys
 
+        from faultmaven.config.settings import MAX_AGENT_TIMEOUT_SECONDS
         from faultmaven.infrastructure.shims.metrics import (
-            _HTTP_DURATION_BUCKETS,
+            _REQUEST_DURATION_BUCKETS,
             PROMETHEUS_AVAILABLE,
         )
 
@@ -478,12 +484,14 @@ class TestHttpDurationBucketsSpanRealTraffic:
                 "-c",
                 "import json,sys;"
                 "from faultmaven.infrastructure.shims import metrics as m;"
-                "d=m.request_duration;"
+                "d=m.request_duration;l=m.llm_latency;"
                 "sys.stderr.write('@@'+json.dumps({"
                 "'prometheus_available': m.PROMETHEUS_AVAILABLE,"
                 "'metrics_active': m.is_metrics_active(),"
                 "'type': type(d).__name__,"
-                "'bounds': [str(b) for b in getattr(d,'_upper_bounds',[])] or None"
+                "'bounds': [str(b) for b in getattr(d,'_upper_bounds',[])] or None,"
+                "'llm_type': type(l).__name__,"
+                "'llm_bounds': [str(b) for b in getattr(l,'_upper_bounds',[])] or None"
                 "})+'@@')",
             ],
             # Hand the child this interpreter's own import path, so the probe
@@ -519,12 +527,37 @@ class TestHttpDurationBucketsSpanRealTraffic:
                 f"not {report['type']}"
             )
             assert report["bounds"] is None
+            assert report["llm_type"] == "NoOpMetric"
+            assert report["llm_bounds"] is None
             return
 
         assert (
             report["metrics_active"] is True
         ), "ENABLE_METRICS=true with the library present must activate metrics"
-        assert [float(b) for b in report["bounds"]] == list(_HTTP_DURATION_BUCKETS), (
+        assert [float(b) for b in report["bounds"]] == list(
+            _REQUEST_DURATION_BUCKETS
+        ), (
             "http_request_duration_seconds is not using the buckets chosen for "
             "this API's measured latency range"
+        )
+        llm_bounds = [float(b) for b in report["llm_bounds"]]
+        assert llm_bounds == list(_REQUEST_DURATION_BUCKETS), (
+            "llm_request_duration_seconds is not on the request bucket ladder, "
+            "so a provider call above 10s is the same +Inf observation (#1529)"
+        )
+        # The property over the SHIPPED bounds: a slow-but-succeeding call is
+        # told apart from a healthy one, and the product's maximum agent
+        # timeout still reaches a finite bucket.
+        healthy = self._bucket_reached(llm_bounds, self.HEALTHY_LLM_CALL)
+        slow = self._bucket_reached(llm_bounds, self.SLOW_SUCCEEDING_LLM_CALL)
+        assert healthy != slow, (
+            f"a {self.HEALTHY_LLM_CALL}s call and a "
+            f"{self.SLOW_SUCCEEDING_LLM_CALL}s one both reach le={healthy}"
+        )
+        assert slow != float("inf")
+        assert self._bucket_reached(
+            llm_bounds, float(MAX_AGENT_TIMEOUT_SECONDS)
+        ) != float("inf"), (
+            f"MAX_AGENT_TIMEOUT_SECONDS ({MAX_AGENT_TIMEOUT_SECONDS}s) falls in "
+            "the overflow bucket"
         )
