@@ -35,7 +35,7 @@ from faultmaven.core.investigation.problem_status import (
 from faultmaven.core.investigation.schemas import InvestigationResponse_Diagnosis
 from faultmaven.modules.case.contracts import AnswerVia, CaseState, ProblemStatus
 
-from .stage_gates import CARRIED_FIX_KEY, _add_system_feedback
+from .stage_gates import CARRIED_FIX_KEY, _add_system_feedback, merge_system_notices
 from .transition_consent import (
     TYPED_CONFIRMATION_LINE,
 )
@@ -207,8 +207,7 @@ async def confirm_revision(
                     metadata[key] = bundle_metadata[key]
         for key in REPLAYED_KEYS:
             replayed[key].extend(bundle_metadata.get(key, []))
-        for notice in bundle_metadata.get("system_notices") or []:
-            _add_system_feedback(metadata, notice)
+        merge_system_notices(metadata, bundle_metadata)
 
     metadata["statement_commit"] = {
         "statement": pending.text,

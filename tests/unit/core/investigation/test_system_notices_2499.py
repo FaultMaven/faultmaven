@@ -13,9 +13,10 @@ import pytest
 
 from faultmaven.core.investigation.milestone_engine.stage_gates import (
     _add_system_feedback,
+    add_evidence_validation_feedback,
+    merge_system_notices,
 )
 from faultmaven.core.investigation.milestone_engine.turn_records import (
-    _NOTICE_CUT_MARKER,
     _create_turn_record,
 )
 from faultmaven.core.investigation.prompts.context_builder import (
@@ -32,6 +33,8 @@ from faultmaven.core.investigation.terminal_transitions import (
 )
 from faultmaven.modules.case.contracts import (
     MAX_SYSTEM_NOTICE_CHARS,
+    MAX_SYSTEM_NOTICES,
+    NOTICE_CUT_MARKER,
     TurnOutcome,
 )
 from tests.case_builders import with_declined_offer
@@ -175,5 +178,91 @@ def test_5_only_a_notice_over_the_per_notice_bound_is_cut_at_its_end():
     assert record.system_notices[0] == "first, whole"
     assert record.system_notices[2] == "last, whole"
     cut = record.system_notices[1]
-    assert len(cut) == MAX_SYSTEM_NOTICE_CHARS and cut.endswith(_NOTICE_CUT_MARKER)
+    assert len(cut) == MAX_SYSTEM_NOTICE_CHARS and cut.endswith(NOTICE_CUT_MARKER)
     assert cut.startswith("L" * 100)
+
+
+def test_6_a_merge_keeps_every_prepend_at_the_head():
+    """The early steps' notices and the response's are two accumulators
+    (``turn_application``, and a replayed bundle's in ``statement_revision``);
+    their merge keeps prepended notices at the head, the later writer's
+    first, then the chronological rest, earlier writer first. A notice already
+    present is not repeated."""
+    early: dict = {}
+    _add_system_feedback(early, "early chronological")
+    _add_system_feedback(early, "early prepended", prepend=True)
+    live: dict = {}
+    _add_system_feedback(live, "live chronological")
+    _add_system_feedback(live, "early chronological")
+    _add_system_feedback(live, "live prepended", prepend=True)
+    merge_system_notices(early, live)
+    assert early["system_notices"] == [
+        "live prepended",
+        "early prepended",
+        "early chronological",
+        "live chronological",
+    ]
+    assert early["system_notices_head"] == 2
+
+
+def test_6_a_replayed_validation_line_merges_into_the_live_one():
+    """A replayed bundle's EVIDENCE VALIDATION line and the live turn's
+    become ONE line at the head naming both, not two with the replayed one
+    in the droppable tail."""
+    bundle: dict = {}
+    _add_system_feedback(bundle, "replayed refusal")
+    add_evidence_validation_feedback(
+        bundle,
+        not_recorded=["solution_accepted"],
+        errors=["Milestones ['solution_accepted'] completed without justification."],
+    )
+    live: dict = {}
+    add_evidence_validation_feedback(
+        live,
+        not_recorded=["symptom_verified"],
+        errors=["Milestones ['symptom_verified'] completed without justification."],
+    )
+    merge_system_notices(live, bundle)
+    notices = live["system_notices"]
+    assert sum(n.startswith("EVIDENCE VALIDATION") for n in notices) == 1
+    assert notices[0].startswith(
+        "EVIDENCE VALIDATION: Milestones ['solution_accepted', 'symptom_verified'] "
+        "were NOT recorded this turn."
+    )
+    assert "['symptom_verified', 'solution_accepted'] completed without" in notices[0]
+    assert notices[1:] == ["replayed refusal"]
+
+
+def test_7_a_first_notice_over_the_budget_is_head_cut_never_omitted():
+    """When even the first notice does not fit, it is head-cut to the room
+    with the record's marker and the rest are counted, singular when one:
+    the block never omits everything. A whole notice that fits is never cut."""
+    case = _investigating_case()
+    long = "FIRST: " + "a long instruction. " * 40
+    case.turn_history = [
+        _record(3).model_copy(update={"system_notices": [long, "SECOND: short."]})
+    ]
+    case.current_turn = 3
+    block = system_feedback_block(case, max_tokens=300, count=len)
+    assert block.count(NOTICE_CUT_MARKER) == 1 and "FIRST: a long" in block
+    assert "[1 more notice from turn 3 omitted]" in block
+    assert "SECOND" not in block and len(block) <= 300 + 2
+    alone = _record(3).model_copy(update={"system_notices": [long]})
+    case.turn_history = [alone]
+    assert "omitted]" not in system_feedback_block(case, max_tokens=300, count=len)
+    assert NOTICE_CUT_MARKER in system_feedback_block(case, max_tokens=300, count=len)
+
+
+def test_8_the_record_keeps_nineteen_and_says_how_many_it_dropped():
+    """Past MAX_SYSTEM_NOTICES the record keeps the first nineteen and a
+    twentieth saying how many more the turn wrote: nothing goes in silence."""
+    notices = [f"NOTICE {i}" for i in range(MAX_SYSTEM_NOTICES + 1)]
+    record = _record_of(*notices)
+    assert len(record.system_notices) == MAX_SYSTEM_NOTICES
+    assert record.system_notices[:-1] == notices[: MAX_SYSTEM_NOTICES - 1]
+    assert record.system_notices[-1] == (
+        "[2 more notices from this turn dropped at the record]"
+    )
+    assert _record_of(*notices[:MAX_SYSTEM_NOTICES]).system_notices == (
+        notices[:MAX_SYSTEM_NOTICES]
+    )

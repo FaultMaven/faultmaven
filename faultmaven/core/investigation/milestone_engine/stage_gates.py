@@ -975,19 +975,68 @@ def _add_system_feedback(
     prompt renders whole notices from its head until its budget is spent,
     never one cut mid-sentence (#2499). ``prepend`` puts the notice at the
     HEAD, so on a messy turn (many accumulators active) it is the last one the
-    prompt would drop. Default is chronological append.
+    prompt would drop; ``metadata["system_notices_head"]`` counts the
+    prepended notices at the head, so a merge of two accumulators
+    (``merge_system_notices``) keeps them there. Default is chronological
+    append.
     """
     if not message:
         return
     notices = metadata.setdefault("system_notices", [])
     if prepend:
         notices.insert(0, message)
+        metadata[_NOTICES_HEAD_KEY] = metadata.get(_NOTICES_HEAD_KEY, 0) + 1
     else:
         notices.append(message)
 
 
+def _drop_system_notice(metadata: dict[str, Any], notice: str) -> None:
+    """Remove ``notice`` from the channel, keeping the head count right."""
+    notices = metadata.get("system_notices") or []
+    if notice not in notices:
+        return
+    index = notices.index(notice)
+    del notices[index]
+    if index < metadata.get(_NOTICES_HEAD_KEY, 0):
+        metadata[_NOTICES_HEAD_KEY] -= 1
+
+
+def merge_system_notices(metadata: dict[str, Any], incoming: dict[str, Any]) -> None:
+    """Fold the notices another accumulator wrote (the response's metadata
+    after the early steps', or a replayed bundle's) into ``metadata``'s, every
+    writer's priority kept (#2499): prepended notices stay at the head,
+    ``incoming``'s first as the later writer's, and the chronological rest
+    follows ``metadata``'s. A notice already present is not repeated.
+    ``incoming``'s EVIDENCE VALIDATION line is re-issued through its writer,
+    which merges it with ``metadata``'s own into the one line a turn carries.
+    """
+    notices = list(incoming.get("system_notices") or [])
+    head = incoming.get(_NOTICES_HEAD_KEY, 0)
+    validation = incoming.get(_EVIDENCE_VALIDATION_KEY)
+    if validation is not None and validation["line"] in notices:
+        index = notices.index(validation["line"])
+        del notices[index]
+        head -= index < head
+    own = metadata.get("system_notices") or []
+    new_head = [n for n in notices[:head] if n not in own]
+    new_tail = [n for n in notices[head:] if n not in own]
+    metadata["system_notices"] = new_head + own + new_tail
+    metadata[_NOTICES_HEAD_KEY] = metadata.get(_NOTICES_HEAD_KEY, 0) + len(new_head)
+    if validation is not None:
+        add_evidence_validation_feedback(
+            metadata,
+            not_recorded=validation["not_recorded"],
+            errors=validation["errors"],
+        )
+
+
+#: How many notices at the head of ``metadata["system_notices"]`` were prepended.
+_NOTICES_HEAD_KEY = "system_notices_head"
 #: The turn's EVIDENCE VALIDATION line as it stands: what it names and says.
 _EVIDENCE_VALIDATION_KEY = "evidence_validation_feedback"
+#: Where the notice channel lives on a turn's metadata: the list, its head
+#: count and the EVIDENCE VALIDATION line's parts. Carried together.
+SYSTEM_NOTICE_KEYS = ("system_notices", _NOTICES_HEAD_KEY, _EVIDENCE_VALIDATION_KEY)
 _NAMED_ERROR = re.compile(r"Milestones \[([^\]]*)\] (completed without .*)", re.S)
 
 
@@ -1015,11 +1064,7 @@ def add_evidence_validation_feedback(
     if previous is not None:
         names |= set(previous["not_recorded"])
         said = previous["errors"] + said
-        metadata["system_notices"] = [
-            notice
-            for notice in metadata.get("system_notices") or []
-            if notice != previous["line"]
-        ]
+        _drop_system_notice(metadata, previous["line"])
     # One message per kind: "Milestones [a] <text>" + [b] -> "Milestones [a, b] <text>".
     merged: dict[str, list[str]] = {}
     for error in said:

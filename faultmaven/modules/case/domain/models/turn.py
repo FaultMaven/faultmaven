@@ -201,6 +201,9 @@ class FixCause(BaseModel):
 #: author's bug). Neither grows with how many backstops fire.
 MAX_SYSTEM_NOTICES = 20
 MAX_SYSTEM_NOTICE_CHARS = 4000
+#: Appended to the head of a notice cut to a bound: the record's per-notice
+#: one, or a prompt budget too small for even the first notice.
+NOTICE_CUT_MARKER = "\n... [notice truncated]"
 
 
 class TurnProgress(BaseModel):

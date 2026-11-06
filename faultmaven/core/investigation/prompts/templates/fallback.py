@@ -373,28 +373,6 @@ def _fallback_tokens(text: str) -> int:
     return len(encoder.encode(text))
 
 
-#: Appended to a notice cut to its cap.
-_NOTICE_CUT_MARKER = "\n[...truncated...]"
-
-
-@functools.lru_cache(maxsize=32)
-def _cap_notice(text: str, cap: int) -> str:
-    """``text`` cut head-first to ``cap`` tokens in :func:`_fallback_tokens`,
-    marker included. Cached: every render of one fallback caps the same notice.
-    """
-    if _fallback_tokens(text) <= cap:
-        return text
-    room = cap - _fallback_tokens(_NOTICE_CUT_MARKER)
-    kept, cut = 0, len(text)
-    while kept < cut:  # the longest head that fits ``room``
-        mid = (kept + cut + 1) // 2
-        if _fallback_tokens(text[:mid]) <= room:
-            kept = mid
-        else:
-            cut = mid - 1
-    return text[:kept] + _NOTICE_CUT_MARKER
-
-
 #: Bracket-narrowing steps per shrink stage, and how close to the budget a fit
 #: has to be to stop early.
 _FALLBACK_SOLVE_STEPS = 4
@@ -611,13 +589,14 @@ def _fallback_body(
     # on the main path, which does not reach here.
     problem_block = _fenced("problem_context", problem_summary[: caps.problem])
 
-    def _notice(text: str) -> str:
-        """The previous turn's notice, capped and then guarded (#1688).
-
-        Capped before guarding for the reason every channel here is: the
+    def _notices() -> str:
+        """The previous turn's notices, whole within ``caps.notice_tokens``
+        (the main prompt's rule, #2499/#2568), then guarded (#1688): the
         terminator has to see the bytes that actually render.
         """
-        return _guarded(_cap_notice(text, caps.notice_tokens))
+        return system_feedback_block(
+            case, guard=_guarded, max_tokens=caps.notice_tokens, count=_fallback_tokens
+        )
 
     def _user(text: str) -> str:
         """The user's message, capped. A cut says so, outside the quoted
@@ -641,7 +620,7 @@ def _fallback_body(
         # a turn that degrades to this fallback still delivers it (#1688).
         # INQUIRY and INVESTIGATING only: the main TERMINAL prompt has no
         # feedback slot either.
-        feedback_block = system_feedback_block(case, guard=_notice)
+        feedback_block = _notices()
         user_block = _user(user_message)
         return FALLBACK_INQUIRY_TEMPLATE.format(
             tools_this_turn=tools_line(given),
@@ -712,7 +691,7 @@ def _fallback_body(
         # fires on the oversized prompts where the rule is easiest to lose. A
         # bare heading like the others here, not a tag: this prompt's trust
         # rule reads an unfenced tag as quoted data.
-        feedback_block = system_feedback_block(case, guard=_notice)
+        feedback_block = _notices()
         parts = exclusions_reminder_parts(case)
         if parts is not None:
             feedback_block += "EXCLUSIONS ON RECORD: " + " ".join(parts) + "\n\n"

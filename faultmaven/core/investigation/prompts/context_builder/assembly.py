@@ -21,6 +21,7 @@ from faultmaven.core.investigation.prompts.templates.tool_text import (
     GivenTools,
 )
 from faultmaven.modules.case.contracts import (
+    NOTICE_CUT_MARKER,
     Case,
     CaseState,
     InvestigationActionType,
@@ -76,30 +77,31 @@ def _cap_text_tokens(
     return tb.use(text)
 
 
-#: Fallback when settings are unavailable. One definition, because the cap is
-#: read at two altitudes now: ``build_investigation_context`` applies it before
-#: the fence, and ``_allocate_sections`` counts the result.
+#: Fallbacks when settings are unavailable. Named once each, because the caps
+#: are read at two altitudes: ``build_investigation_context`` applies them
+#: before the fence, and ``_allocate_sections`` counts the result.
 _USER_MESSAGE_CAP_FALLBACK = 4000
+_SYSTEM_FEEDBACK_CAP_FALLBACK = 1500
+
+
+def _prompt_budget_cap(field: str, fallback: int) -> int:
+    """``prompt_budget.<field>``, or ``fallback`` when settings are unavailable."""
+    try:
+        from faultmaven.config.settings import get_settings
+
+        return getattr(get_settings().prompt_budget, field)
+    except Exception:
+        return fallback
 
 
 def _user_message_cap() -> int:
-    """``prompt_budget.user_message_max_tokens``, or the fallback."""
-    try:
-        from faultmaven.config.settings import get_settings
-
-        return get_settings().prompt_budget.user_message_max_tokens
-    except Exception:
-        return _USER_MESSAGE_CAP_FALLBACK
+    return _prompt_budget_cap("user_message_max_tokens", _USER_MESSAGE_CAP_FALLBACK)
 
 
 def _system_feedback_cap() -> int:
-    """``prompt_budget.system_feedback_max_tokens``, or the fallback."""
-    try:
-        from faultmaven.config.settings import get_settings
-
-        return get_settings().prompt_budget.system_feedback_max_tokens
-    except Exception:
-        return 1500
+    return _prompt_budget_cap(
+        "system_feedback_max_tokens", _SYSTEM_FEEDBACK_CAP_FALLBACK
+    )
 
 
 def _shrink_fenced_tail(fenced: str, alloc: int, budget: "TokenBudget") -> str:
@@ -145,8 +147,6 @@ def _allocate_sections(
     *,
     budget: "TokenBudget",
     case: Case,
-    provider_name: Optional[str],
-    model_name: Optional[str],
     # reserved (bounded, never trimmed)
     identity: str,
     core_context: str,
@@ -428,8 +428,6 @@ def _allocate_sections(
             "prompt_allocation_v2",
             extra={
                 "case_id": case.case_id,
-                "provider": provider_name,
-                "model": model_name,
                 "resolved_limit_tokens": budget.limit_tokens,
                 "reserve_tokens": reserve_tokens,
                 "section_budget_tokens": section_budget,
@@ -516,6 +514,28 @@ def system_feedback_block(
     return f"{heading}\n{body}\n\n"
 
 
+def _omitted_line(omitted: int, from_turn: str) -> str:
+    plural = "s" if omitted != 1 else ""
+    return f"[{omitted} more notice{plural} from {from_turn} omitted]"
+
+
+def _head_cut(text: str, room: int, count: Callable[[str], int]) -> str:
+    """The longest head of ``text`` that fits ``room`` with the cut marker
+    appended, found by bisection on ``count``; the marker alone when nothing
+    does."""
+    if count(text) <= room:
+        return text
+    room -= count(NOTICE_CUT_MARKER)
+    low, high = 0, len(text)
+    while low < high:
+        mid = (low + high + 1) // 2
+        if count(text[:mid]) <= room:
+            low = mid
+        else:
+            high = mid - 1
+    return text[:low] + NOTICE_CUT_MARKER
+
+
 def _whole_notices(
     notices: Sequence[str],
     heading: str,
@@ -525,24 +545,32 @@ def _whole_notices(
 ) -> str:
     """The longest head of ``notices`` that, under ``heading`` and with the
     line naming the rest, fits ``max_tokens``; every notice when there is no
-    budget to fit (#2499)."""
-    kept = len(notices)
-    while kept > 0:
-        omitted = len(notices) - kept
-        body = "\n".join(notices[:kept])
-        if omitted:
-            body += (
-                f"\n[{omitted} more notice{'s' if omitted > 1 else ''} "
-                f"from {from_turn} omitted]"
-            )
-        if (
-            max_tokens is None
-            or count is None
-            or count(f"{heading}\n{body}") <= max_tokens
-        ):
-            return body
-        kept -= 1
-    return f"[{len(notices)} more notices from {from_turn} omitted]"
+    budget to fit (#2499). The heading and each notice are counted once. When
+    even the first notice does not fit, it is head-cut to the room with the
+    record's marker: a notice is cut only when no whole one would fit, and
+    the block never omits everything."""
+    if max_tokens is None or count is None:
+        return "\n".join(notices)
+    room = max_tokens - count(heading + "\n")
+    total = len(notices)
+    used, kept = 0, 0
+    while kept < total:
+        rest = total - kept - 1
+        size = count(notices[kept] + "\n")
+        line = count(_omitted_line(rest, from_turn)) if rest else 0
+        if used + size + line > room:
+            break
+        used += size
+        kept += 1
+    if kept == 0:
+        rest = total - 1
+        line = _omitted_line(rest, from_turn) if rest else ""
+        head = _head_cut(notices[0], room - count(line + "\n"), count)
+        return f"{head}\n{line}" if rest else head
+    body = "\n".join(notices[:kept])
+    if kept < total:
+        body += "\n" + _omitted_line(total - kept, from_turn)
+    return body
 
 
 def build_investigation_context(
@@ -1080,8 +1108,6 @@ def build_investigation_context(
     ctx = _allocate_sections(
         budget=budget,
         case=case,
-        provider_name=provider_name,
-        model_name=model_name,
         identity=identity,
         core_context=core_context,
         milestones_str=milestones_str,

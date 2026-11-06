@@ -526,16 +526,19 @@ class TestTheFallbackRendersTheNotice:
     def test_the_notice_adds_at_most_its_cap(self, notice):
         """The fallback is returned without being re-measured against the
         model ceiling, so its size is bounded by construction, channel by
-        channel. A maximum-length notice may add only its cap, plus the heading
-        and the truncation marker, whatever its script."""
-        notice = notice[:MAX_SYSTEM_NOTICE_CHARS]  # the record's per-notice bound
+        channel. A turn's notices may add only the cap, plus the heading and
+        the line naming the rest, whatever their script: whole notices from
+        the head, the rest omitted with a count, none cut (#2568)."""
+        unit = notice[:30]
+        assert _fallback_tokens(unit) <= 60, "premise: the first notice fits"
+        notices = [f"{i} {unit}" for i in range(12)]
         bare = _fallback_case(CaseState.INVESTIGATING)
         bare.turn_history[-1] = bare.turn_history[-1].model_copy(
             update={"system_notices": []}
         )
         noticed = _fallback_case(CaseState.INVESTIGATING)
         noticed.turn_history[-1] = noticed.turn_history[-1].model_copy(
-            update={"system_notices": [notice]}
+            update={"system_notices": notices}
         )
 
         def size(case: Case) -> int:
@@ -545,8 +548,9 @@ class TestTheFallbackRendersTheNotice:
         block = with_notice[
             with_notice.index("SYSTEM FEEDBACK FROM") : with_notice.index("USER:")
         ]
-        assert notice[:40] in block, "the head is what survives"
-        assert "truncated" in block, "a cut notice says so"
+        assert notices[0] in block, "the head is what survives, whole"
+        assert "more notices from turn 3 omitted]" in block, "the rest, counted"
+        assert "truncated" not in block, "no notice is cut"
         assert size(noticed) - size(bare) <= _FALLBACK_FEEDBACK_MAX_TOKENS + 40
 
     def test_the_terminal_fallback_does_not(self):

@@ -22,6 +22,7 @@ from faultmaven.core.investigation.verification_status import is_stalled
 from faultmaven.modules.case.contracts import (
     MAX_SYSTEM_NOTICE_CHARS,
     MAX_SYSTEM_NOTICES,
+    NOTICE_CUT_MARKER,
     Case,
     FixCause,
     HypothesisState,
@@ -71,16 +72,13 @@ def _determine_turn_outcome(
     )
 
 
-_NOTICE_CUT_MARKER = "\n... [notice truncated]"
-
-
 def _bounded_notice(notice: str) -> str:
     """``notice`` as the record stores it: whole, unless it is over
     ``MAX_SYSTEM_NOTICE_CHARS``, then its head and the cut marker (#2499)."""
     if len(notice) <= MAX_SYSTEM_NOTICE_CHARS:
         return notice
     return (
-        notice[: MAX_SYSTEM_NOTICE_CHARS - len(_NOTICE_CUT_MARKER)] + _NOTICE_CUT_MARKER
+        notice[: MAX_SYSTEM_NOTICE_CHARS - len(NOTICE_CUT_MARKER)] + NOTICE_CUT_MARKER
     )
 
 
@@ -113,16 +111,21 @@ def _create_turn_record(
     # prompt drops whole notices from the TAIL when its budget is short, so
     # a cap at a character count here would cut the newest notice
     # mid-sentence. The two bounds that remain are on the author, at this
-    # one chokepoint: at most MAX_SYSTEM_NOTICES notices, and a notice over
-    # MAX_SYSTEM_NOTICE_CHARS cut at its end with a marker.
-    notices = [_bounded_notice(n) for n in (system_notices or [])[:MAX_SYSTEM_NOTICES]]
-    if len(system_notices or []) > MAX_SYSTEM_NOTICES:
+    # one chokepoint: a notice over MAX_SYSTEM_NOTICE_CHARS cut at its end
+    # with a marker, and at most MAX_SYSTEM_NOTICES notices, the last of
+    # them saying how many more the turn wrote, so nothing goes in silence.
+    notices = [_bounded_notice(n) for n in system_notices or []]
+    if len(notices) > MAX_SYSTEM_NOTICES:
+        dropped = len(notices) - (MAX_SYSTEM_NOTICES - 1)
         logger.warning(
             "Turn %s wrote %d system notices; the record keeps the first %d",
             turn_number,
-            len(system_notices or []),
-            MAX_SYSTEM_NOTICES,
+            len(notices),
+            MAX_SYSTEM_NOTICES - 1,
         )
+        notices = notices[: MAX_SYSTEM_NOTICES - 1] + [
+            f"[{dropped} more notices from this turn dropped at the record]"
+        ]
     return TurnProgress(
         turn_number=turn_number,
         cause_at_start=cause_at_start,
