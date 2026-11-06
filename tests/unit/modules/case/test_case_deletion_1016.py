@@ -11,6 +11,7 @@ fakeredis, SQLite); the SQL repositories' half is
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,6 +20,7 @@ from unittest.mock import AsyncMock
 
 import chromadb
 import fakeredis.aioredis as fakeredis_aio
+import httpx
 import pytest
 from chromadb.errors import NotFoundError as ChromaNotFoundError
 from fastapi import HTTPException, Response
@@ -473,7 +475,7 @@ class TestComposition:
             "uploads",
             "pii_redaction_registry",
         ]
-        assert service.stores_not_configured == ("case_vectors", "llm_traces")
+        assert service.stores_not_configured == ("llm_traces", "case_vectors")
         # The delete is gated on the case's in-flight lease, in the shared
         # Redis client (#2096).
         assert isinstance(service.delete_gate, CaseDeleteGate)
@@ -507,7 +509,7 @@ class TestComposition:
         ],
         ids=["local", "url-override", "empty-project-name"],
     )
-    def test_tracing_with_a_backend_binds_the_trace_eraser_last(
+    def test_tracing_with_a_backend_binds_the_trace_eraser_first(
         self, tmp_path, monkeypatch, backend, project, searched
     ):
         monkeypatch.setattr(tracing, "OPIK_AVAILABLE", True)
@@ -521,14 +523,14 @@ class TestComposition:
         )
 
         assert [e.store_name for e in service.store_erasers] == [
+            "llm_traces",
             "session_pointers",
             "runbook_conversion",
             "uploads",
             "pii_redaction_registry",
-            "llm_traces",
         ]
-        assert isinstance(service.store_erasers[-1], LLMTraceEraser)
-        assert service.store_erasers[-1].project_name == searched
+        assert isinstance(service.store_erasers[0], LLMTraceEraser)
+        assert service.store_erasers[0].project_name == searched
         assert service.stores_not_configured == ("case_vectors",)
 
     @pytest.mark.parametrize(
@@ -548,7 +550,7 @@ class TestComposition:
         )
 
         assert "llm_traces" not in [e.store_name for e in service.store_erasers]
-        assert service.stores_not_configured == ("case_vectors", "llm_traces")
+        assert service.stores_not_configured == ("llm_traces", "case_vectors")
 
     async def test_a_backend_with_no_sdk_fails_every_delete(
         self, tmp_path, monkeypatch
@@ -563,5 +565,36 @@ class TestComposition:
         )
 
         assert service.stores_not_configured == ("case_vectors",)
-        with pytest.raises(ServiceException, match="Cannot clear llm_traces"):
-            await service.store_erasers[-1].erase_case("case_a", ENTERPRISE)
+        with pytest.raises(ServiceException, match="llm_traces.*SDK is not installed"):
+            await service.store_erasers[0].erase_case("case_a", ENTERPRISE)
+
+    async def test_a_trace_backend_that_is_down_leaves_the_case_untouched(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """The real composition through ``hard_delete_case``: the traces clear
+        first, and the raw SDK error's store is named in the log."""
+        monkeypatch.setattr(tracing, "OPIK_AVAILABLE", True)
+        monkeypatch.setattr(
+            LLMTraceEraser,
+            "erase_case",
+            AsyncMock(side_effect=httpx.ConnectError("Connection refused")),
+        )
+        uploads = AsyncMock(return_value=0)
+        monkeypatch.setattr(FileStorageService, "erase_case", uploads)
+        service = self._build(
+            tmp_path,
+            skip=True,
+            case_vector_store=None,
+            opik_enabled=True,
+            opik_use_local=True,
+        )
+        case = await service.repository.save(
+            Case(user_id=CREATOR, enterprise_id=ENTERPRISE, title="Disk full")
+        )
+
+        with caplog.at_level(logging.ERROR), pytest.raises(httpx.ConnectError):
+            await service.hard_delete_case(case.case_id, CREATOR)
+
+        uploads.assert_not_awaited()
+        assert await service.get_case(case.case_id, CREATOR) is not None
+        assert f"Could not clear llm_traces for case {case.case_id}" in caplog.text

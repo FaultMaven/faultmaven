@@ -42,6 +42,10 @@ def case_store_erasers(
     """The case delete's erasers (#1016) in the order it runs them, and the
     stores this deployment does not have.
 
+    The LLM traces clear first: they are telemetry derived from the case, and
+    their backend is the one store likely to be down, so its failure leaves the
+    case untouched. The delete's gate has already refused new turns.
+
     Two stores can be absent by configuration: the case vector store, as under
     ``SKIP_SERVICE_CHECKS`` none is built, so nothing in the process writes
     vectors; and the LLM traces, as without ``OPIK_ENABLED`` and a backend URL
@@ -68,19 +72,8 @@ def case_store_erasers(
             return UnavailableStoreEraser(store_name, "its service was not constructed")
         return build(store)
 
-    erasers = [
-        bound("session_pointers", session_store, SessionPointerEraser),
-        RunbookConversionEraser(get_db_session),
-        bound("uploads", file_storage_service),
-    ]
+    erasers: list[Any] = []
     not_configured: tuple[str, ...] = ()
-    if case_vector_store is None and settings.server.skip_service_checks:
-        not_configured = ("case_vectors",)
-    else:
-        erasers.append(bound("case_vectors", case_vector_store))
-    erasers.append(
-        bound("pii_redaction_registry", redis_client, CaseRedactionRegistryEraser)
-    )
     obs = settings.observability
     if not (obs.opik_enabled and (obs.opik_use_local or obs.opik_url_override)):
         not_configured += ("llm_traces",)
@@ -92,6 +85,18 @@ def case_store_erasers(
         erasers.append(
             UnavailableStoreEraser("llm_traces", "the Opik SDK is not installed")
         )
+    erasers += [
+        bound("session_pointers", session_store, SessionPointerEraser),
+        RunbookConversionEraser(get_db_session),
+        bound("uploads", file_storage_service),
+    ]
+    if case_vector_store is None and settings.server.skip_service_checks:
+        not_configured += ("case_vectors",)
+    else:
+        erasers.append(bound("case_vectors", case_vector_store))
+    erasers.append(
+        bound("pii_redaction_registry", redis_client, CaseRedactionRegistryEraser)
+    )
     return erasers, not_configured
 
 

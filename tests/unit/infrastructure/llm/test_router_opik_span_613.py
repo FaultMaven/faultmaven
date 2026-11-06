@@ -17,7 +17,7 @@ The same span and its trace carry the case and the enterprise, which is how the
 case delete finds them (#2102): ``TestTheTraceIsTaggedWithItsCase`` below.
 """
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -124,7 +124,8 @@ async def _routed(*calls: dict, tracing: bool = True, opik_context=None) -> Magi
 async def _span_update(**route_kwargs) -> dict:
     """Route one call and return the kwargs the span was updated with."""
     opik_context = await _routed(route_kwargs)
-    assert opik_context.update_current_span.call_count == 1
+    # The tag at entry, then this update (#2102).
+    assert opik_context.update_current_span.call_count == 2
     return opik_context.update_current_span.call_args.kwargs
 
 
@@ -187,9 +188,34 @@ class TestTheTraceIsTaggedWithItsCase:
 
         metadata = opik_context.update_current_span.call_args.kwargs["metadata"]
         assert self.OWNER.items() <= metadata.items()
+        # At entry, then again with the content.
+        assert (
+            opik_context.update_current_trace.call_args_list
+            == [call(metadata=self.OWNER, thread_id="case_2102")] * 2
+        )
+
+    async def test_a_failed_call_is_tagged_at_entry(self):
+        """The SDK records ``str(exception)`` as ``error_info``, and a provider's
+        exception can embed its response body."""
+        set_current_enterprise_id("ent-2102")
+        opik_context = MagicMock()
+
+        with (
+            patch.object(
+                ProviderRegistry,
+                "route_request",
+                AsyncMock(side_effect=RuntimeError("provider said no")),
+            ),
+            pytest.raises(RuntimeError, match="provider said no"),
+        ):
+            await _routed(
+                {"prompt": "hi", "case_id": "case_2102"}, opik_context=opik_context
+            )
+
         opik_context.update_current_trace.assert_called_once_with(
             metadata=self.OWNER, thread_id="case_2102"
         )
+        opik_context.update_current_span.assert_called_once_with(metadata=self.OWNER)
 
     async def test_a_call_for_no_case_tags_the_enterprise_alone(self):
         set_current_enterprise_id("ent-2102")
@@ -198,7 +224,7 @@ class TestTheTraceIsTaggedWithItsCase:
 
         metadata = opik_context.update_current_span.call_args.kwargs["metadata"]
         assert metadata["enterprise_id"] == "ent-2102" and "case_id" not in metadata
-        opik_context.update_current_trace.assert_called_once_with(
+        opik_context.update_current_trace.assert_called_with(
             metadata={"enterprise_id": "ent-2102"}
         )
 
@@ -219,11 +245,13 @@ class TestTheTraceIsTaggedWithItsCase:
         span = opik_context.update_current_span.call_args.kwargs
         assert span["metadata"]["cached"] is True  # the cached path did run
         assert self.OWNER.items() <= span["metadata"].items()
-        opik_context.update_current_trace.assert_called_once_with(
+        opik_context.update_current_trace.assert_called_with(
             metadata=self.OWNER, thread_id="case_2102"
         )
 
-    async def test_no_content_reaches_a_span_whose_trace_could_not_be_tagged(self):
+    async def test_a_tag_that_raises_never_breaks_the_call_and_keeps_the_content_off(
+        self,
+    ):
         opik_context = MagicMock()
         opik_context.update_current_trace.side_effect = RuntimeError("no trace")
 

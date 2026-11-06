@@ -63,7 +63,7 @@ async def test_the_case_service_is_composed_with_every_stores_eraser(
             "uploads",
             "pii_redaction_registry",
         ]
-        assert service.stores_not_configured == ("case_vectors", "llm_traces")
+        assert service.stores_not_configured == ("llm_traces", "case_vectors")
     else:
         assert names == [
             "session_pointers",
@@ -78,7 +78,7 @@ async def test_the_case_service_is_composed_with_every_stores_eraser(
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_a_configured_trace_backend_binds_the_trace_eraser_last(
+async def test_a_configured_trace_backend_binds_the_trace_eraser_first(
     monkeypatch, skip_service_checks, fresh_container
 ):
     """#2102. ``initialize()`` does not run ``init_opik_tracing`` and no model is
@@ -91,7 +91,7 @@ async def test_a_configured_trace_backend_binds_the_trace_eraser_last(
     await fresh_container.initialize()
 
     service = fresh_container.get_service("case_service")
-    eraser = service.store_erasers[-1]
+    eraser = service.store_erasers[0]
     assert isinstance(eraser, LLMTraceEraser)
     assert eraser.project_name == "fm-project"
     assert service.stores_not_configured == ("case_vectors",)
