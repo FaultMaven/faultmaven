@@ -461,7 +461,12 @@ request_counter = Counter(
 #           slow-but-healthy one rather than sharing its bucket
 #   120.0 - AGENT_REQUEST_TIMEOUT's default: past this a request has outlived
 #           its own declared budget, which is a different fault from latency
-_HTTP_DURATION_BUCKETS = (
+# One ladder for both request histograms (#1529): an LLM call is the body of a
+# turn, so `llm_request_duration_seconds` spans the same range as the request
+# that carries it, and 120s is AGENT_REQUEST_TIMEOUT's default for the call
+# as for the request. On the defaults a slow-but-succeeding provider was
+# invisible: every call above 10s was the same +Inf observation.
+_REQUEST_DURATION_BUCKETS = (
     0.005,
     0.01,
     0.025,
@@ -488,7 +493,7 @@ request_duration = Histogram(
     "http_request_duration_seconds",
     "HTTP request duration in seconds",
     labelnames=["method", "endpoint"],
-    buckets=_HTTP_DURATION_BUCKETS,
+    buckets=_REQUEST_DURATION_BUCKETS,
 )
 
 active_sessions = Gauge(
@@ -515,6 +520,7 @@ llm_latency = Histogram(
     "llm_request_duration_seconds",
     "LLM request duration in seconds",
     labelnames=["provider", "model"],
+    buckets=_REQUEST_DURATION_BUCKETS,
 )
 
 llm_tokens = Counter(
