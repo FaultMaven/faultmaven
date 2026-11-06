@@ -6,7 +6,9 @@ ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install system dependencies
+# Install system dependencies. On a current base image ca-certificates is a no-op:
+# the base already holds the package that blacklists the roots named further down.
+# It protects a stale local tag, because compose builds on it without pulling.
 RUN apt-get update && apt-get install -y \
     build-essential \
     ca-certificates \
@@ -14,36 +16,9 @@ RUN apt-get update && apt-get install -y \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# Every pip in this build verifies against that OS store, not its vendored bundle.
+# The base image's pip vendors an old CA bundle, so every pip in this build
+# verifies against the OS store instead.
 ENV PIP_CERT=/etc/ssl/certs/ca-certificates.crt
-
-# Neither OpenSSL's default store nor the pip building this image may trust
-# "emSign ECC Root CA - G3" (GHSA-6q48-6c7w-9gw2: compromised intermediate keys)
-# or "AAA Certificate Services". Listing ca-certificates above (unpinned: a pin
-# breaks on its next fix) takes the package that blacklists both. aiohttp's
-# sessions verify against OpenSSL's default paths, and pip 24.0 here vendors
-# certifi 2023.07.22, which holds both. certifi==2026.10.19 stays the store for
-# httpx/requests (huggingface_hub, tiktoken, web search) and lacks both too:
-# #2110's handshake test of ~50 endpoints passed under it alone.
-# The root count and ISRG Root X1 are positive controls: an empty store fails.
-RUN python - <<'EOF'
-import hashlib, os, ssl
-def check_roots(ctx, label):
-    certs = ctx.get_ca_certs()
-    names = {v for cert in certs for rdn in cert["subject"] for k, v in rdn if k == "commonName"}
-    digests = {hashlib.sha256(der).hexdigest() for der in ctx.get_ca_certs(binary_form=True)}
-    trusted = sorted(names & {"emSign ECC Root CA - G3", "AAA Certificate Services"})
-    assert len(certs) >= 100 and "ISRG Root X1" in names, f"{label}: {len(certs)} roots, or no ISRG Root X1"
-    assert not trusted, f"{label}: still trusts {trusted}"
-    assert "86a1ecba089c4a8d3bbe2734c612ba341d813e043cf9e8a862cd5c57a36bbe6b" not in digests, f"{label}: G3 by SHA-256"
-    return len(certs)
-count = check_roots(ssl.create_default_context(), "default context (aiohttp)")
-assert os.path.realpath(ssl.get_default_verify_paths().cafile) == os.path.realpath(os.environ["PIP_CERT"]), "OpenSSL's cafile is not PIP_CERT"
-fresh = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-fresh.load_verify_locations(cafile=os.environ["PIP_CERT"])
-check_roots(fresh, "PIP_CERT (pip)")
-print(f"trust store OK: {count} roots, neither removed root trusted")
-EOF
 
 # Set work directory
 WORKDIR /app
@@ -118,6 +93,15 @@ COPY --chown=faultmaven:faultmaven resources/ ./resources/
 
 # Install the package itself (no deps — already installed from lockfile)
 RUN pip install --no-cache-dir --no-deps .
+
+# Fail the build if "emSign ECC Root CA - G3" (GHSA-6q48-6c7w-9gw2: compromised
+# intermediate keys) or "AAA Certificate Services" is trusted by one of three
+# stores: OpenSSL's default cafile and capath, which aiohttp reads, and certifi,
+# which httpx and requests read. pip reads the cafile through PIP_CERT. gRPC's and
+# litellm's own stores are #2574. TLS handshakes under the fixed store: #2576.
+# Last root step, to see the stores the image ships. scripts/ is not in the image.
+RUN --mount=type=bind,source=scripts/check_image_trust_store.py,target=/tmp/check_image_trust_store.py \
+    python /tmp/check_image_trust_store.py
 
 # The runtime user must own the /app directory itself so it can create ./data
 # (SQLite DB, ChromaDB, evidence) at startup. Copied files are already owned via
