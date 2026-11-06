@@ -39,10 +39,10 @@ How the two sides avoid a race: the delete first writes a tombstone,
 turn first takes the lease, and only then reads the tombstone. Each writes
 before it reads, so they cannot both proceed. Both can refuse at once, which
 is safe: nothing runs and nothing is cleared, and a retry decides. The
-tombstone is renewed while the delete runs and removed on every outcome except
-a deleted row. Otherwise it lapses 30 s after its last renewal: after a
-successful delete, a delete that stopped mid-run, or a removal that failed,
-which holds the case's turns off until then.
+tombstone is renewed while the delete runs, and the delete removes it when it
+is refused or fails. Otherwise (a successful delete, or a removal that failed
+or never ran) it lapses 30 s after it was written or last renewed, and holds
+the case's turns off until then.
 
 While the tombstone stands, `GET /cases/{case_id}` reads `deleting: true`
 for every reader of the case (#2510). It reads `false` once the tombstone is
@@ -71,9 +71,9 @@ read reports it.
   `CASE_DELETE_IN_PROGRESS` and the 404 as before.
 - **`deleting: true` with no delete running.** `deleting` reports the
   delete's tombstone, which a delete writes before it checks for work in
-  flight and which lapses 30 s after its last renewal unless it is removed.
-  So it can read `true` for up to 30 s with no delete running, and turns are
-  refused for the same span. A client reading again sees it clear.
+  flight and which lapses 30 s after it was written or last renewed unless it
+  is removed. So it can read `true` for up to 30 s with no delete running, and
+  turns are refused for the same span. A client reading again sees it clear.
 - **A resume.** Resuming a session on the case
   (`POST /cases/sessions/{session_id}/resume/{case_id}`) is not a turn and
   holds no lease. One that passed its access check before the delete can
