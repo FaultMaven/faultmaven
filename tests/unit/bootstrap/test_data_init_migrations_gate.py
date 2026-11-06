@@ -59,6 +59,27 @@ async def test_startup_migrations_skipped_when_flag_false():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_a_schema_read_past_the_bound_refuses_the_boot(monkeypatch):
+    """Unlike the at-head check, a timeout here is a refusal, not a skip (#1514)."""
+    import asyncio
+
+    async def slow_read(url, declared):
+        await asyncio.sleep(2)  # finite, so a missing bound fails rather than hangs
+
+    settings = SimpleNamespace(
+        database=SimpleNamespace(database_url="sqlite+aiosqlite:///./schema-check.db")
+    )
+    monkeypatch.setattr(data_init, "AT_HEAD_CHECK_TIMEOUT_SECONDS", 0.05)
+    with (
+        patch.object(data_init, "_live_schema", slow_read),
+        patch("faultmaven.config.settings.get_settings", return_value=settings),
+        pytest.raises(TimeoutError, match="schema check's database read"),
+    ):
+        await data_init.verify_schema_tables()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_a_schema_behind_the_models_refuses_the_boot():
     """The check's refusal is the boot's: nothing downstream swallows it (#1514)."""
     settings = SimpleNamespace(run_startup_migrations=False)

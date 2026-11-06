@@ -580,9 +580,49 @@ class TestAlembicMigrationInfrastructure:
             with pytest.raises(RuntimeError) as refused:
                 await data_init.verify_schema_tables()
         message = str(refused.value)
-        assert "missing tables token_revocations;" in message
+        assert "missing tables token_revocations (schema 'main'" in message
+        assert "missing columns" not in message
         assert f"stamped {HEAD_REVISION}" in message
         assert "deployment-wipe.md" in message
+
+    async def test_a_stamped_database_missing_a_declared_column_is_refused(
+        self, clean_database, database_url
+    ):
+        """18 of 24 additive revisions alter existing tables: the column
+        ``021_knowledge_item_ingest_complete`` added, absent, is named."""
+        from faultmaven.bootstrap import data_init
+
+        prepare_database("head", database_url)
+        with closing(sqlite3.connect(TEST_DB)) as conn, conn:
+            conn.execute("ALTER TABLE knowledge_items DROP COLUMN ingest_complete")
+
+        with self._app_settings(database_url.replace("sqlite:", "sqlite+aiosqlite:")):
+            with pytest.raises(RuntimeError) as refused:
+                await data_init.verify_schema_tables()
+        message = str(refused.value)
+        assert "missing columns knowledge_items.ingest_complete (schema" in message
+        assert "missing tables" not in message
+        assert f"stamped {HEAD_REVISION}" in message
+
+    async def test_a_never_migrated_database_is_told_to_migrate_not_to_wipe(
+        self, clean_database, database_url
+    ):
+        """No stamp: the Job (or ``alembic upgrade head``) never ran, so the
+        remedy is to run it, not to drop the database."""
+        from faultmaven.bootstrap import data_init
+
+        prepare_database("head", database_url)
+        with closing(sqlite3.connect(TEST_DB)) as conn, conn:
+            conn.execute("DROP TABLE token_revocations")
+            conn.execute("DELETE FROM alembic_version")
+
+        with self._app_settings(database_url.replace("sqlite:", "sqlite+aiosqlite:")):
+            with pytest.raises(RuntimeError) as refused:
+                await data_init.verify_schema_tables()
+        message = str(refused.value)
+        assert "missing tables token_revocations" in message
+        assert "never migrated: run `alembic upgrade head`" in message
+        assert "stamped" not in message and "deployment-wipe.md" not in message
 
     async def test_a_migrated_database_passes_the_schema_check(
         self, clean_database, database_url
@@ -602,7 +642,7 @@ class TestAlembicMigrationInfrastructure:
 
         with (
             self._app_settings(url),
-            patch.object(data_init, "_startup_check_engine") as engine,
+            patch.object(data_init, "_live_schema") as engine,
         ):
             assert await data_init.verify_schema_tables() == 0
         engine.assert_not_called()
