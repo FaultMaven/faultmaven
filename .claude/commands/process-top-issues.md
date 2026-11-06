@@ -54,25 +54,22 @@ Reviewers are independent agents: they never wrote or planned what they review.
 ## Where an item stands
 
 Steps 1 and 4 take the first row matching an item's records. **Its PR** is the newest PR whose body names it with a
-closing keyword or `Refs`, never by branch name (the first command); `main` is **red** while the second prints a
-failed required check (`$req` as in step 4.6). `H` is the head in its PR's newest `## Review`, `## Delta` or
-`## Merge-ready`; a **pull**, the newest `## Pulled` on the item or its PR; a **ruling**, a later `## Ruling` on it.
+closing keyword or `Refs`, never by branch name (the command below). `H` is the head in its PR's newest `## Review`,
+`## Delta` or `## Merge-ready`; a **pull**, the newest `## Pulled` on the item or its PR; a **ruling**, a `## Ruling`
+on the item after that pull.
 
 ```bash
 gh pr list -R FaultMaven/faultmaven --state all --search "<n> in:body" --json number,state,body,createdAt \
   | jq --arg n <n> '[.[] | select(.body | test("(?i)\\b(close[sd]?|fix(e[sd])?|resolve[sd]?|refs):?\\s+"
     + "((FaultMaven/faultmaven)?#|https://github\\.com/FaultMaven/faultmaven/issues/)" + $n + "\\b"))] | sort_by(.createdAt) | last'
-gh api "repos/FaultMaven/faultmaven/commits/$(git rev-parse origin/main)/check-runs?per_page=100" --jq .check_runs \
-  | jq -r --argjson req "$req" '[.[] | select(.name | IN($req[]))] | group_by(.name) | map(max_by(.started_at))
-    | .[] | select(.conclusion | IN("success","skipped") | not) | "\(.name)=\(.conclusion // "pending")"'
 ```
 
 | # | the records show | next |
 |---|---|---|
-| 1 | its PR merged | at step 1: its merged head must be the newest merge-ready's `H`, with no `## Pulled` after it; else file `PR #<p> merged at an unvouched head` (search first), naming `git log --oneline H..<merged head>`, or the whole PR when no `H` exists, in `pile:blocked` on an owner ruling on how to review them. At step 4, an open item reads on from row 11 |
+| 1 | its PR merged | at step 1: its merged head must be the head its newest `## Merge-ready` names, with no `## Pulled` after it; else file `PR #<p> merged at an unvouched head` (search first), naming `git log --oneline H..<merged head>`, or the whole PR when no `H` exists, in `pile:blocked` on an owner ruling on how to review them. At step 4, an open item reads on from row 11 |
 | 2 | the item in `pile:blocked`, its PR open | the pull is unfinished: finish *To pull an item* from its first step not done |
 | 3 | the item in `pile:blocked` | it waits on its ruling |
-| 4 | its PR open after a merge-ready, and `main` red or a service down that one of its checks needs | waiting: leave it until `main` is green (a check printed `pending` is waited for) or that check passes when re-run; then row 6 |
+| 4 | its PR open, its newest `## Review` or `## Delta` clean, and a required check red because `main` is (a `main red` issue, step 4.6) or a service it needs is down | waiting: leave it until that issue closes or the check passes when re-run (`gh run rerun <run-id> --failed`); then merge `main` in and go on at row 6 or 9 |
 | 5 | its PR in the merge queue at a merge-ready's `H` (`gh api graphql -f query='{repository(owner:"FaultMaven",name:"faultmaven"){pullRequest(number:<p>){isInMergeQueue timelineItems(last:5,itemTypes:[REMOVED_FROM_MERGE_QUEUE_EVENT]){nodes{... on RemovedFromMergeQueueEvent{createdAt reason}}}}}}'`) | leave it |
 | 6 | its PR open after a merge-ready, and code after `H` (the vouched-head check), an owner comment after the merge-ready, a conflict with `main`, a queue removal dated after it (row 5's query; quote its `reason`), or a red required check | refresh: merge `main` in, the change made (by the lane, by you for a conflict), a delta of what changed (step 4.5), CI, merge-ready again. A `fixed` finding in that delta gets one fix commit and one delta; a `fixed` finding in that one pulls the item. A red check the merge base also has makes it row 4, never a pull |
 | 7 | its PR open after a merge-ready at `H` | merge-ready: carried under *Yours to run* |
@@ -93,7 +90,7 @@ Find the newest proposal or result on the Queue, the issue this prints:
 |---|---|
 | none or a result | step 1 |
 | a proposal with an owner comment after it | step 3 |
-| a proposal, no owner comment, but a lane PR (branch `fix/<n>-<slug>`, *Lane rules*) for one of its items opened after it | approved out of band: post a `## Note`, then step 4 |
+| a proposal, no owner comment, but a lane PR (branch `fix/<n>-<slug>`, step 4.1) for one of its items opened after it | approved out of band: post a `## Note`, then step 4 |
 | a proposal, no owner comment, no lane PR | stop and say what it waits for; do not re-propose |
 
 ## 1. Settle the last round
