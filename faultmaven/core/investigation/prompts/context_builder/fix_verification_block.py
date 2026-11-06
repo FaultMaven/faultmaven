@@ -6,8 +6,10 @@ Without it no prompt showed the model its fix attempts or which leg of a
 resolution stands, so a model could narrate a readiness the engine did not
 hold (#2427, turn 11). It shows, one line each:
 
-- the latest fix attempts (accepted SOLUTIONs, by their execution turn) with
-  their window state (``cause_assurance.fix_windows``);
+- the latest fix attempts (accepted SOLUTIONs, by their execution turn),
+  each labelled by its own kind: a remediation with its window state
+  (``cause_assurance.fix_windows``), an interception with what the problem
+  did after it, since it opens no window (#2036 D2.3);
 - the two legs a resolution reads (``cause_elimination_rows`` and
   ``symptom_elimination_rows``), by row id, and the rows that showed the
   problem with no re-check in the problem leg;
@@ -29,10 +31,12 @@ the long post-fix cases that need this block bring.
 
 from faultmaven.core.investigation.cause_assurance import (
     FIX_FAILED,
+    FIX_INTERCEPTION,
     FIX_SUCCEEDED,
     SUBJECT_PROBLEM,
     cause_recheck_status,
     fix_windows,
+    interception_relief,
     pending_symptom_check,
     subject_index,
     symptom_elimination_rows,
@@ -119,10 +123,25 @@ def _attempt_lines(case: Case, attempts: list, windows, subjects, owing) -> list
         description = " ".join((a.description or "").split())
         if len(description) > _DESCRIPTION_CHARS:
             description = description[: _DESCRIPTION_CHARS - 1].rstrip() + "…"
-        state = _window_state(case, by_turn.get(a.accepted_in_turn), subjects, owing)
+        kind = getattr(a, "fix_kind", None)
+        acted = ", ".join(getattr(a, "target_ids", None) or ()) or "no node recorded"
+        if kind == FIX_INTERCEPTION:
+            relief, present = interception_relief(case, a.accepted_in_turn)
+            if present is not None and (relief is None or present > relief):
+                state = f"problem seen again at turn {present}"
+            elif relief is not None:
+                state = f"problem seen gone at turn {relief}"
+            else:
+                state = "not yet observed"
+            label = f", an interception at {acted} (cannot confirm the cause)"
+        else:
+            state = _window_state(
+                case, by_turn.get(a.accepted_in_turn), subjects, owing
+            )
+            label = f", a fix of {acted}" if kind else ""
         lines.append(
             f"  - [{a.action_id}] {description} — executed turn "
-            f"{a.accepted_in_turn}: {state}"
+            f"{a.accepted_in_turn}{label}: {state}"
         )
     return lines
 

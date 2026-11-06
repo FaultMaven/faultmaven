@@ -1000,9 +1000,22 @@ records only what it can substantiate:
   state where the two disagreed — each new row shape that escaped the marks
   reopened it. Both now read one predicate, `cause_assurance.fix_windows`:
 
-  - Each executed SOLUTION (dated by `accepted_in_turn`) opens a **window**
-    that runs to the next one; rows before any dated fix are window 0, which
-    fails only on a relapse (#2501, below).
+  - Each executed SOLUTION (dated by `accepted_in_turn`) that is a
+    **remediation** opens a **window** that runs to the next one; rows before
+    any dated fix are window 0, which ends at the first attempt of any kind
+    and fails only on a relapse (#2501, below). A fix's target and kind are
+    settled once, in the turn the user runs it (#2036 D2.3,
+    `ProposedAction.target_ids` / `fix_kind`): the node its `node_ref` named,
+    else the cause identified at the start of that turn; a remediation when
+    that target is in the cause pool then, else an **interception** (R8). An
+    interception opens no window: it relieves but never resolves, and a later
+    one does not hide an earlier root fix's window. A remediation's window
+    binds its cause rows to its targets and the fallen roots, so a deepening
+    or a demotion since does not re-scope it, and only a re-check of a target
+    still in the confirmation pool confirms it: a renewal of a state later
+    deepened past can fail its window, never succeed. A fix accepted before
+    D2.3, or licensed only by a conclusion naming its cause in words, carries
+    no kind and reads as a remediation bound as below.
   - Inside a window, read in turn order from the window's raw, non-engine
     rows, each bound to the subject it names (#1906 D1,
     `observation_subject`) and placed by its data's upload turn
@@ -1111,16 +1124,15 @@ records only what it can substantiate:
   needs its own cause and problem observations before it resolves. Window 0
   — the rows before any dated fix, where an out-of-band fix lands — fails
   only on a relapse (#2501): the identified cause shown removed after it was
-  first posited (`CausalNode.root_first_attached_turn`, which a later attach
-  of the same root does not move, save once on a root stored before #2036),
+  first posited (the earliest `CausalNode.root_first_attached_turn` of the
+  roots the row supports, which a later attach of the same root does not
+  move, save once on a root last attached before #2036 or never attached),
   then the problem seen gone, then seen present, up to and including the
-  first fix's execution turn. Deepening the cause re-scopes window 0 to the
-  new root only when the relapse's cause row re-checked a row supporting the
-  old root alone: then the new root's removal, then the problem gone, is a
-  new out-of-band fix that window 0 can confirm. A row that also supports the
-  new root binds to their cluster, is floored at the cluster's earliest first
-  attach, and its relapse stands until a dated fix. Reading a window against
-  its fix's own cause is deferred to #2036 (Phase 3, D2.3). Persistence with
+  first attempt's execution turn. The relapse binds to the confirmation
+  roots and to every root deepened into one of them (`deepened_to`,
+  transitively, written by the one attach writer for a re-root and an orphan
+  adoption alike), so deepening the cause does not re-scope window 0: the
+  relapse stands until a dated fix (#2036 D2.3). Persistence with
   no such relief fails nothing, since there a causal_absence row is as likely
   a diagnosis-time exclusion ("DNS ruled out") as a fix's outcome, and window
   0 never carries a disconfirmation, so M6 acts on no undated fix. One more

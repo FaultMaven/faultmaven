@@ -41,6 +41,7 @@ from faultmaven.modules.case.contracts import (
     InterventionQuadrant,
     InvestigationActionType,
     MitigationRecord,
+    NodeType,
     OfferBasis,
     OfferKind,
     ProblemStatus,
@@ -441,18 +442,20 @@ def fix_identity(description: Optional[str]) -> str:
 
 def standing_fix_action(case: Case, description: Optional[str]) -> Any:
     """The SOLUTION action a re-proposal with ``description`` keeps, or None:
-    the pending offer bearing that fix identity, or the latest dated fix while
-    its own window has not FAILED (#2105). After a FAILED window the same fix
-    applied again is a new attempt."""
+    the pending offer bearing that fix identity, or the latest dated attempt
+    while its own window has not FAILED (#2105); an interception opens no
+    window, so it is kept while it is the latest (#2036 D2.3). After a
+    FAILED window the same fix applied again is a new attempt."""
     from faultmaven.core.investigation.cause_assurance import (
         FIX_FAILED,
-        latest_fix_window,
+        attempt_window,
+        fix_application_turn,
     )
 
     identity = fix_identity(description)
     if not identity:
         return None
-    window = None
+    latest = fix_application_turn(case)
     for action in reversed(case.proposed_actions):
         if (
             action.action_type != InvestigationActionType.SOLUTION
@@ -461,11 +464,13 @@ def standing_fix_action(case: Case, description: Optional[str]) -> Any:
             continue
         if action.state == "pending":
             return action
-        if action.state == "accepted" and action.accepted_in_turn is not None:
-            window = window or latest_fix_window(case)
-            if action.accepted_in_turn == window.fix_turn and (
-                window.state != FIX_FAILED
-            ):
+        if (
+            action.state == "accepted"
+            and action.accepted_in_turn is not None
+            and action.accepted_in_turn == latest
+        ):
+            window = attempt_window(case, action)
+            if window is None or window.state != FIX_FAILED:
                 return action
     return None
 
@@ -753,7 +758,10 @@ def _flag_unbound_post_fix_rows(case: Case, metadata: dict[str, Any] | None) -> 
     if fix_turn is None:
         return False
     subjects = subject_index(case)
-    failed = [w for w in fix_windows(case) if w.state == FIX_FAILED]
+    windows = fix_windows(case, subjects)
+    failed = [w for w in windows if w.state == FIX_FAILED]
+    # A kinded window binds its rows to the cause its fix ran against (#2036).
+    window_bound = {e.evidence_id for w in windows for e in w.cause_rows}
     absence = (
         EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
         EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
@@ -777,6 +785,7 @@ def _flag_unbound_post_fix_rows(case: Case, metadata: dict[str, Any] | None) -> 
         if e.collected_at_turn == case.current_turn
         and after_the_fix(e)
         and subjects.subject(e, windows=True) == SUBJECT_UNBOUND
+        and e.evidence_id not in window_bound
     ]
     if not unbound:
         return False
@@ -920,6 +929,9 @@ FIX_JUSTIFICATION_KEY = "fix_acceptance_justification_error"
 #: Set on a replayed bundle's metadata to the ``StagedCauseWork`` whose hold
 #: turn carried a fix acceptance (``held_fix``).
 CARRIED_FIX_KEY = "carried_fix_acceptance"
+#: The SOLUTIONs this apply registered, whose kind the settle reads once
+#: chain emission has run (``response_application._settle_fix_attempts``).
+FIXES_ACCEPTED_KEY = "fixes_accepted_this_apply"
 
 
 class _FixEntry(NamedTuple):
@@ -1405,11 +1417,44 @@ def _ignore_fix_report(case: Case, metadata: dict[str, Any], reason: str) -> Non
     )
 
 
+def _cause_work_at(case: Case, turn: int) -> bool:
+    """Whether ``turn`` recorded cause work, read from the graph's stamps and
+    the turn record: a node posited, a root attached or given a verdict, a
+    hypothesis posited or validated, or the cause identified."""
+    for node in case.causal_nodes.values():
+        if node.node_type == NodeType.PROBLEM:
+            continue
+        meta = node.metadata or {}
+        if turn in (
+            node.generated_at_turn,
+            meta.get("root_attached_turn"),
+            meta.get("root_terminal_turn"),
+        ):
+            return True
+    if any(h.generated_at_turn == turn for h in case.hypotheses.values() if h):
+        return True
+    return any(
+        t.turn_number == turn
+        and (
+            t.hypotheses_generated
+            or t.hypotheses_validated
+            or "root_cause_identified" in t.milestones_completed
+        )
+        for t in case.turn_history or []
+    )
+
+
 def _date_to_the_report(case: Case, target: Any, metadata: dict[str, Any]) -> None:
     """Date ``target``, a live SOLUTION registration stamped this turn, to the
     previous turn: the model declared that the user reported carrying it out
     in their previous message (``accepted_fix_reported_in``, #2427). Nothing is
     inferred from the evidence; ``registered_in_turn`` keeps this turn.
+
+    Refused when the previous turn recorded cause work (``_cause_work_at``):
+    the fix's kind is read against the cause pool at the start of this turn
+    (#2036 D2.3), which would then not be the cause the user ran it against.
+    Read before the settle, the new attempt counts as a remediation here,
+    which only widens the window that judged it.
 
     Bounded so that no observation leaves the window that judged it. With no
     fix dated before, window 0 takes no bound (#2501): a relapse of it before
@@ -1428,6 +1473,14 @@ def _date_to_the_report(case: Case, target: Any, metadata: dict[str, Any]) -> No
     if previous < 1:
         _ignore_fix_report(
             case, metadata, f"there is no message before turn {turn}; {dated_here}"
+        )
+        return
+    if _cause_work_at(case, previous):
+        _ignore_fix_report(
+            case,
+            metadata,
+            f"turn {previous} recorded cause work, so the cause the fix ran "
+            f"against is the one before it, which is not on record; {dated_here}",
         )
         return
     # The window before this fix, ending at this turn.
@@ -1548,6 +1601,7 @@ def _apply_stage_gate_side_effects(
         # genuinely-stale accumulation under a mitigation falls under the general
         # "DIAGNOSTIC asks carry no lifecycle" boundary INV-33 leaves standing.
         if is_solution:
+            metadata.setdefault(FIXES_ACCEPTED_KEY, []).append(target.action_id)
             _retire_shadowed_diagnostic_asks(case, before_turn=target.proposed_in_turn)
             # The persisted projection: True from the first registration on.
             case.progress.solution_accepted = True

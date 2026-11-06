@@ -8,6 +8,11 @@ from uuid import uuid4
 from faultmaven.core.investigation.causal_graph.similarity import (
     find_duplicate_hypothesis,
 )
+from faultmaven.core.investigation.cause_assurance import (
+    FIX_INTERCEPTION,
+    FIX_REMEDIATION,
+    fix_cause_snapshot,
+)
 from faultmaven.core.investigation.confidence_repair import short_repr
 from faultmaven.core.investigation.lifecycle_metrics import (
     hypothesis_dedup_skipped_total,
@@ -80,6 +85,7 @@ from faultmaven.modules.case.contracts import (
     InvestigationActionType,
     JournalEntry,
     KnowledgeMatch,
+    NodeType,
     ProblemStatus,
     ProposedAction,
     RootCauseConclusion,
@@ -111,6 +117,7 @@ from .milestone_inference import (
 from .stage_gates import (
     CARRIED_FIX_KEY,
     FIX_JUSTIFICATION_KEY,
+    FIXES_ACCEPTED_KEY,
     _add_system_feedback,
     _apply_stage_gate_signals,
     _case_has_symptom_evidence,
@@ -247,6 +254,99 @@ def _record_verifying_rows(case: Case, updates: Any, metadata: dict[str, Any]) -
         record_verifying_rows(case, cited)
     elif pv is not None and not pv.verifying_evidence_ids and cited:
         record_verifying_rows(case, cited)
+
+
+#: Each fix entry of this apply with a ``node_ref``, as ``(ref, solution_id,
+#: action_id)`` (``action_id`` None when it names no SOLUTION's target).
+FIX_NODE_REFS_KEY = "fix_node_refs"
+#: ``fix_cause_snapshot`` at the start of this apply (#2036 D2.3).
+FIX_CAUSE_AT_START_KEY = "fix_cause_at_start"
+
+
+def _conclusion_root(case: Case) -> str | None:
+    """The cause node the root-cause conclusion names: its
+    ``names_root_node_id``, else its hypothesis's root; None when it names
+    its cause in words only."""
+    rcc = case.root_cause_conclusion
+    if rcc is None:
+        return None
+    hyp = case.hypotheses.get(rcc.validated_hypothesis_id or "")
+    for node_id in (rcc.names_root_node_id, getattr(hyp, "root_node_id", None)):
+        if node_id in case.causal_nodes:
+            return node_id
+    return None
+
+
+def _settle_fix_attempts(case: Case, metadata: dict[str, Any]) -> None:
+    """What each fix acts on, settled once per apply, right after chain
+    emission and before the orphan pass and the cause recompute, so M6 reads
+    settled windows (#2036 D2.3).
+
+    1. A ``node_ref`` this apply sent resolves through the turn's created
+       nodes and sets its ``Solution.node_id``. On a SOLUTION not yet named or
+       run it is the named target, never changed after; a ref naming no node
+       leaves the fix unnamed, with one line.
+    2. Each SOLUTION accepted in this apply is given its kind against the
+       cause pool at the start of the apply (``fix_cause_snapshot``): the
+       start of the turn the user reports running it, or of the bundle a
+       replay applies it in. Unnamed, it takes the identified or count-held
+       roots, else the root the conclusion names if in the pool; with an
+       empty pool, the conclusion's root, and a root created this turn
+       counts as the cause. A remediation when its targets meet that
+       reference, else an interception. A fix licensed only by a conclusion
+       naming its cause in words stays unkinded, read as a remediation, and
+       the model is asked for the cause's node."""
+    created = metadata.get("chain_nodes_created") or []
+    actions = {a.action_id: a for a in case.proposed_actions}
+    solutions = {sol.solution_id: sol for sol in case.solutions}
+    for ref, solution_id, action_id in metadata.get(FIX_NODE_REFS_KEY) or []:
+        node_id = _resolve_id_ref(ref, created, "cn_")
+        if node_id not in case.causal_nodes:
+            _add_system_feedback(
+                metadata,
+                f"SYSTEM: node_ref {ref} names no node on the causal graph, so "
+                "that fix names no target: when the user runs it, it acts on the "
+                "cause identified then. Name a cn_... id from the graph, or "
+                "new_index_N for a node emitted this turn.",
+            )
+            continue
+        if solution_id in solutions:
+            solutions[solution_id].node_id = node_id
+        action = actions.get(action_id)
+        if action is not None and not action.target_named and action.fix_kind is None:
+            action.target_ids, action.target_named = [node_id], True
+    default, reference = metadata.get(FIX_CAUSE_AT_START_KEY) or ((), frozenset())
+    named = _conclusion_root(case)
+    if not reference:
+        default = (named,) if named else ()
+        reference = frozenset(default) | {
+            node_id
+            for node_id in created
+            if node_id in case.causal_nodes
+            and case.causal_nodes[node_id].node_type == NodeType.ROOT
+        }
+    elif not default and named in reference:
+        default = (named,)
+    for action_id in metadata.get(FIXES_ACCEPTED_KEY) or []:
+        action = actions.get(action_id)
+        if action is None or action.fix_kind is not None:
+            continue
+        if not action.target_named:
+            if not default and case.root_cause_conclusion is not None and not named:
+                _add_system_feedback(
+                    metadata,
+                    f"SYSTEM: fix {action_id} is recorded without a target: the "
+                    "root-cause conclusion names its cause in words only. Set "
+                    "names_root_node_id on root_cause_conclusion to the cause's "
+                    "cn_... node, and node_ref on each fix to the node it changes.",
+                )
+                continue
+            action.target_ids = list(default)
+        action.fix_kind = (
+            FIX_REMEDIATION
+            if reference.intersection(action.target_ids)
+            else FIX_INTERCEPTION
+        )
 
 
 #: The state-update fields that are cause work. While a revised statement
@@ -994,6 +1094,8 @@ class ResponseApplier:
     ) -> None:
         """Apply updates during INVESTIGATING phase."""
         status_at_start = case.progress.problem_status
+        # The cause a fix accepted in this apply was run against (#2036 D2.3).
+        metadata[FIX_CAUSE_AT_START_KEY] = fix_cause_snapshot(case)
         # 0. Check for Proactive Blocker Detection — surface as system feedback
         if hasattr(updates, "missing_critical_data") and updates.missing_critical_data:
             blocker = updates.missing_critical_data
@@ -1440,7 +1542,9 @@ class ResponseApplier:
                 # R9: causal-graph linkage carried by the emission (optional;
                 # honor-or-reject). ``quadrant`` is recorded as DATA — the M5
                 # downgrade below is unchanged. ``node_ref`` is kept only when it
-                # resolves to a real node on this case's graph. Note: no forward-
+                # resolves to a real node on this case's graph, resolved again
+                # after chain emission so a same-turn ``new_index_N`` lands
+                # (``_settle_fix_attempts``, #2036 D2.3). Note: no forward-
                 # looking "verification" is written to ``verification_method`` here
                 # — that field means *how the fix WAS verified* (past tense, read by
                 # the resolution report + resolution-confirmation gate), so writing
@@ -1589,9 +1693,15 @@ class ResponseApplier:
                 # nothing, so the fix the user ran never reads as superseded
                 # and its copy never as a second fix. The Solution row above
                 # is still minted (#1136).
+                refs = metadata.setdefault(FIX_NODE_REFS_KEY, [])
                 if action_type == InvestigationActionType.SOLUTION:
                     kept = standing_fix_action(case, s_item.description)
                     if kept is not None:
+                        # A restatement may name an unnamed pending fix once;
+                        # a name never changes (#2036 D2.3).
+                        if node_ref:
+                            named = kept.action_id if kept.state == "pending" else None
+                            refs.append((node_ref, sol.solution_id, named))
                         solution_slots.append(kept)
                         continue
                     _supersede_pending_solution_offers(case, reason="reproposal")
@@ -1608,6 +1718,13 @@ class ResponseApplier:
                 solution_slots.append(proposed_action)
                 if s_item.solution_type != SolutionType.WORKAROUND:
                     fix_slots.append(proposed_action)
+                if node_ref:
+                    named = (
+                        proposed_action.action_id
+                        if action_type == InvestigationActionType.SOLUTION
+                        else None
+                    )
+                    refs.append((node_ref, sol.solution_id, named))
 
                 # solution_proposed is DERIVED at the end-of-turn assessment
                 # recompute from live SOLUTION offers (INV-32) — the former
@@ -1695,6 +1812,7 @@ class ResponseApplier:
         # real emitted chains. (cause_state derivation never reads the graph for
         # truth — see _recompute_assessment_state.)
         _apply_chain_emission(case, updates, metadata)
+        _settle_fix_attempts(case, metadata)
         # Orphan-chain resolution (B2c invariant: every chain explaining D is
         # attached to exactly one hypothesis). T1 re-attaches an unambiguous
         # double-representation in place; any ambiguous orphan is surfaced to

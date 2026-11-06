@@ -275,6 +275,33 @@ class ProposedAction(BaseModel):
         ),
     )
 
+    # #2036 D2.3: what a SOLUTION acts on, settled once per turn after chain
+    # emission (``response_application._settle_fix_attempts``).
+    target_ids: List[str] = Field(
+        default_factory=list,
+        description=(
+            "SOLUTION only: the causal nodes the fix acts on. A named "
+            "``node_ref`` once it resolves, which nothing changes after; else, "
+            "when the user runs it, the cause identified at the start of that "
+            "turn. Pruning a node drops it here."
+        ),
+    )
+    target_named: bool = Field(
+        default=False,
+        description="SOLUTION only: ``target_ids`` came from the model's node_ref.",
+    )
+    fix_kind: Optional[Literal["remediation", "interception"]] = Field(
+        default=None,
+        description=(
+            "SOLUTION only, set once in the turn the user runs it and never "
+            "recomputed: 'remediation' when its targets met the cause pool at "
+            "the start of that turn, else 'interception', which relieves but "
+            "never confirms a resolution. None before it runs, on an attempt "
+            "accepted before #2036 D2.3, and on one licensed only by a "
+            "conclusion naming no cause node: read as a remediation."
+        ),
+    )
+
     superseded_in_turn: Optional[int] = Field(
         default=None,
         description=(

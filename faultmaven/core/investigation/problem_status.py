@@ -233,6 +233,7 @@ def invalidation_refusal(case: Case, evidence_ids: list[str], basis: str) -> str
     """Why the problem cannot be found a false alarm now, or None."""
     from faultmaven.core.investigation.cause_assurance import (
         SUBJECT_CAUSE,
+        fix_windows,
         subject_index,
     )
 
@@ -254,10 +255,11 @@ def invalidation_refusal(case: Case, evidence_ids: list[str], basis: str) -> str
     # this reads the raw rows, not the resolution leg (which excludes what a
     # failed fix window holds, #1927). Only a row bound to the case's cause
     # (#1906 D1): one naming nothing observed nothing the finding contradicts.
+    # A fix window kinded at its run binds its rows to that fix's cause (#2036).
     subjects = subject_index(case)
     if any(
         subjects.subject(e, windows=True) == SUBJECT_CAUSE for e in case.evidence or []
-    ):
+    ) or any(w.cause_rows for w in fix_windows(case, subjects)):
         return "a cause was observed removed, so the problem existed"
     return None
 

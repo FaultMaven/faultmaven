@@ -413,6 +413,8 @@ cause_identification_held_mece_total = Counter(
 #   undatable acceptance, which keeps ``undatable_acceptance``; as for a dated
 #   window, the latest decided window's label, even while a newer fix is
 #   unobserved.
+# - ``interception``     — every fix run was an interception: none opens a
+#   fix window, so nothing disconfirms the cause (#2036 D2.3).
 # - ``resolution_confirmed`` — the window SUCCEEDED: the cause observed removed
 #   and the problem observed gone, with no persistence before the relief. This
 #   is the #987 incident shape, and a nonzero rate here means something

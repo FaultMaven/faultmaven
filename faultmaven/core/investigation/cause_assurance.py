@@ -62,6 +62,8 @@ __all__ = [
     "FIX_FAILED",
     "FIX_SUCCEEDED",
     "FIX_UNKNOWN",
+    "FIX_INTERCEPTION",
+    "FIX_REMEDIATION",
     "SUBJECT_CAUSE",
     "SUBJECT_PROBLEM",
     "SUBJECT_UNBOUND",
@@ -81,19 +83,23 @@ __all__ = [
     "counterfactual_link_decisive",
     "evidence_category_map",
     "evidence_datum_key",
+    "attempt_window",
     "fix_application_turn",
+    "fix_cause_snapshot",
     "fix_windows",
     "grade_cause_assurance",
     "has_actionable_solution",
     "has_problem_definition",
     "has_resolution_confirmation",
     "has_root_cause_record",
+    "interception_relief",
     "latest_disconfirmation_turn",
     "latest_decided_fix_window",
     "confirming_window",
     "latest_fix_window",
     "observation_subject",
     "observed_turn",
+    "off_cause_attempt",
     "pending_symptom_check",
     "problem_anchor_statements",
     "problem_leg_anchor",
@@ -568,12 +574,15 @@ class SubjectIndex:
             return collected
         return turn
 
-    def cause_targets(self, evidence_id: str, windows: bool = False) -> frozenset:
+    def cause_targets(
+        self, evidence_id: str, windows: bool = False, roots=None
+    ) -> frozenset:
         """What a cause observation naming ``evidence_id`` re-observes: the
         ROOT nodes that row supports, when they are one cause and touch the
         pool; or, when the pool is a rootless hypothesis, that hypothesis.
         Empty when it binds to none, and always for an absence row (absence
-        rows carry no links).
+        rows carry no links). ``roots``, when given, replaces the pool: the
+        root set a fix window binds against (#2036 D2.3), never a hypothesis.
 
         Only node-axis SUPPORTS count for a rooted cause. The row's SUPPORTS
         links may touch only ROOT nodes, all in one cluster
@@ -581,7 +590,7 @@ class SubjectIndex:
         cause): a row SUPPORTS-linked to an INTERMEDIATE rung is about the
         consequence as much as the cause, so a re-check of it (a renewed
         certificate) does not show the cause gone (#2036, c1021-1)."""
-        key = (evidence_id, windows)
+        key = (evidence_id, windows if roots is None else frozenset(roots))
         if key in self._bound:
             return self._bound[key]
         target = self.rows.get(evidence_id)
@@ -592,7 +601,9 @@ class SubjectIndex:
         ):
             nodes = getattr(self.case, "causal_nodes", None) or {}
             linked = self.node_supports.get(evidence_id, frozenset())
-            roots = self.window_roots if windows else self.pool_roots
+            hypotheses = self.pool_hypotheses if roots is None else frozenset()
+            if roots is None:
+                roots = self.window_roots if windows else self.pool_roots
             if roots:
                 if (
                     linked & roots
@@ -600,15 +611,15 @@ class SubjectIndex:
                     and _one_cause(self.case, linked)
                 ):
                     bound = linked
-            elif self.pool_hypotheses:
+            elif hypotheses:
                 hits = self.hypothesis_supports.get(evidence_id, frozenset())
-                hits &= self.pool_hypotheses
+                hits &= hypotheses
                 if len(hits) == 1 and not linked:
                     bound = hits
         self._bound[key] = bound
         return bound
 
-    def subject(self, row, windows: bool = False) -> str:
+    def subject(self, row, windows: bool = False, roots=None) -> str:
         """What ``row`` observes: ``SUBJECT_PROBLEM``, ``SUBJECT_CAUSE`` or
         ``SUBJECT_UNBOUND``.
 
@@ -622,7 +633,9 @@ class SubjectIndex:
           category does not observe; and an engine-authored row, which
           observes nothing. A ref to the row itself or to an absence row is
           stored unbound when the turn records it
-          (``response_application._record_rechecks``)."""
+          (``response_application._record_rechecks``).
+
+        ``roots`` binds a cause observation as ``cause_targets`` does."""
         target_id = getattr(row, "rechecks_evidence_id", None)
         if (
             not isinstance(target_id, str)
@@ -634,7 +647,7 @@ class SubjectIndex:
         if category in _PROBLEM_OBSERVATIONS:
             return SUBJECT_PROBLEM if target_id in self.verifying else SUBJECT_UNBOUND
         if category == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE and (
-            self.cause_targets(target_id, windows)
+            self.cause_targets(target_id, windows, roots)
         ):
             return SUBJECT_CAUSE
         return SUBJECT_UNBOUND
@@ -706,9 +719,12 @@ def _cause_pool(case: "Case") -> tuple[frozenset, frozenset, frozenset]:
        AND no other standing hypothesis is rooted elsewhere: a cause re-fixed
        after it fell can still be shown removed, while nothing is confirmed
        through the fallen one past any other standing hypothesis rooted
-       elsewhere (by node id, whatever its age). A root no hypothesis names
-       does not count, so a fallen cause can still confirm past such an
-       orphan root (#2485);
+       elsewhere (by node id, whatever its age). Once fixes are kinded, it
+       stands only for the fallen roots the latest remediation targets
+       (#2485): a fix of an orphan root no hypothesis names is an
+       interception of it, and a remediation of another cause leaves the
+       fallen one nothing to confirm. With no remediation, or an unkinded
+       latest one, every fallen root stands;
     4. a VALIDATED hypothesis with no root node (inert while a rootless
        hypothesis cannot validate).
 
@@ -721,6 +737,42 @@ def _cause_pool(case: "Case") -> tuple[frozenset, frozenset, frozenset]:
 
     With no confirmation pool nothing confirms the cause: the case can close,
     never resolve."""
+    identified, held, fallen = _pool_legs(case)
+    if identified:
+        return frozenset(identified), frozenset(identified | fallen), frozenset()
+    if held:
+        return frozenset(held), frozenset(held | fallen), frozenset()
+    other_standing = any(
+        h is not None
+        and h.state in _STANDING_HYP_STATES
+        and h.root_node_id
+        and h.root_node_id not in fallen
+        for h in (getattr(case, "hypotheses", None) or {}).values()
+    )
+    if fallen and not other_standing:
+        fixes = _window_fixes(case)
+        kinded, targets = fixes[max(fixes)] if fixes else (False, ())
+        if not kinded:
+            return frozenset(fallen), frozenset(fallen), frozenset()
+        named = fallen.intersection(targets)
+        if named:
+            return frozenset(named), frozenset(fallen), frozenset()
+    return (
+        frozenset(),
+        frozenset(fallen),
+        frozenset(
+            h.hypothesis_id
+            for h in (getattr(case, "hypotheses", None) or {}).values()
+            if h is not None
+            and h.state == HypothesisState.VALIDATED
+            and not h.root_node_id
+        ),
+    )
+
+
+def _pool_legs(case: "Case") -> tuple[set, set, set]:
+    """``(identified, count-held terminal, fallen)`` roots, as ``_cause_pool``
+    reads them; the count-held leg only when nothing is identified."""
     nodes = getattr(case, "causal_nodes", None) or {}
     engine_ids = _engine_absence_row_ids(case)
     recorded = set(
@@ -744,37 +796,27 @@ def _cause_pool(case: "Case") -> tuple[frozenset, frozenset, frozenset]:
             )
         )
     }
-    if identified:
-        return frozenset(identified), frozenset(identified | fallen), frozenset()
-    count_held_fn = _graph_hooks().get("count_held") if nodes else None
-    held = {
-        node_id
-        for node_id in (count_held_fn(case) if count_held_fn is not None else ())
-        if node_id in nodes and nodes[node_id].root_terminal is True
-    }
-    if held:
-        return frozenset(held), frozenset(held | fallen), frozenset()
-    other_standing = any(
-        h is not None
-        and h.state in _STANDING_HYP_STATES
-        and h.root_node_id
-        and h.root_node_id not in fallen
-        for h in (getattr(case, "hypotheses", None) or {}).values()
-    )
-    if fallen and not other_standing:
-        roots = frozenset(fallen)
-        return roots, roots, frozenset()
-    return (
-        frozenset(),
-        frozenset(fallen),
-        frozenset(
-            h.hypothesis_id
-            for h in (getattr(case, "hypotheses", None) or {}).values()
-            if h is not None
-            and h.state == HypothesisState.VALIDATED
-            and not h.root_node_id
-        ),
-    )
+    held: set = set()
+    if not identified and nodes:
+        count_held_fn = _graph_hooks().get("count_held")
+        held = {
+            node_id
+            for node_id in (count_held_fn(case) if count_held_fn is not None else ())
+            if node_id in nodes and nodes[node_id].root_terminal is True
+        }
+    return identified, held, fallen
+
+
+def fix_cause_snapshot(case: "Case") -> tuple[tuple, frozenset]:
+    """``(default target, reference)``: what a fix run now acts on when it
+    names nothing, and what it must meet to be a remediation (#2036 D2.3).
+    The reference is the whole cause pool, every leg of ``_cause_pool`` (the
+    fallen cause and a rootless validated hypothesis included); the default
+    is the identified or count-held roots only, so an unnamed fix of a fallen
+    cause is no remediation of it. Taken at the start of a turn's apply."""
+    confirmation, window, hypotheses = _cause_pool(case)
+    identified, held, _fallen = _pool_legs(case)
+    return tuple(sorted(identified or held)), confirmation | window | hypotheses
 
 
 def subject_index(case: "Case") -> SubjectIndex:
@@ -1007,7 +1049,7 @@ def cause_recheck_status(
     posited = _cause_posited_turn(case)
     windows = fix_windows(case, subjects) if windows is None else windows
     window = confirming_window(case, windows=windows, subjects=subjects)
-    no_window = None if window is not None else _no_confirming_window(windows)
+    no_window = None if window is not None else _no_confirming_window(case, windows)
     out = []
     for e in getattr(case, "evidence", None) or []:
         if subjects.subject(e) != SUBJECT_CAUSE:
@@ -1025,18 +1067,30 @@ def cause_recheck_status(
             why = no_window
         elif not window.holds(turn):
             why = "it is outside the latest observed fix's window"
+        elif window.kind is not None and e not in window.confirmed_cause_rows:
+            why = (
+                f"it re-checks a cause the fix executed at turn {window.fix_turn} "
+                "was not run against"
+            )
         else:
             why = None
         out.append((e, why))
     return out
 
 
-def _no_confirming_window(windows: list) -> str:
+def _no_confirming_window(case: "Case", windows: list) -> str:
     """Why no window confirms (``confirming_window`` is None): the latest
-    observed fix failed. When a newer fix is recorded that nobody has
-    observed yet, it is named as the one still to re-check, not as missing
-    (#2495). A failed window 0 is named as the fix done outside the case
-    (#2501)."""
+    attempt was no fix of the cause (``off_cause_attempt``, #2036 D2.3), or
+    the latest observed fix failed. When a newer fix is recorded that nobody
+    has observed yet, it is named as the one still to re-check, not as
+    missing (#2495). A failed window 0 is named as the fix done outside the
+    case (#2501)."""
+    off = off_cause_attempt(case, windows)
+    if off is not None:
+        return (
+            f"the fix executed at turn {off} did not act on the cause now "
+            "identified; only a fix of that cause can confirm it"
+        )
     observed = [i for i, w in enumerate(windows) if w.observed]
     if observed and windows[observed[-1]].state == FIX_FAILED:
         failed = windows[observed[-1]]
@@ -1068,7 +1122,9 @@ def confirming_polarity_rows(case: "Case") -> list:
       case's cause was posited;
     - not recorded while identification is held open;
     - in the latest fix window holding a causal_absence row, and that window
-      did not FAIL. This stands for main's confirming window (the latest
+      did not FAIL. Windows open on remediations only, so a row after an
+      interception alone is in none (#2036 D2.3). This stands for main's
+      confirming window (the latest
       observed window, none when it failed) minus its persistence-only arm,
       which read the token frame 2a removed: a newer window observed only by
       the problem persisting no longer shadows the older window's rows.
@@ -1187,17 +1243,26 @@ def fix_application_turn(case: "Case") -> int | None:
     happened after the fix", so it establishes nothing. On the no-ProposedAction
     shape M6's counterfactual arm simply does not fire — the evidence-based arm
     is unaffected and still demotes a genuinely refuted cause.
+
+    Any attempt counts, an interception included (#2036 D2.3): a fix was run,
+    so a re-check after it names what it re-checks. The windows a resolution
+    and M6 read open on remediations only (``fix_windows``).
     """
     turns = _dated_fix_turns(case)
     return turns[-1] if turns else None
 
 
 def _dated_fix_turns(case: "Case") -> list[int]:
-    """The execution turns of every accepted SOLUTION, ascending and distinct —
-    the fix record ``fix_application_turn`` and the fix windows
-    (``fix_windows``) both read."""
-    turns = {
-        a.accepted_in_turn
+    """The execution turns of every accepted SOLUTION, ascending and distinct,
+    remediations and interceptions alike: the fix record
+    ``fix_application_turn`` reads it, and window 0 ends at its first."""
+    return sorted({a.accepted_in_turn for a in _dated_fixes(case)})
+
+
+def _dated_fixes(case: "Case") -> list:
+    """Every accepted SOLUTION with an execution turn, in record order."""
+    return [
+        a
         for a in (getattr(case, "proposed_actions", None) or [])
         if getattr(a, "state", None) == "accepted"
         # SOLUTION only — a MITIGATION is by definition NOT a fix of the cause
@@ -1224,8 +1289,37 @@ def _dated_fix_turns(case: "Case") -> list[int]:
         # existed carry None and simply do not establish the precondition,
         # which is the fail-closed direction.
         and getattr(a, "accepted_in_turn", None) is not None
+    ]
+
+
+#: A fix attempt's kind (``ProposedAction.fix_kind``, #2036 D2.3).
+FIX_REMEDIATION = "remediation"
+FIX_INTERCEPTION = "interception"
+
+
+def _is_remediation(action) -> bool:
+    """A remediation, or an unkinded attempt (accepted before D2.3, or
+    licensed only by a conclusion naming no node), which reads as one."""
+    return getattr(action, "fix_kind", None) != FIX_INTERCEPTION
+
+
+def _window_fixes(case: "Case") -> dict:
+    """The cause windows' fixes: each execution turn holding a remediation,
+    mapped to ``(kinded, targets)``. A turn is read as kinded only when every
+    remediation in it is, its targets their union; one with an unkinded
+    remediation reads as before D2.3. An interception opens no window."""
+    turns: dict = {}
+    for a in _dated_fixes(case):
+        if _is_remediation(a):
+            kinded, targets = turns.get(a.accepted_in_turn, (True, ()))
+            turns[a.accepted_in_turn] = (
+                kinded and getattr(a, "fix_kind", None) is not None,
+                (*targets, *(getattr(a, "target_ids", None) or ())),
+            )
+    return {
+        turn: (kinded, tuple(sorted(set(targets))) if kinded else ())
+        for turn, (kinded, targets) in turns.items()
     }
-    return sorted(turns)
 
 
 # ---------------------------------------------------------------------------
@@ -1265,7 +1359,13 @@ class FixWindow:
     ``(cause_turn, persistence_turn)`` pair that disconfirms the cause the
     fix addressed (``disconfirms_cause``), or None. ``observed``: the fix's
     outcome was looked at — a cause row in the window, or a persistence row
-    bound to the problem after the fix."""
+    bound to the problem after the fix.
+
+    ``kind`` is ``FIX_REMEDIATION`` for a window whose fixes were kinded
+    when run (#2036 D2.3), with their ``targets``; None for window 0 and for
+    an unkinded fix, read as before D2.3. ``off_cause``: a remediation whose
+    targets have all left the confirmation pool (deepened past, or another
+    cause identified since), which can fail but never confirm."""
 
     fix_turn: int | None
     end_turn: int | None
@@ -1276,6 +1376,9 @@ class FixWindow:
     relief_turn: int | None = None
     disconfirmation: tuple[int, int] | None = None
     confirmed_cause_rows: tuple = ()
+    targets: tuple = ()
+    kind: str | None = None
+    off_cause: bool = False
 
     def holds(self, turn: int) -> bool:
         """Whether an observation at ``turn`` belongs to this window."""
@@ -1304,7 +1407,9 @@ def fix_windows(
 ) -> list[FixWindow]:
     """Every fix window on the case, oldest first: window 0 (the rows before any
     dated fix — an out-of-band fix leaves no execution record), then one per
-    dated fix (``_dated_fix_turns``).
+    turn with a dated remediation (``_window_fixes``). An interception opens
+    none and ends none but window 0 (#2036 D2.3): it relieves, never
+    resolves, and a later one does not hide an earlier root fix's window.
 
     A window's outcome is read from raw observations (non-engine rows; no
     engine window or REFUTES mark is consulted, so the derivation stands on
@@ -1343,40 +1448,66 @@ def fix_windows(
     without a cause row the window stays UNKNOWN ("I ran it, still failing"
     with no cause re-check may be an implementation error).
 
-    Window 0 fails only on a relapse (#2501, ``_window_zero_relapse``): the
-    identified cause shown removed after it was first posited, then the
-    problem gone, then present. A later attach of the same root does not move
-    that floor (save once on a root stored with neither key,
-    ``CausalNode.root_first_attached_turn``). Deepening the cause re-scopes
-    window 0 to the new root only when the relapse's cause row re-checked a
-    row supporting the old root alone: then the new root's removal, then the
-    problem gone, reads as a new out-of-band fix window 0 can confirm. A row
-    that also supports the new root binds to their cluster, is floored at the
-    cluster's earliest first attach, and its relapse stands until a dated fix.
-    A window read against the cause its fix named is deferred to #2036
-    (Phase 3, D2.3).
+    A kinded window is read against the cause its fixes were run against
+    (#2036 D2.3): its cause rows bind to its ``targets`` plus the fallen
+    roots, so a deepening or an M6 demotion since does not re-scope it, and
+    only rows bound to its targets still in the confirmation pool confirm
+    it (``off_cause`` when none is). An unkinded window binds as above.
+
+    Window 0 ends at the first attempt of any kind, and fails only on a
+    relapse (#2501, ``_window_zero_relapse``): the identified cause shown
+    removed after it was first posited, then the problem gone, then present.
+    The relapse binds its cause rows to the confirmation roots and to every
+    root deepened into one of them (``deepened_to``, transitively), so it
+    stands after the cause is deepened, however often, until a dated fix. A
+    row's floor is the earliest first attach of the roots it supports; a
+    later attach of the same root does not move it (save once on a root
+    stored with neither key, ``CausalNode.root_first_attached_turn``).
     Persistence with no such relief fails nothing: before any dated fix, a
     causal_absence row is as likely a diagnosis-time exclusion ("DNS ruled
     out") as a fix's outcome. It never carries a disconfirmation, so nothing
     destructive acts on an undated fix."""
-    fixes = _dated_fix_turns(case)
+    fixes = _window_fixes(case)
+    attempts = _dated_fix_turns(case)
     subjects = subject_index(case) if subjects is None else subjects
+    nodes = getattr(case, "causal_nodes", None) or {}
+    fallen = frozenset(_pool_legs(case)[2])
     # (category, subject, observed turn) of every bound row.
     bound = [
         (e.category, subject, subjects.observed(e), e)
         for e in subjects.rows.values()
         if (subject := subjects.subject(e, windows=True)) != SUBJECT_UNBOUND
     ]
-    starts: list[int | None] = [None, *fixes]
-    ends: list[int | None] = [*fixes, None]
+    absence = [
+        e
+        for e in subjects.rows.values()
+        if e.category == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
+    ]
+
+    def bound_to(roots, shell) -> tuple:
+        return tuple(
+            e
+            for e in absence
+            if roots
+            and shell.holds(subjects.observed(e))
+            and subjects.subject(e, roots=roots) == SUBJECT_CAUSE
+        )
+
+    turns = sorted(fixes)
+    starts: list[int | None] = [None, *turns]
+    ends: list[int | None] = [attempts[0] if attempts else None, *turns[1:], None]
     windows: list[FixWindow] = []
     for fix_turn, end_turn in zip(starts, ends):
         shell = FixWindow(fix_turn, end_turn, (), FIX_UNKNOWN)
-        cause_rows = tuple(
-            e
-            for category, subject, turn, e in bound
-            if subject == SUBJECT_CAUSE and shell.holds(turn)
-        )
+        kinded, targets = fixes.get(fix_turn, (False, ()))
+        if kinded:
+            cause_rows = bound_to(fallen | nodes.keys() & set(targets), shell)
+        else:
+            cause_rows = tuple(
+                e
+                for category, subject, turn, e in bound
+                if subject == SUBJECT_CAUSE and shell.holds(turn)
+            )
         gone_turns = {
             turn
             for category, subject, turn, e in bound
@@ -1421,14 +1552,30 @@ def fix_windows(
             else:
                 state, failure_turn = FIX_FAILED, turn
                 break
-        confirmed_cause_rows = tuple(
-            row for row in cause_rows if subjects.subject(row) == SUBJECT_CAUSE
-        )
+        confirming = subjects.pool_roots.intersection(targets)
+        if kinded:
+            confirmed_cause_rows = tuple(
+                row
+                for row in cause_rows
+                if confirming
+                and subjects.subject(row, roots=confirming) == SUBJECT_CAUSE
+            )
+        else:
+            confirmed_cause_rows = tuple(
+                row for row in cause_rows if subjects.subject(row) == SUBJECT_CAUSE
+            )
         if state != FIX_FAILED and relief_turn is not None and confirmed_cause_rows:
             state = FIX_SUCCEEDED
         if fix_turn is None:
+            zero = _with_deepened_from(case, subjects.pool_roots)
             relapse = _window_zero_relapse(
-                case, bound, gone_turns, confirmed_cause_rows, subjects, end_turn
+                case,
+                bound,
+                gone_turns,
+                bound_to(zero, shell) if zero else confirmed_cause_rows,
+                subjects,
+                end_turn,
+                zero or None,
             )
             if relapse is not None:
                 state = FIX_FAILED
@@ -1440,31 +1587,54 @@ def fix_windows(
                 cause_rows,
                 state,
                 failure_turn,
-                observed=bool(cause_rows or after_fix),
+                # A relapse read through a deepened-past root is observed too.
+                observed=bool(cause_rows or after_fix or state == FIX_FAILED),
                 relief_turn=relief_turn,
                 disconfirmation=disconfirmation,
                 confirmed_cause_rows=confirmed_cause_rows,
+                targets=targets,
+                kind=FIX_REMEDIATION if kinded else None,
+                off_cause=kinded and not confirming,
             )
         )
     return windows
 
 
+def _with_deepened_from(case: "Case", roots) -> frozenset:
+    """``roots`` plus every root deepened into one of them, transitively: the
+    attach writer records ``deepened_to`` on a root a hypothesis was re-rooted
+    past (``causal_graph.pruning.attach_root``, #2036 D2.3)."""
+    nodes = getattr(case, "causal_nodes", None) or {}
+    out, frontier = set(roots), set(roots)
+    while frontier:
+        frontier = {
+            node_id
+            for node_id, node in nodes.items()
+            if node_id not in out
+            and (getattr(node, "metadata", None) or {}).get("deepened_to") in frontier
+        }
+        out |= frontier
+    return frozenset(out)
+
+
 def _window_zero_relapse(
-    case: "Case", bound, gone_turns, confirmed_cause_rows, subjects, end_turn
+    case: "Case", bound, gone_turns, cause_rows, subjects, end_turn, roots=None
 ) -> tuple[int, int] | None:
     """``(relief_turn, failure_turn)`` when window 0 relapsed, else None
     (#2501): the identified cause shown removed at or after it was first
     posited (``_first_posited_turn``: an earlier row observed something else
     gone), then the problem shown gone, then a problem-bound SYMPTOM_EVIDENCE
     row in a later turn, up to and including the next fix's execution turn. A
-    turn holding both reads as gone, as in a dated window."""
-    if not confirmed_cause_rows:
+    turn holding both reads as gone, as in a dated window. ``cause_rows`` are
+    window 0's, bound against ``roots`` (the confirmation roots and the roots
+    deepened into them), or against the confirmation pool when None."""
+    if not cause_rows:
         return None
     removal = min(
         (
             turn
-            for row in confirmed_cause_rows
-            if (floor := _first_posited_turn(case, subjects, row)) is not None
+            for row in cause_rows
+            if (floor := _first_posited_turn(case, subjects, row, roots)) is not None
             and (turn := subjects.observed(row)) >= floor
         ),
         default=None,
@@ -1488,15 +1658,16 @@ def _window_zero_relapse(
     return None if failure is None else (relief, failure)
 
 
-def _first_posited_turn(case: "Case", subjects, row) -> int | None:
+def _first_posited_turn(case: "Case", subjects, row, roots=None) -> int | None:
     """The first turn what cause-bound ``row`` re-checks was posited: the
-    earliest ``CausalNode.root_first_attached_turn`` of the roots it binds to
-    (a cluster counts as one cause), or a rootless pool hypothesis's
-    ``generated_at_turn``; None when it binds to nothing. Both are dated at
-    the turn the work was emitted, a replayed bundle's own turn (#2537).
-    Unlike ``_cause_posited_turn``, the cause leg's floor, a later attach of
-    the same root does not move it, save once on a root stored with neither
-    key (``CausalNode.root_first_attached_turn``)."""
+    earliest ``CausalNode.root_first_attached_turn`` of the roots it supports
+    (bound against ``roots`` when given, a cluster counting as one cause),
+    or a rootless pool hypothesis's ``generated_at_turn``; None when it binds
+    to nothing. Both are dated at the turn the work was emitted, a replayed
+    bundle's own turn (#2537). Unlike ``_cause_posited_turn``, the cause
+    leg's floor, a later attach of the same root does not move it, save once
+    on a root stored with neither key (``CausalNode.root_first_attached_turn``);
+    a re-check after that attach then confirms window 0."""
     nodes = getattr(case, "causal_nodes", None) or {}
     hypotheses = getattr(case, "hypotheses", None) or {}
     turns = [
@@ -1505,7 +1676,7 @@ def _first_posited_turn(case: "Case", subjects, row) -> int | None:
             if target in nodes
             else hypotheses[target].generated_at_turn
         )
-        for target in subjects.cause_targets(row.rechecks_evidence_id)
+        for target in subjects.cause_targets(row.rechecks_evidence_id, roots=roots)
         if target in nodes or hypotheses.get(target) is not None
     ]
     return min(turns, default=None)
@@ -1536,7 +1707,9 @@ def confirming_window(
     whose fix's outcome was looked at (``FixWindow.observed``: the cause
     re-checked, or the problem seen persisting after the fix), and None when
     that window FAILED: a fix seen failing confirms nothing, and only a new
-    fix opens a window that can. Rows from before a newer, observed fix
+    fix opens a window that can. None too when it is ``off_cause``: a fix of
+    a cause no longer in the pool confirms nothing about the one that is
+    (#2036 D2.3). Rows from before a newer, observed fix
     confirm nothing about it — an earlier fix's, an out-of-band one's, a
     pre-fix cause observation. A newer fix whose outcome nobody looked at yet
     has no verdict, so the window before it still answers: the execution
@@ -1557,8 +1730,58 @@ def confirming_window(
         windows = fix_windows(case, subjects)
     for window in reversed(windows):
         if window.observed:
-            return None if window.state == FIX_FAILED else window
+            return None if window.state == FIX_FAILED or window.off_cause else window
     return None
+
+
+def off_cause_attempt(case: "Case", windows=None) -> int | None:
+    """The execution turn of the latest fix attempt when no fix of the cause
+    now identified can still confirm it, else None (#2036 D2.3): an
+    interception with no remediation window before it, or after a FAILED or
+    ``off_cause`` one; or that ``off_cause`` remediation itself. A live
+    remediation window answers for itself, an interception after it
+    included. None while the confirmation pool is empty: then there is no
+    cause to ask a fix of. ``windows`` is the caller's ``fix_windows(case)``."""
+    confirmation, _window, hypotheses = _cause_pool(case)
+    if not (confirmation or hypotheses):
+        return None
+    windows = fix_windows(case) if windows is None else windows
+    latest = windows[-1]
+    live = latest.fix_turn is not None and latest.state != FIX_FAILED
+    if live and not latest.off_cause:
+        return None
+    attempts = _dated_fix_turns(case)
+    if attempts and attempts[-1] > (latest.fix_turn or -1):
+        return attempts[-1]
+    return latest.fix_turn if live else None
+
+
+def attempt_window(case: "Case", action) -> FixWindow | None:
+    """The cause window an accepted SOLUTION's attempt opened, or None: an
+    interception opens none."""
+    turn = getattr(action, "accepted_in_turn", None)
+    if turn is None or not _is_remediation(action):
+        return None
+    return next((w for w in fix_windows(case) if w.fix_turn == turn), None)
+
+
+def interception_relief(case: "Case", turn: int) -> tuple[int | None, int | None]:
+    """``(relief_turn, present_turn)`` after an interception run at ``turn``,
+    which has no window: the first turn the problem was seen gone at or after
+    it, and the first it was seen present after it (bound rows, by the data's
+    turn)."""
+    subjects = subject_index(case)
+    seen: dict = {}
+    for e in subjects.rows.values():
+        observed = subjects.observed(e)
+        if subjects.subject(e) == SUBJECT_PROBLEM and observed >= turn:
+            if e.category == EvidenceCategory.SYMPTOM_EVIDENCE and observed == turn:
+                continue
+            seen[e.category] = min(seen.get(e.category, observed), observed)
+    return (
+        seen.get(EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE),
+        seen.get(EvidenceCategory.SYMPTOM_EVIDENCE),
+    )
 
 
 def symptom_elimination_rows(

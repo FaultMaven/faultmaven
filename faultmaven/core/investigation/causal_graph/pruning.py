@@ -37,7 +37,9 @@ def prune_abandoned_nodes(case: Case, abandoned_node_ids: list[str]) -> None:
 
     A solution acting on a dropped node has its ``node_id`` cleared: the store's
     ``ON DELETE SET NULL`` on ``solutions.node_id``, applied in memory, so the
-    save never writes back an id whose row it has just deleted (#2071).
+    save never writes back an id whose row it has just deleted (#2071). A fix
+    attempt targeting it drops it from ``target_ids`` and keeps its kind, which
+    was settled when it ran (#2036 D2.3).
     """
     referenced = _referenced_node_ids(case)
     pruned: set[str] = set()
@@ -52,12 +54,45 @@ def prune_abandoned_nodes(case: Case, abandoned_node_ids: list[str]) -> None:
     for solution in case.solutions:
         if solution.node_id in pruned:
             solution.node_id = None
+    for action in getattr(case, "proposed_actions", None) or []:
+        if pruned.intersection(getattr(action, "target_ids", None) or ()):
+            action.target_ids = [t for t in action.target_ids if t not in pruned]
     case.causal_edges[:] = [
         e
         for e in case.causal_edges
         if e.cause_node_id in case.causal_nodes
         and e.effect_node_id in case.causal_nodes
     ]
+
+
+def attach_root(
+    case: Case, hyp: "Hypothesis", root_id: str, path: list, turn: int
+) -> None:
+    """Point ``hyp`` at ``root_id`` along ``path``, the attach dated ``turn``
+    (the emission's): the one writer of the attach stamps and of a deepening's
+    record, for an emitted re-root and an orphan adoption alike (#2036 D2.3).
+
+    The stored ``root_first_attached_turn`` never moves once written; a node
+    attached before it was recorded keeps its last attach as the first
+    (#2501). Re-rooting past the old root (the new path runs through it)
+    says a cause sits above that node: clause b fails for it, whatever was
+    recorded before, and ``deepened_to`` names the root it was deepened to,
+    so a relapse observed on it still fails window 0. A move to another
+    chain says nothing about the old root."""
+    old_root = hyp.root_node_id
+    hyp.root_node_id = root_id
+    hyp.path = path
+    if old_root == root_id:
+        return
+    attached = case.causal_nodes[root_id].metadata
+    attached.setdefault(
+        "root_first_attached_turn", attached.get("root_attached_turn", turn)
+    )
+    attached["root_attached_turn"] = turn
+    stale = case.causal_nodes.get(old_root) if old_root else None
+    if stale is not None and stale.node_type == NodeType.ROOT and old_root in path:
+        stale.record_root_terminal(False, None, turn)
+        stale.metadata["deepened_to"] = root_id
 
 
 def _hypothesis_lacks_real_chain(hyp: "Hypothesis") -> bool:
@@ -142,16 +177,9 @@ def resolve_orphan_chains(case: Case, *, turn: int | None = None) -> list[dict]:
         ):
             hyp = scored[0][1]
             old_path = hyp.path or []
-            hyp.root_node_id = root_id
-            hyp.path = path
-            # The cause this hypothesis names is posited from now (#2036).
-            # The first attach never moves; a node attached before it was
-            # recorded keeps its last attach as the first (#2501).
-            node.metadata.setdefault(
-                "root_first_attached_turn",
-                node.metadata.get("root_attached_turn", turn),
-            )
-            node.metadata["root_attached_turn"] = turn
+            # The cause this hypothesis names is posited from now (#2036); an
+            # adoption through its old root deepens it (#2036 D2.3).
+            attach_root(case, hyp, root_id, path, turn)
             prune_abandoned_nodes(case, old_path)
             adopted.add(hyp.hypothesis_id)
             referenced = _referenced_node_ids(case)  # graph changed — refresh
