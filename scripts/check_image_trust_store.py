@@ -1,13 +1,9 @@
-"""Fail the image build if a TLS store its clients read trusts a banned root.
-
-Checks OpenSSL's default cafile and capath (aiohttp, and pip through PIP_CERT) and
-certifi (httpx, requests), by the SHA-256 of each certificate's DER. The positive
-controls keep an empty store, or a scan that read nothing, from passing.
-"""
+"""Fail the image build if OpenSSL's default cafile or capath, or certifi, trusts a
+banned root, matched by SHA-256 over what OpenSSL parses. Root counts and a known root
+keep an empty store from passing."""
 
 import hashlib
 import os
-import re
 import ssl
 import sys
 from pathlib import Path
@@ -19,25 +15,21 @@ AAA = "d7a7a0fb5d7e2731d771e9484ebcdef71d5f0c3e0a2948782bc83ee0ea699ef4"  # prag
 ISRG_ROOT_X1 = "96bcec06264976f37460779acf28c5a7cfe8a3c0aae11a8ffcee05c0bddf08c6"  # pragma: allowlist secret
 BANNED = {G3: "emSign ECC Root CA - G3", AAA: "AAA Certificate Services"}
 MIN_ROOTS = 100
-PEM = rb"-----BEGIN CERTIFICATE-----.+?-----END CERTIFICATE-----"
 
 
-def pem_digests(pem: bytes) -> set[str]:
-    blocks = re.findall(PEM, pem, re.DOTALL)
-    ders = (ssl.PEM_cert_to_DER_cert(block.decode()) for block in blocks)
+def loaded_digests(files) -> set[str]:
+    """What OpenSSL itself parses from these files: no PEM spelling can escape."""
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    for file in files:
+        try:
+            context.load_verify_locations(cafile=file)
+        except ssl.SSLError as error:  # A refused block can follow a trusted one.
+            if error.reason != "NO_CERTIFICATE_OR_CRL_FOUND":
+                raise
+        except OSError:  # A dangling link: OpenSSL cannot load it either.
+            continue
+    ders = context.get_ca_certs(binary_form=True)
     return {hashlib.sha256(der).hexdigest() for der in ders}
-
-
-def capath_digests(capath: str | None) -> set[str]:
-    """Every certificate in every readable file under OpenSSL's trusted directory."""
-    found: set[str] = set()
-    for folder, _, names in os.walk(capath or ""):
-        for name in names:
-            try:
-                found |= pem_digests(Path(folder, name).read_bytes())
-            except OSError:  # A dangling link: OpenSSL cannot load it either.
-                continue
-    return found
 
 
 def store_problems(store, digests, banned, min_roots, known_root=None) -> list[str]:
@@ -53,8 +45,9 @@ def main(banned=BANNED, known_root=ISRG_ROOT_X1, min_roots=MIN_ROOTS) -> None:
     paths = ssl.get_default_verify_paths()
     ders = ssl.create_default_context().get_ca_certs(binary_form=True)
     cafile = {hashlib.sha256(der).hexdigest() for der in ders}
-    capath = capath_digests(paths.capath)
-    bundle = pem_digests(Path(certifi.where()).read_bytes())
+    walk = os.walk(paths.capath or "")
+    capath = loaded_digests(Path(d, name) for d, _, names in walk for name in names)
+    bundle = loaded_digests([certifi.where()])
     problems = [
         *store_problems("cafile", cafile, banned, min_roots, known_root),
         *store_problems("capath", capath, banned, min_roots, known_root),

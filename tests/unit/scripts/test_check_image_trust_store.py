@@ -4,15 +4,17 @@
 Each test builds real stores from generated certificates, points OpenSSL at them
 the way an image's defaults would (``SSL_CERT_FILE``, ``SSL_CERT_DIR``), and runs
 the script's ``main`` over them, with the fixtures' digests standing in for the
-real roots'.
+real roots'. One test runs the script on its own defaults, over the real roots.
 """
 
 from __future__ import annotations
 
+import base64
 import datetime
 import hashlib
 import importlib.util
 import os
+import ssl
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -69,6 +71,105 @@ BAD = make_root("Banned Root")
 OTHERS = [make_root(f"Other Root {i}") for i in range(3)]
 CLEAN = [KNOWN, *OTHERS]
 BANNED = {BAD.sha256: "Banned Root"}
+
+_BAD_DER = base64.b64decode(b"".join(BAD.pem.splitlines()[1:-1]))
+# What OpenSSL loads as a certificate besides the plain block.
+SPELLINGS = {
+    "trusted-label": BAD.pem.replace(b"CERTIFICATE", b"TRUSTED CERTIFICATE"),
+    "x509-label": BAD.pem.replace(b"CERTIFICATE", b"X509 CERTIFICATE"),
+    "der-plus-aux": b"-----BEGIN CERTIFICATE-----\n"
+    + base64.encodebytes(_BAD_DER + b"\x30\x00")
+    + b"-----END CERTIFICATE-----\n",
+    "commented-begin": b"# -----BEGIN CERTIFICATE-----\n" + BAD.pem,
+}
+REFUSED_BLOCKS = {
+    "bad-base64": b"-----BEGIN CERTIFICATE-----\nA\n-----END CERTIFICATE-----\n",
+    "non-utf8": b"-----BEGIN CERTIFICATE-----\n\xff\n-----END CERTIFICATE-----\n",
+    "unterminated": b"-----BEGIN CERTIFICATE-----\nAAAA\n",
+}
+
+# The real roots the script bans and the one it requires: public CA certificates, here
+# so that no test needs the network or a bundle that still carries them. G3 and AAA are
+# from the certifi pip 24.0 vendors, ISRG from the pinned certifi. Loading a certificate
+# does not check its dates.
+REAL_G3 = b"""\
+-----BEGIN CERTIFICATE-----
+MIICTjCCAdOgAwIBAgIKPPYHqWhwDtqLhDAKBggqhkjOPQQDAzBrMQswCQYDVQQG
+EwJJTjETMBEGA1UECxMKZW1TaWduIFBLSTElMCMGA1UEChMcZU11ZGhyYSBUZWNo
+bm9sb2dpZXMgTGltaXRlZDEgMB4GA1UEAxMXZW1TaWduIEVDQyBSb290IENBIC0g
+RzMwHhcNMTgwMjE4MTgzMDAwWhcNNDMwMjE4MTgzMDAwWjBrMQswCQYDVQQGEwJJ
+TjETMBEGA1UECxMKZW1TaWduIFBLSTElMCMGA1UEChMcZU11ZGhyYSBUZWNobm9s
+b2dpZXMgTGltaXRlZDEgMB4GA1UEAxMXZW1TaWduIEVDQyBSb290IENBIC0gRzMw
+djAQBgcqhkjOPQIBBgUrgQQAIgNiAAQjpQy4LRL1KPOxst3iAhKAnjlfSU2fySU0
+WXTsuwYc58Byr+iuL+FBVIcUqEqy6HyC5ltqtdyzdc6LBtCGI79G1Y4PPwT01xyS
+fvalY8L1X44uT6EYGQIrMgqCZH0Wk9GjQjBAMB0GA1UdDgQWBBR8XQKEE9TMipuB
+zhccLikenEhjQjAOBgNVHQ8BAf8EBAMCAQYwDwYDVR0TAQH/BAUwAwEB/zAKBggq
+hkjOPQQDAwNpADBmAjEAvvNhzwIQHWSVB7gYboiFBS+DCBeQyh+KTOgNG3qxrdWB
+CUfvO6wIBHxcmbHtRwfSAjEAnbpV/KlK6O3t5nYBQnvI+GDZjVGLVTv7jHvrZQnD
++JbNR6iC8hZVdyR+EhCVBCyj
+-----END CERTIFICATE-----
+"""
+REAL_AAA = b"""\
+-----BEGIN CERTIFICATE-----
+MIIEMjCCAxqgAwIBAgIBATANBgkqhkiG9w0BAQUFADB7MQswCQYDVQQGEwJHQjEb
+MBkGA1UECAwSR3JlYXRlciBNYW5jaGVzdGVyMRAwDgYDVQQHDAdTYWxmb3JkMRow
+GAYDVQQKDBFDb21vZG8gQ0EgTGltaXRlZDEhMB8GA1UEAwwYQUFBIENlcnRpZmlj
+YXRlIFNlcnZpY2VzMB4XDTA0MDEwMTAwMDAwMFoXDTI4MTIzMTIzNTk1OVowezEL
+MAkGA1UEBhMCR0IxGzAZBgNVBAgMEkdyZWF0ZXIgTWFuY2hlc3RlcjEQMA4GA1UE
+BwwHU2FsZm9yZDEaMBgGA1UECgwRQ29tb2RvIENBIExpbWl0ZWQxITAfBgNVBAMM
+GEFBQSBDZXJ0aWZpY2F0ZSBTZXJ2aWNlczCCASIwDQYJKoZIhvcNAQEBBQADggEP
+ADCCAQoCggEBAL5AnfRu4ep2hxxNRUSOvkbIgwadwSr+GB+O5AL686tdUIoWMQua
+BtDFcCLNSS1UY8y2bmhGC1Pqy0wkwLxyTurxFa70VJoSCsN6sjNg4tqJVfMiWPPe
+3M/vg4aijJRPn2jymJBGhCfHdr/jzDUsi14HZGWCwEiwqJH5YZ92IFCokcdmtet4
+YgNW8IoaE+oxox6gmf049vYnMlhvB/VruPsUK6+3qszWY19zjNoFmag4qMsXeDZR
+rOme9Hg6jc8P2ULimAyrL58OAd7vn5lJ8S3frHRNG5i1R8XlKdH5kBjHYpy+g8cm
+ez6KJcfA3Z3mNWgQIJ2P2N7Sw4ScDV7oL8kCAwEAAaOBwDCBvTAdBgNVHQ4EFgQU
+oBEKIz6W8Qfs4q8p74Klf9AwpLQwDgYDVR0PAQH/BAQDAgEGMA8GA1UdEwEB/wQF
+MAMBAf8wewYDVR0fBHQwcjA4oDagNIYyaHR0cDovL2NybC5jb21vZG9jYS5jb20v
+QUFBQ2VydGlmaWNhdGVTZXJ2aWNlcy5jcmwwNqA0oDKGMGh0dHA6Ly9jcmwuY29t
+b2RvLm5ldC9BQUFDZXJ0aWZpY2F0ZVNlcnZpY2VzLmNybDANBgkqhkiG9w0BAQUF
+AAOCAQEACFb8AvCb6P+k+tZ7xkSAzk/ExfYAWMymtrwUSWgEdujm7l3sAg9g1o1Q
+GE8mTgHj5rCl7r+8dFRBv/38ErjHT1r0iWAFf2C3BUrz9vHCv8S5dIa2LX1rzNLz
+Rt0vxuBqw8M0Ayx9lt1awg6nCpnBBYurDC/zXDrPbDdVCYfeU0BsWO/8tqtlbgT2
+G9w84FoVxp7Z8VlIMCFlA2zs6SFz7JsDoeA3raAVGI/6ugLOpyypEBMs1OUIJqsi
+l2D4kF501KKaU73yqWjgom7C12yxow+ev+to51byrvLjKzg6CYG1a4XXvi3tPxq3
+smPi9WIsgtRqAEFQ8TmDn5XpNpaYbg==
+-----END CERTIFICATE-----
+"""
+REAL_ISRG = b"""\
+-----BEGIN CERTIFICATE-----
+MIIFazCCA1OgAwIBAgIRAIIQz7DSQONZRGPgu2OCiwAwDQYJKoZIhvcNAQELBQAw
+TzELMAkGA1UEBhMCVVMxKTAnBgNVBAoTIEludGVybmV0IFNlY3VyaXR5IFJlc2Vh
+cmNoIEdyb3VwMRUwEwYDVQQDEwxJU1JHIFJvb3QgWDEwHhcNMTUwNjA0MTEwNDM4
+WhcNMzUwNjA0MTEwNDM4WjBPMQswCQYDVQQGEwJVUzEpMCcGA1UEChMgSW50ZXJu
+ZXQgU2VjdXJpdHkgUmVzZWFyY2ggR3JvdXAxFTATBgNVBAMTDElTUkcgUm9vdCBY
+MTCCAiIwDQYJKoZIhvcNAQEBBQADggIPADCCAgoCggIBAK3oJHP0FDfzm54rVygc
+h77ct984kIxuPOZXoHj3dcKi/vVqbvYATyjb3miGbESTtrFj/RQSa78f0uoxmyF+
+0TM8ukj13Xnfs7j/EvEhmkvBioZxaUpmZmyPfjxwv60pIgbz5MDmgK7iS4+3mX6U
+A5/TR5d8mUgjU+g4rk8Kb4Mu0UlXjIB0ttov0DiNewNwIRt18jA8+o+u3dpjq+sW
+T8KOEUt+zwvo/7V3LvSye0rgTBIlDHCNAymg4VMk7BPZ7hm/ELNKjD+Jo2FR3qyH
+B5T0Y3HsLuJvW5iB4YlcNHlsdu87kGJ55tukmi8mxdAQ4Q7e2RCOFvu396j3x+UC
+B5iPNgiV5+I3lg02dZ77DnKxHZu8A/lJBdiB3QW0KtZB6awBdpUKD9jf1b0SHzUv
+KBds0pjBqAlkd25HN7rOrFleaJ1/ctaJxQZBKT5ZPt0m9STJEadao0xAH0ahmbWn
+OlFuhjuefXKnEgV4We0+UXgVCwOPjdAvBbI+e0ocS3MFEvzG6uBQE3xDk3SzynTn
+jh8BCNAw1FtxNrQHusEwMFxIt4I7mKZ9YIqioymCzLq9gwQbooMDQaHWBfEbwrbw
+qHyGO0aoSCqI3Haadr8faqU9GY/rOPNk3sgrDQoo//fb4hVC1CLQJ13hef4Y53CI
+rU7m2Ys6xt0nUW7/vGT1M0NPAgMBAAGjQjBAMA4GA1UdDwEB/wQEAwIBBjAPBgNV
+HRMBAf8EBTADAQH/MB0GA1UdDgQWBBR5tFnme7bl5AFzgAiIyBpY9umbbjANBgkq
+hkiG9w0BAQsFAAOCAgEAVR9YqbyyqFDQDLHYGmkgJykIrGF1XIpu+ILlaS/V9lZL
+ubhzEFnTIZd+50xx+7LSYK05qAvqFyFWhfFQDlnrzuBZ6brJFe+GnY+EgPbk6ZGQ
+3BebYhtF8GaV0nxvwuo77x/Py9auJ/GpsMiu/X1+mvoiBOv/2X/qkSsisRcOj/KK
+NFtY2PwByVS5uCbMiogziUwthDyC3+6WVwW6LLv3xLfHTjuCvjHIInNzktHCgKQ5
+ORAzI4JMPJ+GslWYHb4phowim57iaztXOoJwTdwJx4nLCgdNbOhdjsnvzqvHu7Ur
+TkXWStAmzOVyyghqpZXjFaH3pO3JLF+l+/+sKAIuvtd7u+Nxe5AW0wdeRlN8NwdC
+jNPElpzVmbUq4JUagEiuTDkHzsxHpFKVK7q4+63SM1N95R1NbdWhscdCb+ZAJzVc
+oyi3B43njTOQ5yOf+1CceWxG1bQVs5ZufpsMljq4Ui0/1lvh+wjChP4kqKOJ2qxq
+4RgqsahDYVvTH9w7jXbyLeiNdd8XM2w9U/t7y0Ff/9yi0GE44Za4rF2LN9d11TPA
+mRGunUHBcnWEvgJBQl9nJEiU0Zsnvgc/ubhPgXRR4Xq37Z0j4r7g1SgEEzwxA57d
+emyPxgcYxn/eR44/KJ4EBs+lVDR3veyJm+kXQ99b21/+jh5Xos1AnX5iItreGCc=
+-----END CERTIFICATE-----
+"""
+ISRG_ROOT_X1 = "96bcec06264976f37460779acf28c5a7cfe8a3c0aae11a8ffcee05c0bddf08c6"  # pragma: allowlist secret
 
 
 def bundle(roots: list[Root]) -> bytes:
@@ -179,6 +280,52 @@ def test_every_problem_is_reported_not_just_the_first(image):
     ]
 
 
+# ---- Every spelling OpenSSL loads, and blocks it refuses ------------------
+
+
+@pytest.mark.parametrize("spelling", SPELLINGS.values(), ids=SPELLINGS)
+def test_a_banned_root_in_any_spelling_in_the_capath_fails(image, spelling):
+    (image.capath / "ee64a828.0").write_bytes(spelling)
+
+    assert failure(image) == ["capath trusts Banned Root"]
+
+
+@pytest.mark.parametrize("spelling", SPELLINGS.values(), ids=SPELLINGS)
+def test_a_banned_root_in_any_spelling_in_certifi_fails(image, spelling):
+    image.certifi.write_bytes(bundle(CLEAN) + spelling)
+
+    assert failure(image) == ["certifi trusts Banned Root"]
+
+
+@pytest.mark.parametrize("block", REFUSED_BLOCKS.values(), ids=REFUSED_BLOCKS)
+def test_a_refused_block_after_a_root_in_the_capath_does_not_pass(image, block):
+    """OpenSSL's capath lookup keeps the certificates it read before a refused block,
+    while `load_verify_locations` drops the whole file. Skipping the refusal would
+    report a clean store with the root still trusted, so it has to fail the build."""
+    (image.capath / "ee64a828.0").write_bytes(BAD.pem + block)
+
+    with pytest.raises(ssl.SSLError):
+        image.run()
+
+
+@pytest.mark.parametrize("block", REFUSED_BLOCKS.values(), ids=REFUSED_BLOCKS)
+def test_a_refused_block_after_a_root_in_certifi_does_not_pass(image, block):
+    image.certifi.write_bytes(bundle(CLEAN) + BAD.pem + block)
+
+    with pytest.raises(ssl.SSLError):
+        image.run()
+
+
+@pytest.mark.parametrize("block", REFUSED_BLOCKS.values(), ids=REFUSED_BLOCKS)
+def test_a_refused_block_in_the_cafile_empties_it_and_does_not_pass(image, block):
+    image.cafile.write_bytes(bundle(CLEAN) + BAD.pem + block)
+
+    assert failure(image) == [
+        f"cafile holds 0 certificates, under {MIN_ROOTS}",
+        f"cafile lacks the known root {KNOWN.sha256}",
+    ]
+
+
 # ---- Positive controls: an empty store or a blind scan cannot pass --------
 
 
@@ -279,6 +426,12 @@ def test_a_cafile_that_does_not_exist_fails(image, monkeypatch, tmp_path):
     assert problems[-1].startswith("OpenSSL's cafile None is not PIP_CERT")
 
 
+def test_a_certifi_bundle_that_does_not_exist_fails(image, tmp_path):
+    image.certifi.unlink()
+
+    assert failure(image) == [f"certifi holds 0 certificates, under {MIN_ROOTS}"]
+
+
 def test_a_capath_that_does_not_exist_fails(image, monkeypatch, tmp_path):
     monkeypatch.setenv("SSL_CERT_DIR", str(tmp_path / "absent"))
 
@@ -324,6 +477,43 @@ def test_the_scan_skips_what_openssl_could_not_load_either(image, tmp_path):
     (image.capath / "dangling.0").symlink_to(tmp_path / "absent")
 
     image.run()
+
+
+# ---- The script's own constants -------------------------------------------
+
+
+def test_the_scripts_defaults_ban_the_real_roots_and_know_the_real_root(tmp_path):
+    """Every other test overrides the constants that do the banning. Nothing else
+    fails on an empty BANNED, a mistyped digest or a known root that is never checked.
+    """
+    fillers = [make_root(f"Filler {i}").pem for i in range(100)]
+    cafile = tmp_path / "ca.crt"
+    cafile.write_bytes(b"".join(fillers) + REAL_G3 + REAL_AAA)
+    # The real known root in the capath: the constant has to be its real digest.
+    capath = tmp_path / "certs"
+    capath.mkdir()
+    (capath / "isrg.pem").write_bytes(REAL_ISRG)
+    env = {
+        **os.environ,
+        "SSL_CERT_FILE": str(cafile),
+        "SSL_CERT_DIR": str(capath),
+        "PIP_CERT": str(cafile),
+    }
+
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT)],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "cafile trusts emSign ECC Root CA - G3" in result.stderr
+    assert "cafile trusts AAA Certificate Services" in result.stderr
+    assert f"cafile lacks the known root {ISRG_ROOT_X1}" in result.stderr
+    assert "capath lacks the known root" not in result.stderr
+    assert "cafile holds" not in result.stderr
 
 
 # ---- The build-time failure itself ----------------------------------------

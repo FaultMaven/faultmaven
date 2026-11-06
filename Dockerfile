@@ -6,9 +6,8 @@ ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install system dependencies. On a current base image ca-certificates is a no-op:
-# the base already holds the package that blacklists the roots named further down.
-# It protects a stale local tag, because compose builds on it without pulling.
+# Install system dependencies. ca-certificates is a no-op on a current base, which
+# holds the fixed package; it protects a stale local tag, as compose does not pull.
 RUN apt-get update && apt-get install -y \
     build-essential \
     ca-certificates \
@@ -16,8 +15,7 @@ RUN apt-get update && apt-get install -y \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# The base image's pip vendors an old CA bundle, so every pip in this build
-# verifies against the OS store instead.
+# The base's pip vendors an old CA bundle: every pip here verifies against the OS store.
 ENV PIP_CERT=/etc/ssl/certs/ca-certificates.crt
 
 # Set work directory
@@ -94,20 +92,19 @@ COPY --chown=faultmaven:faultmaven resources/ ./resources/
 # Install the package itself (no deps — already installed from lockfile)
 RUN pip install --no-cache-dir --no-deps .
 
-# Fail the build if "emSign ECC Root CA - G3" (GHSA-6q48-6c7w-9gw2: compromised
-# intermediate keys) or "AAA Certificate Services" is trusted by one of three
-# stores: OpenSSL's default cafile and capath, which aiohttp reads, and certifi,
-# which httpx and requests read. pip reads the cafile through PIP_CERT. gRPC's and
-# litellm's own stores are #2574. TLS handshakes under the fixed store: #2576.
-# Last root step, to see the stores the image ships. scripts/ is not in the image.
-RUN --mount=type=bind,source=scripts/check_image_trust_store.py,target=/tmp/check_image_trust_store.py \
-    python /tmp/check_image_trust_store.py
-
 # The runtime user must own the /app directory itself so it can create ./data
 # (SQLite DB, ChromaDB, evidence) at startup. Copied files are already owned via
 # COPY --chown above, so this sets only the directory node — not a recursive
 # chown — and creates no copy-up layer.
 RUN chown faultmaven:faultmaven /app
+
+# Fail the build if "emSign ECC Root CA - G3" (GHSA-6q48-6c7w-9gw2: compromised
+# intermediate keys) or "AAA Certificate Services" is in OpenSSL's default cafile or
+# capath, which aiohttp reads, or certifi, which httpx and requests read. pip reads
+# the cafile through PIP_CERT. gRPC's and litellm's own stores are #2574. TLS handshakes
+# under the fixed store: #2576. The last root step, to see the stores the image ships.
+RUN --mount=type=bind,source=scripts/check_image_trust_store.py,target=/tmp/check_image_trust_store.py \
+    python /tmp/check_image_trust_store.py
 USER faultmaven
 
 # Container runtime defaults. With no explicit config the app applies the
