@@ -618,17 +618,19 @@ def _newest_fix_bearer(
 ) -> Any:
     """The newest fix action bearing ``identity``: a SOLUTION, or a fix entry
     ``minted`` as an M5-downgraded DIAGNOSTIC by this apply or, at a replay, by
-    an earlier bundle of it. The copy outranks a non-pending SOLUTION only
-    while the license is down at the decision (``licensed`` False): a live
-    apply's downgrade proves that, but a replay's bundle can mint the copy and
-    its recompute restore the license before a later bundle decides (#2256)."""
+    an earlier bundle of it. The copy outranks a non-pending SOLUTION, except
+    that it yields to a superseded one while the license holds at the decision
+    (``licensed``): a live apply's downgrade proves the license is down, but a
+    replay's bundle can mint the copy and its recompute restore the license
+    before a later bundle decides the carried fix (#2256)."""
     downgraded = None
     for action in reversed(case.proposed_actions):
         if fix_identity(action.description) != identity:
             continue
         if action.action_type == InvestigationActionType.SOLUTION:
-            if downgraded and action.state != "pending" and not licensed:
-                return downgraded
+            if downgraded and action.state != "pending":
+                if not (licensed and action.state == "superseded"):
+                    return downgraded
             return action
         if downgraded is None and action in minted:
             downgraded = action
@@ -1364,7 +1366,9 @@ def _bearer_registers(
     ``license_lost`` stays refused (ruled 2026-10-21). A decision ``carried``
     through a revision hold registers on the license whatever superseded it,
     since the hold withdraws every pending fix. An M5-downgraded fix entry
-    this apply minted: the license fell."""
+    (this apply's, or an earlier bundle's at a replay) is the bearer only
+    while the license is down at the decision, or when no SOLUTION bears the
+    identity: the license line."""
     if bearer.action_type != InvestigationActionType.SOLUTION:
         _add_system_feedback(metadata, _license_notice(bearer.action_id))
         return False
@@ -1479,7 +1483,9 @@ def decide_fix_acceptance(
     this response's ``solutions_to_add`` entries minted or kept, in order.
     ``held``: on a hold turn, those entries, staged rather than minted.
     ``fixes``: the actions minted from fix entries (not WORKAROUNDs) by this
-    apply and, at a replay, by its earlier bundles (``REPLAY_FIX_SLOTS_KEY``).
+    apply and, at a replay, by its earlier bundles (``REPLAY_FIX_SLOTS_KEY``);
+    a downgraded one yields to a superseded SOLUTION while the license holds
+    at the decision (#2256).
 
     Step 1 resolves a fix identity; on a live turn step 2 applies the state rule
     to its newest bearer, and a registration is justified like the first
@@ -1536,8 +1542,8 @@ def _register_carried_fix(
     """At the replay: the state rule on the newest fix action bearing the
     carried fix (``carried``, the staged bundle), among SOLUTIONs and the
     replay's ``fixes``; the license line when none bears it. An earlier
-    bundle's downgraded copy outranks the superseded fix only while the
-    license is still down at this bundle (#2256)."""
+    bundle's downgraded copy yields to the superseded fix while the license
+    holds at this bundle (#2256)."""
     bearer = _newest_fix_bearer(
         case, carried.held_fix, fixes, licensed=_license_holds(case, metadata)
     )
