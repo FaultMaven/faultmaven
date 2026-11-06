@@ -229,13 +229,14 @@ def test_a_reset_already_past_still_asks_for_a_positive_wait():
 
 
 async def test_single_tenant_is_uncapped_without_touching_a_port():
-    """A self-hosted install pays for its own compute — and may not be migrated.
+    """A self-hosted install pays for its own compute: uncapped by policy.
 
     The assertion that matters is not just "uncapped": it is that **the port was
-    never asked and the ledger was never written**. A deployment running with
-    ``RUN_STARTUP_MIGRATIONS=false`` has no ledger table, and a policy that
-    queried before deciding would lose every turn to a 503 about a usage
-    allowance it could never have earned.
+    never asked and the ledger was never written**. The cap is a Cloud
+    allowance, so a single-tenant policy that queried the ledger before
+    deciding would spend a database round trip on every turn to learn nothing,
+    and could lose the turn to a 503 about an allowance it was never under.
+    (A deployment missing the ledger table no longer boots at all, #1514.)
     """
     ledger = InMemoryTurnLedger()
     service, _, orgs = _service(multi=False, ledger=ledger)
