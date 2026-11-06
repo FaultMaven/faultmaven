@@ -39,14 +39,15 @@ How the two sides avoid a race: the delete first writes a tombstone,
 turn first takes the lease, and only then reads the tombstone. Each writes
 before it reads, so they cannot both proceed. Both can refuse at once, which
 is safe: nothing runs and nothing is cleared, and a retry decides. The
-tombstone is held while the delete runs and is removed on every outcome except
-a deleted row, so a failed delete never holds the case's turns off. After a
-successful delete it lapses on its own within 30 s.
+tombstone is renewed while the delete runs and removed on every outcome except
+a deleted row. Otherwise it lapses 30 s after its last renewal: after a
+successful delete, a delete that stopped mid-run, or a removal that failed,
+which holds the case's turns off until then.
 
 While the tombstone stands, `GET /cases/{case_id}` reads `deleting: true`
-for every reader of the case (#2510). It reads `false` again once a failed
-delete has removed its tombstone, and the case answers 404 once a delete
-succeeds. No other read reports it.
+for every reader of the case (#2510). It reads `false` once the tombstone is
+removed or lapses, and the case answers 404 once a delete succeeds. No other
+read reports it.
 
 ## Residuals
 
@@ -68,11 +69,11 @@ succeeds. No other read reports it.
   a tombstone that lapsed under a stalled delete, a read reports `false` while
   a delete may still run. A client still handles the turn's 409
   `CASE_DELETE_IN_PROGRESS` and the 404 as before.
-- **`deleting: true` with no delete running.** It reports the tombstone, so it
-  reads `true` briefly while a delete is refused on work in flight (the
-  tombstone is written before the lease is read), and for up to 30 s after a
-  failed delete whose tombstone could not be removed (logged; turns are
-  refused for that span too). A client reading again sees it clear.
+- **`deleting: true` with no delete running.** `deleting` reports the
+  delete's tombstone, which a delete writes before it checks for work in
+  flight and which lapses 30 s after its last renewal unless it is removed.
+  So it can read `true` for up to 30 s with no delete running, and turns are
+  refused for the same span. A client reading again sees it clear.
 - **A resume.** Resuming a session on the case
   (`POST /cases/sessions/{session_id}/resume/{case_id}`) is not a turn and
   holds no lease. One that passed its access check before the delete can

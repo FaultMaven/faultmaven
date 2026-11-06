@@ -168,10 +168,10 @@ and live.
   it is gone (404) or `deleting` clears. Past that it keeps the case read-only
   until the next user action reads it again. A client that reads once and
   stops still meets the 404 on its next write, as before.
-* Both values are best-effort, because `deleting` reports the delete's
-  tombstone, not the delete. `true` can stand while no delete runs: briefly
-  while one is refused on work in flight, and up to 30 s after a failed one
-  whose tombstone could not be removed. `false` means no delete is *known* to
+* Both values are best-effort. `deleting` reports the delete's tombstone,
+  which a delete writes before it checks for in-flight work and which lapses
+  30 s after its last renewal unless it is removed. So `true` can stand for up
+  to 30 s with no delete running, and `false` means no delete is *known* to
   run (no lease store, a failed read, or a tombstone that lapsed under a
   stalled delete). A client still handles 409 `CASE_DELETE_IN_PROGRESS` and
   404 as before.

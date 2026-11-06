@@ -165,7 +165,8 @@ async def delete_case(
     answers 409 `CASE_WORK_IN_PROGRESS` with `Retry-After` and clears nothing.
     A turn sent while the delete runs is refused with 409
     `CASE_DELETE_IN_PROGRESS`, and `GET /cases/{case_id}` reads
-    `deleting: true` until the case is gone (404) or the delete fails (#2510).
+    `deleting: true` while the delete's tombstone stands: until it is removed
+    or lapses, or the case is gone (404) (#2510).
     If whether work is in flight cannot be read, the delete answers 503
     `CASE_DELETE_UNAVAILABLE` with `Retry-After` and clears nothing (#2096).
 
