@@ -2187,9 +2187,9 @@ def _select_bearing_row(case: "Case", root: "CausalNode", candidates: list):
 
     The candidates are already bound to this cause through the row they name
     (#1906 D1), so tokens decide nothing about WHAT a row observes: they
-    rank bound rows and guard the citation. A row linked to an intermediate
-    rung never gets here (``SubjectIndex.cause_targets``); a row WORDED about
-    the rung, naming a root-only support, does, and is cited. Newest by
+    rank bound rows and guard the citation. A row naming what the root's
+    verdict does not cite never gets here (``SubjectIndex.cause_targets``); a
+    row WORDED about the rung, naming the cited basis, does, and is cited. Newest by
     ``collected_at_turn``: the row recorded closest to the handshake.
 
     Frame = what a confirmation of THIS root may legitimately talk about: the

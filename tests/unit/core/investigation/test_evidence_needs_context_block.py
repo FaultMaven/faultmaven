@@ -154,7 +154,7 @@ def _make_evidence(
     case.evidence.append(ev)
     if category == EvidenceCategory.CAUSAL_EVIDENCE:
         # The checklist lists a cause row a re-check can bind to (#1906 D1):
-        # one supporting the identified root alone.
+        # one the identified root's terminal verdict cites (#2557).
         root = case.causal_nodes.setdefault(
             "cn_00000000c0de",
             CausalNode(
