@@ -1123,8 +1123,12 @@ step meets the close still standing; it is the backstop there, not a chat-path
 refusal.)
 
 A `causal_absence` row is judged against the turn's own verification, after the
-step-2b review and again after step 2c: on a problem not verified by then it is
-recorded as `symptom_absence`.
+step-2b review and again after step 2c: on a problem not verified when the turn
+ends it is held as `symptom_absence`, and one held after 2b is restored when 2c
+ends the turn verified (a withdrawn finding). A row held while a revision waits
+is judged again when the user answers it (#2550): an answer that leaves the
+problem verified (a confirmation, or a decline or close back to `verified`)
+restores it; one back to `unverified` or `invalidated` keeps it `symptom_absence`.
 
 **A user's edit.** Editing the description during an investigation goes
 through the same writer (`edit_statement`), so the three stores stay aligned,
