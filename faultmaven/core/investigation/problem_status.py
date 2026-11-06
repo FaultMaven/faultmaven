@@ -98,9 +98,10 @@ def cause_work_staged(case: Case) -> bool:
 
 
 def hold_premature_absence(row: Evidence) -> None:
-    """Record a causal_absence row as symptom_absence while its problem is not
-    verified, keeping the claim (``metadata["fix_verification"]["claimed"]``)
-    so the problem's verification can restore it (#2550)."""
+    """Record a causal_absence row as symptom_absence: its problem is not
+    verified. The claim (``metadata["fix_verification"]["claimed"]``) restores
+    the row only when its turn ends verified or the revision's hold it arrived
+    in ends on a verified problem; otherwise it is kept as a record (#2550)."""
     recorded = dict((row.metadata or {}).get("fix_verification") or {})
     recorded["claimed"] = EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE.value
     row.metadata = {**(row.metadata or {}), "fix_verification": recorded}

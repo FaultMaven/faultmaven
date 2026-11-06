@@ -29,6 +29,7 @@ from faultmaven.core.investigation.problem_status import (
     decline_revision,
     invalidate_problem,
     pending_revision,
+    verify_problem,
 )
 from faultmaven.core.investigation.schemas import (
     MilestoneUpdates,
@@ -49,7 +50,11 @@ from faultmaven.modules.case.contracts import (
 from tests.unit.core.investigation import (
     test_problem_statement_revision_and_false_alarm as revision,
 )
-from tests.unit.core.investigation.bound_rows import bound_to_add, ensure_subjects
+from tests.unit.core.investigation.bound_rows import (
+    bound_to_add,
+    ensure_subjects,
+    upload,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -152,9 +157,18 @@ class TestAConfirmationCountsTheHoldsRecheck:
 
         _assert_counts_for_the_cause(case, absent)
 
-    async def test_on_a_later_hold_turn(self):
-        engine, case = revision._engine(), revision._case(ProblemStatus.VERIFIED)
+    @pytest.mark.parametrize(
+        "prior", [ProblemStatus.VERIFIED, ProblemStatus.INVALIDATED]
+    )
+    async def test_on_a_later_hold_turn(self, prior):
+        engine = revision._engine()
+        case = (
+            _invalidated()
+            if prior == ProblemStatus.INVALIDATED
+            else revision._case(prior)
+        )
         await _propose(engine, case)
+        assert pending_revision(case).prior_status == prior
         # Hold turn 5 brings the cause work and its re-check. Without the
         # revision's symptom row, the cause rows are new_index_0 and _1.
         dsu = revision._revision_turn_with_cause_work()
@@ -246,13 +260,14 @@ async def test_readers_during_the_hold_read_the_row_as_held():
 
 async def test_a_turn_judges_its_rows_on_the_status_it_ends_with():
     """A withdrawn finding ends the turn verified: the row held before step 2c
-    is restored. Beside a revision, it is held until the user's answer."""
+    is restored, and nothing reports it. Beside a revision, the rows are held
+    until the user's answer and reported once, by the final call."""
     withdrawn = dict(
         invalidation_withdrawn=True,
         withdrawal_basis="the user has customer tickets from that hour",
     )
     engine, case = revision._engine(), _invalidated(ProblemStatus.VERIFIED)
-    await revision._apply(
+    meta = await revision._apply(
         engine,
         case,
         revision._DSU(
@@ -262,16 +277,49 @@ async def test_a_turn_judges_its_rows_on_the_status_it_ends_with():
     )
     assert case.progress.problem_status == ProblemStatus.VERIFIED
     assert case.evidence[-1].category == CAUSAL_ABSENCE
+    assert not [r for r in meta.get("validation_repairs", []) if "causal_absence" in r]
+    assert "symptom_absence_evidence" not in (meta.get("system_feedback") or "")
 
     engine, case = revision._engine(), _invalidated(ProblemStatus.VERIFIED)
-    meta = await _propose(engine, case, revision._row(CAUSAL_ABSENCE, "g"), **withdrawn)
-    absent = meta["evidence_added"][-1]
+    meta = await _propose(
+        engine,
+        case,
+        revision._row(CAUSAL_ABSENCE, "g"),
+        revision._row(CAUSAL_ABSENCE, "g2"),
+        **withdrawn,
+    )
+    held = meta["evidence_added"][1:]  # 2 of the turn's 3 rows
     assert pending_revision(case).prior_status == ProblemStatus.VERIFIED
-    assert _row(case, absent).category == SYMPTOM_ABSENCE
+    assert [_row(case, i).category for i in held] == [SYMPTOM_ABSENCE] * 2
+    repairs = [r for r in meta["validation_repairs"] if "causal_absence" in r]
+    assert len(repairs) == 1
+    assert repairs[0].startswith("2 causal_absence_evidence row(s)")
+    assert meta["system_feedback"].count("causal_absence_evidence row(s)") == 1
+    assert "2 causal_absence_evidence row(s) arrived" in meta["system_feedback"]
 
     await _confirm(engine, case)
 
-    assert _row(case, absent).category == CAUSAL_ABSENCE
+    assert [_row(case, i).category for i in held] == [CAUSAL_ABSENCE] * 2
+
+
+async def test_a_confirmation_restores_only_the_holds_rows():
+    """A row held at the end of an ordinary unverified turn was judged then:
+    a later revision's confirmation does not restore it."""
+    engine, case = revision._engine(), revision._case()
+    case.current_turn = 2
+    early = revision._row(CAUSAL_ABSENCE, "early")
+    early.source_file_id = upload(case, 2)
+    meta = await revision._apply(engine, case, revision._DSU(evidence_to_add=[early]))
+    (held,) = meta["evidence_added"]
+    case.current_turn = 3
+    verify_problem(case, via="test")
+    case.current_turn = 4
+    await _propose(engine, case)
+    assert pending_revision(case).held_since_turn == 4
+
+    await _confirm(engine, case)
+
+    assert _row(case, held).category == SYMPTOM_ABSENCE
 
 
 async def test_a_menu_close_during_the_hold_declines_the_resolution():
