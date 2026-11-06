@@ -283,7 +283,8 @@ class ProposedAction(BaseModel):
             "SOLUTION only: the causal nodes the fix acts on. A named "
             "``node_ref`` once it resolves, which nothing changes after; else, "
             "when the user runs it, the cause identified at the start of that "
-            "turn, or with none the root its licence names. Pruning a node "
+            "turn, or with none identified or count-held the cause its "
+            "licence names. Pruning a node "
             "drops it here."
         ),
     )
@@ -295,11 +296,13 @@ class ProposedAction(BaseModel):
         default=None,
         description=(
             "SOLUTION only, set once in the turn the user runs it and never "
-            "recomputed: 'remediation' when its targets met the cause at the "
-            "start of that turn, else 'interception', which relieves but "
-            "never confirms a resolution. None before it runs, on an attempt "
-            "accepted before #2036 D2.3, and on one licensed only by a "
-            "conclusion naming no cause node: read as a remediation."
+            "recomputed: 'remediation' when its targets met the cause pool at "
+            "the start of that turn (with no root identified or count-held, "
+            "also the causes its licence names), else 'interception', which "
+            "relieves but never confirms a resolution. None before it runs, "
+            "on an attempt accepted before #2036 D2.3, and on one licensed "
+            "only by a conclusion naming its cause in words: read as a "
+            "remediation."
         ),
     )
 

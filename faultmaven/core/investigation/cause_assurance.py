@@ -84,6 +84,7 @@ __all__ = [
     "evidence_category_map",
     "evidence_datum_key",
     "attempt_window",
+    "conclusion_node",
     "conclusion_root",
     "fix_application_turn",
     "fix_cause_snapshot",
@@ -809,10 +810,10 @@ def _pool_legs(case: "Case") -> tuple[set, set, set]:
     return identified, held, fallen
 
 
-def conclusion_root(case: "Case") -> str | None:
-    """The ROOT node the root-cause conclusion names: its
+def conclusion_node(case: "Case") -> str | None:
+    """The node the root-cause conclusion names on the graph: its
     ``names_root_node_id``, else its hypothesis's root; None when it names
-    its cause in words only, or names no ROOT node."""
+    its cause in words only."""
     rcc = getattr(case, "root_cause_conclusion", None)
     if rcc is None:
         return None
@@ -820,37 +821,43 @@ def conclusion_root(case: "Case") -> str | None:
     hyp = (getattr(case, "hypotheses", None) or {}).get(
         rcc.validated_hypothesis_id or ""
     )
-    for node_id in (rcc.names_root_node_id, getattr(hyp, "root_node_id", None)):
-        node = nodes.get(node_id) if node_id else None
-        if node is not None and node.node_type == NodeType.ROOT:
-            return node_id
-    return None
-
-
-def licensed_roots(case: "Case", pool=frozenset()) -> list:
-    """The causes a fix's licence names (M5, ``_cause_identified``) when no
-    root is identified or count-held, in order: the conclusion's root, when
-    ``pool`` holds it or a standing hypothesis is rooted there (a conclusion
-    naming an orphan or a ruled-out root licenses no remediation of it,
-    #2485); then the root of every standing rooted hypothesis, the most
-    likely first (the one the working conclusion leads with)."""
-    nodes = getattr(case, "causal_nodes", None) or {}
-    standing = sorted(
+    return next(
         (
-            h
-            for h in (getattr(case, "hypotheses", None) or {}).values()
-            if h is not None
-            and h.state in _STANDING_HYP_STATES
-            and h.root_node_id in nodes
-            and nodes[h.root_node_id].node_type == NodeType.ROOT
+            node_id
+            for node_id in (rcc.names_root_node_id, getattr(hyp, "root_node_id", None))
+            if node_id and node_id in nodes
         ),
-        key=lambda h: -(h.likelihood or 0.0),
+        None,
     )
-    roots = [h.root_node_id for h in standing]
+
+
+def conclusion_root(case: "Case") -> str | None:
+    """The node the conclusion names (``conclusion_node``) when it is a ROOT,
+    else None."""
+    node_id = conclusion_node(case)
+    nodes = getattr(case, "causal_nodes", None) or {}
+    return node_id if node_id and nodes[node_id].node_type == NodeType.ROOT else None
+
+
+def licensed_roots(case: "Case", pool=frozenset()) -> frozenset:
+    """The causes a fix's licence names (M5, ``_cause_identified``) when no
+    root is identified or count-held: the conclusion's root, when ``pool``
+    holds it or a standing hypothesis is rooted there (a conclusion naming an
+    orphan or a ruled-out root licenses no remediation of it, #2485), and the
+    root of every standing rooted hypothesis."""
+    nodes = getattr(case, "causal_nodes", None) or {}
+    roots = {
+        h.root_node_id
+        for h in (getattr(case, "hypotheses", None) or {}).values()
+        if h is not None
+        and h.state in _STANDING_HYP_STATES
+        and h.root_node_id in nodes
+        and nodes[h.root_node_id].node_type == NodeType.ROOT
+    }
     named = conclusion_root(case)
     if named in pool or named in roots:
-        roots = [named, *roots]
-    return list(dict.fromkeys(roots))
+        roots.add(named)
+    return frozenset(roots)
 
 
 def fix_cause_snapshot(case: "Case") -> tuple[tuple, frozenset, bool]:
@@ -864,22 +871,14 @@ def fix_cause_snapshot(case: "Case") -> tuple[tuple, frozenset, bool]:
     identified or count-held (legs 1–2) the default is those roots, so an
     unnamed fix of a fallen cause is no remediation of it. Otherwise the
     snapshot is ``open``: the reference also admits the causes the fix's
-    licence names (``licensed_roots``). The default is then the conclusion's
-    root when a conclusion stands (none when it names its cause in words
-    only), else the most likely standing hypothesis's root. The settle adds
-    this turn's conclusion root and roots (``_settle_fix_attempts``)."""
+    licence names (``licensed_roots``), and the settle reads the default from
+    the licence as the turn leaves it (``_settle_fix_attempts``)."""
     confirmation, window, hypotheses = _cause_pool(case)
     identified, held, _fallen = _pool_legs(case)
     reference = confirmation | window | hypotheses
     if identified or held:
         return tuple(sorted(identified or held)), reference, False
-    licensed = licensed_roots(case, reference)
-    if getattr(case, "root_cause_conclusion", None) is not None:
-        named = conclusion_root(case)
-        default = (named,) if named in licensed else ()
-    else:
-        default = tuple(licensed[:1])
-    return default, reference | frozenset(licensed), True
+    return (), reference | licensed_roots(case, reference), True
 
 
 def subject_index(case: "Case") -> SubjectIndex:

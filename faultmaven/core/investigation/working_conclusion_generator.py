@@ -108,16 +108,10 @@ def generate_working_conclusion(
     if hold is not None:
         return hold
 
-    # Get active hypotheses
-    hypotheses = list(case.hypotheses.values())
-    active_hypotheses = [
-        h
-        for h in hypotheses
-        if h.state in [HypothesisState.ACTIVE, HypothesisState.VALIDATED]
-    ]
+    best_hypothesis = _leader(case, likelihood_overrides)
 
     # Handle case with no hypotheses yet
-    if not active_hypotheses:
+    if best_hypothesis is None:
         # #987: the hypothesis pool is not the only place the engine knows a
         # cause. When a RootCauseConclusion stands, mirror IT rather than
         # reporting "awaiting hypothesis generation" — the two are parallel
@@ -131,12 +125,9 @@ def generate_working_conclusion(
             return rcc_mirror
         return _create_early_stage_conclusion(case, current_turn)
 
-    def _scored(h: Hypothesis) -> float:
-        return (likelihood_overrides or {}).get(h.hypothesis_id, h.likelihood)
-
-    # Find highest likelihood hypothesis
-    best_hypothesis = max(active_hypotheses, key=_scored)
-    best_likelihood = _scored(best_hypothesis)
+    best_likelihood = (likelihood_overrides or {}).get(
+        best_hypothesis.hypothesis_id, best_hypothesis.likelihood
+    )
 
     # Count supporting evidence
     supporting_count = len(best_hypothesis.supporting_evidence)
@@ -156,6 +147,35 @@ def generate_working_conclusion(
         supporting_evidence_ids=list(best_hypothesis.supporting_evidence),
         caveats=caveats,
         updated_at=datetime.now(timezone.utc),
+    )
+
+
+def leading_hypothesis(
+    case: Case, likelihood_overrides: Mapping[str, float] | None = None
+) -> Hypothesis | None:
+    """The hypothesis ``generate_working_conclusion`` states, scored with the
+    same ``likelihood_overrides``: the most likely ACTIVE or VALIDATED one.
+    None while the problem is on hold or no hypothesis stands, when the
+    working conclusion names no hypothesis."""
+    if _hold_conclusion(case) is not None:
+        return None
+    return _leader(case, likelihood_overrides)
+
+
+def _leader(
+    case: Case, likelihood_overrides: Mapping[str, float] | None
+) -> Hypothesis | None:
+    """The most likely standing hypothesis, an override replacing its
+    likelihood; None when none stands."""
+    active = [
+        h
+        for h in case.hypotheses.values()
+        if h.state in [HypothesisState.ACTIVE, HypothesisState.VALIDATED]
+    ]
+    return max(
+        active,
+        key=lambda h: (likelihood_overrides or {}).get(h.hypothesis_id, h.likelihood),
+        default=None,
     )
 
 

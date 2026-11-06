@@ -32,6 +32,7 @@ from faultmaven.core.investigation.prompts.context_builder.budget import (
 from faultmaven.core.investigation.terminal_transitions import open_disposition_offer
 from faultmaven.core.investigation.working_conclusion_generator import (
     generate_working_conclusion,
+    leading_hypothesis,
 )
 from faultmaven.modules.case.contracts import (
     ActionAttempt,
@@ -325,6 +326,16 @@ def _settled_working_conclusion(
     emission's links would uncap is scored capped, so such a license is seen
     next turn. Nothing is written to the case.
     """
+    return generate_working_conclusion(
+        case=case,
+        current_turn=case.current_turn,
+        likelihood_overrides=_settled_likelihoods(case, metadata),
+    )
+
+
+def _settled_likelihoods(case: Case, metadata: dict[str, Any]) -> dict[str, float]:
+    """The likelihood each hypothesis with a pending update will settle on
+    (``_settled_working_conclusion``), by id."""
     overrides: dict[str, float] = {}
     for h_id, likelihood in metadata.get("deferred_likelihood_updates") or ():
         hypothesis = case.hypotheses.get(h_id)
@@ -333,9 +344,7 @@ def _settled_working_conclusion(
             overrides[h_id] = HypothesisManager.likelihood_after_update(
                 hypothesis, likelihood, case
             )
-    return generate_working_conclusion(
-        case=case, current_turn=case.current_turn, likelihood_overrides=overrides
-    )
+    return overrides
 
 
 def _refresh_working_conclusion(case: Case) -> None:
@@ -943,6 +952,10 @@ CARRIED_FIX_KEY = "carried_fix_acceptance"
 #: The SOLUTIONs this apply registered, whose kind the settle reads once
 #: chain emission has run (``response_application._settle_fix_attempts``).
 FIXES_ACCEPTED_KEY = "fixes_accepted_this_apply"
+#: The hypothesis the working conclusion leads with as M5 reads it in this
+#: apply (``_settled_working_conclusion``), taken when a SOLUTION registers,
+#: before chain emission; the settle's default target with no conclusion.
+FIX_LICENCE_LEADER_KEY = "fix_licence_leader"
 
 
 class _FixEntry(NamedTuple):
@@ -1431,10 +1444,11 @@ def _ignore_fix_report(case: Case, metadata: dict[str, Any], reason: str) -> Non
 def _cause_work_at(case: Case, turn: int) -> bool:
     """Whether ``turn`` recorded cause work, read from the graph's stamps and
     the turn record: a node posited; a root attached, given a verdict, or
-    refuted by a row linked that turn (the model's, or M6's engine row); a
-    hypothesis posited, validated, or refuted (a refutation stamps
-    ``last_updated_turn``, and retracts a conclusion naming it); or the cause
-    identified.
+    refuted by a row linked that turn (the model's link counts because
+    ingestion stamps it with its emission's turn, and M6's engine row is
+    stamped when it is attached); a hypothesis posited, validated, or refuted
+    (a refutation stamps ``last_updated_turn``, and retracts a conclusion
+    naming it); or the cause identified.
 
     Residual, stated: an engine conclusion cleared because its cause became
     MECE-contested leaves no stamp, so the turn that cleared it reads as no
@@ -1632,6 +1646,11 @@ def _apply_stage_gate_side_effects(
         # "DIAGNOSTIC asks carry no lifecycle" boundary INV-33 leaves standing.
         if is_solution:
             metadata.setdefault(FIXES_ACCEPTED_KEY, []).append(target.action_id)
+            if FIX_LICENCE_LEADER_KEY not in metadata:
+                leader = leading_hypothesis(case, _settled_likelihoods(case, metadata))
+                metadata[FIX_LICENCE_LEADER_KEY] = getattr(
+                    leader, "hypothesis_id", None
+                )
             _retire_shadowed_diagnostic_asks(case, before_turn=target.proposed_in_turn)
             # The persisted projection: True from the first registration on.
             case.progress.solution_accepted = True

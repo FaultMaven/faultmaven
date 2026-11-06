@@ -1009,11 +1009,15 @@ records only what it can substantiate:
     else the cause identified at the start of that turn; a remediation when
     that target is in the cause pool then, else an **interception** (R8).
     With no root identified or count-held then, the pool also admits what the
-    fix's licence (M5) names: the conclusion's root, when the pool holds it
-    or a standing hypothesis is rooted there, and the root of every standing
-    rooted hypothesis; the unnamed default is the conclusion's root, else the
-    most likely standing hypothesis's root. A fix named at an intermediate
-    node is an interception. An interception opens no window: it relieves
+    fix's licence (M5) names, the conclusion as that turn leaves it included:
+    the conclusion's root, when the pool holds it or a standing hypothesis is
+    rooted there; the root of every standing rooted hypothesis; and the ROOT
+    nodes created that turn. The unnamed default is then the node the
+    conclusion names (an intermediate one makes the fix an interception; a
+    conclusion naming its cause in words leaves it unkinded, ruling 2), else
+    the root of the hypothesis the working conclusion leads with as M5 read
+    it (none when it has no root). A fix named at an intermediate node is an
+    interception. An interception opens no window: it relieves
     but never resolves, and a later one does not hide an earlier root fix's
     window. A remediation's window binds its cause rows to its targets and
     to the roots that fell and are not the cause now, so a deepening or a

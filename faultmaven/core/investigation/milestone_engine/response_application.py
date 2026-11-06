@@ -11,6 +11,7 @@ from faultmaven.core.investigation.causal_graph.similarity import (
 from faultmaven.core.investigation.cause_assurance import (
     FIX_INTERCEPTION,
     FIX_REMEDIATION,
+    conclusion_node,
     conclusion_root,
     fix_cause_snapshot,
     licensed_roots,
@@ -119,6 +120,7 @@ from .milestone_inference import (
 from .stage_gates import (
     CARRIED_FIX_KEY,
     FIX_JUSTIFICATION_KEY,
+    FIX_LICENCE_LEADER_KEY,
     FIXES_ACCEPTED_KEY,
     _add_system_feedback,
     _apply_stage_gate_signals,
@@ -281,11 +283,11 @@ def _settle_fix_attempts(case: Case, metadata: dict[str, Any]) -> None:
        roots. With none, the snapshot is ``open``: the reference also admits
        what the fix's licence names (``licensed_roots``, the conclusion as
        this turn leaves it included) and a ROOT node created this turn, and
-       the default is the conclusion's root, else the most likely standing
-       hypothesis's root. A remediation when its targets meet the reference
-       (never at an intermediate node), else an interception. A fix licensed
-       only by a conclusion naming no cause node stays unkinded, read as a
-       remediation, and the model is asked for the cause's node."""
+       the unnamed fix takes the cause its licence names (``_licensed_default``).
+       A remediation when its targets meet the reference (never at an
+       intermediate node), else an interception. A fix licensed only by a
+       conclusion naming its cause in words stays unkinded, read as a
+       remediation, and the model is asked for the cause's node (ruling 2)."""
     created = metadata.get("chain_nodes_created") or []
     actions = {a.action_id: a for a in case.proposed_actions}
     solutions = {sol.solution_id: sol for sol in case.solutions}
@@ -311,14 +313,9 @@ def _settle_fix_attempts(case: Case, metadata: dict[str, Any]) -> None:
         True,
     )
     reference = set(reference)
-    named = conclusion_root(case)
     if opened:
-        # The conclusion as this turn leaves it licenses the fix (M5's first
-        # leg): its root is the default, none when it names its cause in
-        # words only (ruling 2) or names a root it does not license (#2485).
+        named = conclusion_root(case)
         admitted = named is not None and named in licensed_roots(case, reference)
-        if case.root_cause_conclusion is not None:
-            default = (named,) if admitted else ()
         if admitted:
             reference.add(named)
         reference |= {
@@ -327,12 +324,13 @@ def _settle_fix_attempts(case: Case, metadata: dict[str, Any]) -> None:
             if node_id in case.causal_nodes
             and case.causal_nodes[node_id].node_type == NodeType.ROOT
         }
+        default = _licensed_default(case, metadata, admitted)
     for action_id in metadata.get(FIXES_ACCEPTED_KEY) or []:
         action = actions.get(action_id)
         if action is None or action.fix_kind is not None:
             continue
         if not action.target_named:
-            if not default and case.root_cause_conclusion is not None and not named:
+            if default is None:
                 _add_system_feedback(
                     metadata,
                     f"SYSTEM: fix {action_id} is recorded without a target: the "
@@ -347,6 +345,36 @@ def _settle_fix_attempts(case: Case, metadata: dict[str, Any]) -> None:
             if reference.intersection(action.target_ids)
             else FIX_INTERCEPTION
         )
+
+
+def _licensed_default(
+    case: Case, metadata: dict[str, Any], admitted: bool
+) -> tuple | None:
+    """An unnamed fix's target when no root is identified or count-held: the
+    cause its licence (M5) names, as this turn leaves it. None only for a
+    conclusion naming its cause in words (ruling 2): the fix stays unkinded.
+
+    - A conclusion stands: the node it names (``conclusion_node``). Its root
+      when the conclusion licenses it (``admitted``, ``licensed_roots``);
+      none when it names a root it does not license (an orphan or a
+      ruled-out one, #2485); an intermediate node as named, which no
+      reference holds, so the fix intercepts it.
+    - Else the working conclusion's leader as M5 read it when the fix
+      registered (``stage_gates.FIX_LICENCE_LEADER_KEY``): its root; none
+      when it has no root node, so the fix intercepts nothing it names and
+      a trailing rooted hypothesis is not credited with it (#2485).
+    - Neither: none."""
+    if case.root_cause_conclusion is not None:
+        node_id = conclusion_node(case)
+        if node_id is None:
+            return None
+        if case.causal_nodes[node_id].node_type == NodeType.ROOT:
+            return (node_id,) if admitted else ()
+        return (node_id,)
+    leader = case.hypotheses.get(metadata.get(FIX_LICENCE_LEADER_KEY) or "")
+    if leader is None or leader.root_node_id not in case.causal_nodes:
+        return ()
+    return (leader.root_node_id,)
 
 
 #: The state-update fields that are cause work. While a revised statement

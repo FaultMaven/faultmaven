@@ -35,6 +35,7 @@ from faultmaven.core.investigation.prompts.context_builder.fix_verification_bloc
     build_fix_verification_block,
 )
 from faultmaven.core.investigation.schemas import (
+    CausalNodeToAdd,
     HypothesisUpdate,
     MilestoneUpdates,
     NodeEvidenceLinkToAdd,
@@ -92,6 +93,7 @@ pytestmark = pytest.mark.unit
 
 _READY = ResolutionReadiness.READY
 _B_HYP = "hyp_00000000eeee"
+_LEAD = "hyp_0000000ead01"
 
 
 def _ground_b(b) -> dict:
@@ -256,8 +258,10 @@ async def test_a_fix_of_a_trailing_candidate_is_a_remediation_of_it():
 
 
 async def test_a_conclusion_naming_an_intermediate_names_no_cause():
-    """F11: the conclusion's root admits only a ROOT node, so a fix licensed
-    by a conclusion naming a rung is no remediation of that rung."""
+    """F11 and delta item 2: the conclusion's root admits only a ROOT node. A
+    conclusion naming a rung names a node, not words, so the unnamed fix
+    targets that rung and is an interception: grounding and re-checking the
+    root afterwards does not resolve on it."""
     eng = _engine()
     case, root, hyp = _identified_case()
     _bare_candidate(case, root, hyp)
@@ -270,11 +274,21 @@ async def test_a_conclusion_naming_an_intermediate_names_no_cause():
         confidence_level="confident",
     )
     assert conclusion_root(case) is None
-    await _record(
+    _rows, meta = await _record(
         eng, case, 6, solutions_to_add=[_fix("restart the pods")], milestones=_ran()
     )
     fix = _attempts(case)[0]
-    assert fix.fix_kind != FIX_REMEDIATION and x not in fix.target_ids
+    assert (fix.fix_kind, fix.target_ids) == (FIX_INTERCEPTION, [x])
+    assert "words only" not in (meta.get("system_feedback") or "")
+    await _record(eng, case, 7, **_grounding(hyp))
+    await _record(
+        eng,
+        case,
+        8,
+        _obs(_CAUSE_GONE, "max_connections reads 100", _SUPPORT),
+        _obs(_GONE, "checkout 200 again", VERIFYING_ID),
+    )
+    assert assess_resolution_readiness(case).missing[0] == _ROOT_FIX
 
 
 # ---------------------------------------------------------------------------
@@ -488,3 +502,191 @@ async def test_an_interceptions_line_shows_its_relapse_and_no_later_relief():
         f"an interception at {x} (cannot confirm the cause): problem seen again at turn 9"
     )
     assert _attempts(case)[0].fix_kind == FIX_INTERCEPTION
+
+
+# ---------------------------------------------------------------------------
+# Delta 1 on fd0f96a: the model's refuting link, the licence M5 read, F10's bound
+# ---------------------------------------------------------------------------
+
+
+async def test_a_model_refuting_link_in_the_previous_turn_blocks_the_backdate():
+    """Delta item 1 (p2b): the model's REFUTES links on the identified root A
+    in turn 7 are stamped with turn 7 at ingestion, so they are cause work:
+    the fix reported in turn 7's message is dated 8, and nothing after A's
+    fall confirms it."""
+    eng = _engine()
+    case, a, _hyp = _identified_case()
+    b = _add_sibling_chain(case)
+    case.hypotheses[_B_HYP].likelihood = case.hypotheses[_B_HYP].initial_likelihood = (
+        0.9
+    )
+    await _record(eng, case, 6, solutions_to_add=[_fix("raise max_connections to 100")])
+    await _record(
+        eng,
+        case,
+        7,
+        _obs(_CAUSAL, "pg_settings: max_connections is 500"),
+        _obs(_CAUSAL, "pg_stat_activity: 35 of 500 connections in use at the burst"),
+        _obs(_GONE, "checkout returns 200", VERIFYING_ID),
+        node_evidence_links=[
+            NodeEvidenceLinkToAdd(
+                node_ref=_ROOT_ID,
+                evidence_id_ref=f"new_index_{i}",
+                stance="refutes",
+                reasoning="the limit is not reached",
+            )
+            for i in (0, 1)
+        ],
+    )
+    refuting = {l.linked_at_turn for l in a.evidence_links if l.stance == "refutes"}
+    assert refuting == {7}
+    _rows, meta = await _record(
+        eng,
+        case,
+        8,
+        milestones=MilestoneUpdates(
+            solution_accepted=True,
+            accepted_action_ref=case.proposed_actions[0].action_id,
+            accepted_fix_reported_in="previous_message",
+        ),
+    )
+    assert [a.accepted_in_turn for a in _attempts(case)] == [8]
+    assert "turn 7 recorded cause work" in meta["system_feedback"]
+    await _record(eng, case, 9, *_leak_rows(), **_ground_b(b))
+    await _record(
+        eng,
+        case,
+        10,
+        _obs(_CAUSE_GONE, "worker RSS flat for 6h", b.evidence_links[0].evidence_id),
+    )
+    assert assess_resolution_readiness(case).verdict == ResolutionReadiness.NEEDS_INFO
+
+
+async def test_an_unnamed_fix_takes_the_leader_m5_read_after_the_turns_updates():
+    """Delta item 3 (p5): A leads at 0.7 and B at 0.65 at the start of the
+    turn; the turn's link lowers A below B, and the unnamed fix M5 licenses
+    through B is a remediation of B, which resolves once B is grounded."""
+    eng = _engine()
+    case, a, hyp = _identified_case()
+    _bare_candidate(case, a, hyp)
+    hyp.likelihood = hyp.initial_likelihood = 0.7
+    b = _add_sibling_chain(case)
+    case.hypotheses[_B_HYP].likelihood = case.hypotheses[_B_HYP].initial_likelihood = (
+        0.65
+    )
+    await _record(eng, case, 6)
+    await _record(
+        eng,
+        case,
+        7,
+        _obs(_CAUSAL, "pg_stat_activity: 12 of 20 connections in use at the burst"),
+        hypothesis_evidence_links=[_link(hyp.hypothesis_id, "new_index_0")],
+        solutions_to_add=[_fix("pin the leaking library to 2.4.1")],
+        milestones=_ran(),
+    )
+    fix = _attempts(case)[0]
+    assert (fix.fix_kind, fix.target_ids) == (FIX_REMEDIATION, [b.node_id])
+    await _record(eng, case, 8, *_leak_rows(), **_ground_b(b))
+    await _recheck(eng, case, 9, b)
+    assert assess_resolution_readiness(case).verdict == _READY
+
+
+@pytest.mark.parametrize("grounded", ["the-leaders-own-root", "a-trailing-root"])
+async def test_a_fix_licensed_by_an_unrooted_leader_is_credited_to_no_root(grounded):
+    """Delta item 3 (as ruled, option A): the working conclusion leads with a
+    hypothesis that has no root node. The unnamed fix it licenses has no
+    target, so it is an interception, and neither the leader's root posited
+    later nor a trailing rooted hypothesis is credited with it."""
+    eng = _engine()
+    case, root, hyp = _identified_case()
+    _bare_candidate(case, root, hyp)
+    hyp.likelihood = hyp.initial_likelihood = 0.3
+    case.hypotheses[_LEAD] = Hypothesis(
+        hypothesis_id=_LEAD,
+        statement="the pgbouncer pool is too small for the checkout burst",
+        category=HypothesisCategory.DATABASE,
+        state=HypothesisState.ACTIVE,
+        generation_mode=HypothesisGenerationMode.OPPORTUNISTIC,
+        rationale="r",
+        initial_likelihood=0.85,
+        likelihood=0.85,
+        generated_at_turn=2,
+    )
+    await _record(eng, case, 6)
+    _rows, meta = await _record(
+        eng,
+        case,
+        7,
+        solutions_to_add=[_fix("raise the pgbouncer default_pool_size to 50")],
+        milestones=_ran(),
+    )
+    fix = _attempts(case)[0]
+    assert (fix.fix_kind, fix.target_ids) == (FIX_INTERCEPTION, [])
+    assert "without a target" not in (meta.get("system_feedback") or "")
+    if grounded == "a-trailing-root":
+        await _record(eng, case, 8, **_grounding(hyp))
+        await _record(
+            eng,
+            case,
+            9,
+            _obs(_CAUSE_GONE, "max_connections reads 100", _SUPPORT),
+            _obs(_GONE, "checkout 200 again", VERIFYING_ID),
+        )
+    else:
+        await _record(
+            eng,
+            case,
+            8,
+            _obs(_CAUSAL, "pgbouncer SHOW POOLS: cl_waiting 40 at the burst"),
+            _obs(_CAUSAL, "pgbouncer default_pool_size = 20"),
+            causal_nodes_to_add=[
+                CausalNodeToAdd(
+                    statement="the pgbouncer pool is too small for the burst",
+                    node_type="root",
+                    produces="D",
+                )
+            ],
+            node_evidence_links=[
+                NodeEvidenceLinkToAdd(
+                    node_ref="new_index_0",
+                    evidence_id_ref=f"new_index_{i}",
+                    stance="supports",
+                    reasoning="bears on the pool size",
+                )
+                for i in (0, 1)
+            ],
+            hypotheses_to_update=[
+                HypothesisUpdate(
+                    hypothesis_id=_LEAD,
+                    root_node_ref="new_index_0",
+                    root_is_terminal=True,
+                    terminal_basis_evidence_ids=["new_index_1"],
+                )
+            ],
+        )
+        lead_root = case.causal_nodes[case.hypotheses[_LEAD].root_node_id]
+        await _recheck(eng, case, 9, lead_root)
+    assert assess_resolution_readiness(case).missing[0] == _ROOT_FIX
+
+
+async def test_a_relapse_in_the_next_attempts_own_turn_is_the_interceptions():
+    """F10's bound: a problem-present row in the next attempt's own turn is
+    still the interception's (as a window reads it), while a relief in that
+    turn is the next attempt's."""
+    eng = _engine()
+    case, _root, _hyp = _identified_case()
+    x = _intermediate(case)
+    await _record(
+        eng, case, 6, solutions_to_add=[_fix("restart the pods", x)], milestones=_ran()
+    )
+    await _record(eng, case, 7, _obs(_GONE, "checkout 200", VERIFYING_ID))
+    await _record(
+        eng,
+        case,
+        9,
+        _obs(_PRESENT, "checkout 503 again", VERIFYING_ID),
+        _obs(_GONE, "checkout 200 after the config change", VERIFYING_ID),
+        solutions_to_add=[_fix("raise max_connections", _ROOT_ID)],
+        milestones=_ran(),
+    )
+    assert interception_relief(case, 6) == (7, 9)
