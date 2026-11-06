@@ -613,15 +613,23 @@ def standing_fix_action(case: Case, description: Optional[str]) -> Any:
     return None
 
 
-def _newest_fix_bearer(case: Case, identity: str, minted: Sequence = ()) -> Any:
+def _newest_fix_bearer(
+    case: Case, identity: str, minted: Sequence = (), *, licensed: bool = False
+) -> Any:
     """The newest fix action bearing ``identity``: a SOLUTION, or a fix entry
-    this apply ``minted`` (M5-downgraded), which outranks a non-pending one."""
+    ``minted`` as an M5-downgraded DIAGNOSTIC by this apply or, at a replay, by
+    an earlier bundle of it. The copy outranks a non-pending SOLUTION only
+    while the license is down at the decision (``licensed`` False): a live
+    apply's downgrade proves that, but a replay's bundle can mint the copy and
+    its recompute restore the license before a later bundle decides (#2256)."""
     downgraded = None
     for action in reversed(case.proposed_actions):
         if fix_identity(action.description) != identity:
             continue
         if action.action_type == InvestigationActionType.SOLUTION:
-            return downgraded if downgraded and action.state != "pending" else action
+            if downgraded and action.state != "pending" and not licensed:
+                return downgraded
+            return action
         if downgraded is None and action in minted:
             downgraded = action
     return downgraded
@@ -1470,7 +1478,8 @@ def decide_fix_acceptance(
     Called once per apply, after the solutions step. ``proposals``: the actions
     this response's ``solutions_to_add`` entries minted or kept, in order.
     ``held``: on a hold turn, those entries, staged rather than minted.
-    ``fixes``: the actions this apply minted from fix entries (not WORKAROUNDs).
+    ``fixes``: the actions minted from fix entries (not WORKAROUNDs) by this
+    apply and, at a replay, by its earlier bundles (``REPLAY_FIX_SLOTS_KEY``).
 
     Step 1 resolves a fix identity; on a live turn step 2 applies the state rule
     to its newest bearer, and a registration is justified like the first
@@ -1526,8 +1535,12 @@ def _register_carried_fix(
 ) -> Any:
     """At the replay: the state rule on the newest fix action bearing the
     carried fix (``carried``, the staged bundle), among SOLUTIONs and the
-    replay's ``fixes``; the license line when none bears it."""
-    bearer = _newest_fix_bearer(case, carried.held_fix, fixes)
+    replay's ``fixes``; the license line when none bears it. An earlier
+    bundle's downgraded copy outranks the superseded fix only while the
+    license is still down at this bundle (#2256)."""
+    bearer = _newest_fix_bearer(
+        case, carried.held_fix, fixes, licensed=_license_holds(case, metadata)
+    )
     if bearer is None:
         _add_system_feedback(
             metadata,

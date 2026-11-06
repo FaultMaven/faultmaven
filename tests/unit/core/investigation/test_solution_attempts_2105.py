@@ -1616,6 +1616,54 @@ async def test_a_carry_whose_copy_an_earlier_bundle_staged_gets_the_license_line
     assert len(case.action_attempts) == 1
 
 
+async def _hold_withdraws_x_and_carries_it():
+    """#2256's shape: pending X; the hold at 6 withdraws it (``license_lost``)
+    and stages its re-send; 7 carries X by id; the license is down at the
+    confirmation, so the replay mints the re-send a DIAGNOSTIC in bundle 6."""
+    eng, case = _identified()
+    await _turn(eng, case, 5, solutions_to_add=[_fix(_FIRST)])
+    (x,) = _solutions(case)
+    case.current_turn = 6
+    _revise(case)
+    await _turn(eng, case, 6, solutions_to_add=[_fix(_FIRST)])
+    assert (x.state, x.superseded_reason) == ("superseded", "license_lost")
+    await _turn(eng, case, 7, milestones=_accepted(x.action_id))
+    assert [b.held_fix for b in pending_revision(case).staged] == [None, _FIRST]
+    _license_down(case)
+    return eng, case, x
+
+
+async def test_a_carried_fix_registers_once_the_license_returns_between_bundles():
+    """#2256: bundle 6's recompute restores the license, so at bundle 7 the
+    carried X registers, stamped 7, and the downgraded copy no longer outranks
+    it: no license line."""
+    eng, case, x = await _hold_withdraws_x_and_carries_it()
+
+    meta = await _confirm(eng, case, 8)
+
+    assert case.proposed_actions[-1].action_type == InvestigationActionType.DIAGNOSTIC
+    assert (x.state, x.accepted_in_turn) == ("accepted", 7)
+    assert _accepted_turns(case) == [7]
+    assert len(case.action_attempts) == 1
+    assert _LICENSE not in meta.get("system_feedback", "")
+
+
+async def test_a_carried_fix_stays_refused_while_the_license_is_down(monkeypatch):
+    """Pin (#2256): the same shape with the license still down at bundle 7
+    keeps the ruled precedence: the downgraded copy outranks the withdrawn X,
+    which gets the license line and does not register."""
+    eng, case, x = await _hold_withdraws_x_and_carries_it()
+    monkeypatch.setattr(stage_gates, "_solution_cause_validated", lambda *a, **k: False)
+
+    meta = await _confirm(eng, case, 8)
+
+    diagnostic = case.proposed_actions[-1]
+    assert diagnostic.action_type == InvestigationActionType.DIAGNOSTIC
+    assert f"{diagnostic.action_id} {_LICENSE}" in meta["system_feedback"]
+    assert (x.state, x.accepted_in_turn) == ("superseded", None)
+    assert case.action_attempts == []
+
+
 async def test_a_fix_carried_in_this_revision_is_neither_named_nor_carried_again():
     """Delta N1: after a first fix, Y is carried at 14; at 15 a bare acceptance
     re-sends Y. No line names Y's ``new_index``, and naming it anyway at 16
