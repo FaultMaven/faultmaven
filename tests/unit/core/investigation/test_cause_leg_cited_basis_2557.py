@@ -1231,3 +1231,123 @@ def test_the_ask_clips_a_long_fix_description():
     fix.description = "switch the issuer to Kubernetes auth " * 20
     ask = _ask(case)
     assert "…" in ask and fix.description.strip() not in ask
+
+
+# ---------------------------------------------------------------------------
+# 17. A window reads only its own roots' citations (N10)
+# ---------------------------------------------------------------------------
+
+_KINDS = [
+    ("remediation", "remediation"),
+    (None, None),
+    ("remediation", None),
+    (None, "remediation"),
+]
+_KIND_IDS = ["kinded", "unkinded", "kinded-a-unkinded-b", "unkinded-a-kinded-b"]
+
+
+def _fix_of(case, turn, kind, root) -> None:
+    _fix(case, turn, kind, [root.node_id] if kind else [], f"a fix at turn {turn}")
+
+
+def _a_fell_then_b_identified(kind_a):
+    """A's verdict also cites a row it does not link. A's fix (6) is seen failing
+    through A's linked, cited row (7, 8), so M6 demotes A on every tree. Then B
+    is identified (9)."""
+    case, a, hyp_a = _identified_case()
+    why = _row("why_a", _CAUSAL, 4, "max_connections was set by hand, once")
+    case.evidence.append(why)
+    a.metadata.update(
+        terminal_verdict(*a.metadata["root_terminal_evidence_ids"], why.evidence_id)
+    )
+    _fix_of(case, 6, kind_a, a)
+    _recheck(case, _eid("pool_log"), turn=7, label="rc_a")
+    case.evidence.append(_row("back_a", _PRESENT, 8, "503s at the gateway again"))
+    _recompute_at(case, 8)
+    _assert_demoted(case, a, hyp_a)
+    b, hyp_b, rows = _stands(
+        case,
+        "cn_0000000025b0",
+        "a memory leak in the gunicorn worker",
+        cites=None,
+        turn=9,
+    )
+    _recompute_at(case, 9)
+    assert b.is_identified_root, "premise: B is identified"
+    return case, why, b, hyp_b, rows
+
+
+def _turns(case, *steps) -> None:
+    """Each ``(turn, row)`` recorded, the case recomputed in its turn."""
+    for turn, row in steps:
+        case.evidence.append(row)
+        _recompute_at(case, turn)
+
+
+def _rc(label, turn, named):
+    return _row(label, _CAUSE_GONE, turn, "the re-check after the fix", rechecks=named)
+
+
+@pytest.mark.parametrize("kind_a, kind_b", _KINDS, ids=_KIND_IDS)
+def test_a_fallen_causes_citation_does_not_fail_the_next_fix(kind_a, kind_b):
+    """A re-check of the fallen A's cited, unlinked row in B's window is not B's:
+    the problem present after it fails nothing and M6 does not refute B. B's own
+    cited row re-checked, then the problem gone, confirms B, as on main."""
+    case, why, b, hyp_b, rows = _a_fell_then_b_identified(kind_a)
+    _fix_of(case, 10, kind_b, b)
+    _turns(
+        case,
+        (11, _rc("rc_a_why", 11, why.evidence_id)),
+        (12, _row("back_b", _PRESENT, 12, "503s at the gateway again")),
+        (13, _rc("rc_b", 13, rows[0].evidence_id)),
+        (14, _row("gone_b", _GONE, 14, "503s at 0.0/s")),
+    )
+
+    window = fix_windows(case)[-1]
+    assert (window.fix_turn, window.state) == (10, FIX_SUCCEEDED)
+    assert b.node_state == NodeState.VALIDATED
+    assert hyp_b.state != HypothesisState.REFUTED
+    assert len(_engine_rows(case)) == 1, "only A's demotion"
+    assert _verdict(case) == ResolutionReadiness.READY
+
+
+@pytest.mark.parametrize("kind", ["remediation", None], ids=["kinded", "unkinded"])
+def test_a_fallen_causes_citation_does_not_observe_a_newer_fix(kind):
+    """B's fix confirmed, then a newer fix nobody has looked at yet. A re-check of
+    the fallen A's cited row is not the newer fix's outcome: the confirmed one
+    still answers."""
+    case, why, b, _hyp_b, rows = _a_fell_then_b_identified(kind)
+    _fix_of(case, 10, kind, b)
+    _turns(
+        case,
+        (11, _rc("rc_b", 11, rows[0].evidence_id)),
+        (12, _row("gone_b", _GONE, 12, "503s at 0.0/s")),
+    )
+    assert _verdict(case) == ResolutionReadiness.READY, "premise: B confirmed"
+    _fix_of(case, 13, kind, b)
+    _turns(case, (14, _rc("rc_a_why", 14, why.evidence_id)))
+
+    assert not fix_windows(case)[-1].observed
+    assert _verdict(case) == ResolutionReadiness.READY
+
+
+@pytest.mark.parametrize("named", ["fallen-linked", "own-uncited"])
+def test_a_kinded_window_is_failed_by_its_target_and_a_fallen_cause_alike(named):
+    """What a kinded window observes through SUPPORTS is unchanged: a re-check of
+    its target's linked, uncited row, or of the fallen A's linked row, with the
+    problem present, fails it. M6 refutes only the cause the row is about."""
+    case, _why, b, hyp_b, rows = _a_fell_then_b_identified("remediation")
+    _fix_of(case, 10, "remediation", b)
+    target = _eid("pool_metric") if named == "fallen-linked" else rows[1].evidence_id
+    _turns(
+        case,
+        (11, _rc("rc_11", 11, target)),
+        (12, _row("back_b", _PRESENT, 12, "503s at the gateway again")),
+    )
+
+    window = fix_windows(case)[-1]
+    assert (window.fix_turn, window.state, window.failure_turn) == (10, FIX_FAILED, 12)
+    if named == "fallen-linked":
+        assert b.node_state == NodeState.VALIDATED and len(_engine_rows(case)) == 1
+    else:
+        assert hyp_b.state == HypothesisState.REFUTED and len(_engine_rows(case)) == 2

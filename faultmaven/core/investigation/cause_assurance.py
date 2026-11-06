@@ -1147,9 +1147,8 @@ def cause_recheck_status(
 
 
 def uncited_recheck_why(subjects: "SubjectIndex") -> str:
-    """Why a window-bound cause re-check confirms nothing (#2557), naming the
-    cited basis to re-check instead (``SubjectIndex.bindable_rows``); the one
-    copy of the clause, which the unbound-row feedback reads too."""
+    """Why a window-bound cause re-check confirms nothing, naming the cited
+    basis to re-check (#2557); the one copy of the clause."""
     if not subjects.pool_roots:
         return "no root cause is identified to confirm"
     _problem, cause = subjects.bindable_rows()
@@ -1454,12 +1453,12 @@ class FixWindow:
     for window 0, the rows before any dated fix (an out-of-band fix leaves no
     execution record). ``end_turn`` is the next fix's execution turn, or None
     for the latest. ``cause_rows`` are the window's causal_absence rows bound
-    to, or naming a row cited by, a cause of the window pool, and
-    ``confirmed_cause_rows``, those bound
-    by citation to the confirmation pool (``_cause_pool``, #2557): any re-check
-    of the cause the fix addressed can FAIL the window, but only one of the
-    case's confirmable cause can make it SUCCEEDED. ``failure_turn`` is the
-    turn the problem was observed persisting
+    to a cause of the window pool, or naming a row its own roots cite (a kinded
+    window's targets, else a root that fell at or after its fix), and
+    ``confirmed_cause_rows`` those bound by citation to the confirmation pool
+    (``_cause_pool``, #2557): any re-check of the cause the fix addressed can
+    FAIL the window, but only one of the case's confirmable cause can make it
+    SUCCEEDED. ``failure_turn`` is the turn the problem was observed persisting
     after the cause's removal, when ``state`` is ``FIX_FAILED``.
     ``relief_turn`` is the first turn the problem was observed gone in the
     window, before any failure; on a FAILED window 0, the relief its failure
@@ -1591,6 +1590,7 @@ def fix_windows(
     # The roots that fell and are not the cause now: a kinded window keeps
     # observing them, never a cause identified since (#2036 D2.3).
     fell = frozenset(fallen - identified - held)
+    fell_at = {n: _root_disconfirmation_turn(case, nodes[n]) for n in fell}
     # (category, subject, observed turn) of every bound row.
     bound = [
         (e.category, subject, subjects.observed(e), e)
@@ -1629,11 +1629,12 @@ def fix_windows(
         shell = FixWindow(fix_turn, end_turn, (), FIX_UNKNOWN)
         kinded, targets = fixes.get(fix_turn, (False, ()))
         confirming = subjects.pool_roots.intersection(targets)
-        own = fell | nodes.keys() & set(targets) if kinded else subjects.window_roots
         if kinded:
-            observed_rows = bound_to(own, shell)
+            own = nodes.keys() & set(targets)
+            observed_rows = bound_to(fell | own, shell)
             confirmed_cause_rows = bound_to(confirming, shell, cited=True)
         else:
+            own = {n for n, at in fell_at.items() if at >= (fix_turn or 0)}
             observed_rows = tuple(
                 e
                 for category, subject, turn, e in bound
@@ -1645,8 +1646,7 @@ def fix_windows(
                 if shell.holds(subjects.observed(e))
                 and subjects.subject(e) == SUBJECT_CAUSE
             )
-        # A row its own roots cite is inside the window as a linked one is, also
-        # once the cause falls; it confirms nothing the confirmation read refuses.
+        # A row its own roots cite is inside it, also once they fall (#2557).
         cause_rows = merged(
             *observed_rows, *confirmed_cause_rows, *cited_by(own, shell)
         )
