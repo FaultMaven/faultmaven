@@ -9,9 +9,41 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     build-essential \
+    ca-certificates \
     curl \
     git \
     && rm -rf /var/lib/apt/lists/*
+
+# Every pip in this build verifies against that OS store, not its vendored bundle.
+ENV PIP_CERT=/etc/ssl/certs/ca-certificates.crt
+
+# Neither OpenSSL's default store nor the pip building this image may trust
+# "emSign ECC Root CA - G3" (GHSA-6q48-6c7w-9gw2: compromised intermediate keys)
+# or "AAA Certificate Services". Listing ca-certificates above (unpinned: a pin
+# breaks on its next fix) takes the package that blacklists both. aiohttp's
+# sessions verify against OpenSSL's default paths, and pip 24.0 here vendors
+# certifi 2023.07.22, which holds both. certifi==2026.10.19 stays the store for
+# httpx/requests (huggingface_hub, tiktoken, web search) and lacks both too:
+# #2110's handshake test of ~50 endpoints passed under it alone.
+# The root count and ISRG Root X1 are positive controls: an empty store fails.
+RUN python - <<'EOF'
+import hashlib, os, ssl
+def check_roots(ctx, label):
+    certs = ctx.get_ca_certs()
+    names = {v for cert in certs for rdn in cert["subject"] for k, v in rdn if k == "commonName"}
+    digests = {hashlib.sha256(der).hexdigest() for der in ctx.get_ca_certs(binary_form=True)}
+    trusted = sorted(names & {"emSign ECC Root CA - G3", "AAA Certificate Services"})
+    assert len(certs) >= 100 and "ISRG Root X1" in names, f"{label}: {len(certs)} roots, or no ISRG Root X1"
+    assert not trusted, f"{label}: still trusts {trusted}"
+    assert "86a1ecba089c4a8d3bbe2734c612ba341d813e043cf9e8a862cd5c57a36bbe6b" not in digests, f"{label}: G3 by SHA-256"
+    return len(certs)
+count = check_roots(ssl.create_default_context(), "default context (aiohttp)")
+assert os.path.realpath(ssl.get_default_verify_paths().cafile) == os.path.realpath(os.environ["PIP_CERT"]), "OpenSSL's cafile is not PIP_CERT"
+fresh = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+fresh.load_verify_locations(cafile=os.environ["PIP_CERT"])
+check_roots(fresh, "PIP_CERT (pip)")
+print(f"trust store OK: {count} roots, neither removed root trusted")
+EOF
 
 # Set work directory
 WORKDIR /app
