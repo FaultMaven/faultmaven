@@ -24,8 +24,11 @@ import sqlite3
 import subprocess
 import sys
 from collections import defaultdict
+from contextlib import closing
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Optional
+from unittest.mock import patch
 
 import pytest
 from sqlalchemy.engine import make_url
@@ -547,6 +550,62 @@ class TestAlembicMigrationInfrastructure:
         ), f"Expected {len(EXPECTED_TABLES)} tables, got {len(tables)}. Missing: {set(EXPECTED_TABLES) - set(tables)}, Extra: {set(tables) - set(EXPECTED_TABLES)}"
         for expected_table in EXPECTED_TABLES:
             assert expected_table in tables, f"Missing table: {expected_table}"
+
+    @staticmethod
+    def _app_settings(database_url: str):
+        """``get_settings()`` as the startup checks read it, on ``database_url``."""
+        return patch(
+            "faultmaven.config.settings.get_settings",
+            return_value=SimpleNamespace(
+                database=SimpleNamespace(database_url=database_url)
+            ),
+        )
+
+    async def test_a_stamped_database_missing_a_declared_table_is_refused(
+        self, clean_database, database_url, monkeypatch
+    ):
+        """The incident's shape (#1514): stamped at head, one table never created.
+
+        The at-head check still answers True on it, so no migration would run;
+        the schema check refuses the boot naming the table and the stamp."""
+        from faultmaven.bootstrap import data_init
+
+        monkeypatch.delenv("ALEMBIC_CONFIG", raising=False)
+        prepare_database("head", database_url)
+        with closing(sqlite3.connect(TEST_DB)) as conn, conn:
+            conn.execute("DROP TABLE token_revocations")
+
+        with self._app_settings(database_url.replace("sqlite:", "sqlite+aiosqlite:")):
+            assert await data_init._schema_already_at_head() is True
+            with pytest.raises(RuntimeError) as refused:
+                await data_init.verify_schema_tables()
+        message = str(refused.value)
+        assert "missing tables token_revocations;" in message
+        assert f"stamped {HEAD_REVISION}" in message
+        assert "deployment-wipe.md" in message
+
+    async def test_a_migrated_database_passes_the_schema_check(
+        self, clean_database, database_url
+    ):
+        """Positive control: every declared table is present after ``upgrade head``."""
+        from faultmaven.bootstrap import data_init
+
+        prepare_database("head", database_url)
+        with self._app_settings(database_url.replace("sqlite:", "sqlite+aiosqlite:")):
+            found = await data_init.verify_schema_tables()
+        assert found == len(EXPECTED_TABLES) - 1  # alembic_version is not a model
+
+    @pytest.mark.parametrize("url", ["", "sqlite+aiosqlite:///:memory:"])
+    async def test_a_non_persistent_database_is_not_checked(self, url):
+        """As the migration run is gated: in-memory stores have no schema to check."""
+        from faultmaven.bootstrap import data_init
+
+        with (
+            self._app_settings(url),
+            patch.object(data_init, "_startup_check_engine") as engine,
+        ):
+            assert await data_init.verify_schema_tables() == 0
+        engine.assert_not_called()
 
     def test_migration_revision_correct(self, clean_database, database_url):
         """Migration revision matches expected head revision."""

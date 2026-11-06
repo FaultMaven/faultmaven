@@ -17,7 +17,7 @@ import sys
 from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -40,6 +40,9 @@ async def _boot(db: Path | str) -> MagicMock:
     with (
         patch.object(data_init, "ensure_data_directories"),
         patch.object(data_init, "run_alembic_migrations") as run_migrations,
+        # The recorded migration never ran, so the schema check (#1514) would
+        # refuse a fresh database here; it is the subject of its own tests.
+        patch.object(data_init, "verify_schema_tables", AsyncMock()),
         patch("faultmaven.config.settings.get_settings", return_value=settings),
     ):
         await data_init.initialize_data_layer(container=MagicMock())

@@ -4,13 +4,15 @@ The app self-runs `alembic upgrade head` at startup only when it owns its
 schema. When an external migration Job owns schema (the K8s deployment), the
 app connects as a non-owner, no-DDL role, so a startup migration that needs
 DDL would be permission-denied and crash-loop the pod. These tests pin that
-`initialize_data_layer` runs migrations iff `RUN_STARTUP_MIGRATIONS` is true.
+`initialize_data_layer` runs migrations iff `RUN_STARTUP_MIGRATIONS` is true,
+and that the schema check (#1514) runs on both branches: the Job-owned
+deployment is the one that cannot migrate itself.
 """
 
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -25,11 +27,13 @@ async def test_startup_migrations_run_when_flag_true():
         patch.object(data_init, "ensure_data_directories"),
         patch.object(data_init, "_schema_already_at_head", return_value=False),
         patch.object(data_init, "run_alembic_migrations") as run_migrations,
+        patch.object(data_init, "verify_schema_tables", AsyncMock()) as schema_check,
         patch("faultmaven.config.settings.get_settings", return_value=settings),
     ):
         await data_init.initialize_data_layer(container=MagicMock())
 
     run_migrations.assert_called_once()
+    schema_check.assert_awaited_once()
 
 
 @pytest.mark.unit
@@ -41,13 +45,31 @@ async def test_startup_migrations_skipped_when_flag_false():
         patch.object(data_init, "ensure_data_directories"),
         patch.object(data_init, "_schema_already_at_head") as at_head_check,
         patch.object(data_init, "run_alembic_migrations") as run_migrations,
+        patch.object(data_init, "verify_schema_tables", AsyncMock()) as schema_check,
         patch("faultmaven.config.settings.get_settings", return_value=settings),
     ):
         await data_init.initialize_data_layer(container=MagicMock())
 
-    # Neither the at-head check (#2212) nor the migration runs.
+    # Neither the at-head check (#2212) nor the migration runs; the schema
+    # check does, since the Job may not have created every table (#1514).
     at_head_check.assert_not_called()
     run_migrations.assert_not_called()
+    schema_check.assert_awaited_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_schema_behind_the_models_refuses_the_boot():
+    """The check's refusal is the boot's: nothing downstream swallows it (#1514)."""
+    settings = SimpleNamespace(run_startup_migrations=False)
+    refusal = RuntimeError("Database schema is behind the models: missing tables x")
+    with (
+        patch.object(data_init, "ensure_data_directories"),
+        patch.object(data_init, "verify_schema_tables", AsyncMock(side_effect=refusal)),
+        patch("faultmaven.config.settings.get_settings", return_value=settings),
+        pytest.raises(RuntimeError, match="behind the models"),
+    ):
+        await data_init.initialize_data_layer(container=MagicMock())
 
 
 @pytest.mark.unit
