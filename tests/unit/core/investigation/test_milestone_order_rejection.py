@@ -248,7 +248,7 @@ class TestRejectionWhenPrerequisiteMissing:
         # returned metadata payload (which only carries turn-summary
         # signals for the API layer).
         turn_record = result["case_updated"].turn_history[-1]
-        feedback = turn_record.system_feedback or ""
+        feedback = "\n".join(turn_record.system_notices)
 
         # The exact phrasing is policy — we pin the load-bearing pieces:
         assert "MILESTONE ORDER ERROR" in feedback
@@ -339,7 +339,7 @@ class TestPrerequisiteSatisfiedPasses:
 
         assert _stab_verified(updated) is True
         # No rejection feedback should have been added.
-        feedback = result["case_updated"].turn_history[-1].system_feedback or ""
+        feedback = "\n".join(result["case_updated"].turn_history[-1].system_notices)
         assert "MILESTONE ORDER ERROR" not in feedback
 
     @pytest.mark.asyncio
@@ -357,5 +357,5 @@ class TestPrerequisiteSatisfiedPasses:
         updated = result["case_updated"]
 
         assert _stab_accepted(updated) is True
-        feedback = result["case_updated"].turn_history[-1].system_feedback or ""
+        feedback = "\n".join(result["case_updated"].turn_history[-1].system_notices)
         assert "MILESTONE ORDER ERROR" not in feedback

@@ -112,7 +112,7 @@ async def _turn(engine, case, message: str, dsu: _DSU | None = None, **kw) -> di
 
 
 def _feedback(result) -> str:
-    return result["case_updated"].turn_history[-1].system_feedback or ""
+    return "\n".join(result["case_updated"].turn_history[-1].system_notices)
 
 
 def _intents(result) -> list:

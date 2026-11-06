@@ -307,7 +307,7 @@ async def test_a_bare_reemission_registers_nothing_and_a_named_one_does():
     assert (
         f"Only if the user reported carrying out {second.action_id}, set "
         f"accepted_action_ref to {second.action_id}"
-    ) in bare["system_feedback"]
+    ) in "\n".join(bare["system_notices"])
 
     await _turn(eng, case, 16, milestones=_accepted(second.action_id))
     assert (second.state, second.accepted_in_turn) == ("accepted", 16)
@@ -330,7 +330,7 @@ async def test_a_reassertion_naming_the_registered_fix_is_absorbed(window):
     assert first.accepted_in_turn == 6
     assert len(case.action_attempts) == 1
     assert "solution_accepted" not in meta["milestones_completed"]
-    feedback = meta.get("system_feedback", "")
+    feedback = "\n".join(meta.get("system_notices") or [])
     if window == "held":
         assert "solution_accepted" not in feedback
     else:
@@ -369,7 +369,7 @@ async def test_a_ref_naming_a_downgraded_diagnostic_is_refused():
     assert (
         f"accepted_action_ref {diagnostic.action_id} names "
         f"{diagnostic.action_id}, a DIAGNOSTIC (downgraded; see its ENGINE_NOTE)"
-    ) in meta["system_feedback"]
+    ) in "\n".join(meta["system_notices"])
 
 
 @pytest.mark.parametrize(
@@ -406,7 +406,7 @@ async def test_a_ref_naming_anything_else_registers_nothing(
     assert [a.accepted_in_turn for a in _solutions(case)][1:] == [None] * len(solutions)
     assert len(case.action_attempts) == 1
     assert "solution_accepted" not in meta["milestones_completed"]
-    assert said in meta["system_feedback"]
+    assert said in "\n".join(meta["system_notices"])
 
 
 @pytest.mark.parametrize("shape", ["first-fix", "after-a-relapse"])
@@ -452,15 +452,15 @@ async def test_an_unjustified_second_registration_is_refused_like_the_first(
 
     if justified:
         assert (second.state, second.accepted_in_turn) == ("accepted", 15)
-        assert "EVIDENCE VALIDATION" not in meta.get("system_feedback", "")
+        assert "EVIDENCE VALIDATION" not in "\n".join(meta.get("system_notices") or [])
     else:
         assert (second.state, second.accepted_in_turn) == ("pending", None)
         assert (
             "EVIDENCE VALIDATION: Milestones ['solution_accepted'] were NOT recorded"
-            in meta["system_feedback"]
+            in "\n".join(meta["system_notices"])
         )
         # Judged by the gate, so the pre-apply strip left it alone.
-        assert "accepted_action_ref" not in meta["system_feedback"]
+        assert "accepted_action_ref" not in "\n".join(meta["system_notices"])
 
 
 async def test_an_unjustified_reassertion_is_absorbed_with_no_line():
@@ -472,7 +472,7 @@ async def test_an_unjustified_reassertion_is_absorbed_with_no_line():
         eng, case, 14, justified=False, milestones=_accepted(first.action_id)
     )
 
-    assert "solution_accepted" not in meta.get("system_feedback", "")
+    assert "solution_accepted" not in "\n".join(meta.get("system_notices") or [])
     assert len(case.action_attempts) == 1
 
 
@@ -492,7 +492,7 @@ async def test_a_restated_latest_fix_named_by_new_index_is_absorbed():
         milestones=_accepted("new_index_0"),
     )
 
-    assert "NOT recorded" not in meta.get("system_feedback", "")
+    assert "NOT recorded" not in "\n".join(meta.get("system_notices") or [])
     assert len(_solutions(case)) == 1
     assert len(case.action_attempts) == 1
 
@@ -516,7 +516,7 @@ async def test_a_superseded_fix_named_after_a_first_fix_must_be_justified(named)
     assert target.accepted_in_turn is None
     assert (x.state, y.state) == ("superseded", "pending")
     assert "Milestones ['solution_accepted'] were NOT recorded" in (
-        meta["system_feedback"]
+        "\n".join(meta["system_notices"])
     )
 
 
@@ -537,7 +537,7 @@ async def test_the_strip_and_the_gate_share_one_evidence_validation_prefix():
         ),
     )
 
-    feedback = meta["system_feedback"]
+    feedback = "\n".join(meta["system_notices"])
     assert feedback.count("EVIDENCE VALIDATION") == 1
     assert (
         "EVIDENCE VALIDATION: Milestones ['mitigation_accepted', "
@@ -796,7 +796,7 @@ async def test_a_fix_withdrawn_when_its_license_fell_is_refused():
 
     assert x.accepted_in_turn is None
     assert case.action_attempts == []
-    assert f"{x.action_id} {_LICENSE}" in meta["system_feedback"]
+    assert f"{x.action_id} {_LICENSE}" in "\n".join(meta["system_notices"])
 
 
 async def test_a_fix_the_hold_withdrew_is_not_registered_by_name_on_a_live_turn():
@@ -815,7 +815,7 @@ async def test_a_fix_the_hold_withdrew_is_not_registered_by_name_on_a_live_turn(
     meta = await _turn(eng, case, 8, milestones=_accepted(x.action_id))
     assert case.action_attempts == []
     assert f"{x.action_id} was withdrawn while its root cause" in (
-        meta["system_feedback"]
+        "\n".join(meta["system_notices"])
     )
 
     await _turn(
@@ -843,7 +843,7 @@ async def test_a_superseded_fix_does_not_register_after_the_license_fell():
     assert x.accepted_in_turn is None
     assert case.progress.solution_accepted is False
     assert len(fix_windows(case)) == 1  # no fix window opened
-    assert f"{x.action_id} {_LICENSE}" in meta["system_feedback"]
+    assert f"{x.action_id} {_LICENSE}" in "\n".join(meta["system_notices"])
 
 
 # ---------------------------------------------------------------------------
@@ -865,7 +865,7 @@ async def test_a_hold_turn_naming_the_pending_fix_registers_it_once(resent):
 
     held = await _turn(eng, case, 6, milestones=_accepted(x.action_id), **sent)
     assert case.action_attempts == []
-    assert "held until the user confirms" in held["system_feedback"]
+    assert "held until the user confirms" in "\n".join(held["system_notices"])
     await _confirm(eng, case, 7)
 
     assert len(case.action_attempts) == 1
@@ -940,8 +940,8 @@ async def test_a_staged_second_fix_registers_when_the_revision_is_confirmed():
         solutions_to_add=[_fix(_RESTART), _fix(_SECOND)],
         milestones=_accepted("new_index_1"),
     )
-    assert "held until the user confirms" in held["system_feedback"]
-    assert held.get("system_feedback", "").count("accepted_action_ref") == 0
+    assert "held until the user confirms" in "\n".join(held["system_notices"])
+    assert "\n".join(held.get("system_notices") or []).count("accepted_action_ref") == 0
     assert len(_solutions(case)) == 1
 
     await _confirm(eng, case, 16)
@@ -1032,7 +1032,7 @@ async def test_a_fix_withdrawn_before_the_hold_keeps_the_ruled_refusal(
     meta = await _turn(eng, case, 8, milestones=_accepted(x.action_id))
 
     said = "was withdrawn while its root cause" if licensed else _LICENSE
-    assert f"{x.action_id} {said}" in meta["system_feedback"]
+    assert f"{x.action_id} {said}" in "\n".join(meta["system_notices"])
     assert all(b.held_fix is None for b in pending_revision(case).staged)
 
 
@@ -1106,7 +1106,7 @@ async def test_a_held_registration_whose_fix_the_replay_downgrades_registers_not
         InvestigationActionType.DIAGNOSTIC
     ]
     diagnostic = case.proposed_actions[0]
-    assert f"{diagnostic.action_id} {_LICENSE}" in meta["system_feedback"]
+    assert f"{diagnostic.action_id} {_LICENSE}" in "\n".join(meta["system_notices"])
 
 
 async def test_a_bundle_that_no_longer_validates_drops_its_carried_registration():
@@ -1141,7 +1141,9 @@ async def test_a_bare_acceptance_of_a_fix_staged_earlier_and_not_re_sent_is_refu
     meta = await _turn(eng, case, 7, milestones=_accepted())
     await _confirm(eng, case, 8)
 
-    assert "no SOLUTION proposal is currently pending" in meta["system_feedback"]
+    assert "no SOLUTION proposal is currently pending" in "\n".join(
+        meta["system_notices"]
+    )
     assert case.action_attempts == []
 
 
@@ -1160,7 +1162,7 @@ async def test_a_bare_acceptance_on_a_hold_after_a_first_fix_names_the_held_fix(
     )
 
     assert "set accepted_action_ref to new_index_1 with solution_accepted" in (
-        meta["system_feedback"]
+        "\n".join(meta["system_notices"])
     )
     assert all(b.held_fix is None for b in pending_revision(case).staged)
 
@@ -1229,7 +1231,9 @@ async def test_an_acceptance_naming_a_workaround_never_registers_its_solution(
 
     kind = "a MITIGATION (set mitigation_accepted" if symptom else "a DIAGNOSTIC"
     assert (x.state, case.action_attempts) == ("pending", [])
-    assert f"{case.proposed_actions[-1].action_id}, {kind}" in meta["system_feedback"]
+    assert f"{case.proposed_actions[-1].action_id}, {kind}" in "\n".join(
+        meta["system_notices"]
+    )
 
 
 def _license_down(case):
@@ -1256,7 +1260,7 @@ async def test_a_downgraded_re_send_of_a_failed_fix_gets_the_license_line():
     )
 
     assert len(case.action_attempts) == 1
-    assert _LICENSE in meta["system_feedback"]
+    assert _LICENSE in "\n".join(meta["system_notices"])
 
 
 async def test_naming_a_downgraded_diagnostic_registers_the_newer_solution():
@@ -1331,7 +1335,7 @@ async def test_the_skip_is_read_when_the_gate_decides():
     assert case.offer_record.open is None
     assert len(case.action_attempts) == 1
     assert "Milestones ['solution_accepted'] were NOT recorded" in (
-        meta["system_feedback"]
+        "\n".join(meta["system_notices"])
     )
 
 
@@ -1350,7 +1354,7 @@ async def test_a_hold_turn_naming_a_failed_fix_settles_it_now(justified):
     )
     await _confirm(eng, case, 15)
 
-    feedback = meta["system_feedback"]
+    feedback = "\n".join(meta["system_notices"])
     assert "held until the user confirms" not in feedback
     assert "NOT recorded" not in feedback
     assert f"SOLUTION {first.action_id} is registered, and its fix window " in feedback
@@ -1373,8 +1377,12 @@ async def test_a_bare_acceptance_after_a_carried_one_says_the_report_stands():
     meta = await _turn(eng, case, 7, milestones=_accepted())
     await _confirm(eng, case, 8)
 
-    assert "no SOLUTION proposal is currently pending" not in meta["system_feedback"]
-    assert "the fix execution reported at turn 6 stands" in meta["system_feedback"]
+    assert "no SOLUTION proposal is currently pending" not in "\n".join(
+        meta["system_notices"]
+    )
+    assert "the fix execution reported at turn 6 stands" in "\n".join(
+        meta["system_notices"]
+    )
     assert _accepted_turns(case) == [6]
 
 
@@ -1448,8 +1456,8 @@ async def test_a_failed_fix_re_sent_and_downgraded_gets_the_license_line(at):
         )
 
     assert case.proposed_actions[-1].action_type == InvestigationActionType.DIAGNOSTIC
-    assert _LICENSE in meta["system_feedback"]
-    assert "re-propose it as a SolutionToAdd" not in meta["system_feedback"]
+    assert _LICENSE in "\n".join(meta["system_notices"])
+    assert "re-propose it as a SolutionToAdd" not in "\n".join(meta["system_notices"])
     assert len(case.action_attempts) == 1
 
 
@@ -1590,7 +1598,7 @@ async def test_a_bare_acceptance_of_a_downgraded_fix_gets_the_license_line():
     )
 
     assert (first.state, case.action_attempts) == ("pending", [])
-    assert _LICENSE in meta["system_feedback"]
+    assert _LICENSE in "\n".join(meta["system_notices"])
 
 
 async def test_a_carry_whose_copy_an_earlier_bundle_staged_gets_the_license_line():
@@ -1612,7 +1620,7 @@ async def test_a_carry_whose_copy_an_earlier_bundle_staged_gets_the_license_line
 
     meta = await _confirm(eng, case, 16)
 
-    assert _LICENSE in meta["system_feedback"]
+    assert _LICENSE in "\n".join(meta["system_notices"])
     assert len(case.action_attempts) == 1
 
 
@@ -1642,8 +1650,10 @@ async def test_a_fix_carried_in_this_revision_is_neither_named_nor_carried_again
         milestones=_accepted("new_index_0"),
     )
 
-    assert "new_index_0" not in bare.get("system_feedback", "")
-    assert "held until the user confirms" not in named.get("system_feedback", "")
+    assert "new_index_0" not in "\n".join(bare.get("system_notices") or [])
+    assert "held until the user confirms" not in "\n".join(
+        named.get("system_notices") or []
+    )
     pending = pending_revision(case)
     assert "1 reported fix execution(s)" in staged_work_summary(pending)
     await _confirm(eng, case, 17)
@@ -1829,8 +1839,8 @@ async def test_every_prompt_site_that_registers_a_fix_names_the_ref():
 
     for text in (
         _between(context, "<pending_action>", "</pending_action>"),
-        failed["system_feedback"],
-        no_pending["system_feedback"],
+        "\n".join(failed["system_notices"]),
+        "\n".join(no_pending["system_notices"]),
         downgraded.proposed_actions[0].downgrade_reason,
         _between(treatment, "User only APPLIED the fix", "User ASKS to resolve"),
         _between(

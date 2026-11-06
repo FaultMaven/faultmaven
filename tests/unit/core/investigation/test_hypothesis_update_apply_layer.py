@@ -176,7 +176,7 @@ def test_refuted_on_a_reason_alone_is_refused_with_feedback():
     assert h.refutation_reason is None
     assert h.likelihood == 0.7
     assert meta["hypotheses_updated"] == []
-    feedback = meta["system_feedback"]
+    feedback = "\n".join(meta["system_notices"])
     assert f"Hypothesis {h.hypothesis_id} was NOT refuted" in feedback
     assert "ask for the check that would settle it" in feedback
     counter.labels.assert_called_once_with(source="model")
@@ -194,7 +194,7 @@ def test_a_self_hedged_refutes_link_does_not_back_a_refutation():
     _refute(eng, case, h, meta)
 
     assert h.state == HypothesisState.ACTIVE
-    assert "self-hedged" in meta["system_feedback"]
+    assert "self-hedged" in "\n".join(meta["system_notices"])
 
 
 def test_a_refutes_link_on_the_chain_root_backs_the_refutation():
@@ -245,7 +245,7 @@ def test_refuted_without_reason_is_skipped_with_feedback():
 
     assert h.state == HypothesisState.ACTIVE  # unchanged
     assert meta["hypotheses_updated"] == []
-    assert "refutation_reason" in meta.get("system_feedback", "")
+    assert "refutation_reason" in "\n".join(meta.get("system_notices") or [])
 
 
 def test_validated_transition_is_deferred_noop():
@@ -298,7 +298,7 @@ def test_refuted_is_terminal_immutable_no_resurrection_or_corruption():
     assert h.state == HypothesisState.REFUTED  # not resurrected
     assert h.refutation_reason == "disproved"  # intact
     assert meta2["hypotheses_updated"] == []
-    assert "terminal" in meta2.get("system_feedback", "").lower()
+    assert "terminal" in "\n".join(meta2.get("system_notices") or []).lower()
     # The pair stays consistent — the hypothesis still reconstructs cleanly.
     Hypothesis(**h.model_dump())  # must not raise
 
@@ -329,7 +329,7 @@ def test_likelihood_not_applied_to_terminal_hypothesis():
 
     assert h.likelihood == 0.0  # unchanged — terminal
     assert meta["hypotheses_updated"] == []
-    assert meta.get("system_feedback")
+    assert meta.get("system_notices")
 
 
 def test_refuted_without_reason_does_not_apply_same_entry_likelihood():
@@ -358,7 +358,7 @@ def test_refuted_without_reason_does_not_apply_same_entry_likelihood():
     assert h.state == HypothesisState.ACTIVE  # not refuted (no reason)
     assert h.likelihood == 0.7  # NOT bumped to 0.95
     assert meta["hypotheses_updated"] == []
-    assert meta.get("system_feedback")
+    assert meta.get("system_notices")
 
 
 def test_likelihood_only_update_applies():
@@ -492,7 +492,7 @@ def test_evidence_free_likelihood_update_capped_with_feedback():
     # Ceiling semantics: the cap refuses the RAISE but never demotes below
     # the current earned value (0.7 here), so the applied value is unchanged.
     assert h.likelihood == 0.7
-    assert "capped" in meta.get("system_feedback", "")
+    assert "capped" in "\n".join(meta.get("system_notices") or [])
     assert meta["hypotheses_updated"] == [h.hypothesis_id]
 
 
@@ -531,7 +531,7 @@ def test_supported_likelihood_update_no_cap_feedback():
     )
 
     assert h.likelihood == 0.9
-    assert "capped" not in meta.get("system_feedback", "")
+    assert "capped" not in "\n".join(meta.get("system_notices") or [])
 
 
 def test_same_turn_link_then_likelihood_is_not_capped():
@@ -576,7 +576,7 @@ def test_same_turn_link_then_likelihood_is_not_capped():
         eng.deps.hypothesis_manager, case, meta, case.current_turn
     )
     assert h.likelihood == 0.9
-    assert "capped" not in meta.get("system_feedback", "")
+    assert "capped" not in "\n".join(meta.get("system_notices") or [])
 
 
 def test_deferred_apply_respects_same_turn_refutation():
@@ -614,7 +614,7 @@ def test_deferred_apply_respects_same_turn_refutation():
         eng.deps.hypothesis_manager, case, meta, case.current_turn
     )
     assert h.likelihood == 0.0  # not resurrected
-    assert "immutable" in meta.get("system_feedback", "")
+    assert "immutable" in "\n".join(meta.get("system_notices") or [])
 
 
 def test_duplicate_entries_for_one_hypothesis_are_applied_once():

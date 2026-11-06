@@ -466,13 +466,12 @@ class TransitionManager:
                 f"from {case.state.value!r}. "
                 f"Valid targets: {sorted(valid_targets)}."
             )
-            current_feedback = metadata.get("system_feedback") or ""
             valid_list = (
                 ", ".join(f"{t!r}" for t in sorted(valid_targets))
                 or "(none — case is terminal)"
             )
-            metadata["system_feedback"] = (
-                f"{current_feedback}\n"
+            _add_system_feedback(
+                metadata,
                 "INVALID TRANSITION ERROR: You emitted "
                 f"``proposed_transition.to_state={proposed.to_state!r}`` "
                 f"from case.state={case.state.value!r}, which is "
@@ -483,8 +482,8 @@ class TransitionManager:
                 "valid proposed_transition (resolution requires "
                 "investigation work first — there is no "
                 "INQUIRY → RESOLVED edge). Do not re-emit this "
-                "transition; emit only valid edges."
-            ).strip()
+                "transition; emit only valid edges.",
+            )
             metadata.setdefault("validation_repairs", []).append(
                 f"Rejected proposed_transition.to_state="
                 f"{proposed.to_state!r} from {case.state.value!r}"

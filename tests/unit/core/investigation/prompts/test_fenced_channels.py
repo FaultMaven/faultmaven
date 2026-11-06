@@ -275,7 +275,7 @@ def _feedback_record(feedback: str) -> TurnProgress:
         outcome=TurnOutcome.CONVERSATION,
         user_message_summary="u1",
         agent_response_summary="a1",
-        system_feedback=feedback,
+        system_notices=[feedback] if feedback else [],
     )
 
 
@@ -2080,7 +2080,7 @@ class TestNoAssembledSectionCanSwallowADelimiter:
                 timestamp=datetime.now(timezone.utc),
                 outcome=TurnOutcome.CONVERSATION,
                 progress_made=True,
-                system_feedback=CONVERSATION_SHAPES["unterminated"],
+                system_notices=[CONVERSATION_SHAPES["unterminated"]],
             )
         ]
         prompt = get_prompt_for_case(

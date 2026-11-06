@@ -136,7 +136,7 @@ def test_anchoring_retires_flagged_stalled_hypotheses_and_marks_the_turn():
     # The intervention recorded the turn it fired (drives the cooldown).
     assert case.progress.last_anti_anchoring_turn == case.current_turn
     # The LLM is told to diversify, with an honest retirement count.
-    fb = meta.get("system_feedback") or ""
+    fb = "\n".join(meta.get("system_notices") or [])
     assert "CRITICAL" in fb and "Retired 2" in fb
 
 
@@ -153,7 +153,7 @@ def test_recent_outstanding_need_suppresses():
 
     assert all(h.state == HypothesisState.ACTIVE for h in case.hypotheses.values())
     assert case.progress.last_anti_anchoring_turn == 0  # never fired
-    assert not meta.get("system_feedback")
+    assert not meta.get("system_notices")
 
 
 def test_stale_outstanding_need_does_not_permanently_suppress():
@@ -175,7 +175,7 @@ def test_stale_outstanding_need_does_not_permanently_suppress():
         if h.state == HypothesisState.RETIRED
     }
     assert retired == {"hyp_0000000000a1", "hyp_0000000000a2"}
-    assert "CRITICAL" in (meta.get("system_feedback") or "")
+    assert "CRITICAL" in "\n".join(meta.get("system_notices") or [])
 
 
 def test_cooldown_marker_suppresses_then_expires():
@@ -187,7 +187,7 @@ def test_cooldown_marker_suppresses_then_expires():
         eng.deps.hypothesis_manager, case, meta, investigation_advanced=True
     )
     assert all(h.state == HypothesisState.ACTIVE for h in case.hypotheses.values())
-    assert not meta.get("system_feedback")
+    assert not meta.get("system_notices")
 
     # Window expired → fires again.
     eng2, case2 = _engine(), _flooded_case(current_turn=10)
@@ -220,7 +220,7 @@ def test_retire_zero_still_marks_the_turn_so_it_does_not_renag_every_turn():
     assert all(h.state == HypothesisState.ACTIVE for h in case.hypotheses.values())
     # Nothing retired, but the turn is marked and the message claims no retirement.
     assert case.progress.last_anti_anchoring_turn == case.current_turn
-    fb = meta.get("system_feedback") or ""
+    fb = "\n".join(meta.get("system_notices") or [])
     assert "CRITICAL" in fb and "Retired" not in fb
 
 

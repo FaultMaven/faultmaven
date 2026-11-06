@@ -207,9 +207,8 @@ async def confirm_revision(
                     metadata[key] = bundle_metadata[key]
         for key in REPLAYED_KEYS:
             replayed[key].extend(bundle_metadata.get(key, []))
-        feedback = bundle_metadata.get("system_feedback")
-        if feedback:
-            _add_system_feedback(metadata, feedback)
+        for notice in bundle_metadata.get("system_notices") or []:
+            _add_system_feedback(metadata, notice)
 
     metadata["statement_commit"] = {
         "statement": pending.text,

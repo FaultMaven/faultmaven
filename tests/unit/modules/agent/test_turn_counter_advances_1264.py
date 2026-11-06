@@ -212,7 +212,7 @@ class TestTheRecordDoesNotDestroyWhatTurnHistoryFeeds:
     """``turn_history`` is not only a counter.
 
     ``prompts/context_builder`` renders it as the prompt's EARLIER TURNS block
-    and reads ``[-1].system_feedback``; ``working_conclusion_generator`` and
+    and reads ``"\n".join([-1].system_notices)``; ``working_conclusion_generator`` and
     ``progress_monitor`` window it. Adding a MINIMAL entry is therefore not a
     harmless placeholder — it displaces the tail and replaces real text. Each
     test below fails against the first version of this fix, which recorded an
@@ -232,7 +232,9 @@ class TestTheRecordDoesNotDestroyWhatTurnHistoryFeeds:
                 turn_number=1,
                 progress_made=True,
                 outcome=TurnOutcome.CONVERSATION,
-                system_feedback="EVIDENCE VALIDATION: provide milestone_justifications.",
+                system_notices=[
+                    "EVIDENCE VALIDATION: provide milestone_justifications."
+                ],
             )
         ]
         case.current_turn = 2
@@ -241,9 +243,9 @@ class TestTheRecordDoesNotDestroyWhatTurnHistoryFeeds:
             case, user_message="hi", agent_response="hello", metadata={}
         )
 
-        assert case.turn_history[-1].system_feedback == (
+        assert case.turn_history[-1].system_notices == [
             "EVIDENCE VALIDATION: provide milestone_justifications."
-        ), "the greeting swallowed feedback the next engine turn still needs"
+        ], "the greeting swallowed feedback the next engine turn still needs"
 
     def test_it_records_the_real_text(self, sample_case):
         """``_build_graduated_history`` renders from the record when one exists

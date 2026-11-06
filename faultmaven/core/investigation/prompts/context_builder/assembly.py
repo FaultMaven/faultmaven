@@ -92,6 +92,16 @@ def _user_message_cap() -> int:
         return _USER_MESSAGE_CAP_FALLBACK
 
 
+def _system_feedback_cap() -> int:
+    """``prompt_budget.system_feedback_max_tokens``, or the fallback."""
+    try:
+        from faultmaven.config.settings import get_settings
+
+        return get_settings().prompt_budget.system_feedback_max_tokens
+    except Exception:
+        return 1500
+
+
 def _shrink_fenced_tail(fenced: str, alloc: int, budget: "TokenBudget") -> str:
     """Shrink a fenced block to ``alloc`` tokens, keeping its BODY's tail.
 
@@ -172,11 +182,10 @@ def _allocate_sections(
 
     try:
         pb = get_settings().prompt_budget
-        feedback_cap = pb.system_feedback_max_tokens
         journal_cap = pb.journal_max_tokens
         conversation_cap = pb.conversation_history_max_tokens
     except Exception:
-        feedback_cap, journal_cap = 1500, 1500
+        journal_cap = 1500
         conversation_cap = 8000
 
     try:
@@ -196,21 +205,20 @@ def _allocate_sections(
 
     # ``user_message_block`` arrives already capped AND already fenced (the cap
     # runs before the fence in ``build_investigation_context``, or it would cut
-    # the rendered element), so it is only counted here.
-    capped_feedback = _cap_text_tokens(
-        feedback_str, feedback_cap, provider_name, model_name
-    )
+    # the rendered element), and ``feedback_str`` arrives bounded to its cap by
+    # whole notices (``system_feedback_block``, #2499), so both are only
+    # counted here.
     ctx["identity"] = _reserve(identity)
     ctx["core_context"] = _reserve(core_context)
     ctx["milestones"] = _reserve(milestones_str)
     ctx["inquiry_state"] = _reserve(inquiry_state_str)
     ctx["pending_action"] = _reserve(pending_action_str)
-    ctx["system_feedback"] = _reserve(capped_feedback)
-    # Its own section, not appended to the feedback (#1911): the feedback cap
-    # keeps the head and would cut the reminder first, and a feedback cut
-    # mid-tag would absorb it; as a section of its own it gets the per-section
-    # tag termination below. Bounded: at most MAX_NAMED_EXCLUSIONS ids and two
-    # fixed sentences.
+    ctx["system_feedback"] = _reserve(feedback_str)
+    # Its own section, not appended to the feedback (#1911): the feedback
+    # budget drops notices from the tail and would drop the reminder first,
+    # and a notice ending mid-tag would absorb it; as a section of its own it
+    # gets the per-section tag termination below. Bounded: at most
+    # MAX_NAMED_EXCLUSIONS ids and two fixed sentences.
     ctx["exclusions"] = _reserve(exclusions_str)
     # Reserved within its own fixed budget (#1906 D7), not a floor-0 variable
     # section: those are dropped first under pressure, and pressure is what
@@ -447,9 +455,13 @@ def _working_hypotheses(case: Case, standing: list[str]) -> str:
 
 
 def system_feedback_block(
-    case: Case, guard: Optional[Callable[[str], str]] = None
+    case: Case,
+    guard: Optional[Callable[[str], str]] = None,
+    *,
+    max_tokens: Optional[int] = None,
+    count: Optional[Callable[[str], int]] = None,
 ) -> str:
-    """The previous turn's ``system_feedback`` as a prompt block, or ``""``.
+    """The previous turn's ``system_notices`` as a prompt block, or ``""``.
 
     The one reader of the channel, shared by the main prompt and the minimal
     fallback (``templates._fallback_body``), so a turn that degrades to the
@@ -466,31 +478,71 @@ def system_feedback_block(
     and over any record not carrying it, such as a SKIPPED placeholder that
     ``Case.reconcile_turn_sequence`` backfilled for an interrupted turn.
 
+    The notices render whole, in record order (prepended first, then
+    chronological), until the next would take the block over ``max_tokens``
+    as ``count`` measures it; then one line says how many were omitted. A
+    notice is never cut mid-sentence (#2499). Without ``max_tokens`` every
+    notice renders: the fallback bounds its copy itself.
+
     ``guard`` wraps the notice text alone; the fallback passes its
     ``_guarded``. Wrapping the finished block instead would put a terminator
     after the block's trailing blank line, on the same line as whatever the
     template renders next.
     """
     last = case.turn_history[-1] if case.turn_history else None
-    if last is None or not last.system_feedback:
+    if last is None or not last.system_notices:
         return ""
-    notice = last.system_feedback
-    body = guard(notice) if guard else notice
+    notices = list(last.system_notices)
     if not last.system_feedback_forwarded:
-        return f"IMPORTANT - SYSTEM FEEDBACK FROM PREVIOUS TURN:\n{body}\n\n"
-    origin = next(
-        (
-            record
-            for record in reversed(case.turn_history[:-1])
-            if record.system_feedback == notice and not record.system_feedback_forwarded
-        ),
-        None,
-    )
-    source = f"TURN {origin.turn_number}" if origin else "AN EARLIER TURN"
-    return (
-        f"IMPORTANT - SYSTEM FEEDBACK FROM {source} "
-        f"(not shown to you until now):\n{body}\n\n"
-    )
+        origin = last
+        heading = "IMPORTANT - SYSTEM FEEDBACK FROM PREVIOUS TURN:"
+    else:
+        origin = next(
+            (
+                record
+                for record in reversed(case.turn_history[:-1])
+                if list(record.system_notices) == notices
+                and not record.system_feedback_forwarded
+            ),
+            None,
+        )
+        source = f"TURN {origin.turn_number}" if origin else "AN EARLIER TURN"
+        heading = (
+            f"IMPORTANT - SYSTEM FEEDBACK FROM {source} (not shown to you until now):"
+        )
+    from_turn = f"turn {origin.turn_number}" if origin else "an earlier turn"
+    body = _whole_notices(notices, heading, from_turn, max_tokens, count)
+    body = guard(body) if guard else body
+    return f"{heading}\n{body}\n\n"
+
+
+def _whole_notices(
+    notices: Sequence[str],
+    heading: str,
+    from_turn: str,
+    max_tokens: Optional[int],
+    count: Optional[Callable[[str], int]],
+) -> str:
+    """The longest head of ``notices`` that, under ``heading`` and with the
+    line naming the rest, fits ``max_tokens``; every notice when there is no
+    budget to fit (#2499)."""
+    kept = len(notices)
+    while kept > 0:
+        omitted = len(notices) - kept
+        body = "\n".join(notices[:kept])
+        if omitted:
+            body += (
+                f"\n[{omitted} more notice{'s' if omitted > 1 else ''} "
+                f"from {from_turn} omitted]"
+            )
+        if (
+            max_tokens is None
+            or count is None
+            or count(f"{heading}\n{body}") <= max_tokens
+        ):
+            return body
+        kept -= 1
+    return f"[{len(notices)} more notices from {from_turn} omitted]"
 
 
 def build_investigation_context(
@@ -891,7 +943,9 @@ def build_investigation_context(
 
     # 8. System Feedback (Validation errors from previous turn), then the
     # exclusions on record, in the slot read last before the user's message.
-    feedback_str = system_feedback_block(case)
+    feedback_str = system_feedback_block(
+        case, max_tokens=_system_feedback_cap(), count=budget.count
+    )
     exclusions_str = exclusions_reminder(case)
 
     # 9. Stage-Specific Context Loading (Gap #10: Section 11.4)

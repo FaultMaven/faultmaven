@@ -970,13 +970,20 @@ def _add_system_feedback(
 ) -> None:
     """Accumulate a system notice for the next turn's prompt context.
 
-    ``prepend`` puts the notice at the HEAD: the turn record truncates
-    feedback head-first, so a notice that must survive a messy turn (many
-    accumulators active) goes in front. Default is chronological append.
+    One whole notice per call, onto ``metadata["system_notices"]``: the turn
+    record stores the list as it stands (``create_turn_progress``) and the
+    prompt renders whole notices from its head until its budget is spent,
+    never one cut mid-sentence (#2499). ``prepend`` puts the notice at the
+    HEAD, so on a messy turn (many accumulators active) it is the last one the
+    prompt would drop. Default is chronological append.
     """
-    current = metadata.get("system_feedback", "") or ""
-    parts = (message, current) if prepend else (current, message)
-    metadata["system_feedback"] = "\n".join(p for p in parts if p).strip()
+    if not message:
+        return
+    notices = metadata.setdefault("system_notices", [])
+    if prepend:
+        notices.insert(0, message)
+    else:
+        notices.append(message)
 
 
 #: The turn's EVIDENCE VALIDATION line as it stands: what it names and says.
@@ -1008,11 +1015,11 @@ def add_evidence_validation_feedback(
     if previous is not None:
         names |= set(previous["not_recorded"])
         said = previous["errors"] + said
-        metadata["system_feedback"] = "\n".join(
-            part
-            for part in (metadata.get("system_feedback") or "").split("\n")
-            if part != previous["line"]
-        )
+        metadata["system_notices"] = [
+            notice
+            for notice in metadata.get("system_notices") or []
+            if notice != previous["line"]
+        ]
     # One message per kind: "Milestones [a] <text>" + [b] -> "Milestones [a, b] <text>".
     merged: dict[str, list[str]] = {}
     for error in said:

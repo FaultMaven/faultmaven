@@ -502,7 +502,7 @@ def test_hypothesis_cannot_adopt_another_hypothesis_root():
     assert adopter.path == []
     assert owner.root_node_id == owned_root
     # The LLM is told what to do instead — emit its own root.
-    feedback = metadata.get("system_feedback", "")
+    feedback = "\n".join(metadata.get("system_notices") or [])
     assert owned_root in feedback
     assert owner.hypothesis_id in feedback
     assert "One cause = one chain" in feedback
@@ -574,7 +574,7 @@ def test_two_new_hypotheses_cannot_share_one_emitted_root():
 
     rooted = [h for h in (first, second) if h.root_node_id is not None]
     assert len(rooted) == 1
-    assert "One cause = one chain" in metadata.get("system_feedback", "")
+    assert "One cause = one chain" in "\n".join(metadata.get("system_notices") or [])
 
 
 def test_re_anchoring_a_hypothesis_to_its_own_root_is_not_refused():
@@ -591,7 +591,7 @@ def test_re_anchoring_a_hypothesis_to_its_own_root_is_not_refused():
 
     assert h.root_node_id == root_id
     assert h.path[0] == root_id
-    assert "system_feedback" not in metadata
+    assert not metadata.get("system_notices")
 
 
 def test_handoff_is_honored_when_the_owner_re_roots_in_the_same_batch():
@@ -622,7 +622,7 @@ def test_handoff_is_honored_when_the_owner_re_roots_in_the_same_batch():
     assert handed_over in case.causal_nodes
     assert owner.root_node_id not in (None, handed_over)
     assert len(owner.path) == 3  # root -> intermediate -> D
-    assert "system_feedback" not in metadata
+    assert not metadata.get("system_notices")
     # No dangling edges after the deferred GC.
     assert all(
         e.cause_node_id in case.causal_nodes and e.effect_node_id in case.causal_nodes

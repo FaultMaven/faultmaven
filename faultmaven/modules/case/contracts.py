@@ -626,6 +626,8 @@ from faultmaven.modules.case.domain.models.solution import (
     classify_solution_outcome,
 )
 from faultmaven.modules.case.domain.models.turn import (
+    MAX_SYSTEM_NOTICE_CHARS,
+    MAX_SYSTEM_NOTICES,
     NON_INVESTIGATIVE_OUTCOMES,
     FixCause,
     InvestigationMomentum,
@@ -915,6 +917,8 @@ __all__ = [
     "TemporalState",
     "TERMINAL_HYPOTHESIS_STATES",
     "NON_INVESTIGATIVE_OUTCOMES",
+    "MAX_SYSTEM_NOTICES",
+    "MAX_SYSTEM_NOTICE_CHARS",
     "is_default_case_title",
     "TerminalConfirmedVia",
     "TurnOutcome",

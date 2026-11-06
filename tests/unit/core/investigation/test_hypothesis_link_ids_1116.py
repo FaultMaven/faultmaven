@@ -185,9 +185,9 @@ class TestTerminalHypothesisRefusesLinks:
         assert h.last_progress_at_turn == 1
         assert h.iterations_without_progress == 2
         assert "hypothesis_evidence_links_applied" not in metadata
-        assert h.hypothesis_id in metadata["system_feedback"]
-        assert "terminal" in metadata["system_feedback"]
-        assert "NEW hypothesis" in metadata["system_feedback"]
+        assert h.hypothesis_id in "\n".join(metadata["system_notices"])
+        assert "terminal" in "\n".join(metadata["system_notices"])
+        assert "NEW hypothesis" in "\n".join(metadata["system_notices"])
 
     def test_active_hypothesis_in_the_same_batch_still_links(self):
         """The guard skips the one link, not the batch."""

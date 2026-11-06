@@ -635,12 +635,12 @@ def test_7_the_checklist_narrows_to_the_rows_that_would_bind():
 async def test_8_an_unbound_row_gets_one_line_listing_what_would_bind(rechecks):
     eng, case, _root_node, _hyp = _fixed(6)
     (row,), meta = await _record(eng, case, 7, _obs(_GONE, "checkout fine", rechecks))
-    feedback = meta["system_feedback"]
+    feedback = "\n".join(meta["system_notices"])
     assert f"Post-fix row(s) {row.evidence_id}" in feedback
     assert VERIFYING_ID in feedback and _SUPPORT in feedback
 
     _, meta = await _record(eng, case, 8, _obs(_GONE, "checkout fine", VERIFYING_ID))
-    assert "Post-fix row" not in (meta.get("system_feedback") or "")
+    assert "Post-fix row" not in "\n".join(meta.get("system_notices") or [])
 
 
 # ---------------------------------------------------------------------------
@@ -773,7 +773,7 @@ async def test_p1_a_refuted_causes_recheck_never_confirms_another_cause():
     assert observation_subject(case, a_recheck) == SUBJECT_UNBOUND
     assert assess_resolution_readiness(case).verdict != ResolutionReadiness.READY
     # The window still sees it, so the model is not told it names nothing.
-    assert "Post-fix row(s)" not in (meta.get("system_feedback") or "")
+    assert "Post-fix row(s)" not in "\n".join(meta.get("system_notices") or [])
 
 
 async def test_p2_a_count_held_cause_binds_after_another_cause_fell():
@@ -1001,7 +1001,7 @@ async def test_a_count_held_root_with_no_terminal_verdict_is_no_cause():
 
 
 def _post_fix_line(meta) -> bool:
-    return "Post-fix row(s)" in (meta.get("system_feedback") or "")
+    return "Post-fix row(s)" in "\n".join(meta.get("system_notices") or [])
 
 
 async def test_no_line_for_an_exclusion_before_any_fix():
@@ -1042,7 +1042,7 @@ async def test_no_line_inside_a_failed_window():
     await _record(eng, case, 8, _obs(_PRESENT, "checkout still 503", VERIFYING_ID))
     assert fix_windows(case)[-1].state == FIX_FAILED
     _, meta = await _record(eng, case, 10, _obs(_GONE, "checkout fine now"))
-    assert "did not hold" in meta["system_feedback"]
+    assert "did not hold" in "\n".join(meta["system_notices"])
     assert not _post_fix_line(meta)
 
 
@@ -1160,7 +1160,7 @@ async def test_f2_a_fallen_cause_is_not_confirmed_past_a_newer_candidate(
     assert observation_subject(case, a_recheck) == SUBJECT_UNBOUND
     assert assess_resolution_readiness(case).verdict != ResolutionReadiness.READY
     assert a_recheck in fix_windows(case)[-1].cause_rows
-    assert "Post-fix row(s)" not in (meta.get("system_feedback") or "")
+    assert "Post-fix row(s)" not in "\n".join(meta.get("system_notices") or [])
 
 
 async def test_f2_the_fallen_causes_own_hypothesis_is_not_another_candidate():
