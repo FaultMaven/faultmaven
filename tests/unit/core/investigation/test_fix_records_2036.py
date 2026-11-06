@@ -1108,18 +1108,30 @@ async def test_a_conclusion_naming_an_intermediate_licenses_as_it_is_stored(
     assert _verdict(case) == (_NEEDS_INFO if named == "cn" else _READY)
 
 
-async def test_a_target_a_record_names_is_dropped_once_pruned_and_the_kind_kept():
-    """N3 (q3): the fix is licensed on R1 at 5. Turn 6's orphan pass, after
-    its record named R1, re-attaches A to R3 and prunes R1. At 7 the fix is
-    declared run in turn 6's message: turn 6's record makes it a remediation
-    of R1, and the target holds no node off the graph."""
+@pytest.mark.parametrize("named", [False, True], ids=["unnamed", "named"])
+async def test_a_target_a_record_names_is_dropped_once_pruned_and_the_kind_kept(
+    named,
+):
+    """N3 (q3) and delta 2's F1: the fix is licensed on R1 at 5, and may name
+    it (``node_ref``). Turn 6's orphan pass, after its record named R1,
+    re-attaches A to R3 and prunes R1. At 7 the fix is declared run in turn
+    6's message: turn 6's record makes it a remediation of R1, named or not,
+    and the target then holds no node off the graph."""
     case, root, hyp = _identified_case()
     _bare_candidate(case, root, hyp)
     hyp.likelihood = hyp.initial_likelihood = 0.85
     eng = _engine()
     await _record(eng, case, 4)
-    await _record(eng, case, 5, solutions_to_add=[_fix("raise max_connections")])
+    await _record(
+        eng,
+        case,
+        5,
+        solutions_to_add=[_fix("raise max_connections", _ROOT_ID if named else None)],
+    )
     fix = case.proposed_actions[-1]
+    assert (fix.target_ids, fix.target_named) == (
+        ([_ROOT_ID], True) if named else ([], False)
+    )
     await _record(eng, case, 6)
     assert case.turn_history[-1].cause_at_start.licence_ids == (_ROOT_ID,)
     r3 = _orphan(case, "cn_000000000033", _problem(case).node_id)

@@ -284,9 +284,9 @@ class ProposedAction(BaseModel):
             "``node_ref`` once it resolves, which nothing changes after; else, "
             "when the user runs it, the roots identified or count-held at the "
             "start of that turn; with none, the licence's cause, read from the "
-            "turn's record and ``licence_ids``. Pruning a node drops it here, "
-            "and a node off the graph by the time the fix is kinded is not "
-            "kept (its kind stands)."
+            "turn's record and ``licence_ids``. A node off the graph is "
+            "dropped here once the fix is kinded, when it is kinded or when "
+            "pruned after; its kind stands."
         ),
     )
     target_named: bool = Field(

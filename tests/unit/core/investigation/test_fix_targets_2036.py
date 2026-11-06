@@ -513,13 +513,27 @@ async def test_interceptions_count_in_no_fix_failure_cycle_and_relapse_demotes_n
 
 
 def test_pruning_a_target_drops_it_and_keeps_the_kind():
-    """Finding 9."""
+    """Finding 9, and PR #2558's delta 2 (F1): pruning drops a node from a
+    kinded fix's target, its kind kept, and from every fix's licence. A fix
+    not yet kinded keeps its named target, so the settle kinds it against
+    the record that named the node, then drops it."""
     case, _root, _hyp = _identified_case()
     x = _intermediate(case)
     action = _accepted(case, 6, FIX_INTERCEPTION, [x])
+    pending = ProposedAction(
+        case_id=case.case_id,
+        action_type=InvestigationActionType.SOLUTION,
+        description="restart the pods",
+        proposed_in_turn=7,
+        target_ids=[x],
+        target_named=True,
+        licence_ids=[x],
+    )
+    case.proposed_actions.append(pending)
     prune_abandoned_nodes(case, [x])
     assert x not in case.causal_nodes
     assert (action.target_ids, action.fix_kind) == ([], FIX_INTERCEPTION)
+    assert (pending.target_ids, pending.licence_ids) == ([x], [])
 
 
 # ---------------------------------------------------------------------------
