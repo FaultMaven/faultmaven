@@ -904,18 +904,17 @@ def _flag_unbound_post_fix_rows(case: Case, metadata: dict[str, Any] | None) -> 
     a symptom row, the confirmation pool for a causal_absence row, #2557).
     Such a row confirms and disconfirms nothing, so the model is told which
     ids WOULD bind — the list the re-verification checklist renders
-    (``SubjectIndex.bindable_rows``). A causal_absence row bound to the fix's
-    window but re-checking a row the root's verdict does not cite can fail
-    the fix and confirms nothing; it gets its own clause, naming the cited
-    basis. With a pool root whose verdict cites no row, the model is asked
-    to re-send the verdict citing its rows; with no pool, today's line.
+    (``SubjectIndex.bindable_rows``). A causal_absence row its window binds but
+    the verdict does not cite can fail the fix and confirms nothing: its own
+    line (``uncited_recheck_why``), silent with no pool.
 
     Post-fix means after a RECORDED fix, by the data's turn: an absence row
     in the fix's window (from its execution turn, as ``FixWindow.holds``), a
     symptom_evidence row after its execution turn (as persistence reads it)
-    and not cited as having shown the problem. Never before any fix — a
-    diagnosis-time exclusion or a mitigation's relief observes no fix — and
-    never inside a FAILED window, where nothing confirms and the failed-fix
+    and not cited as having shown the problem. Before any fix — a
+    diagnosis-time exclusion or a mitigation's relief observes no fix — only a
+    causal_absence row that named a row, on a non-empty pool (#2557). Never
+    inside a FAILED window, where nothing confirms and the failed-fix
     notice (``_flag_absence_inside_a_failed_fix_window``) says what to do.
     Only on a verified problem: before it, nothing can bind. Returns whether
     the line was added."""
@@ -925,13 +924,12 @@ def _flag_unbound_post_fix_rows(case: Case, metadata: dict[str, Any] | None) -> 
         fix_application_turn,
         fix_windows,
         subject_index,
+        uncited_recheck_why,
     )
 
     if metadata is None or case.progress.problem_status != ProblemStatus.VERIFIED:
         return False
     fix_turn = fix_application_turn(case)
-    if fix_turn is None:
-        return False
     subjects = subject_index(case)
     windows = fix_windows(case, subjects)
     failed = [w for w in windows if w.state == FIX_FAILED]
@@ -946,6 +944,12 @@ def _flag_unbound_post_fix_rows(case: Case, metadata: dict[str, Any] | None) -> 
         turn = subjects.observed(row)
         if any(window.holds(turn) for window in failed):
             return False
+        if fix_turn is None:
+            return bool(
+                row.category == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
+                and subjects.pool_roots
+                and getattr(row, "rechecks_evidence_id", None)
+            )
         if row.category in absence:
             return turn >= fix_turn
         return (
@@ -955,7 +959,10 @@ def _flag_unbound_post_fix_rows(case: Case, metadata: dict[str, Any] | None) -> 
         )
 
     def confirms_nothing(row) -> bool:
-        if row.category == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE:
+        if (
+            row.category == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
+            and subjects.pool_roots
+        ):
             return subjects.subject(row) == SUBJECT_UNBOUND
         return (
             subjects.subject(row, windows=True) == SUBJECT_UNBOUND
@@ -976,43 +983,39 @@ def _flag_unbound_post_fix_rows(case: Case, metadata: dict[str, Any] | None) -> 
     problem, cause = subjects.bindable_rows()
     problem_ids = ", ".join(e.evidence_id for e in problem[:5])
     cause_ids = ", ".join(e.evidence_id for e in cause[:5])
+    why = uncited_recheck_why(subjects)
     if cause_ids:
         cause_text = f"one of {cause_ids} (the cited basis of the root cause)."
     elif subjects.pool_roots:
         cause_text = (
-            "the root cause's terminal verdict cites no row yet; re-send "
-            "root_is_terminal true citing the causal_evidence rows that show "
-            "why it arose (RE-ROOT if a deeper cause produced it), then "
-            "re-check one of them."
+            f"{why}; re-send root_is_terminal true citing the causal_evidence "
+            "rows that show why it arose (RE-ROOT if a deeper cause produced "
+            "it), then re-check one of them."
         )
     else:
         cause_text = "none supports the root cause alone yet."
-    lines = []
-    if unnamed:
-        lines.append(
-            f"SYSTEM: Post-fix row(s) {', '.join(unnamed[:5])} name nothing they "
-            "re-check that binds, so they confirm and disconfirm nothing. Set "
-            "rechecks — symptom rows: "
-            + (
-                f"one of {problem_ids}"
-                if problem_ids
-                else "none is on record as having shown the problem; cite those "
-                "rows in symptom_verification_evidence_ids"
-            )
-            + "; causal_absence rows: "
-            + cause_text
-        )
     if uncited:
-        lines.append(
+        _add_system_feedback(
+            metadata,
             f"SYSTEM: Post-fix row(s) {', '.join(uncited[:5])} confirm nothing: "
-            "each re-checks a row the root's verdict does not cite; "
-            + (
-                f"name one of {cause_ids} (the cited basis)."
-                if cause_ids
-                else cause_text
-            )
+            + (f"{why}." if cause_ids else cause_text),
         )
-    _add_system_feedback(metadata, "\n".join(lines))
+    if not unnamed:
+        return True
+    _add_system_feedback(
+        metadata,
+        f"SYSTEM: Post-fix row(s) {', '.join(unnamed[:5])} name nothing they "
+        "re-check that binds, so they confirm and disconfirm nothing. Set "
+        "rechecks — symptom rows: "
+        + (
+            f"one of {problem_ids}"
+            if problem_ids
+            else "none is on record as having shown the problem; cite those "
+            "rows in symptom_verification_evidence_ids"
+        )
+        + "; causal_absence rows: "
+        + cause_text,
+    )
     return True
 
 

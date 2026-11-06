@@ -27,6 +27,7 @@ from faultmaven.core.investigation.cause_assurance import (
     SUBJECT_UNBOUND,
     cause_recheck_status,
     fix_windows,
+    remediations_at,
     subject_index,
 )
 from faultmaven.core.investigation.milestone_engine.stage_gates import (
@@ -46,6 +47,8 @@ from faultmaven.modules.case.contracts import (
     CauseState,
     EvidenceCategory,
     EvidenceStance,
+    HypothesisEvidenceLink,
+    HypothesisState,
     InvestigationActionType,
     NodeEvidenceLink,
     NodeState,
@@ -54,7 +57,11 @@ from faultmaven.modules.case.contracts import (
     ValidationMethod,
 )
 from tests.unit.core.investigation.test_m6_cause_gone_problem_persists_1927 import (
+    _ROOT_ID,
+    _UNNAMED,
+    _assert_demoted,
     _eid,
+    _engine_rows,
     _identified_case,
     _recompute_at,
     _row,
@@ -186,6 +193,15 @@ def _fixed(case, final):
     return fix
 
 
+def _cites_unlinked(case, final, ttl):
+    """The final root's verdict also cites a row it does not SUPPORTS-link."""
+    why = _row("why", _CAUSAL, 4, "the AppRole secret_id was issued once, by hand")
+    case.evidence.append(why)
+    final.metadata.update(terminal_verdict(ttl.evidence_id, why.evidence_id))
+    assert why.evidence_id not in {l.evidence_id for l in final.evidence_links}
+    return why
+
+
 def _recheck(case, named, turn=8, label="recheck"):
     row = _row(label, _CAUSE_GONE, turn, "the re-check after the fix", rechecks=named)
     case.evidence.append(row)
@@ -263,10 +279,7 @@ def test_a_cited_row_the_root_does_not_link_binds_end_to_end():
     cited basis, so a re-check of it binds, is inside the fix's window, and
     confirms the cause (INV-48 rejected a link requirement)."""
     case, final, _relief, _login, ttl = _mirror()
-    why = _row("why", _CAUSAL, 4, "the AppRole secret_id was issued once, by hand")
-    case.evidence.append(why)
-    final.metadata.update(terminal_verdict(ttl.evidence_id, why.evidence_id))
-    assert why.evidence_id not in {l.evidence_id for l in final.evidence_links}
+    why = _cites_unlinked(case, final, ttl)
     _fixed(case, final)
     row = _recheck(case, why.evidence_id)
 
@@ -349,9 +362,7 @@ def test_an_uncited_pool_root_binds_nothing_until_the_verdict_is_re_sent():
     assert subjects.bindable_rows()[1] == []
     assert _latest(case).state != FIX_SUCCEEDED
     assert _verdict(case) == ResolutionReadiness.NEEDS_INFO
-    assert cause_recheck_status(case) == [
-        (row, f"it {_UNCITED}, and the verdict cites no row yet")
-    ]
+    assert cause_recheck_status(case) == [(row, _NO_CITATION)]
     feedback = _feedback(case)
     assert f"Post-fix row(s) {row.evidence_id} confirm nothing" in feedback
     assert _NO_CITATION in feedback
@@ -367,7 +378,7 @@ def test_with_no_cause_in_the_pool_the_feedback_keeps_its_line():
     _recompute_at(case, 5)
     assert subject_index(case).pool_roots == frozenset(), "premise: no pool"
     _fix(case, 6, None, [], "raise max_connections to 100")
-    row = _recheck(case, None)
+    row = _recheck(case, _UNNAMED)
 
     assert subject_index(case).subject(row, windows=True) == SUBJECT_UNBOUND
     feedback = _feedback(case)
@@ -429,7 +440,7 @@ def test_the_feedback_names_the_cited_basis():
     second that it re-checks a row the verdict does not cite, naming them."""
     case, final, relief, _login, ttl = _mirror()
     _fixed(case, final)
-    unnamed = _recheck(case, None, label="unnamed")
+    unnamed = _recheck(case, _UNNAMED, label="unnamed")
     uncited = _recheck(case, relief.evidence_id, label="uncited")
 
     feedback = _feedback(case)
@@ -441,7 +452,7 @@ def test_the_feedback_names_the_cited_basis():
         "root cause)." in feedback
     )
     assert (
-        f"Post-fix row(s) {uncited.evidence_id} confirm nothing: each {_UNCITED}; "
+        f"Post-fix row(s) {uncited.evidence_id} confirm nothing: it {_UNCITED}; "
         f"name one of {ttl.evidence_id} (the cited basis)." in feedback
     )
 
@@ -451,6 +462,12 @@ def test_the_schema_tells_the_model_to_name_the_cited_basis():
     states the rule the feedback enforces."""
     description = EvidenceToAdd.model_fields["rechecks"].description
     assert "terminal verdict cites (the cited basis)" in description
+    assert (
+        "An observation naming no row confirms and disconfirms nothing" in description
+    )
+    assert (
+        "does not cite confirms nothing, though it can show a fix failed" in description
+    )
     assert "supports the root cause alone" not in description
 
 
@@ -462,8 +479,7 @@ def test_the_block_names_the_cited_basis_on_a_missing_cause_leg():
     block = build_fix_verification_block(case)
     assert (
         f"  - cause: missing; re-checked, not counted yet: {row.evidence_id} "
-        f"(it {_UNCITED}; name one of {ttl.evidence_id} (the cited basis)); "
-        f"the cited basis to re-check: {ttl.evidence_id}\n" in block
+        f"(it {_UNCITED}; name one of {ttl.evidence_id} (the cited basis))\n" in block
     )
 
 
@@ -483,8 +499,8 @@ def test_the_readiness_ask_names_the_root_and_the_fix_without_ids():
     )
     assert ask == (
         "- **The cause re-checked after the fix** — what you reported is shown "
-        f"gone; the cause the fix addressed, *{_FINAL}*, needs to be seen removed "
-        f"too: the output of a check showing what *{_FIX}* changed at it."
+        f'gone; the cause the fix addressed, "{_FINAL}", needs to be seen removed '
+        f'too: the output of a check showing what "{_FIX}" changed at it.'
     )
     assert "ev_" not in ask and _eid("ttl") not in ask
 
@@ -504,3 +520,297 @@ def test_an_attempt_with_nothing_to_name_keeps_the_generic_ask():
         "a check showing it (e.g. the setting now reads the new value" in message
     )
     assert "changed at it" not in message
+
+
+# ---------------------------------------------------------------------------
+# 7. A cited row that confirms can also fail: window 0's relapse and M6
+# ---------------------------------------------------------------------------
+
+
+def test_window_zero_relapses_through_a_cited_unlinked_row():
+    """No dated fix. The cited row confirms window 0, so the problem coming back
+    after it is that window's relapse: it does not stay READY (#2501)."""
+    case, final, _relief, _login, ttl = _mirror()
+    why = _cites_unlinked(case, final, ttl)
+    _recheck(case, why.evidence_id, turn=6)
+    case.evidence.append(_row("gone0", _GONE, 7, "503s at 0.0/s"))
+    case.current_turn = 7
+    assert _verdict(case) == ResolutionReadiness.READY, "premise: it confirms"
+
+    case.evidence.append(_row("back0", _PRESENT, 8, "503s at the gateway again"))
+    case.current_turn = 8
+
+    window = fix_windows(case)[0]
+    assert (window.state, window.relief_turn, window.failure_turn) == (
+        FIX_FAILED,
+        7,
+        8,
+    )
+    assert _verdict(case) == ResolutionReadiness.NEEDS_INFO
+
+
+def test_m6_demotes_on_a_failed_fix_seen_through_a_cited_unlinked_row():
+    """The discriminating datum disconfirms as a relief row does: the fix's
+    window FAILS, and M6 attributes that failure to the root (``failed_fix_of``)."""
+    case, final, _relief, _login, ttl = _mirror()
+    hyp = next(iter(case.hypotheses.values()))
+    why = _cites_unlinked(case, final, ttl)
+    _fix(case, 6, "remediation", [final.node_id], _FIX)
+    _recheck(case, why.evidence_id, turn=7)
+    case.evidence.append(_row("back", _PRESENT, 8, "503s at the gateway again"))
+
+    _recompute_at(case, 8)
+
+    _assert_demoted(case, final, hyp)
+    assert len(_engine_rows(case)) == 1
+    assert fix_windows(case)[-1].state == FIX_FAILED
+
+
+# ---------------------------------------------------------------------------
+# 8. A refused re-check with no dated fix is not silent, and only that shape
+# ---------------------------------------------------------------------------
+
+
+def test_a_refused_recheck_with_no_dated_fix_is_told_and_asked_for():
+    """An unregistered fix: a re-check naming a root support the verdict does
+    not cite. The model is told which rows bind, and the user is asked for the
+    cause, not again for the problem they just showed gone."""
+    case, _final, _relief, login, ttl = _mirror()
+    row = _recheck(case, login.evidence_id, turn=6)
+
+    assert (
+        f"Post-fix row(s) {row.evidence_id} confirm nothing: it {_UNCITED}; "
+        f"name one of {ttl.evidence_id} (the cited basis)." in _feedback(case)
+    )
+
+    case.evidence.append(_row("gone0", _GONE, 7, "503s at 0.0/s"))
+    case.current_turn = 7
+    readiness = assess_resolution_readiness(case)
+    assert readiness.verdict == ResolutionReadiness.NEEDS_INFO
+    assert "**The cause re-checked after the fix**" in readiness.message
+    assert "**Confirmation it's resolved**" not in readiness.message
+    assert "ev_" not in readiness.message
+
+
+def test_window_zero_with_no_recheck_named_keeps_its_ask_and_no_feedback():
+    """Every other window-0 shape reads as on ``main``: a causal_absence row
+    naming nothing, a symptom row naming nothing."""
+    case, _final, _relief, _login, ttl = _mirror()
+    _recheck(case, _UNNAMED, turn=6)
+    case.evidence += [
+        _row("sym0", _PRESENT, 6, "a probe", rechecks=_UNNAMED),
+        _row("sym1", _PRESENT, 6, "a probe", rechecks=ttl.evidence_id),
+    ]
+    assert _feedback(case) == ""
+
+    case.evidence.append(_row("gone0", _GONE, 7, "503s at 0.0/s"))
+    case.current_turn = 7
+    message = assess_resolution_readiness(case).message
+    assert "**Confirmation it's resolved**" in message
+    assert "**The cause re-checked after the fix**" not in message
+    assert _feedback(case) == ""
+
+
+def test_a_named_recheck_with_no_dated_fix_and_no_pool_stays_silent():
+    case, root, _hyp = _identified_case()
+    root.metadata = {}
+    _recompute_at(case, 5)
+    assert subject_index(case).pool_roots == frozenset(), "premise: no pool"
+    _recheck(case, _eid("pool_log"), turn=6)
+    assert _feedback(case) == ""
+
+
+# ---------------------------------------------------------------------------
+# 9. The block offers the cited basis only where a re-check can count
+# ---------------------------------------------------------------------------
+
+_CLAUSE = "the cited basis to re-check"
+
+
+def _failed(case, final, relief):
+    _fix(case, 6, "remediation", [final.node_id], _FIX)
+    _recheck(case, relief.evidence_id, turn=7)
+    case.evidence.append(_row("back", _PRESENT, 8, "503s at the gateway again"))
+    case.current_turn = 8
+
+
+def _interception_only(case, _final, _relief):
+    _fix(case, 5, "interception", [_SECRET_ID], _RELIEF)
+
+
+def _no_fix(case, _final, _relief):
+    case.progress.solution_accepted = True
+
+
+@pytest.mark.parametrize("shape", [_failed, _interception_only, _no_fix])
+def test_the_block_offers_no_basis_where_no_recheck_can_count(shape):
+    case, final, relief, _login, ttl = _mirror()
+    shape(case, final, relief)
+    block = build_fix_verification_block(case)
+    assert "  - cause: missing" in block, "premise: the leg is rendered"
+    assert _CLAUSE not in block and ttl.evidence_id not in block
+
+
+def test_the_block_offers_the_basis_after_a_remediation_with_the_problem_gone():
+    case, final, _relief, _login, ttl = _mirror()
+    _fixed(case, final)
+    block = build_fix_verification_block(case)
+    assert f"  - cause: missing; {_CLAUSE}: {ttl.evidence_id}\n" in block
+
+
+def test_the_block_names_the_basis_once_beside_a_pending_uncited_row():
+    case, final, relief, _login, ttl = _mirror()
+    _fixed(case, final)
+    _recheck(case, relief.evidence_id)
+    block = build_fix_verification_block(case)
+    assert _CLAUSE not in block
+    assert block.count(ttl.evidence_id) == 1
+
+
+# ---------------------------------------------------------------------------
+# 10. A real target of the fix is told why, in the true words
+# ---------------------------------------------------------------------------
+
+
+def test_a_recheck_of_a_deepened_past_target_is_told_the_cited_basis():
+    """The fix ran against a root since deepened past as well as the final one.
+    A re-check of that root's own support is the fix's, not another cause's:
+    it does not count because the verdict does not cite it."""
+    case, final, _relief, _login, ttl = _mirror()
+    _fix(case, 6, "remediation", [_ROOT_ID, final.node_id], _FIX)
+    row = _recheck(case, _eid("pool_log"), turn=7)
+    assert cause_recheck_status(case) == [
+        (row, f"it {_UNCITED}; name one of {ttl.evidence_id} (the cited basis)")
+    ]
+
+
+# ---------------------------------------------------------------------------
+# 11. The ask carries no record id, and quotes what it names
+# ---------------------------------------------------------------------------
+
+
+def _ask(case) -> str:
+    message = assess_resolution_readiness(case).message
+    return next(
+        line
+        for line in message.splitlines()
+        if "The cause re-checked after the fix" in line
+    )
+
+
+@pytest.mark.parametrize(
+    "where, record_id",
+    [
+        ("statement", "ev_0a65b4b839ca"),
+        ("statement", "cn_51f2ee0b4a99"),
+        ("description", "act_0123456789ab"),
+        ("description", "hyp_0123456789ab"),
+    ],
+)
+def test_the_ask_falls_back_when_a_name_carries_a_record_id(where, record_id):
+    case, final, _relief, _login, _ttl = _mirror()
+    fix = _fixed(case, final)
+    if where == "statement":
+        final.statement = f"{_FINAL}, as {record_id} shows"
+    else:
+        fix.description = f"{_FIX} (see {record_id})"
+    ask = _ask(case)
+    assert record_id not in ask
+    assert "the output of a check showing it (e.g. the setting" in ask
+
+
+def test_the_ask_quotes_a_statement_holding_markup():
+    case, final, _relief, _login, _ttl = _mirror()
+    _fixed(case, final)
+    final.statement = "the pool is sized workers * 2 by hand"
+    assert '"the pool is sized workers * 2 by hand"' in _ask(case)
+
+
+def test_the_ask_clips_a_long_statement():
+    case, final, _relief, _login, _ttl = _mirror()
+    _fixed(case, final)
+    final.statement = "nothing rotates it " * 20
+    ask = _ask(case)
+    assert "…" in ask and final.statement.strip() not in ask
+
+
+# ---------------------------------------------------------------------------
+# 12. What the rule rests on
+# ---------------------------------------------------------------------------
+
+
+def test_remediations_at_excludes_a_same_turn_relief():
+    case, final, _relief, _login, _ttl = _mirror()
+    _fix(case, 6, "interception", [_SECRET_ID], _RELIEF)
+    _fix(case, 6, "remediation", [final.node_id], _FIX)
+    assert [a.description for a in remediations_at(case, 6)] == [_FIX]
+    case.evidence.append(_row("gone", _GONE, 7, "503s at 0.0/s"))
+    case.current_turn = 7
+    assert _FIX in _ask(case) and _RELIEF not in _ask(case)
+
+
+def _with_deeper_member(case, final):
+    """A second identified root on the final root's line, on its own datum."""
+    policy = _row("policy", _CAUSAL, 4, "the Vault AppRole policy pins a fixed TTL")
+    case.evidence.append(policy)
+    deeper = _root(
+        "cn_00000000255d",
+        "the Vault AppRole policy forbids secret_id renewal",
+        [policy],
+        validated=True,
+        cites=[policy],
+    )
+    case.causal_nodes[deeper.node_id] = deeper
+    case.causal_edges.append(
+        CausalEdge(cause_node_id=deeper.node_id, effect_node_id=final.node_id)
+    )
+    assert subject_index(case).pool_roots == {final.node_id, deeper.node_id}
+    return deeper
+
+
+def test_the_ask_narrows_to_the_targets_of_a_kinded_window():
+    case, final, _relief, _login, _ttl = _mirror()
+    deeper = _with_deeper_member(case, final)
+    _fixed(case, final)
+    assert _FINAL in _ask(case) and deeper.statement not in _ask(case)
+
+
+def test_a_citation_on_a_node_outside_the_pool_binds_nothing():
+    """A candidate on the cause's own line, so only the pool test refuses it:
+    the rule reads the pool's citations, not every node's."""
+    case, final, _relief, _login, ttl = _mirror()
+    other = _row("other", _CAUSAL, 4, "a row a candidate root's verdict cites")
+    case.evidence.append(other)
+    candidate = _root(
+        "cn_00000000255e", "a candidate above it", [], validated=False, cites=[other]
+    )
+    case.causal_nodes[candidate.node_id] = candidate
+    case.causal_edges.append(
+        CausalEdge(cause_node_id=candidate.node_id, effect_node_id=final.node_id)
+    )
+    subjects = subject_index(case)
+    assert subjects.pool_roots == {final.node_id}, "premise: outside the pool"
+    assert subjects.cause_targets(other.evidence_id) == frozenset()
+    assert [e.evidence_id for e in subjects.bindable_rows()[1]] == [ttl.evidence_id]
+
+
+def test_a_rootless_validated_hypothesis_still_binds():
+    """Leg 4 has no verdict to cite: the row binds through the hypothesis."""
+    case, root, hyp = _identified_case()
+    case.causal_nodes.pop(root.node_id)
+    case.progress.identified_cause_root_ids = []
+    hyp.root_node_id, hyp.path = None, []
+    hyp.state = HypothesisState.VALIDATED
+    hyp.evidence_links = [
+        HypothesisEvidenceLink(
+            hypothesis_id=hyp.hypothesis_id,
+            evidence_id=_eid("pool_log"),
+            stance=EvidenceStance.SUPPORTS,
+            reasoning="bears on it",
+            stance_confidence=0.9,
+        )
+    ]
+    subjects = subject_index(case)
+    assert subjects.pool_roots == frozenset(), "premise: no root"
+    row = _recheck(case, _eid("pool_log"), turn=6)
+    assert subject_index(case).subject(row) == SUBJECT_CAUSE

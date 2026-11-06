@@ -272,9 +272,7 @@ def test_pending_re_checks_overflow_like_every_list():
     case.progress.cause_identification_held_open = True
     for turn in range(5, 11):
         bound_row(case, EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE, turn=turn)
-    assert "held open) (+1 more); the cited basis to re-check: " in (
-        build_fix_verification_block(case)
-    )
+    assert "held open) (+1 more)\n" in build_fix_verification_block(case)
 
 
 def test_an_ask_the_engine_stopped_surfacing_is_not_listed_as_live():

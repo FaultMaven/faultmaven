@@ -19,6 +19,7 @@ from faultmaven.core.investigation.cause_assurance import (
     SUBJECT_UNBOUND,
     _cause_pool,
     cause_elimination_rows,
+    cause_recheck_status,
     confirm_root_from_resolution_absence,
     confirming_polarity_rows,
     fix_windows,
@@ -743,7 +744,8 @@ async def _a_fell_then_b(supports: int, terminal: bool = True):
     """A identified, its fix (8) seen failing at 9 — the cause re-checked gone,
     the problem still there — so M6 demotes A. Then B, another candidate,
     gets its own supports: two (validated, identified), one (count-held) or
-    none; ``terminal=False`` leaves B with no why-stopping verdict."""
+    none; its verdict cites them, or a row it does not link when it has none,
+    and ``terminal=False`` leaves B with no why-stopping verdict."""
     eng, case, root_a, hyp_a = _fixed(8)
     await _record(
         eng,
@@ -771,8 +773,12 @@ async def _a_fell_then_b(supports: int, terminal: bool = True):
                 linked_at_turn=10,
             )
         )
-    if terminal and rows:
-        _cite_supports(b)
+    if terminal:
+        b.metadata.update(
+            terminal_verdict(*rows)
+            if rows
+            else terminal_verdict(_support(case, "gunicorn pins no worker limit", 10))
+        )
     await _record(eng, case, 10)
     return eng, case, root_a, b, (rows[0] if rows else None)
 
@@ -1169,20 +1175,28 @@ async def test_f1_a_fallen_causes_recheck_never_makes_anothers_fix_succeed():
     assert _RECHECK_ASK in assess_resolution_readiness(case).message
 
 
+_NO_ROOT = "no root cause is identified to confirm"
+
+
 @pytest.mark.parametrize(
-    "supports, terminal",
-    [(1, False), (0, True), (2, False)],
+    "supports, terminal, why",
+    [
+        (1, False, _NO_ROOT),
+        (0, True, _NO_ROOT),
+        # A validated root with no verdict holds identification open.
+        (2, False, "the cause's identification is held open"),
+    ],
     ids=["non-terminal-b", "bare-b", "validated-non-terminal-b"],
 )
 async def test_f2_a_fallen_cause_is_not_confirmed_past_a_newer_candidate(
-    supports, terminal
+    supports, terminal, why
 ):
     """A fell; B stands as a candidate that is neither identified nor
     count-held terminal. The fallen-cause leg does not serve confirmation
     while B stands: A's re-check confirms nothing and A's supports are not
     offered. The window pool still holds A (the pool's last leg too), so the
-    window sees the re-check; the model is told it re-checks a row no standing
-    verdict cites, not that it names nothing (#2557)."""
+    window sees the re-check, and the model is told nothing: with no pool there
+    is no cited basis to offer. The status gives the true reason (#2557)."""
     eng, case, _root_a, b, _b_support = await _a_fell_then_b(supports, terminal)
     assert not b.is_identified_root
     _problem, cause = subject_index(case).bindable_rows()
@@ -1191,9 +1205,8 @@ async def test_f2_a_fallen_cause_is_not_confirmed_past_a_newer_candidate(
     assert observation_subject(case, a_recheck) == SUBJECT_UNBOUND
     assert assess_resolution_readiness(case).verdict != ResolutionReadiness.READY
     assert a_recheck in fix_windows(case)[-1].cause_rows
-    feedback = meta.get("system_feedback") or ""
-    assert "re-checks a row the root's verdict does not cite" in feedback
-    assert "name nothing they re-check" not in feedback
+    assert "Post-fix row(s)" not in (meta.get("system_feedback") or "")
+    assert [w for e, w in cause_recheck_status(case) if e is a_recheck] == [why]
 
 
 async def test_f2_the_fallen_causes_own_hypothesis_is_not_another_candidate():
