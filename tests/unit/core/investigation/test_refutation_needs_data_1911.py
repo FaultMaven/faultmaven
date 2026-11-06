@@ -66,7 +66,6 @@ from tests.unit.core.investigation.test_m6_cause_gone_problem_persists_1927 impo
     _failed_fix,
     _identified_case,
 )
-from tests.utils import terminal_verdict
 
 pytestmark = pytest.mark.unit
 

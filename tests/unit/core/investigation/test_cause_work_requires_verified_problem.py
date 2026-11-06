@@ -54,7 +54,6 @@ from faultmaven.modules.case.contracts import (
     ValidationMethod,
 )
 from tests.case_builders import investigating_case
-from tests.utils import terminal_verdict
 
 _FILE_ID = "file_0123456789ab"
 

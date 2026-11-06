@@ -117,7 +117,6 @@ from faultmaven.modules.report.domain.services.report_generation_service import 
 )
 from tests.case_builders import investigating_case, with_open_offer
 from tests.unit.core.investigation.bound_rows import bound_row, ensure_subjects
-from tests.utils import terminal_verdict
 
 _FILE_ID = "file_0123456789ab"
 
