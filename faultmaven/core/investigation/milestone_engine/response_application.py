@@ -51,6 +51,7 @@ from faultmaven.core.investigation.problem_status import (
     is_engine_false_alarm_close,
     is_false_alarm_close,
     pending_revision,
+    problem_shown_real,
     propose_revision,
     record_verifying_rows,
     revision_refusal,
@@ -161,8 +162,13 @@ def _reclassify_premature_causal_absence(case: Case, metadata: dict[str, Any]) -
     status the turn began with or an optimistic claim 2b reverts. Without this,
     one such row reads resolution-READY on a never-verified case
     (``assess_resolution_readiness``) and pivots a false-alarm close to RESOLVED
-    (INV-37)."""
-    if cause_work_accepted(case):
+    (INV-37).
+
+    A hold over a problem verified before its revision is not unverified
+    (``problem_shown_real``): its rows stay causal_absence and are read once
+    the hold ends, a confirmation replaying the cause work they re-check
+    (#2550)."""
+    if problem_shown_real(case):
         return
     created = set(metadata.get("evidence_added") or [])
     rows = [
@@ -1210,7 +1216,8 @@ class ResponseApplier:
             case, updates, metadata, status_at_start=status_at_start
         )
         # And again for the status the turn ends with: a revision on the
-        # verifying turn leaves the problem unverified until the user confirms.
+        # verifying turn leaves the problem unverified until the user confirms;
+        # one over a problem verified before it holds a verified problem.
         _reclassify_premature_causal_absence(case, metadata)
 
         # 2d. While a revision awaits re-confirmation, this turn's cause work

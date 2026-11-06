@@ -95,6 +95,18 @@ def cause_work_staged(case: Case) -> bool:
     return case.progress.problem_status == ProblemStatus.REVISION_PENDING
 
 
+def problem_shown_real(case: Case) -> bool:
+    """Whether the problem has been verified: it is verified now, or it was
+    verified before the revision that holds it (a superseding proposal keeps
+    the first hold's prior status). Unlike ``cause_work_accepted``, a hold over
+    a verified problem counts: its cause work is staged, not refused."""
+    status = case.progress.problem_status
+    if status == ProblemStatus.REVISION_PENDING:
+        held = pending_revision(case)
+        return held is not None and held.prior_status == ProblemStatus.VERIFIED
+    return status == ProblemStatus.VERIFIED
+
+
 def problem_on_hold(case: Case) -> bool:
     """Whether the case waits on the user or on new evidence rather than
     investigating: a revision awaiting re-confirmation, or a false alarm.
