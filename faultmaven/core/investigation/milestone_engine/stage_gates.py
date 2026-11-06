@@ -613,18 +613,50 @@ def standing_fix_action(case: Case, description: Optional[str]) -> Any:
     return None
 
 
-def _newest_fix_bearer(case: Case, identity: str, minted: Sequence = ()) -> Any:
+def _newest_fix_bearer(
+    case: Case, identity: str, minted: Sequence = (), *, licensed: bool = False
+) -> Any:
     """The newest fix action bearing ``identity``: a SOLUTION, or a fix entry
-    this apply ``minted`` (M5-downgraded), which outranks a non-pending one."""
+    ``minted`` as an M5-downgraded DIAGNOSTIC by this apply or, at a replay, by
+    an earlier bundle of it. The copy outranks a non-pending SOLUTION only
+    while the license is down at the decision (``licensed`` False), the state
+    its downgrade recorded: a live apply decides on the truth it minted under
+    and passes nothing, but a replay's bundle can mint the copy and its
+    recompute restore the license before a later bundle decides the carried
+    fix (#2256). Pending always wins."""
     downgraded = None
     for action in reversed(case.proposed_actions):
         if fix_identity(action.description) != identity:
             continue
         if action.action_type == InvestigationActionType.SOLUTION:
-            return downgraded if downgraded and action.state != "pending" else action
+            copy_outranks = (
+                downgraded is not None and action.state != "pending" and not licensed
+            )
+            return downgraded if copy_outranks else action
         if downgraded is None and action in minted:
             downgraded = action
     return downgraded
+
+
+def _retire_downgraded_copies(case: Case, target: Any, minted: Sequence) -> int:
+    """Retire the pending M5-downgraded copies of the fix ``target`` registers
+    (``minted``: this apply's, or this replay's, fix entries). Left pending,
+    the copy is the newest pending action the context renders as the current
+    ask, and a ref to it is refused (``_fix_named_by``): a loop (#2256)."""
+    identity = fix_identity(target.description)
+    count = 0
+    for action in minted:
+        if (
+            action.action_type == InvestigationActionType.DIAGNOSTIC
+            and action.state == "pending"
+            and fix_identity(action.description) == identity
+        ):
+            action.state = "superseded"
+            action.superseded_reason = "stale_pending"
+            action.superseded_in_turn = case.current_turn
+            pending_action_superseded_stale_total.inc()
+            count += 1
+    return count
 
 
 def _retire_shadowed_diagnostic_asks(case: Case, *, before_turn: int) -> int:
@@ -1119,6 +1151,9 @@ FIX_JUSTIFICATION_KEY = "fix_acceptance_justification_error"
 #: Set on a replayed bundle's metadata to the ``StagedCauseWork`` whose hold
 #: turn carried a fix acceptance (``held_fix``).
 CARRIED_FIX_KEY = "carried_fix_acceptance"
+#: The turn the replayed revision's hold began (``PendingRevision.
+#: held_since_turn``): a carried decision refuses a fix withdrawn before it.
+REPLAY_HELD_SINCE_KEY = "replay_held_since_turn"
 #: The SOLUTIONs this apply registered, whose kind the settle reads once
 #: chain emission has run (``response_application._settle_fix_attempts``).
 FIXES_ACCEPTED_KEY = "fixes_accepted_this_apply"
@@ -1169,6 +1204,28 @@ def _withdrawn_notice(action_id: str) -> str:
         "does not register by its ACTION_ID. If the user carried it out, "
         "re-propose it as a SolutionToAdd and set solution_accepted with "
         "accepted_action_ref new_index_N naming it."
+    )
+
+
+def _downgraded_notice(action_id: str) -> str:
+    """The refusal of a fix whose only bearer is its M5-downgraded copy once
+    the license holds again: the copy cannot register, a re-proposal can."""
+    return (
+        f"SYSTEM: 'solution_accepted' was not registered: {action_id} was "
+        "downgraded to a DIAGNOSTIC when it was proposed, because its root cause "
+        "was not established then. The cause is established now: if the user "
+        "carried out the fix, re-propose it as a SolutionToAdd and set "
+        "solution_accepted with accepted_action_ref new_index_N naming it."
+    )
+
+
+def _withdrawn_before(bearer: Any, held_since_turn: int) -> bool:
+    """Withdrawn ``license_lost`` before the hold began, not by the hold
+    itself: the hold changes nothing about it, so the ruled refusal stands."""
+    return (
+        bearer.state == "superseded"
+        and bearer.superseded_reason == "license_lost"
+        and (bearer.superseded_in_turn or 0) < held_since_turn
     )
 
 
@@ -1396,30 +1453,52 @@ def _resolve_fix_identity(
 
 
 def _bearer_registers(
-    case: Case, bearer: Any, metadata: dict[str, Any], *, carried: bool
+    case: Case,
+    bearer: Any,
+    metadata: dict[str, Any],
+    *,
+    carried: bool,
+    licensed: Optional[bool] = None,
 ) -> bool:
     """Step 2, THE state rule (live gate and replay): whether the newest fix
     action bearing the named fix (``_newest_fix_bearer``) registers.
 
-    Pending registers; accepted is a re-assertion, absorbed (with a line when
-    identity no longer keeps it, ``_note_failed_fix``).
-    Superseded registers only while the M5 license holds now (the mint path's
-    predicate), and on a live turn only as a ``reproposal``: one withdrawn
-    ``license_lost`` stays refused (ruled 2026-10-21). A decision ``carried``
-    through a revision hold registers on the license whatever superseded it,
-    since the hold withdraws every pending fix. An M5-downgraded fix entry
-    this apply minted: the license fell."""
+    Every case the rule keeps:
+
+    - pending registers;
+    - accepted is a re-assertion, absorbed: silently while identity keeps
+      the registered fix, with ``_note_failed_fix``'s "is registered …
+      re-propose it" line once its window failed or a later fix followed it —
+      live or ``carried`` alike (a carried re-run of a failed fix whose
+      re-send an earlier bundle downgraded is a report, never silence, #2256);
+    - superseded registers only while the M5 license holds now (the mint
+      path's predicate), and on a live turn only as a ``reproposal``: one
+      withdrawn ``license_lost`` stays refused (ruled 2026-10-21). A decision
+      ``carried`` through a revision hold registers on the license whatever
+      superseded it, since the hold withdraws every pending fix — except one
+      withdrawn before the hold began, which ``_register_carried_fix`` refuses
+      as the hold turn would have;
+    - an M5-downgraded DIAGNOSTIC (this apply's, or an earlier bundle's at a
+      replay) is the bearer only while the license is down at the decision,
+      or when no SOLUTION bears the identity: the license line while it is
+      down, the downgraded line once it holds (a copy cannot register; a
+      re-proposal can).
+
+    ``licensed`` is the M5 license at this decision, computed once by a
+    carried decision; a live turn passes nothing (its downgrade proves the
+    license down) and reads it here only for a superseded bearer."""
     if bearer.action_type != InvestigationActionType.SOLUTION:
-        _add_system_feedback(metadata, _license_notice(bearer.action_id))
+        notice = _downgraded_notice if licensed else _license_notice
+        _add_system_feedback(metadata, notice(bearer.action_id))
         return False
     if bearer.state == "pending":
         return True
     if bearer.state == "accepted":
-        if not carried:
-            _note_failed_fix(case, bearer, metadata)
+        _note_failed_fix(case, bearer, metadata)
         return False
     if bearer.state == "superseded":
-        licensed = _license_holds(case, metadata)
+        if licensed is None:
+            licensed = _license_holds(case, metadata)
         if licensed and (carried or bearer.superseded_reason == "reproposal"):
             return True
         _refuse_withdrawn(metadata, bearer.action_id, licensed)
@@ -1473,12 +1552,7 @@ def _hold_settles(
     if bearer.state == "accepted":  # not re-sent: settled as on a live turn
         _note_failed_fix(case, bearer, metadata)
         return True
-    if (
-        bearer.state == "superseded"
-        and bearer.superseded_reason == "license_lost"
-        # Withdrawn before the hold began, not by the hold itself.
-        and (bearer.superseded_in_turn or 0) < pending_revision(case).held_since_turn
-    ):
+    if _withdrawn_before(bearer, pending_revision(case).held_since_turn):
         _refuse_withdrawn(metadata, bearer.action_id, _license_holds(case, metadata))
         return True
     return False
@@ -1522,7 +1596,8 @@ def decide_fix_acceptance(
     Called once per apply, after the solutions step. ``proposals``: the actions
     this response's ``solutions_to_add`` entries minted or kept, in order.
     ``held``: on a hold turn, those entries, staged rather than minted.
-    ``fixes``: the actions this apply minted from fix entries (not WORKAROUNDs).
+    ``fixes``: the actions minted from fix entries (not WORKAROUNDs) by this
+    apply and, at a replay, by its earlier bundles (``REPLAY_FIX_SLOTS_KEY``).
 
     Step 1 resolves a fix identity; on a live turn step 2 applies the state rule
     to its newest bearer, and a registration is justified like the first
@@ -1578,8 +1653,15 @@ def _register_carried_fix(
 ) -> Any:
     """At the replay: the state rule on the newest fix action bearing the
     carried fix (``carried``, the staged bundle), among SOLUTIONs and the
-    replay's ``fixes``; the license line when none bears it."""
-    bearer = _newest_fix_bearer(case, carried.held_fix, fixes)
+    replay's ``fixes``; the license line when none bears it. The license is
+    read once, here: an earlier bundle's downgraded copy outranks a SOLUTION
+    only while it is down at this bundle (#2256). A SOLUTION withdrawn before
+    the hold began is refused as the hold turn refuses it (``_hold_settles``):
+    a re-send on the hold turn carried the decision past that refusal, and
+    the replay, minting the re-send under the license of ITS bundle, must not
+    land it on the withdrawn action."""
+    licensed = _license_holds(case, metadata)
+    bearer = _newest_fix_bearer(case, carried.held_fix, fixes, licensed=licensed)
     if bearer is None:
         _add_system_feedback(
             metadata,
@@ -1588,7 +1670,15 @@ def _register_carried_fix(
             ),
         )
         return None
-    return bearer if _bearer_registers(case, bearer, metadata, carried=True) else None
+    if bearer.action_type == InvestigationActionType.SOLUTION and _withdrawn_before(
+        bearer, metadata.get(REPLAY_HELD_SINCE_KEY, 0)
+    ):
+        _refuse_withdrawn(metadata, bearer.action_id, licensed)
+        return None
+    registers = _bearer_registers(
+        case, bearer, metadata, carried=True, licensed=licensed
+    )
+    return bearer if registers else None
 
 
 def _ignore_fix_report(case: Case, metadata: dict[str, Any], reason: str) -> None:
@@ -1706,6 +1796,7 @@ def _apply_stage_gate_side_effects(
     solution_action: Any = None,
     fix_reported_in: Optional[str] = None,
     carried: Any = None,
+    minted: Sequence[Any] = (),
 ) -> None:
     """Apply side effects when stage-gate milestones are completed.
 
@@ -1787,6 +1878,7 @@ def _apply_stage_gate_side_effects(
         if is_solution:
             metadata.setdefault(FIXES_ACCEPTED_KEY, []).append(target.action_id)
             _retire_shadowed_diagnostic_asks(case, before_turn=target.proposed_in_turn)
+            _retire_downgraded_copies(case, target, minted)
             # The persisted projection: True from the first registration on.
             case.progress.solution_accepted = True
             metadata.setdefault("milestones_completed", []).append("solution_accepted")
@@ -2066,6 +2158,7 @@ def _apply_stage_gate_signals(
             solution_action=solution_action,
             fix_reported_in=getattr(m, "accepted_fix_reported_in", None),
             carried=carried,
+            minted=fixes,
         )
 
 

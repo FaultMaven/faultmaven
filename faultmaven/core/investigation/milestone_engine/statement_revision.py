@@ -35,7 +35,12 @@ from faultmaven.core.investigation.problem_status import (
 from faultmaven.core.investigation.schemas import InvestigationResponse_Diagnosis
 from faultmaven.modules.case.contracts import AnswerVia, CaseState, ProblemStatus
 
-from .stage_gates import CARRIED_FIX_KEY, _add_system_feedback, merge_system_notices
+from .stage_gates import (
+    CARRIED_FIX_KEY,
+    REPLAY_HELD_SINCE_KEY,
+    _add_system_feedback,
+    merge_system_notices,
+)
 from .transition_consent import (
     TYPED_CONFIRMATION_LINE,
 )
@@ -200,6 +205,7 @@ async def confirm_revision(
         }
         if bundle.held_fix:
             bundle_metadata[CARRIED_FIX_KEY] = bundle
+            bundle_metadata[REPLAY_HELD_SINCE_KEY] = pending.held_since_turn
         await responses._apply_investigation_updates(case, updates, bundle_metadata)
         if terminal_offer_opened_this_turn(case) is not None:
             for key in PROPOSAL_KEYS:
