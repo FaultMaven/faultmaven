@@ -197,18 +197,15 @@ def test_fields_whose_consumer_cannot_resolve_a_placeholder_stay_strict():
 
     Membership in ``IdRef`` is decided by the consumer, not the field name.
     ``_source_file_resolves`` refuses a row whose ``source_file_id`` names no
-    upload of the case, and the solution apply-path keeps ``node_ref`` only when
-    it is already in ``case.causal_nodes`` — neither resolves ``new_index_N``,
-    so annotating them would advertise a form the engine cannot honour.
+    upload of the case, so it does not resolve ``new_index_N``, and annotating
+    it would advertise a form the engine cannot honour.
 
-    (``RootCauseConclusionUpdate.names_root_node_id`` is deliberately NOT in
-    this list: milestone_engine B2 (#695) does resolve its placeholder, so it
-    carries ``IdRef``.)
+    (``RootCauseConclusionUpdate.names_root_node_id`` and
+    ``SolutionToAdd.node_ref`` are deliberately NOT in this list: milestone_engine
+    B2 (#695) resolves the first's placeholder, and the fix settle the second's
+    (#2036 D2.3), so both carry ``IdRef``.)
     """
-    for model_name, field_name in (
-        ("EvidenceToAdd", "source_file_id"),
-        ("SolutionToAdd", "node_ref"),
-    ):
+    for model_name, field_name in (("EvidenceToAdd", "source_file_id"),):
         field = getattr(s, model_name).model_fields[field_name]
         assert not _is_id_ref(field), f"{model_name}.{field_name} must stay strict"
         with pytest.raises(ValidationError):

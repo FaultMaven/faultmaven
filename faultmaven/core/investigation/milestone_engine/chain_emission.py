@@ -1,7 +1,7 @@
 """Emitting an LLM-authored causal chain onto the case graph, and the garbage-collection and ambiguity-nudge passes that keep it consistent afterward."""
 
 import logging
-from typing import Any
+from typing import Any, Sequence
 
 from faultmaven.core.investigation.causal_graph.ingestion import (
     chain_path_to_problem,
@@ -9,6 +9,7 @@ from faultmaven.core.investigation.causal_graph.ingestion import (
     mirror_hypothesis_support_to_root_nodes,
 )
 from faultmaven.core.investigation.causal_graph.pruning import (
+    attach_root,
     prune_abandoned_nodes,
     resolve_orphan_chains,
 )
@@ -51,6 +52,29 @@ def record_root_verdict(metadata: dict[str, Any], hyp_id: str, entry: Any) -> No
         for ref in getattr(entry, "terminal_basis_evidence_ids", None) or []
     ]
     metadata.setdefault("hyp_root_verdicts", {})[hyp_id] = (verdict, cited)
+
+
+def resolve_root_ref(case: Case, ref: str | None, created: Sequence[str]) -> str | None:
+    """Resolve a root ref (a cn_ id, or ``new_index_N`` into ``created``, the
+    emission's nodes) to a ROOT node id, or None.
+
+    A hypothesis root must be a ROOT node (M1/M3) — refs that resolve to
+    an intermediate or to the PROBLEM node D are rejected (the hypothesis
+    stays flat). A conclusion's same-turn ``names_root_node_id`` resolves
+    here too, and so does the licence a fix records from it (#2036 D2.3).
+    """
+    if not ref:
+        return None
+    if ref.startswith("new_index_"):
+        try:
+            idx = int(ref[len("new_index_") :])
+        except ValueError:
+            return None
+        node_id = created[idx] if 0 <= idx < len(created) else None
+    else:
+        node_id = ref if ref in case.causal_nodes else None
+    node = case.causal_nodes.get(node_id) if node_id else None
+    return node_id if node is not None and node.node_type == NodeType.ROOT else None
 
 
 def _apply_chain_emission(
@@ -138,26 +162,11 @@ def _apply_chain_emission(
         evidence_created_ids=metadata.get("evidence_slots", []),
         validation_repairs=metadata.setdefault("validation_repairs", []),
     )
+    # What a same-turn fix's ``node_ref: new_index_N`` resolves against (#2036).
+    metadata["chain_nodes_created"] = list(created)
 
     def _resolve_root(ref: str | None) -> str | None:
-        """Resolve a root_node_ref to a ROOT node id, or None.
-
-        A hypothesis root must be a ROOT node (M1/M3) — refs that resolve to
-        an intermediate or to the PROBLEM node D are rejected (the hypothesis
-        stays flat).
-        """
-        if not ref:
-            return None
-        if ref.startswith("new_index_"):
-            try:
-                idx = int(ref[len("new_index_") :])
-            except ValueError:
-                return None
-            node_id = created[idx] if 0 <= idx < len(created) else None
-        else:
-            node_id = ref if ref in case.causal_nodes else None
-        node = case.causal_nodes.get(node_id) if node_id else None
-        return node_id if node is not None and node.node_type == NodeType.ROOT else None
+        return resolve_root_ref(case, ref, created)
 
     # Link each hypothesis to its chain root via the explicit
     # hyp_id -> root_node_ref map (recorded at creation, or on a re-root
@@ -193,27 +202,7 @@ def _apply_chain_emission(
         new_path = chain_path_to_problem(root_id, case)
         if old_root and old_root != root_id and not new_path:
             return None
-        hyp.root_node_id = root_id
-        hyp.path = new_path
-        if old_root != root_id:
-            attached = case.causal_nodes[root_id].metadata
-            # The first attach never moves; a node attached before it was
-            # recorded keeps its last attach as the first (#2501).
-            attached.setdefault(
-                "root_first_attached_turn", attached.get("root_attached_turn", turn)
-            )
-            attached["root_attached_turn"] = turn
-            # Deepening the hypothesis past its old root (the new root's path
-            # runs through it) says a cause sits above that node: clause b
-            # fails for it, whatever was recorded before. A move to another
-            # chain says nothing about the old root.
-            stale = case.causal_nodes.get(old_root) if old_root else None
-            if (
-                stale is not None
-                and stale.node_type == NodeType.ROOT
-                and old_root in new_path
-            ):
-                stale.record_root_terminal(False, None, turn)
+        attach_root(case, hyp, root_id, new_path, turn)
         return old_path if (old_root and old_root != root_id) else []
 
     # One cause, one chain (M3/§7.8.1): a chain root belongs to exactly ONE

@@ -11,6 +11,7 @@ from faultmaven.core.investigation.cause_assurance import (
     FIX_SUCCEEDED,
     FixWindow,
     counterfactual_link_decisive,
+    fix_application_turn,
     fix_windows,
     latest_decided_fix_window,
     stance_declared_confident,
@@ -380,7 +381,10 @@ def _fix_failure_refusal(case: Case, decided: FixWindow | None) -> str | None:
     not erase it. A relapse — the problem seen gone after the fix, then seen
     again — establishes no disconfirmation (``FixWindow.disconfirms_cause``).
     A relapsed window 0 on a case with an undatable acceptance keeps that
-    label, so the transition series stays visible (#2501)."""
+    label, so the transition series stays visible (#2501). A case whose
+    every dated fix was an interception is ``interception``: none opens a
+    window, so nothing disconfirms the cause (#2036 D2.3); one with an
+    undatable acceptance keeps that label."""
     if decided is not None and decided.state == FIX_FAILED:
         if decided.disconfirms_cause:
             return None
@@ -388,6 +392,12 @@ def _fix_failure_refusal(case: Case, decided: FixWindow | None) -> str | None:
             return "undatable_acceptance"
         return "relapse"
     latest = fix_windows(case)[-1]
+    if (
+        latest.fix_turn is None
+        and fix_application_turn(case) is not None
+        and not _has_undatable_solution_acceptance(case)
+    ):
+        return "interception"
     if latest.fix_turn is None:
         # Two different worlds, separately labeled: nothing was ever tried, vs
         # a fix WAS executed but carries no execution turn — an acceptance

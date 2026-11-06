@@ -627,6 +627,7 @@ from faultmaven.modules.case.domain.models.solution import (
 )
 from faultmaven.modules.case.domain.models.turn import (
     NON_INVESTIGATIVE_OUTCOMES,
+    FixCause,
     InvestigationMomentum,
     TerminalConfirmedVia,
     TurnOutcome,
@@ -918,6 +919,7 @@ __all__ = [
     "TerminalConfirmedVia",
     "TurnOutcome",
     "TurnProgress",
+    "FixCause",
     "UploadedFile",
     "UrgencyLevel",
     "VerificationStatus",

@@ -782,7 +782,9 @@ evidence directly. You may do several in one turn if the evidence supports it.
      (single pod, cluster, database, shared service).
    - Emit a SolutionToAdd record in solutions_to_add describing the fix (description,
      solution_type, estimated_impact, risks, commands, and `quadrant`: `remediation`
-     only for a cause that passes the ROOT-CAUSE TEST). The backend derives
+     only for a cause that passes the ROOT-CAUSE TEST), with `node_ref` naming
+     the node it changes: a fix of another node (a renewal, a restart) cannot
+     confirm the root cause, so the case cannot resolve on it. The backend derives
      solution_proposed=True from the standing proposal — you do NOT set it in
      milestones. No evidence_to_add record is needed for the proposal itself.
    - Having proposed the fix, do not pile fresh diagnostic asks onto a fix the

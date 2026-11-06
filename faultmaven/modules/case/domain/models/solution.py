@@ -275,6 +275,55 @@ class ProposedAction(BaseModel):
         ),
     )
 
+    # #2036 D2.3: what a SOLUTION acts on, settled once per turn after chain
+    # emission (``response_application._settle_fix_attempts``).
+    target_ids: List[str] = Field(
+        default_factory=list,
+        description=(
+            "SOLUTION only: the causal nodes the fix acts on. A named "
+            "``node_ref`` once it resolves, which nothing changes after; else, "
+            "when the user runs it, the roots identified or count-held at the "
+            "start of that turn; with none, the licence's cause, read from the "
+            "turn's record and ``licence_ids``. A node off the graph is "
+            "dropped here once the fix is kinded, when it is kinded or when "
+            "pruned after; its kind stands."
+        ),
+    )
+    target_named: bool = Field(
+        default=False,
+        description="SOLUTION only: ``target_ids`` came from the model's node_ref.",
+    )
+    licence_ids: Optional[List[str]] = Field(
+        default=None,
+        description=(
+            "SOLUTION only: the root(s) of what M5 licensed the fix on when it "
+            "was proposed, resolved after that apply's chain emission; never "
+            "changed (a restatement keeps it), save that pruning a node drops "
+            "it. None: not recorded (proposed before #2036 D2.3)."
+        ),
+    )
+    licence_in_words: bool = Field(
+        default=False,
+        description=(
+            "SOLUTION only: when proposed, its licence was a conclusion naming "
+            "its cause in words only."
+        ),
+    )
+    fix_kind: Optional[Literal["remediation", "interception"]] = Field(
+        default=None,
+        description=(
+            "SOLUTION only, set once in the turn the user runs it and never "
+            "recomputed, from records: 'remediation' when its targets meet the "
+            "cause pool recorded at the start of the turn it ran in "
+            "(``TurnProgress.cause_at_start``) or a ROOT in its ``licence_ids``, "
+            "else 'interception', which relieves but never confirms a "
+            "resolution. None before it runs, when that turn has no record, "
+            "for an unnamed fix with no recorded licence and no root then "
+            "(both from before #2036 D2.3), and with no target under a "
+            "conclusion naming its cause in words: read as a remediation."
+        ),
+    )
+
     superseded_in_turn: Optional[int] = Field(
         default=None,
         description=(

@@ -122,11 +122,12 @@ def _coerce_bare_int_to_new_index(v: Any) -> Any:
 # placeholder alongside a real prefixed ID. The test of membership is whether
 # the field's CONSUMER resolves the placeholder — not how the field is named,
 # and not what its description happens to say. ``EvidenceToAdd.source_file_id``
-# and ``SolutionToAdd.node_ref`` stay plain ``str`` because their consumers
-# only ever match an already-persisted id (``_source_file_resolves`` refuses a
-# row whose file is not one of the case's uploads; the solution apply-path keeps
-# ``node_ref`` only when it is already in ``case.causal_nodes``). Annotating
-# those would advertise a placeholder form the engine cannot honour.
+# stays plain ``str`` because its consumer only ever matches an
+# already-persisted id (``_source_file_resolves`` refuses a row whose file is
+# not one of the case's uploads). Annotating it would advertise a placeholder
+# form the engine cannot honour. ``SolutionToAdd.node_ref`` is an ``IdRef``:
+# the fix's target resolves a ``new_index_N`` through the turn's created nodes
+# (``response_application._settle_fix_attempts``, #2036 D2.3).
 #
 # ⚠️ The test suite pins the description⇄annotation pairing, which is a PROXY
 # for this rule, not the rule itself. It cannot see consumers. A new ref field
@@ -1571,12 +1572,14 @@ class SolutionToAdd(NullTolerantModel):
             "interception) / 'loop_break'. Omit when it does not apply."
         ),
     )
-    node_ref: Optional[str] = Field(
+    node_ref: Optional[IdRef] = Field(
         default=None,
         description=(
-            "The cn_... id of the causal node this fix acts on, when known (e.g. "
-            "the validated root cause shown in the causal graph). Omit if the fix "
-            "is not tied to a specific node."
+            "The cn_... id of the causal node this fix changes (the root cause "
+            "for a fix of the root; the intermediate state a renewal or restart "
+            "intercepts), or 'new_index_N' for a node emitted this turn in "
+            "causal_nodes_to_add. Only a fix of the root cause can confirm it. "
+            "Omitted, the fix acts on the cause identified when the user runs it."
         ),
     )
 

@@ -931,8 +931,11 @@ class Case(BaseModel):
                         getattr(self, "case_id", "?"),
                         _MAX_TURN_BACKFILL,
                     )
-                # TurnProgress is frozen.
-                entry = entry.model_copy(update={"turn_number": number})
+                # TurnProgress is frozen. The cause recorded at the start of
+                # its old turn is not this turn's (#2036 D2.3).
+                entry = entry.model_copy(
+                    update={"turn_number": number, "cause_at_start": None}
+                )
                 repairs += 1
             rebuilt.append(entry)
 

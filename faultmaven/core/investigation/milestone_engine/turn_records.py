@@ -21,6 +21,7 @@ from faultmaven.core.investigation.turn_uploads import report_turn_uploads
 from faultmaven.core.investigation.verification_status import is_stalled
 from faultmaven.modules.case.contracts import (
     Case,
+    FixCause,
     HypothesisState,
     InvestigationMomentum,
     TerminalConfirmedVia,
@@ -85,8 +86,10 @@ def _create_turn_record(
     repair_pattern: str | None = None,
     validation_repairs: list[str] | None = None,
     agent_response_synthesized: bool = False,
+    cause_at_start: FixCause | None = None,
 ) -> TurnProgress:
-    """Create turn progress record."""
+    """Create turn progress record. ``cause_at_start`` is the ``FixCause``
+    the turn's live apply took when it started (#2036 D2.3)."""
     # Multiple backstops (path-conditional emission rejection, milestone
     # ordering, data-quality blockers, prompt-injection alerts, etc.)
     # all append to ``metadata["system_feedback"]`` independently. A
@@ -100,6 +103,7 @@ def _create_turn_record(
         system_feedback = system_feedback[:980] + "\n... [truncated]"
     return TurnProgress(
         turn_number=turn_number,
+        cause_at_start=cause_at_start,
         timestamp=datetime.now(UTC),
         milestones_completed=milestones_completed,
         evidence_added=evidence_added,

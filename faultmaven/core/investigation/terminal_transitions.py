@@ -30,6 +30,7 @@ from typing import Any, Callable, Iterable, Optional
 from faultmaven.core.investigation.cause_assurance import (
     CONFIRMED_RCC_LIKELIHOOD_FLOOR,
     FIX_FAILED,
+    FIX_INTERCEPTION,
     SUBJECT_PROBLEM,
     CauseAssuranceGrade,
     SubjectIndex,
@@ -43,6 +44,7 @@ from faultmaven.core.investigation.cause_assurance import (
     has_resolution_confirmation,
     has_root_cause_record,
     latest_fix_window,
+    off_cause_attempt,
     pending_symptom_check,
     resolution_confirmation_rows,
     subject_index,
@@ -512,6 +514,9 @@ def _fix_documented_not_applied(case: "Case") -> bool:
       are never withdrawn, so the flag alone outlives the thing it describes.
     - **A solution is on record.** "Deferred" with nothing deferred is not an
       outcome.
+    - **Not only interceptions run.** When every fix the user ran was an
+      interception (#2036 D2.3) and none is pending, the fix on record was
+      applied, so the case closes under another reason.
 
     Deliberately NOT gated on ``solution_feasible == DEFERRED``. A case whose fix
     was marked FEASIBLE but simply closed without executing is in exactly the
@@ -523,6 +528,14 @@ def _fix_documented_not_applied(case: "Case") -> bool:
     """
     progress = getattr(case, "progress", None)
     if progress is None or not _cause_identified(case):
+        return False
+    fixes = [
+        a
+        for a in getattr(case, "proposed_actions", None) or []
+        if a.action_type == InvestigationActionType.SOLUTION
+        and a.state in ("pending", "accepted")
+    ]
+    if fixes and all(getattr(a, "fix_kind", None) == FIX_INTERCEPTION for a in fixes):
         return False
     return bool(
         getattr(progress, "solution_proposed", False)
@@ -1289,8 +1302,9 @@ def _relief_without_cause_recheck(
     the problem and dated by their data (#1906 D1, #2145), as the windows
     read them. A cause re-check counts only when it could confirm
     (``FixWindow.confirmed_cause_rows``): a re-check of a fallen cause after
-    another cause's fix still leaves the cause leg owed."""
-    if window.fix_turn is None or window.confirmed_cause_rows:
+    another cause's fix still leaves the cause leg owed. Never on an
+    ``off_cause`` window: no re-check confirms it (#2036 D2.3)."""
+    if window.fix_turn is None or window.confirmed_cause_rows or window.off_cause:
         return False
     subjects = subject_index(case) if subjects is None else subjects
     latest: dict = {}
@@ -1416,6 +1430,28 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
     # the cause, or "it's fine now" — so asking the user to confirm again would
     # loop. A resolution needs a NEW fix, recorded, then seen working.
     window = latest_fix_window(case)
+    # The latest attempt acted on no cause now identified (#2036 D2.3): an
+    # interception, or a remediation of a cause since deepened past. No check
+    # after it confirms the cause, so asking for one would loop.
+    off_cause = off_cause_attempt(case)
+    if off_cause is not None:
+        return ResolutionReadiness(
+            verdict=ResolutionReadiness.NEEDS_INFO,
+            message=(
+                f"The last fix (turn {off_cause}) did not act on the root cause "
+                "now identified, so no check after it can show that cause gone. "
+                "To mark this **resolved** I need a **fix of the root cause** — "
+                "tell me what you changed (or plan to change) there, and once "
+                "it's applied, submit the output of checks showing the cause "
+                "gone and the original problem gone with it, as data (pasted or "
+                "attached, not typed into your message).\n\n"
+                "If the problem is only quiet for now, or the root's fix is "
+                "**deferred**, you can **close** the case instead — that keeps "
+                "the investigation on record without claiming the cause was "
+                "fixed."
+            ),
+            missing=["a fix of the root cause", *missing],
+        )
     if window.state == FIX_FAILED:
         return ResolutionReadiness(
             verdict=ResolutionReadiness.NEEDS_INFO,

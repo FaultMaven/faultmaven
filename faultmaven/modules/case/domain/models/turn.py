@@ -149,6 +149,52 @@ TerminalConfirmedVia = Literal[
 _WARNED_UNKNOWN_CHANNELS: set[str] = set()
 
 
+class FixCause(BaseModel):
+    """The cause a fix run in a turn acts on, recorded once at the start of
+    that turn (``TurnProgress.cause_at_start``, #2036 D2.3); frozen, so never
+    rewritten."""
+
+    model_config = ConfigDict(frozen=True)
+
+    root_ids: tuple[str, ...] = Field(
+        default=(),
+        description="The identified roots, else the count-held terminal roots.",
+    )
+    licence_ids: tuple[str, ...] = Field(
+        default=(),
+        description=(
+            "With no root_ids, the cause M5's own leg licenses then: the root "
+            "of the conclusion's standing hypothesis, else the node the "
+            "conclusion names (a ROOT only when licensed; an intermediate as "
+            "named), or the root of the hypothesis leading at M5's bar; else "
+            "none."
+        ),
+    )
+    reference_ids: tuple[str, ...] = Field(
+        default=(),
+        description=(
+            "What a fix's targets must meet to be a remediation: every leg of "
+            "the cause pool, plus the roots of the standing hypotheses when "
+            "root_ids is empty."
+        ),
+    )
+    in_words: bool = Field(
+        default=False,
+        description=(
+            "With no root_ids, M5's leg is a conclusion naming its cause in "
+            "words only (no node)."
+        ),
+    )
+    held: bool = Field(
+        default=False,
+        description=(
+            "The turn started while a revised statement awaited the user's "
+            "re-confirmation, so cause work staged in the hold is not in this "
+            "record."
+        ),
+    )
+
+
 class TurnProgress(BaseModel):
     """
     Record of what happened in one turn.
@@ -156,6 +202,16 @@ class TurnProgress(BaseModel):
     """
 
     turn_number: int = Field(ge=0, description="Sequential turn number")
+
+    cause_at_start: Optional[FixCause] = Field(
+        default=None,
+        description=(
+            "The cause a fix run in this turn acts on, taken once at the start "
+            "of the turn's live apply, or as the record is written on a turn "
+            "with none (#2036 D2.3). None on a turn recorded before it existed "
+            "and on a SKIPPED placeholder: a fix run then stays unkinded."
+        ),
+    )
 
     timestamp: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),

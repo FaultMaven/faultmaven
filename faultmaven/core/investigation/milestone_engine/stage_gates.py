@@ -32,15 +32,19 @@ from faultmaven.core.investigation.prompts.context_builder.budget import (
 from faultmaven.core.investigation.terminal_transitions import open_disposition_offer
 from faultmaven.core.investigation.working_conclusion_generator import (
     generate_working_conclusion,
+    leading_hypothesis,
 )
 from faultmaven.modules.case.contracts import (
     ActionAttempt,
+    AnswerKind,
     Case,
     CaseState,
     EvidenceCategory,
+    FixCause,
     InterventionQuadrant,
     InvestigationActionType,
     MitigationRecord,
+    NodeType,
     OfferBasis,
     OfferKind,
     ProblemStatus,
@@ -291,11 +295,123 @@ def _solution_cause_validated(
     so the engine cannot distinguish it from a remediation — per-quadrant
     precision waits until the emission carries a quadrant. Pure; no side effects.
     """
+    return solution_licence_leg(case, working_conclusion) is not None
+
+
+def solution_licence_leg(
+    case: Case, working_conclusion: WorkingConclusion | None = None
+) -> Optional[str]:
+    """The leg M5 licenses a SOLUTION on (``cause_identification_leg``), or
+    None: the one reading ``_solution_cause_validated`` and the fix's
+    recorded licence share (#2036 D2.3)."""
     # Local import mirrors the module's other terminal_transitions uses (avoids
     # an import cycle) and keeps M5 and the resolution gate on ONE predicate.
-    from faultmaven.core.investigation.terminal_transitions import _cause_identified
+    from faultmaven.core.investigation.terminal_transitions import (
+        cause_identification_leg,
+    )
 
-    return _cause_identified(case, working_conclusion=working_conclusion)
+    return cause_identification_leg(case, working_conclusion=working_conclusion)
+
+
+def licence_subject(
+    case: Case, leg: str | None, likelihood_overrides: dict[str, float] | None = None
+) -> Any:
+    """What M5 licenses a fix on under ``leg``, read when the fix is proposed
+    (#2036 D2.3): the identified, else count-held, roots ("chain"); the
+    conclusion's hypothesis id and the node it names, as given ("rcc"); the
+    leading hypothesis's id, scored with ``likelihood_overrides`` as M5's
+    working conclusion is ("working_conclusion"); else None."""
+    from faultmaven.core.investigation.cause_assurance import _pool_legs
+
+    if leg == "chain":
+        identified, held, _fallen = _pool_legs(case)
+        return tuple(sorted(identified or held))
+    rcc = case.root_cause_conclusion
+    if leg == "rcc" and rcc is not None:
+        return (rcc.validated_hypothesis_id, rcc.names_root_node_id)
+    if leg == "working_conclusion":
+        leader = leading_hypothesis(case, likelihood_overrides)
+        return getattr(leader, "hypothesis_id", None)
+    return None
+
+
+def licence_leg_ids(
+    case: Case, leg: str | None, subject: Any
+) -> tuple[list[str], bool]:
+    """``(ids, in_words)``: the root(s) a licence ``subject``
+    (``licence_subject``) names on the graph as it stands now (#2036 D2.3).
+
+    - ``"chain"``: those roots still on the graph;
+    - ``"rcc"``: the conclusion's standing hypothesis root
+      (``conclusion_node``); else the node it names: a ROOT only when the
+      cause pool holds it (#2485), an intermediate as named; none and
+      ``in_words`` when it names no node;
+    - ``"working_conclusion"``: the hypothesis's root, none when unrooted."""
+    from faultmaven.core.investigation.cause_assurance import (
+        _cause_pool,
+        conclusion_node,
+    )
+
+    nodes = case.causal_nodes or {}
+    if leg == "chain":
+        return [node_id for node_id in subject or () if node_id in nodes], False
+    if leg == "rcc" and subject is not None:
+        hypothesis_id, named = subject
+        node_id = conclusion_node(case, hypothesis_id, named)
+        if node_id is not None:
+            return [node_id], False
+        if named not in nodes:
+            return [], True
+        if nodes[named].node_type != NodeType.ROOT or named in set().union(
+            *_cause_pool(case)
+        ):
+            return [named], False
+        return [], False
+    if leg == "working_conclusion":
+        leader = case.hypotheses.get(subject or "")
+        if leader is not None and leader.root_node_id in nodes:
+            return [leader.root_node_id], False
+    return [], False
+
+
+def fix_cause(case: Case) -> FixCause:
+    """What a fix run now acts on (#2036 D2.3), recorded at the start of each
+    turn (``TurnProgress.cause_at_start``); never recomputed after.
+
+    - ``root_ids``: the identified, else count-held terminal, roots;
+    - ``licence_ids``: with none, the cause M5's own leg licenses now
+      (``solution_licence_leg``, at its bar, never the leader at any
+      likelihood); none when no leg holds;
+    - ``reference_ids``: every leg of ``_cause_pool``, plus ``licensed_roots``
+      when ``root_ids`` is empty;
+    - ``in_words``: the conclusion licensing it names its cause in words only;
+    - ``held``: a revised statement awaits re-confirmation, so the cause work
+      staged in its hold is not in this pool."""
+    from faultmaven.core.investigation.cause_assurance import (
+        _cause_pool,
+        _pool_legs,
+        licensed_roots,
+    )
+
+    confirmation, window, hypotheses = _cause_pool(case)
+    identified, held, _fallen = _pool_legs(case)
+    reference = set(confirmation | window | hypotheses)
+    on_hold = pending_revision(case) is not None
+    if identified or held:
+        return FixCause(
+            root_ids=sorted(identified or held),
+            reference_ids=sorted(reference),
+            held=on_hold,
+        )
+    reference |= licensed_roots(case)
+    leg = solution_licence_leg(case)
+    ids, in_words = licence_leg_ids(case, leg, licence_subject(case, leg))
+    return FixCause(
+        licence_ids=ids,
+        reference_ids=sorted(reference),
+        in_words=in_words,
+        held=on_hold,
+    )
 
 
 def _settled_working_conclusion(
@@ -322,6 +438,16 @@ def _settled_working_conclusion(
     emission's links would uncap is scored capped, so such a license is seen
     next turn. Nothing is written to the case.
     """
+    return generate_working_conclusion(
+        case=case,
+        current_turn=case.current_turn,
+        likelihood_overrides=_settled_likelihoods(case, metadata),
+    )
+
+
+def _settled_likelihoods(case: Case, metadata: dict[str, Any]) -> dict[str, float]:
+    """The likelihood each hypothesis with a pending update will settle on
+    (``_settled_working_conclusion``), by id."""
     overrides: dict[str, float] = {}
     for h_id, likelihood in metadata.get("deferred_likelihood_updates") or ():
         hypothesis = case.hypotheses.get(h_id)
@@ -330,9 +456,7 @@ def _settled_working_conclusion(
             overrides[h_id] = HypothesisManager.likelihood_after_update(
                 hypothesis, likelihood, case
             )
-    return generate_working_conclusion(
-        case=case, current_turn=case.current_turn, likelihood_overrides=overrides
-    )
+    return overrides
 
 
 def _refresh_working_conclusion(case: Case) -> None:
@@ -441,18 +565,25 @@ def fix_identity(description: Optional[str]) -> str:
 
 def standing_fix_action(case: Case, description: Optional[str]) -> Any:
     """The SOLUTION action a re-proposal with ``description`` keeps, or None:
-    the pending offer bearing that fix identity, or the latest dated fix while
-    its own window has not FAILED (#2105). After a FAILED window the same fix
-    applied again is a new attempt."""
+    the pending offer bearing that fix identity, or a dated attempt that still
+    stands. A remediation (or a fix accepted before #2036 D2.3) stands until
+    its own window FAILED or a later remediation opened one (#2105); an
+    interception never ends its standing. An interception opens no window: it
+    stands while it is the latest attempt, until the problem is seen present
+    after its latest relief, or after it with no relief (#2036 D2.3). After a
+    failure the same fix applied again is a new attempt."""
     from faultmaven.core.investigation.cause_assurance import (
         FIX_FAILED,
-        latest_fix_window,
+        attempt_window,
+        fix_application_turn,
+        fix_windows,
+        interception_relief,
     )
 
     identity = fix_identity(description)
     if not identity:
         return None
-    window = None
+    latest = fix_application_turn(case)
     for action in reversed(case.proposed_actions):
         if (
             action.action_type != InvestigationActionType.SOLUTION
@@ -461,11 +592,23 @@ def standing_fix_action(case: Case, description: Optional[str]) -> Any:
             continue
         if action.state == "pending":
             return action
-        if action.state == "accepted" and action.accepted_in_turn is not None:
-            window = window or latest_fix_window(case)
-            if action.accepted_in_turn == window.fix_turn and (
-                window.state != FIX_FAILED
+        if action.state != "accepted" or action.accepted_in_turn is None:
+            continue
+        window = attempt_window(case, action)
+        if window is not None:
+            # A remediation stands while its window is the latest one and has
+            # not FAILED: a later interception does not end it.
+            if window.state != FIX_FAILED and (
+                window.fix_turn == fix_windows(case)[-1].fix_turn
             ):
+                return action
+            continue
+        # An interception opens no window: the latest attempt, it stands until
+        # the problem is seen present after its latest relief, or after it
+        # with none.
+        if action.accepted_in_turn == latest:
+            relief, present = interception_relief(case, action.accepted_in_turn)
+            if present is None or (relief is not None and present <= relief):
                 return action
     return None
 
@@ -753,7 +896,10 @@ def _flag_unbound_post_fix_rows(case: Case, metadata: dict[str, Any] | None) -> 
     if fix_turn is None:
         return False
     subjects = subject_index(case)
-    failed = [w for w in fix_windows(case) if w.state == FIX_FAILED]
+    windows = fix_windows(case, subjects)
+    failed = [w for w in windows if w.state == FIX_FAILED]
+    # A kinded window binds its rows to the cause its fix ran against (#2036).
+    window_bound = {e.evidence_id for w in windows for e in w.cause_rows}
     absence = (
         EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
         EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
@@ -777,6 +923,7 @@ def _flag_unbound_post_fix_rows(case: Case, metadata: dict[str, Any] | None) -> 
         if e.collected_at_turn == case.current_turn
         and after_the_fix(e)
         and subjects.subject(e, windows=True) == SUBJECT_UNBOUND
+        and e.evidence_id not in window_bound
     ]
     if not unbound:
         return False
@@ -920,6 +1067,9 @@ FIX_JUSTIFICATION_KEY = "fix_acceptance_justification_error"
 #: Set on a replayed bundle's metadata to the ``StagedCauseWork`` whose hold
 #: turn carried a fix acceptance (``held_fix``).
 CARRIED_FIX_KEY = "carried_fix_acceptance"
+#: The SOLUTIONs this apply registered, whose kind the settle reads once
+#: chain emission has run (``response_application._settle_fix_attempts``).
+FIXES_ACCEPTED_KEY = "fixes_accepted_this_apply"
 
 
 class _FixEntry(NamedTuple):
@@ -1420,7 +1570,11 @@ def _date_to_the_report(case: Case, target: Any, metadata: dict[str, Any]) -> No
     this turn is judged in the new window. With one, its window must have
     FAILED before the previous turn (a failure is final), and its
     disconfirmation must read the same with this fix dated either way.
-    Otherwise the declaration is ignored, with a line."""
+    The fix is then kinded against the previous turn's own record
+    (``TurnProgress.cause_at_start``, #2036 D2.3). Read before the settle,
+    the new attempt counts as a remediation here, which only widens the
+    window that judged it. Otherwise the declaration is ignored, with a
+    line."""
     from faultmaven.core.investigation.cause_assurance import FIX_FAILED, fix_windows
 
     turn, previous = case.current_turn, case.current_turn - 1
@@ -1457,7 +1611,38 @@ def _date_to_the_report(case: Case, target: Any, metadata: dict[str, Any]) -> No
             f"{dated_here}",
         )
         return
+    # A hold turn's record holds the pool without its staged cause work, which
+    # this turn's confirmation just replayed (#2036 D2.3).
+    if _previous_turn_held(case):
+        target.accepted_in_turn = turn
+        _ignore_fix_report(
+            case,
+            metadata,
+            f"turn {previous} was held for the revised statement confirmed now, "
+            f"so its record lacks the cause work replayed since; {dated_here}",
+        )
+        return
     target.registered_in_turn = turn
+
+
+def _previous_turn_held(case: Case) -> bool:
+    """Whether the previous turn started inside the hold of the revised
+    statement confirmed this turn (a REVISION accepted now, in the offer
+    record): its record says so (``FixCause.held``), so its pool lacks the
+    cause work the confirmation replayed. The turn that opened the hold
+    started before its own cause work was staged, so its record holds."""
+    record = next(
+        (t for t in case.turn_history if t.turn_number == case.current_turn - 1),
+        None,
+    )
+    return bool(
+        getattr(getattr(record, "cause_at_start", None), "held", False)
+    ) and any(
+        a.kind == OfferKind.REVISION
+        and a.answer == AnswerKind.ACCEPTED
+        and a.at_turn == case.current_turn
+        for a in case.offer_record.answers
+    )
 
 
 def _apply_stage_gate_side_effects(
@@ -1548,6 +1733,7 @@ def _apply_stage_gate_side_effects(
         # genuinely-stale accumulation under a mitigation falls under the general
         # "DIAGNOSTIC asks carry no lifecycle" boundary INV-33 leaves standing.
         if is_solution:
+            metadata.setdefault(FIXES_ACCEPTED_KEY, []).append(target.action_id)
             _retire_shadowed_diagnostic_asks(case, before_turn=target.proposed_in_turn)
             # The persisted projection: True from the first registration on.
             case.progress.solution_accepted = True

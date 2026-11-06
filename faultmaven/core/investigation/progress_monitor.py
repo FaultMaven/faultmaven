@@ -659,10 +659,12 @@ class ProgressMonitor:
         """
         Detect repeated fix attempts that don't work.
 
-        A SOLUTION attempt is a record with its own fix window (#2105), so for
-        ``solution`` this triggers on N+ FAILED dated windows (``fix_windows``),
-        unless the latest window SUCCEEDED: a fix that worked after the failed
-        ones is no failure cycle. A relapsed window 0 is no recorded attempt,
+        A remediation is a record with its own fix window (#2105); an
+        interception opens none, so it neither counts nor lifts it (#2036
+        D2.3). For ``solution`` this triggers on N+ FAILED dated windows
+        (``fix_windows``), unless the latest window SUCCEEDED: a fix that
+        worked after the failed ones is no failure cycle. A relapsed window 0
+        is no recorded attempt,
         and a late-registered fix can fail both it and its own window (#2501).
         A latest window not yet observed (UNKNOWN) does not lift it — that
         fix's outcome is still to be seen. A mitigation keeps the older

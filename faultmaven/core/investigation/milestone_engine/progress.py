@@ -15,6 +15,8 @@ from faultmaven.modules.case.contracts import (
     TurnProgress,
 )
 
+from .stage_gates import fix_cause
+
 
 def check_if_progress_made(metadata: dict[str, Any]) -> bool:
     """Whether the investigation ADVANCED this turn — the sole writer of
@@ -265,6 +267,9 @@ def record_promptless_turn(
     case.turn_history.append(
         TurnProgress(
             turn_number=case.current_turn,
+            # No apply ran, so nothing in this turn moved the cause before
+            # its record (#2036 D2.3).
+            cause_at_start=fix_cause(case),
             timestamp=datetime.now(UTC),
             milestones_completed=list(milestones_completed or []),
             evidence_added=[],
