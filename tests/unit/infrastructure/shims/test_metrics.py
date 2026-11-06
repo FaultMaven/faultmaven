@@ -472,6 +472,7 @@ class TestHttpDurationBucketsSpanRealTraffic:
         import subprocess
         import sys
 
+        from faultmaven.config.settings import MAX_AGENT_TIMEOUT_SECONDS
         from faultmaven.infrastructure.shims.metrics import (
             _REQUEST_DURATION_BUCKETS,
             PROMETHEUS_AVAILABLE,
@@ -554,6 +555,9 @@ class TestHttpDurationBucketsSpanRealTraffic:
             f"{self.SLOW_SUCCEEDING_LLM_CALL}s one both reach le={healthy}"
         )
         assert slow != float("inf")
-        assert self._bucket_reached(llm_bounds, 600.0) != float(
-            "inf"
-        ), "MAX_AGENT_TIMEOUT_SECONDS falls in the overflow bucket"
+        assert self._bucket_reached(
+            llm_bounds, float(MAX_AGENT_TIMEOUT_SECONDS)
+        ) != float("inf"), (
+            f"MAX_AGENT_TIMEOUT_SECONDS ({MAX_AGENT_TIMEOUT_SECONDS}s) falls in "
+            "the overflow bucket"
+        )
