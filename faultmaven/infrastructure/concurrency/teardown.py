@@ -82,10 +82,10 @@ class ContainerRelease:
     answers ``False`` while one does. That, or a failed or interrupted
     shutdown that decided it was not the last (a hold taken during its drain
     or grace, even one released since), means another release is the last.
-    One that failed having decided it was the last still yields to any hold
-    taken since its reset (a composition begun during its closes), and one
-    that failed before deciding reads only whether the container is held.
-    Anything else runs the gated steps.
+    A last release, whether it returned or raised, still yields to any hold
+    still held when it reads (all taken since its reset: a composition begun
+    during its closes), and one that failed before deciding reads only
+    whether the container is held. Anything else runs the gated steps.
     ``shutdown`` is a passed container's; by default the singleton's is
     resolved inside the step.
     """
@@ -100,15 +100,17 @@ class ContainerRelease:
             from faultmaven.container import container
 
             shutdown = container.shutdown
+        owner = getattr(shutdown, "__self__", None)
+        decided = getattr(owner, "released_last", None)
+        held = getattr(owner, "is_held", None)
+        last = None
         try:
-            self._others_hold = (await shutdown()) is False
+            last = await shutdown()
         except BaseException:
-            owner = getattr(shutdown, "__self__", None)
-            decided = getattr(owner, "released_last", None)
             last = decided() if decided is not None else None
-            held = getattr(owner, "is_held", None)
-            self._others_hold = last is False or bool(held is not None and held())
             raise
+        finally:  # one predicate, whichever way the shutdown ended (#2535)
+            self._others_hold = last is False or bool(held is not None and held())
 
     def if_last(self, step: Callable[[], Any]) -> Callable[[], Any]:
         """``step``, run only when the release was the last (or did not say)."""

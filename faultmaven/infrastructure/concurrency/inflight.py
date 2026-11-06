@@ -8,12 +8,13 @@ in flight never meets a closed Redis client, ChromaDB client or engine.
 ``cancellable`` work is cancelled once the bound has passed; ``must_finish``
 work (the settlement: no cancellation may reach its commit, R1) is awaited with
 no bound, which the database's command timeout supplies (#2280). A cancel does
-not stop a thread, so :func:`draining` holds while a drain that is still the
-last runs, and the vector write reads it first. **Residual:** a write already
-in its thread at the bound finishes into the client after it. **Residual (two
-loops):** a drain superseded by a hold from another loop leaves the flag down
-while its own loop's work runs; if that hold's release closes the stores first,
-that work's writes are not refused (#2532).
+not stop a thread, so :func:`draining` holds while a release that is still the
+last drains and then closes the stores, and the vector write reads it first.
+**Residual:** a write already in its thread at the bound finishes into the
+client after it. **Residual (two loops):** a drain superseded by a hold from
+another loop leaves the flag down while its own loop's work runs; if that
+hold's release closes the stores first, that work's writes after those closes
+are not refused (#2532).
 
 **Per case, across replicas.** A case's lease is the Redis sorted set
 ``case-inflight:{enterprise_id}:{case_id}``: holder tokens scored by expiry on
@@ -31,11 +32,12 @@ a delete that passes meanwhile can race it. Standalone's Redis is in-process.
 """
 
 import asyncio
+import contextlib
 import enum
 import logging
 import math
 import secrets
-from typing import Any, Callable, Dict, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Iterator, Optional, Set, Tuple
 
 from faultmaven.infrastructure.concurrency.owned_claim import (
     OwnedClaim,
@@ -160,12 +162,26 @@ def tracked(what_prefix: str = "") -> Set["asyncio.Task[Any]"]:
 
 
 def draining() -> bool:
-    """Whether a drain runs whose release no hold has superseded: a store write
+    """Whether a drain runs whose release no hold has superseded, or a release
+    still the last runs, from its drain until its closes end: a store write
     that has not started must not start. A drain stops counting toward it once
     a hold is taken after its release, and never counts again (a drain no
     longer the last closes nothing); another drain still the last keeps it
-    raised."""
+    raised. Once a last release's closes begin, the flag stays raised until
+    they end, whatever composes or resets meanwhile, so a second composition's
+    evidence writes are refused during those closes."""
     return any(last() for last in list(_DRAINS))
+
+
+@contextlib.contextmanager
+def raised(last: Callable[[], bool]) -> Iterator[None]:
+    """Count ``last`` toward :func:`draining` while the block runs."""
+    drains = _DRAINS  # removed from the list it joined
+    drains.append(last)
+    try:
+        yield
+    finally:
+        drains.remove(last)
 
 
 async def drain(
@@ -176,12 +192,14 @@ async def drain(
     Waits for every tracked task, those spawned meanwhile included, up to
     ``timeout_s`` (default ``DRAIN_BOUND_SECONDS``). Then it cancels the
     ``cancellable`` rest, gives them ``CANCEL_GRACE_SECONDS``, and awaits the
-    ``must_finish`` ones with no bound. Last, the case leases being released
-    get the same grace. Once ``last()`` turns false (the release is no longer
-    the last), this drain stops counting toward :func:`draining` at once,
-    while it still waits for this loop's work up to its bound; past the bound
-    it waits for the ``must_finish`` work it has not cancelled, then returns,
-    cancelling nothing more.
+    ``must_finish`` ones with no bound. Once no work is left, the case leases
+    being released get the same grace, and it returns. Once ``last()`` turns
+    false (the release is no longer the last), this drain stops counting
+    toward :func:`draining` at once and cancels nothing more: it still waits
+    for this loop's work up to its bound, then returns, leaving the rest
+    running. Superseded past the bound, during the cancel grace or the wait
+    after it, it still ends that grace and waits, with no bound, for the
+    ``must_finish`` work it did not cancel.
     Interrupted, it cancels nothing and re-raises: a last release then calls
     :func:`cancel_cancellable`. **Residual:** an interrupted shutdown does not
     wait for a settlement, which can then meet closed stores.
@@ -190,8 +208,7 @@ async def drain(
     deadline = loop.time() + (DRAIN_BOUND_SECONDS if timeout_s is None else timeout_s)
     abandoned: Set["asyncio.Task[Any]"] = set()
     cancelled = 0
-    _DRAINS.append(last)
-    try:
+    with raised(last):
         while True:
             pending = [t for t in _pending_on(loop) if t not in abandoned]
             if not pending:
@@ -209,8 +226,6 @@ async def drain(
         releases = [t for t in _RELEASES if t.get_loop() is loop]
         if releases:
             await asyncio.wait(releases, timeout=CANCEL_GRACE_SECONDS)
-    finally:
-        _DRAINS.remove(last)
     return cancelled
 
 

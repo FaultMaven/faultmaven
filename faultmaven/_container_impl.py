@@ -37,6 +37,7 @@ from faultmaven.container.providers import (
     register_services,
     register_tools,
 )
+from faultmaven.infrastructure.concurrency import inflight
 from faultmaven.infrastructure.concurrency.teardown import (
     run_teardown,
     teardown_step,
@@ -1861,11 +1862,18 @@ class DIContainer(BaseDIContainer):
         Then it closes everything recorded with :meth:`own`, newest first,
         through ``run_teardown`` (every close runs, a failed one is logged, an
         interruption, the drain's included, is held until all have run), and
-        returns ``True``. Once it has decided, it records for the calling
-        context whether it was the last (:meth:`released_last`): a composer
-        whose shutdown raised reads that decision, and after a last one also
-        any hold taken since the reset. Whoever composes shuts down on every
-        path, while the loop the clients are bound to still runs.
+        returns ``True``. A last release keeps ``inflight.draining()`` raised
+        from its drain until its closes end, whatever composes or resets
+        meanwhile, so no evidence vector write starts under a client it closes
+        (#2532); a second composition's are refused during the closes too. The
+        knowledge base's vector write reads no such flag (#2562). Once it has
+        decided, it records for the calling context whether it was the last
+        (:meth:`released_last`): a composer whose shutdown raised reads that
+        decision. After a last release, whether it returned or raised, the
+        composer yields to any hold still held when it reads (all taken since
+        its reset); after one that failed before deciding, it reads only whether
+        the container is held. Whoever composes shuts down on every path, while
+        the loop the clients are bound to still runs.
         """
         self._last_release.set(None)
         if not self._holds.release():
@@ -1876,39 +1884,46 @@ class DIContainer(BaseDIContainer):
         # No hold taken on this instance since this release began. Sticky: once
         # false it stays false, so the drain's flag and this release agree.
         last = lambda: self._holds is holds and holds.takes == taken
-        interrupted = await teardown_step(
-            "Draining the work in flight",
-            functools.partial(_drain_work_in_flight, last),
-        )
-        if not last():
-            self._last_release.set(False)
-            if interrupted is not None:
-                raise interrupted
-            return False
-        if interrupted is None:
-            # Synchronous: no hold can be taken between the check and the reset.
+        with inflight.raised(last):  # the draining flag, to the reset (#2532)
             interrupted = await teardown_step(
-                "Letting the case leases lapse", _let_leases_lapse
+                "Draining the work in flight",
+                functools.partial(_drain_work_in_flight, last),
             )
-        else:
-            await teardown_step("Cancelling the cancellable rest", _cancel_cancellable)
-            if not last():  # a hold taken during the grace
+            if not last():
                 self._last_release.set(False)
-                raise interrupted
-        self._last_release.set(True)
-        owned = self._owned[::-1]
-        self._owned.clear()  # closed once, whatever the closes do
-        self.reset()
-        try:
-            await run_teardown(
-                [
-                    (f"Closing {what}", functools.partial(close, resource))
-                    for what, resource, close in owned
-                ]
-            )
-        finally:
-            if interrupted is not None:
-                raise interrupted
+                if interrupted is not None:
+                    raise interrupted
+                return False
+            if interrupted is None:
+                # Synchronous: no hold can be taken between the check and the reset.
+                interrupted = await teardown_step(
+                    "Letting the case leases lapse", _let_leases_lapse
+                )
+            else:
+                await teardown_step(
+                    "Cancelling the cancellable rest", _cancel_cancellable
+                )
+                if not last():  # a hold taken during the grace
+                    self._last_release.set(False)
+                    raise interrupted
+            self._last_release.set(True)
+            owned = self._owned[::-1]
+            self._owned.clear()  # closed once, whatever the closes do
+            self.reset()
+        # Then until the closes end, whatever composes or resets meanwhile: the
+        # flag is the process's, so it cannot tell this composition's writes
+        # from a later one's. The reset is synchronous, so there is no gap.
+        with inflight.raised(lambda: True):
+            try:
+                await run_teardown(
+                    [
+                        (f"Closing {what}", functools.partial(close, resource))
+                        for what, resource, close in owned
+                    ]
+                )
+            finally:
+                if interrupted is not None:
+                    raise interrupted
         return True
 
     async def release_every_hold(self) -> bool:
@@ -1946,22 +1961,16 @@ class DIContainer(BaseDIContainer):
 
 
 async def _drain_work_in_flight(last) -> None:
-    """The last release's drain, importing it in the step (#2267)."""
-    from faultmaven.infrastructure.concurrency.inflight import drain
-
-    await drain(last=last)
+    """The last release's drain."""
+    await inflight.drain(last=last)
 
 
 def _let_leases_lapse() -> None:
-    from faultmaven.infrastructure.concurrency.inflight import let_leases_lapse
-
-    let_leases_lapse()
+    inflight.let_leases_lapse()
 
 
 async def _cancel_cancellable() -> None:
-    from faultmaven.infrastructure.concurrency.inflight import cancel_cancellable
-
-    await cancel_cancellable()
+    await inflight.cancel_cancellable()
 
 
 # Global container access - always returns the current singleton instance
