@@ -1,20 +1,23 @@
-"""A cause re-check recorded while a statement revision waits (#2550).
+"""A causal_absence row recorded while a statement revision waits (#2550).
 
-A causal_absence row recorded before the problem is verified is recorded as
-symptom_absence: a cause cannot be shown eliminated before its problem is
-verified. A revision over a VERIFIED problem holds a problem shown real, so its
-hold turns' rows stay causal_absence, and the confirmation's replayed cause work
-binds a re-check of the staged cause. A hold over a problem never verified (the
-verifying turn's own revision, a false alarm's) still reclassifies.
+A cause cannot be shown eliminated before its problem is verified, so a
+causal_absence row on a turn that ends with the problem unverified is held as
+symptom_absence, judged on the status the turn ends with. A revision's hold is
+judged again when the user answers it: an answer that leaves the problem
+verified restores the hold's rows, and the cause work a confirmation replays
+binds them; an answer back to unverified or to a false alarm keeps them held.
 
 Driven through ``_apply_investigation_updates`` and the user's answer
-(``confirm_revision`` / ``decline_revision``). No live LLM.
+(``confirm_revision``, ``decline_revision``, ``execute_user_closure``). No live
+LLM.
 """
 
 import pytest
 
 from faultmaven.core.investigation.cause_assurance import (
+    FIX_UNKNOWN,
     SUBJECT_CAUSE,
+    SUBJECT_UNBOUND,
     cause_recheck_status,
     fix_windows,
     subject_index,
@@ -26,35 +29,81 @@ from faultmaven.core.investigation.problem_status import (
     decline_revision,
     invalidate_problem,
     pending_revision,
-    problem_shown_real,
 )
-from faultmaven.modules.case.contracts import AnswerVia, EvidenceCategory, ProblemStatus
+from faultmaven.core.investigation.schemas import (
+    MilestoneUpdates,
+    ProblemVerificationUpdate,
+)
+from faultmaven.core.investigation.terminal_transitions import (
+    assess_resolution_readiness,
+    derive_disposition_eligibility,
+    execute_user_closure,
+)
+from faultmaven.modules.case.contracts import (
+    AnswerVia,
+    ClosureReason,
+    EvidenceCategory,
+    ProblemStatus,
+    ResolveEligibility,
+)
 from tests.unit.core.investigation import (
     test_problem_statement_revision_and_false_alarm as revision,
 )
-from tests.unit.core.investigation.bound_rows import bound_to_add
+from tests.unit.core.investigation.bound_rows import bound_to_add, ensure_subjects
 
 pytestmark = pytest.mark.unit
 
 CAUSAL_ABSENCE = EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
 SYMPTOM_ABSENCE = EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE
 SYMPTOM = EvidenceCategory.SYMPTOM_EVIDENCE
+ANSWER = "if the user's answer to the revised statement leaves the problem verified"
 
 
 def _recheck(case, *, turn: int, of: str):
-    """The model's re-check of the cause row ``of`` (a ``new_index_N`` ref),
-    on data uploaded at ``turn`` (``bound_rows.upload``): the cause is gone."""
+    """The model's re-check of the cause row ``of`` (an id or a ``new_index_N``
+    ref), on data uploaded at ``turn``: the cause is gone."""
     summary = "the orders pool now reads 50 connections"
     return bound_to_add(case, CAUSAL_ABSENCE, summary, turn=turn, rechecks=of)
 
 
-async def _revision_turn_with_recheck(engine, case) -> str:
+async def _revision_turn_with_recheck(engine, case) -> tuple[dict, str]:
     """Turn 4: the revision, the cause work and a re-check of a staged cause
-    row, on a file uploaded that turn. Returns the re-check's id."""
+    row, on a file uploaded that turn. Returns the turn's metadata and the
+    re-check's id."""
     dsu = revision._revision_turn_with_cause_work()
     dsu.evidence_to_add.append(_recheck(case, turn=4, of="new_index_1"))
     meta = await revision._apply(engine, case, dsu)
-    return meta["evidence_added"][-1]
+    return meta, meta["evidence_added"][-1]
+
+
+async def _propose(engine, case, *rows, **verification) -> dict:
+    """Turn 4: a revision citing a new symptom row, beside ``rows``."""
+    return await revision._apply(
+        engine,
+        case,
+        revision._DSU(
+            evidence_to_add=[revision._row(SYMPTOM, "s1"), *rows],
+            verification_updates=ProblemVerificationUpdate(
+                **verification,
+                revised_problem_statement=revision.REVISED,
+                revision_evidence_ids=["new_index_0"],
+                revision_basis="the gateway log shows timeouts with normal DB latency",
+            ),
+        ),
+    )
+
+
+async def _hold_turn(engine, case, *rows) -> list[str]:
+    """Turn 5, while the revision waits: ``rows`` and nothing else."""
+    case.current_turn = 5
+    meta = await revision._apply(engine, case, revision._DSU(evidence_to_add=rows))
+    return meta["evidence_added"]
+
+
+async def _confirm(engine, case) -> None:
+    case.current_turn += 1
+    await confirm_revision(engine.responses, case, {}, via=AnswerVia.CLICK)
+    assert case.progress.problem_status == ProblemStatus.VERIFIED
 
 
 def _row(case, evidence_id: str):
@@ -71,33 +120,43 @@ def _assert_counts_for_the_cause(case, evidence_id: str) -> None:
     assert [e.evidence_id for e in fix_windows(case)[0].cause_rows] == [evidence_id]
 
 
-class TestAHoldOverAVerifiedProblem:
-    async def test_a_recheck_on_the_proposal_turn_counts_once_confirmed(self):
+def _invalidated(prior: ProblemStatus = ProblemStatus.UNVERIFIED):
+    case = revision._case(prior)
+    finding = revision._with(case, revision._evidence(SYMPTOM_ABSENCE, "a"))
+    invalidate_problem(case, evidence_ids=finding, basis="the alert misfired")
+    return case
+
+
+async def _hold_with_both_legs(engine, case) -> str:
+    """A verified problem with a cause in the pool; a revision at turn 4; at
+    hold turn 5, the cause's support and the problem re-checked gone. Returns
+    the cause re-check's id."""
+    verifying, support = ensure_subjects(case, turn=3)
+    await _propose(engine, case)
+    absent, _ = await _hold_turn(
+        engine,
+        case,
+        _recheck(case, turn=5, of=support),
+        bound_to_add(case, SYMPTOM_ABSENCE, "checkout ok", turn=5, rechecks=verifying),
+    )
+    return absent
+
+
+class TestAConfirmationCountsTheHoldsRecheck:
+    async def test_on_the_proposal_turn(self):
         engine, case = revision._engine(), revision._case(ProblemStatus.VERIFIED)
-        absent = await _revision_turn_with_recheck(engine, case)
-        assert case.progress.problem_status == ProblemStatus.REVISION_PENDING
+        _, absent = await _revision_turn_with_recheck(engine, case)
+        assert _row(case, absent).category == SYMPTOM_ABSENCE
 
-        case.current_turn = 5
-        await confirm_revision(engine.responses, case, {}, via=AnswerVia.CLICK)
+        await _confirm(engine, case)
 
-        assert case.progress.problem_status == ProblemStatus.VERIFIED
         _assert_counts_for_the_cause(case, absent)
 
-    async def test_a_recheck_on_a_later_hold_turn_counts_once_confirmed(self):
+    async def test_on_a_later_hold_turn(self):
         engine, case = revision._engine(), revision._case(ProblemStatus.VERIFIED)
-        await revision._apply(
-            engine,
-            case,
-            revision._DSU(
-                evidence_to_add=[revision._row(SYMPTOM, "s1")],
-                verification_updates=revision._revision_update("new_index_0"),
-            ),
-        )
-        assert case.progress.problem_status == ProblemStatus.REVISION_PENDING
-
+        await _propose(engine, case)
         # Hold turn 5 brings the cause work and its re-check. Without the
         # revision's symptom row, the cause rows are new_index_0 and _1.
-        case.current_turn = 5
         dsu = revision._revision_turn_with_cause_work()
         dsu.verification_updates = None
         del dsu.evidence_to_add[0]
@@ -105,70 +164,139 @@ class TestAHoldOverAVerifiedProblem:
         for link in dsu.node_evidence_links:
             link.evidence_id_ref = shifted[link.evidence_id_ref]
         dsu.hypotheses_to_add[0].terminal_basis_evidence_ids = ["new_index_1"]
+        case.current_turn = 5
         dsu.evidence_to_add.append(_recheck(case, turn=5, of="new_index_0"))
-        meta = await revision._apply(engine, case, dsu)
-        absent = meta["evidence_added"][-1]
+        absent = (await revision._apply(engine, case, dsu))["evidence_added"][-1]
 
-        case.current_turn = 6
-        await confirm_revision(engine.responses, case, {}, via=AnswerVia.CLICK)
+        await _confirm(engine, case)
 
-        assert case.progress.problem_status == ProblemStatus.VERIFIED
         _assert_counts_for_the_cause(case, absent)
 
-    async def test_a_declined_revision_leaves_no_symptom_absence(self):
-        engine, case = revision._engine(), revision._case(ProblemStatus.VERIFIED)
-        absent = await _revision_turn_with_recheck(engine, case)
+    async def test_after_a_revision_on_the_verifying_turn(self):
+        engine, case = revision._engine(), revision._case()
+        dsu = revision._revision_turn_with_cause_work()
+        dsu.milestones = MilestoneUpdates(symptom_verified=True)
+        meta = await revision._apply(
+            engine, case, dsu, revision._Response("timeouts in the gateway log")
+        )
+        assert pending_revision(case).prior_status == ProblemStatus.UNVERIFIED
+        support = meta["evidence_added"][1]
+        (absent,) = await _hold_turn(engine, case, _recheck(case, turn=5, of=support))
 
-        case.current_turn = 5
+        await _confirm(engine, case)
+
+        _assert_counts_for_the_cause(case, absent)
+
+
+class TestAnAnswerBackToWhereTheCaseWas:
+    async def test_to_verified_restores_the_row_unbound(self):
+        engine, case = revision._engine(), revision._case(ProblemStatus.VERIFIED)
+        _, absent = await _revision_turn_with_recheck(engine, case)
+
         decline_revision(case, via=AnswerVia.CLICK)
 
         assert case.progress.problem_status == ProblemStatus.VERIFIED
         assert _row(case, absent).category == CAUSAL_ABSENCE
-        assert SYMPTOM_ABSENCE not in {e.category for e in case.evidence}
+        assert subject_index(case).subject(_row(case, absent)) == SUBJECT_UNBOUND
+        assert cause_recheck_status(case) == []
 
-
-class TestAHoldOverAProblemNeverVerified:
-    async def test_a_revision_over_a_false_alarm_reclassifies(self):
+    async def test_to_unverified_keeps_it_held(self):
         engine, case = revision._engine(), revision._case()
-        finding = revision._with(case, revision._evidence(SYMPTOM_ABSENCE, "a"))
-        invalidate_problem(case, evidence_ids=finding, basis="the alert misfired")
-        await revision._apply(
-            engine,
-            case,
-            revision._DSU(
-                evidence_to_add=[
-                    revision._row(SYMPTOM, "s1"),
-                    revision._row(CAUSAL_ABSENCE, "g"),
-                ],
-                verification_updates=revision._revision_update("new_index_0"),
-            ),
-        )
-        assert case.progress.problem_status == ProblemStatus.REVISION_PENDING
+        _, absent = await _revision_turn_with_recheck(engine, case)
+
+        decline_revision(case, via=AnswerVia.CLICK)
+
+        assert case.progress.problem_status == ProblemStatus.UNVERIFIED
+        assert _row(case, absent).category == SYMPTOM_ABSENCE
+
+    async def test_to_a_false_alarm_keeps_a_later_hold_turns_row_held(self):
+        engine, case = revision._engine(), _invalidated()
+        await _propose(engine, case)
         assert pending_revision(case).prior_status == ProblemStatus.INVALIDATED
-        assert case.evidence[-1].category == SYMPTOM_ABSENCE
+        (absent,) = await _hold_turn(engine, case, revision._row(CAUSAL_ABSENCE, "g"))
+
+        decline_revision(case, via=AnswerVia.CLICK)
+
+        assert case.progress.problem_status == ProblemStatus.INVALIDATED
+        assert _row(case, absent).category == SYMPTOM_ABSENCE
 
 
-@pytest.mark.parametrize("superseded", [False, True])
-@pytest.mark.parametrize(
-    "prior, shown",
-    [
-        (ProblemStatus.VERIFIED, True),
-        (ProblemStatus.UNVERIFIED, False),
-        (ProblemStatus.INVALIDATED, False),
-    ],
-)
-def test_a_hold_shows_the_problem_real_only_over_a_verified_one(
-    prior, shown, superseded
-):
-    case = revision._case(prior)
-    assert problem_shown_real(case) is shown
-    revision._propose(case)
-    if superseded:
-        revision._propose(
-            case,
-            "Checkout requests to /orders time out after 30s at the gateway",
-            evidence=list(pending_revision(case).evidence_ids),
-        )
-    assert case.progress.problem_status == ProblemStatus.REVISION_PENDING
-    assert pending_revision(case).prior_status == prior
-    assert problem_shown_real(case) is shown
+async def test_readers_during_the_hold_read_the_row_as_held():
+    """A re-check of a pool root's support, beside the problem re-checked
+    gone: while the statement is in question nothing reads it as the cause
+    removed. Confirmed, it is causal_absence."""
+    engine, case = revision._engine(), revision._case(ProblemStatus.VERIFIED)
+    absent = await _hold_with_both_legs(engine, case)
+
+    assert _row(case, absent).category == SYMPTOM_ABSENCE
+    assert cause_recheck_status(case) == []
+    readiness = assess_resolution_readiness(case)
+    assert readiness.verdict == readiness.NEEDS_INFO
+    assert derive_disposition_eligibility(case)["resolved"] == (
+        ResolveEligibility.NEEDS_INFO
+    )
+    assert [(w.state, len(w.cause_rows)) for w in fix_windows(case)] == [
+        (FIX_UNKNOWN, 0)
+    ]
+
+    await _confirm(engine, case)
+
+    assert _row(case, absent).category == CAUSAL_ABSENCE
+
+
+async def test_a_turn_judges_its_rows_on_the_status_it_ends_with():
+    """A withdrawn finding ends the turn verified: the row held before step 2c
+    is restored. Beside a revision, it is held until the user's answer."""
+    withdrawn = dict(
+        invalidation_withdrawn=True,
+        withdrawal_basis="the user has customer tickets from that hour",
+    )
+    engine, case = revision._engine(), _invalidated(ProblemStatus.VERIFIED)
+    await revision._apply(
+        engine,
+        case,
+        revision._DSU(
+            evidence_to_add=[revision._row(CAUSAL_ABSENCE, "g")],
+            verification_updates=ProblemVerificationUpdate(**withdrawn),
+        ),
+    )
+    assert case.progress.problem_status == ProblemStatus.VERIFIED
+    assert case.evidence[-1].category == CAUSAL_ABSENCE
+
+    engine, case = revision._engine(), _invalidated(ProblemStatus.VERIFIED)
+    meta = await _propose(engine, case, revision._row(CAUSAL_ABSENCE, "g"), **withdrawn)
+    absent = meta["evidence_added"][-1]
+    assert pending_revision(case).prior_status == ProblemStatus.VERIFIED
+    assert _row(case, absent).category == SYMPTOM_ABSENCE
+
+    await _confirm(engine, case)
+
+    assert _row(case, absent).category == CAUSAL_ABSENCE
+
+
+async def test_a_menu_close_during_the_hold_declines_the_resolution():
+    """The close cancels the revision back to a verified problem, which
+    restores the hold's rows, so the case confirms a resolution and the close
+    is the user's decline of it (#2418)."""
+    engine, case = revision._engine(), revision._case(ProblemStatus.VERIFIED)
+    absent = await _hold_with_both_legs(engine, case)
+
+    reason = execute_user_closure(case, case.effective_driver_id)
+
+    assert _row(case, absent).category == CAUSAL_ABSENCE
+    assert reason == ClosureReason.RESOLUTION_DECLINED
+
+
+async def test_a_hold_turns_feedback_names_the_answer():
+    engine, case = revision._engine(), revision._case(ProblemStatus.VERIFIED)
+    meta, _ = await _revision_turn_with_recheck(engine, case)
+    assert ANSWER in meta["system_feedback"]
+
+    engine, case = revision._engine(), revision._case()
+    meta = await revision._apply(
+        engine,
+        case,
+        revision._DSU(evidence_to_add=[revision._row(CAUSAL_ABSENCE, "g")]),
+    )
+    assert "recorded as symptom_absence_evidence" in meta["system_feedback"]
+    assert ANSWER not in meta["system_feedback"]

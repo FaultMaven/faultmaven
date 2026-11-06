@@ -41,6 +41,7 @@ be accepted, or None. The transitions assume their guard passed.
 """
 
 import logging
+from collections.abc import Iterable
 from datetime import UTC, datetime
 
 from faultmaven.core.investigation.causal_graph.similarity import (
@@ -59,6 +60,7 @@ from faultmaven.modules.case.contracts import (
     AnswerVia,
     Case,
     ClosureReason,
+    Evidence,
     EvidenceCategory,
     NeedPurpose,
     NeedState,
@@ -95,16 +97,40 @@ def cause_work_staged(case: Case) -> bool:
     return case.progress.problem_status == ProblemStatus.REVISION_PENDING
 
 
-def problem_shown_real(case: Case) -> bool:
-    """Whether the problem has been verified: it is verified now, or it was
-    verified before the revision that holds it (a superseding proposal keeps
-    the first hold's prior status). Unlike ``cause_work_accepted``, a hold over
-    a verified problem counts: its cause work is staged, not refused."""
-    status = case.progress.problem_status
-    if status == ProblemStatus.REVISION_PENDING:
-        held = pending_revision(case)
-        return held is not None and held.prior_status == ProblemStatus.VERIFIED
-    return status == ProblemStatus.VERIFIED
+def hold_premature_absence(row: Evidence) -> None:
+    """Record a causal_absence row as symptom_absence while its problem is not
+    verified, keeping the claim (``metadata["fix_verification"]["claimed"]``)
+    so the problem's verification can restore it (#2550)."""
+    recorded = dict((row.metadata or {}).get("fix_verification") or {})
+    recorded["claimed"] = EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE.value
+    row.metadata = {**(row.metadata or {}), "fix_verification": recorded}
+    row.category = EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE
+
+
+def restore_premature_absence(rows: Iterable[Evidence]) -> None:
+    """Return each row ``hold_premature_absence`` still holds to
+    causal_absence: the problem it arrived on is verified."""
+    for row in rows:
+        recorded = (row.metadata or {}).get("fix_verification")
+        if not (
+            row.category == EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE
+            and isinstance(recorded, dict)
+            and recorded.get("claimed")
+            == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE.value
+        ):
+            continue
+        kept = {k: v for k, v in recorded.items() if k != "claimed"}
+        metadata = {k: v for k, v in row.metadata.items() if k != "fix_verification"}
+        row.metadata = {**metadata, "fix_verification": kept} if kept else metadata
+        row.category = EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
+
+
+def _restore_the_hold(case: Case, revision: PendingRevision) -> None:
+    """The hold ended on a verified problem: the rows it held as
+    symptom_absence were cause observations of a real problem (#2550)."""
+    restore_premature_absence(
+        e for e in case.evidence if e.collected_at_turn >= revision.held_since_turn
+    )
 
 
 def problem_on_hold(case: Case) -> bool:
@@ -405,6 +431,7 @@ def commit_revision(case: Case, *, via: AnswerVia) -> PendingRevision:
         case, f"problem statement revised at turn {case.current_turn}"
     )
     _move(case, ProblemStatus.VERIFIED, via="revision_confirmed")
+    _restore_the_hold(case, pending)
     return pending
 
 
@@ -614,6 +641,8 @@ def _answer_pending(
         case, proposal_id=offer.proposal_id, answer=answer, via=via
     )
     _move(case, offer.revision.prior_status, via=status_via)
+    if offer.revision.prior_status == ProblemStatus.VERIFIED:
+        _restore_the_hold(case, offer.revision)
     return offer.revision
 
 
