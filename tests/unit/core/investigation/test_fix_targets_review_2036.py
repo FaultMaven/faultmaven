@@ -6,12 +6,14 @@ report on them.
   the start of the turn, the reference also admits what the fix's licence
   names (``cause_assurance.licensed_roots``): the conclusion's ROOT when the
   pool holds it or a standing hypothesis is rooted there, and the root of
-  every standing rooted hypothesis. The unnamed default is the conclusion's
-  root, else the most likely standing hypothesis's root.
+  every standing rooted hypothesis. The unnamed default is read from the two
+  records (``test_fix_records_2036``): the start-of-turn licence, or the
+  licence M5 recorded on the fix when it was proposed.
 - **The binding (F1, F3).** A kinded window binds to its targets plus the
   roots that fell and are not the cause now. An unkinded window ends at the
   first interception by which it has FAILED, and spans it while live.
-- **The readers (F5, F6, F8, F9, F10).**
+- **The readers (F5, F6, F9, F10).** F8's backdate refusal went with
+  the re-plan on recorded facts: a backdated fix reads its turn's record.
 
 Every turn enters through the real apply and is judged by the real gate.
 """
@@ -54,6 +56,7 @@ from faultmaven.modules.case.contracts import (
     RootCauseConclusion,
 )
 from tests.unit.core.investigation.bound_rows import VERIFYING_ID
+from tests.unit.core.investigation.recorded_turns import _record
 from tests.unit.core.investigation.test_fix_targets_2036 import (
     _ROOT_FIX,
     _accepted,
@@ -76,7 +79,6 @@ from tests.unit.core.investigation.test_fix_verification_subjects_1906 import (
     _PRESENT,
     _SUPPORT,
     _obs,
-    _record,
 )
 from tests.unit.core.investigation.test_m6_cause_gone_problem_persists_1927 import (
     _ROOT_ID,
@@ -265,6 +267,8 @@ async def test_a_conclusion_naming_an_intermediate_names_no_cause():
     eng = _engine()
     case, root, hyp = _identified_case()
     _bare_candidate(case, root, hyp)
+    # The recompute derives the bare root's state: no cause identified.
+    await _record(eng, case, 5)
     x = _intermediate(case)
     case.root_cause_conclusion = RootCauseConclusion(
         root_cause="pods hold exhausted connections",
@@ -370,7 +374,7 @@ async def test_a_live_legacy_fix_spans_an_interception_and_resolves():
 
 
 # ---------------------------------------------------------------------------
-# The readers (F5, F6, F8, F9, F10)
+# The readers (F5, F6, F9, F10)
 # ---------------------------------------------------------------------------
 
 
@@ -420,36 +424,6 @@ async def test_the_report_cites_no_row_from_an_off_cause_window():
     assert fix_windows(case)[-1].off_cause
     assert assess_resolution_readiness(case).missing[0] == _ROOT_FIX
     assert confirming_polarity_rows(case) == []
-
-
-async def test_a_backdate_over_a_refutation_in_the_previous_turn_is_dated_now():
-    """F8: a refutation is cause work, so the fix reported in the message of
-    the turn B was refuted is dated to the registration turn."""
-    eng = _engine()
-    case, _a, _hyp = _identified_case()
-    _add_sibling_chain(case)
-    await _record(eng, case, 6, solutions_to_add=[_fix("upgrade the leaking library")])
-    await _record(
-        eng,
-        case,
-        7,
-        _obs(_PRESENT, "worker RSS is flat for 7 days"),
-        hypothesis_evidence_links=[_link(_B_HYP, "new_index_0")],
-        hypotheses_to_update=[_refute(_B_HYP, "RSS is flat")],
-    )
-    assert case.hypotheses[_B_HYP].state == HypothesisState.REFUTED
-    _rows, meta = await _record(
-        eng,
-        case,
-        8,
-        milestones=MilestoneUpdates(
-            solution_accepted=True,
-            accepted_action_ref=case.proposed_actions[0].action_id,
-            accepted_fix_reported_in="previous_message",
-        ),
-    )
-    assert [a.accepted_in_turn for a in _attempts(case)] == [8]
-    assert "turn 7 recorded cause work" in meta["system_feedback"]
 
 
 async def test_an_interception_rerun_after_a_relapse_is_a_new_attempt():
@@ -505,90 +479,73 @@ async def test_an_interceptions_line_shows_its_relapse_and_no_later_relief():
 
 
 # ---------------------------------------------------------------------------
-# Delta 1 on fd0f96a: the model's refuting link, the licence M5 read, F10's bound
+# Delta 1 on fd0f96a: the licence M5 read, F10's bound
 # ---------------------------------------------------------------------------
 
 
-async def test_a_model_refuting_link_in_the_previous_turn_blocks_the_backdate():
-    """Delta item 1 (p2b): the model's REFUTES links on the identified root A
-    in turn 7 are stamped with turn 7 at ingestion, so they are cause work:
-    the fix reported in turn 7's message is dated 8, and nothing after A's
-    fall confirms it."""
-    eng = _engine()
-    case, a, _hyp = _identified_case()
-    b = _add_sibling_chain(case)
-    case.hypotheses[_B_HYP].likelihood = case.hypotheses[_B_HYP].initial_likelihood = (
-        0.9
-    )
-    await _record(eng, case, 6, solutions_to_add=[_fix("raise max_connections to 100")])
-    await _record(
-        eng,
-        case,
-        7,
-        _obs(_CAUSAL, "pg_settings: max_connections is 500"),
-        _obs(_CAUSAL, "pg_stat_activity: 35 of 500 connections in use at the burst"),
-        _obs(_GONE, "checkout returns 200", VERIFYING_ID),
-        node_evidence_links=[
-            NodeEvidenceLinkToAdd(
-                node_ref=_ROOT_ID,
-                evidence_id_ref=f"new_index_{i}",
-                stance="refutes",
-                reasoning="the limit is not reached",
-            )
-            for i in (0, 1)
-        ],
-    )
-    refuting = {l.linked_at_turn for l in a.evidence_links if l.stance == "refutes"}
-    assert refuting == {7}
-    _rows, meta = await _record(
-        eng,
-        case,
-        8,
-        milestones=MilestoneUpdates(
-            solution_accepted=True,
-            accepted_action_ref=case.proposed_actions[0].action_id,
-            accepted_fix_reported_in="previous_message",
-        ),
-    )
-    assert [a.accepted_in_turn for a in _attempts(case)] == [8]
-    assert "turn 7 recorded cause work" in meta["system_feedback"]
-    await _record(eng, case, 9, *_leak_rows(), **_ground_b(b))
-    await _record(
-        eng,
-        case,
-        10,
-        _obs(_CAUSE_GONE, "worker RSS flat for 6h", b.evidence_links[0].evidence_id),
-    )
-    assert assess_resolution_readiness(case).verdict == ResolutionReadiness.NEEDS_INFO
-
-
-async def test_an_unnamed_fix_takes_the_leader_m5_read_after_the_turns_updates():
-    """Delta item 3 (p5): A leads at 0.7 and B at 0.65 at the start of the
-    turn; the turn's link lowers A below B, and the unnamed fix M5 licenses
-    through B is a remediation of B, which resolves once B is grounded."""
+@pytest.mark.parametrize("named", [False, True], ids=["unnamed", "named"])
+@pytest.mark.parametrize("move", ["link", "update", "m5-recovery"])
+async def test_a_reply_moving_the_cause_needs_the_fix_named_to_credit_the_new_one(
+    move, named
+):
+    """Ruled 2026-11-06 (ruling 1's reading): A (R1) leads at the start of
+    turn 7, and the reply the user runs the fix in moves the cause to B: a
+    row refuting A (delta 1's p5), an update lowering A (delta 2's P3), or a
+    conclusion naming B, grounded at once (an M5 recovery beside a rooted
+    leader). Unnamed, the fix is credited to R1, the start-of-turn licence,
+    so B's re-check reads NEEDS_INFO; named at B (``node_ref``), READY."""
     eng = _engine()
     case, a, hyp = _identified_case()
     _bare_candidate(case, a, hyp)
-    hyp.likelihood = hyp.initial_likelihood = 0.7
     b = _add_sibling_chain(case)
-    case.hypotheses[_B_HYP].likelihood = case.hypotheses[_B_HYP].initial_likelihood = (
-        0.65
-    )
+    hyp.likelihood = hyp.initial_likelihood = 0.85 if move == "m5-recovery" else 0.7
+    if move != "m5-recovery":
+        case.hypotheses[_B_HYP].likelihood = 0.65
+        case.hypotheses[_B_HYP].initial_likelihood = 0.65
     await _record(eng, case, 6)
+    rows = [_obs(_CAUSAL, "pg_stat_activity: 12 of 20 connections in use")]
+    if move == "link":
+        fields = dict(
+            hypothesis_evidence_links=[_link(hyp.hypothesis_id, "new_index_0")]
+        )
+    elif move == "update":
+        fields = dict(
+            hypotheses_to_update=[
+                HypothesisUpdate(hypothesis_id=hyp.hypothesis_id, likelihood=0.3)
+            ]
+        )
+    else:
+        rows = list(_leak_rows())
+        fields = dict(
+            root_cause_conclusion=RootCauseConclusionUpdate(
+                root_cause="a memory leak in the gunicorn worker",
+                mechanism="the worker leaks until OOM",
+                evidence_ids=["new_index_0"],
+                likelihood=0.9,
+                names_root_node_id=b.node_id,
+            ),
+            **_ground_b(b),
+        )
     await _record(
         eng,
         case,
         7,
-        _obs(_CAUSAL, "pg_stat_activity: 12 of 20 connections in use at the burst"),
-        hypothesis_evidence_links=[_link(hyp.hypothesis_id, "new_index_0")],
-        solutions_to_add=[_fix("pin the leaking library to 2.4.1")],
+        *rows,
+        solutions_to_add=[
+            _fix("pin the leaking library", b.node_id if named else None)
+        ],
         milestones=_ran(),
+        **fields,
     )
     fix = _attempts(case)[0]
-    assert (fix.fix_kind, fix.target_ids) == (FIX_REMEDIATION, [b.node_id])
-    await _record(eng, case, 8, *_leak_rows(), **_ground_b(b))
+    target = b.node_id if named else a.node_id
+    assert (fix.fix_kind, fix.target_ids) == (FIX_REMEDIATION, [target])
+    if move != "m5-recovery":
+        await _record(eng, case, 8, *_leak_rows(), **_ground_b(b))
     await _recheck(eng, case, 9, b)
-    assert assess_resolution_readiness(case).verdict == _READY
+    assert assess_resolution_readiness(case).verdict == (
+        _READY if named else ResolutionReadiness.NEEDS_INFO
+    )
 
 
 @pytest.mark.parametrize("grounded", ["the-leaders-own-root", "a-trailing-root"])

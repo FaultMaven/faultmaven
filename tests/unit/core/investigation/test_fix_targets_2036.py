@@ -65,6 +65,7 @@ from faultmaven.modules.case.contracts import (
 )
 from tests.unit.core.investigation.bound_rows import VERIFYING_ID
 from tests.unit.core.investigation.fix_turns_2039 import _engine_rows
+from tests.unit.core.investigation.recorded_turns import _record
 from tests.unit.core.investigation.test_fix_verification_subjects_1906 import (
     _CAUSAL,
     _CAUSE_GONE,
@@ -72,7 +73,6 @@ from tests.unit.core.investigation.test_fix_verification_subjects_1906 import (
     _PRESENT,
     _SUPPORT,
     _obs,
-    _record,
 )
 from tests.unit.core.investigation.test_m6_cause_gone_problem_persists_1927 import (
     _ROOT_ID,
@@ -919,30 +919,3 @@ def test_the_fallen_leg_stands_only_for_the_latest_remediations_target(
     confirmation, window, _hyps = _cause_pool(case)
     assert confirmation == (frozenset({a.node_id}) if confirms else frozenset())
     assert window == frozenset({a.node_id})
-
-
-# ---------------------------------------------------------------------------
-# #2427: a backdated registration over cause work is refused
-# ---------------------------------------------------------------------------
-
-
-async def test_a_backdated_registration_over_the_previous_turns_cause_work_is_dated_now():
-    case, _a, hyp = _identified_case()
-    eng = _engine()
-    await _record(
-        eng, case, 6, solutions_to_add=[_fix("switch pgbouncer to transaction mode")]
-    )
-    await _deepen(eng, case, hyp, 7)
-    _rows, meta = await _record(
-        eng,
-        case,
-        8,
-        milestones=MilestoneUpdates(
-            solution_accepted=True,
-            accepted_action_ref=case.proposed_actions[0].action_id,
-            accepted_fix_reported_in="previous_message",
-        ),
-    )
-    (fix,) = _attempts(case)
-    assert fix.accepted_in_turn == 8
-    assert "turn 7 recorded cause work" in meta["system_feedback"]

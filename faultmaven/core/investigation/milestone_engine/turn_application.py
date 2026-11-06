@@ -26,8 +26,9 @@ from faultmaven.modules.case.contracts import TurnOutcome
 
 from .affordances import engine_owned_affordances
 from .progress import restatement_stall_notice, score_progress
+from .response_application import FIX_CAUSE_AT_START_KEY
 from .response_synthesis import is_agent_response_synthesized
-from .stage_gates import _add_system_feedback, _refresh_working_conclusion
+from .stage_gates import _add_system_feedback, _refresh_working_conclusion, fix_cause
 from .statement_revision import merge_statement_commit
 from .terminal_proposals import (
     _maybe_propose_confirmed_resolution,
@@ -272,9 +273,15 @@ async def _apply_turn_response(
             log_msg += f", repair: {progress_result.repair_type.value}"
         logger.info(log_msg)
 
-    # Step 6: Record turn progress
+    # Step 6: Record turn progress. The cause a fix run in this turn acts on
+    # is the one the live investigation apply took when it started (#2036
+    # D2.3); an inquiry or terminal turn runs none, and records it now.
+    cause_at_start = metadata.get(FIX_CAUSE_AT_START_KEY)
     turn_record = _create_turn_record(
         turn_number=case_updated.current_turn,
+        cause_at_start=(
+            cause_at_start if cause_at_start is not None else fix_cause(case_updated)
+        ),
         milestones_completed=metadata.get("milestones_completed", []),
         evidence_added=metadata.get("evidence_added", []),
         hypotheses_generated=metadata.get("hypotheses_generated", []),

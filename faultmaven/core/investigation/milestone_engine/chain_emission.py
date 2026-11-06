@@ -85,11 +85,11 @@ def _apply_chain_emission(
 
     These stamps are dated at the emission's turn (``emission_turn``), a
     replayed bundle's own, not its confirmation (#2537): the nodes and edges
-    it ingests, the links it emits onto nodes (``linked_at_turn``), the root
-    attaches (``root_attached_turn``, ``root_first_attached_turn``) and the
-    deepening's terminal record. The mirrored root links and a recorded
-    verdict's ``root_terminal_turn`` / ``root_terminal_refused_turn`` keep
-    the current turn; no floor reads them.
+    it ingests, the root attaches (``root_attached_turn``,
+    ``root_first_attached_turn``) and the deepening's terminal record. The
+    mirrored root links (``linked_at_turn``) and a recorded verdict's
+    ``root_terminal_turn`` / ``root_terminal_refused_turn`` keep the current
+    turn; no floor reads them.
     """
     nodes = list(getattr(updates, "causal_nodes_to_add", None) or [])
     edges = list(getattr(updates, "causal_edges_to_add", None) or [])

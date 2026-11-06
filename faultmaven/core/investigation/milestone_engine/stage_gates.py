@@ -36,11 +36,11 @@ from faultmaven.core.investigation.working_conclusion_generator import (
 )
 from faultmaven.modules.case.contracts import (
     ActionAttempt,
+    AnswerKind,
     Case,
     CaseState,
     EvidenceCategory,
-    EvidenceStance,
-    HypothesisState,
+    FixCause,
     InterventionQuadrant,
     InvestigationActionType,
     MitigationRecord,
@@ -295,11 +295,92 @@ def _solution_cause_validated(
     so the engine cannot distinguish it from a remediation — per-quadrant
     precision waits until the emission carries a quadrant. Pure; no side effects.
     """
+    return solution_licence_leg(case, working_conclusion) is not None
+
+
+def solution_licence_leg(
+    case: Case, working_conclusion: WorkingConclusion | None = None
+) -> Optional[str]:
+    """The leg M5 licenses a SOLUTION on (``cause_identification_leg``), or
+    None: the one reading ``_solution_cause_validated`` and the fix's
+    recorded licence share (#2036 D2.3)."""
     # Local import mirrors the module's other terminal_transitions uses (avoids
     # an import cycle) and keeps M5 and the resolution gate on ONE predicate.
-    from faultmaven.core.investigation.terminal_transitions import _cause_identified
+    from faultmaven.core.investigation.terminal_transitions import (
+        cause_identification_leg,
+    )
 
-    return _cause_identified(case, working_conclusion=working_conclusion)
+    return cause_identification_leg(case, working_conclusion=working_conclusion)
+
+
+def licence_leg_ids(
+    case: Case,
+    leg: str | None,
+    likelihood_overrides: dict[str, float] | None = None,
+) -> tuple[list[str], bool]:
+    """``(ids, in_words)``: the root(s) a licence leg names (#2036 D2.3).
+
+    - ``"chain"``: the identified, else count-held terminal, roots;
+    - ``"rcc"``: the conclusion's node (``conclusion_node``): a ROOT only when
+      ``licensed_roots`` holds it (#2485), an intermediate as named, none and
+      ``in_words`` when it names no node;
+    - ``"working_conclusion"``: the leading hypothesis's root
+      (``leading_hypothesis`` with ``likelihood_overrides``), none unrooted."""
+    from faultmaven.core.investigation.cause_assurance import (
+        _cause_pool,
+        _pool_legs,
+        conclusion_node,
+        licensed_roots,
+    )
+
+    nodes = case.causal_nodes or {}
+    if leg == "chain":
+        identified, held, _fallen = _pool_legs(case)
+        return sorted(identified or held), False
+    if leg == "rcc":
+        node_id = conclusion_node(case)
+        if node_id is None:
+            return [], True
+        confirmation, window, hypotheses = _cause_pool(case)
+        licensed = licensed_roots(case, confirmation | window | hypotheses)
+        if nodes[node_id].node_type != NodeType.ROOT or node_id in licensed:
+            return [node_id], False
+        return [], False
+    if leg == "working_conclusion":
+        leader = leading_hypothesis(case, likelihood_overrides)
+        if leader is not None and leader.root_node_id in nodes:
+            return [leader.root_node_id], False
+    return [], False
+
+
+def fix_cause(case: Case) -> FixCause:
+    """What a fix run now acts on (#2036 D2.3), recorded at the start of each
+    turn (``TurnProgress.cause_at_start``); never recomputed after.
+
+    - ``root_ids``: the identified, else count-held terminal, roots;
+    - ``licence_ids``: with none, the cause M5's own leg licenses now
+      (``solution_licence_leg``, at its bar, never the leader at any
+      likelihood); none when no leg holds;
+    - ``reference_ids``: every leg of ``_cause_pool``, plus ``licensed_roots``
+      when ``root_ids`` is empty;
+    - ``in_words``: the conclusion licensing it names its cause in words
+      only."""
+    from faultmaven.core.investigation.cause_assurance import (
+        _cause_pool,
+        _pool_legs,
+        licensed_roots,
+    )
+
+    confirmation, window, hypotheses = _cause_pool(case)
+    identified, held, _fallen = _pool_legs(case)
+    reference = set(confirmation | window | hypotheses)
+    if identified or held:
+        return FixCause(
+            root_ids=sorted(identified or held), reference_ids=sorted(reference)
+        )
+    reference |= licensed_roots(case, frozenset(reference))
+    ids, in_words = licence_leg_ids(case, solution_licence_leg(case))
+    return FixCause(licence_ids=ids, reference_ids=sorted(reference), in_words=in_words)
 
 
 def _settled_working_conclusion(
@@ -952,10 +1033,6 @@ CARRIED_FIX_KEY = "carried_fix_acceptance"
 #: The SOLUTIONs this apply registered, whose kind the settle reads once
 #: chain emission has run (``response_application._settle_fix_attempts``).
 FIXES_ACCEPTED_KEY = "fixes_accepted_this_apply"
-#: The hypothesis the working conclusion leads with as M5 reads it in this
-#: apply (``_settled_working_conclusion``), taken when a SOLUTION registers,
-#: before chain emission; the settle's default target with no conclusion.
-FIX_LICENCE_LEADER_KEY = "fix_licence_leader"
 
 
 class _FixEntry(NamedTuple):
@@ -1441,51 +1518,6 @@ def _ignore_fix_report(case: Case, metadata: dict[str, Any], reason: str) -> Non
     )
 
 
-def _cause_work_at(case: Case, turn: int) -> bool:
-    """Whether ``turn`` recorded cause work, read from the graph's stamps and
-    the turn record: a node posited; a root attached, given a verdict, or
-    refuted by a row linked that turn (the model's link counts because
-    ingestion stamps it with its emission's turn, and M6's engine row is
-    stamped when it is attached); a hypothesis posited, validated, or refuted
-    (a refutation stamps ``last_updated_turn``, and retracts a conclusion
-    naming it); or the cause identified.
-
-    Residual, stated: an engine conclusion cleared because its cause became
-    MECE-contested leaves no stamp, so the turn that cleared it reads as no
-    cause work."""
-    for node in case.causal_nodes.values():
-        if node.node_type == NodeType.PROBLEM:
-            continue
-        meta = node.metadata or {}
-        stamps = (
-            node.generated_at_turn,
-            meta.get("root_attached_turn"),
-            meta.get("root_terminal_turn"),
-        )
-        refuted = node.node_type == NodeType.ROOT and any(
-            link.stance == EvidenceStance.REFUTES and link.linked_at_turn == turn
-            for link in node.evidence_links
-        )
-        if turn in stamps or refuted:
-            return True
-    if any(
-        h.generated_at_turn == turn
-        or (h.state == HypothesisState.REFUTED and h.last_updated_turn == turn)
-        for h in case.hypotheses.values()
-        if h is not None
-    ):
-        return True
-    return any(
-        t.turn_number == turn
-        and (
-            t.hypotheses_generated
-            or t.hypotheses_validated
-            or "root_cause_identified" in t.milestones_completed
-        )
-        for t in case.turn_history or []
-    )
-
-
 def _date_to_the_report(case: Case, target: Any, metadata: dict[str, Any]) -> None:
     """Date ``target``, a live SOLUTION registration stamped this turn, to the
     previous turn: the model declared that the user reported carrying it out
@@ -1501,12 +1533,11 @@ def _date_to_the_report(case: Case, target: Any, metadata: dict[str, Any]) -> No
     this turn is judged in the new window. With one, its window must have
     FAILED before the previous turn (a failure is final), and its
     disconfirmation must read the same with this fix dated either way.
-    Within those bounds, the previous turn must have recorded no cause work
-    (``_cause_work_at``): the fix's kind is read against the cause pool at
-    the start of this turn (#2036 D2.3), which would then not be the cause
-    the user ran it against. Read before the settle, the new attempt counts
-    as a remediation here, which only widens the window that judged it.
-    Otherwise the declaration is ignored, with a line."""
+    The fix is then kinded against the previous turn's own record
+    (``TurnProgress.cause_at_start``, #2036 D2.3). Read before the settle,
+    the new attempt counts as a remediation here, which only widens the
+    window that judged it. Otherwise the declaration is ignored, with a
+    line."""
     from faultmaven.core.investigation.cause_assurance import FIX_FAILED, fix_windows
 
     turn, previous = case.current_turn, case.current_turn - 1
@@ -1543,18 +1574,31 @@ def _date_to_the_report(case: Case, target: Any, metadata: dict[str, Any]) -> No
             f"{dated_here}",
         )
         return
-    # After the bounds, whose lines are the more specific: a failure seen in
-    # the previous turn is also cause work once M6 demotes on it.
-    if _cause_work_at(case, previous):
+    # A hold turn's record holds the pool without its staged cause work, which
+    # this turn's confirmation just replayed (#2036 D2.3).
+    if _previous_turn_held(case):
         target.accepted_in_turn = turn
         _ignore_fix_report(
             case,
             metadata,
-            f"turn {previous} recorded cause work, so the cause the fix ran "
-            f"against is the one before it, which is not on record; {dated_here}",
+            f"turn {previous} was held for the revised statement confirmed now, "
+            f"so its record lacks the cause work replayed since; {dated_here}",
         )
         return
     target.registered_in_turn = turn
+
+
+def _previous_turn_held(case: Case) -> bool:
+    """Whether the previous turn was held for a revised statement, read from
+    the offer record: a REVISION accepted this turn was open in it. The
+    confirmation's ``statement_commit`` merges into the turn's metadata only
+    after the live apply, so it cannot be read here."""
+    return any(
+        a.kind == OfferKind.REVISION
+        and a.answer == AnswerKind.ACCEPTED
+        and a.at_turn == case.current_turn
+        for a in case.offer_record.answers
+    )
 
 
 def _apply_stage_gate_side_effects(
@@ -1646,11 +1690,6 @@ def _apply_stage_gate_side_effects(
         # "DIAGNOSTIC asks carry no lifecycle" boundary INV-33 leaves standing.
         if is_solution:
             metadata.setdefault(FIXES_ACCEPTED_KEY, []).append(target.action_id)
-            if FIX_LICENCE_LEADER_KEY not in metadata:
-                leader = leading_hypothesis(case, _settled_likelihoods(case, metadata))
-                metadata[FIX_LICENCE_LEADER_KEY] = getattr(
-                    leader, "hypothesis_id", None
-                )
             _retire_shadowed_diagnostic_asks(case, before_turn=target.proposed_in_turn)
             # The persisted projection: True from the first registration on.
             case.progress.solution_accepted = True

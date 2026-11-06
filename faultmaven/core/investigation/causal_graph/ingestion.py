@@ -427,9 +427,6 @@ def ingest_emitted_chain(
             stance=stance,
             reasoning=getattr(link, "reasoning", None) or "node evidence",
             stance_confidence=emitted_confidence,
-            # The emission's turn, a replayed bundle's own: the backdate's
-            # cause-work check reads a REFUTES link by it (#2036 D2.3).
-            linked_at_turn=current_turn,
         )
         if existing_idx is None:
             node.evidence_links.append(fresh)

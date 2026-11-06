@@ -87,7 +87,6 @@ __all__ = [
     "conclusion_node",
     "conclusion_root",
     "fix_application_turn",
-    "fix_cause_snapshot",
     "fix_windows",
     "grade_cause_assurance",
     "has_actionable_solution",
@@ -811,20 +810,23 @@ def _pool_legs(case: "Case") -> tuple[set, set, set]:
 
 
 def conclusion_node(case: "Case") -> str | None:
-    """The node the root-cause conclusion names on the graph: its
-    ``names_root_node_id``, else its hypothesis's root; None when it names
-    its cause in words only."""
+    """The node the root-cause conclusion names on the graph, the one reader
+    of it (``_cause_posited_turn`` reads it too): its hypothesis's root, else
+    its ``names_root_node_id``; None when it names its cause in words only."""
     rcc = getattr(case, "root_cause_conclusion", None)
     if rcc is None:
         return None
     nodes = getattr(case, "causal_nodes", None) or {}
     hyp = (getattr(case, "hypotheses", None) or {}).get(
-        rcc.validated_hypothesis_id or ""
+        getattr(rcc, "validated_hypothesis_id", None) or ""
     )
     return next(
         (
             node_id
-            for node_id in (rcc.names_root_node_id, getattr(hyp, "root_node_id", None))
+            for node_id in (
+                getattr(hyp, "root_node_id", None),
+                getattr(rcc, "names_root_node_id", None),
+            )
             if node_id and node_id in nodes
         ),
         None,
@@ -858,27 +860,6 @@ def licensed_roots(case: "Case", pool=frozenset()) -> frozenset:
     if named in pool or named in roots:
         roots.add(named)
     return frozenset(roots)
-
-
-def fix_cause_snapshot(case: "Case") -> tuple[tuple, frozenset, bool]:
-    """``(default target, reference, open)``: what a fix run now acts on when
-    it names nothing, what it must meet to be a remediation, and whether no
-    root was identified or count-held (#2036 D2.3). Taken at the start of a
-    turn's apply, or of each bundle a replay applies.
-
-    The reference is the whole cause pool, every leg of ``_cause_pool`` (the
-    fallen cause and a rootless validated hypothesis included). With a root
-    identified or count-held (legs 1–2) the default is those roots, so an
-    unnamed fix of a fallen cause is no remediation of it. Otherwise the
-    snapshot is ``open``: the reference also admits the causes the fix's
-    licence names (``licensed_roots``), and the settle reads the default from
-    the licence as the turn leaves it (``_settle_fix_attempts``)."""
-    confirmation, window, hypotheses = _cause_pool(case)
-    identified, held, _fallen = _pool_legs(case)
-    reference = confirmation | window | hypotheses
-    if identified or held:
-        return tuple(sorted(identified or held)), reference, False
-    return (), reference | licensed_roots(case, reference), True
 
 
 def subject_index(case: "Case") -> SubjectIndex:
@@ -1289,12 +1270,8 @@ def _cause_posited_turn(case: "Case") -> int:
     }
     pool = [n for n in standing.values() if n.is_identified_root]
     if not pool:
-        rcc = getattr(case, "root_cause_conclusion", None)
-        named = standing.get(getattr(rcc, "validated_hypothesis_id", None) or "")
-        named_node = nodes.get(getattr(rcc, "names_root_node_id", None) or "")
-        pool = [
-            n for n in (named, named_node) if n is not None and n in standing.values()
-        ] or list(standing.values())
+        named = nodes.get(conclusion_node(case) or "")
+        pool = [named] if named in standing.values() else list(standing.values())
     return max((n.root_attached_turn for n in pool), default=0)
 
 
