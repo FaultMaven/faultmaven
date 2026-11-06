@@ -30,7 +30,7 @@ failure, then searches traces and spans, then deletes. No purge is queued for
 later, so the delete fails when:
 
 - the backend cannot be reached, or the queued traces are not sent in time;
-- the backend's search answers anything but rows;
+- the backend answers an error, or pages that disagree with their total;
 - `OPIK_ENABLED` and a backend URL are set but tracing did not initialize, or
   the Opik SDK is not installed;
 - the erase takes longer than 60 s.
@@ -78,10 +78,10 @@ read reports it.
   answers. It also ingests asynchronously, so a trace sent just before the
   search may not be found by it.
 - **Traces on another replica (#2573).** After a connection failure the SDK
-  parks traces in a SQLite database on that pod. A parked trace replays when
-  that pod's monitor next sees the backend, or when a delete runs on that pod. A
-  trace parked or still batched on another replica is invisible to the delete
-  and can land after it.
+  parks traces in a SQLite database on that pod. A parked trace replays only
+  when a delete runs on that pod, or after `init_opik_tracing`'s ping interval of
+  999999 s, which is about 11.6 days. A trace parked or still batched on another
+  replica is invisible to the delete and can land after it.
 - **The title route (#2580).** It holds no lease, so its trace can land after
   the delete.
 - **Traces recorded before #2102.** They carry no case tag, so they cannot be

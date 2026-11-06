@@ -5,6 +5,7 @@ in ``test_trace_erasure_loopback_2102.py``, which is where a drift from this fak
 is caught. What a backend does with these calls is untested: there is none here.
 """
 
+import asyncio
 import json
 import logging
 import sys
@@ -32,8 +33,15 @@ FILTER = f'metadata.case_id = "{CASE}" AND metadata.enterprise_id = "{ENTERPRISE
 OPTIONS = {"timeout_in_seconds": 15}
 
 
-def _ndjson(rows) -> bytes:
-    return b"".join(json.dumps(row).encode() + b"\n" for row in rows)
+_COUNTED = object()
+
+
+def _page(rows, total=_COUNTED, **_):
+    """A page as the backend builds it: counted first, then read."""
+    rows = list(rows)
+    return SimpleNamespace(
+        size=len(rows), total=len(rows) if total is _COUNTED else total, content=rows
+    )
 
 
 class _FakeMonitor:
@@ -47,32 +55,35 @@ class _FakeMonitor:
 
 
 class _FakeClient:
-    """Serves rows a page at a time, as the backend does. ``trace_stream`` and
-    ``span_stream`` replace the served page with exact chunks."""
+    """Serves the paged list endpoints over its rows. ``trace_page`` and
+    ``span_page`` replace what a page request answers."""
 
     project_name = "the-clients-project"
 
     def __init__(
         self, traces=(), spans=(), flushed=True, connected=True, send_fails=False
     ):
-        self.trace_rows = [{"id": i} for i in traces]
-        self.span_rows = [{"id": f"s{n}", "trace_id": t} for n, t in enumerate(spans)]
-        self.trace_stream = self.span_stream = None
+        self.trace_rows = [SimpleNamespace(id=i) for i in traces]
+        self.span_rows = [
+            SimpleNamespace(id=f"s{n}", trace_id=t) for n, t in enumerate(spans)
+        ]
+        self.trace_page = self.span_page = None
         self.flushed, self.send_fails = flushed, send_fails
         self.monitor = _FakeMonitor(connected)
         self._streamer = SimpleNamespace(
             _fallback_replay_manager=SimpleNamespace(_monitor=self.monitor)
         )
         self.flushes: list = []
-        self.trace_searches: list = []
-        self.span_searches: list = []
+        self.trace_reads: list = []
+        self.span_reads: list = []
         self.deleted: list = []
         self.delete_options: list = []
         self.rest_client = SimpleNamespace(
             traces=SimpleNamespace(
-                search_traces=self.search_traces, delete_traces=self.delete_traces
+                get_traces_by_project=self.get_traces_by_project,
+                delete_traces=self.delete_traces,
             ),
-            spans=SimpleNamespace(search_spans=self.search_spans),
+            spans=SimpleNamespace(get_spans_by_project=self.get_spans_by_project),
         )
 
     def flush(self, timeout=None):
@@ -88,30 +99,21 @@ class _FakeClient:
         return self.flushed
 
     @staticmethod
-    def _page(rows, kwargs):
-        cursor = kwargs["last_retrieved_id"]
-        start = (
-            1 + next(i for i, r in enumerate(rows) if r["id"] == cursor)
-            if cursor
-            else 0
-        )
-        return iter([_ndjson(rows[start : start + kwargs["limit"]])])
+    def _serve(rows, kwargs):
+        start = (kwargs["page"] - 1) * kwargs["size"]
+        return _page(rows[start : start + kwargs["size"]], total=len(rows))
 
-    def search_traces(self, **kwargs):
-        self.trace_searches.append(kwargs)
-        return (
-            iter(self.trace_stream)
-            if self.trace_stream
-            else self._page(self.trace_rows, kwargs)
-        )
+    def get_traces_by_project(self, **kwargs):
+        self.trace_reads.append(kwargs)
+        if self.trace_page:
+            return self.trace_page(**kwargs)
+        return self._serve(self.trace_rows, kwargs)
 
-    def search_spans(self, **kwargs):
-        self.span_searches.append(kwargs)
-        return (
-            iter(self.span_stream)
-            if self.span_stream
-            else self._page(self.span_rows, kwargs)
-        )
+    def get_spans_by_project(self, **kwargs):
+        self.span_reads.append(kwargs)
+        if self.span_page:
+            return self.span_page(**kwargs)
+        return self._serve(self.span_rows, kwargs)
 
     def delete_traces(self, *, ids, request_options=None):
         self.deleted.append(list(ids))
@@ -126,6 +128,21 @@ def _no_client():
     raise AssertionError("no client may be built")
 
 
+class _WatchedLock:
+    """The module's lock, telling a test when a second delete waits on it."""
+
+    def __init__(self, arrived: threading.Event):
+        self._lock, self._arrived = threading.Lock(), arrived
+
+    def __enter__(self):
+        if not self._lock.acquire(blocking=False):
+            self._arrived.set()
+            self._lock.acquire()
+
+    def __exit__(self, *_):
+        self._lock.release()
+
+
 @pytest.fixture(autouse=True)
 def backend_configured(monkeypatch):
     """``init_opik_tracing`` reached a backend. The SDK's filter parser is replaced,
@@ -133,12 +150,12 @@ def backend_configured(monkeypatch):
     monkeypatch.setattr(tracing, "OPIK_AVAILABLE", True)
     monkeypatch.setattr(tracing, "_tracing_configured", True)
     monkeypatch.setattr(
-        trace_erasure, "_parsed_filters", lambda text, entity: (entity, text)
+        trace_erasure, "_parsed_filters", lambda text, entity: f"{entity}:{text}"
     )
 
 
 class TestTheErase:
-    async def test_it_deletes_the_union_of_what_both_searches_found(self, caplog):
+    async def test_it_deletes_the_union_of_what_both_reads_found(self, caplog):
         client = _FakeClient(traces=["t1", "t2"], spans=["t2", "t3", "t3"])
 
         with caplog.at_level(logging.INFO, logger=trace_erasure.__name__):
@@ -155,22 +172,30 @@ class TestTheErase:
 
         assert client.deleted == [["t9"]]
 
-    async def test_the_searches_filter_on_both_ids_and_read_ids_alone(self):
+    async def test_the_reads_filter_on_both_ids_and_exclude_the_content(self):
         client = _FakeClient(traces=["t1"])
 
         await _eraser(client).erase_case(CASE, ENTERPRISE)
 
         shared = {
             "project_name": "faultmaven",
-            "limit": TRACE_PAGE_SIZE,
-            "last_retrieved_id": None,
+            "page": 1,
+            "size": TRACE_PAGE_SIZE,
             "request_options": OPTIONS,
         }
-        assert client.trace_searches == [
-            {**shared, "filters": ("traces", FILTER), "exclude": TRACE_EXCLUDE}
+        assert client.trace_reads == [
+            {
+                **shared,
+                "filters": f"traces:{FILTER}",
+                "exclude": json.dumps(TRACE_EXCLUDE),
+            }
         ]
-        assert client.span_searches == [
-            {**shared, "filters": ("spans", FILTER), "exclude": SPAN_EXCLUDE}
+        assert client.span_reads == [
+            {
+                **shared,
+                "filters": f"spans:{FILTER}",
+                "exclude": json.dumps(SPAN_EXCLUDE),
+            }
         ]
 
     async def test_no_project_name_reads_the_clients_project(self):
@@ -179,8 +204,8 @@ class TestTheErase:
 
         await _eraser(client, project=None).erase_case(CASE, ENTERPRISE)
 
-        assert client.trace_searches[0]["project_name"] == "the-clients-project"
-        assert client.span_searches[0]["project_name"] == "the-clients-project"
+        assert client.trace_reads[0]["project_name"] == "the-clients-project"
+        assert client.span_reads[0]["project_name"] == "the-clients-project"
 
     async def test_deletes_are_sent_in_chunks_of_a_thousand(self):
         client = _FakeClient(traces=[f"t{i}" for i in range(1500)])
@@ -189,64 +214,33 @@ class TestTheErase:
 
         assert [len(chunk) for chunk in client.deleted] == [1000, 500]
 
-    async def test_it_pages_until_a_short_page(self):
-        ids = [f"t{i}" for i in range(TRACE_PAGE_SIZE + 5)]
-        client = _FakeClient(traces=ids)
+    @pytest.mark.parametrize("extra", [5, 0], ids=["past-a-page", "an-exact-page"])
+    async def test_it_reads_every_page_until_the_total(self, extra):
+        ids = [f"t{i}" for i in range(TRACE_PAGE_SIZE + extra)]
+        spans = [f"t{i}" for i in range(TRACE_PAGE_SIZE + extra)]
+        client = _FakeClient(traces=ids, spans=spans)
 
         assert await _eraser(client).erase_case(CASE, ENTERPRISE) == len(ids)
 
-        assert [s["last_retrieved_id"] for s in client.trace_searches] == [
-            None,
-            ids[TRACE_PAGE_SIZE - 1],
-        ]
+        pages = [1, 2] if extra else [1]
+        assert [r["page"] for r in client.trace_reads] == pages
+        assert [r["page"] for r in client.span_reads] == pages
 
-    async def test_spans_page_by_their_own_id_not_their_trace_id(self):
-        ids = [f"t{i}" for i in range(TRACE_PAGE_SIZE + 5)]
-        client = _FakeClient(spans=ids)
-
-        assert await _eraser(client).erase_case(CASE, ENTERPRISE) == len(ids)
-
-        assert [s["last_retrieved_id"] for s in client.span_searches] == [
-            None,
-            f"s{TRACE_PAGE_SIZE - 1}",
-        ]
-
-    async def test_an_exactly_full_page_is_not_taken_for_the_last(self):
-        ids = [f"t{i}" for i in range(TRACE_PAGE_SIZE)]
-        client = _FakeClient(traces=ids)
-
-        assert await _eraser(client).erase_case(CASE, ENTERPRISE) == len(ids)
-
-        assert len(client.trace_searches) == 2
-
-    async def test_nothing_found_deletes_nothing_and_searches_once_each(self):
+    async def test_nothing_found_deletes_nothing_and_reads_once_each(self):
         client = _FakeClient()
 
         assert await _eraser(client).erase_case(CASE, ENTERPRISE) == 0
 
         assert client.deleted == []
-        assert (len(client.trace_searches), len(client.span_searches)) == (1, 1)
+        assert (len(client.trace_reads), len(client.span_reads)) == (1, 1)
 
-    async def test_nothing_searches_again_after_the_delete(self):
+    async def test_nothing_reads_again_after_the_delete(self):
         """A read only to count and log could fail a delete that succeeded."""
         client = _FakeClient(traces=["t1"], spans=["t1"])
 
         await _eraser(client).erase_case(CASE, ENTERPRISE)
 
-        assert (len(client.trace_searches), len(client.span_searches)) == (1, 1)
-
-    async def test_a_row_split_across_chunks_is_read_whole(self):
-        client = _FakeClient()
-        client.trace_stream = [
-            b'{"id":"t',
-            b'1"}\r\n{"id":"t2"}',
-            b"\n",
-            b'{"id":"t3"}',
-        ]
-
-        assert await _eraser(client).erase_case(CASE, ENTERPRISE) == 3
-
-        assert client.deleted == [["t1", "t2", "t3"]]
+        assert (len(client.trace_reads), len(client.span_reads)) == (1, 1)
 
     async def test_it_runs_on_its_own_pool(self):
         """A hang must not hold a slot of the pool the PII sanitizer uses."""
@@ -257,42 +251,61 @@ class TestTheErase:
         assert client.flushes[0].thread.startswith("llm-trace-erase")
 
 
+def _row(i):
+    return SimpleNamespace(id=f"t{i}")
+
+
 class TestItFailsClosed:
     @pytest.mark.parametrize(
-        "stream, line",
+        "kind, page",
         [
-            ("trace_stream", b'{"code":500,"message":"Streaming timed out"}\n'),
-            ("span_stream", b'{"code":500,"message":"Streaming timed out"}\n'),
-            ("trace_stream", b'{"id":"t1"}\n{"id":"t2"'),
-            ("trace_stream", b"not json\n"),
-            ("trace_stream", b'["t1"]\n'),
-            ("trace_stream", b'{"id":null}\n'),
-            ("span_stream", b'{"id":"s1"}\n'),
-            ("span_stream", b'{"trace_id":"t1"}\n'),
+            ("trace_page", lambda **_: _page([_row(1)], total=None)),
+            ("trace_page", lambda **_: _page([_row(1), _row(2)], total=3)),
+            ("trace_page", lambda **_: _page([_row(1), _row(2)], total=1)),
+            ("trace_page", lambda **_: _page([], total=1)),
+            (
+                "trace_page",
+                lambda page, **_: _page(
+                    map(_row, range(TRACE_PAGE_SIZE - 1)), total=TRACE_PAGE_SIZE + 5
+                ),
+            ),
+            (
+                "trace_page",
+                lambda page, **_: _page(
+                    map(_row, range(TRACE_PAGE_SIZE if page == 1 else 5)),
+                    total=TRACE_PAGE_SIZE + page * 5,
+                ),
+            ),
+            ("trace_page", lambda **_: _page([SimpleNamespace(id=None)])),
+            ("span_page", lambda **_: _page([SimpleNamespace(id="s", trace_id="")])),
+            ("span_page", lambda **_: _page([SimpleNamespace(trace_id="t1")], total=2)),
         ],
         ids=[
-            "error-in-traces",
-            "error-in-spans",
-            "truncated",
-            "not-json",
-            "not-a-dict",
-            "null-id",
-            "span-with-no-trace-id",
-            "span-with-no-cursor",
+            "no-total",
+            "total-above-the-rows",
+            "rows-above-the-total",
+            "an-empty-page-before-the-total",
+            "a-short-page-before-the-total",
+            "a-total-that-moves",
+            "a-row-without-its-id",
+            "a-span-without-its-trace-id",
+            "spans-short-of-their-total",
         ],
     )
-    async def test_a_line_that_is_not_a_row_fails_with_nothing_deleted(
-        self, stream, line
+    async def test_a_page_that_disagrees_with_its_total_deletes_nothing(
+        self, kind, page
     ):
         client = _FakeClient(traces=["t1"])
-        setattr(client, stream, [line])
+        setattr(client, kind, page)
 
-        with pytest.raises(ServiceException, match="llm_traces.*not a row"):
+        with pytest.raises(ServiceException, match="llm_traces.*disagree"):
             await _eraser(client).erase_case(CASE, ENTERPRISE)
 
         assert client.deleted == []
 
-    @pytest.mark.parametrize("call", ["search_traces", "search_spans", "delete_traces"])
+    @pytest.mark.parametrize(
+        "call", ["get_traces_by_project", "get_spans_by_project", "delete_traces"]
+    )
     async def test_an_unreachable_backend_propagates(self, call):
         client = _FakeClient(traces=["t1"])
 
@@ -300,15 +313,9 @@ class TestItFailsClosed:
             raise httpx.ConnectError("[Errno 111] Connection refused")
 
         rest = client.rest_client
-        rest.traces.search_traces = (
-            unreachable if call == "search_traces" else rest.traces.search_traces
-        )
-        rest.spans.search_spans = (
-            unreachable if call == "search_spans" else rest.spans.search_spans
-        )
-        rest.traces.delete_traces = (
-            unreachable if call == "delete_traces" else rest.traces.delete_traces
-        )
+        for api in (rest.traces, rest.spans):
+            if hasattr(api, call):
+                setattr(api, call, unreachable)
 
         with pytest.raises(httpx.ConnectError):
             await _eraser(client).erase_case(CASE, ENTERPRISE)
@@ -316,7 +323,7 @@ class TestItFailsClosed:
     async def test_an_erase_that_outlasts_its_budget_refuses(self, monkeypatch):
         release = threading.Event()
         client = _FakeClient()
-        client.rest_client.traces.search_traces = lambda **_: release.wait() and []
+        client.trace_page = lambda **_: release.wait() and _page([])
         monkeypatch.setattr(trace_erasure, "TRACE_ERASE_TIMEOUT_SECONDS", 0.01)
 
         try:
@@ -332,14 +339,12 @@ class TestItFailsClosed:
         that keeps answering full pages. Called directly: the wait is not what
         is under test."""
         client = _FakeClient()
-        served = []
 
-        def endless(**kwargs):
-            served.append(kwargs)
-            assert len(served) < 3, "the worker kept paging past its deadline"
-            return iter([_ndjson({"id": f"t{i}"} for i in range(kwargs["limit"]))])
+        def endless(page, **_):
+            assert page < 3, "the worker kept paging past its deadline"
+            return _page(map(_row, range(TRACE_PAGE_SIZE)), total=10**9)
 
-        client.rest_client.traces.search_traces = endless
+        client.trace_page = endless
         monkeypatch.setattr(trace_erasure, "TRACE_ERASE_TIMEOUT_SECONDS", -1)
 
         with pytest.raises(ServiceException, match="llm_traces.*time limit"):
@@ -370,13 +375,13 @@ class TestWhatThisPodHolds:
     """After a connection failure the SDK parks traces, and ``flush`` replays them
     only while its monitor's flag is True (#2573)."""
 
-    async def test_a_flush_that_does_not_finish_refuses_before_the_search(self):
+    async def test_a_flush_that_does_not_finish_refuses_before_the_read(self):
         client = _FakeClient(traces=["t1"], flushed=False)
 
         with pytest.raises(ServiceException, match="llm_traces.*did not reach"):
             await _eraser(client).erase_case(CASE, ENTERPRISE)
 
-        assert client.trace_searches == [] and client.deleted == []
+        assert client.trace_reads == [] and client.deleted == []
 
     async def test_a_lowered_flag_is_reset_so_the_flush_replays(self):
         client = _FakeClient(connected=False)
@@ -394,13 +399,46 @@ class TestWhatThisPodHolds:
 
         assert client.monitor.resets == 0
 
-    async def test_a_send_that_fails_during_the_flush_refuses_before_the_search(self):
+    async def test_a_send_that_fails_during_the_flush_refuses_before_the_read(self):
         client = _FakeClient(traces=["t1"], connected=False, send_fails=True)
 
         with pytest.raises(ServiceException, match="llm_traces.*unreachable"):
             await _eraser(client).erase_case(CASE, ENTERPRISE)
 
-        assert client.trace_searches == [] and client.deleted == []
+        assert client.trace_reads == [] and client.deleted == []
+
+    async def test_two_deletes_on_one_pod_deliver_one_at_a_time(self, monkeypatch):
+        """The SDK's replay is a non-blocking mutex: a flush that overlaps another
+        returns at once, with its case's traces still parked."""
+        arrived, release = threading.Event(), threading.Event()
+        monkeypatch.setattr(trace_erasure, "_REPLAY_LOCK", _WatchedLock(arrived))
+        in_flush: list = []
+        overlaps: list = []
+        clients = [_FakeClient(traces=["t1"]), _FakeClient(traces=["t2"])]
+        for client in clients:
+
+            def flush(timeout=None, real=client.flush):
+                in_flush.append(1)
+                overlaps.append(len(in_flush))
+                if len(in_flush) > 1:
+                    arrived.set()
+                release.wait(10)
+                in_flush.pop()
+                return real(timeout)
+
+            client.flush = flush
+        first = asyncio.ensure_future(_eraser(clients[0]).erase_case(CASE, ENTERPRISE))
+        while not overlaps:
+            await asyncio.sleep(0)
+        second = asyncio.ensure_future(_eraser(clients[1]).erase_case(CASE, ENTERPRISE))
+
+        try:
+            assert await asyncio.to_thread(arrived.wait, 10)
+        finally:
+            release.set()
+
+        assert await asyncio.gather(first, second) == [1, 1]
+        assert max(overlaps) == 1
 
     @pytest.mark.parametrize(
         "changed",
