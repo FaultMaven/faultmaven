@@ -65,7 +65,6 @@ from tests.unit.core.investigation.bound_rows import (
     bound_evidence,
     ensure_subjects,
 )
-from tests.utils import TERMINAL_BASIS_ID
 
 _FILE_ID = "file_0123456789ab"
 
@@ -717,7 +716,7 @@ def _counterfactual_case(*, with_persistence: bool):
     # VALIDATED and marked terminal. M6 reads its representative off it (#2042).
     root = case.causal_nodes[created[0]]
     root.node_state = NodeState.VALIDATED
-    root.record_root_terminal(True, [TERMINAL_BASIS_ID], 7)
+    root.record_root_terminal(True, [support.evidence_id], 7)
     root.evidence_links.append(
         NodeEvidenceLink(
             evidence_id=support.evidence_id,
@@ -931,7 +930,7 @@ def test_resolved_case_truth_surfaces_agree_with_the_confirmed_cause():
     root_id = created[0]
     # The hypothesis rooted here marks its root terminal (#2036).
     case.causal_nodes[root_id].record_root_terminal(
-        True, [TERMINAL_BASIS_ID], case.current_turn
+        True, ["ev_bf208c13b2b7", "ev_6159eb53665c"], case.current_turn
     )
     hyp = _hypothesis("hyp_421fd53b5fd7", HypothesisState.ACTIVE, root_node_id=root_id)
     hyp.path = [root_id]

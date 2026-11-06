@@ -724,14 +724,15 @@ def make_org_knowledge_item(
     )
 
 
-#: The row a fixture's terminal verdict cites (#2036 D6). The node reads only
-#: that its ``True`` verdict cites a row; chain emission checks the row itself.
-TERMINAL_BASIS_ID = "ev_0000000ba515"
-
-
-def terminal_verdict() -> Dict[str, Any]:
-    """Root-node metadata for a verdict marked terminal, citing its basis."""
-    return {"root_terminal": True, "root_terminal_evidence_ids": [TERMINAL_BASIS_ID]}
+def terminal_verdict(*evidence_ids: str) -> Dict[str, Any]:
+    """Root-node metadata for a verdict marked terminal, citing its basis:
+    the causal_evidence rows of the case that show why the root arose (#2036
+    D6), which a post-fix cause re-check confirms the cause through (#2557).
+    In the product chain emission refuses a citation that is not a row of
+    the case, so a fixture cites real rows and never a placeholder."""
+    if not evidence_ids:
+        raise ValueError("a terminal verdict cites the rows it rests on (D6)")
+    return {"root_terminal": True, "root_terminal_evidence_ids": list(evidence_ids)}
 
 
 def bridge_flat_hypotheses_to_graph(case) -> None:

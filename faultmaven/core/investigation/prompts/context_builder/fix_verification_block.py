@@ -157,6 +157,13 @@ def _leg_lines(case: Case, windows, subjects, status, cause_rows, problem_rows):
         if status:
             pending = [f"{row.evidence_id} ({why})" for row, why in status]
             cause += "; re-checked, not counted yet: " + _ids(pending)
+        # The rows a re-check confirms the cause through: the root's cited
+        # basis (#2557), so the model asks for those, not for the relief.
+        _problem, basis = subjects.bindable_rows()
+        if basis:
+            cause += "; the cited basis to re-check: " + _ids(
+                [row.evidence_id for row in basis]
+            )
         lines.append(cause)
         latest = windows[-1]
         if latest.state == FIX_FAILED:

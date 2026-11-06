@@ -46,6 +46,7 @@ from faultmaven.core.investigation.cause_assurance import (
     latest_fix_window,
     off_cause_attempt,
     pending_symptom_check,
+    remediations_at,
     resolution_confirmation_rows,
     subject_index,
 )
@@ -1292,6 +1293,44 @@ _SUBMIT_AS_DATA = (
 )
 
 
+def _cause_recheck_ask(case: "Case", window) -> str:
+    """The readiness ask for the cause leg after a dated fix (#1927, #2557):
+    the problem is shown gone, and the cause the fix addressed is to be seen
+    removed — named by the root's statement and the fix, so the user shows
+    what the fix changed at the cause (what its cited basis shows, D6), not
+    the relief. Several roots or fixes are listed; with nothing to name (an
+    out-of-band fix, window 0), the generic line."""
+    nodes = getattr(case, "causal_nodes", None) or {}
+    subjects = subject_index(case)
+    roots = subjects.pool_roots
+    if window.kind is not None:
+        roots = roots.intersection(window.targets)
+    statements = [
+        _clip(nodes[n].statement)
+        for n in sorted(roots)
+        if n in nodes and getattr(nodes[n], "statement", None)
+    ]
+    fixes = [
+        _clip(a.description)
+        for a in remediations_at(case, window.fix_turn)
+        if getattr(a, "description", None)
+    ]
+    if statements and fixes:
+        return (
+            "- **The cause re-checked after the fix** — what you reported is "
+            f"shown gone; the cause the fix addressed, *{'; '.join(statements)}*, "
+            "needs to be seen removed too: the output of a check showing what "
+            f"*{'; '.join(fixes)}* changed at it."
+        )
+    return (
+        "- **The cause re-checked after the fix** — what you reported "
+        "is shown gone; the cause the fix addressed needs to be seen "
+        "removed too: the output of a check showing it (e.g. the setting "
+        "now reads the new value, or the corrected process is the one "
+        "running)."
+    )
+
+
 def _relief_without_cause_recheck(
     case: "Case", window, subjects: "SubjectIndex | None" = None
 ) -> bool:
@@ -1484,13 +1523,7 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
             # re-check (#1927): a relief alone may be a workaround's, so the fix
             # is unconfirmed. Ask for the leg that is missing, not the one the
             # user just gave.
-            asks.append(
-                "- **The cause re-checked after the fix** — what you reported "
-                "is shown gone; the cause the fix addressed needs to be seen "
-                "removed too: the output of a check showing it (e.g. the setting "
-                "now reads the new value, or the corrected process is the one "
-                "running)."
-            )
+            asks.append(_cause_recheck_ask(case, window))
         elif cause_elimination_rows(case):
             # The cause leg stands; only the problem the user reported is
             # unchecked (#1906). Say so, rather than re-asking for the fix.

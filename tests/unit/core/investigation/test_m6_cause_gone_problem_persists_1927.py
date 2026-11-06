@@ -158,7 +158,7 @@ def _identified_case(*, hypothesis_turn=1) -> tuple[Case, CausalNode, Hypothesis
         ),
     ]
     root = CausalNode(
-        metadata=terminal_verdict(),
+        metadata=terminal_verdict(*(row.evidence_id for row in supports)),
         node_id=_ROOT_ID,
         statement="max_connections is set to 20, below the checkout pool size",
         node_type=NodeType.ROOT,
