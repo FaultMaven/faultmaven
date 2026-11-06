@@ -30,6 +30,7 @@ from .cause_work import refuse_cause_work
 from .stage_gates import (
     _add_system_feedback,
 )
+from .statement_revision import emission_turn
 from .turn_records import _resolve_id_ref
 
 logger = logging.getLogger(__name__)
@@ -80,6 +81,14 @@ def _apply_chain_emission(
     links onto nodes that already stand follow the rule for links onto
     standing hypotheses and still apply; a link naming a refused same-turn
     node resolves to nothing and is skipped.
+
+    These stamps are dated at the emission's turn (``emission_turn``), a
+    replayed bundle's own, not its confirmation (#2537): the nodes and edges
+    it ingests, the root attaches (``root_attached_turn``,
+    ``root_first_attached_turn``) and the deepening's terminal record. The
+    mirrored root links (``linked_at_turn``) and a recorded verdict's
+    ``root_terminal_turn`` / ``root_terminal_refused_turn`` keep the current
+    turn; no floor reads them.
     """
     nodes = list(getattr(updates, "causal_nodes_to_add", None) or [])
     edges = list(getattr(updates, "causal_edges_to_add", None) or [])
@@ -119,12 +128,13 @@ def _apply_chain_emission(
             ),
         )
         nodes, edges, deductive, root_refs, verdicts = [], [], [], {}, {}
+    turn = emission_turn(case, metadata)
     created = ingest_emitted_chain(
         case,
         nodes,
         edges,
         node_links,
-        case.current_turn,
+        turn,
         evidence_created_ids=metadata.get("evidence_slots", []),
         validation_repairs=metadata.setdefault("validation_repairs", []),
     )
@@ -190,10 +200,9 @@ def _apply_chain_emission(
             # The first attach never moves; a node attached before it was
             # recorded keeps its last attach as the first (#2501).
             attached.setdefault(
-                "root_first_attached_turn",
-                attached.get("root_attached_turn", case.current_turn),
+                "root_first_attached_turn", attached.get("root_attached_turn", turn)
             )
-            attached["root_attached_turn"] = case.current_turn
+            attached["root_attached_turn"] = turn
             # Deepening the hypothesis past its old root (the new root's path
             # runs through it) says a cause sits above that node: clause b
             # fails for it, whatever was recorded before. A move to another
@@ -204,7 +213,7 @@ def _apply_chain_emission(
                 and stale.node_type == NodeType.ROOT
                 and old_root in new_path
             ):
-                stale.record_root_terminal(False, None, case.current_turn)
+                stale.record_root_terminal(False, None, turn)
         return old_path if (old_root and old_root != root_id) else []
 
     # One cause, one chain (M3/§7.8.1): a chain root belongs to exactly ONE
@@ -347,9 +356,7 @@ def _record_verdict_on_root(
     if not verdict:
         node.record_root_terminal(False, None, case.current_turn)
         return
-    kept, refused = _terminal_basis(
-        case, node, cited, metadata.get("evidence_slots", [])
-    )
+    kept, refused = _terminal_basis(case, node, cited)
     standing = (
         list(node.metadata.get("root_terminal_evidence_ids") or [])
         if node.root_terminal is True
@@ -380,16 +387,14 @@ def _record_verdict_on_root(
     )
 
 
-def _terminal_basis(
-    case: "Case", node: Any, cited: list, emitted: list
-) -> tuple[list, list]:
+def _terminal_basis(case: "Case", node: Any, cited: list) -> tuple[list, list]:
     """The rows a ``True`` verdict on ``node`` cites, split into those that
     qualify and why each other does not. A row qualifies when it is a
     non-engine causal_evidence row recorded (``collected_at_turn``, not the
-    upload's date) at or after the root was first posited, or in the same
-    emission (``emitted``: a staged turn replayed after its revision is
-    confirmed attaches the root a turn after its rows). This is a floor: it
-    cannot judge what the row says, so a row showing only that the state
+    upload's date) at or after the root was first posited, which a staged
+    turn replayed after its revision is confirmed dates at its own turn
+    (``emission_turn``, #2537), so the same emission counts. This is a floor:
+    it cannot judge what the row says, so a row showing only that the state
     exists still qualifies."""
     rows = {e.evidence_id: e for e in case.evidence}
     floor = node.root_first_attached_turn
@@ -402,7 +407,7 @@ def _terminal_basis(
             refused.append(f"{ref} ({row.category.value}, not causal_evidence)")
         elif row.collected_by == ENGINE_EVIDENCE_AUTHOR:
             refused.append(f"{ref} (recorded by the engine)")
-        elif row.collected_at_turn < floor and ref not in emitted:
+        elif row.collected_at_turn < floor:
             refused.append(
                 f"{ref} (recorded at turn {row.collected_at_turn}, before the "
                 "root was posited)"
@@ -421,7 +426,7 @@ def _nudge_ambiguous_orphan_chains(case: "Case", metadata: dict[str, Any]) -> No
 
     A verdict sent with a hypothesis that was still flat at chain emission is
     recorded on the root T1 gave it (#2036)."""
-    ambiguous = resolve_orphan_chains(case)
+    ambiguous = resolve_orphan_chains(case, turn=emission_turn(case, metadata))
     for hyp_id, (verdict, cited) in (
         metadata.pop("hyp_root_verdicts_pending", None) or {}
     ).items():

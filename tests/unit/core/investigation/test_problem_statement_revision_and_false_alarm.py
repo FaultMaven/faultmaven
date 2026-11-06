@@ -1181,6 +1181,8 @@ class TestStagingAcrossTheHandshake:
             for f in result["suggested_follow_ups"]
         }
         assert keys == {updated.offer_record.open.proposal_id}
+        # Its reason is copied out of the replay (#2537 keeps the turn).
+        assert "close this case as stabilized" in result["agent_response"]
 
     async def test_a_decline_note_survives_the_live_turns_own_feedback(self):
         """Feedback written before the LLM call (the decline note) is merged

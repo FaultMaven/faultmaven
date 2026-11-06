@@ -68,7 +68,7 @@ def _hypothesis_lacks_real_chain(hyp: "Hypothesis") -> bool:
     return not hyp.path or len(hyp.path) <= 2
 
 
-def resolve_orphan_chains(case: Case) -> list[dict]:
+def resolve_orphan_chains(case: Case, *, turn: int | None = None) -> list[dict]:
     """Resolve emitted chains the LLM left unlinked (the invariant: every chain
     explaining D attaches to exactly one hypothesis). Run AFTER chain ingest.
 
@@ -88,8 +88,10 @@ def resolve_orphan_chains(case: Case) -> list[dict]:
       standalone candidate root ("an unexplained candidate root is fine").
 
     Returns the ambiguous orphans (each ``{root_id, statement,
-    candidate_hypotheses}``) for T2a; T1 re-attachments are applied in place.
+    candidate_hypotheses}``) for T2a; T1 re-attachments are applied in place,
+    their attach dated ``turn``: the emission's, the current turn by default.
     """
+    turn = case.current_turn if turn is None else turn
     if not any(n.node_type == NodeType.PROBLEM for n in case.causal_nodes.values()):
         return []
 
@@ -147,9 +149,9 @@ def resolve_orphan_chains(case: Case) -> list[dict]:
             # recorded keeps its last attach as the first (#2501).
             node.metadata.setdefault(
                 "root_first_attached_turn",
-                node.metadata.get("root_attached_turn", case.current_turn),
+                node.metadata.get("root_attached_turn", turn),
             )
-            node.metadata["root_attached_turn"] = case.current_turn
+            node.metadata["root_attached_turn"] = turn
             prune_abandoned_nodes(case, old_path)
             adopted.add(hyp.hypothesis_id)
             referenced = _referenced_node_ids(case)  # graph changed — refresh

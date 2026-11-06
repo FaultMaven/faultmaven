@@ -1803,8 +1803,12 @@ def _apply_stage_gate_signals(
                 "(prerequisite mitigation_accepted not set)"
             )
         elif not p.mitigation.verified:
+            # Local import: statement_revision imports this module. A staged
+            # verification is dated at its hold turn, not its replay (#2537).
+            from .statement_revision import emission_turn
+
             p.mitigation.verified = True
-            p.mitigation.completed_at_turn = case.current_turn
+            p.mitigation.completed_at_turn = emission_turn(case, metadata)
             metadata["milestones_completed"].append("mitigation_verified")
 
     # --- side effects (Framework §4.1): mark the type-matched

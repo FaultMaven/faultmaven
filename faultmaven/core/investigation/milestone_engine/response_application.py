@@ -124,7 +124,11 @@ from .stage_gates import (
     llm_claimable_milestones,
     standing_fix_action,
 )
-from .statement_revision import REPLAY_FIX_SLOTS_KEY, REPLAY_METADATA_KEY
+from .statement_revision import (
+    REPLAY_FIX_SLOTS_KEY,
+    REPLAY_METADATA_KEY,
+    emission_turn,
+)
 from .terminal_proposals import (
     _maybe_propose_deferred_close,
     _maybe_propose_false_alarm_close,
@@ -1324,6 +1328,9 @@ class ResponseApplier:
                     initial_likelihood=h_item.likelihood,
                     current_turn=case.current_turn,
                 )
+                # Posited in its emission's turn (#2537); its progress stamps
+                # stay this turn's: it could not be worked while staged.
+                h.generated_at_turn = emission_turn(case, metadata)
                 case.hypotheses[h.hypothesis_id] = h
                 metadata["hypotheses_generated"].append(h.hypothesis_id)
                 emit_order.append(h.hypothesis_id)
