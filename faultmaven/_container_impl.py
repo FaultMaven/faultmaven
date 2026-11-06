@@ -1276,6 +1276,11 @@ class DIContainer(BaseDIContainer):
                 # Idempotent for a case that is already gone.
                 return True
 
+            async def delete_in_progress(self, case_id, enterprise_id):
+                # A delete here is one synchronous step that holds no
+                # tombstone, so none is ever seen running (#2510).
+                return False
+
             async def get_case_messages_enhanced(
                 self,
                 case_id: str,

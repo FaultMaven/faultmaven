@@ -488,6 +488,34 @@ class CaseDeleteGate:
             raise CaseWorkInProgress(_seconds(left_ms))
         return tombstone
 
+    async def deleting(self, case: CaseKey) -> bool:
+        """Whether a delete of ``case`` runs: its tombstone stands (#2510).
+
+        Best-effort: ``False`` with no store or a read that fails (logged once
+        per reason), as for a tombstone that lapsed under a stalled delete, so
+        it means no delete is *known* to run. The case then reads as live, and
+        the turn's own read (:func:`hold_case`) still refuses it.
+        """
+        if self._redis is None:
+            return _tombstone_unread("no_store", None)
+        try:
+            return bool(await self._redis.exists(tombstone_key(case)))
+        except Exception as exc:  # noqa: BLE001 - the read is best-effort
+            return _tombstone_unread("store_error", exc)
+
+
+def _tombstone_unread(reason: str, exc: Optional[BaseException]) -> bool:
+    """A read that cannot see a delete's tombstone: logged once per reason."""
+    if f"tombstone:{reason}" not in _REPORTED:
+        _REPORTED.add(f"tombstone:{reason}")
+        logger.warning(
+            "Case delete tombstone unreadable (%s%s): a case read reports no "
+            "delete running (#2510)",
+            reason,
+            f": {exc!r}" if exc is not None else "",
+        )
+    return False
+
 
 def _seconds(ms: Any) -> int:
     return max(1, math.ceil(int(ms or 0) / 1000))

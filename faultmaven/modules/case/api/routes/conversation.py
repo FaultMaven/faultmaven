@@ -420,8 +420,9 @@ _TURN_RESPONSES: Dict[int | str, Dict[str, Any]] = {
             "new data, a status change or a file reclassification; a "
             "text-only question is still answered); "
             f"`{inflight.CASE_DELETE_IN_PROGRESS}` (a delete of the case is "
-            "running; nothing of the turn ran: reload the case, which is gone "
-            "once the delete succeeds)."
+            "running; nothing of the turn ran: reload the case, and while it "
+            "reads `deleting: true` show it read-only and read it again until "
+            "it is gone (404) or `deleting` clears)."
         ),
         "headers": {
             "x-error-code": {
@@ -609,7 +610,9 @@ async def submit_turn(
     here to its end, so a delete of the case refuses while it runs; one that
     starts while a delete runs → **409** `x-error-code:
     CASE_DELETE_IN_PROGRESS`, with no `Retry-After`: nothing ran, reload the
-    case (#2096).
+    case (#2096). While `GET /cases/{case_id}` reads `deleting: true`, show
+    the case read-only and read it again until it is gone (404) or `deleting`
+    clears (#2510).
 
     **Timing.** `limits.turnResponseBoundSeconds` on
     `GET /api/v1/meta/capabilities` is the NOMINAL bound on this route's answer

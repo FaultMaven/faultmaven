@@ -31,7 +31,7 @@ every 10 s and lapsing 30 s after its last renewal.
 | Answer | `x-error-code` | `Retry-After` | Meaning | Client action |
 |---|---|---|---|---|
 | Delete **409** | `CASE_WORK_IN_PROGRESS` | yes | A turn on the case, or work one started, is still running, or another delete of the case is. Nothing was cleared. | Retry after `Retry-After`; the work may run longer, so the retry may be refused again. |
-| Turn **409** | `CASE_DELETE_IN_PROGRESS` | no | A delete of the case is running. Nothing of the turn ran. | Reload the case: it is gone once the delete succeeds. |
+| Turn **409** | `CASE_DELETE_IN_PROGRESS` | no | A delete of the case is running. Nothing of the turn ran. | Reload the case. While it reads `deleting: true`, show it read-only and read it again (from 2 s, at most every 10 s, for at most 60 s) until it is gone (404) or `deleting` clears. |
 | Delete **503** | `CASE_DELETE_UNAVAILABLE` | yes | Whether work is in flight could not be read: Redis is unreachable. Nothing was cleared. | Retry after `Retry-After`. |
 
 How the two sides avoid a race: the delete first writes a tombstone,
@@ -39,9 +39,15 @@ How the two sides avoid a race: the delete first writes a tombstone,
 turn first takes the lease, and only then reads the tombstone. Each writes
 before it reads, so they cannot both proceed. Both can refuse at once, which
 is safe: nothing runs and nothing is cleared, and a retry decides. The
-tombstone is held while the delete runs and is removed on every outcome except
-a deleted row, so a failed delete never holds the case's turns off. After a
-successful delete it lapses on its own within 30 s.
+tombstone is renewed while the delete runs, and the delete removes it when it
+is refused or fails. Otherwise (a successful delete, or a removal that failed
+or never ran) it lapses 30 s after it was written or last renewed, and holds
+the case's turns off until then.
+
+While the tombstone stands, `GET /cases/{case_id}` reads `deleting: true`
+for every reader of the case (#2510). It reads `false` once the tombstone is
+removed or lapses, and the case answers 404 once a delete succeeds. No other
+read reports it.
 
 ## Residuals
 
@@ -58,6 +64,16 @@ successful delete it lapses on its own within 30 s.
   that loses data) until the holder's next successful renewal (every 10 s), a
   delete can pass under running holders. The renewal, or the case's next turn,
   writes the member again.
+- **`deleting` is best-effort.** `false` means no delete is *known* to run:
+  with no lease store, a failed tombstone read (logged once per process), or
+  a tombstone that lapsed under a stalled delete, a read reports `false` while
+  a delete may still run. A client still handles the turn's 409
+  `CASE_DELETE_IN_PROGRESS` and the 404 as before.
+- **`deleting: true` with no delete running.** `deleting` reports the
+  delete's tombstone, which a delete writes before it checks for work in
+  flight and which lapses 30 s after it was written or last renewed unless it
+  is removed. So it can read `true` for up to 30 s with no delete running, and
+  turns are refused for the same span. A client reading again sees it clear.
 - **A resume.** Resuming a session on the case
   (`POST /cases/sessions/{session_id}/resume/{case_id}`) is not a turn and
   holds no lease. One that passed its access check before the delete can
