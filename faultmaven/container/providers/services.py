@@ -1365,10 +1365,12 @@ def register_services(container: BaseDIContainer) -> None:
 
     logger.info("🔍 Services: Registering services...")
 
-    # Get dependencies from container. The case repository is required: the
-    # infrastructure layer registers one or refuses startup (#2103), and no
-    # service built here exists without it (#2548).
-    case_repository = container.get_service("case_repository", required=True)
+    # Get dependencies from container. The case repository is read by its
+    # registered name; the infrastructure layer registers one or refuses
+    # startup (#2103), and `create_case_service` refuses a missing one with
+    # `RequiredServiceConstructionError` (#2548), the one class `initialize`
+    # re-raises ahead of its lenient path.
+    case_repository = container.get_service("case_repository")
     session_store = container.get_service("session_store")
     case_vector_store = getattr(container, "case_vector_store", None)
     redis_client = getattr(container, "redis_client", None)

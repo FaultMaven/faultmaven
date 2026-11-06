@@ -35,6 +35,7 @@ import pytest
 
 from faultmaven.config.settings import FaultMavenSettings, TenantProvider
 from faultmaven.container import DIContainer
+from faultmaven.container.errors import RequiredServiceConstructionError
 from faultmaven.container.providers.infrastructure import create_case_repository
 from faultmaven.container.providers.services import register_services
 from faultmaven.container.registry import DependencyRegistry
@@ -66,13 +67,16 @@ def _settings(monkeypatch, **env) -> FaultMavenSettings:
     return FaultMavenSettings(_env_file=None)
 
 
-def _container(settings: FaultMavenSettings) -> DIContainer:
+def _container(
+    settings: FaultMavenSettings, *, with_case_repository: bool = True
+) -> DIContainer:
     """A real container, built off the singleton.
 
     ``DIContainer.__new__`` returns the process-wide instance, so calling it
     here would compose into whatever state another test left behind — and leave
     this test's services there for the next one. ``object.__new__`` gives the
-    real class with a private registry.
+    real class with a private registry. ``with_case_repository=False`` leaves
+    the case repository unregistered, the state the composition must refuse.
     """
     container = object.__new__(DIContainer)
     container._initialized = False
@@ -89,10 +93,34 @@ def _container(settings: FaultMavenSettings) -> DIContainer:
     # builds for these settings (the SQLite-backed sessionless one), because
     # no case service exists without a repository (#2548).
     container.redis_client = None
-    container.case_repository = create_case_repository(settings)
-    container._register_service("case_repository", container.case_repository)
+    if with_case_repository:
+        container.case_repository = create_case_repository(settings)
+        container._register_service("case_repository", container.case_repository)
     container.user_store = object()
     return container
+
+
+@pytest.mark.unit
+class TestNoCaseRepositoryIsRefused:
+    """No case service exists without a case repository (#2548).
+
+    The composition reads the repository by its registered name and hands
+    whatever it finds to ``create_case_service``, whose refusal is the one
+    ``RequiredServiceConstructionError`` ``DIContainer.initialize`` re-raises
+    ahead of its lenient path. Not ``get_service(required=True)``: that raises
+    ``ServiceUnavailableError`` for the same state, a second class the
+    initialize path does not treat as terminal.
+    """
+
+    def test_register_services_refuses_an_unregistered_case_repository(
+        self, monkeypatch
+    ):
+        settings = _settings(monkeypatch, AUTH_MODE="local", JWT_SECRET_KEY="x" * 40)
+        container = _container(settings, with_case_repository=False)
+        assert container.get_service("case_repository") is None
+
+        with pytest.raises(RequiredServiceConstructionError, match="case repository"):
+            register_services(container)
 
 
 @pytest.mark.unit
