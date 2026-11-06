@@ -955,7 +955,10 @@ class Evidence(BaseModel):
     # observation re-observes. ``rechecks`` is the evidence id it names, or
     # None when what it named binds to no row (an unresolvable ref, a refused
     # slot, an absence row); ``named`` keeps the model's ref for the audit.
-    # No key at all: the row named nothing. No SQL reads it.
+    # No ``rechecks`` key: the row named nothing. ``claimed`` marks a
+    # causal_absence row held as symptom_absence (``hold_premature_absence``,
+    # #2550), restored only if its turn, or the revision's hold it arrived in,
+    # ends verified; otherwise it is kept as a record. No SQL reads it.
 
     @property
     def rechecks_evidence_id(self) -> Optional[str]:
