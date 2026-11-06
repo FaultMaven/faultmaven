@@ -434,9 +434,9 @@ def _settle_fix_attempts(case: Case, metadata: dict[str, Any]) -> None:
             if (set(cause.reference_ids) | own).intersection(action.target_ids)
             else FIX_INTERCEPTION
         )
-        # A node the run turn's record names can be off the graph since (an
-        # orphan pass pruned it): the kind stands, and the id goes, as pruning
-        # drops it from a target set before.
+        # After kinding, every id off the graph goes, whether pruned after
+        # the run turn's record named it or left in an unkinded fix's targets
+        # by pruning. The kind stands.
         action.target_ids = [t for t in action.target_ids if t in case.causal_nodes]
 
 

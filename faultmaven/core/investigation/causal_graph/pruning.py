@@ -39,9 +39,10 @@ def prune_abandoned_nodes(case: Case, abandoned_node_ids: list[str]) -> None:
     ``ON DELETE SET NULL`` on ``solutions.node_id``, applied in memory, so the
     save never writes back an id whose row it has just deleted (#2071). A
     kinded fix attempt targeting it drops it from ``target_ids`` and keeps its
-    kind, which was settled when it ran. A fix not yet kinded keeps it, so the
-    settle kinds that fix against the record that named the node, then drops
-    it. A fix licensed on it drops it from ``licence_ids`` (#2036 D2.3).
+    kind, which was settled when it ran. A fix not yet kinded keeps it: the id
+    is dropped once the settle kinds the fix, and a fix the settle leaves
+    unkinded keeps it. A fix licensed on it drops it from ``licence_ids``
+    (#2036 D2.3).
     """
     referenced = _referenced_node_ids(case)
     pruned: set[str] = set()

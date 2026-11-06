@@ -1108,18 +1108,24 @@ async def test_a_conclusion_naming_an_intermediate_licenses_as_it_is_stored(
     assert _verdict(case) == (_NEEDS_INFO if named == "cn" else _READY)
 
 
+@pytest.mark.parametrize("pruned_by", ["orphan-pass", "run-turn-emission"])
 @pytest.mark.parametrize("named", [False, True], ids=["unnamed", "named"])
 async def test_a_target_a_record_names_is_dropped_once_pruned_and_the_kind_kept(
-    named,
+    named, pruned_by
 ):
     """N3 (q3) and delta 2's F1: the fix is licensed on R1 at 5, and may name
-    it (``node_ref``). Turn 6's orphan pass, after its record named R1,
-    re-attaches A to R3 and prunes R1. At 7 the fix is declared run in turn
-    6's message: turn 6's record makes it a remediation of R1, named or not,
-    and the target then holds no node off the graph."""
+    it (``node_ref``). R1 then leaves the graph after turn 6's record named
+    it, one of two ways. Turn 6's orphan pass re-attaches A to R3 and prunes
+    R1, and at 7 the fix is declared run in turn 6's message. Or, with no
+    backdate, the user runs it at 6 and the same reply re-roots A onto a new
+    chain, so chain emission prunes R1 before the settle, while the fix is
+    accepted and not yet kinded. Turn 6's record makes it a remediation of
+    R1 either way, named or not, and the target then holds no node off the
+    graph."""
     case, root, hyp = _identified_case()
     _bare_candidate(case, root, hyp)
     hyp.likelihood = hyp.initial_likelihood = 0.85
+    hyp.path = [_ROOT_ID, _problem(case).node_id]
     eng = _engine()
     await _record(eng, case, 4)
     await _record(
@@ -1132,13 +1138,27 @@ async def test_a_target_a_record_names_is_dropped_once_pruned_and_the_kind_kept(
     assert (fix.target_ids, fix.target_named) == (
         ([_ROOT_ID], True) if named else ([], False)
     )
-    await _record(eng, case, 6)
-    assert case.turn_history[-1].cause_at_start.licence_ids == (_ROOT_ID,)
-    r3 = _orphan(case, "cn_000000000033", _problem(case).node_id)
-    old_path = list(hyp.path or [_ROOT_ID])
-    attach_root(case, hyp, r3, [r3, _problem(case).node_id], 6)
-    prune_abandoned_nodes(case, old_path)
-    await _record(eng, case, 7, milestones=_backdated(fix.action_id))
+    if pruned_by == "orphan-pass":
+        await _record(eng, case, 6)
+        r3 = _orphan(case, "cn_000000000033", _problem(case).node_id)
+        old_path = list(hyp.path)
+        attach_root(case, hyp, r3, [r3, _problem(case).node_id], 6)
+        prune_abandoned_nodes(case, old_path)
+        await _record(eng, case, 7, milestones=_backdated(fix.action_id))
+    else:
+        statement = "the checkout service leaks connections on a retry path"
+        await _record(
+            eng,
+            case,
+            6,
+            _obs(_CAUSAL, f"{statement}: retry opens a new connection"),
+            _obs(_CAUSAL, f"{statement}: the old one is never closed"),
+            milestones=_ran(fix.action_id),
+            **_new_root(statement, "D", hyp.hypothesis_id),
+        )
+    record = next(t for t in case.turn_history if t.turn_number == 6)
+    assert record.cause_at_start.licence_ids == (_ROOT_ID,)
+    assert _ROOT_ID not in case.causal_nodes
     (run,) = _attempts(case)
     assert (run.accepted_in_turn, run.fix_kind, run.target_ids) == (
         6,
