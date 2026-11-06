@@ -50,6 +50,7 @@ from faultmaven.core.investigation.offers import answer_offer, open_terminal_off
 from faultmaven.core.investigation.problem_status import (
     cause_work_accepted,
     cause_work_staged,
+    hold_premature_absence,
     invalidate_problem,
     invalidation_refusal,
     is_engine_false_alarm_close,
@@ -57,6 +58,7 @@ from faultmaven.core.investigation.problem_status import (
     pending_revision,
     propose_revision,
     record_verifying_rows,
+    restore_premature_absence,
     revision_refusal,
     stage_cause_work,
     unverify_problem,
@@ -163,38 +165,61 @@ WHY_OPEN_DOWNGRADE_REASON = (
 )
 
 
-def _reclassify_premature_causal_absence(case: Case, metadata: dict[str, Any]) -> None:
+#: The rows ``_reclassify_premature_causal_absence`` held this turn, which its
+#: final call reports.
+_PREMATURE_ABSENCE_KEY = "premature_absence_held"
+
+
+def _reclassify_premature_causal_absence(
+    case: Case, metadata: dict[str, Any], *, final: bool = False
+) -> None:
     """A cause cannot have been eliminated before the problem it caused is
     verified: a causal_absence row then means "the problem is not there", which
-    is symptom_absence. This turn's rows are reclassified rather than dropped —
-    new_index_N refs this turn index into ``evidence_slots``, and a dropped row
-    would leave its ref naming nothing. Judged against the turn's own verification (after step 2b), never the
-    status the turn began with or an optimistic claim 2b reverts. Without this,
-    one such row reads resolution-READY on a never-verified case
-    (``assess_resolution_readiness``) and pivots a false-alarm close to RESOLVED
-    (INV-37)."""
-    if cause_work_accepted(case):
-        return
+    is symptom_absence. This turn's rows are held as symptom_absence rather
+    than dropped (``problem_status.hold_premature_absence``) — new_index_N refs
+    this turn index into ``evidence_slots``, and a dropped row would leave its
+    ref naming nothing. Without this, one such row reads resolution-READY on a
+    never-verified case (``assess_resolution_readiness``) and pivots a
+    false-alarm close to RESOLVED (INV-37).
+
+    Judged on the status the turn ends with (the ``final`` call, after step
+    2c), never the status it began with or an optimistic claim 2b reverts: a
+    row the call before 2c held is restored when the turn ends verified (a
+    false-alarm finding withdrawn). A row held while a revised statement waits
+    is judged again when the user answers it (#2550): restored when the answer
+    leaves the problem verified (``problem_status.commit_revision``,
+    ``_answer_pending``)."""
     created = set(metadata.get("evidence_added") or [])
-    rows = [
-        e
-        for e in case.evidence
-        if e.evidence_id in created
-        and e.category == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
-    ]
-    if not rows:
+    rows = [e for e in case.evidence if e.evidence_id in created]
+    if cause_work_accepted(case):
+        restore_premature_absence(rows)
+        metadata.pop(_PREMATURE_ABSENCE_KEY, None)
         return
+    held = metadata.setdefault(_PREMATURE_ABSENCE_KEY, [])
     for row in rows:
-        row.category = EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE
+        if row.category == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE:
+            hold_premature_absence(row)
+            held.append(row.evidence_id)
+    if not final:
+        return
+    metadata.pop(_PREMATURE_ABSENCE_KEY)
+    if not held:
+        return
     metadata.setdefault("validation_repairs", []).append(
-        f"{len(rows)} causal_absence_evidence row(s) recorded before the problem "
+        f"{len(held)} causal_absence_evidence row(s) recorded before the problem "
         "was verified were recorded as symptom_absence_evidence"
     )
     _add_system_feedback(
         metadata,
-        f"{len(rows)} causal_absence_evidence row(s) arrived before the problem "
+        f"{len(held)} causal_absence_evidence row(s) arrived before the problem "
         "was verified and were recorded as symptom_absence_evidence: a cause can "
-        "only be shown eliminated once the problem it caused is verified.",
+        "only be shown eliminated once the problem it caused is verified."
+        + (
+            " They count as causal_absence_evidence if the user's answer to the "
+            "revised statement leaves the problem verified."
+            if cause_work_staged(case)
+            else ""
+        ),
     )
 
 
@@ -1357,8 +1382,9 @@ class ResponseApplier:
                     )
 
         # The verification is final for the symptom claim: a causal_absence row
-        # recorded on a problem still unverified is reclassified before step 2c
-        # reads the turn's rows (a false-alarm finding may cite it).
+        # recorded on a problem still unverified is held as symptom_absence
+        # before step 2c reads the turn's rows (a false-alarm finding may cite
+        # it). The call after 2c judges it on the status the turn ends with.
         _reclassify_premature_causal_absence(case, metadata)
 
         # 2c. What the evidence says about the statement itself: inaccurate
@@ -1368,9 +1394,10 @@ class ResponseApplier:
         self._apply_verification_updates(
             case, updates, metadata, status_at_start=status_at_start
         )
-        # And again for the status the turn ends with: a revision on the
-        # verifying turn leaves the problem unverified until the user confirms.
-        _reclassify_premature_causal_absence(case, metadata)
+        # And again for the status the turn ends with: a turn that ends verified
+        # (a withdrawn finding) restores what the call above held; a revision
+        # holds the rows until the user's answer judges them again.
+        _reclassify_premature_causal_absence(case, metadata, final=True)
 
         # 2d. While a revision awaits re-confirmation, this turn's cause work
         # is held on it, with the evidence ids its refs resolve against, and
