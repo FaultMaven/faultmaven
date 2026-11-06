@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 14.14.0
+**Version:** 14.15.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -1681,6 +1681,10 @@ Get a specific case by ID (v2.0 milestone-based)
 Returns full case details with milestone progress, investigation stage,
 and completion percentage.
 
+While a delete of the case runs, `deleting` is true: show the case
+read-only and read it again until it is gone (404) or `deleting` clears
+(#2510).
+
 **Tags:** `cases`
 
 **Auth:** `HTTPBearer`
@@ -1755,9 +1759,11 @@ While a turn on the case, or work one started (its upload links, evidence
 indexing, a runbook draft), is still running, on any server, the delete
 answers 409 `CASE_WORK_IN_PROGRESS` with `Retry-After` and clears nothing.
 A turn sent while the delete runs is refused with 409
-`CASE_DELETE_IN_PROGRESS`. If whether work is in flight cannot be read,
-the delete answers 503 `CASE_DELETE_UNAVAILABLE` with `Retry-After` and
-clears nothing (#2096).
+`CASE_DELETE_IN_PROGRESS`, and `GET /cases/{case_id}` reads
+`deleting: true` while the delete's tombstone stands: until it is removed
+or lapses, or the case is gone (404) (#2510).
+If whether work is in flight cannot be read, the delete answers 503
+`CASE_DELETE_UNAVAILABLE` with `Retry-After` and clears nothing (#2096).
 
 Returns 204 No Content on success.
 
@@ -2444,7 +2450,9 @@ request runs as a new turn.
 here to its end, so a delete of the case refuses while it runs; one that
 starts while a delete runs → **409** `x-error-code:
 CASE_DELETE_IN_PROGRESS`, with no `Retry-After`: nothing ran, reload the
-case (#2096).
+case (#2096). While `GET /cases/{case_id}` reads `deleting: true`, show
+the case read-only and read it again until it is gone (404) or `deleting`
+clears (#2510).
 
 **Timing.** `limits.turnResponseBoundSeconds` on
 `GET /api/v1/meta/capabilities` is the NOMINAL bound on this route's answer
@@ -2473,7 +2481,7 @@ likely to do so again, so retry at most once (it carries no `Retry-After`);
 **Responses:**
 
 - `200` — The turn's response. A retry of a committed turn under the same `Idempotency-Key` is answered with that turn's response, and carries `X-Idempotency-Replayed: true`. ([`TurnResponse`](#turnresponse))
-- `409` — Conflict. Told apart by `x-error-code`: `TURN_IN_PROGRESS` (a turn with this `Idempotency-Key` is still running: retry with the same key after `Retry-After` seconds, the longest the running turn can still hold its claim — an upper bound, not when it finishes; it may finish sooner); `IDEMPOTENCY_KEY_REUSE` (the key was used for a different turn); `IDEMPOTENCY_REPLAY_UNAVAILABLE` (the turn committed but its response can no longer be replayed: reload the case); `CASE_VERSION_CONFLICT` (another writer changed the case while this turn ran; nothing committed); `CASE_TERMINAL` (the case is resolved or closed and refuses new data, a status change or a file reclassification; a text-only question is still answered); `CASE_DELETE_IN_PROGRESS` (a delete of the case is running; nothing of the turn ran: reload the case, which is gone once the delete succeeds).
+- `409` — Conflict. Told apart by `x-error-code`: `TURN_IN_PROGRESS` (a turn with this `Idempotency-Key` is still running: retry with the same key after `Retry-After` seconds, the longest the running turn can still hold its claim — an upper bound, not when it finishes; it may finish sooner); `IDEMPOTENCY_KEY_REUSE` (the key was used for a different turn); `IDEMPOTENCY_REPLAY_UNAVAILABLE` (the turn committed but its response can no longer be replayed: reload the case); `CASE_VERSION_CONFLICT` (another writer changed the case while this turn ran; nothing committed); `CASE_TERMINAL` (the case is resolved or closed and refuses new data, a status change or a file reclassification; a text-only question is still answered); `CASE_DELETE_IN_PROGRESS` (a delete of the case is running; nothing of the turn ran: reload the case, and while it reads `deleting: true` show it read-only and read it again until it is gone (404) or `deleting` clears).
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 - `503` — Unavailable; nothing of the turn committed, and a retry after `Retry-After` seconds is safe. Told apart by `x-error-code`: `DATABASE_UNAVAILABLE` (the database did not answer while the turn was being prepared); `TENANT_TURN_CAP_UNAVAILABLE` (the usage allowance could not be checked); `LLM_OVER_CAPACITY`, `LLM_PROVIDER_UNAVAILABLE` and `LLM_INVALID_RESPONSE` (the AI provider could not answer usably); `REVOCATION_STATE_UNKNOWN` (the authentication every route requires could not read the token revocation store).
 - `504` — Timeout; nothing of the turn committed. Told apart by `x-error-code`: `REQUEST_TIMEOUT` (the turn used its whole ceiling, `limits.turnCeilingSeconds` on `GET /api/v1/meta/capabilities`, on this input; the same input is likely to exhaust it again, so a client retries at most once, and no `Retry-After` is sent); `LLM_TIMEOUT` (the AI provider timed out: transient, retry after `Retry-After` seconds).
@@ -4994,6 +5002,7 @@ Detailed case information for single case view.
 - `creator_display_name` (object, optional)
 - `current_stage` (object, required)
 - `current_turn` (integer, required) — The MESSAGE clock: every persisted exchange advances it, asides included. It is what `Message.turn_number`, evidence `uploaded_at_turn` and the conversation anchors are keyed on, so keep using it to ADDRESS a turn — and prefer `investigation_turn` to DISPLAY one.
+- `deleting` (boolean, optional) — True while a delete of this case runs (#2510). Show the case read-only and read it again, backing off from 2 s to at most every 10 s for at most 60 s, until it is gone (404) or this clears; then keep it read-only until the next user action reads it again. Best-effort both ways: it reports the delete's tombstone, which a delete writes before it checks for in-flight work and which lapses 30 s after its last renewal unless removed, so true can stand for up to 30 s with no delete running, and false means no delete is known to run. A turn can still meet 409 `CASE_DELETE_IN_PROGRESS` or 404. Set on `GET /cases/{case_id}`; false on every other surface that embeds `CaseDetail`.
 - `description` (string, required)
 - `driver_display_name` (object, optional)
 - `driver_id` (object, optional)

@@ -953,8 +953,11 @@ class CaseService(CaseDriverMixin, ICaseService):
         conversion), holds the lease on any replica from before it writes
         anything to its end, so while one is in flight the delete refuses and
         clears nothing. A turn that starts meanwhile reads the tombstone and
-        refuses itself. The tombstone is deleted on every outcome but a
-        deleted row, so a failed delete never holds turns off.
+        refuses itself. The tombstone is renewed while the delete runs, and
+        the delete removes it when it is refused or fails. Otherwise (a
+        successful delete, or a removal that failed or never ran) it lapses
+        30 s after it was written or last renewed, and holds the case's turns
+        off until then.
 
         Every store that holds the case's data is cleared BEFORE the row, by
         ``store_erasers`` in their bound order: session pointers, runbook
@@ -1028,6 +1031,13 @@ class CaseService(CaseDriverMixin, ICaseService):
             if tombstone is not None:
                 await tombstone.end(deleted=deleted)
         return True
+
+    async def delete_in_progress(self, case_id: str, enterprise_id: str) -> bool:
+        """Whether a delete of the case runs (``delete_gate``, #2510); ``False``
+        with no gate, as a delete then holds no tombstone."""
+        if self.delete_gate is None:
+            return False
+        return await self.delete_gate.deleting((enterprise_id, case_id))
 
     @trace("case_service_close_case")
     async def close_case(self, case_id: str, user_id: str) -> Case:

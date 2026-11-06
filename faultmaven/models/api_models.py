@@ -329,6 +329,24 @@ class CaseDetail(BaseModel):
         description=VALID_NEXT_STATES_DESCRIPTION,
     )
 
+    deleting: bool = Field(
+        default=False,
+        description=(
+            "True while a delete of this case runs (#2510). Show the case "
+            "read-only and read it again, backing off from 2 s to at most "
+            "every 10 s for at most 60 s, until it is gone (404) or this "
+            "clears; then keep it read-only until the next user action reads "
+            "it again. Best-effort both ways: it reports the delete's "
+            "tombstone, which a delete writes before it checks for in-flight "
+            "work and which lapses 30 s after its last renewal unless removed, "
+            "so true can stand for up to 30 s with no delete running, and "
+            "false means no delete is known to run. A turn can still meet 409 "
+            "`CASE_DELETE_IN_PROGRESS` or 404. Set on "
+            "`GET /cases/{case_id}`; false on every other surface that embeds "
+            "`CaseDetail`."
+        ),
+    )
+
     @classmethod
     def from_case(cls, case: Case) -> "CaseDetail":
         """Convert Case domain model to API detail view."""

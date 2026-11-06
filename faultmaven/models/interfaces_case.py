@@ -459,6 +459,16 @@ class ICaseService(ABC):
         pass
 
     @abstractmethod
+    async def delete_in_progress(self, case_id: str, enterprise_id: str) -> bool:
+        """Whether a delete of the case runs: its tombstone stands (#2510).
+
+        Best-effort: ``False`` means no delete is known to run (no store, a
+        failed read, or a tombstone that lapsed under a slow delete). Never
+        raises, and checks no access: the caller has read the case.
+        """
+        pass
+
+    @abstractmethod
     async def list_user_cases(
         self, user_id: str, filters: Optional[CaseListFilter] = None
     ) -> Tuple[List[CaseSummary], int]:
