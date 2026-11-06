@@ -7202,7 +7202,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "14.15.0"
+    "version": "14.16.0"
   },
   "openapi": "3.1.0",
   "paths": {

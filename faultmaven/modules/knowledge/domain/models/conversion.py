@@ -82,6 +82,8 @@ class ConversionErrorCode(str, Enum):
     # Content-level errors
     DOCUMENT_TOO_LONG = "DOCUMENT_TOO_LONG"
     DOCUMENT_TOO_SHORT = "DOCUMENT_TOO_SHORT"
+    # pypdf's limits refused it, or reading it outran its time limit (#2153)
+    DOCUMENT_TOO_COMPLEX = "DOCUMENT_TOO_COMPLEX"
     NOT_ACTIONABLE = "NOT_ACTIONABLE"
     NO_FAILURE_MODES = "NO_FAILURE_MODES"
     ALREADY_A_RUNBOOK = "ALREADY_A_RUNBOOK"

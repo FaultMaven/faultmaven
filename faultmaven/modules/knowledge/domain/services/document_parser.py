@@ -6,9 +6,14 @@ Does not interpret or transform content — that is the LLM's job.
 
 import logging
 import re
+from dataclasses import dataclass, replace
 from io import BytesIO
 from pathlib import Path
 from typing import Optional
+
+# Not beside ``PdfReader`` below: tests mock ``sys.modules["pypdf"]``, and an
+# ``except`` has to name the class pypdf really raises.
+from pypdf.errors import LimitReachedError
 
 from faultmaven.modules.knowledge.domain.services.runbook_grammar import (
     mask_html_comments,
@@ -21,10 +26,34 @@ logger = logging.getLogger(__name__)
 class DocumentRefusal(ValueError):
     """A refusal this parser words itself: a hand-written sentence for the
     caller (a missing parser library, an undecodable text file, an image-only
-    PDF). ``parse`` passes its text on; anything else an extractor raises is a
-    parser library's own exception, whose text can name the file's server path
-    (python-docx: ``Package not found at '/tmp/…'``), so only its class is
-    passed on (#836)."""
+    PDF). ``extract_document_text`` passes its text on; anything else an
+    extractor raises is a parser library's own exception, whose text can name
+    the file's server path (python-docx: ``Package not found at '/tmp/…'``), so
+    only its class is passed on (#836)."""
+
+
+class DocumentTooComplex(DocumentRefusal):
+    """pypdf's limits refused the whole document, or refused pages and no other
+    page had text. Mapped by type to ``DOCUMENT_TOO_COMPLEX``, never
+    ``FILE_CORRUPT`` (#2153)."""
+
+
+_TOO_COMPLEX = (
+    "This PDF is too complex for the PDF reader's limits, so no text could be "
+    "read from it. Export it to text (TXT or Markdown), or split it into smaller "
+    "documents, and convert that instead."
+)
+
+
+@dataclass(frozen=True)
+class ParsedDocument:
+    """What extraction read. ``page_count`` is set for a PDF only, and
+    ``skipped_pages`` holds the 1-based numbers of the pages pypdf refused for
+    its limits: each costs its own text, not the document's."""
+
+    text: str
+    page_count: Optional[int] = None
+    skipped_pages: tuple[int, ...] = ()
 
 
 class DocumentParser:
@@ -50,7 +79,9 @@ class DocumentParser:
         ".htm": "html",
     }
 
-    def parse(self, file_path: Path, content_type: Optional[str] = None) -> str:
+    def extract_document_text(
+        self, file_path: Path, content_type: Optional[str] = None
+    ) -> ParsedDocument:
         """Extract plain text from a document file.
 
         Args:
@@ -58,9 +89,10 @@ class DocumentParser:
             content_type: MIME type hint (used if extension is ambiguous).
 
         Returns:
-            Extracted text content.
+            The extracted text, with a PDF's page count and refused pages.
 
         Raises:
+            DocumentTooComplex: pypdf refused the whole document for its limits.
             ValueError: If the file format is unsupported or parsing fails.
         """
         fmt = self._detect_format(file_path, content_type)
@@ -78,7 +110,9 @@ class DocumentParser:
             raise ValueError(f"Unsupported format: {fmt}")
 
         try:
-            text = extractor(file_path)
+            extracted = extractor(file_path)
+        except DocumentTooComplex:
+            raise
         except DocumentRefusal as e:
             raise ValueError(f"Failed to parse {file_path.name}: {e}") from e
         except Exception as e:
@@ -89,7 +123,9 @@ class DocumentParser:
                 f"Failed to parse {file_path.name} ({type(e).__name__})"
             ) from e
 
-        if not text or not text.strip():
+        if isinstance(extracted, str):
+            extracted = ParsedDocument(extracted)
+        if not extracted.text.strip():
             raise ValueError(
                 f"No extractable text found in {file_path.name}. "
                 "The file may be image-only (scanned PDF) or empty."
@@ -112,7 +148,7 @@ class DocumentParser:
         # ``(?m)^(?:Page \d+...)$``, and page-footer stripping is precisely what
         # the PDF path needs. Under CR the ``$`` never anchors, so page numbers
         # and uncollapsed blank-line runs ride into the conversion prompt.
-        return normalize_line_endings(text)
+        return replace(extracted, text=normalize_line_endings(extracted.text))
 
     def _detect_format(self, file_path: Path, content_type: Optional[str]) -> str:
         """Determine format from MIME type or file extension."""
@@ -128,26 +164,42 @@ class DocumentParser:
             f"Supported: PDF, DOCX, TXT, Markdown, HTML"
         )
 
-    def _extract_pdf(self, file_path: Path) -> str:
-        """Extract text from PDF using pypdf."""
+    def _extract_pdf(self, file_path: Path) -> ParsedDocument:
+        """Extract text from PDF using pypdf, page by page.
+
+        A page pypdf's limits refuse costs that page, and its number is kept. A
+        limit opening the document or its page tree costs the document, as do
+        refused pages with no other page's text: checked before "no extractable
+        text", so a refusal is never read as an image-only PDF.
+        """
         try:
             from pypdf import PdfReader
         except ImportError:
             raise DocumentRefusal("pypdf is required for PDF parsing")
 
-        reader = PdfReader(str(file_path))
-        pages = []
-        for page in reader.pages:
-            text = page.extract_text()
+        try:
+            reader = PdfReader(str(file_path))
+            page_count = len(reader.pages)
+        except LimitReachedError as e:
+            raise DocumentTooComplex(_TOO_COMPLEX) from e
+        pages, skipped = [], []
+        for index in range(page_count):
+            try:
+                text = reader.pages[index].extract_text()
+            except LimitReachedError:
+                skipped.append(index + 1)
+                continue
             if text:
                 pages.append(text)
 
+        if not pages and skipped:
+            raise DocumentTooComplex(_TOO_COMPLEX)
         if not pages:
             raise DocumentRefusal(
                 "No extractable text in PDF. The file may be scanned/image-only."
             )
 
-        return "\n\n".join(pages)
+        return ParsedDocument("\n\n".join(pages), page_count, tuple(skipped))
 
     def _extract_docx(self, file_path: Path) -> str:
         """Extract text from DOCX preserving structure."""

@@ -14,11 +14,15 @@ Stages:
 6. Content triage (LLM classifier)
 """
 
+import asyncio
+import contextvars
 import logging
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, NamedTuple, Optional
 
 from faultmaven.core.investigation.confidence_repair import (
     ConfidenceAction,
@@ -47,7 +51,10 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
     RedactionReport,
     TriageResult,
 )
-from faultmaven.modules.knowledge.domain.services.document_parser import DocumentParser
+from faultmaven.modules.knowledge.domain.services.document_parser import (
+    DocumentParser,
+    DocumentTooComplex,
+)
 from faultmaven.modules.knowledge.domain.services.runbook_grammar import code_spans
 from faultmaven.utils.frontmatter import match_frontmatter
 from faultmaven.utils.token_estimation import _get_tiktoken_encoder
@@ -57,6 +64,22 @@ logger = logging.getLogger(__name__)
 MAX_TOKEN_LIMIT = 30_000
 MIN_TEXT_LENGTH = 200
 TRIAGE_SAMPLE_TOKENS = 2000
+
+#: How long a request waits for Stages 0-5: about 3x the 10.7 s a legitimate
+#: dense PDF page was measured to take (#2153).
+EXTRACTION_TIMEOUT_SECONDS = 30
+
+#: Where Stages 0-5 run: CPU over the caller's file, off the event loop (#1417's
+#: class, #2153). Not a semaphore: ``async with sem: await wait_for(to_thread())``
+#: frees the slot on timeout while the thread runs on, bounding nothing. A pool
+#: worker stays taken until its work ends, so at most two run; a queued one whose
+#: caller timed out never runs. A timed-out worker runs on to pypdf's own limits,
+#: and process exit waits for it. The route unlinking the temp file meanwhile is
+#: safe on Linux: an open file outlives its name, and a worker not yet reading it
+#: fails with a result nobody reads.
+_EXTRACTION_POOL = ThreadPoolExecutor(
+    max_workers=2, thread_name_prefix="document-extract"
+)
 
 
 def _get_encoder():
@@ -180,9 +203,13 @@ def redact_sensitive_content(text: str) -> tuple[str, RedactionReport]:
 
 
 def extract_source_metadata(
-    file_path: Path, content_type: str, extracted_text: str
+    file_path: Path,
+    content_type: str,
+    extracted_text: str,
+    page_count: Optional[int],
 ) -> Dict[str, Any]:
-    """Stage 5: Capture provenance metadata from source file."""
+    """Stage 5: Capture provenance metadata from source file. A PDF's page
+    count is the extraction's, so the file is not opened a second time."""
     stat = file_path.stat()
     word_count = len(extracted_text.split())
 
@@ -193,15 +220,8 @@ def extract_source_metadata(
         "word_count": word_count,
     }
 
-    # Page count for PDFs
-    if content_type == "application/pdf":
-        try:
-            from pypdf import PdfReader
-
-            reader = PdfReader(str(file_path))
-            metadata["page_count"] = len(reader.pages)
-        except Exception:
-            pass
+    if page_count is not None:
+        metadata["page_count"] = page_count
 
     return metadata
 
@@ -561,6 +581,16 @@ def _has_runbook_body(text: str) -> bool:
 # =============================================================================
 
 
+class _Prepared(NamedTuple):
+    """Stages 0-5's output, handed from the extraction pool to Stage 6."""
+
+    extracted_text: str
+    source_metadata: Dict[str, Any]
+    redaction_report: RedactionReport
+    token_count: int
+    warnings: list[str]
+
+
 class DocumentPreprocessor:
     """Orchestrates the preprocessing pipeline."""
 
@@ -573,12 +603,14 @@ class DocumentPreprocessor:
         # whichever router is configured.
         self._sanitizer = sanitizer
 
-    async def preprocess(
+    def _prepare(
         self,
         file_path: Path,
         content_type: str,
-    ) -> PreprocessingResult:
-        """Run the full preprocessing pipeline."""
+    ) -> PreprocessingResult | _Prepared:
+        """Stages 0-5, synchronous CPU over the caller's file: ``preprocess``
+        runs this in ``_EXTRACTION_POOL``, never on the event loop. Returns the
+        rejection, or what Stage 6 needs."""
         warnings: list[str] = []
 
         # Stage 0: File integrity
@@ -599,7 +631,15 @@ class DocumentPreprocessor:
 
         # Stage 1: Format extraction
         try:
-            extracted_text = self._parser.parse(file_path, content_type)
+            parsed = self._parser.extract_document_text(file_path, content_type)
+        except DocumentTooComplex as e:
+            return PreprocessingResult(
+                extracted_text="",
+                source_metadata={},
+                is_rejected=True,
+                rejection_reason=str(e),
+                error_code=ConversionErrorCode.DOCUMENT_TOO_COMPLEX,
+            )
         except ValueError as e:
             error_msg = str(e)
             if "encoding" in error_msg.lower() or "decode" in error_msg.lower():
@@ -614,6 +654,14 @@ class DocumentPreprocessor:
                 is_rejected=True,
                 rejection_reason=error_msg,
                 error_code=error_code,
+            )
+        extracted_text = parsed.text
+        if parsed.skipped_pages:
+            warnings.append(
+                "The PDF reader's limits refused page(s) "
+                f"{', '.join(map(str, parsed.skipped_pages))} of "
+                f"{parsed.page_count}, so their text was skipped. Check the "
+                "generated runbook against those pages of the source."
             )
 
         # Stage 1b: Existing runbook detection — a REFUSAL, not a warning.
@@ -731,9 +779,46 @@ class DocumentPreprocessor:
 
         # Stage 5: Source metadata extraction
         source_metadata = extract_source_metadata(
-            file_path, content_type, extracted_text
+            file_path, content_type, extracted_text, parsed.page_count
         )
         source_metadata["token_count"] = token_count
+        return _Prepared(
+            extracted_text, source_metadata, redaction_report, token_count, warnings
+        )
+
+    async def preprocess(
+        self, file_path: Path, content_type: str
+    ) -> PreprocessingResult:
+        """Run the full preprocessing pipeline: Stages 0-5 in the extraction
+        pool under ``EXTRACTION_TIMEOUT_SECONDS``, then Stage 6 on the loop."""
+        # A copied context, as ``to_thread`` makes and ``run_in_executor`` does
+        # not: pypdf's limits, the tenant and the request id are context vars.
+        work = partial(
+            contextvars.copy_context().run, self._prepare, file_path, content_type
+        )
+        try:
+            prepared = await asyncio.wait_for(
+                asyncio.get_running_loop().run_in_executor(_EXTRACTION_POOL, work),
+                EXTRACTION_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            return PreprocessingResult(
+                extracted_text="",
+                source_metadata={},
+                is_rejected=True,
+                rejection_reason=(
+                    "Reading this document took longer than the "
+                    f"{EXTRACTION_TIMEOUT_SECONDS}-second limit, so it was not "
+                    "converted. Export it to text (TXT or Markdown), or split it "
+                    "into smaller documents, and convert that instead."
+                ),
+                error_code=ConversionErrorCode.DOCUMENT_TOO_COMPLEX,
+            )
+        if isinstance(prepared, PreprocessingResult):
+            return prepared
+        extracted_text, source_metadata, redaction_report, token_count, warnings = (
+            prepared
+        )
 
         # Stage 6: Content triage (classifier LLM)
         triage_result = await self._run_content_triage(extracted_text)

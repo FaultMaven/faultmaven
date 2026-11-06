@@ -41,6 +41,9 @@ _SYNC_GATE = {
     "find_security_hazards",
     "validate_file",
     "score_file",
+    # An uploaded document's extraction (#2153): #1417's class, back on a path
+    # this guard did not root. ``_prepare`` reaches it, so it joins the set too.
+    "extract_document_text",
 }
 
 #: The one name collision the by-name scan cannot resolve. Pinned as an exact

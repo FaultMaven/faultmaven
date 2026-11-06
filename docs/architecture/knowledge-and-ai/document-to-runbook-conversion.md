@@ -208,6 +208,10 @@ Upload (file + scope + metadata)
   │     PDF/DOCX/HTML → plain text with structure preserved
   │     Markdown/TXT → pass through
   │     Reuse existing extractors from faultmaven/modules/preprocessing/
+  │     Stages 0-5 run off the event loop (two workers, 30 s bound). A PDF
+  │     page pypdf's limits refuse is skipped and named in a warning. Past
+  │     the bound, a document-level limit, or no other page with text:
+  │     REJECT with HTTP 422 / DOCUMENT_TOO_COMPLEX (#2153)
   │
   ├── 1b. Already-a-Runbook Gate (deterministic, no LLM)
   │     Detect: runbook frontmatter (≥4 of id/domain/service/symptom_class/
@@ -944,8 +948,8 @@ keys its user-facing copy on that code, not on the prose. **This table is
 illustrative, not exhaustive** — the authoritative mapping is the `status_map`
 in `modules/knowledge/api/conversion_routes.py`, which also returns
 `FILE_EMPTY`, `FILE_CORRUPT`, `ENCODING_ERROR`, `DOCUMENT_TOO_SHORT`,
-`NO_TECHNICAL_CONTENT` and `LLM_PARSE_ERROR` as 422. Read the map rather than
-extending this list, or the two drift apart again.
+`DOCUMENT_TOO_COMPLEX`, `NO_TECHNICAL_CONTENT` and `LLM_PARSE_ERROR` as 422.
+Read the map rather than extending this list, or the two drift apart again.
 
 ---
 

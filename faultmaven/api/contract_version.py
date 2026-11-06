@@ -151,6 +151,24 @@ def validate_contract_changes(changes: tuple[ContractChange, ...]) -> None:
 
 CONTRACT_CHANGES: tuple[ContractChange, ...] = (
     ContractChange(
+        version="14.16.0",
+        level="MINOR",
+        title=(
+            "`POST /knowledge/convert` refuses a document too complex to read with "
+            "422 `DOCUMENT_TOO_COMPLEX`, and skips a PDF page pypdf refuses with a "
+            "warning (#2153)."
+        ),
+        body=r"""* `DOCUMENT_TOO_COMPLEX` (422), whose `detail` says to export the document
+  to text or split it: pypdf's limits refused the whole PDF, or refused pages
+  and no other page had text, or reading it outran 30 s. It was `FILE_CORRUPT`.
+* A refused PDF page is skipped, not the document, and the response's
+  `warnings` names the skipped page numbers.
+
+Nothing structural moves: conversion error codes are not in the OpenAPI schema
+or `contract-notes.json`. MINOR because every client survives it: one that
+does not know the code shows its generic error with the `detail`.""",
+    ),
+    ContractChange(
         version="14.15.0",
         level="MINOR",
         title=(

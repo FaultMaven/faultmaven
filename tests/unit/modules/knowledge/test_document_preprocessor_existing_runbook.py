@@ -109,7 +109,7 @@ def test_every_shipped_runbook_is_detected(path: Path):
     # detection ever runs, so a pack runbook that later ships a ``<!-- … -->``
     # directive across a section heading would break the real path while a
     # read_text-based test kept passing.
-    parsed = DocumentParser().parse(path, "text/markdown")
+    parsed = DocumentParser().extract_document_text(path, "text/markdown").text
     assert detect_existing_runbook(parsed) is True
     assert detect_existing_runbook(cleanup_text(parsed)) is True
 
@@ -491,7 +491,10 @@ def test_a_runbook_quoting_an_unclosed_comment_in_a_fence_is_still_detected():
     path = Path(tempfile.mkdtemp()) / "rb.md"
     path.write_text(content)
     assert (
-        detect_existing_runbook(DocumentParser().parse(path, "text/markdown")) is True
+        detect_existing_runbook(
+            DocumentParser().extract_document_text(path, "text/markdown").text
+        )
+        is True
     )
 
 

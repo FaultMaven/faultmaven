@@ -1,6 +1,12 @@
 {
-  "contractVersion": "14.15.0",
+  "contractVersion": "14.16.0",
   "entries": [
+    {
+      "body": "* A new `error_code`, `DOCUMENT_TOO_COMPLEX`, answered 422 with a `detail`\n  that says what to do (export the document to text, or split it): pypdf's\n  resource limits refused the whole PDF, or refused pages and no other page\n  had text, or reading the document outran its 30 s time limit. A limit\n  refusal was `FILE_CORRUPT` until now.\n* A PDF page pypdf refuses is skipped, not the document: the conversion goes\n  on with the other pages, and the response's `warnings` names the skipped\n  page numbers.\n\nNothing structural moves: conversion error codes are not in the OpenAPI schema\nor `contract-notes.json`. MINOR because every client survives it: a client\nthat does not know the code shows its generic error with the `detail`.",
+      "level": "MINOR",
+      "title": "`POST /knowledge/convert` refuses a document too complex to read with 422 `DOCUMENT_TOO_COMPLEX`, and skips a PDF page pypdf refuses with a warning (#2153).",
+      "version": "14.16.0"
+    },
     {
       "body": "`CaseDetail` gains `deleting` (bool, default `false`). This completes\n14.14.0's rule for a turn refused with 409 `CASE_DELETE_IN_PROGRESS` (\"the\nclient reloads the case; it is gone once the delete succeeds\"): until now no\nread could see the delete, so a reload while it ran read the case unchanged\nand live.\n\n* While `deleting` is true, the client shows the case read-only and reads it\n  again, backing off from 2 s to at most every 10 s, for at most 60 s, until\n  it is gone (404) or `deleting` clears. Past that it keeps the case read-only\n  until the next user action reads it again. A client that reads once and\n  stops still meets the 404 on its next write, as before.\n* Both values are best-effort. `deleting` reports the delete's tombstone,\n  which a delete writes before it checks for in-flight work and which lapses\n  30 s after its last renewal unless it is removed. So `true` can stand for up\n  to 30 s with no delete running, and `false` means no delete is *known* to\n  run (no lease store, a failed read, or a tombstone that lapsed under a\n  stalled delete). A client still handles 409 `CASE_DELETE_IN_PROGRESS` and\n  404 as before.\n* Set on `GET /cases/{case_id}` only. Every other surface that embeds\n  `CaseDetail` (the operator's `GET /admin/cases/{case_id}`) reads `false`;\n  `GET /cases/{case_id}/ui`, the lists and search are unchanged.\n\nMINOR because every client survives it: a new optional field that a client\nwhich does not read it ignores.",
       "level": "MINOR",
