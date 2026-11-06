@@ -1005,19 +1005,30 @@ records only what it can substantiate:
     any dated fix are window 0, which ends at the first attempt of any kind
     and fails only on a relapse (#2501, below). A fix's target and kind are
     settled once, in the turn the user runs it (#2036 D2.3,
-    `ProposedAction.target_ids` / `fix_kind`): the node its `node_ref` named,
-    else the cause identified at the start of that turn; a remediation when
-    that target is in the cause pool then, else an **interception** (R8).
-    With no root identified or count-held then, the pool also admits what the
-    fix's licence (M5) names, the conclusion as that turn leaves it included:
-    the conclusion's root, when the pool holds it or a standing hypothesis is
-    rooted there; the root of every standing rooted hypothesis; and the ROOT
-    nodes created that turn. The unnamed default is then the node the
-    conclusion names (an intermediate one makes the fix an interception; a
-    conclusion naming its cause in words leaves it unkinded, ruling 2), else
-    the root of the hypothesis the working conclusion leads with as M5 read
-    it (none when it has no root). A fix named at an intermediate node is an
-    interception. An interception opens no window: it relieves
+    `ProposedAction.target_ids` / `fix_kind`), from two records written when
+    they held and never rebuilt: the cause pool at the start of the turn the
+    fix ran in (`TurnProgress.cause_at_start`, taken once at the start of
+    that turn's live apply; the turn #2427 backdates it to, when declared),
+    and the licence M5 recorded on the fix in the apply that proposed it
+    (`ProposedAction.licence_ids`, the root(s) of M5's leg, read after that
+    apply's chain emission and never changed by a restatement). The target
+    is the node its `node_ref` named; else the roots identified or
+    count-held at the start of the run turn; else the licence's cause: for a
+    fix proposed before its run turn, its own licence, then the run turn's;
+    for one proposed in it, the run turn's start-of-turn licence (what the
+    user ran it against before that turn's chain moved), then its own. So a
+    reply that moves the cause in the turn the fix runs in (a new leader, an
+    M5 recovery re-rooting) leaves an unnamed fix on the cause before the
+    move, and the case reads NEEDS_INFO until the model names the fix's node
+    (ruled 2026-11-06). A remediation when the target meets that start pool
+    (every leg of `_cause_pool`, and with no root identified or count-held
+    the roots the licence names: the conclusion's root, when the pool holds
+    it or a standing hypothesis is rooted there, and the root of every
+    standing rooted hypothesis) or a ROOT in the fix's own licence; else an
+    **interception** (R8). A fix whose target is an intermediate node is an
+    interception. A fix with no target under a conclusion naming its cause
+    in words stays unkinded (ruling 2), and so does one run in a turn with
+    no record. An interception opens no window: it relieves
     but never resolves, and a later one does not hide an earlier root fix's
     window. A remediation's window binds its cause rows to its targets and
     to the roots that fell and are not the cause now, so a deepening or a
@@ -1078,7 +1089,11 @@ records only what it can substantiate:
   #2427), the fix is dated to that message, within a bound that moves no
   observation out of the window that judged it: with a fix dated before, its
   window FAILED before the report message and its disconfirmation reads the
-  same either way, or the declaration is ignored. The fix's window then holds
+  same either way, or the declaration is ignored. It is ignored too when the
+  report message was held for a revised statement the user confirms now,
+  because that turn's record lacks the cause work the confirmation replayed;
+  otherwise the fix is kinded against that message's own turn record. The
+  fix's window then holds
   that message's rows, all post-fix: its cause row and a later problem-present
   row (the registration turn's paste included) are a disconfirmation
   (INV-42). The gate reads a failed fix the same

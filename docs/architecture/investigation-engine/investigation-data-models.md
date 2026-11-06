@@ -323,7 +323,7 @@ The milestone engine validates evidence claims for **progress indicators** (non-
 |---------------------|-----------------|---------|
 | `mitigation_accepted` | `mitigation.accepted` | User acknowledges executing proposed mitigation (workaround) |
 | `mitigation_verified` | `mitigation.verified` (+ `completed_at_turn`) | User confirms the mitigation stabilized the situation |
-| `solution_accepted` (+ `accepted_action_ref`) | the named SOLUTION's `accepted_in_turn` + `ActionAttempt`, then, once chain emission has run, its `target_ids` and `fix_kind` (remediation or interception, against the cause pool at the start of the turn, which with none identified or count-held also admits the causes the fix's licence names, #2036 D2.3); `solution_accepted` stays True from the first | User acknowledges executing the proposed solution the ref names (an ACTION_ID, or `new_index_N`); each fix registers once, and after the first only when named (#2105) |
+| `solution_accepted` (+ `accepted_action_ref`) | the named SOLUTION's `accepted_in_turn` + `ActionAttempt`, then, once chain emission has run, its `target_ids` and `fix_kind` (remediation or interception), read from two records: the cause pool at the start of the turn it ran in (`TurnProgress.cause_at_start`) and the licence M5 recorded on the fix when it was proposed (`licence_ids`), #2036 D2.3; `solution_accepted` stays True from the first | User acknowledges executing the proposed solution the ref names (an ACTION_ID, or `new_index_N`); each fix registers once, and after the first only when named (#2105) |
 | `solution_verified` | `solution_verified` | User confirmed fix worked (User-Agent Handshake) |
 
 **How progress milestone validation works:**
@@ -370,6 +370,8 @@ class TurnProgress(BaseModel):
 
     turn_number: int
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    # The cause a fix run this turn acts on, taken at the turn's start (#2036 D2.3)
+    cause_at_start: Optional[FixCause] = None
 
     # What advanced this turn
     milestones_completed: List[str] = Field(default_factory=list)
