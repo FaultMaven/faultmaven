@@ -54,21 +54,21 @@ Reviewers are independent agents: they never wrote or planned what they review.
 ## Where an item stands
 
 Steps 1 and 4 take the first row matching an item's records. **Its PR** is the newest PR whose body names it with a
-closing keyword or `Refs`, never by branch name; of two open ones, the one on its plan's branch. `R` is the head in
-its PR's newest `## Review` or `## Delta`; `H`, in its newest `## Review`, `## Delta` or `## Merge-ready`. A **pull**
-is the newest `## Pulled` on the item, or on its PR when that comment closed it; a **ruling**, a `## Ruling` on the
-item after its newest plan, pull and merged PR.
+closing keyword or `Refs` (the command lists them, newest last), never by branch name; of two open ones, the one on
+its plan's branch. `R` is the head in its PR's newest `## Review` or `## Delta`; `H`, in its newest `## Review`,
+`## Delta` or `## Merge-ready`. A **pull** is the newest `## Pulled` on the item, or on its PR when that comment
+closed it; a **ruling**, a `## Ruling` on the item after its newest plan, pull and merged PR.
 
 ```bash
-set -o pipefail; gh pr list -R FaultMaven/faultmaven --state all --search "<n> in:body" --limit 1000 --json number,state,body,createdAt \
+set -o pipefail; gh pr list -R FaultMaven/faultmaven --state all --search "<n> in:body" --limit 1000 --json number,state,headRefName,body,createdAt \
   | jq --arg n <n> '[.[] | select(.body | test("(?i)\\b(close[sd]?|fix(e[sd])?|resolve[sd]?|refs):?[ \\t]+"
-    + "((FaultMaven/faultmaven)?#|https://github\\.com/FaultMaven/faultmaven/issues/)" + $n + "\\b"))] | sort_by(.createdAt) | last' || echo error
+    + "((FaultMaven/faultmaven)?#|https://github\\.com/FaultMaven/faultmaven/issues/)" + $n + "\\b"))] | map(del(.body)) | sort_by(.createdAt)' || echo error
 ```
 
 | # | the records show | next |
 |---|---|---|
 | 1 | its PR merged | at step 1: its merged head must be the head its newest `## Merge-ready` names, with no `## Pulled` after it; else file `PR #<p> merged at an unvouched head` (search first), naming `git log --oneline R..<merged head>`, or the whole PR when no `R` exists, in `pile:blocked` on an owner ruling on how to review them. At step 4, an open item whose PR merged since this round's proposal waits for step 1's edit-down and a new proposal; one whose PR merged before it reads on from row 11 |
-| 2 | the item, or an item its PR closes, in `pile:blocked` on an owner ruling (`**Blocked on:** an owner ruling on …`) or with no `**Blocked on:**` line, with that PR open, or with a plan of the round being settled and no pull newer than it | that item's pull is unfinished: finish *To pull an item* for it from its first step not done |
+| 2 | the item, or an item its PR closes, in `pile:blocked` with a `**Blocked on:** an owner ruling on …` line or with no `**Blocked on:**` line; and either that PR open, or a plan of the round being settled with no pull newer than it | that item's pull is unfinished: finish *To pull an item* for it from its first step not done |
 | 3 | the item in `pile:blocked` | it waits on its blocker |
 | 4 | its PR open, its newest `## Review` or `## Delta` clean or its findings waived by a ruling, and a required check red because `main` is (a `main red` issue, step 4.6) or a service it needs is down | waiting: leave it until that issue closes or the check passes when re-run (`gh run rerun <run-id> --failed`); then merge `main` in and go on at row 6 or 9 |
 | 5 | its PR in the merge queue at a merge-ready's `H`, with none of row 6's triggers (`gh api graphql -f query='{repository(owner:"FaultMaven",name:"faultmaven"){pullRequest(number:<p>){isInMergeQueue timelineItems(last:5,itemTypes:[REMOVED_FROM_MERGE_QUEUE_EVENT]){nodes{... on RemovedFromMergeQueueEvent{createdAt reason}}}}}}'`) | leave it |
@@ -97,8 +97,8 @@ Find the newest proposal or result on the Queue, the issue this prints:
 ## 1. Settle the last round
 
 1. **Each PR the last result named,** and each item it carries: do what its row in *Where an item stands* says.
-   Rows 1–7 settle it, as does a closed PR (step 1.2 places its item). On rows 8–10, a PR in a refresh or one the
-   last result reported waiting goes on at its row; any other means a build was interrupted: report it and stop.
+   Rows 1–7 settle it, as does a closed PR (step 1.2 places its item). On rows 8–10, a PR with a `## Delta` after its
+   merge-ready, or reported waiting last round, goes on at its row; else a build was interrupted: report and stop.
 2. **Each issue row**, taking the first that matches: **closed**, nothing to do; **open with its PR merged**, close it
    if everything it asked for is delivered, else edit it down to the remainder, title and body; **`pulled`, or its PR
    closed unmerged**, `pile:blocked` with `**Blocked on:** an owner ruling on …` naming what stopped it, unless an
@@ -194,7 +194,7 @@ free slot). Each starts at its row in *Where an item stands*; one whose plan (ne
    comment citing what fixed it and the evidence. If it is alive, plan it as above.
 2. **Lane.** Send a fresh agent on your model. Use `sonnet` only for a docs-only change outside `.claude/` and
    `CLAUDE.md`. Its prompt holds the issue, the ruling, your plan, the done-when, the branch, directory and base the
-   plan names (new, or on an existing branch: rows 6, 8, 11, 12), and *Lane rules* below, verbatim.
+   plan names (new, or on an existing branch: rows 2, 6, 8, 11, 12), and *Lane rules* below, verbatim.
    Run lanes in the background. Meanwhile, plan the next item; and once a round, check the 5 oldest ready `P3`s
    outside the round with no `## Evidence — premise` in 30 days. One is dead only when a reproduction showing its
    defect at the commit it cites no longer shows it on `origin/main` (never a latent one or one without such a
