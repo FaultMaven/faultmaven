@@ -953,9 +953,11 @@ class CaseService(CaseDriverMixin, ICaseService):
         conversion), holds the lease on any replica from before it writes
         anything to its end, so while one is in flight the delete refuses and
         clears nothing. A turn that starts meanwhile reads the tombstone and
-        refuses itself. The tombstone is deleted on every outcome but a
-        deleted row; if that fails, it lapses 30 s after its last renewal,
-        and turns are refused until then.
+        refuses itself. The tombstone is renewed while the delete runs, and
+        the delete removes it when it is refused or fails. Otherwise (a
+        successful delete, or a removal that failed or never ran) it lapses
+        30 s after it was written or last renewed, and holds the case's turns
+        off until then.
 
         Every store that holds the case's data is cleared BEFORE the row, by
         ``store_erasers`` in their bound order: session pointers, runbook
