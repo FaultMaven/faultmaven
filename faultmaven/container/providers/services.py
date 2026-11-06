@@ -227,9 +227,6 @@ def create_milestone_engine(
             Each is None when its service is unavailable, exactly as the
             engine saw it before.
     """
-    if not case_repository:
-        return None
-
     try:
         from faultmaven.core.investigation.milestone_engine.engine import (
             MilestoneEngine,
@@ -389,8 +386,8 @@ def create_investigation_service(
     file_storage_service: Any | None = None,
 ) -> Any | None:
     """Create investigation service for workflow orchestration."""
-    if not milestone_engine or not case_repository:
-        logger.debug("InvestigationService skipped (missing dependencies)")
+    if not milestone_engine:
+        logger.debug("InvestigationService skipped (no milestone engine)")
         return None
 
     try:
@@ -969,10 +966,6 @@ def create_report_generation_service(
     pii_redactor: Any | None,
 ) -> Any | None:
     """Create report generation service for terminal summaries."""
-    if not case_repository:
-        logger.debug("ReportGenerationService skipped (no case repository)")
-        return None
-
     try:
         from faultmaven.modules.report.domain.services.report_generation_service import (
             ReportGenerationService,
@@ -1372,8 +1365,10 @@ def register_services(container: BaseDIContainer) -> None:
 
     logger.info("🔍 Services: Registering services...")
 
-    # Get dependencies from container
-    case_repository = getattr(container, "case_repository", None)
+    # Get dependencies from container. The case repository is required: the
+    # infrastructure layer registers one or refuses startup (#2103), and no
+    # service built here exists without it (#2548).
+    case_repository = container.get_service("case_repository", required=True)
     session_store = container.get_service("session_store")
     case_vector_store = getattr(container, "case_vector_store", None)
     redis_client = getattr(container, "redis_client", None)
@@ -1585,15 +1580,14 @@ def register_services(container: BaseDIContainer) -> None:
     # The driver releases (ADR-020 D3): leaving a team and deactivation hand a
     # driver's cases back to their creators through the case service. Bound
     # here because both services are built before it.
-    if hasattr(case_service, "release_drivers_for_team_leave"):
-        if team_service is not None:
-            team_service.bind_case_driver_release(case_service)
-        user_service = getattr(container, "user_service", None)
-        if user_service is not None:
-            user_service.bind_case_driver_release(case_service)
-            # An account that created cases cannot be deleted (#1923): the
-            # deletion route asks the case service how many first.
-            user_service.bind_case_creator_count(case_service)
+    if team_service is not None:
+        team_service.bind_case_driver_release(case_service)
+    user_service = getattr(container, "user_service", None)
+    if user_service is not None:
+        user_service.bind_case_driver_release(case_service)
+        # An account that created cases cannot be deleted (#1923): the
+        # deletion route asks the case service how many first.
+        user_service.bind_case_creator_count(case_service)
 
     # Knowledge Service — writes through KnowledgeVectorStore and nothing else:
     # its add_documents refuses a KB chunk with no tenant stamp (#1168). With

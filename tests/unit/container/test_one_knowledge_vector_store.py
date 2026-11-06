@@ -78,6 +78,7 @@ def _container(settings: FaultMavenSettings) -> DIContainer:
     # The SQLite-backed repository the composition root builds for these
     # settings: no case service exists without one (#2548).
     container.case_repository = create_case_repository(settings)
+    container._register_service("case_repository", container.case_repository)
     container.user_store = object()
     return container
 

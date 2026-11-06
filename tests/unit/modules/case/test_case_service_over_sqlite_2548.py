@@ -37,7 +37,7 @@ from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository im
 )
 from tests.case_builders import make_case
 
-pytestmark = pytest.mark.unit
+pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("restore_tenant_context")]
 
 OWNER = "user_owner_2548"
 BILLING_ORG = "org_payer_2548"
@@ -67,13 +67,6 @@ async def service(tmp_path, case_schema_template):
         await engine.dispose()
 
 
-@pytest.fixture(autouse=True)
-def _reset_context():
-    yield
-    set_current_enterprise_id(STANDALONE_ENTERPRISE_ID)
-    set_current_billing_organization_id(None)
-
-
 async def test_billing_comes_from_the_actors_organization_not_from_the_owner_id(
     service,
 ):
@@ -81,13 +74,15 @@ async def test_billing_comes_from_the_actors_organization_not_from_the_owner_id(
     stand-in once wrote ``organization_id = owner_id``, a user id in the
     billing column. The real service's ``None`` answer is pinned in
     ``test_case_service.py``; this is the non-``None`` one, read back."""
+    set_current_enterprise_id(STANDALONE_ENTERPRISE_ID)
     set_current_billing_organization_id(BILLING_ORG)
 
     case = await service.create_case(title="Checkout latency", owner_id=OWNER)
     stored = await service.get_case(case.case_id, OWNER)
 
     assert stored.enterprise_id == STANDALONE_ENTERPRISE_ID
-    assert stored.organization_id == BILLING_ORG != OWNER
+    assert stored.organization_id == BILLING_ORG
+    assert stored.organization_id != OWNER
 
 
 async def _one_of_each_state(service) -> None:

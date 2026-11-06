@@ -90,6 +90,7 @@ def _container(settings: FaultMavenSettings) -> DIContainer:
     # no case service exists without a repository (#2548).
     container.redis_client = None
     container.case_repository = create_case_repository(settings)
+    container._register_service("case_repository", container.case_repository)
     container.user_store = object()
     return container
 
@@ -401,6 +402,7 @@ class TestTheDriverWiring:
         settings = _settings(monkeypatch, AUTH_MODE="local", JWT_SECRET_KEY="x" * 40)
         container = _container(settings)
         container.case_repository = InMemoryCaseRepository()
+        container._register_service("case_repository", container.case_repository)
         container.user_store = SimpleNamespace(user_repository=object())
         register_services(container)
         return container, team_service

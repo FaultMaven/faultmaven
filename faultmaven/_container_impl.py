@@ -1201,9 +1201,9 @@ class DIContainer(BaseDIContainer):
         ``initialize``, a provider or a getter's cache put on the instance is
         removed, whatever its name: tools, adapters and extractors set as plain
         attributes, and the ``hasattr`` cache of ``get_job_service``. One left
-        behind is handed to the next
-        composition as-is, built over the previous one's Redis client, which
-        the shutdown that preceded this reset closed.
+        behind is handed to the next composition as-is, built over the
+        previous one's Redis client, which the shutdown that preceded this
+        reset closed.
 
         Refuses while anything is owned (``own``), naming it: whatever it
         dropped could no longer be closed. Only ``shutdown()`` and tests call it.

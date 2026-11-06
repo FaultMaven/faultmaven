@@ -80,9 +80,11 @@ class RequiredServiceConstructionError(RuntimeError):
     """A service the deployment configured could not be constructed (#2103).
 
     Raised by the factories of the case repository and the case, session and
-    auth services. ``DIContainer.initialize`` re-raises it in every
-    environment, ahead of its lenient path, so the process refuses to start
-    and names the cause, instead of serving without the service or with an
-    in-memory stand-in for it. A ``RuntimeError``, so ``compose_application``
-    and the jobs runner treat it as terminal too.
+    auth services. Also raised when a required repository is absent at
+    composition (#2548): a composition-order invariant, not a configured
+    service whose constructor failed. ``DIContainer.initialize`` re-raises it
+    in every environment, ahead of its lenient path, so the process refuses
+    to start and names the cause, instead of serving without the service or
+    with an in-memory stand-in for it. A ``RuntimeError``, so
+    ``compose_application`` and the jobs runner treat it as terminal too.
     """
