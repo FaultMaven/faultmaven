@@ -313,41 +313,62 @@ def solution_licence_leg(
     return cause_identification_leg(case, working_conclusion=working_conclusion)
 
 
-def licence_leg_ids(
-    case: Case,
-    leg: str | None,
-    likelihood_overrides: dict[str, float] | None = None,
-) -> tuple[list[str], bool]:
-    """``(ids, in_words)``: the root(s) a licence leg names (#2036 D2.3).
+def licence_subject(
+    case: Case, leg: str | None, likelihood_overrides: dict[str, float] | None = None
+) -> Any:
+    """What M5 licenses a fix on under ``leg``, read when the fix is proposed
+    (#2036 D2.3): the identified, else count-held, roots ("chain"); the
+    conclusion's hypothesis id and the node it names, as given ("rcc"); the
+    leading hypothesis's id, scored with ``likelihood_overrides`` as M5's
+    working conclusion is ("working_conclusion"); else None."""
+    from faultmaven.core.investigation.cause_assurance import _pool_legs
 
-    - ``"chain"``: the identified, else count-held terminal, roots;
-    - ``"rcc"``: the conclusion's node (``conclusion_node``): a ROOT only when
-      ``licensed_roots`` holds it (#2485), an intermediate as named, none and
+    if leg == "chain":
+        identified, held, _fallen = _pool_legs(case)
+        return tuple(sorted(identified or held))
+    rcc = case.root_cause_conclusion
+    if leg == "rcc" and rcc is not None:
+        return (rcc.validated_hypothesis_id, rcc.names_root_node_id)
+    if leg == "working_conclusion":
+        leader = leading_hypothesis(case, likelihood_overrides)
+        return getattr(leader, "hypothesis_id", None)
+    return None
+
+
+def licence_leg_ids(
+    case: Case, leg: str | None, subject: Any
+) -> tuple[list[str], bool]:
+    """``(ids, in_words)``: the root(s) a licence ``subject``
+    (``licence_subject``) names on the graph as it stands now (#2036 D2.3).
+
+    - ``"chain"``: those roots still on the graph;
+    - ``"rcc"``: the conclusion's standing hypothesis root
+      (``conclusion_node``); else the node it names: a ROOT only when the
+      cause pool holds it (#2485), an intermediate as named; none and
       ``in_words`` when it names no node;
-    - ``"working_conclusion"``: the leading hypothesis's root
-      (``leading_hypothesis`` with ``likelihood_overrides``), none unrooted."""
+    - ``"working_conclusion"``: the hypothesis's root, none when unrooted."""
     from faultmaven.core.investigation.cause_assurance import (
         _cause_pool,
-        _pool_legs,
         conclusion_node,
-        licensed_roots,
     )
 
     nodes = case.causal_nodes or {}
     if leg == "chain":
-        identified, held, _fallen = _pool_legs(case)
-        return sorted(identified or held), False
-    if leg == "rcc":
-        node_id = conclusion_node(case)
-        if node_id is None:
-            return [], True
-        confirmation, window, hypotheses = _cause_pool(case)
-        licensed = licensed_roots(case, confirmation | window | hypotheses)
-        if nodes[node_id].node_type != NodeType.ROOT or node_id in licensed:
+        return [node_id for node_id in subject or () if node_id in nodes], False
+    if leg == "rcc" and subject is not None:
+        hypothesis_id, named = subject
+        node_id = conclusion_node(case, hypothesis_id, named)
+        if node_id is not None:
             return [node_id], False
+        if named not in nodes:
+            return [], True
+        if nodes[named].node_type != NodeType.ROOT or named in set().union(
+            *_cause_pool(case)
+        ):
+            return [named], False
         return [], False
     if leg == "working_conclusion":
-        leader = leading_hypothesis(case, likelihood_overrides)
+        leader = case.hypotheses.get(subject or "")
         if leader is not None and leader.root_node_id in nodes:
             return [leader.root_node_id], False
     return [], False
@@ -363,8 +384,9 @@ def fix_cause(case: Case) -> FixCause:
       likelihood); none when no leg holds;
     - ``reference_ids``: every leg of ``_cause_pool``, plus ``licensed_roots``
       when ``root_ids`` is empty;
-    - ``in_words``: the conclusion licensing it names its cause in words
-      only."""
+    - ``in_words``: the conclusion licensing it names its cause in words only;
+    - ``held``: a revised statement awaits re-confirmation, so the cause work
+      staged in its hold is not in this pool."""
     from faultmaven.core.investigation.cause_assurance import (
         _cause_pool,
         _pool_legs,
@@ -374,13 +396,22 @@ def fix_cause(case: Case) -> FixCause:
     confirmation, window, hypotheses = _cause_pool(case)
     identified, held, _fallen = _pool_legs(case)
     reference = set(confirmation | window | hypotheses)
+    on_hold = pending_revision(case) is not None
     if identified or held:
         return FixCause(
-            root_ids=sorted(identified or held), reference_ids=sorted(reference)
+            root_ids=sorted(identified or held),
+            reference_ids=sorted(reference),
+            held=on_hold,
         )
-    reference |= licensed_roots(case, frozenset(reference))
-    ids, in_words = licence_leg_ids(case, solution_licence_leg(case))
-    return FixCause(licence_ids=ids, reference_ids=sorted(reference), in_words=in_words)
+    reference |= licensed_roots(case)
+    leg = solution_licence_leg(case)
+    ids, in_words = licence_leg_ids(case, leg, licence_subject(case, leg))
+    return FixCause(
+        licence_ids=ids,
+        reference_ids=sorted(reference),
+        in_words=in_words,
+        held=on_hold,
+    )
 
 
 def _settled_working_conclusion(
@@ -534,15 +565,18 @@ def fix_identity(description: Optional[str]) -> str:
 
 def standing_fix_action(case: Case, description: Optional[str]) -> Any:
     """The SOLUTION action a re-proposal with ``description`` keeps, or None:
-    the pending offer bearing that fix identity, or the latest dated attempt
-    while its own window has not FAILED (#2105). An interception opens no
-    window: it is kept until the problem is seen present after its latest
-    relief, or after it with no relief (#2036 D2.3). After a failure the
-    same fix applied again is a new attempt."""
+    the pending offer bearing that fix identity, or a dated attempt that still
+    stands. A remediation (or a fix accepted before #2036 D2.3) stands until
+    its own window FAILED or a later remediation opened one (#2105); an
+    interception never ends its standing. An interception opens no window: it
+    stands while it is the latest attempt, until the problem is seen present
+    after its latest relief, or after it with no relief (#2036 D2.3). After a
+    failure the same fix applied again is a new attempt."""
     from faultmaven.core.investigation.cause_assurance import (
         FIX_FAILED,
         attempt_window,
         fix_application_turn,
+        fix_windows,
         interception_relief,
     )
 
@@ -558,18 +592,21 @@ def standing_fix_action(case: Case, description: Optional[str]) -> Any:
             continue
         if action.state == "pending":
             return action
-        if (
-            action.state == "accepted"
-            and action.accepted_in_turn is not None
-            and action.accepted_in_turn == latest
-        ):
-            window = attempt_window(case, action)
-            if window is not None:
-                if window.state != FIX_FAILED:
-                    return action
-                continue
-            # An interception opens no window: it stands until the problem is
-            # seen present after its latest relief, or after it with none.
+        if action.state != "accepted" or action.accepted_in_turn is None:
+            continue
+        window = attempt_window(case, action)
+        if window is not None:
+            # A remediation stands while its window is the latest one and has
+            # not FAILED: a later interception does not end it.
+            if window.state != FIX_FAILED and (
+                window.fix_turn == fix_windows(case)[-1].fix_turn
+            ):
+                return action
+            continue
+        # An interception opens no window: the latest attempt, it stands until
+        # the problem is seen present after its latest relief, or after it
+        # with none.
+        if action.accepted_in_turn == latest:
             relief, present = interception_relief(case, action.accepted_in_turn)
             if present is None or (relief is not None and present <= relief):
                 return action
@@ -1589,11 +1626,18 @@ def _date_to_the_report(case: Case, target: Any, metadata: dict[str, Any]) -> No
 
 
 def _previous_turn_held(case: Case) -> bool:
-    """Whether the previous turn was held for a revised statement, read from
-    the offer record: a REVISION accepted this turn was open in it. The
-    confirmation's ``statement_commit`` merges into the turn's metadata only
-    after the live apply, so it cannot be read here."""
-    return any(
+    """Whether the previous turn started inside the hold of the revised
+    statement confirmed this turn (a REVISION accepted now, in the offer
+    record): its record says so (``FixCause.held``), so its pool lacks the
+    cause work the confirmation replayed. The turn that opened the hold
+    started before its own cause work was staged, so its record holds."""
+    record = next(
+        (t for t in case.turn_history if t.turn_number == case.current_turn - 1),
+        None,
+    )
+    return bool(
+        getattr(getattr(record, "cause_at_start", None), "held", False)
+    ) and any(
         a.kind == OfferKind.REVISION
         and a.answer == AnswerKind.ACCEPTED
         and a.at_turn == case.current_turn

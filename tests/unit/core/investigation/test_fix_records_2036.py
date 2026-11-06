@@ -4,11 +4,13 @@ records, both written when they held, and never rebuilt at the settle.
 - The turn record (``TurnProgress.cause_at_start``): the cause pool at the
   start of the turn the fix ran in, taken once at the start of the turn's live
   apply, or as a promptless turn is recorded.
-- The action (``ProposedAction.licence_ids``): the root(s) M5 licensed the fix
-  on, recorded in the apply that proposed it, after its chain emission.
+- The action (``ProposedAction.licence_ids``): what M5 licensed the fix on,
+  read when it was proposed and resolved to its root(s) after that apply's
+  chain emission; None when never recorded.
 
-The shapes are PR #2553's last delta (F1-F5), the round 65 critique's, and the
-two shapes today's ruling reads NEEDS_INFO until the fix names its node
+The shapes are PR #2553's last delta (F1-F5), the round 65 critique's, PR
+#2558's review, and the two shapes today's ruling reads NEEDS_INFO until the
+fix names its node
 (https://github.com/FaultMaven/faultmaven/issues/2036#issuecomment-6678007824).
 Every turn enters through the real apply and writes its record as step 6
 does (``recorded_turns._record``); the gate is the real one.
@@ -17,11 +19,20 @@ does (``recorded_turns._record``); the gate is the real one.
 from unittest.mock import AsyncMock
 
 import pytest
+from pydantic import ValidationError
 
+from faultmaven.core.investigation.causal_graph.disconfirmation import (
+    _fix_failure_refusal,
+)
+from faultmaven.core.investigation.causal_graph.pruning import (
+    attach_root,
+    prune_abandoned_nodes,
+)
 from faultmaven.core.investigation.cause_assurance import (
+    FIX_INTERCEPTION,
     FIX_REMEDIATION,
     _cause_posited_turn,
-    conclusion_node,
+    fix_windows,
 )
 from faultmaven.core.investigation.milestone_engine.progress import (
     record_promptless_turn,
@@ -49,6 +60,7 @@ from faultmaven.modules.agent.domain.services.investigation_service.turn_bookkee
 from faultmaven.modules.case.contracts import (
     Case,
     EvidenceStance,
+    HypothesisState,
     InvestigationActionType,
     NodeEvidenceLink,
     ProposedAction,
@@ -79,6 +91,8 @@ from tests.unit.core.investigation.test_fix_targets_2036 import (
     _fix,
     _grounding,
     _intermediate,
+    _orphan,
+    _problem,
     _ran,
     _recheck,
 )
@@ -210,7 +224,7 @@ async def test_the_records_round_trip_and_a_case_stored_before_them_reads_legacy
         milestones=_ran(),
     )
     (record,), (fix,) = case.turn_history, _attempts(case)
-    assert record.cause_at_start.root_ids == [_ROOT_ID]
+    assert record.cause_at_start.root_ids == (_ROOT_ID,)
     assert (fix.licence_ids, fix.target_ids, fix.fix_kind) == (
         [_ROOT_ID],
         [_ROOT_ID],
@@ -220,6 +234,8 @@ async def test_the_records_round_trip_and_a_case_stored_before_them_reads_legacy
     assert again.turn_history == case.turn_history
     assert again.proposed_actions == case.proposed_actions
 
+    with pytest.raises(ValidationError):
+        record.cause_at_start.root_ids = ()  # review finding 10: never rewritten
     stored = record.model_dump(mode="json")
     del stored["cause_at_start"]
     assert TurnProgress(**stored).cause_at_start is None
@@ -228,7 +244,7 @@ async def test_the_records_round_trip_and_a_case_stored_before_them_reads_legacy
         del stored[key]
     legacy = ProposedAction(**stored)
     assert (legacy.licence_ids, legacy.licence_in_words, legacy.fix_kind) == (
-        [],
+        None,
         False,
         None,
     )
@@ -252,7 +268,7 @@ def test_a_turn_with_no_apply_records_the_cause_as_its_record_is_written(writer)
         )
     (record,) = case.turn_history
     assert record.cause_at_start == fix_cause(case)
-    assert record.cause_at_start.root_ids == [_ROOT_ID]
+    assert record.cause_at_start.root_ids == (_ROOT_ID,)
 
 
 def test_a_skipped_placeholder_records_no_cause():
@@ -299,8 +315,8 @@ async def test_the_generation_path_records_the_cause_its_apply_started_with():
     updated = result["case_updated"]
     record = updated.turn_history[-1]
     assert record.turn_number == updated.current_turn
-    assert record.cause_at_start.licence_ids == [_ROOT_ID]
-    assert fix_cause(updated).licence_ids == []
+    assert record.cause_at_start.licence_ids == (_ROOT_ID,)
+    assert fix_cause(updated).licence_ids == ()
 
 
 async def test_a_fix_backdated_onto_a_turn_with_no_record_stays_unkinded():
@@ -484,7 +500,7 @@ async def test_a_fix_withdrawn_for_a_lost_licence_and_reproposed_takes_its_new_o
         solutions_to_add=[_fix("pin the leaking library")],
         milestones=_ran("new_index_0"),
     )
-    assert case.turn_history[-1].cause_at_start.licence_ids == []
+    assert case.turn_history[-1].cause_at_start.licence_ids == ()
     (fix,) = _attempts(case)
     assert fix is not withdrawn
     assert (fix.licence_ids, fix.target_ids) == ([b.node_id], [b.node_id])
@@ -525,7 +541,7 @@ async def test_a_backdated_fix_is_kinded_against_its_own_turns_record(problem_go
             for i in (0, 1)
         ],
     )
-    assert case.turn_history[-1].cause_at_start.root_ids == [a.node_id]
+    assert case.turn_history[-1].cause_at_start.root_ids == (a.node_id,)
     _rows, meta = await _record(
         eng, case, 8, milestones=_backdated(case.proposed_actions[0].action_id)
     )
@@ -543,9 +559,9 @@ async def test_a_backdated_fix_is_kinded_against_its_own_turns_record(problem_go
 
 async def test_a_conclusion_the_recompute_links_to_a_hypothesis_names_its_root():
     """F4 (realistic): the conclusion names an intermediate X, and the
-    recompute attributes it to A, rooted at R. ``conclusion_node`` reads the
-    hypothesis's root first, as ``_cause_posited_turn`` does, so the unnamed
-    fix is a remediation of R, which R's grounding and re-check confirm."""
+    recompute attributes it to A, rooted at R. The licence reads the root of
+    the conclusion's standing hypothesis first, so the unnamed fix is a
+    remediation of R, which R's grounding and re-check confirm."""
     case, root, hyp = _identified_case()
     _bare_candidate(case, root, hyp)
     x = _intermediate(case)
@@ -587,15 +603,26 @@ async def test_a_conclusion_the_recompute_links_to_a_hypothesis_names_its_root()
     assert _verdict(case) == _READY
 
 
-def test_the_posited_turn_and_the_fix_read_one_conclusion_node():
-    """F4: one reader of the conclusion's node. With the conclusion's
-    hypothesis rooted at R and its ``names_root_node_id`` at B, both read R;
-    with no hypothesis, both read B."""
+@pytest.mark.parametrize("linked", ["standing", "retired"])
+def test_the_cause_posited_turn_reads_as_on_main(linked):
+    """Review finding 4: with no root identified, the floor is the latest
+    attach among the conclusion's standing hypothesis root and the standing
+    root it names (B, attached at 6), as on ``main``, not one of them read
+    first. Linked to a retired hypothesis, it is B's alone, not the latest
+    standing root (C, attached at 9)."""
     case, root, hyp = _identified_case()
     _bare_candidate(case, root, hyp)
+    root.metadata["root_attached_turn"] = 3
     b = _add_sibling_chain(case)
     b.metadata.update({"root_terminal": None, "root_attached_turn": 6})
-    root.metadata["root_attached_turn"] = 3
+    if linked == "retired":
+        hyp.state = HypothesisState.RETIRED
+        c = _orphan(case, "cn_00000000c0c0", _problem(case).node_id)
+        case.causal_nodes[c].metadata["root_attached_turn"] = 9
+        case.hypotheses["hyp_00000000c0c0"] = hyp.model_copy(
+            update={"hypothesis_id": "hyp_00000000c0c0", "root_node_id": c}
+        )
+        case.hypotheses["hyp_00000000c0c0"].state = HypothesisState.ACTIVE
     case.root_cause_conclusion = RootCauseConclusion(
         root_cause="c",
         mechanism="m",
@@ -604,9 +631,7 @@ def test_the_posited_turn_and_the_fix_read_one_conclusion_node():
         likelihood=0.8,
         confidence_level="confident",
     )
-    assert (conclusion_node(case), _cause_posited_turn(case)) == (_ROOT_ID, 3)
-    case.root_cause_conclusion.validated_hypothesis_id = None
-    assert (conclusion_node(case), _cause_posited_turn(case)) == (b.node_id, 6)
+    assert _cause_posited_turn(case) == 6
 
 
 @pytest.mark.parametrize("relist", ["none", "re-listed", "first"])
@@ -706,9 +731,10 @@ async def test_a_held_fix_is_kinded_against_its_replayed_bundles_start(
     assert _verdict(case) == _READY
 
 
-async def _confirmed_with(fields, pending_before_hold=False):
-    """The revision staged at 4 is confirmed at 5 (the replay ran), and turn
-    5's live response carries ``fields``."""
+async def _confirmed_with(fields, pending_before_hold=False, hold_turns=0):
+    """The revision staged at 4 (and ``hold_turns`` more turns held) is
+    confirmed the next turn (the replay ran), whose live response carries
+    ``fields``."""
     original = revision._case
 
     def _case_with_a_pending_fix():
@@ -726,7 +752,9 @@ async def _confirmed_with(fields, pending_before_hold=False):
     if pending_before_hold:
         revision._case = _case_with_a_pending_fix
     try:
-        engine, case, _hyp, root, _rows, _file = await _replayed()
+        engine, case, _hyp, root, _rows, _file = await _replayed(
+            held=[revision._DSU()] * hold_turns
+        )
     finally:
         revision._case = original
     meta = await revision._apply(engine, case, revision._DSU(**fields))
@@ -748,12 +776,20 @@ async def test_a_fix_run_in_the_confirmation_turn_takes_the_replayed_root():
     )
 
 
-@pytest.mark.parametrize("pending", [False, True], ids=["minted-now", "pending-before"])
-async def test_a_backdate_onto_a_hold_turn_is_dated_now(pending):
-    """Critique point 3 (A3): "yes, and I ran it" on the confirmation turn,
-    declared run in the previous message, a hold turn whose record lacks the
-    replayed cause work. The backdate is refused and the fix dated this
-    turn; only its date changes."""
+@pytest.mark.parametrize(
+    "hold_turns, pending, dated",
+    [(0, False, 4), (1, False, 6), (1, True, 6)],
+    ids=["the-opening-turn", "a-later-hold-turn", "a-later-hold-turn-pending-before"],
+)
+async def test_a_backdate_onto_a_hold_turn_after_the_opening_one_is_dated_now(
+    recorded_revision_turns, hold_turns, pending, dated
+):
+    """Critique point 3 (A3), as review finding 6 narrows it: "yes, and I ran
+    it" on the confirmation turn, declared run in the previous message. The
+    turn that opened the hold started before its cause work was staged, so
+    its record holds and the fix is dated there. A later hold turn's record
+    lacks the staged cause work, so the backdate is refused and the fix dated
+    this turn; only its date changes."""
     case, root, meta = await _confirmed_with(
         dict(
             solutions_to_add=[_fix("raise the orders pool to 50")],
@@ -764,14 +800,15 @@ async def test_a_backdate_onto_a_hold_turn_is_dated_now(pending):
             ),
         ),
         pending_before_hold=pending,
+        hold_turns=hold_turns,
     )
     (fix,) = _attempts(case)
     assert (fix.accepted_in_turn, fix.fix_kind, fix.target_ids) == (
-        5,
+        dated,
         FIX_REMEDIATION,
         [root.node_id],
     )
-    assert _HELD in meta["system_feedback"]
+    assert (_HELD in (meta.get("system_feedback") or "")) == (dated != 4)
 
 
 # ---------------------------------------------------------------------------
@@ -797,5 +834,175 @@ async def test_a_restatement_keeps_the_licence_the_fix_was_proposed_under():
     )
     assert case.proposed_actions[-1] is pending
     assert pending.licence_ids == [b.node_id]
-    assert case.turn_history[-1].cause_at_start.licence_ids == [b.node_id]
-    assert fix_cause(case).licence_ids == [_ROOT_ID]
+    assert case.turn_history[-1].cause_at_start.licence_ids == (b.node_id,)
+    assert fix_cause(case).licence_ids == (_ROOT_ID,)
+
+
+# ---------------------------------------------------------------------------
+# PR #2558's review (7a5b9ca41)
+# ---------------------------------------------------------------------------
+
+
+async def test_the_licence_is_the_hypothesis_m5_read_at_the_mint():
+    """Finding 1 (p6): A leads at 0.7 and B stands at 0.4. One reply links
+    two rows to B's root, raises B to 0.95 and proposes a fix. M5 licensed it
+    through A, B's raise being capped until those links are ingested; the
+    settle records A's root, and recomputes no likelihood."""
+    case, _hyp, b = _two_candidates(a=0.7, b=0.4)
+    eng = _engine()
+    await _record(eng, case, 4)
+    await _record(
+        eng,
+        case,
+        5,
+        *_leak_rows(),
+        node_evidence_links=_ground_b(b)["node_evidence_links"],
+        hypotheses_to_update=[HypothesisUpdate(hypothesis_id=_B_HYP, likelihood=0.95)],
+        solutions_to_add=[_fix("pin the leaking library")],
+    )
+    assert case.hypotheses[_B_HYP].likelihood > 0.7
+    assert case.proposed_actions[-1].licence_ids == [_ROOT_ID]
+
+
+def _stored_before_the_licence(case, action) -> ProposedAction:
+    """``action`` as a case stored before ``licence_ids`` existed loads it."""
+    stored = action.model_dump()
+    del stored["licence_ids"], stored["licence_in_words"]
+    legacy = ProposedAction.model_validate(stored)
+    case.proposed_actions[case.proposed_actions.index(action)] = legacy
+    return legacy
+
+
+@pytest.mark.parametrize("identified", [False, True], ids=["no-root", "a-root"])
+async def test_a_fix_proposed_before_its_licence_was_recorded_reads_as_before(
+    identified,
+):
+    """Findings 2 and 9 (p5b): an unnamed fix stored before the field carries
+    no licence (None), not an empty one. Run once a root is identified, it
+    takes that root; with none, and an unrooted hypothesis leading, it stays
+    unkinded with no line, and reads as before D2.3."""
+    case, hyp, b = _two_candidates(a=0.3, b=0.7)
+    eng = _engine()
+    await _record(eng, case, 4)
+    await _record(eng, case, 5, solutions_to_add=[_fix("pin the leaking library")])
+    fix = _stored_before_the_licence(case, case.proposed_actions[-1])
+    if identified:
+        await _record(eng, case, 6, **_grounding(hyp))
+    else:
+        case.hypotheses["hyp_00000000c0c0"] = hyp.model_copy(
+            update={
+                "hypothesis_id": "hyp_00000000c0c0",
+                "root_node_id": None,
+                "likelihood": 0.9,
+            }
+        )
+        await _record(eng, case, 6)
+    _rows, meta = await _record(eng, case, 7, milestones=_ran(fix.action_id))
+    (run,) = _attempts(case)
+    if identified:
+        assert (run.fix_kind, run.target_ids) == (FIX_REMEDIATION, [_ROOT_ID])
+        return
+    assert (run.fix_kind, run.target_ids) == (None, [])
+    assert "without a target" not in (meta.get("system_feedback") or "")
+    case.hypotheses["hyp_00000000c0c0"].state = HypothesisState.RETIRED
+    await _record(eng, case, 8, *_leak_rows(), **_ground_b(b))
+    await _recheck(eng, case, 9, b)
+    assert _verdict(case) == _READY
+
+
+async def test_pruning_a_licensed_root_drops_it_from_the_licence():
+    """Finding 3 (p2b): the fix is proposed under A's root R1; A is then
+    re-attached to R3 and R1 pruned. The licence drops R1, so the fix run
+    next takes the start-of-turn licence, R3, never a node off the graph."""
+    case, root, hyp = _identified_case()
+    _bare_candidate(case, root, hyp)
+    hyp.likelihood = hyp.initial_likelihood = 0.85
+    eng = _engine()
+    await _record(eng, case, 4)
+    await _record(eng, case, 5, solutions_to_add=[_fix("raise max_connections")])
+    fix = case.proposed_actions[-1]
+    assert fix.licence_ids == [_ROOT_ID]
+    r3 = _orphan(case, "cn_000000000033", _problem(case).node_id)
+    old_path = list(hyp.path or [_ROOT_ID])
+    attach_root(case, hyp, r3, [r3, _problem(case).node_id], 6)
+    prune_abandoned_nodes(case, old_path)
+    assert _ROOT_ID not in case.causal_nodes and fix.licence_ids == []
+    await _record(eng, case, 6)
+    await _record(eng, case, 7, milestones=_ran(fix.action_id))
+    (run,) = _attempts(case)
+    assert (run.fix_kind, run.target_ids) == (FIX_REMEDIATION, [r3])
+
+
+@pytest.mark.parametrize("how", ["restated", "named"])
+async def test_an_interception_does_not_end_a_live_remediations_standing(how):
+    """Finding 5 (p4): a remediation at 6, an interception at 7. Restated and
+    accepted at 8, or named by its id, the remediation is the same attempt:
+    no new attempt, no second window, and no "a later fix followed it"."""
+    case, _root, _hyp = _identified_case()
+    eng = _engine()
+    x = _intermediate(case)
+    await _record(
+        eng,
+        case,
+        6,
+        solutions_to_add=[_fix("raise max_connections")],
+        milestones=_ran(),
+    )
+    await _record(
+        eng, case, 7, solutions_to_add=[_fix("restart the pods", x)], milestones=_ran()
+    )
+    first = _attempts(case)[0]
+    _rows, meta = await _record(
+        eng,
+        case,
+        8,
+        **(
+            dict(solutions_to_add=[_fix("raise max_connections")], milestones=_ran())
+            if how == "restated"
+            else dict(milestones=_ran(first.action_id))
+        ),
+    )
+    assert [a.accepted_in_turn for a in _attempts(case)] == [6, 7]
+    assert [w.fix_turn for w in fix_windows(case)] == [None, 6]
+    assert "later fix followed it" not in (meta.get("system_feedback") or "")
+
+
+async def test_an_undatable_acceptance_keeps_its_label_beside_an_interception():
+    """Finding 7: a fix accepted before its turn was recorded, then an
+    interception. M6's refusal keeps the transition label."""
+    case, _root, _hyp = _identified_case()
+    case.proposed_actions.append(
+        ProposedAction(
+            case_id=case.case_id,
+            action_type=InvestigationActionType.SOLUTION,
+            description="a fix accepted before its turn was recorded",
+            proposed_in_turn=3,
+            state="accepted",
+        )
+    )
+    x = _intermediate(case)
+    await _record(
+        _engine(),
+        case,
+        6,
+        solutions_to_add=[_fix("restart the pods", x)],
+        milestones=_ran(),
+    )
+    assert _attempts(case)[-1].fix_kind == FIX_INTERCEPTION
+    assert _fix_failure_refusal(case, None) == "undatable_acceptance"
+
+
+def test_a_renumbered_record_drops_the_cause_it_held():
+    """Finding 8: a record moved to another turn's number no longer holds
+    the cause at that turn's start, so it holds none."""
+    case, _root, _hyp = _identified_case()
+    case.current_turn = 6
+    for _ in range(2):
+        record_promptless_turn(
+            case, user_message="hi", agent_response="ok", progress_made=False
+        )
+    case.reconcile_turn_sequence()
+    assert [(t.turn_number, t.cause_at_start is None) for t in case.turn_history] == [
+        (6, False),
+        (7, True),
+    ]

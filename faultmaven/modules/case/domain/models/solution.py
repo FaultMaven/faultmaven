@@ -291,12 +291,13 @@ class ProposedAction(BaseModel):
         default=False,
         description="SOLUTION only: ``target_ids`` came from the model's node_ref.",
     )
-    licence_ids: List[str] = Field(
-        default_factory=list,
+    licence_ids: Optional[List[str]] = Field(
+        default=None,
         description=(
-            "SOLUTION only: the root(s) M5 licensed the fix on, recorded once "
-            "in the apply that proposed it, after its chain emission; never "
-            "changed (a restatement keeps it)."
+            "SOLUTION only: the root(s) of what M5 licensed the fix on when it "
+            "was proposed, resolved after that apply's chain emission; never "
+            "changed (a restatement keeps it), save that pruning a node drops "
+            "it. None: not recorded (proposed before #2036 D2.3)."
         ),
     )
     licence_in_words: bool = Field(
@@ -314,8 +315,9 @@ class ProposedAction(BaseModel):
             "cause pool recorded at the start of the turn it ran in "
             "(``TurnProgress.cause_at_start``) or a ROOT in its ``licence_ids``, "
             "else 'interception', which relieves but never confirms a "
-            "resolution. None before it runs, when that turn has no record "
-            "(accepted before #2036 D2.3), and with no target under a "
+            "resolution. None before it runs, when that turn has no record, "
+            "for an unnamed fix with no recorded licence and no root then "
+            "(both from before #2036 D2.3), and with no target under a "
             "conclusion naming its cause in words: read as a remediation."
         ),
     )

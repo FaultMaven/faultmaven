@@ -130,6 +130,7 @@ from .stage_gates import (
     fix_cause,
     fix_identity,
     licence_leg_ids,
+    licence_subject,
     llm_claimable_milestones,
     solution_licence_leg,
     standing_fix_action,
@@ -265,26 +266,28 @@ FIX_NODE_REFS_KEY = "fix_node_refs"
 #: ``fix_cause`` at the start of this apply (#2036 D2.3): the turn record's
 #: ``cause_at_start`` on a live apply; a replayed bundle's own, not written back.
 FIX_CAUSE_AT_START_KEY = "fix_cause_at_start"
-#: The SOLUTIONs this apply minted, as ``(action_id, leg)``: the leg M5
-#: licensed each on (``cause_identification_leg``).
+#: The SOLUTIONs this apply minted, as ``(action_id, leg, subject)``: the leg
+#: M5 licensed each on (``cause_identification_leg``) and what it read there
+#: (``licence_subject``), taken at the mint.
 FIXES_MINTED_KEY = "fixes_minted_this_apply"
 
 
 def _record_licences(case: Case, metadata: dict[str, Any]) -> None:
     """Record, once, the licence of each SOLUTION this apply minted
-    (``ProposedAction.licence_ids``): the root(s) of the leg M5 licensed it
-    on, read after this apply's chain emission, so a ``new_index_N`` the
-    conclusion names has resolved. Never changed after."""
+    (``ProposedAction.licence_ids``): what M5 licensed it on at the mint,
+    resolved to its root(s) after this apply's chain emission, so a
+    ``new_index_N`` the conclusion names has a node. Nothing is re-scored
+    here. Never changed after."""
+    created = metadata.get("chain_nodes_created") or []
     actions = {a.action_id: a for a in case.proposed_actions}
-    overrides = None
-    for action_id, leg in metadata.get(FIXES_MINTED_KEY) or []:
+    for action_id, leg, subject in metadata.get(FIXES_MINTED_KEY) or []:
         action = actions.get(action_id)
         if action is None or action.action_type != InvestigationActionType.SOLUTION:
             continue
-        if overrides is None:
-            overrides = _settled_likelihoods(case, metadata)
+        if leg == "rcc" and subject is not None and subject[1]:
+            subject = (subject[0], _resolve_id_ref(subject[1], created, "cn_"))
         action.licence_ids, action.licence_in_words = licence_leg_ids(
-            case, leg, overrides
+            case, leg, subject
         )
 
 
@@ -303,14 +306,17 @@ def _run_turn_cause(case: Case, metadata: dict[str, Any], turn: int) -> FixCause
 
 def _unnamed_target(
     cause: FixCause, action: ProposedAction, same_turn: bool
-) -> list[str]:
+) -> list[str] | None:
     """An unnamed fix's target, from records only (#2036 D2.3): the run
     turn's identified or count-held roots; else, proposed before its run
     turn, its own licence, then the run turn's licence leg; proposed in it,
     the run turn's licence leg (what the user ran it against), then its own
-    licence."""
+    licence. None, with no roots, for a fix whose licence was never recorded
+    (proposed before D2.3): it stays unkinded, read as before."""
     if cause.root_ids:
         return list(cause.root_ids)
+    if action.licence_ids is None:
+        return None
     first, then = (
         (cause.licence_ids, action.licence_ids)
         if same_turn
@@ -332,8 +338,9 @@ def _settle_fix_attempts(case: Case, metadata: dict[str, Any]) -> None:
        (``_record_licences``).
     3. Each SOLUTION accepted in this apply is kinded against the cause
        recorded for the turn it ran in (``_run_turn_cause``): the acceptance's
-       turn, or the one it is backdated to (#2427). No record: unkinded,
-       read as before D2.3. Unnamed, it takes ``_unnamed_target``, where
+       turn, or the one it is backdated to (#2427). No record, or an unnamed
+       fix with no recorded licence and no root: unkinded, read as before
+       D2.3. Unnamed, it takes ``_unnamed_target``, where
        "proposed in its run turn" means minted in this apply. A remediation
        when its targets meet that record's ``reference_ids`` or a ROOT its
        own licence names (an intermediate one never), else an interception.
@@ -360,7 +367,7 @@ def _settle_fix_attempts(case: Case, metadata: dict[str, Any]) -> None:
         if action is not None and not action.target_named and action.fix_kind is None:
             action.target_ids, action.target_named = [node_id], True
     _record_licences(case, metadata)
-    minted = {action_id for action_id, _leg in metadata.get(FIXES_MINTED_KEY) or []}
+    minted = {entry[0] for entry in metadata.get(FIXES_MINTED_KEY) or []}
     for action_id in metadata.get(FIXES_ACCEPTED_KEY) or []:
         action = actions.get(action_id)
         if action is None or action.fix_kind is not None:
@@ -373,12 +380,14 @@ def _settle_fix_attempts(case: Case, metadata: dict[str, Any]) -> None:
         # intermediate node is never a remediation.
         own = {
             node_id
-            for node_id in action.licence_ids
+            for node_id in action.licence_ids or ()
             if node_id in case.causal_nodes
             and case.causal_nodes[node_id].node_type == NodeType.ROOT
         }
         if not action.target_named:
             target = _unnamed_target(cause, action, same_turn)
+            if target is None:
+                continue
             if not target and (cause.in_words or action.licence_in_words):
                 _add_system_feedback(
                     metadata,
@@ -1641,16 +1650,18 @@ class ResponseApplier:
                 # evidence by 3D instead. Graceful denial (no stall): the flow
                 # continues as DIAGNOSTIC; the LLM grounds the root and
                 # re-proposes, or proposes a mitigation.
-                # The leg M5 licenses a SOLUTION on, whose root(s) the
-                # settle records as its licence (#2036 D2.3).
-                licence_leg = (
-                    solution_licence_leg(
+                # The leg M5 licenses a SOLUTION on and what it reads there,
+                # taken now; the settle resolves it to the fix's licence
+                # after chain emission (#2036 D2.3).
+                licence_leg = licence_read = None
+                if action_type == InvestigationActionType.SOLUTION:
+                    licence_leg = solution_licence_leg(
                         case,
                         working_conclusion=_settled_working_conclusion(case, metadata),
                     )
-                    if action_type == InvestigationActionType.SOLUTION
-                    else None
-                )
+                    licence_read = licence_subject(
+                        case, licence_leg, _settled_likelihoods(case, metadata)
+                    )
                 if (
                     action_type == InvestigationActionType.SOLUTION
                     and licence_leg is None
@@ -1773,7 +1784,7 @@ class ResponseApplier:
                 solution_slots.append(proposed_action)
                 if action_type == InvestigationActionType.SOLUTION:
                     metadata.setdefault(FIXES_MINTED_KEY, []).append(
-                        (proposed_action.action_id, licence_leg)
+                        (proposed_action.action_id, licence_leg, licence_read)
                     )
                 if s_item.solution_type != SolutionType.WORKAROUND:
                     fix_slots.append(proposed_action)

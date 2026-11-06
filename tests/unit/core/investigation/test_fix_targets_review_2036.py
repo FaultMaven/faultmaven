@@ -4,9 +4,8 @@ report on them.
 
 - **The reference (F2, F4, F11).** With no root identified or count-held at
   the start of the turn, the reference also admits what the fix's licence
-  names (``cause_assurance.licensed_roots``): the conclusion's ROOT when the
-  pool holds it or a standing hypothesis is rooted there, and the root of
-  every standing rooted hypothesis. The unnamed default is read from the two
+  names: the root of every standing rooted hypothesis
+  (``cause_assurance.licensed_roots``). The unnamed default is read from the two
   records (``test_fix_records_2036``): the start-of-turn licence, or the
   licence M5 recorded on the fix when it was proposed.
 - **The binding (F1, F3).** A kinded window binds to its targets plus the
@@ -25,7 +24,7 @@ from faultmaven.core.investigation.cause_assurance import (
     FIX_INTERCEPTION,
     FIX_REMEDIATION,
     cause_recheck_status,
-    conclusion_root,
+    conclusion_node,
     confirming_polarity_rows,
     fix_windows,
     interception_relief,
@@ -277,7 +276,7 @@ async def test_a_conclusion_naming_an_intermediate_names_no_cause():
         likelihood=0.8,
         confidence_level="confident",
     )
-    assert conclusion_root(case) is None
+    assert conclusion_node(case, None, x) is None
     _rows, meta = await _record(
         eng, case, 6, solutions_to_add=[_fix("restart the pods")], milestones=_ran()
     )

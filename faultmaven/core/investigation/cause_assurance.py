@@ -85,7 +85,6 @@ __all__ = [
     "evidence_datum_key",
     "attempt_window",
     "conclusion_node",
-    "conclusion_root",
     "fix_application_turn",
     "fix_windows",
     "grade_cause_assurance",
@@ -809,57 +808,39 @@ def _pool_legs(case: "Case") -> tuple[set, set, set]:
     return identified, held, fallen
 
 
-def conclusion_node(case: "Case") -> str | None:
-    """The node the root-cause conclusion names on the graph, the one reader
-    of it (``_cause_posited_turn`` reads it too): its hypothesis's root, else
-    its ``names_root_node_id``; None when it names its cause in words only."""
-    rcc = getattr(case, "root_cause_conclusion", None)
-    if rcc is None:
-        return None
-    nodes = getattr(case, "causal_nodes", None) or {}
-    hyp = (getattr(case, "hypotheses", None) or {}).get(
-        getattr(rcc, "validated_hypothesis_id", None) or ""
-    )
-    return next(
-        (
-            node_id
-            for node_id in (
-                getattr(hyp, "root_node_id", None),
-                getattr(rcc, "names_root_node_id", None),
-            )
-            if node_id and node_id in nodes
-        ),
-        None,
-    )
-
-
-def conclusion_root(case: "Case") -> str | None:
-    """The node the conclusion names (``conclusion_node``) when it is a ROOT,
-    else None."""
-    node_id = conclusion_node(case)
-    nodes = getattr(case, "causal_nodes", None) or {}
-    return node_id if node_id and nodes[node_id].node_type == NodeType.ROOT else None
-
-
-def licensed_roots(case: "Case", pool=frozenset()) -> frozenset:
-    """The causes a fix's licence names (M5, ``_cause_identified``) when no
-    root is identified or count-held: the conclusion's root, when ``pool``
-    holds it or a standing hypothesis is rooted there (a conclusion naming an
-    orphan or a ruled-out root licenses no remediation of it, #2485), and the
-    root of every standing rooted hypothesis."""
+def conclusion_node(
+    case: "Case", hypothesis_id: str | None, named: str | None
+) -> str | None:
+    """The standing hypothesis root a root-cause conclusion names, read only
+    for a fix's licence (#2036 D2.3): the root of the hypothesis it is linked
+    to (``hypothesis_id``) while that hypothesis stands, else the node it
+    names (``named``) when a standing hypothesis is rooted there; None
+    otherwise."""
     nodes = getattr(case, "causal_nodes", None) or {}
     roots = {
+        h.hypothesis_id: h.root_node_id
+        for h in (getattr(case, "hypotheses", None) or {}).values()
+        if h is not None and h.state in _STANDING_HYP_STATES and h.root_node_id in nodes
+    }
+    if hypothesis_id in roots:
+        return roots[hypothesis_id]
+    return named if named in roots.values() else None
+
+
+def licensed_roots(case: "Case") -> frozenset:
+    """The causes a fix's licence (M5) can name when no root is identified or
+    count-held: the root of every standing rooted hypothesis. A conclusion
+    naming an orphan or a ruled-out root licenses no remediation of it
+    (#2485)."""
+    nodes = getattr(case, "causal_nodes", None) or {}
+    return frozenset(
         h.root_node_id
         for h in (getattr(case, "hypotheses", None) or {}).values()
         if h is not None
         and h.state in _STANDING_HYP_STATES
         and h.root_node_id in nodes
         and nodes[h.root_node_id].node_type == NodeType.ROOT
-    }
-    named = conclusion_root(case)
-    if named in pool or named in roots:
-        roots.add(named)
-    return frozenset(roots)
+    )
 
 
 def subject_index(case: "Case") -> SubjectIndex:
@@ -1270,8 +1251,12 @@ def _cause_posited_turn(case: "Case") -> int:
     }
     pool = [n for n in standing.values() if n.is_identified_root]
     if not pool:
-        named = nodes.get(conclusion_node(case) or "")
-        pool = [named] if named in standing.values() else list(standing.values())
+        rcc = getattr(case, "root_cause_conclusion", None)
+        named = standing.get(getattr(rcc, "validated_hypothesis_id", None) or "")
+        named_node = nodes.get(getattr(rcc, "names_root_node_id", None) or "")
+        pool = [
+            n for n in (named, named_node) if n is not None and n in standing.values()
+        ] or list(standing.values())
     return max((n.root_attached_turn for n in pool), default=0)
 
 

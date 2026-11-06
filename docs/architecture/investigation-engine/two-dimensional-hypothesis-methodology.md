@@ -1010,8 +1010,10 @@ records only what it can substantiate:
     fix ran in (`TurnProgress.cause_at_start`, taken once at the start of
     that turn's live apply; the turn #2427 backdates it to, when declared),
     and the licence M5 recorded on the fix in the apply that proposed it
-    (`ProposedAction.licence_ids`, the root(s) of M5's leg, read after that
-    apply's chain emission and never changed by a restatement). The target
+    (`ProposedAction.licence_ids`: what M5 read on its leg then, the
+    hypothesis or the conclusion, resolved to its root after that apply's
+    chain emission with nothing re-scored; never changed by a restatement,
+    save that pruning a node drops it). The target
     is the node its `node_ref` named; else the roots identified or
     count-held at the start of the run turn; else the licence's cause: for a
     fix proposed before its run turn, its own licence, then the run turn's;
@@ -1022,13 +1024,14 @@ records only what it can substantiate:
     move, and the case reads NEEDS_INFO until the model names the fix's node
     (ruled 2026-11-06). A remediation when the target meets that start pool
     (every leg of `_cause_pool`, and with no root identified or count-held
-    the roots the licence names: the conclusion's root, when the pool holds
-    it or a standing hypothesis is rooted there, and the root of every
-    standing rooted hypothesis) or a ROOT in the fix's own licence; else an
+    the root of every standing rooted hypothesis) or a ROOT in the fix's own
+    licence; else an
     **interception** (R8). A fix whose target is an intermediate node is an
     interception. A fix with no target under a conclusion naming its cause
     in words stays unkinded (ruling 2), and so does one run in a turn with
-    no record. An interception opens no window: it relieves
+    no record, or an unnamed one proposed before its licence was recorded
+    with no root identified when it ran. An interception opens no window: it
+    relieves
     but never resolves, and a later one does not hide an earlier root fix's
     window. A remediation's window binds its cause rows to its targets and
     to the roots that fell and are not the cause now, so a deepening or a
@@ -1090,9 +1093,11 @@ records only what it can substantiate:
   observation out of the window that judged it: with a fix dated before, its
   window FAILED before the report message and its disconfirmation reads the
   same either way, or the declaration is ignored. It is ignored too when the
-  report message was held for a revised statement the user confirms now,
-  because that turn's record lacks the cause work the confirmation replayed;
-  otherwise the fix is kinded against that message's own turn record. The
+  report message's turn started inside the hold of a revised statement the
+  user confirms now (a turn after the one that opened the hold), because
+  that turn's record lacks the cause work the confirmation replayed
+  (`FixCause.held`); otherwise the fix is kinded against that message's own
+  turn record. The
   fix's window then holds
   that message's rows, all post-fix: its cause row and a later problem-present
   row (the registration turn's paste included) are a disconfirmation

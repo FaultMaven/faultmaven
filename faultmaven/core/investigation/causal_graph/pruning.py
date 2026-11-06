@@ -39,7 +39,8 @@ def prune_abandoned_nodes(case: Case, abandoned_node_ids: list[str]) -> None:
     ``ON DELETE SET NULL`` on ``solutions.node_id``, applied in memory, so the
     save never writes back an id whose row it has just deleted (#2071). A fix
     attempt targeting it drops it from ``target_ids`` and keeps its kind, which
-    was settled when it ran (#2036 D2.3).
+    was settled when it ran, and a fix licensed on it drops it from
+    ``licence_ids`` (#2036 D2.3).
     """
     referenced = _referenced_node_ids(case)
     pruned: set[str] = set()
@@ -57,6 +58,8 @@ def prune_abandoned_nodes(case: Case, abandoned_node_ids: list[str]) -> None:
     for action in getattr(case, "proposed_actions", None) or []:
         if pruned.intersection(getattr(action, "target_ids", None) or ()):
             action.target_ids = [t for t in action.target_ids if t not in pruned]
+        if pruned.intersection(getattr(action, "licence_ids", None) or ()):
+            action.licence_ids = [t for t in action.licence_ids if t not in pruned]
     case.causal_edges[:] = [
         e
         for e in case.causal_edges

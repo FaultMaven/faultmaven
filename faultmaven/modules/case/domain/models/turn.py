@@ -151,28 +151,31 @@ _WARNED_UNKNOWN_CHANNELS: set[str] = set()
 
 class FixCause(BaseModel):
     """The cause a fix run in a turn acts on, recorded once at the start of
-    that turn (``TurnProgress.cause_at_start``, #2036 D2.3); never
-    recomputed."""
+    that turn (``TurnProgress.cause_at_start``, #2036 D2.3); frozen, so never
+    rewritten."""
 
-    root_ids: List[str] = Field(
-        default_factory=list,
+    model_config = ConfigDict(frozen=True)
+
+    root_ids: tuple[str, ...] = Field(
+        default=(),
         description="The identified roots, else the count-held terminal roots.",
     )
-    licence_ids: List[str] = Field(
-        default_factory=list,
+    licence_ids: tuple[str, ...] = Field(
+        default=(),
         description=(
-            "With no root_ids, the cause M5's own leg licenses then: the "
-            "root-cause conclusion's node (a ROOT only when licensed; an "
-            "intermediate as named), or the root of the hypothesis leading at "
-            "M5's bar; else none."
+            "With no root_ids, the cause M5's own leg licenses then: the root "
+            "of the conclusion's standing hypothesis, else the node the "
+            "conclusion names (a ROOT only when licensed; an intermediate as "
+            "named), or the root of the hypothesis leading at M5's bar; else "
+            "none."
         ),
     )
-    reference_ids: List[str] = Field(
-        default_factory=list,
+    reference_ids: tuple[str, ...] = Field(
+        default=(),
         description=(
             "What a fix's targets must meet to be a remediation: every leg of "
-            "the cause pool, plus the roots the licence names when root_ids "
-            "is empty."
+            "the cause pool, plus the roots of the standing hypotheses when "
+            "root_ids is empty."
         ),
     )
     in_words: bool = Field(
@@ -180,6 +183,14 @@ class FixCause(BaseModel):
         description=(
             "With no root_ids, M5's leg is a conclusion naming its cause in "
             "words only (no node)."
+        ),
+    )
+    held: bool = Field(
+        default=False,
+        description=(
+            "The turn started while a revised statement awaited the user's "
+            "re-confirmation, so cause work staged in the hold is not in this "
+            "record."
         ),
     )
 
