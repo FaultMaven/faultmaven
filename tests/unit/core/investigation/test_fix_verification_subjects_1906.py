@@ -131,9 +131,14 @@ def _fixed(turn=6):
     return _engine(), case, root, hyp
 
 
-def _root(node_id, statement, *supports, node_type=NodeType.ROOT, terminal=True):
+def _root(
+    node_id, statement, *supports, node_type=NodeType.ROOT, terminal=True, cites=None
+):
+    """A validated node on ``supports``; a terminal root's verdict cites
+    ``cites`` (the rows showing why it arose), else all its supports."""
+    basis = list(supports if cites is None else cites)
     return CausalNode(
-        metadata=terminal_verdict() if terminal else {},
+        metadata=terminal_verdict(*basis) if terminal and basis else {},
         node_id=node_id,
         statement=statement,
         node_type=node_type,
@@ -151,6 +156,20 @@ def _root(node_id, statement, *supports, node_type=NodeType.ROOT, terminal=True)
             for s in supports
         ],
         generated_at_turn=1,
+    )
+
+
+def _cite_supports(node) -> None:
+    """The node's terminal verdict cites every row supporting it (the cited
+    basis, D6), as the model cites the rows showing why the root arose."""
+    node.metadata.update(
+        terminal_verdict(
+            *(
+                link.evidence_id
+                for link in node.evidence_links
+                if link.stance == EvidenceStance.SUPPORTS
+            )
+        )
     )
 
 
@@ -284,6 +303,7 @@ def _gateway_case():
         "nothing rotates the AppRole secret_id",
         rung_and_roots,
         roots_only,
+        cites=(roots_only,),
     )
     secret = _root(
         "cn_00000000cbad",
@@ -333,7 +353,11 @@ async def test_1_roots_of_one_cluster_bind_a_rung_link_binds_none():
     ]
 
 
-async def test_1_roots_of_two_clusters_bind_none():
+async def test_1_a_row_of_two_clusters_binds_by_citation_alone():
+    """The row supports roots of two clusters, so by link shape it binds to
+    none: the window read. The identified root's verdict cites it, and on the
+    confirmation read a cited row binds by citation alone (#2557, ruled
+    2026-11-06)."""
     case, root, _hyp = _identified_case()
     other = _root("cn_00000000e7e7", "the gunicorn worker leaks memory")
     case.causal_nodes[other.node_id] = other
@@ -348,7 +372,8 @@ async def test_1_roots_of_two_clusters_bind_none():
     (row,), _ = await _record(
         _engine(), case, 7, _obs(_CAUSE_GONE, "max_connections reads 100", _SUPPORT)
     )
-    assert observation_subject(case, row) == SUBJECT_UNBOUND
+    assert observation_subject(case, row) == SUBJECT_CAUSE
+    assert subject_index(case).subject(row, windows=True) == SUBJECT_UNBOUND
 
 
 async def test_1_a_count_held_root_binds_and_with_no_cause_nothing_does():
@@ -729,8 +754,6 @@ async def _a_fell_then_b(supports: int, terminal: bool = True):
     )
     assert hyp_a.state == HypothesisState.REFUTED and _engine_rows(case)
     b = _add_sibling_chain(case)
-    if not terminal:
-        b.metadata.pop("root_terminal", None)
     problem = next(
         n for n in case.causal_nodes.values() if n.node_type == NodeType.PROBLEM
     )
@@ -748,6 +771,8 @@ async def _a_fell_then_b(supports: int, terminal: bool = True):
                 linked_at_turn=10,
             )
         )
+    if terminal and rows:
+        _cite_supports(b)
     await _record(eng, case, 10)
     return eng, case, root_a, b, (rows[0] if rows else None)
 
@@ -772,8 +797,12 @@ async def test_p1_a_refuted_causes_recheck_never_confirms_another_cause():
     a_recheck, meta = await _fix_b_and_recheck(eng, case, _SUPPORT)
     assert observation_subject(case, a_recheck) == SUBJECT_UNBOUND
     assert assess_resolution_readiness(case).verdict != ResolutionReadiness.READY
-    # The window still sees it, so the model is not told it names nothing.
-    assert "Post-fix row(s)" not in (meta.get("system_feedback") or "")
+    # The window still sees it; the model is told it re-checks a row the
+    # standing cause's verdict does not cite, and which rows it cites (#2557).
+    feedback = meta.get("system_feedback") or ""
+    assert "re-checks a row the root's verdict does not cite" in feedback
+    assert _b_support in feedback
+    assert "name nothing they re-check" not in feedback
 
 
 async def test_p2_a_count_held_cause_binds_after_another_cause_fell():
@@ -877,6 +906,7 @@ async def test_the_stamp_cites_only_a_row_about_the_cause_it_confirms():
                 linked_at_turn=3,
             )
         )
+    _cite_supports(b)
     eng = _engine()
     await _record(eng, case, 5)
     hyp_a.state = HypothesisState.RETIRED
@@ -1151,7 +1181,8 @@ async def test_f2_a_fallen_cause_is_not_confirmed_past_a_newer_candidate(
     count-held terminal. The fallen-cause leg does not serve confirmation
     while B stands: A's re-check confirms nothing and A's supports are not
     offered. The window pool still holds A (the pool's last leg too), so the
-    window sees the re-check and the model is not told it names nothing."""
+    window sees the re-check; the model is told it re-checks a row no standing
+    verdict cites, not that it names nothing (#2557)."""
     eng, case, _root_a, b, _b_support = await _a_fell_then_b(supports, terminal)
     assert not b.is_identified_root
     _problem, cause = subject_index(case).bindable_rows()
@@ -1160,21 +1191,25 @@ async def test_f2_a_fallen_cause_is_not_confirmed_past_a_newer_candidate(
     assert observation_subject(case, a_recheck) == SUBJECT_UNBOUND
     assert assess_resolution_readiness(case).verdict != ResolutionReadiness.READY
     assert a_recheck in fix_windows(case)[-1].cause_rows
-    assert "Post-fix row(s)" not in (meta.get("system_feedback") or "")
+    feedback = meta.get("system_feedback") or ""
+    assert "re-checks a row the root's verdict does not cite" in feedback
+    assert "name nothing they re-check" not in feedback
 
 
 async def test_f2_the_fallen_causes_own_hypothesis_is_not_another_candidate():
     """Only ANOTHER standing hypothesis takes the fallen leg away. In the turn
     A loses its verdict, before the recompute re-records the identified roots,
     A is fallen (recorded) while its own hypothesis still stands: A still
-    serves confirmation, and its support is still offered for a re-check."""
+    serves confirmation (the pool holds it), though its reversed verdict cites
+    no row, so no re-check target is offered until a verdict citing A's rows
+    is re-sent (#2557)."""
     eng, case, root_a, hyp_a = _fixed(8)
     await _record(eng, case, 8)
     root_a.record_root_terminal(False, None, 9)
     assert not root_a.is_identified_root and hyp_a.state == HypothesisState.VALIDATED
     assert _cause_pool(case)[0] == {root_a.node_id}
     _problem, cause = subject_index(case).bindable_rows()
-    assert _SUPPORT in [e.evidence_id for e in cause]
+    assert cause == []
 
 
 def _polarity_ids(case) -> list:

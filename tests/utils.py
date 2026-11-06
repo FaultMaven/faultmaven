@@ -751,6 +751,7 @@ def bridge_flat_hypotheses_to_graph(case) -> None:
     from faultmaven.modules.case.contracts import (
         CausalEdge,
         CausalNode,
+        EvidenceStance,
         NodeEvidenceLink,
         NodeType,
     )
@@ -763,12 +764,18 @@ def bridge_flat_hypotheses_to_graph(case) -> None:
     for hyp in case.hypotheses.values():
         if hyp.root_node_id:
             continue
+        supports = [
+            link.evidence_id
+            for link in hyp.evidence_links
+            if link.stance == EvidenceStance.SUPPORTS
+        ]
         root = CausalNode(
             statement=hyp.statement[:500],
             node_type=NodeType.ROOT,
             # The bridged chain is the hypothesis's whole cause: its root is
-            # terminal (the why-stopping verdict, #2036).
-            metadata=terminal_verdict(),
+            # terminal (the why-stopping verdict, #2036), citing the rows that
+            # support it (D6); with none it has no verdict yet.
+            metadata=terminal_verdict(*supports) if supports else {},
             category=hyp.category,
             generated_at_turn=hyp.generated_at_turn,
             evidence_links=[

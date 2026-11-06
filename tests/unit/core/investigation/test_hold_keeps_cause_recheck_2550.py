@@ -74,10 +74,10 @@ def _recheck(case, *, turn: int, of: str):
 
 async def _revision_turn_with_recheck(engine, case) -> tuple[dict, str]:
     """Turn 4: the revision, the cause work and a re-check of a staged cause
-    row, on a file uploaded that turn. Returns the turn's metadata and the
+    row (the root's cited basis, #2557), on a file uploaded that turn. Returns the turn's metadata and the
     re-check's id."""
     dsu = revision._revision_turn_with_cause_work()
-    dsu.evidence_to_add.append(_recheck(case, turn=4, of="new_index_1"))
+    dsu.evidence_to_add.append(_recheck(case, turn=4, of="new_index_2"))
     meta = await revision._apply(engine, case, dsu)
     return meta, meta["evidence_added"][-1]
 
@@ -183,7 +183,7 @@ class TestAConfirmationCountsTheHoldsRecheck:
             link.evidence_id_ref = shifted[link.evidence_id_ref]
         dsu.hypotheses_to_add[0].terminal_basis_evidence_ids = ["new_index_1"]
         case.current_turn = 5
-        dsu.evidence_to_add.append(_recheck(case, turn=5, of="new_index_0"))
+        dsu.evidence_to_add.append(_recheck(case, turn=5, of="new_index_1"))
         absent = (await revision._apply(engine, case, dsu))["evidence_added"][-1]
 
         await _confirm(engine, case)
@@ -198,7 +198,7 @@ class TestAConfirmationCountsTheHoldsRecheck:
             engine, case, dsu, revision._Response("timeouts in the gateway log")
         )
         assert pending_revision(case).prior_status == ProblemStatus.UNVERIFIED
-        support = meta["evidence_added"][1]
+        support = meta["evidence_added"][2]  # the root's cited basis (#2557)
         (absent,) = await _hold_turn(engine, case, _recheck(case, turn=5, of=support))
 
         await _confirm(engine, case)

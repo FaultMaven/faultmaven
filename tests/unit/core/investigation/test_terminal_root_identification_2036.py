@@ -653,7 +653,7 @@ def test_the_bound_reads_the_cause_the_conclusion_names():
     # One support: A is count-held, not identified; B has no verdict.
     root_a = case.causal_nodes[hyp_a.root_node_id]
     root_a.evidence_links = root_a.evidence_links[:1]
-    root_b.metadata.pop("root_terminal")
+    root_b.metadata.pop("root_terminal", None)
     _recompute_cause_state_from_chain(case)
     assert case.progress.cause_identification_held_open is False
     assert case.progress.cause_state != CauseState.IDENTIFIED

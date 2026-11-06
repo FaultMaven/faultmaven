@@ -223,7 +223,6 @@ def _seed_root(case: Case) -> str:
     emission can name them without adding nodes."""
     seed_problem_node(case)
     root = CausalNode(
-        metadata=terminal_verdict(),
         node_id="cn_0000000000aa",
         statement=_CAUSE,
         node_type=NodeType.ROOT,

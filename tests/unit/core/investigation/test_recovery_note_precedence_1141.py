@@ -81,7 +81,9 @@ def _built(members, *, root_terminal="keep"):
         if root_terminal is None:
             node.metadata.pop("root_terminal", None)
         elif root_terminal is True:
-            node.metadata.update(terminal_verdict())
+            node.metadata.update(
+                terminal_verdict(*(link.evidence_id for link in node.evidence_links))
+            )
         elif root_terminal != "keep":
             node.metadata["root_terminal"] = root_terminal
     _recompute_cause_state_from_chain(case)

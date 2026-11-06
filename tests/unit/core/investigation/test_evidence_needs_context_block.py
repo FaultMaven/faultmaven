@@ -158,7 +158,7 @@ def _make_evidence(
         root = case.causal_nodes.setdefault(
             "cn_00000000c0de",
             CausalNode(
-                metadata=terminal_verdict(),
+                metadata={},
                 node_id="cn_00000000c0de",
                 statement="the identified root cause",
                 node_type=NodeType.ROOT,
@@ -176,6 +176,10 @@ def _make_evidence(
                 reasoning="supports the root",
                 linked_at_turn=case.current_turn,
             )
+        )
+        # Its terminal verdict cites every support (the cited basis, #2557).
+        root.metadata.update(
+            terminal_verdict(*(link.evidence_id for link in root.evidence_links))
         )
     return ev
 

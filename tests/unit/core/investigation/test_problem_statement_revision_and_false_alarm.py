@@ -1109,7 +1109,6 @@ class TestStagingAcrossTheHandshake:
             generated_at_turn=1,
         )
         root = CausalNode(
-            metadata=terminal_verdict(),
             node_id="cn_0000000000ee",
             statement="an unrelated root",
             node_type=NodeType.ROOT,
@@ -1588,7 +1587,6 @@ def test_a_node_is_retexted_in_place_so_chains_keep_their_anchor():
         n for n in case.causal_nodes.values() if n.node_type == NodeType.PROBLEM
     )
     root = CausalNode(
-        metadata=terminal_verdict(),
         node_id="cn_0000000000cc",
         statement=CAUSE,
         node_type=NodeType.ROOT,

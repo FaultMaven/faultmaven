@@ -492,7 +492,12 @@ def test_no_consumer_reads_a_refuted_root_as_held():
             source_file_id=file_id,
         )
     )
-    assert [why for _e, why in cause_recheck_status(case)] == [None]
+    # Not "held open": the fallen cause's reversed verdict cites no row, so
+    # the window-bound re-check confirms nothing (#2557).
+    assert [why for _e, why in cause_recheck_status(case)] == [
+        "it re-checks a row the root's verdict does not cite, and the verdict "
+        "cites no row yet"
+    ]
     assert [e.evidence_id for e in confirming_polarity_rows(case)] == [
         "ev_0000000ab5e1"
     ]

@@ -24,10 +24,13 @@ from faultmaven.modules.case.contracts import (
     CausalNode,
     CauseState,
     ConfidenceLevel,
+    EvidenceCategory,
+    EvidenceStance,
     Hypothesis,
     HypothesisCategory,
     HypothesisGenerationMode,
     HypothesisState,
+    NodeEvidenceLink,
     NodeState,
     NodeType,
     RootCauseConclusion,
@@ -39,6 +42,7 @@ from tests.unit.core.investigation.test_m6_cause_gone_problem_persists_1927 impo
     _failed_fix,
     _identified_case,
     _recompute_at,
+    _row,
 )
 from tests.utils import terminal_verdict
 
@@ -75,6 +79,37 @@ def _refuted_earlier(*, initial_likelihood=0.5, root_id="cn_0000000000a1", on=No
         generated_at_turn=3,
     )
     return hyp, root
+
+
+def _old_root(case, node_id) -> CausalNode:
+    """A root that reads VALIDATED and terminal on a datum of its own, which
+    its verdict cites (D6); the row joins the case."""
+    datum = _row(
+        f"clock_{node_id}",
+        EvidenceCategory.CAUSAL_EVIDENCE,
+        3,
+        "the checkout pod's clock reads 40s ahead of the database",
+    )
+    case.evidence.append(datum)
+    return CausalNode(
+        metadata=terminal_verdict(datum.evidence_id),
+        node_id=node_id,
+        statement="the checkout pod's clock runs ahead of the database",
+        node_type=NodeType.ROOT,
+        node_state=NodeState.VALIDATED,
+        validation_method=ValidationMethod.EMPIRICAL,
+        belief=0.9,
+        actionable=True,
+        evidence_links=[
+            NodeEvidenceLink(
+                evidence_id=datum.evidence_id,
+                stance=EvidenceStance.SUPPORTS,
+                reasoning="bears on it",
+                linked_at_turn=3,
+            )
+        ],
+        generated_at_turn=3,
+    )
 
 
 def _with_first(case, hyp, root):
@@ -186,17 +221,7 @@ def test_an_orphaned_identified_root_never_stands_in_for_the_cause():
     tie must not hand the demotion to the old hypothesis."""
     case, root, hyp = _identified_case()
     hyp.initial_likelihood = 0.5
-    old_root = CausalNode(
-        metadata=terminal_verdict(),
-        node_id="cn_0000000000b2",
-        statement="the checkout pod's clock runs ahead of the database",
-        node_type=NodeType.ROOT,
-        node_state=NodeState.VALIDATED,
-        validation_method=ValidationMethod.EMPIRICAL,
-        belief=0.9,
-        actionable=True,
-        generated_at_turn=3,
-    )
+    old_root = _old_root(case, "cn_0000000000b2")
     old, _ = _refuted_earlier(on=old_root.node_id)
     _with_first(case, old, old_root)
     assert old_root.is_identified_root
@@ -232,17 +257,7 @@ def test_a_root_whose_only_hypothesis_fell_grounds_no_identification():
     )
 
     case, root, hyp = _identified_case()
-    old_root = CausalNode(
-        metadata=terminal_verdict(),
-        node_id="cn_0000000000b3",
-        statement="the checkout pod's clock runs ahead of the database",
-        node_type=NodeType.ROOT,
-        node_state=NodeState.VALIDATED,
-        validation_method=ValidationMethod.EMPIRICAL,
-        belief=0.9,
-        actionable=True,
-        generated_at_turn=3,
-    )
+    old_root = _old_root(case, "cn_0000000000b3")
     old, _ = _refuted_earlier(on=old_root.node_id)
     _with_first(case, old, old_root)
 

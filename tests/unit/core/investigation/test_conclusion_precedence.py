@@ -94,8 +94,11 @@ def _evidence(label, category=EvidenceCategory.CAUSAL_EVIDENCE) -> Evidence:
 def _node(
     node_id, statement, node_type=NodeType.ROOT, *, support_labels=()
 ) -> CausalNode:
+    cited = [_eid(label) for label in support_labels]
     return CausalNode(
-        metadata=terminal_verdict(),
+        metadata=(
+            terminal_verdict(*cited) if node_type == NodeType.ROOT and cited else {}
+        ),
         node_id=node_id,
         statement=statement,
         node_type=node_type,

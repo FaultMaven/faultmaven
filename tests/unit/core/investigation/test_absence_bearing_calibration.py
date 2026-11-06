@@ -144,6 +144,8 @@ def _diagnosis_row(label, category, summary) -> Evidence:
 
 
 def _supports(node, *rows) -> None:
+    """``rows`` support ``node``; a root's terminal verdict cites them all
+    (the cited basis, D6), as the model cites the rows showing why it arose."""
     for row in rows:
         node.evidence_links.append(
             NodeEvidenceLink(
@@ -153,11 +155,21 @@ def _supports(node, *rows) -> None:
                 linked_at_turn=2,
             )
         )
+    if node.node_type == NodeType.ROOT:
+        node.metadata.update(
+            terminal_verdict(
+                *(
+                    link.evidence_id
+                    for link in node.evidence_links
+                    if link.stance == EvidenceStance.SUPPORTS
+                )
+            )
+        )
 
 
 def _node(node_id, statement, node_type, *, validated=False) -> CausalNode:
     return CausalNode(
-        metadata=terminal_verdict(),
+        metadata={},
         node_id=node_id,
         statement=statement,
         node_type=node_type,
@@ -259,6 +271,9 @@ def _incident_case():
     case.problem_verification.verifying_evidence_ids = [verifying.evidence_id]
     _supports(target, target_support, rung_support)
     _supports(rung, rung_support)
+    # The target's verdict cites its own datum (the cited basis, #2557); the
+    # rung-shared row is the consequence as much as the cause.
+    target.metadata.update(terminal_verdict(target_support.evidence_id))
     return case, target, sibling
 
 

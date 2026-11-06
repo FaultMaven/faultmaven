@@ -557,7 +557,6 @@ def _add_proxy_candidate(case, hyp) -> Hypothesis:
     """A second, unvalidated candidate that M6's likelihood proxy picks as the
     representative once no conclusion names the identified cause."""
     other_root = CausalNode(
-        metadata=terminal_verdict(),
         node_id="cn_00000000ffff",
         statement="a connection leak in the checkout worker",
         node_type=NodeType.ROOT,
@@ -778,7 +777,6 @@ def _add_sibling_chain(case) -> CausalNode:
     """Another candidate cause in the graph, sharing no content with the
     identified one; the conclusion keeps naming the identified cause."""
     sibling = CausalNode(
-        metadata=terminal_verdict(),
         node_id="cn_00000000eeee",
         statement="a memory leak in the gunicorn worker",
         node_type=NodeType.ROOT,

@@ -1129,7 +1129,10 @@ def cause_recheck_status(
     out = []
     for e in getattr(case, "evidence", None) or []:
         bound = subjects.subject(e) == SUBJECT_CAUSE
-        if not bound and e.evidence_id not in window_bound:
+        if not bound and (
+            e.category != EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
+            or e.evidence_id not in window_bound
+        ):
             continue
         turn = subjects.observed(e)
         if held_open:

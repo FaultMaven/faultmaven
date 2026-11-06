@@ -48,7 +48,11 @@ from faultmaven.modules.case.contracts import (
     ProposedAction,
 )
 from tests.case_builders import investigating_case, with_declined_offer
-from tests.unit.core.investigation.bound_rows import bound_row, ensure_subjects
+from tests.unit.core.investigation.bound_rows import (
+    SUPPORT_ID,
+    bound_row,
+    ensure_subjects,
+)
 from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
 
 pytestmark = pytest.mark.unit
@@ -212,7 +216,8 @@ def test_an_attempt_carries_its_window_state(shape, state):
 
 def test_a_missing_cause_leg_does_not_read_the_problem_leg():
     block = build_fix_verification_block(_case("treatment", cause=False))
-    assert "  - cause: missing\n" in block
+    # The cited basis to re-check follows (#2557): the root's one support.
+    assert f"  - cause: missing; the cited basis to re-check: {SUPPORT_ID}\n" in block
     assert "  - problem: read once the cause leg stands" in block
 
 
@@ -267,7 +272,9 @@ def test_pending_re_checks_overflow_like_every_list():
     case.progress.cause_identification_held_open = True
     for turn in range(5, 11):
         bound_row(case, EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE, turn=turn)
-    assert "held open) (+1 more)\n" in build_fix_verification_block(case)
+    assert "held open) (+1 more); the cited basis to re-check: " in (
+        build_fix_verification_block(case)
+    )
 
 
 def test_an_ask_the_engine_stopped_surfacing_is_not_listed_as_live():
