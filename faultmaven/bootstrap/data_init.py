@@ -4,7 +4,8 @@ Handles first-run initialization tasks:
 1. Create data directories (data/chroma-kb, data/chroma-evidence, data/evidence,
    and data/knowledge/, the standalone import directory ``POST /knowledge/scan``
    reads)
-2. Run Alembic migrations to ensure schema is up-to-date
+2. Run Alembic migrations to ensure schema is up-to-date, then refuse a
+   database missing a table or column the models declare (#1514)
 
 The default local admin user is not created here: ``bootstrap/startup.py`` calls
 :func:`ensure_default_admin_exists` on every startup (skipped under
@@ -383,26 +384,35 @@ def alembic_script_heads() -> frozenset[str]:
     return frozenset(ScriptDirectory.from_config(config).get_heads())
 
 
-async def _database_revisions(database_url: str) -> frozenset[str]:
-    """The revisions in ``alembic_version``, empty without the table or a row.
+def _startup_check_engine(database_url: str) -> Any:
+    """An unpooled engine on the app's database for a one-shot startup read.
 
-    Plain SQL, so a fresh install never imports alembic here. On SQLite the
-    connection creates a missing file, empty, as the subprocess would. On
-    PostgreSQL the connection is bounded like the app's own (#2280), so the
-    deadline the caller puts on this read aborts the connection rather than
-    waiting on a CancelRequest a silent server never answers."""
-    from sqlalchemy import inspect, text
+    Both readers hold their read under ``wait_within`` for
+    :data:`AT_HEAD_CHECK_TIMEOUT_SECONDS`. On PostgreSQL the connection is
+    bounded like the app's own (#2280), so that deadline aborts the connection
+    rather than waiting on a CancelRequest a silent server never answers.
+    """
     from sqlalchemy.ext.asyncio import create_async_engine
     from sqlalchemy.pool import NullPool
 
     from faultmaven.config.settings import get_settings
     from faultmaven.infrastructure.persistence.pg_connection import pg_connect_args
 
-    engine = create_async_engine(
+    return create_async_engine(
         database_url,
         poolclass=NullPool,
         connect_args=pg_connect_args(database_url, get_settings().database),
     )
+
+
+async def _database_revisions(database_url: str) -> frozenset[str]:
+    """The revisions in ``alembic_version``, empty without the table or a row.
+
+    Plain SQL, so a fresh install never imports alembic here. On SQLite the
+    connection creates a missing file, empty, as the subprocess would."""
+    from sqlalchemy import inspect, text
+
+    engine = _startup_check_engine(database_url)
     try:
         async with engine.connect() as conn:
             if not await conn.run_sync(
@@ -413,6 +423,103 @@ async def _database_revisions(database_url: str) -> frozenset[str]:
             return frozenset(row[0] for row in rows)
     finally:
         await engine.dispose()
+
+
+def _read_live_schema(
+    sync_conn: Any, declared: dict[str, frozenset[str]]
+) -> tuple[str, dict[str, frozenset[str]], frozenset[str]]:
+    """Over ONE connection: the schema the app reads, the declared tables present
+    with their column names, and the stamp (empty without ``alembic_version`` or
+    a row). The schema is the dialect's default (``current_schema()`` on
+    PostgreSQL, ``main`` on SQLite): what ``get_table_names`` looks in, so a
+    search-path divergence from the migration Job's role is diagnosable."""
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(sync_conn)
+    names = inspector.get_table_names()
+    present = {
+        table: frozenset(column["name"] for column in inspector.get_columns(table))
+        for table in names
+        if table in declared
+    }
+    stamped: frozenset[str] = frozenset()
+    if "alembic_version" in names:
+        rows = sync_conn.execute(text("SELECT version_num FROM alembic_version"))
+        stamped = frozenset(row[0] for row in rows)
+    return sync_conn.dialect.default_schema_name or "(default)", present, stamped
+
+
+async def _live_schema(
+    database_url: str, declared: dict[str, frozenset[str]]
+) -> tuple[str, dict[str, frozenset[str]], frozenset[str]]:
+    engine = _startup_check_engine(database_url)
+    try:
+        async with engine.connect() as conn:
+            return await conn.run_sync(_read_live_schema, declared)
+    finally:
+        await engine.dispose()
+
+
+async def verify_schema_tables() -> int:
+    """Refuse a persistent database missing a table or column the models declare.
+
+    A database stamped at head but structurally behind the models passed every
+    startup check (#1514): the at-head skip runs no migration on it, the Cloud
+    pod (``RUN_STARTUP_MIGRATIONS=false``) never migrates in the app at all,
+    and the first use of the missing table failed with an ``OperationalError``
+    after the boot logged success. ``Base.metadata`` is the one declaration of
+    the expected tables and their columns, so a live schema missing any of
+    them is refused here, naming them, before a request is served. Names are
+    the floor: an index, a constraint or a column type an additive revision
+    changed is not detected. Extra tables and columns are an operator's own
+    and ignored.
+
+    Returns the number of declared tables found, or 0 when no persistent
+    database is configured (nothing to check, as the migration run is gated).
+    The read is held to :data:`AT_HEAD_CHECK_TIMEOUT_SECONDS` like the at-head
+    check's, but past it the boot is refused (``TimeoutError`` naming this
+    check), not skipped; a schema that cannot be read at all propagates, as the
+    migration run's errors do.
+    """
+    from faultmaven.config.settings import get_settings, persistent_database_configured
+    from faultmaven.infrastructure.persistence.models import Base
+
+    if not persistent_database_configured(get_settings().database.database_url):
+        return 0
+    declared = {
+        name: frozenset(column.name for column in table.columns)
+        for name, table in Base.metadata.tables.items()
+    }
+    schema, present, stamped = await wait_within(
+        _live_schema(migration_database_url(), declared),
+        AT_HEAD_CHECK_TIMEOUT_SECONDS,
+        what="The schema check's database read",
+    )
+    missing_tables = sorted(set(declared) - set(present))
+    missing_columns = sorted(
+        f"{table}.{column}"
+        for table, columns in present.items()
+        for column in declared[table] - columns
+    )
+    if not missing_tables and not missing_columns:
+        return len(declared)
+    gaps = []
+    if missing_tables:
+        gaps.append(f"missing tables {', '.join(missing_tables)}")
+    if missing_columns:
+        gaps.append(f"missing columns {', '.join(missing_columns)}")
+    found = f"{'; '.join(gaps)} (schema {schema!r}, as the app reads it)"
+    if not stamped:
+        raise RuntimeError(
+            f"Database schema is behind the models: {found}; the database was "
+            "never migrated: run `alembic upgrade head` (or the migration Job)."
+        )
+    raise RuntimeError(
+        f"Database schema is behind the models: {found}; the database is stamped "
+        f"{', '.join(sorted(stamped))} but those were never created. Re-run the "
+        "migration Job or re-provision the database "
+        "(docs/operations/deployment-wipe.md)."
+    )
 
 
 async def _schema_already_at_head() -> bool:
@@ -511,7 +618,9 @@ def run_alembic_migrations() -> bool:
         alembic_ini, search_paths = find_alembic_ini()
         if not alembic_ini:
             logger.warning(
-                f"alembic.ini not found in: {[str(p) for p in search_paths]}"
+                f"alembic.ini not found in: {[str(p) for p in search_paths]}; no "
+                "migration runs, and the schema check next decides whether the "
+                "database holds every declared table and column."
             )
             return False
 
@@ -559,9 +668,12 @@ def run_alembic_migrations() -> bool:
         logger.error("❌ Alembic migration timed out after 60 seconds")
         raise RuntimeError("Alembic migration timed out after 60 seconds")
     except FileNotFoundError as e:
-        # This one might be optional if dev env without alembic, but in prod it should fail
+        # A dev environment without alembic: no migration runs, and the schema
+        # check next decides whether the database holds what the models declare.
         logger.warning(
-            f"⚠️ Alembic command not found - assuming manual schema management: {e}"
+            f"⚠️ Alembic command not found ({e}); no migration ran, and the schema "
+            "check next decides whether the database holds every declared table "
+            "and column."
         )
         return False
     except Exception as e:
@@ -795,6 +907,9 @@ async def initialize_data_layer(container: Any) -> None:
             "Skipping startup Alembic migrations (RUN_STARTUP_MIGRATIONS=false); "
             "schema is owned by an external migration Job."
         )
+    # On either branch the database must hold every table and column the models
+    # declare; a database behind them is refused here, not at first use (#1514).
+    await verify_schema_tables()
 
     # Step 4: Create default admin user if needed
     # Moved to startup.py (Step 3) to ensure it runs after the default enterprise is created

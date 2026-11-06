@@ -622,7 +622,24 @@ it, adds its tables with their RLS enrolment on PostgreSQL, and its
 `downgrade()` drops only what it added. The first is `002_llm_usage_ledger`
 (`llm_usage_daily`, `llm_turn_spend`). A tenant-scoped table added this way is
 enrolled in RLS by its own revision — the baseline's table list does not reach
-it. A revision can add database objects other than tables: `003_admin_case_metadata`
+it.
+
+A database stamped at head but missing a table or a column the models declare
+— the shape an in-place amendment leaves behind, since Alembic finds nothing to
+apply — is refused at startup, on every deployment, whether the app ran the
+migration, skipped it at head, or left it to the migration Job (#1514): the boot
+stops with `Database schema is behind the models: missing tables <names>;
+missing columns <table.column> (schema <name>); the database is stamped
+<revision> but those were never created`, before any request is served. A
+database with no stamp at all is refused as never migrated, with `alembic
+upgrade head` as the remedy. Table and column names are the floor of that
+check; a missing index or constraint, or a changed column type, is not
+detected. The read is held to the same 10 seconds as the at-head check, and
+past them the boot is refused, not skipped. The remedy for a stamped database
+is to re-run the migration Job, or to
+[re-provision the database](#re-provisioning-a-database).
+
+A revision can add database objects other than tables: `003_admin_case_metadata`
 creates two PostgreSQL `SECURITY DEFINER` functions for the cross-enterprise
 operator case list, revokes `EXECUTE` from `PUBLIC` and grants it to the runtime
 role `faultmaven_app` when that role exists, and is a no-op on SQLite

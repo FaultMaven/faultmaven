@@ -17,7 +17,7 @@ import sys
 from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -31,8 +31,13 @@ from tests.integration.test_alembic_migrations import (
 UNKNOWN_REVISION = "0123456789ab"
 
 
-async def _boot(db: Path | str) -> MagicMock:
-    """Run ``initialize_data_layer`` on ``db`` (a file, or a URL); return the recorder."""
+async def _boot(db: Path | str, *, fresh: bool = False) -> MagicMock:
+    """Run ``initialize_data_layer`` on ``db`` (a file, or a URL); return the recorder.
+
+    ``fresh`` stubs the schema check (#1514): the recorded migration never ran,
+    so a database with no tables would be refused by the real check, which has
+    its own tests. A migrated database runs it for real.
+    """
     url = f"sqlite+aiosqlite:///{db}" if isinstance(db, Path) else db
     settings = SimpleNamespace(
         run_startup_migrations=True, database=SimpleNamespace(database_url=url)
@@ -42,7 +47,11 @@ async def _boot(db: Path | str) -> MagicMock:
         patch.object(data_init, "run_alembic_migrations") as run_migrations,
         patch("faultmaven.config.settings.get_settings", return_value=settings),
     ):
-        await data_init.initialize_data_layer(container=MagicMock())
+        if fresh:
+            with patch.object(data_init, "verify_schema_tables", AsyncMock()):
+                await data_init.initialize_data_layer(container=MagicMock())
+        else:
+            await data_init.initialize_data_layer(container=MagicMock())
     return run_migrations
 
 
@@ -128,7 +137,7 @@ async def test_a_fresh_database_runs_the_subprocess_without_reading_the_scripts(
         _set_versions(db)
 
     with patch.object(data_init, "alembic_script_heads") as script_heads:
-        run_migrations = await _boot(db)
+        run_migrations = await _boot(db, fresh=(state == "no-table"))
 
     run_migrations.assert_called_once()
     script_heads.assert_not_called()
@@ -163,7 +172,9 @@ async def test_a_check_that_raises_warns_and_runs_the_subprocess(
     else:
         monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / "no-project-here"))
 
-    (await _boot(head_db)).assert_called_once()
+    # An unreadable file is one the recorded migration never repaired (#1514).
+    unreadable = cause == "database-unreadable"
+    (await _boot(head_db, fresh=unreadable)).assert_called_once()
     [warning] = _records(caplog, logging.WARNING)
     assert exception in warning
 
@@ -208,7 +219,7 @@ async def test_a_database_read_past_the_bound_warns_and_runs_the_subprocess(
 
     monkeypatch.setattr(data_init, "AT_HEAD_CHECK_TIMEOUT_SECONDS", 0.05)
     with patch.object(data_init, "_database_revisions", slow_read):
-        (await _boot(tmp_path / "unread.db")).assert_called_once()
+        (await _boot(tmp_path / "unread.db", fresh=True)).assert_called_once()
     [warning] = _records(caplog, logging.WARNING)
     assert "TimeoutError" in warning
 
@@ -232,7 +243,7 @@ async def test_a_read_whose_cancellation_hangs_still_runs_the_subprocess_at_the_
 
     monkeypatch.setattr(data_init, "AT_HEAD_CHECK_TIMEOUT_SECONDS", 0.05)
     with patch.object(data_init, "_database_revisions", read_against_a_silent_server):
-        boot = asyncio.ensure_future(_boot(tmp_path / "silent.db"))
+        boot = asyncio.ensure_future(_boot(tmp_path / "silent.db", fresh=True))
         try:
             done, _ = await asyncio.wait({boot}, timeout=5)
             assert done, "the at-head check outlasted its bound"
