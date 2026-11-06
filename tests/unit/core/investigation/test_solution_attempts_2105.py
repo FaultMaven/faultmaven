@@ -60,6 +60,7 @@ from faultmaven.core.investigation.schemas import (
     MilestoneJustifications,
     MilestoneUpdates,
     ProblemVerificationUpdate,
+    RootCauseConclusionUpdate,
     SolutionToAdd,
 )
 from faultmaven.core.investigation.terminal_transitions import (
@@ -233,8 +234,8 @@ async def _confirm(eng, case, turn) -> dict:
     return meta
 
 
-async def _refute_the_cause(eng, case, turn) -> dict:
-    """The model refutes the identified cause on a row on record (INV-47)."""
+def _refutation(case) -> dict:
+    """The model refutes the identified cause on ``new_index_0`` (INV-47)."""
     hyp = next(iter(case.hypotheses.values()))
     link = HypothesisEvidenceLinkToAdd(
         hypothesis_id_ref=hyp.hypothesis_id,
@@ -247,13 +248,16 @@ async def _refute_the_cause(eng, case, turn) -> dict:
         state=HypothesisState.REFUTED,
         refutation_reason="checkout fails with the limit far above the pool",
     )
+    return {"hypothesis_evidence_links": [link], "hypotheses_to_update": [refute]}
+
+
+_REFUTING_ROW = "checkout returns 503 with max_connections at 500"
+
+
+async def _refute_the_cause(eng, case, turn, **updates) -> dict:
+    """The model refutes the identified cause on a row on record (INV-47)."""
     return await _turn(
-        eng,
-        case,
-        turn,
-        _ev(_PRESENT, "checkout returns 503 with max_connections at 500"),
-        hypothesis_evidence_links=[link],
-        hypotheses_to_update=[refute],
+        eng, case, turn, _ev(_PRESENT, _REFUTING_ROW), **_refutation(case), **updates
     )
 
 
@@ -1571,6 +1575,12 @@ async def test_a_pending_fix_wins_over_its_downgraded_re_send_named_by_new_index
 
     assert (x.state, x.accepted_in_turn) == ("accepted", 6)
     assert len(case.action_attempts) == 1
+    copy = case.proposed_actions[-1]
+    assert (copy.action_type, copy.state, copy.superseded_reason) == (
+        InvestigationActionType.DIAGNOSTIC,
+        "superseded",
+        "stale_pending",
+    )
 
 
 async def test_a_bare_acceptance_of_a_downgraded_fix_gets_the_license_line():
@@ -1593,11 +1603,16 @@ async def test_a_bare_acceptance_of_a_downgraded_fix_gets_the_license_line():
     assert _LICENSE in meta["system_feedback"]
 
 
-async def test_a_carry_whose_copy_an_earlier_bundle_staged_gets_the_license_line():
-    """E3 (P11): bundle 14 stages the re-send of the failed X, bundle 15 carries
-    the acceptance; the license is down at confirmation, so the replay mints X
-    a DIAGNOSTIC in bundle 14, which bundle 15's carry sees."""
+async def test_a_carry_whose_copy_an_earlier_bundle_staged_is_a_reassertion():
+    """E3 (P11), under the general rule (#2256): bundle 14 stages the re-send
+    of the failed X, bundle 15 carries the acceptance; the license is down at
+    confirmation, so the replay mints X a DIAGNOSTIC in bundle 14, and bundle
+    14's recompute restores the license. At bundle 15 the copy yields to the
+    accepted X: no false license line. The revision leaves no FAILED window on
+    record, so X is the standing fix and the carry a re-assertion, absorbed
+    (``_note_failed_fix`` says nothing while identity keeps the fix)."""
     eng, case = await _relapsed()
+    (first,) = _solutions(case)
     case.current_turn = 14
     _revise(case)
     await _turn(eng, case, 14, solutions_to_add=[_fix(_FIRST)])
@@ -1612,8 +1627,157 @@ async def test_a_carry_whose_copy_an_earlier_bundle_staged_gets_the_license_line
 
     meta = await _confirm(eng, case, 16)
 
-    assert _LICENSE in meta["system_feedback"]
+    assert case.proposed_actions[-1].action_type == InvestigationActionType.DIAGNOSTIC
+    assert stage_gates.standing_fix_action(case, _FIRST) is first
+    assert (first.state, first.accepted_in_turn) == ("accepted", 6)
     assert len(case.action_attempts) == 1
+    assert "system_feedback" not in meta
+
+
+async def test_a_carried_re_run_of_a_failed_fix_gets_the_re_propose_line():
+    """The state rule at the function (#2256): a carried bearer that is the
+    ACCEPTED X whose window FAILED gets ``_note_failed_fix``'s accurate line,
+    as a live turn does, never silence. (Through the engine, a revision commit
+    leaves no FAILED window on record, so E3 above is a re-assertion.)"""
+    _eng, case = await _relapsed()
+    (first,) = _solutions(case)
+    assert stage_gates.standing_fix_action(case, _FIRST) is None
+    meta: dict = {}
+
+    registers = stage_gates._bearer_registers(
+        case, first, meta, carried=True, licensed=True
+    )
+
+    assert registers is False
+    assert f"SOLUTION {first.action_id} is registered, and its fix window failed" in (
+        meta["system_feedback"]
+    )
+
+
+async def _hold_withdraws_x_and_carries_it(*, refuted=False):
+    """#2256's shape: pending X; the hold at 6 withdraws it (``license_lost``)
+    and stages its re-send; 7 carries X by id; the license is down at the
+    confirmation, so the replay mints the re-send a DIAGNOSTIC in bundle 6.
+    ``refuted``: bundle 6 also stages a refutation of the cause, so its
+    recompute cannot restore the license."""
+    eng, case = _identified()
+    await _turn(eng, case, 5, solutions_to_add=[_fix(_FIRST)])
+    (x,) = _solutions(case)
+    case.current_turn = 6
+    _revise(case)
+    if refuted:
+        await _refute_the_cause(eng, case, 6, solutions_to_add=[_fix(_FIRST)])
+    else:
+        await _turn(eng, case, 6, solutions_to_add=[_fix(_FIRST)])
+    assert (x.state, x.superseded_reason) == ("superseded", "license_lost")
+    await _turn(eng, case, 7, milestones=_accepted(x.action_id))
+    assert [b.held_fix for b in pending_revision(case).staged] == [None, _FIRST]
+    _license_down(case)
+    return eng, case, x
+
+
+async def test_a_carried_fix_registers_once_the_license_returns_between_bundles():
+    """#2256: bundle 6's recompute restores the license, so at bundle 7 the
+    carried X registers, stamped 7, and the downgraded copy no longer outranks
+    it: no license line."""
+    eng, case, x = await _hold_withdraws_x_and_carries_it()
+
+    meta = await _confirm(eng, case, 8)
+
+    copy = case.proposed_actions[-1]
+    assert copy.action_type == InvestigationActionType.DIAGNOSTIC
+    assert (x.state, x.accepted_in_turn) == ("accepted", 7)
+    assert _accepted_turns(case) == [7]
+    assert len(case.action_attempts) == 1
+    assert _LICENSE not in meta.get("system_feedback", "")
+    # The copy is retired with the registration: no pending action is left to
+    # render as the current ask.
+    assert (copy.state, copy.superseded_reason) == ("superseded", "stale_pending")
+    assert all(a.state != "pending" for a in case.proposed_actions)
+
+
+async def test_a_carried_fix_stays_refused_while_the_license_is_down():
+    """Pin (#2256): the same shape with the cause refuted in bundle 6, so its
+    recompute cannot restore the license: at bundle 7 the downgraded copy
+    outranks the withdrawn X, which gets the license line and does not
+    register."""
+    eng, case, x = await _hold_withdraws_x_and_carries_it(refuted=True)
+
+    meta = await _confirm(eng, case, 8)
+
+    diagnostic = case.proposed_actions[-1]
+    assert diagnostic.action_type == InvestigationActionType.DIAGNOSTIC
+    assert f"{diagnostic.action_id} {_LICENSE}" in meta["system_feedback"]
+    assert (x.state, x.accepted_in_turn) == ("superseded", None)
+    assert case.action_attempts == []
+
+
+async def test_a_carried_fix_withdrawn_before_the_hold_stays_refused_at_the_replay():
+    """INV-32 at the replay (#2256 review, finding 5): X was withdrawn
+    ``license_lost`` at 6, before the hold began at 7. Bundle 7 stages X's
+    re-send; bundle 8 re-establishes the root and carries X by its re-send
+    (``_hold_settles`` carries a fix this response proposes). The replay mints
+    the re-send a DIAGNOSTIC at 7 and the license holds at 8, yet the carry
+    does not land on the withdrawn X: the hold's own refusal, worded as the
+    hold turn words it."""
+    eng, case = _identified()
+    await _turn(eng, case, 5, solutions_to_add=[_fix(_FIRST)])
+    (x,) = _solutions(case)
+    await _refute_the_cause(eng, case, 6)
+    case.current_turn = 7
+    _revise(case)
+    assert pending_revision(case).held_since_turn == 7
+    await _turn(eng, case, 7, solutions_to_add=[_fix(_FIRST)])
+    await _turn(
+        eng,
+        case,
+        8,
+        root_cause_conclusion=RootCauseConclusionUpdate(
+            root_cause="max_connections too low for the checkout pool",
+            mechanism="the pool saturates the limit under peak",
+            likelihood=0.85,
+        ),
+        solutions_to_add=[_fix(_FIRST)],
+        milestones=_accepted("new_index_0"),
+    )
+    assert [b.held_fix for b in pending_revision(case).staged] == [None, _FIRST]
+
+    meta = await _confirm(eng, case, 9)
+
+    assert case.proposed_actions[-1].action_type == InvestigationActionType.DIAGNOSTIC
+    assert (x.state, x.accepted_in_turn) == ("superseded", None)
+    assert case.action_attempts == []
+    assert f"{x.action_id} was withdrawn while its root cause" in (
+        meta["system_feedback"]
+    )
+
+
+async def test_a_carried_fix_with_only_a_downgraded_copy_gets_the_downgraded_line():
+    """#2256 review, finding 1: a fix only ever staged (never a SOLUTION) is
+    minted a DIAGNOSTIC in bundle 6, whose recompute restores the license;
+    bundle 7 carries it. The line says it was downgraded when proposed and
+    asks for a re-proposal, not that the cause is no longer established."""
+    eng, case = _identified()
+    _revise(case)
+    await _turn(eng, case, 6, solutions_to_add=[_fix(_SECOND)])
+    await _turn(
+        eng,
+        case,
+        7,
+        solutions_to_add=[_fix(_SECOND)],
+        milestones=_accepted("new_index_0"),
+    )
+    _license_down(case)
+
+    meta = await _confirm(eng, case, 8)
+
+    (copy,) = case.proposed_actions
+    assert copy.action_type == InvestigationActionType.DIAGNOSTIC
+    assert case.action_attempts == []
+    assert f"{copy.action_id} was downgraded to a DIAGNOSTIC when it was proposed" in (
+        meta["system_feedback"]
+    )
+    assert _LICENSE not in meta["system_feedback"]
 
 
 async def test_a_fix_carried_in_this_revision_is_neither_named_nor_carried_again():
