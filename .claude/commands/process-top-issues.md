@@ -69,7 +69,7 @@ set -o pipefail; gh pr list -R FaultMaven/faultmaven --state all --search "<n> i
 | 1 | its PR merged | at step 1: its merged head must be the head its newest `## Merge-ready` names, with no `## Pulled` after it; else file `PR #<p> merged at an unvouched head` (search first), naming `git log --oneline R..<merged head>`, or the whole PR when no `R` exists, in `pile:blocked` on an owner ruling on how to review them. At step 4, an open item whose PR merged this round waits for step 1's edit-down and a new proposal; one whose PR merged earlier reads on from row 11 |
 | 2 | the item, or an item its PR closes, in `pile:blocked` on an owner ruling (`**Blocked on:** an owner ruling on …`), with that PR open, or with a plan of this round and no pull newer than it | that item's pull is unfinished: finish *To pull an item* for it from its first step not done |
 | 3 | the item in `pile:blocked` | it waits on its blocker |
-| 4 | its PR open, its newest `## Review` or `## Delta` clean, and a required check red because `main` is (a `main red` issue, step 4.6) or a service it needs is down | waiting: leave it until that issue closes or the check passes when re-run (`gh run rerun <run-id> --failed`); then merge `main` in and go on at row 6 or 9 |
+| 4 | its PR open, its newest `## Review` or `## Delta` clean or its findings waived by a ruling, and a required check red because `main` is (a `main red` issue, step 4.6) or a service it needs is down | waiting: leave it until that issue closes or the check passes when re-run (`gh run rerun <run-id> --failed`); then merge `main` in and go on at row 6 or 9 |
 | 5 | its PR in the merge queue at a merge-ready's `H`, with none of row 6's triggers (`gh api graphql -f query='{repository(owner:"FaultMaven",name:"faultmaven"){pullRequest(number:<p>){isInMergeQueue timelineItems(last:5,itemTypes:[REMOVED_FROM_MERGE_QUEUE_EVENT]){nodes{... on RemovedFromMergeQueueEvent{createdAt reason}}}}}}'`) | leave it |
 | 6 | its PR open after a merge-ready, and code after `H` (the vouched-head check), an owner comment after the merge-ready, a conflict with `main`, a queue removal dated after it (row 5's query; quote its `reason`), or a red required check | refresh: merge `main` in, the change made (by the lane, by you for a conflict), a delta of what changed (step 4.5), CI, merge-ready again; a refresh whose `## Delta` is newer than its trigger goes on at row 8 or 9. A `fixed` finding in that delta gets one fix commit and one delta; a `fixed` finding in that one pulls the item. A red check the merge base also has makes it row 4, never a pull |
 | 7 | its PR open after a merge-ready at `H` | merge-ready: carried under *Yours to run* |
@@ -312,12 +312,12 @@ To **pull** an item:
 
    ```bash
    p=<pulled>; k='\b(close[sd]?|fix(e[sd])?|resolve[sd]?'
-   n="):?[[:space:]]+((FaultMaven/faultmaven)?#|https://github\.com/FaultMaven/faultmaven/issues/)$p\b"
-   grep -iqE "$k$n" <<<"Closes FaultMaven/faultmaven#$p" || { echo error; exit 1; }
+   s="):?[[:space:]]+((FaultMaven/faultmaven)?#|https://github\.com/FaultMaven/faultmaven/issues/)$p\b"
+   grep -iqE "$k$s" <<<"Closes FaultMaven/faultmaven#$p" || { echo error; exit 1; }
    c=$(git log --format=%B origin/main..<head>) && b=$(gh pr view <n> --json title,body --jq '.title, .body') || { echo error; exit 1; }
    l=$(gh api graphql -f query='{repository(owner:"FaultMaven",name:"faultmaven"){pullRequest(number:<n>){closingIssuesReferences(first:50){nodes{number}}}}}' \
      --jq '.data.repository.pullRequest.closingIssuesReferences.nodes[].number') || { echo error; exit 1; }
-   { grep -iqE "$k$n" <<<"$c" || grep -iqE "$k|refs$n" <<<"$b" || grep -qx "$p" <<<"$l"; } && echo named || echo none
+   { grep -iqE "$k$s" <<<"$c" || grep -iqE "$k|refs$s" <<<"$b" || grep -qx "$p" <<<"$l"; } && echo named || echo none
    ```
 
    A commit message that names it pulls the whole PR;
@@ -353,9 +353,9 @@ each PR in the round that first reports it. Then stop.
 - **Implement the plan; do not re-plan.** Where the code disagrees with the plan, stop and report what you found.
 - **Worktree:** the branch, directory and base your brief names. A new lane runs, as one command,
   `git fetch origin main && git worktree add -b <branch> /home/swhouse/product/faultmaven/.claude/worktrees/<dir> <base>`,
-  and stops and reports if the branch or the directory exists. A resumed lane works in that directory, adding it
-  with `git worktree add /home/swhouse/product/faultmaven/.claude/worktrees/<dir> <branch>` if only the branch exists.
-  Never work in the main checkout, and never delete its `./data`.
+  and stops and reports if the branch or the directory exists. A resumed lane works in that directory, adding it with
+  `git worktree add /home/swhouse/product/faultmaven/.claude/worktrees/<dir> <branch>` if only the branch exists, or
+  as a new lane if neither does. Never work in the main checkout, and never delete its `./data`.
 - **Before pushing,** run `black --check faultmaven/ tests/`, `ruff check faultmaven/ tests/`, `lint-imports`, and
   the tests that cover the change, plus `python scripts/check_contract_version.py` if `docs/reference/api/`
   moved. Not the whole suite: CI runs it.
