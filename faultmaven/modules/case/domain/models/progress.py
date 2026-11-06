@@ -170,8 +170,9 @@ class MitigationRecord(BaseModel):
     gate signals plus the workaround ProposedAction:
     - ``proposed_at_turn`` is set when a ``solution_type=workaround`` action is created.
     - ``accepted`` / ``verified`` mirror the LLM gate signals (compliance detection).
-    - ``completed_at_turn`` is set the turn ``verified`` flips True (the boundary for
-      up-weighting pre-mitigation evidence in any later RCA).
+    - ``completed_at_turn`` is set when ``verified`` flips True, to the turn the
+      verification was reported (a replayed one's hold turn, #2537): the boundary
+      for up-weighting pre-mitigation evidence in any later RCA.
 
     Single record per investigation for now (redesign §3.2.1); the flow stays open
     to user-led action so a non-mitigating insert is never a dead-end.
@@ -189,7 +190,10 @@ class MitigationRecord(BaseModel):
     )
     completed_at_turn: Optional[int] = Field(
         default=None,
-        description="Turn `verified` flipped True (Gate-3-equivalent boundary)",
+        description=(
+            "Turn the verification that flipped `verified` True was reported, "
+            "a replayed one's hold turn (#2537) (Gate-3-equivalent boundary)"
+        ),
     )
 
     @model_validator(mode="after")

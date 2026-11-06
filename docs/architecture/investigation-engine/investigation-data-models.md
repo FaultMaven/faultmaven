@@ -498,8 +498,9 @@ class MitigationRecord(BaseModel):
     )
     completed_at_turn: Optional[int] = Field(
         default=None,
-        description="Turn `verified` flipped True — boundary for up-weighting "
-                    "pre-mitigation evidence in any later RCA",
+        description="Turn the verification that flipped `verified` True was "
+                    "reported, a replayed one's hold turn (#2537) — boundary for "
+                    "up-weighting pre-mitigation evidence in any later RCA",
     )
 
     @model_validator(mode="after")
