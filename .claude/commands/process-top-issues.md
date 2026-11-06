@@ -55,9 +55,9 @@ Reviewers are independent agents: they never wrote or planned what they review.
 
 Steps 1 and 4 take the first row matching an item's records. **Its PR** is the newest PR on its plan's branch (its
 lead's, for a shared lane) whose body names it with a closing keyword or `Refs`, else the newest that names it (the
-command lists them, newest last). `R` is the head in its PR's newest `## Review` or `## Delta`; `H`, the same with
-`## Merge-ready`. A **pull** is the newest `## Pulled` on the item, or on its PR when that comment closed it; a **live
-ruling**, a `## Ruling` on the item after its newest plan and pull, and after its PR merged when it did.
+command lists them, newest last). `R` is the head in its PR's newest `## Review` or `## Delta`; `H`, the newest of
+those and `## Merge-ready`. A **pull** is the newest `## Pulled` on the item, or on its PR when that comment closed
+it; a **live ruling**, a `## Ruling` on the item after its newest plan and pull, and after its PR merged when it did.
 
 ```bash
 set -o pipefail; gh pr list -R FaultMaven/faultmaven --state all --search "<n> in:body" --limit 1000 --json number,state,headRefName,body,createdAt \
@@ -69,13 +69,13 @@ set -o pipefail; gh pr list -R FaultMaven/faultmaven --state all --search "<n> i
 |---|---|---|
 | 1 | its PR merged | at step 1: its merged head must be the head its newest `## Merge-ready` names, with no `## Pulled` after it; else file `PR #<p> merged at an unvouched head` (search first), naming `git log --oneline R..<merged head>`, or the whole PR when no `R` exists, in `pile:blocked` on an owner ruling on how to review them. At step 4, an open item whose PR merged since this round's proposal waits for step 1's edit-down and a new proposal; one whose PR merged before it reads on from row 11 |
 | 2 | the item, or an item its PR closes, in `pile:blocked` with a `**Blocked on:** an owner ruling on …` line or with no `**Blocked on:**` line; and either that PR open, or a plan of the round being settled with no pull newer than it | that item's pull is unfinished: finish *To pull an item* for it from its first step not done |
-| 3 | the item, or an item its PR closes, in `pile:blocked` | it waits on its blocker, and that PR is not merge-ready meanwhile |
-| 4 | its PR open, its newest `## Review` or `## Delta` clean or its findings waived by a ruling, and a required check red because `main` is (a `main red` issue, step 4.6) or a service it needs is down | waiting: leave it until that issue closes or the check passes when re-run (`gh run rerun <run-id> --failed`); then merge `main` in and go on at row 6 or 9 |
+| 3 | the item in `pile:blocked` | it waits on its blocker |
+| 4 | its PR open, its newest `## Review` or `## Delta` clean or its findings waived by a live ruling, and a required check red because `main` is (a `main red` issue, step 4.6) or a service it needs is down | waiting: leave it until that issue closes or the check passes when re-run (`gh run rerun <run-id> --failed`); then merge `main` in and go on at row 6 or 9 |
 | 5 | its PR in the merge queue at a merge-ready's `H`, with none of row 6's triggers (`gh api graphql -f query='{repository(owner:"FaultMaven",name:"faultmaven"){pullRequest(number:<p>){isInMergeQueue timelineItems(last:5,itemTypes:[REMOVED_FROM_MERGE_QUEUE_EVENT]){nodes{... on RemovedFromMergeQueueEvent{createdAt reason}}}}}}'`) | leave it |
 | 6 | its PR open after a merge-ready, and code after the merge-ready's head (the vouched-head check), an owner comment after the merge-ready, a conflict with `main`, a queue removal dated after it with the PR not back in the queue (row 5's query; quote its `reason`), or a red required check | refresh: merge `main` in, the change made (by the lane, by you for a conflict), a delta of what changed (step 4.5), CI, merge-ready again; a refresh with a `## Delta` after the merge-ready goes on at row 8 or 9, unless an owner comment, a conflict or a red check is newer than that delta. A `fixed` finding in that delta gets one fix commit and one delta; a `fixed` finding in that one pulls the item. A red check the merge base also has makes it row 4, never a pull |
-| 7 | its PR open after a merge-ready at `H` | merge-ready: carried under *Yours to run* |
+| 7 | its PR open after a merge-ready at `H` | merge-ready: carried under *Yours to run*; while an item it closes is in `pile:blocked`, it is not merge-ready and waits on that item's blocker |
 | 8 | its PR open; its newest `## Review` or `## Delta` has a `fixed` finding neither landed nor waived by a live ruling | a pull trigger met since its newest live ruling, or ever when it has none, pulls it: the cap or size (step 4.5), or a `fixed` finding in a re-entry delta (row 12) or in a refresh's second delta (row 6). Else the fix commit, then a delta of the commits since `R` (row 12's, when its live ruling grants a re-entry) |
-| 9 | its PR open; its newest `## Review` or `## Delta` is clean, or its findings are waived by a live ruling | the vouched-head check from `R` (step 4.6); code after `R` gets a delta first; then merge-ready |
+| 9 | its PR open; its newest `## Review` or `## Delta` is clean, or its findings are waived by a live ruling | the vouched-head check from `R` (step 4.6); code after `R` gets a delta first; then merge-ready, or row 7's wait while an item it closes is in `pile:blocked` |
 | 10 | its PR open, no review | *Verify*, then the review (steps 4.3–4.4) |
 | 11 | a `## Plan — round <N>` newer than any pull, live ruling and PR of the item, and no open PR | resume a lane on that plan, in the branch and worktree it names |
 | 12 | a pull that closed its PR, which has not merged since, and a live ruling granting one more fix and delta, an exception commit or a merge as is | re-entry: `gh pr reopen` it. A merge as is waives its outstanding findings, each filed as an issue: row 9. Else the lane adds one commit on its branch, and a delta of only that commit, outside the cap, where a `fixed` finding pulls it again |
@@ -176,8 +176,8 @@ free slot). Each starts at its row in *Where an item stands*; one whose plan (ne
      thresholds. A repo-scanning guard, census or lint only when you can name an incident where the
      same class came back after an earlier fix. Such a guard is exercised through the path that runs it, and
      reverting the fix makes it fail;
-   - **the size budget:** estimated product and test lines. A product budget past twice the proposal's estimate (or
-     the newest one an owner ruling set) and 50 lines over it pulls the item before a lane is sent, step 4.5's bound;
+   - **the size budget:** estimated product and test lines. A product budget past twice the newest estimate (the
+     proposal's, or a later one an owner ruling set) and 50 lines over it pulls the item before a lane, as 4.5 does;
    - **a probe,** when the plan chooses a mechanism (a classifier rule, a predicate, a library behaviour): the
      realistic inputs you ran it against before sending a lane, negatives first, and what each returned;
    - **the decisions.** Any choice about what a user sees, overriding a documented decision, deleting data,
@@ -193,7 +193,7 @@ free slot). Each starts at its row in *Where an item stands*; one whose plan (ne
    For a **verification** item, run the reproduction yourself. If the defect is dead, close the issue with a `## Closed`
    comment citing what fixed it and the evidence. If it is alive, plan it as above.
 2. **Lane.** Send a fresh agent on your model. Use `sonnet` only for a docs-only change outside `.claude/` and
-   `CLAUDE.md`. Its prompt holds the issue, the ruling, your plan, the done-when, the branch, directory and base the
+   `CLAUDE.md`. Its prompt holds the issue, its rulings, your plan, the done-when, the branch, directory and base the
    plan names (new, or on an existing branch: rows 2, 6, 8, 10, 11, 12), and *Lane rules* below, verbatim.
    Run lanes in the background. Meanwhile, plan the next item; and once a round, check the 5 oldest ready `P3`s
    outside the round with no `## Evidence — premise` in 30 days. One is dead only when a reproduction showing its
@@ -247,10 +247,10 @@ free slot). Each starts at its row in *Where an item stands*; one whose plan (ne
      finding pulls the item, unless each such finding is a comment, docstring, document or missing test whose fix
      touches only comments, docstrings no code reads (not a model's or a route's), `docs/` or `tests/`: that fix,
      if its commit keeps to them, gets one more delta, once, outside the cap, where a `fixed` finding pulls the item.
-   - **Size.** Passing twice the plan's product budget (or the newest one an owner ruling set, until a newer plan or
-     ruling sets another; never one you restated) and 50 lines over it pulls the item, as does growth carrying an
-     owner-reserved decision. Test lines never count against it (#2198). Any smaller overrun, and any test overrun, is
-     stated, with the new estimate, in the delta and the merge-ready.
+   - **Size.** Passing twice the plan's product budget (or the newest budget an owner ruling set after it; never one
+     you restated) and 50 lines over it pulls the item, as does growth carrying an owner-reserved decision. Test lines
+     never count against it (#2198). Any smaller overrun, and any test overrun, is stated, with the new estimate, in
+     the delta and the merge-ready.
    - **Never review the same code twice.** Each plan gets at most one design critique, and each PR one adversarial
      review and two fix deltas, plus the text-or-test one above; more fix rounds pull the item to the owner (a
      rebuild, row 13, is a new plan and PR). A re-entry, a refresh, a conflict resolution or a change the owner asks
@@ -294,7 +294,7 @@ free slot). Each starts at its row in *Where an item stands*; one whose plan (ne
 
    A PR is merge-ready only when, on its final head: every lane on it has ended, so nothing pushes after you vouch; no
    item it closes is in `pile:blocked`; the review and every delta are clean, with every finding landed or waived by a
-   ruling; the vouched-head check prints `clean`; every required check is green; it is not a draft; and on it you
+   live ruling; the vouched-head check prints `clean`; every required check is green; it is not a draft; and on it you
    re-ran each lane's test command for any of its tests CI did not run there (a `skipif` the CI jobs meet, a suite the
    `changes` job skipped; `real_llm` only on the owner's approval). Then comment `## Merge-ready — <head>` with the
    base, the plan link, the design critique and its declined points, the review level, each delta's range and
