@@ -306,7 +306,8 @@ class TurnProgress(BaseModel):
         description=(
             "The engine's notices to the model from this turn, each whole, "
             "prepended ones first (e.g., 'Invalid evidence ID'); the next "
-            "prompt renders whole notices from the head, never a cut one (#2499)"
+            "prompt renders whole notices from the head, and cuts one only "
+            "when none fits whole: the first, head-cut with a marker (#2499)"
         ),
         max_length=MAX_SYSTEM_NOTICES,
     )

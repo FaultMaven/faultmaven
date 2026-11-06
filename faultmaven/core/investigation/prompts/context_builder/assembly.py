@@ -479,8 +479,8 @@ def system_feedback_block(
     The notices render whole, in record order (prepended first, then
     chronological), until the next would take the block over ``max_tokens``
     as ``count`` measures it; then one line says how many were omitted. A
-    notice is never cut mid-sentence (#2499). Without ``max_tokens`` every
-    notice renders: the fallback bounds its copy itself.
+    notice is cut only when no whole one fits: the first, head-cut with the
+    record's marker (#2499). Without ``max_tokens`` every notice renders.
 
     ``guard`` wraps the notice text alone; the fallback passes its
     ``_guarded``. Wrapping the finished block instead would put a terminator

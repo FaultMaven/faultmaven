@@ -801,7 +801,7 @@ def _withdraw_unlicensed_solution_offers(
                     "fix, or propose a temporary mitigation (WORKAROUND) instead."
                 )
             ),
-            # Prepend (see docstring): truncation keeps the head.
+            # Prepend: notices are dropped whole from the tail, so this goes last.
             prepend=True,
         )
     return count
@@ -1005,7 +1005,8 @@ def _add_system_feedback(
     One whole notice per call, onto ``metadata["system_notices"]``: the turn
     record stores the list as it stands (``create_turn_progress``) and the
     prompt renders whole notices from its head until its budget is spent,
-    never one cut mid-sentence (#2499). ``prepend`` puts the notice at the
+    cutting one only when no whole one fits: the first, head-cut with the
+    record's marker (#2499). ``prepend`` puts the notice at the
     HEAD, so on a messy turn (many accumulators active) it is the last one the
     prompt would drop; ``metadata["system_notices_head"]`` counts the
     prepended notices at the head, so a merge of two accumulators

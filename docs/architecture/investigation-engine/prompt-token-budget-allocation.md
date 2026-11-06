@@ -319,8 +319,9 @@ exceeding the hard limit).
   fixed-shape strings the engine emits. `system_feedback` can grow with
   the turn's notices, so it is **bounded** at its cap too, by whole notices:
   `system_feedback_block` renders them from the head of the record's list and
-  replaces the rest with one line saying how many it omitted, never cutting a
-  notice (#2499). This is what substantiates INV-2 for the whole reserve, not
+  replaces the rest with one line saying how many it omitted, cutting a notice
+  only when no whole one fits (the first, head-cut with the record's marker,
+  #2499). This is what substantiates INV-2 for the whole reserve, not
   just `user_message`. `<fix_verification>` (#1906 D7: the fix
   attempts, the resolution legs, the open symptom asks) is bounded by
   construction and capped at `FIX_VERIFICATION_MAX_TOKENS` with its tags kept;

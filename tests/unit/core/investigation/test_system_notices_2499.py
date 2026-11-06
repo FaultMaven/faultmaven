@@ -9,12 +9,20 @@ mid-sentence: the issue's shapes are real turns of the #1906 harness whose
 notices exceed that cut. No live LLM.
 """
 
+from unittest.mock import AsyncMock
+
 import pytest
 
 from faultmaven.core.investigation.milestone_engine.stage_gates import (
     _add_system_feedback,
     add_evidence_validation_feedback,
     merge_system_notices,
+)
+from faultmaven.core.investigation.milestone_engine.statement_revision import (
+    REPLAY_METADATA_KEY,
+)
+from faultmaven.core.investigation.milestone_engine.turn_application import (
+    _apply_turn_response,
 )
 from faultmaven.core.investigation.milestone_engine.turn_records import (
     _create_turn_record,
@@ -28,6 +36,7 @@ from faultmaven.core.investigation.prompts.context_builder.assembly import (
 from faultmaven.core.investigation.prompts.templates.assembly import (
     get_prompt_for_case,
 )
+from faultmaven.core.investigation.schemas import InvestigationResponse_Diagnosis
 from faultmaven.core.investigation.terminal_transitions import (
     PENDING_CHECK_DECLINE_CLAUSE,
 )
@@ -35,9 +44,13 @@ from faultmaven.modules.case.contracts import (
     MAX_SYSTEM_NOTICE_CHARS,
     MAX_SYSTEM_NOTICES,
     NOTICE_CUT_MARKER,
+    ProblemStatus,
     TurnOutcome,
 )
 from tests.case_builders import with_declined_offer
+from tests.unit.core.investigation import (
+    test_problem_statement_revision_and_false_alarm as revision,
+)
 from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
 from tests.unit.core.investigation.test_pending_check_holds_the_offer_1906 import (
     _asked_at_7,
@@ -266,3 +279,79 @@ def test_8_the_record_keeps_nineteen_and_says_how_many_it_dropped():
     assert _record_of(*notices[:MAX_SYSTEM_NOTICES]).system_notices == (
         notices[:MAX_SYSTEM_NOTICES]
     )
+
+
+def _unjustified_mitigation() -> InvestigationResponse_Diagnosis:
+    """A response the reasoning-first strip refuses: its EVIDENCE VALIDATION
+    line is the live turn's prepended notice."""
+    return InvestigationResponse_Diagnosis(
+        agent_response="Noted.",
+        state_updates={"milestones": {"mitigation_accepted": True}},
+    )
+
+
+async def test_9_the_live_prepend_heads_the_record_over_an_early_one():
+    """Through ``_apply_turn_response``: a notice an early step prepended, then
+    the response's own prepended line (the strip). The response is the later
+    writer, so its prepend heads the record and the early one follows."""
+    engine, case = revision._engine(), revision._case(ProblemStatus.VERIFIED)
+    case.current_turn = 5
+    metadata = {**revision._meta(), "outcome": TurnOutcome.CONVERSATION}
+    early = "EARLY: prepended before the model call."
+    _add_system_feedback(metadata, early, prepend=True)
+
+    case_updated, _, _ = await _apply_turn_response(
+        engine.deps.hypothesis_manager,
+        engine.deps.progress_monitor,
+        engine.deps.state_validator,
+        engine.responses,
+        engine.transitions,
+        attachments=None,
+        case=case,
+        metadata=metadata,
+        response_obj=_unjustified_mitigation(),
+        upload_report=None,
+        user_message="the workaround is in",
+    )
+
+    notices = case_updated.turn_history[-1].system_notices
+    assert notices[0].startswith(
+        "EVIDENCE VALIDATION: Milestones ['mitigation_accepted'] were NOT recorded"
+    )
+    assert notices[1] == early
+
+
+async def test_10_a_replayed_validation_line_and_the_live_strip_are_one_line():
+    """Through ``confirm_revision``: the "yes" replays a staged bundle whose
+    metadata carries an EVIDENCE VALIDATION line, and the live response is
+    stripped. The record holds ONE validation line, at its head, naming both.
+    No replay writer emits that line at this head (the bundle carries no
+    justification verdict), so the stage gate's writer is called at the apply
+    seam on the replay's metadata only."""
+    engine, case = revision._engine(), revision._case()
+    await revision._apply(engine, case, revision._revision_turn_with_cause_work())
+    case.current_turn += 1
+    apply = engine.responses._apply_investigation_updates
+
+    async def apply_then_refuse(case, updates, metadata, *args, **kwargs):
+        await apply(case, updates, metadata, *args, **kwargs)
+        if metadata.get(REPLAY_METADATA_KEY):
+            add_evidence_validation_feedback(
+                metadata,
+                not_recorded=["solution_accepted"],
+                errors=["Milestones ['solution_accepted'] completed without X."],
+            )
+
+    engine.responses._apply_investigation_updates = apply_then_refuse
+    engine.generator.generate_structured_output = AsyncMock(
+        return_value=_unjustified_mitigation()
+    )
+
+    result = await engine.process_turn(
+        case=case, user_message="yes", redaction_ctx=None
+    )
+
+    notices = result["case_updated"].turn_history[-1].system_notices
+    validation = [n for n in notices if n.startswith("EVIDENCE VALIDATION")]
+    assert len(validation) == 1 and notices[0] == validation[0]
+    assert "['mitigation_accepted', 'solution_accepted'] were NOT" in notices[0]
