@@ -1862,9 +1862,11 @@ class DIContainer(BaseDIContainer):
         Then it closes everything recorded with :meth:`own`, newest first,
         through ``run_teardown`` (every close runs, a failed one is logged, an
         interruption, the drain's included, is held until all have run), and
-        returns ``True``. From the drain through the closes it keeps
-        ``inflight.draining()`` raised, until a composition takes a hold, so no
-        store write starts under a client it closes (#2532). Once it has
+        returns ``True``. A last release keeps ``inflight.draining()`` raised
+        from its drain until its closes end, whatever composes or resets
+        meanwhile, so no evidence vector write starts under a client it closes
+        (#2532); a second composition's are refused during the closes too. The
+        knowledge base's vector write reads no such flag (#2562). Once it has
         decided, it records for the calling context whether it was the last
         (:meth:`released_last`): a composer whose shutdown raised reads that
         decision. After a last release, whether it returned or raised, the
@@ -1908,10 +1910,10 @@ class DIContainer(BaseDIContainer):
             owned = self._owned[::-1]
             self._owned.clear()  # closed once, whatever the closes do
             self.reset()
-        # Then through the closes, until a composition takes a hold: its writes
-        # go to its own clients. The reset is synchronous, so there is no gap.
-        fresh = self._holds
-        with inflight.raised(lambda: self._holds is fresh and fresh.takes == 0):
+        # Then until the closes end, whatever composes or resets meanwhile: the
+        # flag is the process's, so it cannot tell this composition's writes
+        # from a later one's. The reset is synchronous, so there is no gap.
+        with inflight.raised(lambda: True):
             try:
                 await run_teardown(
                     [
@@ -1959,22 +1961,16 @@ class DIContainer(BaseDIContainer):
 
 
 async def _drain_work_in_flight(last) -> None:
-    """The last release's drain, importing it in the step (#2267)."""
-    from faultmaven.infrastructure.concurrency.inflight import drain
-
-    await drain(last=last)
+    """The last release's drain."""
+    await inflight.drain(last=last)
 
 
 def _let_leases_lapse() -> None:
-    from faultmaven.infrastructure.concurrency.inflight import let_leases_lapse
-
-    let_leases_lapse()
+    inflight.let_leases_lapse()
 
 
 async def _cancel_cancellable() -> None:
-    from faultmaven.infrastructure.concurrency.inflight import cancel_cancellable
-
-    await cancel_cancellable()
+    await inflight.cancel_cancellable()
 
 
 # Global container access - always returns the current singleton instance

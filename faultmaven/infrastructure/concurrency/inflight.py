@@ -162,24 +162,26 @@ def tracked(what_prefix: str = "") -> Set["asyncio.Task[Any]"]:
 
 
 def draining() -> bool:
-    """Whether a drain, or a last release's closes, run that no hold has
-    superseded: a store write that has not started must not start. A drain
-    stops counting toward it once a hold is taken after its release, and never
-    counts again (a drain no longer the last closes nothing); another drain
-    still the last keeps it raised. A last release keeps the flag raised from
-    its drain through its closes, until a composition takes a hold: that
-    composition writes through its own clients."""
+    """Whether a drain runs whose release no hold has superseded, or a last
+    release's closes run: a store write that has not started must not start.
+    A drain stops counting toward it once a hold is taken after its release,
+    and never counts again (a drain no longer the last closes nothing);
+    another drain still the last keeps it raised. A last release keeps the
+    flag raised from its drain until its closes end, whatever composes or
+    resets meanwhile, so a second composition's evidence writes are refused
+    during those closes."""
     return any(last() for last in list(_DRAINS))
 
 
 @contextlib.contextmanager
 def raised(last: Callable[[], bool]) -> Iterator[None]:
     """Count ``last`` toward :func:`draining` while the block runs."""
-    _DRAINS.append(last)
+    drains = _DRAINS  # removed from the list it joined
+    drains.append(last)
     try:
         yield
     finally:
-        _DRAINS.remove(last)
+        drains.remove(last)
 
 
 async def drain(
@@ -190,13 +192,14 @@ async def drain(
     Waits for every tracked task, those spawned meanwhile included, up to
     ``timeout_s`` (default ``DRAIN_BOUND_SECONDS``). Then it cancels the
     ``cancellable`` rest, gives them ``CANCEL_GRACE_SECONDS``, and awaits the
-    ``must_finish`` ones with no bound. Last, the case leases being released
-    get the same grace. Once ``last()`` turns false (the release is no longer
-    the last), this drain stops counting toward :func:`draining` at once,
-    while it still waits for this loop's work up to its bound. Past the bound,
-    a drain no longer the last returns at once, cancelling nothing more. One
-    that stops being the last while it waits for the ``must_finish`` work it
-    did not cancel returns once that work ends.
+    ``must_finish`` ones with no bound. Once no work is left, the case leases
+    being released get the same grace, and it returns. Once ``last()`` turns
+    false (the release is no longer the last), this drain stops counting
+    toward :func:`draining` at once and cancels nothing more: it still waits
+    for this loop's work up to its bound, then returns, leaving the rest
+    running. Superseded past the bound, during the cancel grace or the wait
+    after it, it still ends that grace and waits, with no bound, for the
+    ``must_finish`` work it did not cancel.
     Interrupted, it cancels nothing and re-raises: a last release then calls
     :func:`cancel_cancellable`. **Residual:** an interrupted shutdown does not
     wait for a settlement, which can then meet closed stores.

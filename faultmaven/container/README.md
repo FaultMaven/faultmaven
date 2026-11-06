@@ -153,8 +153,10 @@ to its event loop and is never recorded. `shutdown()` names no resource.
      rules (every close runs, a failed one is logged, an interruption, the
      drain's included, is held until all have run). It returns `True`. The
      draining flag (`inflight.draining()`), raised since the drain, stays
-     raised through the closes until a composition takes a hold, so no store
-     write starts under a client being closed. The composer, whether its
+     raised until the closes end, whatever composes or resets meanwhile, so
+     no evidence vector write starts under a client being closed; a second
+     composition's are refused during the closes too. The knowledge base's
+     vector write reads no such flag (#2562). The composer, whether its
      release returned or raised, yields to any hold still held when it reads
      (all taken since its reset): it skips what only the last may stop.
 
