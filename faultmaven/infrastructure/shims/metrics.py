@@ -461,11 +461,16 @@ request_counter = Counter(
 #           slow-but-healthy one rather than sharing its bucket
 #   120.0 - AGENT_REQUEST_TIMEOUT's default: past this a request has outlived
 #           its own declared budget, which is a different fault from latency
-# One ladder for both request histograms (#1529): an LLM call is the body of a
-# turn, so `llm_request_duration_seconds` spans the same range as the request
-# that carries it, and 120s is AGENT_REQUEST_TIMEOUT's default for the call
-# as for the request. On the defaults a slow-but-succeeding provider was
-# invisible: every call above 10s was the same +Inf observation.
+#   300.0, 600.0 - up to MAX_AGENT_TIMEOUT_SECONDS, the product's maximum
+#           agent timeout; a local-model call under
+#           LLM_PROVIDER_TIMEOUT_OVERRIDES='{"ollama": 600}' lands here
+# One ladder for both request histograms (#1529). A routed LLM call's ceiling
+# is max(LLM_REQUEST_TIMEOUT, LLM_PROVIDER_TIMEOUT_OVERRIDES[provider]) clamped
+# to the turn's remainder (router._resolve_timeout); the request's is
+# AGENT_REQUEST_TIMEOUT (default 120, max 600). `llm_request_duration_seconds`
+# records routed calls only (a dedicated DA_PROVIDER sends directly and is not
+# in the series). On prometheus_client's defaults a slow-but-succeeding
+# provider was invisible: every call above 10s was the same +Inf observation.
 _REQUEST_DURATION_BUCKETS = (
     0.005,
     0.01,
@@ -486,6 +491,8 @@ _REQUEST_DURATION_BUCKETS = (
     30.0,
     60.0,
     120.0,
+    300.0,
+    600.0,
     float("inf"),
 )
 

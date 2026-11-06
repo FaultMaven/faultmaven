@@ -343,7 +343,10 @@ class TestHttpDurationBucketsSpanRealTraffic:
     ORDINARY_READ = 0.4  # a DB-backed read
     HEALTHY_TURN = 14.95  # slowest healthy turn (turn 4, deepest context)
     HUNG_PROVIDER_TURN = 68.7  # retry ladder against a hung provider -> 503
-    HEALTHY_LLM_CALL = 8.2  # llm_request_duration_seconds p95 measured (#1529)
+    # LLM calls (#1529): 8.2s is the Prometheus p95 of llm_request_duration_seconds
+    # reported there, 25.0s the slow-but-succeeding shape the issue names.
+    HEALTHY_LLM_CALL = 8.2
+    SLOW_SUCCEEDING_LLM_CALL = 25.0
 
     @staticmethod
     def _bucket_reached(buckets, observation):
@@ -388,6 +391,8 @@ class TestHttpDurationBucketsSpanRealTraffic:
             self.ORDINARY_READ,
             self.HEALTHY_TURN,
             self.HUNG_PROVIDER_TURN,
+            self.HEALTHY_LLM_CALL,
+            self.SLOW_SUCCEEDING_LLM_CALL,
             # Exactly on a bound. The only observation that distinguishes
             # `le` (<=, what Prometheus does: this reaches 10.0) from `<`
             # (which would push it into the 15.0 bucket), so without it the
@@ -442,29 +447,6 @@ class TestHttpDurationBucketsSpanRealTraffic:
         assert probe != read
         assert probe <= 0.05, "a 30ms health probe must not need a 100ms+ bucket"
 
-    def test_a_healthy_llm_call_and_a_hung_one_are_distinguishable(self):
-        """``llm_request_duration_seconds`` carried the defaults (#1529).
-
-        An LLM call is the body of a turn, so it spans the same range the
-        request does — but #1522 widened only ``http_request_duration_seconds``.
-        On the defaults a 68.7s hung call and anything above 10s were the same
-        +Inf observation, reported by every percentile as exactly 10.0s: a
-        provider that is slow but succeeding never showed in the series.
-        """
-        from faultmaven.infrastructure.shims.metrics import _REQUEST_DURATION_BUCKETS
-
-        healthy = self._bucket_reached(_REQUEST_DURATION_BUCKETS, self.HEALTHY_LLM_CALL)
-        hung = self._bucket_reached(_REQUEST_DURATION_BUCKETS, self.HUNG_PROVIDER_TURN)
-
-        assert healthy != hung, (
-            f"a {self.HEALTHY_LLM_CALL}s healthy LLM call and a "
-            f"{self.HUNG_PROVIDER_TURN}s hung one both reach bucket le={healthy}"
-        )
-        assert hung != float("inf"), (
-            "a hung provider's call falls in the overflow bucket, so "
-            "histogram_quantile reports it as the largest finite bound"
-        )
-
     def test_the_shipped_metric_is_wired_to_these_buckets(self):
         """The call site, not just the constant — asserted in BOTH worlds.
 
@@ -483,9 +465,7 @@ class TestHttpDurationBucketsSpanRealTraffic:
         Standalone while passing Test Cloud. Rather than skip in the job most
         likely to regress, each world gets the strongest assertion it admits:
         the real bounds where the library is present, the NoOp degradation
-        where it is not. The degraded arm warns, so a run that never checked
-        the bounds says so in its output instead of looking identical to one
-        that did.
+        where it is not.
         """
         import json
         import os
@@ -559,9 +539,21 @@ class TestHttpDurationBucketsSpanRealTraffic:
             "http_request_duration_seconds is not using the buckets chosen for "
             "this API's measured latency range"
         )
-        assert [float(b) for b in report["llm_bounds"]] == list(
-            _REQUEST_DURATION_BUCKETS
-        ), (
+        llm_bounds = [float(b) for b in report["llm_bounds"]]
+        assert llm_bounds == list(_REQUEST_DURATION_BUCKETS), (
             "llm_request_duration_seconds is not on the request bucket ladder, "
             "so a provider call above 10s is the same +Inf observation (#1529)"
         )
+        # The property over the SHIPPED bounds: a slow-but-succeeding call is
+        # told apart from a healthy one, and the product's maximum agent
+        # timeout still reaches a finite bucket.
+        healthy = self._bucket_reached(llm_bounds, self.HEALTHY_LLM_CALL)
+        slow = self._bucket_reached(llm_bounds, self.SLOW_SUCCEEDING_LLM_CALL)
+        assert healthy != slow, (
+            f"a {self.HEALTHY_LLM_CALL}s call and a "
+            f"{self.SLOW_SUCCEEDING_LLM_CALL}s one both reach le={healthy}"
+        )
+        assert slow != float("inf")
+        assert self._bucket_reached(llm_bounds, 600.0) != float(
+            "inf"
+        ), "MAX_AGENT_TIMEOUT_SECONDS falls in the overflow bucket"
