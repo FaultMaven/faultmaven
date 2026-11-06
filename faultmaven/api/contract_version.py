@@ -1970,7 +1970,9 @@ cannot disagree, and
 `tests/unit/container/test_minimal_case_service_terminal_parity.py` pins it.
 Not contract surface — `MinimalCaseService` is not published — but the same
 sweep found it, and a filter nobody asked for is the same lie as a filter
-nobody applies.
+nobody applies. (Later, #2548 deleted the stand-in; the real service's
+terminal listing is pinned in
+`tests/unit/modules/case/test_case_service_over_sqlite_2548.py`.)
 
 ONE DOCUMENT WAS ARGUING WITH ITSELF and is corrected here.
 `docs/architecture/case-and-session/case-and-session-concepts.md` listed

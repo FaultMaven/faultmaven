@@ -162,17 +162,6 @@ class TestCreateInvestigationTools:
 class TestCreateMilestoneEngine:
     """Tests for create_milestone_engine()."""
 
-    def test_returns_none_without_repository(self):
-        """Returns None when case_repository is None."""
-        mock_provider = MagicMock()
-        mock_tools = MagicMock()
-        result = create_milestone_engine(
-            llm_provider=mock_provider,
-            case_repository=None,
-            investigation_tools=mock_tools,
-        )
-        assert result is None
-
     def test_creates_engine_with_investigation_tools(self):
         """Forwards investigation_tools to MilestoneEngine."""
         mock_provider = MagicMock()

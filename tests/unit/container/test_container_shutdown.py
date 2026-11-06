@@ -159,7 +159,6 @@ async def test_reset_drops_every_cache_and_attribute_composition_left(container)
     container._register_service("redis_client", client)
     container.redis_client = client
     job_service = container.get_job_service()
-    minimal_case_service = container._create_minimal_case_service()
     container.kb_qa_tool = object()
     container.logs_extractor = object()
     assert job_service is not None and job_service.redis_client is client
@@ -172,7 +171,6 @@ async def test_reset_drops_every_cache_and_attribute_composition_left(container)
     container.redis_client = replacement
     assert container.get_job_service() is not job_service
     assert container.get_job_service().redis_client is replacement
-    assert container._create_minimal_case_service() is not minimal_case_service
 
 
 async def test_shutdown_is_idempotent(container):

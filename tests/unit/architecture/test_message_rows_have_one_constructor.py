@@ -159,17 +159,6 @@ _ALLOWED = {
             "faultmaven/modules/case/infrastructure/postgresql_hybrid_case_repository/saving.py",
             "_upsert_messages",
         ): "binds the case's rows into the upsert's parameters",
-        # Not a row of this table at all.
-        (
-            "faultmaven/_container_impl.py",
-            "DIContainer._create_minimal_case_service.MinimalCaseService.create_case",
-        ): (
-            "the degraded-mode stand-in keeps its own in-memory transcript "
-            "(self.case_messages), never case.messages and never the table: no "
-            "aggregate save exists there for a blank row to abort, and its "
-            "reader reads this dict's own shape (timestamp, user_id, "
-            "initial_<case_id>). It already writes no row for a blank message"
-        ),
         ("faultmaven/models/api_messages.py", "MessageResponse"): (
             "an OpenAPI example payload"
         ),

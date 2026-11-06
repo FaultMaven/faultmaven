@@ -85,7 +85,6 @@ def create_case_service(
     session_store: Any | None,
     case_vector_store: Any | None,
     settings: FaultMavenSettings,
-    minimal_factory: callable,
     team_service: Any | None = None,
     share_repository: Any | None = None,
     account_reader: Any | None = None,
@@ -94,16 +93,20 @@ def create_case_service(
 ) -> Any:
     """Create case service for case persistence and management.
 
-    The in-memory ``minimal_factory`` service answers only when no case
-    repository is configured. With one configured, a failure to build the
-    service or its erasers raises ``RequiredServiceConstructionError``, which
-    refuses startup in every environment (#2103). Never a stand-in: the
-    in-memory one lost every case on restart, differed per replica, and
-    reported success for a delete that cleared nothing.
+    No case service exists without a case repository (#2548): one missing, or
+    a failure to build the service or its erasers, raises
+    ``RequiredServiceConstructionError``, which refuses startup in every
+    environment (#2103). ``create_case_repository`` never returns None, so the
+    missing-repository arm is the composition root's own invariant, not a
+    mode. There is no stand-in: the in-memory one lost every case on restart,
+    differed per replica, reported success for a delete that cleared nothing,
+    and was held to ``ICaseService`` by nothing, so six methods the case
+    routes call were missing from it.
     """
     if not case_repository:
-        logger.debug("Case service using minimal implementation (no repository)")
-        return minimal_factory()
+        raise RequiredServiceConstructionError(
+            "CaseService could not be constructed: no case repository"
+        )
 
     try:
         from faultmaven.infrastructure.concurrency.inflight import CaseDeleteGate
@@ -224,9 +227,6 @@ def create_milestone_engine(
             Each is None when its service is unavailable, exactly as the
             engine saw it before.
     """
-    if not case_repository:
-        return None
-
     try:
         from faultmaven.core.investigation.milestone_engine.engine import (
             MilestoneEngine,
@@ -386,8 +386,8 @@ def create_investigation_service(
     file_storage_service: Any | None = None,
 ) -> Any | None:
     """Create investigation service for workflow orchestration."""
-    if not milestone_engine or not case_repository:
-        logger.debug("InvestigationService skipped (missing dependencies)")
+    if not milestone_engine:
+        logger.debug("InvestigationService skipped (no milestone engine)")
         return None
 
     try:
@@ -966,10 +966,6 @@ def create_report_generation_service(
     pii_redactor: Any | None,
 ) -> Any | None:
     """Create report generation service for terminal summaries."""
-    if not case_repository:
-        logger.debug("ReportGenerationService skipped (no case repository)")
-        return None
-
     try:
         from faultmaven.modules.report.domain.services.report_generation_service import (
             ReportGenerationService,
@@ -1369,8 +1365,12 @@ def register_services(container: BaseDIContainer) -> None:
 
     logger.info("🔍 Services: Registering services...")
 
-    # Get dependencies from container
-    case_repository = getattr(container, "case_repository", None)
+    # Get dependencies from container. The case repository is read by its
+    # registered name; the infrastructure layer registers one or refuses
+    # startup (#2103), and `create_case_service` refuses a missing one with
+    # `RequiredServiceConstructionError` (#2548), the one class `initialize`
+    # re-raises ahead of its lenient path.
+    case_repository = container.get_service("case_repository")
     session_store = container.get_service("session_store")
     case_vector_store = getattr(container, "case_vector_store", None)
     redis_client = getattr(container, "redis_client", None)
@@ -1566,7 +1566,6 @@ def register_services(container: BaseDIContainer) -> None:
         session_store,
         case_vector_store,
         settings,
-        container._create_minimal_case_service,
         team_service=team_service,  # Case read allowlist: team-membership resolution
         share_repository=share_repository,  # Case read allowlist: share source (§D4)
         # The account store's directory read (ADR-020 D4/D5): driver
@@ -1583,15 +1582,14 @@ def register_services(container: BaseDIContainer) -> None:
     # The driver releases (ADR-020 D3): leaving a team and deactivation hand a
     # driver's cases back to their creators through the case service. Bound
     # here because both services are built before it.
-    if hasattr(case_service, "release_drivers_for_team_leave"):
-        if team_service is not None:
-            team_service.bind_case_driver_release(case_service)
-        user_service = getattr(container, "user_service", None)
-        if user_service is not None:
-            user_service.bind_case_driver_release(case_service)
-            # An account that created cases cannot be deleted (#1923): the
-            # deletion route asks the case service how many first.
-            user_service.bind_case_creator_count(case_service)
+    if team_service is not None:
+        team_service.bind_case_driver_release(case_service)
+    user_service = getattr(container, "user_service", None)
+    if user_service is not None:
+        user_service.bind_case_driver_release(case_service)
+        # An account that created cases cannot be deleted (#1923): the
+        # deletion route asks the case service how many first.
+        user_service.bind_case_creator_count(case_service)
 
     # Knowledge Service — writes through KnowledgeVectorStore and nothing else:
     # its add_documents refuses a KB chunk with no tenant stamp (#1168). With

@@ -4,9 +4,8 @@ Any reader of a case may set ``include_debug`` on ``GET /cases/{id}/messages``,
 and ``debug_info.storage_errors`` carried ``str(e)`` of whatever failed: a row
 that would not convert, or the read itself. The text was built a service hop
 from the route, where the route-scanning error-text guards do not look. Each
-entry is now ``CODE: ExceptionClass`` and the text goes to the log, in both
-services that answer the route: ``CaseService`` and the container's fallback.
-The model itself refuses any other entry.
+entry is now ``CODE: ExceptionClass`` and the text goes to the log. The model
+itself refuses any other entry.
 """
 
 import asyncio
@@ -110,44 +109,6 @@ async def test_without_include_debug_there_is_no_debug_info(build_app, call_api)
 
     assert response.status_code == 200
     assert response.json()["debug_info"] is None
-
-
-class _UnreadableStore(dict):
-    def __init__(self, exc):
-        super().__init__()
-        self.exc = exc
-
-    def __contains__(self, key):
-        return True
-
-    def __getitem__(self, key):
-        raise self.exc
-
-
-@pytest.mark.parametrize("exc", FAILURES)
-@pytest.mark.parametrize("arm", ["MESSAGE_PARSE_FAILED", "STORAGE_READ_FAILED"])
-async def test_the_fallback_returns_a_code_and_logs_the_text(caplog, arm, exc):
-    # The package, not ``_container_impl``: imported first, the impl module
-    # re-enters ``faultmaven.container`` half-initialized (an import cycle).
-    from faultmaven.container import DIContainer
-
-    fallback = object.__new__(DIContainer)._create_minimal_case_service()
-    caplog.set_level(logging.WARNING)
-    if arm == "STORAGE_READ_FAILED":
-        fallback.case_messages = _UnreadableStore(exc)
-    else:
-        fallback.case_messages[CASE_ID] = [dict(ROW)]
-    with patch("faultmaven.models.api.Message", side_effect=exc):
-        response = await fallback.get_case_messages_enhanced(
-            CASE_ID, include_debug=True
-        )
-
-    assert response.debug_info.storage_errors == [f"{arm}: {type(exc).__name__}"]
-    assert "hunter2" not in response.model_dump_json()
-    record = _logged(caplog, exc)
-    assert CASE_ID in record.getMessage()
-    if arm == "MESSAGE_PARSE_FAILED":
-        assert "m-1" in record.getMessage()
 
 
 def _debug_info(*entries: str) -> MessageRetrievalDebugInfo:

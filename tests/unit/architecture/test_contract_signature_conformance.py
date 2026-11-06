@@ -392,7 +392,7 @@ def _bare_container():
     ``DIContainer.__new__`` returns SESSION STATE (the process singleton), so
     calling it here would mutate/observe whatever the rest of the suite has
     built. ``object.__new__`` gives an unowned shell that is enough to call
-    the ``_create_minimal_*`` factories, which are self-contained.
+    ``_create_minimal_session_service``, which is self-contained.
     """
     # Imported via the package facade: importing ``_container_impl`` directly
     # trips a circular import (it re-enters ``faultmaven.container``).
@@ -403,10 +403,6 @@ def _bare_container():
 
 def minimal_session_service():
     return _bare_container()._create_minimal_session_service()
-
-
-def minimal_case_service():
-    return _bare_container()._create_minimal_case_service()
 
 
 # ============================================================
@@ -435,21 +431,6 @@ class RegistryEntry:
 
     def pending(self) -> Dict[str, str]:
         return dict(self.pending_members)
-
-
-#: MinimalCaseService is the DEGRADED-MODE case service (container falls back
-#: to it when no case repository is available), so these gaps 500 in
-#: production today. Filling them is not mechanical: a stand-in
-#: ``search_cases`` returning ``[]`` reads to the caller as "no matching
-#: cases" when the truth is "search unavailable", which is precisely the
-#: incorrect-conclusion failure the product must not produce. The decision —
-#: implement degraded semantics, narrow ICaseService, or stop presenting the
-#: stand-in as an ICaseService — is an owner call.
-_MINIMAL_CASE_SERVICE_PENDING = (
-    "PENDING: degraded-mode ICaseService coverage is an owner decision — a "
-    "stand-in that answers these with empty/zero values would report absence "
-    "where the truth is unavailability."
-)
 
 
 def _build_registry() -> Dict[str, RegistryEntry]:
@@ -562,21 +543,9 @@ def _build_registry() -> Dict[str, RegistryEntry]:
             reals=(AuthSessionService,),
             standins=(("MinimalSessionService", minimal_session_service),),
         ),
-        RegistryEntry(
-            interface=ICaseService,
-            reals=(CaseService,),
-            standins=(("MinimalCaseService", minimal_case_service),),
-            pending_members=tuple(
-                (member, _MINIMAL_CASE_SERVICE_PENDING)
-                for member in (
-                    "get_or_create_case_for_session",
-                    "link_session_to_case",
-                    "resume_case_in_session",
-                    "search_cases",
-                    "get_case_analytics",
-                )
-            ),
-        ),
+        # No stand-in: a case service is never built without a repository
+        # (#2548), so nothing duck-types this surface.
+        RegistryEntry(interface=ICaseService, reals=(CaseService,)),
         RegistryEntry(
             interface=ICaseRepository,
             reals=(
