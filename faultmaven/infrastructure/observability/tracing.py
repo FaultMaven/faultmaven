@@ -407,6 +407,16 @@ def _enable_sdk_tracing() -> None:
 _tracing_configured = False
 
 
+def trace_backend_configured() -> bool:
+    """Did initialisation reach a configured backend?
+
+    The recorded outcome alone, without the SDK's tracing switch: an operator's
+    ``OPIK_TRACK_DISABLE=true`` stops new spans, but the traces already recorded
+    can still be read and deleted, which is what the case delete needs (#2102).
+    """
+    return OPIK_AVAILABLE and _tracing_configured
+
+
 def tracing_is_effective() -> bool:
     """Will a traced call actually record a span right now?
 
@@ -434,7 +444,7 @@ def tracing_is_effective() -> bool:
     — reporting False on it would be the #1121 defect class (a renamed symbol
     reading as "tracing off").
     """
-    if not (OPIK_AVAILABLE and _tracing_configured):
+    if not trace_backend_configured():
         return False
 
     try:

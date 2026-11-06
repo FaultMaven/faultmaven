@@ -341,6 +341,7 @@ class OutOfBandTriage:
                     self.llm_router,
                     messages=messages,
                     model=settings.llm.get_classifier_model(),
+                    case_id=redaction_ctx.case_id,
                     max_tokens=TRIAGE_MAX_TOKENS,
                     min_output_tokens=TRIAGE_MIN_OUTPUT_TOKENS,
                     reasoning_intent=ReasoningIntent.EXTRACTION,
@@ -647,6 +648,7 @@ async def _one_answer_attempt(
         llm_router,
         messages=messages,
         model=model,
+        case_id=redaction_ctx.case_id,
         max_tokens=ANSWER_MAX_TOKENS,
         temperature=0.5,
         # Grounded transformation of the profile / a short factual or creative

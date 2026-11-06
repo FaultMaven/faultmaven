@@ -119,10 +119,11 @@ class TestClassifierSettingsResolution:
 
         router = _router_returning("none")
         await IntentResolver(router)._classify(
-            "whatever", CHOICES, redaction_ctx=disabled_redaction()
+            "whatever", CHOICES, redaction_ctx=disabled_redaction("case_2102")
         )
 
         assert router.route.await_args.kwargs["model"] == "gpt-5.4-mini"
+        assert router.route.await_args.kwargs["case_id"] == "case_2102"
 
     @pytest.mark.asyncio
     async def test_no_override_kwarg_at_all_when_classifier_provider_unset(

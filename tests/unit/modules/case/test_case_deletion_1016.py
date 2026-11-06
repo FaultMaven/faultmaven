@@ -30,6 +30,8 @@ from faultmaven.config.tenant_context import set_current_enterprise_id
 from faultmaven.container.providers.services import create_case_service
 from faultmaven.exceptions import NotFoundError, ServiceError, ServiceException
 from faultmaven.infrastructure.concurrency.inflight import CaseDeleteGate
+from faultmaven.infrastructure.observability import tracing
+from faultmaven.infrastructure.observability.trace_erasure import LLMTraceEraser
 from faultmaven.infrastructure.persistence.case_vector_store import CaseVectorStore
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.infrastructure.security.case_redaction import (
@@ -444,11 +446,13 @@ class TestComposition:
         with pytest.raises(RuntimeError, match="cannot build the erasers"):
             self._build(tmp_path, skip=True, case_vector_store=None)
 
-    def _build(self, tmp_path, *, skip, case_vector_store):
+    def _build(self, tmp_path, *, skip, case_vector_store, **observability):
         from faultmaven.config.settings import get_settings
 
         settings = get_settings().model_copy(deep=True)
         settings.server.skip_service_checks = skip
+        for name, value in observability.items():
+            setattr(settings.observability, name, value)
         redis = self.redis = fakeredis_aio.FakeRedis(decode_responses=True)
         storage = FileStorageService(backend=FilesystemStorageBackend(str(tmp_path)))
         return create_case_service(
@@ -469,7 +473,7 @@ class TestComposition:
             "uploads",
             "pii_redaction_registry",
         ]
-        assert service.stores_not_configured == ("case_vectors",)
+        assert service.stores_not_configured == ("case_vectors", "llm_traces")
         # The delete is gated on the case's in-flight lease, in the shared
         # Redis client (#2096).
         assert isinstance(service.delete_gate, CaseDeleteGate)
@@ -482,10 +486,82 @@ class TestComposition:
         service = self._build(tmp_path, skip=False, case_vector_store=vectors)
         assert isinstance(service, CaseService)
         assert service.store_erasers[3] is vectors
-        assert service.stores_not_configured == ()
+        assert service.stores_not_configured == ("llm_traces",)
 
     async def test_an_unconstructed_store_fails_the_delete(self, tmp_path):
         absent = self._build(tmp_path, skip=False, case_vector_store=None)
-        assert absent.stores_not_configured == ()
+        assert absent.stores_not_configured == ("llm_traces",)
         with pytest.raises(ServiceException, match="Cannot clear case_vectors"):
             await absent.store_erasers[3].erase_case("case_a", ENTERPRISE)
+
+    # The LLM traces (#2102): the same two settings ``init_opik_tracing`` reads,
+    # so an eraser is bound only where something can write a trace.
+
+    @pytest.mark.parametrize(
+        "backend, project, searched",
+        [
+            ({"opik_use_local": True}, "fm-project", "fm-project"),
+            ({"opik_url_override": "http://opik.test"}, "fm-project", "fm-project"),
+            # ``init_opik_tracing`` gives an empty name its own default.
+            ({"opik_use_local": True}, "", None),
+        ],
+        ids=["local", "url-override", "empty-project-name"],
+    )
+    def test_tracing_with_a_backend_binds_the_trace_eraser_last(
+        self, tmp_path, monkeypatch, backend, project, searched
+    ):
+        monkeypatch.setattr(tracing, "OPIK_AVAILABLE", True)
+        service = self._build(
+            tmp_path,
+            skip=True,
+            case_vector_store=None,
+            opik_enabled=True,
+            opik_project_name=project,
+            **backend,
+        )
+
+        assert [e.store_name for e in service.store_erasers] == [
+            "session_pointers",
+            "runbook_conversion",
+            "uploads",
+            "pii_redaction_registry",
+            "llm_traces",
+        ]
+        assert isinstance(service.store_erasers[-1], LLMTraceEraser)
+        assert service.store_erasers[-1].project_name == searched
+        assert service.stores_not_configured == ("case_vectors",)
+
+    @pytest.mark.parametrize(
+        "observability",
+        [
+            {"opik_enabled": True, "opik_use_local": False, "opik_url_override": None},
+            {"opik_enabled": False, "opik_use_local": True},
+        ],
+        ids=["enabled-no-url", "disabled"],
+    )
+    def test_no_backend_names_the_traces_not_configured(
+        self, tmp_path, monkeypatch, observability
+    ):
+        monkeypatch.setattr(tracing, "OPIK_AVAILABLE", True)
+        service = self._build(
+            tmp_path, skip=True, case_vector_store=None, **observability
+        )
+
+        assert "llm_traces" not in [e.store_name for e in service.store_erasers]
+        assert service.stores_not_configured == ("case_vectors", "llm_traces")
+
+    async def test_a_backend_with_no_sdk_fails_every_delete(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(tracing, "OPIK_AVAILABLE", False)
+        service = self._build(
+            tmp_path,
+            skip=True,
+            case_vector_store=None,
+            opik_enabled=True,
+            opik_use_local=True,
+        )
+
+        assert service.stores_not_configured == ("case_vectors",)
+        with pytest.raises(ServiceException, match="Cannot clear llm_traces"):
+            await service.store_erasers[-1].erase_case("case_a", ENTERPRISE)

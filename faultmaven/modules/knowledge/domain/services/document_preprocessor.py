@@ -819,6 +819,8 @@ class DocumentPreprocessor:
         )
 
         try:
+            # A knowledge-base document: no case to tag, so its trace carries
+            # the enterprise alone (#2102, #2575).
             response = await route_model_call(
                 self._llm_router,
                 messages=messages,

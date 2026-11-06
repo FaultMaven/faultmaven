@@ -10,6 +10,8 @@ fail every delete.
 
 import pytest
 
+from faultmaven.infrastructure.observability import tracing
+from faultmaven.infrastructure.observability.trace_erasure import LLMTraceEraser
 from faultmaven.modules.case.domain.services.case_erasure import (
     UnavailableStoreEraser,
 )
@@ -61,7 +63,7 @@ async def test_the_case_service_is_composed_with_every_stores_eraser(
             "uploads",
             "pii_redaction_registry",
         ]
-        assert service.stores_not_configured == ("case_vectors",)
+        assert service.stores_not_configured == ("case_vectors", "llm_traces")
     else:
         assert names == [
             "session_pointers",
@@ -71,4 +73,25 @@ async def test_the_case_service_is_composed_with_every_stores_eraser(
             "pii_redaction_registry",
         ]
         assert service.store_erasers[3] is fresh_container.case_vector_store
-        assert service.stores_not_configured == ()
+        assert service.stores_not_configured == ("llm_traces",)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_a_configured_trace_backend_binds_the_trace_eraser_last(
+    monkeypatch, skip_service_checks, fresh_container
+):
+    """#2102. ``initialize()`` does not run ``init_opik_tracing`` and no model is
+    called here, so no SDK client is built."""
+    monkeypatch.setenv("OPIK_ENABLED", "true")
+    monkeypatch.setenv("OPIK_URL_OVERRIDE", "http://opik.test")
+    monkeypatch.setenv("OPIK_PROJECT_NAME", "fm-project")
+    monkeypatch.setattr(tracing, "OPIK_AVAILABLE", True)
+    skip_service_checks(True)
+    await fresh_container.initialize()
+
+    service = fresh_container.get_service("case_service")
+    eraser = service.store_erasers[-1]
+    assert isinstance(eraser, LLMTraceEraser)
+    assert eraser.project_name == "fm-project"
+    assert service.stores_not_configured == ("case_vectors",)

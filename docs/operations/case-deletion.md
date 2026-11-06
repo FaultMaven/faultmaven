@@ -13,11 +13,32 @@ holds the case's data before it deletes the row:
 - its runbook conversion jobs and drafts (a published runbook is kept);
 - its uploaded files;
 - its evidence search index (the `case_{case_id}` ChromaDB collection);
-- its PII redaction registry.
+- its PII redaction registry;
+- its LLM traces in Opik, where a trace backend is configured (#2102).
 
 Then the row goes, in one transaction with its team shares and a
 `case_deleted` audit row. If a store cannot be cleared, the delete answers
 **500** `DELETE_CASE_ERROR` and keeps the row, so a retry can finish it (#1016).
+
+### LLM traces
+
+Each trace that records a case's prompt or response is tagged with the case and
+its enterprise, and the delete finds the traces by those tags. It sends any
+queued traces first, then searches, then deletes. No purge is queued for later,
+so the delete fails when:
+
+- the backend cannot be reached, or the queued traces are not sent in time;
+- `OPIK_ENABLED` and a backend URL are set but tracing did not initialize, or
+  the Opik SDK is not installed;
+- the erase takes longer than 60 s;
+- the search returns its limit of 5000 traces. The delete removes those first,
+  so a retry takes the next ones.
+
+With `OPIK_TRACK_DISABLE=true` a delete still purges: the flag stops new spans,
+and the traces already recorded can still be deleted.
+
+Without `OPIK_ENABLED` and a backend URL, no process records a trace, and the
+audit row names `llm_traces` under `not_configured`.
 
 ## Work in flight holds a delete off (#2096)
 
@@ -51,6 +72,20 @@ read reports it.
 
 ## Residuals
 
+- **Traces the backend has not finished with.** The backend deletes
+  asynchronously, so a trace can stay visible for a while after the delete
+  answers. It also ingests asynchronously, so a trace sent just before the
+  search may not be found by it.
+- **Traces parked on a pod (#2573).** A trace the SDK could not send, after a
+  connection failure, goes into a SQLite database on the pod and is never sent.
+  It sits outside every store the delete clears.
+- **Traces recorded before #2102.** They carry no case tag, so they cannot be
+  attributed to a case and a delete does not find them.
+- **Tracing turned off later.** With `OPIK_ENABLED` off or no backend URL, a
+  delete does not contact the backend, so traces recorded while tracing was on
+  stay there, although the audit row names `llm_traces` under `not_configured`.
+- **A deleted document's traces (#2575).** A trace of an uploaded document
+  serves no case and carries only the enterprise, so no case delete reaches it.
 - **Redis unreachable (ruled 2026-11-04).** The delete fails closed with 503,
   but a turn whose lease write or tombstone read fails runs unguarded. It is
   logged once per process and counted on `case_unleased_turns_total{reason}`

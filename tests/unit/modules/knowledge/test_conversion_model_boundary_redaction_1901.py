@@ -156,6 +156,8 @@ class RecordingRouter:
         fail_conversion: int | None = None,
     ):
         self.calls: list[tuple[str, list[dict]]] = []
+        #: What each conversion call named as its case (the trace tag, #2102).
+        self.conversion_case_ids: list[str | None] = []
         self._modes = modes
         self._truncate_next_conversion = truncate_first_conversion
         #: The 1-based generation call that fails AT THE ROUTER (a provider
@@ -167,6 +169,8 @@ class RecordingRouter:
         stage = STAGES[kwargs["temperature"]]
         messages = kwargs["messages"]
         self.calls.append((stage, messages))
+        if stage == "conversion":
+            self.conversion_case_ids.append(kwargs["case_id"])
         if stage == "triage":
             return _response(
                 '{"is_actionable": true, "confidence": 0.9, "reason": "guide"}'
@@ -314,6 +318,25 @@ async def _convert_document(tmp_path, router, sanitizer):
             user_id="u_1901",
             enterprise_id=None,
         )
+
+
+class TestTheConversionCallNamesItsCase:
+    """The trace of a case's conversion is the case's to purge (#2102). An
+    upload serves no case."""
+
+    async def test_the_case_path(self, tmp_path, sanitizer, redaction_on):
+        router = RecordingRouter()
+
+        await _convert_case(tmp_path, router, sanitizer)
+
+        assert router.conversion_case_ids == [CASE_ID]
+
+    async def test_the_upload_path(self, tmp_path, sanitizer, redaction_on):
+        router = RecordingRouter()
+
+        await _convert_document(tmp_path, router, sanitizer)
+
+        assert router.conversion_case_ids and not any(router.conversion_case_ids)
 
 
 # ---------------------------------------------------------------------------

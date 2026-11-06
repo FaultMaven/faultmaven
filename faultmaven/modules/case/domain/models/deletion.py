@@ -40,7 +40,7 @@ class CaseDeletion:
     tombstone, ``infrastructure/concurrency/inflight.py``, #2096;
     ``lock:report_generation:case:…``, ``report_lock_manager.py``) and audit
     trails that must outlive the case (``operator_access_audit``,
-    ``operator_access_grants.target_case_id``). Opik traces are #2102.
+    ``operator_access_grants.target_case_id``).
     """
 
     case_id: str
