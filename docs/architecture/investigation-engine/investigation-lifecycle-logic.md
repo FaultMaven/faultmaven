@@ -2217,7 +2217,7 @@ The user decides the mitigation is sufficient (or RCA is infeasible, see §2.4) 
 
 #### Mitigation Is Iterative, Forward-Only
 
-A mitigation is not assumed one-shot. The agent may adjust its approach and propose multiple attempts until the user verifies stabilization; each accepted attempt is recorded in `action_attempts`. The `mitigation` record itself is **single and forward-only** (INV-24): `accepted` / `verified` are never reset, and `completed_at_turn` is stamped once, when `verified` first flips True, with the turn the verification was reported (a replayed one's hold turn, #2537): the boundary for up-weighting pre-mitigation evidence in later RCA. If a mitigation fails to stabilize, the flow stays open to user-led action — the agent acknowledges it didn't work and may propose an alternative in prose, or the user closes (§2.3, the no-dead-end rule).
+A mitigation is not assumed one-shot. The agent may adjust its approach and propose multiple attempts until the user verifies stabilization; each accepted attempt is recorded in `action_attempts`. The `mitigation` record itself is **single and forward-only** (INV-24): `accepted` / `verified` are never reset, and `completed_at_turn` is stamped once, when `verified` first flips True, with the turn whose response carried the `mitigation_verified` that flipped it (a replayed one's hold turn, #2537): the boundary for up-weighting pre-mitigation evidence in later RCA. If a mitigation fails to stabilize, the flow stays open to user-led action — the agent acknowledges it didn't work and may propose an alternative in prose, or the user closes (§2.3, the no-dead-end rule).
 
 #### How the System Distinguishes Outcomes (Retrospectively)
 

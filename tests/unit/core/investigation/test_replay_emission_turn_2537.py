@@ -71,8 +71,8 @@ def _solution(solution_type: str, description: str) -> SolutionToAdd:
 async def _replayed(data_turn=_STAGED, *, edit=None, held=(), confirmed=None):
     """The cause, its chain and its rows staged at 4 from data uploaded at
     ``data_turn`` (``edit`` changes the staged turn's update, ``held`` are
-    the next hold turns), replayed on the "yes" at ``confirmed``, by default
-    the turn after them. Returns the engine, the case, the hypothesis, its
+    the next hold turns' updates), replayed on the "yes" at ``confirmed``, by
+    default the turn after them. Returns the engine, the case, the hypothesis, its
     root, the staged rows' ids (the symptom row, then the root's two
     supports) and the file."""
     engine, case = revision._engine(), revision._case()
