@@ -1283,12 +1283,14 @@ async def test_an_interrupted_last_release_cancels_cancellable_work_before_the_c
     assert order[0] == ("close", True, False) and work.cancelled()
 
 
-async def test_an_interrupted_last_release_spares_a_composition_begun_during_its_closes(
-    container, monkeypatch
+@pytest.mark.parametrize("interrupted", [False, True], ids=["returned", "raised"])
+async def test_a_last_release_spares_a_composition_begun_during_its_closes(
+    interrupted, container, monkeypatch
 ):
-    """The release decided it was the last before its reset, and the composer
-    read that decision alone when it raised: it disposed the engine under a
-    composition begun during the closes."""
+    """The release decided it was the last before its reset. The composer read
+    that decision alone when it raised, and ``shutdown()``'s ``True`` alone when
+    it returned (#2535): it disposed the engine under a composition begun
+    during the closes."""
     from faultmaven.infrastructure.concurrency import teardown
 
     closed, entered, gate = [], asyncio.Event(), asyncio.Event()
@@ -1306,11 +1308,84 @@ async def test_an_interrupted_last_release_spares_a_composition_begun_during_its
     await asyncio.wait_for(entered.wait(), timeout=5)
     with _composing(AsyncMock()):
         await _elsewhere(container.initialize())
-    releasing.cancel()
-
-    with pytest.raises(asyncio.CancelledError):
+    if interrupted:
+        releasing.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await releasing
+    else:
+        gate.set()
         await releasing
     assert closed == [] and container.is_held()
+
+
+def _evidence_write(monkeypatch, written):
+    """The evidence vector write, through its guard, into a store that records
+    what it is given; the embed is stubbed."""
+    from faultmaven.core.preprocessing import vector_storage
+    from faultmaven.core.preprocessing.models import UnifiedDataType
+
+    class _Store:
+        async def add_documents(self, **kwargs):
+            written.append(kwargs["case_id"])
+
+    async def _embed(texts, **_):
+        return [[0.0] for _ in texts]
+
+    monkeypatch.setattr(vector_storage, "embed_texts_or_raise", _embed)
+    return lambda: vector_storage.store_in_vector_db_background(
+        "c1", "ev1", "## A\nline\n", UnifiedDataType.LOGS, {}, _Store()
+    )
+
+
+async def test_a_store_write_that_reaches_its_guard_during_the_closes_is_refused(
+    container, monkeypatch, record
+):
+    """#2532: the drain lowered the flag as it ended, before the reset and the
+    closes, so a vector write that reached its guard while a client closed
+    started ``add_documents`` under it. Once the closes end the flag is down."""
+    from faultmaven.core.preprocessing.vector_storage import VectorIndexOutcome
+
+    written, outcomes = [], []
+    store = _evidence_write(monkeypatch, written)
+
+    async def _close_under_a_write(_client):
+        outcomes.append(await store())
+
+    await _hold(container, 1)
+    container.own(object(), close=_close_under_a_write, what="the ChromaDB client")
+
+    assert await container.shutdown() is True
+    assert outcomes == [VectorIndexOutcome.FAILED] and written == []
+    assert record.draining() is False
+    assert await store() is VectorIndexOutcome.INDEXED  # the positive control
+    assert written == ["c1"]
+
+
+async def test_a_composition_begun_during_the_closes_lowers_the_flag_for_good(
+    container, record
+):
+    """Its writes go to its own clients, so the flag drops once it holds, and
+    stays down once that hold is released, as during the drain."""
+    entered, gate = asyncio.Event(), asyncio.Event()
+
+    async def _slow_close(_resource):
+        entered.set()
+        await gate.wait()
+
+    await _hold(container, 1)
+    container.own(object(), close=_slow_close, what="a Redis pool draining")
+    closing = asyncio.create_task(container.shutdown())
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    assert record.draining() is True
+
+    holder = contextvars.Context()
+    with _composing(AsyncMock()):
+        await asyncio.create_task(container.initialize(), context=holder)
+    assert record.draining() is False
+    holder.run(container._holds.release)
+    assert record.draining() is False
+    gate.set()
+    assert await closing is True and record.draining() is False
 
 
 async def test_a_release_that_fails_before_deciding_yields_to_a_holder(monkeypatch):

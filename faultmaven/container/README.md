@@ -151,9 +151,12 @@ to its event loop and is never recorded. `shutdown()` names no resource.
      afresh and keeps its hold;
   3. **the closes**: everything owned, newest first, through `run_teardown`'s
      rules (every close runs, a failed one is logged, an interruption, the
-     drain's included, is held until all have run). It returns `True`. If
-     the closes are interrupted, the composer still yields to a composition
-     begun during them: it skips what only the last may stop.
+     drain's included, is held until all have run). It returns `True`. The
+     draining flag (`inflight.draining()`), raised since the drain, stays
+     raised through the closes until a composition takes a hold, so no store
+     write starts under a client being closed. The composer, whether its
+     release returned or raised, yields to any hold still held when it reads
+     (all taken since its reset): it skips what only the last may stop.
 
   With no hold anywhere it closes whatever is owned, which is how a refused
   composition is undone. A release that is not the last drains nothing: the
@@ -175,10 +178,11 @@ to its event loop and is never recorded. `shutdown()` names no resource.
   releases through `ContainerRelease` (`concurrency/teardown.py`), and only
   when `shutdown()` neither answers `False` nor fails having decided it was
   not the last (`released_last()`: another release is then the last) does it
-  dispose the process-global database engine. A shutdown that fails having
-  decided it was the last still yields to any hold taken since its reset (a
-  composition begun during its closes), and one that fails before deciding
-  reads only whether the container is held. The lifespan's decomposition also
+  dispose the process-global database engine. A last release, whether its
+  shutdown returned or raised, still yields to any hold still held when it
+  reads (all taken since its reset: a composition begun during its closes),
+  and one that fails before deciding reads only whether the container is
+  held. The lifespan's decomposition also
   uninstalls the usage ledger, drains its writes, and stops the APM export
   then. The hold count is a proxy for "the process is done serving", not a
   count of the engine's users: `get_engine()` opens it lazily for any caller.

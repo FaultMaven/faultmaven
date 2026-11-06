@@ -37,6 +37,7 @@ from faultmaven.container.providers import (
     register_services,
     register_tools,
 )
+from faultmaven.infrastructure.concurrency import inflight
 from faultmaven.infrastructure.concurrency.teardown import (
     run_teardown,
     teardown_step,
@@ -1861,11 +1862,16 @@ class DIContainer(BaseDIContainer):
         Then it closes everything recorded with :meth:`own`, newest first,
         through ``run_teardown`` (every close runs, a failed one is logged, an
         interruption, the drain's included, is held until all have run), and
-        returns ``True``. Once it has decided, it records for the calling
-        context whether it was the last (:meth:`released_last`): a composer
-        whose shutdown raised reads that decision, and after a last one also
-        any hold taken since the reset. Whoever composes shuts down on every
-        path, while the loop the clients are bound to still runs.
+        returns ``True``. From the drain through the closes it keeps
+        ``inflight.draining()`` raised, until a composition takes a hold, so no
+        store write starts under a client it closes (#2532). Once it has
+        decided, it records for the calling context whether it was the last
+        (:meth:`released_last`): a composer whose shutdown raised reads that
+        decision. After a last release, whether it returned or raised, the
+        composer yields to any hold still held when it reads (all taken since
+        its reset); after one that failed before deciding, it reads only whether
+        the container is held. Whoever composes shuts down on every path, while
+        the loop the clients are bound to still runs.
         """
         self._last_release.set(None)
         if not self._holds.release():
@@ -1876,39 +1882,46 @@ class DIContainer(BaseDIContainer):
         # No hold taken on this instance since this release began. Sticky: once
         # false it stays false, so the drain's flag and this release agree.
         last = lambda: self._holds is holds and holds.takes == taken
-        interrupted = await teardown_step(
-            "Draining the work in flight",
-            functools.partial(_drain_work_in_flight, last),
-        )
-        if not last():
-            self._last_release.set(False)
-            if interrupted is not None:
-                raise interrupted
-            return False
-        if interrupted is None:
-            # Synchronous: no hold can be taken between the check and the reset.
+        with inflight.raised(last):  # the draining flag, to the reset (#2532)
             interrupted = await teardown_step(
-                "Letting the case leases lapse", _let_leases_lapse
+                "Draining the work in flight",
+                functools.partial(_drain_work_in_flight, last),
             )
-        else:
-            await teardown_step("Cancelling the cancellable rest", _cancel_cancellable)
-            if not last():  # a hold taken during the grace
+            if not last():
                 self._last_release.set(False)
-                raise interrupted
-        self._last_release.set(True)
-        owned = self._owned[::-1]
-        self._owned.clear()  # closed once, whatever the closes do
-        self.reset()
-        try:
-            await run_teardown(
-                [
-                    (f"Closing {what}", functools.partial(close, resource))
-                    for what, resource, close in owned
-                ]
-            )
-        finally:
-            if interrupted is not None:
-                raise interrupted
+                if interrupted is not None:
+                    raise interrupted
+                return False
+            if interrupted is None:
+                # Synchronous: no hold can be taken between the check and the reset.
+                interrupted = await teardown_step(
+                    "Letting the case leases lapse", _let_leases_lapse
+                )
+            else:
+                await teardown_step(
+                    "Cancelling the cancellable rest", _cancel_cancellable
+                )
+                if not last():  # a hold taken during the grace
+                    self._last_release.set(False)
+                    raise interrupted
+            self._last_release.set(True)
+            owned = self._owned[::-1]
+            self._owned.clear()  # closed once, whatever the closes do
+            self.reset()
+        # Then through the closes, until a composition takes a hold: its writes
+        # go to its own clients. The reset is synchronous, so there is no gap.
+        fresh = self._holds
+        with inflight.raised(lambda: self._holds is fresh and fresh.takes == 0):
+            try:
+                await run_teardown(
+                    [
+                        (f"Closing {what}", functools.partial(close, resource))
+                        for what, resource, close in owned
+                    ]
+                )
+            finally:
+                if interrupted is not None:
+                    raise interrupted
         return True
 
     async def release_every_hold(self) -> bool:
