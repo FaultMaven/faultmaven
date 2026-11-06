@@ -26,6 +26,7 @@ from faultmaven.core.investigation.milestone_engine.chain_emission import (
     _apply_chain_emission,
     _nudge_ambiguous_orphan_chains,
     record_root_verdict,
+    resolve_root_ref,
 )
 from faultmaven.core.investigation.milestone_engine.evidence_need_updates import (
     _apply_evidence_need_updates,
@@ -300,8 +301,10 @@ FIXES_MINTED_KEY = "fixes_minted_this_apply"
 def _record_licences(case: Case, metadata: dict[str, Any]) -> None:
     """Record, once, the licence of each SOLUTION this apply minted
     (``ProposedAction.licence_ids``): what M5 licensed it on at the mint,
-    resolved to its root(s) after this apply's chain emission, so a
-    ``new_index_N`` the conclusion names has a node. Nothing is re-scored
+    resolved to its root(s) after this apply's chain emission. A
+    ``new_index_N`` the conclusion names resolves as chain emission resolves
+    the conclusion's (``resolve_root_ref``: a ROOT, else none), so the
+    licence reads what the stored conclusion names. Nothing is re-scored
     here. Never changed after."""
     created = metadata.get("chain_nodes_created") or []
     actions = {a.action_id: a for a in case.proposed_actions}
@@ -309,8 +312,10 @@ def _record_licences(case: Case, metadata: dict[str, Any]) -> None:
         action = actions.get(action_id)
         if action is None or action.action_type != InvestigationActionType.SOLUTION:
             continue
-        if leg == "rcc" and subject is not None and subject[1]:
-            subject = (subject[0], _resolve_id_ref(subject[1], created, "cn_"))
+        if leg == "rcc" and (subject or (None, None))[1]:
+            hypothesis_id, named = subject
+            if named.startswith("new_index_"):
+                subject = (hypothesis_id, resolve_root_ref(case, named, created))
         action.licence_ids, action.licence_in_words = licence_leg_ids(
             case, leg, subject
         )
@@ -368,7 +373,8 @@ def _settle_fix_attempts(case: Case, metadata: dict[str, Any]) -> None:
        D2.3. Unnamed, it takes ``_unnamed_target``, where
        "proposed in its run turn" means minted in this apply. A remediation
        when its targets meet that record's ``reference_ids`` or a ROOT its
-       own licence names (an intermediate one never), else an interception.
+       own licence names (an intermediate one never), else an interception;
+       a target id no longer on the graph is then dropped, the kind kept.
        With no target and a licence naming its cause in words only:
        unkinded, and the model is asked for the cause's node (ruling 2).
        Nothing here reads the cause as this apply leaves it."""
@@ -428,6 +434,10 @@ def _settle_fix_attempts(case: Case, metadata: dict[str, Any]) -> None:
             if (set(cause.reference_ids) | own).intersection(action.target_ids)
             else FIX_INTERCEPTION
         )
+        # A node the run turn's record names can be off the graph since (an
+        # orphan pass pruned it): the kind stands, and the id goes, as pruning
+        # drops it from a target set before.
+        action.target_ids = [t for t in action.target_ids if t in case.causal_nodes]
 
 
 #: The state-update fields that are cause work. While a revised statement

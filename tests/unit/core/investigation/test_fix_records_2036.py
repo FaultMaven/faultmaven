@@ -933,11 +933,23 @@ async def test_pruning_a_licensed_root_drops_it_from_the_licence():
     assert (run.fix_kind, run.target_ids) == (FIX_REMEDIATION, [r3])
 
 
-@pytest.mark.parametrize("how", ["restated", "named"])
-async def test_an_interception_does_not_end_a_live_remediations_standing(how):
-    """Finding 5 (p4): a remediation at 6, an interception at 7. Restated and
-    accepted at 8, or named by its id, the remediation is the same attempt:
-    no new attempt, no second window, and no "a later fix followed it"."""
+@pytest.mark.parametrize(
+    "second, how, attempts, windows, line",
+    [
+        ("interception", "restated", [6, 7], [None, 6], False),
+        ("interception", "named", [6, 7], [None, 6], False),
+        ("remediation", "restated", [6, 7, 8], [None, 6, 7, 8], False),
+        ("remediation", "named", [6, 7], [None, 6, 7], True),
+    ],
+)
+async def test_only_a_later_remediation_ends_a_remediations_standing(
+    second, how, attempts, windows, line
+):
+    """Finding 5 (p4) and delta 1's N2 (q4): a remediation at 6, then an
+    interception or a second remediation at 7. Restated and accepted at 8, or
+    named by its id, the first fix is the same attempt after an interception
+    (no new attempt, no second window, no "a later fix followed it"); after a
+    later remediation it is a new attempt, and naming it gets that line."""
     case, _root, _hyp = _identified_case()
     eng = _engine()
     x = _intermediate(case)
@@ -949,7 +961,17 @@ async def test_an_interception_does_not_end_a_live_remediations_standing(how):
         milestones=_ran(),
     )
     await _record(
-        eng, case, 7, solutions_to_add=[_fix("restart the pods", x)], milestones=_ran()
+        eng,
+        case,
+        7,
+        solutions_to_add=[
+            (
+                _fix("restart the pods", x)
+                if second == "interception"
+                else _fix("shrink the checkout pool")
+            )
+        ],
+        milestones=_ran(),
     )
     first = _attempts(case)[0]
     _rows, meta = await _record(
@@ -962,9 +984,9 @@ async def test_an_interception_does_not_end_a_live_remediations_standing(how):
             else dict(milestones=_ran(first.action_id))
         ),
     )
-    assert [a.accepted_in_turn for a in _attempts(case)] == [6, 7]
-    assert [w.fix_turn for w in fix_windows(case)] == [None, 6]
-    assert "later fix followed it" not in (meta.get("system_feedback") or "")
+    assert [a.accepted_in_turn for a in _attempts(case)] == attempts
+    assert [w.fix_turn for w in fix_windows(case)] == windows
+    assert ("later fix followed it" in (meta.get("system_feedback") or "")) == line
 
 
 async def test_an_undatable_acceptance_keeps_its_label_beside_an_interception():
@@ -1006,3 +1028,108 @@ def test_a_renumbered_record_drops_the_cause_it_held():
         (6, False),
         (7, True),
     ]
+
+
+# ---------------------------------------------------------------------------
+# PR #2558's delta 1 (172579dd4)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "named, linked, run, kind",
+    [
+        ("new_index_0", True, 6, FIX_REMEDIATION),
+        ("new_index_0", True, 5, None),
+        ("new_index_0", False, 6, None),
+        ("new_index_0", False, 5, None),
+        ("cn", True, 6, FIX_INTERCEPTION),
+    ],
+    ids=["linked-next", "linked-same", "unlinked-next", "unlinked-same", "cn-control"],
+)
+async def test_a_conclusion_naming_an_intermediate_licenses_as_it_is_stored(
+    named, linked, run, kind
+):
+    """N1 (q1): one reply emits an intermediate as ``new_index_0``, a
+    conclusion naming it so, and an unnamed fix, run then (5) or next turn.
+    Chain emission stores the conclusion naming no node (a ROOT only), and the
+    licence resolves the ref the same way: none, in words. So the fix stays
+    unkinded with the line, unless the recompute links the conclusion to A and
+    the fix runs next turn, under that turn's licence: A's root. Either way
+    A's re-check resolves. The control names an existing intermediate by id:
+    an interception at it, which never does."""
+    case, root, hyp = _identified_case()
+    _bare_candidate(case, root, hyp)
+    eng = _engine()
+    await _record(eng, case, 4)
+    x = _intermediate(case) if named == "cn" else "new_index_0"
+    _rows, meta = await _record(
+        eng,
+        case,
+        5,
+        **(
+            {}
+            if named == "cn"
+            else dict(
+                causal_nodes_to_add=[
+                    CausalNodeToAdd(
+                        statement="checkout pods hold exhausted pool connections",
+                        node_type="intermediate",
+                        produces="D",
+                    )
+                ]
+            )
+        ),
+        root_cause_conclusion=RootCauseConclusionUpdate(
+            root_cause=hyp.statement if linked else "a cosmic ray flipped a bit",
+            mechanism="the checkout pool opens more connections than postgres admits",
+            evidence_ids=[_SUPPORT],
+            likelihood=0.9,
+            names_root_node_id=x,
+        ),
+        solutions_to_add=[_fix("restart the checkout pods")],
+        **(dict(milestones=_ran()) if run == 5 else {}),
+    )
+    fix = next(a for a in case.proposed_actions if a.description.startswith("restart"))
+    licence = ([x], False) if named == "cn" else ([], True)
+    assert (fix.licence_ids, fix.licence_in_words) == licence
+    if run == 6:
+        _rows, meta = await _record(eng, case, 6, milestones=_ran(fix.action_id))
+    target = {FIX_REMEDIATION: [_ROOT_ID], FIX_INTERCEPTION: [x], None: []}[kind]
+    assert (fix.fix_kind, fix.target_ids) == (kind, target)
+    assert ("without a target" in (meta.get("system_feedback") or "")) == (kind is None)
+    await _record(eng, case, 7, **_grounding(hyp))
+    await _record(
+        eng,
+        case,
+        8,
+        _obs(_CAUSE_GONE, "max_connections reads 100", _SUPPORT),
+        _obs(_GONE, "checkout 200 again", VERIFYING_ID),
+    )
+    assert _verdict(case) == (_NEEDS_INFO if named == "cn" else _READY)
+
+
+async def test_a_target_a_record_names_is_dropped_once_pruned_and_the_kind_kept():
+    """N3 (q3): the fix is licensed on R1 at 5. Turn 6's orphan pass, after
+    its record named R1, re-attaches A to R3 and prunes R1. At 7 the fix is
+    declared run in turn 6's message: turn 6's record makes it a remediation
+    of R1, and the target holds no node off the graph."""
+    case, root, hyp = _identified_case()
+    _bare_candidate(case, root, hyp)
+    hyp.likelihood = hyp.initial_likelihood = 0.85
+    eng = _engine()
+    await _record(eng, case, 4)
+    await _record(eng, case, 5, solutions_to_add=[_fix("raise max_connections")])
+    fix = case.proposed_actions[-1]
+    await _record(eng, case, 6)
+    assert case.turn_history[-1].cause_at_start.licence_ids == (_ROOT_ID,)
+    r3 = _orphan(case, "cn_000000000033", _problem(case).node_id)
+    old_path = list(hyp.path or [_ROOT_ID])
+    attach_root(case, hyp, r3, [r3, _problem(case).node_id], 6)
+    prune_abandoned_nodes(case, old_path)
+    await _record(eng, case, 7, milestones=_backdated(fix.action_id))
+    (run,) = _attempts(case)
+    assert (run.accepted_in_turn, run.fix_kind, run.target_ids) == (
+        6,
+        FIX_REMEDIATION,
+        [],
+    )

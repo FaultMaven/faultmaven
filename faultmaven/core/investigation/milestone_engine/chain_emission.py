@@ -1,7 +1,7 @@
 """Emitting an LLM-authored causal chain onto the case graph, and the garbage-collection and ambiguity-nudge passes that keep it consistent afterward."""
 
 import logging
-from typing import Any
+from typing import Any, Sequence
 
 from faultmaven.core.investigation.causal_graph.ingestion import (
     chain_path_to_problem,
@@ -52,6 +52,29 @@ def record_root_verdict(metadata: dict[str, Any], hyp_id: str, entry: Any) -> No
         for ref in getattr(entry, "terminal_basis_evidence_ids", None) or []
     ]
     metadata.setdefault("hyp_root_verdicts", {})[hyp_id] = (verdict, cited)
+
+
+def resolve_root_ref(case: Case, ref: str | None, created: Sequence[str]) -> str | None:
+    """Resolve a root ref (a cn_ id, or ``new_index_N`` into ``created``, the
+    emission's nodes) to a ROOT node id, or None.
+
+    A hypothesis root must be a ROOT node (M1/M3) — refs that resolve to
+    an intermediate or to the PROBLEM node D are rejected (the hypothesis
+    stays flat). A conclusion's same-turn ``names_root_node_id`` resolves
+    here too, and so does the licence a fix records from it (#2036 D2.3).
+    """
+    if not ref:
+        return None
+    if ref.startswith("new_index_"):
+        try:
+            idx = int(ref[len("new_index_") :])
+        except ValueError:
+            return None
+        node_id = created[idx] if 0 <= idx < len(created) else None
+    else:
+        node_id = ref if ref in case.causal_nodes else None
+    node = case.causal_nodes.get(node_id) if node_id else None
+    return node_id if node is not None and node.node_type == NodeType.ROOT else None
 
 
 def _apply_chain_emission(
@@ -143,24 +166,7 @@ def _apply_chain_emission(
     metadata["chain_nodes_created"] = list(created)
 
     def _resolve_root(ref: str | None) -> str | None:
-        """Resolve a root_node_ref to a ROOT node id, or None.
-
-        A hypothesis root must be a ROOT node (M1/M3) — refs that resolve to
-        an intermediate or to the PROBLEM node D are rejected (the hypothesis
-        stays flat).
-        """
-        if not ref:
-            return None
-        if ref.startswith("new_index_"):
-            try:
-                idx = int(ref[len("new_index_") :])
-            except ValueError:
-                return None
-            node_id = created[idx] if 0 <= idx < len(created) else None
-        else:
-            node_id = ref if ref in case.causal_nodes else None
-        node = case.causal_nodes.get(node_id) if node_id else None
-        return node_id if node is not None and node.node_type == NodeType.ROOT else None
+        return resolve_root_ref(case, ref, created)
 
     # Link each hypothesis to its chain root via the explicit
     # hyp_id -> root_node_ref map (recorded at creation, or on a re-root
