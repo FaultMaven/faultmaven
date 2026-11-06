@@ -913,7 +913,7 @@ def _flag_unbound_post_fix_rows(case: Case, metadata: dict[str, Any] | None) -> 
     symptom_evidence row after its execution turn (as persistence reads it)
     and not cited as having shown the problem. Before any fix — a
     diagnosis-time exclusion or a mitigation's relief observes no fix — only a
-    causal_absence row that named a row, on a non-empty pool (#2557). Never
+    row its window binds, on a non-empty pool (#2557). Never
     inside a FAILED window, where nothing confirms and the failed-fix
     notice (``_flag_absence_inside_a_failed_fix_window``) says what to do.
     Only on a verified problem: before it, nothing can bind. Returns whether
@@ -945,11 +945,7 @@ def _flag_unbound_post_fix_rows(case: Case, metadata: dict[str, Any] | None) -> 
         if any(window.holds(turn) for window in failed):
             return False
         if fix_turn is None:
-            return bool(
-                row.category == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
-                and subjects.pool_roots
-                and getattr(row, "rechecks_evidence_id", None)
-            )
+            return bool(subjects.pool_roots) and row.evidence_id in window_bound
         if row.category in absence:
             return turn >= fix_turn
         return (
@@ -997,7 +993,8 @@ def _flag_unbound_post_fix_rows(case: Case, metadata: dict[str, Any] | None) -> 
     if uncited:
         _add_system_feedback(
             metadata,
-            f"SYSTEM: Post-fix row(s) {', '.join(uncited[:5])} confirm nothing: "
+            f"SYSTEM: {'Row(s)' if fix_turn is None else 'Post-fix row(s)'} "
+            f"{', '.join(uncited[:5])} confirm nothing: "
             + (f"{why}." if cause_ids else cause_text),
         )
     if not unnamed:

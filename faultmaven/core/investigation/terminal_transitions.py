@@ -1294,9 +1294,10 @@ _SUBMIT_AS_DATA = (
 )
 
 
-#: A record id a model-authored name can carry: the prefixes the models mint.
+#: What a model-authored name can carry: a record id, or the ref the model writes.
 _RECORD_ID = re.compile(
-    r"\b(?:act|att|case|cdo|ce|cn|doc|eneed|ev|file|hyp|sol)_[0-9a-f]{12}\b"
+    r"\b(?:(?:act|att|case|cdo|ce|cn|doc|eneed|ev|file|hyp|sol)_[0-9a-f]{12}"
+    r"|new_index_\d+)\b"
 )
 
 
@@ -1357,17 +1358,12 @@ def _relief_without_cause_recheck(
     (``FixWindow.confirmed_cause_rows``): a re-check of a fallen cause after
     another cause's fix still leaves the cause leg owed. Never on an
     ``off_cause`` window: no re-check confirms it (#2036 D2.3). On window 0 only
-    when a causal_absence row in it named a row: with nothing confirmed, that
-    re-check was refused (#2557)."""
+    with a pool and a row the window binds: with nothing confirmed, the rule
+    refused that re-check (#2557)."""
     if window.confirmed_cause_rows or window.off_cause:
         return False
     subjects = subject_index(case) if subjects is None else subjects
-    if window.fix_turn is None and not any(
-        getattr(e, "category", None) == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
-        and getattr(e, "rechecks_evidence_id", None)
-        and window.holds(subjects.observed(e))
-        for e in subjects.rows.values()
-    ):
+    if window.fix_turn is None and not (subjects.pool_roots and window.cause_rows):
         return False
     latest: dict = {}
     for e in case.evidence or []:

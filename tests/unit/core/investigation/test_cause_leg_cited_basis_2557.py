@@ -18,8 +18,11 @@ rotates it), an interception (a new secret_id) whose read-back is a row
 SUPPORTS-linked to the final root, then the lasting fix (Kubernetes auth).
 """
 
+import re
+
 import pytest
 
+from faultmaven.core.investigation.causal_graph.disconfirmation import failed_fix_of
 from faultmaven.core.investigation.cause_assurance import (
     FIX_FAILED,
     FIX_SUCCEEDED,
@@ -33,8 +36,10 @@ from faultmaven.core.investigation.cause_assurance import (
 from faultmaven.core.investigation.milestone_engine.stage_gates import (
     _flag_unbound_post_fix_rows,
 )
+from faultmaven.core.investigation.prompts.context_builder.budget import TokenBudget
 from faultmaven.core.investigation.prompts.context_builder.fix_verification_block import (
     build_fix_verification_block,
+    cap_fix_verification_block,
 )
 from faultmaven.core.investigation.schemas import EvidenceToAdd
 from faultmaven.core.investigation.terminal_transitions import (
@@ -46,10 +51,16 @@ from faultmaven.modules.case.contracts import (
     CausalNode,
     CauseState,
     EvidenceCategory,
+    EvidenceNeed,
     EvidenceStance,
+    Hypothesis,
+    HypothesisCategory,
     HypothesisEvidenceLink,
+    HypothesisGenerationMode,
     HypothesisState,
     InvestigationActionType,
+    NeedPriority,
+    NeedPurpose,
     NodeEvidenceLink,
     NodeState,
     NodeType,
@@ -59,6 +70,7 @@ from faultmaven.modules.case.contracts import (
 from tests.unit.core.investigation.test_m6_cause_gone_problem_persists_1927 import (
     _ROOT_ID,
     _UNNAMED,
+    VERIFYING_ID,
     _assert_demoted,
     _eid,
     _engine_rows,
@@ -579,9 +591,10 @@ def test_a_refused_recheck_with_no_dated_fix_is_told_and_asked_for():
     row = _recheck(case, login.evidence_id, turn=6)
 
     assert (
-        f"Post-fix row(s) {row.evidence_id} confirm nothing: it {_UNCITED}; "
+        f"SYSTEM: Row(s) {row.evidence_id} confirm nothing: it {_UNCITED}; "
         f"name one of {ttl.evidence_id} (the cited basis)." in _feedback(case)
     )
+    assert "Post-fix" not in _feedback(case), "no fix is on record"
 
     case.evidence.append(_row("gone0", _GONE, 7, "503s at 0.0/s"))
     case.current_turn = 7
@@ -590,6 +603,12 @@ def test_a_refused_recheck_with_no_dated_fix_is_told_and_asked_for():
     assert "**The cause re-checked after the fix**" in readiness.message
     assert "**Confirmation it's resolved**" not in readiness.message
     assert "ev_" not in readiness.message
+
+
+def _assert_keeps_mains_ask(case) -> None:
+    message = assess_resolution_readiness(case).message
+    assert "**Confirmation it's resolved**" in message
+    assert "**The cause re-checked after the fix**" not in message
 
 
 def test_window_zero_with_no_recheck_named_keeps_its_ask_and_no_feedback():
@@ -618,6 +637,9 @@ def test_a_named_recheck_with_no_dated_fix_and_no_pool_stays_silent():
     assert subject_index(case).pool_roots == frozenset(), "premise: no pool"
     _recheck(case, _eid("pool_log"), turn=6)
     assert _feedback(case) == ""
+    case.evidence.append(_row("gone0", _GONE, 7, "503s at 0.0/s"))
+    case.current_turn = 7
+    _assert_keeps_mains_ask(case)
 
 
 # ---------------------------------------------------------------------------
@@ -814,3 +836,398 @@ def test_a_rootless_validated_hypothesis_still_binds():
     assert subjects.pool_roots == frozenset(), "premise: no root"
     row = _recheck(case, _eid("pool_log"), turn=6)
     assert subject_index(case).subject(row) == SUBJECT_CAUSE
+
+
+# ---------------------------------------------------------------------------
+# 13. Delta of 6f45da107: what a window reads of its own citation
+# ---------------------------------------------------------------------------
+
+
+def _stands(case, node_id, statement, *, cites, turn, generated_at_turn=None):
+    """A second cause on its own two supports, its verdict citing ``cites`` (its
+    own first support when None), rooted by a standing hypothesis."""
+    labels = (f"{node_id}_a", f"{node_id}_b")
+    rows = [_row(label, _CAUSAL, turn, f"{label} reading") for label in labels]
+    case.evidence += rows
+    root = _root(node_id, statement, rows, validated=True, cites=cites or rows[:1])
+    case.causal_nodes[root.node_id] = root
+    problem = next(
+        n for n in case.causal_nodes.values() if n.node_type == NodeType.PROBLEM
+    )
+    case.causal_edges.append(
+        CausalEdge(cause_node_id=root.node_id, effect_node_id=problem.node_id)
+    )
+    hyp = Hypothesis(
+        hypothesis_id=f"hyp_{node_id[3:]}",
+        statement=statement,
+        category=HypothesisCategory.CODE,
+        state=HypothesisState.ACTIVE,
+        generation_mode=HypothesisGenerationMode.OPPORTUNISTIC,
+        rationale="initial",
+        root_node_id=root.node_id,
+        generated_at_turn=turn if generated_at_turn is None else generated_at_turn,
+    )
+    case.hypotheses[hyp.hypothesis_id] = hyp
+    return root, hyp, rows
+
+
+@pytest.mark.parametrize("through", ["cited-unlinked", "linked-control"])
+def test_a_failure_read_through_a_cited_row_stays_failed_once_the_cause_falls(through):
+    """An unkinded fix, re-checked, the problem still there: M6 demotes on it and
+    mints its row. A second cause is identified and its cited row re-checked,
+    the problem gone. The failure M6 acted on still stands (the gate and M6 do
+    not disagree), through a cited row as through a linked one."""
+    case, final, relief, _login, ttl = _mirror()
+    hyp = next(iter(case.hypotheses.values()))
+    named = _cites_unlinked(case, final, ttl) if through == "cited-unlinked" else relief
+    _fix(case, 6, None, [], _FIX)
+    _recheck(case, named.evidence_id, turn=7, label="rc_a")
+    case.evidence.append(_row("back", _PRESENT, 8, "503s at the gateway again"))
+    _recompute_at(case, 8)
+    _assert_demoted(case, final, hyp)
+    assert len(_engine_rows(case)) == 1
+
+    second, _hyp2, rows = _stands(
+        case,
+        "cn_00000000255f",
+        "a memory leak in the gunicorn worker",
+        cites=None,
+        turn=9,
+    )
+    _recompute_at(case, 9)
+    assert second.is_identified_root, "premise: the second cause is identified"
+    _recheck(case, rows[0].evidence_id, turn=10, label="rc_b")
+    case.evidence.append(_row("gone", _GONE, 11, "503s at 0.0/s"))
+    case.current_turn = 11
+
+    window = fix_windows(case)[-1]
+    assert (window.state, window.failure_turn) == (FIX_FAILED, 8)
+    assert _verdict(case) == ResolutionReadiness.NEEDS_INFO
+
+
+def _kinded_a_fell_older_b_stands(b_cites=None):
+    """A remediation kinded to A (6) seen failing (7, 8): M6 demotes A. Then B, a
+    hypothesis older than the fix, is identified."""
+    case, a, hyp_a = _identified_case()
+    _fix(case, 6, "remediation", [a.node_id], _FIX)
+    _recheck(case, _eid("pool_log"), turn=7, label="rc_a")
+    case.evidence.append(_row("back", _PRESENT, 8, "503s at the gateway again"))
+    _recompute_at(case, 8)
+    _assert_demoted(case, a, hyp_a)
+    assert len(_engine_rows(case)) == 1
+    b, hyp_b, rows = _stands(
+        case,
+        "cn_00000000256a",
+        "a memory leak in the gunicorn worker",
+        cites=b_cites,
+        turn=9,
+        generated_at_turn=1,
+    )
+    _recompute_at(case, 9)
+    assert b.is_identified_root, "premise: B is identified"
+    return case, b, hyp_b, rows
+
+
+def test_m6_leaves_a_cause_the_kinded_fix_did_not_target():
+    """B cites a row A SUPPORTS-links, and that row is re-checked with the problem
+    present. The window is A's: the failure is not B's, whatever B cites."""
+    shared = _row("pool_metric", _CAUSAL, 4, "unused; the row is A's own")
+    case, b, hyp_b, _rows = _kinded_a_fell_older_b_stands(b_cites=[shared])
+    _recheck(case, shared.evidence_id, turn=10, label="rc_b")
+    case.evidence.append(_row("back2", _PRESENT, 11, "503s at the gateway again"))
+    _recompute_at(case, 11)
+
+    assert b.node_state == NodeState.VALIDATED
+    assert hyp_b.state != HypothesisState.REFUTED
+    assert len(_engine_rows(case)) == 1
+
+
+def test_m6_attributes_a_cited_row_to_the_root_citing_it():
+    """Two identified roots of distinct causes (two clusters) and an unkinded fix,
+    whose window confirms through either. It fails through A's cited, unlinked row:
+    that failure is A's, and B does not cite the row. Roots of one cluster count
+    as one cause, so this holds only across clusters."""
+    case, a, hyp_a = _identified_case()
+    why = _row("why", _CAUSAL, 4, "max_connections was set by hand, once")
+    case.evidence.append(why)
+    a.metadata.update(
+        terminal_verdict(*a.metadata["root_terminal_evidence_ids"], why.evidence_id)
+    )
+    b, hyp_b, _rows = _stands(
+        case,
+        "cn_00000000256f",
+        "a worker leak",
+        cites=None,
+        turn=4,
+        generated_at_turn=1,
+    )
+    _recompute_at(case, 5)
+    assert subject_index(case).pool_roots == {a.node_id, b.node_id}, "premise"
+    assert case.progress.cause_identification_contested is True, "premise: distinct"
+    _fix(case, 6, None, [], _FIX)
+    row = _recheck(case, why.evidence_id, turn=7, label="rc_a")
+    case.evidence.append(_row("back", _PRESENT, 8, "503s at the gateway again"))
+    case.current_turn = 8
+
+    assert row in fix_windows(case)[-1].confirmed_cause_rows, "premise: it confirms"
+    assert failed_fix_of(case, hyp_a) is not None
+    assert failed_fix_of(case, hyp_b) is None
+
+
+def test_a_kinded_window_reads_only_its_own_roots_citations():
+    """A row B alone cites is no re-check of what A's fix addressed: it stays
+    out of A's window, and a citation of A's own does not widen what confirms
+    it."""
+    case, b, _hyp_b, rows = _kinded_a_fell_older_b_stands()
+    of_b = _recheck(case, rows[0].evidence_id, turn=10, label="rc_b")
+    window = fix_windows(case)[-1]
+    assert of_b not in window.cause_rows
+    assert subject_index(case).subject(of_b) == SUBJECT_CAUSE, "premise: B's basis"
+    assert window.confirmed_cause_rows == ()
+
+
+def test_a_kinded_windows_own_citation_is_read_but_does_not_confirm():
+    """The fallen target's cited, unlinked row is inside its window, and with the
+    target out of the pool it confirms nothing."""
+    case, final, _relief, _login, ttl = _mirror()
+    hyp = next(iter(case.hypotheses.values()))
+    why = _cites_unlinked(case, final, ttl)
+    _fix(case, 6, "remediation", [final.node_id], _FIX)
+    _recheck(case, why.evidence_id, turn=7, label="rc_a")
+    case.evidence.append(_row("back", _PRESENT, 8, "503s at the gateway again"))
+    _recompute_at(case, 8)
+    _assert_demoted(case, final, hyp)
+    _stands(case, "cn_00000000256b", "a worker leak", cites=None, turn=9)
+    _recompute_at(case, 9)
+
+    again = _recheck(case, why.evidence_id, turn=10, label="rc_a2")
+    window = fix_windows(case)[-1]
+    assert again in window.cause_rows and window.confirmed_cause_rows == ()
+
+
+# ---------------------------------------------------------------------------
+# 14. Window 0 reads only a row its window binds
+# ---------------------------------------------------------------------------
+
+
+def _names_a_competitors_support(case) -> str:
+    support = _row("comp_sup", _CAUSAL, 4, "dns errors in the resolver log")
+    case.evidence.append(support)
+    node = _root(
+        "cn_00000000256c", "the resolver drops queries", [support], validated=False
+    )
+    case.causal_nodes[node.node_id] = node
+    return support.evidence_id
+
+
+def _names_a_symptom_row(_case) -> str:
+    return VERIFYING_ID
+
+
+def _names_a_rungs_support(case) -> str:
+    support = _row("rung_sup", _CAUSAL, 4, "a rung's own reading")
+    case.evidence.append(support)
+    rung = _root("cn_00000000256d", "a rung", [support], validated=False)
+    rung.node_type = NodeType.INTERMEDIATE
+    case.causal_nodes[rung.node_id] = rung
+    return support.evidence_id
+
+
+@pytest.mark.parametrize(
+    "names",
+    [_names_a_competitors_support, _names_a_symptom_row, _names_a_rungs_support],
+)
+def test_a_row_window_zero_does_not_bind_is_silent_and_keeps_mains_ask(names):
+    """In DIAGNOSIS, with no fix, a causal_absence row is as likely an exclusion as
+    a fix's outcome: naming what the window does not bind, it is not told to name
+    the cited basis, which would read READY with no fix on record."""
+    case, _final, _relief, _login, _ttl = _mirror()
+    _recheck(case, names(case), turn=6)
+    assert _feedback(case) == ""
+    case.evidence.append(_row("gone0", _GONE, 7, "503s at 0.0/s"))
+    case.current_turn = 7
+    assert _verdict(case) == ResolutionReadiness.NEEDS_INFO
+    _assert_keeps_mains_ask(case)
+
+
+def _no_root_identified(case, root, hyp) -> None:
+    root.metadata = {}
+    case.progress.identified_cause_root_ids = []
+    _recompute_at(case, 5)
+
+
+def _no_graph(case, root, hyp) -> None:
+    case.causal_nodes = {
+        n: v for n, v in case.causal_nodes.items() if v.node_type == NodeType.PROBLEM
+    }
+    case.causal_edges = []
+    hyp.root_node_id, hyp.path = None, []
+    case.progress.identified_cause_root_ids = []
+
+
+def _interception_with_no_pool(case, root, hyp) -> None:
+    _no_root_identified(case, root, hyp)
+    _fix(case, 8, "interception", [], _RELIEF)
+
+
+@pytest.mark.parametrize(
+    "shape", [_no_root_identified, _no_graph, _interception_with_no_pool]
+)
+def test_a_rootless_pool_keeps_mains_ask(shape):
+    """Nothing binds on an empty pool, so "the cause the fix addressed" could not
+    be met."""
+    case, root, hyp = _identified_case()
+    shape(case, root, hyp)
+    assert subject_index(case).pool_roots == frozenset(), "premise: no pool"
+    _recheck(case, _eid("pool_log"), turn=6)
+    case.evidence.append(_row("gone0", _GONE, 7, "503s at 0.0/s"))
+    case.current_turn = 9
+    _assert_keeps_mains_ask(case)
+
+
+def test_a_window_bound_row_with_an_empty_pool_keeps_mains_ask():
+    """A fallen cause past another standing hypothesis: the window still binds the
+    re-check, and no root cause is identified to ask about."""
+    case, root, _hyp = _identified_case()
+    root.metadata = {}
+    case.progress.identified_cause_root_ids = [root.node_id]
+    case.causal_nodes["cn_00000000256e"] = _root(
+        "cn_00000000256e", "a standing candidate", [], validated=False
+    )
+    case.hypotheses["hyp_00000000256e"] = Hypothesis(
+        hypothesis_id="hyp_00000000256e",
+        statement="a standing candidate",
+        category=HypothesisCategory.CODE,
+        state=HypothesisState.ACTIVE,
+        generation_mode=HypothesisGenerationMode.OPPORTUNISTIC,
+        rationale="initial",
+        root_node_id="cn_00000000256e",
+        generated_at_turn=2,
+    )
+    row = _recheck(case, _eid("pool_log"), turn=6)
+    subjects = subject_index(case)
+    assert subjects.pool_roots == frozenset(), "premise: no pool"
+    assert subjects.window_roots == {root.node_id}, "premise: the window binds it"
+    assert row in fix_windows(case)[0].cause_rows
+    assert _feedback(case) == ""
+    case.evidence.append(_row("gone0", _GONE, 7, "503s at 0.0/s"))
+    case.current_turn = 7
+    _assert_keeps_mains_ask(case)
+
+
+def test_a_dated_window_keeps_post_fix_in_the_uncited_line():
+    case, final, relief, _login, ttl = _mirror()
+    _fixed(case, final)
+    row = _recheck(case, relief.evidence_id)
+    assert f"SYSTEM: Post-fix row(s) {row.evidence_id} confirm nothing" in _feedback(
+        case
+    )
+
+
+# ---------------------------------------------------------------------------
+# 15. The block stays inside its budget, and says what it hides
+# ---------------------------------------------------------------------------
+
+
+def _long_pending(pending, needs, cited):
+    """The block's largest shape: three attempts, ``pending`` uncited re-checks,
+    ``needs`` outstanding asks and ``cited`` rows in the basis."""
+    case, final, relief, _login, _ttl = _mirror()
+    basis = [_row(f"cit{i}", _CAUSAL, 4, f"datum {i}") for i in range(cited)]
+    case.evidence += basis
+    final.metadata.update(terminal_verdict(*(row.evidence_id for row in basis)))
+    fix = "switch the issuer to Kubernetes auth and rotate every secret_id, in all clusters "
+    _fix(case, 5, "interception", [_SECRET_ID], fix)
+    _fix(case, 6, "remediation", [final.node_id], fix)
+    _fix(case, 7, "remediation", [final.node_id], fix)
+    case.evidence.append(_row("gone", _GONE, 8, "503s at 0.0/s"))
+    for i in range(pending):
+        _recheck(case, relief.evidence_id, turn=8 + i, label=f"pend{i}")
+    ask = "Paste the check showing every route still returns 200 after the change, " * 3
+    for _ in range(needs):
+        case.evidence_needs.append(
+            EvidenceNeed(
+                case_id=case.case_id,
+                purpose=NeedPurpose.SYMPTOM_VERIFICATION,
+                request_text=ask,
+                rationale="r",
+                priority=NeedPriority.HIGH,
+                created_at_turn=case.current_turn,
+            )
+        )
+    return case, basis
+
+
+def test_six_pending_uncited_rows_cut_no_need_and_name_the_basis_once():
+    """The full why on the first row; the later rows with the same why keep its
+    clause before the ``;``. The block then fits, with every need kept."""
+    case, basis = _long_pending(pending=6, needs=5, cited=5)
+    block = build_fix_verification_block(case)
+    assert block.count(f"it {_UNCITED}") == 6, "premise: six rows, each says why"
+    assert cap_fix_verification_block(block, TokenBudget(100000)) == block
+    assert block.count("[eneed_") == 5
+    for row in basis:
+        assert block.count(row.evidence_id) == 1
+    assert len(re.findall(r"ev_[0-9a-f]{12}", block)) <= 12
+
+
+def test_the_block_names_the_basis_when_the_list_hides_the_row_that_would():
+    """Six rows from outside the window, then one uncited: the list ends (+1
+    more), so the seventh row's why is not shown. The clause must say it."""
+    case, final, relief, _login, ttl = _mirror()
+    for i in range(6):
+        _recheck(case, ttl.evidence_id, turn=5, label=f"before{i}")
+    _fix(case, 6, "remediation", [final.node_id], _FIX)
+    _recheck(case, relief.evidence_id, turn=7, label="uncited")
+    block = build_fix_verification_block(case)
+    assert "(+1 more)" in block, "premise: the seventh row is cut from the list"
+    assert f"{_CLAUSE}: {ttl.evidence_id}" in block
+
+
+# ---------------------------------------------------------------------------
+# 16. The ask, for every id the case can mint and the ref the model writes
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        "act",
+        "att",
+        "case",
+        "cdo",
+        "ce",
+        "cn",
+        "doc",
+        "eneed",
+        "ev",
+        "file",
+        "hyp",
+        "sol",
+    ],
+)
+def test_the_ask_falls_back_for_every_prefix_a_record_id_carries(prefix):
+    case, final, _relief, _login, _ttl = _mirror()
+    _fixed(case, final)
+    record_id = f"{prefix}_0123456789ab"
+    final.statement = f"{_FINAL}, as {record_id} shows"
+    ask = _ask(case)
+    assert record_id not in ask
+    assert "the output of a check showing it (e.g. the setting" in ask
+
+
+def test_the_ask_falls_back_for_the_ref_the_model_writes():
+    case, final, _relief, _login, _ttl = _mirror()
+    _fixed(case, final)
+    final.statement = "the row new_index_2 shows nothing rotates it"
+    ask = _ask(case)
+    assert "new_index_2" not in ask
+    assert "the output of a check showing it (e.g. the setting" in ask
+
+
+def test_the_ask_clips_a_long_fix_description():
+    case, final, _relief, _login, _ttl = _mirror()
+    fix = _fixed(case, final)
+    fix.description = "switch the issuer to Kubernetes auth " * 20
+    ask = _ask(case)
+    assert "…" in ask and fix.description.strip() not in ask

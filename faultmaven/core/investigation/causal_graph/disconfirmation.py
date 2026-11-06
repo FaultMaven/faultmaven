@@ -201,8 +201,9 @@ def failed_fix_of(case: Case, hyp: Hypothesis) -> FixWindow | None:
     on its first observation does not erase that); the fix ran at/after the
     hypothesis existed (a fix can only have addressed a cause that existed when
     it ran); and the fix was a fix OF this cause — one of the window's cause
-    rows names a row supporting this root's cause, or its cited basis (#1906 D1,
-    #2557, ``SubjectIndex.addresses``; the rows' wording decides nothing). The
+    rows names a row supporting this root's cause, or confirms the window through
+    its cited basis (#1906 D1, #2557, ``SubjectIndex.addresses``; the rows'
+    wording decides nothing). The
     window's outcome is shared with
     the readiness gate, which also stops reading a RELAPSED fix as a
     resolution; M6 does not demote on one, because the problem seen gone after
@@ -221,7 +222,10 @@ def failed_fix_of(case: Case, hyp: Hypothesis) -> FixWindow | None:
     subjects = subject_index(case)
     if not any(
         subjects.addresses(row, {root.node_id}, windows=True)
-        or subjects.addresses(row, {root.node_id})
+        or (
+            row in window.confirmed_cause_rows
+            and subjects.addresses(row, {root.node_id})
+        )
         for row in window.cause_rows
     ):
         return None

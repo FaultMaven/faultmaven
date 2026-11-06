@@ -1164,7 +1164,7 @@ def uncited_recheck_why(subjects: "SubjectIndex") -> str:
 
 def remediations_at(case: "Case", turn: int | None) -> list:
     """The accepted remediations executed at ``turn``, in record order: the
-    fixes whose window ``fix_windows`` dates there. None for window 0."""
+    fixes whose window ``fix_windows`` dates there; ``[]`` for window 0."""
     return [
         a
         for a in _dated_fixes(case)
@@ -1454,7 +1454,8 @@ class FixWindow:
     for window 0, the rows before any dated fix (an out-of-band fix leaves no
     execution record). ``end_turn`` is the next fix's execution turn, or None
     for the latest. ``cause_rows`` are the window's causal_absence rows bound
-    to a cause of the window pool, and ``confirmed_cause_rows``, those bound
+    to, or naming a row cited by, a cause of the window pool, and
+    ``confirmed_cause_rows``, those bound
     by citation to the confirmation pool (``_cause_pool``, #2557): any re-check
     of the cause the fix addressed can FAIL the window, but only one of the
     case's confirmable cause can make it SUCCEEDED. ``failure_turn`` is the
@@ -1572,8 +1573,9 @@ def fix_windows(
     removed after it was first posited, then the problem gone, then present.
     The relapse binds its cause rows to the confirmation roots and to every
     root deepened into one of them (``deepened_to``, transitively), so it
-    stands after the cause is deepened, however often, until a dated fix, and
-    reads the window's confirmation-bound rows too (a cited row, #2557). A
+    stands after the cause is deepened, however often, until a dated fix; one
+    read only through a cited row (the window's confirmation-bound rows, #2557)
+    does not survive a re-root, which erases the citation (#2582). A
     row's floor is the earliest first attach of the roots it supports; a
     later attach of the same root does not move it (save once on a root
     stored with neither key, ``CausalNode.root_first_attached_turn``).
@@ -1610,6 +1612,15 @@ def fix_windows(
             and subjects.subject(e, roots=roots, cited=cited) == SUBJECT_CAUSE
         )
 
+    def cited_by(roots, shell) -> tuple:
+        cited = set().union(*(subjects.citations.get(n, ()) for n in roots))
+        return tuple(
+            e
+            for e in absence
+            if getattr(e, "rechecks_evidence_id", None) in cited
+            and shell.holds(subjects.observed(e))
+        )
+
     def merged(*rows) -> tuple:
         inside = {e.evidence_id for e in rows}
         return tuple(e for e in absence if e.evidence_id in inside)
@@ -1618,8 +1629,9 @@ def fix_windows(
         shell = FixWindow(fix_turn, end_turn, (), FIX_UNKNOWN)
         kinded, targets = fixes.get(fix_turn, (False, ()))
         confirming = subjects.pool_roots.intersection(targets)
+        own = fell | nodes.keys() & set(targets) if kinded else subjects.window_roots
         if kinded:
-            observed_rows = bound_to(fell | nodes.keys() & set(targets), shell)
+            observed_rows = bound_to(own, shell)
             confirmed_cause_rows = bound_to(confirming, shell, cited=True)
         else:
             observed_rows = tuple(
@@ -1633,8 +1645,11 @@ def fix_windows(
                 if shell.holds(subjects.observed(e))
                 and subjects.subject(e) == SUBJECT_CAUSE
             )
-        # A cited row the cause does not SUPPORTS-link is inside its window too.
-        cause_rows = merged(*observed_rows, *confirmed_cause_rows)
+        # A row its own roots cite is inside the window as a linked one is, also
+        # once the cause falls; it confirms nothing the confirmation read refuses.
+        cause_rows = merged(
+            *observed_rows, *confirmed_cause_rows, *cited_by(own, shell)
+        )
         gone_turns = {
             turn
             for category, subject, turn, e in bound
