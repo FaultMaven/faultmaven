@@ -143,6 +143,18 @@ async def test_the_draining_flag_skips_the_evidence_vector_write(monkeypatch):
     assert written == ["c1"]
 
 
+def test_a_raised_scope_leaves_the_list_it_joined(monkeypatch):
+    """A scope that outlived a rebinding of ``_DRAINS`` (a test's fixture)
+    removed its entry from the new list, which never held it: ``ValueError``,
+    and the list it joined kept it."""
+    joined: list = []
+    monkeypatch.setattr(inflight, "_DRAINS", joined)
+    with inflight.raised(lambda: True):
+        assert inflight.draining() is True
+        monkeypatch.setattr(inflight, "_DRAINS", [])
+    assert joined == []
+
+
 async def test_overlapping_drains_keep_the_flag_until_both_end():
     """The first drain to end must not clear the flag under the other."""
     finish = asyncio.Event()

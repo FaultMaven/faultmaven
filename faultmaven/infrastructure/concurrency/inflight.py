@@ -162,14 +162,14 @@ def tracked(what_prefix: str = "") -> Set["asyncio.Task[Any]"]:
 
 
 def draining() -> bool:
-    """Whether a drain runs whose release no hold has superseded, or a last
-    release's closes run: a store write that has not started must not start.
-    A drain stops counting toward it once a hold is taken after its release,
-    and never counts again (a drain no longer the last closes nothing);
-    another drain still the last keeps it raised. A last release keeps the
-    flag raised from its drain until its closes end, whatever composes or
-    resets meanwhile, so a second composition's evidence writes are refused
-    during those closes."""
+    """Whether a drain runs whose release no hold has superseded, or a release
+    still the last runs, from its drain until its closes end: a store write
+    that has not started must not start. A drain stops counting toward it once
+    a hold is taken after its release, and never counts again (a drain no
+    longer the last closes nothing); another drain still the last keeps it
+    raised. Once a last release's closes begin, the flag stays raised until
+    they end, whatever composes or resets meanwhile, so a second composition's
+    evidence writes are refused during those closes."""
     return any(last() for last in list(_DRAINS))
 
 
