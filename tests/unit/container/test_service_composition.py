@@ -35,6 +35,7 @@ import pytest
 
 from faultmaven.config.settings import FaultMavenSettings, TenantProvider
 from faultmaven.container import DIContainer
+from faultmaven.container.providers.infrastructure import create_case_repository
 from faultmaven.container.providers.services import register_services
 from faultmaven.container.registry import DependencyRegistry
 
@@ -83,10 +84,12 @@ def _container(settings: FaultMavenSettings) -> DIContainer:
     for name in BOUNDARY_SERVICES:
         container._register_service(name, object())
 
-    # Attributes the service layer reads directly. None is the honest value:
-    # no Redis client and no case repository in this process.
+    # Attributes the service layer reads directly. No Redis client in this
+    # process, so None; the case repository is the one the composition root
+    # builds for these settings (the SQLite-backed sessionless one), because
+    # no case service exists without a repository (#2548).
     container.redis_client = None
-    container.case_repository = None
+    container.case_repository = create_case_repository(settings)
     container.user_store = object()
     return container
 

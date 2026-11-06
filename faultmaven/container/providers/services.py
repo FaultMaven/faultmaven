@@ -85,7 +85,6 @@ def create_case_service(
     session_store: Any | None,
     case_vector_store: Any | None,
     settings: FaultMavenSettings,
-    minimal_factory: callable,
     team_service: Any | None = None,
     share_repository: Any | None = None,
     account_reader: Any | None = None,
@@ -94,16 +93,20 @@ def create_case_service(
 ) -> Any:
     """Create case service for case persistence and management.
 
-    The in-memory ``minimal_factory`` service answers only when no case
-    repository is configured. With one configured, a failure to build the
-    service or its erasers raises ``RequiredServiceConstructionError``, which
-    refuses startup in every environment (#2103). Never a stand-in: the
-    in-memory one lost every case on restart, differed per replica, and
-    reported success for a delete that cleared nothing.
+    No case service exists without a case repository (#2548): one missing, or
+    a failure to build the service or its erasers, raises
+    ``RequiredServiceConstructionError``, which refuses startup in every
+    environment (#2103). ``create_case_repository`` never returns None, so the
+    missing-repository arm is the composition root's own invariant, not a
+    mode. There is no stand-in: the in-memory one lost every case on restart,
+    differed per replica, reported success for a delete that cleared nothing,
+    and was held to ``ICaseService`` by nothing, so six methods the case
+    routes call were missing from it.
     """
     if not case_repository:
-        logger.debug("Case service using minimal implementation (no repository)")
-        return minimal_factory()
+        raise RequiredServiceConstructionError(
+            "CaseService could not be constructed: no case repository"
+        )
 
     try:
         from faultmaven.infrastructure.concurrency.inflight import CaseDeleteGate
@@ -1566,7 +1569,6 @@ def register_services(container: BaseDIContainer) -> None:
         session_store,
         case_vector_store,
         settings,
-        container._create_minimal_case_service,
         team_service=team_service,  # Case read allowlist: team-membership resolution
         share_repository=share_repository,  # Case read allowlist: share source (§D4)
         # The account store's directory read (ADR-020 D4/D5): driver

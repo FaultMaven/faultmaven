@@ -26,6 +26,7 @@ from faultmaven.config.settings import FaultMavenSettings
 from faultmaven.container import DIContainer
 from faultmaven.container.providers import tools
 from faultmaven.container.providers.infrastructure import (
+    create_case_repository,
     register_knowledge_vector_store,
 )
 from faultmaven.container.providers.services import register_services
@@ -74,7 +75,9 @@ def _container(settings: FaultMavenSettings) -> DIContainer:
     for name in BOUNDARY_SERVICES:
         container._register_service(name, object())
     container.redis_client = None
-    container.case_repository = None
+    # The SQLite-backed repository the composition root builds for these
+    # settings: no case service exists without one (#2548).
+    container.case_repository = create_case_repository(settings)
     container.user_store = object()
     return container
 

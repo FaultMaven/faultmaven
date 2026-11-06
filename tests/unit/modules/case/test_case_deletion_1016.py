@@ -434,7 +434,7 @@ class TestRunbookConversion:
 
 class TestComposition:
     def test_an_eraser_that_cannot_be_built_fails_startup(self, tmp_path, monkeypatch):
-        """Not the ``MinimalCaseService`` fallback, whose delete clears nothing."""
+        """Refused at composition, never served without its erasers (#2103)."""
         from faultmaven.container.providers import services
 
         def refuse(**_):
@@ -456,7 +456,6 @@ class TestComposition:
             RedisSessionStore(redis, session_ttl_seconds=1800),
             case_vector_store,
             settings,
-            lambda: pytest.fail("fell back to MinimalCaseService"),
             file_storage_service=storage,
             redis_client=redis,
         )

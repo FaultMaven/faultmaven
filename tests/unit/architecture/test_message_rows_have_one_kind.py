@@ -50,10 +50,10 @@ _MUST_HAVE_SCANNED = pathlib.Path(
 #: catch it, which is a guard that has to be argued with rather than obeyed.
 #:
 #: TWO of these are required, not one. One was too weak in both directions: a
-#: row that carries `message_type` INSTEAD of `role` — the shape
-#: `MinimalCaseService` actually had, and the shape this issue is about — has
-#: no `role`, and was caught only because it happened to also carry a
-#: `message_id` that repositories will mint for it anyway.
+#: row that carries `message_type` INSTEAD of `role` — the shape the since
+#: deleted in-memory case stand-in had (#2548), and the shape this issue is
+#: about — has no `role`, and was caught only because it happened to also
+#: carry a `message_id` that repositories will mint for it anyway.
 _CONVERSATION_ROW_KEYS = {
     "message_id",
     "case_id",

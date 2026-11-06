@@ -4,9 +4,12 @@ The case, session and auth factories caught any construction error and returned
 another implementation: cases or sessions in process memory, or an
 ``AuthService`` with no revocation store. The case repository's factory
 returned None, which read as "not configured". Each now raises
-``RequiredServiceConstructionError`` naming the cause. The in-memory stand-ins
-remain for the not-configured branch only. At request time, a missing case
-service answers 503, not a 401 that blames the caller.
+``RequiredServiceConstructionError`` naming the cause. The in-memory session
+stand-in remains for the not-configured branch only; the case service has no
+stand-in at all (#2548): ``create_case_repository`` never returns None, so a
+case service asked to be built over no repository is refused the same way. At
+request time, a missing case service answers 503, not a 401 that blames the
+caller.
 """
 
 from unittest.mock import MagicMock, patch
@@ -78,7 +81,6 @@ def test_a_case_service_that_cannot_be_built_is_refused(settings, monkeypatch):
             _session_store(),
             None,
             settings,
-            _no_stand_in,
             file_storage_service=MagicMock(),
             redis_client=MagicMock(),
         ),
@@ -115,13 +117,18 @@ def test_an_auth_service_with_no_revocation_store_configured_is_built(settings):
     assert service._revocation_store is None
 
 
-def test_no_repository_or_store_still_answers_with_the_stand_in(settings):
+def test_no_session_store_still_answers_with_the_stand_in(settings):
     stand_in = object()
-    assert (
-        services.create_case_service(None, None, None, settings, lambda: stand_in)
-        is stand_in
-    )
     assert services.create_session_service(None, settings, lambda: stand_in) is stand_in
+
+
+def test_no_case_repository_is_refused_not_stood_in_for(settings):
+    """No case service exists without a case repository (#2548)."""
+    with pytest.raises(RequiredServiceConstructionError) as refused:
+        services.create_case_service(None, _session_store(), None, settings)
+    assert str(refused.value) == (
+        "CaseService could not be constructed: no case repository"
+    )
 
 
 def test_a_missing_case_service_answers_503_not_401():
