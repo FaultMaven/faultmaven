@@ -1,14 +1,15 @@
-"""A breaker or deadline that is not the LLM's answers what it answered before
-those classes had a handler (#1632, #1635).
+"""A breaker, a deadline or an ``LLMProviderError`` escaping a route answers as
+on ``main`` (#1632, #1635).
 
-Every external client raises both classes. Any other one escaping a route must
-still answer as an exception nothing maps: ``LoggingMiddleware`` logs it under
-the request's correlation id, and the 500 names that id in its body (#2294).
-The control is a ``RuntimeError`` on the same app; on ``main`` the breaker and
-the deadline answer exactly as it does. Answered by the handler itself, even
-through ``internal_server_error_handler``, they lose ``correlation_id`` from
-the body and gain the headers an ordinary response collects on its way out.
-Each stack is the real application, rebuilt (``rebuild_app_under``).
+No global handler takes these classes: every external client raises the first
+two, and the one route that reaches the LLM with them, ``convert_document``,
+answers them itself. So one escaping any other route still answers as an
+exception nothing maps: ``LoggingMiddleware`` logs it under the request's
+correlation id, and the 500 names that id in its body (#2294). The control is a
+``RuntimeError`` on the same app. A handler answering them, even through
+``internal_server_error_handler``, drops ``correlation_id`` from the body and
+adds the headers an ordinary response collects on its way out. Each stack is
+the real application, rebuilt (``rebuild_app_under``).
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
+from faultmaven.models.exceptions import LLMProviderError
 from tests.integration._app_rebuild import rebuild_app_under
 from tests.unit.api.test_llm_failure_shapes_1635 import _breaker, _deadline
 
@@ -26,8 +28,9 @@ pytestmark = pytest.mark.integration
 _FAILURES = {
     "unmapped": lambda: RuntimeError("unmapped fault 1632"),
     "chromadb-breaker": lambda: _breaker(service="ChromaDB"),
+    "unnamed-breaker": lambda: _breaker(service=None),
     "s3-deadline": lambda: _deadline("s3"),
-    "llm-breaker": _breaker,
+    "provider-error": lambda: LLMProviderError("no provider"),
 }
 
 
@@ -72,8 +75,8 @@ def _shape(response) -> tuple:
     )
 
 
-@pytest.mark.parametrize("name", ["chromadb-breaker", "s3-deadline"])
-def test_another_services_failure_answers_as_an_unmapped_exception(client, name):
+@pytest.mark.parametrize("name", sorted(set(_FAILURES) - {"unmapped"}))
+def test_each_answers_as_an_unmapped_exception(client, name):
     response = _get(client, name)
     control = _get(client, "unmapped")
 
@@ -83,11 +86,3 @@ def test_another_services_failure_answers_as_an_unmapped_exception(client, name)
     # exception that reached it carries.
     assert response.json()["correlation_id"] == response.headers["x-correlation-id"]
     assert "Circuit breaker" not in response.text
-
-
-def test_the_llm_breaker_answers_the_llm_status_through_the_app(client):
-    response = _get(client, "llm-breaker")
-
-    assert response.status_code == 503, response.text
-    assert response.headers["x-error-code"] == "LLM_PROVIDER_UNAVAILABLE"
-    assert response.headers["retry-after"] == "30"

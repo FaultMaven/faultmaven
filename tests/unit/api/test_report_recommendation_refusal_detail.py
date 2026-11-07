@@ -12,7 +12,7 @@ remediation, passed the entire API suite.
 
 import pytest
 
-from faultmaven.infrastructure.base_client import CircuitBreakerError
+from faultmaven.exceptions import CircuitBreakerError
 from faultmaven.infrastructure.knowledge.runbook_kb import RESULTS_UNREADABLE_CODE
 from faultmaven.models.exceptions import KnowledgeBaseError
 from faultmaven.modules.case.api.routes.reports import (

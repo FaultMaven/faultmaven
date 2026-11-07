@@ -33,7 +33,6 @@ from faultmaven.exceptions import (
     CASE_TERMINAL,
     AuthorizationError,
     ConflictError,
-    ExternalCallTimeout,
     LLMException,
     NotFoundError,
     RawModelContentRefused,
@@ -41,12 +40,7 @@ from faultmaven.exceptions import (
     ServiceException,
     ValidationException,
 )
-from faultmaven.infrastructure.base_client import CircuitBreakerError
-from faultmaven.models.exceptions import (
-    IndexAdmissionRefused,
-    LLMProviderError,
-    OAuthProtocolError,
-)
+from faultmaven.models.exceptions import IndexAdmissionRefused, OAuthProtocolError
 from faultmaven.modules.auth.exceptions import TeamOperationRefused
 from faultmaven.modules.knowledge.exceptions import (
     IngestOutcomeUnknown,
@@ -427,9 +421,6 @@ class TestGetExceptionHandlers:
             ServiceError,
             ServiceException,
             LLMException,
-            CircuitBreakerError,
-            ExternalCallTimeout,
-            LLMProviderError,
             RawModelContentRefused,
             OAuthProtocolError,
         }

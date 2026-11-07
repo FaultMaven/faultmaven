@@ -19,14 +19,12 @@ from faultmaven.config.settings import get_settings
 from faultmaven.config.tenant_context import get_current_enterprise_id
 from faultmaven.core.investigation.turn_budget import clamp_to_turn_budget
 from faultmaven.exceptions import (
+    LLM_BREAKER_SERVICE,
     CallShapeUnsupported,
     LLMOutputFloorError,
     RawModelContentRefused,
 )
-from faultmaven.infrastructure.base_client import (
-    LLM_BREAKER_SERVICE,
-    BaseExternalClient,
-)
+from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.infrastructure.health.sla_tracker import sla_tracker
 from faultmaven.infrastructure.security.model_content import (
     plain_messages,

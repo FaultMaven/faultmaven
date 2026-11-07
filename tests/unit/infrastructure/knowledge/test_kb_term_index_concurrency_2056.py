@@ -27,7 +27,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from faultmaven.infrastructure.base_client import CircuitBreakerError
+from faultmaven.exceptions import CircuitBreakerError
 from faultmaven.infrastructure.chroma_client import CHROMA_EXECUTOR
 from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
     KB_COLLECTION,

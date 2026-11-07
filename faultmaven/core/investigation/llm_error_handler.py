@@ -25,21 +25,19 @@ from faultmaven.core.investigation.turn_budget import (
     spendable_turn_budget,
 )
 from faultmaven.exceptions import (
+    LLM_BREAKER_SERVICE,
     LLM_CONFIG_ERROR,
     PROVIDER_AUTH_FAILED,
     PROVIDER_CIRCUIT_OPEN,
     QUOTA_EXHAUSTED,
     TOKEN_LIMIT,
     TURN_BUDGET_EXHAUSTED,
+    CircuitBreakerError,
     LLMErrorCategory,
     RawModelContentRefused,
     declared_llm_category,
     is_billing_error,
     walk_cause_chain,
-)
-from faultmaven.infrastructure.base_client import (
-    LLM_BREAKER_SERVICE,
-    CircuitBreakerError,
 )
 
 logger = logging.getLogger(__name__)
@@ -625,8 +623,10 @@ class LLMErrorHandler:
         # the runbook KB included — so an unscoped ``isinstance`` would answer a
         # ChromaDB outage with "The AI provider failed repeatedly", which is
         # both wrong and unactionable. A breaker that carries no service name
-        # (an older raiser, or a hand-built one in a test) still reaches the
-        # generic branch below rather than being silently dropped.
+        # (an older raiser, or a hand-built one in a test) is read as the
+        # LLM's: this handler wraps a model call, so it knows what it called.
+        # The API boundary does not, and ``is_llm_breaker`` there reads the
+        # named breaker only (#1632).
         if isinstance(error, CircuitBreakerError) and getattr(
             error, "service", None
         ) in (None, LLM_BREAKER_SERVICE):

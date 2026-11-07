@@ -26,12 +26,10 @@ from faultmaven.core.investigation.llm_error_handler import (
 from faultmaven.exceptions import (
     PROVIDER_CIRCUIT_OPEN,
     QUOTA_EXHAUSTED,
+    CircuitBreakerError,
     LLMException,
 )
-from faultmaven.infrastructure.base_client import (
-    BaseExternalClient,
-    CircuitBreakerError,
-)
+from faultmaven.infrastructure.base_client import BaseExternalClient
 
 
 class _RouterLike(BaseExternalClient):
