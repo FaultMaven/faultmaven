@@ -41,6 +41,7 @@ from faultmaven.modules.case.contracts import (
     ProposedAction,
 )
 from tests.unit.core.investigation import test_replay_emission_turn_2537 as replay
+from tests.unit.core.investigation import test_solution_attempts_2105 as attempts
 from tests.unit.core.investigation.bound_rows import bound_row, bound_to_add
 from tests.unit.core.investigation.test_refutation_needs_data_1911 import (
     _DSU,
@@ -428,30 +429,58 @@ def _response(value: str, justification: str | None):
     )
 
 
-@pytest.mark.parametrize(
-    "value, said",
-    [
-        ("declared_stable", "mitigation_disposition to declared_stable or "),
-        (None, "set it True again"),
-    ],
+_DISPOSITION_SENTENCE = (
+    "mitigation_disposition takes declared_stable or proceed_unmitigated, never True."
 )
-def test_the_unjustified_line_names_the_dispositions_values(value, said):
-    """One notice (#2499), and never "True" for the disposition (F2)."""
+_UNJUSTIFIED = "completed without justification. To claim one, set it True again"
+
+
+@pytest.mark.parametrize("disposition", [True, False])
+def test_the_unjustified_disposition_gets_its_own_fixed_sentence(disposition):
+    """The shared sentence is unchanged, so it still merges with the gate's;
+    the disposition's values are one more fixed sentence, never "True" (F2)."""
     case, _shown = _pending()
     case.progress.mitigation = MitigationRecord(accepted=True)
-    milestones = (
-        MilestoneUpdates(mitigation_disposition=value)
-        if value
-        else MilestoneUpdates(mitigation_verified=True)
-    )
     response = _response("declared_stable", None)
-    response.state_updates.milestones = milestones
+    if not disposition:
+        response.state_updates.milestones = MilestoneUpdates(mitigation_verified=True)
     _valid, errors, _found = validate_reasoning_first(response, case)
-    (line,) = [e for e in errors if "completed without justification" in e]
-    assert said in line
-    if value:
-        assert "set it True again" not in line
-        assert "milestone_justifications.mitigation_disposition" in line
+
+    (shared,) = [e for e in errors if _UNJUSTIFIED in e]
+    named = "mitigation_disposition" if disposition else "mitigation_verified"
+    assert shared.startswith(f"Milestones ['{named}'] ")
+    assert errors.count(_DISPOSITION_SENTENCE) == (1 if disposition else 0)
+
+
+async def test_the_strip_and_the_gate_merge_beside_the_disposition_sentence():
+    """Both writers in one turn: the reasoning-first strip refuses the
+    unjustified disposition, the gate the unjustified fix. One merged
+    "completed without justification" sentence names both, and the
+    disposition's sentence appears once (#2499)."""
+    eng, case = await attempts._relapsed()
+    await attempts._turn(
+        eng, case, 14, solutions_to_add=[attempts._fix(attempts._SECOND)]
+    )
+    second = attempts._solutions(case)[-1]
+    meta = await attempts._process(
+        eng,
+        case,
+        15,
+        justified=False,
+        milestones=MilestoneUpdates(
+            solution_accepted=True,
+            accepted_action_ref=second.action_id,
+            mitigation_disposition="declared_stable",
+        ),
+    )
+
+    feedback = "\n".join(meta["system_notices"])
+    assert feedback.count("EVIDENCE VALIDATION") == 1
+    assert feedback.count("completed without justification") == 1
+    assert (
+        "Milestones ['mitigation_disposition', 'solution_accepted'] " + _UNJUSTIFIED
+    ) in feedback
+    assert feedback.count(_DISPOSITION_SENTENCE) == 1
 
 
 @pytest.mark.parametrize(

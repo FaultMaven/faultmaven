@@ -321,22 +321,21 @@ def _justification_errors(
     unjustified = [m for m in completed if m not in justifications]
     if unjustified:
         offending.update(unjustified)
-        # The disposition is no boolean (#2100): "True" would be an off-enum
-        # value, dropped. One fixed clause, whatever the count.
-        again = (
-            "set it again (mitigation_disposition to declared_stable or "
-            "proceed_unmitigated, justified under "
-            "milestone_justifications.mitigation_disposition; any other True)"
-            if "mitigation_disposition" in unjustified
-            else "set it True again"
-        )
         errors.append(
             f"Milestones {unjustified} completed without justification. To "
-            f"claim one, {again} and set "
+            "claim one, set it True again and set "
             "evidence_trail.milestone_justifications.<milestone> to the "
             "evidence that shows it, citing evidence IDs; null or blank is "
             "no justification."
         )
+        # The disposition is no boolean (#2100): "True" would be an off-enum
+        # value, dropped. Its own fixed sentence, so the shared one above
+        # still merges with the gate's (``add_evidence_validation_feedback``).
+        if "mitigation_disposition" in unjustified:
+            errors.append(
+                "mitigation_disposition takes declared_stable or "
+                "proceed_unmitigated, never True."
+            )
 
     # Check 1.5: Warn if trying to complete milestones with no actionable evidence.
     # Contextual evidence (raw uploads) cannot justify milestones — only
