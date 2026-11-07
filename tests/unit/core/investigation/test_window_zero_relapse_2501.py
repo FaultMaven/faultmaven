@@ -312,7 +312,7 @@ async def test_1_a_relapse_on_a_row_the_deeper_cause_shares_stands():
         validation_method=ValidationMethod.EMPIRICAL,
         belief=0.9,
         actionable=True,
-        metadata=terminal_verdict(),
+        metadata=terminal_verdict(deeper_support.evidence_id),
         generated_at_turn=8,
         evidence_links=[
             NodeEvidenceLink(
@@ -389,6 +389,10 @@ def _cluster_case():
         CausalEdge(cause_node_id=upper.node_id, effect_node_id=problem.node_id),
     ]
     hyp.path = [deepest.node_id, upper.node_id, problem.node_id]
+    # The identified root's verdict cites the shared row as its basis too.
+    deepest.metadata.update(
+        terminal_verdict(*deepest.metadata["root_terminal_evidence_ids"], _ROOTS)
+    )
     case.evidence.append(
         Evidence(
             evidence_id=_ROOTS,

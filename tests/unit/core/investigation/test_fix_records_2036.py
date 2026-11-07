@@ -707,7 +707,7 @@ async def test_a_held_fix_is_kinded_against_its_replayed_bundles_start(
         solutions_to_add=[_solution("config_change", "raise the pool to 50")],
         milestones=MilestoneUpdates(solution_accepted=True),
     )
-    engine, case, _hyp, root, (shown, support, _), _ = await _replayed(held=[fix])
+    engine, case, _hyp, root, (shown, _, support), _ = await _replayed(held=[fix])
     held = next(t for t in case.turn_history if t.turn_number == 5)
     assert root.node_id not in held.cause_at_start.reference_ids
     (attempt,) = _attempts(case)

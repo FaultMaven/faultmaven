@@ -175,7 +175,8 @@ def ensure_subjects(case, *, turn: int = 1) -> tuple[str, str | None]:
 
 def _cause_on_record(case, *, turn: int) -> None:
     """A cause a cause observation can be about, with a support of its own
-    (``cause_assurance._cause_pool``). A stand-in gets an identified root
+    (``cause_assurance._cause_pool``), cited as the root's terminal basis so
+    a re-check of it confirms the cause (#2557). A stand-in gets an identified root
     (VALIDATED, marked terminal): nothing recomputes it. A real case gets a
     COUNT-HELD root — one causal support, a hypothesis rooted on it, an edge
     to the PROBLEM node, marked terminal — which the engine's recompute keeps
@@ -191,7 +192,7 @@ def _cause_on_record(case, *, turn: int) -> None:
         summary="postgres log: FATAL too many connections for the worker pool",
     )
     root = CausalNode(
-        metadata=terminal_verdict(),
+        metadata=terminal_verdict(support.evidence_id),
         node_id=BOUND_ROOT_ID,
         statement="max_connections is set to 20, below the worker pool size",
         node_type=NodeType.ROOT,

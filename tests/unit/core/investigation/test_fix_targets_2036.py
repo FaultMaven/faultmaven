@@ -158,9 +158,10 @@ async def _deepen(eng, case, hyp, turn, statement="pgbouncer runs in session mod
 
 
 async def _recheck(eng, case, turn, root, gone=True):
-    """The cause re-checked gone (naming the root's support), and the problem
-    gone or still present."""
-    support = root.evidence_links[0].evidence_id
+    """The cause re-checked gone (naming the root's cited basis, #2557, else
+    its support), and the problem gone or still present."""
+    cited = root.metadata.get("root_terminal_evidence_ids") or []
+    support = cited[0] if cited else root.evidence_links[0].evidence_id
     problem = (
         _obs(_GONE, "checkout 200 again", VERIFYING_ID)
         if gone

@@ -71,8 +71,8 @@ def _render_finding_line(ev, label: str | None = None) -> str:
 def _rows_a_recheck_binds(case: Case) -> list[tuple[str, object]]:
     """The re-verification checklist, narrowed to the rows a re-check can name
     in ``rechecks`` and bind to (#1906 D1, ``SubjectIndex.bindable_rows``):
-    the rows that showed the problem, and the rows supporting the cause pool
-    alone. With no verifying row on record (a legacy case) the problem half is
+    the rows that showed the problem, and the cited basis of the cause pool
+    (the rows its terminal verdicts cite, #2557). With no verifying row on record (a legacy case) the problem half is
     every symptom_evidence row, as before: the model is asked to cite one."""
     from faultmaven.core.investigation.cause_assurance import subject_index
 

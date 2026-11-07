@@ -97,8 +97,9 @@ async def test_the_report_renders_the_row_the_stamp_recorded(same_line, shape):
     polarity set omit c_b, and the section still renders it."""
     case, r1, _hyp = _identified_case()
     r2_links, r1.evidence_links = r1.evidence_links[1:], r1.evidence_links[:1]
+    r1.metadata.update(terminal_verdict(r1.evidence_links[0].evidence_id))
     r2 = CausalNode(
-        metadata=terminal_verdict(),
+        metadata=terminal_verdict(r2_links[0].evidence_id),
         node_id="cn_00000000d00b",
         statement=(
             "every checkout worker blocks waiting on a postgres slot"

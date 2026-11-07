@@ -1380,7 +1380,7 @@ authoritative**.
   by `milestone_engine.response_application._record_rechecks`; the list
   renders only the rows a re-check binds to (`_rows_a_recheck_binds` over
   `cause_assurance.SubjectIndex.bindable_rows`: the verifying rows, unnarrowed
-  while none is recorded, and the cause pool's root-only supports).
+  while none is recorded, and the cited basis of the cause pool's roots — the rows their terminal verdicts cite, #2557).
   `context_builder.evidence_needs._build_evidence_needs_block` (re-verification
   section) + `templates.diagnosis._EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM` + the
   per-stage EVIDENCE-TYPES sections and the classification decision-tree

@@ -98,8 +98,9 @@ def _root(node_id, statement, *, support_labels=()) -> CausalNode:
         )
         for label in support_labels
     ]
+    cited = [_eid(label) for label in support_labels]
     return CausalNode(
-        metadata=terminal_verdict(),
+        metadata=terminal_verdict(*cited) if cited else {},
         node_id=node_id,
         statement=statement,
         node_type=NodeType.ROOT,

@@ -37,6 +37,7 @@ from faultmaven.core.investigation.cause_assurance import (
     cause_recheck_status,
     fix_windows,
     interception_relief,
+    off_cause_attempt,
     pending_symptom_check,
     subject_index,
     symptom_elimination_rows,
@@ -146,6 +147,24 @@ def _attempt_lines(case: Case, attempts: list, windows, subjects, owing) -> list
     return lines
 
 
+def _cited_basis_clause(case: Case, windows, subjects, status) -> str:
+    """The rows a re-check confirms the cause through (#2557), so the model asks
+    for those, not for the relief: only where a re-check can count (a fix of
+    the cause on record, its window not FAILED, the cause not held open), and
+    not when a pending row's why already names them."""
+    _problem, basis = subjects.bindable_rows()
+    if (
+        not basis
+        or not _dated_fixes(case)
+        or windows[-1].state == FIX_FAILED
+        or off_cause_attempt(case, windows) is not None
+        or getattr(case.progress, "cause_identification_held_open", False)
+        or any(basis[0].evidence_id in why for _row, why in status[:MAX_IDS])
+    ):
+        return ""
+    return "; the cited basis to re-check: " + _ids([r.evidence_id for r in basis])
+
+
 def _leg_lines(case: Case, windows, subjects, status, cause_rows, problem_rows):
     lines = ["Resolution legs (RESOLVED needs both):"]
     if cause_rows:
@@ -155,9 +174,14 @@ def _leg_lines(case: Case, windows, subjects, status, cause_rows, problem_rows):
         # for what is missing rather than for the re-check again.
         cause = "  - cause: missing"
         if status:
-            pending = [f"{row.evidence_id} ({why})" for row, why in status]
+            # The full why once; a later row with it keeps the clause before ";".
+            pending, said = [], set()
+            for row, why in status:
+                shown = why.split(";")[0] if why in said else why
+                pending.append(f"{row.evidence_id} ({shown})")
+                said.add(why)
             cause += "; re-checked, not counted yet: " + _ids(pending)
-        lines.append(cause)
+        lines.append(cause + _cited_basis_clause(case, windows, subjects, status))
         latest = windows[-1]
         if latest.state == FIX_FAILED:
             # As readiness asks (``assess_resolution_readiness``).

@@ -83,8 +83,15 @@ def _node(
 ) -> CausalNode:
     if state == NodeState.REFUTED and not refutation_reason:
         refutation_reason = "refuted in test"
+    cited = [
+        link.evidence_id
+        for link in links or []
+        if link.stance == EvidenceStance.SUPPORTS
+    ]
     return CausalNode(
-        metadata=terminal_verdict(),
+        metadata=(
+            terminal_verdict(*cited) if node_type == NodeType.ROOT and cited else {}
+        ),
         node_id=node_id,
         statement=f"node {node_id}",
         node_type=node_type,
@@ -139,7 +146,6 @@ def _case(nodes, edges=None, evidence=None, hyps=None) -> Case:
 
 def _problem() -> CausalNode:
     return CausalNode(
-        metadata=terminal_verdict(),
         node_id=_nid(0xD),
         statement="D: intermittent latency",
         node_type=NodeType.PROBLEM,
@@ -339,8 +345,12 @@ def _differential_via_evidence():
         links=[_link("cf", EvidenceStance.REFUTES)],
     )
     ev = _evidence("cf", EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE)
+    # The survivor stays unobserved (no SUPPORTS link); its terminal verdict
+    # still cites a causal_evidence row of the case, as D6 requires (#2557).
+    why = _evidence("why", EvidenceCategory.CAUSAL_EVIDENCE)
+    survivor.metadata.update(terminal_verdict(why.evidence_id))
     edges = [_edge(survivor.node_id, d.node_id), _edge(sibling.node_id, d.node_id)]
-    case = _case([d, survivor, sibling], edges=edges, evidence=[ev])
+    case = _case([d, survivor, sibling], edges=edges, evidence=[ev, why])
     case.hypotheses = {"hyp_000000000001": _hyp(survivor.node_id)}
     case.progress.problem_status = ProblemStatus.VERIFIED  # cause-identification anchor
     return case, survivor.node_id

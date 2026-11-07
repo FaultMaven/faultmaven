@@ -54,7 +54,6 @@ from faultmaven.modules.case.contracts import (
     ValidationMethod,
 )
 from tests.case_builders import investigating_case
-from tests.utils import terminal_verdict
 
 _FILE_ID = "file_0123456789ab"
 
@@ -223,7 +222,6 @@ def _seed_root(case: Case) -> str:
     emission can name them without adding nodes."""
     seed_problem_node(case)
     root = CausalNode(
-        metadata=terminal_verdict(),
         node_id="cn_0000000000aa",
         statement=_CAUSE,
         node_type=NodeType.ROOT,

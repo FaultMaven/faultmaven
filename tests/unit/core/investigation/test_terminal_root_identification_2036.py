@@ -84,7 +84,6 @@ from tests.unit.core.investigation.test_chain_cause_state import (
     _eid,
     _root,
 )
-from tests.utils import TERMINAL_BASIS_ID
 
 pytestmark = pytest.mark.unit
 
@@ -170,7 +169,7 @@ def test_a_validated_root_whose_why_is_open_is_held():
 
 def test_marking_the_root_terminal_identifies_it():
     case, root, _hyp = _open_chain_case()
-    root.record_root_terminal(True, [TERMINAL_BASIS_ID], case.current_turn)
+    root.record_root_terminal(True, [_eid("ev_root_support")], case.current_turn)
     _recompute_cause_state_from_chain(case)
     assert case.progress.cause_state == CauseState.IDENTIFIED
     assert case.progress.cause_identification_held_open is False
@@ -187,7 +186,7 @@ def test_the_mirror_names_only_a_terminal_root():
 
     # A mirror minted while the root was marked terminal is retracted when the
     # verdict is withdrawn.
-    root.record_root_terminal(True, [TERMINAL_BASIS_ID], case.current_turn)
+    root.record_root_terminal(True, [_eid("ev_root_support")], case.current_turn)
     assert synthesize_rcc_from_validated_root(case) is True
     root.record_root_terminal(False, None, case.current_turn)
     assert retract_stale_engine_rcc(case) is True
@@ -235,7 +234,7 @@ def test_a_held_case_does_not_resolve_on_a_renewal():
 def test_the_same_rows_resolve_a_terminal_root():
     """The contrast: with the root marked terminal, the same rows confirm."""
     case, root, _hyp = _open_chain_case()
-    root.record_root_terminal(True, [TERMINAL_BASIS_ID], case.current_turn)
+    root.record_root_terminal(True, [_eid("ev_root_support")], case.current_turn)
     _recompute_cause_state_from_chain(case)
     _renewal_rows(case, turn=case.current_turn)
     assert cause_elimination_rows(case)
@@ -292,7 +291,7 @@ def test_the_stamp_never_confirms_an_open_root():
     _renewal_rows(case, turn=case.current_turn)
     assert confirm_root_from_resolution_absence(case) is False
 
-    root.record_root_terminal(True, [TERMINAL_BASIS_ID], case.current_turn)
+    root.record_root_terminal(True, [_eid("ev_root_support")], case.current_turn)
     assert confirm_root_from_resolution_absence(case) is True
 
 
@@ -654,7 +653,7 @@ def test_the_bound_reads_the_cause_the_conclusion_names():
     # One support: A is count-held, not identified; B has no verdict.
     root_a = case.causal_nodes[hyp_a.root_node_id]
     root_a.evidence_links = root_a.evidence_links[:1]
-    root_b.metadata.pop("root_terminal")
+    root_b.metadata.pop("root_terminal", None)
     _recompute_cause_state_from_chain(case)
     assert case.progress.cause_identification_held_open is False
     assert case.progress.cause_state != CauseState.IDENTIFIED

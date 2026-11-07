@@ -74,7 +74,7 @@ async def _replayed(data_turn=_STAGED, *, edit=None, held=(), confirmed=None):
     the next hold turns' updates), replayed on the "yes" at ``confirmed``, by
     default the turn after them. Returns the engine, the case, the hypothesis, its
     root, the staged rows' ids (the symptom row, then the root's two
-    supports) and the file."""
+    supports; the verdict cites the second, #2557) and the file."""
     engine, case = revision._engine(), revision._case()
     file_id = upload(case, data_turn)
     dsu = revision._revision_turn_with_cause_work()
@@ -105,7 +105,7 @@ async def test_a_replayed_cause_is_posited_in_its_own_turn(data_turn, why):
     """The root's attach, the hypothesis and the nodes read the staged turn,
     so the cause leg counts a re-check of the cause from that turn's data. A
     row from data submitted before the cause still predates it."""
-    engine, case, hyp, root, (_, support, _), file_id = await _replayed(data_turn)
+    engine, case, hyp, root, (_, _, support), file_id = await _replayed(data_turn)
 
     assert root.metadata["root_attached_turn"] == _STAGED
     assert root.metadata["root_first_attached_turn"] == _STAGED
@@ -130,7 +130,7 @@ async def test_a_relapse_on_a_replayed_cause_fails_window_zero():
     """The replayed cause re-checked gone on the staged turn's data, the
     problem gone at 5, then back at 6: window 0's relapse, floored at the
     cause's first attach, the staged turn."""
-    engine, case, _hyp, _root, (shown, support, _), file_id = await _replayed()
+    engine, case, _hyp, _root, (shown, _, support), file_id = await _replayed()
 
     await _record(
         engine,
@@ -203,7 +203,7 @@ async def test_a_held_fix_seen_failing_disconfirms_a_cause_replayed_before_it():
         solutions_to_add=[_solution("config_change", "raise the pool to 50")],
         milestones=MilestoneUpdates(solution_accepted=True),
     )
-    engine, case, hyp, _root, (shown, support, _), _ = await _replayed(held=[fix])
+    engine, case, hyp, _root, (shown, _, support), _ = await _replayed(held=[fix])
     assert [a.accepted_in_turn for a in case.proposed_actions] == [_STAGED + 1]
     assert case.progress.cause_state == CauseState.IDENTIFIED
 
