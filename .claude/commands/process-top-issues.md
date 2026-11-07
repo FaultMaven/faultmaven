@@ -269,8 +269,8 @@ free slot). Each starts at its row in *Where an item stands*; one whose plan (ne
      review and two fix deltas, plus the text-or-test one above; more fix rounds pull the item to the owner (a
      rebuild, row 13, is a new plan and PR). A re-entry, a refresh, a conflict resolution or a change the owner asks
      for is a delta of only what is new, outside that cap. A whole-PR review is never repeated, nor run as a delta.
-   - **No cap narrows a root fix.** On a seam with a root issue, a finding that shares the root is `fixed` in the
-     structural work, never declined or filed to stay under a cap. A structural fix's budget is the one its ruling
+   - **No cap narrows a root fix.** On a seam with an open root issue, a finding that shares the root is `fixed` in
+     the structural work, never declined or filed to stay under a cap. A structural fix's budget is the one its ruling
      sets, and reaching the size bound or the fix-round cap pulls the item to the owner with the question; it never
      narrows the fix.
 6. **Merge-ready.** Every required context must be `SUCCESS` or `SKIPPED` on the head:
@@ -349,7 +349,7 @@ To **pull** an item:
   pile and a priority.
 - **Search open and closed issues first.** If an open issue already covers it, add the evidence there under
   `## Evidence`. If a closed issue matches, cite it in the new issue. Findings that share one root go in one issue; a
-  latent one on a seam with a root issue goes there under `## Evidence` (in review, its `filed` landing), unless
+  latent one on a seam with an open root issue goes there under `## Evidence` (in review, its `filed` landing), unless
   *State* makes it `P1`. A latent `P1` on a frozen seam is filed, so the count shows it, added to the root issue's
   `**Absorbs:**` line and blocked on it like the seam's other items; its `P1` raises the root issue's priority, and
   the ruling that places the root issue states its priority.
