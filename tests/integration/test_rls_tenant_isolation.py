@@ -33,7 +33,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
-from tests.utils import seed_enterprises
+from tests.utils import seed_enterprises, seed_users
 
 pytestmark = [
     pytest.mark.integration,
@@ -806,6 +806,7 @@ async def test_a_tenant_delete_of_a_platform_row_is_refused_before_the_vectors(
     service._vector_store.delete_documents_by_parent_id = AsyncMock(return_value=3)
     service._tracer = MagicMock()
     service._share_repo = None
+    service._trace_eraser = None
 
     try:
         for item_id in (builtin_id, authored_id):
@@ -827,6 +828,124 @@ async def test_a_tenant_delete_of_a_platform_row_is_refused_before_the_vectors(
     finally:
         async with su_maker() as session:
             await session.execute(_KI_DELETE, {"i": authored_id})
+            await session.commit()
+
+
+_CONVERSION_ROWS = (
+    text(
+        "INSERT INTO uploaded_files (file_id, enterprise_id, filename, size_bytes) "
+        "VALUES (:f, :e, 'f', 1)"
+    ),
+    text(
+        "INSERT INTO conversion_jobs (id, enterprise_id, scope, source_file_id) "
+        "VALUES (:j, :e, 'personal', :f)"
+    ),
+    text(
+        "INSERT INTO conversion_drafts (id, enterprise_id, conversion_id, "
+        "knowledge_item_id, runbook_id, title, content, status) "
+        "VALUES (:d, :e, :j, :i, :d, 't', 'c', 'verified')"
+    ),
+)
+_CONVERSION_DELETES = (
+    text("DELETE FROM conversion_drafts WHERE conversion_id = :j"),
+    text("DELETE FROM conversion_jobs WHERE id = :j"),
+    text("DELETE FROM uploaded_files WHERE file_id = :f"),
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.security
+async def test_a_document_delete_purges_only_the_traces_its_session_may_read(
+    limited_engine, kb_rows, superuser_engine
+):
+    """#2575: the drafts naming a document are read under the caller's
+    row-level security. A tenant's delete of a platform row, refused by RLS,
+    erases nothing although a platform draft names it; the tenant's delete of
+    its own document erases its own conversion, under its own enterprise."""
+    from contextlib import asynccontextmanager
+    from unittest.mock import AsyncMock, MagicMock
+
+    from faultmaven.modules.knowledge.domain.services.knowledge_service import (
+        KnowledgeService,
+    )
+
+    ent_a, _ent_b, _builtin_id, _personal_id = kb_rows
+    platform_id, tenant_id, owner = str(uuid4()), str(uuid4()), f"u_{uuid4().hex[:8]}"
+    owners = {
+        "platform": (f"conv_{uuid4().hex[:12]}", STANDALONE_ENTERPRISE_ID, platform_id),
+        "tenant": (f"conv_{uuid4().hex[:12]}", ent_a, tenant_id),
+    }
+    su_maker = async_sessionmaker(superuser_engine, expire_on_commit=False)
+    async with su_maker() as session:
+        await seed_users(session, [owner], enterprise_id=ent_a)
+        await session.execute(
+            _KI_INSERT,
+            {
+                "i": platform_id,
+                "e": STANDALONE_ENTERPRISE_ID,
+                "org": None,
+                "s": "global",
+                "t": "A",
+                "c": "body",
+            },
+        )
+        await session.execute(
+            text(
+                "INSERT INTO knowledge_items (item_id, enterprise_id, scope, "
+                "owner_id, title, content, item_type, vector_generation) "
+                "VALUES (:i, :e, 'personal', :o, 'T', 'body', 'runbook', 'gen-test')"
+            ),
+            {"i": tenant_id, "e": ent_a, "o": owner},
+        )
+        for job, enterprise, item in owners.values():
+            for statement in _CONVERSION_ROWS:
+                await session.execute(
+                    statement,
+                    {
+                        "f": f"f_{job}",
+                        "j": job,
+                        "d": f"d_{job}",
+                        "e": enterprise,
+                        "i": item,
+                    },
+                )
+        await session.commit()
+
+    maker = async_sessionmaker(limited_engine, expire_on_commit=False)
+
+    @asynccontextmanager
+    async def tenant_session():
+        async with maker() as session:
+            await _bind(session, ent_a)
+            yield session
+
+    service = KnowledgeService.__new__(KnowledgeService)
+    service._db_session_factory = tenant_session
+    service._vector_store = MagicMock()
+    service._vector_store.delete_documents_by_parent_id = AsyncMock(return_value=3)
+    service._tracer = MagicMock()
+    service._share_repo = None
+    service._trace_eraser = MagicMock()
+    service._trace_eraser.erase_conversion = AsyncMock(return_value=0)
+
+    try:
+        assert (await service.delete_document(platform_id))["success"] is False
+        service._trace_eraser.erase_conversion.assert_not_awaited()
+
+        assert (await service.delete_document(tenant_id))["action"] == "deleted"
+        service._trace_eraser.erase_conversion.assert_awaited_once_with(
+            *owners["tenant"][:2]
+        )
+    finally:
+        async with su_maker() as session:
+            for job, _enterprise, _item in owners.values():
+                for statement in _CONVERSION_DELETES:
+                    await session.execute(statement, {"j": job, "f": f"f_{job}"})
+            for item_id in (platform_id, tenant_id):
+                await session.execute(_KI_DELETE, {"i": item_id})
+            await session.execute(
+                text("DELETE FROM users WHERE user_id = :u"), {"u": owner}
+            )
             await session.commit()
 
 

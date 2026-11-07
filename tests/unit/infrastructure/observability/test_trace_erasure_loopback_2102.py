@@ -1,5 +1,5 @@
 """The case delete's eraser on the real Opik SDK, against a stub on a port this
-test binds (#2102). No live backend and no model call: what a real backend does
+test binds (#2102), and the draft and document deletes' (#2575, ``TestAConversion``). No live backend and no model call: what a real backend does
 with these requests is still untested.
 
 The stub answers the paged list endpoints as the backend's source at
@@ -241,7 +241,7 @@ def _eraser(client, project=PROJECT) -> LLMTraceEraser:
     return LLMTraceEraser(project, client_factory=lambda: client)
 
 
-async def _route(*, case_id=CASE, fails=False):
+async def _route(*, case_id=CASE, conversion_id=None, fails=False):
     """The real ``route()`` under the real ``opik.track``. The registry stands in
     for the providers, so no model is called."""
     registry = MagicMock()
@@ -264,7 +264,10 @@ async def _route(*, case_id=CASE, fails=False):
         patch.object(router_module, "_opik_tracing_enabled", return_value=True),
     ):
         await router_module.LLMRouter().route(
-            prompt=vetted(f"the prompt of {case_id}"), model="m", case_id=case_id
+            prompt=vetted(f"the prompt of {case_id or conversion_id}"),
+            model="m",
+            case_id=case_id,
+            conversion_id=conversion_id,
         )
 
 
@@ -525,3 +528,51 @@ class TestTheTag:
             assert recorded["error_info"]["message"] == BODY
             assert recorded["metadata"] == owner
         assert trace["thread_id"] == CASE
+
+
+CONVERSION = "conv_aabb20262575"
+OTHER_CONVERSION = "conv_ccdd20262575"
+
+
+def _content_of(backend, conversion_id):
+    """The spans stored for ``conversion_id`` that hold content."""
+    with backend._lock:
+        return [
+            row
+            for row in backend.stored["spans"].values()
+            if (row.get("metadata") or {}).get("conversion_id") == conversion_id
+            and row.get("input")
+        ]
+
+
+class TestAConversion:
+    """#2575: an upload's calls carry no case. The conversion's tag finds them
+    exactly as the case's does."""
+
+    async def test_its_traces_go_and_another_conversions_stay(self, backend, client):
+        for conversion_id in (CONVERSION, OTHER_CONVERSION):
+            await _route(case_id=None, conversion_id=conversion_id)
+        assert client.flush(timeout=20) is True
+        assert len(_content_of(backend, CONVERSION)) == 1
+
+        assert await _eraser(client).erase_conversion(CONVERSION, ENTERPRISE) == 1
+
+        (query,) = backend.reads["spans"]
+        assert [(f["key"], f["value"]) for f in json.loads(query["filters"])] == [
+            ("conversion_id", CONVERSION),
+            ("enterprise_id", ENTERPRISE),
+        ]
+        assert _content_of(backend, CONVERSION) == []
+        assert len(_content_of(backend, OTHER_CONVERSION)) == 1
+
+    async def test_a_failed_call_has_the_conversion_on_the_wire(self, backend, client):
+        with pytest.raises(RuntimeError):
+            await _route(case_id=None, conversion_id=CONVERSION, fails=True)
+        client.flush(timeout=20)
+
+        owner = {"conversion_id": CONVERSION, "enterprise_id": ENTERPRISE}
+        (trace,) = [t for t in backend.traces if t.get("error_info")]
+        (span,) = [s for s in backend.spans if s.get("error_info")]
+        for recorded in (trace, span):
+            assert recorded["error_info"]["message"] == BODY
+            assert recorded["metadata"] == owner

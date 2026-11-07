@@ -107,6 +107,21 @@ async def discard_drafts_naming_item(session: AsyncSession, item_id: str) -> Lis
     return discarded
 
 
+async def conversions_naming_item(
+    session: AsyncSession, item_id: str
+) -> List[Tuple[str, str]]:
+    """The ``(conversion_id, enterprise_id)`` of each draft naming ``item_id``,
+    in any status: the conversions whose traces deleting the item purges
+    (``KnowledgeService.delete_document``, #2575)."""
+    rows = await session.execute(
+        select(ConversionDraftModel.conversion_id, ConversionDraftModel.enterprise_id)
+        .where(ConversionDraftModel.knowledge_item_id == item_id)
+        .distinct()
+        .order_by(ConversionDraftModel.conversion_id)
+    )
+    return [(conversion_id, enterprise_id) for conversion_id, enterprise_id in rows]
+
+
 async def discard_drafts_naming_any_item(
     session: AsyncSession,
 ) -> Tuple[List[str], List[str], int]:

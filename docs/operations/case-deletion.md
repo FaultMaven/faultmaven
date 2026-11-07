@@ -1,7 +1,8 @@
 # Case deletion
 
 What `DELETE /api/v1/cases/{case_id}` does, when it refuses, and what it can
-still miss. The full contract of each answer is in the generated
+still miss, and how the knowledge base's draft and document deletes purge their
+LLM traces the same way. The full contract of each answer is in the generated
 [API reference](../reference/api/README.md).
 
 ## What a delete clears
@@ -40,6 +41,40 @@ and the traces already recorded can still be deleted.
 
 Without `OPIK_ENABLED` and a backend URL, no process records a trace, and the
 audit row names `llm_traces` under `not_configured`.
+
+## Draft and document deletes (#2575)
+
+Each model call that carries an uploaded document's text (its triage, its
+analysis, and each failure mode's generation) is tagged with the document's
+conversion and its enterprise. Two deletes purge a conversion's traces, with
+the same steps and refusals as a case delete:
+
+- `DELETE /api/v1/knowledge/conversions/{conversion_id}/drafts/{draft_id}`
+  purges the draft's conversion. A refusal answers **500** "Failed to delete
+  draft" and leaves the draft as it was.
+- `DELETE /api/v1/knowledge/documents/{document_id}` purges the conversion of
+  each draft that names the document, read under the caller's row-level
+  security. A refusal answers **500** "Failed to delete document" and leaves the
+  document as it was; `POST /api/v1/knowledge/documents/bulk-delete` reports
+  that document in `errors`. The document's `source_url` plays no part, as the
+  uploader writes it. A document that no draft names purges nothing: a built-in,
+  whose delete only unpublishes it, or a runbook published from a case whose
+  drafts that case's delete removed.
+
+The traces go before any row changes, and no database transaction is open
+while the backend is called. The unit is the conversion, not the draft: every
+failure mode's prompt holds the whole document, so deleting one of a
+conversion's drafts also deletes the traces of the drafts beside it.
+
+A runbook made with no model call has a conversion too: a template, a
+directory scan, and a direct upload (`POST /api/v1/knowledge/documents`) each
+create one. Deleting such a runbook searches the backend, finds nothing, and
+fails while the backend is down.
+
+These deletes need no in-flight gate: a conversion's model calls all finish
+before its draft rows exist, so none of its traces can land after a delete
+that found them. They write no audit row, so nothing records a delete made
+while tracing is not configured.
 
 ## Work in flight holds a delete off (#2096)
 
@@ -89,8 +124,17 @@ read reports it.
 - **Tracing turned off later (#2581).** With `OPIK_ENABLED` off or no backend
   URL, a delete does not contact the backend, so traces recorded while tracing
   was on stay there, and the audit row names `llm_traces` under `not_configured`.
-- **A deleted document's traces (#2575).** A trace of an uploaded document
-  serves no case and carries only the enterprise, so no case delete reaches it.
+- **Document traces recorded before #2575.** They carry no conversion tag, so
+  a draft or document delete does not find them.
+- **A conversion that left no draft (#2604).** A conversion refused or failed
+  before it wrote a draft, or one whose receipt was lost, sent the document's
+  text and left no row whose delete would purge it.
+- **A runbook quoted into a case.** Knowledge base text that a case's prompt
+  carried is that case's trace: the case delete purges it, a document delete
+  does not.
+- **Draft and document deletes** are subject to the backend's asynchronous
+  delete, to other replicas' parked traces (#2573), and to tracing turned off
+  later (#2581), as above, with no audit row to name the last.
 - **Redis unreachable (ruled 2026-11-04).** The delete fails closed with 503,
   but a turn whose lease write or tombstone read fails runs unguarded. It is
   logged once per process and counted on `case_unleased_turns_total{reason}`

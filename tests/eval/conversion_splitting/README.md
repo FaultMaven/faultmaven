@@ -100,6 +100,7 @@ analysis = await _analyze_document(
     path.read_text(),
     path.name,
     model_boundary_redaction(None),
+    conversion_id="conv_eval",  # tags the call's trace (#2575)
 )
 ```
 

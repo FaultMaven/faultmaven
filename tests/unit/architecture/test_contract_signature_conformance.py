@@ -442,6 +442,7 @@ def _build_registry() -> Dict[str, RegistryEntry]:
     from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
         KnowledgeVectorStore,
     )
+    from faultmaven.infrastructure.observability.trace_erasure import LLMTraceEraser
     from faultmaven.infrastructure.persistence.case_vector_store import CaseVectorStore
     from faultmaven.infrastructure.persistence.user_repository import (
         InMemoryUserRepository,
@@ -525,6 +526,7 @@ def _build_registry() -> Dict[str, RegistryEntry]:
     )
     from faultmaven.modules.knowledge.contracts import (
         IConversionService,
+        IConversionTraceEraser,
         IKnowledgeService,
     )
     from faultmaven.modules.knowledge.domain.services.conversion_service.case_erasure import (  # noqa: E501
@@ -590,6 +592,10 @@ def _build_registry() -> Dict[str, RegistryEntry]:
         RegistryEntry(interface=ICaseCreatorCount, reals=(CaseService,)),
         RegistryEntry(interface=IKnowledgeService, reals=(KnowledgeService,)),
         RegistryEntry(interface=IConversionService, reals=(ConversionService,)),
+        RegistryEntry(
+            interface=IConversionTraceEraser,
+            reals=(LLMTraceEraser, UnavailableStoreEraser),
+        ),
         RegistryEntry(
             interface=IUserRepository,
             reals=(
