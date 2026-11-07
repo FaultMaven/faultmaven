@@ -54,6 +54,7 @@ Read the generated file in `alembic/versions/`. Check:
   For each flagged item, note the incompatibility and propose the `batch_alter_table` or dialect-branching pattern.
 - **No unintended table drops.** If autogenerate proposes dropping a table, stop and confirm with the user — this is usually a model-state mismatch.
 - **Move the test pins.** Set `HEAD_REVISION` in `tests/integration/test_alembic_migrations.py` to the new revision, and update `EXPECTED_TABLES` there for any table added or removed — the suite fails until both match.
+- **Record the fingerprint.** Append the line `tests/unit/architecture/test_applied_revisions_unchanged.py` prints for the new revision to `alembic/revision_fingerprints.txt`. A revision does not change once it is on `main`: a database that already applied it would never see the change, so a schema change is a new revision.
 
 ### 5. Report
 
