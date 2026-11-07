@@ -24,7 +24,6 @@ from faultmaven.exceptions import (
     ConflictError,
     NotFoundError,
     RawModelContentRefused,
-    ServiceException,
     ValidationException,
 )
 from faultmaven.infrastructure import index_slot
@@ -122,6 +121,10 @@ from faultmaven.modules.knowledge.domain.services.runbook_validator import (
     aenforce_runbook_security,
     avalidate_and_score,
 )
+from faultmaven.modules.knowledge.domain.trace_purge import (
+    TRACE_ERASER_NOT_WIRED,
+    made_model_calls,
+)
 from faultmaven.modules.knowledge.draft_content import (
     DRAFT_CONTENT_MAX_CHARS,
     draft_content_too_long_message,
@@ -137,7 +140,6 @@ from faultmaven.providers.tenancy.factory import (
     BUILTIN_MULTI,
     requested_tenant_provider,
 )
-from faultmaven.utils.exception_name import exception_class_name
 from faultmaven.utils.frontmatter import match_frontmatter
 from faultmaven.utils.line_endings import normalize_line_endings
 from faultmaven.utils.runbook_id import (
@@ -238,7 +240,7 @@ class ConversionService:
         team_service=None,
         sanitizer=None,
         account_reader: Optional[IAccountDirectory] = None,
-        trace_eraser: Optional[IConversionTraceEraser] = None,
+        trace_eraser: Optional[IConversionTraceEraser] = TRACE_ERASER_NOT_WIRED,
     ):
         self._llm_router = llm_router
         self._settings = settings
@@ -269,7 +271,7 @@ class ConversionService:
         self._account_reader = account_reader
         # Purges a conversion's LLM traces when one of its drafts is deleted
         # (#2575). None where no trace backend is configured, so nothing
-        # recorded one.
+        # recorded one; left out, every purge fails (TRACE_ERASER_NOT_WIRED).
         self._trace_eraser = trace_eraser
         self._preprocessor = DocumentPreprocessor(llm_router, settings, sanitizer)
         self._scan_lock = asyncio.Lock()
@@ -2544,15 +2546,15 @@ status: draft
         Defaults ``False`` (fail-closed).
 
         Before the row changes, the LLM traces of the draft's conversion are
-        purged (#2575): every mode's prompt carried the whole document, so the
-        traces of its sibling drafts go too. Read, purge and write run in that
-        order with no transaction open across the purge: the write's session
-        reads the job and the draft again, and a draft gone meanwhile answers
-        ``False``.
+        purged (#2575), when it made model calls (``trace_purge``): every
+        mode's prompt carried the whole document, so the traces of its sibling
+        drafts go too. Read, purge and write run in that order with no
+        transaction open across the purge: the write's session reads the job
+        and the draft again, and a draft gone meanwhile answers ``False``.
 
         Raises:
-            ServiceException: the traces could not be purged, for any reason;
-                the draft is untouched.
+            ServiceException: the traces could not be purged; the draft is
+                untouched.
         """
         if not self._db_session_factory:
             return False
@@ -2563,21 +2565,12 @@ status: draft
             )
             if found is None:
                 return False
-            _, dm = found
+            job, dm = found
+            purge = made_model_calls(job) and self._trace_eraser is not None
             owner = (dm.conversion_id, dm.enterprise_id)
 
-        if self._trace_eraser is not None:
-            try:
-                await self._trace_eraser.erase_conversion(*owner)
-            except ServiceException:
-                raise
-            except Exception as exc:
-                # The SDK's own errors (a refused connection, a 5xx) propagate
-                # raw from the eraser; the route answers one class for all.
-                raise ServiceException(
-                    f"Cannot clear llm_traces for conversion {owner[0]}: "
-                    f"{exception_class_name(exc)}"
-                ) from exc
+        if purge:
+            await self._trace_eraser.erase_conversion(*owner)
 
         async with self._db_session_factory() as session:
             found = await self._owned_draft(

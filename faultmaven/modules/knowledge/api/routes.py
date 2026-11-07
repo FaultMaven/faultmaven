@@ -1432,9 +1432,11 @@ async def bulk_delete_documents(
     ``DELETE /documents/{id}``, applied to each target before anything reaches
     the service. Refused targets are reported in ``errors`` and never counted
     as deleted; ``total_requested`` is the de-duplicated batch size (see
-    ``_normalize_bulk_document_ids``), so the counts reconcile. A document
-    whose model-call traces cannot be deleted is reported in ``errors`` and
-    left as it was (#2575).
+    ``_normalize_bulk_document_ids``), so the counts reconcile. Each
+    conversion's model-call traces are deleted once for the batch (#2575).
+    When they cannot be, that document and every one after it are reported in
+    ``errors`` and left as they were, without another call to the trace
+    backend.
     """
     logger = logging.getLogger(__name__)
 

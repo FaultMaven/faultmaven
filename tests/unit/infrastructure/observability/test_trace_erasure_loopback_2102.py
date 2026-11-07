@@ -304,10 +304,15 @@ class TestTheRead:
             else (500, {"errors": ["a query error"]})
         )
 
-        with pytest.raises(ApiError) as refused:
+        with pytest.raises(
+            ServiceException, match=f"llm_traces for case {CASE}: ApiError$"
+        ) as refused:
             await _eraser(client).erase_case(CASE, ENTERPRISE)
 
-        assert refused.value.status_code == 500
+        # Wrapped by its class (#2575): its text carries the backend's body.
+        assert isinstance(refused.value.__cause__, ApiError)
+        assert refused.value.__cause__.status_code == 500
+        assert "a query error" not in str(refused.value)
         assert backend.deleted == []
         assert [q["page"] for q in backend.reads["traces"]] == ["1", "2", "2", "2"]
 
@@ -509,8 +514,12 @@ class TestWhatThisPodHolds:
         _after_the_first_ping(client)
         backend.stop()
 
-        with pytest.raises(httpx.ConnectError):
+        with pytest.raises(
+            ServiceException, match=f"llm_traces for case {CASE}: ConnectError$"
+        ) as refused:
             await _eraser(client).erase_case(CASE, ENTERPRISE)
+
+        assert isinstance(refused.value.__cause__, httpx.ConnectError)
 
 
 class TestTheTag:

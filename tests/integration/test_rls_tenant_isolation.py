@@ -836,9 +836,10 @@ _CONVERSION_ROWS = (
         "INSERT INTO uploaded_files (file_id, enterprise_id, filename, size_bytes) "
         "VALUES (:f, :e, 'f', 1)"
     ),
+    # A conversion that analysed a failure mode, so made model calls.
     text(
-        "INSERT INTO conversion_jobs (id, enterprise_id, scope, source_file_id) "
-        "VALUES (:j, :e, 'personal', :f)"
+        "INSERT INTO conversion_jobs (id, enterprise_id, scope, source_file_id, "
+        "failure_modes_detected) VALUES (:j, :e, 'personal', :f, 1)"
     ),
     text(
         "INSERT INTO conversion_drafts (id, enterprise_id, conversion_id, "

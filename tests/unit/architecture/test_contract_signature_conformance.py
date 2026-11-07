@@ -442,7 +442,10 @@ def _build_registry() -> Dict[str, RegistryEntry]:
     from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
         KnowledgeVectorStore,
     )
-    from faultmaven.infrastructure.observability.trace_erasure import LLMTraceEraser
+    from faultmaven.infrastructure.observability.trace_erasure import (
+        LLMTraceEraser,
+        UnavailableTraceEraser,
+    )
     from faultmaven.infrastructure.persistence.case_vector_store import CaseVectorStore
     from faultmaven.infrastructure.persistence.user_repository import (
         InMemoryUserRepository,
@@ -586,6 +589,7 @@ def _build_registry() -> Dict[str, RegistryEntry]:
                 SessionPointerEraser,
                 UnavailableStoreEraser,
                 RunbookConversionEraser,
+                UnavailableTraceEraser,
             ),
         ),
         RegistryEntry(interface=ICaseDriverRelease, reals=(CaseService,)),
@@ -594,7 +598,7 @@ def _build_registry() -> Dict[str, RegistryEntry]:
         RegistryEntry(interface=IConversionService, reals=(ConversionService,)),
         RegistryEntry(
             interface=IConversionTraceEraser,
-            reals=(LLMTraceEraser, UnavailableStoreEraser),
+            reals=(LLMTraceEraser, UnavailableTraceEraser),
         ),
         RegistryEntry(
             interface=IUserRepository,

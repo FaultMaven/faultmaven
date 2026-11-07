@@ -23,6 +23,7 @@ from typing import Any, Callable, List, Optional
 
 from faultmaven.exceptions import ServiceException
 from faultmaven.infrastructure.observability.tracing import trace_backend_configured
+from faultmaven.utils.exception_name import exception_class_name
 
 logger = logging.getLogger(__name__)
 
@@ -137,8 +138,15 @@ class LLMTraceEraser:
             # reading stops at its deadline, and each call has its own timeout.
             # Whatever it deletes meanwhile a retry would have deleted.
             raise _refused(owner, "timed out") from exc
+        except ServiceException:
+            raise
+        except Exception as exc:
+            # The SDK's own errors, a refused connection or a 5xx whose text
+            # carries the backend's response body (#2575): named by class only,
+            # so no caller logs or answers that text.
+            raise _refused(owner, exception_class_name(exc)) from exc
 
-    def _erase(self, owner_id: str, enterprise_id: str, kind: str = "case") -> int:
+    def _erase(self, owner_id: str, enterprise_id: str, kind: str) -> int:
         """The SDK's blocking calls, off the event loop."""
         owner = f"{kind} {owner_id}"
         deadline = time.monotonic() + TRACE_ERASE_TIMEOUT_SECONDS
@@ -157,14 +165,14 @@ class LLMTraceEraser:
         rest = client.rest_client
         options = {"timeout_in_seconds": self._request_timeout_seconds}
         found: List[str] = []
-        for get_page, kind, exclude, row_key in (
+        for get_page, entity, exclude, row_key in (
             (rest.traces.get_traces_by_project, "traces", TRACE_EXCLUDE, "id"),
             (rest.spans.get_spans_by_project, "spans", SPAN_EXCLUDE, "trace_id"),
         ):
             read_page = functools.partial(
                 get_page,
                 project_name=self.project_name or client.project_name,
-                filters=_parsed_filters(filter_string, kind),
+                filters=_parsed_filters(filter_string, entity),
                 exclude=json.dumps(exclude),
                 size=TRACE_PAGE_SIZE,
                 request_options=options,
@@ -204,6 +212,23 @@ class LLMTraceEraser:
         # A trace still queued here would land after the search and survive it.
         if not flushed:
             raise _refused(owner, "queued traces did not reach the backend")
+
+
+class UnavailableTraceEraser:
+    """Bound where traces cannot be erased: a backend configured without the
+    Opik SDK, or a knowledge service no composition gave an eraser. Every
+    delete that needs a purge fails instead of skipping it."""
+
+    store_name = STORE_NAME
+
+    def __init__(self, reason: str):
+        self.reason = reason
+
+    async def erase_case(self, case_id: str, enterprise_id: str) -> int:
+        raise _refused(f"case {case_id}", self.reason)
+
+    async def erase_conversion(self, conversion_id: str, enterprise_id: str) -> int:
+        raise _refused(f"conversion {conversion_id}", self.reason)
 
 
 def _read_ids(

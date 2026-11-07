@@ -81,13 +81,17 @@ from faultmaven.modules.knowledge.domain.request_receipts import (
     read_receipt,
 )
 from faultmaven.modules.knowledge.domain.services.conversion_service.draft_retirement import (
-    conversions_naming_item,
     discard_drafts_naming_item,
 )
 from faultmaven.modules.knowledge.domain.services.runbook_validator import (
     RunbookQualityError,
     aenforce_runbook_quality,
     aenforce_runbook_security,
+)
+from faultmaven.modules.knowledge.domain.trace_purge import (
+    TRACE_ERASER_NOT_WIRED,
+    TracePurge,
+    conversions_naming_item,
 )
 from faultmaven.modules.knowledge.domain.write_scope import (
     metadata_scope_floor,
@@ -422,7 +426,7 @@ class KnowledgeService:
         *,
         db_session_factory: Any,
         share_repository: Optional[Any] = None,
-        trace_eraser: Optional[IConversionTraceEraser] = None,
+        trace_eraser: Optional[IConversionTraceEraser] = TRACE_ERASER_NOT_WIRED,
     ):
         """
         Initialize with interface dependencies for better testability
@@ -445,7 +449,8 @@ class KnowledgeService:
                 (#894).
             trace_eraser: Purges a conversion's LLM traces when a document it
                 published is deleted (#2575). ``None`` where no trace backend is
-                configured, so nothing recorded one.
+                configured, so nothing recorded one. Left out, every delete that
+                needs a purge fails (``TRACE_ERASER_NOT_WIRED``).
 
         Raises:
             ValueError: if ``db_session_factory`` is None.
@@ -637,7 +642,8 @@ class KnowledgeService:
         0. An authored document's LLM traces (#2575), before any row changes
            and with no transaction open: :meth:`_erase_conversion_traces`. A
            trace backend that cannot be reached raises, and the document is
-           untouched.
+           untouched. A runbook from a template, a scan or a direct upload
+           made no model call and erases nothing.
         1. The row change, in one transaction: a ``DELETE``, or a targeted
            ``UPDATE ... SET is_published = false`` that writes no other column
            but ``updated_at`` (so it cannot revert a concurrent committed
@@ -676,6 +682,12 @@ class KnowledgeService:
             RuntimeError: any failure up to and including the commit, the
                 trace purge's included.
         """
+        return await self._delete_document(document_id, TracePurge(self._trace_eraser))
+
+    async def _delete_document(
+        self, document_id: str, purge: TracePurge
+    ) -> Dict[str, Any]:
+        """:meth:`delete_document`, its trace erases made through ``purge``."""
         with self._tracer.trace("knowledge_service_delete_document"):
             if not document_id or not document_id.strip():
                 raise ValueError("Document ID cannot be empty")
@@ -691,7 +703,7 @@ class KnowledgeService:
 
                 # Step 0: an authored document's traces, before the row change.
                 if not builtin:
-                    await self._erase_conversion_traces(document_id)
+                    await self._erase_conversion_traces(document_id, purge)
 
                 async with self._db_session_factory() as session:
                     repo = DatabaseKnowledgeItemRepository(session)
@@ -789,21 +801,19 @@ class KnowledgeService:
                 logger.error(f"Failed to remove document {document_id}: {e}")
                 raise RuntimeError(f"Document removal failed: {str(e)}") from e
 
-    async def _erase_conversion_traces(self, document_id: str) -> None:
-        """Purge the LLM traces of each conversion whose draft names the
-        document (#2575); raise when one cannot be purged.
-
-        Keyed on the drafts, read under the caller's row-level security, never
-        on ``source_url``, which the uploader writes. A document no draft names
-        erases nothing. The session closes before the first erase, so no
+    async def _erase_conversion_traces(
+        self, document_id: str, purge: TracePurge
+    ) -> None:
+        """Purge the LLM traces of each conversion that made model calls and
+        has a draft naming the document (#2575, ``trace_purge``); raise when
+        one cannot be purged. The session closes before the first erase, so no
         transaction is open across the trace backend's calls.
         """
-        if self._trace_eraser is None:
+        if purge.eraser is None:
             return
         async with self._db_session_factory() as session:
             owners = await conversions_naming_item(session, document_id)
-        for conversion_id, enterprise_id in owners:
-            await self._trace_eraser.erase_conversion(conversion_id, enterprise_id)
+        await purge.erase(owners)
 
     async def get_document_statistics(self) -> Dict[str, Any]:
         """Get knowledge base statistics from SQLite."""
@@ -3412,14 +3422,21 @@ class KnowledgeService:
         chunk retrievable through a KB door: :meth:`delete_document` reports
         success once its row change commits, and a vector delete that fails
         after it is not a failed delete (#2397). A document whose LLM traces
-        cannot be purged is a failed delete, left as it was (#2575).
+        cannot be purged is a failed delete, left as it was (#2575). Each
+        conversion is erased once for the whole batch, and after the first
+        refusal every remaining document is counted failed without another
+        call to the trace backend.
         """
         deleted_count = 0
         errors = []
+        purge = TracePurge(self._trace_eraser)
 
         for doc_id in document_ids:
+            if purge.refused:
+                errors.append(f"Document {doc_id}: delete failed")
+                continue
             try:
-                result = await self.delete_document(doc_id)
+                result = await self._delete_document(doc_id, purge)
                 if result.get("success"):
                     deleted_count += 1
                 else:

@@ -46,8 +46,11 @@ audit row names `llm_traces` under `not_configured`.
 
 Each model call that carries an uploaded document's text (its triage, its
 analysis, and each failure mode's generation) is tagged with the document's
-conversion and its enterprise. Two deletes purge a conversion's traces, with
-the same steps and refusals as a case delete:
+conversion and its enterprise. Only a document or case conversion makes model
+calls, and its job records the failure modes they worked on; a template, a
+directory scan and a direct upload (`POST /api/v1/knowledge/documents`) record
+none, have no traces, and their deletes purge nothing. Three operations purge a
+conversion's traces, with the same steps and refusals as a case delete:
 
 - `DELETE /api/v1/knowledge/conversions/{conversion_id}/drafts/{draft_id}`
   purges the draft's conversion. A refusal answers **500** "Failed to delete
@@ -55,26 +58,28 @@ the same steps and refusals as a case delete:
 - `DELETE /api/v1/knowledge/documents/{document_id}` purges the conversion of
   each draft that names the document, read under the caller's row-level
   security. A refusal answers **500** "Failed to delete document" and leaves the
-  document as it was; `POST /api/v1/knowledge/documents/bulk-delete` reports
-  that document in `errors`. The document's `source_url` plays no part, as the
+  document as it was. The document's `source_url` plays no part, as the
   uploader writes it. A document that no draft names purges nothing: a built-in,
   whose delete only unpublishes it, or a runbook published from a case whose
   drafts that case's delete removed.
+  `POST /api/v1/knowledge/documents/bulk-delete` purges each conversion once
+  for the whole batch. After the first refusal it reports that document and
+  every one after it in `errors`, unchanged, without contacting the backend
+  again.
+- `fm-reset-kb` purges the conversion of each draft naming a runbook it
+  deletes, and with `--all-drafts` of every draft, before it writes anything.
+  A refusal exits 1 with nothing written.
 
 The traces go before any row changes, and no database transaction is open
 while the backend is called. The unit is the conversion, not the draft: every
 failure mode's prompt holds the whole document, so deleting one of a
 conversion's drafts also deletes the traces of the drafts beside it.
 
-A runbook made with no model call has a conversion too: a template, a
-directory scan, and a direct upload (`POST /api/v1/knowledge/documents`) each
-create one. Deleting such a runbook searches the backend, finds nothing, and
-fails while the backend is down.
-
 These deletes need no in-flight gate: a conversion's model calls all finish
 before its draft rows exist, so none of its traces can land after a delete
 that found them. They write no audit row, so nothing records a delete made
-while tracing is not configured.
+while tracing is not configured. A knowledge service composed without an
+eraser fails every purge rather than skip it.
 
 ## Work in flight holds a delete off (#2096)
 

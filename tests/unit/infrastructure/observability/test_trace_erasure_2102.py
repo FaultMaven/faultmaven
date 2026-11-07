@@ -25,6 +25,7 @@ from faultmaven.infrastructure.observability.trace_erasure import (
     TRACE_EXCLUDE,
     TRACE_PAGE_SIZE,
     LLMTraceEraser,
+    UnavailableTraceEraser,
 )
 
 pytestmark = pytest.mark.unit
@@ -317,7 +318,9 @@ class TestItFailsClosed:
     @pytest.mark.parametrize(
         "call", ["get_traces_by_project", "get_spans_by_project", "delete_traces"]
     )
-    async def test_an_unreachable_backend_propagates(self, call):
+    async def test_an_unreachable_backend_refuses_naming_the_error_class(self, call):
+        """The SDK's own error, wrapped once here for every caller: its text
+        can carry the backend's response body (#2575)."""
         client = _FakeClient(traces=["t1"])
 
         def unreachable(**_):
@@ -328,8 +331,12 @@ class TestItFailsClosed:
             if hasattr(api, call):
                 setattr(api, call, unreachable)
 
-        with pytest.raises(httpx.ConnectError):
+        with pytest.raises(
+            ServiceException, match=f"llm_traces for case {CASE}: ConnectError$"
+        ) as refused:
             await _eraser(client).erase_case(CASE, ENTERPRISE)
+
+        assert isinstance(refused.value.__cause__, httpx.ConnectError)
 
     async def test_an_erase_that_outlasts_its_budget_refuses(self, monkeypatch):
         release = threading.Event()
@@ -359,7 +366,7 @@ class TestItFailsClosed:
         monkeypatch.setattr(trace_erasure, "TRACE_ERASE_TIMEOUT_SECONDS", -1)
 
         with pytest.raises(ServiceException, match="llm_traces.*time limit"):
-            _eraser(client)._erase(CASE, ENTERPRISE)
+            _eraser(client)._erase(CASE, ENTERPRISE, "case")
 
         assert client.deleted == []
 
@@ -568,11 +575,7 @@ class TestAConversionsTraces:
         assert client.trace_reads == [] and client.deleted == []
 
     async def test_an_absent_sdk_refuses_naming_the_conversion(self):
-        from faultmaven.modules.case.domain.services.case_erasure import (
-            UnavailableStoreEraser,
-        )
-
-        eraser = UnavailableStoreEraser("llm_traces", "the Opik SDK is not installed")
+        eraser = UnavailableTraceEraser("the Opik SDK is not installed")
 
         with pytest.raises(
             ServiceException, match=f"llm_traces for conversion {CONVERSION}: the"

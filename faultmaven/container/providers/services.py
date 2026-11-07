@@ -33,7 +33,8 @@ logger = logging.getLogger(__name__)
 
 def llm_trace_eraser(settings: FaultMavenSettings) -> Any | None:
     """The LLM trace eraser every delete that purges traces is bound to: the
-    case delete (#2102), and the draft and document deletes (#2575).
+    case delete (#2102), and the draft and document deletes and ``fm-reset-kb``
+    (#2575).
 
     ``None`` when ``OPIK_ENABLED`` is off or no backend URL is set, as then
     nothing records a trace (``init_opik_tracing`` disables tracing). A backend
@@ -41,9 +42,9 @@ def llm_trace_eraser(settings: FaultMavenSettings) -> Any | None:
     delete fails instead of skipping its traces.
     """
     from faultmaven.infrastructure.observability import tracing
-    from faultmaven.infrastructure.observability.trace_erasure import LLMTraceEraser
-    from faultmaven.modules.case.domain.services.case_erasure import (
-        UnavailableStoreEraser,
+    from faultmaven.infrastructure.observability.trace_erasure import (
+        LLMTraceEraser,
+        UnavailableTraceEraser,
     )
 
     obs = settings.observability
@@ -53,7 +54,7 @@ def llm_trace_eraser(settings: FaultMavenSettings) -> Any | None:
         # None reads the client's project, where ``init_opik_tracing`` sends
         # traces when the name is empty; "" would search a project named "".
         return LLMTraceEraser(obs.opik_project_name or None)
-    return UnavailableStoreEraser("llm_traces", "the Opik SDK is not installed")
+    return UnavailableTraceEraser("the Opik SDK is not installed")
 
 
 def case_store_erasers(

@@ -9,6 +9,9 @@ state introduced by an earlier ingestion bug.
 
 What it does
 ------------
+0. Purges the LLM traces of each conversion that made model calls and has a
+   draft it deletes or discards, before any row changes (#2575). If one cannot
+   be purged it stops with nothing written, as the delete routes do.
 1. Deletes every row from ``knowledge_items`` that it locks; a row written
    while it runs (only a running API writes one) is kept and reported.
 2. Keeps ``conversion_drafts`` rows, discarding first the ones that
@@ -117,7 +120,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, true
 
 from faultmaven.bootstrap.data_init import resolve_kb_chroma_dir
 from faultmaven.cli._container import run_with_container
@@ -309,6 +312,10 @@ async def reset_kb(
         discard_drafts_naming_any_item,
         release_case_keys_without_a_live_draft,
     )
+    from faultmaven.modules.knowledge.domain.trace_purge import (
+        TracePurge,
+        conversions_with_drafts,
+    )
     from faultmaven.providers.tenancy.factory import (
         BUILTIN_MULTI,
         requested_tenant_provider,
@@ -371,11 +378,34 @@ async def reset_kb(
         print(refusal)
         return 1
 
-    # One session for the survey and the wipe: the counts an operator reads
-    # are then the same snapshot the DELETEs run against.
+    from faultmaven.container.providers.services import llm_trace_eraser
+    from faultmaven.infrastructure.observability import tracing
+
+    purge = TracePurge(llm_trace_eraser(settings))
+    if purge.eraser is not None:
+        # The eraser refuses until this process has configured the backend, as
+        # the API's lifespan does.
+        tracing.init_opik_tracing(settings=settings)
+
+    # The survey reads; the wipe writes in a session of its own, after the
+    # purge, so no transaction is open across the trace backend's calls.
     async with get_db_session() as session:
         ki_count = await _count_rows(session, KnowledgeItemModel)
         draft_count = await _count_rows(session, ConversionDraftModel)
+        # What the routes would purge for the same rows: every draft's
+        # conversion with ``--all-drafts``, else those naming an item.
+        owners = (
+            await conversions_with_drafts(
+                session,
+                (
+                    true()
+                    if all_drafts
+                    else ConversionDraftModel.knowledge_item_id.is_not(None)
+                ),
+            )
+            if purge.eraser is not None
+            else []
+        )
 
         print("Current state:")
         print(f"  knowledge_items rows: {ki_count}")
@@ -396,6 +426,7 @@ async def reset_kb(
             # store it found.
             print(f"  ChromaDB path: {chroma_dir}")
             print(f"  ChromaDB path exists: {chroma_dir.exists()}")
+        print(f"  conversions whose LLM traces it purges: {len(owners)}")
         print()
 
         if dry_run:
@@ -405,6 +436,19 @@ async def reset_kb(
             print("(dry-run) No changes made.")
             return 0
 
+    try:
+        await purge.erase(owners)
+    except Exception as exc:
+        print(
+            "ERROR: refusing to reset the KB.\n\n"
+            f"    The LLM traces of a conversion could not be purged: {exc}\n\n"
+            "    Nothing was written. Make the trace backend reachable, then re-run."
+        )
+        return 1
+    if owners:
+        print(f"Purged the LLM traces of {len(owners)} conversions.")
+
+    async with get_db_session() as session:
         # SQL wipe. Report the DELETEs' own rowcounts rather than the counts
         # read above, so the numbers printed are what the database actually did.
         # The drafts that published these runbooks are discarded first: their

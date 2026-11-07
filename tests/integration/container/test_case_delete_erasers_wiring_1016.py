@@ -12,7 +12,10 @@ fail every delete.
 import pytest
 
 from faultmaven.infrastructure.observability import tracing
-from faultmaven.infrastructure.observability.trace_erasure import LLMTraceEraser
+from faultmaven.infrastructure.observability.trace_erasure import (
+    LLMTraceEraser,
+    UnavailableTraceEraser,
+)
 from faultmaven.modules.case.domain.services.case_erasure import (
     UnavailableStoreEraser,
 )
@@ -105,7 +108,7 @@ async def test_a_configured_trace_backend_binds_the_trace_eraser_first(
     [
         (False, True, type(None)),
         (True, True, LLMTraceEraser),
-        (True, False, UnavailableStoreEraser),
+        (True, False, UnavailableTraceEraser),
     ],
     ids=["not-configured", "configured", "sdk-absent"],
 )

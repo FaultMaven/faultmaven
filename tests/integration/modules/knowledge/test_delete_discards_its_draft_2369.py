@@ -531,7 +531,10 @@ async def test_a_reset_whose_commit_fails_prints_no_count_and_keeps_the_key(
 ):
     await _open_case(session_factory)
     job_id = await _orphan_a_key(session_factory)
-    failing = _FailingCommit(session_factory, (RuntimeError("commit failed"), False))
+    # The survey's session, which commits nothing, then the wipe's (#2575).
+    failing = _FailingCommit(
+        session_factory, *[(RuntimeError("commit failed"), False)] * 2
+    )
     failing.armed = True
     capsys.readouterr()
 

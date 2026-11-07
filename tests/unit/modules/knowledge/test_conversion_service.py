@@ -1640,6 +1640,7 @@ def _make_live_case_service(session_factory) -> ConversionService:
         llm_router=AsyncMock(),
         settings=settings,
         db_session_factory=session_factory,
+        trace_eraser=None,
     )
 
 
