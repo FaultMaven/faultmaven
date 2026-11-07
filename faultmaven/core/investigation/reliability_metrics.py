@@ -46,7 +46,8 @@ Read as rates, never the numerator alone:
   entry or optional sub-object quarantined, or a state field reset to its
   default, or an out-of-range confidence removed — dropped from an
   update-shaped record, or set aside for ingest to decide on a link — or an
-  off-enum ``MilestoneUpdates.accepted_fix_reported_in`` dropped, #2427),
+  off-enum ``MilestoneUpdates.accepted_fix_reported_in`` or
+  ``mitigation_disposition`` dropped, #2427, #2100),
   ``state_dropped`` (state_updates unrecoverable, conversational fallback),
   ``response_synthesized`` (required agent_response missing, placeholder
   filled, state_updates KEPT),
@@ -78,7 +79,7 @@ Read as rates, never the numerator alone:
 
 - ``faultmaven_schema_field_repairs_total``: every out-of-range confidence the
   engine acted on, and every off-enum ``MilestoneUpdates.accepted_fix_reported_in``
-  it dropped (#2427), by ``schema`` (the model class owning the field, e.g.
+  (#2427) or ``MilestoneUpdates.mitigation_disposition`` (#2100) it dropped, by ``schema`` (the model class owning the field, e.g.
   ``HypothesisToAdd``), ``field`` and ``action`` — ``rescaled`` (a value in
   ``(1, 100]`` read as a percentage), ``coerced`` (a ``bool``), ``dropped``
   (removed from an update-shaped record, the stored value kept; for
@@ -162,7 +163,8 @@ SCHEMA_FIELD_REPAIR_ACTIONS = ("rescaled", "coerced", "dropped", "pruned", "defa
 schema_field_repairs_total = Counter(
     "faultmaven_schema_field_repairs_total",
     "Out-of-range confidence values the engine acted on, and off-enum "
-    "MilestoneUpdates.accepted_fix_reported_in values it dropped, labeled by "
+    "MilestoneUpdates.accepted_fix_reported_in and mitigation_disposition "
+    "values it dropped, labeled by "
     "``schema`` (owning model class), ``field`` and ``action`` (rescaled | "
     "coerced | dropped | pruned | defaulted). Link confidences are counted at "
     "ingest.",

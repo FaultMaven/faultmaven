@@ -43,8 +43,10 @@ from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
     InquiryData,
+    ProblemStatus,
     ProblemVerification,
 )
+from tests.unit.core.investigation.bound_rows import mitigated
 
 _FILE_ID = "file_0123456789ab"
 
@@ -297,8 +299,9 @@ class TestPrerequisiteSatisfiedPasses:
         """If the LLM emits ``mitigation_accepted=True`` AND
         ``mitigation_verified=True`` in one response, the iteration
         order processes ``mitigation_accepted`` first, so the
-        ``mitigation_verified`` check sees the prerequisite met.
-        Both get set."""
+        ``mitigation_verified`` check sees the prerequisite met: no ordering
+        error. The verdict is derived (#2100): on this unverified problem
+        nothing binds, so it is refused with the cite ask."""
         engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
         case = _mitigation_case()
         mock_llm.route.return_value = _llm_response_setting_milestones(
@@ -311,9 +314,11 @@ class TestPrerequisiteSatisfiedPasses:
         updated = result["case_updated"]
 
         assert _stab_accepted(updated) is True
-        assert _stab_verified(updated) is True
-        # Side effects ran: mitigation completion boundary stamped
-        assert updated.progress.mitigation.completed_at_turn is not None
+        assert _stab_verified(updated) is False
+        assert updated.progress.mitigation.completed_at_turn is None
+        feedback = "\n".join(updated.turn_history[-1].system_notices)
+        assert "MILESTONE ORDER ERROR" not in feedback
+        assert "verify the problem first" in feedback
 
     @pytest.mark.asyncio
     async def test_verified_alone_succeeds_when_accepted_already_true(
@@ -326,10 +331,14 @@ class TestPrerequisiteSatisfiedPasses:
 
         engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
         case = _mitigation_case()
-        # Accept signalled on a prior turn -> mitigation already accepted.
+        # Accept signalled on a prior turn -> mitigation already accepted, and
+        # the problem re-checked relieved after it: the derived verdict's
+        # input (#2100).
         case.progress.mitigation = MitigationRecord(
             proposed_at_turn=case.current_turn, accepted=True
         )
+        case.progress.problem_status = ProblemStatus.VERIFIED
+        mitigated(case, attempt=case.current_turn, relief=case.current_turn)
         mock_llm.route.return_value = _llm_response_setting_milestones(
             {"mitigation_verified": True}
         )

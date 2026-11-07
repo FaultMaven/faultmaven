@@ -46,7 +46,7 @@ from faultmaven.modules.case.contracts import (
     ProblemVerification,
 )
 from tests.case_builders import investigating_case
-from tests.unit.core.investigation.bound_rows import bound_row
+from tests.unit.core.investigation.bound_rows import bound_row, mitigated, upload
 
 _FILE_ID = "file_0123456789ab"
 
@@ -206,9 +206,10 @@ def test_closure_message_uses_rationale_or_fallback(rationale, expected_phrase):
     assert expected_phrase in metadata["rca_infeasible_closure_message"]
 
 
-def _turn_engine(model_proposes: str | None) -> MilestoneEngine:
-    """A real engine whose stubbed model verifies the mitigation and, when
-    asked, proposes a transition beside it."""
+def _turn_engine(model_proposes: str | None, case: Case) -> MilestoneEngine:
+    """A real engine whose stubbed model verifies the mitigation, on a re-check
+    bound to the problem (#2100), and, when asked, proposes a transition beside
+    it."""
     repo = MagicMock()
     repo.save = AsyncMock(side_effect=lambda c, **_: c)
     repo.get = AsyncMock(side_effect=lambda cid: None)
@@ -222,7 +223,8 @@ def _turn_engine(model_proposes: str | None) -> MilestoneEngine:
                 extract="gateway 5xx rate: 0.0 at 14:30-15:00",
                 category=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
                 source_type=EvidenceSourceType.LOGS,
-                source_file_id=_FILE_ID,
+                source_file_id=upload(case, 1, "relief"),
+                rechecks=case.problem_verification.verifying_evidence_ids[0],
             )
         ],
     }
@@ -248,6 +250,7 @@ def _turn_engine(model_proposes: str | None) -> MilestoneEngine:
 def _turn_case() -> Case:
     case = _make_case(rca_infeasible=True, mitigation_verified=False)
     case.progress.problem_status = ProblemStatus.VERIFIED
+    mitigated(case, attempt=1)
     return case
 
 
@@ -258,7 +261,7 @@ async def test_the_models_same_turn_proposal_leaves_the_engines_close(model_prop
     offer the user confirmed was the model's, not the one whose reason the
     reply shows."""
     case = _turn_case()
-    result = await _turn_engine(model_proposes).process_turn(
+    result = await _turn_engine(model_proposes, case).process_turn(
         case=case, user_message="the failover held, error rate is 0", redaction_ctx=None
     )
 
@@ -299,7 +302,7 @@ async def test_a_resolvable_case_is_never_offered_the_stabilized_close(
         primary_purpose="re-check the reported symptom after the fix",
         collected_by="user",
     )
-    engine = _turn_engine(model_proposes)
+    engine = _turn_engine(model_proposes, case)
     result = await engine.process_turn(
         case=case, user_message="the failover held, error rate is 0", redaction_ctx=None
     )

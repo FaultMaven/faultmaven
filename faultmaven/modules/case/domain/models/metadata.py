@@ -133,6 +133,7 @@ class CaseMetadata(BaseModel):
         turns_without_progress: Optional[int],
         mitigation_accepted: Optional[bool],
         mitigation_verified: Optional[bool],
+        mitigation_disposed: Optional[bool],
         solution_accepted: Optional[bool],
         solution_verified: Optional[bool],
         turn_numbers: Optional[Sequence[int]],
@@ -143,9 +144,10 @@ class CaseMetadata(BaseModel):
 
         ``turn_numbers`` / ``turn_is_out_of_band`` describe ``turn_history`` in
         stored order, one element per entry, or are ``None`` when the stored
-        history is malformed. The four gates are ``False`` for a gate the stored
-        progress does not record (including a mitigation never recorded) and
-        ``None`` for one stored with the wrong type.
+        history is malformed. The five gate inputs are ``False`` for one the
+        stored progress does not record (including a mitigation never recorded)
+        and ``None`` for one stored with the wrong type; ``mitigation_disposed``
+        is whether the mitigation carries a disposition (#2100).
 
         Never raises for a malformed input: each derived field is computed
         inside its own guard, and a field that cannot be derived is ``None``,
@@ -180,6 +182,7 @@ class CaseMetadata(BaseModel):
         gates = (
             mitigation_accepted,
             mitigation_verified,
+            mitigation_disposed,
             solution_accepted,
             solution_verified,
         )
@@ -191,6 +194,7 @@ class CaseMetadata(BaseModel):
                 investigation_stage(
                     mitigation_accepted=mitigation_accepted,
                     mitigation_verified=mitigation_verified,
+                    mitigation_disposed=mitigation_disposed,
                     solution_accepted=solution_accepted,
                     solution_verified=solution_verified,
                 ),

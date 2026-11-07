@@ -1,6 +1,6 @@
 """The ``<fix_verification>`` block: what the engine holds about the fix, shown
-to the model on TREATMENT turns, and on MITIGATION turns once a fix is dated
-(#1906 D7).
+to the model on TREATMENT turns, and on MITIGATION turns once a fix or the
+mitigation's attempt is dated (#1906 D7, #2100).
 
 Without it no prompt showed the model its fix attempts or which leg of a
 resolution stands, so a model could narrate a readiness the engine did not
@@ -14,7 +14,10 @@ hold (#2427, turn 11). It shows, one line each:
   ``symptom_elimination_rows``), by row id, and the rows that showed the
   problem with no re-check in the problem leg;
 - the outstanding symptom-verification needs, the one that holds the resolve
-  offer (``pending_symptom_check``) first and marked.
+  offer (``pending_symptom_check``) first and marked;
+- in MITIGATION, the mitigation's attempt, what the problem did after it
+  (``mitigation_holds``) and the rows a re-check can name; with no fix dated,
+  only these, never the resolution legs (#2100).
 
 Informational: no gate reads it. It cites ids and never repeats the
 re-verification checklist's row texts (``evidence_needs``).
@@ -37,6 +40,9 @@ from faultmaven.core.investigation.cause_assurance import (
     cause_recheck_status,
     fix_windows,
     interception_relief,
+    mitigation_attempt_turn,
+    mitigation_holds,
+    mitigation_relief,
     off_cause_attempt,
     pending_symptom_check,
     subject_index,
@@ -273,19 +279,47 @@ def _held_mark(case: Case, need) -> str:
     return f" (holds the resolution offer until answered{why}{decline})"
 
 
+def _mitigation_lines(case: Case, subjects) -> list[str]:
+    """The mitigation's attempt, what the problem did after it, and the rows a
+    re-check can name (#2100)."""
+    relief, present = mitigation_relief(case, subjects)
+    if relief is not None and mitigation_holds(relief, present):
+        state = f"problem re-checked relieved at turn {relief}"
+    elif present is not None:
+        state = f"problem seen again at turn {present}"
+    else:
+        state = "not yet re-checked"
+    problem, _cause = subjects.bindable_rows()
+    rows = _ids([r.evidence_id for r in problem]) or (
+        "none on record as having shown the problem"
+    )
+    return [
+        f"Mitigation: executed turn {mitigation_attempt_turn(case)}: {state}",
+        f"  - rows a post-mitigation re-check names in rechecks: {rows}",
+    ]
+
+
 def build_fix_verification_block(case: Case) -> str:
-    """The block, or ``""``: in TREATMENT, and in MITIGATION once a SOLUTION is
-    dated (mitigation attempts are not records until #1906 Phase 4, D3). One
-    ``SubjectIndex`` and one ``fix_windows`` list serve the attempts, the legs
-    and the held need (``pending_symptom_check``); a held need's mark reads
-    the resolve decline (``declined_resolve_entry``, through the closure
-    verdict), which builds its own."""
+    """The block, or ``""``: in TREATMENT, and in MITIGATION once a SOLUTION or
+    the mitigation's attempt is dated; with only the mitigation dated, its
+    lines alone (#2100). One ``SubjectIndex`` and one ``fix_windows`` list
+    serve the attempts, the legs and the held need (``pending_symptom_check``);
+    a held need's mark reads the resolve decline (``declined_resolve_entry``,
+    through the closure verdict), which builds its own."""
     stage = case.current_stage if case.state == CaseState.INVESTIGATING else None
     attempts = _dated_fixes(case)
+    mitigating = (
+        stage == InvestigationStage.MITIGATION
+        and mitigation_attempt_turn(case) is not None
+    )
     if stage != InvestigationStage.TREATMENT and not (
         stage == InvestigationStage.MITIGATION and attempts
     ):
-        return ""
+        if not mitigating:
+            return ""
+        header = "The engine's record of the mitigation (informational; ids name "
+        lines = _mitigation_lines(case, subject_index(case))
+        return "\n".join([OPEN_TAG, header + "evidence rows):", *lines, CLOSE_TAG])
     subjects = subject_index(case)
     windows = fix_windows(case, subjects)
     status = cause_recheck_status(case, subjects=subjects, windows=windows)
@@ -301,6 +335,7 @@ def build_fix_verification_block(case: Case) -> str:
     lines = [
         OPEN_TAG,
         "The engine's record of the fix (informational; ids name evidence rows):",
+        *(_mitigation_lines(case, subjects) if mitigating else []),
         *(
             _attempt_lines(case, attempts, windows, subjects, owing)
             if attempts

@@ -1915,7 +1915,11 @@ def attempt_window(case: "Case", action) -> FixWindow | None:
 
 
 def interception_relief(
-    case: "Case", turn: int, subjects: "SubjectIndex | None" = None
+    case: "Case",
+    turn: int,
+    subjects: "SubjectIndex | None" = None,
+    *,
+    until_next_fix: bool = True,
 ) -> tuple[int | None, int | None]:
     """``(relief_turn, present_turn)`` after an interception run at ``turn``,
     which has no window: the latest turn the problem was seen gone, and the
@@ -1923,9 +1927,11 @@ def interception_relief(
     window reads them (bound rows, by the data's turn): a present row in its
     own turn may quote pre-fix lines, and one in the next attempt's turn is
     still this one's. Present after the relief is a relapse. ``subjects`` is
-    the caller's ``subject_index(case)``."""
+    the caller's ``subject_index(case)``; ``until_next_fix`` False reads on
+    with no end (``mitigation_relief``)."""
     subjects = subject_index(case) if subjects is None else subjects
-    end = next((t for t in _dated_fix_turns(case) if t > turn), None)
+    fixes = _dated_fix_turns(case) if until_next_fix else []
+    end = next((t for t in fixes if t > turn), None)
     seen: dict = {}
     for e in subjects.rows.values():
         observed = subjects.observed(e)
@@ -1941,6 +1947,43 @@ def interception_relief(
         seen.get(EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE),
         seen.get(EvidenceCategory.SYMPTOM_EVIDENCE),
     )
+
+
+def mitigation_attempt_turn(case: "Case") -> int | None:
+    """The execution turn of the case's accepted MITIGATION (its
+    ``accepted_in_turn``), or None: none accepted, or one accepted before the
+    field existed. One mitigation record per case (INV-24), so one attempt."""
+    for action in getattr(case, "proposed_actions", None) or []:
+        if (
+            getattr(action, "state", None) == "accepted"
+            and getattr(action.action_type, "value", action.action_type)
+            == InvestigationActionType.MITIGATION.value
+        ):
+            return getattr(action, "accepted_in_turn", None)
+    return None
+
+
+def mitigation_relief(
+    case: "Case", subjects: "SubjectIndex | None" = None
+) -> tuple[int | None, int | None]:
+    """``(relief_turn, present_turn)`` of the problem after the mitigation's
+    attempt, read as ``interception_relief`` reads it but with no end (#2100):
+    the one record has no later mitigation to end it, and a relief after a
+    later fix is still a relief after the mitigation. ``(None, None)`` with no
+    dated attempt. The mitigation is no fix of the cause: it opens no window
+    and is not among ``_dated_fixes``."""
+    turn = mitigation_attempt_turn(case)
+    if turn is None:
+        return None, None
+    return interception_relief(case, turn, subjects, until_next_fix=False)
+
+
+def mitigation_holds(relief: int | None, present: int | None) -> bool:
+    """Whether a mitigation's bound rows leave it holding: no bound
+    persistence, or the latest relief after the latest persistence. The one
+    predicate the verdict's derivation, the closure reason and the
+    ``<fix_verification>`` block read (#2100)."""
+    return present is None or (relief is not None and present < relief)
 
 
 def symptom_elimination_rows(

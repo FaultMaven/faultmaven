@@ -47,8 +47,8 @@ TEST_DB = os.path.join(os.environ[TEST_DATA_ROOT_ENV], "test_migration.db")
 # the 001-053 chain) plus additive revisions on top of it, so the seed
 # assertions below reverse the whole schema with "downgrade base" and each
 # additive revision is stepped over on its own.
-#: 024_kb_request_receipts
-HEAD_REVISION = "d6cfb801d9f5"  # pragma: allowlist secret
+#: 025_admin_case_metadata_mitigation_disposed
+HEAD_REVISION = "45970adab01d"  # pragma: allowlist secret
 #: The baseline, which every additive revision parents onto.
 BASELINE_REVISION = "a1e0c17bd001"  # 001_enterprise_baseline
 #: The first additive revision.
@@ -116,6 +116,9 @@ DROP_IN_FLIGHT_REVISIONS_REVISION = "cf17b34fc8c4"  # pragma: allowlist secret
 #: ``024_kb_request_receipts``: one row per keyed KB upload or conversion that
 #: published (#2433).
 KB_REQUEST_RECEIPTS_REVISION = "d6cfb801d9f5"  # pragma: allowlist secret
+#: ``025_admin_case_metadata_mitigation_disposed``: the operator case-metadata
+#: page function returns ``mitigation_disposed``, the stage's fifth input (#2100).
+ADMIN_CASE_METADATA_DISPOSED_REVISION = "45970adab01d"  # pragma: allowlist secret
 #: The tables 002_llm_usage_ledger adds (#640).
 LLM_USAGE_TABLES = ["llm_turn_spend", "llm_usage_daily"]
 
@@ -714,7 +717,7 @@ class TestAlembicMigrationInfrastructure:
 
 
 class TestFunctionOnlyRevisions:
-    """Revisions 003, 004, 005 and 014 change PostgreSQL functions and nothing
+    """Revisions 003, 004, 005, 014 and 025 change PostgreSQL functions and nothing
     else.
 
     SQLite has no row-level security to bypass and no definer functions, so on
@@ -723,7 +726,8 @@ class TestFunctionOnlyRevisions:
     ``tests/integration/security/test_admin_case_metadata_postgres.py`` (003);
     ``tests/integration/security/test_definer_functions_postgres.py``, whose
     step test starts from what 004 leaves and asserts it, and steps 005 down to
-    004 and back (005); ``test_admin_case_metadata_postgres.py`` again (014).
+    004 and back (005); ``test_admin_case_metadata_postgres.py`` again (014,
+    025).
 
     015 is stepped here too: it adds no table on either dialect (a key change on
     PostgreSQL, two triggers on SQLite), so the same table-set check holds. Its
@@ -787,6 +791,11 @@ class TestFunctionOnlyRevisions:
                 ORG_PERMISSIONS_MANAGEMENT_ONLY_REVISION,
                 VERIFIED_BY_DISPLAY_NAME_REVISION,
                 id="020_org_permissions_are_management_only",
+            ),
+            pytest.param(
+                ADMIN_CASE_METADATA_DISPOSED_REVISION,
+                KB_REQUEST_RECEIPTS_REVISION,
+                id="025_admin_case_metadata_mitigation_disposed",
             ),
         ],
     )

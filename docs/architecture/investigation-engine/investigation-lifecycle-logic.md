@@ -1018,7 +1018,7 @@ State updates occur at specific points within a turn to ensure consistency:
 | `solution_state` / `solution_feasible` | Assessment (engine-derived / LLM-settable) | End of each INVESTIGATING turn / LLM output | `solution_state` mirrors the derived `solution_proposed` (`SELECTED` while it holds, else `UNKNOWN`); `solution_feasible` defaults NOW, LLM sets DEFERRED. |
 | `solution_proposed` | Progress indicator (engine-derived) | End of each INVESTIGATING turn | Derived at the assessment recompute (INV-32): True iff a LIVE SOLUTION ProposedAction stands (`pending`/`accepted`) or the gate ladder advanced (`solution_accepted`/`solution_verified`, forward-only facts). A new SOLUTION offer supersedes prior pending ones (`reproposal`); a pending offer whose established-cause license falls — M6 demotion, conclusion retraction, MECE hold — is withdrawn (`license_lost`) with `system_feedback` to the LLM. Not a write-once latch. |
 | `mitigation_accepted` | Mitigation gate signal | LLM structured output | User acknowledges executing the proposed mitigation → materializes `mitigation.accepted` |
-| `mitigation_verified` | Mitigation gate signal | LLM structured output | User confirms the mitigation stabilized the situation → materializes `mitigation.verified` + `completed_at_turn` (a user decision; it records no `symptom_absence_evidence` row unless the user submitted data, #1930) |
+| `mitigation_verified` | Mitigation gate signal | LLM structured output, verdict engine-derived | The problem re-checked relieved after the mitigation → materializes `mitigation.verified` + `completed_at_turn`, derived (#2100): accepted only when a `symptom_absence_evidence` re-check bound to the problem (`rechecks` naming a verifying row) is observed at or after the mitigation's attempt and no bound persistence follows it. The user's own account is not it: that is `mitigation_disposition` `declared_stable`, and the stall's "proceed" `proceed_unmitigated` (`mitigation.disposition`, written once, never read as verified; either also leaves MITIGATION, and `declared_stable` stamps `completed_at_turn`) |
 | `solution_accepted` | Gate milestone | LLM structured output | User acknowledges executing proposed solution |
 | `solution_verified` | Gate milestone | After user confirms fix | User confirms problem resolved (User-Agent Handshake) |
 | Disposition action | — | End of turn | After all other processing |
@@ -1820,7 +1820,7 @@ INVESTIGATING → CLOSED disposition handshake, now reachable without a path gat
 The UI stage label is a pure derived view over the action-compliance gates
 (redesign R4), not a driver:
 
-- `mitigation.accepted ∧ ¬mitigation.verified` → **"Mitigating"**
+- `mitigation.accepted ∧ ¬mitigation.verified ∧ no mitigation.disposition` → **"Mitigating"**
 - `solution_accepted ∧ ¬solution_verified` → **"Resolving"**
 - else → **"Investigating"** (sub-phase distinguished by `symptom_verified` /
   `cause_state`, not by the stage enum)
@@ -1978,7 +1978,7 @@ async def record_turn(
     # and the case-level snapshot share one vocabulary. Without that append the
     # per-turn readers (the transparency counter above all) key on a name that
     # engine-derivation stopped producing — see INV-35.
-    STAGE_GATE_MILESTONES = {"mitigation_accepted", "mitigation_verified", "solution_accepted", "solution_verified"}
+    STAGE_GATE_MILESTONES = {"mitigation_accepted", "mitigation_verified", "mitigation_disposed", "solution_accepted", "solution_verified"}
     PROGRESS_INDICATORS = {"symptom_verified", "solution_proposed"}
 
     all_changed = [
@@ -2202,7 +2202,7 @@ solution deliberation; cause + solution known but deferred → CLOSE-with-docume
 **Gate signals / record**:
 
 - `mitigation_accepted` (LLM emission) → materializes `mitigation.accepted`: user acknowledged executing the proposed mitigation.
-- `mitigation_verified` (LLM emission) → materializes `mitigation.verified` + `completed_at_turn`: the mitigation stabilized the situation. The case continues opportunistically (the "Mitigating" label clears).
+- `mitigation_verified` (LLM emission) → materializes `mitigation.verified` + `completed_at_turn` when a problem-bound re-check shows the problem relieved after the attempt (#2100); `mitigation_disposition` records the user's declaration (`declared_stable`) or the stall's choice (`proceed_unmitigated`). Either way the case continues opportunistically (the "Mitigating" label clears).
 - `solution_accepted`: user acknowledged executing the permanent solution → "Resolving".
 - `solution_verified`: permanent fix validated (User-Agent Handshake) → RESOLVED.
 
@@ -2221,7 +2221,7 @@ The user decides the mitigation is sufficient (or RCA is infeasible, see §2.4) 
 
 #### Mitigation Is Iterative, Forward-Only
 
-A mitigation is not assumed one-shot. The agent may adjust its approach and propose multiple attempts until the user verifies stabilization; each accepted attempt is recorded in `action_attempts`. The `mitigation` record itself is **single and forward-only** (INV-24): `accepted` / `verified` are never reset, and `completed_at_turn` is stamped once, when `verified` first flips True, with the turn whose response carried the `mitigation_verified` that flipped it (a replayed one's hold turn, #2537): the boundary for up-weighting pre-mitigation evidence in later RCA. If a mitigation fails to stabilize, the flow stays open to user-led action — the agent acknowledges it didn't work and may propose an alternative in prose, or the user closes (§2.3, the no-dead-end rule).
+A mitigation is not assumed one-shot. The agent may adjust its approach and propose multiple attempts until the problem is seen relieved or the user declares it stable; each accepted attempt is recorded in `action_attempts`. The `mitigation` record itself is **single and forward-only** (INV-24): `accepted` / `verified` / `disposition` are never reset, and `completed_at_turn` is stamped once, by the derived verdict or a `declared_stable` disposition, with the turn whose response carried it (a replayed one's hold turn, #2537): the boundary for up-weighting pre-mitigation evidence in later RCA. If a mitigation fails to stabilize, the flow stays open to user-led action — the agent acknowledges it didn't work and may propose an alternative in prose, or the user closes (§2.3, the no-dead-end rule).
 
 #### How the System Distinguishes Outcomes (Retrospectively)
 

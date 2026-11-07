@@ -221,9 +221,9 @@ def _infer_milestones(
     Note:
         - The verification quartet (SYMPTOM/CAUSAL + their ABSENCE rows).
           The absence categories map to [] — mitigation_verified /
-          solution_verified are gate milestones set by compliance detection,
-          not by evidence category; the absence rows are consumed directly by
-          the readiness checks (see CATEGORY_MILESTONE_MAP).
+          solution_verified are gate milestones, not set by evidence category;
+          the absence rows are read directly by the gate (#2100) and the
+          readiness checks (see CATEGORY_MILESTONE_MAP).
         - If category not in map, returns [] (safe fallback).
         - LLM can override by explicitly setting advances_milestones in EvidenceToAdd.
     """
@@ -260,12 +260,13 @@ GATE_JUDGED_MILESTONES: frozenset[str] = frozenset({"solution_accepted"})
 
 
 def _milestone_already_recorded(
-    progress: InvestigationProgress, milestone: str
+    progress: InvestigationProgress, milestone: str, value: Any = None
 ) -> bool:
     """Whether the case already records ``milestone`` as reached.
 
     Covers the boolean fields of ``MilestoneUpdates`` this check judges, so not
-    ``GATE_JUDGED_MILESTONES``. A name it does not know reads as not recorded,
+    ``GATE_JUDGED_MILESTONES``, and the disposition (#2100), recorded when the
+    record carries ``value``. A name it does not know reads as not recorded,
     so a milestone added to the schema later is still validated rather than
     waved through.
     """
@@ -274,6 +275,11 @@ def _milestone_already_recorded(
         "symptom_verified": progress.symptom_verified,
         "mitigation_accepted": mitigation is not None and mitigation.accepted,
         "mitigation_verified": mitigation is not None and mitigation.verified,
+        "mitigation_disposition": (
+            mitigation is not None
+            and value is not None
+            and mitigation.disposition == value
+        ),
     }
     return bool(recorded.get(milestone, False))
 
@@ -322,6 +328,14 @@ def _justification_errors(
             "evidence that shows it, citing evidence IDs; null or blank is "
             "no justification."
         )
+        # The disposition is no boolean (#2100): "True" would be an off-enum
+        # value, dropped. Its own fixed sentence, so the shared one above
+        # still merges with the gate's (``add_evidence_validation_feedback``).
+        if "mitigation_disposition" in unjustified:
+            errors.append(
+                "mitigation_disposition takes declared_stable or "
+                "proceed_unmitigated, never True."
+            )
 
     # Check 1.5: Warn if trying to complete milestones with no actionable evidence.
     # Contextual evidence (raw uploads) cannot justify milestones — only
@@ -424,6 +438,13 @@ def validate_reasoning_first(
             and not _milestone_already_recorded(case.progress, milestone_name)
         ):
             completed_milestones.append(milestone_name)
+    # The disposition is a string, not a boolean: one the case does not
+    # already carry is a change, justified like a milestone (#2100).
+    disposition = getattr(milestones, "mitigation_disposition", None)
+    if disposition is not None and not _milestone_already_recorded(
+        case.progress, "mitigation_disposition", disposition
+    ):
+        completed_milestones.append("mitigation_disposition")
 
     if not completed_milestones:
         # No milestones actually completed, no validation needed

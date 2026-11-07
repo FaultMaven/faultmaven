@@ -29,10 +29,10 @@ can answer:
 * **Failure direction.** Without the functions the read raises
   ``CaseMetadataUnavailableError`` — which the route answers with a 503 — and
   revision 003 steps down and back up.
-* **Revision 014 keeps the hardening.** It drops and re-creates the page
-  function to add the effective driver; stepped down and back up, the function
-  keeps its settings, its comment, the runtime role's grant and no ``PUBLIC``
-  one, at either definition.
+* **Revisions 014 and 025 keep the hardening.** Each drops and re-creates the
+  page function, to add the effective driver and the mitigation's disposition
+  (#2100); stepped down and back up, the function keeps its settings, its
+  comment, the runtime role's grant and no ``PUBLIC`` one, at every definition.
 
 Everything runs as a role with the deployed ``faultmaven_app`` grants —
 including ``EXECUTE`` on both functions, which revision 003 grants that role by
@@ -87,6 +87,9 @@ _LEDGER_REVISION = "65913afe773c"  # 002_llm_usage_ledger, 003's parent
 #: ``014_admin_case_metadata_driver`` and its parent, ``013``.
 _DRIVER_REVISION = "831be28d1434"  # pragma: allowlist secret
 _PRE_DRIVER_REVISION = "9b3e5c71d2a4"  # pragma: allowlist secret
+#: ``025_admin_case_metadata_mitigation_disposed`` and its parent, ``024``.
+_DISPOSED_REVISION = "45970adab01d"  # pragma: allowlist secret
+_PRE_DISPOSED_REVISION = "d6cfb801d9f5"  # pragma: allowlist secret
 
 #: Every fixture case is updated "in 2099", so the fixtures lead the
 #: newest-first order ahead of any row another module left in the shared
@@ -114,6 +117,7 @@ _PAGE_COLUMNS = [
     ("turns_without_progress", "integer"),
     ("mitigation_accepted", "boolean"),
     ("mitigation_verified", "boolean"),
+    ("mitigation_disposed", "boolean"),
     ("solution_accepted", "boolean"),
     ("solution_verified", "boolean"),
     ("turn_numbers", "integer[]"),
@@ -317,6 +321,34 @@ async def world(limited_role_env):
                 state=investigating,
                 progress=InvestigationProgress(
                     mitigation=MitigationRecord(accepted=True, verified=False)
+                ),
+                turn_history=turns((1, False)),
+                current_turn=1,
+            ),
+            # A mitigation the user declared stable, and one the stall's
+            # "proceed" left unverified: neither is MITIGATION (#2100).
+            "declared": _case(
+                ent_a,
+                user_a,
+                "declared",
+                state=investigating,
+                progress=InvestigationProgress(
+                    mitigation=MitigationRecord(
+                        accepted=True, disposition="declared_stable"
+                    )
+                ),
+                turn_history=turns((1, False)),
+                current_turn=1,
+            ),
+            "proceeded": _case(
+                ent_a,
+                user_a,
+                "proceeded",
+                state=investigating,
+                progress=InvestigationProgress(
+                    mitigation=MitigationRecord(
+                        accepted=True, disposition="proceed_unmitigated"
+                    )
                 ),
                 turn_history=turns((1, False)),
                 current_turn=1,
@@ -840,6 +872,8 @@ async def test_the_multi_path_serves_what_the_single_tenant_path_serves(world):
     a = world.a
     assert rows[a["diagnosis"].case_id].stage == "diagnosis"
     assert rows[a["mitigation"].case_id].stage == "mitigation"
+    assert rows[a["declared"].case_id].stage == "diagnosis"
+    assert rows[a["proceeded"].case_id].stage == "diagnosis"
     assert rows[a["treatment"].case_id].stage == "treatment"
     assert rows[a["null_mitigation"].case_id].stage == "treatment"
     assert rows[a["missing_keys"].case_id].stage == "diagnosis"
@@ -960,6 +994,39 @@ _MALFORMED = {
     "mitigation_gate_as_string": (
         "{progress,mitigation}",
         '{"accepted": "true", "verified": false}',
+        (None, 1),
+    ),
+    # The disposition (#2100): absent or JSON null is none, either value
+    # leaves MITIGATION, anything else is unreadable.
+    "disposition_absent": (
+        "{progress,mitigation}",
+        '{"accepted": true, "verified": false}',
+        ("mitigation", 1),
+    ),
+    "disposition_null": (
+        "{progress,mitigation}",
+        '{"accepted": true, "verified": false, "disposition": null}',
+        ("mitigation", 1),
+    ),
+    "disposition_declared": (
+        "{progress,mitigation}",
+        '{"accepted": true, "verified": false, "disposition": "declared_stable"}',
+        ("diagnosis", 1),
+    ),
+    "disposition_proceeded": (
+        "{progress,mitigation}",
+        '{"accepted": true, "verified": false, '
+        '"disposition": "proceed_unmitigated"}',
+        ("diagnosis", 1),
+    ),
+    "disposition_off_vocabulary": (
+        "{progress,mitigation}",
+        '{"accepted": true, "verified": false, "disposition": "stable"}',
+        (None, 1),
+    ),
+    "disposition_as_boolean": (
+        "{progress,mitigation}",
+        '{"accepted": true, "verified": false, "disposition": true}',
         (None, 1),
     ),
     "entry_not_an_object": ("{metadata,turn_history}", "[1, 2]", ("diagnosis", None)),
@@ -1472,13 +1539,15 @@ async def test_revision_003_steps_down_and_up(limited_role_env):
         assert await functions_and_ledger() == (set(), 0)
 
 
-async def test_revision_014_steps_down_and_up_keeping_the_hardening(limited_role_env):
-    """Revision 014 drops the page function and creates it again, so everything
-    a drop takes with it is re-stated: ``PUBLIC`` revoked, 003's comment, the
-    runtime role's grant. Checked at head, after stepping down to 013 (005's
-    definition restored) and at head again — with the runtime role present, so
-    the grant branch runs. In a database of its own, for the reason 003's step
-    test gives."""
+async def test_revisions_014_and_025_step_down_and_up_keeping_the_hardening(
+    limited_role_env,
+):
+    """Revisions 014 and 025 drop the page function and create it again, so
+    everything a drop takes with it is re-stated: ``PUBLIC`` revoked, 003's
+    comment, the runtime role's grant. Checked at head, after stepping down to
+    024 (014's definition restored) and back, then down to 013 (005's) and up to
+    014 — with the runtime role present, so the grant branch runs. In a
+    database of its own, for the reason 003's step test gives."""
     async with database_of_its_own(
         limited_role_env, "fm_casemeta_driver", runtime_role=True
     ) as url:
@@ -1533,7 +1602,8 @@ async def test_revision_014_steps_down_and_up_keeping_the_hardening(limited_role
             assert runtime is True, "the runtime role lost EXECUTE"
             assert public is False, "PUBLIC may execute"
 
-        previous_columns = [c for c in _PAGE_COLUMNS if c[0] != "driver_id"]
+        def without(*names):
+            return [c for c in _PAGE_COLUMNS if c[0] not in names]
 
         result = alembic_on(url, "upgrade head")
         assert result.returncode == 0, result.stderr[-2000:]
@@ -1541,14 +1611,28 @@ async def test_revision_014_steps_down_and_up_keeping_the_hardening(limited_role
         assert columns == _PAGE_COLUMNS
         hardened(catalog)
 
-        result = alembic_on(url, f"downgrade {_PRE_DRIVER_REVISION}")
-        assert result.returncode == 0, result.stderr[-2000:]
-        columns, catalog = await page_function()
-        assert columns == previous_columns
-        hardened(catalog)
+        for down_to, down_columns, up_to, up_columns in (
+            (
+                _PRE_DISPOSED_REVISION,
+                without("mitigation_disposed"),
+                _DISPOSED_REVISION,
+                _PAGE_COLUMNS,
+            ),
+            (
+                _PRE_DRIVER_REVISION,
+                without("mitigation_disposed", "driver_id"),
+                _DRIVER_REVISION,
+                without("mitigation_disposed"),
+            ),
+        ):
+            result = alembic_on(url, f"downgrade {down_to}")
+            assert result.returncode == 0, result.stderr[-2000:]
+            columns, catalog = await page_function()
+            assert columns == down_columns
+            hardened(catalog)
 
-        result = alembic_on(url, f"upgrade {_DRIVER_REVISION}")
-        assert result.returncode == 0, result.stderr[-2000:]
-        columns, catalog = await page_function()
-        assert columns == _PAGE_COLUMNS
-        hardened(catalog)
+            result = alembic_on(url, f"upgrade {up_to}")
+            assert result.returncode == 0, result.stderr[-2000:]
+            columns, catalog = await page_function()
+            assert columns == up_columns
+            hardened(catalog)

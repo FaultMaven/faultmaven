@@ -34,10 +34,13 @@ from faultmaven.modules.case.contracts import (
     HypothesisCategory,
     HypothesisGenerationMode,
     HypothesisState,
+    InvestigationActionType,
+    MitigationRecord,
     NodeEvidenceLink,
     NodeState,
     NodeType,
     ProblemVerification,
+    ProposedAction,
     UploadedFile,
     ValidationMethod,
 )
@@ -290,3 +293,41 @@ def bound_to_add(
     )
     fields.update(overrides)
     return EvidenceToAdd(**fields)
+
+
+def mitigated(case: Case, *, attempt: int, relief: int | None = None) -> str:
+    """An accepted mitigation run at ``attempt`` (its MITIGATION action and the
+    record), and, with ``relief``, a re-check bound to the problem showing it
+    gone at that turn (#2100): what a derived ``mitigation_verified`` reads.
+    Gives the case a verifying row only when it has none. Returns its id."""
+    case.proposed_actions.append(
+        ProposedAction(
+            case_id=case.case_id,
+            action_type=InvestigationActionType.MITIGATION,
+            description="route orders to the replica",
+            proposed_in_turn=attempt,
+            state="accepted",
+            accepted_in_turn=attempt,
+        )
+    )
+    if case.progress.mitigation is None:
+        case.progress.mitigation = MitigationRecord(
+            proposed_at_turn=attempt, accepted=True
+        )
+    if case.problem_verification is None:
+        case.problem_verification = ProblemVerification(
+            symptom_statement=case.description or "the reported problem"
+        )
+    pv = case.problem_verification
+    if not pv.verifying_evidence_ids:
+        shown = _row(
+            case,
+            EvidenceCategory.SYMPTOM_EVIDENCE,
+            turn=1,
+            evidence_id=VERIFYING_ID,
+            summary="the reported problem, as first shown",
+        )
+        pv.verifying_evidence_ids = [shown.evidence_id]
+    if relief is not None:
+        bound_row(case, turn=relief, rechecks=pv.verifying_evidence_ids[0])
+    return pv.verifying_evidence_ids[0]

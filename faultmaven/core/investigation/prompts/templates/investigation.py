@@ -391,7 +391,7 @@ evidence_trail:
     justification here, whether you set it True or False. A retraction
     (symptom_verified=False) without one is REFUSED and the claim stands.
     * One field per milestone: symptom_verified, mitigation_accepted,
-      mitigation_verified, solution_accepted.
+      mitigation_verified, mitigation_disposition, solution_accepted.
     * Set null for any milestone you did NOT change this turn. Null and empty
       string both mean "no justification" — a milestone you changed without a
       real one is rejected.
@@ -407,6 +407,7 @@ evidence_trail:
          symptom_verified: "Connection errors at rate 12% confirmed in application logs",
          mitigation_accepted: null,
          mitigation_verified: null,
+         mitigation_disposition: null,
          solution_accepted: null
        }}
 
@@ -506,8 +507,9 @@ You MUST respond with valid JSON matching these fields:
     justification here, whether you set it True or False. A retraction
     (symptom_verified=False) without one is REFUSED and the claim stands.
     * One field per milestone: symptom_verified, mitigation_accepted,
-      mitigation_verified, solution_accepted. Set null for milestones you did
-      not change; null or empty string means "no justification".
+      mitigation_verified, mitigation_disposition, solution_accepted. Set null
+      for milestones you did not change; null or empty string means "no
+      justification".
     * Example: {{symptom_verified: "47 connection errors in nginx log between 14:02–16:45 UTC"}}
   - uncertainties: What remains unclear.
 - **state_updates**:

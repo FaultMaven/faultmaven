@@ -41,6 +41,7 @@ pytestmark = pytest.mark.unit
 
 _STAGED = 4  # the revision helper's case is at turn 4
 _CAUSE_GONE = EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
+_GONE = EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE
 
 
 def _obs(category, summary, rechecks, file_id) -> EvidenceToAdd:
@@ -232,15 +233,24 @@ async def test_a_held_fix_seen_failing_disconfirms_a_cause_replayed_before_it():
 
 async def test_a_staged_mitigation_verification_is_dated_at_its_hold_turn():
     """A workaround run and verified on the staged turn, held with it and
-    confirmed two turns later: the pre-mitigation boundary is the hold turn."""
+    confirmed two turns later: the attempt and the pre-mitigation boundary are
+    the hold turn. The verdict is derived (#2100), from the relief row the hold
+    turn recorded, naming the revision's cited row (``commit_revision`` makes
+    it the verifying row)."""
 
     def mitigated(dsu):
         dsu.solutions_to_add = [_solution("workaround", "route orders to the replica")]
         dsu.milestones = MilestoneUpdates(
             mitigation_accepted=True, mitigation_verified=True
         )
+        file_id = dsu.evidence_to_add[0].source_file_id
+        dsu.evidence_to_add.append(
+            _obs(_GONE, "orders answer within 200ms", "new_index_0", file_id)
+        )
 
     _, case, *_ = await _replayed(edit=mitigated, confirmed=_STAGED + 2)
 
+    (attempt,) = [a for a in case.proposed_actions if a.state == "accepted"]
+    assert attempt.accepted_in_turn == _STAGED
     assert case.progress.mitigation.verified is True
     assert case.progress.mitigation.completed_at_turn == _STAGED

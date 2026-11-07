@@ -53,7 +53,7 @@ There are two distinct transition mechanisms:
 | INQUIRY | TERMINAL (CLOSED) | User-Agent Handshake | User declines investigation |
 | DIAGNOSIS | MITIGATION | Inference-based | `mitigation_accepted` — user accepts the proposed temporary fix |
 | DIAGNOSIS | TREATMENT | Inference-based | `solution_accepted` — user acknowledges executing the proposed solution |
-| MITIGATION | DIAGNOSIS | Inference-based | `mitigation_verified` — user confirms mitigation worked; gate milestones never reset, and `current_stage` falls through to DIAGNOSIS via its `NOT mitigation_verified` clause |
+| MITIGATION | DIAGNOSIS | Inference-based | `mitigation_verified` — derived from a problem-bound re-check after the mitigation — or a `mitigation_disposition` (#2100); gate milestones never reset, and `current_stage` falls through to DIAGNOSIS |
 | TREATMENT | TERMINAL (RESOLVED) | User-Agent Handshake | `solution_verified` — user confirms the solution resolved the issue |
 | Any INVESTIGATING stage | TERMINAL (CLOSED) | User-Agent Handshake | User escalates or abandons |
 
@@ -112,7 +112,7 @@ The GPS map. At any turn the agent reads this table to know where the investigat
 | | | 3 | `solution_proposed` | Action | Row 2 true — agent reasons to fix | — | [Zone 3](#zone-3-solution-proposal) |
 | | | 4 | `mitigation_accepted` (→ `mitigation.accepted`) | Trigger | User acknowledges executing the mitigation | DECIDE → Mitigating | [Zone 3](#zone-3-solution-proposal) |
 | | | 6 | `solution_accepted` | Trigger | User acknowledges executing fix | DECIDE → TREATMENT | [Zone 3](#zone-3-solution-proposal) |
-| MITIGATION ("Mitigating") | `mitigation_instructions(given)` | 5 | `mitigation_verified` (→ `mitigation.verified`) | Gate | User confirms the mitigation worked | EVIDENCE → DIAGNOSIS | [MITIGATION](#mitigation-stage--the-mitigation-insert-display-mitigating) |
+| MITIGATION ("Mitigating") | `mitigation_instructions(given)` | 5 | `mitigation_verified` (→ `mitigation.verified`, derived) or `mitigation_disposition` | Gate | A bound re-check shows the problem relieved, or the user declares it stable or proceeds without (#2100) | EVIDENCE → DIAGNOSIS | [MITIGATION](#mitigation-stage--the-mitigation-insert-display-mitigating) |
 | TREATMENT | `treatment_instructions(given)` | 7 | `solution_verified` | Gate | User confirms solution worked | DECIDE → TERMINAL | [TREATMENT](#treatment-stage) |
 | TERMINAL | `TERMINAL_TEMPLATE` | — | — | — | No milestone tracking | — | [TERMINAL](#terminal-state) |
 
@@ -409,19 +409,19 @@ The **mitigation insert**: apply a temporary fix to stop active impact when an A
 2. Provide numbered steps framed as user instructions, not agent actions.
 3. State rollback: what to do if the fix makes things worse. State the fix is temporary.
 4. Request post-fix data — metrics, error rates, user observation — confirming the symptom has stopped.
-5. Accept subjective confirmation for `mitigation.verified`: it is the user's call for the milestone, never a row. When confirmed: (1) only when the user submitted post-mitigation data, record a `symptom_absence_evidence` row in `evidence_to_add` (the symptom is no longer present, while the cause may persist), (2) emit `mitigation_verified=True` (materializes `mitigation.verified` + `completed_at_turn`).
+5. Post-mitigation data the user submitted that shows the problem relieved: (1) record a `symptom_absence_evidence` row in `evidence_to_add` with `rechecks` naming a row that showed the problem (the symptom is no longer present, while the cause may persist), (2) emit `mitigation_verified=True`; the engine derives `mitigation.verified` + `completed_at_turn` from that bound row (#2100). The user's own account ("it's stable") is theirs to give, never a row: emit `mitigation_disposition: declared_stable`.
 6. Iterate if ineffective — propose a modified approach, stay in the mitigation insert.
 7. Whether to form hypotheses here follows the single rule: do so iff `cause_state ∈ {UNKNOWN, CANDIDATES}`. There is no separate ban tied to being mid-mitigation.
 
-**`mitigation_verified`** — Emitted when the user confirms stabilization. Subjective confirmation is sufficient: "it's better", "errors dropped", "seems stable". Specific metric values are not required. Forward-only: `mitigation.accepted`/`.verified` are never reset. The case returns to DIAGNOSIS via the `current_stage` property's fall-through (the "Mitigating" branch requires `NOT mitigation.verified`).
+**`mitigation_verified`** — Emitted with the post-mitigation re-check; recorded only when a `symptom_absence_evidence` row bound to the problem is observed at or after the mitigation's attempt, with no bound persistence after it (#2100). Subjective confirmation ("it's better", "seems stable") is `mitigation_disposition: declared_stable`, recorded as the user's declaration, never as verified. Forward-only: `mitigation.accepted`/`.verified`/`.disposition` are never reset. The case returns to DIAGNOSIS via the `current_stage` property's fall-through (the "Mitigating" branch requires neither a verdict nor a disposition).
 
-**When mitigation stalls:** If multiple attempts have failed and safe options are exhausted, do not continue proposing variants. The single-record constraint is not a dead-end (lifecycle §2.3, INV-24): offer exactly two DECIDE suggestions — (1) "Accept current state and continue" — emits `mitigation_verified=True` to return to DIAGNOSIS even with partial stabilization. Do NOT fabricate a `symptom_absence_evidence` row here: the symptom was not actually verified gone, so the gate is set directly without an absence row. (2) "Escalate to a human expert" — acknowledges the investigation has reached its limit.
+**When mitigation stalls:** If multiple attempts have failed and safe options are exhausted, do not continue proposing variants. The single-record constraint is not a dead-end (lifecycle §2.3, INV-24): offer exactly two DECIDE suggestions — (1) "Accept current state and continue" — emits `mitigation_disposition: proceed_unmitigated` to return to DIAGNOSIS even with partial stabilization, never `mitigation_verified`. Do NOT fabricate a `symptom_absence_evidence` row here: the symptom was not actually verified gone. (2) "Escalate to a human expert" — acknowledges the investigation has reached its limit.
 
 **Gate Conditions:**
 
 | To | Mechanism | Condition |
 | -- | --------- | --------- |
-| DIAGNOSIS (Zone 2 or 3) | Inference-based | `mitigation_verified = True` → `mitigation.verified` — forward-only; the "Mitigating" property branch fails its `NOT mitigation.verified` clause and the case falls through to DIAGNOSIS. Forwarding after mitigation follows the §2.3 table (cause uncertain → RCA; cause + solution known → propose solution / close). No Gate-3 gating — the cause_state rule alone governs whether hypothesis work resumes. |
+| DIAGNOSIS (Zone 2 or 3) | Inference-based | `mitigation.verified` (derived from a bound re-check) or `mitigation.disposition` (#2100) — forward-only; the "Mitigating" property branch fails and the case falls through to DIAGNOSIS. Forwarding after mitigation follows the §2.3 table (cause uncertain → RCA; cause + solution known → propose solution / close). No Gate-3 gating — the cause_state rule alone governs whether hypothesis work resumes. |
 | TERMINAL (CLOSED) | User-Agent Handshake | User selects escalation from stall-breaker or abandons |
 
 **Anti-Patterns:**
