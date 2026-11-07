@@ -405,8 +405,9 @@ it was the only migration — or the object was dropped by hand.
    for the baseline, `alembic upgrade <down_revision>:<revision> --sql` for any
    other. Take the statements that create the missing objects: the table, its
    indexes, and any row-level security, policy, trigger or grant the revision
-   attaches to it. Never the `alembic_version` statement: the stamp is already
-   right.
+   attaches to it. Leave out the rendered `BEGIN;` and `COMMIT;`, and the
+   `alembic_version` statement: the stamp is already right, and a `COMMIT;`
+   copied into the transaction below ends it early, and the role with it.
 3. Apply them in one transaction **as the role that owns the schema** (the
    migration Job's role). `ALTER DEFAULT PRIVILEGES FOR ROLE <owner>` is what
    grants the app's runtime role access to a new table, and it applies only to
@@ -694,10 +695,14 @@ upgrade head` as the remedy. Table and column names are the floor of that
 check; a missing index or constraint, or a changed column type, is not
 detected. The read is held to the same 10 seconds as the at-head check, and
 past them the boot is refused, not skipped. The remedy for a stamped database
-turns on the stamp. Behind the scripts' head, run the migration Job (`alembic
-upgrade head`); the refusal names the head. At head, that run applies nothing
+turns on where the stamp sits in the scripts. Behind their head, run the
+migration Job (`alembic upgrade head`); the refusal names the head, and what to
+do if the names are still missing once there. At head, that run applies nothing
 and reports success, so the refusal says so and points to
-[A Database at Head Missing Tables](#a-database-at-head-missing-tables).
+[A Database at Head Missing Tables](#a-database-at-head-missing-tables). A
+stamp the scripts do not contain (an image rolled back across a migration, so
+the database is newer than it) is named as such: no migration run from that
+image can proceed, and the remedy is an image whose migrations include it.
 
 A revision can add database objects other than tables: `003_admin_case_metadata`
 creates two PostgreSQL `SECURITY DEFINER` functions for the cross-enterprise

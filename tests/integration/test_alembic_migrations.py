@@ -621,6 +621,28 @@ class TestAlembicMigrationInfrastructure:
         )
         assert "changes nothing" not in message
 
+    async def test_a_stamp_these_scripts_do_not_contain_is_not_told_to_migrate(
+        self, clean_database, database_url, monkeypatch
+    ):
+        """An image rolled back across a migration: the database is stamped at a
+        revision these scripts lack, so alembic cannot locate it and a migration
+        run from this image fails. The refusal says that, not "run the Job"."""
+        from faultmaven.bootstrap import data_init
+
+        monkeypatch.delenv("ALEMBIC_CONFIG", raising=False)
+        prepare_database("head", database_url)
+        with closing(sqlite3.connect(TEST_DB)) as conn, conn:
+            conn.execute("DROP TABLE token_revocations")
+            conn.execute("UPDATE alembic_version SET version_num = 'f0f0f0f0f0f0'")
+
+        with self._app_settings(database_url.replace("sqlite:", "sqlite+aiosqlite:")):
+            with pytest.raises(RuntimeError) as refused:
+                await data_init.verify_schema_tables()
+        message = str(refused.value)
+        assert "stamped f0f0f0f0f0f0" in message
+        assert "migration scripts do not contain f0f0f0f0f0f0" in message
+        assert "run the migration Job" not in message
+
     async def test_a_stamped_database_missing_a_declared_column_is_refused(
         self, clean_database, database_url
     ):

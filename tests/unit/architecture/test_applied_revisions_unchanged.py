@@ -9,27 +9,32 @@ baseline before the amendment; nothing noticed until the startup schema check
 (#1514) refused the boot. Schema changes therefore arrive as new revisions.
 
 ``alembic/revision_fingerprints.txt`` records each revision's fingerprint, one
-``<revision> <fingerprint>`` line per revision: a digest of its code with
-comments, docstrings and formatting left out, so an edit to prose leaves it
-alone and a change to what the revision runs moves it. Plain text, not JSON:
-detect-secrets reads every quoted hex string as a possible secret, and an
-unquoted one is not.
-A revision imports nothing from the application, so its own code is all that
-decides what it runs. These tests fail when a revision's code no longer matches
-its recorded fingerprint, when a revision has none recorded, and when a recorded
-revision has no file.
+``<revision> <fingerprint>`` line per revision in chain order: a digest of its
+code with comments, docstrings and formatting left out, so an edit to prose
+leaves it alone and a change to the revision's statements moves it. A revision
+imports nothing from the application, so all of its code is in its file; what
+it reads while it runs (018 reads files, others read stored rows) is data, which
+no fingerprint holds. The revisions are the ones Alembic itself finds. Plain
+text, not JSON: detect-secrets reads every quoted hex string as a possible
+secret, and an unquoted one is not.
+
+These tests fail when a revision's code no longer matches its recorded
+fingerprint, when a revision has none recorded, and when a recorded revision has
+no file. The one way past the first is to record a new fingerprint: a visible
+edit to an existing line, kept for an edit that cannot change any database's
+schema (#2462), and the line a reviewer checks.
 """
 
 from __future__ import annotations
 
 import ast
+import functools
 import hashlib
 from pathlib import Path
 
 import pytest
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
-_VERSIONS = _PROJECT_ROOT / "alembic" / "versions"
 _MANIFEST = _PROJECT_ROOT / "alembic" / "revision_fingerprints.txt"
 _MANIFEST_NAME = "alembic/revision_fingerprints.txt"
 
@@ -79,38 +84,26 @@ def fingerprint(source: str) -> str:
     return hashlib.sha256(_canonical(tree).encode("utf-8")).hexdigest()[:16]
 
 
-def _revision_id(source: str, path: Path) -> str:
-    """The module-level ``revision`` the file declares."""
-    for node in ast.parse(source).body:
-        target = None
-        if isinstance(node, ast.AnnAssign):
-            target, value = node.target, node.value
-        elif isinstance(node, ast.Assign) and len(node.targets) == 1:
-            target, value = node.targets[0], node.value
-        if (
-            isinstance(target, ast.Name)
-            and target.id == "revision"
-            and isinstance(value, ast.Constant)
-            and isinstance(value.value, str)
-        ):
-            return value.value
-    raise AssertionError(f"{path.name} declares no `revision`")
-
-
+@functools.cache
 def _revisions_on_disk() -> dict[str, tuple[Path, str]]:
-    """Every revision in ``alembic/versions``: id -> (file, fingerprint)."""
+    """Every revision Alembic finds, in chain order (base first): id -> (file,
+    fingerprint). Alembic's own discovery, so a file it would not run is not a
+    revision here either; parsed once per session."""
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    config = Config(str(_PROJECT_ROOT / "alembic.ini"))
+    location = config.get_main_option("script_location", "")
+    config.set_main_option("script_location", str(_PROJECT_ROOT / location))
+    config.set_main_option("prepend_sys_path", "")
     found: dict[str, tuple[Path, str]] = {}
-    for path in sorted(_VERSIONS.glob("*.py")):
-        source = path.read_text(encoding="utf-8")
-        revision = _revision_id(source, path)
-        assert revision not in found, (
-            f"{path.name} and {found[revision][0].name} both declare "
-            f"revision {revision}"
-        )
-        found[revision] = (path, fingerprint(source))
+    for script in reversed(list(ScriptDirectory.from_config(config).walk_revisions())):
+        path = Path(script.path)
+        found[script.revision] = (path, fingerprint(path.read_text(encoding="utf-8")))
     return found
 
 
+@functools.cache
 def _recorded() -> dict[str, str]:
     """The manifest: revision -> fingerprint. Text from ``#`` to the end of a
     line is prose (each entry names its file that way); what remains on a line
@@ -190,11 +183,12 @@ def test_every_recorded_revision_still_has_its_file() -> None:
 _SAMPLE = '''"""Revision docstring."""
 revision: str = "abc"
 down_revision = None
+TABLE = "t"
 
 
 def upgrade() -> None:
     """Upgrade."""
-    op.execute("CREATE TABLE t (id int)")
+    op.execute(f"CREATE TABLE {TABLE} (id int)")
 '''
 
 
@@ -206,12 +200,13 @@ def upgrade() -> None:
         _SAMPLE.replace('"""Revision docstring."""', '"""Reworded at length."""'),
         _SAMPLE.replace('    """Upgrade."""\n', ""),
         _SAMPLE.replace(
-            '    op.execute("CREATE', '    # why\n    op.execute(\n        "CREATE'
+            '    op.execute(f"CREATE', '    # why\n    op.execute(\n        f"CREATE'
         ).replace('int)")', 'int)"\n    )'),
     ],
     ids=["docstring reworded", "docstring removed", "comment and reformat"],
 )
 def test_prose_and_formatting_leave_the_fingerprint_alone(variant: str) -> None:
+    assert variant != _SAMPLE, "the variant's edit did not apply"
     assert fingerprint(variant) == fingerprint(_SAMPLE)
 
 
@@ -221,6 +216,8 @@ def test_prose_and_formatting_leave_the_fingerprint_alone(variant: str) -> None:
     "variant",
     [
         _SAMPLE.replace("id int", "id bigint"),
+        _SAMPLE.replace("{TABLE} (id", "{TABLE}_v2 (id"),
+        _SAMPLE.replace('TABLE = "t"', 'TABLE = "u"'),
         _SAMPLE.replace("down_revision = None", 'down_revision = "xyz"'),
         _SAMPLE + '    op.execute("CREATE INDEX i ON t (id)")\n',
         _SAMPLE.replace(
@@ -229,12 +226,15 @@ def test_prose_and_formatting_leave_the_fingerprint_alone(variant: str) -> None:
     ],
     ids=[
         "statement changed",
+        "f-string changed",
+        "module constant changed",
         "re-parented",
         "statement appended",
         "statement prepended",
     ],
 )
 def test_a_change_to_what_a_revision_runs_moves_the_fingerprint(variant: str) -> None:
+    assert variant != _SAMPLE, "the variant's edit did not apply"
     assert fingerprint(variant) != fingerprint(_SAMPLE)
 
 
@@ -243,4 +243,4 @@ def test_a_change_to_what_a_revision_runs_moves_the_fingerprint(variant: str) ->
 def test_the_fingerprint_is_pinned_for_a_known_source() -> None:
     """Pinned so a Python whose tree differs fails here, by name, rather than
     as every revision changing at once."""
-    assert fingerprint(_SAMPLE) == "d2e5a52620a2ab19"  # pragma: allowlist secret
+    assert fingerprint(_SAMPLE) == "85bdb1f74ce32341"  # pragma: allowlist secret
