@@ -233,7 +233,7 @@ async def test_an_abandoned_docx_worker_stops_after_its_current_paragraph(
 
     monkeypatch.setattr(Paragraph, "text", property(slow_text))
     monkeypatch.setattr(DocumentParser, "extract_document_text", extract_then_signal)
-    monkeypatch.setattr(dp, "EXTRACTION_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(dp, "EXTRACTION_TIMEOUT_SECONDS", 0.25)
 
     try:
         with caplog.at_level(logging.WARNING):

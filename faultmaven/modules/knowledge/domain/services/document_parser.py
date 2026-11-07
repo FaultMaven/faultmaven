@@ -291,10 +291,16 @@ class DocumentParser:
 
         A paragraph's style is python-docx's own lookup of its ``w:pStyle`` id,
         made once per distinct id: ``Paragraph.style`` scans the document's
-        styles on every read, about 4 ms a paragraph (#2597). ``abandoned`` is
-        checked before each paragraph and each table row. One paragraph is read
-        whole, so a paragraph of millions of runs (about 35 µs a run) runs to
-        its end.
+        styles on every read, about 4 ms a paragraph (#2597). An id that is
+        unknown or not a paragraph style's costs two scans, its lookup and the
+        library's fallback to the default, once per distinct id; the paragraph
+        check below bounds a document of many such ids.
+
+        ``abandoned`` is checked before each paragraph and each table row. One
+        paragraph and one row are each read whole, so a paragraph of millions
+        of runs (about 35 µs a run), or a row of huge width, ``gridSpan`` or
+        vertical-merge depth, runs to its end: the preparation seam's residual,
+        whose fix, a worker process a timeout can kill, is #2596.
         """
         try:
             from docx import Document
@@ -345,7 +351,9 @@ class DocumentParser:
         self, table, abandoned: Optional[threading.Event], where: str
     ) -> str:
         """Convert a DOCX table to markdown format, checking ``abandoned`` before
-        each row: with merged cells a row costs more the larger its table."""
+        each row. A row is read whole, at a cost set by its width, its cells'
+        ``gridSpan`` and the depth of its vertical merges, not by its table's
+        size."""
         rows, count = [], len(table.rows)
         for index, row in enumerate(table.rows):
             _stop_if_abandoned(abandoned, where, "row", index, count)

@@ -77,9 +77,12 @@ EXTRACTION_TIMEOUT_SECONDS = 120
 
 #: ``Retry-After`` on ``CONVERSION_BUSY``. A PDF worker held when a request
 #: gives up has ended, or stops at its next page, within one bound of it. A DOCX
-#: worker stops at its next paragraph or table row (#2597), except inside one
-#: paragraph: a paragraph of millions of runs (about 35 µs a run) is read to its
-#: end. A worker on any other format has no such checkpoint and runs to its end.
+#: worker stops at its next paragraph or table row (#2597), but one paragraph
+#: and one table row are each read whole: a paragraph of millions of runs (about
+#: 35 µs a run), or a row of huge width, ``gridSpan`` or vertical-merge depth,
+#: runs to its end. Both are the preparation seam's residual (a thread cannot be
+#: stopped), and #2596 holds its fix: a worker process a timeout can kill. A
+#: worker on any other format has no such checkpoint and runs to its end.
 CONVERSION_BUSY_RETRY_AFTER_SECONDS = EXTRACTION_TIMEOUT_SECONDS
 
 #: Where Stages 0-5 run: CPU over the caller's file, off the event loop (#1417's

@@ -212,10 +212,12 @@ Upload (file + scope + metadata)
   │     free within 120 s: REJECT with HTTP 503 / CONVERSION_BUSY +
   │     Retry-After. A PDF page pypdf's budgets refuse is skipped and named
   │     in a warning. A run past 120 s (the worker stops at its next PDF
-  │     page, or DOCX paragraph or table row; one DOCX paragraph is read
-  │     whole, so a paragraph of millions of runs runs to its end, #2597), a
-  │     document-level budget, or refused pages leaving too little to
-  │     convert: REJECT with HTTP 422 / DOCUMENT_TOO_COMPLEX. Corruption
+  │     page, or DOCX paragraph or table row, #2597; one DOCX paragraph and
+  │     one table row are each read whole, so a paragraph of millions of runs
+  │     or a row of huge width, gridSpan or merge depth runs to its end, the
+  │     preparation seam's residual that #2596's killable worker process
+  │     fixes), a document-level budget, or refused pages leaving too little
+  │     to convert: REJECT with HTTP 422 / DOCUMENT_TOO_COMPLEX. Corruption
   │     pypdf reports as a limit stays FILE_CORRUPT
   │
   ├── 1b. Already-a-Runbook Gate (deterministic, no LLM)
