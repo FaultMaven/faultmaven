@@ -815,8 +815,10 @@ class EvidenceToAdd(NullTolerantModel):
             "causal_absence_evidence, or symptom_evidence showing the problem "
             "still present): the id of the row it re-checks, or new_index_N "
             "for a row of this response. For the problem, a row that showed "
-            "it; for the cause, a row that supports the root cause alone. An "
-            "observation naming no such row confirms and disconfirms nothing."
+            "it; for the cause, a row the root cause's terminal verdict cites "
+            "(the cited basis). An observation naming no row confirms and "
+            "disconfirms nothing; one naming a row of the cause the verdict "
+            "does not cite confirms nothing, though it can show a fix failed."
         ),
     )
 

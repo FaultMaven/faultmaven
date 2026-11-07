@@ -1895,12 +1895,13 @@ the cited row must be NEWER than any refutation recorded against the root
 being confirmed — any author, any confidence. A hedged self-claimed failed
 fix neither demotes the root nor counts against it (§7.2, #2106), but the top
 grade is never minted from a row recorded at-or-before it; only the user's strictly-newer post-refute
-gone⇒gone completes `CONFIRMED`. The candidates are bound rows naming a
-support of the cause being confirmed (#1906 D1): a row re-checking one
-SUPPORTS-linked to an intermediate rung binds to no cause, however worded —
-the reversal of the stance `test_absence_bearing_calibration` pinned, by
-link shape (`test_a_recheck_of_a_rung_linked_row_binds_to_nothing`), while a
-rung-WORDED row naming a root-only support is still cited. And
+gone⇒gone completes `CONFIRMED`. The candidates are bound rows naming the
+cited basis of the cause being confirmed (#1906 D1; #2557, INV-48): a row
+re-checking one the root's verdict does not cite, one SUPPORTS-linked to an
+intermediate rung among them, binds to no cause, however worded — the
+reversal of the stance `test_absence_bearing_calibration` pinned
+(`test_a_recheck_of_a_rung_linked_row_binds_to_nothing`), while a rung-WORDED
+row naming the cited basis is still cited. And
 **content-level bearing** (`_select_bearing_row`, ranking bound rows by
 `collected_at_turn`): the citation is the NEWEST candidate not
 affirmatively **about a different chain** (≥2 shared content tokens with

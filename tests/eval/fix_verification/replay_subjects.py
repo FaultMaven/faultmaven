@@ -16,8 +16,9 @@ isolate what the rules do:
   verifying-turn fallback (exactly one symptom row written in the turn the
   symptom claim landed). Only rows observed at or after the latest recorded
   fix's turn (``fix_application_turn``) are named: a symptom_absence row names
-  the verifying row, a causal_absence row the first row supporting the
-  confirmation pool alone (ROOT-only, one cluster). Persistence rows stay
+  the verifying row, a causal_absence row the first of the confirmation
+  pool's cited basis (#2557; a corpus older than #2036 D6 has none, so no
+  cause row is named). Persistence rows stay
   unnamed. Where every check follows the recorded fix, the figure is an UPPER
   BOUND on what naming earns (a perfect model, no failure ever named). It is
   no bound where a check the rules admit is left unnamed: a check observed

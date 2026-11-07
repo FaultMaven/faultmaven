@@ -397,7 +397,9 @@ async def test_a_recheck_after_an_off_cause_fix_says_why_it_does_not_count():
         case,
         8,
         _obs(
-            _CAUSE_GONE, "a rotation job exists now", r2.evidence_links[0].evidence_id
+            _CAUSE_GONE,
+            "a rotation job exists now",
+            r2.metadata["root_terminal_evidence_ids"][0],
         ),
     )
     await _record(

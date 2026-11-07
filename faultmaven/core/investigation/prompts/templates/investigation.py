@@ -149,8 +149,8 @@ an evidence row.
    After a fix, one recorded here or one the user reports carrying out
    outside the case, each absence row names in `rechecks` the row it
    re-checks: for symptom_absence a row that showed the problem, for
-   causal_absence a row that supports the root cause alone (the
-   re-verification checklist lists both); a symptom_evidence row showing
+   causal_absence a row the root cause's terminal verdict cites, its
+   cited basis (the re-verification checklist lists both); a symptom_evidence row showing
    the problem still present or back names the row that showed the
    problem. A post-fix row naming none confirms nothing.
    A fix the user reports carrying out outside the case is registered in

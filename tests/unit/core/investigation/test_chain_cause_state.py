@@ -124,7 +124,7 @@ def _root(
         for label in labels
     ]
     return CausalNode(
-        metadata=terminal_verdict(),
+        metadata=terminal_verdict(*(_eid(label) for label in labels)) if labels else {},
         node_id=node_id,
         statement=statement,
         node_type=NodeType.ROOT,
@@ -823,6 +823,7 @@ def test_stale_engine_rcc_refreshed_on_root_handoff_without_refutation():
                 linked_at_turn=case.current_turn,
             )
         )
+    rB.metadata.update(terminal_verdict(sb.evidence_id, sb2.evidence_id))
     _recompute_cause_state_from_chain(case)
     assert rA.node_state == NodeState.INCONCLUSIVE  # drifted, not refuted
     assert rB.node_state == NodeState.VALIDATED

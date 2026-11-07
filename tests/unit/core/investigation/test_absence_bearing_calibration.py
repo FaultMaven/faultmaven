@@ -144,6 +144,8 @@ def _diagnosis_row(label, category, summary) -> Evidence:
 
 
 def _supports(node, *rows) -> None:
+    """``rows`` support ``node``; a root's terminal verdict cites them all
+    (the cited basis, D6), as the model cites the rows showing why it arose."""
     for row in rows:
         node.evidence_links.append(
             NodeEvidenceLink(
@@ -153,11 +155,21 @@ def _supports(node, *rows) -> None:
                 linked_at_turn=2,
             )
         )
+    if node.node_type == NodeType.ROOT:
+        node.metadata.update(
+            terminal_verdict(
+                *(
+                    link.evidence_id
+                    for link in node.evidence_links
+                    if link.stance == EvidenceStance.SUPPORTS
+                )
+            )
+        )
 
 
 def _node(node_id, statement, node_type, *, validated=False) -> CausalNode:
     return CausalNode(
-        metadata=terminal_verdict(),
+        metadata={},
         node_id=node_id,
         statement=statement,
         node_type=node_type,
@@ -259,6 +271,9 @@ def _incident_case():
     case.problem_verification.verifying_evidence_ids = [verifying.evidence_id]
     _supports(target, target_support, rung_support)
     _supports(rung, rung_support)
+    # The target's verdict cites its own datum (the cited basis, #2557); the
+    # rung-shared row is the consequence as much as the cause.
+    target.metadata.update(terminal_verdict(target_support.evidence_id))
     return case, target, sibling
 
 
@@ -313,7 +328,7 @@ def test_symptom_side_confirmation_bears_via_problem_anchor():
 
 def test_mechanism_rung_worded_confirmation_is_frame_bearing():
     """A row WORDED about the target chain's RUNG (its mechanism) that
-    re-checks a support of the root alone is the target's story, not another
+    re-checks the root's cited basis is the target's story, not another
     chain's — frame-bearing, never vetoed (a ranking pin over bound rows)."""
     case, target, _ = _incident_case()
     row = _absence_row(
@@ -327,10 +342,10 @@ def test_mechanism_rung_worded_confirmation_is_frame_bearing():
 
 def test_a_recheck_of_a_rung_linked_row_binds_to_nothing():
     """REVERSAL of the stance this test replaced (#1906 D1, ruled 2026-10-31
-    Q2), by LINK SHAPE, not wording: a row re-checking one SUPPORTS-linked to
-    the INTERMEDIATE rung is about the consequence as much as the cause (the
-    #2036 renewal), so it binds to no cause — no cause leg, no stamp — however
-    it is worded."""
+    Q2), not by wording: a row re-checking one SUPPORTS-linked to the
+    INTERMEDIATE rung is about the consequence as much as the cause (the #2036
+    renewal), and the root's verdict does not cite it (#2557), so it binds to
+    no cause — no cause leg, no stamp — however it is worded."""
     case, target, _ = _incident_case()
     row = _absence_row(
         "rung_linked",

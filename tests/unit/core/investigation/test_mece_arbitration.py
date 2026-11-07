@@ -93,8 +93,9 @@ def _root(node_id, statement, *, support_labels=()) -> CausalNode:
         )
         for label in support_labels
     ]
+    cited = [_eid(label) for label in support_labels]
     return CausalNode(
-        metadata=terminal_verdict(),
+        metadata=terminal_verdict(*cited) if cited else {},
         node_id=node_id,
         statement=statement,
         node_type=NodeType.ROOT,
@@ -136,7 +137,6 @@ def _case(nodes, edges=None, evidence=None, hyps=None) -> Case:
 
 def _problem(case_id="cn_00000000000d") -> CausalNode:
     return CausalNode(
-        metadata=terminal_verdict(),
         node_id=case_id,
         statement="checkout orders failing with 500s",
         node_type=NodeType.PROBLEM,
@@ -565,7 +565,6 @@ def test_path_through_refuted_rung_does_not_merge_roots():
     and masked the contest."""
     case = _specimen_case(members=_SPECIMEN[:2])
     rung = CausalNode(
-        metadata=terminal_verdict(),
         node_id="cn_0000000000f1",
         statement="pool wait queue saturates under sustained connection debt",
         node_type=NodeType.INTERMEDIATE,
@@ -602,7 +601,6 @@ def test_live_path_still_merges_roots():
     rung is one deepened line — not a contest."""
     case = _specimen_case(members=_SPECIMEN[:2])
     rung = CausalNode(
-        metadata=terminal_verdict(),
         node_id="cn_0000000000f1",
         statement="pool wait queue saturates under sustained connection debt",
         node_type=NodeType.INTERMEDIATE,
