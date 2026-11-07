@@ -12657,7 +12657,7 @@
     },
     "/api/v1/knowledge/documents/bulk-delete": {
       "post": {
-        "description": "Bulk delete documents.\n\nOwnership-aware per target (#866): the same gate as\n``DELETE /documents/{id}``, applied to each target before anything reaches\nthe service. Refused targets are reported in ``errors`` and never counted\nas deleted; ``total_requested`` is the de-duplicated batch size (see\n``_normalize_bulk_document_ids``), so the counts reconcile. Each\nconversion's model-call traces are deleted once for the batch (#2575).\nWhen they cannot be, that document and every one after it are reported in\n``errors`` and left as they were, without another call to the trace\nbackend.",
+        "description": "Bulk delete documents.\n\nOwnership-aware per target (#866): the same gate as\n``DELETE /documents/{id}``, applied to each target before anything reaches\nthe service. Refused targets are reported in ``errors`` and never counted\nas deleted; ``total_requested`` is the de-duplicated batch size (see\n``_normalize_bulk_document_ids``), so the counts reconcile. Each\nconversion's model-call traces are deleted once for the batch (#2575).\nWhen they cannot be, that document is reported in ``errors`` and left as it\nwas; after that, a document whose traces are not yet deleted is reported\nthe same way without another call to the trace backend, and one with none\nleft to delete is deleted.",
         "operationId": "bulk_delete_documents_api_v1_knowledge_documents_bulk_delete_post",
         "requestBody": {
           "content": {

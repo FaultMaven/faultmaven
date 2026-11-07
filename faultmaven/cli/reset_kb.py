@@ -11,7 +11,9 @@ What it does
 ------------
 0. Purges the LLM traces of each conversion that made model calls and has a
    draft it deletes or discards, before any row changes (#2575). If one cannot
-   be purged it stops with nothing written, as the delete routes do.
+   be purged it stops with nothing written, as the delete routes do. The wipe
+   then acts only on what the purge covered: a runbook or draft written since,
+   from a conversion it did not purge, is kept and reported.
 1. Deletes every row from ``knowledge_items`` that it locks; a row written
    while it runs (only a running API writes one) is kept and reported.
 2. Keeps ``conversion_drafts`` rows, discarding first the ones that
@@ -315,6 +317,8 @@ async def reset_kb(
     from faultmaven.modules.knowledge.domain.trace_purge import (
         TracePurge,
         conversions_with_drafts,
+        drafts_purged_or_untraced,
+        items_purged_or_untraced,
     )
     from faultmaven.providers.tenancy.factory import (
         BUILTIN_MULTI,
@@ -461,7 +465,17 @@ async def reset_kb(
         # helper's rowcount after the draft step, both written in this
         # transaction, so a key another session takes or frees meanwhile is
         # never counted as this reset's.
-        locked, discarded, released_keys = await discard_drafts_naming_any_item(session)
+        #
+        # Only what the purge covered (#2575): an item or draft written since
+        # the survey, from a conversion whose traces were not purged, is kept.
+        # With no trace backend there was nothing to purge.
+        items = drafts = None
+        if purge.eraser is not None:
+            items = items_purged_or_untraced(purge.erased)
+            drafts = drafts_purged_or_untraced(purge.erased)
+        locked, discarded, released_keys = await discard_drafts_naming_any_item(
+            session, items
+        )
         deleted_items = (
             await session.execute(
                 delete(KnowledgeItemModel).where(KnowledgeItemModel.item_id.in_(locked))
@@ -469,11 +483,21 @@ async def reset_kb(
         ).rowcount
         kept_items = await _count_rows(session, KnowledgeItemModel)
         # Drafts carry no mark of being bootstrap-generated, so by default
-        # every row is KEPT. ``--all-drafts`` deletes every row, with no WHERE.
+        # every row is KEPT. ``--all-drafts`` deletes every row the purge
+        # covered (every row, with no trace backend).
         deleted_drafts = (
-            (await session.execute(delete(ConversionDraftModel))).rowcount
+            (
+                await session.execute(
+                    delete(ConversionDraftModel).where(
+                        true() if drafts is None else drafts
+                    )
+                )
+            ).rowcount
             if all_drafts
             else None
+        )
+        kept_drafts = (
+            await _count_rows(session, ConversionDraftModel) if all_drafts else 0
         )
         # After the draft step on either path, so a key whose drafts this run
         # or an earlier one deleted is released (#2387).
@@ -496,6 +520,12 @@ async def reset_kb(
             f"Kept {kept_items} knowledge_items rows written while the reset ran, "
             "so the API is still up: stop it first. If the vector store is "
             "removed below, the API's startup repair re-indexes them."
+        )
+    if kept_drafts:
+        print(
+            f"Kept {kept_drafts} conversion_drafts rows written while the reset "
+            "ran, whose LLM traces it did not purge: stop the API, then run it "
+            "again."
         )
 
     # ChromaDB wipe

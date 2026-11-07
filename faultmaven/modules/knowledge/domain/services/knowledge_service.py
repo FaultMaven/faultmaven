@@ -3423,18 +3423,15 @@ class KnowledgeService:
         success once its row change commits, and a vector delete that fails
         after it is not a failed delete (#2397). A document whose LLM traces
         cannot be purged is a failed delete, left as it was (#2575). Each
-        conversion is erased once for the whole batch, and after the first
-        refusal every remaining document is counted failed without another
-        call to the trace backend.
+        conversion is erased once for the whole batch. After the first refusal
+        a document whose conversion is not yet erased fails without another
+        call to the trace backend; one with nothing left to erase is deleted.
         """
         deleted_count = 0
         errors = []
         purge = TracePurge(self._trace_eraser)
 
         for doc_id in document_ids:
-            if purge.refused:
-                errors.append(f"Document {doc_id}: delete failed")
-                continue
             try:
                 result = await self._delete_document(doc_id, purge)
                 if result.get("success"):

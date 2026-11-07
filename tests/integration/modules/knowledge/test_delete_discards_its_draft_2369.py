@@ -689,8 +689,8 @@ async def test_a_runbook_published_during_a_kb_reset_is_kept_whole(
     discard = draft_retirement.discard_drafts_naming_any_item
     landed: dict[str, str] = {}
 
-    async def discard_then_upload(session):
-        retired = await discard(session)
+    async def discard_then_upload(session, items=None):
+        retired = await discard(session, items)
         landed["item"], landed["draft"] = await _publish(own_pg, knowledge, "upload")
         return retired
 
@@ -735,9 +735,9 @@ async def _reset_while_a_case_converts(
     discard = draft_retirement.discard_drafts_naming_any_item
     landed: list[str] = []
 
-    async def convert_then_discard(session):
+    async def convert_then_discard(session, items=None):
         landed.append((await _convert(factory, "case-concurrent")).conversion_id)
-        return await discard(session)
+        return await discard(session, items)
 
     monkeypatch.setattr(
         draft_retirement, "discard_drafts_naming_any_item", convert_then_discard

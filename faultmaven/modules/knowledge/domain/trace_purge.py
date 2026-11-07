@@ -14,15 +14,17 @@ security, never on an item's ``source_url``, which the uploader writes.
 
 from typing import List, Optional, Set, Tuple
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from faultmaven.exceptions import ServiceException
 from faultmaven.infrastructure.observability.trace_erasure import (
     UnavailableTraceEraser,
 )
 from faultmaven.infrastructure.persistence.models import (
     ConversionDraftModel,
     ConversionJobModel,
+    KnowledgeItemModel,
 )
 from faultmaven.modules.knowledge.contracts import IConversionTraceEraser
 
@@ -63,19 +65,61 @@ async def conversions_naming_item(session: AsyncSession, item_id: str) -> List[O
     )
 
 
+def items_purged_or_untraced(erased: Set[str]):
+    """The items each of whose naming drafts' model-call conversions is in
+    ``erased``: those a purge of ``erased`` has covered, or that need none."""
+    return ~(
+        select(ConversionDraftModel.id)
+        .join(
+            ConversionJobModel,
+            ConversionJobModel.id == ConversionDraftModel.conversion_id,
+        )
+        .where(
+            ConversionDraftModel.knowledge_item_id == KnowledgeItemModel.item_id,
+            ConversionJobModel.failure_modes_detected > 0,
+            ConversionDraftModel.conversion_id.not_in(erased),
+        )
+        .exists()
+    )
+
+
+def drafts_purged_or_untraced(erased: Set[str]):
+    """The drafts whose conversion is in ``erased`` or made no model call."""
+    return ConversionDraftModel.conversion_id.in_(
+        select(ConversionJobModel.id).where(
+            or_(
+                ConversionJobModel.failure_modes_detected == 0,
+                ConversionJobModel.id.in_(erased),
+            )
+        )
+    )
+
+
 class TracePurge:
     """The erases of one delete, or of one bulk delete: each conversion is
-    erased once, and ``refused`` records that one could not be."""
+    erased once. After a refusal (``refused``) a conversion not yet erased is
+    refused at once, with no call to the backend, while one already erased
+    still passes."""
 
     def __init__(self, eraser: Optional[IConversionTraceEraser]):
         self.eraser = eraser
         self.refused = False
         self._erased: Set[Owner] = set()
 
+    @property
+    def erased(self) -> Set[str]:
+        """The ids of the conversions erased so far."""
+        return {conversion_id for conversion_id, _ in self._erased}
+
     async def erase(self, owners: List[Owner]) -> None:
         for owner in owners:
             if owner in self._erased:
                 continue
+            if self.refused:
+                raise ServiceException(
+                    f"Cannot clear llm_traces for conversion {owner[0]}: an "
+                    "earlier erase in this batch was refused"
+                )
             try:
                 await self.eraser.erase_conversion(*owner)
             except Exception:

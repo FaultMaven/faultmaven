@@ -1434,9 +1434,10 @@ async def bulk_delete_documents(
     as deleted; ``total_requested`` is the de-duplicated batch size (see
     ``_normalize_bulk_document_ids``), so the counts reconcile. Each
     conversion's model-call traces are deleted once for the batch (#2575).
-    When they cannot be, that document and every one after it are reported in
-    ``errors`` and left as they were, without another call to the trace
-    backend.
+    When they cannot be, that document is reported in ``errors`` and left as it
+    was; after that, a document whose traces are not yet deleted is reported
+    the same way without another call to the trace backend, and one with none
+    left to delete is deleted.
     """
     logger = logging.getLogger(__name__)
 

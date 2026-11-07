@@ -427,8 +427,8 @@ class TestTheDocumentDelete:
     async def test_the_bulk_delete_stops_erasing_at_the_first_refusal(
         self, stack, monkeypatch
     ):
-        """The rest are counted failed with no other call to the backend, a
-        document with nothing to purge included."""
+        """A document whose conversion is not yet erased fails with no other
+        call to the backend; one with nothing to purge is deleted."""
         eraser, client = _unreachable(monkeypatch)
         kb = stack(trace_eraser=eraser)
         first = await _published(kb, "conv_a", "Redis Evictions Under Pressure")
@@ -437,12 +437,47 @@ class TestTheDocumentDelete:
 
         result = await kb.knowledge.bulk_delete_documents([first, other, upload])
 
-        assert result["deleted_count"] == 0
+        assert result["deleted_count"] == 1
         assert result["errors"] == [
-            f"Document {doc}: delete failed" for doc in (first, other, upload)
+            f"Document {doc}: delete failed" for doc in (first, other)
         ]
         assert len(client.trace_reads) == 1
-        assert (await _state(kb.factory))[1] == {first, other, upload}
+        assert (await _state(kb.factory))[1] == {first, other}
+
+    @pytest.mark.parametrize(
+        "upload_first", [True, False], ids=["upload-first", "upload-last"]
+    )
+    async def test_the_bulk_outcome_does_not_depend_on_order(
+        self, stack, monkeypatch, upload_first
+    ):
+        eraser, _client = _unreachable(monkeypatch)
+        kb = stack(trace_eraser=eraser)
+        traced = await _published(kb, "conv_a", "Redis Evictions Under Pressure")
+        upload = (await _upload(kb.knowledge))["document_id"]
+        batch = [upload, traced] if upload_first else [traced, upload]
+
+        result = await kb.knowledge.bulk_delete_documents(batch)
+
+        assert result["deleted_count"] == 1
+        assert result["errors"] == [f"Document {traced}: delete failed"]
+        assert (await _state(kb.factory))[1] == {traced}
+
+    async def test_a_document_whose_conversion_was_erased_deletes_after_a_refusal(
+        self, stack
+    ):
+        """Its sibling's erase covered it, so it needs no call."""
+        kb = stack()
+        first = await _published(kb, "conv_a", "Redis Evictions Under Pressure")
+        refused = await _published(kb, "conv_b", "Kafka Consumer Lag On Rebalance")
+        sibling = await _published(kb, "conv_a", "Redis Swap Storms", "d_conv_a2")
+        kb.eraser.fails, kb.eraser.only = DOWN, "conv_b"
+
+        result = await kb.knowledge.bulk_delete_documents([first, refused, sibling])
+
+        assert result["deleted_count"] == 2
+        assert result["errors"] == [f"Document {refused}: delete failed"]
+        assert kb.eraser.owners == [("conv_a", ENT), ("conv_b", ENT)]
+        assert (await _state(kb.factory))[1] == {refused}
 
     async def test_it_is_keyed_on_the_drafts_not_on_the_source_url(self, stack):
         """``source_url`` is a field the uploader writes: naming another
@@ -618,6 +653,37 @@ class TestTheKbReset:
         assert kb.eraser.owners == owners
         assert all(item_id in call.items for call in kb.eraser.calls)
         assert (await _state(kb.factory))[1] == set()
+
+    @pytest.mark.parametrize("all_drafts", [False, True], ids=["default", "all-drafts"])
+    async def test_what_lands_during_the_purge_is_kept_and_reported(
+        self, reset_eraser, monkeypatch, capsys, all_drafts
+    ):
+        """A runbook published, and a draft added, while the erase runs: their
+        conversions were not purged, so the wipe keeps them."""
+        kb = reset_eraser
+        await _published(kb, "conv_a", "Redis Evictions Under Pressure")
+        landed = {}
+
+        async def published_meanwhile():
+            kb.eraser.meanwhile = None
+            landed["item"] = await _published(kb, "conv_new", "Kafka Consumer Lag")
+            await _add(
+                kb.factory, *_model_job("conv_late"), _draft("late", "conv_late")
+            )
+
+        kb.eraser.meanwhile = published_meanwhile
+        capsys.readouterr()
+
+        assert await _reset(kb.factory, monkeypatch, all_drafts=all_drafts) == 0
+
+        assert kb.eraser.owners == [("conv_a", ENT)]
+        drafts, items = await _state(kb.factory)
+        assert items == {landed["item"]}
+        assert (drafts["d_conv_new"], drafts["late"]) == ("verified", "draft")
+        assert "d_conv_a" in drafts or all_drafts
+        out = capsys.readouterr().out
+        assert "Kept 1 knowledge_items rows written while the reset ran" in out
+        assert ("Kept 2 conversion_drafts rows written while" in out) is all_drafts
 
     async def test_a_refused_purge_deletes_nothing(self, reset_eraser, monkeypatch):
         kb = reset_eraser

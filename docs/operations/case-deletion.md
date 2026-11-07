@@ -63,12 +63,14 @@ conversion's traces, with the same steps and refusals as a case delete:
   whose delete only unpublishes it, or a runbook published from a case whose
   drafts that case's delete removed.
   `POST /api/v1/knowledge/documents/bulk-delete` purges each conversion once
-  for the whole batch. After the first refusal it reports that document and
-  every one after it in `errors`, unchanged, without contacting the backend
-  again.
-- `fm-reset-kb` purges the conversion of each draft naming a runbook it
-  deletes, and with `--all-drafts` of every draft, before it writes anything.
-  A refusal exits 1 with nothing written.
+  for the whole batch. After the first refusal, a document whose conversion is
+  not yet purged is reported in `errors`, unchanged, without contacting the
+  backend again; one with nothing left to purge is still deleted.
+- `fm-reset-kb` purges the conversion of each draft naming a runbook, and with
+  `--all-drafts` of every draft, before it writes anything. A refusal exits 1
+  with nothing written. It then deletes only what that purge covered: a
+  runbook or draft written meanwhile, from a conversion it did not purge, is
+  kept and reported.
 
 The traces go before any row changes, and no database transaction is open
 while the backend is called. The unit is the conversion, not the draft: every

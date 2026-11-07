@@ -108,14 +108,15 @@ async def discard_drafts_naming_item(session: AsyncSession, item_id: str) -> Lis
 
 
 async def discard_drafts_naming_any_item(
-    session: AsyncSession,
+    session: AsyncSession, items=None
 ) -> Tuple[List[str], List[str], int]:
-    """Lock every item and discard the drafts naming one, ahead of deleting
-    them (``fm-reset-kb``); return the locked item ids, the discarded draft
-    ids and how many case keys the discard released. The caller deletes
-    exactly those items: an item written after the lock was not locked and
-    its drafts were not discarded, so deleting it would orphan them."""
-    return await _discard_drafts_naming(session, true())
+    """Lock every item ``items`` matches (every item when ``None``) and
+    discard the drafts naming one, ahead of deleting them (``fm-reset-kb``);
+    return the locked item ids, the discarded draft ids and how many case keys
+    the discard released. The caller deletes exactly those items: an item
+    written after the lock was not locked and its drafts were not discarded,
+    so deleting it would orphan them."""
+    return await _discard_drafts_naming(session, true() if items is None else items)
 
 
 async def _discard_drafts_naming(
