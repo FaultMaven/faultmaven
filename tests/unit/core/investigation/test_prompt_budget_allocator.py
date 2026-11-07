@@ -405,8 +405,6 @@ def _allocate(budget, **variable):
         _allocate_sections(
             budget=budget,
             case=case,
-            provider_name=PROVIDER,
-            model_name=MODEL,
             **reserve,
             **sections,
         ),

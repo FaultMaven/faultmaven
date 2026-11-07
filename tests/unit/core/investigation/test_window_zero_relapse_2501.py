@@ -708,7 +708,7 @@ async def test_7_the_failed_fix_notice_names_the_fix_done_outside_the_case():
 
     _, meta = await _record(eng, case, 7, _gone("checkout is fine now"))
 
-    feedback = meta.get("system_feedback") or ""
+    feedback = "\n".join(meta.get("system_notices") or [])
     assert (
         "SYSTEM: The fix done outside the case did not hold: the problem was "
         "seen gone at turn 5, then seen again at turn 6." in feedback

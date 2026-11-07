@@ -28,7 +28,13 @@ from .affordances import engine_owned_affordances
 from .progress import restatement_stall_notice, score_progress
 from .response_application import FIX_CAUSE_AT_START_KEY
 from .response_synthesis import is_agent_response_synthesized
-from .stage_gates import _add_system_feedback, _refresh_working_conclusion, fix_cause
+from .stage_gates import (
+    SYSTEM_NOTICE_KEYS,
+    _add_system_feedback,
+    _refresh_working_conclusion,
+    fix_cause,
+    merge_system_notices,
+)
 from .statement_revision import merge_statement_commit
 from .terminal_proposals import (
     _maybe_propose_confirmed_resolution,
@@ -67,15 +73,14 @@ async def _apply_turn_response(
     # replay's refusals and repairs — are merged with the response's own, never
     # replaced by them: the turn record is the only way the next turn learns
     # of them.
-    early_feedback = metadata.get("system_feedback") or ""
+    early = {key: metadata[key] for key in SYSTEM_NOTICE_KEYS if key in metadata}
     early_repairs = list(metadata.get("validation_repairs") or [])
     metadata.update(response_metadata)
-    if early_feedback:
-        live_feedback = metadata.get("system_feedback") or ""
-        if early_feedback not in live_feedback:
-            metadata["system_feedback"] = "\n".join(
-                part for part in (early_feedback, live_feedback) if part
-            )
+    if early.get("system_notices"):
+        for key in SYSTEM_NOTICE_KEYS:
+            metadata.pop(key, None)
+        metadata.update(early)
+        merge_system_notices(metadata, response_metadata)
     if early_repairs:
         live_repairs = list(metadata.get("validation_repairs") or [])
         metadata["validation_repairs"] = early_repairs + [
@@ -150,7 +155,7 @@ async def _apply_turn_response(
     # local. ``_check_automatic_transitions`` never reads
     # ``progress_made``, so scoring after it is not circular, and
     # ``_perform_hypothesis_housekeeping`` (the only other thing between
-    # here and Step 5.8) reads ``metadata["system_feedback"]``, the
+    # here and Step 5.8) reads ``metadata["system_notices"]``, the
     # ``case.turns_without_progress`` ATTRIBUTE, which Step 5.8 updates
     # afterwards either way — so anti-anchoring sees the same value it
     # saw before — and ``metadata["progress_made"]``, which decides
@@ -260,10 +265,7 @@ async def _apply_turn_response(
 
         # Store prompt injection in system_feedback for next turn
         if progress_result.prompt_injection:
-            current_feedback = metadata.get("system_feedback", "") or ""
-            metadata["system_feedback"] = (
-                f"{current_feedback}\n{progress_result.prompt_injection}".strip()
-            )
+            _add_system_feedback(metadata, progress_result.prompt_injection)
 
         log_msg = (
             f"Progress transparency activated: pending milestone "
@@ -295,7 +297,7 @@ async def _apply_turn_response(
             is_agent_response_synthesized(response_obj)
             or not response_obj.agent_response.strip()
         ),
-        system_feedback=metadata.get("system_feedback"),
+        system_notices=metadata.get("system_notices"),
         momentum=progress_metrics.investigation_momentum,
         blocked_reasons=progress_metrics.blocked_reasons,
         next_steps=progress_metrics.next_steps,

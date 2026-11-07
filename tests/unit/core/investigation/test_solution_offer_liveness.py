@@ -314,7 +314,7 @@ class TestLicenseLostWithdrawal:
         assert withdrawn[0].superseded_in_turn == 7
         assert case.progress.solution_proposed is False
         assert case.progress.solution_state == SolutionState.UNKNOWN
-        assert "withdrawn" in metadata.get("system_feedback", "")
+        assert "withdrawn" in "\n".join(metadata.get("system_notices") or [])
 
     async def test_withdrawal_logs_warning_event(self, caplog):
         import logging
@@ -351,7 +351,7 @@ class TestLicenseLostWithdrawal:
         _recompute_assessment_state(case, metadata=metadata)
         assert len(_pending_solutions(case)) == 1
         assert case.progress.solution_proposed is True
-        assert "system_feedback" not in metadata
+        assert not metadata.get("system_notices")
 
     async def test_accepted_offer_is_never_withdrawn(self):
         # An executed fix is a historical fact — license loss cannot unmake
@@ -508,7 +508,7 @@ class TestSameTurnCreateThenWithdraw:
         assert len(withdrawn) == 1
         assert withdrawn[0].superseded_reason == "license_lost"
         assert case.progress.solution_proposed is False
-        assert "withdrawn" in metadata.get("system_feedback", "")
+        assert "withdrawn" in "\n".join(metadata.get("system_notices") or [])
 
 
 # ---------------------------------------------------------------------------
@@ -597,9 +597,9 @@ class TestWorkingConclusionLicense:
         # survive a turn whose earlier accumulators already wrote feedback.
         case = self._case_with_pending_offer()
         case.progress.cause_identification_contested = True
-        metadata = {"system_feedback": "EARLIER ACCUMULATED FEEDBACK"}
+        metadata = {"system_notices": ["EARLIER ACCUMULATED FEEDBACK"]}
         assert _withdraw_unlicensed_solution_offers(case, metadata=metadata) == 1
-        fb = metadata["system_feedback"]
+        fb = "\n".join(metadata["system_notices"])
         assert fb.startswith("SYSTEM: Your pending SOLUTION proposal was withdrawn")
         assert "EARLIER ACCUMULATED FEEDBACK" in fb
 
@@ -689,7 +689,7 @@ class TestTypeMatchedStageGates:
         assert case.progress.solution_accepted is False
         assert diag.state == "pending"
         assert "solution_accepted" not in metadata["milestones_completed"]
-        assert "was not registered" in metadata.get("system_feedback", "")
+        assert "was not registered" in "\n".join(metadata.get("system_notices") or [])
 
     async def test_solution_accepted_targets_the_solution_not_newest_pending(self):
         case = _make_case()
@@ -714,7 +714,7 @@ class TestTypeMatchedStageGates:
         )
         assert case.progress.mitigation is None
         assert sol.state == "pending"
-        assert "was not registered" in metadata.get("system_feedback", "")
+        assert "was not registered" in "\n".join(metadata.get("system_notices") or [])
 
     async def test_mitigation_verified_needs_no_pending_action(self):
         # Accept-then-verify-later: the mitigation action left pending at the
@@ -815,7 +815,9 @@ class TestSameTurnGateBundles:
         assert len(sol_actions) == 1
         assert sol_actions[0].state == "accepted"
         assert case.action_attempts[-1].action_id == sol_actions[0].action_id
-        assert "was not registered" not in metadata.get("system_feedback", "")
+        assert "was not registered" not in "\n".join(
+            metadata.get("system_notices") or []
+        )
         assert case.progress.solution_proposed is True
 
     async def test_same_turn_workaround_and_mitigation_accept_registers(self):
@@ -871,7 +873,7 @@ class TestIdempotentReemission:
             _Updates(milestones=MilestoneUpdates(solution_accepted=True)),
             metadata,
         )
-        assert "system_feedback" not in metadata or not metadata["system_feedback"]
+        assert not metadata.get("system_notices")
         assert case.progress.solution_accepted is True
         assert "solution_accepted" not in metadata["milestones_completed"]
 
@@ -894,7 +896,7 @@ class TestMitigationRejectionCoherence:
             _milestone_updates(mitigation_accepted=True, mitigation_verified=True),
             metadata,
         )
-        fb = metadata.get("system_feedback", "")
+        fb = "\n".join(metadata.get("system_notices") or [])
         assert "'mitigation_accepted' was not registered" in fb
         assert "The same applies to 'mitigation_verified'" in fb
         assert "MILESTONE ORDER ERROR" not in fb
@@ -911,7 +913,9 @@ class TestMitigationRejectionCoherence:
         await _make_engine().responses._apply_investigation_updates(
             case, _milestone_updates(mitigation_accepted=True), metadata
         )
-        assert "was not re-registered" in metadata.get("system_feedback", "")
+        assert "was not re-registered" in "\n".join(
+            metadata.get("system_notices") or []
+        )
         assert second.state == "pending"
         assert "mitigation_accepted" not in metadata["milestones_completed"]
 
@@ -923,7 +927,7 @@ class TestMitigationRejectionCoherence:
         await _make_engine().responses._apply_investigation_updates(
             case, _milestone_updates(mitigation_accepted=True), metadata
         )
-        assert not metadata.get("system_feedback")
+        assert not metadata.get("system_notices")
 
 
 # ---------------------------------------------------------------------------

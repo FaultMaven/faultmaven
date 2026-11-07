@@ -333,7 +333,7 @@ async def test_a_fix_backdated_onto_a_turn_with_no_record_stays_unkinded():
     )
     (fix,) = _attempts(case)
     assert (fix.accepted_in_turn, fix.fix_kind, fix.target_ids) == (7, None, [])
-    assert "without a target" not in (meta.get("system_feedback") or "")
+    assert "without a target" not in "\n".join(meta.get("system_notices") or [])
 
 
 @pytest.mark.parametrize("with_hypothesis", [True, False], ids=["re-rooted", "bare"])
@@ -551,7 +551,7 @@ async def test_a_backdated_fix_is_kinded_against_its_own_turns_record(problem_go
         FIX_REMEDIATION,
         [a.node_id],
     )
-    assert _IGNORED not in (meta.get("system_feedback") or "")
+    assert _IGNORED not in "\n".join(meta.get("system_notices") or [])
     await _record(eng, case, 9, *_leak_rows(), **_ground_b(b))
     await _recheck(eng, case, 10, b)
     assert _verdict(case) == _NEEDS_INFO
@@ -808,7 +808,7 @@ async def test_a_backdate_onto_a_hold_turn_after_the_opening_one_is_dated_now(
         FIX_REMEDIATION,
         [root.node_id],
     )
-    assert (_HELD in (meta.get("system_feedback") or "")) == (dated != 4)
+    assert (_HELD in "\n".join(meta.get("system_notices") or [])) == (dated != 4)
 
 
 # ---------------------------------------------------------------------------
@@ -903,7 +903,7 @@ async def test_a_fix_proposed_before_its_licence_was_recorded_reads_as_before(
         assert (run.fix_kind, run.target_ids) == (FIX_REMEDIATION, [_ROOT_ID])
         return
     assert (run.fix_kind, run.target_ids) == (None, [])
-    assert "without a target" not in (meta.get("system_feedback") or "")
+    assert "without a target" not in "\n".join(meta.get("system_notices") or [])
     case.hypotheses["hyp_00000000c0c0"].state = HypothesisState.RETIRED
     await _record(eng, case, 8, *_leak_rows(), **_ground_b(b))
     await _recheck(eng, case, 9, b)
@@ -986,7 +986,9 @@ async def test_only_a_later_remediation_ends_a_remediations_standing(
     )
     assert [a.accepted_in_turn for a in _attempts(case)] == attempts
     assert [w.fix_turn for w in fix_windows(case)] == windows
-    assert ("later fix followed it" in (meta.get("system_feedback") or "")) == line
+    assert (
+        "later fix followed it" in "\n".join(meta.get("system_notices") or [])
+    ) == line
 
 
 async def test_an_undatable_acceptance_keeps_its_label_beside_an_interception():
@@ -1096,7 +1098,9 @@ async def test_a_conclusion_naming_an_intermediate_licenses_as_it_is_stored(
         _rows, meta = await _record(eng, case, 6, milestones=_ran(fix.action_id))
     target = {FIX_REMEDIATION: [_ROOT_ID], FIX_INTERCEPTION: [x], None: []}[kind]
     assert (fix.fix_kind, fix.target_ids) == (kind, target)
-    assert ("without a target" in (meta.get("system_feedback") or "")) == (kind is None)
+    assert ("without a target" in "\n".join(meta.get("system_notices") or [])) == (
+        kind is None
+    )
     await _record(eng, case, 7, **_grounding(hyp))
     await _record(
         eng,

@@ -587,8 +587,6 @@ def _allocate(budget: TokenBudget, case, block: str) -> dict:
     return _allocate_sections(
         budget=budget,
         case=case,
-        provider_name=None,
-        model_name=None,
         **_RESERVE,
         evidence_str="EVIDENCE " * 400,
         graduated_history="HISTORY " * 400,

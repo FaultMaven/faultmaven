@@ -232,7 +232,7 @@ def _latest(case):
 def _feedback(case) -> str:
     meta: dict = {}
     _flag_unbound_post_fix_rows(case, meta)
-    return meta.get("system_feedback") or ""
+    return "\n".join(meta.get("system_notices") or [])
 
 
 # ---------------------------------------------------------------------------

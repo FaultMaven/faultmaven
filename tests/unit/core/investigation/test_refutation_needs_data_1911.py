@@ -221,8 +221,8 @@ async def test_an_argument_alone_does_not_refute():
     h = case.hypotheses[h_id]
     assert h.state == HypothesisState.ACTIVE
     assert h.refutation_reason is None
-    assert f"Hypothesis {h_id} was NOT refuted" in meta["system_feedback"]
-    assert "It stays open." in meta["system_feedback"]
+    assert f"Hypothesis {h_id} was NOT refuted" in "\n".join(meta["system_notices"])
+    assert "It stays open." in "\n".join(meta["system_notices"])
     counter.labels.assert_called_once_with(source="model")
 
 
@@ -247,7 +247,7 @@ async def test_evidence_already_on_record_backs_a_refutation():
     h = case.hypotheses[h_id]
     assert h.state == HypothesisState.REFUTED
     assert [link.evidence_id for link in h.evidence_links] == [reason_row]
-    assert "NOT refuted" not in meta.get("system_feedback", "")
+    assert "NOT refuted" not in "\n".join(meta.get("system_notices") or [])
 
 
 async def test_a_refutes_link_from_an_earlier_turn_backs_a_refutation():
@@ -309,8 +309,8 @@ async def test_a_hedged_refutes_link_does_not_refute_and_the_held_retire_lands()
     h = case.hypotheses[h_id]
     assert h.state == HypothesisState.RETIRED
     assert h.refutation_reason is None
-    assert "self-hedged" in meta["system_feedback"]
-    assert "set it aside (RETIRED)" in meta["system_feedback"]
+    assert "self-hedged" in "\n".join(meta["system_notices"])
+    assert "set it aside (RETIRED)" in "\n".join(meta["system_notices"])
 
 
 async def test_a_held_transition_without_a_refutation_is_not_held():
@@ -393,7 +393,7 @@ async def test_one_turn_verifies_identifies_and_refutes_a_competitor():
     ]
     assert cause.root_node_id is not None
     assert case.progress.cause_state == CauseState.IDENTIFIED
-    assert "NOT" not in meta.get("system_feedback", "")
+    assert "NOT" not in "\n".join(meta.get("system_notices") or [])
 
 
 # ---------------------------------------------------------------------------
@@ -619,4 +619,4 @@ async def test_a_same_turn_link_on_the_chain_root_alone_backs_a_refutation():
 
     competitor = case.hypotheses[meta["hypotheses_generated"][1]]
     assert competitor.state == HypothesisState.REFUTED
-    assert "NOT refuted" not in meta.get("system_feedback", "")
+    assert "NOT refuted" not in "\n".join(meta.get("system_notices") or [])

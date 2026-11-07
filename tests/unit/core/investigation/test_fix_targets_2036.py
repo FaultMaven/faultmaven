@@ -287,7 +287,7 @@ async def test_a_ref_naming_no_node_leaves_the_fix_unnamed_with_one_line():
         6,
         solutions_to_add=[_fix("raise max_connections", "cn_00000000dead")],
     )
-    assert "node_ref cn_00000000dead names no node" in meta["system_feedback"]
+    assert "node_ref cn_00000000dead names no node" in "\n".join(meta["system_notices"])
     await _record(eng, case, 7, milestones=_ran(case.proposed_actions[-1].action_id))
     (fix,) = _attempts(case)
     assert (fix.target_ids, fix.target_named, fix.fix_kind) == (
@@ -379,7 +379,7 @@ async def test_the_settle_runs_inside_the_one_recompute_and_keeps_the_withdrawal
         )
     assert len(calls) == 1
     assert case.proposed_actions[-1].state == "superseded"
-    assert "withdrawn" in meta["system_feedback"]
+    assert "withdrawn" in "\n".join(meta["system_notices"])
 
 
 # ---------------------------------------------------------------------------
@@ -776,7 +776,7 @@ async def test_a_fix_licensed_by_a_conclusion_in_words_only_stays_unkinded():
     )
     (fix,) = _attempts(case)
     assert (fix.fix_kind, fix.target_ids) == (None, [])
-    assert "names its cause in words only" in meta["system_feedback"]
+    assert "names its cause in words only" in "\n".join(meta["system_notices"])
     await _record(
         eng,
         case,

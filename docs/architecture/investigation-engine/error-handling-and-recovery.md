@@ -648,11 +648,11 @@ class ResponseParser:
 
 ### 3.2 System Feedback Loop
 
-Validation errors from multiple sources are merged into `system_feedback` on the turn record. The next prompt reads it from the last record, `turn_history[-1]`, through `context_builder.assembly.system_feedback_block()`, which the main prompt and the minimal fallback both use:
+Validation errors from multiple sources are recorded as `system_notices` on the turn record, one whole notice each (#2499: the record cuts nothing, and the next prompt renders whole notices from the head of the list until its `system_feedback_max_tokens` budget is spent, then one line saying how many it omitted). The next prompt reads it from the last record, `turn_history[-1]`, through `context_builder.assembly.system_feedback_block()`, which the main prompt and the minimal fallback both use:
 
 | Source | Feedback Key | Content |
 |--------|-------------|---------|
-| Reasoning-first validator | none: the strip in `_process_response_structured` prepends it, so truncation keeps it | The milestones that were not recorded and why (no justification, no `evidence_trail`, no evidence) |
+| Reasoning-first validator | none: the strip in `_process_response_structured` prepends it, so it is the last notice the prompt's budget would drop (#2499) | The milestones that were not recorded and why (no justification, no `evidence_trail`, no evidence) |
 | Progress monitor | `breakout_action` (turn metadata; the monitor result also carries a `prompt_injection` field) | Transparency guidance + repair-pattern injection (e.g., "try different category" on anchoring) |
 
 This ensures the LLM receives corrective instructions for the next turn even when the current turn's issues are non-fatal.

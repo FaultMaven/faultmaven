@@ -282,7 +282,7 @@ async def test_a_conclusion_naming_an_intermediate_names_no_cause():
     )
     fix = _attempts(case)[0]
     assert (fix.fix_kind, fix.target_ids) == (FIX_INTERCEPTION, [x])
-    assert "words only" not in (meta.get("system_feedback") or "")
+    assert "words only" not in "\n".join(meta.get("system_notices") or [])
     await _record(eng, case, 7, **_grounding(hyp))
     await _record(
         eng,
@@ -580,7 +580,7 @@ async def test_a_fix_licensed_by_an_unrooted_leader_is_credited_to_no_root(groun
     )
     fix = _attempts(case)[0]
     assert (fix.fix_kind, fix.target_ids) == (FIX_INTERCEPTION, [])
-    assert "without a target" not in (meta.get("system_feedback") or "")
+    assert "without a target" not in "\n".join(meta.get("system_notices") or [])
     if grounded == "a-trailing-root":
         await _record(eng, case, 8, **_grounding(hyp))
         await _record(

@@ -75,7 +75,6 @@ from faultmaven.core.investigation.prompts.templates.fallback import (
     _FALLBACK_FENCE_RULE_TEMPLATE,
     _FALLBACK_MAX_TOKENS,
     DEGRADED_NO_TOOLS_NOTICE,
-    _cap_notice,
     _fallback_stub_block,
     _fallback_tokens,
     get_fallback_prompt_for_case,
@@ -86,6 +85,7 @@ from faultmaven.core.investigation.prompts.templates.investigation import (
 )
 from faultmaven.core.investigation.prompts.templates.terminal import TERMINAL_TEMPLATE
 from faultmaven.modules.case.contracts import (
+    NOTICE_CUT_MARKER,
     Case,
     CaseState,
     Evidence,
@@ -275,7 +275,7 @@ def _feedback_record(feedback: str) -> TurnProgress:
         outcome=TurnOutcome.CONVERSATION,
         user_message_summary="u1",
         agent_response_summary="a1",
-        system_feedback=feedback,
+        system_notices=[feedback] if feedback else [],
     )
 
 
@@ -2080,7 +2080,7 @@ class TestNoAssembledSectionCanSwallowADelimiter:
                 timestamp=datetime.now(timezone.utc),
                 outcome=TurnOutcome.CONVERSATION,
                 progress_made=True,
-                system_feedback=CONVERSATION_SHAPES["unterminated"],
+                system_notices=[CONVERSATION_SHAPES["unterminated"]],
             )
         ]
         prompt = get_prompt_for_case(
@@ -2629,8 +2629,11 @@ class TestTheCompactRuleStaysCompact:
         assert _fill(unit, 500) in prompt
         # Shortened, not emptied to the one-character minimum.
         assert max(_journal_entry_lengths(prompt)) > 1
-        # The notice keeps its cap.
-        assert _cap_notice(_fill(unit, 1000), _FALLBACK_FEEDBACK_MAX_TOKENS) in prompt
+        # The notice keeps its cap: a lone notice over it is head-cut, with
+        # the shared marker (#2568), and the block stays within the cap.
+        assert _fill(unit, 40) in prompt and NOTICE_CUT_MARKER in prompt
+        block = prompt[prompt.index("SYSTEM FEEDBACK FROM") : prompt.index("USER:")]
+        assert _fallback_tokens(block) <= _FALLBACK_FEEDBACK_MAX_TOKENS + 40
 
     def test_long_file_labels_shrink_with_the_context(self):
         """A file's label is capped at a filename's own limit and shrinks with
@@ -2706,11 +2709,7 @@ class TestTheCompactRuleStaysCompact:
         monkeypatch.setattr(
             token_estimation, "_get_tiktoken_encoder", lambda model="gpt-4": None
         )
-        _cap_notice.cache_clear()
-        try:
-            prompt = get_fallback_prompt_for_case(_dense_case(_CJK), _fill(_CJK, 4000))
-        finally:
-            _cap_notice.cache_clear()
+        prompt = get_fallback_prompt_for_case(_dense_case(_CJK), _fill(_CJK, 4000))
 
         size = len(real.encode(prompt + DEGRADED_NO_TOOLS_NOTICE))
         assert size < MIN_PROMPT_BUDGET, (size, MIN_PROMPT_BUDGET)

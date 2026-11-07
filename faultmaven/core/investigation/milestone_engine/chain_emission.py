@@ -435,5 +435,4 @@ def _nudge_ambiguous_orphan_chains(case: "Case", metadata: dict[str, Any]) -> No
         lines.append(
             f"- chain root '{orphan['statement'][:80]}' ~ hypothesis '{cands[:120]}'"
         )
-    current = metadata.get("system_feedback", "") or ""
-    metadata["system_feedback"] = "\n".join([current, *lines]).strip()
+    _add_system_feedback(metadata, "\n".join(lines))

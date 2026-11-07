@@ -293,7 +293,7 @@ class TestStripReachesNextPrompt:
 
         assert case.progress.symptom_verified is False, "the claim was stripped"
         # At the head of the record: the record truncates from the tail.
-        assert case.turn_history[-1].system_feedback.startswith(
+        assert "\n".join(case.turn_history[-1].system_notices).startswith(
             f"EVIDENCE VALIDATION: {_NOTICE}"
         )
 
@@ -322,5 +322,5 @@ class TestStripReachesNextPrompt:
 
         assert updated.progress.symptom_verified is True
         assert "EVIDENCE VALIDATION" not in (
-            updated.turn_history[-1].system_feedback or ""
+            "\n".join(updated.turn_history[-1].system_notices)
         )

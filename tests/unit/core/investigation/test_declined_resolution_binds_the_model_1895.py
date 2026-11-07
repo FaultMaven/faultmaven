@@ -184,7 +184,7 @@ async def _turn(engine, case, message: str, **kw) -> dict:
 
 
 def _feedback(result) -> str:
-    return result["case_updated"].turn_history[-1].system_feedback or ""
+    return "\n".join(result["case_updated"].turn_history[-1].system_notices)
 
 
 def _labels(result) -> list:

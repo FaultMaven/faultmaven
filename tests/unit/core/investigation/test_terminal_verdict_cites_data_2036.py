@@ -173,7 +173,7 @@ def test_a_true_verdict_with_no_qualifying_row_is_refused_and_held(cite, reason)
     }[cite]
     meta = _mark_terminal(case, hyp, cited)
     _assert_held(case, root)
-    feedback = meta["system_feedback"]
+    feedback = "\n".join(meta["system_notices"])
     assert f"Root {root.node_id} {_REFUSED}" in feedback
     assert "terminal_basis_evidence_ids" in feedback
     assert reason in feedback
@@ -194,7 +194,7 @@ def test_a_row_recorded_on_the_attach_turn_identifies():
     assert root.root_terminal is True
     assert root.metadata["root_terminal_evidence_ids"] == [basis]
     assert case.progress.cause_state == CauseState.IDENTIFIED
-    assert _REFUSED not in meta.get("system_feedback", "")
+    assert _REFUSED not in "\n".join(meta.get("system_notices") or [])
 
 
 def test_a_same_turn_new_index_row_identifies():
@@ -242,11 +242,11 @@ def test_a_true_re_sent_on_a_cited_root_is_absorbed_or_extends_it():
     _mark_terminal(case, hyp, [basis])
     case.current_turn = 6
     meta = _mark_terminal(case, hyp, [])  # nothing qualifying: absorbed
-    assert _REFUSED not in meta.get("system_feedback", "")
+    assert _REFUSED not in "\n".join(meta.get("system_notices") or [])
     assert root.metadata["root_terminal_evidence_ids"] == [basis]
     before = _row(case, 3, "the secret_id expired")
     meta = _mark_terminal(case, hyp, [before])  # named, still absorbed
-    feedback = meta["system_feedback"]
+    feedback = "\n".join(meta["system_notices"])
     assert _REFUSED not in feedback
     assert f"{before} (recorded at turn 3, before the root was posited)" in feedback
     assert "(the root's verdict stands on its cited rows)" in feedback
@@ -520,7 +520,7 @@ def test_no_consumer_reads_a_refuted_root_as_held():
     )
     metadata: dict = {}
     assert _withdraw_unlicensed_solution_offers(case, metadata=metadata) == 1
-    assert "no longer established" in metadata["system_feedback"]
+    assert "no longer established" in "\n".join(metadata["system_notices"])
     # response_application: M5 at proposal gives the generic recovery.
     from tests.unit.core.investigation.test_m5_recovery_1679 import _fix
 

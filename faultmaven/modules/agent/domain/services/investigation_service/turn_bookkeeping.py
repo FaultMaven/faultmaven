@@ -70,7 +70,7 @@ def _backfill_consumed_turn(
 
     **The record is a real one, not a placeholder.** ``turn_history`` is not
     only a counter: ``prompts/context_builder`` renders it as the prompt's
-    EARLIER TURNS block and reads ``[-1].system_feedback``, and
+    EARLIER TURNS block and reads ``[-1].system_notices``, and
     ``working_conclusion_generator`` / ``progress_monitor`` window it for
     momentum and loop detection. A minimal entry is therefore not "honest but
     small" — it actively destroys what those readers need:
@@ -101,7 +101,7 @@ def _backfill_consumed_turn(
       from the record when one exists and falls back to the message text only
       when it is MISSING, so an empty record does not leave the text alone — it
       REPLACES it with "User message → conversation".
-    * ``system_feedback`` is FORWARDED from the previous turn. It is read off
+    * ``system_notices`` are FORWARDED from the previous turn. They are read off
       ``turn_history[-1]`` and is meant for the next prompt; these routes build
       no prompt, so they have not consumed it. Dropping it would silently
       swallow a reasoning-validation error whenever a greeting landed between

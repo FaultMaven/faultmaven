@@ -54,7 +54,12 @@ from faultmaven.core.investigation.prompts.templates.treatment import (
     treatment_instructions,
 )
 from faultmaven.infrastructure.llm.prompt_cache import CACHE_BOUNDARY
-from faultmaven.modules.case.contracts import InvestigationActionType, ProblemStatus
+from faultmaven.modules.case.contracts import (
+    InvestigationActionType,
+    ProblemStatus,
+    TurnOutcome,
+    TurnProgress,
+)
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.hypothesis import (
     Hypothesis,
@@ -278,14 +283,27 @@ def test_no_reminder_outside_investigating(state):
     assert exclusions_reminder(case) == ""
 
 
-def test_the_feedback_cap_never_cuts_the_reminder(monkeypatch):
-    """The cap keeps the head of the feedback. Under it, the reminder was the
-    first thing lost, and a cut could leave its tag open against the user's
-    message. It is appended after the cap."""
-    monkeypatch.setattr(
-        context_assembly, "_cap_text_tokens", lambda text, *a, **k: text[:10]
-    )
-    prompt = _assembled(_case(InvestigationStage.TREATMENT, key_refuted=False))
+def test_the_feedback_budget_never_cuts_the_reminder(monkeypatch):
+    """The feedback budget drops whole notices from the tail (#2499). Were the
+    reminder appended to the feedback it would be the first thing lost, and
+    a notice ending mid-tag could leave its tag open against the user's
+    message. It is its own section, whole under a budget too small for the
+    previous turn's notices."""
+    monkeypatch.setattr(context_assembly, "_system_feedback_cap", lambda: 60)
+    case = _case(InvestigationStage.TREATMENT, key_refuted=False)
+    case.turn_history = [
+        TurnProgress(
+            turn_number=case.current_turn,
+            outcome=TurnOutcome.CONVERSATION,
+            progress_made=False,
+            system_notices=[
+                'Refused hypothesis <hyp statement="pool exhausted' + " no data. " * 20
+            ]
+            * 3,
+        )
+    ]
+    prompt = _assembled(case)
+    assert "more notices from turn" in prompt, "premise: the budget bit"
     block = prompt[prompt.find("<exclusions_on_record>") :]
     assert "Ruled out on record: nothing." in block
     assert "</exclusions_on_record>" in block

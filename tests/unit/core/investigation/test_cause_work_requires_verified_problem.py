@@ -175,7 +175,7 @@ async def test_hypotheses_on_an_unverified_problem_are_refused_not_queued():
 
     assert case.hypotheses == {}
     assert meta["hypotheses_generated"] == []
-    assert "CAUSE WORK NOT ACCEPTED" in meta["system_feedback"]
+    assert "CAUSE WORK NOT ACCEPTED" in "\n".join(meta["system_notices"])
     counter.labels.assert_called_once_with(kind="hypothesis")
     counter.labels.return_value.inc.assert_called_once_with(1)
 
@@ -213,7 +213,7 @@ async def test_chain_structure_on_an_unverified_problem_is_refused():
 
     assert [n.node_type for n in case.causal_nodes.values()] == [NodeType.PROBLEM]
     assert case.causal_edges == []
-    assert "CAUSE WORK NOT ACCEPTED" in meta["system_feedback"]
+    assert "CAUSE WORK NOT ACCEPTED" in "\n".join(meta["system_notices"])
     counter.labels.assert_called_once_with(kind="chain")
 
 
@@ -246,7 +246,7 @@ async def test_an_edge_between_standing_nodes_on_an_unverified_problem_is_refuse
     )
 
     assert case.causal_edges == []
-    assert "CAUSE WORK NOT ACCEPTED" in meta["system_feedback"]
+    assert "CAUSE WORK NOT ACCEPTED" in "\n".join(meta["system_notices"])
 
 
 async def test_a_deductive_validation_on_an_unverified_problem_is_refused():
@@ -267,7 +267,7 @@ async def test_a_deductive_validation_on_an_unverified_problem_is_refused():
     )
 
     assert "deductive_survivor_ids" not in meta
-    assert "CAUSE WORK NOT ACCEPTED" in meta["system_feedback"]
+    assert "CAUSE WORK NOT ACCEPTED" in "\n".join(meta["system_notices"])
 
 
 async def test_root_cause_claims_on_an_unverified_problem_are_refused():
@@ -291,7 +291,7 @@ async def test_root_cause_claims_on_an_unverified_problem_are_refused():
     assert case.progress.root_cause_method is None
     assert case.progress.root_cause_likelihood == 0.0
     assert "rcc_authored_this_turn" not in meta
-    assert "CAUSE WORK NOT ACCEPTED" in meta["system_feedback"]
+    assert "CAUSE WORK NOT ACCEPTED" in "\n".join(meta["system_notices"])
     counter.labels.assert_called_once_with(kind="conclusion")
 
 
@@ -303,7 +303,7 @@ async def test_a_verified_problem_accepts_hypotheses_active():
     (hyp,) = case.hypotheses.values()
     assert hyp.state == HypothesisState.ACTIVE
     assert meta["hypotheses_generated"] == [hyp.hypothesis_id]
-    assert "system_feedback" not in meta
+    assert not meta.get("system_notices")
 
 
 # ---------------------------------------------------------------------------
@@ -359,7 +359,7 @@ async def test_a_symptom_claim_reverted_at_2b_takes_the_turns_cause_work_with_it
     assert case.root_cause_conclusion is None
     assert case.progress.root_cause_method is None
     assert case.progress.root_cause_likelihood == 0.0
-    assert "CAUSE WORK NOT ACCEPTED" in meta["system_feedback"]
+    assert "CAUSE WORK NOT ACCEPTED" in "\n".join(meta["system_notices"])
 
 
 async def test_one_turn_verifies_forms_grounds_and_identifies():
@@ -403,7 +403,7 @@ async def test_one_turn_verifies_forms_grounds_and_identifies():
     (hyp,) = case.hypotheses.values()
     assert hyp.root_node_id is not None
     assert case.progress.cause_state == CauseState.IDENTIFIED
-    assert "NOT ACCEPTED" not in meta.get("system_feedback", "")
+    assert "NOT ACCEPTED" not in "\n".join(meta.get("system_notices") or [])
 
 
 # ---------------------------------------------------------------------------
@@ -423,7 +423,7 @@ async def test_a_zero_likelihood_is_not_a_cause_claim():
         )
 
     counter.labels.assert_not_called()
-    assert "system_feedback" not in meta
+    assert not meta.get("system_notices")
 
 
 def _standing(case: Case, statement: str = _CAUSE) -> str:
@@ -470,7 +470,7 @@ async def test_a_restated_standing_hypothesis_keeps_its_link_through_a_refusal()
     assert list(case.hypotheses) == [standing]
     (link,) = case.hypotheses[standing].evidence_links
     assert link.evidence_id == meta["evidence_added"][0]
-    assert "1 hypothesis(es)" in meta["system_feedback"]
+    assert "1 hypothesis(es)" in "\n".join(meta["system_notices"])
 
 
 async def test_a_re_root_on_an_unverified_problem_is_refused():
@@ -493,7 +493,7 @@ async def test_a_re_root_on_an_unverified_problem_is_refused():
     )
 
     assert case.hypotheses[standing].root_node_id is None
-    assert "hypothesis root refs" in meta["system_feedback"]
+    assert "hypothesis root refs" in "\n".join(meta["system_notices"])
 
 
 async def test_everything_refused_in_a_turn_is_reported_in_one_note():
@@ -514,6 +514,6 @@ async def test_everything_refused_in_a_turn_is_reported_in_one_note():
             ),
         )
 
-    assert meta["system_feedback"].count("CAUSE WORK NOT ACCEPTED") == 1
+    assert "\n".join(meta["system_notices"]).count("CAUSE WORK NOT ACCEPTED") == 1
     kinds = sorted(c.kwargs["kind"] for c in counter.labels.call_args_list)
     assert kinds == ["chain", "conclusion", "hypothesis"]

@@ -20,6 +20,9 @@ from faultmaven.core.investigation.lifecycle_metrics import (
 from faultmaven.core.investigation.turn_uploads import report_turn_uploads
 from faultmaven.core.investigation.verification_status import is_stalled
 from faultmaven.modules.case.contracts import (
+    MAX_SYSTEM_NOTICE_CHARS,
+    MAX_SYSTEM_NOTICES,
+    NOTICE_CUT_MARKER,
     Case,
     FixCause,
     HypothesisState,
@@ -35,6 +38,7 @@ from .progress import (
     summarize_for_turn_record,
 )
 from .stage_gates import (
+    _add_system_feedback,
     _normalise_id_ref,
 )
 from .transition_consent import card_reads_as_bare_reply
@@ -68,6 +72,16 @@ def _determine_turn_outcome(
     )
 
 
+def _bounded_notice(notice: str) -> str:
+    """``notice`` as the record stores it: whole, unless it is over
+    ``MAX_SYSTEM_NOTICE_CHARS``, then its head and the cut marker (#2499)."""
+    if len(notice) <= MAX_SYSTEM_NOTICE_CHARS:
+        return notice
+    return (
+        notice[: MAX_SYSTEM_NOTICE_CHARS - len(NOTICE_CUT_MARKER)] + NOTICE_CUT_MARKER
+    )
+
+
 def _create_turn_record(
     turn_number: int,
     milestones_completed: list[str],
@@ -79,7 +93,7 @@ def _create_turn_record(
     outcome: TurnOutcome,
     user_message: str,
     agent_response: str,
-    system_feedback: str | None = None,
+    system_notices: list[str] | None = None,
     momentum: InvestigationMomentum | None = None,
     blocked_reasons: list[str] | None = None,
     next_steps: list[str] | None = None,
@@ -91,16 +105,27 @@ def _create_turn_record(
     """Create turn progress record. ``cause_at_start`` is the ``FixCause``
     the turn's live apply took when it started (#2036 D2.3)."""
     # Multiple backstops (path-conditional emission rejection, milestone
-    # ordering, data-quality blockers, prompt-injection alerts, etc.)
-    # all append to ``metadata["system_feedback"]`` independently. A
-    # single turn can fire 4+ backstops (e.g., LLM emits root_cause
-    # milestone + causal_evidence + hypotheses_to_add + solutions_to_add
-    # in a pre_path_investigating state), pushing the accumulated text
-    # past ``TurnProgress.system_feedback``'s 1000-char Pydantic cap and
-    # crashing the turn save. Truncate at the chokepoint so every
-    # accumulation path is covered without per-call edits.
-    if system_feedback and len(system_feedback) > 1000:
-        system_feedback = system_feedback[:980] + "\n... [truncated]"
+    # ordering, data-quality blockers, prompt-injection alerts, etc.) each
+    # add a notice through ``_add_system_feedback``, and a single turn can
+    # fire 4+. Every notice is stored whole, in prompt order (#2499): the
+    # prompt drops whole notices from the TAIL when its budget is short, so
+    # a cap at a character count here would cut the newest notice
+    # mid-sentence. The two bounds that remain are on the author, at this
+    # one chokepoint: a notice over MAX_SYSTEM_NOTICE_CHARS cut at its end
+    # with a marker, and at most MAX_SYSTEM_NOTICES notices, the last of
+    # them saying how many more the turn wrote, so nothing goes in silence.
+    notices = [_bounded_notice(n) for n in system_notices or []]
+    if len(notices) > MAX_SYSTEM_NOTICES:
+        dropped = len(notices) - (MAX_SYSTEM_NOTICES - 1)
+        logger.warning(
+            "Turn %s wrote %d system notices; the record keeps the first %d",
+            turn_number,
+            len(notices),
+            MAX_SYSTEM_NOTICES - 1,
+        )
+        notices = notices[: MAX_SYSTEM_NOTICES - 1] + [
+            f"[{dropped} more notices from this turn dropped at the record]"
+        ]
     return TurnProgress(
         turn_number=turn_number,
         cause_at_start=cause_at_start,
@@ -115,7 +140,7 @@ def _create_turn_record(
         user_message_summary=summarize_for_turn_record(user_message, 200),
         agent_response_summary=summarize_for_turn_record(agent_response, 500),
         agent_response_synthesized=agent_response_synthesized,
-        system_feedback=system_feedback,
+        system_notices=notices,
         momentum=momentum,
         blocked_reasons=blocked_reasons or [],
         next_steps=next_steps or [],
@@ -389,12 +414,7 @@ def _perform_hypothesis_housekeeping(
             f"CRITICAL: {reason}. {retired_note}Broaden the differential — "
             "propose alternative hypotheses from different root-cause categories."
         )
-        current_feedback = metadata.get("system_feedback", "")
-        metadata["system_feedback"] = (
-            (current_feedback + "\n" + anchoring_msg)
-            if current_feedback
-            else anchoring_msg
-        )
+        _add_system_feedback(metadata, anchoring_msg)
 
 
 def _awaiting_recent_evidence(case: Case, within_turns: int) -> bool:

@@ -392,7 +392,7 @@ async def test_a_declaration_after_a_fix_not_seen_failing_is_ignored(caplog):
     assert (
         f"{_IGNORED}: the fix executed at turn 10 was not seen failing before "
         "turn 10, so turn 10's observations stay with it; the fix is dated to "
-        "turn 11." in meta["system_feedback"]
+        "turn 11." in "\n".join(meta["system_notices"])
     )
     assert "accepted_fix_reported_in=previous_message ignored at turn 11" in (
         caplog.text
@@ -421,7 +421,7 @@ async def test_a_declaration_moving_the_rows_that_failed_the_last_fix_is_ignored
 
     assert _stamps(case) == [(6, None), (11, None)]
     assert _judged(case) == ("failed", 10, (10, 10))
-    assert f"{_IGNORED}: {_not_failing_before(10)}" in meta["system_feedback"]
+    assert f"{_IGNORED}: {_not_failing_before(10)}" in "\n".join(meta["system_notices"])
     await _turn(eng, case, 12, _ev(_GONE, "checkout returns 200, 503 rate 0.0/s"))
     verdict = assess_resolution_readiness(case).verdict
     assert verdict == ResolutionReadiness.NEEDS_INFO
@@ -454,7 +454,7 @@ async def test_a_fix_failing_in_the_report_turn_bounds_the_declaration():
 
     assert _stamps(case) == [(6, None), (11, None)]
     assert _judged(case) == ("failed", 10, (7, 10))
-    assert f"{_IGNORED}: {_not_failing_before(10)}" in meta["system_feedback"]
+    assert f"{_IGNORED}: {_not_failing_before(10)}" in "\n".join(meta["system_notices"])
 
 
 async def test_a_declaration_moving_a_disconfirmation_is_ignored():
@@ -481,7 +481,7 @@ async def test_a_declaration_moving_a_disconfirmation_is_ignored():
     assert (
         f"{_IGNORED}: turn 10's observations decide whether the fix executed at "
         "turn 6 was disconfirmed, so they stay with it; the fix is dated to turn "
-        "11." in meta["system_feedback"]
+        "11." in "\n".join(meta["system_notices"])
     )
     await _turn(eng, case, 12, _ev(_GONE, "checkout returns 200, 503 rate 0.0/s"))
     verdict = assess_resolution_readiness(case).verdict
@@ -508,7 +508,7 @@ async def test_a_second_fix_reported_after_the_first_failed_is_dated_to_its_repo
     assert _stamps(case) == [(6, None), (10, 11)]
     assert _judged(case) == ("failed", 8, None)
     assert _windows(case)[-1] == (10, "succeeded")
-    assert _IGNORED not in (meta.get("system_feedback") or "")
+    assert _IGNORED not in "\n".join(meta.get("system_notices") or [])
     verdict = assess_resolution_readiness(case).verdict
     assert verdict == ResolutionReadiness.READY
 
@@ -528,7 +528,7 @@ async def test_a_declaration_on_the_first_turn_is_ignored_with_a_line(caplog):
 
     assert _stamps(case) == [(1, None)]
     reason = "there is no message before turn 1; the fix is dated to turn 1"
-    assert f"{_IGNORED}: {reason}." in meta["system_feedback"]
+    assert f"{_IGNORED}: {reason}." in "\n".join(meta["system_notices"])
     assert f"ignored at turn 1: {reason}" in caplog.text
 
 
@@ -540,9 +540,8 @@ async def test_a_declaration_without_an_acceptance_is_ignored_with_a_line():
     )
 
     assert _stamps(case) == []
-    assert (
-        f"{_IGNORED}: it is read only with solution_accepted."
-        in meta["system_feedback"]
+    assert f"{_IGNORED}: it is read only with solution_accepted." in "\n".join(
+        meta["system_notices"]
     )
 
 
@@ -557,8 +556,8 @@ async def test_a_refused_acceptance_takes_its_declaration_with_it():
     meta = await _turn(eng, case, 7, milestones=_accepted(_PREVIOUS))
 
     assert _stamps(case) == []
-    assert "solution_accepted NOT ACCEPTED" in meta["system_feedback"]
-    assert "accepted_fix_reported_in" not in meta["system_feedback"]
+    assert "solution_accepted NOT ACCEPTED" in "\n".join(meta["system_notices"])
+    assert "accepted_fix_reported_in" not in "\n".join(meta["system_notices"])
 
 
 async def test_a_declaration_on_a_revision_hold_turn_is_ignored_with_a_line():
@@ -574,7 +573,7 @@ async def test_a_declaration_on_a_revision_hold_turn_is_ignored_with_a_line():
 
     assert (
         f"{_IGNORED}: a fix carried through a revision hold is dated to its hold "
-        "turn, 6." in meta["system_feedback"]
+        "turn, 6." in "\n".join(meta["system_notices"])
     )
     assert _stamps(case) == [(6, None)]
 
@@ -626,7 +625,7 @@ async def test_an_unknown_report_value_costs_that_field_alone(value):
     assert (
         f"SYSTEM: accepted_fix_reported_in {value!r} was ignored: it is "
         "this_message or previous_message; the fix is dated to this turn."
-        in meta["system_feedback"]
+        in "\n".join(meta["system_notices"])
     )
 
 
