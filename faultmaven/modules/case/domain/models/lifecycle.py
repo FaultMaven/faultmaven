@@ -328,14 +328,15 @@ class InvestigationStrategy(str, Enum):
 #     one carrying the most established knowledge wins.
 #   - closed_rca_infeasible ABOVE mitigation_sufficient, because the engine's
 #     only path to it fires on a mitigation verified or declared stable
-#     (#2100; milestone_engine, "propose closure as stabilized rather than
-#     push RCA"), so both hold on essentially
+#     (#2100; milestone_engine, "propose closure ... rather than push RCA"),
+#     so both hold on essentially
 #     every such close and the more informative label must win. It holds only
 #     WITH a rationale. Distinct from insufficient evidence, which is contingent
 #     (someone with more access could get it): here a future reader should know
 #     not to re-open the case expecting to find a cause.
 #   - mitigation_sufficient: the one closure in the set that is not a failure of
-#     any kind, which is why it is not folded into a generic bucket.
+#     any kind, which is why it is not folded into a generic bucket. A bound
+#     relapse after the user's declaration drops it (#2100, F5).
 #   - closed_restatement_held immediately above the generic bucket, which it
 #     only ever displaces (#1195): routing it there would head the closure
 #     summary "insufficient evidence to establish the problem or its cause" over
@@ -447,8 +448,10 @@ _CLOSURE_REASON_MEANINGS: Mapping[ClosureReason, str] = closure_reason_table(
             "end-of-life system)."
         ),
         ClosureReason.MITIGATION_SUFFICIENT: (
-            "A verified mitigation relieved the symptom, and root-cause analysis "
-            "was not pursued further."
+            "A mitigation relieved the symptom, as a re-check bound to the problem "
+            "observed with no relapse seen after it, or as the user declared with "
+            "no relapse seen after the declaration; root-cause analysis was "
+            "deferred."
         ),
         ClosureReason.CLOSED_RESTATEMENT_HELD: (
             "The evidence supported a cause, but its statement never said more "
@@ -457,7 +460,9 @@ _CLOSURE_REASON_MEANINGS: Mapping[ClosureReason, str] = closure_reason_table(
         ClosureReason.CLOSED_INSUFFICIENT_EVIDENCE: (
             "No more specific reason held: the problem could not be verified, no "
             "cause could be grounded in the evidence, or a cause was identified "
-            "with no fix or verified mitigation on record."
+            "but no fix was confirmed to work, none was left documented to apply, "
+            "and no mitigation was verified or declared stable without a relapse "
+            "seen after it."
         ),
     }
 )

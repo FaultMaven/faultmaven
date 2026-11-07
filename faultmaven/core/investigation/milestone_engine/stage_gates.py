@@ -1993,15 +1993,17 @@ def _apply_stage_gate_side_effects(
     # ``progress.mitigation.completed_at_turn`` (set in the apply-loop where
     # the record is materialized).
     if "mitigation_verified" in completed_gates or declared:
-        # rca_infeasible advisory signal: propose closure as stabilized rather
-        # than push RCA on a problem the LLM has flagged as intractable.
-        # Reference: investigation-lifecycle-logic.md §2.4.
+        # rca_infeasible advisory signal: propose closure, stating the
+        # mitigation's record, rather than push RCA on a problem the LLM has
+        # flagged as intractable. Reference: investigation-lifecycle-logic.md §2.4.
         rca_infeasible = case.problem_verification and getattr(
             case.problem_verification, "rca_infeasible", False
         )
         from faultmaven.core.investigation.terminal_transitions import (
             ClosureReadiness,
             closure_verdict,
+            mitigation_closure_line,
+            mitigation_sentence,
         )
 
         # Don't clobber an in-flight disposition handshake, and never on a
@@ -2014,7 +2016,7 @@ def _apply_stage_gate_side_effects(
         # pending close on it (INV-37). This one stands down instead of
         # pivoting: the resolve offer that case warrants is the resolution
         # backstop's (INV-43, step 4c), or the model's own RESOLVED, which
-        # reads READY on the same bar. A "stabilized" close beside a confirmed
+        # reads READY on the same bar. A mitigation close beside a confirmed
         # elimination would be offered on a premise the case contradicts.
         if (
             rca_infeasible
@@ -2036,14 +2038,12 @@ def _apply_stage_gate_side_effects(
                 declared_rationale
                 or "root cause analysis is not feasible for this problem"
             )
-            lead = (
-                "You reported the mitigation stable."
-                if declared and "mitigation_verified" not in completed_gates
-                else "The mitigation is verified and stable."
+            # The lead is the mitigation's record (#2100, C1), never a verdict
+            # the record does not hold.
+            lead = mitigation_sentence(
+                mitigation_closure_line(case) or "a mitigation was applied"
             )
-            closure_message = (
-                f"{lead} Since {rationale}, shall we close this case as stabilized?"
-            )
+            closure_message = f"{lead} Since {rationale}, shall we close this case?"
             # Its decline binds nothing (the record's rules,
             # ``core/investigation/offers.py``), so the open is refused only
             # under a standing false-alarm decline, which an infeasible-RCA

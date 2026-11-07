@@ -334,7 +334,9 @@ class TestTheExemptOpeners:
         offer = case.offer_record.open
         assert (offer.kind, offer.basis) == ("close", "rca_infeasible")
         # Its rca_infeasible_closure_message, rendered below the reply.
-        assert offer.summary.startswith("The mitigation is verified and stable.")
+        assert offer.summary.startswith(
+            "The problem was observed relieved after the mitigation (turn 1)."
+        )
         assert offer.summary in result["agent_response"]
         assert _compliance(caplog).transition_superseded_by_engine is True
 

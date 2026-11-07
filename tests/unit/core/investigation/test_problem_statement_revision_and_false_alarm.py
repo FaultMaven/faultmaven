@@ -1137,8 +1137,8 @@ class TestStagingAcrossTheHandshake:
         assert "hypothesis root refs" in "\n".join(meta["system_notices"])
 
     async def test_a_yes_never_executes_an_rca_close_the_replay_made(self):
-        """The stage-gate side effect proposes 'close as stabilized' when a
-        mitigation verifies on an rca_infeasible problem. Replayed, it must
+        """The stage-gate side effect proposes the close when a mitigation
+        verifies on an rca_infeasible problem. Replayed, it must
         still arrive as an offer with its card, never executed by the "yes"
         that confirmed the statement (#1871 review). The verdict is derived
         (#2100): the hold turn's relief names the revision's cited row."""
@@ -1187,7 +1187,10 @@ class TestStagingAcrossTheHandshake:
         }
         assert keys == {updated.offer_record.open.proposal_id}
         # Its reason is copied out of the replay (#2537 keeps the turn).
-        assert "close this case as stabilized" in result["agent_response"]
+        assert (
+            "The problem was observed relieved after the mitigation (turn 4). "
+            "Since black-box vendor API, shall we close this case?"
+        ) in result["agent_response"]
         assert updated.progress.mitigation.verified is True
 
     async def test_a_decline_note_survives_the_live_turns_own_feedback(self):

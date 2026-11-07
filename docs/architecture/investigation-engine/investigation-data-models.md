@@ -100,8 +100,11 @@ class CaseState(str, Enum):
     closure_reason = a ClosureReason (modules/case/domain/models/lifecycle.py),
     whose values and their meanings the API contract publishes.
     Engine-derived via derive_closure_reason(). Never authored by the LLM.
-    Note: a case stabilized by a verified mitigation closes as "mitigation_sufficient";
-    the documented mitigation is preserved on the closed case.
+    Note: a mitigation verified by a bound re-check and still holding, or
+    declared stable by the user with no bound relapse after the declaration,
+    closes as "mitigation_sufficient"; the documented mitigation is preserved on
+    the closed case, and the closure texts state its record
+    (mitigation_closure_line, #2100).
     """
 ```
 
@@ -150,7 +153,7 @@ class InvestigationProgress(BaseModel):
             "`mitigation_accepted` / `mitigation_verified` in the schema) plus "
             "the workaround ProposedAction. Replaces the mitigation_* booleans "
             "and path_selection.mitigation_completed_at_turn. Its existence marks "
-            "the case 'stabilized'."
+            "an accepted mitigation, not a relieved symptom."
         ),
     )
 
@@ -876,7 +879,7 @@ Root cause analysis is sometimes infeasible — uncontrollable external dependen
 
 `rca_infeasible` is a **boolean + rationale** rather than a taxonomy enum (e.g., `UNCONTROLLABLE_EXTERNAL`, `DEPRECATED_LEGACY`). This avoids a growing taxonomy that requires prompt/test updates for each new category. The rationale string captures the "why" for context.
 
-**What it does:** After a mitigation is verified, if `rca_infeasible=True` and the cause remains uncertain, the agent proposes closure instead of pushing further RCA. The agent says: *"The mitigation is verified. Since [rationale], shall we close this case?"*
+**What it does:** After a mitigation is verified or declared stable, if `rca_infeasible=True` and the cause remains uncertain, the agent proposes closure instead of pushing further RCA, leading with the mitigation's record (#2100): *"The problem was observed relieved after the mitigation (turn 7). Since [rationale], shall we close this case?"*
 
 **What it does NOT do:**
 
