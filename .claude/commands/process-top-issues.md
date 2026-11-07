@@ -356,8 +356,8 @@ To **pull** an item:
   pile and a priority.
 - **Search open and closed issues first.** If an open issue already covers it, add the evidence there under
   `## Evidence`. If a closed issue matches, cite it in the new issue. Findings that share one root go in one issue.
-- **A finding that shares an open root issue's root,** and that no open issue other than the root issue covers, is
-  filed as its own issue, in `pile:blocked` with `**Blocked on:** an owner ruling on its place in #<root>`, and
+- **A filed finding that shares an open root issue's root,** and that no open issue other than the root issue covers,
+  is filed as its own issue, in `pile:blocked` with `**Blocked on:** an owner ruling on its place in #<root>`, and
   appended to the root issue's `**Blocks:**` line (a body edit), with an `## Evidence` comment there naming it; the
   next ruling on the root issue places it.
 - **Fix the item's own root, a symptom of it, or a part of it in its PR;** file it only when a ruling waived it.
