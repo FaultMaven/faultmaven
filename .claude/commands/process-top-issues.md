@@ -10,7 +10,7 @@ comment without reading the diff, so every PR you hand over must have been throu
 
 This file is self-contained. Memory notes point here and never restate it; where they disagree, this file wins.
 **Changing this file:** you propose the edit as a PR, it goes through step 4 at `xhigh` with a design critique, and the
-owner merges it; an edit replaces or tightens an existing rule where it can, and the file stays under 380 lines.
+owner merges it; an edit replaces or tightens an existing rule where it can.
 
 **Roles.** The owner rules on questions, approves rounds, and merges. You (the owning agent) propose, plan, verify
 and report. Lanes (subagents) each implement one plan you wrote, in their own worktree; at most three run at once.
@@ -116,8 +116,22 @@ Find the newest proposal or result on the Queue, the issue this prints:
      its URL, kind and count. Raise secret-scanning alerts with the owner in session, never in writing. Report the
      non-secret `unknown`/`unavailable` lines in the proposal. Dismiss nothing without the owner's ruling on the issue.
 2. **Pick.**
-   - From `pile:ready` only. **Design flaws first:** for each item on a seam with earlier fixes, ask whether its root
-     keeps producing the same type of defect, naming the chain; confirmed ones come in the order the owner last
+   - **The design-flaw pass** gives each seam with earlier fixes a row listing the defects fixed and open on it. A row
+     is a **design flaw** only when it also names the **mechanism** (the code fact that produced those defects, at
+     `path:line`) and the **structural fix** (the one change that makes that class impossible, and the open issues it
+     absorbs). Any other row's items rank by priority like any other item; the freeze, not the row, stops per-defect
+     work. Each row states the seam's **count** now, at the last proposal and two proposals ago, and why it stood when
+     it did ("no lane"; "closed by PR #p, merge-ready"). The count is the open issues on its root issue's
+     `**Absorbs:**` line, or on the row's own list until one exists.
+   - **A seam freezes** when its count is not below its count two proposals ago, whatever the row says held it. File
+     its **root issue**, if none exists: an `**Absorbs:** #a, #b …` line (the defects fixed and still open on it), the
+     mechanism and the structural fix, in `pile:blocked` on an owner ruling on the structural fix, at the highest
+     priority among the issues it absorbs, never `tracking`. Move the seam's open items that no open PR carries to
+     `pile:blocked` with `**Blocked on:** #<root>`. An absorbed issue is not a duplicate: it stays open until the
+     structural fix delivers it. A frozen seam gets no new plan; an open PR on it finishes by its row in *Where an
+     item stands*.
+   - From `pile:ready` only. **Design flaws first:** a confirmed one's item is its structural fix, once ruled, not the
+     next per-defect fix that the structural fix would absorb; confirmed ones come in the order the owner last
      approved. Then `P1`, `P2`, `P3`, oldest first within each. One slot stays reserved for the oldest `P2` waiting
      over 30 days, even when design flaws could fill it. Skip an item that an open PR from an earlier round
      still carries (its PR, *Where an item stands*), and any item on that PR's seam until it merges.
@@ -131,7 +145,7 @@ Find the newest proposal or result on the Queue, the issue this prints:
 
    ```
    ## Round <N> — proposal
-   ### Design-flaw pass
+   ### Design-flaw pass (one row per seam with earlier fixes: mechanism · structural fix · absorbs · open now / last / two ago)
    ### Building
    | # | P | root (one line) | done when (observable behaviour) | size (product / test lines, est.) |
    ### Next (same columns; each starts when a lane's PR is merge-ready or pulled, or its item closes)
@@ -255,6 +269,10 @@ free slot). Each starts at its row in *Where an item stands*; one whose plan (ne
      review and two fix deltas, plus the text-or-test one above; more fix rounds pull the item to the owner (a
      rebuild, row 13, is a new plan and PR). A re-entry, a refresh, a conflict resolution or a change the owner asks
      for is a delta of only what is new, outside that cap. A whole-PR review is never repeated, nor run as a delta.
+   - **No cap narrows a root fix.** On a seam with a root issue, a finding that shares the root is `fixed` in the
+     structural work, never declined or filed to stay under a cap. A structural fix's budget is the one its ruling
+     sets, and reaching the size bound or the fix-round cap pulls the item to the owner with the question; it never
+     narrows the fix.
 6. **Merge-ready.** Every required context must be `SUCCESS` or `SKIPPED` on the head:
 
    ```bash
@@ -330,7 +348,11 @@ To **pull** an item:
   what would make it reachable, if known. File it as you find it, with `Found while working on #<n>`, the evidence, a
   pile and a priority.
 - **Search open and closed issues first.** If an open issue already covers it, add the evidence there under
-  `## Evidence`. If a closed issue matches, cite it in the new issue. Findings that share one root go in one issue.
+  `## Evidence`. If a closed issue matches, cite it in the new issue. Findings that share one root go in one issue; a
+  latent one on a seam with a root issue goes there under `## Evidence` (in review, its `filed` landing), unless
+  *State* makes it `P1`. A latent `P1` on a frozen seam is filed, so the count shows it, added to the root issue's
+  `**Absorbs:**` line and blocked on it like the seam's other items; its `P1` raises the root issue's priority, and
+  the ruling that places the root issue states its priority.
 - **Fix the item's own root, a symptom of it, or a part of it in its PR;** file it only when a ruling waived it.
 
 ## 5. Report on the Queue
