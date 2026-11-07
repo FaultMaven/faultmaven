@@ -321,9 +321,18 @@ def _justification_errors(
     unjustified = [m for m in completed if m not in justifications]
     if unjustified:
         offending.update(unjustified)
+        # The disposition is no boolean (#2100): "True" would be an off-enum
+        # value, dropped. One fixed clause, whatever the count.
+        again = (
+            "set it again (mitigation_disposition to declared_stable or "
+            "proceed_unmitigated, justified under "
+            "milestone_justifications.mitigation_disposition; any other True)"
+            if "mitigation_disposition" in unjustified
+            else "set it True again"
+        )
         errors.append(
             f"Milestones {unjustified} completed without justification. To "
-            "claim one, set it True again and set "
+            f"claim one, {again} and set "
             "evidence_trail.milestone_justifications.<milestone> to the "
             "evidence that shows it, citing evidence IDs; null or blank is "
             "no justification."

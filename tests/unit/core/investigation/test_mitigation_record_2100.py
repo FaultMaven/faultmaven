@@ -15,6 +15,7 @@ from faultmaven.core.investigation.cause_assurance import _dated_fix_turns, fix_
 from faultmaven.core.investigation.milestone_engine.milestone_inference import (
     validate_reasoning_first,
 )
+from faultmaven.core.investigation.offers import answer_offer, open_terminal_offer
 from faultmaven.core.investigation.prompts.context_builder.fix_verification_block import (
     build_fix_verification_block,
 )
@@ -29,6 +30,8 @@ from faultmaven.core.investigation.schemas import (
 )
 from faultmaven.core.investigation.terminal_transitions import derive_closure_reason
 from faultmaven.modules.case.contracts import (
+    AnswerKind,
+    AnswerVia,
     ClosureReason,
     EvidenceCategory,
     InvestigationActionType,
@@ -137,6 +140,13 @@ def _revision_pending(case):
     case.progress.problem_status = ProblemStatus.REVISION_PENDING
 
 
+_DECLARE = "; or, if the user says it holds, set mitigation_disposition declared_stable"
+_SETTLE = (
+    "; settle it with mitigation_disposition: declared_stable if the user says it "
+    "holds, proceed_unmitigated to go on without one"
+)
+
+
 @pytest.mark.parametrize(
     "shape, said",
     [
@@ -145,7 +155,7 @@ def _revision_pending(case):
         ("relapse", "(it was seen present at turn 8)"),
         ("unverified", "verify the problem first, citing symptom_verification"),
         ("revision_pending", "the revised problem statement awaits the user's"),
-        ("legacy", "after the mitigation: record the post-mitigation"),
+        ("legacy", "execution is not dated, so no re-check can verify it" + _SETTLE),
     ],
 )
 async def test_mitigation_verified_without_a_bound_relief_is_refused(shape, said):
@@ -181,7 +191,11 @@ async def test_mitigation_verified_without_a_bound_relief_is_refused(shape, said
     feedback = _feedback(meta)
     assert said in feedback
     assert feedback.count("mitigation_verified was not recorded") == 1
-    assert "set mitigation_disposition declared_stable" in feedback
+    if shape == "legacy":
+        # No re-check can count: the line asks for none (F8).
+        assert "rechecks" not in feedback and _DECLARE not in feedback
+    else:
+        assert _DECLARE + "." in feedback
     if shape in ("unbound", "before_the_attempt", "relapse"):
         assert f"rechecks naming one of {shown}" in feedback
 
@@ -282,6 +296,38 @@ async def test_a_disposition_needs_an_accepted_mitigation():
     assert "no mitigation is accepted" in _feedback(meta)
 
 
+async def test_a_disposition_beside_a_refused_accept_shares_its_notice():
+    """With no workaround pending the accept is refused, and the disposition
+    sent with it is named in that one notice, never refused again (F7)."""
+    eng, (case, _shown) = _engine(), _pending()
+    case.proposed_actions.clear()
+    meta = await _turn(
+        eng,
+        case,
+        6,
+        mitigation_accepted=True,
+        mitigation_disposition="declared_stable",
+    )
+    notices = [n for n in meta["system_notices"] if "mitigation" in n]
+    assert len(notices) == 1
+    assert "'mitigation_accepted' was not registered" in notices[0]
+    assert "'mitigation_disposition'" in notices[0]
+    assert "was not recorded" not in _feedback(meta)
+    assert case.progress.mitigation is None
+
+
+async def test_a_refusal_asks_for_no_disposition_the_record_carries():
+    """A refused verify on a mitigation already declared stable does not ask
+    for the declaration again (F6)."""
+    eng, case, _shown = await _accepted()
+    await _turn(eng, case, 7, mitigation_disposition="declared_stable")
+    meta = await _turn(eng, case, 8, mitigation_verified=True)
+
+    assert case.progress.mitigation.verified is False
+    assert "mitigation_verified was not recorded" in _feedback(meta)
+    assert "set mitigation_disposition" not in _feedback(meta)
+
+
 async def test_one_response_judges_the_verdict_before_the_disposition():
     """A verdict derived this turn refuses the proceed; a refused verify beside
     a disposition that registered does not ask for the declaration again
@@ -313,6 +359,46 @@ async def test_one_response_judges_the_verdict_before_the_disposition():
     assert "set mitigation_disposition declared_stable" not in _feedback(meta)
 
 
+def _decline_the_open_close(case) -> None:
+    case.offer_record = answer_offer(
+        case,
+        proposal_id=open_terminal_offer(case).proposal_id,
+        answer=AnswerKind.DECLINED,
+        via=AnswerVia.CLICK,
+        actor_id=case.effective_driver_id,
+    )
+
+
+@pytest.mark.parametrize("first", ["verified", "declared"])
+async def test_the_stabilized_close_is_offered_once_whichever_settles_first(first):
+    """3B fires on the turn that settles the mitigation, never on the second
+    fact (F3). Declined in between, so only that rule can keep it shut. A
+    declaration beside a verdict is still recorded, and adds no
+    ``mitigation_disposed``."""
+    eng, case, shown = await _accepted()
+    case.problem_verification.rca_infeasible = True
+    case.problem_verification.rca_infeasible_rationale = "the vendor API is opaque"
+    verify = dict(mitigation_verified=True)
+    declare = dict(mitigation_disposition="declared_stable")
+    rows = {"verified": [_relief(case, 7, shown)], "declared": []}
+    await _turn(
+        eng, case, 7, *rows[first], **(verify if first == "verified" else declare)
+    )
+    assert case.offer_record.open is not None, "premise: the first settles it"
+    _decline_the_open_close(case)
+
+    later = [_relief(case, 9, shown)] if first == "declared" else []
+    meta = await _turn(
+        eng, case, 9, *later, **(declare if first == "verified" else verify)
+    )
+
+    record = case.progress.mitigation
+    assert (record.verified, record.disposition) == (True, "declared_stable")
+    assert case.offer_record.open is None
+    assert "mitigation_disposed" not in meta["milestones_completed"]
+    assert "rca_infeasible_closure_message" not in meta
+
+
 async def test_a_declared_mitigation_offers_the_close_in_its_own_words():
     """The 3B propose-close fires on a declaration and says what the record
     holds: the user's report, not a verification."""
@@ -340,6 +426,32 @@ def _response(value: str, justification: str | None):
             )
         ),
     )
+
+
+@pytest.mark.parametrize(
+    "value, said",
+    [
+        ("declared_stable", "mitigation_disposition to declared_stable or "),
+        (None, "set it True again"),
+    ],
+)
+def test_the_unjustified_line_names_the_dispositions_values(value, said):
+    """One notice (#2499), and never "True" for the disposition (F2)."""
+    case, _shown = _pending()
+    case.progress.mitigation = MitigationRecord(accepted=True)
+    milestones = (
+        MilestoneUpdates(mitigation_disposition=value)
+        if value
+        else MilestoneUpdates(mitigation_verified=True)
+    )
+    response = _response("declared_stable", None)
+    response.state_updates.milestones = milestones
+    _valid, errors, _found = validate_reasoning_first(response, case)
+    (line,) = [e for e in errors if "completed without justification" in e]
+    assert said in line
+    if value:
+        assert "set it True again" not in line
+        assert "milestone_justifications.mitigation_disposition" in line
 
 
 @pytest.mark.parametrize(
@@ -388,6 +500,28 @@ async def test_a_disposition_held_on_a_revision_is_replayed_by_its_value():
 # ---------------------------------------------------------------------------
 # What the model is shown
 # ---------------------------------------------------------------------------
+
+
+async def test_post_mitigation_feedback_ends_when_the_mitigation_settles():
+    """Settled (here declared stable at 7), the mitigation anchors no more
+    lines: a later unbound symptom row is the diagnosis's own (F1)."""
+    eng, case, _shown = await _accepted()
+    await _turn(eng, case, 7, mitigation_disposition="declared_stable")
+    meta = await _turn(eng, case, 12, _relief(case, 12, None, category=_PRESENT))
+    assert "Post-mitigation" not in _feedback(meta)
+
+
+async def test_a_symptom_row_in_the_attempts_own_turn_is_not_post_mitigation():
+    """It may quote pre-mitigation lines, so the relief read skips it, and the
+    feedback does too; an absence row in that turn is post-attempt (F4)."""
+    eng, (case, _shown) = _engine(), _pending()
+    present = _relief(case, 6, None, category=_PRESENT)
+    meta = await _turn(eng, case, 6, present, mitigation_accepted=True)
+    assert "Post-mitigation" not in _feedback(meta)
+
+    eng, (case, _shown) = _engine(), _pending()
+    meta = await _turn(eng, case, 6, _relief(case, 6, None), mitigation_accepted=True)
+    assert "Post-mitigation row(s)" in _feedback(meta)
 
 
 async def test_an_unbound_post_mitigation_row_is_told_what_it_could_name():

@@ -44,6 +44,7 @@ from typing import (
     List,
     Literal,
     Optional,
+    get_args,
 )
 
 from pydantic import (
@@ -68,12 +69,15 @@ from faultmaven.core.investigation.confidence_repair import (
 )
 from faultmaven.modules.agent.domain.models.agentic import QueryIntent  # noqa: F401
 from faultmaven.modules.case.contracts import (
+    DECLARED_STABLE,
+    PROCEED_UNMITIGATED,
     EvidenceCategory,
     EvidenceSourceType,
     EvidenceStance,
     HypothesisCategory,
     HypothesisState,
     InvestigationStage,
+    MitigationDisposition,
     NeedObtainability,
     NeedPriority,
     NeedPurpose,
@@ -622,9 +626,7 @@ class MilestoneUpdates(NullTolerantModel):
     # What a mitigation carries that is not an observation (#2100): the user's
     # own account that it holds, or the stall's choice to go on without one.
     # An enum, not a boolean; justified like a milestone.
-    mitigation_disposition: Optional[
-        Literal["declared_stable", "proceed_unmitigated"]
-    ] = Field(
+    mitigation_disposition: Optional[MitigationDisposition] = Field(
         None,
         description=(
             "declared_stable when the user says the mitigation holds; "
@@ -689,7 +691,7 @@ class MilestoneUpdates(NullTolerantModel):
     @field_validator("mitigation_disposition", mode="before")
     @classmethod
     def _drop_unknown_disposition(cls, v: Any, info: ValidationInfo) -> Any:
-        if v is None or v in ("declared_stable", "proceed_unmitigated"):
+        if v is None or v in get_args(MitigationDisposition):
             return v
         report(
             info.context,
@@ -698,7 +700,9 @@ class MilestoneUpdates(NullTolerantModel):
                 field=info.field_name or "?",
                 action=ConfidenceAction.DROPPED,
                 raw=v,
-                detail="is not declared_stable or proceed_unmitigated; field dropped",
+                detail=(
+                    f"is not {DECLARED_STABLE} or {PROCEED_UNMITIGATED}; field dropped"
+                ),
             ),
         )
         return None

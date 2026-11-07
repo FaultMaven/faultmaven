@@ -920,8 +920,10 @@ def _flag_unbound_post_fix_rows(case: Case, metadata: dict[str, Any] | None) -> 
     notice (``_flag_absence_inside_a_failed_fix_window``) says what to do.
     A problem observation (a symptom_absence row, or a symptom_evidence row
     not cited as having shown the problem) at or after the mitigation's
-    attempt is post-attempt as well, whether or not a fix is dated, and its
-    line says "Post-mitigation" when only the mitigation makes it one (#2100).
+    attempt (a symptom_evidence row after its turn, as ``interception_relief``
+    reads it) is post-attempt as well while the mitigation is unsettled,
+    whether or not a fix is dated, and its line says "Post-mitigation" when
+    only the mitigation makes it one (#2100).
     Only on a verified problem: before it, nothing can bind. Returns whether
     the line was added."""
     from faultmaven.core.investigation.cause_assurance import (
@@ -958,7 +960,7 @@ def _flag_unbound_post_fix_rows(case: Case, metadata: dict[str, Any] | None) -> 
             and row.evidence_id not in subjects.verifying
         )
 
-    mitigated = mitigation_attempt_turn(case)
+    mitigated = mitigation_attempt_turn(case) if _mitigation_unsettled(case) else None
     by_mitigation: set = set()
 
     def after_the_fix(row) -> bool:
@@ -971,6 +973,7 @@ def _flag_unbound_post_fix_rows(case: Case, metadata: dict[str, Any] | None) -> 
             return False
         problem = row.category == EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE or (
             row.category == EvidenceCategory.SYMPTOM_EVIDENCE
+            and turn > mitigated
             and row.evidence_id not in subjects.verifying
         )
         if problem:
@@ -1038,6 +1041,19 @@ def _flag_unbound_post_fix_rows(case: Case, metadata: dict[str, Any] | None) -> 
         + cause_text,
     )
     return True
+
+
+def _mitigation_settled(case: Case) -> bool:
+    """Whether the mitigation is settled: verified, or carrying a disposition
+    (#2100). What leaves MITIGATION, and what 3B fires on, once."""
+    record = case.progress.mitigation
+    return record is not None and (record.verified or record.disposition is not None)
+
+
+def _mitigation_unsettled(case: Case) -> bool:
+    """Accepted and not yet settled: the MITIGATION stage's record."""
+    record = case.progress.mitigation
+    return record is not None and record.accepted and not _mitigation_settled(case)
 
 
 def _normalise_id_ref(ref: Any) -> Any:
@@ -2126,6 +2142,8 @@ def _apply_stage_gate_signals(
     stab_accepted_signal = bool(getattr(m, "mitigation_accepted", False))
     stab_verified_signal = bool(getattr(m, "mitigation_verified", False))
     disposition = getattr(m, "mitigation_disposition", None)
+    # 3B fires on the turn that settles the mitigation, once (#2100).
+    settled_before = _mitigation_settled(case)
 
     if stab_accepted_signal and p.mitigation is not None and p.mitigation.accepted:
         # Already registered. Single-mitigation model (INV-24): a SECOND
@@ -2206,7 +2224,7 @@ def _apply_stage_gate_signals(
         )
 
     # --- mitigation_verified: derived, never the model's label (#2100) --
-    refusal: Optional[str] = None
+    refusal: Optional[tuple[str, str]] = None
     settled: set[str] = set()
     if stab_verified_signal:
         # Ordering guard: verification presupposes acceptance. If accept
@@ -2257,32 +2275,35 @@ def _apply_stage_gate_signals(
     if disposition is not None and _register_disposition(case, disposition, metadata):
         settled.add("mitigation_disposed")
     if refusal is not None:
-        if "mitigation_disposed" not in settled:
-            refusal += (
-                "; or, if the user says it holds, set mitigation_disposition "
-                "declared_stable"
-            )
-        _add_system_feedback(metadata, refusal + ".")
+        line, settle = refusal
+        # The way to settle it, only while the record carries no disposition.
+        _add_system_feedback(
+            metadata, line + (settle if p.mitigation.disposition is None else "") + "."
+        )
     settled |= {"mitigation_verified"} & set(metadata["milestones_completed"])
     if settled:
+        # 3B only on the turn that settles it: never a second close offer.
         _apply_stage_gate_side_effects(
             case,
-            settled,
+            set() if settled_before else settled,
             user_message,
             metadata,
-            declared="mitigation_disposed" in settled
+            declared=not settled_before
+            and "mitigation_disposed" in settled
             and p.mitigation.disposition == DECLARED_STABLE,
         )
 
 
-def _mitigation_verify_refusal(case: Case) -> Optional[str]:
+def _mitigation_verify_refusal(case: Case) -> Optional[tuple[str, str]]:
     """Why ``mitigation_verified`` does not register, or None (#2100, D3.1):
     the verdict is derived, from a problem-bound re-check dated at or after
     the mitigation's attempt and not followed by a bound persistence
-    (``cause_assurance.mitigation_holds``). Without a verified problem nothing
-    binds, so the line asks for the verification first (ruling (iii)); under
-    a pending revision, for its confirmation. The caller appends the
-    declaration clause when no disposition registered this turn."""
+    (``cause_assurance.mitigation_holds``). An attempt with no turn can never
+    be re-checked, so its line names the disposition alone. Without a
+    verified problem nothing binds, so the line asks for the verification
+    first (ruling (iii)); under a pending revision, for its confirmation.
+    Returns ``(line, how to settle it)``: the caller appends the second while
+    the record carries no disposition."""
     from faultmaven.core.investigation.cause_assurance import (
         mitigation_attempt_turn,
         mitigation_holds,
@@ -2291,35 +2312,48 @@ def _mitigation_verify_refusal(case: Case) -> Optional[str]:
     )
 
     head = "SYSTEM: mitigation_verified was not recorded — "
+    declare = (
+        "; or, if the user says it holds, set mitigation_disposition declared_stable"
+    )
+    turn = mitigation_attempt_turn(case)
+    if turn is None:
+        return (
+            head + "the mitigation's execution is not dated, so no re-check can "
+            "verify it",
+            "; settle it with mitigation_disposition: declared_stable if the "
+            "user says it holds, proceed_unmitigated to go on without one",
+        )
     status = case.progress.problem_status
     if status == ProblemStatus.REVISION_PENDING:
         return (
             head + "the revised problem statement awaits the user's "
-            "confirmation: re-check the problem once it is confirmed"
+            "confirmation: re-check the problem once it is confirmed",
+            declare,
         )
     if status != ProblemStatus.VERIFIED:
         return (
             head + "the problem is not verified: verify the problem first, "
-            "citing symptom_verification_evidence_ids, then re-check it"
+            "citing symptom_verification_evidence_ids, then re-check it",
+            declare,
         )
     subjects = subject_index(case)
     relief, present = mitigation_relief(case, subjects)
     if relief is not None and mitigation_holds(relief, present):
         return None
-    turn = mitigation_attempt_turn(case)
     problem, _cause = subjects.bindable_rows()
     ids = ", ".join(e.evidence_id for e in problem[:5])
     seen = f" (it was seen present at turn {present})" if present is not None else ""
     return (
         head + "no re-check bound to the problem shows it relieved after the "
-        f"mitigation{f' (turn {turn})' if turn is not None else ''}{seen}: "
-        "record the post-mitigation symptom_absence_evidence with rechecks "
+        f"mitigation (turn {turn}){seen}: record the post-mitigation "
+        "symptom_absence_evidence with rechecks "
         + (
             f"naming one of {ids}"
             if ids
             else "naming a row that showed the problem (none is on record: "
             "cite them in symptom_verification_evidence_ids)"
-        )
+        ),
+        declare,
     )
 
 
@@ -2329,7 +2363,10 @@ def _register_disposition(case: Case, value: str, metadata: dict[str, Any]) -> b
     with one line, without an accepted mitigation, against a different one
     already recorded, and ``proceed_unmitigated`` against a verified one; a
     restatement is absorbed. ``declared_stable`` also stamps
-    ``completed_at_turn``: it says the symptom is relieved."""
+    ``completed_at_turn``: it says the symptom is relieved. On a verified
+    record it is recorded beside the verdict, silently: it settles nothing,
+    so it adds no ``mitigation_disposed``. Returns whether it settled the
+    mitigation."""
     from .statement_revision import emission_turn
 
     record = case.progress.mitigation
@@ -2349,11 +2386,13 @@ def _register_disposition(case: Case, value: str, metadata: dict[str, Any]) -> b
         )
         return False
     turn = emission_turn(case, metadata)
+    settles = not record.verified
     record.disposition, record.disposition_at_turn = value, turn
     if value == DECLARED_STABLE and record.completed_at_turn is None:
         record.completed_at_turn = turn
-    metadata["milestones_completed"].append("mitigation_disposed")
-    return True
+    if settles:
+        metadata["milestones_completed"].append("mitigation_disposed")
+    return settles
 
 
 #: The two closes a user can decline from the engine and still want later, by

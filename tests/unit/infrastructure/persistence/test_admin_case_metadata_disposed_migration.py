@@ -19,7 +19,7 @@ import typing
 
 import pytest
 
-from faultmaven.modules.case.domain.models.progress import MitigationDisposition
+from faultmaven.modules.case.contracts import MitigationDisposition
 from tests.unit.infrastructure.persistence.test_admin_case_metadata_driver_migration import (
     _REV_014,
     _SIGNATURE,
