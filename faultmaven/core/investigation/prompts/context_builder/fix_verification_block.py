@@ -16,8 +16,10 @@ hold (#2427, turn 11). It shows, one line each:
 - the outstanding symptom-verification needs, the one that holds the resolve
   offer (``pending_symptom_check``) first and marked;
 - in MITIGATION, the mitigation's attempt, what the problem did after it
-  (``mitigation_holds``) and the rows a re-check can name; with no fix dated,
-  only these, never the resolution legs (#2100).
+  (``mitigation_observation``) and the rows a re-check can name, and a
+  holding relief the model has not registered, with the ask for
+  ``mitigation_verified`` (#2602); with no fix dated, only these, never the
+  resolution legs (#2100).
 
 Informational: no gate reads it. It cites ids and never repeats the
 re-verification checklist's row texts (``evidence_needs``).
@@ -41,14 +43,14 @@ from faultmaven.core.investigation.cause_assurance import (
     fix_windows,
     interception_relief,
     mitigation_attempt_turn,
-    mitigation_holds,
-    mitigation_relief,
+    mitigation_observation,
     off_cause_attempt,
     pending_symptom_check,
     subject_index,
     symptom_elimination_rows,
 )
 from faultmaven.core.investigation.evidence_need_surfacing import is_ask_exhausted
+from faultmaven.core.investigation.problem_status import problem_on_hold
 from faultmaven.core.investigation.terminal_transitions import (
     _relief_without_cause_recheck,
     declined_resolve_entry,
@@ -281,10 +283,20 @@ def _held_mark(case: Case, need) -> str:
 
 def _mitigation_lines(case: Case, subjects) -> list[str]:
     """The mitigation's attempt, what the problem did after it, and the rows a
-    re-check can name (#2100)."""
-    relief, present = mitigation_relief(case, subjects)
-    if relief is not None and mitigation_holds(relief, present):
+    re-check can name (#2100). A holding relief on an unsettled record (no
+    verdict, no disposition) is named with the ask for ``mitigation_verified``,
+    the verdict's trigger (#2602, ruled (b)), except while the problem is on
+    hold, where the gate refuses it."""
+    seen = mitigation_observation(case, subjects)
+    relief, present = seen.relief_turn, seen.present_turn
+    unregistered = []
+    if relief is not None and seen.holding:
         state = f"problem re-checked relieved at turn {relief}"
+        if not (seen.verified or seen.disposition or problem_on_hold(case)):
+            unregistered = [
+                f"  - relief row {seen.relief_row_id} (turn {relief}) is on record "
+                "but unregistered: send mitigation_verified to record it"
+            ]
     elif present is not None:
         state = f"problem seen again at turn {present}"
     else:
@@ -294,7 +306,8 @@ def _mitigation_lines(case: Case, subjects) -> list[str]:
         "none on record as having shown the problem"
     )
     return [
-        f"Mitigation: executed turn {mitigation_attempt_turn(case)}: {state}",
+        f"Mitigation: executed turn {seen.attempt_turn}: {state}",
+        *unregistered,
         f"  - rows a post-mitigation re-check names in rechecks: {rows}",
     ]
 

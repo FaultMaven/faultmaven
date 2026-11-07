@@ -472,7 +472,7 @@ not revive it).
   model's proposal re-offers. So a question about a standing deferred offer
   withdraws it for the turn, and a decline is not re-offered on its own turn.
   The user's own offers, the INV-37 pivot's resolve and the rca_infeasible
-  stabilized close are exempt.
+  mitigation close are exempt.
 
 **Why RESOLVED left the status menu.** It was listed in `USER_SELECTABLE_ACTIONS`
 until the engine could see the readiness bar for itself, and the listing was
@@ -964,7 +964,8 @@ def force_close_investigation(case: Case, user_id: str, reason: str):
         closed_at=datetime.now(UTC),
         closure_reason=reason,  # engine-derived; see derive_closure_reason()
     )
-    # Note: a case stabilized by a verified mitigation closes as "mitigation_sufficient".
+    # Note: a mitigation verified by a bound re-check, or declared stable by the user
+    # with no bound relapse after the declaration, closes as "mitigation_sufficient".
     # The documented mitigation is preserved on the closed case.
     case.action_history.append(CaseAction(
         from_state=CaseState.INVESTIGATING,
@@ -1018,7 +1019,7 @@ State updates occur at specific points within a turn to ensure consistency:
 | `solution_state` / `solution_feasible` | Assessment (engine-derived / LLM-settable) | End of each INVESTIGATING turn / LLM output | `solution_state` mirrors the derived `solution_proposed` (`SELECTED` while it holds, else `UNKNOWN`); `solution_feasible` defaults NOW, LLM sets DEFERRED. |
 | `solution_proposed` | Progress indicator (engine-derived) | End of each INVESTIGATING turn | Derived at the assessment recompute (INV-32): True iff a LIVE SOLUTION ProposedAction stands (`pending`/`accepted`) or the gate ladder advanced (`solution_accepted`/`solution_verified`, forward-only facts). A new SOLUTION offer supersedes prior pending ones (`reproposal`); a pending offer whose established-cause license falls — M6 demotion, conclusion retraction, MECE hold — is withdrawn (`license_lost`) with `system_feedback` to the LLM. Not a write-once latch. |
 | `mitigation_accepted` | Mitigation gate signal | LLM structured output | User acknowledges executing the proposed mitigation → materializes `mitigation.accepted` |
-| `mitigation_verified` | Mitigation gate signal | LLM structured output, verdict engine-derived | The problem re-checked relieved after the mitigation → materializes `mitigation.verified` + `completed_at_turn`, derived (#2100): accepted only when a `symptom_absence_evidence` re-check bound to the problem (`rechecks` naming a verifying row) is observed at or after the mitigation's attempt and no bound persistence follows it. The user's own account is not it: that is `mitigation_disposition` `declared_stable`, and the stall's "proceed" `proceed_unmitigated` (`mitigation.disposition`, written once, never read as verified; either also leaves MITIGATION, and `declared_stable` stamps `completed_at_turn`) |
+| `mitigation_verified` | Mitigation gate signal | LLM structured output, verdict engine-derived | The problem re-checked relieved after the mitigation → materializes `mitigation.verified` + `completed_at_turn`, derived (#2100): accepted only when a `symptom_absence_evidence` re-check bound to the problem (`rechecks` naming a verifying row) is observed at or after the mitigation's attempt and no bound persistence follows it. The user's own account is not it: that is `mitigation_disposition` `declared_stable`, and the stall's "proceed" `proceed_unmitigated` (`mitigation.disposition`, written once, never read as verified; either also leaves MITIGATION, and `declared_stable` stamps `completed_at_turn`). The label stays the trigger: a holding bound relief with no label sent is named in the `<fix_verification>` block with the ask for it (#2602) |
 | `solution_accepted` | Gate milestone | LLM structured output | User acknowledges executing proposed solution |
 | `solution_verified` | Gate milestone | After user confirms fix | User confirms problem resolved (User-Agent Handshake) |
 | Disposition action | — | End of turn | After all other processing |
@@ -1855,7 +1856,7 @@ The signal's effect is narrow and specific — when a mitigation has been verifi
 | `rca_infeasible` | Post-mitigation agent behavior |
 | --- | --- |
 | `False` (default) | Agent pushes toward RCA: *"The mitigation is working. Now let's investigate the root cause to prevent recurrence."* |
-| `True` | Agent proposes closure: *"The mitigation is verified. Since [rationale], shall we close this case?"* Uses User-Agent Handshake — user must confirm. |
+| `True` | Agent proposes closure, leading with the mitigation's record (`mitigation_closure_line`, #2100): *"The problem was observed relieved after the mitigation (turn 7). Since [rationale], shall we close this case?"*, or *"You reported the mitigation stable (turn 7). …"* on a declaration. Uses User-Agent Handshake — user must confirm. |
 
 The close is not offered on a case that confirms a resolution (closure readiness SUGGEST_RESOLVE, both absence legs): there the resolve offer is the one the case warrants, made by the resolution backstop (INV-43) or by the model's own RESOLVED proposal. Every engine opener reads closure readiness before choosing its target (#1885).
 
@@ -1866,7 +1867,7 @@ If `rca_infeasible=True` but the user says "actually, let's dig deeper" — the 
 Cases closed via this path use the existing terminal state:
 
 - `status = CLOSED`
-- `closure_reason = "mitigation_sufficient"` (the documented mitigation is preserved on the closed case)
+- `closure_reason = "closed_rca_infeasible"`: the rationale ranks it above `mitigation_sufficient`, which also holds on this path (the documented mitigation is preserved on the closed case). Its reply and report label assert nothing about the mitigation; the mitigation's record follows them (§4.4, "What a closure says about a mitigation").
 
 `RESOLVED` remains pristine — it always means a permanent fix with verified root cause. See §4.5.1 for runbook generation.
 
@@ -2215,7 +2216,23 @@ The user decides the mitigation is sufficient (or RCA is infeasible, see §2.4) 
 1. **Agent-proposed** (when `rca_infeasible=True` and the cause remains uncertain): after the mitigation verifies, the agent proposes closure via User-Agent Handshake instead of pushing RCA.
 2. **User-initiated** (any case): the user closes via UI at any time (close-anytime, §2.3).
 
-**Closure**: `CaseState.CLOSED` with `closure_reason="mitigation_sufficient"`. The documented mitigation (and any partial findings) is preserved on the closed case.
+**Closure**: `CaseState.CLOSED` with `closure_reason="mitigation_sufficient"` (`closed_rca_infeasible` on the agent-proposed path, which needs the rationale). The documented mitigation (and any partial findings) is preserved on the closed case.
+
+**What a closure says about a mitigation** (#2100, D3.3/D5.3). The engine's closure texts state the record, from one helper (`terminal_transitions.mitigation_closure_line`, over `cause_assurance.mitigation_observation`), never a verdict the record does not hold. The helper states each fact that holds, in this order:
+
+1. the user's declaration: "you reported the mitigation stable (turn D)";
+2. the bound relief: "the problem was observed relieved after the mitigation (turn N)", or "after the mitigation and a later fix" when a dated SOLUTION ran between the attempt and the relief. When the relief row's own coverage is vouched, runs forward and spans at least a minute, ", and the data it cites covers about 5 minutes" follows (minutes under 2 hours, hours under 2 days, then days). An instant or unvouched coverage names the turn only. No message clock is read;
+3. a bound persistence: "the problem was seen again at turn M" (", before that relief" when a later relief holds);
+4. the stall's proceed: "the investigation went on without the mitigation shown to hold (turn P)";
+5. with none of these: "a mitigation was applied (turn A); no re-check bound to the problem is on record". A stored `verified` with no bound row reads this way (the record is read as stored).
+
+"stabilized" appears in none of them. Where the line goes, by reason:
+
+- **replaces the reply**: `mitigation_sufficient` ("Case closed — <line>; root-cause analysis was deferred.");
+- **follows the reason's reply**: `closed_rca_infeasible`, `solution_deferred`, `closed_restatement_held`, `closed_insufficient_evidence`;
+- **omitted**: `inquiry_only` (no record can exist), `closed_false_alarm` (the problem was not present) and `resolution_declined` (the fix was confirmed).
+
+The report's Mitigation Status section opens with the line on every case with a mitigation record, a false alarm's excepted, then lists the solutions; a `resolution_declined` close renders no Mitigation Status. The rca-infeasible propose-close leads with it (§2.4.3). The LLM-driven close keeps the model's own prose; the rule binds the engine's lines.
 
 **Post-terminal**: agent offers runbook generation only for RESOLVED cases (§4.5.1); CLOSED cases get the closure summary only.
 
@@ -2231,7 +2248,7 @@ The retrospective shape is **direct** vs **mitigated**, derived from
 | Field | Mitigated → RESOLVED | Mitigated → CLOSED | Direct → RESOLVED |
 | ----- | ------------------- | ------------------- | ----------------- |
 | `mitigation` present | Yes | Yes | No |
-| `mitigation.accepted` / `.verified` | True / True | True / True | n/a |
+| `mitigation.accepted` / `.verified` | True / True | True / True, or `disposition` `declared_stable` | n/a |
 | `solution_accepted` / `solution_verified` | True / True | False / False | True / True |
 | `cause_state` | IDENTIFIED | May be UNKNOWN/CANDIDATES | IDENTIFIED |
 | `CaseState` | RESOLVED | CLOSED | RESOLVED |
@@ -2257,7 +2274,11 @@ one, or the one the pivot would open) before deriving, so it closes as
 `solution_deferred`
 when a fix is documented but was never applied; `closed_rca_infeasible` when RCA
 was declared infeasible with a rationale; `mitigation_sufficient` when a
-mitigation is verified; `closed_restatement_held` when the restatement guard held
+mitigation is verified by a bound re-check and still holding, or declared stable
+by the user, unless a re-check bound to the problem sees it present after the
+declaration as its latest observation (F5, ruled 2026-11-07: a persistence in
+the declaration's turn or before it stays the user's call, and a later relief
+restores the reason); `closed_restatement_held` when the restatement guard held
 every unsettled root (#1195); otherwise `closed_insufficient_evidence`. It no
 longer keys on the `INSUFFICIENT_EVIDENCE` verification-status cell (see
 [Insufficient-Evidence Handling §3.5](./insufficient-evidence-handling.md)),
@@ -2408,7 +2429,7 @@ Independent of post-terminal operations. User can archive any terminal case via 
     - User stops responding.
     - User explicitly requests escalation.
     - User closes after a mitigation without pursuing RCA (the documented mitigation is preserved on the closed case).
-3. **Closure**: Case marked `CLOSED` with an engine-derived `closure_reason` naming why it ended — a stabilized case closes as `mitigation_sufficient`, one that established nothing as `closed_insufficient_evidence`.
+3. **Closure**: Case marked `CLOSED` with an engine-derived `closure_reason` naming why it ended — a case whose mitigation relieved the symptom closes as `mitigation_sufficient`, one that established nothing as `closed_insufficient_evidence`.
 
 #### Milestones
 

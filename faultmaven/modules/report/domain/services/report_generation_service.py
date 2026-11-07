@@ -469,12 +469,11 @@ class ReportGenerationService:
                 "deferred"
             ),
             ClosureReason.CLOSED_RCA_INFEASIBLE: (
-                "Closed — root cause structurally unreachable; mitigation is the "
-                "accepted strategy"
+                "Closed — root cause structurally unreachable"
             ),
             ClosureReason.MITIGATION_SUFFICIENT: (
-                "Closed — stabilized by a verified mitigation, root-cause "
-                "analysis deferred"
+                "Closed — a mitigation relieved the symptom; root-cause analysis "
+                "deferred"
             ),
             ClosureReason.CLOSED_RESTATEMENT_HELD: (
                 "Closed — a cause was supported by the evidence but never stated "
@@ -1209,7 +1208,8 @@ class ReportGenerationService:
         - Solution Applied and Confirming Evidence (resolution_declined: the
           confirmed fix, rendered as the resolution summary renders it)
         - Leading Hypotheses (top 5 by confidence)
-        - Mitigation Status (when a mitigation was inserted)
+        - Mitigation Status (when a mitigation was inserted): its record
+          (``mitigation_closure_line``), then the solutions
         - Timeline
         - Recommendation (closed_insufficient_evidence: where to restart;
           closed_restatement_held: name the mechanism, do not gather more)
@@ -1311,19 +1311,33 @@ class ReportGenerationService:
                     )
             parts.append("")
 
-        # Mitigation Status — only meaningful when a mitigation was
-        # actually inserted (the "stop the bleeding" move). For cases that
-        # never stabilized, this section would mislead.
+        # Mitigation Status — only when a mitigation was inserted (the "stop
+        # the bleeding" move). It opens with what the record holds about it
+        # (``mitigation_closure_line``, #2100), then the solutions. A false
+        # alarm's problem was not present, so its section names no relief.
+        # Function-local import: the _assurance_note precedent.
+        from faultmaven.core.investigation.terminal_transitions import (
+            mitigation_closure_line,
+            mitigation_sentence,
+        )
+
         was_mitigated = (
             case.progress is not None and case.progress.mitigation is not None
         )
+        line = (
+            mitigation_closure_line(case)
+            if closure_reason_raw != ClosureReason.CLOSED_FALSE_ALARM
+            else None
+        )
         # A resolution_declined close already rendered its solutions above.
         if (
-            solutions
+            (solutions or line)
             and was_mitigated
             and closure_reason_raw != ClosureReason.RESOLUTION_DECLINED
         ):
             parts.append("## Mitigation Status\n")
+            if line:
+                parts.append(f"{mitigation_sentence(line)}\n")
             for i, sol in enumerate(solutions, 1):
                 parts.extend(self._format_solution_block(sol, i))
             # _format_solution_block's last line ends with \n; no extra separator needed.
