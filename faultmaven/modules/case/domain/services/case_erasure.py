@@ -34,7 +34,9 @@ class SessionPointerEraser:
 
 class UnavailableStoreEraser:
     """Bound for a configured store whose service failed to construct, so
-    every delete fails instead of skipping the store."""
+    every delete fails instead of skipping the store. Bound for the LLM traces
+    it also stands in the knowledge module's draft and document deletes
+    (``erase_conversion``, #2575)."""
 
     def __init__(self, store_name: str, reason: str):
         self.store_name = store_name
@@ -43,4 +45,10 @@ class UnavailableStoreEraser:
     async def erase_case(self, case_id: str, enterprise_id: str) -> int:
         raise ServiceException(
             f"Cannot clear {self.store_name} for case {case_id}: {self.reason}"
+        )
+
+    async def erase_conversion(self, conversion_id: str, enterprise_id: str) -> int:
+        raise ServiceException(
+            f"Cannot clear {self.store_name} for conversion {conversion_id}: "
+            f"{self.reason}"
         )

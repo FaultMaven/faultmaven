@@ -165,6 +165,18 @@ class IConversionService(Protocol):
         ...
 
 
+class IConversionTraceEraser(Protocol):
+    """Purges the LLM traces of one document conversion (#2575): the draft and
+    document deletes run it before any row changes. The composition root binds
+    the eraser the case delete runs first (#2102), so all three fail closed
+    alike."""
+
+    async def erase_conversion(self, conversion_id: str, enterprise_id: str) -> int:
+        """Remove the traces tagged with the conversion and its enterprise;
+        return how many. Raises when they cannot be removed."""
+        ...
+
+
 # ============================================================
 # DTOs for cross-module communication
 # ============================================================

@@ -2797,6 +2797,13 @@ Deleting a global-scope draft is platform-corpus authoring — the service
 applies the global-authoring gate once the job's scope is loaded, same as
 edit (#785) and verify.
 
+Before the draft changes, the model-call traces of its conversion are
+deleted (#2575). Every draft of a conversion was generated from the whole
+document, so the traces of its other drafts go too. When they cannot be
+deleted (the trace backend is unreachable, or did not initialize) the
+request answers **500** "Failed to delete draft" and the draft is
+untouched, so a retry can finish it.
+
 **Tags:** `knowledge-conversion`
 
 **Auth:** `HTTPBearer`
@@ -3022,7 +3029,9 @@ Ownership-aware per target (#866): the same gate as
 ``DELETE /documents/{id}``, applied to each target before anything reaches
 the service. Refused targets are reported in ``errors`` and never counted
 as deleted; ``total_requested`` is the de-duplicated batch size (see
-``_normalize_bulk_document_ids``), so the counts reconcile.
+``_normalize_bulk_document_ids``), so the counts reconcile. A document
+whose model-call traces cannot be deleted is reported in ``errors`` and
+left as it was (#2575).
 
 **Tags:** `knowledge_base`
 
@@ -3272,6 +3281,12 @@ and the delete has committed. Its search-index entries are removed
 afterwards, best effort; any left behind are never served. An excerpt
 already in a case's conversation context
 stays there until that case next searches the knowledge base.
+
+Before the document changes, the model-call traces of the conversions its
+drafts came from are deleted (#2575). When they cannot be deleted (the
+trace backend is unreachable, or did not initialize) the request answers
+500 "Failed to delete document" and the document is untouched, so a retry
+can finish it.
 
 Args:
     document_id: Document identifier

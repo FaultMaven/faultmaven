@@ -72,6 +72,7 @@ from faultmaven.models.interfaces import (
     ITracer,
 )
 from faultmaven.models.vector_metadata import VectorMetadata
+from faultmaven.modules.knowledge.contracts import IConversionTraceEraser
 from faultmaven.modules.knowledge.domain.item_title import sanitize_item_title
 from faultmaven.modules.knowledge.domain.request_receipts import (
     KbReceiptKey,
@@ -80,6 +81,7 @@ from faultmaven.modules.knowledge.domain.request_receipts import (
     read_receipt,
 )
 from faultmaven.modules.knowledge.domain.services.conversion_service.draft_retirement import (
+    conversions_naming_item,
     discard_drafts_naming_item,
 )
 from faultmaven.modules.knowledge.domain.services.runbook_validator import (
@@ -420,6 +422,7 @@ class KnowledgeService:
         *,
         db_session_factory: Any,
         share_repository: Optional[Any] = None,
+        trace_eraser: Optional[IConversionTraceEraser] = None,
     ):
         """
         Initialize with interface dependencies for better testability
@@ -440,6 +443,9 @@ class KnowledgeService:
                 an empty KB in production (#894/#899). Keyword-only because
                 this signature's positional tail has already shifted once
                 (#894).
+            trace_eraser: Purges a conversion's LLM traces when a document it
+                published is deleted (#2575). ``None`` where no trace backend is
+                configured, so nothing recorded one.
 
         Raises:
             ValueError: if ``db_session_factory`` is None.
@@ -468,6 +474,7 @@ class KnowledgeService:
         # rows on team publish and to resolve the shared-id read allowlist. May be
         # None (e.g. minimal/test wiring) — team sharing then no-ops.
         self._share_repo = share_repository
+        self._trace_eraser = trace_eraser
 
         # Enhanced capabilities
         self._llm = llm_provider
@@ -595,7 +602,8 @@ class KnowledgeService:
           ``kb_init._reconcile_vectors`` collects an unpublished built-in's
           vectors at the next pack-loading bootstrap. The row is kept because
           the pack would resurrect a hard delete anyway.
-        - **Authored** (UUID / ``kb_<16 hex>``) → **hard delete**: drop the
+        - **Authored** (UUID / ``kb_<16 hex>``) → **hard delete**: purge the
+          LLM traces of the conversions its drafts came from, drop the
           ``knowledge_items`` row, discard the drafts that published it (their
           text kept, their slots freed, #2369), then remove its vectors best
           effort.
@@ -626,6 +634,10 @@ class KnowledgeService:
 
         The order:
 
+        0. An authored document's LLM traces (#2575), before any row changes
+           and with no transaction open: :meth:`_erase_conversion_traces`. A
+           trace backend that cannot be reached raises, and the document is
+           untouched.
         1. The row change, in one transaction: a ``DELETE``, or a targeted
            ``UPDATE ... SET is_published = false`` that writes no other column
            but ``updated_at`` (so it cannot revert a concurrent committed
@@ -661,7 +673,8 @@ class KnowledgeService:
 
         Raises:
             ValueError: empty ``document_id``.
-            RuntimeError: any failure up to and including the commit.
+            RuntimeError: any failure up to and including the commit, the
+                trace purge's included.
         """
         with self._tracer.trace("knowledge_service_delete_document"):
             if not document_id or not document_id.strip():
@@ -675,6 +688,10 @@ class KnowledgeService:
             try:
                 builtin = is_builtin_item_id(document_id)
                 discarded: List[str] = []
+
+                # Step 0: an authored document's traces, before the row change.
+                if not builtin:
+                    await self._erase_conversion_traces(document_id)
 
                 async with self._db_session_factory() as session:
                     repo = DatabaseKnowledgeItemRepository(session)
@@ -771,6 +788,22 @@ class KnowledgeService:
             except Exception as e:
                 logger.error(f"Failed to remove document {document_id}: {e}")
                 raise RuntimeError(f"Document removal failed: {str(e)}") from e
+
+    async def _erase_conversion_traces(self, document_id: str) -> None:
+        """Purge the LLM traces of each conversion whose draft names the
+        document (#2575); raise when one cannot be purged.
+
+        Keyed on the drafts, read under the caller's row-level security, never
+        on ``source_url``, which the uploader writes. A document no draft names
+        erases nothing. The session closes before the first erase, so no
+        transaction is open across the trace backend's calls.
+        """
+        if self._trace_eraser is None:
+            return
+        async with self._db_session_factory() as session:
+            owners = await conversions_naming_item(session, document_id)
+        for conversion_id, enterprise_id in owners:
+            await self._trace_eraser.erase_conversion(conversion_id, enterprise_id)
 
     async def get_document_statistics(self) -> Dict[str, Any]:
         """Get knowledge base statistics from SQLite."""
@@ -3378,7 +3411,8 @@ class KnowledgeService:
         constant "delete failed" per id. A document counted as deleted has no
         chunk retrievable through a KB door: :meth:`delete_document` reports
         success once its row change commits, and a vector delete that fails
-        after it is not a failed delete (#2397).
+        after it is not a failed delete (#2397). A document whose LLM traces
+        cannot be purged is a failed delete, left as it was (#2575).
         """
         deleted_count = 0
         errors = []

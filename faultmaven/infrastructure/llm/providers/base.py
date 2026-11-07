@@ -36,6 +36,7 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
 ROUTER_CONSUMED_KWARGS: FrozenSet[str] = frozenset(
     {
         "case_id",
+        "conversion_id",
         "bypass_cache",
         "provider_override",
         "data_type",

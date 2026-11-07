@@ -447,6 +447,7 @@ class TestAnalysisPhase:
             "sample text",
             "test.md",
             sanitizer=None,
+            conversion_id="conv_test",
         )
 
         assert isinstance(result, AnalysisResult)
@@ -476,6 +477,7 @@ class TestAnalysisPhase:
             "sample text",
             "test.md",
             sanitizer=None,
+            conversion_id="conv_test",
         )
 
         assert result.source_assessment.content_type == "troubleshooting_guide"
@@ -499,6 +501,7 @@ class TestAnalysisPhase:
                 "sample text",
                 "test.md",
                 sanitizer=None,
+                conversion_id="conv_test",
             )
 
         assert exc.value.error_code == ConversionErrorCode.LLM_PARSE_ERROR
