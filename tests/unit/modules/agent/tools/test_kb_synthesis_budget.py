@@ -272,10 +272,11 @@ async def test_synthesis_prompt_tells_the_model_its_allowance():
         question="Why was it OOMKilled?",
         scope_id=None,
         k=5,
-        redaction_ctx=disabled_redaction(),
+        redaction_ctx=disabled_redaction("case_2102"),
     )
 
     router.route.assert_awaited()
+    assert router.route.await_args.kwargs["case_id"] == "case_2102"
     prompt = router.route.await_args.kwargs["messages"][-1]["content"]
 
     assert f"{KB_ANSWER_RELAY_CHARS:,}" in prompt, (

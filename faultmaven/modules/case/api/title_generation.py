@@ -1533,6 +1533,7 @@ async def _generate_title_with_llm(
         response = await route_model_call(
             llm_provider,
             prompt=prompt,
+            case_id=redaction_ctx.case_id,
             max_tokens=LLM_TITLE_MAX_TOKENS,
             temperature=LLM_TITLE_TEMPERATURE,
         )

@@ -16,6 +16,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from faultmaven.config.settings import get_settings
+from faultmaven.config.tenant_context import get_current_enterprise_id
 from faultmaven.core.investigation.turn_budget import clamp_to_turn_budget
 from faultmaven.exceptions import (
     CallShapeUnsupported,
@@ -236,6 +237,14 @@ def _estimate_visible_output_tokens(
     # ONE rule serves both untokenizable cases — no tokenizer for this
     # provider, and no CPU budget for a body this long.
     return len(text.encode("utf-8")) // _CONSERVATIVE_BYTES_PER_TOKEN
+
+
+def _opik_owner(case_id: Optional[str]) -> Dict[str, str]:
+    """The metadata ``LLMTraceEraser`` finds a trace and its spans by (#2102)."""
+    owner = {"enterprise_id": get_current_enterprise_id()}
+    if case_id:
+        owner["case_id"] = case_id
+    return owner
 
 
 def _opik_tracing_enabled() -> bool:
@@ -559,6 +568,8 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         Returns:
             LLMResponse with generated content
         """
+        self._tag_opik_trace(case_id)
+
         # Validate prompt or messages
         if prompt is None and not messages:
             raise TypeError("Either prompt or messages must be provided")
@@ -700,7 +711,10 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 if self.settings.observability.opik_log_raw_prompts:
                     cached_response.raw_prompt = plain_text(prompt)
                 self._update_opik_span(
-                    cached_response, sanitized_prompt=prompt_text, cached=True
+                    cached_response,
+                    sanitized_prompt=prompt_text,
+                    cached=True,
+                    case_id=case_id,
                 )
                 llm_requests.labels(
                     provider=cached_response.provider,
@@ -813,6 +827,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 response,
                 sanitized_prompt=prompt_text,
                 sanitized_messages=messages_view,
+                case_id=case_id,
             )
 
             # Truncation is a normal-looking success at every other layer: HTTP
@@ -989,12 +1004,31 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             )
             raise
 
+    def _tag_opik_trace(self, case_id: Optional[str]) -> None:
+        """Tag the current trace and span with their owner, before anything fails.
+
+        Every exit from ``route()`` is then tagged, the failures included: the SDK
+        records ``str(exception)`` as ``error_info``, and a provider's exception
+        can embed its response body (#2102). A failure here never breaks the call.
+        """
+        if not (_opik_tracing_enabled() and OPIK_AVAILABLE):
+            return
+        try:
+            owner = _opik_owner(case_id)
+            opik_context.update_current_trace(
+                metadata=owner, **({"thread_id": case_id} if case_id else {})
+            )
+            opik_context.update_current_span(metadata=owner)
+        except Exception as e:
+            self.logger.warning(f"Failed to tag Opik trace: {e}")
+
     def _update_opik_span(
         self,
         response: LLMResponse,
         sanitized_prompt: Optional[str] = None,
         sanitized_messages: Optional[List[Dict[str, Any]]] = None,
         cached: bool = False,
+        case_id: Optional[str] = None,
     ) -> None:
         """Update the current Opik span with LLM call data.
 
@@ -1002,6 +1036,10 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         model, provider, and token usage to whichever span is currently active.
         This works whether the span was created by @opik.track on this function
         or by a parent caller.
+
+        The span and its trace carry the enterprise, and the case when the call
+        served one: ``LLMTraceEraser`` finds a deleted case's traces by those
+        metadata keys, on the trace and on the span (#2102).
         """
         # Gate FIRST, warn second. Tracing being off is the configured state,
         # not a problem to report: with tracing disabled there is no span to
@@ -1033,7 +1071,9 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             if response.content:
                 output_data["response"] = response.content[:TELEMETRY_PAYLOAD_MAX_CHARS]
 
+            owner = _opik_owner(case_id)
             metadata = {
+                **owner,
                 "cached": cached or response.cached,
                 "prompt_cache_hit": getattr(response, "prompt_cache_hit", False),
                 "tokens_used": response.tokens_used,
@@ -1052,6 +1092,12 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                     "completion_tokens": getattr(response, "output_tokens", 0),
                 }
 
+            # The trace first: if tagging it raises, the content is not attached.
+            # That does not make the two atomic. They travel in separate batches,
+            # so the span carries the tags too and the eraser searches both.
+            opik_context.update_current_trace(
+                metadata=owner, **({"thread_id": case_id} if case_id else {})
+            )
             opik_context.update_current_span(
                 input=input_data,
                 output=output_data,

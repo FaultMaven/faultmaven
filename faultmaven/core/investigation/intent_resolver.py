@@ -246,6 +246,7 @@ class IntentResolver:
                 self.llm_router,
                 messages=messages,
                 model=classifier_model,
+                case_id=redaction_ctx.case_id,
                 # See CLASSIFIER_MAX_TOKENS / CLASSIFIER_MIN_OUTPUT_TOKENS:
                 # EXTRACTION asks each provider for its verified MINIMUM
                 # reasoning ("none" where that is verified, "low" otherwise) —

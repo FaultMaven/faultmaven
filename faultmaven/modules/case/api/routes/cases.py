@@ -151,7 +151,9 @@ async def delete_case(
     `DELETE_CASE_ERROR` and the case stays, so the delete can be retried. A
     failed delete can leave a case that reads normally while some of its
     files and its evidence search are already gone, until a retry completes
-    the delete.
+    the delete. The case's LLM traces clear first, where a trace backend is
+    configured: when that backend is unreachable the request answers this 500
+    and the rest of the case is untouched.
 
     The operation is idempotent - subsequent requests will return
     204 No Content even if the case has already been deleted, and so does a

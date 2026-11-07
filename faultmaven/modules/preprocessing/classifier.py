@@ -81,6 +81,8 @@ def _opik_track_classifier(func: Callable) -> Callable:
     SDK at this call site.
     """
     if _OPIK_AVAILABLE:
+        # Records no content and serves no case, so it carries no case tag and
+        # the case delete has nothing to purge here (#2102).
         tracked = opik.track(
             name="tier0_classify", capture_input=False, capture_output=False
         )(func)

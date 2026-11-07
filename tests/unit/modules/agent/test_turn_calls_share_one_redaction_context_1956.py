@@ -343,6 +343,7 @@ class TestTheTitle:
 
         assert source == "llm"
         _assert_redacted(router)
+        assert router.calls[0]["case_id"] == "case_1956"
 
     @pytest.mark.parametrize(
         "title",

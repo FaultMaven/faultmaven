@@ -1075,6 +1075,8 @@ class ConversionService:
                     self._llm_router,
                     messages=messages,
                     model=knowledge_model,
+                    # None on the upload path, which serves no case (#2102).
+                    case_id=case_id,
                     max_tokens=cap,
                     temperature=0.3,
                     # Same KNOWLEDGE_PROVIDER routing as _analyze_document.

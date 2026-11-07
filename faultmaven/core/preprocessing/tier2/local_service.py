@@ -98,6 +98,7 @@ class LocalTier2Service:
                     self.llm_client,
                     messages=messages,
                     max_tokens=cap,
+                    case_id=redaction_ctx.case_id,
                 )
 
             response = await generate_with_truncation_retry(

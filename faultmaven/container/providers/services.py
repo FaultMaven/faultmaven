@@ -42,11 +42,19 @@ def case_store_erasers(
     """The case delete's erasers (#1016) in the order it runs them, and the
     stores this deployment does not have.
 
-    Only the case vector store can be absent by configuration: under
+    The LLM traces clear first: they are telemetry derived from the case, and
+    their backend is the one store likely to be down, so its failure leaves the
+    case untouched. The delete's gate has already refused new turns.
+
+    Two stores can be absent by configuration: the case vector store, as under
     ``SKIP_SERVICE_CHECKS`` none is built, so nothing in the process writes
-    vectors. Any other missing store is a construction failure, bound as an
-    eraser that raises so every delete fails instead of skipping it.
+    vectors; and the LLM traces, as without ``OPIK_ENABLED`` and a backend URL
+    nothing records one (``init_opik_tracing`` disables tracing, #2102). Any
+    other missing store is a construction failure, bound as an eraser that
+    raises so every delete fails instead of skipping it.
     """
+    from faultmaven.infrastructure.observability import tracing
+    from faultmaven.infrastructure.observability.trace_erasure import LLMTraceEraser
     from faultmaven.infrastructure.persistence.database import get_db_session
     from faultmaven.infrastructure.security.case_redaction import (
         CaseRedactionRegistryEraser,
@@ -64,14 +72,26 @@ def case_store_erasers(
             return UnavailableStoreEraser(store_name, "its service was not constructed")
         return build(store)
 
-    erasers = [
+    erasers: list[Any] = []
+    not_configured: tuple[str, ...] = ()
+    obs = settings.observability
+    if not (obs.opik_enabled and (obs.opik_use_local or obs.opik_url_override)):
+        not_configured += ("llm_traces",)
+    elif tracing.OPIK_AVAILABLE:
+        # None reads the client's project, where ``init_opik_tracing`` sends
+        # traces when the name is empty; "" would search a project named "".
+        erasers.append(LLMTraceEraser(obs.opik_project_name or None))
+    else:
+        erasers.append(
+            UnavailableStoreEraser("llm_traces", "the Opik SDK is not installed")
+        )
+    erasers += [
         bound("session_pointers", session_store, SessionPointerEraser),
         RunbookConversionEraser(get_db_session),
         bound("uploads", file_storage_service),
     ]
-    not_configured: tuple[str, ...] = ()
     if case_vector_store is None and settings.server.skip_service_checks:
-        not_configured = ("case_vectors",)
+        not_configured += ("case_vectors",)
     else:
         erasers.append(bound("case_vectors", case_vector_store))
     erasers.append(

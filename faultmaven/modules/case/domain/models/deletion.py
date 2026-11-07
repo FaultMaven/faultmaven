@@ -31,7 +31,8 @@ class CaseDeletion:
 
     ``cleared`` maps each store the delete cleared to the number of items it
     removed (0 when there was nothing to remove). ``not_configured`` names a
-    store this deployment does not have, so nothing in it can hold the case.
+    store this deployment does not write to now. It can still hold what an
+    earlier configuration recorded, which the delete did not reach (#2581).
 
     The audit row's ``not_cleared`` list holds content-bearing stores only.
     Left out on purpose: TTL claims and locks that carry no content
@@ -40,7 +41,7 @@ class CaseDeletion:
     tombstone, ``infrastructure/concurrency/inflight.py``, #2096;
     ``lock:report_generation:case:…``, ``report_lock_manager.py``) and audit
     trails that must outlive the case (``operator_access_audit``,
-    ``operator_access_grants.target_case_id``). Opik traces are #2102.
+    ``operator_access_grants.target_case_id``).
     """
 
     case_id: str
