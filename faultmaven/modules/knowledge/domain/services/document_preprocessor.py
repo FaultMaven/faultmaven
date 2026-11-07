@@ -74,8 +74,9 @@ TRIAGE_SAMPLE_TOKENS = 2000
 #: bounded by the check between pages, not by this.
 EXTRACTION_TIMEOUT_SECONDS = 120
 
-#: ``Retry-After`` on ``CONVERSION_BUSY``. Every worker held when a request gives
-#: up has ended, or been abandoned at a page boundary, within one bound of it.
+#: ``Retry-After`` on ``CONVERSION_BUSY``. A PDF worker held when a request
+#: gives up has ended, or stops at its next page, within one bound of it. A
+#: worker on any other format has no such checkpoint and runs to its end (#2597).
 CONVERSION_BUSY_RETRY_AFTER_SECONDS = EXTRACTION_TIMEOUT_SECONDS
 
 #: Where Stages 0-5 run: CPU over the caller's file, off the event loop (#1417's

@@ -62,14 +62,15 @@ def _stream(words: str) -> bytes:
     return b"BT /F1 12 Tf 72 720 Td (" + words.encode() + b") Tj ET"
 
 
-def _write(tmp_path: Path, objects: list[bytes]) -> Path:
-    """A PDF of ``objects``, numbered from 1, with its cross-reference table."""
+def _write(tmp_path: Path, objects: list[bytes], xref_count: int | None = None) -> Path:
+    """A PDF of ``objects``, numbered from 1, with its cross-reference table.
+    ``xref_count`` overstates the table's entry count: corrupt."""
     out, offsets = b"%PDF-1.4\n", []
     for number, body in enumerate(objects, 1):
         offsets.append(len(out))
         out += b"%d 0 obj\n" % number + body + b"\nendobj\n"
     xref = len(out)
-    out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objects) + 1)
+    out += b"xref\n0 %d\n0000000000 65535 f \n" % (xref_count or len(objects) + 1)
     out += b"".join(b"%010d 00000 n \n" % offset for offset in offsets)
     out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (
         len(objects) + 1,
@@ -80,9 +81,17 @@ def _write(tmp_path: Path, objects: list[bytes]) -> Path:
     return path
 
 
-def _pdf(tmp_path: Path, *streams: bytes, self_length: tuple[int, ...] = ()) -> Path:
+def _pdf(
+    tmp_path: Path,
+    *streams: bytes,
+    self_length: tuple[int, ...] = (),
+    huge_length: tuple[int, ...] = (),
+    xref_count: int | None = None,
+) -> Path:
     """One page per content stream. A page numbered in ``self_length`` declares
-    its stream's ``/Length`` as a reference to that same stream: corrupt."""
+    its stream's ``/Length`` as a reference to that same stream, and one in
+    ``huge_length`` declares 999,999,999 bytes, past pypdf's 75 MB stream limit,
+    in a file of under 2 KB: both corrupt."""
     kids = b" ".join(b"%d 0 R" % (4 + 2 * i) for i in range(len(streams)))
     objects = [
         _CATALOG,
@@ -91,13 +100,17 @@ def _pdf(tmp_path: Path, *streams: bytes, self_length: tuple[int, ...] = ()) -> 
     ]
     for i, stream in enumerate(streams):
         number = 5 + 2 * i
-        length = b"%d 0 R" % number if i + 1 in self_length else b"%d" % len(stream)
+        length = b"%d" % len(stream)
+        if i + 1 in self_length:
+            length = b"%d 0 R" % number
+        if i + 1 in huge_length:
+            length = b"999999999"
         objects.append(
             b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents %d 0 R"
             b" /Resources << /Font << /F1 3 0 R >> >> >>" % number
         )
         objects.append(b"<< /Length %s >>\nstream\n" % length + stream + b"\nendstream")
-    return _write(tmp_path, objects)
+    return _write(tmp_path, objects, xref_count)
 
 
 def _parent_cycle(tmp_path: Path) -> Path:
@@ -256,6 +269,20 @@ async def test_the_skipped_page_list_names_ten_and_counts_the_rest(tmp_path):
             id="self-referencing-length-one-page",
         ),
         pytest.param(_parent_cycle, id="parent-cycle"),
+        # "Declared size ... exceeds allowed limit": 999,999 entries in ~1 KB.
+        pytest.param(
+            lambda d: _pdf(d, _stream(_TEXT), xref_count=999_999),
+            id="xref-declares-more-entries-than-the-file-holds",
+        ),
+        # "Declared stream length ... exceeds maximum allowed length".
+        pytest.param(
+            lambda d: _pdf(d, _stream(_TEXT), _stream(_TEXT), huge_length=(2,)),
+            id="declared-stream-length-past-the-limit-on-page-2",
+        ),
+        pytest.param(
+            lambda d: _pdf(d, _stream(_TEXT), huge_length=(1,)),
+            id="declared-stream-length-past-the-limit-one-page",
+        ),
     ],
 )
 async def test_corruption_pypdf_reports_as_a_limit_stays_file_corrupt(

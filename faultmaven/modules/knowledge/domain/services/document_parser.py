@@ -57,9 +57,15 @@ _TOO_COMPLEX = (
 #: cycle or a self-reference ("Detected ...": /Pages, /Parent, /Next, a tree,
 #: an outline, an article), an invalid CID width range, and the two recovery
 #: limits, reached only once the /Root or a zlib stream has already failed to
-#: parse. Every other site is a budget: tokens, depth, entries, sizes and
-#: decompressed output. Corruption stays FILE_CORRUPT, for the whole document.
+#: parse. So are the two "Declared ..." sizes, where the file declares more
+#: than it holds: an xref subsection with more entries than the file has room
+#: for, and a stream /Length over pypdf's 75 MB stream limit, which no file
+#: under that size holds (every upload under the default 10 MB cap). In a
+#: larger file FILE_CORRUPT is what main answered anyway. Every other site is
+#: a budget: tokens, depth, entries, sizes read and decompressed output.
+#: Corruption stays FILE_CORRUPT, for the whole document.
 _CORRUPTION_MESSAGES = (
+    "Declared ",
     "Detected ",
     "Invalid ",
     "Maximum Root object recovery",
