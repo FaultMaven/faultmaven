@@ -516,9 +516,56 @@ async def verify_schema_tables() -> int:
         )
     raise RuntimeError(
         f"Database schema is behind the models: {found}; the database is stamped "
-        f"{', '.join(sorted(stamped))} but those were never created. Re-run the "
-        "migration Job or re-provision the database "
-        "(docs/operations/deployment-wipe.md)."
+        f"{', '.join(sorted(stamped))} but those were never created. "
+        + _stamped_remedy(stamped)
+    )
+
+
+#: What fixes a database at head that lacks declared names. No migration run
+#: does: Alembic records an applied revision by id, not content.
+_AT_HEAD_REMEDY = (
+    "A revision this database had already applied gained them afterwards, or "
+    "they were dropped by hand. Create them from the revision that declares "
+    'them, as the migration role (docs/guides/database-migrations.md, "A '
+    'Database at Head Missing Tables"), or re-provision the database, which '
+    "destroys its data (docs/operations/deployment-wipe.md)."
+)
+
+
+def _stamped_remedy(stamped: frozenset[str]) -> str:
+    """The remedy for a stamped database missing declared names, which turns on
+    whether the stamp is the scripts' head.
+
+    Behind head, the migration run that has not happened yet is the remedy. At
+    head, ``alembic upgrade head`` (and so the migration Job) applies nothing and
+    reports success, so advising it would send the operator round the same loop.
+    When the heads cannot be read, or ``ALEMBIC_CONFIG`` may point the migration
+    at other scripts, both cases are named and neither is claimed.
+    """
+    heads: Optional[frozenset[str]] = None
+    if not _alembic_config_override():
+        try:
+            heads = alembic_script_heads()
+        except Exception as exc:  # the refusal stands; only its advice narrows
+            logger.warning(
+                "Could not read the migration scripts' heads (%s: %s)",
+                type(exc).__name__,
+                exc,
+            )
+    if heads is None:
+        return (
+            "If that is not the migration scripts' head, run the migration Job "
+            "(`alembic upgrade head`); if it is, no migration run creates them. "
+            + _AT_HEAD_REMEDY
+        )
+    if stamped == heads:
+        return (
+            "That is the migration scripts' head, so re-running the migration Job "
+            "(`alembic upgrade head`) changes nothing. " + _AT_HEAD_REMEDY
+        )
+    return (
+        f"The migration scripts' head is {', '.join(sorted(heads))}: run the "
+        "migration Job (`alembic upgrade head`)."
     )
 
 

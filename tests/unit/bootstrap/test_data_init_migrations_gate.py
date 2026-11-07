@@ -108,3 +108,64 @@ def test_run_startup_migrations_reads_env_alias(monkeypatch):
 
     monkeypatch.setenv("RUN_STARTUP_MIGRATIONS", "false")
     assert FaultMavenSettings().run_startup_migrations is False
+
+
+_HEAD = frozenset({"head_rev"})
+
+
+@pytest.mark.unit
+def test_a_stamp_at_head_is_not_told_to_rerun_the_migration():
+    """At head the Job applies nothing and reports success: the advice names the
+    repair and the re-provision instead."""
+    with (
+        patch.object(data_init, "_alembic_config_override", return_value=""),
+        patch.object(data_init, "alembic_script_heads", return_value=_HEAD),
+    ):
+        remedy = data_init._stamped_remedy(_HEAD)
+    assert "changes nothing" in remedy
+    assert "database-migrations.md" in remedy and "deployment-wipe.md" in remedy
+    assert "run the migration Job" not in remedy
+
+
+@pytest.mark.unit
+def test_a_stamp_behind_head_is_told_to_run_the_migration():
+    with (
+        patch.object(data_init, "_alembic_config_override", return_value=""),
+        patch.object(data_init, "alembic_script_heads", return_value=_HEAD),
+    ):
+        remedy = data_init._stamped_remedy(frozenset({"older_rev"}))
+    assert remedy == (
+        "The migration scripts' head is head_rev: run the migration Job "
+        "(`alembic upgrade head`)."
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "override, heads",
+    [
+        ("", OSError("alembic.ini not found")),
+        ("/elsewhere/alembic.ini", _HEAD),
+    ],
+    ids=["heads unreadable", "ALEMBIC_CONFIG set"],
+)
+def test_an_unknown_head_claims_neither_remedy(override, heads):
+    """When the scripts' head cannot be known for the run that migrates this
+    database, both cases are named and neither is asserted."""
+    reader = (
+        MagicMock(side_effect=heads)
+        if isinstance(heads, Exception)
+        else MagicMock(return_value=heads)
+    )
+    with (
+        patch.object(data_init, "_alembic_config_override", return_value=override),
+        patch.object(data_init, "alembic_script_heads", reader),
+    ):
+        remedy = data_init._stamped_remedy(_HEAD)
+    assert remedy.startswith(
+        "If that is not the migration scripts' head, run the migration Job"
+    )
+    assert "if it is, no migration run creates them" in remedy
+    assert "changes nothing" not in remedy
+    if override:
+        reader.assert_not_called()

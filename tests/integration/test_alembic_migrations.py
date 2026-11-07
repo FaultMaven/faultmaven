@@ -583,7 +583,43 @@ class TestAlembicMigrationInfrastructure:
         assert "missing tables token_revocations (schema 'main'" in message
         assert "missing columns" not in message
         assert f"stamped {HEAD_REVISION}" in message
+        # At head the migration Job applies nothing, so it is not the advice.
+        assert (
+            "re-running the migration Job (`alembic upgrade head`) changes nothing"
+            in message
+        )
+        assert "database-migrations.md" in message
         assert "deployment-wipe.md" in message
+
+    async def test_a_database_behind_head_missing_a_table_is_told_to_migrate(
+        self, clean_database, database_url, monkeypatch
+    ):
+        """Stamped one revision short of head (the migration Job has not run
+        this release's revisions yet): the run that has not happened is the
+        remedy, and the at-head advice would be wrong."""
+        from alembic.config import Config
+        from alembic.script import ScriptDirectory
+        from faultmaven.bootstrap import data_init
+
+        monkeypatch.delenv("ALEMBIC_CONFIG", raising=False)
+        script = ScriptDirectory.from_config(Config(str(PROJECT_ROOT / "alembic.ini")))
+        behind = script.get_revision(HEAD_REVISION).down_revision
+        assert isinstance(behind, str), behind
+        prepare_database(behind, database_url)
+        with closing(sqlite3.connect(TEST_DB)) as conn, conn:
+            conn.execute("DROP TABLE token_revocations")
+
+        with self._app_settings(database_url.replace("sqlite:", "sqlite+aiosqlite:")):
+            with pytest.raises(RuntimeError) as refused:
+                await data_init.verify_schema_tables()
+        message = str(refused.value)
+        assert "missing tables" in message and "token_revocations" in message
+        assert f"stamped {behind}" in message
+        assert (
+            f"The migration scripts' head is {HEAD_REVISION}: run the migration Job"
+            in message
+        )
+        assert "changes nothing" not in message
 
     async def test_a_stamped_database_missing_a_declared_column_is_refused(
         self, clean_database, database_url
