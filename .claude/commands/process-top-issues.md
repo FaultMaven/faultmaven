@@ -121,23 +121,24 @@ Find the newest proposal or result on the Queue, the issue this prints:
      **mechanism** (the code fact that produced them, at `path:line`) and the **structural fix** (the one change that
      makes that class impossible, and the open issues it would absorb), or "not yet analysed"; its **open count** now,
      and at each earlier proposal that printed one for it; and one **recommendation** no ruling has decided since the
-     counts, mechanism and structural fix it reads, the first that applies, for *Needs your call*: a freeze, when
-     neither of the last two rounds lowered it: the count now is not below the last printed count, nor that one below
-     the count printed before it; a root analysis, when it has no mechanism; a ruling on the structural fix, when it
-     names both.
+     counts, mechanism and structural fix it reads, the first that applies, for *Needs your call*: a freeze, when the
+     seam has no open root issue and neither of its last two printed steps lowered the count (now not below the last
+     printed count, nor that one below the one before it); a root analysis, when it has no mechanism; a ruling on the
+     structural fix, when it names both.
    - **Rulings carry the state.** A freeze ruling names the seam's root issue (labelled `root-issue`, filed if none is
      open, in `pile:blocked` with `**Blocked on:** an owner ruling on its root analysis and structural fix`) and lists
      exactly the issues it blocks on the root issue's `**Blocks:**` line: each listed issue that no open PR carries
      and that is not already in `pile:blocked` moves there with `**Blocked on:** #<root>`; one an open PR carries
-     stays with that PR; one already blocked keeps its line, and when its own blocker clears while the root issue is
-     open, its line becomes `**Blocked on:** #<root>`. While the root issue is open, no issue on its `**Blocks:**`
-     line gets a new plan beyond the stages a ruling sets, and an open PR on one finishes by its row in *Where an item
-     stands*. A ruling on the structural fix lists its stages, each filed as an issue with its budget and the issues
-     it delivers; a stage's PR closes only those (another it delivers is a change to the list) and says
-     `Refs #<root>`, and the last stage closes the root issue. That list places them, as step 3 places any ruled
-     issue. A ruling that declines the structural fix closes the root issue and lists where its issues go. Every
-     change to a root issue's `**Blocks:**` line or a stage's list is a ruling, except a finding added under *Filing
-     what you find*.
+     stays with that PR; one already blocked keeps its line. When a listed issue's own blocker clears while the root
+     issue is open, by Sort or by a ruling, its line becomes `**Blocked on:** #<root>`. While the root issue is open,
+     no issue on its `**Blocks:**` line gets a new plan beyond the stages a ruling sets, and an open PR on one
+     finishes by its row in *Where an item stands*. A ruling on the structural fix names the seam's root issue (filed
+     as above if none is open) and lists its stages, each filed as an issue with its budget and the issues it
+     delivers; a stage's PR closes only those (another it delivers is a change to the list) and says `Refs #<root>`;
+     when the last stage's PR merges, close the root issue under `## Closed`, citing the stages. That list places
+     them, as step 3 places any ruled issue. A ruling that declines the structural fix closes the root issue and lists
+     where its issues go. Every change to a root issue's `**Blocks:**` line or a stage's list is a ruling, except a
+     finding added under *Filing what you find*.
    - From `pile:ready` only. **Design flaws first:** an item on a seam whose structural fix is ruled to be built,
      while its root issue is open, is the next stage that ruling sets, in the order the owner last approved. Then
      `P1`, `P2`, `P3`, oldest first within each. One slot stays reserved for the oldest `P2` waiting over 30 days that
@@ -355,9 +356,10 @@ To **pull** an item:
   pile and a priority.
 - **Search open and closed issues first.** If an open issue already covers it, add the evidence there under
   `## Evidence`. If a closed issue matches, cite it in the new issue. Findings that share one root go in one issue.
-- **A `filed` finding that shares an open root issue's root,** and that no open issue covers, is filed as its own
-  issue, in `pile:blocked` with `**Blocked on:** an owner ruling on its place in #<root>`, and added to the root
-  issue's `**Blocks:**` line by an `## Evidence` comment there naming it; the next ruling on the root issue places it.
+- **A finding that shares an open root issue's root,** and that no open issue other than the root issue covers, is
+  filed as its own issue, in `pile:blocked` with `**Blocked on:** an owner ruling on its place in #<root>`, and
+  appended to the root issue's `**Blocks:**` line (a body edit), with an `## Evidence` comment there naming it; the
+  next ruling on the root issue places it.
 - **Fix the item's own root, a symptom of it, or a part of it in its PR;** file it only when a ruling waived it.
 
 ## 5. Report on the Queue
