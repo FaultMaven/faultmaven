@@ -22,6 +22,11 @@ from faultmaven.infrastructure.logging.unified import UnifiedLogger, get_unified
 # Type variable for generic return types
 T = TypeVar("T")
 
+#: The ``service_name`` of the LLM router's client, so the ``service`` its open
+#: breaker and its deadline carry. The engine's open-breaker branch and the API
+#: boundary key on it to tell the LLM's failure from another dependency's.
+LLM_BREAKER_SERVICE = "LLM_Providers"
+
 
 class CircuitBreakerError(Exception):
     """Exception raised when circuit breaker is open.

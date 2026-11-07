@@ -23,7 +23,10 @@ from faultmaven.exceptions import (
     LLMOutputFloorError,
     RawModelContentRefused,
 )
-from faultmaven.infrastructure.base_client import BaseExternalClient
+from faultmaven.infrastructure.base_client import (
+    LLM_BREAKER_SERVICE,
+    BaseExternalClient,
+)
 from faultmaven.infrastructure.health.sla_tracker import sla_tracker
 from faultmaven.infrastructure.security.model_content import (
     plain_messages,
@@ -365,7 +368,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         # Initialize BaseExternalClient
         super().__init__(
             client_name="llm_router",
-            service_name="LLM_Providers",
+            service_name=LLM_BREAKER_SERVICE,
             enable_circuit_breaker=True,
             circuit_breaker_threshold=LLM_CIRCUIT_BREAKER_THRESHOLD,
             circuit_breaker_timeout=LLM_CIRCUIT_BREAKER_TIMEOUT,

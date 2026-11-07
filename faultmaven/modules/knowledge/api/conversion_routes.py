@@ -35,6 +35,7 @@ from fastapi import (
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ValidationError
 
+from faultmaven.api.exception_handlers import LLM_FAILURE_SHAPES, is_llm_failure
 from faultmaven.config.idempotency_key import IDEMPOTENCY_REPLAY_UNAVAILABLE
 from faultmaven.config.tenant_context import writable_enterprise_id
 from faultmaven.exceptions import FaultMavenException, RawModelContentRefused
@@ -375,6 +376,14 @@ async def convert_document(
         # A refusal is answered by its own handler: 500 SERVICE_ERROR (#1998).
         raise
     except Exception as e:
+        if isinstance(e, LLM_FAILURE_SHAPES) and is_llm_failure(e):
+            # The LLM's open breaker and its configuration error are not
+            # FaultMavenExceptions, so the arm that re-raises those misses
+            # them (the LLM's deadline is one, and passes there). The
+            # global handler answers them as it answers an LLMException there:
+            # 503 with Retry-After, 402 or 502 (#1632). Another service's
+            # breaker keeps this route's 500.
+            raise
         logger.error(f"Conversion failed: {e}", exc_info=True)
         return JSONResponse(
             status_code=500,

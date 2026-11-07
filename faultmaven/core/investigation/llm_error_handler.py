@@ -37,15 +37,12 @@ from faultmaven.exceptions import (
     is_billing_error,
     walk_cause_chain,
 )
-from faultmaven.infrastructure.base_client import CircuitBreakerError
+from faultmaven.infrastructure.base_client import (
+    LLM_BREAKER_SERVICE,
+    CircuitBreakerError,
+)
 
 logger = logging.getLogger(__name__)
-
-# ``service_name`` the LLM router gives its ``BaseExternalClient`` (router.py).
-# The open-breaker branch in ``handle_error`` keys on it so an outage of some
-# OTHER dependency that happens to reach this handler is not reported to the
-# user as an AI-provider outage.
-LLM_BREAKER_SERVICE = "LLM_Providers"
 
 T = TypeVar("T")
 

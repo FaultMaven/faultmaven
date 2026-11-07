@@ -64,6 +64,14 @@ this is the family the global handlers dispatch by type.
 > fall through to FastAPI's default 500 if raised. New code should
 > raise `AuthorizationError` for "caller lacks permission" instead.
 
+> **Note.** `CircuitBreakerError` (`infrastructure/base_client.py`),
+> `ExternalCallTimeout` and `LLMProviderError` have a global handler,
+> `llm_failure_handler`, for the LLM's failure only (#1632, #1635; see
+> [LLM Provider Failures](#llm-provider-failures-turn-endpoints)). Every
+> external client raises the first two, and one that is not the LLM's is
+> re-raised by the handler, so it still falls through to the default 500,
+> logged and answered under the request's correlation id (#2294).
+
 ## Structured Metadata
 
 `NotFoundError` and `ConflictError` accept structured fields so the
@@ -178,6 +186,8 @@ provider condition presented to the user as a FaultMaven bug.
 | provider status 503 | 503 | `LLM_OVER_CAPACITY` | 60 |
 | provider status 5xx (other) | 503 | `LLM_PROVIDER_UNAVAILABLE` | 60 |
 | provider status 4xx (other, e.g. Gemini 400) | 502 | `LLM_PROVIDER_ERROR` | — |
+| `LLMProviderError` (the LLM layer's configuration error), or the open LLM breaker latched `PROVIDER_AUTH_FAILED` | 502 | `LLM_PROVIDER_ERROR` | — |
+| the open LLM breaker, any other latch or none (latched `QUOTA_EXHAUSTED` is the billing row) | 503 | `LLM_PROVIDER_UNAVAILABLE` | 30 |
 | no status, DECLARED `retryable` (any class, incl. `ExternalCallTimeout`) | 503 | `LLM_PROVIDER_UNAVAILABLE` | 30 |
 | no status, DECLARED terminal | 502 | `LLM_PROVIDER_ERROR` | — |
 | engine `RETRY_EXHAUSTED` / `PROVIDER_CIRCUIT_OPEN` / `TOKEN_LIMIT` / `UNKNOWN_ERROR` | 503 | `LLM_PROVIDER_UNAVAILABLE` | 30 |
@@ -187,8 +197,10 @@ provider condition presented to the user as a FaultMaven bug.
 
 **A narrower version of the mapping is the global handler** (#552).
 `get_exception_handlers()` registers `service_exception_handler` for both
-`ServiceException` and `LLMException`. The table above is for a route where
-every failure is an LLM call; it reads generic signals — a declared
+`ServiceException` and `LLMException`, and `llm_failure_handler` for the LLM
+failures that are not `LLMException`s (`LLM_FAILURE_SHAPES`), which it answers
+the same way and re-raises when they are not the LLM's. The table above is for
+a route where every failure is an LLM call; it reads generic signals — a declared
 `retryable`, a `ValidationError`/`JSONDecodeError` on the chain, billing
 *wording* — as provider conditions. On any other route those come from non-LLM
 work (a corrupt record, an object-store timeout), so the global handler
@@ -198,7 +210,7 @@ applies it only on typed evidence:
 |------------------|------|----------------|-------------|
 | a model-content refusal on the cause chain | 500 | `SERVICE_ERROR` | — |
 | `QUOTA_EXHAUSTED` declared by type anywhere on the cause chain (no wording fallback) | 402 | `QUOTA_EXHAUSTED` | — |
-| an `LLMException` on the cause chain | the table above | | |
+| an LLM failure on the cause chain (`is_llm_failure`): an `LLMException`, an `LLMProviderError`, or a `CircuitBreakerError` / `ExternalCallTimeout` whose `service` is the LLM router's (`LLM_BREAKER_SERVICE`; another service's, or none, is not) | the table above | | |
 | anything else | 500 | `SERVICE_ERROR` | — |
 
 **A model-content refusal is FaultMaven's fault, not the provider's** (#1998
@@ -233,7 +245,10 @@ Two things a global handler cannot reach, and what covers them:
 - **A broad `except Exception` arm ahead of any typed arm** — the most common
   shape on the route surface. It swallows the failure before any handler sees
   it; a route that reaches an LLM needs a typed arm (or a bare re-raise of
-  `FaultMavenException`) in front of it.
+  `FaultMavenException`) in front of it, and must pass on the LLM's breaker
+  and `LLMProviderError`, which are not `FaultMavenException`s
+  (`convert_document` re-raises `LLM_FAILURE_SHAPES` that `is_llm_failure`
+  reads as the LLM's, #1632).
 
 The typed signals are read off the `__cause__` chain rather than copied at
 wrap time, so a wrap is lossless only if it links: every

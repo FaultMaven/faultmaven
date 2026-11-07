@@ -10,10 +10,13 @@ This module provides exception handlers for:
 - ServiceError → 500 Internal Server Error
 - ServiceException / LLMException → 402 when billing is declared by type on
   the cause chain; the precise LLM-failure status
-  (``llm_service_error_http_exception``) when an ``LLMException`` is on the
-  chain; otherwise a static 500 ``SERVICE_ERROR`` — so a route that forgets
-  the mapping does not answer a bare 500, and a non-LLM failure is not
-  relabelled as the AI provider's (#552)
+  (``llm_service_error_http_exception``) when an LLM failure is on the chain
+  (``is_llm_failure``); otherwise a static 500 ``SERVICE_ERROR`` — so a route
+  that forgets the mapping does not answer a bare 500, and a non-LLM failure
+  is not relabelled as the AI provider's (#552)
+- CircuitBreakerError / ExternalCallTimeout / LLMProviderError → the same
+  answer when the failure is the LLM's; any other is re-raised and answered
+  as an exception nothing maps (#1632, #1635)
 - RawModelContentRefused (#1998) → 500 ``SERVICE_ERROR``, on its own or on
   the cause chain of a ``ServiceException``: a refused model call is a
   FaultMaven programming error, never the AI provider's failure
@@ -58,12 +61,14 @@ from pydantic import ValidationError
 
 from faultmaven.exceptions import (
     LLM_CONFIG_ERROR,
+    PROVIDER_AUTH_FAILED,
     PROVIDER_CIRCUIT_OPEN,
     QUOTA_EXHAUSTED,
     TOKEN_LIMIT,
     TURN_BUDGET_EXHAUSTED,
     AuthorizationError,
     ConflictError,
+    ExternalCallTimeout,
     LLMException,
     NotFoundError,
     RawModelContentRefused,
@@ -73,7 +78,15 @@ from faultmaven.exceptions import (
     is_billing_error,
     walk_cause_chain,
 )
-from faultmaven.models.exceptions import IndexAdmissionRefused, OAuthProtocolError
+from faultmaven.infrastructure.base_client import (
+    LLM_BREAKER_SERVICE,
+    CircuitBreakerError,
+)
+from faultmaven.models.exceptions import (
+    IndexAdmissionRefused,
+    LLMProviderError,
+    OAuthProtocolError,
+)
 from faultmaven.modules.auth.exceptions import TeamOperationRefused
 from faultmaven.modules.knowledge.exceptions import (
     INGEST_OUTCOME_UNKNOWN_DETAIL,
@@ -308,6 +321,22 @@ def _llm_http(
     return HTTPException(status_code=status_code, detail=detail, headers=headers)
 
 
+def _llm_breaker(exc: BaseException) -> Optional[CircuitBreakerError]:
+    """The LLM router's open breaker on the ``__cause__`` chain, if any.
+
+    Every ``BaseExternalClient`` raises ``CircuitBreakerError``; only the one
+    whose ``service`` is ``LLM_BREAKER_SERVICE`` is the LLM's.
+    """
+    return next(
+        (
+            c
+            for c in walk_cause_chain(exc)
+            if isinstance(c, CircuitBreakerError) and c.service == LLM_BREAKER_SERVICE
+        ),
+        None,
+    )
+
+
 def _model_content_refused(exc: BaseException) -> bool:
     """A model-content refusal (#1998) on the ``__cause__`` chain."""
     return any(isinstance(c, RawModelContentRefused) for c in walk_cause_chain(exc))
@@ -355,6 +384,10 @@ def llm_service_error_http_exception(exc: BaseException) -> HTTPException:
         provider status 503                    → 503  LLM_OVER_CAPACITY         (retry 60)
         provider status 5xx (other)            → 503  LLM_PROVIDER_UNAVAILABLE  (retry 60)
         provider status 4xx (other)            → 502  LLM_PROVIDER_ERROR        (no retry)
+        LLMProviderError (LLM config error)/   → 502  LLM_PROVIDER_ERROR        (no retry)
+          open LLM breaker latched
+          PROVIDER_AUTH_FAILED
+        open LLM breaker, other latch or none  → 503  LLM_PROVIDER_UNAVAILABLE  (retry 30)
         no status, DECLARED retryable          → 503  LLM_PROVIDER_UNAVAILABLE  (retry 30)
         no status, DECLARED terminal           → 502  LLM_PROVIDER_ERROR        (no retry)
         engine RETRY_EXHAUSTED/TOKEN_LIMIT/    → 503  LLM_PROVIDER_UNAVAILABLE  (retry 30)
@@ -364,6 +397,14 @@ def llm_service_error_http_exception(exc: BaseException) -> HTTPException:
           LLM_CONFIG_ERROR
         schema-parse failure on the chain      → 503  LLM_INVALID_RESPONSE      (retry 30)
         anything else                          → 500  SERVICE_ERROR             (retry 10)
+
+    The open LLM breaker is the LLM router's ``CircuitBreakerError`` (its
+    ``service`` is ``LLM_BREAKER_SERVICE``; another service's is not read
+    here). A breaker latched ``QUOTA_EXHAUSTED`` is the billing row; one latched
+    ``PROVIDER_AUTH_FAILED`` is as permanent, so it gets the row the engine
+    gives ``AUTH_FAILED``; any other is the engine's ``PROVIDER_CIRCUIT_OPEN``
+    row. The LLM router's own deadline is an ``ExternalCallTimeout``, which
+    declares itself retryable (#1635).
 
     A 4xx (other than 429) means the provider rejected *this request* — the same
     request retried yields the same rejection, so no ``Retry-After``. A parse
@@ -420,6 +461,26 @@ def llm_service_error_http_exception(exc: BaseException) -> HTTPException:
             "LLM_PROVIDER_ERROR",
             "The AI provider could not process this request.",
             None,
+        )
+    # The two LLM failures that are not ``LLMException``s (#1635): the open
+    # LLM breaker (billing answered above) and the LLM layer's configuration
+    # error, whatever ``error_code`` it carries.
+    breaker = _llm_breaker(exc)
+    if (breaker is not None and breaker.error_code == PROVIDER_AUTH_FAILED) or any(
+        isinstance(c, LLMProviderError) for c in walk_cause_chain(exc)
+    ):
+        return _llm_http(
+            502,
+            "LLM_PROVIDER_ERROR",
+            "The AI provider could not process this request.",
+            None,
+        )
+    if breaker is not None:
+        return _llm_http(
+            503,
+            "LLM_PROVIDER_UNAVAILABLE",
+            "The AI provider is temporarily unavailable. Please try again.",
+            "30",
         )
     # No provider status. Fall back to the retryability the raising code
     # DECLARED, on any exception in the chain — not only on an ``LLMException``.
@@ -1010,9 +1071,14 @@ async def oauth_protocol_error_handler(
     )
 
 
-def _is_llm_failure(exc: BaseException) -> bool:
-    """Typed evidence that ``exc`` is an LLM-call failure: an ``LLMException``
-    on the ``__cause__`` chain (``exc`` itself included).
+def is_llm_failure(exc: BaseException) -> bool:
+    """Typed evidence that ``exc`` is an LLM-call failure, on the ``__cause__``
+    chain (``exc`` itself included): an ``LLMException``; an
+    ``LLMProviderError``, the LLM layer's configuration error; or the LLM
+    router's open breaker or deadline, a ``CircuitBreakerError`` or
+    ``ExternalCallTimeout`` whose ``service`` is ``LLM_BREAKER_SERVICE``
+    (#1635). Every external client raises those two classes, so one naming
+    another service, or none, is not an LLM failure.
 
     Deliberately NOT: a ``retryable`` flag (``ExternalCallTimeout`` declares
     one for any external call), a ``ValidationError`` / ``JSONDecodeError``
@@ -1022,7 +1088,14 @@ def _is_llm_failure(exc: BaseException) -> bool:
     ``llm_service_error_http_exception`` reads them and ``/turns`` calls it
     inline, and why the global handler does not.
     """
-    return any(isinstance(c, LLMException) for c in walk_cause_chain(exc))
+    return any(
+        isinstance(c, (LLMException, LLMProviderError))
+        or (
+            isinstance(c, (CircuitBreakerError, ExternalCallTimeout))
+            and c.service == LLM_BREAKER_SERVICE
+        )
+        for c in walk_cause_chain(exc)
+    )
 
 
 def global_service_exception_http_exception(exc: BaseException) -> HTTPException:
@@ -1033,8 +1106,9 @@ def global_service_exception_http_exception(exc: BaseException) -> HTTPException
     1. Billing declared by type anywhere on the chain → 402. The NARROW
        predicate: no English-marker fallback, so a message that merely says
        "billing details" is not told to buy credits.
-    2. An ``LLMException`` on the chain → the full LLM mapping. Here an LLM
-       is known to be involved, so every signal it reads is sound.
+    2. An LLM failure on the chain (:func:`is_llm_failure`) → the full LLM
+       mapping. Here an LLM is known to be involved, so every signal it reads
+       is sound.
     3. Anything else → a static 500 ``SERVICE_ERROR`` with no
        ``Retry-After``: a data fault is not transient, and it is not the AI
        provider's.
@@ -1043,7 +1117,7 @@ def global_service_exception_http_exception(exc: BaseException) -> HTTPException
         return model_content_refused_http_exception()
     if is_quota_exhausted_service_error(exc):
         return quota_exhausted_http_exception()
-    if _is_llm_failure(exc):
+    if is_llm_failure(exc):
         return llm_service_error_http_exception(exc)
     return _llm_http(500, "SERVICE_ERROR", SERVICE_ERROR_DETAIL, None)
 
@@ -1075,7 +1149,8 @@ async def service_exception_handler(
     What this does NOT reach, measured when it was added: a route arm that
     catches ``ServiceException`` itself (inventoried by
     ``test_service_exception_global_handler``), and a broad ``except
-    Exception`` arm ahead of any typed arm (#1632).
+    Exception`` arm ahead of any typed arm (#1632). The LLM failures that are
+    not ``LLMException``s reach it through :func:`llm_failure_handler`.
     """
     logger.error(
         "Unhandled %s: %s %s - %s",
@@ -1088,6 +1163,26 @@ async def service_exception_handler(
     return await http_exception_handler(
         request, global_service_exception_http_exception(exc)
     )
+
+
+#: The LLM failures that are not ``LLMException``s, raw (#1632, #1635). None of
+#: the three classes is the LLM's alone.
+LLM_FAILURE_SHAPES = (CircuitBreakerError, ExternalCallTimeout, LLMProviderError)
+
+
+async def llm_failure_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Answer a raw ``LLM_FAILURE_SHAPES`` failure that is the LLM's as
+    ``service_exception_handler`` answers it (#1632, #1635).
+
+    Anything else is re-raised, so it travels on as it did before these classes
+    had a handler: ``LoggingMiddleware`` logs it under the request's
+    correlation id and the 500 names that id (#2294). Answered here, even by
+    ``internal_server_error_handler``, it would leave the middleware as an
+    ordinary response, with no ``correlation_id`` in the body.
+    """
+    if not is_llm_failure(exc):
+        raise exc
+    return await service_exception_handler(request, exc)
 
 
 async def model_content_refused_handler(
@@ -1212,6 +1307,7 @@ def get_exception_handlers() -> dict[Type[Exception], Callable]:
         ServiceError: service_error_handler,
         ServiceException: service_exception_handler,
         LLMException: service_exception_handler,
+        **dict.fromkeys(LLM_FAILURE_SHAPES, llm_failure_handler),
         RawModelContentRefused: model_content_refused_handler,
         OAuthProtocolError: oauth_protocol_error_handler,
     }
