@@ -537,6 +537,19 @@ def _mitigation_declared_stable(case: "Case") -> bool:
     return not relapsed
 
 
+def shown_milestones(case: "Case") -> list[str]:
+    """The completed milestones a close shows the user: the close prompt's
+    count and the report's Investigation State read this one list. A
+    ``mitigation_verified`` a bound relapse followed is left out, as the
+    closure reason leaves it (``_mitigation_verified``, #2100); a stored
+    verdict with no bound row is read as stored."""
+    progress = getattr(case, "progress", None)
+    milestones = list(progress.completed_milestones) if progress else []
+    if "mitigation_verified" in milestones and not _mitigation_verified(case):
+        milestones.remove("mitigation_verified")
+    return milestones
+
+
 def _span_words(span) -> str:
     """A data window in the unit a reader takes in, rounded half up before
     the unit is picked: minutes under 2 hours, hours under 2 days, then
@@ -1967,9 +1980,7 @@ def assess_close_summary(case: "Case") -> ClosureReadiness:
     """
     evidence_count = len(case.evidence) if case.evidence else 0
     hypothesis_count = len(case.hypotheses) if case.hypotheses else 0
-    milestones_completed = (
-        len(case.progress.completed_milestones) if case.progress else 0
-    )
+    milestones_completed = len(shown_milestones(case))
     has_root_cause = _cause_identified(case)
     has_solutions = bool(case.solutions and len(case.solutions) > 0)
 

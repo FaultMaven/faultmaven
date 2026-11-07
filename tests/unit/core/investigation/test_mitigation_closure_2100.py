@@ -25,8 +25,10 @@ from faultmaven.core.investigation.prompts.context_builder.fix_verification_bloc
     build_fix_verification_block,
 )
 from faultmaven.core.investigation.terminal_transitions import (
+    assess_close_summary,
     derive_closure_reason,
     mitigation_closure_line,
+    shown_milestones,
 )
 from faultmaven.modules.case.contracts import (
     CaseState,
@@ -235,6 +237,25 @@ def test_the_relief_row_is_the_one_its_coverage_dates_latest():
     assert mitigation_observation(case).relief_row_id == last.evidence_id
 
 
+def test_a_future_dated_row_never_outranks_a_dated_one():
+    """Two vouched relief rows at turn 7, the later one's coverage ending after
+    it was recorded: the valid row is the relief row, its span is stated, and
+    #2602's ask names it (D1)."""
+    case, shown = _mitigation()
+    valid = bound_row(case, turn=7, rechecks=shown, **_covered(600))
+    bound_row(
+        case, turn=7, rechecks=shown, **_covered(600, end=_T0 + timedelta(days=1095))
+    )
+    seen = mitigation_observation(case)
+    assert (seen.relief_row_id, seen.span) == (valid.evidence_id, timedelta(minutes=10))
+    assert mitigation_closure_line(case) == (
+        f"{_RELIEVED_7}, and the data it cites covers about 10 minutes"
+    )
+    assert f"  - relief row {valid.evidence_id} (turn 7) {_ASK}" in (
+        build_fix_verification_block(case)
+    )
+
+
 @pytest.mark.parametrize(
     "fix_turn, later", [(6, True), (7, True), (4, False)], ids=["between", "at", "same"]
 )
@@ -294,13 +315,18 @@ def test_an_undated_attempt_says_no_re_check_can_be_tied_to_it():
 
 async def test_a_relapsed_verdict_is_not_listed_as_a_milestone_reached():
     """Relief at 7 verified, seen again at 9: the report's Investigation State
-    drops "mitigation verified", as the closure reason does."""
+    drops "mitigation verified", as the closure reason does, and the close
+    prompt counts the same list (D2)."""
     case, shown = _mitigation(attempt=6, relief=7)
     case.progress.mitigation.verified = True
     bound_row(case, _PRESENT, turn=9, rechecks=shown)
+    assert "mitigation_verified" in case.progress.completed_milestones, "premise"
+    listed = shown_milestones(case)
+    assert listed == ["mitigation_accepted", "symptom_verified"]
+
     state = _section(await _report(_closed(case)), "## Investigation State")
-    assert "mitigation accepted" in state
-    assert "mitigation verified" not in state
+    assert "2 milestones reached: mitigation accepted, symptom verified." in state
+    assert "- **Milestones completed**: 2\n" in assess_close_summary(case).message
 
 
 # ---------------------------------------------------------------------------

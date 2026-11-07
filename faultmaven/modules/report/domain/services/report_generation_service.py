@@ -1220,9 +1220,9 @@ class ReportGenerationService:
         # Function-local import: the _assurance_note precedent for report →
         # core.investigation reads.
         from faultmaven.core.investigation.terminal_transitions import (
-            _mitigation_verified,
             mitigation_closure_line,
             mitigation_sentence,
+            shown_milestones,
         )
 
         title = case.title or "Untitled Case"
@@ -1234,15 +1234,8 @@ class ReportGenerationService:
         hypotheses = self._list_hypotheses(case)
         evidence_items = case.evidence or []
         solutions = case.solutions or []
-        milestones = (
-            case.progress.completed_milestones
-            if hasattr(case, "progress") and case.progress
-            else []
-        )
-        # A verdict a bound relapse followed is not listed as reached (#2100);
-        # a stored verdict with no bound rows is read as stored.
-        if "mitigation_verified" in milestones and not _mitigation_verified(case):
-            milestones = [m for m in milestones if m != "mitigation_verified"]
+        # The list the close prompt counts (#2100).
+        milestones = shown_milestones(case)
 
         parts = [
             f"# Closure Summary: {title}\n",

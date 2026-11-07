@@ -2020,27 +2020,32 @@ def _as_utc(ts: datetime) -> datetime:
     return ts if ts.tzinfo is not None else ts.replace(tzinfo=timezone.utc)
 
 
-def _relief_span(row) -> timedelta | None:
-    """The row's own data window when its provenance is vouched, it runs
-    forward, it is at least ``MITIGATION_SPAN_FLOOR`` long and it ends by the
-    time the row was recorded (observed data cannot end later), else None."""
-    start = getattr(row, "coverage_start_ts", None)
+def _dated_by_its_coverage(row) -> bool:
+    """Whether the row's coverage end dates its data: set, vouched, and no
+    later than the time the row was recorded (observed data cannot end
+    later). The one rule the relief row's choice and its span read."""
     end = getattr(row, "coverage_end_ts", None)
-    if start is None or end is None:
-        return None
-    if not is_vouched(getattr(row, "coverage_source", None)):
-        return None
-    start, end = _as_utc(start), _as_utc(end)
+    if end is None or not is_vouched(getattr(row, "coverage_source", None)):
+        return False
     recorded = getattr(row, "collected_at", None)
-    if recorded is not None and end > _as_utc(recorded):
+    return recorded is None or _as_utc(end) <= _as_utc(recorded)
+
+
+def _relief_span(row) -> timedelta | None:
+    """The row's own data window when its coverage end dates it
+    (``_dated_by_its_coverage``), it runs forward and it is at least
+    ``MITIGATION_SPAN_FLOOR`` long, else None."""
+    start = getattr(row, "coverage_start_ts", None)
+    if start is None or not _dated_by_its_coverage(row):
         return None
-    span = end - start
+    span = _as_utc(row.coverage_end_ts) - _as_utc(start)
     return span if span >= MITIGATION_SPAN_FLOOR else None
 
 
 def _relief_row(subjects: "SubjectIndex", turn: int):
-    """The bound relief row observed at ``turn``: the one whose vouched
-    coverage ends latest, else the last in the case's order (C10)."""
+    """The bound relief row observed at ``turn``: of those its coverage dates
+    (``_dated_by_its_coverage``), the one ending latest, else the last in the
+    case's order (C10)."""
     rows = [
         e
         for e in subjects.rows.values()
@@ -2048,12 +2053,7 @@ def _relief_row(subjects: "SubjectIndex", turn: int):
         and subjects.subject(e) == SUBJECT_PROBLEM
         and subjects.observed(e) == turn
     ]
-    dated = [
-        e
-        for e in rows
-        if getattr(e, "coverage_end_ts", None) is not None
-        and is_vouched(getattr(e, "coverage_source", None))
-    ]
+    dated = [e for e in rows if _dated_by_its_coverage(e)]
     if dated:
         return max(reversed(dated), key=lambda e: _as_utc(e.coverage_end_ts))
     return rows[-1] if rows else None
