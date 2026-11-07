@@ -12,15 +12,21 @@ Driven through ``LLMRouter.route`` with a real Anthropic provider and only the
 HTTP layer mocked, because the span is written there, from the SANITIZED prompt
 and messages the route builds. ``opik_context`` is patched in: ``opik`` is not a
 dependency of the standalone install.
+
+The same span and its trace carry the case and the enterprise, which is how the
+case delete finds them (#2102): ``TestTheTraceIsTaggedWithItsCase`` below.
 """
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
+from faultmaven.config.tenant_context import set_current_enterprise_id
+from faultmaven.infrastructure.llm import router as router_module
+from faultmaven.infrastructure.llm.cache import LLMResponseCache
 from faultmaven.infrastructure.llm.prompt_cache import CACHE_BOUNDARY
 from faultmaven.infrastructure.llm.providers.anthropic import AnthropicProvider
-from faultmaven.infrastructure.llm.providers.base import ProviderConfig
+from faultmaven.infrastructure.llm.providers.base import LLMResponse, ProviderConfig
 from faultmaven.infrastructure.llm.providers.registry import (
     ProviderRegistry,
     ProviderState,
@@ -83,9 +89,9 @@ def _registry() -> ProviderRegistry:
     return reg
 
 
-async def _span_update(**route_kwargs) -> dict:
-    """Route one call and return the kwargs the span was updated with."""
-    opik_context = MagicMock()
+async def _routed(*calls: dict, tracing: bool = True, opik_context=None) -> MagicMock:
+    """Route ``calls`` through one router; return the patched ``opik_context``."""
+    opik_context = opik_context or MagicMock()
     with (
         patch(
             "faultmaven.infrastructure.llm.router.get_registry",
@@ -93,7 +99,7 @@ async def _span_update(**route_kwargs) -> dict:
         ),
         patch(
             "faultmaven.infrastructure.llm.router._opik_tracing_enabled",
-            return_value=True,
+            return_value=tracing,
         ),
         patch("faultmaven.infrastructure.llm.router.OPIK_AVAILABLE", True),
         patch(
@@ -109,10 +115,17 @@ async def _span_update(**route_kwargs) -> dict:
         # cloud profile) ``route`` is wrapped in ``opik.track``, and forcing the
         # gate open above would otherwise drive the real SDK.
         route = getattr(LLMRouter.route, "__wrapped__", LLMRouter.route)
-        await route(
-            LLMRouter(), model="claude-sonnet-4-6", **vetted_kwargs(route_kwargs)
-        )
-    assert opik_context.update_current_span.call_count == 1
+        router = LLMRouter()
+        for call in calls:
+            await route(router, model="claude-sonnet-4-6", **vetted_kwargs(call))
+    return opik_context
+
+
+async def _span_update(**route_kwargs) -> dict:
+    """Route one call and return the kwargs the span was updated with."""
+    opik_context = await _routed(route_kwargs)
+    # The tag at entry, then this update (#2102).
+    assert opik_context.update_current_span.call_count == 2
     return opik_context.update_current_span.call_args.kwargs
 
 
@@ -160,3 +173,110 @@ async def test_input_without_the_boundary_is_recorded_as_before():
     span = await _span_update(prompt=prompt)
     assert span["input"]["prompt"] == prompt[:TELEMETRY_PAYLOAD_MAX_CHARS]
     assert span["metadata"]["prompt_prefix_elided"] is False
+
+
+@pytest.mark.usefixtures("restore_tenant_context")
+class TestTheTraceIsTaggedWithItsCase:
+    """#2102: ``LLMTraceEraser`` searches TRACE metadata by these two keys."""
+
+    OWNER = {"case_id": "case_2102", "enterprise_id": "ent-2102"}
+
+    async def test_a_call_for_a_case_tags_the_span_and_its_trace(self):
+        set_current_enterprise_id("ent-2102")
+
+        opik_context = await _routed({"prompt": "hi", "case_id": "case_2102"})
+
+        metadata = opik_context.update_current_span.call_args.kwargs["metadata"]
+        assert self.OWNER.items() <= metadata.items()
+        # At entry, then again with the content.
+        assert (
+            opik_context.update_current_trace.call_args_list
+            == [call(metadata=self.OWNER, thread_id="case_2102")] * 2
+        )
+
+    async def test_a_failed_call_is_tagged_at_entry(self):
+        """The SDK records ``str(exception)`` as ``error_info``, and a provider's
+        exception can embed its response body."""
+        set_current_enterprise_id("ent-2102")
+        opik_context = MagicMock()
+
+        with (
+            patch.object(
+                ProviderRegistry,
+                "route_request",
+                AsyncMock(side_effect=RuntimeError("provider said no")),
+            ),
+            pytest.raises(RuntimeError, match="provider said no"),
+        ):
+            await _routed(
+                {"prompt": "hi", "case_id": "case_2102"}, opik_context=opik_context
+            )
+
+        opik_context.update_current_trace.assert_called_once_with(
+            metadata=self.OWNER, thread_id="case_2102"
+        )
+        opik_context.update_current_span.assert_called_once_with(metadata=self.OWNER)
+
+    async def test_a_call_for_no_case_tags_the_enterprise_alone(self):
+        set_current_enterprise_id("ent-2102")
+
+        opik_context = await _routed({"prompt": "hi"})
+
+        metadata = opik_context.update_current_span.call_args.kwargs["metadata"]
+        assert metadata["enterprise_id"] == "ent-2102" and "case_id" not in metadata
+        opik_context.update_current_trace.assert_called_with(
+            metadata={"enterprise_id": "ent-2102"}
+        )
+
+    async def test_a_cached_answer_records_content_so_it_is_tagged_too(self):
+        set_current_enterprise_id("ent-2102")
+        answer = LLMResponse(
+            content="from the cache",
+            confidence=0.9,
+            provider="anthropic",
+            model="claude-sonnet-4-6",
+            tokens_used=1,
+            response_time_ms=1,
+        )
+
+        with patch.object(LLMResponseCache, "check", return_value=answer):
+            opik_context = await _routed({"prompt": "hi", "case_id": "case_2102"})
+
+        span = opik_context.update_current_span.call_args.kwargs
+        assert span["metadata"]["cached"] is True  # the cached path did run
+        assert self.OWNER.items() <= span["metadata"].items()
+        opik_context.update_current_trace.assert_called_with(
+            metadata=self.OWNER, thread_id="case_2102"
+        )
+
+    async def test_a_tag_that_raises_never_breaks_the_call_and_keeps_the_content_off(
+        self,
+    ):
+        opik_context = MagicMock()
+        opik_context.update_current_trace.side_effect = RuntimeError("no trace")
+
+        await _routed(
+            {"prompt": "hi", "case_id": "case_2102"}, opik_context=opik_context
+        )
+
+        opik_context.update_current_span.assert_not_called()
+
+    async def test_tracing_off_touches_neither(self):
+        opik_context = await _routed(
+            {"prompt": "hi", "case_id": "case_2102"}, tracing=False
+        )
+
+        opik_context.update_current_span.assert_not_called()
+        opik_context.update_current_trace.assert_not_called()
+
+    async def test_the_decorator_does_not_attach_a_return_value_to_the_trace(self):
+        """With ``create_duplicate_root_span=False`` the SDK would record the
+        raw return value as the trace's output."""
+        with (
+            patch.object(router_module, "OPIK_AVAILABLE", True),
+            patch.object(router_module, "opik", create=True) as opik,
+        ):
+            router_module._opik_track_llm("x")(AsyncMock())
+
+        opik.track.assert_called_once()
+        assert "create_duplicate_root_span" not in opik.track.call_args.kwargs

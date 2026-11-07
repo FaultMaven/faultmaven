@@ -64,6 +64,8 @@ async def _analyze_document(
     )
 
     async def _analyze(cap: int):
+        # An uploaded document, reached only from ``convert_document``: no case
+        # to tag, so its trace carries the enterprise alone (#2102, #2575).
         return await route_model_call(
             llm_router,
             messages=messages,

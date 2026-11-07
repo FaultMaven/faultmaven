@@ -84,8 +84,9 @@ class TestLocalTier2Analyze:
             query="what errors occurred",
             context=context,
             data_type=UnifiedDataType.LOGS,
-            redaction_ctx=disabled_redaction(),
+            redaction_ctx=disabled_redaction("case_2102"),
         )
+        assert service.llm_client.route.await_args.kwargs["case_id"] == "case_2102"
         assert result.backend_used == "local_llm"
         assert result.confidence == 0.6
         assert "Analysis:" in result.answer

@@ -147,11 +147,12 @@ class TestTriage:
                 _case(),
                 HAIKU,
                 classify_query(HAIKU),
-                redaction_ctx=disabled_redaction(),
+                redaction_ctx=disabled_redaction("case_2102"),
             )
             == OutOfBandKind.OFF_TOPIC
         )
         kwargs = router.route.call_args.kwargs
+        assert kwargs["case_id"] == "case_2102"
         assert kwargs["max_tokens"] == TRIAGE_MAX_TOKENS
         assert kwargs["temperature"] == 0.0
 
@@ -704,10 +705,11 @@ class TestAnswer:
             _case(),
             HAIKU,
             OutOfBandKind.OFF_TOPIC,
-            redaction_ctx=disabled_redaction(),
+            redaction_ctx=disabled_redaction("case_2102"),
         )
         assert text == "Canberra. Back to postgres?"
         assert router.route.call_args.kwargs["max_tokens"] == ANSWER_MAX_TOKENS
+        assert router.route.call_args.kwargs["case_id"] == "case_2102"
 
     async def test_empty_or_failed_answer_falls_back_without_raising(self):
         router = MagicMock()

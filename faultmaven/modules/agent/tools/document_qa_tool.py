@@ -396,6 +396,7 @@ Answer:"""
                 self._llm_router,
                 model=synthesis_model,
                 messages=messages,
+                case_id=redaction_ctx.case_id,
                 max_tokens=cap,
                 temperature=0.3,  # Low temperature for factual accuracy
                 # This is grounded transformation of retrieved chunks, not
