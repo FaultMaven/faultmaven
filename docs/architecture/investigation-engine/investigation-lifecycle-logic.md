@@ -2221,10 +2221,10 @@ The user decides the mitigation is sufficient (or RCA is infeasible, see §2.4) 
 **What a closure says about a mitigation** (#2100, D3.3/D5.3). The engine's closure texts state the record, from one helper (`terminal_transitions.mitigation_closure_line`, over `cause_assurance.mitigation_observation`), never a verdict the record does not hold. The helper states each fact that holds, in this order:
 
 1. the user's declaration: "you reported the mitigation stable (turn D)";
-2. the bound relief: "the problem was observed relieved after the mitigation (turn N)", or "after the mitigation and a later fix" when a dated SOLUTION ran between the attempt and the relief. When the relief row's own coverage is vouched, runs forward and spans at least a minute, ", and the data it cites covers about 5 minutes" follows (minutes under 2 hours, hours under 2 days, then days). An instant or unvouched coverage names the turn only. No message clock is read;
+2. the bound relief: "the problem was observed relieved after the mitigation (turn N)", or "after the mitigation and a later fix" when a dated SOLUTION ran after the attempt's turn, by the relief's. When the relief row's own coverage is vouched, runs forward, spans at least a minute and ends by the time the row was recorded, ", and the data it cites covers about 5 minutes" follows (rounded half up, then minutes under 2 hours, hours under 2 days, then days; a naive timestamp is read as UTC). An instant, unvouched or future-dated coverage names the turn only. No message clock is read;
 3. a bound persistence: "the problem was seen again at turn M" (", before that relief" when a later relief holds);
-4. the stall's proceed: "the investigation went on without the mitigation shown to hold (turn P)";
-5. with none of these: "a mitigation was applied (turn A); no re-check bound to the problem is on record". A stored `verified` with no bound row reads this way (the record is read as stored).
+4. the stall's proceed: "the investigation went on before the mitigation was verified (turn P)";
+5. with none of these: "a mitigation was applied (turn A); no re-check bound to the problem is on record". A stored `verified` with no bound row reads this way (the record is read as stored). An attempt with no execution turn reads "a mitigation was applied; its attempt is undated, so no re-check can be tied to it": no bound row is read against it, so F5 cannot apply to it either.
 
 "stabilized" appears in none of them. Where the line goes, by reason:
 
@@ -2232,7 +2232,7 @@ The user decides the mitigation is sufficient (or RCA is infeasible, see §2.4) 
 - **follows the reason's reply**: `closed_rca_infeasible`, `solution_deferred`, `closed_restatement_held`, `closed_insufficient_evidence`;
 - **omitted**: `inquiry_only` (no record can exist), `closed_false_alarm` (the problem was not present) and `resolution_declined` (the fix was confirmed).
 
-The report's Mitigation Status section opens with the line on every case with a mitigation record, a false alarm's excepted, then lists the solutions; a `resolution_declined` close renders no Mitigation Status. The rca-infeasible propose-close leads with it (§2.4.3). The LLM-driven close keeps the model's own prose; the rule binds the engine's lines.
+The report's Mitigation Status section opens with the line on every case with a mitigation record, a false alarm's excepted, then lists the solutions; a `resolution_declined` close renders no Mitigation Status. The report's closure label for `mitigation_sufficient` is "Closed — a mitigation was applied; root-cause analysis deferred", and its milestones list "mitigation verified" only while that verdict holds (a stored verdict with no bound row is read as stored). The rca-infeasible propose-close leads with it (§2.4.3). The LLM-driven close keeps the model's own prose; the rule binds the engine's lines.
 
 **Post-terminal**: agent offers runbook generation only for RESOLVED cases (§4.5.1); CLOSED cases get the closure summary only.
 

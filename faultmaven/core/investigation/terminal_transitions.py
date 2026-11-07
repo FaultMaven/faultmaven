@@ -24,6 +24,7 @@ Reference: investigation-lifecycle-logic.md Section 1.4
 """
 
 import logging
+import math
 import re
 from datetime import UTC, datetime
 from typing import Any, Callable, Iterable, Optional
@@ -519,7 +520,9 @@ def _mitigation_declared_stable(case: "Case") -> bool:
     declaration turn, with no relief after it. A persistence in the
     declaration's own turn or before it is what the user declared over, so
     it stays their call. ``disposition_at_turn`` is ``emission_turn``-dated,
-    so a replayed declaration compares at its hold turn."""
+    so a replayed declaration compares at its hold turn. An undated attempt
+    has no bound reads (``mitigation_relief`` dates them from the attempt),
+    so F5 cannot apply to it and its declaration stands."""
     mitigation = getattr(case.progress, "mitigation", None) if case.progress else None
     if getattr(mitigation, "disposition", None) != DECLARED_STABLE:
         return False
@@ -535,16 +538,15 @@ def _mitigation_declared_stable(case: "Case") -> bool:
 
 
 def _span_words(span) -> str:
-    """A data window in the unit a reader takes in: minutes under 2 hours,
-    hours under 2 days, then days (#2100, C2)."""
+    """A data window in the unit a reader takes in, rounded half up before
+    the unit is picked: minutes under 2 hours, hours under 2 days, then
+    days (#2100, C2)."""
     seconds = span.total_seconds()
-    if seconds < 2 * 3600:
-        n, unit = round(seconds / 60), "minute"
-    elif seconds < 2 * 86400:
-        n, unit = round(seconds / 3600), "hour"
-    else:
-        n, unit = round(seconds / 86400), "day"
-    n = max(1, n)
+    n, unit = math.floor(seconds / 60 + 0.5), "minute"
+    if n >= 120:
+        n, unit = math.floor(seconds / 3600 + 0.5), "hour"
+        if n >= 48:
+            n, unit = math.floor(seconds / 86400 + 0.5), "day"
     return f"about {n} {unit}{'' if n == 1 else 's'}"
 
 
@@ -555,7 +557,8 @@ def mitigation_closure_line(case: "Case") -> Optional[str]:
     mitigation. It states each fact that holds, in this order: the user's
     declaration, the bound relief (with the relief row's data window when
     ``mitigation_observation`` dates one), the problem seen again, the
-    stall's proceed; with none of them, that no bound re-check is on record.
+    stall's proceed; with none of them, that no bound re-check is on record,
+    or, for an attempt with no turn, that none can be tied to it.
     The word for the user's declaration is "stable", and "stabilized" is
     never used: the line states the record, not a verdict."""
     seen = mitigation_observation(case)
@@ -585,10 +588,15 @@ def mitigation_closure_line(case: "Case") -> Optional[str]:
         )
     if seen.disposition == PROCEED_UNMITIGATED:
         clauses.append(
-            "the investigation went on without the mitigation shown to hold"
+            "the investigation went on before the mitigation was verified"
             + at(seen.disposition_turn)
         )
-    if not clauses:
+    if not clauses and seen.attempt_turn is None:
+        clauses.append(
+            "a mitigation was applied; its attempt is undated, so no re-check can "
+            "be tied to it"
+        )
+    elif not clauses:
         clauses.append(
             f"a mitigation was applied{at(seen.attempt_turn)}; no re-check bound to "
             "the problem is on record"

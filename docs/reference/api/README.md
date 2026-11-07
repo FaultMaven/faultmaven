@@ -5345,9 +5345,9 @@ Why a CLOSED case ended: the most specific reason that holds when it is closed. 
 - `resolution_declined` — The fix was confirmed to work, and the user chose not to mark the case resolved.
 - `solution_deferred` — The cause was identified and a fix documented, and the case was closed without being resolved.
 - `closed_rca_infeasible` — The root cause was declared structurally unreachable, with a rationale (for example an uncontrollable external dependency or an end-of-life system).
-- `mitigation_sufficient` — A mitigation relieved the symptom, as a re-check bound to the problem observed or as the user declared, with no relapse seen after it; root-cause analysis was deferred.
+- `mitigation_sufficient` — A mitigation relieved the symptom, as a re-check bound to the problem observed with no relapse seen after it, or as the user declared with no relapse seen after the declaration; root-cause analysis was deferred.
 - `closed_restatement_held` — The evidence supported a cause, but its statement never said more than the problem itself, so no root cause was established.
-- `closed_insufficient_evidence` — No more specific reason held: the problem could not be verified, no cause could be grounded in the evidence, or a cause was identified but no fix was confirmed to work, none was left documented to apply, and no mitigation held.
+- `closed_insufficient_evidence` — No more specific reason held: the problem could not be verified, no cause could be grounded in the evidence, or a cause was identified but no fix was confirmed to work, none was left documented to apply, and no mitigation was verified or declared stable without a relapse seen after it.
 
 ---
 

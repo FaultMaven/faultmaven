@@ -449,8 +449,9 @@ _CLOSURE_REASON_MEANINGS: Mapping[ClosureReason, str] = closure_reason_table(
         ),
         ClosureReason.MITIGATION_SUFFICIENT: (
             "A mitigation relieved the symptom, as a re-check bound to the problem "
-            "observed or as the user declared, with no relapse seen after it; "
-            "root-cause analysis was deferred."
+            "observed with no relapse seen after it, or as the user declared with "
+            "no relapse seen after the declaration; root-cause analysis was "
+            "deferred."
         ),
         ClosureReason.CLOSED_RESTATEMENT_HELD: (
             "The evidence supported a cause, but its statement never said more "
@@ -460,7 +461,8 @@ _CLOSURE_REASON_MEANINGS: Mapping[ClosureReason, str] = closure_reason_table(
             "No more specific reason held: the problem could not be verified, no "
             "cause could be grounded in the evidence, or a cause was identified "
             "but no fix was confirmed to work, none was left documented to apply, "
-            "and no mitigation held."
+            "and no mitigation was verified or declared stable without a relapse "
+            "seen after it."
         ),
     }
 )

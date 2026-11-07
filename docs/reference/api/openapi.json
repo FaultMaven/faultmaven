@@ -2743,9 +2743,9 @@
           "The fix was confirmed to work, and the user chose not to mark the case resolved.",
           "The cause was identified and a fix documented, and the case was closed without being resolved.",
           "The root cause was declared structurally unreachable, with a rationale (for example an uncontrollable external dependency or an end-of-life system).",
-          "A mitigation relieved the symptom, as a re-check bound to the problem observed or as the user declared, with no relapse seen after it; root-cause analysis was deferred.",
+          "A mitigation relieved the symptom, as a re-check bound to the problem observed with no relapse seen after it, or as the user declared with no relapse seen after the declaration; root-cause analysis was deferred.",
           "The evidence supported a cause, but its statement never said more than the problem itself, so no root cause was established.",
-          "No more specific reason held: the problem could not be verified, no cause could be grounded in the evidence, or a cause was identified but no fix was confirmed to work, none was left documented to apply, and no mitigation held."
+          "No more specific reason held: the problem could not be verified, no cause could be grounded in the evidence, or a cause was identified but no fix was confirmed to work, none was left documented to apply, and no mitigation was verified or declared stable without a relapse seen after it."
         ]
       },
       "DatabaseTimeoutsStatus": {

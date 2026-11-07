@@ -33,6 +33,7 @@ from faultmaven.modules.case.contracts import (
     ClosureReason,
     EvidenceCategory,
     InvestigationActionType,
+    InvestigationStage,
     ProblemStatus,
     ProposedAction,
     Solution,
@@ -56,6 +57,20 @@ _PRESENT = EvidenceCategory.SYMPTOM_EVIDENCE
 _SUFFICIENT = ClosureReason.MITIGATION_SUFFICIENT
 _T0 = datetime(2026, 11, 7, 8, 0, tzinfo=timezone.utc)
 _RELIEVED_7 = "the problem was observed relieved after the mitigation (turn 7)"
+
+
+_HOUR = timedelta(hours=1)
+
+
+def _covered(seconds: float, source: str | None = "iso8601", *, end=_T0) -> dict:
+    """A relief row's coverage: ``seconds`` of data ending at ``end``, the row
+    recorded at ``_T0`` (fixed, never the wall clock)."""
+    return dict(
+        coverage_start_ts=end - timedelta(seconds=seconds),
+        coverage_end_ts=end,
+        coverage_source=source,
+        collected_at=_T0,
+    )
 
 
 def _mitigation(attempt: int = 6, *, relief: int | None = None):
@@ -110,11 +125,7 @@ async def test_the_closure_states_the_relief_and_never_stabilized(coverage, said
     dated = {}
     if coverage is not None:
         source, minutes = coverage
-        dated = dict(
-            coverage_start_ts=_T0,
-            coverage_end_ts=_T0 + timedelta(minutes=minutes),
-            coverage_source=source,
-        )
+        dated = _covered(minutes * 60, source)
     bound_row(case, turn=7, rechecks=shown, **dated)
     await _turn(eng, case, 7, mitigation_verified=True)
     assert case.progress.mitigation.verified is True, "premise: registered"
@@ -129,7 +140,8 @@ async def test_the_closure_states_the_relief_and_never_stabilized(coverage, said
     assert _section(report, "## Mitigation Status") == (
         f"## Mitigation Status\n\nT{_RELIEVED_7[1:]}{said}.\n"
     )
-    assert "Closed — a mitigation relieved the symptom; root-cause analysis" in report
+    assert "Closed — a mitigation was applied; root-cause analysis deferred" in report
+    assert "mitigation verified" in _section(report, "## Investigation State")
     assert "stabiliz" not in reply + report
 
 
@@ -154,42 +166,46 @@ async def test_the_rca_infeasible_close_leads_with_the_relief():
 
 
 @pytest.mark.parametrize(
-    "seconds, source, said",
+    "seconds, source, end, said",
     [
-        (59, "iso8601", None),
-        (60, "iso8601", "about 1 minute"),
-        (0, "caller_declared", None),
-        (-300, "iso8601", None),
-        (119 * 60, "epoch_s", "about 119 minutes"),
-        (2 * 3600, "iso8601", "about 2 hours"),
-        (47 * 3600, "iso8601", "about 47 hours"),
-        (90 * 86400, "iso8601", "about 90 days"),
-        (3600, None, None),
+        (59, "iso8601", _T0, None),
+        (60, "iso8601", _T0, "about 1 minute"),
+        (90, "iso8601", _T0, "about 2 minutes"),
+        (150, "iso8601", _T0, "about 3 minutes"),
+        (0, "caller_declared", _T0, None),
+        (-300, "iso8601", _T0, None),
+        (119 * 60, "epoch_s", _T0, "about 119 minutes"),
+        (7170, "iso8601", _T0, "about 2 hours"),
+        (47 * 3600, "iso8601", _T0, "about 47 hours"),
+        (47.6 * 3600, "iso8601", _T0, "about 2 days"),
+        (90 * 86400, "iso8601", _T0, "about 90 days"),
+        (3600, None, _T0, None),
+        (3600, "iso8601", _T0 + timedelta(days=1095), None),
+        (300, "iso8601", _T0.replace(tzinfo=None), "about 5 minutes"),
     ],
     ids=[
         "under-the-floor",
         "the-floor",
+        "ninety-seconds-rounds-up",
+        "half-rounds-up",
         "instant",
         "negative",
         "minutes",
-        "hours",
+        "rounded-to-120-minutes-is-hours",
         "hours-under-two-days",
+        "rounded-to-48-hours-is-days",
         "ninety-days",
         "unrecorded-source",
+        "ends-after-the-row-was-recorded",
+        "naive-is-utc",
     ],
 )
-def test_the_span_has_a_floor_and_human_units(seconds, source, said):
-    """The relief row's own vouched window, forward and at least a minute long,
-    in minutes under 2 hours, hours under 2 days, then days (C2)."""
+def test_the_span_has_a_floor_and_human_units(seconds, source, end, said):
+    """The relief row's own vouched window, forward, at least a minute long and
+    ending by the time the row was recorded, rounded half up before the unit is
+    picked: minutes under 2 hours, hours under 2 days, then days (C2)."""
     case, shown = _mitigation()
-    bound_row(
-        case,
-        turn=7,
-        rechecks=shown,
-        coverage_start_ts=_T0,
-        coverage_end_ts=_T0 + timedelta(seconds=seconds),
-        coverage_source=source,
-    )
+    bound_row(case, turn=7, rechecks=shown, **_covered(seconds, source, end=end))
     line = mitigation_closure_line(case)
     if said is None:
         assert line == _RELIEVED_7
@@ -199,20 +215,17 @@ def test_the_span_has_a_floor_and_human_units(seconds, source, said):
 
 
 def test_the_relief_row_is_the_one_its_coverage_dates_latest():
-    """At the relief turn: the bound row whose vouched coverage ends latest,
-    else the last recorded (C10). An unbound row is never it."""
+    """At the relief turn: the bound row whose vouched coverage ends latest, a
+    naive end read as UTC, else the last recorded (C10). An unbound row is
+    never it."""
     case, shown = _mitigation()
-    dated = bound_row(
-        case,
-        turn=7,
-        rechecks=shown,
-        coverage_start_ts=_T0,
-        coverage_end_ts=_T0 + timedelta(minutes=30),
-        coverage_source="iso8601",
+    naive = bound_row(
+        case, turn=7, rechecks=shown, **_covered(1800, end=_T0.replace(tzinfo=None))
     )
+    bound_row(case, turn=7, rechecks=shown, **_covered(600, end=_T0 - _HOUR))
     bound_row(case, turn=7, rechecks=shown, coverage_end_ts=_T0 + timedelta(days=1))
     seen = mitigation_observation(case)
-    assert (seen.relief_turn, seen.relief_row_id) == (7, dated.evidence_id)
+    assert (seen.relief_turn, seen.relief_row_id) == (7, naive.evidence_id)
     assert seen.span == timedelta(minutes=30)
 
     case, shown = _mitigation()
@@ -222,23 +235,27 @@ def test_the_relief_row_is_the_one_its_coverage_dates_latest():
     assert mitigation_observation(case).relief_row_id == last.evidence_id
 
 
-def test_a_relief_after_a_later_fix_names_the_fix():
-    """A dated SOLUTION between the attempt and the relief (C5)."""
+@pytest.mark.parametrize(
+    "fix_turn, later", [(6, True), (7, True), (4, False)], ids=["between", "at", "same"]
+)
+def test_a_relief_after_a_later_fix_names_the_fix(fix_turn, later):
+    """A dated SOLUTION after the attempt's turn, by the relief's (C5); one
+    accepted in the mitigation's own turn is not later."""
     case, shown = _mitigation(attempt=4)
     case.proposed_actions.append(
         ProposedAction(
             case_id=case.case_id,
             action_type=InvestigationActionType.SOLUTION,
             description="raise the pool to 50",
-            proposed_in_turn=5,
+            proposed_in_turn=3,
             state="accepted",
-            accepted_in_turn=6,
+            accepted_in_turn=fix_turn,
         )
     )
     bound_row(case, turn=7, rechecks=shown)
+    after = "the mitigation and a later fix" if later else "the mitigation"
     assert mitigation_closure_line(case) == (
-        "the problem was observed relieved after the mitigation and a later fix "
-        "(turn 7)"
+        f"the problem was observed relieved after {after} (turn 7)"
     )
 
 
@@ -246,22 +263,44 @@ def test_no_line_without_an_accepted_mitigation():
     assert mitigation_closure_line(_case()) is None
 
 
-@pytest.mark.parametrize("attempt", [4, None], ids=["dated", "legacy"])
-def test_a_stored_verdict_with_no_bound_row_says_so(attempt):
-    """The dev corpus's 17: ``verified`` stored, no bound row. It closes as
-    stored, and the line says no bound re-check is on record; an attempt with
-    no turn names none (C9, C10)."""
+async def test_a_stored_verdict_with_no_bound_row_says_so():
+    """The dev corpus's shape: ``verified`` stored, no bound row. It closes as
+    stored, says no bound re-check is on record, and keeps its "mitigation
+    verified" milestone (the read-as-stored residual, C9)."""
     case, _shown = _mitigation(attempt=4)
     case.progress.mitigation.verified = True
-    if attempt is None:
-        case.proposed_actions[-1].accepted_in_turn = None
     closed = _closed(case)
     assert closed.closure_reason is _SUFFICIENT
-    turn = " (turn 4)" if attempt else ""
     assert _terminal_confirmation_response(closed) == (
-        f"Case closed — a mitigation was applied{turn}; no re-check bound to the "
+        "Case closed — a mitigation was applied (turn 4); no re-check bound to the "
         "problem is on record; root-cause analysis was deferred."
     )
+    assert "mitigation verified" in (
+        _section(await _report(closed), "## Investigation State")
+    )
+
+
+def test_an_undated_attempt_says_no_re_check_can_be_tied_to_it():
+    """An attempt with no execution turn reads no bound row, even with bound rows
+    on the case (C10)."""
+    case, shown = _mitigation(attempt=4, relief=7)
+    bound_row(case, _PRESENT, turn=9, rechecks=shown)
+    case.proposed_actions[-1].accepted_in_turn = None
+    assert mitigation_closure_line(case) == (
+        "a mitigation was applied; its attempt is undated, so no re-check can be "
+        "tied to it"
+    )
+
+
+async def test_a_relapsed_verdict_is_not_listed_as_a_milestone_reached():
+    """Relief at 7 verified, seen again at 9: the report's Investigation State
+    drops "mitigation verified", as the closure reason does."""
+    case, shown = _mitigation(attempt=6, relief=7)
+    case.progress.mitigation.verified = True
+    bound_row(case, _PRESENT, turn=9, rechecks=shown)
+    state = _section(await _report(_closed(case)), "## Investigation State")
+    assert "mitigation accepted" in state
+    assert "mitigation verified" not in state
 
 
 # ---------------------------------------------------------------------------
@@ -324,9 +363,7 @@ async def test_the_stalls_proceed_is_said_in_the_reply_and_the_report():
     record.disposition, record.disposition_at_turn = "proceed_unmitigated", 8
     closed = _closed(case)
     assert closed.closure_reason is ClosureReason.CLOSED_INSUFFICIENT_EVIDENCE
-    proceeded = (
-        "The investigation went on without the mitigation shown to hold (turn 8)."
-    )
+    proceeded = "The investigation went on before the mitigation was verified (turn 8)."
     assert _terminal_confirmation_response(closed).endswith(f"summary. {proceeded}")
     assert proceeded in _section(await _report(closed), "## Mitigation Status")
 
@@ -357,6 +394,7 @@ async def test_an_rca_infeasible_close_states_a_relapse_and_not_the_mitigation()
 # ---------------------------------------------------------------------------
 
 _LINE = f"T{_RELIEVED_7[1:]}."
+
 _WITH_RECORD = {
     ClosureReason.INQUIRY_ONLY: None,
     ClosureReason.CLOSED_FALSE_ALARM: None,
@@ -423,7 +461,31 @@ async def test_a_declined_resolution_and_a_false_alarm_report_no_line():
 _ASK = "is on record but unregistered: send mitigation_verified to record it"
 
 
-async def test_the_block_names_an_unregistered_relief_until_it_is_registered():
+def _fix_accepted(case, turn: int) -> None:
+    """A SOLUTION run at ``turn``: past MITIGATION, the case is in TREATMENT,
+    where the block renders the fix."""
+    case.proposed_actions.append(
+        ProposedAction(
+            case_id=case.case_id,
+            action_type=InvestigationActionType.SOLUTION,
+            description="raise the pool to 50",
+            proposed_in_turn=turn,
+            state="accepted",
+            accepted_in_turn=turn,
+        )
+    )
+    case.progress.solution_accepted = True
+
+
+@pytest.mark.parametrize(
+    "settle",
+    [dict(mitigation_verified=True), dict(mitigation_disposition="declared_stable")],
+    ids=["verified", "declared"],
+)
+async def test_the_block_names_an_unregistered_relief_until_it_settles(settle):
+    """The ask stands while the case is in MITIGATION. Once the label or a
+    disposition settles the record, the block renders no mitigation line at
+    all, so no ask: with a fix in TREATMENT the block is shown, without them."""
     eng, case, shown = await _accepted()
     await _turn(eng, case, 7, _relief(case, 7, shown))
     row = case.evidence[-1].evidence_id
@@ -431,32 +493,36 @@ async def test_the_block_names_an_unregistered_relief_until_it_is_registered():
     assert f"  - relief row {row} (turn 7) {_ASK}" in block
     assert case.progress.mitigation.verified is False, "premise: the label unsent"
 
-    await _turn(eng, case, 8, mitigation_verified=True)
-    assert case.progress.mitigation.verified is True
-    assert _ASK not in build_fix_verification_block(case)
+    await _turn(eng, case, 8, **settle)
+    _fix_accepted(case, 9)
+    assert case.current_stage is InvestigationStage.TREATMENT, "premise"
+    block = build_fix_verification_block(case)
+    assert "The engine's record of the fix" in block
+    assert "Mitigation:" not in block and _ASK not in block
 
 
 @pytest.mark.parametrize(
-    "shape", ["declared", "not_rechecked", "relapse", "revision_pending"]
+    "shape", ["not_rechecked", "relapse", "revision_pending", "unverified"]
 )
-async def test_no_ask_without_a_holding_relief_on_an_unsettled_record(shape):
-    """A disposition settles it; no relief, or one the problem was seen after,
-    has nothing to register; under a pending revision the gate refuses the
-    label (C6)."""
+async def test_no_ask_where_the_gate_would_refuse_the_label(shape):
+    """No relief, or one the problem was seen after, has nothing to register;
+    under a pending revision or on an unverified problem the gate refuses the
+    label (``_mitigation_verify_refusal``), so the block does not ask for it
+    (C6). The mitigation's lines still render."""
     eng, case, shown = await _accepted()
     if shape != "not_rechecked":
         await _turn(eng, case, 7, _relief(case, 7, shown))
-    if shape == "declared":
-        await _turn(eng, case, 8, mitigation_disposition="declared_stable")
-    elif shape == "relapse":
+    if shape == "relapse":
         await _turn(eng, case, 8, _relief(case, 8, shown, category=_PRESENT))
     elif shape == "revision_pending":
         case.progress.problem_status = ProblemStatus.REVISION_PENDING
+    elif shape == "unverified":
+        case.progress.problem_status = ProblemStatus.UNVERIFIED
+    assert case.current_stage is InvestigationStage.MITIGATION, "premise"
     block = build_fix_verification_block(case)
+    assert "Mitigation: executed turn 6: " in block
     assert _ASK not in block
-    if shape == "not_rechecked":
-        assert "Mitigation: executed turn 6: not yet re-checked" in block
-    if shape == "revision_pending":
+    if shape in ("revision_pending", "unverified"):
         assert "problem re-checked relieved at turn 7" in block
 
 
@@ -468,7 +534,9 @@ async def test_no_ask_without_a_holding_relief_on_an_unsettled_record(shape):
 def test_no_published_meaning_claims_a_verified_mitigation():
     meanings = " ".join(_CLOSURE_REASON_MEANINGS.values())
     assert "verified mitigation" not in meanings
-    assert "as the user declared" in _CLOSURE_REASON_MEANINGS[_SUFFICIENT]
-    assert "none was left documented to apply, and no mitigation held." in (
+    assert "no relapse seen after the declaration" in (
+        _CLOSURE_REASON_MEANINGS[_SUFFICIENT]
+    )
+    assert "no mitigation was verified or declared stable without a relapse" in (
         _CLOSURE_REASON_MEANINGS[ClosureReason.CLOSED_INSUFFICIENT_EVIDENCE]
     )

@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from typing import TYPE_CHECKING
 
@@ -2008,26 +2008,33 @@ class MitigationObservation:
     holding: bool
     relief_row_id: str | None
     span: timedelta | None
-    #: A dated SOLUTION ran between the attempt and the relief.
+    #: A dated SOLUTION ran after the attempt's turn, by the relief's.
     fix_before_relief: bool
-    verified: bool
     disposition: str | None
     disposition_turn: int | None
 
 
+def _as_utc(ts: datetime) -> datetime:
+    """``ts`` with a timezone: a naive one is read as UTC, the clock the
+    extractors write."""
+    return ts if ts.tzinfo is not None else ts.replace(tzinfo=timezone.utc)
+
+
 def _relief_span(row) -> timedelta | None:
     """The row's own data window when its provenance is vouched, it runs
-    forward and it is at least ``MITIGATION_SPAN_FLOOR`` long, else None."""
+    forward, it is at least ``MITIGATION_SPAN_FLOOR`` long and it ends by the
+    time the row was recorded (observed data cannot end later), else None."""
     start = getattr(row, "coverage_start_ts", None)
     end = getattr(row, "coverage_end_ts", None)
     if start is None or end is None:
         return None
     if not is_vouched(getattr(row, "coverage_source", None)):
         return None
-    try:
-        span = end - start
-    except TypeError:  # one aware, one naive: no common clock
+    start, end = _as_utc(start), _as_utc(end)
+    recorded = getattr(row, "collected_at", None)
+    if recorded is not None and end > _as_utc(recorded):
         return None
+    span = end - start
     return span if span >= MITIGATION_SPAN_FLOOR else None
 
 
@@ -2048,10 +2055,7 @@ def _relief_row(subjects: "SubjectIndex", turn: int):
         and is_vouched(getattr(e, "coverage_source", None))
     ]
     if dated:
-        try:
-            return max(reversed(dated), key=lambda e: e.coverage_end_ts)
-        except TypeError:  # aware beside naive: fall back to the case's order
-            pass
+        return max(reversed(dated), key=lambda e: _as_utc(e.coverage_end_ts))
     return rows[-1] if rows else None
 
 
@@ -2078,8 +2082,7 @@ def mitigation_observation(
         span=_relief_span(row) if row is not None else None,
         fix_before_relief=relief is not None
         and attempt is not None
-        and any(attempt <= t <= relief for t in _dated_fix_turns(case)),
-        verified=bool(getattr(mitigation, "verified", False)),
+        and any(attempt < t <= relief for t in _dated_fix_turns(case)),
         disposition=getattr(mitigation, "disposition", None),
         disposition_turn=getattr(mitigation, "disposition_at_turn", None),
     )

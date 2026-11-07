@@ -50,7 +50,9 @@ from faultmaven.core.investigation.cause_assurance import (
     symptom_elimination_rows,
 )
 from faultmaven.core.investigation.evidence_need_surfacing import is_ask_exhausted
-from faultmaven.core.investigation.problem_status import problem_on_hold
+from faultmaven.core.investigation.milestone_engine.stage_gates import (
+    _mitigation_verify_refusal,
+)
 from faultmaven.core.investigation.terminal_transitions import (
     _relief_without_cause_recheck,
     declined_resolve_entry,
@@ -283,16 +285,16 @@ def _held_mark(case: Case, need) -> str:
 
 def _mitigation_lines(case: Case, subjects) -> list[str]:
     """The mitigation's attempt, what the problem did after it, and the rows a
-    re-check can name (#2100). A holding relief on an unsettled record (no
-    verdict, no disposition) is named with the ask for ``mitigation_verified``,
-    the verdict's trigger (#2602, ruled (b)), except while the problem is on
-    hold, where the gate refuses it."""
+    re-check can name (#2100). Rendered only in MITIGATION, where the record
+    carries no verdict and no disposition: a holding relief is named with the
+    ask for ``mitigation_verified``, the verdict's trigger (#2602, ruled (b)),
+    when the gate would accept it (``_mitigation_verify_refusal`` is None)."""
     seen = mitigation_observation(case, subjects)
     relief, present = seen.relief_turn, seen.present_turn
     unregistered = []
     if relief is not None and seen.holding:
         state = f"problem re-checked relieved at turn {relief}"
-        if not (seen.verified or seen.disposition or problem_on_hold(case)):
+        if _mitigation_verify_refusal(case) is None:
             unregistered = [
                 f"  - relief row {seen.relief_row_id} (turn {relief}) is on record "
                 "but unregistered: send mitigation_verified to record it"

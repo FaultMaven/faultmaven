@@ -114,10 +114,10 @@ def test_rca_infeasible_creates_pending_closure():
     assert case.offer_record.open.kind == "close"
     assert case.offer_record.open.closure_reason == "closed_rca_infeasible"
     assert "third-party API outage" in case.offer_record.open.summary
-    # A stored verdict with no bound re-check: the lead says so (#2100, C1).
+    # A stored verdict on an undated attempt: the lead says so (#2100, C1).
     assert case.offer_record.open.summary == (
-        "A mitigation was applied; no re-check bound to the problem is on record. "
-        "Since third-party API outage, shall we close this case?"
+        "A mitigation was applied; its attempt is undated, so no re-check can be "
+        "tied to it. Since third-party API outage, shall we close this case?"
     )
 
     assert case.offer_record.open.basis == "rca_infeasible"

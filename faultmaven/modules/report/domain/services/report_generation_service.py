@@ -472,8 +472,7 @@ class ReportGenerationService:
                 "Closed — root cause structurally unreachable"
             ),
             ClosureReason.MITIGATION_SUFFICIENT: (
-                "Closed — a mitigation relieved the symptom; root-cause analysis "
-                "deferred"
+                "Closed — a mitigation was applied; root-cause analysis deferred"
             ),
             ClosureReason.CLOSED_RESTATEMENT_HELD: (
                 "Closed — a cause was supported by the evidence but never stated "
@@ -1218,6 +1217,14 @@ class ReportGenerationService:
         (product decision): a closed case's graph reads as a conclusion
         the case never reached.
         """
+        # Function-local import: the _assurance_note precedent for report →
+        # core.investigation reads.
+        from faultmaven.core.investigation.terminal_transitions import (
+            _mitigation_verified,
+            mitigation_closure_line,
+            mitigation_sentence,
+        )
+
         title = case.title or "Untitled Case"
         created = to_json_compatible(case.created_at) if case.created_at else "Unknown"
         closed = to_json_compatible(case.closed_at) if case.closed_at else "Unknown"
@@ -1232,6 +1239,10 @@ class ReportGenerationService:
             if hasattr(case, "progress") and case.progress
             else []
         )
+        # A verdict a bound relapse followed is not listed as reached (#2100);
+        # a stored verdict with no bound rows is read as stored.
+        if "mitigation_verified" in milestones and not _mitigation_verified(case):
+            milestones = [m for m in milestones if m != "mitigation_verified"]
 
         parts = [
             f"# Closure Summary: {title}\n",
@@ -1315,12 +1326,6 @@ class ReportGenerationService:
         # the bleeding" move). It opens with what the record holds about it
         # (``mitigation_closure_line``, #2100), then the solutions. A false
         # alarm's problem was not present, so its section names no relief.
-        # Function-local import: the _assurance_note precedent.
-        from faultmaven.core.investigation.terminal_transitions import (
-            mitigation_closure_line,
-            mitigation_sentence,
-        )
-
         was_mitigated = (
             case.progress is not None and case.progress.mitigation is not None
         )

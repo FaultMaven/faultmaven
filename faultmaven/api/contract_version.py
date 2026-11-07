@@ -162,18 +162,20 @@ CONTRACT_CHANGES: tuple[ContractChange, ...] = (
 not.
 
 * `mitigation_sufficient`: "A mitigation relieved the symptom, as a re-check
-  bound to the problem observed or as the user declared, with no relapse seen
-  after it; root-cause analysis was deferred." It read "A verified mitigation
-  relieved the symptom, and root-cause analysis was not pursued further." The
-  value covers the user's declaration that the mitigation holds as well as an
-  observed relief, and a re-check bound to the problem that sees it present
-  after that declaration, as the latest observation, closes the case under
-  another reason.
+  bound to the problem observed with no relapse seen after it, or as the user
+  declared with no relapse seen after the declaration; root-cause analysis was
+  deferred." It read "A verified mitigation relieved the symptom, and
+  root-cause analysis was not pursued further." The value covers the user's
+  declaration that the mitigation holds as well as an observed relief, and a
+  re-check bound to the problem that sees it present after that declaration,
+  as the latest observation, closes the case under another reason.
 * `closed_insufficient_evidence`: its last clause reads "or a cause was
   identified but no fix was confirmed to work, none was left documented to
-  apply, and no mitigation held", where it read "with no fix or verified
-  mitigation on record". A case whose only applied fixes were interceptions
-  closes here with a fix applied, which the old clause denied.
+  apply, and no mitigation was verified or declared stable without a relapse
+  seen after it", where it read "with no fix or verified mitigation on
+  record". A case whose only applied fixes were interceptions closes here with
+  a fix applied, which the old clause denied, and so does a mitigation verified
+  or declared stable that a bound re-check later saw relapse.
 
 The engine's closure texts state the mitigation's record (the relief and the
 turn it was observed, the user's declaration, a relapse) instead of
