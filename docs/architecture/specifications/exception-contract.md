@@ -247,9 +247,10 @@ Two things a global handler cannot reach, and what covers them:
   that are not `FaultMavenException`s and have no handler itself.
   `convert_document`'s broad arm raises
   `global_service_exception_http_exception(e)` when `is_llm_failure(e)`, and
-  its `FaultMavenException` arm does so for the LLM's `ExternalCallTimeout`;
-  an `LLMProviderError` with `LLM_CONFIG_ERROR` there is Step 0's 503
-  `LLM_UNAVAILABLE` refusal (#1632).
+  its `FaultMavenException` arm does so for the LLM's `ExternalCallTimeout`.
+  The configuration error itself, an `LLMProviderError` with
+  `LLM_CONFIG_ERROR` or the LLM breaker latched with it, is Step 0's 503
+  `LLM_UNAVAILABLE` refusal there; wrapped, the mapping decides (#1632).
 
 The typed signals are read off the `__cause__` chain rather than copied at
 wrap time, so a wrap is lossless only if it links: every

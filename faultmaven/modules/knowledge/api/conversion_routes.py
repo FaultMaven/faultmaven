@@ -43,10 +43,11 @@ from faultmaven.config.idempotency_key import IDEMPOTENCY_REPLAY_UNAVAILABLE
 from faultmaven.config.tenant_context import writable_enterprise_id
 from faultmaven.exceptions import (
     LLM_CONFIG_ERROR,
+    CircuitBreakerError,
     ExternalCallTimeout,
     FaultMavenException,
     RawModelContentRefused,
-    walk_cause_chain,
+    is_llm_breaker,
 )
 from faultmaven.infrastructure.concurrency.request_fingerprint import (
     digest_file,
@@ -343,6 +344,7 @@ async def convert_document(
         # translation instead of being swallowed into a 500 below. The LLM's
         # own deadline is the one with no handler: answered here (#1632).
         if isinstance(e, ExternalCallTimeout) and is_llm_failure(e):
+            logger.error(f"Conversion failed: {e}", exc_info=True)
             raise global_service_exception_http_exception(e) from e
         raise
 
@@ -391,13 +393,15 @@ async def convert_document(
         raise
     except Exception as e:
         logger.error(f"Conversion failed: {e}", exc_info=True)
-        # The LLM failures that are not FaultMavenExceptions (#1632). A
-        # provider the registry cannot configure is Step 0's refusal; the
-        # open breaker, or one wrapped, answers as an LLMException passed
-        # above does. Another service's breaker keeps the 500 below.
-        if any(
-            isinstance(c, LLMProviderError) and c.error_code == LLM_CONFIG_ERROR
-            for c in walk_cause_chain(e)
+        # The LLM failures that are not FaultMavenExceptions (#1632). The LLM
+        # layer's configuration error, raised or latched by the open LLM
+        # breaker, is Step 0's refusal in either state; anything else on an
+        # LLM chain answers as an LLMException passed above does, where an
+        # outer typed declaration decides. Another service's breaker keeps
+        # the 500 below.
+        if getattr(e, "error_code", None) == LLM_CONFIG_ERROR and (
+            isinstance(e, LLMProviderError)
+            or (isinstance(e, CircuitBreakerError) and is_llm_breaker(e))
         ):
             return JSONResponse(
                 status_code=503,

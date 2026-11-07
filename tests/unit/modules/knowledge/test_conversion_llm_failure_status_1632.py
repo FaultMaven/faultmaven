@@ -5,13 +5,15 @@ The route re-raises ``FaultMavenException`` to the global handlers, so an
 ``LLMException`` there answered 402/429/503 already. The LLM's open breaker and
 its configuration error are not ``FaultMavenException``s: they fell to the
 route's broad arm, 500 ``LLM_GENERATION_FAILED``. The LLM's deadline is one,
-but no handler took it: the raw 500. A provider the registry cannot configure
-is Step 0's ``LLM_UNAVAILABLE`` refusal. Any other failure keeps its answer.
+but no handler took it: the raw 500. A provider the registry cannot configure,
+raised or latched by the open breaker, is Step 0's ``LLM_UNAVAILABLE`` refusal.
+Any other failure keeps its answer.
 ``TestClient``, because the route takes a multipart upload.
 """
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -21,16 +23,20 @@ from fastapi.testclient import TestClient
 
 from faultmaven.api.exception_handlers import (
     get_exception_handlers,
+    global_service_exception_http_exception,
     http_exception_handler,
     internal_server_error_handler,
 )
+from faultmaven.core.investigation.milestone_engine.errors import MilestoneEngineError
 from faultmaven.exceptions import (
     LLM_BREAKER_SERVICE,
     LLM_CONFIG_ERROR,
     PROVIDER_AUTH_FAILED,
     QUOTA_EXHAUSTED,
     LLMException,
+    ServiceException,
 )
+from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.models.exceptions import LLMProviderError
 from faultmaven.modules.knowledge.api.conversion_routes import (
     _get_conversion_service,
@@ -61,6 +67,8 @@ from tests.unit.api.test_llm_failure_shapes_1635 import (
 from tests.unit.api.test_service_exception_global_handler import _BILLING_TEXT
 
 pytestmark = pytest.mark.unit
+
+conversion_router_module = "faultmaven.modules.knowledge.api.conversion_routes"
 
 
 @pytest.fixture
@@ -111,10 +119,6 @@ _LLM_FAILURES = {
         lambda: _breaker(error_code=PROVIDER_AUTH_FAILED),
         PROVIDER_ERROR,
     ),
-    "breaker-latched-config": (
-        lambda: _breaker(error_code=LLM_CONFIG_ERROR),
-        PROVIDER_ERROR,
-    ),
     "breaker-wrapped": (lambda: _from(RuntimeError("x"), _breaker()), UNAVAILABLE),
     "provider-error": (lambda: LLMProviderError("failed"), PROVIDER_ERROR),
     "deadline": (lambda: _deadline(LLM_BREAKER_SERVICE), UNAVAILABLE),
@@ -143,17 +147,77 @@ def test_a_billing_latched_breaker_answers_as_the_billing_llm_exception(
     assert breaker.headers["x-error-code"] == billing.headers["x-error-code"]
 
 
-def test_an_unconfigured_provider_is_step_0s_refusal(client, convert):
-    config = LLMProviderError("no provider", error_code=LLM_CONFIG_ERROR)
-    unconfigured = _convert(client, convert, config)
-    step_0 = _convert(
-        client,
-        convert,
-        ConversionRejectedError(LLM_NOT_CONFIGURED, error_code="LLM_UNAVAILABLE"),
-    )
+def _config_error() -> LLMProviderError:
+    return LLMProviderError("no provider", error_code=LLM_CONFIG_ERROR)
 
-    assert unconfigured.status_code == step_0.status_code == 503
-    assert unconfigured.json() == step_0.json()
+
+def _step_0(client, convert):
+    refusal = ConversionRejectedError(LLM_NOT_CONFIGURED, error_code="LLM_UNAVAILABLE")
+    return _convert(client, convert, refusal)
+
+
+class _Router(BaseExternalClient):
+    """A real client under the LLM router's breaker name, opening on 2."""
+
+    def __init__(self):
+        super().__init__(
+            client_name="router_1632",
+            service_name=LLM_BREAKER_SERVICE,
+            circuit_breaker_threshold=2,
+        )
+
+
+def test_an_unconfigured_provider_is_step_0s_refusal_before_and_after_the_breaker_opens(
+    client, convert
+):
+    router, provider = _Router(), AsyncMock(side_effect=_config_error())
+
+    async def through_the_router(**_):
+        return await router.call_external("route_llm_request", provider)
+
+    answers = [_convert(client, convert, through_the_router) for _ in range(4)]
+
+    assert provider.await_count == 2  # the breaker refused the last two
+    step_0 = _step_0(client, convert)
+    assert step_0.status_code == 503
+    for answer in answers:
+        assert (answer.status_code, answer.json()) == (503, step_0.json())
+
+
+@pytest.mark.parametrize(
+    "outer",
+    [
+        pytest.param(
+            lambda: type("Transient", (Exception,), {"retryable": True})(),
+            id="declared-retryable",
+        ),
+        pytest.param(
+            lambda: MilestoneEngineError("x", error_code="RETRY_EXHAUSTED"),
+            id="retry-exhausted",
+        ),
+        pytest.param(
+            lambda: ServiceException("conversion failed"), id="service-exception"
+        ),
+    ],
+)
+def test_a_config_error_under_a_typed_declaration_answers_the_mapping(
+    client, convert, outer
+):
+    failure = _from(outer(), _config_error())
+    expected = global_service_exception_http_exception(failure)
+    response = _convert(client, convert, failure)
+
+    assert response.status_code == expected.status_code
+    assert response.headers["x-error-code"] == expected.headers["x-error-code"]
+    assert response.headers.get("retry-after") == expected.headers.get("Retry-After")
+
+
+def test_the_llm_deadline_is_logged_with_its_traceback(client, convert, caplog):
+    with caplog.at_level(logging.ERROR, logger=conversion_router_module):
+        _convert(client, convert, _deadline(LLM_BREAKER_SERVICE))
+
+    (record,) = [r for r in caplog.records if r.name == conversion_router_module]
+    assert record.levelno == logging.ERROR and record.exc_info
 
 
 def test_a_refusal_raised_from_an_llm_failure_keeps_its_answer(client, convert):
@@ -214,6 +278,7 @@ async def _mode_error(failure):
         pytest.param(_deadline(LLM_BREAKER_SERVICE), True, id="llm-deadline"),
         pytest.param(_breaker(error_code=QUOTA_EXHAUSTED), False, id="billing-latch"),
         pytest.param(_breaker(error_code=PROVIDER_AUTH_FAILED), False, id="auth-latch"),
+        pytest.param(_breaker(error_code=LLM_CONFIG_ERROR), False, id="config-latch"),
         pytest.param(_breaker(service="ChromaDB"), False, id="chromadb"),
         pytest.param(ValueError("boom"), False, id="value-error"),
     ],
