@@ -211,10 +211,14 @@ Upload (file + scope + metadata)
   │     Stages 0-5 run off the event loop on two workers (#2153). No worker
   │     free within 120 s: REJECT with HTTP 503 / CONVERSION_BUSY +
   │     Retry-After. A PDF page pypdf's budgets refuse is skipped and named
-  │     in a warning. A run past 120 s (the worker stops at the next page), a
-  │     document-level budget, or refused pages leaving too little to
-  │     convert: REJECT with HTTP 422 / DOCUMENT_TOO_COMPLEX. Corruption
-  │     pypdf reports as a limit stays FILE_CORRUPT
+  │     in a warning. A run past 120 s (the worker stops at its next PDF
+  │     page, or DOCX paragraph or table row, #2597; one DOCX paragraph and
+  │     one table row are each read whole, so a paragraph of millions of runs
+  │     or a row of huge width, gridSpan or merge depth runs to its end, the
+  │     preparation seam's residual, tracked on #2596), a document-level
+  │     budget, or refused pages leaving too little to convert: REJECT with
+  │     HTTP 422 / DOCUMENT_TOO_COMPLEX. Corruption pypdf reports as a
+  │     limit stays FILE_CORRUPT
   │
   ├── 1b. Already-a-Runbook Gate (deterministic, no LLM)
   │     Detect: runbook frontmatter (≥4 of id/domain/service/symptom_class/
