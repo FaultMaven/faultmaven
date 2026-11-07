@@ -26,9 +26,11 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from typing import TYPE_CHECKING
 
+from faultmaven.core.investigation.coverage_trust import is_vouched
 from faultmaven.core.investigation.lifecycle_metrics import (
     absence_confirmation_bearing_rejected_total,
     absence_row_link_refused_total,
@@ -70,6 +72,7 @@ __all__ = [
     "BearingFrame",
     "CauseAssuranceGrade",
     "FixWindow",
+    "MitigationObservation",
     "SubjectIndex",
     "absence_row_link_refused",
     "bearing_frame",
@@ -98,6 +101,7 @@ __all__ = [
     "confirming_window",
     "latest_fix_window",
     "licensed_roots",
+    "mitigation_observation",
     "observation_subject",
     "observed_turn",
     "off_cause_attempt",
@@ -1984,6 +1988,104 @@ def mitigation_holds(relief: int | None, present: int | None) -> bool:
     predicate the verdict's derivation, the closure reason and the
     ``<fix_verification>`` block read (#2100)."""
     return present is None or (relief is not None and present < relief)
+
+
+#: The shortest data window a relief row's span is stated for: 27 of 30
+#: covered absence rows on the dev corpus are instants (#2100, C2).
+MITIGATION_SPAN_FLOOR = timedelta(seconds=60)
+
+
+@dataclass(frozen=True)
+class MitigationObservation:
+    """What the record holds about the case's mitigation (#2100, D3.2): the
+    attempt, the latest bound relief and persistence after it, the relief
+    row and its data window, and the disposition. One clock, the rows' data
+    turns; ``span`` is the relief row's own coverage, never a message time."""
+
+    attempt_turn: int | None
+    relief_turn: int | None
+    present_turn: int | None
+    holding: bool
+    relief_row_id: str | None
+    span: timedelta | None
+    #: A dated SOLUTION ran after the attempt's turn, by the relief's.
+    fix_before_relief: bool
+    disposition: str | None
+    disposition_turn: int | None
+
+
+def _as_utc(ts: datetime) -> datetime:
+    """``ts`` with a timezone: a naive one is read as UTC, the clock the
+    extractors write."""
+    return ts if ts.tzinfo is not None else ts.replace(tzinfo=timezone.utc)
+
+
+def _dated_by_its_coverage(row) -> bool:
+    """Whether the row's coverage end dates its data: set, vouched, and no
+    later than the time the row was recorded (observed data cannot end
+    later). The one rule the relief row's choice and its span read."""
+    end = getattr(row, "coverage_end_ts", None)
+    if end is None or not is_vouched(getattr(row, "coverage_source", None)):
+        return False
+    recorded = getattr(row, "collected_at", None)
+    return recorded is None or _as_utc(end) <= _as_utc(recorded)
+
+
+def _relief_span(row) -> timedelta | None:
+    """The row's own data window when its coverage end dates it
+    (``_dated_by_its_coverage``), it runs forward and it is at least
+    ``MITIGATION_SPAN_FLOOR`` long, else None."""
+    start = getattr(row, "coverage_start_ts", None)
+    if start is None or not _dated_by_its_coverage(row):
+        return None
+    span = _as_utc(row.coverage_end_ts) - _as_utc(start)
+    return span if span >= MITIGATION_SPAN_FLOOR else None
+
+
+def _relief_row(subjects: "SubjectIndex", turn: int):
+    """The bound relief row observed at ``turn``: of those its coverage dates
+    (``_dated_by_its_coverage``), the one ending latest, else the last in the
+    case's order (C10)."""
+    rows = [
+        e
+        for e in subjects.rows.values()
+        if e.category == EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE
+        and subjects.subject(e) == SUBJECT_PROBLEM
+        and subjects.observed(e) == turn
+    ]
+    dated = [e for e in rows if _dated_by_its_coverage(e)]
+    if dated:
+        return max(reversed(dated), key=lambda e: _as_utc(e.coverage_end_ts))
+    return rows[-1] if rows else None
+
+
+def mitigation_observation(
+    case: "Case", subjects: "SubjectIndex | None" = None
+) -> MitigationObservation | None:
+    """The case's accepted mitigation as the record holds it, or None with
+    none accepted. Read by the closure line, the closure reason's F5 and the
+    ``<fix_verification>`` block (#2100, #2602); no recurrence detector."""
+    progress = getattr(case, "progress", None)
+    mitigation = getattr(progress, "mitigation", None) if progress else None
+    if mitigation is None or not getattr(mitigation, "accepted", False):
+        return None
+    subjects = subject_index(case) if subjects is None else subjects
+    attempt = mitigation_attempt_turn(case)
+    relief, present = mitigation_relief(case, subjects)
+    row = _relief_row(subjects, relief) if relief is not None else None
+    return MitigationObservation(
+        attempt_turn=attempt,
+        relief_turn=relief,
+        present_turn=present,
+        holding=mitigation_holds(relief, present),
+        relief_row_id=getattr(row, "evidence_id", None),
+        span=_relief_span(row) if row is not None else None,
+        fix_before_relief=relief is not None
+        and attempt is not None
+        and any(attempt < t <= relief for t in _dated_fix_turns(case)),
+        disposition=getattr(mitigation, "disposition", None),
+        disposition_turn=getattr(mitigation, "disposition_at_turn", None),
+    )
 
 
 def symptom_elimination_rows(

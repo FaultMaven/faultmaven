@@ -80,7 +80,7 @@ them, whatever its kind, a new confirmation included
 (``terminal_offer_answered_this_turn``). Exempt from both: the user's own
 offers, as from a decline; the resolve the INV-37 pivot opens in place of the
 close the user accepted (``pivoted_from_close``); and the rca-infeasible
-stabilized close, opened only on the turn a mitigation is verified or
+mitigation close, opened only on the turn a mitigation is verified or
 declared stable (#2100), which earns it as a new confirmation earns a resolve. The decline is checked first,
 so a binding decline is what a refusal reports (``offer_refusal`` names the
 reason).
