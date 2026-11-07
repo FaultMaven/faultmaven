@@ -170,8 +170,10 @@ not.
   after that declaration, as the latest observation, closes the case under
   another reason.
 * `closed_insufficient_evidence`: its last clause reads "or a cause was
-  identified with no fix applied, and no mitigation that held", where it read
-  "with no fix or verified mitigation on record".
+  identified but no fix was confirmed to work, none was left documented to
+  apply, and no mitigation held", where it read "with no fix or verified
+  mitigation on record". A case whose only applied fixes were interceptions
+  closes here with a fix applied, which the old clause denied.
 
 The engine's closure texts state the mitigation's record (the relief and the
 turn it was observed, the user's declaration, a relapse) instead of

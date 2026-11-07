@@ -469,6 +469,6 @@ def test_no_published_meaning_claims_a_verified_mitigation():
     meanings = " ".join(_CLOSURE_REASON_MEANINGS.values())
     assert "verified mitigation" not in meanings
     assert "as the user declared" in _CLOSURE_REASON_MEANINGS[_SUFFICIENT]
-    assert "no mitigation that held" in (
+    assert "none was left documented to apply, and no mitigation held." in (
         _CLOSURE_REASON_MEANINGS[ClosureReason.CLOSED_INSUFFICIENT_EVIDENCE]
     )

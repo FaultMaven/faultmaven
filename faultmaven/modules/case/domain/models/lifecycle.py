@@ -459,7 +459,8 @@ _CLOSURE_REASON_MEANINGS: Mapping[ClosureReason, str] = closure_reason_table(
         ClosureReason.CLOSED_INSUFFICIENT_EVIDENCE: (
             "No more specific reason held: the problem could not be verified, no "
             "cause could be grounded in the evidence, or a cause was identified "
-            "with no fix applied, and no mitigation that held."
+            "but no fix was confirmed to work, none was left documented to apply, "
+            "and no mitigation held."
         ),
     }
 )
