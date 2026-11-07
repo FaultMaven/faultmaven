@@ -19,6 +19,7 @@ called, or the real eraser over a client whose backend is unreachable.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -29,7 +30,7 @@ from uuid import uuid4
 import httpx
 import pytest
 from fastapi import FastAPI
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text, update
 
 from faultmaven.api.exception_handlers import get_exception_handlers
 from faultmaven.api.v1.auth_dependencies import require_authentication
@@ -69,8 +70,10 @@ from tests.integration.modules.knowledge.test_delete_discards_its_draft_2369 imp
     _convert,
     _draft,
     _job,
+    _needs_postgres,
     _open_case,
     _reset,
+    own_pg,
 )
 from tests.integration.modules.knowledge.test_upload_writes_rows_after_ingest_2365 import (  # noqa: F401
     OWNER,
@@ -652,7 +655,10 @@ class TestTheKbReset:
         owners = [("conv_a", ENT)] + ([("conv_p", ENT)] if all_drafts else [])
         assert kb.eraser.owners == owners
         assert all(item_id in call.items for call in kb.eraser.calls)
-        assert (await _state(kb.factory))[1] == set()
+        drafts, items = await _state(kb.factory)
+        assert items == set()
+        # The upload's draft goes too: its conversion made no model call.
+        assert (drafts == {}) is all_drafts
 
     @pytest.mark.parametrize("all_drafts", [False, True], ids=["default", "all-drafts"])
     async def test_what_lands_during_the_purge_is_kept_and_reported(
@@ -693,3 +699,67 @@ class TestTheKbReset:
         assert await _reset(kb.factory, monkeypatch, all_drafts=True) == 1
 
         assert await _state(kb.factory) == ({"d_conv_a": "verified"}, {item_id})
+
+
+@pytest.mark.postgres
+@_needs_postgres
+@pytest.mark.parametrize(
+    "touch_item", [True, False], ids=["completes-row", "link-only"]
+)
+async def test_a_publication_the_reset_lock_waits_on_is_kept(
+    own_pg, monkeypatch, capsys, touch_item  # noqa: F811
+):
+    """On PostgreSQL, a runbook's completing transaction holds its row and
+    links its draft while the reset's lock waits on that row. Its conversion
+    was not purged, so the reset keeps the runbook and its draft, and says so."""
+    factory = own_pg
+    eraser = _Eraser(factory, _Sessions(factory))
+    monkeypatch.setattr(services, "llm_trace_eraser", lambda settings: eraser)
+    monkeypatch.setattr(tracing, "init_opik_tracing", lambda settings=None: None)
+    await _seed_item(factory, _item("ia"))
+    await _add(factory, *_model_job("conv_a"), _draft("d_a", "conv_a", item_id="ia"))
+    await _seed_item(factory, _item("x", ingest_complete=False))
+    await _add(factory, *_model_job("conv_new"), _draft("d_new", "conv_new"))
+    blocked_by = text(
+        "SELECT count(*) FROM pg_locks WHERE NOT granted "
+        "AND :pid = ANY(pg_blocking_pids(pid))"
+    )
+
+    async with factory() as completing, factory() as probe:
+        if touch_item:
+            await completing.execute(
+                update(KnowledgeItemModel)
+                .where(KnowledgeItemModel.item_id == "x")
+                .values(ingest_complete=True)
+            )
+        await completing.execute(
+            update(ConversionDraftModel)
+            .where(ConversionDraftModel.id == "d_new")
+            .values(status="verified", knowledge_item_id="x")
+        )
+        pid = (await completing.execute(text("SELECT pg_backend_pid()"))).scalar()
+        reset = asyncio.create_task(_reset(factory, monkeypatch, all_drafts=False))
+        waited = False
+        for _ in range(600):
+            if reset.done():
+                break
+            waited = bool((await probe.execute(blocked_by, {"pid": pid})).scalar())
+            await probe.rollback()
+            if waited:
+                break
+            await asyncio.sleep(0.05)
+        await completing.commit()
+        assert await reset == 0
+
+    assert waited, "the reset's lock never waited on the completing transaction"
+    assert eraser.owners == [("conv_a", ENT)]
+    async with factory() as session:
+        items = set(
+            (await session.execute(select(KnowledgeItemModel.item_id))).scalars()
+        )
+        kept = await session.get(ConversionDraftModel, "d_new")
+    assert items == {"x"}
+    assert (kept.status, kept.knowledge_item_id) == ("verified", "x")
+    assert "Kept 1 knowledge_items rows written while the reset ran" in (
+        capsys.readouterr().out
+    )
