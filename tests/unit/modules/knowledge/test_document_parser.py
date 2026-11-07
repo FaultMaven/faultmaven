@@ -1,7 +1,7 @@
 """Unit tests for DocumentParser.
 
 Tests text extraction from PDF, DOCX, TXT, Markdown, and HTML formats.
-External libraries (pypdf, python-docx, beautifulsoup4) are mocked.
+pypdf and beautifulsoup4 are mocked; DOCX files are built with python-docx.
 """
 
 import textwrap
@@ -533,55 +533,41 @@ class TestPdfExtraction:
 
 
 # ---------------------------------------------------------------------------
-# DOCX extraction (mocked)
+# DOCX extraction
 # ---------------------------------------------------------------------------
 
 
 class TestDocxExtraction:
-    """Tests for DOCX extraction with mocked python-docx."""
+    """Tests for DOCX extraction over files python-docx builds. The parser
+    reads a paragraph's style id from its XML (#2597), so a mocked
+    ``para.style`` would be a mock it never reads."""
 
-    def _make_paragraph(self, text, style_name=None):
-        """Helper to create a mock paragraph."""
-        para = MagicMock()
-        para.text = text
-        style = MagicMock()
-        style.name = style_name
-        para.style = style
-        return para
+    def _write_docx(self, path, paragraphs, tables=()):
+        """Write ``(text, style)`` paragraphs, then tables of rows of cell text."""
+        from docx import Document
 
-    def _make_table(self, rows_data):
-        """Helper to create a mock table with rows of cell text."""
-        table = MagicMock()
-        rows = []
-        for row_cells in rows_data:
-            row = MagicMock()
-            cells = [MagicMock(text=cell) for cell in row_cells]
-            row.cells = cells
-            rows.append(row)
-        table.rows = rows
-        return table
+        doc = Document()
+        for text, style in paragraphs:
+            doc.add_paragraph(text, style=style)
+        for rows in tables:
+            table = doc.add_table(rows=len(rows), cols=len(rows[0]))
+            for row, cells in zip(table.rows, rows):
+                for cell, text in zip(row.cells, cells):
+                    cell.text = text
+        doc.save(str(path))
 
     @pytest.mark.unit
     def test_extract_docx_paragraphs(self, parser, tmp_path):
         """Paragraphs are joined with double newlines."""
         # Arrange
         docx_file = tmp_path / "doc.docx"
-        docx_file.write_bytes(b"fake docx")
+        self._write_docx(
+            docx_file, [("First paragraph", "Normal"), ("Second paragraph", "Normal")]
+        )
 
-        mock_doc = MagicMock()
-        mock_doc.paragraphs = [
-            self._make_paragraph("First paragraph", "Normal"),
-            self._make_paragraph("Second paragraph", "Normal"),
-        ]
-        mock_doc.tables = []
-
-        with patch.dict(
-            "sys.modules",
-            {"docx": MagicMock(Document=MagicMock(return_value=mock_doc))},
-        ):
-            result = parser.extract_document_text(
-                docx_file, content_type="application/msword"
-            ).text
+        result = parser.extract_document_text(
+            docx_file, content_type="application/msword"
+        ).text
 
         # Assert
         assert "First paragraph" in result
@@ -592,24 +578,19 @@ class TestDocxExtraction:
         """DOCX heading styles are converted to markdown headings."""
         # Arrange
         docx_file = tmp_path / "headings.docx"
-        docx_file.write_bytes(b"fake docx")
+        self._write_docx(
+            docx_file,
+            [
+                ("Title", "Heading 1"),
+                ("Subtitle", "Heading 2"),
+                ("Section", "Heading 3"),
+                ("Body text", "Normal"),
+            ],
+        )
 
-        mock_doc = MagicMock()
-        mock_doc.paragraphs = [
-            self._make_paragraph("Title", "Heading 1"),
-            self._make_paragraph("Subtitle", "Heading 2"),
-            self._make_paragraph("Section", "Heading 3"),
-            self._make_paragraph("Body text", "Normal"),
-        ]
-        mock_doc.tables = []
-
-        with patch.dict(
-            "sys.modules",
-            {"docx": MagicMock(Document=MagicMock(return_value=mock_doc))},
-        ):
-            result = parser.extract_document_text(
-                docx_file, content_type="application/msword"
-            ).text
+        result = parser.extract_document_text(
+            docx_file, content_type="application/msword"
+        ).text
 
         # Assert
         assert "# Title" in result
@@ -622,24 +603,19 @@ class TestDocxExtraction:
         """Empty paragraphs are excluded."""
         # Arrange
         docx_file = tmp_path / "sparse.docx"
-        docx_file.write_bytes(b"fake docx")
+        self._write_docx(
+            docx_file,
+            [
+                ("Real text", "Normal"),
+                ("", "Normal"),
+                ("   ", "Normal"),
+                ("More text", "Normal"),
+            ],
+        )
 
-        mock_doc = MagicMock()
-        mock_doc.paragraphs = [
-            self._make_paragraph("Real text", "Normal"),
-            self._make_paragraph("", "Normal"),
-            self._make_paragraph("   ", "Normal"),
-            self._make_paragraph("More text", "Normal"),
-        ]
-        mock_doc.tables = []
-
-        with patch.dict(
-            "sys.modules",
-            {"docx": MagicMock(Document=MagicMock(return_value=mock_doc))},
-        ):
-            result = parser.extract_document_text(
-                docx_file, content_type="application/msword"
-            ).text
+        result = parser.extract_document_text(
+            docx_file, content_type="application/msword"
+        ).text
 
         # Assert
         assert "Real text" in result
@@ -653,29 +629,15 @@ class TestDocxExtraction:
         """DOCX tables are converted to markdown table syntax."""
         # Arrange
         docx_file = tmp_path / "table.docx"
-        docx_file.write_bytes(b"fake docx")
+        self._write_docx(
+            docx_file,
+            [("Before table", "Normal")],
+            [[["Host", "Status"], ["srv1", "OK"], ["srv2", "DOWN"]]],
+        )
 
-        mock_doc = MagicMock()
-        mock_doc.paragraphs = [
-            self._make_paragraph("Before table", "Normal"),
-        ]
-        mock_doc.tables = [
-            self._make_table(
-                [
-                    ["Host", "Status"],
-                    ["srv1", "OK"],
-                    ["srv2", "DOWN"],
-                ]
-            )
-        ]
-
-        with patch.dict(
-            "sys.modules",
-            {"docx": MagicMock(Document=MagicMock(return_value=mock_doc))},
-        ):
-            result = parser.extract_document_text(
-                docx_file, content_type="application/msword"
-            ).text
+        result = parser.extract_document_text(
+            docx_file, content_type="application/msword"
+        ).text
 
         # Assert
         assert "| Host | Status |" in result

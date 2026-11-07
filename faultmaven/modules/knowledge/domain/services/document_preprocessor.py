@@ -71,12 +71,14 @@ TRIAGE_SAMPLE_TOKENS = 2000
 #: from its own start (#2153). The route has no other limit until the ingress's
 #: 660 s, so both waits and the model calls after them fit, and a legitimate
 #: dense PDF (10.7 s measured for one page) has room. Work a caller abandons is
-#: bounded by the check between pages, not by this.
+#: bounded by the checks between PDF pages and DOCX paragraphs and tables, not
+#: by this.
 EXTRACTION_TIMEOUT_SECONDS = 120
 
-#: ``Retry-After`` on ``CONVERSION_BUSY``. A PDF worker held when a request
-#: gives up has ended, or stops at its next page, within one bound of it. A
-#: worker on any other format has no such checkpoint and runs to its end (#2597).
+#: ``Retry-After`` on ``CONVERSION_BUSY``. A PDF or DOCX worker held when a
+#: request gives up has ended, or stops at its next page, paragraph or table,
+#: within one bound of it (#2597). A worker on any other format has no such
+#: checkpoint and runs to its end.
 CONVERSION_BUSY_RETRY_AFTER_SECONDS = EXTRACTION_TIMEOUT_SECONDS
 
 #: Where Stages 0-5 run: CPU over the caller's file, off the event loop (#1417's
@@ -84,10 +86,11 @@ CONVERSION_BUSY_RETRY_AFTER_SECONDS = EXTRACTION_TIMEOUT_SECONDS
 #: frees the slot on timeout while the thread runs on, bounding nothing. A pool
 #: worker stays taken until its work ends, so at most two run, and a queued one
 #: whose caller gave up is cancelled and never runs. A thread cannot be killed,
-#: so a started worker whose caller gave up checks between PDF pages and stops
-#: after its current one; process exit waits for that page. The route unlinking
-#: the temp file meanwhile is safe on Linux: an open file outlives its name, and
-#: a worker not yet reading it fails with a result nobody reads.
+#: so a started worker whose caller gave up checks between PDF pages, and DOCX
+#: paragraphs and tables, and stops after its current one; process exit waits
+#: for that one. The route unlinking the temp file meanwhile is safe on Linux:
+#: an open file outlives its name, and a worker not yet reading it fails with a
+#: result nobody reads.
 _EXTRACTION_POOL = ThreadPoolExecutor(
     max_workers=2, thread_name_prefix="document-extract"
 )
@@ -849,9 +852,10 @@ class DocumentPreprocessor:
         Two waits, each up to ``EXTRACTION_TIMEOUT_SECONDS``: for a worker, then
         for its run, timed from when it started. A request that gets no worker
         is ``CONVERSION_BUSY``, and its queued work is cancelled; one whose run
-        outlasts the bound is refused, and its worker stops at the next page.
-        Each bound is scoped to its own wait, so a ``TimeoutError`` raised in
-        the worker propagates as the error it is.
+        outlasts the bound is refused, and its worker stops at its next PDF
+        page, or DOCX paragraph or table. Each bound is scoped to its own wait,
+        so a ``TimeoutError`` raised in the worker propagates as the error it
+        is.
         """
         loop = asyncio.get_running_loop()
         started, abandoned = loop.create_future(), threading.Event()
@@ -901,7 +905,7 @@ class DocumentPreprocessor:
                 )
         finally:
             # Queued: cancelled, so it never runs. Running: it stops after its
-            # current page. Finished: neither does anything.
+            # current page, paragraph or table. Finished: neither does anything.
             abandoned.set()
             job.cancel()
         if isinstance(prepared, PreprocessingResult):
