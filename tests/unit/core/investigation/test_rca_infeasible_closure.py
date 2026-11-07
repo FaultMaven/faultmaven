@@ -2,7 +2,8 @@
 
 When the LLM marks rca_infeasible=True on ProblemVerification and the
 ``mitigation_verified`` mitigation gate later fires, the engine must
-propose closing the case as stabilized (User-Agent Handshake).
+propose closing the case, stating the mitigation's record (User-Agent
+Handshake, #2100).
 Reference: investigation-lifecycle-logic.md §2.4.
 
 Post-redesign (unified opportunistic flow, no path fork): there is no
@@ -113,7 +114,11 @@ def test_rca_infeasible_creates_pending_closure():
     assert case.offer_record.open.kind == "close"
     assert case.offer_record.open.closure_reason == "closed_rca_infeasible"
     assert "third-party API outage" in case.offer_record.open.summary
-    assert "shall we close this case as stabilized?" in case.offer_record.open.summary
+    # A stored verdict on an undated attempt: the lead says so (#2100, C1).
+    assert case.offer_record.open.summary == (
+        "A mitigation was applied; its attempt is undated, so no re-check can be "
+        "tied to it. Since third-party API outage, shall we close this case?"
+    )
 
     assert case.offer_record.open.basis == "rca_infeasible"
     assert [card["label"] for card in project_offers(case).pair] == [
@@ -270,8 +275,8 @@ async def test_the_models_same_turn_proposal_leaves_the_engines_close(model_prop
     assert offer.kind == "close"
     assert offer.closure_reason == "closed_rca_infeasible"
     assert offer.summary == (
-        "The mitigation is verified and stable. Since third-party API outage, "
-        "shall we close this case as stabilized?"
+        "The problem was observed relieved after the mitigation (turn 1). Since "
+        "third-party API outage, shall we close this case?"
     )
     assert offer.summary in result["agent_response"]
 

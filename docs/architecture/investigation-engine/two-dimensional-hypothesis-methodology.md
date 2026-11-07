@@ -1262,7 +1262,8 @@ states that identity in the methodology's terms.
   or user declines):** the ladder is **capped** at the deepest *reachable,
   controllable* rung. The accepted terminal action is a **state interception** (R8)
   at an intermediate node; the root is never eliminated, so the case CLOSES
-  (`mitigation_sufficient`) on *symptom* absence, not *causal* absence.
+  (`closed_rca_infeasible` with its rationale, else `mitigation_sufficient`) on
+  *symptom* absence, not *causal* absence.
 
 **Axis B (impact-now gap) governs the temporary interception** — whether, *en
 route*, we intercept an intermediate rung to suppress `D` now. This is the

@@ -151,6 +151,43 @@ def validate_contract_changes(changes: tuple[ContractChange, ...]) -> None:
 
 CONTRACT_CHANGES: tuple[ContractChange, ...] = (
     ContractChange(
+        version="14.17.0",
+        level="MINOR",
+        title=(
+            "`ClosureReason`'s meanings for `mitigation_sufficient` and "
+            "`closed_insufficient_evidence` say what the mitigation record shows, "
+            "not a verified mitigation (#2100)."
+        ),
+        body=r"""Two values' `x-enum-descriptions` change; the values and their wire form do
+not.
+
+* `mitigation_sufficient`: "A mitigation relieved the symptom, as a re-check
+  bound to the problem observed with no relapse seen after it, or as the user
+  declared with no relapse seen after the declaration; root-cause analysis was
+  deferred." It read "A verified mitigation relieved the symptom, and
+  root-cause analysis was not pursued further." The value covers the user's
+  declaration that the mitigation holds as well as an observed relief, and a
+  re-check bound to the problem that sees it present after that declaration,
+  as the latest observation, closes the case under another reason.
+* `closed_insufficient_evidence`: its last clause reads "or a cause was
+  identified but no fix was confirmed to work, none was left documented to
+  apply, and no mitigation was verified or declared stable without a relapse
+  seen after it", where it read "with no fix or verified mitigation on
+  record". A case whose only applied fixes were interceptions closes here with
+  a fix applied, which the old clause denied, and so does a mitigation verified
+  or declared stable that a bound re-check later saw relapse.
+
+The engine's closure texts state the mitigation's record (the relief and the
+turn it was observed, the user's declaration, a relapse) instead of
+"stabilized by a verified mitigation". Those are chat and report content, not
+contract.
+
+MINOR because every client survives it: no value is added or removed, and a
+label table keyed on the enum still has one entry per value. A client that
+labels `mitigation_sufficient` "Stabilized" claims more than the value now
+means, and changes its label when it adopts this version.""",
+    ),
+    ContractChange(
         version="14.16.0",
         level="MINOR",
         title=(

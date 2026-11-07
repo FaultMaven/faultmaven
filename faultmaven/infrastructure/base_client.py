@@ -16,33 +16,15 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Optional, TypeVar, Union
 
-from faultmaven.exceptions import SERVICE_SCOPED_ERROR_CODES, ExternalCallTimeout
+from faultmaven.exceptions import (
+    SERVICE_SCOPED_ERROR_CODES,
+    CircuitBreakerError,
+    ExternalCallTimeout,
+)
 from faultmaven.infrastructure.logging.unified import UnifiedLogger, get_unified_logger
 
 # Type variable for generic return types
 T = TypeVar("T")
-
-
-class CircuitBreakerError(Exception):
-    """Exception raised when circuit breaker is open.
-
-    Carries the ``error_code`` of the classified failure that tripped the
-    breaker so upstream layers can still distinguish a permanent condition
-    (e.g. billing/quota exhaustion) from a transient provider outage — even
-    though this particular request never reached the provider. Without this, the
-    open-breaker message would erase the original signal and a billing failure
-    would surface as a generic 500.
-
-    ``service`` names the dependency whose breaker opened. The class is shared
-    by every ``BaseExternalClient`` — ChromaDB, Redis, Presidio, the runbook KB
-    and the LLM router all raise it — so a handler that words its response in
-    terms of one of them has to be able to check which one it actually got.
-    """
-
-    def __init__(self, message, error_code=None, service=None):
-        super().__init__(message)
-        self.error_code = error_code
-        self.service = service
 
 
 class CircuitBreaker:

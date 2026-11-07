@@ -402,15 +402,15 @@ async def test_the_stabilized_close_is_offered_once_whichever_settles_first(firs
 
 async def test_a_declared_mitigation_offers_the_close_in_its_own_words():
     """The 3B propose-close fires on a declaration and says what the record
-    holds: the user's report, not a verification."""
+    holds: the user's report, not a verification (lane B, C1)."""
     eng, case, _shown = await _accepted()
     case.problem_verification.rca_infeasible = True
     case.problem_verification.rca_infeasible_rationale = "the vendor API is opaque"
     await _turn(eng, case, 7, mitigation_disposition="declared_stable")
 
     assert case.offer_record.open.summary == (
-        "You reported the mitigation stable. Since the vendor API is opaque, "
-        "shall we close this case as stabilized?"
+        "You reported the mitigation stable (turn 7). Since the vendor API is "
+        "opaque, shall we close this case?"
     )
 
 

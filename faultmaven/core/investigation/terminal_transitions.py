@@ -24,6 +24,7 @@ Reference: investigation-lifecycle-logic.md Section 1.4
 """
 
 import logging
+import math
 import re
 from datetime import UTC, datetime
 from typing import Any, Callable, Iterable, Optional
@@ -46,6 +47,7 @@ from faultmaven.core.investigation.cause_assurance import (
     has_root_cause_record,
     latest_fix_window,
     mitigation_holds,
+    mitigation_observation,
     mitigation_relief,
     off_cause_attempt,
     pending_symptom_check,
@@ -73,6 +75,7 @@ from faultmaven.core.investigation.verification_status import (
 from faultmaven.infrastructure.knowledge.runbook_kb import RESULTS_UNREADABLE_CODE
 from faultmaven.modules.case.contracts import (
     DECLARED_STABLE,
+    PROCEED_UNMITIGATED,
     AnswerKind,
     AnswerVia,
     Case,
@@ -511,9 +514,112 @@ def _mitigation_verified(case: "Case") -> bool:
 
 
 def _mitigation_declared_stable(case: "Case") -> bool:
-    """Whether the user declared the mitigation stable (#2100, D3.3)."""
+    """Whether the user declared the mitigation stable (#2100, D3.3) and no
+    re-check bound to the problem saw it present after the declaration as its
+    latest observation (F5, ruled 2026-11-07): a persistence later than the
+    declaration turn, with no relief after it. A persistence in the
+    declaration's own turn or before it is what the user declared over, so
+    it stays their call. ``disposition_at_turn`` is ``emission_turn``-dated,
+    so a replayed declaration compares at its hold turn. An undated attempt
+    has no bound reads (``mitigation_relief`` dates them from the attempt),
+    so F5 cannot apply to it and its declaration stands."""
     mitigation = getattr(case.progress, "mitigation", None) if case.progress else None
-    return getattr(mitigation, "disposition", None) == DECLARED_STABLE
+    if getattr(mitigation, "disposition", None) != DECLARED_STABLE:
+        return False
+    declared = getattr(mitigation, "disposition_at_turn", None)
+    relief, present = mitigation_relief(case)
+    relapsed = (
+        declared is not None
+        and present is not None
+        and present > declared
+        and not mitigation_holds(relief, present)
+    )
+    return not relapsed
+
+
+def shown_milestones(case: "Case") -> list[str]:
+    """The completed milestones a close shows the user: the close prompt's
+    count and the report's Investigation State read this one list. A
+    ``mitigation_verified`` a bound relapse followed is left out, as the
+    closure reason leaves it (``_mitigation_verified``, #2100); a stored
+    verdict with no bound row is read as stored."""
+    progress = getattr(case, "progress", None)
+    milestones = list(progress.completed_milestones) if progress else []
+    if "mitigation_verified" in milestones and not _mitigation_verified(case):
+        milestones.remove("mitigation_verified")
+    return milestones
+
+
+def _span_words(span) -> str:
+    """A data window in the unit a reader takes in, rounded half up before
+    the unit is picked: minutes under 2 hours, hours under 2 days, then
+    days (#2100, C2)."""
+    seconds = span.total_seconds()
+    n, unit = math.floor(seconds / 60 + 0.5), "minute"
+    if n >= 120:
+        n, unit = math.floor(seconds / 3600 + 0.5), "hour"
+        if n >= 48:
+            n, unit = math.floor(seconds / 86400 + 0.5), "day"
+    return f"about {n} {unit}{'' if n == 1 else 's'}"
+
+
+def mitigation_closure_line(case: "Case") -> Optional[str]:
+    """What the record holds about the case's mitigation, as one line for the
+    engine's closure texts (#2100, D3.3, D5.3): the closure reply, the
+    rca-infeasible propose-close and the report. None with no accepted
+    mitigation. It states each fact that holds, in this order: the user's
+    declaration, the bound relief (with the relief row's data window when
+    ``mitigation_observation`` dates one), the problem seen again, the
+    stall's proceed; with none of them, that no bound re-check is on record,
+    or, for an attempt with no turn, that none can be tied to it.
+    The word for the user's declaration is "stable", and "stabilized" is
+    never used: the line states the record, not a verdict."""
+    seen = mitigation_observation(case)
+    if seen is None:
+        return None
+
+    def at(turn) -> str:
+        return f" (turn {turn})" if turn is not None else ""
+
+    clauses = []
+    if seen.disposition == DECLARED_STABLE:
+        clauses.append(f"you reported the mitigation stable{at(seen.disposition_turn)}")
+    if seen.relief_turn is not None:
+        after = "the mitigation" + (
+            " and a later fix" if seen.fix_before_relief else ""
+        )
+        clause = (
+            f"the problem was observed relieved after {after} (turn {seen.relief_turn})"
+        )
+        if seen.span is not None:
+            clause += f", and the data it cites covers {_span_words(seen.span)}"
+        clauses.append(clause)
+    if seen.present_turn is not None:
+        clauses.append(
+            f"the problem was seen again at turn {seen.present_turn}"
+            + (", before that relief" if seen.holding else "")
+        )
+    if seen.disposition == PROCEED_UNMITIGATED:
+        clauses.append(
+            "the investigation went on before the mitigation was verified"
+            + at(seen.disposition_turn)
+        )
+    if not clauses and seen.attempt_turn is None:
+        clauses.append(
+            "a mitigation was applied; its attempt is undated, so no re-check can "
+            "be tied to it"
+        )
+    elif not clauses:
+        clauses.append(
+            f"a mitigation was applied{at(seen.attempt_turn)}; no re-check bound to "
+            "the problem is on record"
+        )
+    return "; ".join(clauses)
+
+
+def mitigation_sentence(line: str) -> str:
+    """``mitigation_closure_line``'s line standing as a sentence of its own."""
+    return f"{line[:1].upper()}{line[1:]}."
 
 
 def _fix_documented_not_applied(case: "Case") -> bool:
@@ -615,12 +721,15 @@ def derive_closure_reason(case: "Case") -> ClosureReason:
       ``rca_infeasible`` WITH a rationale. Ranked above ``mitigation_sufficient``
       because the engine's only path to it fires on a mitigation verified or
       declared stable, so both hold on essentially every such close; this label
-      already implies the relieved symptom and additionally explains why RCA
-      stopped, so letting the other win would shadow the more informative fact
-      every time.
+      additionally explains why RCA stopped, so letting the other win would
+      shadow the more informative fact every time. It asserts nothing about
+      the mitigation: the closure texts state its record beside it
+      (``mitigation_closure_line``), a relapse included.
     - ``mitigation_sufficient`` — a mitigation verified by a bound re-check and
-      still holding, or declared stable by the user (#2100); a
-      ``proceed_unmitigated`` falls through. The symptom is
+      still holding, or declared stable by the user with no bound re-check
+      seeing the problem present after the declaration as its latest
+      observation (#2100, F5 ruled 2026-11-07); a ``proceed_unmitigated``
+      or such a relapse falls through. The symptom is
       relieved and RCA was deferred BY CHOICE, the cause still reachable if
       anyone returns to it. The one closure here that is not a failure of any
       kind, which is why it is not folded into a generic bucket.
@@ -1871,9 +1980,7 @@ def assess_close_summary(case: "Case") -> ClosureReadiness:
     """
     evidence_count = len(case.evidence) if case.evidence else 0
     hypothesis_count = len(case.hypotheses) if case.hypotheses else 0
-    milestones_completed = (
-        len(case.progress.completed_milestones) if case.progress else 0
-    )
+    milestones_completed = len(shown_milestones(case))
     has_root_cause = _cause_identified(case)
     has_solutions = bool(case.solutions and len(case.solutions) > 0)
 
