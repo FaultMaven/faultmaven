@@ -14,7 +14,9 @@ and messages the route builds. ``opik_context`` is patched in: ``opik`` is not a
 dependency of the standalone install.
 
 The same span and its trace carry the case and the enterprise, which is how the
-case delete finds them (#2102): ``TestTheTraceIsTaggedWithItsCase`` below.
+case delete finds them (#2102): ``TestTheTraceIsTaggedWithItsCase`` below. A
+call carrying a document's text carries its conversion too, which is how the
+draft and document deletes find them (#2575).
 """
 
 from unittest.mock import AsyncMock, MagicMock, call, patch
@@ -280,3 +282,57 @@ class TestTheTraceIsTaggedWithItsCase:
 
         opik.track.assert_called_once()
         assert "create_duplicate_root_span" not in opik.track.call_args.kwargs
+
+
+@pytest.mark.usefixtures("restore_tenant_context")
+class TestTheTraceIsTaggedWithItsConversion:
+    """#2575: ``LLMTraceEraser.erase_conversion`` searches by these two keys."""
+
+    OWNER = {"enterprise_id": "ent-2575", "conversion_id": "conv_2575"}
+
+    async def test_a_call_for_a_conversion_tags_the_span_and_its_trace(self):
+        set_current_enterprise_id("ent-2575")
+
+        opik_context = await _routed({"prompt": "hi", "conversion_id": "conv_2575"})
+
+        metadata = opik_context.update_current_span.call_args.kwargs["metadata"]
+        assert self.OWNER.items() <= metadata.items() and "case_id" not in metadata
+        # At entry, then again with the content.
+        assert (
+            opik_context.update_current_trace.call_args_list
+            == [call(metadata=self.OWNER)] * 2
+        )
+
+    async def test_a_case_conversion_carries_the_case_and_the_conversion(self):
+        set_current_enterprise_id("ent-2575")
+
+        opik_context = await _routed(
+            {"prompt": "hi", "case_id": "case_2575", "conversion_id": "conv_2575"}
+        )
+
+        owner = {**self.OWNER, "case_id": "case_2575"}
+        metadata = opik_context.update_current_span.call_args.kwargs["metadata"]
+        assert owner.items() <= metadata.items()
+        opik_context.update_current_trace.assert_called_with(
+            metadata=owner, thread_id="case_2575"
+        )
+
+    async def test_a_failed_call_is_tagged_at_entry(self):
+        set_current_enterprise_id("ent-2575")
+        opik_context = MagicMock()
+
+        with (
+            patch.object(
+                ProviderRegistry,
+                "route_request",
+                AsyncMock(side_effect=RuntimeError("provider said no")),
+            ),
+            pytest.raises(RuntimeError, match="provider said no"),
+        ):
+            await _routed(
+                {"prompt": "hi", "conversion_id": "conv_2575"},
+                opik_context=opik_context,
+            )
+
+        opik_context.update_current_trace.assert_called_once_with(metadata=self.OWNER)
+        opik_context.update_current_span.assert_called_once_with(metadata=self.OWNER)

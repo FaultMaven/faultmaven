@@ -158,6 +158,8 @@ class RecordingRouter:
         self.calls: list[tuple[str, list[dict]]] = []
         #: What each conversion call named as its case (the trace tag, #2102).
         self.conversion_case_ids: list[str | None] = []
+        #: What each call, by stage, named as its conversion (#2575).
+        self.conversion_ids: list[tuple[str, str | None]] = []
         self._modes = modes
         self._truncate_next_conversion = truncate_first_conversion
         #: The 1-based generation call that fails AT THE ROUTER (a provider
@@ -169,6 +171,7 @@ class RecordingRouter:
         stage = STAGES[kwargs["temperature"]]
         messages = kwargs["messages"]
         self.calls.append((stage, messages))
+        self.conversion_ids.append((stage, kwargs.get("conversion_id")))
         if stage == "conversion":
             self.conversion_case_ids.append(kwargs["case_id"])
         if stage == "triage":
@@ -337,6 +340,30 @@ class TestTheConversionCallNamesItsCase:
         await _convert_document(tmp_path, router, sanitizer)
 
         assert router.conversion_case_ids and not any(router.conversion_case_ids)
+
+
+class TestEveryCallNamesItsConversion:
+    """Every call that carries the document's text tags its trace with the
+    conversion, so deleting a draft or document of it purges them (#2575)."""
+
+    async def test_the_upload_path(self, tmp_path, sanitizer, redaction_on):
+        router = RecordingRouter(modes=2)
+
+        result = await _convert_document(tmp_path, router, sanitizer)
+
+        assert result.conversion_id.startswith("conv_")
+        assert router.conversion_ids == [
+            (stage, result.conversion_id)
+            for stage in ("triage", "analysis", "conversion", "conversion")
+        ]
+
+    async def test_the_case_path(self, tmp_path, sanitizer, redaction_on):
+        router = RecordingRouter()
+
+        result = await _convert_case(tmp_path, router, sanitizer)
+
+        assert router.conversion_ids == [("conversion", result.conversion_id)]
+        assert router.conversion_case_ids == [CASE_ID]
 
 
 # ---------------------------------------------------------------------------

@@ -182,7 +182,9 @@ async def test_a_refused_page_costs_that_page_and_the_limit_reaches_the_worker(
     path = _pdf(tmp_path, _stream(_TEXT), _DENSE)
 
     with caplog.at_level(logging.WARNING), apply_configuration(**_LOW_BUDGET):
-        result = await DocumentPreprocessor().preprocess(path, "application/pdf")
+        result = await DocumentPreprocessor().preprocess(
+            path, "application/pdf", conversion_id="conv_test"
+        )
 
     assert not result.is_rejected, (result.error_code, result.rejection_reason)
     assert "kubectl rollout restart" in result.extracted_text
@@ -213,7 +215,9 @@ async def test_a_limit_refusal_is_document_too_complex(
     path = _pdf(tmp_path, *streams)
 
     with caplog.at_level(logging.WARNING), apply_configuration(**limit):
-        result = await DocumentPreprocessor().preprocess(path, "application/pdf")
+        result = await DocumentPreprocessor().preprocess(
+            path, "application/pdf", conversion_id="conv_test"
+        )
 
     assert result.is_rejected
     assert result.error_code == ConversionErrorCode.DOCUMENT_TOO_COMPLEX
@@ -237,7 +241,9 @@ async def test_refused_pages_that_leave_too_little_are_document_too_complex(
     path = _pdf(tmp_path, _stream(words), _DENSE)
 
     with apply_configuration(**_LOW_BUDGET):
-        result = await DocumentPreprocessor().preprocess(path, "application/pdf")
+        result = await DocumentPreprocessor().preprocess(
+            path, "application/pdf", conversion_id="conv_test"
+        )
 
     assert result.error_code == ConversionErrorCode.DOCUMENT_TOO_COMPLEX
     assert "refused page(s) 2 of 2" in result.rejection_reason
@@ -247,7 +253,9 @@ async def test_the_skipped_page_list_names_ten_and_counts_the_rest(tmp_path):
     path = _pdf(tmp_path, _stream(_TEXT), *[_DENSE] * 12)
 
     with apply_configuration(**_LOW_BUDGET):
-        result = await DocumentPreprocessor().preprocess(path, "application/pdf")
+        result = await DocumentPreprocessor().preprocess(
+            path, "application/pdf", conversion_id="conv_test"
+        )
 
     assert not result.is_rejected, result.rejection_reason
     assert [
@@ -292,7 +300,7 @@ async def test_corruption_pypdf_reports_as_a_limit_stays_file_corrupt(
     files: FILE_CORRUPT for the whole document, as before #2153."""
     with caplog.at_level(logging.WARNING):
         result = await DocumentPreprocessor().preprocess(
-            build(tmp_path), "application/pdf"
+            build(tmp_path), "application/pdf", conversion_id="conv_test"
         )
 
     assert result.error_code == ConversionErrorCode.FILE_CORRUPT
@@ -337,7 +345,9 @@ async def test_the_other_refusals_keep_their_codes_in_the_worker(
     path = tmp_path / name
     path.write_bytes(body)
 
-    result = await DocumentPreprocessor().preprocess(path, content_type)
+    result = await DocumentPreprocessor().preprocess(
+        path, content_type, conversion_id="conv_test"
+    )
 
     assert result.is_rejected
     assert result.error_code == code, result.rejection_reason
@@ -357,7 +367,9 @@ async def test_preparation_runs_in_the_extraction_pool(tmp_path, monkeypatch):
 
     monkeypatch.setattr(DocumentParser, "extract_document_text", record)
 
-    await DocumentPreprocessor().preprocess(_text_file(tmp_path), "text/plain")
+    await DocumentPreprocessor().preprocess(
+        _text_file(tmp_path), "text/plain", conversion_id="conv_test"
+    )
 
     assert len(seen) == 1 and seen[0].startswith("document-extract"), seen
 
@@ -381,7 +393,9 @@ async def test_preparation_does_not_stall_the_event_loop(tmp_path, monkeypatch):
         return preprocessor._prepare(path, "text/plain")
 
     async def through_preprocess():
-        return await preprocessor.preprocess(path, "text/plain")
+        return await preprocessor.preprocess(
+            path, "text/plain", conversion_id="conv_test"
+        )
 
     inline_ticks = await _ticks_during(inline)
     hopped_ticks = await _ticks_during(through_preprocess)
@@ -416,7 +430,7 @@ async def test_a_preparation_past_its_time_limit_is_refused(
     try:
         with caplog.at_level(logging.WARNING):
             result = await DocumentPreprocessor().preprocess(
-                _text_file(tmp_path), "text/plain"
+                _text_file(tmp_path), "text/plain", conversion_id="conv_test"
             )
     finally:
         release.set()
@@ -454,7 +468,9 @@ async def test_an_abandoned_worker_stops_after_its_current_page(
 
     try:
         with caplog.at_level(logging.WARNING):
-            result = await DocumentPreprocessor().preprocess(path, "application/pdf")
+            result = await DocumentPreprocessor().preprocess(
+                path, "application/pdf", conversion_id="conv_test"
+            )
             gate.set()
             assert finished.wait(5), "the worker never finished"
     finally:
@@ -481,7 +497,7 @@ async def test_a_request_with_no_free_worker_is_busy_and_its_work_never_runs(
 
     with caplog.at_level(logging.WARNING), _both_workers_held():
         result = await DocumentPreprocessor().preprocess(
-            _text_file(tmp_path, "queued.txt"), "text/plain"
+            _text_file(tmp_path, "queued.txt"), "text/plain", conversion_id="conv_test"
         )
 
     assert [m for m in _warnings(caplog) if "queued.txt: no extraction worker" in m]
@@ -519,4 +535,6 @@ async def test_a_timeout_error_raised_in_the_worker_propagates(tmp_path, monkeyp
     monkeypatch.setattr(DocumentParser, "extract_document_text", fail)
 
     with pytest.raises(TimeoutError, match="ETIMEDOUT"):
-        await DocumentPreprocessor().preprocess(_text_file(tmp_path), "text/plain")
+        await DocumentPreprocessor().preprocess(
+            _text_file(tmp_path), "text/plain", conversion_id="conv_test"
+        )

@@ -184,6 +184,7 @@ def _knowledge(factory) -> KnowledgeService:
         vector_store=vectors,
         db_session_factory=factory,
         share_repository=_Shares(factory),
+        trace_eraser=None,
     )
     service._index_document_in_vector_store = AsyncMock(return_value=3)
     return service

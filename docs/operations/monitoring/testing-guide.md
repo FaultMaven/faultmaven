@@ -480,7 +480,8 @@ class TestServiceIntegration:
 ### 2. Testing Infrastructure Layer Integration
 
 ```python
-from faultmaven.infrastructure.base_client import BaseExternalClient, CircuitBreakerError
+from faultmaven.exceptions import CircuitBreakerError
+from faultmaven.infrastructure.base_client import BaseExternalClient
 
 class TestInfrastructureIntegration:
     """Integration tests for BaseExternalClient."""

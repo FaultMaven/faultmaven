@@ -154,6 +154,7 @@ async def _world(engine, dialect):
     svc._vector_store = store
     svc._tracer = MagicMock()
     svc._share_repo = None
+    svc._trace_eraser = None
     svc._sanitizer = MagicMock()
 
     async def _same(text):

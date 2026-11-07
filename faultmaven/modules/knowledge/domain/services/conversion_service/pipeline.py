@@ -43,6 +43,7 @@ async def _analyze_document(
     filename: str,
     *,
     sanitizer,
+    conversion_id: str,
 ) -> AnalysisResult:
     """Analyze document for failure modes using KNOWLEDGE_PROVIDER.
 
@@ -51,7 +52,8 @@ async def _analyze_document(
     redacts nothing, see ``should_redact``), once, before the truncation
     retry's closure, so the retry resends the redacted text (#1901).
     Keyword-only with no default so a new caller cannot send without deciding.
-    A ``RedactionUnavailableError`` propagates: nothing is sent.
+    A ``RedactionUnavailableError`` propagates: nothing is sent. The call's
+    trace is tagged with ``conversion_id`` (#2575), also keyword-only.
     """
     knowledge_model = settings.llm.get_knowledge_model()
 
@@ -64,12 +66,13 @@ async def _analyze_document(
     )
 
     async def _analyze(cap: int):
-        # An uploaded document, reached only from ``convert_document``: no case
-        # to tag, so its trace carries the enterprise alone (#2102, #2575).
+        # An uploaded document, reached only from ``convert_document``: its
+        # trace carries the conversion and the enterprise (#2575).
         return await route_model_call(
             llm_router,
             messages=messages,
             model=knowledge_model,
+            conversion_id=conversion_id,
             max_tokens=cap,
             temperature=0.2,
             response_format={"type": "json_object"},

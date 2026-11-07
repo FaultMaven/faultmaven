@@ -25,6 +25,7 @@ from faultmaven.exceptions import (
     NotFoundError,
     RawModelContentRefused,
     ValidationException,
+    is_llm_breaker,
 )
 from faultmaven.infrastructure import index_slot
 from faultmaven.infrastructure.concurrency import inflight
@@ -40,6 +41,7 @@ from faultmaven.infrastructure.persistence.models import (
 from faultmaven.infrastructure.security.model_content import model_boundary_redacted
 from faultmaven.models.exceptions import IndexAdmissionRefused
 from faultmaven.modules.auth.contracts import IAccountDirectory, is_team_member
+from faultmaven.modules.knowledge.contracts import IConversionTraceEraser
 from faultmaven.modules.knowledge.domain.case_authoring import (
     CASE_ID_RULE,
     DE_IDENTIFICATION_RULES,
@@ -89,6 +91,7 @@ from faultmaven.modules.knowledge.domain.services.conversion_service.draft_slots
     refuse_if_draft_slot_taken,
 )
 from faultmaven.modules.knowledge.domain.services.conversion_service.errors import (
+    LLM_NOT_CONFIGURED,
     ConversionRejectedError,
 )
 from faultmaven.modules.knowledge.domain.services.conversion_service.failure_modes import (
@@ -119,6 +122,10 @@ from faultmaven.modules.knowledge.domain.services.runbook_validator import (
     RunbookQualityError,
     aenforce_runbook_security,
     avalidate_and_score,
+)
+from faultmaven.modules.knowledge.domain.trace_purge import (
+    TRACE_ERASER_NOT_WIRED,
+    made_model_calls,
 )
 from faultmaven.modules.knowledge.draft_content import (
     DRAFT_CONTENT_MAX_CHARS,
@@ -212,6 +219,9 @@ class _PreparedConversion:
     #: The document path's pre-computed id; None on the case path, whose id is
     #: minted from the frontmatter the model writes.
     runbook_id: Optional[str]
+    #: The conversion the messages carry the text of: their trace is tagged
+    #: with it, so deleting its draft or document purges them (#2575).
+    conversion_id: str
 
 
 # =============================================================================
@@ -232,6 +242,7 @@ class ConversionService:
         team_service=None,
         sanitizer=None,
         account_reader: Optional[IAccountDirectory] = None,
+        trace_eraser: Optional[IConversionTraceEraser] = TRACE_ERASER_NOT_WIRED,
     ):
         self._llm_router = llm_router
         self._settings = settings
@@ -260,6 +271,10 @@ class ConversionService:
         # username there, which for an SSO account is the email's local part.
         # None → ``verified_by`` stays empty.
         self._account_reader = account_reader
+        # Purges a conversion's LLM traces when one of its drafts is deleted
+        # (#2575). None where no trace backend is configured, so nothing
+        # recorded one; left out, every purge fails (TRACE_ERASER_NOT_WIRED).
+        self._trace_eraser = trace_eraser
         self._preprocessor = DocumentPreprocessor(llm_router, settings, sanitizer)
         self._scan_lock = asyncio.Lock()
         # In-flight case-conversion dedup. Keyed by case_id; the value is
@@ -335,15 +350,11 @@ class ConversionService:
             knowledge_model = self._settings.llm.get_knowledge_model()
             if not knowledge_model:
                 raise ConversionRejectedError(
-                    "No LLM provider is configured. Set CHAT_PROVIDER in your .env file "
-                    "or configure a provider in Dashboard > LLM Settings.",
-                    error_code=ConversionErrorCode.LLM_UNAVAILABLE,
+                    LLM_NOT_CONFIGURED, error_code=ConversionErrorCode.LLM_UNAVAILABLE
                 )
         except AttributeError:
             raise ConversionRejectedError(
-                "No LLM provider is configured. Set CHAT_PROVIDER in your .env file "
-                "or configure a provider in Dashboard > LLM Settings.",
-                error_code=ConversionErrorCode.LLM_UNAVAILABLE,
+                LLM_NOT_CONFIGURED, error_code=ConversionErrorCode.LLM_UNAVAILABLE
             )
 
         conversion_id = generate_conversion_id()
@@ -361,7 +372,9 @@ class ConversionService:
             },
         )
 
-        preprocessing = await self._preprocessor.preprocess(file_path, content_type)
+        preprocessing = await self._preprocessor.preprocess(
+            file_path, content_type, conversion_id=conversion_id
+        )
 
         if preprocessing.is_rejected:
             raise ConversionRejectedError(
@@ -386,6 +399,7 @@ class ConversionService:
             preprocessing.extracted_text,
             original_filename,
             sanitizer=self._sanitizer,
+            conversion_id=conversion_id,
         )
 
         # Where the model's titles become failure modes: scrubbed HERE, before
@@ -1006,6 +1020,7 @@ class ConversionService:
             knowledge_model=knowledge_model,
             redacted_messages=messages,
             runbook_id=runbook_id,
+            conversion_id=conversion_id,
         )
 
     async def _scrub_failure_mode_titles(
@@ -1077,6 +1092,7 @@ class ConversionService:
                     model=knowledge_model,
                     # None on the upload path, which serves no case (#2102).
                     case_id=case_id,
+                    conversion_id=prepared.conversion_id,
                     max_tokens=cap,
                     temperature=0.3,
                     # Same KNOWLEDGE_PROVIDER routing as _analyze_document.
@@ -1262,7 +1278,10 @@ class ConversionService:
             return ConversionError(
                 failure_mode_id=failure_mode.id,
                 error=f"Runbook generation failed ({type(e).__name__})",
-                retryable=getattr(e, "retryable", False),
+                # An open LLM breaker declares nothing; one whose latch
+                # clears with its window is as retryable as a deadline (#1632).
+                retryable=getattr(e, "retryable", False)
+                or is_llm_breaker(e, transient=True),
             )
 
     # =========================================================================
@@ -2526,13 +2545,60 @@ status: draft
         global draft is platform-corpus authoring, the same policy as
         :meth:`update_draft` / :meth:`verify_draft` on the adjacent verbs.
         Defaults ``False`` (fail-closed).
+
+        Before the row changes, the LLM traces of the draft's conversion are
+        purged (#2575), when it made model calls (``trace_purge``): every
+        mode's prompt carried the whole document, so the traces of its sibling
+        drafts go too. Read, purge and write run in that order with no
+        transaction open across the purge: the write's session reads the job
+        and the draft again, and a draft gone meanwhile answers ``False``.
+
+        Raises:
+            ServiceException: the traces could not be purged; the draft is
+                untouched.
         """
         if not self._db_session_factory:
             return False
 
         async with self._db_session_factory() as session:
-            # Verify ownership (system-created jobs accessible to any user)
-            job_result = await session.execute(
+            found = await self._owned_draft(
+                session, conversion_id, draft_id, user_id, is_platform_admin
+            )
+            if found is None:
+                return False
+            job, dm = found
+            purge = made_model_calls(job) and self._trace_eraser is not None
+            owner = (dm.conversion_id, dm.enterprise_id)
+
+        if purge:
+            await self._trace_eraser.erase_conversion(*owner)
+
+        async with self._db_session_factory() as session:
+            found = await self._owned_draft(
+                session, conversion_id, draft_id, user_id, is_platform_admin
+            )
+            if found is None:
+                return False
+            job, dm = found
+            # Soft delete in database
+            dm.status = DraftStatus.DISCARDED.value
+            await release_live_case_key_if_drained(session, job, dm.id)
+            await session.commit()
+
+            return True
+
+    @staticmethod
+    async def _owned_draft(
+        session,
+        conversion_id: str,
+        draft_id: str,
+        user_id: str,
+        is_platform_admin: bool,
+    ) -> Optional[Tuple[ConversionJobModel, ConversionDraftModel]]:
+        """The job the caller owns (or the system made) and its draft, or None.
+        A global job's draft is behind the global-authoring gate."""
+        job = (
+            await session.execute(
                 select(ConversionJobModel).where(
                     ConversionJobModel.id == conversion_id,
                     (
@@ -2541,26 +2607,17 @@ status: draft
                     ),
                 )
             )
-            job = job_result.scalar_one_or_none()
-            if not job:
-                return False
-
-            if job.scope == "global":
-                ensure_global_authoring_allowed(is_platform_admin)
-
-            draft_result = await session.execute(
+        ).scalar_one_or_none()
+        if not job:
+            return None
+        if job.scope == "global":
+            ensure_global_authoring_allowed(is_platform_admin)
+        dm = (
+            await session.execute(
                 select(ConversionDraftModel).where(
                     ConversionDraftModel.id == draft_id,
                     ConversionDraftModel.conversion_id == conversion_id,
                 )
             )
-            dm = draft_result.scalar_one_or_none()
-            if not dm:
-                return False
-
-            # Soft delete in database
-            dm.status = DraftStatus.DISCARDED.value
-            await release_live_case_key_if_drained(session, job, dm.id)
-            await session.commit()
-
-            return True
+        ).scalar_one_or_none()
+        return (job, dm) if dm else None

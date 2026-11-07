@@ -260,7 +260,8 @@ def _service_with_real_bulk_loop(*, update_error=None, delete_result=None):
         side_effect=lambda doc_id, user=None, team_ids=None: VISIBLE.get(doc_id)
     )
     service.update_document_metadata = AsyncMock(side_effect=update_error)
-    service.delete_document = AsyncMock(
+    # The bulk loop's per-document delete, which shares one trace purge (#2575).
+    service._delete_document = AsyncMock(
         side_effect=delete_result if callable(delete_result) else None,
         return_value=None if callable(delete_result) else delete_result,
     )
@@ -295,7 +296,7 @@ class TestBulkErrorsDoNotEchoExceptions:
         assert resp.json()["errors"] == [f"Document {OWN}: update failed"]
 
     def test_delete_failure_does_not_echo_the_exception(self, single_tenant):
-        def _raise(_doc_id):
+        def _raise(_doc_id, _purge):
             raise RuntimeError(DSN)
 
         service = _service_with_real_bulk_loop(delete_result=_raise)

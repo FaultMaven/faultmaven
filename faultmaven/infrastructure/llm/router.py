@@ -19,6 +19,7 @@ from faultmaven.config.settings import get_settings
 from faultmaven.config.tenant_context import get_current_enterprise_id
 from faultmaven.core.investigation.turn_budget import clamp_to_turn_budget
 from faultmaven.exceptions import (
+    LLM_BREAKER_SERVICE,
     CallShapeUnsupported,
     LLMOutputFloorError,
     RawModelContentRefused,
@@ -239,11 +240,16 @@ def _estimate_visible_output_tokens(
     return len(text.encode("utf-8")) // _CONSERVATIVE_BYTES_PER_TOKEN
 
 
-def _opik_owner(case_id: Optional[str]) -> Dict[str, str]:
-    """The metadata ``LLMTraceEraser`` finds a trace and its spans by (#2102)."""
+def _opik_owner(
+    case_id: Optional[str], conversion_id: Optional[str] = None
+) -> Dict[str, str]:
+    """The metadata ``LLMTraceEraser`` finds a trace and its spans by: the case
+    a call served (#2102), and the conversion whose document it carried (#2575)."""
     owner = {"enterprise_id": get_current_enterprise_id()}
     if case_id:
         owner["case_id"] = case_id
+    if conversion_id:
+        owner["conversion_id"] = conversion_id
     return owner
 
 
@@ -365,7 +371,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         # Initialize BaseExternalClient
         super().__init__(
             client_name="llm_router",
-            service_name="LLM_Providers",
+            service_name=LLM_BREAKER_SERVICE,
             enable_circuit_breaker=True,
             circuit_breaker_threshold=LLM_CIRCUIT_BREAKER_THRESHOLD,
             circuit_breaker_timeout=LLM_CIRCUIT_BREAKER_TIMEOUT,
@@ -498,6 +504,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         response_format: Optional[Dict[str, Any]] = None,
         messages: Optional[List[Dict[str, Any]]] = None,
         case_id: Optional[str] = None,
+        conversion_id: Optional[str] = None,
         provider_override: Optional[str] = None,
         cache_prompt: bool = False,
         bypass_cache: bool = False,
@@ -558,6 +565,11 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             warned about here rather than silently given headroom this layer
             cannot correctly guess.
 
+        conversion_id: the document conversion this call carries the text of
+            (#2575). With ``case_id`` and the enterprise it tags the call's
+            trace and span, by which deleting the conversion's draft or
+            document purges them.
+
         Args:
             prompt: Input prompt (optional if messages is provided)
             model: Specific model to use (optional)
@@ -568,7 +580,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         Returns:
             LLMResponse with generated content
         """
-        self._tag_opik_trace(case_id)
+        self._tag_opik_trace(case_id, conversion_id)
 
         # Validate prompt or messages
         if prompt is None and not messages:
@@ -715,6 +727,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                     sanitized_prompt=prompt_text,
                     cached=True,
                     case_id=case_id,
+                    conversion_id=conversion_id,
                 )
                 llm_requests.labels(
                     provider=cached_response.provider,
@@ -828,6 +841,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 sanitized_prompt=prompt_text,
                 sanitized_messages=messages_view,
                 case_id=case_id,
+                conversion_id=conversion_id,
             )
 
             # Truncation is a normal-looking success at every other layer: HTTP
@@ -1004,7 +1018,9 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             )
             raise
 
-    def _tag_opik_trace(self, case_id: Optional[str]) -> None:
+    def _tag_opik_trace(
+        self, case_id: Optional[str], conversion_id: Optional[str] = None
+    ) -> None:
         """Tag the current trace and span with their owner, before anything fails.
 
         Every exit from ``route()`` is then tagged, the failures included: the SDK
@@ -1014,7 +1030,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         if not (_opik_tracing_enabled() and OPIK_AVAILABLE):
             return
         try:
-            owner = _opik_owner(case_id)
+            owner = _opik_owner(case_id, conversion_id)
             opik_context.update_current_trace(
                 metadata=owner, **({"thread_id": case_id} if case_id else {})
             )
@@ -1029,6 +1045,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         sanitized_messages: Optional[List[Dict[str, Any]]] = None,
         cached: bool = False,
         case_id: Optional[str] = None,
+        conversion_id: Optional[str] = None,
     ) -> None:
         """Update the current Opik span with LLM call data.
 
@@ -1037,9 +1054,10 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         This works whether the span was created by @opik.track on this function
         or by a parent caller.
 
-        The span and its trace carry the enterprise, and the case when the call
-        served one: ``LLMTraceEraser`` finds a deleted case's traces by those
-        metadata keys, on the trace and on the span (#2102).
+        The span and its trace carry the enterprise, the case when the call
+        served one, and the conversion when it carried a document's text:
+        ``LLMTraceEraser`` finds a deleted case's or conversion's traces by those
+        metadata keys, on the trace and on the span (#2102, #2575).
         """
         # Gate FIRST, warn second. Tracing being off is the configured state,
         # not a problem to report: with tracing disabled there is no span to
@@ -1071,7 +1089,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             if response.content:
                 output_data["response"] = response.content[:TELEMETRY_PAYLOAD_MAX_CHARS]
 
-            owner = _opik_owner(case_id)
+            owner = _opik_owner(case_id, conversion_id)
             metadata = {
                 **owner,
                 "cached": cached or response.cached,

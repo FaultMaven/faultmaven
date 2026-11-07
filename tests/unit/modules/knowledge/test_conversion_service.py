@@ -447,6 +447,7 @@ class TestAnalysisPhase:
             "sample text",
             "test.md",
             sanitizer=None,
+            conversion_id="conv_test",
         )
 
         assert isinstance(result, AnalysisResult)
@@ -476,6 +477,7 @@ class TestAnalysisPhase:
             "sample text",
             "test.md",
             sanitizer=None,
+            conversion_id="conv_test",
         )
 
         assert result.source_assessment.content_type == "troubleshooting_guide"
@@ -499,6 +501,7 @@ class TestAnalysisPhase:
                 "sample text",
                 "test.md",
                 sanitizer=None,
+                conversion_id="conv_test",
             )
 
         assert exc.value.error_code == ConversionErrorCode.LLM_PARSE_ERROR
@@ -1637,6 +1640,7 @@ def _make_live_case_service(session_factory) -> ConversionService:
         llm_router=AsyncMock(),
         settings=settings,
         db_session_factory=session_factory,
+        trace_eraser=None,
     )
 
 

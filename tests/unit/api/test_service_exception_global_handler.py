@@ -367,6 +367,14 @@ _ALLOWED_ARMS: dict[tuple[str, str, str], str] = {
         "ValidationException."
     ),
     (
+        "faultmaven/modules/knowledge/api/conversion_routes.py",
+        "delete_draft",
+        "ServiceException",
+    ): (
+        "`ConversionService.delete_draft` makes no LLM call: it purges the "
+        "conversion's traces and discards the row (#2575)."
+    ),
+    (
         "faultmaven/modules/report/api/routes.py",
         "generate_report",
         "ServiceException",
@@ -385,6 +393,7 @@ _KNOWN_ARM_FILES = {
     "faultmaven/modules/case/api/routes/cases.py",
     "faultmaven/modules/case/api/routes/conversation.py",
     "faultmaven/modules/case/api/title_generation.py",
+    "faultmaven/modules/knowledge/api/conversion_routes.py",
     "faultmaven/modules/report/api/routes.py",
 }
 

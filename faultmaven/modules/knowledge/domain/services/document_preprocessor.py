@@ -848,10 +848,11 @@ class DocumentPreprocessor:
         )
 
     async def preprocess(
-        self, file_path: Path, content_type: str
+        self, file_path: Path, content_type: str, *, conversion_id: str
     ) -> PreprocessingResult:
         """Run the full preprocessing pipeline: Stages 0-5 in the extraction
-        pool, then Stage 6 on the loop.
+        pool, then Stage 6 on the loop. ``conversion_id`` tags the triage
+        call's trace (#2575).
 
         Two waits, each up to ``EXTRACTION_TIMEOUT_SECONDS``: for a worker, then
         for its run, timed from when it started. A request that gets no worker
@@ -919,7 +920,9 @@ class DocumentPreprocessor:
         )
 
         # Stage 6: Content triage (classifier LLM)
-        triage_result = await self._run_content_triage(extracted_text)
+        triage_result = await self._run_content_triage(
+            extracted_text, conversion_id=conversion_id
+        )
         if triage_result:
             if (
                 not triage_result.is_actionable
@@ -957,7 +960,9 @@ class DocumentPreprocessor:
             token_count=token_count,
         )
 
-    async def _run_content_triage(self, text: str) -> Optional[TriageResult]:
+    async def _run_content_triage(
+        self, text: str, *, conversion_id: str
+    ) -> Optional[TriageResult]:
         """Stage 6: Send first 2K tokens to classifier to determine if actionable.
 
         Triage is advisory and fails OPEN — a document that cannot be
@@ -1002,12 +1007,13 @@ class DocumentPreprocessor:
         )
 
         try:
-            # A knowledge-base document: no case to tag, so its trace carries
-            # the enterprise alone (#2102, #2575).
+            # A knowledge-base document: its trace carries the conversion and
+            # the enterprise, by which deleting the conversion purges it (#2575).
             response = await route_model_call(
                 self._llm_router,
                 messages=messages,
                 model=classifier_model,
+                conversion_id=conversion_id,
                 max_tokens=256,
                 temperature=0.1,
                 response_format={"type": "json_object"},

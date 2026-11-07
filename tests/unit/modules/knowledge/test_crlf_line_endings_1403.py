@@ -670,6 +670,7 @@ async def test_the_converted_draft_is_stored_lf():
             knowledge_model="test-model",
             redacted_messages=[],
             runbook_id="redis-notes",
+            conversion_id="conv_test",
         ),
         failure_mode=FailureModeAnalysis(
             id="fm-1",

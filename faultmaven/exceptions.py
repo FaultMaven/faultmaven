@@ -155,6 +155,51 @@ class ExternalCallTimeout(ExternalServiceException, TimeoutError):
         self.timeout = timeout
 
 
+class CircuitBreakerError(Exception):
+    """Exception raised when circuit breaker is open.
+
+    Carries the ``error_code`` of the classified failure that tripped the
+    breaker so upstream layers can still distinguish a permanent condition
+    (e.g. billing/quota exhaustion) from a transient provider outage — even
+    though this particular request never reached the provider. Without this, the
+    open-breaker message would erase the original signal and a billing failure
+    would surface as a generic 500.
+
+    ``service`` names the dependency whose breaker opened. The class is shared
+    by every ``BaseExternalClient`` — ChromaDB, Redis, Presidio, the runbook KB
+    and the LLM router all raise it — so a handler that words its response in
+    terms of one of them has to be able to check which one it actually got.
+    """
+
+    def __init__(self, message, error_code=None, service=None):
+        super().__init__(message)
+        self.error_code = error_code
+        self.service = service
+
+
+#: The ``service_name`` of the LLM router's client, so the ``service`` its open
+#: breaker and its deadline carry.
+LLM_BREAKER_SERVICE = "LLM_Providers"
+
+
+def is_llm_breaker(exc: BaseException, *, transient: bool = False) -> bool:
+    """The LLM router's open breaker on the ``__cause__`` chain (``exc`` included).
+
+    Read by its ``service``: one naming another dependency, or none, is not the
+    LLM's here. A caller that knows it called the model decides ``None`` itself,
+    as the engine's error handler does.
+
+    ``transient``: only a breaker whose latch clears with its recovery window,
+    so none, or any code but a ``PERMANENT_BREAKER_LATCHES`` one.
+    """
+    return any(
+        isinstance(c, CircuitBreakerError)
+        and c.service == LLM_BREAKER_SERVICE
+        and not (transient and c.error_code in PERMANENT_BREAKER_LATCHES)
+        for c in walk_cause_chain(exc)
+    )
+
+
 class SessionException(FaultMavenException):
     """Raised when session operations fail."""
 
@@ -281,6 +326,11 @@ CASE_TERMINAL = "CASE_TERMINAL"
 # case_b639fac38fe0 chain). A rejected credential (PROVIDER_AUTH_FAILED) is the
 # same shape as quota: permanent until an operator rotates the key.
 SERVICE_SCOPED_ERROR_CODES = frozenset({QUOTA_EXHAUSTED, PROVIDER_AUTH_FAILED})
+
+# The codes an open breaker can latch that no wait clears: the service-scoped
+# failures above, and a missing LLM configuration. A breaker latched on any
+# other code, or on none, clears with its recovery window (#1632).
+PERMANENT_BREAKER_LATCHES = SERVICE_SCOPED_ERROR_CODES | {LLM_CONFIG_ERROR}
 
 
 # ---------------------------------------------------------------------------

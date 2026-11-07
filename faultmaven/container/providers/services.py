@@ -31,6 +31,32 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def llm_trace_eraser(settings: FaultMavenSettings) -> Any | None:
+    """The LLM trace eraser every delete that purges traces is bound to: the
+    case delete (#2102), and the draft and document deletes and ``fm-reset-kb``
+    (#2575).
+
+    ``None`` when ``OPIK_ENABLED`` is off or no backend URL is set, as then
+    nothing records a trace (``init_opik_tracing`` disables tracing). A backend
+    configured without the Opik SDK binds an eraser that raises, so every
+    delete fails instead of skipping its traces.
+    """
+    from faultmaven.infrastructure.observability import tracing
+    from faultmaven.infrastructure.observability.trace_erasure import (
+        LLMTraceEraser,
+        UnavailableTraceEraser,
+    )
+
+    obs = settings.observability
+    if not (obs.opik_enabled and (obs.opik_use_local or obs.opik_url_override)):
+        return None
+    if tracing.OPIK_AVAILABLE:
+        # None reads the client's project, where ``init_opik_tracing`` sends
+        # traces when the name is empty; "" would search a project named "".
+        return LLMTraceEraser(obs.opik_project_name or None)
+    return UnavailableTraceEraser("the Opik SDK is not installed")
+
+
 def case_store_erasers(
     *,
     session_store: Any | None,
@@ -48,13 +74,10 @@ def case_store_erasers(
 
     Two stores can be absent by configuration: the case vector store, as under
     ``SKIP_SERVICE_CHECKS`` none is built, so nothing in the process writes
-    vectors; and the LLM traces, as without ``OPIK_ENABLED`` and a backend URL
-    nothing records one (``init_opik_tracing`` disables tracing, #2102). Any
-    other missing store is a construction failure, bound as an eraser that
-    raises so every delete fails instead of skipping it.
+    vectors; and the LLM traces (:func:`llm_trace_eraser`). Any other missing
+    store is a construction failure, bound as an eraser that raises so every
+    delete fails instead of skipping it.
     """
-    from faultmaven.infrastructure.observability import tracing
-    from faultmaven.infrastructure.observability.trace_erasure import LLMTraceEraser
     from faultmaven.infrastructure.persistence.database import get_db_session
     from faultmaven.infrastructure.security.case_redaction import (
         CaseRedactionRegistryEraser,
@@ -74,17 +97,11 @@ def case_store_erasers(
 
     erasers: list[Any] = []
     not_configured: tuple[str, ...] = ()
-    obs = settings.observability
-    if not (obs.opik_enabled and (obs.opik_use_local or obs.opik_url_override)):
+    trace_eraser = llm_trace_eraser(settings)
+    if trace_eraser is None:
         not_configured += ("llm_traces",)
-    elif tracing.OPIK_AVAILABLE:
-        # None reads the client's project, where ``init_opik_tracing`` sends
-        # traces when the name is empty; "" would search a project named "".
-        erasers.append(LLMTraceEraser(obs.opik_project_name or None))
     else:
-        erasers.append(
-            UnavailableStoreEraser("llm_traces", "the Opik SDK is not installed")
-        )
+        erasers.append(trace_eraser)
     erasers += [
         bound("session_pointers", session_store, SessionPointerEraser),
         RunbookConversionEraser(get_db_session),
@@ -545,6 +562,8 @@ def create_knowledge_service(
         llm_provider=llm_provider,
         db_session_factory=get_db_session,
         share_repository=share_repository,
+        # A deleted document's conversion traces (#2575).
+        trace_eraser=llm_trace_eraser(settings),
     )
 
 
@@ -1670,6 +1689,8 @@ def register_services(container: BaseDIContainer) -> None:
             account_reader=getattr(
                 getattr(container, "user_store", None), "user_repository", None
             ),
+            # A deleted draft's conversion traces (#2575).
+            trace_eraser=llm_trace_eraser(settings),
         )
     except Exception as conv_err:
         logger.warning(

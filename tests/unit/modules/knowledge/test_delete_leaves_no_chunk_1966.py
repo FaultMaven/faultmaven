@@ -48,7 +48,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from faultmaven.bootstrap import kb_init
-from faultmaven.infrastructure.base_client import CircuitBreakerError
+from faultmaven.exceptions import CircuitBreakerError
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.infrastructure.persistence.share_repository import (
     PostgreSQLShareRepository,
@@ -223,6 +223,7 @@ async def kb():
     svc._vector_store = store
     svc._tracer = MagicMock()
     svc._share_repo = _Shares(factory)
+    svc._trace_eraser = None
     svc._index_document_in_vector_store = _index
     svc._delete_knowledge_item_row = AsyncMock()
     svc._sanitizer = MagicMock()
