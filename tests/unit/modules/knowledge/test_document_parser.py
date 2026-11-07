@@ -131,7 +131,7 @@ class TestTxtExtraction:
         txt_file.write_text(content, encoding="utf-8")
 
         # Act
-        result = parser.parse(txt_file)
+        result = parser.extract_document_text(txt_file).text
 
         # Assert
         assert result == content
@@ -145,7 +145,7 @@ class TestTxtExtraction:
         txt_file.write_text(content, encoding="utf-8")
 
         # Act
-        result = parser.parse(txt_file)
+        result = parser.extract_document_text(txt_file).text
 
         # Assert
         assert result == content
@@ -159,7 +159,7 @@ class TestTxtExtraction:
 
         # Act / Assert
         with pytest.raises(ValueError, match="No extractable text"):
-            parser.parse(txt_file)
+            parser.extract_document_text(txt_file)
 
     @pytest.mark.unit
     def test_extract_txt_whitespace_only_raises(self, parser, tmp_path):
@@ -170,7 +170,7 @@ class TestTxtExtraction:
 
         # Act / Assert
         with pytest.raises(ValueError, match="No extractable text"):
-            parser.parse(txt_file)
+            parser.extract_document_text(txt_file)
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +190,7 @@ class TestMarkdownExtraction:
         md_file.write_text(content, encoding="utf-8")
 
         # Act
-        result = parser.parse(md_file)
+        result = parser.extract_document_text(md_file).text
 
         # Assert
         assert result == content
@@ -203,7 +203,7 @@ class TestMarkdownExtraction:
         md_file.write_text("Before <!-- hidden --> After", encoding="utf-8")
 
         # Act
-        result = parser.parse(md_file)
+        result = parser.extract_document_text(md_file).text
 
         # Assert
         assert "hidden" not in result
@@ -227,7 +227,7 @@ class TestMarkdownExtraction:
         md_file.write_text(content, encoding="utf-8")
 
         # Act
-        result = parser.parse(md_file)
+        result = parser.extract_document_text(md_file).text
 
         # Assert
         assert "TODO" not in result
@@ -243,7 +243,7 @@ class TestMarkdownExtraction:
         md_file.write_text("A <!-- c1 --> B <!-- c2 --> C", encoding="utf-8")
 
         # Act
-        result = parser.parse(md_file)
+        result = parser.extract_document_text(md_file).text
 
         # Assert
         assert "c1" not in result
@@ -272,7 +272,7 @@ class TestHtmlExtraction:
         html_file.write_text(html, encoding="utf-8")
 
         # Act
-        result = parser.parse(html_file)
+        result = parser.extract_document_text(html_file).text
 
         # Assert
         assert "# Title" in result
@@ -297,7 +297,7 @@ class TestHtmlExtraction:
         html_file.write_text(html, encoding="utf-8")
 
         # Act
-        result = parser.parse(html_file)
+        result = parser.extract_document_text(html_file).text
 
         # Assert
         assert "Main content" in result
@@ -317,7 +317,7 @@ class TestHtmlExtraction:
         html_file.write_text(html, encoding="utf-8")
 
         # Act
-        result = parser.parse(html_file)
+        result = parser.extract_document_text(html_file).text
 
         # Assert
         assert "```" in result
@@ -339,7 +339,7 @@ class TestHtmlExtraction:
         html_file.write_text(html, encoding="utf-8")
 
         # Act
-        result = parser.parse(html_file)
+        result = parser.extract_document_text(html_file).text
 
         # Assert
         assert "| Name | Value |" in result
@@ -358,7 +358,7 @@ class TestHtmlExtraction:
         html_file.write_text(html, encoding="utf-8")
 
         # Act
-        result = parser.parse(html_file)
+        result = parser.extract_document_text(html_file).text
 
         # Assert
         assert "First paragraph." in result
@@ -373,7 +373,7 @@ class TestHtmlExtraction:
         html_file.write_text(html, encoding="utf-8")
 
         # Act
-        result = parser.parse(html_file)
+        result = parser.extract_document_text(html_file).text
 
         # Assert
         assert "- Alpha" in result
@@ -389,7 +389,7 @@ class TestHtmlExtraction:
 
         # Act / Assert
         with pytest.raises(ValueError, match="No extractable text"):
-            parser.parse(html_file)
+            parser.extract_document_text(html_file)
 
     @pytest.mark.unit
     def test_extract_html_htm_extension(self, parser, tmp_path):
@@ -400,7 +400,7 @@ class TestHtmlExtraction:
         htm_file.write_text(html, encoding="utf-8")
 
         # Act
-        result = parser.parse(htm_file)
+        result = parser.extract_document_text(htm_file).text
 
         # Assert
         assert "Content" in result
@@ -435,7 +435,9 @@ class TestPdfExtraction:
                 "sys.modules",
                 {"pypdf": MagicMock(PdfReader=MagicMock(return_value=mock_reader))},
             ):
-                result = parser.parse(pdf_file, content_type="application/pdf")
+                result = parser.extract_document_text(
+                    pdf_file, content_type="application/pdf"
+                ).text
 
         # Assert
         assert result == "Page 1 content"
@@ -461,7 +463,9 @@ class TestPdfExtraction:
             "sys.modules",
             {"pypdf": MagicMock(PdfReader=MagicMock(return_value=mock_reader))},
         ):
-            result = parser.parse(pdf_file, content_type="application/pdf")
+            result = parser.extract_document_text(
+                pdf_file, content_type="application/pdf"
+            ).text
 
         # Assert
         assert result == "Chapter 1\n\nChapter 2\n\nChapter 3"
@@ -487,7 +491,9 @@ class TestPdfExtraction:
             "sys.modules",
             {"pypdf": MagicMock(PdfReader=MagicMock(return_value=mock_reader))},
         ):
-            result = parser.parse(pdf_file, content_type="application/pdf")
+            result = parser.extract_document_text(
+                pdf_file, content_type="application/pdf"
+            ).text
 
         # Assert
         assert result == "Has text"
@@ -512,7 +518,7 @@ class TestPdfExtraction:
             {"pypdf": MagicMock(PdfReader=MagicMock(return_value=mock_reader))},
         ):
             with pytest.raises(ValueError, match="No extractable text"):
-                parser.parse(pdf_file, content_type="application/pdf")
+                parser.extract_document_text(pdf_file, content_type="application/pdf")
 
     @pytest.mark.unit
     def test_extract_pdf_import_error_raises(self, parser, tmp_path):
@@ -523,7 +529,7 @@ class TestPdfExtraction:
 
         with patch.dict("sys.modules", {"pypdf": None}):
             with pytest.raises(ValueError, match="pypdf is required"):
-                parser.parse(pdf_file, content_type="application/pdf")
+                parser.extract_document_text(pdf_file, content_type="application/pdf")
 
 
 # ---------------------------------------------------------------------------
@@ -573,7 +579,9 @@ class TestDocxExtraction:
             "sys.modules",
             {"docx": MagicMock(Document=MagicMock(return_value=mock_doc))},
         ):
-            result = parser.parse(docx_file, content_type="application/msword")
+            result = parser.extract_document_text(
+                docx_file, content_type="application/msword"
+            ).text
 
         # Assert
         assert "First paragraph" in result
@@ -599,7 +607,9 @@ class TestDocxExtraction:
             "sys.modules",
             {"docx": MagicMock(Document=MagicMock(return_value=mock_doc))},
         ):
-            result = parser.parse(docx_file, content_type="application/msword")
+            result = parser.extract_document_text(
+                docx_file, content_type="application/msword"
+            ).text
 
         # Assert
         assert "# Title" in result
@@ -627,7 +637,9 @@ class TestDocxExtraction:
             "sys.modules",
             {"docx": MagicMock(Document=MagicMock(return_value=mock_doc))},
         ):
-            result = parser.parse(docx_file, content_type="application/msword")
+            result = parser.extract_document_text(
+                docx_file, content_type="application/msword"
+            ).text
 
         # Assert
         assert "Real text" in result
@@ -661,7 +673,9 @@ class TestDocxExtraction:
             "sys.modules",
             {"docx": MagicMock(Document=MagicMock(return_value=mock_doc))},
         ):
-            result = parser.parse(docx_file, content_type="application/msword")
+            result = parser.extract_document_text(
+                docx_file, content_type="application/msword"
+            ).text
 
         # Assert
         assert "| Host | Status |" in result
@@ -678,7 +692,9 @@ class TestDocxExtraction:
 
         with patch.dict("sys.modules", {"docx": None}):
             with pytest.raises(ValueError, match="python-docx is required"):
-                parser.parse(docx_file, content_type="application/msword")
+                parser.extract_document_text(
+                    docx_file, content_type="application/msword"
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -698,7 +714,7 @@ class TestUnsupportedFormat:
 
         # Act / Assert
         with pytest.raises(ValueError, match="Unsupported file type"):
-            parser.parse(csv_file)
+            parser.extract_document_text(csv_file)
 
     @pytest.mark.unit
     def test_unsupported_mime_and_extension_raises(self, parser, tmp_path):
@@ -709,16 +725,18 @@ class TestUnsupportedFormat:
 
         # Act / Assert
         with pytest.raises(ValueError, match="Unsupported file type"):
-            parser.parse(bin_file, content_type="application/octet-stream")
+            parser.extract_document_text(
+                bin_file, content_type="application/octet-stream"
+            )
 
 
 # ---------------------------------------------------------------------------
-# Parse method integration (format detection -> extraction -> validation)
+# extract_document_text integration (format detection -> extraction -> validation)
 # ---------------------------------------------------------------------------
 
 
 class TestParseIntegration:
-    """Tests for the parse() method end-to-end flow."""
+    """Tests for the extract_document_text() end-to-end flow."""
 
     @pytest.mark.unit
     def test_parse_with_content_type_hint(self, parser, tmp_path):
@@ -727,7 +745,7 @@ class TestParseIntegration:
         log_file = tmp_path / "app.log"
         log_file.write_text("2026-03-22 ERROR: disk full", encoding="utf-8")
 
-        result = parser.parse(log_file, content_type="text/plain")
+        result = parser.extract_document_text(log_file, content_type="text/plain").text
         assert "disk full" in result
 
     @pytest.mark.unit
@@ -736,7 +754,7 @@ class TestParseIntegration:
         txt_file = tmp_path / "notes.txt"
         txt_file.write_text("Some notes", encoding="utf-8")
 
-        result = parser.parse(txt_file)
+        result = parser.extract_document_text(txt_file).text
         assert result == "Some notes"
 
     @pytest.mark.unit
@@ -747,7 +765,7 @@ class TestParseIntegration:
         broken.mkdir()
 
         with pytest.raises(ValueError, match="Failed to parse broken.md"):
-            parser.parse(broken)
+            parser.extract_document_text(broken)
 
 
 # ---------------------------------------------------------------------------

@@ -14,11 +14,16 @@ Stages:
 6. Content triage (LLM classifier)
 """
 
+import asyncio
+import contextvars
 import logging
 import os
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, NamedTuple, Optional
 
 from faultmaven.core.investigation.confidence_repair import (
     ConfidenceAction,
@@ -47,7 +52,11 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
     RedactionReport,
     TriageResult,
 )
-from faultmaven.modules.knowledge.domain.services.document_parser import DocumentParser
+from faultmaven.modules.knowledge.domain.services.document_parser import (
+    DocumentParser,
+    DocumentTooComplex,
+    ParsedDocument,
+)
 from faultmaven.modules.knowledge.domain.services.runbook_grammar import code_spans
 from faultmaven.utils.frontmatter import match_frontmatter
 from faultmaven.utils.token_estimation import _get_tiktoken_encoder
@@ -57,6 +66,69 @@ logger = logging.getLogger(__name__)
 MAX_TOKEN_LIMIT = 30_000
 MIN_TEXT_LENGTH = 200
 TRIAGE_SAMPLE_TOKENS = 2000
+
+#: How long a request waits for a worker, and then for its Stages 0-5, each
+#: from its own start (#2153). The route has no other limit until the ingress's
+#: 660 s, so both waits and the model calls after them fit, and a legitimate
+#: dense PDF (10.7 s measured for one page) has room. Work a caller abandons is
+#: bounded by the check between pages, not by this.
+EXTRACTION_TIMEOUT_SECONDS = 120
+
+#: ``Retry-After`` on ``CONVERSION_BUSY``. A PDF worker held when a request
+#: gives up has ended, or stops at its next page, within one bound of it. A
+#: worker on any other format has no such checkpoint and runs to its end (#2597).
+CONVERSION_BUSY_RETRY_AFTER_SECONDS = EXTRACTION_TIMEOUT_SECONDS
+
+#: Where Stages 0-5 run: CPU over the caller's file, off the event loop (#1417's
+#: class, #2153). Not a semaphore: ``async with sem: await wait_for(to_thread())``
+#: frees the slot on timeout while the thread runs on, bounding nothing. A pool
+#: worker stays taken until its work ends, so at most two run, and a queued one
+#: whose caller gave up is cancelled and never runs. A thread cannot be killed,
+#: so a started worker whose caller gave up checks between PDF pages and stops
+#: after its current one; process exit waits for that page. The route unlinking
+#: the temp file meanwhile is safe on Linux: an open file outlives its name, and
+#: a worker not yet reading it fails with a result nobody reads.
+_EXTRACTION_POOL = ThreadPoolExecutor(
+    max_workers=2, thread_name_prefix="document-extract"
+)
+
+#: How many skipped page numbers a sentence names before "and N more".
+_PAGES_NAMED = 10
+
+
+def _page_list(pages: tuple[int, ...]) -> str:
+    """The first ``_PAGES_NAMED`` page numbers, then how many more."""
+    named = ", ".join(map(str, pages[:_PAGES_NAMED]))
+    more = len(pages) - _PAGES_NAMED
+    return f"{named} and {more} more" if more > 0 else named
+
+
+def _refusal(reason: str, error_code: ConversionErrorCode) -> PreprocessingResult:
+    return PreprocessingResult(
+        extracted_text="",
+        source_metadata={},
+        is_rejected=True,
+        rejection_reason=reason,
+        error_code=error_code,
+    )
+
+
+def _refused_pages_left_too_little(parsed: ParsedDocument) -> PreprocessingResult:
+    """The length or technical-content gate refused what the refused pages left:
+    the refused pages are the cause, not the document's length or subject."""
+    return _refusal(
+        f"The PDF reader's limits refused page(s) {_page_list(parsed.skipped_pages)}"
+        f" of {parsed.page_count}, and the pages it could read are not enough to "
+        "convert. Export it to text (TXT or Markdown), or split it into smaller "
+        "documents, and convert that instead.",
+        ConversionErrorCode.DOCUMENT_TOO_COMPLEX,
+    )
+
+
+def _resolve(started: "asyncio.Future[None]") -> None:
+    """Mark a request's worker started, unless the request stopped waiting."""
+    if not started.done():
+        started.set_result(None)
 
 
 def _get_encoder():
@@ -180,9 +252,13 @@ def redact_sensitive_content(text: str) -> tuple[str, RedactionReport]:
 
 
 def extract_source_metadata(
-    file_path: Path, content_type: str, extracted_text: str
+    file_path: Path,
+    content_type: str,
+    extracted_text: str,
+    page_count: Optional[int],
 ) -> Dict[str, Any]:
-    """Stage 5: Capture provenance metadata from source file."""
+    """Stage 5: Capture provenance metadata from source file. A PDF's page
+    count is the extraction's, so the file is not opened a second time."""
     stat = file_path.stat()
     word_count = len(extracted_text.split())
 
@@ -193,15 +269,8 @@ def extract_source_metadata(
         "word_count": word_count,
     }
 
-    # Page count for PDFs
-    if content_type == "application/pdf":
-        try:
-            from pypdf import PdfReader
-
-            reader = PdfReader(str(file_path))
-            metadata["page_count"] = len(reader.pages)
-        except Exception:
-            pass
+    if page_count is not None:
+        metadata["page_count"] = page_count
 
     return metadata
 
@@ -561,6 +630,16 @@ def _has_runbook_body(text: str) -> bool:
 # =============================================================================
 
 
+class _Prepared(NamedTuple):
+    """Stages 0-5's output, handed from the extraction pool to Stage 6."""
+
+    extracted_text: str
+    source_metadata: Dict[str, Any]
+    redaction_report: RedactionReport
+    token_count: int
+    warnings: list[str]
+
+
 class DocumentPreprocessor:
     """Orchestrates the preprocessing pipeline."""
 
@@ -573,12 +652,19 @@ class DocumentPreprocessor:
         # whichever router is configured.
         self._sanitizer = sanitizer
 
-    async def preprocess(
+    def _prepare(
         self,
         file_path: Path,
         content_type: str,
-    ) -> PreprocessingResult:
-        """Run the full preprocessing pipeline."""
+        on_start: Optional[Callable[[], object]] = None,
+        abandoned: Optional[threading.Event] = None,
+    ) -> PreprocessingResult | _Prepared:
+        """Stages 0-5, synchronous CPU over the caller's file: ``preprocess``
+        runs this in ``_EXTRACTION_POOL``, never on the event loop. Returns the
+        rejection, or what Stage 6 needs. ``on_start`` tells the caller this
+        request holds a worker; ``abandoned`` is set once it stops waiting."""
+        if on_start is not None:
+            on_start()
         warnings: list[str] = []
 
         # Stage 0: File integrity
@@ -599,7 +685,11 @@ class DocumentPreprocessor:
 
         # Stage 1: Format extraction
         try:
-            extracted_text = self._parser.parse(file_path, content_type)
+            parsed = self._parser.extract_document_text(
+                file_path, content_type, abandoned
+            )
+        except DocumentTooComplex as e:
+            return _refusal(str(e), ConversionErrorCode.DOCUMENT_TOO_COMPLEX)
         except ValueError as e:
             error_msg = str(e)
             if "encoding" in error_msg.lower() or "decode" in error_msg.lower():
@@ -614,6 +704,14 @@ class DocumentPreprocessor:
                 is_rejected=True,
                 rejection_reason=error_msg,
                 error_code=error_code,
+            )
+        extracted_text = parsed.text
+        if parsed.skipped_pages:
+            warnings.append(
+                "The PDF reader's limits refused page(s) "
+                f"{_page_list(parsed.skipped_pages)} of {parsed.page_count}, so "
+                "their text was skipped. Check the generated runbook against "
+                "those pages of the source."
             )
 
         # Stage 1b: Existing runbook detection — a REFUSAL, not a warning.
@@ -677,6 +775,8 @@ class DocumentPreprocessor:
 
         # Check minimum length
         if len(extracted_text.strip()) < MIN_TEXT_LENGTH:
+            if parsed.skipped_pages:
+                return _refused_pages_left_too_little(parsed)
             return PreprocessingResult(
                 extracted_text=extracted_text,
                 source_metadata={},
@@ -692,6 +792,8 @@ class DocumentPreprocessor:
         # Stage 2b: Heuristic technical content check (before LLM calls)
         has_technical, signal_count = check_technical_content(extracted_text)
         if not has_technical:
+            if parsed.skipped_pages:
+                return _refused_pages_left_too_little(parsed)
             return PreprocessingResult(
                 extracted_text=extracted_text,
                 source_metadata={},
@@ -731,9 +833,82 @@ class DocumentPreprocessor:
 
         # Stage 5: Source metadata extraction
         source_metadata = extract_source_metadata(
-            file_path, content_type, extracted_text
+            file_path, content_type, extracted_text, parsed.page_count
         )
         source_metadata["token_count"] = token_count
+        return _Prepared(
+            extracted_text, source_metadata, redaction_report, token_count, warnings
+        )
+
+    async def preprocess(
+        self, file_path: Path, content_type: str
+    ) -> PreprocessingResult:
+        """Run the full preprocessing pipeline: Stages 0-5 in the extraction
+        pool, then Stage 6 on the loop.
+
+        Two waits, each up to ``EXTRACTION_TIMEOUT_SECONDS``: for a worker, then
+        for its run, timed from when it started. A request that gets no worker
+        is ``CONVERSION_BUSY``, and its queued work is cancelled; one whose run
+        outlasts the bound is refused, and its worker stops at the next page.
+        Each bound is scoped to its own wait, so a ``TimeoutError`` raised in
+        the worker propagates as the error it is.
+        """
+        loop = asyncio.get_running_loop()
+        started, abandoned = loop.create_future(), threading.Event()
+        # A copied context, as ``to_thread`` makes and ``submit`` does not:
+        # pypdf's limits, the tenant and the request id are context variables.
+        job = _EXTRACTION_POOL.submit(
+            contextvars.copy_context().run,
+            self._prepare,
+            file_path,
+            content_type,
+            partial(loop.call_soon_threadsafe, _resolve, started),
+            abandoned,
+        )
+        try:
+            try:
+                async with asyncio.timeout(EXTRACTION_TIMEOUT_SECONDS):
+                    await started
+            except TimeoutError:
+                logger.warning(
+                    "conversion of %s: no extraction worker free within %s s",
+                    file_path.name,
+                    EXTRACTION_TIMEOUT_SECONDS,
+                )
+                return _refusal(
+                    "The server is busy converting other documents, so this one "
+                    "could not start. Try again in "
+                    f"{CONVERSION_BUSY_RETRY_AFTER_SECONDS} seconds.",
+                    ConversionErrorCode.CONVERSION_BUSY,
+                )
+            try:
+                async with asyncio.timeout(EXTRACTION_TIMEOUT_SECONDS) as running:
+                    prepared = await asyncio.wrap_future(job)
+            except TimeoutError:
+                if not running.expired():
+                    raise
+                logger.warning(
+                    "conversion of %s: extraction ran past %s s; refused",
+                    file_path.name,
+                    EXTRACTION_TIMEOUT_SECONDS,
+                )
+                return _refusal(
+                    "Reading this document took longer than the "
+                    f"{EXTRACTION_TIMEOUT_SECONDS}-second limit, so it was not "
+                    "converted. Export it to text (TXT or Markdown), or split it "
+                    "into smaller documents, and convert that instead.",
+                    ConversionErrorCode.DOCUMENT_TOO_COMPLEX,
+                )
+        finally:
+            # Queued: cancelled, so it never runs. Running: it stops after its
+            # current page. Finished: neither does anything.
+            abandoned.set()
+            job.cancel()
+        if isinstance(prepared, PreprocessingResult):
+            return prepared
+        extracted_text, source_metadata, redaction_report, token_count, warnings = (
+            prepared
+        )
 
         # Stage 6: Content triage (classifier LLM)
         triage_result = await self._run_content_triage(extracted_text)

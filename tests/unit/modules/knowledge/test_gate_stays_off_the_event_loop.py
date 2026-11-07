@@ -41,6 +41,16 @@ _SYNC_GATE = {
     "find_security_hazards",
     "validate_file",
     "score_file",
+    # An uploaded document's preparation (#2153): #1417's class, back on a path
+    # this guard did not root. The extraction and the stages ``_prepare`` runs
+    # after it, each a name defined once in the tree, so rooting it adds no hit
+    # elsewhere. ``_prepare`` reaches them, so it joins the set too.
+    "extract_document_text",
+    "classify_runbook_shape",
+    "cleanup_text",
+    "check_technical_content",
+    "redact_sensitive_content",
+    "count_tokens",
 }
 
 #: The one name collision the by-name scan cannot resolve. Pinned as an exact
