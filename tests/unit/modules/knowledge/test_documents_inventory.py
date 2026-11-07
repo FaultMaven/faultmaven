@@ -287,6 +287,7 @@ async def inventory_service():
     svc._vector_store.delete_documents_by_parent_id = AsyncMock(return_value=2)
     svc._tracer = MagicMock()
     svc._share_repo = None  # no team publishing in this fixture
+    svc._trace_eraser = None
 
     async def _seed(item):
         async with factory() as session:

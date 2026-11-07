@@ -108,18 +108,23 @@ async def discard_drafts_naming_item(session: AsyncSession, item_id: str) -> Lis
 
 
 async def discard_drafts_naming_any_item(
-    session: AsyncSession,
+    session: AsyncSession, items=None
 ) -> Tuple[List[str], List[str], int]:
-    """Lock every item and discard the drafts naming one, ahead of deleting
-    them (``fm-reset-kb``); return the locked item ids, the discarded draft
-    ids and how many case keys the discard released. The caller deletes
-    exactly those items: an item written after the lock was not locked and
-    its drafts were not discarded, so deleting it would orphan them."""
-    return await _discard_drafts_naming(session, true())
+    """Lock every item ``items`` matches (every item when ``None``) and
+    discard the drafts naming one, ahead of deleting them (``fm-reset-kb``);
+    return the locked item ids, the discarded draft ids and how many case keys
+    the discard released. The caller deletes exactly those items: an item
+    written after the lock was not locked and its drafts were not discarded,
+    so deleting it would orphan them. A filter ``items`` is evaluated again
+    once the rows are locked, and an item that no longer passes is left with
+    its drafts (#2575)."""
+    if items is None:
+        return await _discard_drafts_naming(session, true())
+    return await _discard_drafts_naming(session, items, recheck=True)
 
 
 async def _discard_drafts_naming(
-    session: AsyncSession, items
+    session: AsyncSession, items, recheck: bool = False
 ) -> Tuple[List[str], List[str], int]:
     """Lock the items ``items`` matches and discard the live drafts naming
     them; return the locked item ids, the discarded draft ids and how many
@@ -136,6 +141,13 @@ async def _discard_drafts_naming(
     slot is freed. One statement, as no unique key bounds the drafts naming one
     item, then one key release per job. A draft already discarded is not
     counted again.
+
+    ``recheck`` evaluates ``items`` again, in a new statement over the locked
+    ids, and keeps only those that pass. PostgreSQL evaluates a filter on
+    other rows in the locking statement's snapshot, rechecking only the
+    locked row after a wait, so a link that committed while the lock waited
+    is seen only by the next statement; once the rows are locked, no new link
+    to them can commit.
     """
     locked = list(
         (
@@ -144,6 +156,16 @@ async def _discard_drafts_naming(
             )
         ).scalars()
     )
+    if recheck and locked:
+        locked = list(
+            (
+                await session.execute(
+                    select(KnowledgeItemModel.item_id).where(
+                        KnowledgeItemModel.item_id.in_(locked), items
+                    )
+                )
+            ).scalars()
+        )
     if not locked:
         return [], [], 0
     discarded = (

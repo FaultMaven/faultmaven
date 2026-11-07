@@ -92,14 +92,13 @@ conversion call applies (#1901) — pass the deployment's sanitizer to send what
 production sends, or `None` to send the documents as written:
 
 ```python
-from faultmaven.infrastructure.security.case_redaction import model_boundary_redaction
-
 analysis = await _analyze_document(
     LLMRouter(),
     get_settings(),
     path.read_text(),
     path.name,
-    model_boundary_redaction(None),
+    sanitizer=None,  # or the deployment's sanitizer
+    conversion_id="conv_eval",  # tags the call's trace (#2575)
 )
 ```
 

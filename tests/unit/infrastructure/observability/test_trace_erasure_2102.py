@@ -1,4 +1,6 @@
-"""The case delete purges a case's LLM traces, or fails and says so (#2102).
+"""The case delete purges a case's LLM traces, or fails and says so (#2102); the
+draft and document deletes purge a conversion's the same way (#2575,
+``TestAConversionsTraces``).
 
 Driven with a fake client, as opik is not in the dev install. The real SDK runs
 in ``test_trace_erasure_loopback_2102.py``, which is where a drift from this fake
@@ -23,6 +25,7 @@ from faultmaven.infrastructure.observability.trace_erasure import (
     TRACE_EXCLUDE,
     TRACE_PAGE_SIZE,
     LLMTraceEraser,
+    UnavailableTraceEraser,
 )
 
 pytestmark = pytest.mark.unit
@@ -315,7 +318,9 @@ class TestItFailsClosed:
     @pytest.mark.parametrize(
         "call", ["get_traces_by_project", "get_spans_by_project", "delete_traces"]
     )
-    async def test_an_unreachable_backend_propagates(self, call):
+    async def test_an_unreachable_backend_refuses_naming_the_error_class(self, call):
+        """The SDK's own error, wrapped once here for every caller: its text
+        can carry the backend's response body (#2575)."""
         client = _FakeClient(traces=["t1"])
 
         def unreachable(**_):
@@ -326,8 +331,12 @@ class TestItFailsClosed:
             if hasattr(api, call):
                 setattr(api, call, unreachable)
 
-        with pytest.raises(httpx.ConnectError):
+        with pytest.raises(
+            ServiceException, match=f"llm_traces for case {CASE}: ConnectError$"
+        ) as refused:
             await _eraser(client).erase_case(CASE, ENTERPRISE)
+
+        assert isinstance(refused.value.__cause__, httpx.ConnectError)
 
     async def test_an_erase_that_outlasts_its_budget_refuses(self, monkeypatch):
         release = threading.Event()
@@ -357,7 +366,7 @@ class TestItFailsClosed:
         monkeypatch.setattr(trace_erasure, "TRACE_ERASE_TIMEOUT_SECONDS", -1)
 
         with pytest.raises(ServiceException, match="llm_traces.*time limit"):
-            _eraser(client)._erase(CASE, ENTERPRISE)
+            _eraser(client)._erase(CASE, ENTERPRISE, "case")
 
         assert client.deleted == []
 
@@ -508,3 +517,67 @@ async def test_the_default_client_is_the_one_the_decorator_shares(monkeypatch):
         monkeypatch.setitem(sys.modules, name, stand_in)
 
     assert await LLMTraceEraser("faultmaven").erase_case(CASE, ENTERPRISE) == 1
+
+
+CONVERSION = "conv_aabb20262575"
+
+
+class TestAConversionsTraces:
+    """#2575: the case's erase, found by the conversion's tag instead."""
+
+    async def test_its_requests_are_the_case_erases_but_for_the_owner_key(self, caplog):
+        by_case = _FakeClient(traces=["t1"], spans=["t1", "t2"])
+        by_conversion = _FakeClient(traces=["t1"], spans=["t1", "t2"])
+
+        await _eraser(by_case).erase_case(CONVERSION, ENTERPRISE)
+        with caplog.at_level(logging.INFO, logger=trace_erasure.__name__):
+            assert (
+                await _eraser(by_conversion).erase_conversion(CONVERSION, ENTERPRISE)
+                == 2
+            )
+
+        for reads in ("trace_reads", "span_reads"):
+            assert getattr(by_conversion, reads) == [
+                {
+                    **read,
+                    "filters": read["filters"].replace(
+                        "metadata.case_id", "metadata.conversion_id"
+                    ),
+                }
+                for read in getattr(by_case, reads)
+            ]
+        assert 'metadata.conversion_id = "' in by_conversion.trace_reads[0]["filters"]
+        assert by_conversion.deleted == by_case.deleted == [["t1", "t2"]]
+        assert f"Deleted 2 traces of conversion {CONVERSION}" in caplog.text
+
+    @pytest.mark.parametrize(
+        "conversion_id",
+        ['conv" OR metadata.x = "y', "conv_a\n", ""],
+        ids=["quote", "trailing-newline", "empty"],
+    )
+    async def test_an_id_outside_the_alphabet_is_refused_before_any_call(
+        self, conversion_id
+    ):
+        eraser = LLMTraceEraser("faultmaven", client_factory=_no_client)
+
+        with pytest.raises(ServiceException, match="not a valid id"):
+            await eraser.erase_conversion(conversion_id, ENTERPRISE)
+
+    async def test_a_refusal_names_the_conversion_and_deletes_nothing(self):
+        client = _FakeClient(traces=["t1"], flushed=False)
+
+        with pytest.raises(
+            ServiceException,
+            match=f"llm_traces for conversion {CONVERSION}: queued traces",
+        ):
+            await _eraser(client).erase_conversion(CONVERSION, ENTERPRISE)
+
+        assert client.trace_reads == [] and client.deleted == []
+
+    async def test_an_absent_sdk_refuses_naming_the_conversion(self):
+        eraser = UnavailableTraceEraser("the Opik SDK is not installed")
+
+        with pytest.raises(
+            ServiceException, match=f"llm_traces for conversion {CONVERSION}: the"
+        ):
+            await eraser.erase_conversion(CONVERSION, ENTERPRISE)

@@ -975,6 +975,12 @@ async def delete_document(
     already in a case's conversation context
     stays there until that case next searches the knowledge base.
 
+    Before the document changes, the model-call traces of the conversions its
+    drafts came from are deleted (#2575). When they cannot be deleted (the
+    trace backend is unreachable, or did not initialize) the request answers
+    500 "Failed to delete document" and the document is untouched, so a retry
+    can finish it.
+
     Args:
         document_id: Document identifier
 
@@ -1426,7 +1432,12 @@ async def bulk_delete_documents(
     ``DELETE /documents/{id}``, applied to each target before anything reaches
     the service. Refused targets are reported in ``errors`` and never counted
     as deleted; ``total_requested`` is the de-duplicated batch size (see
-    ``_normalize_bulk_document_ids``), so the counts reconcile.
+    ``_normalize_bulk_document_ids``), so the counts reconcile. Each
+    conversion's model-call traces are deleted once for the batch (#2575).
+    When they cannot be, that document is reported in ``errors`` and left as it
+    was; after that, a document whose traces are not yet deleted is reported
+    the same way without another call to the trace backend, and one with none
+    left to delete is deleted.
     """
     logger = logging.getLogger(__name__)
 

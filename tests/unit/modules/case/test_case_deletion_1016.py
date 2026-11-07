@@ -572,13 +572,15 @@ class TestComposition:
         self, tmp_path, monkeypatch, caplog
     ):
         """The real composition through ``hard_delete_case``: the traces clear
-        first, and the raw SDK error's store is named in the log."""
+        first, and the SDK error, wrapped by the eraser (#2575), names the
+        store in the log."""
         monkeypatch.setattr(tracing, "OPIK_AVAILABLE", True)
-        monkeypatch.setattr(
-            LLMTraceEraser,
-            "erase_case",
-            AsyncMock(side_effect=httpx.ConnectError("Connection refused")),
-        )
+        monkeypatch.setattr(tracing, "_tracing_configured", True)
+
+        def unreachable(*_args):
+            raise httpx.ConnectError("Connection refused")
+
+        monkeypatch.setattr(LLMTraceEraser, "_erase", unreachable)
         uploads = AsyncMock(return_value=0)
         monkeypatch.setattr(FileStorageService, "erase_case", uploads)
         service = self._build(
@@ -592,7 +594,12 @@ class TestComposition:
             Case(user_id=CREATOR, enterprise_id=ENTERPRISE, title="Disk full")
         )
 
-        with caplog.at_level(logging.ERROR), pytest.raises(httpx.ConnectError):
+        with (
+            caplog.at_level(logging.ERROR),
+            pytest.raises(
+                ServiceException, match="llm_traces for case .*: ConnectError"
+            ),
+        ):
             await service.hard_delete_case(case.case_id, CREATOR)
 
         uploads.assert_not_awaited()

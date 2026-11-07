@@ -47,6 +47,7 @@ from faultmaven.exceptions import (
     ExternalCallTimeout,
     FaultMavenException,
     RawModelContentRefused,
+    ServiceException,
     is_llm_breaker,
 )
 from faultmaven.infrastructure.concurrency.request_fingerprint import (
@@ -677,13 +678,24 @@ async def delete_draft(
     Deleting a global-scope draft is platform-corpus authoring — the service
     applies the global-authoring gate once the job's scope is loaded, same as
     edit (#785) and verify.
+
+    Before the draft changes, the model-call traces of its conversion are
+    deleted (#2575). Every draft of a conversion was generated from the whole
+    document, so the traces of its other drafts go too. When they cannot be
+    deleted (the trace backend is unreachable, or did not initialize) the
+    request answers **500** "Failed to delete draft" and the draft is
+    untouched, so a retry can finish it.
     """
-    success = await service.delete_draft(
-        conversion_id=conversion_id,
-        draft_id=draft_id,
-        user_id=current_user.user_id,
-        is_platform_admin=current_user.is_platform_admin(),
-    )
+    try:
+        success = await service.delete_draft(
+            conversion_id=conversion_id,
+            draft_id=draft_id,
+            user_id=current_user.user_id,
+            is_platform_admin=current_user.is_platform_admin(),
+        )
+    except ServiceException as e:
+        logger.error(f"Failed to delete draft {draft_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete draft")
     if not success:
         raise HTTPException(status_code=404, detail="Draft not found")
 

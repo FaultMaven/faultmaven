@@ -201,6 +201,7 @@ _BY_LABEL = {t.label: t for t in TARGETS}
 _FLOOR = 7777
 _CONSUMED_BY_THE_ROUTER = {
     "case_id": "case-SENTINEL-2002",
+    "conversion_id": "conv-SENTINEL-2575",
     "bypass_cache": "bypass-SENTINEL-2002",
     "provider_override": "provider-SENTINEL-2002",
     "data_type": DataType.TRACE_DATA,

@@ -223,6 +223,7 @@ async def kb():
     svc._vector_store = store
     svc._tracer = MagicMock()
     svc._share_repo = _Shares(factory)
+    svc._trace_eraser = None
     svc._index_document_in_vector_store = _index
     svc._delete_knowledge_item_row = AsyncMock()
     svc._sanitizer = MagicMock()
