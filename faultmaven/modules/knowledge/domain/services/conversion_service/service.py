@@ -25,6 +25,7 @@ from faultmaven.exceptions import (
     NotFoundError,
     RawModelContentRefused,
     ValidationException,
+    is_llm_breaker,
 )
 from faultmaven.infrastructure import index_slot
 from faultmaven.infrastructure.concurrency import inflight
@@ -89,6 +90,7 @@ from faultmaven.modules.knowledge.domain.services.conversion_service.draft_slots
     refuse_if_draft_slot_taken,
 )
 from faultmaven.modules.knowledge.domain.services.conversion_service.errors import (
+    LLM_NOT_CONFIGURED,
     ConversionRejectedError,
 )
 from faultmaven.modules.knowledge.domain.services.conversion_service.failure_modes import (
@@ -335,15 +337,11 @@ class ConversionService:
             knowledge_model = self._settings.llm.get_knowledge_model()
             if not knowledge_model:
                 raise ConversionRejectedError(
-                    "No LLM provider is configured. Set CHAT_PROVIDER in your .env file "
-                    "or configure a provider in Dashboard > LLM Settings.",
-                    error_code=ConversionErrorCode.LLM_UNAVAILABLE,
+                    LLM_NOT_CONFIGURED, error_code=ConversionErrorCode.LLM_UNAVAILABLE
                 )
         except AttributeError:
             raise ConversionRejectedError(
-                "No LLM provider is configured. Set CHAT_PROVIDER in your .env file "
-                "or configure a provider in Dashboard > LLM Settings.",
-                error_code=ConversionErrorCode.LLM_UNAVAILABLE,
+                LLM_NOT_CONFIGURED, error_code=ConversionErrorCode.LLM_UNAVAILABLE
             )
 
         conversion_id = generate_conversion_id()
@@ -1262,7 +1260,10 @@ class ConversionService:
             return ConversionError(
                 failure_mode_id=failure_mode.id,
                 error=f"Runbook generation failed ({type(e).__name__})",
-                retryable=getattr(e, "retryable", False),
+                # An open LLM breaker declares nothing; one whose latch
+                # clears with its window is as retryable as a deadline (#1632).
+                retryable=getattr(e, "retryable", False)
+                or is_llm_breaker(e, transient=True),
             )
 
     # =========================================================================

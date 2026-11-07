@@ -35,13 +35,25 @@ from fastapi import (
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ValidationError
 
+from faultmaven.api.exception_handlers import (
+    global_service_exception_http_exception,
+    is_llm_failure,
+)
 from faultmaven.config.idempotency_key import IDEMPOTENCY_REPLAY_UNAVAILABLE
 from faultmaven.config.tenant_context import writable_enterprise_id
-from faultmaven.exceptions import FaultMavenException, RawModelContentRefused
+from faultmaven.exceptions import (
+    LLM_CONFIG_ERROR,
+    CircuitBreakerError,
+    ExternalCallTimeout,
+    FaultMavenException,
+    RawModelContentRefused,
+    is_llm_breaker,
+)
 from faultmaven.infrastructure.concurrency.request_fingerprint import (
     digest_file,
     request_fingerprint,
 )
+from faultmaven.models.exceptions import LLMProviderError
 from faultmaven.modules.auth.contracts import DevUser
 from faultmaven.modules.knowledge.api.request_idempotency import (
     IdempotencyKey,
@@ -64,6 +76,7 @@ from faultmaven.modules.knowledge.domain.request_receipts import (
     KbRequestReceipt,
 )
 from faultmaven.modules.knowledge.domain.services.conversion_service.errors import (
+    LLM_NOT_CONFIGURED,
     ConversionRejectedError,
 )
 from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
@@ -324,11 +337,15 @@ async def convert_document(
             )
         )
 
-    except FaultMavenException:
+    except FaultMavenException as e:
         # Typed service exceptions (AuthorizationError for a team the caller
         # doesn't belong to, ValidationException for team publishing being
         # unavailable) propagate to the global handlers for canonical 403/422
-        # translation instead of being swallowed into a 500 below.
+        # translation instead of being swallowed into a 500 below. The LLM's
+        # own deadline is the one with no handler: answered here (#1632).
+        if isinstance(e, ExternalCallTimeout) and is_llm_failure(e):
+            logger.error(f"Conversion failed: {e}", exc_info=True)
+            raise global_service_exception_http_exception(e) from e
         raise
 
     except ConversionRejectedError as e:
@@ -376,6 +393,25 @@ async def convert_document(
         raise
     except Exception as e:
         logger.error(f"Conversion failed: {e}", exc_info=True)
+        # The LLM failures that are not FaultMavenExceptions (#1632). The LLM
+        # layer's configuration error, raised or latched by the open LLM
+        # breaker, is Step 0's refusal in either state; anything else on an
+        # LLM chain answers as an LLMException passed above does, where an
+        # outer typed declaration decides. Another service's breaker keeps
+        # the 500 below.
+        if getattr(e, "error_code", None) == LLM_CONFIG_ERROR and (
+            isinstance(e, LLMProviderError)
+            or (isinstance(e, CircuitBreakerError) and is_llm_breaker(e))
+        ):
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "detail": LLM_NOT_CONFIGURED,
+                    "error_code": ConversionErrorCode.LLM_UNAVAILABLE,
+                },
+            )
+        if is_llm_failure(e):
+            raise global_service_exception_http_exception(e) from e
         return JSONResponse(
             status_code=500,
             content={

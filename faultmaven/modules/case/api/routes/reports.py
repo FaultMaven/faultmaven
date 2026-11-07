@@ -15,8 +15,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from faultmaven.api.v1.auth_dependencies import require_authentication
 from faultmaven.api.v1.dependencies import get_case_repository
 from faultmaven.config.tenant_context import get_current_enterprise_id
-from faultmaven.exceptions import CASE_TERMINAL
-from faultmaven.infrastructure.base_client import CircuitBreakerError
+from faultmaven.exceptions import CASE_TERMINAL, CircuitBreakerError
 from faultmaven.infrastructure.knowledge.runbook_kb import RESULTS_UNREADABLE_CODE
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models.exceptions import KnowledgeBaseError

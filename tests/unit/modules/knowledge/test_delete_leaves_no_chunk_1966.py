@@ -48,7 +48,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from faultmaven.bootstrap import kb_init
-from faultmaven.infrastructure.base_client import CircuitBreakerError
+from faultmaven.exceptions import CircuitBreakerError
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.infrastructure.persistence.share_repository import (
     PostgreSQLShareRepository,
