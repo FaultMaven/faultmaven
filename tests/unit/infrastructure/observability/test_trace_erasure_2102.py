@@ -128,6 +128,15 @@ def _no_client():
     raise AssertionError("no client may be built")
 
 
+async def _until(condition):
+    """Yield to the loop until ``condition`` holds. A hang fails, never passes."""
+    for _ in range(2000):
+        if condition():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("the condition never held")
+
+
 class _WatchedLock:
     """The module's lock, telling a test when a second delete waits on it."""
 
@@ -428,8 +437,8 @@ class TestWhatThisPodHolds:
 
             client.flush = flush
         first = asyncio.ensure_future(_eraser(clients[0]).erase_case(CASE, ENTERPRISE))
-        while not overlaps:
-            await asyncio.sleep(0)
+        await _until(lambda: overlaps or first.done())
+        assert overlaps, f"the first delete ended before its flush: {first!r}"
         second = asyncio.ensure_future(_eraser(clients[1]).erase_case(CASE, ENTERPRISE))
 
         try:
