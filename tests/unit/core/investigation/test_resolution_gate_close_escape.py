@@ -329,5 +329,5 @@ async def test_steps_zero_ready_reproposal_stands_on_a_real_turn(model_proposes)
     extra = _compliance(info)
     assert extra["transition_superseded_by_engine"] is True
     assert extra["transition_pivoted"] is False
-    feedback = result["case_updated"].turn_history[-1].system_feedback or ""
+    feedback = "\n".join(result["case_updated"].turn_history[-1].system_notices)
     assert "the engine already offered the user a 'resolved' transition" in feedback

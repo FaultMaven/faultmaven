@@ -317,9 +317,12 @@ exceeding the hard limit).
 - **Engine-generated blocks** (`identity`, `core_context`, `milestones`,
   `inquiry_state`, `pending_action`) are bounded by construction — short,
   fixed-shape strings the engine emits. `system_feedback` can grow with
-  accumulated validation/feedback text, so it is **capped** with a marker like
-  any other reserved item. This is what substantiates INV-2 for the whole
-  reserve, not just `user_message`. `<fix_verification>` (#1906 D7: the fix
+  the turn's notices, so it is **bounded** at its cap too, by whole notices:
+  `system_feedback_block` renders them from the head of the record's list and
+  replaces the rest with one line saying how many it omitted, cutting a notice
+  only when no whole one fits (the first, head-cut with the record's marker,
+  #2499). This is what substantiates INV-2 for the whole reserve, not
+  just `user_message`. `<fix_verification>` (#1906 D7: the fix
   attempts, the resolution legs, the open symptom asks) is bounded by
   construction and capped at `FIX_VERIFICATION_MAX_TOKENS` with its tags kept;
   it is reserved rather than a floor-0 variable section because pressure is

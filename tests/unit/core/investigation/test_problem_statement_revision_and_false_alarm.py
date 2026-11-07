@@ -593,7 +593,7 @@ class TestApplyStep:
             ),
         )
         assert case.progress.problem_status == ProblemStatus.UNVERIFIED
-        assert "contradict" in meta["system_feedback"]
+        assert "contradict" in "\n".join(meta["system_notices"])
 
     async def test_a_false_alarm_offers_the_close_and_only_the_close(self):
         engine, case = _engine(), _case()
@@ -643,7 +643,7 @@ class TestApplyStep:
             _Response("errors in the log"),
         )
         assert case.progress.problem_status == ProblemStatus.VERIFIED
-        assert "same response verified" in meta["system_feedback"]
+        assert "same response verified" in "\n".join(meta["system_notices"])
 
     async def test_a_revision_from_a_false_alarm_withdraws_the_engine_close(self):
         engine, case = _engine(), _case()
@@ -684,7 +684,7 @@ class TestApplyStep:
             ),
         )
         assert case.progress.problem_status == ProblemStatus.VERIFIED
-        assert "awaiting the user's answer" in meta["system_feedback"]
+        assert "awaiting the user's answer" in "\n".join(meta["system_notices"])
 
     async def test_a_disputed_false_alarm_is_withdrawn_with_its_close(self):
         engine, case = _engine(), _case()
@@ -805,7 +805,7 @@ class TestApplyStep:
         )
         assert not case.progress.mitigation.verified
         assert "mitigation_accepted, mitigation_verified NOT ACCEPTED" in (
-            meta["system_feedback"]
+            "\n".join(meta["system_notices"])
         )
 
     async def test_rca_infeasible_is_applied(self):
@@ -881,7 +881,7 @@ class TestStagingAcrossTheHandshake:
             "causal_nodes_to_add",
             "node_evidence_links",
         }
-        assert "NOT ACCEPTED" not in meta.get("system_feedback", "")
+        assert "NOT ACCEPTED" not in "\n".join(meta.get("system_notices") or [])
 
     async def test_the_confirmation_turn_verifies_forms_and_identifies(self):
         """The opportunism pin through the handshake: a bare "yes" commits the
@@ -947,7 +947,7 @@ class TestStagingAcrossTheHandshake:
         assert [u["hypothesis_id"] for u in bundle.updates["hypotheses_to_update"]] == [
             "new_index_1"
         ]
-        assert "NOT refuted" not in meta.get("system_feedback", "")
+        assert "NOT refuted" not in "\n".join(meta.get("system_notices") or [])
         assert "1 refutation(s)" in staged_work_summary(pending_revision(case))
 
         case.current_turn += 1
@@ -1009,7 +1009,7 @@ class TestStagingAcrossTheHandshake:
 
         assert pending_revision(case) is not None
         assert standing.state == HypothesisState.ACTIVE
-        assert "NOT refuted" not in meta.get("system_feedback", "")
+        assert "NOT refuted" not in "\n".join(meta.get("system_notices") or [])
 
         case.current_turn += 1
         result = await engine.process_turn(
@@ -1074,8 +1074,8 @@ class TestStagingAcrossTheHandshake:
         dsu.milestones = MilestoneUpdates(solution_accepted=True)
         meta = await _apply(engine, case, dsu)
 
-        assert "was not registered" not in meta["system_feedback"]
-        assert "held until the user confirms" in meta["system_feedback"]
+        assert "was not registered" not in "\n".join(meta["system_notices"])
+        assert "held until the user confirms" in "\n".join(meta["system_notices"])
         (bundle,) = pending_revision(case).staged
         # The gate's decision is carried by fix identity (#2105), never as the
         # milestone itself.
@@ -1136,7 +1136,7 @@ class TestStagingAcrossTheHandshake:
             ),
         )
         assert case.hypotheses["hyp_0000000000dd"].root_node_id is None
-        assert "hypothesis root refs" in meta["system_feedback"]
+        assert "hypothesis root refs" in "\n".join(meta["system_notices"])
 
     async def test_a_yes_never_executes_an_rca_close_the_replay_made(self):
         """The stage-gate side effect proposes 'close as stabilized' when a
@@ -1207,7 +1207,7 @@ class TestStagingAcrossTheHandshake:
 
         await engine.process_turn(case=case, user_message="no", redaction_ctx=None)
 
-        feedback = case.turn_history[-1].system_feedback or ""
+        feedback = "\n".join(case.turn_history[-1].system_notices)
         assert "declined the revised problem statement" in feedback
         assert "CAUSE WORK NOT ACCEPTED" in feedback
 
@@ -1225,7 +1225,7 @@ class TestStagingAcrossTheHandshake:
         assert updated.description == STATEMENT
         assert updated.hypotheses == {}
         assert pending_revision(updated) is None
-        feedback = updated.turn_history[-1].system_feedback or ""
+        feedback = "\n".join(updated.turn_history[-1].system_notices)
         assert "(1 hypothesis(es), 1 causal node(s)) was discarded" in feedback
 
 
@@ -1322,7 +1322,9 @@ class TestHandshakeDoors:
         metadata: dict = {"response_obj": response}
         await engine.transitions.check_automatic_transitions(case, metadata, "close")
         assert open_terminal_offer(case) is None
-        assert "awaiting the user's confirmation" in metadata["system_feedback"]
+        assert "awaiting the user's confirmation" in "\n".join(
+            metadata["system_notices"]
+        )
 
     async def test_the_users_own_close_cancels_the_revision(self):
         case = _case(ProblemStatus.VERIFIED)
@@ -1410,8 +1412,8 @@ class TestHolds:
         )
         assert case.solutions == []
         assert case.proposed_actions == []
-        assert "SOLUTIONS NOT ACCEPTED" in meta["system_feedback"]
-        assert "HYPOTHESIS UPDATES NOT ACCEPTED" in meta["system_feedback"]
+        assert "SOLUTIONS NOT ACCEPTED" in "\n".join(meta["system_notices"])
+        assert "HYPOTHESIS UPDATES NOT ACCEPTED" in "\n".join(meta["system_notices"])
 
     async def test_a_false_alarm_refuses_evidence_links_on_standing_hypotheses(self):
         from faultmaven.core.investigation.schemas import HypothesisEvidenceLinkToAdd
@@ -1449,7 +1451,9 @@ class TestHolds:
         hyp = case.hypotheses["hyp_0000000000bb"]
         assert hyp.likelihood == 0.5
         assert hyp.evidence_links == []
-        assert "HYPOTHESIS EVIDENCE LINKS NOT ACCEPTED" in meta["system_feedback"]
+        assert "HYPOTHESIS EVIDENCE LINKS NOT ACCEPTED" in "\n".join(
+            meta["system_notices"]
+        )
 
     def test_both_holds_have_their_own_status(self):
         case = _case()
@@ -1702,7 +1706,7 @@ class TestFalseAlarmCloseFollowsItsFinding:
         )
         assert open_terminal_offer(case) is not None
         assert case.progress.problem_status == ProblemStatus.INVALIDATED
-        assert "awaiting the user's answer" in meta["system_feedback"]
+        assert "awaiting the user's answer" in "\n".join(meta["system_notices"])
         # The engine's own close is still withdrawn by a revision:
         # TestApplyStep.test_a_revision_from_a_false_alarm_withdraws_the_engine_close
 
@@ -1824,7 +1828,7 @@ class TestTheEnginesFalseAlarmOfferStands:
         assert extra["engine_effective_to_status"] == "closed"
         assert extra["transition_superseded_by_engine"] is True
         assert extra["transition_pivoted"] is False
-        feedback = result["case_updated"].turn_history[-1].system_feedback or ""
+        feedback = "\n".join(result["case_updated"].turn_history[-1].system_notices)
         assert "TRANSITION NOT PROPOSED" in feedback
 
     async def test_a_bare_no_then_records_the_decline_against_the_finding(self):
@@ -1859,7 +1863,7 @@ class TestTheEnginesFalseAlarmOfferStands:
             ),
         )
         assert "STATEMENT REVISION NOT ACCEPTED" not in (
-            meta.get("system_feedback") or ""
+            "\n".join(meta.get("system_notices") or [])
         )
         assert open_terminal_offer(case) is None
         assert case.progress.problem_status == ProblemStatus.REVISION_PENDING

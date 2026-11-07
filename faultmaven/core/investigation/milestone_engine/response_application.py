@@ -1200,8 +1200,7 @@ class ResponseApplier:
                 blocker_msg += (
                     f" Alternatives: {', '.join(blocker.suggested_alternatives)}"
                 )
-            current_feedback = metadata.get("system_feedback", "") or ""
-            metadata["system_feedback"] = f"{current_feedback}\n{blocker_msg}".strip()
+            _add_system_feedback(metadata, blocker_msg)
             metadata["data_blocker_detected"] = True
             logger.warning(f"Case {case.case_id} data blocker: {blocker.description}")
 

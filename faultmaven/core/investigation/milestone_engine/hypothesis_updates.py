@@ -78,16 +78,13 @@ def _apply_hypothesis_action_intent(
     hypothesis = case.hypotheses.get(hypothesis_id)
 
     if hypothesis and hypothesis.state.is_terminal:
-        current_fb = metadata.get("system_feedback", "") or ""
-        metadata["system_feedback"] = "\n".join(
-            [
-                current_fb,
-                f"Hypothesis {hypothesis_id} is already "
-                f"{hypothesis.state.value} (terminal) — it "
-                f"cannot be {action}d. Open a NEW hypothesis "
-                f"if that theory is back in play.",
-            ]
-        ).strip()
+        _add_system_feedback(
+            metadata,
+            f"Hypothesis {hypothesis_id} is already "
+            f"{hypothesis.state.value} (terminal) — it "
+            f"cannot be {action}d. Open a NEW hypothesis "
+            f"if that theory is back in play.",
+        )
         logger.info(
             f"Hypothesis {hypothesis_id} {action} intent refused "
             f"for case {case.case_id}: state "
@@ -147,17 +144,14 @@ def _apply_hypothesis_action_intent(
             # anti-anchoring retired the hypothesis the user just affirmed.
             hypothesis.last_progress_at_turn = case.current_turn
             hypothesis.iterations_without_progress = 0
-            current_fb = metadata.get("system_feedback", "") or ""
-            metadata["system_feedback"] = "\n".join(
-                [
-                    current_fb,
-                    f"Recorded your strong belief in hypothesis "
-                    f"{hypothesis_id}. It is marked validated once "
-                    f"its cause chain is confirmed by evidence — "
-                    f"link supporting evidence to its root to get "
-                    f"there.",
-                ]
-            ).strip()
+            _add_system_feedback(
+                metadata,
+                f"Recorded your strong belief in hypothesis "
+                f"{hypothesis_id}. It is marked validated once "
+                f"its cause chain is confirmed by evidence — "
+                f"link supporting evidence to its root to get "
+                f"there.",
+            )
         elif action == "retire":
             hypothesis.state = HypothesisState.RETIRED
             # Bounded at the write, not left to the field validator: this is
@@ -328,9 +322,8 @@ def _apply_hypothesis_updates(
             if not reroot:
                 metadata["hypotheses_updated"].append(h_id)
 
-    if feedback:
-        current = metadata.get("system_feedback", "") or ""
-        metadata["system_feedback"] = "\n".join([current, *feedback]).strip()
+    for line in feedback:
+        _add_system_feedback(metadata, line)
 
 
 def _refutation_grounds(case: "Case", hypothesis) -> tuple[list[str], bool]:
@@ -474,9 +467,8 @@ def _apply_deferred_likelihood_updates(
                 f"conclusion. Record the observation as evidence and "
                 f"link it (hypothesis_evidence_links) to raise belief."
             )
-    if feedback:
-        current = metadata.get("system_feedback", "") or ""
-        metadata["system_feedback"] = "\n".join([current, *feedback]).strip()
+    for line in feedback:
+        _add_system_feedback(metadata, line)
 
 
 def _apply_hypothesis_evidence_links(

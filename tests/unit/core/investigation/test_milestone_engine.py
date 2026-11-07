@@ -576,9 +576,9 @@ class TestMilestoneEngine:
         # Verify blocker surfaced as system_feedback in the turn record
         updated_case = result["case_updated"]
         last_turn = updated_case.turn_history[-1]
-        assert last_turn.system_feedback is not None
-        assert "Logs missing timestamps" in last_turn.system_feedback
-        assert "Cannot establish timeline" in last_turn.system_feedback
+        assert last_turn.system_notices != []
+        assert "Logs missing timestamps" in "\n".join(last_turn.system_notices)
+        assert "Cannot establish timeline" in "\n".join(last_turn.system_notices)
 
     @pytest.mark.asyncio
     async def test_evidence_quality_issues_logged(self, mock_llm, mock_repo, base_case):
@@ -2498,122 +2498,6 @@ class TestAnUnmetRequestOffersClose:
         assert metadata.get("resolution_suggest_close") is not True
 
 
-class TestCreateTurnRecordSystemFeedbackTruncation:
-    """Regression: ``TurnProgress.system_feedback`` has a 1000-char Pydantic
-    cap. Multiple backstops (milestone ordering guards, evidence-need
-    rejections, data-quality blockers, etc.) each append independently to
-    ``metadata["system_feedback"]``. When several backstops fire in one turn
-    the accumulated text overflowed the cap and crashed the turn save with
-    a 500. ``_create_turn_record`` is the single chokepoint where all
-    system_feedback values are written into the TurnProgress, so truncation
-    happens there."""
-
-    def _make_engine(self):
-        mock_llm = MockLLMProvider()
-        mock_llm.route = AsyncMock()
-        mock_repo = MagicMock()
-        mock_repo.save = AsyncMock(side_effect=lambda c, **_: c)
-        return MilestoneEngine(
-            mock_llm,
-            mock_repo,
-            investigation_tools=MagicMock(),
-        )
-
-    def test_short_system_feedback_passes_through_unchanged(self):
-        from faultmaven.modules.case.contracts import TurnOutcome
-
-        engine = self._make_engine()
-        short_feedback = (
-            "MILESTONE ORDER ERROR: mitigation_verified without acceptance."
-        )
-        record = _create_turn_record(
-            turn_number=1,
-            milestones_completed=[],
-            evidence_added=[],
-            hypotheses_generated=[],
-            hypotheses_validated=[],
-            solutions_proposed=[],
-            progress_made=False,
-            outcome=TurnOutcome.CONVERSATION,
-            user_message="hi",
-            agent_response="ok",
-            system_feedback=short_feedback,
-        )
-        assert record.system_feedback == short_feedback
-
-    def test_oversized_system_feedback_is_truncated_with_marker(self):
-        """Simulate a multi-backstop pile-up: several rejection messages
-        concatenated push past 1000 chars. Without truncation, TurnProgress
-        validation crashes."""
-        from faultmaven.modules.case.contracts import TurnOutcome
-
-        engine = self._make_engine()
-        # Each rejection message is ~300-400 chars. Several firing in one
-        # turn easily exceeds 1000.
-        oversized_feedback = (
-            "MILESTONE ORDER ERROR: You set mitigation_verified=True without "
-            "first setting mitigation_accepted=True. Verification presupposes "
-            "acceptance — set mitigation_accepted=True (based on the user's "
-            "confirmation signals) before mitigation_verified=True. Set BOTH "
-            "milestones in the same response if both happened this turn.\n"
-            "EVIDENCE NEED REJECTION: A causal-purpose evidence_need was emitted "
-            "with no valid motivating hypothesis. Causal needs are motivated by "
-            "hypotheses; create the hypothesis first, then attach the need to "
-            "it via motivating_hypothesis_ids.\n"
-            "DATA QUALITY: The submitted log file could not be parsed into "
-            "structured records. Re-check the format and resubmit, or describe "
-            "the relevant lines directly so the symptom can be verified.\n"
-            "HYPOTHESIS STATE: A REFUTED hypothesis update was emitted without a "
-            "refutation_reason. state=REFUTED and refutation_reason travel "
-            "together as a pair — an update carrying one without the other is "
-            "rejected and re-surfaced here for retry.\n"
-            "SOLUTION ORDERING: solution_verified=True was emitted before "
-            "solution_accepted=True. Verification presupposes acceptance — set "
-            "solution_accepted first, then verify once the user confirms the fix "
-            "worked. Both may be set in one response if both happened this turn."
-        )
-        assert len(oversized_feedback) > 1000  # sanity: the test setup is real
-
-        record = _create_turn_record(
-            turn_number=6,
-            milestones_completed=[],
-            evidence_added=[],
-            hypotheses_generated=[],
-            hypotheses_validated=[],
-            solutions_proposed=[],
-            progress_made=False,
-            outcome=TurnOutcome.CONVERSATION,
-            user_message="please continue",
-            agent_response="working on it",
-            system_feedback=oversized_feedback,
-        )
-        # Truncated to fit within the Pydantic max_length=1000 cap.
-        assert record.system_feedback is not None
-        assert len(record.system_feedback) <= 1000
-        assert "[truncated]" in record.system_feedback
-        # First backstop's content is preserved (truncation is tail-cut).
-        assert "MILESTONE ORDER ERROR" in record.system_feedback
-
-    def test_none_system_feedback_remains_none(self):
-        from faultmaven.modules.case.contracts import TurnOutcome
-
-        engine = self._make_engine()
-        record = _create_turn_record(
-            turn_number=1,
-            milestones_completed=[],
-            evidence_added=[],
-            hypotheses_generated=[],
-            hypotheses_validated=[],
-            solutions_proposed=[],
-            progress_made=False,
-            outcome=TurnOutcome.CONVERSATION,
-            user_message="hi",
-            agent_response="ok",
-            system_feedback=None,
-        )
-        assert record.system_feedback is None
-
-
 class TestVerificationStatusRecordedOnTurn:
     """Verification-status Phase 1: when the insufficient-evidence handoff fires,
     ``process_turn`` must surface the recorded status in the RETURNED metadata —
@@ -2760,9 +2644,11 @@ class TestRestatementStallNotice:
 
         record = result["case_updated"].turn_history[-1]
         assert result["case_updated"].turns_without_progress == 3
-        assert "No progress for 3 consecutive turns" in record.system_feedback
-        assert "ask what would settle it" in record.system_feedback
-        assert "offer the check that would discriminate" in record.system_feedback
+        assert "No progress for 3 consecutive turns" in "\n".join(record.system_notices)
+        assert "ask what would settle it" in "\n".join(record.system_notices)
+        assert "offer the check that would discriminate" in "\n".join(
+            record.system_notices
+        )
 
     @pytest.mark.asyncio
     async def test_no_notice_below_the_threshold(self, mock_llm, mock_repo, base_case):
@@ -2776,4 +2662,4 @@ class TestRestatementStallNotice:
         )
 
         record = result["case_updated"].turn_history[-1]
-        assert "No progress for" not in (record.system_feedback or "")
+        assert "No progress for" not in "\n".join(record.system_notices)

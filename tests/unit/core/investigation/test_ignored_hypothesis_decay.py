@@ -245,7 +245,9 @@ def test_ignored_hypothesis_eventually_trips_stagnation_anchoring():
             # Retirement is an anti-anchoring soft-retire, never a refutation.
             assert h.refutation_reason is None
             assert h.retirement_reason.startswith("Anti-anchoring")
-            assert "Broaden the differential" in meta.get("system_feedback", "")
+            assert "Broaden the differential" in "\n".join(
+                meta.get("system_notices") or []
+            )
             break
     assert retired, "an ignored hypothesis never tripped stagnation anchoring"
 

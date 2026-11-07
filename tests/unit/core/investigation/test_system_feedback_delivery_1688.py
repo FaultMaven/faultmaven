@@ -69,7 +69,11 @@ from faultmaven.modules.case.domain.models.problem import (
 )
 from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 from faultmaven.modules.case.domain.models.solution import Solution, SolutionType
-from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
+from faultmaven.modules.case.domain.models.turn import (
+    MAX_SYSTEM_NOTICE_CHARS,
+    TurnOutcome,
+    TurnProgress,
+)
 from faultmaven.utils.model_context import resolve_model_budget
 from faultmaven.utils.token_estimation import estimate_tokens
 from tests.case_builders import inquiry_case, with_open_offer
@@ -118,7 +122,7 @@ def _record(turn: int, feedback: str | None = None) -> TurnProgress:
         outcome=TurnOutcome.CONVERSATION,
         user_message_summary=f"user {turn}",
         agent_response_summary=f"agent {turn}",
-        system_feedback=feedback,
+        system_notices=[feedback] if feedback else [],
     )
 
 
@@ -295,7 +299,7 @@ class TestAPromptlessTurnPassesTheNoticeOn:
             assert case.turn_history[-1].turn_number == case.current_turn, message
             offer = case.offer_record.open
             assert (offer.kind.to_state if offer else None) == pending_after
-            assert case.turn_history[-1].system_feedback == NOTICE, message
+            assert case.turn_history[-1].system_notices == [NOTICE], message
             assert case.turn_history[-1].system_feedback_forwarded, message
         assert not case.is_terminal
         assert engine.generator.generate_structured_output.call_count == 0
@@ -318,7 +322,7 @@ class TestAPromptlessTurnPassesTheNoticeOn:
 
         assert not await _turn(engine, case, "yes")
         assert case.state == CaseState.CLOSED
-        assert case.turn_history[-1].system_feedback is None
+        assert case.turn_history[-1].system_notices == []
         assert not case.turn_history[-1].system_feedback_forwarded
 
     def test_the_service_backstop_follows_the_same_rule(self):
@@ -329,7 +333,7 @@ class TestAPromptlessTurnPassesTheNoticeOn:
         _backfill_consumed_turn(
             open_case, user_message="hi", agent_response="Hello!", metadata={}
         )
-        assert open_case.turn_history[-1].system_feedback == NOTICE
+        assert open_case.turn_history[-1].system_notices == [NOTICE]
         assert open_case.turn_history[-1].system_feedback_forwarded
 
         closed = _closed(_with_notice(_investigating_case()))
@@ -337,7 +341,7 @@ class TestAPromptlessTurnPassesTheNoticeOn:
         _backfill_consumed_turn(
             closed, user_message="thanks", agent_response="Glad to help.", metadata={}
         )
-        assert closed.turn_history[-1].system_feedback is None
+        assert closed.turn_history[-1].system_notices == []
 
 
 class TestTheHeadingNamesTheTurnThatWroteTheNotice:
@@ -446,7 +450,7 @@ class TestTheNoticeIsDeliveredOnceAcrossAGate:
         case = (await engine.process_turn(case, "it still fails", redaction_ctx=None))[
             "case_updated"
         ]
-        assert _STRIPPED in (case.turn_history[-1].system_feedback or "")
+        assert _STRIPPED in "\n".join(case.turn_history[-1].system_notices)
 
         # Turn 2: the user opens a close from the dropdown. No prompt is built.
         llm.route.reset_mock()
@@ -475,7 +479,7 @@ class TestTheNoticeIsDeliveredOnceAcrossAGate:
 
         # Delivered, therefore consumed: turn 3's record carries only what
         # turn 3 produced, so turn 4's prompt does not repeat the notice.
-        assert _STRIPPED not in (case.turn_history[-1].system_feedback or "")
+        assert _STRIPPED not in "\n".join(case.turn_history[-1].system_notices)
 
 
 # ---------------------------------------------------------------------------
@@ -503,7 +507,7 @@ class TestTheFallbackRendersTheNotice:
         ``USER:`` still starts its own line after the block's blank line."""
         case = _fallback_case(CaseState.INVESTIGATING)
         case.turn_history[-1] = case.turn_history[-1].model_copy(
-            update={"system_feedback": 'Refused: see <evidence id="ev_1'}
+            update={"system_notices": ['Refused: see <evidence id="ev_1']}
         )
         prompt = get_fallback_prompt_for_case(case, SUBSTANTIVE)
         assert f'ev_1">{TERMINATOR_NOTE}\n\nUSER:' in prompt
@@ -522,16 +526,19 @@ class TestTheFallbackRendersTheNotice:
     def test_the_notice_adds_at_most_its_cap(self, notice):
         """The fallback is returned without being re-measured against the
         model ceiling, so its size is bounded by construction, channel by
-        channel. A maximum-length notice may add only its cap, plus the heading
-        and the truncation marker, whatever its script."""
-        notice = notice[:1000]  # TurnProgress.system_feedback's max_length
+        channel. A turn's notices may add only the cap, plus the heading and
+        the line naming the rest, whatever their script: whole notices from
+        the head, the rest omitted with a count, none cut (#2568)."""
+        unit = notice[:30]
+        assert _fallback_tokens(unit) <= 60, "premise: the first notice fits"
+        notices = [f"{i} {unit}" for i in range(12)]
         bare = _fallback_case(CaseState.INVESTIGATING)
         bare.turn_history[-1] = bare.turn_history[-1].model_copy(
-            update={"system_feedback": None}
+            update={"system_notices": []}
         )
         noticed = _fallback_case(CaseState.INVESTIGATING)
         noticed.turn_history[-1] = noticed.turn_history[-1].model_copy(
-            update={"system_feedback": notice}
+            update={"system_notices": notices}
         )
 
         def size(case: Case) -> int:
@@ -541,8 +548,9 @@ class TestTheFallbackRendersTheNotice:
         block = with_notice[
             with_notice.index("SYSTEM FEEDBACK FROM") : with_notice.index("USER:")
         ]
-        assert notice[:40] in block, "the head is what survives"
-        assert "truncated" in block, "a cut notice says so"
+        assert notices[0] in block, "the head is what survives, whole"
+        assert "more notices from turn 3 omitted]" in block, "the rest, counted"
+        assert "truncated" not in block, "no notice is cut"
         assert size(noticed) - size(bare) <= _FALLBACK_FEEDBACK_MAX_TOKENS + 40
 
     def test_the_terminal_fallback_does_not(self):

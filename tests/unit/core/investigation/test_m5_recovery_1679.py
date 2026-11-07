@@ -432,7 +432,9 @@ class TestAppliedFixRecovery:
         (solution,) = _actions(case, InvestigationActionType.SOLUTION)
         assert diagnostic.state == "superseded"
         assert solution.state == "accepted"
-        assert "was not registered" not in (metadata.get("system_feedback") or "")
+        assert "was not registered" not in "\n".join(
+            metadata.get("system_notices") or []
+        )
 
     async def test_the_downgrade_note_names_that_path(self):
         case = _case(leading_likelihood=0.4)
@@ -466,7 +468,7 @@ class TestAppliedFixRecovery:
         )
 
         assert case.progress.solution_accepted is False
-        feedback = metadata.get("system_feedback") or ""
+        feedback = "\n".join(metadata.get("system_notices") or [])
         assert "'solution_accepted' was not registered" in feedback
         assert "ONE response" in feedback
         assert "do not ask them to accept it again" in feedback

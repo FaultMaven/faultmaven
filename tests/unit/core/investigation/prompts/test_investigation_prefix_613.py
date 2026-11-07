@@ -288,7 +288,7 @@ def _record(turn: int, feedback: str | None = None) -> TurnProgress:
         outcome=TurnOutcome.CONVERSATION,
         user_message_summary=f"user {turn}",
         agent_response_summary=f"agent {turn}",
-        system_feedback=feedback,
+        system_notices=[feedback] if feedback else [],
     )
 
 

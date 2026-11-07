@@ -308,9 +308,9 @@ def _justification_errors(
     # membership test against the raw model would report every milestone as
     # justified and this gate would never fire again (fm#1057).
     #
-    # One message for all of them, not one each: the errors are delivered to
-    # the next turn through ``system_feedback``, which the turn record caps at
-    # 1000 characters, so their size must not grow with the milestone count.
+    # One message for all of them, not one each: the errors reach the next
+    # turn as one system notice, which the prompt keeps or drops whole
+    # (#2499), so its size must not grow with the milestone count.
     justifications = evidence_trail.milestone_justifications.as_dict()
     unjustified = [m for m in completed if m not in justifications]
     if unjustified:

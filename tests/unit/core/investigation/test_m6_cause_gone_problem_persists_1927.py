@@ -1080,7 +1080,7 @@ def test_an_absence_row_inside_a_failed_window_tells_the_model_to_record_a_fix()
     case.evidence.append(_problem_gone(10, label="fine_now"))
     metadata = {}
     assert _flag_absence_inside_a_failed_fix_window(case, metadata) is True
-    feedback = metadata["system_feedback"]
+    feedback = "\n".join(metadata["system_notices"])
     assert "did not hold" in feedback
     assert "SolutionToAdd" in feedback and "solution_accepted" in feedback
 
