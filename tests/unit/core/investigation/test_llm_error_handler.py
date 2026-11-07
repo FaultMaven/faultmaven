@@ -464,8 +464,7 @@ class TestBillingErrorHandling:
     async def test_handle_open_breaker_billing_fails_with_quota_code(self, handler):
         """An open-breaker error carrying QUOTA_EXHAUSTED is classified as
         billing, not as an opaque unknown/retryable error."""
-        from faultmaven.exceptions import QUOTA_EXHAUSTED
-        from faultmaven.infrastructure.base_client import CircuitBreakerError
+        from faultmaven.exceptions import QUOTA_EXHAUSTED, CircuitBreakerError
 
         err = CircuitBreakerError(
             "Circuit breaker is open for LLM_Providers",
@@ -999,8 +998,7 @@ class TestCircuitBreakerClassification:
         so it fell to the unclassified tail — telling an operator "unknown"
         about the one failure the system understands completely.
         """
-        from faultmaven.exceptions import PROVIDER_CIRCUIT_OPEN
-        from faultmaven.infrastructure.base_client import CircuitBreakerError
+        from faultmaven.exceptions import PROVIDER_CIRCUIT_OPEN, CircuitBreakerError
 
         result = await fast_handler.handle_error(
             CircuitBreakerError("Circuit breaker is open for LLM_Providers"),
@@ -1013,7 +1011,7 @@ class TestCircuitBreakerClassification:
     async def test_open_breaker_is_not_retried(self, fast_handler):
         """The breaker's recovery window (30s) outlasts the whole backoff
         ladder (2+4+8 = 14s), so a retry is guaranteed to meet it still open."""
-        from faultmaven.infrastructure.base_client import CircuitBreakerError
+        from faultmaven.exceptions import CircuitBreakerError
 
         result = await fast_handler.handle_error(
             CircuitBreakerError("Circuit breaker is open for LLM_Providers"),
@@ -1026,8 +1024,7 @@ class TestCircuitBreakerClassification:
         """The billing check runs FIRST and must keep winning: a quota-latched
         breaker still fails as QUOTA_EXHAUSTED (the case_b639fac38fe0
         chain), not as a transient circuit-open."""
-        from faultmaven.exceptions import QUOTA_EXHAUSTED
-        from faultmaven.infrastructure.base_client import CircuitBreakerError
+        from faultmaven.exceptions import QUOTA_EXHAUSTED, CircuitBreakerError
 
         result = await fast_handler.handle_error(
             CircuitBreakerError(
@@ -1045,8 +1042,7 @@ class TestCircuitBreakerClassification:
         rotates the key, so it must route to the terminal AUTH_FAILED rather
         than to a transient code that invites the user to resend. The message
         contains no "auth", so the prose classifier could not see it."""
-        from faultmaven.exceptions import PROVIDER_AUTH_FAILED
-        from faultmaven.infrastructure.base_client import CircuitBreakerError
+        from faultmaven.exceptions import PROVIDER_AUTH_FAILED, CircuitBreakerError
 
         result = await fast_handler.handle_error(
             CircuitBreakerError(
@@ -1068,7 +1064,7 @@ class TestCircuitBreakerClassification:
         an unscoped ``isinstance`` would answer a ChromaDB outage with "The AI
         provider failed repeatedly" — wrong, and unactionable.
         """
-        from faultmaven.infrastructure.base_client import CircuitBreakerError
+        from faultmaven.exceptions import CircuitBreakerError
 
         result = await fast_handler.handle_error(
             CircuitBreakerError(
@@ -1189,7 +1185,7 @@ def _httpx_504():
 
 
 def _breaker_open():
-    from faultmaven.infrastructure.base_client import CircuitBreakerError
+    from faultmaven.exceptions import CircuitBreakerError
 
     return CircuitBreakerError(
         "Circuit breaker is open for LLM_Providers", service="LLM_Providers"

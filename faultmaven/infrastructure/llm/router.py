@@ -19,6 +19,7 @@ from faultmaven.config.settings import get_settings
 from faultmaven.config.tenant_context import get_current_enterprise_id
 from faultmaven.core.investigation.turn_budget import clamp_to_turn_budget
 from faultmaven.exceptions import (
+    LLM_BREAKER_SERVICE,
     CallShapeUnsupported,
     LLMOutputFloorError,
     RawModelContentRefused,
@@ -365,7 +366,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         # Initialize BaseExternalClient
         super().__init__(
             client_name="llm_router",
-            service_name="LLM_Providers",
+            service_name=LLM_BREAKER_SERVICE,
             enable_circuit_breaker=True,
             circuit_breaker_threshold=LLM_CIRCUIT_BREAKER_THRESHOLD,
             circuit_breaker_timeout=LLM_CIRCUIT_BREAKER_TIMEOUT,
