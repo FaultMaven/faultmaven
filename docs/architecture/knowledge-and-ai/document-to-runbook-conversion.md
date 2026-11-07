@@ -215,10 +215,10 @@ Upload (file + scope + metadata)
   │     page, or DOCX paragraph or table row, #2597; one DOCX paragraph and
   │     one table row are each read whole, so a paragraph of millions of runs
   │     or a row of huge width, gridSpan or merge depth runs to its end, the
-  │     preparation seam's residual that #2596's killable worker process
-  │     fixes), a document-level budget, or refused pages leaving too little
-  │     to convert: REJECT with HTTP 422 / DOCUMENT_TOO_COMPLEX. Corruption
-  │     pypdf reports as a limit stays FILE_CORRUPT
+  │     preparation seam's residual, tracked on #2596), a document-level
+  │     budget, or refused pages leaving too little to convert: REJECT with
+  │     HTTP 422 / DOCUMENT_TOO_COMPLEX. Corruption pypdf reports as a
+  │     limit stays FILE_CORRUPT
   │
   ├── 1b. Already-a-Runbook Gate (deterministic, no LLM)
   │     Detect: runbook frontmatter (≥4 of id/domain/service/symptom_class/

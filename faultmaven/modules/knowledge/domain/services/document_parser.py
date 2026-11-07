@@ -300,7 +300,7 @@ class DocumentParser:
         paragraph and one row are each read whole, so a paragraph of millions
         of runs (about 35 µs a run), or a row of huge width, ``gridSpan`` or
         vertical-merge depth, runs to its end: the preparation seam's residual,
-        whose fix, a worker process a timeout can kill, is #2596.
+        tracked on #2596.
         """
         try:
             from docx import Document

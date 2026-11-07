@@ -72,7 +72,7 @@ TRIAGE_SAMPLE_TOKENS = 2000
 #: 660 s, so both waits and the model calls after them fit, and a legitimate
 #: dense PDF (10.7 s measured for one page) has room. Work a caller abandons is
 #: bounded by the checks between PDF pages and DOCX paragraphs and table rows,
-#: not by this.
+#: up to the unit in progress (see ``Retry-After`` below), not by this.
 EXTRACTION_TIMEOUT_SECONDS = 120
 
 #: ``Retry-After`` on ``CONVERSION_BUSY``. A PDF worker held when a request
@@ -81,8 +81,8 @@ EXTRACTION_TIMEOUT_SECONDS = 120
 #: and one table row are each read whole: a paragraph of millions of runs (about
 #: 35 µs a run), or a row of huge width, ``gridSpan`` or vertical-merge depth,
 #: runs to its end. Both are the preparation seam's residual (a thread cannot be
-#: stopped), and #2596 holds its fix: a worker process a timeout can kill. A
-#: worker on any other format has no such checkpoint and runs to its end.
+#: stopped), tracked on #2596. A worker on any other format has no such
+#: checkpoint and runs to its end.
 CONVERSION_BUSY_RETRY_AFTER_SECONDS = EXTRACTION_TIMEOUT_SECONDS
 
 #: Where Stages 0-5 run: CPU over the caller's file, off the event loop (#1417's
