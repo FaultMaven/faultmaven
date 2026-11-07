@@ -8,7 +8,7 @@ import logging
 import re
 import threading
 from dataclasses import dataclass, replace
-from functools import partial
+from functools import cache, partial
 from io import BytesIO
 from pathlib import Path
 from typing import Optional
@@ -41,9 +41,9 @@ class DocumentTooComplex(DocumentRefusal):
 
 
 class ExtractionAbandoned(Exception):
-    """Raised between PDF pages (#2153), and between DOCX paragraphs and tables
-    (#2597), once the caller has stopped waiting. Nobody reads it: it only ends
-    the worker's run after its current page, paragraph or table."""
+    """Raised between PDF pages (#2153), and between DOCX paragraphs and table
+    rows (#2597), once the caller has stopped waiting. Nobody reads it: it only
+    ends the worker's run after its current page, paragraph or row."""
 
 
 def _stop_if_abandoned(
@@ -146,7 +146,7 @@ class DocumentParser:
             file_path: Path to the document file.
             content_type: MIME type hint (used if extension is ambiguous).
             abandoned: Set once the caller stops waiting; a PDF checks it
-                between pages, a DOCX between paragraphs and between tables.
+                between pages, a DOCX between paragraphs and table rows.
 
         Returns:
             The extracted text, with a PDF's page count and refused pages.
@@ -154,7 +154,7 @@ class DocumentParser:
         Raises:
             DocumentTooComplex: pypdf refused the whole document for its limits.
             ExtractionAbandoned: ``abandoned`` was set between two pages,
-                paragraphs or tables.
+                paragraphs or table rows.
             ValueError: If the file format is unsupported or parsing fails.
         """
         fmt = self._detect_format(file_path, content_type)
@@ -289,33 +289,26 @@ class DocumentParser:
     ) -> str:
         """Extract text from DOCX preserving structure.
 
-        Style names are resolved once per document, never through
-        ``Paragraph.style``, which scans the document's styles on every read:
-        about 4 ms a paragraph (#2597).
+        A paragraph's style is python-docx's own lookup of its ``w:pStyle`` id,
+        made once per distinct id: ``Paragraph.style`` scans the document's
+        styles on every read, about 4 ms a paragraph (#2597). ``abandoned`` is
+        checked before each paragraph and each table row. One paragraph is read
+        whole, so a paragraph of millions of runs (about 35 µs a run) runs to
+        its end.
         """
         try:
             from docx import Document
             from docx.enum.style import WD_STYLE_TYPE
-            from docx.styles.style import ParagraphStyle
         except ImportError:
             raise DocumentRefusal("python-docx is required for DOCX parsing")
 
         doc = Document(str(file_path))
-        # As ``Paragraph.style`` resolves a ``w:pStyle`` id: the first style with
-        # it (hence ``reversed``), and the default paragraph style for an id that
-        # is absent, unknown or not a paragraph style's.
-        default = doc.styles.default(WD_STYLE_TYPE.PARAGRAPH)
-        default_name = default.name if default is not None else None
-        styles = reversed(doc.styles.element.style_lst)
-        by_id = {element.styleId: element for element in styles if element.styleId}
-        style_names = {
-            style_id: (
-                ParagraphStyle(element).name
-                if element.type == WD_STYLE_TYPE.PARAGRAPH
-                else default_name
-            )
-            for style_id, element in by_id.items()
-        }
+
+        @cache
+        def style_name_of(style_id: Optional[str]) -> Optional[str]:
+            style = doc.part.get_style(style_id, WD_STYLE_TYPE.PARAGRAPH)
+            return style.name if style is not None else None
+
         where, paragraphs, tables = f"DOCX {file_path.name}", doc.paragraphs, doc.tables
         parts = []
 
@@ -326,7 +319,7 @@ class DocumentParser:
                 continue
 
             # Convert heading styles to markdown headings
-            style_name = style_names.get(para._p.style, default_name)
+            style_name = style_name_of(para._p.style)
             if style_name:
                 style_name = style_name.lower()
                 if style_name.startswith("heading"):
@@ -339,18 +332,23 @@ class DocumentParser:
             parts.append(text)
 
         # Extract tables as markdown tables
-        for index, table in enumerate(tables):
-            _stop_if_abandoned(abandoned, where, "table", index, len(tables))
-            table_text = self._docx_table_to_markdown(table)
+        for number, table in enumerate(tables, 1):
+            table_text = self._docx_table_to_markdown(
+                table, abandoned, f"{where} table {number} of {len(tables)}"
+            )
             if table_text:
                 parts.append(table_text)
 
         return "\n\n".join(parts)
 
-    def _docx_table_to_markdown(self, table) -> str:
-        """Convert a DOCX table to markdown format."""
-        rows = []
-        for row in table.rows:
+    def _docx_table_to_markdown(
+        self, table, abandoned: Optional[threading.Event], where: str
+    ) -> str:
+        """Convert a DOCX table to markdown format, checking ``abandoned`` before
+        each row: with merged cells a row costs more the larger its table."""
+        rows, count = [], len(table.rows)
+        for index, row in enumerate(table.rows):
+            _stop_if_abandoned(abandoned, where, "row", index, count)
             cells = [cell.text.strip() for cell in row.cells]
             rows.append("| " + " | ".join(cells) + " |")
 

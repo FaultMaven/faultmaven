@@ -1,12 +1,13 @@
 """A DOCX paragraph costs its own text, not a scan of the document's styles, and
-its extraction stops between paragraphs and tables once its caller has given
-up, as a PDF's does between pages (#2597).
+its extraction stops between paragraphs and table rows once its caller has
+given up, as a PDF's does between pages (#2597).
 
-python-docx's ``Paragraph.style`` scans every style element for a paragraph
-with no style of its own (``CT_Styles.default_for``), and the parser read it
-twice a paragraph: a 40 KB file of plain paragraphs held a converter for a
-minute. Cost is counted in ``default_for`` calls, never in seconds. Documents
-are built with python-docx's default template.
+python-docx's ``Paragraph.style`` scans the styles on every read
+(``CT_Styles.default_for`` for a paragraph with no style of its own,
+``CT_Styles.get_by_id`` for one with), and the parser read it three times a
+paragraph: a 40 KB file of plain paragraphs held a converter for a minute. Cost
+is counted in those calls, never in seconds. Documents are built with
+python-docx's default template.
 """
 
 from __future__ import annotations
@@ -19,18 +20,27 @@ import pytest
 from docx import Document
 from docx.enum.style import WD_STYLE_TYPE
 from docx.oxml.styles import CT_Styles
+from docx.table import _Row
 from docx.text.paragraph import Paragraph
 
+from faultmaven.modules.knowledge.domain.models.conversion import ConversionErrorCode
+from faultmaven.modules.knowledge.domain.services import document_preprocessor as dp
 from faultmaven.modules.knowledge.domain.services.document_parser import (
     DocumentParser,
     ExtractionAbandoned,
 )
+from faultmaven.modules.knowledge.domain.services.document_preprocessor import (
+    DocumentPreprocessor,
+)
 
 pytestmark = [pytest.mark.unit, pytest.mark.knowledge_base]
 
+_DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
 #: What ``main`` extracted from ``_styled`` before #2597: a heading style
 #: becomes its markdown level; every other paragraph, an absent, unknown or
-#: character style's id included, is plain; tables follow the paragraphs.
+#: character style's id included, is plain; an id two styles share is the
+#: first's; tables follow the paragraphs.
 _STYLED_TEXT = """\
 # Database failover
 
@@ -46,9 +56,16 @@ Unknown style id
 
 Character style id
 
+## Duplicate style id
+
 | Host | Lag |
 | --- | --- |
 | db-2 | 40 s |"""
+
+
+def _save(doc, path: Path) -> Path:
+    doc.save(str(path))
+    return path
 
 
 def _styled(tmp_path: Path) -> Path:
@@ -60,38 +77,50 @@ def _styled(tmp_path: Path) -> Path:
     # A character style whose name reads as a heading: its id is not a
     # paragraph style's, so the paragraph takes the default style.
     doc.styles.add_style("HEADING 4", WD_STYLE_TYPE.CHARACTER)
+    # Two paragraph styles sharing one id: the first, Heading 2, is the one.
+    for name, heading in (("Dup Two", "Heading 2"), ("Dup Five", "Heading 5")):
+        style = doc.styles.add_style(name, WD_STYLE_TYPE.PARAGRAPH)
+        style.style_id, style.name = "Dup", heading
     for text, style_id in (
         ("Explicit Normal", "Normal"),
         ("Unknown style id", "NoSuchStyle"),
         ("Character style id", "HEADING4"),
+        ("Duplicate style id", "Dup"),
     ):
         doc.add_paragraph(text)._p.get_or_add_pPr().style = style_id
     table = doc.add_table(rows=2, cols=2)
     for row, cells in zip(table.rows, (("Host", "Lag"), ("db-2", "40 s"))):
         for cell, text in zip(row.cells, cells):
             cell.text = text
-    path = tmp_path / "failover.docx"
-    doc.save(str(path))
-    return path
+    return _save(doc, tmp_path / "failover.docx")
 
 
-def test_a_500_paragraph_document_scans_its_styles_at_most_once(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "styles",
+    [(None,), ("Heading 1", "Heading 2", "Quote", None)],
+    ids=["unstyled", "four-styles"],
+)
+def test_500_paragraphs_scan_the_styles_once_per_distinct_style(
+    tmp_path, monkeypatch, styles
+):
+    """On ``main``: 1,500 scans for either document."""
     doc = Document()
     for n in range(500):
-        doc.add_paragraph(f"Restart api pod {n} after the rollout.")
-    path = tmp_path / "plain.docx"
-    doc.save(str(path))
-    scans, default_for = [], CT_Styles.default_for
+        doc.add_paragraph(f"Restart api pod {n}.", style=styles[n % len(styles)])
+    path = _save(doc, tmp_path / "plain.docx")
+    scans = []
+    for name in ("default_for", "get_by_id"):
+        scan = getattr(CT_Styles, name)
+        monkeypatch.setattr(
+            CT_Styles,
+            name,
+            lambda self, key, _scan=scan: scans.append(key) or _scan(self, key),
+        )
 
-    def counted(self, style_type):
-        scans.append(style_type)
-        return default_for(self, style_type)
-
-    monkeypatch.setattr(CT_Styles, "default_for", counted)
     text = DocumentParser().extract_document_text(path).text
 
     assert text.count("Restart api pod") == 500
-    assert len(scans) <= 1, f"{len(scans)} style scans for 500 paragraphs"
+    assert len(scans) <= len(styles), f"{len(scans)} style scans for 500 paragraphs"
 
 
 def test_headings_and_tables_extract_as_before(tmp_path):
@@ -101,6 +130,19 @@ def test_headings_and_tables_extract_as_before(tmp_path):
     )
 
     assert parsed.text == _STYLED_TEXT
+
+
+def test_a_heading_named_default_style_heads_every_unstyled_paragraph(tmp_path):
+    doc = Document()
+    doc.styles["Normal"].element.default = None
+    doc.styles["Heading 1"].element.default = True
+    doc.add_paragraph("Failover")
+    doc.add_paragraph("Symptoms", style="Heading 2")
+    path = _save(doc, tmp_path / "heading-default.docx")
+
+    assert DocumentParser().extract_document_text(path).text == (
+        "# Failover\n\n## Symptoms"
+    )
 
 
 def test_an_abandoned_extraction_reads_no_paragraph(tmp_path, monkeypatch):
@@ -135,30 +177,72 @@ def test_an_extraction_abandoned_mid_document_stops_after_its_current_paragraph(
 
     assert len(read) == 1, f"read {len(read)} paragraphs after its caller left"
     assert "DOCX failover.docx: its caller stopped waiting" in caplog.text
-    assert "stopped before paragraph 2 of 7" in caplog.text
+    assert "stopped before paragraph 2 of 8" in caplog.text
 
 
-def test_an_extraction_abandoned_between_tables_stops_after_its_current_table(
+def test_an_extraction_abandoned_in_a_table_stops_after_its_current_row(
     tmp_path, monkeypatch, caplog
 ):
+    """A row with merged cells costs more the larger its table, so one table is
+    no checkpoint."""
     doc = Document()
     doc.add_paragraph("Hosts by lag")
-    for _ in range(3):
-        doc.add_table(rows=1, cols=1).cell(0, 0).text = "db-2"
-    path = tmp_path / "tables.docx"
-    doc.save(str(path))
-    abandoned, read = threading.Event(), []
-    to_markdown = DocumentParser._docx_table_to_markdown
+    for _ in range(2):
+        doc.add_table(rows=3, cols=1)
+    path = _save(doc, tmp_path / "tables.docx")
+    abandoned, read, cells = threading.Event(), [], _Row.cells
 
-    def read_then_abandon(self, table):
-        read.append(table)
+    def read_then_abandon(row):
+        read.append(row)
         abandoned.set()
-        return to_markdown(self, table)
+        return cells.fget(row)
 
-    monkeypatch.setattr(DocumentParser, "_docx_table_to_markdown", read_then_abandon)
+    monkeypatch.setattr(_Row, "cells", property(read_then_abandon))
 
     with caplog.at_level(logging.WARNING), pytest.raises(ExtractionAbandoned):
         DocumentParser().extract_document_text(path, abandoned=abandoned)
 
-    assert len(read) == 1, f"read {len(read)} tables after its caller left"
-    assert "stopped before table 2 of 3" in caplog.text
+    assert len(read) == 1, f"read {len(read)} rows after its caller left"
+    assert "DOCX tables.docx table 1 of 2: its caller stopped waiting" in caplog.text
+    assert "stopped before row 2 of 3" in caplog.text
+
+
+async def test_an_abandoned_docx_worker_stops_after_its_current_paragraph(
+    tmp_path, monkeypatch, caplog
+):
+    """Through the extraction pool, as the PDF test in
+    ``test_document_extraction_off_the_loop_2153.py`` does: once its caller has
+    timed out, the worker finishes the paragraph it is on and reads no other."""
+    doc = Document()
+    for n in range(5):
+        doc.add_paragraph(f"Restart api pod {n}; kubectl rollout restart the api.")
+    path = _save(doc, tmp_path / "runbook.docx")
+    gate, finished, read = threading.Event(), threading.Event(), []
+    text, extract = Paragraph.text, DocumentParser.extract_document_text
+
+    def slow_text(paragraph):
+        gate.wait(5)
+        read.append(paragraph)
+        return text.fget(paragraph)
+
+    def extract_then_signal(self, *args, **kwargs):
+        try:
+            return extract(self, *args, **kwargs)
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(Paragraph, "text", property(slow_text))
+    monkeypatch.setattr(DocumentParser, "extract_document_text", extract_then_signal)
+    monkeypatch.setattr(dp, "EXTRACTION_TIMEOUT_SECONDS", 0.05)
+
+    try:
+        with caplog.at_level(logging.WARNING):
+            result = await DocumentPreprocessor().preprocess(path, _DOCX)
+            gate.set()
+            assert finished.wait(5), "the worker never finished"
+    finally:
+        gate.set()
+
+    assert result.error_code == ConversionErrorCode.DOCUMENT_TOO_COMPLEX
+    assert len(read) == 1, f"the worker read {len(read)} paragraphs after it left"
+    assert "stopped before paragraph 2 of 5" in caplog.text

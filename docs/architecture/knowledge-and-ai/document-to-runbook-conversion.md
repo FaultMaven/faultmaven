@@ -211,7 +211,9 @@ Upload (file + scope + metadata)
   │     Stages 0-5 run off the event loop on two workers (#2153). No worker
   │     free within 120 s: REJECT with HTTP 503 / CONVERSION_BUSY +
   │     Retry-After. A PDF page pypdf's budgets refuse is skipped and named
-  │     in a warning. A run past 120 s (the worker stops at the next page), a
+  │     in a warning. A run past 120 s (the worker stops at its next PDF
+  │     page, or DOCX paragraph or table row; one DOCX paragraph is read
+  │     whole, so a paragraph of millions of runs runs to its end, #2597), a
   │     document-level budget, or refused pages leaving too little to
   │     convert: REJECT with HTTP 422 / DOCUMENT_TOO_COMPLEX. Corruption
   │     pypdf reports as a limit stays FILE_CORRUPT
