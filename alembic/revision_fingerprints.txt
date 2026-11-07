@@ -1,0 +1,33 @@
+# What each migration revision runs, as
+# tests/unit/architecture/test_applied_revisions_unchanged.py fingerprints it:
+# one `<revision> <fingerprint>` line per revision, in chain order.
+#
+# Alembic records an applied revision by id, not content, so a revision that has
+# reached main does not change: a database that already applied it would never
+# see the change. Put a schema change in a new revision, and append its line
+# here (the test prints it).
+
+a1e0c17bd001 56d322ee79086b9b  # 20260906_1200_a1e0c17bd001_001_enterprise_baseline
+65913afe773c eb274012aa2506c2  # 20260929_0019_65913afe773c_002_llm_usage_ledger
+baa28e79ebab 6176150f98a28a4a  # 20260930_0900_baa28e79ebab_003_admin_case_metadata
+14d4bfdd406e 72dc969f6e332108  # 20261001_0900_14d4bfdd406e_004_definer_trigger_hardening
+1c5a2ad13a65 4652943b7a680d5a  # 20261001_1500_1c5a2ad13a65_005_definer_search_path_without_public
+f37066de2792 e5a93eafa8d48835  # 20261002_0836_f37066de2792_006_kb_conversion_source_storage_ref_null
+497ae8900ae2 3040e95a84575d48  # 20261006_1200_497ae8900ae2_007_problem_status_single_source
+558d7f3cfed1 f1f433a53956bf60  # 20261007_1200_558d7f3cfed1_008_runbook_severity_admits_info
+1e713f2d0e74 0134e0d23f74b83e  # 20261008_1200_1e713f2d0e74_009_drop_case_checkpoints
+afdd293ca6ab 09cb37ad6e2613a7  # 20261008_1500_afdd293ca6ab_010_turn_receipts
+2d05706532a9 52889f860bfffc8c  # 20261009_1206_2d05706532a9_011_remove_knowledge_suggestions
+6c1f0d2a9b47 8ce1ed09e0f2ba17  # 20261010_1200_6c1f0d2a9b47_012_case_driver
+9b3e5c71d2a4 398a589416fca042  # 20261011_1200_9b3e5c71d2a4_013_evidence_is_submitted_data
+831be28d1434 4f525b4462f67c2d  # 20261012_1200_831be28d1434_014_admin_case_metadata_driver
+9904ee0cad86 d49f053addd55266  # 20261012_1200_9904ee0cad86_015_case_creator_restrict
+b5334d07ae6c 5a74f79bb12a8bd2  # 20261012_1200_b5334d07ae6c_016_no_email_derived_display_names
+f95a5b3a58eb ca4d62feaf04f6d0  # 20261012_1300_f95a5b3a58eb_017_drop_investigation_sessions
+c4441b83ba24 3b9f81391a480709  # 20261012_1400_c4441b83ba24_018_runbook_drafts_in_the_database
+82bc95a1c02f 7c7e7a75472b56e4  # 20261012_1500_82bc95a1c02f_019_verified_by_is_the_display_name
+596f06c52909 bc449450c201dba1  # 20261018_1200_596f06c52909_020_org_permissions_are_management_only
+d0eb318ce3e0 a16fe34e9158f8da  # 20261029_1200_d0eb318ce3e0_021_knowledge_item_ingest_complete
+03f93180f630 26e42bcfbf031257  # 20261030_1200_03f93180f630_022_knowledge_item_vector_generation
+cf17b34fc8c4 d31437d39408235d  # 20261031_1200_cf17b34fc8c4_023_drop_in_flight_revisions
+d6cfb801d9f5 55ac1f7ab30e8dff  # 20261101_1200_d6cfb801d9f5_024_kb_request_receipts
