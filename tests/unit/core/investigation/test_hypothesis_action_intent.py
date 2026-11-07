@@ -128,7 +128,7 @@ def test_terminal_hypothesis_refuses_every_action(make_terminal, action):
     assert h.model_dump() == before
     # The action was refused, not silently swallowed as applied.
     assert "hypothesis_action_applied" not in metadata
-    fb = metadata.get("system_feedback", "")
+    fb = "\n".join(metadata.get("system_notices") or [])
     assert "terminal" in fb.lower()
     assert h.state.value in fb
     # The aggregate still reconstructs — the original #843 failure was a
@@ -262,7 +262,7 @@ def test_refute_with_nothing_on_record_is_refused():
     assert h.state == HypothesisState.ACTIVE
     assert h.refutation_reason is None
     assert "hypothesis_action_applied" not in metadata
-    assert "nothing on record refutes it" in metadata["system_feedback"]
+    assert "nothing on record refutes it" in "\n".join(metadata["system_notices"])
     counter.labels.assert_called_once_with(source="user")
 
 
@@ -278,7 +278,7 @@ def test_validate_on_active_records_strong_prior():
     assert h.state == HypothesisState.ACTIVE
     assert h.likelihood == 1.0
     assert metadata["hypothesis_action_applied"] is True
-    assert "validated once" in metadata.get("system_feedback", "")
+    assert "validated once" in "\n".join(metadata.get("system_notices") or [])
 
 
 def test_validate_records_progress_so_the_same_turn_does_not_decay_it():

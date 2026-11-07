@@ -195,6 +195,17 @@ class FixCause(BaseModel):
     )
 
 
+#: Bounds on a turn's ``system_notices`` (#2499): at most this many notices,
+#: and ``_create_turn_record`` cuts a single notice over this many characters
+#: at its end, the one cut left in the channel (a notice that long is its
+#: author's bug). Neither grows with how many backstops fire.
+MAX_SYSTEM_NOTICES = 20
+MAX_SYSTEM_NOTICE_CHARS = 4000
+#: Appended to the head of a notice cut to a bound: the record's per-notice
+#: one, or a prompt budget too small for even the first notice.
+NOTICE_CUT_MARKER = "\n... [notice truncated]"
+
+
 class TurnProgress(BaseModel):
     """
     Record of what happened in one turn.
@@ -290,16 +301,21 @@ class TurnProgress(BaseModel):
     # ============================================================
     # System Feedback (for iterative correction)
     # ============================================================
-    system_feedback: Optional[str] = Field(
-        default=None,
-        description="Instruction or error from system to agent (e.g., 'Invalid evidence ID')",
-        max_length=1000,
+    system_notices: List[str] = Field(
+        default_factory=list,
+        description=(
+            "The engine's notices to the model from this turn, each whole, "
+            "prepended ones first (e.g., 'Invalid evidence ID'); the next "
+            "prompt renders whole notices from the head, and cuts one only "
+            "when none fits whole: the first, head-cut with a marker (#2499)"
+        ),
+        max_length=MAX_SYSTEM_NOTICES,
     )
     system_feedback_forwarded: bool = Field(
         default=False,
         description=(
             "True when this turn built no prompt and carried the previous "
-            "record's system_feedback forward unread, so the notice belongs to "
+            "record's system_notices forward unread, so the notices belong to "
             "an earlier turn (#1688)"
         ),
     )

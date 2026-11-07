@@ -238,11 +238,11 @@ def record_promptless_turn(
     rule below, so a pending-gate click buried the notice a greeting would have
     carried.
 
-    **``system_feedback`` is FORWARDED from the previous turn.** It is addressed
+    **``system_notices`` are FORWARDED from the previous turn.** They are addressed
     to the next prompt, and the prompt reads it positionally, from
     ``turn_history[-1]`` (``context_builder.system_feedback_block``). A turn
     that built no prompt has not consumed it, so a record written here with no
-    feedback would hide the notice from the next prompt that is built.
+    notices would hide them from the next prompt that is built.
     Forwarding cannot deliver twice: the generation path records only the
     feedback its own turn produced. A forwarded copy is marked
     ``system_feedback_forwarded``, so the prompt can say which turn the notice
@@ -260,9 +260,9 @@ def record_promptless_turn(
     """
     previous = case.turn_history[-1] if case.turn_history else None
     forwarded = (
-        previous.system_feedback
+        list(previous.system_notices)
         if previous is not None and not case.is_terminal
-        else None
+        else []
     )
     case.turn_history.append(
         TurnProgress(
@@ -282,7 +282,7 @@ def record_promptless_turn(
             agent_response_summary=summarize_for_turn_record(agent_response, 500),
             agent_response_synthesized=agent_response_synthesized,
             terminal_confirmed_via=terminal_confirmed_via,
-            system_feedback=forwarded,
+            system_notices=forwarded,
             system_feedback_forwarded=bool(forwarded),
         )
     )

@@ -296,7 +296,7 @@ async def test_a_turn_judges_its_rows_on_the_status_it_ends_with():
     assert case.progress.problem_status == ProblemStatus.VERIFIED
     assert case.evidence[-1].category == CAUSAL_ABSENCE
     assert not [r for r in meta.get("validation_repairs", []) if "causal_absence" in r]
-    assert "symptom_absence_evidence" not in (meta.get("system_feedback") or "")
+    assert "symptom_absence_evidence" not in "\n".join(meta.get("system_notices") or [])
 
     engine, case = revision._engine(), _invalidated(ProblemStatus.VERIFIED)
     meta = await _propose(
@@ -312,8 +312,12 @@ async def test_a_turn_judges_its_rows_on_the_status_it_ends_with():
     repairs = [r for r in meta["validation_repairs"] if "causal_absence" in r]
     assert len(repairs) == 1
     assert repairs[0].startswith("2 causal_absence_evidence row(s)")
-    assert meta["system_feedback"].count("causal_absence_evidence row(s)") == 1
-    assert "2 causal_absence_evidence row(s) arrived" in meta["system_feedback"]
+    assert (
+        "\n".join(meta["system_notices"]).count("causal_absence_evidence row(s)") == 1
+    )
+    assert "2 causal_absence_evidence row(s) arrived" in "\n".join(
+        meta["system_notices"]
+    )
 
     await _confirm(engine, case)
 
@@ -373,7 +377,7 @@ async def test_a_menu_close_during_the_hold_declines_the_resolution():
 async def test_a_hold_turns_feedback_names_the_answer():
     engine, case = revision._engine(), revision._case(ProblemStatus.VERIFIED)
     meta, _ = await _revision_turn_with_recheck(engine, case)
-    assert ANSWER in meta["system_feedback"]
+    assert ANSWER in "\n".join(meta["system_notices"])
 
     engine, case = revision._engine(), revision._case()
     meta = await revision._apply(
@@ -381,5 +385,5 @@ async def test_a_hold_turns_feedback_names_the_answer():
         case,
         revision._DSU(evidence_to_add=[revision._row(CAUSAL_ABSENCE, "g")]),
     )
-    assert "recorded as symptom_absence_evidence" in meta["system_feedback"]
-    assert ANSWER not in meta["system_feedback"]
+    assert "recorded as symptom_absence_evidence" in "\n".join(meta["system_notices"])
+    assert ANSWER not in "\n".join(meta["system_notices"])

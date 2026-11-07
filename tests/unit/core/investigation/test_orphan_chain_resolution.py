@@ -503,7 +503,7 @@ def test_engine_nudge_appends_system_feedback_for_ambiguous_orphan():
     metadata: dict = {}
     _nudge_ambiguous_orphan_chains(case, metadata)
 
-    fb = metadata.get("system_feedback", "")
+    fb = "\n".join(metadata.get("system_notices") or [])
     assert "Unlinked causal chain" in fb
     assert "re-root" in fb
 
@@ -521,5 +521,5 @@ def test_engine_nudge_silent_and_reattaches_on_unambiguous_case():
     _nudge_ambiguous_orphan_chains(case, metadata)
 
     # T1 re-attached; no nudge emitted.
-    assert "system_feedback" not in metadata or not metadata["system_feedback"]
+    assert not metadata.get("system_notices")
     assert hyp.root_node_id == orphan_root

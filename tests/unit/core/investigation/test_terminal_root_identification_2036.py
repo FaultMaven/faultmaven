@@ -455,7 +455,7 @@ def test_m5_recovery_names_the_why_when_the_cause_is_held():
     )
     metadata: dict = {}
     assert _withdraw_unlicensed_solution_offers(case, metadata=metadata) == 1
-    assert "its why is open (ROOT-CAUSE TEST" in metadata["system_feedback"]
+    assert "its why is open (ROOT-CAUSE TEST" in "\n".join(metadata["system_notices"])
 
 
 # ---------------------------------------------------------------------------

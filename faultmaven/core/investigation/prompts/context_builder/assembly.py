@@ -21,6 +21,7 @@ from faultmaven.core.investigation.prompts.templates.tool_text import (
     GivenTools,
 )
 from faultmaven.modules.case.contracts import (
+    NOTICE_CUT_MARKER,
     Case,
     CaseState,
     InvestigationActionType,
@@ -76,20 +77,31 @@ def _cap_text_tokens(
     return tb.use(text)
 
 
-#: Fallback when settings are unavailable. One definition, because the cap is
-#: read at two altitudes now: ``build_investigation_context`` applies it before
-#: the fence, and ``_allocate_sections`` counts the result.
+#: Fallbacks when settings are unavailable. Named once each, because the caps
+#: are read at two altitudes: ``build_investigation_context`` applies them
+#: before the fence, and ``_allocate_sections`` counts the result.
 _USER_MESSAGE_CAP_FALLBACK = 4000
+_SYSTEM_FEEDBACK_CAP_FALLBACK = 1500
 
 
-def _user_message_cap() -> int:
-    """``prompt_budget.user_message_max_tokens``, or the fallback."""
+def _prompt_budget_cap(field: str, fallback: int) -> int:
+    """``prompt_budget.<field>``, or ``fallback`` when settings are unavailable."""
     try:
         from faultmaven.config.settings import get_settings
 
-        return get_settings().prompt_budget.user_message_max_tokens
+        return getattr(get_settings().prompt_budget, field)
     except Exception:
-        return _USER_MESSAGE_CAP_FALLBACK
+        return fallback
+
+
+def _user_message_cap() -> int:
+    return _prompt_budget_cap("user_message_max_tokens", _USER_MESSAGE_CAP_FALLBACK)
+
+
+def _system_feedback_cap() -> int:
+    return _prompt_budget_cap(
+        "system_feedback_max_tokens", _SYSTEM_FEEDBACK_CAP_FALLBACK
+    )
 
 
 def _shrink_fenced_tail(fenced: str, alloc: int, budget: "TokenBudget") -> str:
@@ -135,8 +147,6 @@ def _allocate_sections(
     *,
     budget: "TokenBudget",
     case: Case,
-    provider_name: Optional[str],
-    model_name: Optional[str],
     # reserved (bounded, never trimmed)
     identity: str,
     core_context: str,
@@ -172,11 +182,10 @@ def _allocate_sections(
 
     try:
         pb = get_settings().prompt_budget
-        feedback_cap = pb.system_feedback_max_tokens
         journal_cap = pb.journal_max_tokens
         conversation_cap = pb.conversation_history_max_tokens
     except Exception:
-        feedback_cap, journal_cap = 1500, 1500
+        journal_cap = 1500
         conversation_cap = 8000
 
     try:
@@ -196,21 +205,20 @@ def _allocate_sections(
 
     # ``user_message_block`` arrives already capped AND already fenced (the cap
     # runs before the fence in ``build_investigation_context``, or it would cut
-    # the rendered element), so it is only counted here.
-    capped_feedback = _cap_text_tokens(
-        feedback_str, feedback_cap, provider_name, model_name
-    )
+    # the rendered element), and ``feedback_str`` arrives bounded to its cap by
+    # whole notices (``system_feedback_block``, #2499), so both are only
+    # counted here.
     ctx["identity"] = _reserve(identity)
     ctx["core_context"] = _reserve(core_context)
     ctx["milestones"] = _reserve(milestones_str)
     ctx["inquiry_state"] = _reserve(inquiry_state_str)
     ctx["pending_action"] = _reserve(pending_action_str)
-    ctx["system_feedback"] = _reserve(capped_feedback)
-    # Its own section, not appended to the feedback (#1911): the feedback cap
-    # keeps the head and would cut the reminder first, and a feedback cut
-    # mid-tag would absorb it; as a section of its own it gets the per-section
-    # tag termination below. Bounded: at most MAX_NAMED_EXCLUSIONS ids and two
-    # fixed sentences.
+    ctx["system_feedback"] = _reserve(feedback_str)
+    # Its own section, not appended to the feedback (#1911): the feedback
+    # budget drops notices from the tail and would drop the reminder first,
+    # and a notice ending mid-tag would absorb it; as a section of its own it
+    # gets the per-section tag termination below. Bounded: at most
+    # MAX_NAMED_EXCLUSIONS ids and two fixed sentences.
     ctx["exclusions"] = _reserve(exclusions_str)
     # Reserved within its own fixed budget (#1906 D7), not a floor-0 variable
     # section: those are dropped first under pressure, and pressure is what
@@ -420,8 +428,6 @@ def _allocate_sections(
             "prompt_allocation_v2",
             extra={
                 "case_id": case.case_id,
-                "provider": provider_name,
-                "model": model_name,
                 "resolved_limit_tokens": budget.limit_tokens,
                 "reserve_tokens": reserve_tokens,
                 "section_budget_tokens": section_budget,
@@ -447,9 +453,13 @@ def _working_hypotheses(case: Case, standing: list[str]) -> str:
 
 
 def system_feedback_block(
-    case: Case, guard: Optional[Callable[[str], str]] = None
+    case: Case,
+    guard: Optional[Callable[[str], str]] = None,
+    *,
+    max_tokens: Optional[int] = None,
+    count: Optional[Callable[[str], int]] = None,
 ) -> str:
-    """The previous turn's ``system_feedback`` as a prompt block, or ``""``.
+    """The previous turn's ``system_notices`` as a prompt block, or ``""``.
 
     The one reader of the channel, shared by the main prompt and the minimal
     fallback (``templates._fallback_body``), so a turn that degrades to the
@@ -466,31 +476,101 @@ def system_feedback_block(
     and over any record not carrying it, such as a SKIPPED placeholder that
     ``Case.reconcile_turn_sequence`` backfilled for an interrupted turn.
 
+    The notices render whole, in record order (prepended first, then
+    chronological), until the next would take the block over ``max_tokens``
+    as ``count`` measures it; then one line says how many were omitted. A
+    notice is cut only when no whole one fits: the first, head-cut with the
+    record's marker (#2499). Without ``max_tokens`` every notice renders.
+
     ``guard`` wraps the notice text alone; the fallback passes its
     ``_guarded``. Wrapping the finished block instead would put a terminator
     after the block's trailing blank line, on the same line as whatever the
     template renders next.
     """
     last = case.turn_history[-1] if case.turn_history else None
-    if last is None or not last.system_feedback:
+    if last is None or not last.system_notices:
         return ""
-    notice = last.system_feedback
-    body = guard(notice) if guard else notice
+    notices = list(last.system_notices)
     if not last.system_feedback_forwarded:
-        return f"IMPORTANT - SYSTEM FEEDBACK FROM PREVIOUS TURN:\n{body}\n\n"
-    origin = next(
-        (
-            record
-            for record in reversed(case.turn_history[:-1])
-            if record.system_feedback == notice and not record.system_feedback_forwarded
-        ),
-        None,
-    )
-    source = f"TURN {origin.turn_number}" if origin else "AN EARLIER TURN"
-    return (
-        f"IMPORTANT - SYSTEM FEEDBACK FROM {source} "
-        f"(not shown to you until now):\n{body}\n\n"
-    )
+        origin = last
+        heading = "IMPORTANT - SYSTEM FEEDBACK FROM PREVIOUS TURN:"
+    else:
+        origin = next(
+            (
+                record
+                for record in reversed(case.turn_history[:-1])
+                if list(record.system_notices) == notices
+                and not record.system_feedback_forwarded
+            ),
+            None,
+        )
+        source = f"TURN {origin.turn_number}" if origin else "AN EARLIER TURN"
+        heading = (
+            f"IMPORTANT - SYSTEM FEEDBACK FROM {source} (not shown to you until now):"
+        )
+    from_turn = f"turn {origin.turn_number}" if origin else "an earlier turn"
+    body = _whole_notices(notices, heading, from_turn, max_tokens, count)
+    body = guard(body) if guard else body
+    return f"{heading}\n{body}\n\n"
+
+
+def _omitted_line(omitted: int, from_turn: str) -> str:
+    plural = "s" if omitted != 1 else ""
+    return f"[{omitted} more notice{plural} from {from_turn} omitted]"
+
+
+def _head_cut(text: str, room: int, count: Callable[[str], int]) -> str:
+    """The longest head of ``text`` that fits ``room`` with the cut marker
+    appended, found by bisection on ``count``; the marker alone when nothing
+    does."""
+    if count(text) <= room:
+        return text
+    room -= count(NOTICE_CUT_MARKER)
+    low, high = 0, len(text)
+    while low < high:
+        mid = (low + high + 1) // 2
+        if count(text[:mid]) <= room:
+            low = mid
+        else:
+            high = mid - 1
+    return text[:low] + NOTICE_CUT_MARKER
+
+
+def _whole_notices(
+    notices: Sequence[str],
+    heading: str,
+    from_turn: str,
+    max_tokens: Optional[int],
+    count: Optional[Callable[[str], int]],
+) -> str:
+    """The longest head of ``notices`` that, under ``heading`` and with the
+    line naming the rest, fits ``max_tokens``; every notice when there is no
+    budget to fit (#2499). The heading and each notice are counted once. When
+    even the first notice does not fit, it is head-cut to the room with the
+    record's marker: a notice is cut only when no whole one would fit, and
+    the block never omits everything."""
+    if max_tokens is None or count is None:
+        return "\n".join(notices)
+    room = max_tokens - count(heading + "\n")
+    total = len(notices)
+    used, kept = 0, 0
+    while kept < total:
+        rest = total - kept - 1
+        size = count(notices[kept] + "\n")
+        line = count(_omitted_line(rest, from_turn)) if rest else 0
+        if used + size + line > room:
+            break
+        used += size
+        kept += 1
+    if kept == 0:
+        rest = total - 1
+        line = _omitted_line(rest, from_turn) if rest else ""
+        head = _head_cut(notices[0], room - count(line + "\n"), count)
+        return f"{head}\n{line}" if rest else head
+    body = "\n".join(notices[:kept])
+    if kept < total:
+        body += "\n" + _omitted_line(total - kept, from_turn)
+    return body
 
 
 def build_investigation_context(
@@ -891,7 +971,9 @@ def build_investigation_context(
 
     # 8. System Feedback (Validation errors from previous turn), then the
     # exclusions on record, in the slot read last before the user's message.
-    feedback_str = system_feedback_block(case)
+    feedback_str = system_feedback_block(
+        case, max_tokens=_system_feedback_cap(), count=budget.count
+    )
     exclusions_str = exclusions_reminder(case)
 
     # 9. Stage-Specific Context Loading (Gap #10: Section 11.4)
@@ -1026,8 +1108,6 @@ def build_investigation_context(
     ctx = _allocate_sections(
         budget=budget,
         case=case,
-        provider_name=provider_name,
-        model_name=model_name,
         identity=identity,
         core_context=core_context,
         milestones_str=milestones_str,

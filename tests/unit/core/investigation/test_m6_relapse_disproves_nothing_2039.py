@@ -257,7 +257,7 @@ def _notice(case, turn):
     case.evidence.append(_problem_gone(turn, label=f"fine_now_{turn}"))
     metadata = {}
     assert _flag_absence_inside_a_failed_fix_window(case, metadata) is True
-    return metadata["system_feedback"]
+    return "\n".join(metadata["system_notices"])
 
 
 def test_after_a_relapse_the_notice_keeps_the_fix_under_a_standing_cause():

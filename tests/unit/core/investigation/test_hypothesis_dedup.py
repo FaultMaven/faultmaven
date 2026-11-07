@@ -293,7 +293,7 @@ async def test_duplicate_of_standing_hypothesis_not_minted():
     # Not counted as generation (a dedup is not diagnostic progress).
     assert meta["hypotheses_generated"] == []
     # Feedback names the standing id so the LLM can update it instead.
-    assert existing.hypothesis_id in meta["system_feedback"]
+    assert existing.hypothesis_id in "\n".join(meta["system_notices"])
 
 
 async def test_intra_batch_duplicate_minted_once():

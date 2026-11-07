@@ -2200,7 +2200,7 @@ class TestINV22_ProposedTransitionAgainstActionGraph:
         )
         assert result.state == CaseState.INQUIRY
 
-        feedback = metadata.get("system_feedback") or ""
+        feedback = "\n".join(metadata.get("system_notices") or [])
         assert "INVALID TRANSITION ERROR" in feedback
         assert "'resolved'" in feedback
         assert "'inquiry'" in feedback
@@ -2245,7 +2245,9 @@ class TestINV22_ProposedTransitionAgainstActionGraph:
         )
         assert result.offer_record.open.kind == "close"
         # No rejection feedback for a valid emission.
-        assert "INVALID TRANSITION ERROR" not in (metadata.get("system_feedback") or "")
+        assert "INVALID TRANSITION ERROR" not in "\n".join(
+            metadata.get("system_notices") or []
+        )
 
     @pytest.mark.asyncio
     async def test_engine_accepts_valid_resolved_from_investigating(self):
@@ -2267,7 +2269,7 @@ class TestINV22_ProposedTransitionAgainstActionGraph:
         # happens downstream (SUGGEST_CLOSE pivot, NEEDS_INFO, or READY
         # → propose) is the existing per-state processing, not this
         # invariant's concern.
-        feedback = metadata.get("system_feedback") or ""
+        feedback = "\n".join(metadata.get("system_notices") or [])
         assert "INVALID TRANSITION ERROR" not in feedback, (
             "INV-22 over-reach: valid to_state='resolved' from "
             "INVESTIGATING was flagged as invalid. The guard must "

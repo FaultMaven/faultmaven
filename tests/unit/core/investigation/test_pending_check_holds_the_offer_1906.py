@@ -265,7 +265,7 @@ async def test_1_the_check_asked_with_the_legs_holds_the_backstop(caplog):
     assert _CLOSE_PARAGRAPH not in readiness.message
     assert case.offer_record.open is None
     assert "Shall I mark this case resolved?" not in result["agent_response"]
-    feedback = result["case_updated"].turn_history[-1].system_feedback
+    feedback = "\n".join(result["case_updated"].turn_history[-1].system_notices)
     assert (
         f"RESOLUTION HELD: the check you asked for is still pending "
         f"([{need.need_id}] {_ASK}). The resolution is offered once an answer "
@@ -327,7 +327,7 @@ async def test_2_fulfilled_on_a_row_from_before_the_ask_still_holds():
     assert need.state == NeedState.FULFILLED
     assert pending_symptom_check(case) is need
     assert case.offer_record.open is None
-    feedback = result["case_updated"].turn_history[-1].system_feedback
+    feedback = "\n".join(result["case_updated"].turn_history[-1].system_notices)
     assert (
         f"the check you asked for ([{need.need_id}] {_ASK}) is marked FULFILLED, "
         "but the rows you cited predate the ask" in feedback
@@ -344,7 +344,7 @@ async def test_3_the_models_resolved_while_held_gets_feedback_and_no_request(
     case, _, need, _ = await _asked_at_7(engine)
     caplog.set_level(logging.INFO)
     result = await _turn(engine, case, 8, "mark it resolved", propose="resolved")
-    feedback = result["case_updated"].turn_history[-1].system_feedback
+    feedback = "\n".join(result["case_updated"].turn_history[-1].system_notices)
     assert f"{_HELD_FEEDBACK} ([{need.need_id}] {_ASK})." in feedback
     assert "mark the need FULFILLED citing it" in feedback
     assert "SUPERSEDE the need with the reason" in feedback
@@ -396,9 +396,9 @@ async def test_3_the_feedback_promises_no_offer_a_decline_still_binds(
         with_declined_offer(case, kind="resolve", basis="backstop")
     needs = [_mark(need, "fulfilled", verifying)] if fulfilled else []
     await _turn(engine, case, 8, "checking the targets page", needs=needs)
-    held = case.turn_history[-1].system_feedback
+    held = "\n".join(case.turn_history[-1].system_notices)
     await _turn(engine, case, 9, "mark it resolved", propose="resolved")
-    refused = case.turn_history[-1].system_feedback
+    refused = "\n".join(case.turn_history[-1].system_notices)
     assert case.offer_record.open is None, "premise: still held"
     assert (need.state == NeedState.FULFILLED) is fulfilled, "premise"
     named = f"[{need.need_id}] {_ASK}"
@@ -437,7 +437,7 @@ async def test_3_an_answer_showing_the_problem_present_reopens_nothing():
     case, result, need, verifying = await _asked_at_7(engine)
     with_declined_offer(case, kind="resolve", basis="backstop")
     await _turn(engine, case, 8, "checking the targets page")
-    assert _DECLINE_CLAUSE in case.turn_history[-1].system_feedback, "premise"
+    assert _DECLINE_CLAUSE in "\n".join(case.turn_history[-1].system_notices), "premise"
     data = upload(case, 9, "prometheus targets")
     await _turn(
         engine,
@@ -448,7 +448,7 @@ async def test_3_an_answer_showing_the_problem_present_reopens_nothing():
             _row(_PRESENT, "Prometheus still shows job=billing DOWN", data, verifying)
         ],
     )
-    feedback = case.turn_history[-1].system_feedback or ""
+    feedback = "\n".join(case.turn_history[-1].system_notices)
     readiness = assess_resolution_readiness(case)
     assert readiness.verdict == ResolutionReadiness.NEEDS_INFO
     assert readiness.missing[0] == "a new fix after the one that did not hold"
