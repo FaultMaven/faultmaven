@@ -361,8 +361,8 @@ def find_alembic_ini() -> tuple[Optional[Path], list[Path]]:
     return next((p for p in searched if p.exists()), None), searched
 
 
-def alembic_script_heads() -> frozenset[str]:
-    """The migration scripts' head revisions, as the subprocess reads them by default.
+def _script_directory() -> Any:
+    """The migration scripts, as the subprocess reads them by default.
 
     With ``ALEMBIC_CONFIG`` unset, the subprocess (``cwd=project_root``, no ``-c``)
     reads the project root's ``alembic.ini`` and resolves its ``script_location``
@@ -381,7 +381,17 @@ def alembic_script_heads() -> frozenset[str]:
     location = config.get_main_option("script_location", "")
     config.set_main_option("script_location", str(root / location))
     config.set_main_option("prepend_sys_path", "")
-    return frozenset(ScriptDirectory.from_config(config).get_heads())
+    return ScriptDirectory.from_config(config)
+
+
+def alembic_script_heads() -> frozenset[str]:
+    """The migration scripts' head revisions (see :func:`_script_directory`)."""
+    return frozenset(_script_directory().get_heads())
+
+
+def alembic_script_revisions() -> frozenset[str]:
+    """Every revision the migration scripts contain (see :func:`_script_directory`)."""
+    return frozenset(script.revision for script in _script_directory().walk_revisions())
 
 
 def _startup_check_engine(database_url: str) -> Any:
@@ -516,9 +526,75 @@ async def verify_schema_tables() -> int:
         )
     raise RuntimeError(
         f"Database schema is behind the models: {found}; the database is stamped "
-        f"{', '.join(sorted(stamped))} but those were never created. Re-run the "
-        "migration Job or re-provision the database "
-        "(docs/operations/deployment-wipe.md)."
+        f"{', '.join(sorted(stamped))} but those were never created. "
+        + _stamped_remedy(stamped)
+    )
+
+
+#: What fixes a database at head that lacks declared names. No migration run
+#: does: Alembic records an applied revision by id, not content.
+_AT_HEAD_REMEDY = (
+    "A revision this database had already applied gained them afterwards, or "
+    "they were dropped by hand. Create them from the revision that declares "
+    'them, as the migration role (docs/guides/database-migrations.md, "A '
+    'Database at Head Missing Tables"), or re-provision the database, which '
+    "destroys its data (docs/operations/deployment-wipe.md)."
+)
+
+
+def _stamped_remedy(stamped: frozenset[str]) -> str:
+    """The remedy for a stamped database missing declared names, which turns on
+    where the stamp sits in the migration scripts.
+
+    - Not in them: the database was migrated by a newer image, or by other
+      scripts (an image rolled back across a migration). No run from this
+      image can proceed: alembic cannot locate the stamp.
+    - Behind head: the migration run that has not happened yet is the remedy,
+      and the at-head remedy is named for the case it does not fix.
+    - At head: ``alembic upgrade head`` (and so the migration Job) applies
+      nothing and reports success, so advising it would send the operator round
+      the same loop.
+
+    When the scripts cannot be read, or ``ALEMBIC_CONFIG`` may point the
+    migration at other scripts, the run and the at-head remedy are both named
+    and neither is claimed.
+    """
+    heads: Optional[frozenset[str]] = None
+    known: Optional[frozenset[str]] = None
+    if not _alembic_config_override():
+        try:
+            heads = alembic_script_heads()
+            known = alembic_script_revisions()
+        except Exception as exc:  # the refusal stands; only its advice narrows
+            heads = known = None
+            logger.warning(
+                "Could not read the migration scripts (%s: %s)",
+                type(exc).__name__,
+                exc,
+            )
+    if heads is None or known is None:
+        return (
+            "If that is not the migration scripts' head, run the migration Job "
+            "(`alembic upgrade head`); if it is, no migration run creates them. "
+            + _AT_HEAD_REMEDY
+        )
+    unknown = stamped - known
+    if unknown:
+        return (
+            f"This image's migration scripts do not contain {', '.join(sorted(unknown))}: "
+            "the database was migrated by a newer image, or by other scripts, so no "
+            "migration run from this image can proceed. Run an image whose "
+            "migrations include it."
+        )
+    if stamped == heads:
+        return (
+            "That is the migration scripts' head, so re-running the migration Job "
+            "(`alembic upgrade head`) changes nothing. " + _AT_HEAD_REMEDY
+        )
+    return (
+        f"The migration scripts' head is {', '.join(sorted(heads))}: run the "
+        "migration Job (`alembic upgrade head`). If the database still lacks them "
+        "once at head, no migration run will create them. " + _AT_HEAD_REMEDY
     )
 
 

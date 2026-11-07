@@ -11,6 +11,7 @@ This guide covers the database migration system for FaultMaven, powered by [Alem
 - [SQLite and PostgreSQL](#sqlite-and-postgresql)
 - [Applying Migrations](#applying-migrations)
 - [Rolling Back Migrations](#rolling-back-migrations)
+- [A Database at Head Missing Tables](#a-database-at-head-missing-tables)
 - [Re-provisioning a Database](#re-provisioning-a-database)
 - [Best Practices](#best-practices)
 - [Troubleshooting](#troubleshooting)
@@ -31,6 +32,18 @@ revisions on top of it. The baseline creates the schema it was written with and
 its `downgrade()` drops all of it; each additive revision adds to that schema,
 and its `downgrade()` removes only what it added — see
 [Migration History](#migration-history).
+
+A revision does not change once it is on `main`. Alembic records which
+revisions a database has applied by id, not by content, so a change to a
+revision some database already applied never reaches that database: `alembic
+upgrade head` finds nothing to do, and the stamp then claims a schema the
+database does not have. A schema change is a new revision.
+`tests/unit/architecture/test_applied_revisions_unchanged.py` holds the line: it
+fingerprints each revision's code (comments, docstrings and formatting left
+out) against `alembic/revision_fingerprints.txt` and fails when one moves. Only
+an edit that cannot change the schema any database ends with — a fix to a
+statement that could not run at all — records a new fingerprint, and its PR
+says why no database is affected.
 
 ### Who runs the migrations
 
@@ -199,6 +212,11 @@ YYYYMMDD_HHMM_<revision>_add_user_preferences.py
   `HEAD_REVISION` and `EXPECTED_TABLES`. It fails when the chain has more than
   one head, when a migration lands without `HEAD_REVISION` moving, and when the
   migrated table set differs from `EXPECTED_TABLES`.
+- **Record its fingerprint.** Append the line
+  `tests/unit/architecture/test_applied_revisions_unchanged.py` prints for the
+  new revision to `alembic/revision_fingerprints.txt`. Revise the migration
+  freely until it merges, re-recording the line; after that it does not change
+  (see [Overview](#one-database-one-chain)).
 - **Regenerate the ER diagram** when tables or columns change:
   `python scripts/generate_er_diagram.py --update`.
 
@@ -371,6 +389,46 @@ alembic downgrade base              # everything
 > baseline itself) drops every table and leaves only `alembic_version`. Back up
 > first.
 
+## A Database at Head Missing Tables
+
+Startup refuses a database stamped at the scripts' head that lacks a table or
+column the models declare. No migration run will create it: the database has
+applied every revision there is, by id. Either a revision it had already
+applied gained the object afterwards — the baseline was amended in place while
+it was the only migration — or the object was dropped by hand.
+
+**Keeping the data: create what is missing from the revision that declares it.**
+
+1. Find the revision: `grep -l '"<table>"' alembic/versions/*.py`.
+2. Render its DDL without a database. With `DATABASE_URL` naming a PostgreSQL
+   URL (offline mode connects to nothing), `alembic upgrade <revision> --sql`
+   for the baseline, `alembic upgrade <down_revision>:<revision> --sql` for any
+   other. Take the statements that create the missing objects: the table, its
+   indexes, and any row-level security, policy, trigger or grant the revision
+   attaches to it. Leave out the rendered `BEGIN;` and `COMMIT;`, and the
+   `alembic_version` statement: the stamp is already right, and a `COMMIT;`
+   copied into the transaction below ends it early, and the role with it.
+3. Apply them in one transaction **as the role that owns the schema** (the
+   migration Job's role). `ALTER DEFAULT PRIVILEGES FOR ROLE <owner>` is what
+   grants the app's runtime role access to a new table, and it applies only to
+   tables that role creates; a table a superuser creates is owned by the
+   superuser and grants the runtime role nothing. Connected as a superuser,
+   `SET LOCAL ROLE <owner>` first:
+
+   ```sql
+   BEGIN;
+   SET LOCAL ROLE <owner>;
+   -- the rendered CREATE TABLE / CREATE INDEX statements, schema-qualified
+   COMMIT;
+   ```
+
+4. Restart. The check reads names only, so when the revision attaches more than
+   tables and columns, compare the repaired schema with a fresh one:
+   `pg_dump --schema-only` of the repaired database and of a scratch database
+   migrated from empty to the same head, diffed.
+
+**Or re-provision**, below, which discards the data.
+
 ## Re-provisioning a Database
 
 A deployment on the current baseline receives each additive revision through
@@ -380,7 +438,8 @@ database stamped at the baseline's revision **before the baseline was amended
 in place** (it was, while it was the only migration). Alembic considers such a
 database up to date on the baseline, so no run ever delivers the amendment, and
 the revisions stacked on top would apply to a schema they were not written
-against. Re-provision it instead:
+against. Re-provision it instead (or, to keep the data,
+[repair it](#a-database-at-head-missing-tables)):
 
 - **PostgreSQL**: drop and re-create the database, then re-run the migration
   Job. `fm-wipe-deployment --wipe` clears the surfaces a `DROP DATABASE` does
@@ -636,8 +695,14 @@ upgrade head` as the remedy. Table and column names are the floor of that
 check; a missing index or constraint, or a changed column type, is not
 detected. The read is held to the same 10 seconds as the at-head check, and
 past them the boot is refused, not skipped. The remedy for a stamped database
-is to re-run the migration Job, or to
-[re-provision the database](#re-provisioning-a-database).
+turns on where the stamp sits in the scripts. Behind their head, run the
+migration Job (`alembic upgrade head`); the refusal names the head, and what to
+do if the names are still missing once there. At head, that run applies nothing
+and reports success, so the refusal says so and points to
+[A Database at Head Missing Tables](#a-database-at-head-missing-tables). A
+stamp the scripts do not contain (an image rolled back across a migration, so
+the database is newer than it) is named as such: no migration run from that
+image can proceed, and the remedy is an image whose migrations include it.
 
 A revision can add database objects other than tables: `003_admin_case_metadata`
 creates two PostgreSQL `SECURITY DEFINER` functions for the cross-enterprise

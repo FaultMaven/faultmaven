@@ -108,3 +108,94 @@ def test_run_startup_migrations_reads_env_alias(monkeypatch):
 
     monkeypatch.setenv("RUN_STARTUP_MIGRATIONS", "false")
     assert FaultMavenSettings().run_startup_migrations is False
+
+
+_HEAD = frozenset({"head_rev"})
+_KNOWN = frozenset({"base_rev", "older_rev", "head_rev"})
+
+
+def _scripts(heads=_HEAD, known=_KNOWN, override=""):
+    """Patch what ``_stamped_remedy`` reads: ALEMBIC_CONFIG and the scripts."""
+
+    def reader(value):
+        if isinstance(value, Exception):
+            return MagicMock(side_effect=value)
+        return MagicMock(return_value=value)
+
+    return (
+        patch.object(data_init, "_alembic_config_override", return_value=override),
+        patch.object(data_init, "alembic_script_heads", reader(heads)),
+        patch.object(data_init, "alembic_script_revisions", reader(known)),
+    )
+
+
+@pytest.mark.unit
+def test_a_stamp_at_head_is_not_told_to_rerun_the_migration():
+    """At head the Job applies nothing and reports success: the advice names the
+    repair and the re-provision instead."""
+    override, heads, known = _scripts()
+    with override, heads, known:
+        remedy = data_init._stamped_remedy(_HEAD)
+    assert "changes nothing" in remedy
+    assert "database-migrations.md" in remedy and "deployment-wipe.md" in remedy
+    assert "run the migration Job" not in remedy
+
+
+@pytest.mark.unit
+def test_a_stamp_behind_head_is_told_to_run_the_migration_and_what_if_that_fails():
+    """Behind head the pending run is the remedy; the at-head remedy is named for
+    a name no pending revision creates (an amended or hand-dropped one)."""
+    override, heads, known = _scripts()
+    with override, heads, known:
+        remedy = data_init._stamped_remedy(frozenset({"older_rev"}))
+    assert remedy.startswith(
+        "The migration scripts' head is head_rev: run the migration Job "
+        "(`alembic upgrade head`). If the database still lacks them once at head, "
+        "no migration run will create them."
+    )
+    assert "database-migrations.md" in remedy and "deployment-wipe.md" in remedy
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "stamped",
+    [frozenset({"newer_rev"}), frozenset({"head_rev", "newer_rev"})],
+    ids=["newer stamp", "one of two stamps unknown"],
+)
+def test_a_stamp_the_scripts_do_not_contain_is_not_told_to_migrate(stamped):
+    """An image rolled back across a migration: alembic cannot locate the stamp,
+    so a migration run from this image fails and is not the advice."""
+    override, heads, known = _scripts()
+    with override, heads, known:
+        remedy = data_init._stamped_remedy(stamped)
+    assert remedy == (
+        "This image's migration scripts do not contain newer_rev: the database "
+        "was migrated by a newer image, or by other scripts, so no migration run "
+        "from this image can proceed. Run an image whose migrations include it."
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "override, heads, known",
+    [
+        ("", OSError("alembic.ini not found"), _KNOWN),
+        ("", _HEAD, OSError("revision file unreadable")),
+        ("/elsewhere/alembic.ini", _HEAD, _KNOWN),
+    ],
+    ids=["heads unreadable", "revisions unreadable", "ALEMBIC_CONFIG set"],
+)
+def test_unknown_scripts_claim_neither_remedy(override, heads, known):
+    """When the scripts the migration run reads cannot be known, the run and the
+    at-head remedy are both named and neither is asserted."""
+    o, h, k = _scripts(heads=heads, known=known, override=override)
+    with o, h as heads_reader, k as revisions_reader:
+        remedy = data_init._stamped_remedy(frozenset({"newer_rev"}))
+    assert remedy.startswith(
+        "If that is not the migration scripts' head, run the migration Job"
+    )
+    assert "if it is, no migration run creates them" in remedy
+    assert "changes nothing" not in remedy and "do not contain" not in remedy
+    if override:
+        heads_reader.assert_not_called()
+        revisions_reader.assert_not_called()
