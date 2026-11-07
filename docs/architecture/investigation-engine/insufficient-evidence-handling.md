@@ -241,7 +241,7 @@ The turn channel and the durable record have to agree, or the fix is half done. 
 
 `closed_restatement_held` is therefore its own closure reason, with its own **Cause Boundary** block and its own recommendation (name the mechanism; do not gather more data). Two deliberate choices:
 
-- **Ranked immediately above the generic bucket and nowhere higher.** A verified mitigation or a declared-infeasible RCA says more about how the case ended.
+- **Ranked immediately above the generic bucket and nowhere higher.** A mitigation that relieved the symptom (`mitigation_sufficient`: verified and holding, or declared stable with no bound relapse after it) or a declared-infeasible RCA says more about how the case ended.
 - **Keyed on `restatement_hold_governs`, not on the `RESTATEMENT_HELD` status cell.** The cell additionally requires a stall, and a user may close before one. Keying on the cell would repeat, one label over, the mistake this function's own docstring records: the old `closed_insufficient_evidence` was gated on the `INSUFFICIENT_EVIDENCE` cell and so was unreachable for exactly the population it best described. Keying on the *raw* graph summary was the other error — it let a case with a **promoted** cause, and a case with **no verified symptom**, close under "a cause was supported but never stated distinctly". Both guards live in the shared predicate now.
 - **The composite closes here too**, because the hold is the more specific and more actionable finding — so the Cause Boundary block names any declared wall as an additional fact, or the honest partial the sibling block exists to capture would be lost from the record.
 

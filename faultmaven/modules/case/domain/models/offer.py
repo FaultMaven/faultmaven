@@ -57,7 +57,8 @@ class OfferBasis(StrEnum):
     DEFERRED = "deferred"
     #: The close a false-alarm finding calls for.
     FALSE_ALARM = "false_alarm"
-    #: The stabilized close on a mitigation with an infeasible RCA.
+    #: The close on a verified or declared-stable mitigation with an
+    #: infeasible RCA.
     RCA_INFEASIBLE = "rca_infeasible"
     #: The close after a resolution request the next turn did not meet.
     NEEDS_INFO_UNMET = "needs_info_unmet"

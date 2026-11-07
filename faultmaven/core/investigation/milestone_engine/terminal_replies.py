@@ -6,6 +6,8 @@ from faultmaven.core.investigation.prompts.templates.terminal import (
 )
 from faultmaven.core.investigation.terminal_transitions import (
     cause_identification_leg,
+    mitigation_closure_line,
+    mitigation_sentence,
     resolution_record_lines,
 )
 from faultmaven.modules.case.contracts import (
@@ -108,13 +110,28 @@ _CLOSED_REPLIES: Mapping[ClosureReason, str] = closure_reason_table(
             "is deferred out-of-band."
         ),
         ClosureReason.CLOSED_RCA_INFEASIBLE: (
-            "Case closed — the root cause is not reachable for this problem; "
-            "the mitigation stands as the accepted strategy."
+            "Case closed — the root cause is not reachable for this problem."
         ),
+        # The record-free fallback: a mitigation_sufficient case states its
+        # record instead (``_terminal_confirmation_response``).
         ClosureReason.MITIGATION_SUFFICIENT: (
-            "Case closed — stabilized by a verified mitigation; root-cause "
-            "analysis was deferred."
+            "Case closed — a mitigation was applied; root-cause analysis was "
+            "deferred."
         ),
+    }
+)
+
+#: The reasons whose reply is followed by the mitigation's record when the
+#: case has one (#2100, C5). ``mitigation_sufficient`` states it in place of
+#: its own line; the others omit it: no record can exist before the
+#: investigation, a false alarm's problem was not present, and a declined
+#: resolution's fix was confirmed.
+_MITIGATION_LINE_FOLLOWS = frozenset(
+    {
+        ClosureReason.CLOSED_RCA_INFEASIBLE,
+        ClosureReason.SOLUTION_DEFERRED,
+        ClosureReason.CLOSED_RESTATEMENT_HELD,
+        ClosureReason.CLOSED_INSUFFICIENT_EVIDENCE,
     }
 )
 
@@ -123,13 +140,25 @@ def _terminal_confirmation_response(case) -> str:
     """Deterministic status line after a transition is confirmed.
 
     Closure-reason-aware so the user can tell at a glance what was preserved
-    (``_CLOSED_REPLIES``; a CLOSED case always carries a reason). The terminal
-    reply is composed by ``_compose_terminal_reply`` which appends the
-    auto-generated summary content (when produced).
+    (``_CLOSED_REPLIES``; a CLOSED case always carries a reason). What it
+    says about a mitigation is the record (``mitigation_closure_line``,
+    #2100): it replaces the ``mitigation_sufficient`` line and follows the
+    reasons in ``_MITIGATION_LINE_FOLLOWS``. The terminal reply is composed
+    by ``_compose_terminal_reply`` which appends the auto-generated summary
+    content (when produced).
     """
     if case.state == CaseState.RESOLVED:
         return "Case resolved."
-    return _CLOSED_REPLIES[case.closure_reason]
+    reason = case.closure_reason
+    line = mitigation_closure_line(case)
+    if line is None or not (
+        reason == ClosureReason.MITIGATION_SUFFICIENT
+        or reason in _MITIGATION_LINE_FOLLOWS
+    ):
+        return _CLOSED_REPLIES[reason]
+    if reason == ClosureReason.MITIGATION_SUFFICIENT:
+        return f"Case closed — {line}; root-cause analysis was deferred."
+    return f"{_CLOSED_REPLIES[reason]} {mitigation_sentence(line)}"
 
 
 def _compose_terminal_reply(case, summary_payload: str | None) -> str:
