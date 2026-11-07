@@ -322,7 +322,8 @@ The milestone engine validates evidence claims for **progress indicators** (non-
 | Gate signal (LLM emission) | Materializes as | Trigger |
 |---------------------|-----------------|---------|
 | `mitigation_accepted` | `mitigation.accepted` | User acknowledges executing proposed mitigation (workaround) |
-| `mitigation_verified` | `mitigation.verified` (+ `completed_at_turn`) | User confirms the mitigation stabilized the situation |
+| `mitigation_verified` | `mitigation.verified` (+ `completed_at_turn`) | Derived (#2100): a problem-bound re-check shows the problem relieved at or after the mitigation's attempt |
+| `mitigation_disposition` | `mitigation.disposition` (+ `disposition_at_turn`; `declared_stable` also stamps `completed_at_turn`) | The user declares it stable (`declared_stable`) or chooses to go on without one (`proceed_unmitigated`); written once, never read as verified |
 | `solution_accepted` (+ `accepted_action_ref`) | the named SOLUTION's `accepted_in_turn` + `ActionAttempt`, then, once chain emission has run, its `target_ids` and `fix_kind` (remediation or interception), read from two records: the cause pool at the start of the turn it ran in (`TurnProgress.cause_at_start`) and the licence M5 recorded on the fix when it was proposed (`licence_ids`), #2036 D2.3; `solution_accepted` stays True from the first | User acknowledges executing the proposed solution the ref names (an ACTION_ID, or `new_index_N`); each fix registers once, and after the first only when named (#2105) |
 | `solution_verified` | `solution_verified` | User confirmed fix worked (User-Agent Handshake) |
 
@@ -495,9 +496,11 @@ class MitigationRecord(BaseModel):
     accepted: bool = Field(
         default=False, description="User complied with the proposed mitigation"
     )
-    verified: bool = Field(
-        default=False, description="User confirmed the mitigation stabilized the situation"
+    verified: bool = Field(  # derived from a problem-bound re-check (#2100)
+        default=False, description="A problem-bound re-check showed the problem relieved"
     )
+    disposition: Optional[Literal["declared_stable", "proceed_unmitigated"]] = None
+    disposition_at_turn: Optional[int] = None
     completed_at_turn: Optional[int] = Field(
         default=None,
         description="Turn whose response carried the `mitigation_verified` that "

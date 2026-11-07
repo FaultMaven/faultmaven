@@ -116,7 +116,7 @@ from faultmaven.modules.report.domain.services.report_generation_service import 
     ReportGenerationService,
 )
 from tests.case_builders import investigating_case, with_open_offer
-from tests.unit.core.investigation.bound_rows import bound_row, ensure_subjects
+from tests.unit.core.investigation.bound_rows import bound_row, ensure_subjects, upload
 
 _FILE_ID = "file_0123456789ab"
 
@@ -1140,17 +1140,24 @@ class TestStagingAcrossTheHandshake:
         """The stage-gate side effect proposes 'close as stabilized' when a
         mitigation verifies on an rca_infeasible problem. Replayed, it must
         still arrive as an offer with its card, never executed by the "yes"
-        that confirmed the statement (#1871 review)."""
+        that confirmed the statement (#1871 review). The verdict is derived
+        (#2100): the hold turn's relief names the revision's cited row."""
         from faultmaven.core.investigation.schemas import SolutionToAdd
 
         engine, case = _engine(), _case()
         case.problem_verification.rca_infeasible = True
         case.problem_verification.rca_infeasible_rationale = "black-box vendor API"
+        relief = _row(EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE, "g1").model_copy(
+            update={
+                "source_file_id": upload(case, case.current_turn),
+                "rechecks": "new_index_0",
+            }
+        )
         await _apply(
             engine,
             case,
             _DSU(
-                evidence_to_add=[_row(EvidenceCategory.SYMPTOM_EVIDENCE, "s1")],
+                evidence_to_add=[_row(EvidenceCategory.SYMPTOM_EVIDENCE, "s1"), relief],
                 verification_updates=_revision_update("new_index_0"),
                 solutions_to_add=[
                     SolutionToAdd(
@@ -1181,6 +1188,7 @@ class TestStagingAcrossTheHandshake:
         assert keys == {updated.offer_record.open.proposal_id}
         # Its reason is copied out of the replay (#2537 keeps the turn).
         assert "close this case as stabilized" in result["agent_response"]
+        assert updated.progress.mitigation.verified is True
 
     async def test_a_decline_note_survives_the_live_turns_own_feedback(self):
         """Feedback written before the LLM call (the decline note) is merged

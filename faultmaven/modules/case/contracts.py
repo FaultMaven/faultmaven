@@ -608,6 +608,8 @@ from faultmaven.modules.case.domain.models.problem import (
     UrgencyLevel,
 )
 from faultmaven.modules.case.domain.models.progress import (
+    DECLARED_STABLE,
+    PROCEED_UNMITIGATED,
     CauseAssuranceGrade,
     CauseState,
     InvestigationProgress,
@@ -915,6 +917,8 @@ __all__ = [
     "mechanism_for_display",
     "normalize_stored_report_content",
     "MitigationRecord",
+    "DECLARED_STABLE",
+    "PROCEED_UNMITIGATED",
     "TemporalState",
     "TERMINAL_HYPOTHESIS_STATES",
     "NON_INVESTIGATIVE_OUTCOMES",

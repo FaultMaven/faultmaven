@@ -84,6 +84,7 @@ from faultmaven.modules.case.domain.models.solution import (
     SolutionType,
 )
 from tests.case_builders import investigating_case
+from tests.unit.core.investigation.bound_rows import mitigated
 
 _FILE_ID = "file_0123456789ab"
 
@@ -720,9 +721,11 @@ class TestTypeMatchedStageGates:
         # Accept-then-verify-later: the mitigation action left pending at the
         # accept step; the verify signal keys on the accepted record, not on
         # a pending action (the old any-type guard rejected this flow when no
-        # unrelated pending action happened to exist).
+        # unrelated pending action happened to exist). The verdict is derived
+        # from a problem-bound re-check after the attempt (#2100).
         case = _make_case()
         case.progress.mitigation = MitigationRecord(proposed_at_turn=2, accepted=True)
+        mitigated(case, attempt=3, relief=5)
         metadata = _meta()
         await _make_engine().responses._apply_investigation_updates(
             case, _milestone_updates(mitigation_verified=True), metadata

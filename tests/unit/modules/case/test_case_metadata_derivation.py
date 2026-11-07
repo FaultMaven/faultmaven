@@ -102,6 +102,7 @@ def _stored(**overrides):
         turns_without_progress=0,
         mitigation_accepted=False,
         mitigation_verified=False,
+        mitigation_disposed=False,
         solution_accepted=False,
         solution_verified=False,
         turn_numbers=[],
@@ -291,8 +292,18 @@ def test_a_duplicate_turn_moves_the_clock_it_reports():
 
 
 def _gate_combinations():
-    """Every combination the two ordering validators admit, plus no mitigation."""
-    for mitigation in (None, (False, False), (True, False), (True, True)):
+    """Every combination the ordering validators admit, plus no mitigation:
+    (accepted, verified, disposition) for the mitigation (#2100)."""
+    mitigations = (
+        None,
+        (False, False, None),
+        (True, False, None),
+        (True, True, None),
+        (True, False, "declared_stable"),
+        (True, False, "proceed_unmitigated"),
+        (True, True, "declared_stable"),
+    )
+    for mitigation in mitigations:
         for solution in ((False, False), (True, False), (True, True)):
             yield mitigation, solution
 
@@ -301,7 +312,11 @@ def _gate_combinations():
 def test_the_stage_rule_is_the_progress_rule(mitigation, solution):
     progress = InvestigationProgress(
         mitigation=(
-            MitigationRecord(accepted=mitigation[0], verified=mitigation[1])
+            MitigationRecord(
+                accepted=mitigation[0],
+                verified=mitigation[1],
+                disposition=mitigation[2],
+            )
             if mitigation
             else None
         ),
@@ -311,6 +326,7 @@ def test_the_stage_rule_is_the_progress_rule(mitigation, solution):
     gates = dict(
         mitigation_accepted=bool(mitigation and mitigation[0]),
         mitigation_verified=bool(mitigation and mitigation[1]),
+        mitigation_disposed=bool(mitigation and mitigation[2]),
         solution_accepted=solution[0],
         solution_verified=solution[1],
     )
@@ -327,14 +343,17 @@ def test_the_stage_rule_is_the_progress_rule(mitigation, solution):
 @pytest.mark.parametrize(
     "accepted_verified, solution, expected",
     [
-        ((False, False), (False, False), InvestigationStage.DIAGNOSIS),
-        ((True, False), (False, False), InvestigationStage.MITIGATION),
-        ((True, True), (False, False), InvestigationStage.DIAGNOSIS),
-        ((False, False), (True, False), InvestigationStage.TREATMENT),
-        ((False, False), (True, True), InvestigationStage.DIAGNOSIS),
+        ((False, False, False), (False, False), InvestigationStage.DIAGNOSIS),
+        ((True, False, False), (False, False), InvestigationStage.MITIGATION),
+        ((True, True, False), (False, False), InvestigationStage.DIAGNOSIS),
+        ((False, False, False), (True, False), InvestigationStage.TREATMENT),
+        ((False, False, False), (True, True), InvestigationStage.DIAGNOSIS),
         # An unverified mitigation outranks an unverified solution.
-        ((True, False), (True, False), InvestigationStage.MITIGATION),
-        ((True, True), (True, False), InvestigationStage.TREATMENT),
+        ((True, False, False), (True, False), InvestigationStage.MITIGATION),
+        ((True, True, False), (True, False), InvestigationStage.TREATMENT),
+        # A disposition leaves MITIGATION as the verdict does (#2100).
+        ((True, False, True), (False, False), InvestigationStage.DIAGNOSIS),
+        ((True, False, True), (True, False), InvestigationStage.TREATMENT),
     ],
 )
 def test_the_stage_each_gate_combination_derives(accepted_verified, solution, expected):
@@ -344,6 +363,7 @@ def test_the_stage_each_gate_combination_derives(accepted_verified, solution, ex
         investigation_stage(
             mitigation_accepted=accepted_verified[0],
             mitigation_verified=accepted_verified[1],
+            mitigation_disposed=accepted_verified[2],
             solution_accepted=solution[0],
             solution_verified=solution[1],
         )
@@ -403,6 +423,7 @@ def test_a_malformed_history_is_served_without_its_investigation_turn(caplog):
     [
         "mitigation_accepted",
         "mitigation_verified",
+        "mitigation_disposed",
         "solution_accepted",
         "solution_verified",
     ],

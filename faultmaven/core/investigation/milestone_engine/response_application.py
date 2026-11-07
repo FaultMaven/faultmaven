@@ -461,10 +461,12 @@ _STAGED_MILESTONE_FIELDS = ("root_cause_likelihood", "root_cause_method")
 #: register against the actions the replay creates — rather than rejected now
 #: as "not registered" against a proposal that is merely waiting.
 #: ``solution_accepted`` is not among them: the stage gate decides it on the
-#: hold turn and carries its decision by fix identity (#2105).
+#: hold turn and carries its decision by fix identity (#2105). The disposition
+#: is held by its value (#2100).
 _STAGED_GATE_SIGNALS = (
     "mitigation_accepted",
     "mitigation_verified",
+    "mitigation_disposition",
 )
 #: Every compliance signal, refused together on a problem found never present.
 _GATE_SIGNALS = ("solution_accepted", *_STAGED_GATE_SIGNALS)
@@ -536,6 +538,12 @@ class ResponseApplier:
                     f"SYSTEM: accepted_fix_reported_in {short_repr(repair.raw)} "
                     "was ignored: it is this_message or previous_message; the "
                     "fix is dated to this turn.",
+                )
+            elif repair.field == "mitigation_disposition":
+                _add_system_feedback(
+                    metadata,
+                    f"SYSTEM: mitigation_disposition {short_repr(repair.raw)} "
+                    "was ignored: it is declared_stable or proceed_unmitigated.",
                 )
 
         # POST-PROCESSING: Apply LLM failure mitigation (Pattern-based fallback)
@@ -1096,9 +1104,9 @@ class ResponseApplier:
                 held = [
                     name
                     for name in _STAGED_GATE_SIGNALS
-                    if getattr(milestones, name, None) is True
+                    if getattr(milestones, name, None) not in (None, False)
                 ]
-                claims.update({name: True for name in held})
+                claims.update({name: getattr(milestones, name) for name in held})
                 if held:
                     metadata["staged_gate_signals"] = held
             if claims:

@@ -102,6 +102,7 @@ class StateValidator:
         - solution_verified requires solution_proposed and solution_accepted
         - solution_accepted requires solution_proposed
         - mitigation_verified requires mitigation_accepted
+        - a mitigation disposition requires mitigation_accepted (#2100)
         - cause_state=IDENTIFIED should have root_cause_likelihood
         """
         issues: List[ValidationIssue] = []
@@ -153,6 +154,16 @@ class StateValidator:
                     severity=ValidationSeverity.ERROR,
                     field="progress.mitigation",
                     suggested_fix="Set mitigation_accepted=True or reset mitigation_verified=False",
+                )
+            )
+        if _stab is not None and _stab.disposition and not _stab.accepted:
+            issues.append(
+                ValidationIssue(
+                    code="MILESTONE_ORDER_005",
+                    message="mitigation disposition set but mitigation_accepted=False",
+                    severity=ValidationSeverity.ERROR,
+                    field="progress.mitigation",
+                    suggested_fix="Set mitigation_accepted=True or clear the disposition",
                 )
             )
 

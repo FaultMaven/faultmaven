@@ -46,8 +46,9 @@ def mitigation_instructions(given: GivenTools) -> str:
 
 **OBJECTIVE:**
 Apply a temporary fix to reduce immediate impact while the root-cause investigation
-continues. This stage is iterative — keep working until the user verifies the
-situation is stabilized, then return to DIAGNOSIS for root-cause analysis.
+continues. This stage is iterative — keep working until the problem is seen
+relieved or the user declares it stable, then return to DIAGNOSIS for root-cause
+analysis.
 
 **CONTEXT:**
 The user has accepted a mitigation approach. This is a controlled detour — the
@@ -73,34 +74,37 @@ goal is to stabilize the situation, NOT to find or fix the root cause.
 
 3. **Verify Effectiveness:**
    - Analyze the user's feedback on whether the fix helped
-   - If the post-fix data shows improvement or the user confirms stabilization:
+   - If post-mitigation data the user SUBMITTED (a file or pasted data) shows
+     the problem relieved:
      1. Analyze the submitted data from the structural index in <evidence_collected>.
         """
         + _specific_patterns(given)
         + """
-     2. Only when the user SUBMITTED post-mitigation data (a file or pasted data):
-        record a `symptom_absence_evidence` row in evidence_to_add — the
-        re-verification that the symptom is no longer present after the mitigation:
+     2. Record a `symptom_absence_evidence` row in evidence_to_add — the
+        re-check that the problem is no longer present after the mitigation:
         summary: "Symptom no longer present after the mitigation: [key indicators]"
         category: symptom_absence_evidence
         source_type: what the submitted data is (logs | metrics | text …)
         source_file_id: the file it came from
+        rechecks: one of the rows that showed the problem, as after a fix
         Stand-alone audit row — do NOT link it to a hypothesis or a causal
         node. Never from the user's words ("It's stable" is their account, not
-        evidence). Skip this step
-        if a `symptom_absence_evidence` row was already recorded in a prior turn.
-     3. Set `mitigation_verified=True` in your state updates. The return to DIAGNOSIS
-        happens only when this is set — do not narrate the transition without setting it.
-   - ACCEPT SUBJECTIVE CONFIRMATION for `mitigation_verified`: "It's stabilized"
-     or "errors dropped" is the user's call to make, and it is sufficient for
-     the milestone — specific metric values are not required. It records no
-     evidence row (step 2 needs submitted data).
+        evidence). If an earlier such row named nothing in rechecks, record
+        a new one naming it.
+     3. Set `mitigation_verified=True`. FaultMaven records it only when a
+        re-check bound to the problem shows it relieved at or after the
+        mitigation; that returns the case to DIAGNOSIS — do not narrate the
+        transition without it.
+   - The user's own account ("It's stabilized", "errors dropped") is their call
+     to make: set `mitigation_disposition: declared_stable`, justified, never
+     `mitigation_verified`. It records no evidence row and also returns the case
+     to DIAGNOSIS.
    - If NOT working → adjust approach: suggest a modified or alternative temporary fix.
-     Stay in this stage and keep working until the user confirms the situation is
-     stabilized. Do not give up after one attempt.
+     Stay in this stage and keep working until the problem is seen relieved or
+     the user declares it stable. Do not give up after one attempt.
 
 4. **Transition Back to Diagnosis:**
-   After the user verifies the fix is effective:
+   After the mitigation is verified or the user declares it stable:
    - "The temporary fix is in place and things are stabilizing. Now let's find the
      root cause to prevent this from happening again."
    - The investigation returns to DIAGNOSIS stage for root-cause analysis
@@ -113,11 +117,12 @@ do not continue proposing further fixes. Acknowledge the situation directly:
 direct intervention beyond what I can guide remotely."
 
 Offer the user exactly two DECIDE suggestions:
-1. "Accept current state and proceed to root cause" — set `mitigation_verified=True`
-   to return to DIAGNOSIS. Do NOT record a `symptom_absence_evidence` row here: the
-   symptom is NOT confirmed gone (mitigation was only partial or none), so there is
-   no absence to record. The situation isn't fully stable, but root-cause work can
-   begin; set the gate even though mitigation is only partial.
+1. "Accept current state and proceed to root cause" — when the user picks it, set
+   `mitigation_disposition: proceed_unmitigated`, justified, to return to
+   DIAGNOSIS; never `mitigation_verified`. Do NOT record a
+   `symptom_absence_evidence` row here: the symptom is NOT confirmed gone
+   (mitigation was only partial or none), so there is no absence to record. The
+   situation isn't stable, but root-cause work can begin.
 2. "Escalate to a human expert" — acknowledge the investigation has hit its limit and
    a specialist with direct system access is needed.
 

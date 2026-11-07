@@ -91,7 +91,7 @@ The remaining budget renders the historical items through the existing tiers,
 ranked by `_score_evidence_for_tier_a` (hypothesis linkage +3, diagnostic data
 type +2/+1, structural richness +1, time-window coverage +4, pre-mitigation
 up-weight +5, recency 0–1). The +5 pre-mitigation term fires only after a
-mitigation verifies (`progress.mitigation.completed_at_turn` set and the
+mitigation verifies or is declared stable (`progress.mitigation.completed_at_turn` set and the
 current turn past it) and applies to evidence collected at or before that
 boundary — post-mitigation telemetry typically shows a stabilized system that
 no longer exhibits the root cause's signature, so the RCA-relevant window is

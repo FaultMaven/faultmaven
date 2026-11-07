@@ -436,8 +436,9 @@ class MilestoneJustifications(NullTolerantModel):
 
     The map was never genuinely free-form. Its key domain is exactly the
     boolean fields of :class:`MilestoneUpdates` — the milestones the engine can
-    observe being completed — so declaring them loses nothing and gains the
-    model an explicit list of what it is allowed to justify.
+    observe being completed — plus ``mitigation_disposition`` (#2100), so
+    declaring them loses nothing and gains the model an explicit list of what
+    it is allowed to justify.
 
     ``test_schema_strict_mode.py`` pins this field set against
     ``MilestoneUpdates``; adding a gate milestone without adding its
@@ -447,6 +448,7 @@ class MilestoneJustifications(NullTolerantModel):
     symptom_verified: Annotated[Optional[str], _JustificationText] = None
     mitigation_accepted: Annotated[Optional[str], _JustificationText] = None
     mitigation_verified: Annotated[Optional[str], _JustificationText] = None
+    mitigation_disposition: Annotated[Optional[str], _JustificationText] = None
     solution_accepted: Annotated[Optional[str], _JustificationText] = None
 
     def as_dict(self) -> Dict[str, str]:
@@ -617,6 +619,19 @@ class MilestoneUpdates(NullTolerantModel):
     # ProposedAction — the user's action is the trigger, the LLM recognizes it.
     mitigation_accepted: Optional[bool] = None
     mitigation_verified: Optional[bool] = None
+    # What a mitigation carries that is not an observation (#2100): the user's
+    # own account that it holds, or the stall's choice to go on without one.
+    # An enum, not a boolean; justified like a milestone.
+    mitigation_disposition: Optional[
+        Literal["declared_stable", "proceed_unmitigated"]
+    ] = Field(
+        None,
+        description=(
+            "declared_stable when the user says the mitigation holds; "
+            "proceed_unmitigated when the user chooses to go on to the root "
+            "cause without one. Never mitigation_verified."
+        ),
+    )
     solution_accepted: Optional[bool] = None
     # Which fix the user carried out: each execution registers once, for the
     # fix it names (#2105). IdRef: the stage gate resolves ``new_index_N``.
@@ -666,6 +681,24 @@ class MilestoneUpdates(NullTolerantModel):
                     "is not this_message or previous_message; field dropped, "
                     "the fix is dated to this turn"
                 ),
+            ),
+        )
+        return None
+
+    # An off-enum value costs this field alone (#2100), reported as above.
+    @field_validator("mitigation_disposition", mode="before")
+    @classmethod
+    def _drop_unknown_disposition(cls, v: Any, info: ValidationInfo) -> Any:
+        if v is None or v in ("declared_stable", "proceed_unmitigated"):
+            return v
+        report(
+            info.context,
+            ConfidenceRepair(
+                schema=cls.__name__,
+                field=info.field_name or "?",
+                action=ConfidenceAction.DROPPED,
+                raw=v,
+                detail="is not declared_stable or proceed_unmitigated; field dropped",
             ),
         )
         return None
