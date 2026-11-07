@@ -237,7 +237,9 @@ async def test_an_abandoned_docx_worker_stops_after_its_current_paragraph(
 
     try:
         with caplog.at_level(logging.WARNING):
-            result = await DocumentPreprocessor().preprocess(path, _DOCX)
+            result = await DocumentPreprocessor().preprocess(
+                path, _DOCX, conversion_id="conv_test"
+            )
             gate.set()
             assert finished.wait(5), "the worker never finished"
     finally:
