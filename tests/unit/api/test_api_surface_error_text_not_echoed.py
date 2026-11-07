@@ -190,12 +190,16 @@ _ALLOWED: dict[tuple[str, str, str], str] = {
         "faultmaven/modules/knowledge/api/conversion_routes.py",
         "convert_document",
         "JSONResponse(status_code=status, content={'detail': str(e), "
-        "'error_code': error_code})",
+        "'error_code': error_code}, headers={'Retry-After': "
+        "str(CONVERSION_BUSY_RETRY_AFTER_SECONDS)} if error_code == "
+        "ConversionErrorCode.CONVERSION_BUSY else None)",
     ): (
         "Typed domain exception. Every `ConversionRejectedError` construction "
         "is a hand-written caller-facing sentence; the one that interpolated a "
         "parse exception was made static in #1400. The broad `except "
-        "Exception` below it is separately sanitised."
+        "Exception` below it is separately sanitised. #2153's refusals are "
+        "hand-written too (the busy, time-limit and too-complex sentences), and "
+        "its header is a constant."
     ),
 }
 

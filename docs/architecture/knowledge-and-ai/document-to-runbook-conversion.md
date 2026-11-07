@@ -208,10 +208,13 @@ Upload (file + scope + metadata)
   │     PDF/DOCX/HTML → plain text with structure preserved
   │     Markdown/TXT → pass through
   │     Reuse existing extractors from faultmaven/modules/preprocessing/
-  │     Stages 0-5 run off the event loop (two workers, 30 s bound). A PDF
-  │     page pypdf's limits refuse is skipped and named in a warning. Past
-  │     the bound, a document-level limit, or no other page with text:
-  │     REJECT with HTTP 422 / DOCUMENT_TOO_COMPLEX (#2153)
+  │     Stages 0-5 run off the event loop on two workers (#2153). No worker
+  │     free within 120 s: REJECT with HTTP 503 / CONVERSION_BUSY +
+  │     Retry-After. A PDF page pypdf's budgets refuse is skipped and named
+  │     in a warning. A run past 120 s (the worker stops at the next page), a
+  │     document-level budget, or refused pages leaving too little to
+  │     convert: REJECT with HTTP 422 / DOCUMENT_TOO_COMPLEX. Corruption
+  │     pypdf reports as a limit stays FILE_CORRUPT
   │
   ├── 1b. Already-a-Runbook Gate (deterministic, no LLM)
   │     Detect: runbook frontmatter (≥4 of id/domain/service/symptom_class/
@@ -948,8 +951,9 @@ keys its user-facing copy on that code, not on the prose. **This table is
 illustrative, not exhaustive** — the authoritative mapping is the `status_map`
 in `modules/knowledge/api/conversion_routes.py`, which also returns
 `FILE_EMPTY`, `FILE_CORRUPT`, `ENCODING_ERROR`, `DOCUMENT_TOO_SHORT`,
-`DOCUMENT_TOO_COMPLEX`, `NO_TECHNICAL_CONTENT` and `LLM_PARSE_ERROR` as 422.
-Read the map rather than extending this list, or the two drift apart again.
+`DOCUMENT_TOO_COMPLEX`, `NO_TECHNICAL_CONTENT` and `LLM_PARSE_ERROR` as 422,
+and `CONVERSION_BUSY` as 503 with `Retry-After`. Read the map rather than
+extending this list, or the two drift apart again.
 
 ---
 

@@ -69,6 +69,9 @@ from faultmaven.modules.knowledge.domain.services.conversion_service.errors impo
 from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
     ConversionService,
 )
+from faultmaven.modules.knowledge.domain.services.document_preprocessor import (
+    CONVERSION_BUSY_RETRY_AFTER_SECONDS,
+)
 from faultmaven.modules.knowledge.exceptions import KbReceiptExistsError
 from faultmaven.modules.knowledge.taxonomy import (
     KnowledgeScope,
@@ -335,6 +338,7 @@ async def convert_document(
             ConversionErrorCode.DOCUMENT_TOO_LONG: 413,
             ConversionErrorCode.UNSUPPORTED_FORMAT: 415,
             ConversionErrorCode.LLM_UNAVAILABLE: 503,
+            ConversionErrorCode.CONVERSION_BUSY: 503,
             ConversionErrorCode.FILE_EMPTY: 422,
             ConversionErrorCode.FILE_CORRUPT: 422,
             ConversionErrorCode.ENCODING_ERROR: 422,
@@ -360,6 +364,11 @@ async def convert_document(
         return JSONResponse(
             status_code=status,
             content={"detail": str(e), "error_code": error_code},
+            headers=(
+                {"Retry-After": str(CONVERSION_BUSY_RETRY_AFTER_SECONDS)}
+                if error_code == ConversionErrorCode.CONVERSION_BUSY
+                else None
+            ),
         )
 
     except RawModelContentRefused:

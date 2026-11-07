@@ -2,9 +2,9 @@
   "contractVersion": "14.16.0",
   "entries": [
     {
-      "body": "* A new `error_code`, `DOCUMENT_TOO_COMPLEX`, answered 422 with a `detail`\n  that says what to do (export the document to text, or split it): pypdf's\n  resource limits refused the whole PDF, or refused pages and no other page\n  had text, or reading the document outran its 30 s time limit. A limit\n  refusal was `FILE_CORRUPT` until now.\n* A PDF page pypdf refuses is skipped, not the document: the conversion goes\n  on with the other pages, and the response's `warnings` names the skipped\n  page numbers.\n\nNothing structural moves: conversion error codes are not in the OpenAPI schema\nor `contract-notes.json`. MINOR because every client survives it: a client\nthat does not know the code shows its generic error with the `detail`.",
+      "body": "* `DOCUMENT_TOO_COMPLEX` (422), whose `detail` says to export the document\n  to text or split it: pypdf's budgets refused the whole PDF, or refused pages\n  and what was left is too little to convert, or reading it outran 120 s. It\n  was `FILE_CORRUPT`, which a broken PDF still answers.\n* `CONVERSION_BUSY` (503, with `Retry-After` in seconds): no extraction worker\n  was free within 120 s. Nothing of the request ran; retry after the wait.\n* A refused PDF page is skipped, not the document, and the response's\n  `warnings` names the skipped page numbers: the first ten, then a count.\n\nNothing structural moves: conversion error codes and their headers are not in\nthe OpenAPI schema or `contract-notes.json`. MINOR because every client\nsurvives it: one that does not know a code shows its generic error with the\n`detail`.",
       "level": "MINOR",
-      "title": "`POST /knowledge/convert` refuses a document too complex to read with 422 `DOCUMENT_TOO_COMPLEX`, and skips a PDF page pypdf refuses with a warning (#2153).",
+      "title": "`POST /knowledge/convert` refuses a document too complex to read with 422 `DOCUMENT_TOO_COMPLEX`, skips a PDF page pypdf refuses with a warning, and answers 503 `CONVERSION_BUSY` when no worker is free (#2153).",
       "version": "14.16.0"
     },
     {

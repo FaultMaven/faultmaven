@@ -6,7 +6,9 @@ Does not interpret or transform content — that is the LLM's job.
 
 import logging
 import re
+import threading
 from dataclasses import dataclass, replace
+from functools import partial
 from io import BytesIO
 from pathlib import Path
 from typing import Optional
@@ -33,9 +35,14 @@ class DocumentRefusal(ValueError):
 
 
 class DocumentTooComplex(DocumentRefusal):
-    """pypdf's limits refused the whole document, or refused pages and no other
+    """pypdf's budgets refused the whole document, or refused pages and no other
     page had text. Mapped by type to ``DOCUMENT_TOO_COMPLEX``, never
     ``FILE_CORRUPT`` (#2153)."""
+
+
+class ExtractionAbandoned(Exception):
+    """Raised between PDF pages once the caller has stopped waiting (#2153).
+    Nobody reads it: it only ends the worker's run after its current page."""
 
 
 _TOO_COMPLEX = (
@@ -44,12 +51,37 @@ _TOO_COMPLEX = (
     "documents, and convert that instead."
 )
 
+#: pypdf raises ``LimitReachedError`` for a corrupt file as well as for its
+#: budgets, and has no subclass to tell them apart, so corruption is matched by
+#: its message. Of the 57 raise sites in pypdf 6.21.4 these are corruption: a
+#: cycle or a self-reference ("Detected ...": /Pages, /Parent, /Next, a tree,
+#: an outline, an article), an invalid CID width range, and the two recovery
+#: limits, reached only once the /Root or a zlib stream has already failed to
+#: parse. Every other site is a budget: tokens, depth, entries, sizes and
+#: decompressed output. Corruption stays FILE_CORRUPT, for the whole document.
+_CORRUPTION_MESSAGES = (
+    "Detected ",
+    "Invalid ",
+    "Maximum Root object recovery",
+    "Recovery limit reached",
+)
+
+
+def _is_budget(file_path: Path, error: LimitReachedError) -> bool:
+    """Whether pypdf refused for one of its budgets, not for corruption."""
+    if str(error).startswith(_CORRUPTION_MESSAGES):
+        logger.warning(
+            "PDF %s: pypdf limit error read as corruption: %s", file_path.name, error
+        )
+        return False
+    return True
+
 
 @dataclass(frozen=True)
 class ParsedDocument:
     """What extraction read. ``page_count`` is set for a PDF only, and
-    ``skipped_pages`` holds the 1-based numbers of the pages pypdf refused for
-    its limits: each costs its own text, not the document's."""
+    ``skipped_pages`` holds the 1-based numbers of the pages pypdf's budgets
+    refused: each costs its own text, not the document's."""
 
     text: str
     page_count: Optional[int] = None
@@ -80,25 +112,31 @@ class DocumentParser:
     }
 
     def extract_document_text(
-        self, file_path: Path, content_type: Optional[str] = None
+        self,
+        file_path: Path,
+        content_type: Optional[str] = None,
+        abandoned: Optional[threading.Event] = None,
     ) -> ParsedDocument:
         """Extract plain text from a document file.
 
         Args:
             file_path: Path to the document file.
             content_type: MIME type hint (used if extension is ambiguous).
+            abandoned: Set once the caller stops waiting; a PDF checks it
+                between pages.
 
         Returns:
             The extracted text, with a PDF's page count and refused pages.
 
         Raises:
             DocumentTooComplex: pypdf refused the whole document for its limits.
+            ExtractionAbandoned: ``abandoned`` was set between two pages.
             ValueError: If the file format is unsupported or parsing fails.
         """
         fmt = self._detect_format(file_path, content_type)
 
         extractors = {
-            "pdf": self._extract_pdf,
+            "pdf": partial(self._extract_pdf, abandoned=abandoned),
             "docx": self._extract_docx,
             "txt": self._extract_txt,
             "markdown": self._extract_markdown,
@@ -111,7 +149,7 @@ class DocumentParser:
 
         try:
             extracted = extractor(file_path)
-        except DocumentTooComplex:
+        except (DocumentTooComplex, ExtractionAbandoned):
             raise
         except DocumentRefusal as e:
             raise ValueError(f"Failed to parse {file_path.name}: {e}") from e
@@ -164,13 +202,16 @@ class DocumentParser:
             f"Supported: PDF, DOCX, TXT, Markdown, HTML"
         )
 
-    def _extract_pdf(self, file_path: Path) -> ParsedDocument:
+    def _extract_pdf(
+        self, file_path: Path, abandoned: Optional[threading.Event] = None
+    ) -> ParsedDocument:
         """Extract text from PDF using pypdf, page by page.
 
-        A page pypdf's limits refuse costs that page, and its number is kept. A
-        limit opening the document or its page tree costs the document, as do
+        A page pypdf's budgets refuse costs that page, and its number is kept. A
+        budget opening the document or its page tree costs the document, as do
         refused pages with no other page's text: checked before "no extractable
-        text", so a refusal is never read as an image-only PDF.
+        text", so a refusal is never read as an image-only PDF. Corruption that
+        pypdf reports as a limit stays the whole document's (FILE_CORRUPT).
         """
         try:
             from pypdf import PdfReader
@@ -181,17 +222,40 @@ class DocumentParser:
             reader = PdfReader(str(file_path))
             page_count = len(reader.pages)
         except LimitReachedError as e:
+            if not _is_budget(file_path, e):
+                raise
+            logger.warning("PDF %s: pypdf refused the document: %s", file_path.name, e)
             raise DocumentTooComplex(_TOO_COMPLEX) from e
-        pages, skipped = [], []
+        pages, skipped, bounds = [], [], set()
         for index in range(page_count):
+            if abandoned is not None and abandoned.is_set():
+                logger.warning(
+                    "PDF %s: its caller stopped waiting; stopped before page %d of %d",
+                    file_path.name,
+                    index + 1,
+                    page_count,
+                )
+                raise ExtractionAbandoned(file_path.name)
             try:
                 text = reader.pages[index].extract_text()
-            except LimitReachedError:
+            except LimitReachedError as e:
+                if not _is_budget(file_path, e):
+                    raise
                 skipped.append(index + 1)
+                bounds.add(str(e))
                 continue
-            if text:
+            if text and text.strip():
                 pages.append(text)
 
+        if skipped:
+            logger.warning(
+                "PDF %s: pypdf refused %d of %d pages, among them %s: %s",
+                file_path.name,
+                len(skipped),
+                page_count,
+                skipped[:10],
+                "; ".join(sorted(bounds)[:3]),
+            )
         if not pages and skipped:
             raise DocumentTooComplex(_TOO_COMPLEX)
         if not pages:

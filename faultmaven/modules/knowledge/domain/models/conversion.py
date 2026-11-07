@@ -93,6 +93,9 @@ class ConversionErrorCode(str, Enum):
     MISSING_ROOT_CAUSE = "MISSING_ROOT_CAUSE"
     CASE_RUNBOOK_EXISTS = "CASE_RUNBOOK_EXISTS"
 
+    # No extraction worker was free within the bound; retry (#2153)
+    CONVERSION_BUSY = "CONVERSION_BUSY"
+
     # LLM errors
     LLM_UNAVAILABLE = "LLM_UNAVAILABLE"
     LLM_PARSE_ERROR = "LLM_PARSE_ERROR"
