@@ -26,9 +26,10 @@ class EvidenceCategory(str, Enum):
     slice. Rejection is expressed as the absence of an evidence row;
     hypothesis-level refutation lives on ``hypothesis_evidence.stance``.
 
-    The verification gates (``mitigation_verified`` / ``solution_verified``)
-    are NOT driven by an evidence category — they are set by the LLM via the
-    User-Agent Handshake / compliance detection. The absence rows are the
+    ``solution_verified`` is NOT driven by an evidence category — it is set by
+    the User-Agent Handshake. ``mitigation_verified`` is derived from a
+    problem-bound ``symptom_absence_evidence`` re-check at or after the
+    mitigation (#2100). The absence rows are the
     durable audit trail that the readiness checks consult
     (``assess_resolution_readiness`` via ``_resolution_confirmed``) to decide
     RESOLVED vs CLOSED: RESOLVED needs both a ``causal_absence_evidence`` row
@@ -90,7 +91,8 @@ class EvidenceCategory(str, Enum):
     - Error rate trending to zero in monitoring after rollback
     - The dashboard's health check, re-run, returning 200
 
-    Advances Milestones: mitigation_verified (primary), contributes to
+    Advances Milestones: mitigation_verified (primary: a problem-bound
+    re-check after the mitigation derives it, #2100), contributes to
     solution_verified.
     """
 

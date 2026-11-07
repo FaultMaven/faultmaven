@@ -96,7 +96,7 @@ _SPENT_HYP_STATES = (
 # Stage-Gate Milestones (trigger stage transitions)
 # =============================================================================
 #
-# These four milestones drive stage transitions (per
+# These milestones drive stage transitions (per
 # docs/architecture/investigation-engine/evidence-driven-investigation-framework.md §3).
 # When any of them fires in a turn, the stage changes. Because they are also
 # included in TurnProgress.milestones_completed, the investigative-turn counter
@@ -107,6 +107,8 @@ STAGE_GATE_MILESTONES: frozenset[str] = frozenset(
     {
         "mitigation_accepted",
         "mitigation_verified",
+        # A disposition leaves MITIGATION too (#2100).
+        "mitigation_disposed",
         "solution_accepted",
         "solution_verified",
     }
@@ -135,8 +137,14 @@ MILESTONE_DEPENDENCIES: Dict[str, Dict[str, str]] = {
     },
     "mitigation_verified": {
         "stage": "MITIGATION",
-        "description": "Verify that the temporary fix stabilized the situation",
-        "needs": "User confirmation that temporary fix stabilized the situation",
+        "description": (
+            "The problem observed relieved after the temporary fix, or the user "
+            "declares it stable"
+        ),
+        "needs": (
+            "A post-mitigation re-check bound to the problem (rechecks), or the "
+            "user's declaration (mitigation_disposition)"
+        ),
     },
     "solution_verified": {
         "stage": "TREATMENT",
@@ -324,7 +332,8 @@ class ProgressMonitor:
         ``milestones_completed``. This includes both progress milestones (e.g.,
         ``symptom_verified``) AND stage-gate milestones
         (``STAGE_GATE_MILESTONES``: ``mitigation_accepted``,
-        ``mitigation_verified``, ``solution_accepted``, ``solution_verified``).
+        ``mitigation_verified``, ``mitigation_disposed``, ``solution_accepted``,
+        ``solution_verified``).
         Since stage transitions are always driven by a stage-gate milestone in
         the same turn, a stage transition always resets the counter. This
         matches progress-transparency.md §Transitions ("A stage transition
@@ -699,8 +708,9 @@ class ProgressMonitor:
         if action_type == "mitigation":
             # Post-redesign the mitigation verify gate lives on the
             # mitigation record, not a progress boolean.
+            # A disposition settles it as well (#2100).
             _stab = case.progress.mitigation
-            verified = bool(_stab is not None and _stab.verified)
+            verified = bool(_stab is not None and (_stab.verified or _stab.disposition))
         else:
             return False
 

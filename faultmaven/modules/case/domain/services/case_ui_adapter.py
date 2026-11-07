@@ -120,7 +120,10 @@ _MILESTONE_DESCRIPTIONS = {
     "symptom_verified": "Verify the reported symptoms with evidence",
     "root_cause_identified": "Validate a hypothesis with supporting causal evidence",
     "solution_proposed": "Propose a concrete fix based on identified root cause",
-    "mitigation_verified": "Verify that the temporary fix stabilized the situation",
+    "mitigation_verified": (
+        "The problem observed relieved after the temporary fix, or the user "
+        "declares it stable"
+    ),
     "solution_verified": "Verify that the permanent fix resolved the issue",
 }
 

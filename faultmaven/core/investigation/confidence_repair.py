@@ -42,14 +42,17 @@ refutation. Clamping overstates (a falsely certain hypothesis steers the
 investigation); a sentinel understates, and on a refutation understating is the
 unsafe direction. Both were built and rejected on #1498.
 
-**The fix report** (``MilestoneUpdates.accepted_fix_reported_in``, #2427) is not
-a confidence: it names the user message that reported carrying the fix out,
-``this_message`` or ``previous_message``. An off-enum value is DROPPED, the
-field alone, so the acceptance and the fix it names stand. There the field's
-absence is the inert reading (the fix is dated to the registration turn, and
-nothing is inferred), so dropping it writes no claim, unlike a confidence's
-default. Its note says so in its own words (``ConfidenceRepair.detail``), and
-the apply step also tells the model the value was ignored.
+**The two enums** are not confidences. The fix report
+(``MilestoneUpdates.accepted_fix_reported_in``, #2427) names the user message
+that reported carrying the fix out, ``this_message`` or ``previous_message``;
+the mitigation's disposition (``MilestoneUpdates.mitigation_disposition``,
+#2100) is ``declared_stable`` or ``proceed_unmitigated``. An off-enum value is
+DROPPED, the field alone, so the rest of the milestones stand. There the
+field's absence is the inert reading (the fix is dated to the registration
+turn; no disposition is recorded), so dropping it writes no claim, unlike a
+confidence's default. Its note says so in its own words
+(``ConfidenceRepair.detail``), and the apply step also tells the model the
+value was ignored.
 
 Every action is observable twice: a per-field Prometheus counter
 (``faultmaven_schema_field_repairs_total``) and a note on the turn's
@@ -92,7 +95,8 @@ LINK_SET_ASIDE_ATTR = "_stance_confidence_set_aside"
 
 class ConfidenceAction(str, Enum):
     """What happened to one value the engine acted on: an out-of-range
-    confidence, or an off-enum fix report (only ever DROPPED, #2427)."""
+    confidence, or an off-enum fix report or disposition (only ever DROPPED,
+    #2427, #2100)."""
 
     RESCALED = "rescaled"  # (1, 100] read as a percentage
     COERCED = "coerced"  # bool -> 1.0 / 0.0
@@ -120,7 +124,8 @@ MEANING_PRESERVING_ACTIONS = frozenset(
 @dataclass(frozen=True)
 class ConfidenceRepair:
     """One value the engine had to act on: an out-of-range confidence, or an
-    off-enum ``MilestoneUpdates.accepted_fix_reported_in``, dropped (#2427)."""
+    off-enum ``MilestoneUpdates.accepted_fix_reported_in`` (#2427) or
+    ``MilestoneUpdates.mitigation_disposition`` (#2100), dropped."""
 
     schema: str  # the model class that owns the field, e.g. "HypothesisToAdd"
     field: str  # e.g. "likelihood"
@@ -128,9 +133,9 @@ class ConfidenceRepair:
     raw: Any
     value: Optional[float] = None
     where: Optional[str] = None  # where the value sat, when it is known
-    # What the note says after the value, for the one field that is not a
-    # confidence (``MilestoneUpdates.accepted_fix_reported_in``, #2427): the
-    # value is dropped and the fix is dated to the registration turn.
+    # What the note says after the value, for the two fields that are not a
+    # confidence (``MilestoneUpdates.accepted_fix_reported_in``, #2427, and
+    # ``MilestoneUpdates.mitigation_disposition``, #2100): the value is dropped.
     detail: Optional[str] = None
 
     def note(self) -> str:

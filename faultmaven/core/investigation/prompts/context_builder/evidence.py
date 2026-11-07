@@ -210,8 +210,9 @@ def _score_evidence_for_tier_a(
     if time_window is not None and _coverage_overlaps_window(ev, time_window):
         score += 4
 
-    # Pre-mitigation evidence up-weight. After a mitigation verifies
-    # (``progress.mitigation.completed_at_turn`` is set), evidence
+    # Pre-mitigation evidence up-weight. After a mitigation verifies or is
+    # declared stable (``progress.mitigation.completed_at_turn`` is set; a
+    # proceed_unmitigated disposition does not set it, #2100), evidence
     # collected before the mitigation boundary is the RCA-relevant window
     # because telemetry collected post-mitigation typically shows a
     # stabilized system that no longer exhibits the root cause's signature.

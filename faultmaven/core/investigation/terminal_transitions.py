@@ -45,6 +45,8 @@ from faultmaven.core.investigation.cause_assurance import (
     has_resolution_confirmation,
     has_root_cause_record,
     latest_fix_window,
+    mitigation_holds,
+    mitigation_relief,
     off_cause_attempt,
     pending_symptom_check,
     remediations_at,
@@ -70,6 +72,7 @@ from faultmaven.core.investigation.verification_status import (
 )
 from faultmaven.infrastructure.knowledge.runbook_kb import RESULTS_UNREADABLE_CODE
 from faultmaven.modules.case.contracts import (
+    DECLARED_STABLE,
     AnswerKind,
     AnswerVia,
     Case,
@@ -498,9 +501,19 @@ def _rca_declared_infeasible(case: "Case") -> bool:
 
 
 def _mitigation_verified(case: "Case") -> bool:
-    """Whether a mitigation is on record as verified (the symptom is relieved)."""
+    """Whether a mitigation is on record as verified and still holding: no
+    bound persistence after its latest relief (``mitigation_holds``, #2100).
+    A stored verdict with no bound rows reads ``(None, None)`` and holds."""
     mitigation = getattr(case.progress, "mitigation", None) if case.progress else None
-    return bool(mitigation is not None and getattr(mitigation, "verified", False))
+    if mitigation is None or not getattr(mitigation, "verified", False):
+        return False
+    return mitigation_holds(*mitigation_relief(case))
+
+
+def _mitigation_declared_stable(case: "Case") -> bool:
+    """Whether the user declared the mitigation stable (#2100, D3.3)."""
+    mitigation = getattr(case.progress, "mitigation", None) if case.progress else None
+    return getattr(mitigation, "disposition", None) == DECLARED_STABLE
 
 
 def _fix_documented_not_applied(case: "Case") -> bool:
@@ -600,11 +613,14 @@ def derive_closure_reason(case: "Case") -> ClosureReason:
     - ``closed_rca_infeasible`` — the cause is structurally unreachable (an
       uncontrollable external dependency, an EOL system), declared via
       ``rca_infeasible`` WITH a rationale. Ranked above ``mitigation_sufficient``
-      because the engine's only path to it fires on ``mitigation_verified``, so
-      both hold on essentially every such close; this label already implies the
-      verified mitigation and additionally explains why RCA stopped, so letting
-      the other win would shadow the more informative fact every time.
-    - ``mitigation_sufficient`` — a verified mitigation on record: the symptom is
+      because the engine's only path to it fires on a mitigation verified or
+      declared stable, so both hold on essentially every such close; this label
+      already implies the relieved symptom and additionally explains why RCA
+      stopped, so letting the other win would shadow the more informative fact
+      every time.
+    - ``mitigation_sufficient`` — a mitigation verified by a bound re-check and
+      still holding, or declared stable by the user (#2100); a
+      ``proceed_unmitigated`` falls through. The symptom is
       relieved and RCA was deferred BY CHOICE, the cause still reachable if
       anyone returns to it. The one closure here that is not a failure of any
       kind, which is why it is not folded into a generic bucket.
@@ -654,7 +670,7 @@ def derive_closure_reason(case: "Case") -> ClosureReason:
     if _rca_declared_infeasible(case):
         return ClosureReason.CLOSED_RCA_INFEASIBLE
 
-    if _mitigation_verified(case):
+    if _mitigation_verified(case) or _mitigation_declared_stable(case):
         return ClosureReason.MITIGATION_SUFFICIENT
 
     if _restatement_held_close(case):

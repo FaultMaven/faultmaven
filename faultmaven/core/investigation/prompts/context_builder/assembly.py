@@ -697,6 +697,9 @@ def build_investigation_context(
             "solution_verified": p.solution_verified,
         }
         active_gates = [k for k, v in stage_gates.items() if v]
+        if _stab is not None and _stab.disposition:
+            # What the mitigation carries that is not an observation (#2100).
+            active_gates.append(f"mitigation_disposition: {_stab.disposition}")
 
         # Progress indicators (LLM context)
         indicators = {

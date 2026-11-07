@@ -525,13 +525,14 @@ def test_milestone_justifications_covers_every_settable_milestone():
     ``MilestoneUpdates`` without a matching justification field would be
     impossible to justify — and the reasoning gate strips exactly the milestones
     it finds unjustified, so it would be silently unsettable in production while
-    every test still passed.
+    every test still passed. The disposition (#2100) is a string, justified
+    like a milestone, so it is the one non-boolean in the set.
     """
     settable = {
         name
         for name, field in MilestoneUpdates.model_fields.items()
         if field.annotation is not None and bool is _bool_of(field.annotation)
-    }
+    } | {"mitigation_disposition"}
     declared = set(MilestoneJustifications.model_fields)
 
     assert settable == declared, (

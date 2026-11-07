@@ -63,7 +63,8 @@ class InvestigationStage(str, Enum):
     - Communicate that this is temporary
 
     Transitions:
-    - User confirms mitigation worked → back to DIAGNOSIS (mitigation_verified)
+    - A bound re-check shows the mitigation worked (mitigation_verified), or the
+      mitigation carries a disposition (#2100) → back to DIAGNOSIS
     - For root cause analysis and permanent fix
     """
 

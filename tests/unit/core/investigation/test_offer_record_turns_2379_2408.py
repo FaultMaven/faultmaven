@@ -45,7 +45,7 @@ from faultmaven.modules.case.domain.models.evidence import (
     EvidenceCategory,
     EvidenceSourceType,
 )
-from tests.unit.core.investigation.bound_rows import ensure_subjects
+from tests.unit.core.investigation.bound_rows import ensure_subjects, mitigated
 from tests.unit.core.investigation.test_offer_record_declines_bind_2379 import (
     _DSU,
     _FILE_ID,
@@ -256,7 +256,7 @@ class TestANeedsInfoProposalIsARequest:
 
         case.current_turn += 1
         engine.generator.generate_structured_output = AsyncMock(
-            return_value=_mitigation_verified()
+            return_value=_mitigation_verified(case)
         )
         result = await engine.process_turn(
             case=case, user_message="the failover held", redaction_ctx=None
@@ -277,10 +277,12 @@ def _rca_case():
     case.problem_verification.rca_infeasible = True
     case.problem_verification.rca_infeasible_rationale = "third-party API outage"
     case.progress.mitigation = MitigationRecord(proposed_at_turn=0, accepted=True)
+    mitigated(case, attempt=0)
     return case
 
 
-def _mitigation_verified() -> InvestigationResponse_Mitigation:
+def _mitigation_verified(case) -> InvestigationResponse_Mitigation:
+    """The model's verify, on a re-check bound to the problem (#2100)."""
     return InvestigationResponse_Mitigation(
         agent_response="The failover held.",
         state_updates={
@@ -292,6 +294,7 @@ def _mitigation_verified() -> InvestigationResponse_Mitigation:
                     category=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
                     source_type=EvidenceSourceType.LOGS,
                     source_file_id=_FILE_ID,
+                    rechecks=case.problem_verification.verifying_evidence_ids[0],
                 )
             ],
         },

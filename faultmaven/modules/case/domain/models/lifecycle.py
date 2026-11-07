@@ -327,8 +327,9 @@ class InvestigationStrategy(str, Enum):
 #   - solution_deferred ahead of the remaining reasons: where several hold, the
 #     one carrying the most established knowledge wins.
 #   - closed_rca_infeasible ABOVE mitigation_sufficient, because the engine's
-#     only path to it fires on `mitigation_verified` (milestone_engine, "propose
-#     closure as stabilized rather than push RCA"), so both hold on essentially
+#     only path to it fires on a mitigation verified or declared stable
+#     (#2100; milestone_engine, "propose closure as stabilized rather than
+#     push RCA"), so both hold on essentially
 #     every such close and the more informative label must win. It holds only
 #     WITH a rationale. Distinct from insufficient evidence, which is contingent
 #     (someone with more access could get it): here a future reader should know

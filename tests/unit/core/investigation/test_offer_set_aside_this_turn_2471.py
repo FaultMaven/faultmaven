@@ -322,7 +322,7 @@ class TestTheExemptOpeners:
         withdrawn = with_open_offer(case, kind="close", basis="model")
         case.current_turn += 1
         with caplog.at_level("INFO"):
-            result = await _rca_engine("closed").process_turn(
+            result = await _rca_engine("closed", case).process_turn(
                 case=case,
                 user_message="the failover held - what happens if I close this now?",
                 redaction_ctx=None,

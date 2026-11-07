@@ -56,6 +56,7 @@ from faultmaven.core.investigation.offers import (
     standing_false_alarm_decline,
 )
 from faultmaven.modules.case.contracts import (
+    DECLARED_STABLE,
     AnswerKind,
     AnswerVia,
     Case,
@@ -201,15 +202,18 @@ def current_statement(case: Case) -> str:
 
 def _acted_on_bar(case: Case) -> str | None:
     """The shared bar for revising or invalidating: once a cause is identified
-    and uncontested, or a mitigation or fix was VERIFIED against the statement,
+    and uncontested, or a mitigation or fix was VERIFIED against the statement
+    (a mitigation by a bound re-check, or declared stable by the user, #2100),
     the statement is history rather than a working frame. An action merely
     accepted does not bar — a fix that failed is exactly when a mis-statement
-    surfaces."""
+    surfaces — nor does a mitigation proceeded without."""
     p = case.progress
     if p.cause_state.value == "identified" and not p.cause_identification_contested:
         return "the root cause is already identified against the current statement"
     if p.mitigation is not None and p.mitigation.verified:
         return "a mitigation was verified against the current statement"
+    if p.mitigation is not None and p.mitigation.disposition == DECLARED_STABLE:
+        return "a mitigation was declared stable against the current statement"
     if p.solution_verified:
         return "a fix was verified against the current statement"
     return None

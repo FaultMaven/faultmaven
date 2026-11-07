@@ -1,6 +1,6 @@
 from datetime import datetime
 from enum import Enum
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -162,18 +162,33 @@ class SolutionFeasible(str, Enum):
     """Solution is known but implementation takes time / happens out-of-band."""
 
 
+#: The two dispositions a mitigation can carry (#2100, D3.3/D3.4): the user's
+#: own account that it holds, and the stall's choice to go on without one.
+DECLARED_STABLE = "declared_stable"
+PROCEED_UNMITIGATED = "proceed_unmitigated"
+MitigationDisposition = Literal["declared_stable", "proceed_unmitigated"]
+
+
 class MitigationRecord(BaseModel):
     """A single forward-only mitigation (the inserted "stop the bleeding" move).
 
     Replaces the legacy path-coupled mitigation gates
-    (redesign R2). The engine materializes this record from the LLM's accept/verify
-    gate signals plus the workaround ProposedAction:
+    (redesign R2). The engine materializes this record from the LLM's gate
+    signals plus the workaround ProposedAction:
     - ``proposed_at_turn`` is set when a ``solution_type=workaround`` action is created.
-    - ``accepted`` / ``verified`` mirror the LLM gate signals (compliance detection).
-    - ``completed_at_turn`` is set when ``verified`` flips True, to the turn whose
-      response carried the ``mitigation_verified`` that flipped it (a replayed
-      one's hold turn, #2537): the boundary for up-weighting pre-mitigation
-      evidence in any later RCA.
+    - ``accepted`` mirrors the accept signal (compliance detection); the
+      accepted MITIGATION's ``accepted_in_turn`` dates the attempt.
+    - ``verified`` is DERIVED (#2100, D3.1): set only when a problem-bound
+      re-check shows the problem relieved at or after the attempt
+      (``cause_assurance.mitigation_relief``). A stored ``verified`` is read as
+      stored.
+    - ``disposition`` records what is not an observation: the user's
+      declaration (``declared_stable``) or the stall's choice
+      (``proceed_unmitigated``). Never read as verified.
+    - ``completed_at_turn`` is set by the derived verdict or ``declared_stable``,
+      to the turn whose response carried it (a replayed one's hold turn,
+      #2537): the boundary for up-weighting pre-mitigation evidence in any
+      later RCA.
 
     Single record per investigation for now (redesign §3.2.1); the flow stays open
     to user-led action so a non-mitigating insert is never a dead-end.
@@ -187,24 +202,42 @@ class MitigationRecord(BaseModel):
     )
     verified: bool = Field(
         default=False,
-        description="User confirmed the mitigation stabilized the situation",
+        description=(
+            "A problem-bound re-check showed the problem relieved after the "
+            "mitigation"
+        ),
     )
     completed_at_turn: Optional[int] = Field(
         default=None,
         description=(
-            "Turn whose response carried the `mitigation_verified` that flipped "
-            "`verified` True, a replayed one's hold turn (#2537) "
-            "(Gate-3-equivalent boundary)"
+            "Turn whose response carried the derived verdict or the "
+            "`declared_stable` disposition, a replayed one's hold turn (#2537): "
+            "the symptom relieved (Gate-3-equivalent boundary)"
         ),
+    )
+    disposition: Optional[MitigationDisposition] = Field(
+        default=None,
+        description=(
+            "The user's declaration (declared_stable) or the stall's choice "
+            "(proceed_unmitigated); written once"
+        ),
+    )
+    disposition_at_turn: Optional[int] = Field(
+        default=None, description="Turn whose response carried the disposition"
     )
 
     @model_validator(mode="after")
     def _verified_requires_accepted(self) -> "MitigationRecord":
-        """A mitigation cannot be verified before it was accepted."""
+        """A mitigation cannot be verified or disposed of before it was
+        accepted, and a verified one cannot be proceeded without."""
         if self.verified and not self.accepted:
             raise ValueError(
                 "mitigation.verified=True requires mitigation.accepted=True"
             )
+        if self.disposition is not None and not self.accepted:
+            raise ValueError("mitigation.disposition requires mitigation.accepted")
+        if self.verified and self.disposition == PROCEED_UNMITIGATED:
+            raise ValueError("a verified mitigation cannot carry proceed_unmitigated")
         return self
 
 
@@ -212,22 +245,24 @@ def investigation_stage(
     *,
     mitigation_accepted: bool,
     mitigation_verified: bool,
+    mitigation_disposed: bool,
     solution_accepted: bool,
     solution_verified: bool,
 ) -> InvestigationStage:
-    """The stage label the four gate milestones derive (redesign R4).
+    """The stage label the five gate inputs derive (redesign R4).
 
     The one copy of the rule. :attr:`InvestigationProgress.current_stage` reads
     the gates off a loaded progress blob and asks this; the cross-enterprise
-    operator list, which never loads a case, reads the same four booleans out of
+    operator list, which never loads a case, reads the same five inputs out of
     the stored blob and asks this too — so the label cannot mean one thing on a
     case page and another in the operator's list.
 
-    A mitigation that was never recorded is neither accepted nor verified, which
-    is how a caller with no ``MitigationRecord`` states it.
+    A mitigation leaves MITIGATION on its derived verdict or on a disposition
+    (#2100). A mitigation that was never recorded is neither accepted, verified
+    nor disposed of, which is how a caller with no ``MitigationRecord`` states it.
     """
-    # MITIGATION: mitigation accepted but not yet verified.
-    if mitigation_accepted and not mitigation_verified:
+    # MITIGATION: mitigation accepted, neither verified nor disposed of.
+    if mitigation_accepted and not (mitigation_verified or mitigation_disposed):
         return InvestigationStage.MITIGATION
 
     # TREATMENT: solution_accepted but not yet verified
@@ -516,7 +551,7 @@ class InvestigationProgress(BaseModel):
         label re-derived from the action-compliance gates.
 
         Returns one of 3 InvestigationStage enum values:
-        - MITIGATION: a mitigation is accepted but not yet verified
+        - MITIGATION: a mitigation is accepted, neither verified nor disposed of
         - TREATMENT: solution accepted but not yet verified
         - DIAGNOSIS: everything else (default investigating view)
 
@@ -530,6 +565,9 @@ class InvestigationProgress(BaseModel):
         return investigation_stage(
             mitigation_accepted=mitigation is not None and mitigation.accepted,
             mitigation_verified=mitigation is not None and mitigation.verified,
+            mitigation_disposed=(
+                mitigation is not None and mitigation.disposition is not None
+            ),
             solution_accepted=self.solution_accepted,
             solution_verified=self.solution_verified,
         )
