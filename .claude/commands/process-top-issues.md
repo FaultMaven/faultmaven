@@ -121,15 +121,15 @@ Find the newest proposal or result on the Queue, the issue this prints:
      `path:line`) and the **structural fix** (the one change that makes that class impossible, and the open issues it
      absorbs). Any other row's items rank by priority like any other item; the freeze, not the row, stops per-defect
      work. Each row states the seam's **count** now, at the last proposal and two proposals ago, and why it stood when
-     it did ("no lane"; "closed by PR #p, merge-ready"). The count is the open issues on its root issue's
-     `**Absorbs:**` line, or on the row's own list until one exists.
+     it did ("no lane"; "closed by PR #p, merge-ready"). The count is the open issues on the `**Absorbs:**` line of
+     its open root issue, or on the row's own list while it has none.
    - **A seam freezes** when its count is not below its count two proposals ago, whatever the row says held it. File
-     its **root issue**, if none exists: an `**Absorbs:** #a, #b …` line (the defects fixed and still open on it), the
-     mechanism and the structural fix, in `pile:blocked` on an owner ruling on the structural fix, at the highest
-     priority among the issues it absorbs, never `tracking`. Move the seam's open items that no open PR carries to
-     `pile:blocked` with `**Blocked on:** #<root>`. An absorbed issue is not a duplicate: it stays open until the
-     structural fix delivers it. A frozen seam gets no new plan; an open PR on it finishes by its row in *Where an
-     item stands*.
+     its **root issue**, if no open one exists: an `**Absorbs:** #a, #b …` line (the defects fixed and still open on
+     it), the mechanism and the structural fix, in `pile:blocked` on an owner ruling on the structural fix, at the
+     highest priority among the issues it absorbs, never `tracking`. Move the seam's open items that no open PR
+     carries to `pile:blocked` with `**Blocked on:** #<root>`. An absorbed issue is not a duplicate: it stays open
+     until the structural fix delivers it. A frozen seam gets no new plan; an open PR on it finishes by its row in
+     *Where an item stands*.
    - From `pile:ready` only. **Design flaws first:** a confirmed one's item is its structural fix, once ruled, not the
      next per-defect fix that the structural fix would absorb; confirmed ones come in the order the owner last
      approved. Then `P1`, `P2`, `P3`, oldest first within each. One slot stays reserved for the oldest `P2` waiting
@@ -350,9 +350,9 @@ To **pull** an item:
 - **Search open and closed issues first.** If an open issue already covers it, add the evidence there under
   `## Evidence`. If a closed issue matches, cite it in the new issue. Findings that share one root go in one issue; a
   latent one on a seam with an open root issue goes there under `## Evidence` (in review, its `filed` landing), unless
-  *State* makes it `P1`. A latent `P1` on a frozen seam is filed, so the count shows it, added to the root issue's
-  `**Absorbs:**` line and blocked on it like the seam's other items; its `P1` raises the root issue's priority, and
-  the ruling that places the root issue states its priority.
+  *State* makes it `P1`. A latent `P1` on a frozen seam is filed, so the count shows it, added to the open root
+  issue's `**Absorbs:**` line and blocked on it like the seam's other items; its `P1` raises the root issue's
+  priority, and the ruling that places the root issue states its priority.
 - **Fix the item's own root, a symptom of it, or a part of it in its PR;** file it only when a ruling waived it.
 
 ## 5. Report on the Queue
