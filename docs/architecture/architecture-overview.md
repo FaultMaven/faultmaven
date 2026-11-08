@@ -148,7 +148,7 @@ The **same codebase** runs in both modes — provider selection happens in the c
 
 ## Architectural Enforcement
 
-Import boundaries are enforced at build time by `import-linter` with 15 contracts today (`lint-imports` prints them) covering module privacy, layer separation, and cross-module import rules. Run `lint-imports` locally; CI enforces on every PR.
+Import boundaries are enforced at build time by `import-linter` with 16 contracts today (`lint-imports` prints them) covering module privacy, layer separation, and cross-module import rules. Run `lint-imports` locally; CI enforces on every PR.
 
 See `.importlinter` at repo root for the current contracts. Architecture principles: [Architectural Design Principles](core-architecture/architectural-design-principles.md).
 

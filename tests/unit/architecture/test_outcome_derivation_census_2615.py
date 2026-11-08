@@ -7,44 +7,64 @@ outcome on its own. This census stops that: a new site, a moved one or a
 changed count fails until it is declared here, and each stage of #2615 shrinks
 the tables as it moves its readers.
 
+The census watches the derivations, fields and entries it names. A wrapper
+outside those lists (a function that returns one of them) is not seen. Pin 2's
+poisoned-case test (stage S2) backstops what a census of names misses.
+
 Each site is keyed by ``(path, qualname of the enclosing function)``, the path
 as the scan writes it (``rel.as_posix()``), with an exact count per name.
-Module level is ``<module>``. A ``getattr`` by a constant name counts as the
-attribute would: ``getattr(case, "closure_reason", None)`` is a field read, and
-an entry reached that way is a reference that is not a call. Three tables:
+Module level is ``<module>``. Three tables:
 
 * ``DERIVATION_SITES``: every Load reference to a function in ``DERIVATIONS``,
-  the functions #2615's tables name as deciding an outcome. A call counts, and
-  so does a bare reference, as a name or an attribute (``ca.fix_windows``,
-  ``callback=fix_windows``); an import or the ``def`` does not.
-  ``case.contracts`` re-exports ``classify_solution_outcome``, so the narration
-  package's import contract cannot see a narrator's use of it; only this
-  census does. Stage S4 removes the re-export.
+  the functions #2615's tables name as deciding an outcome, and two one-line
+  wrappers of them (``has_resolution_confirmation``,
+  ``_resolution_confirmed``). A call counts, and so does a bare reference, as a
+  name or an attribute (``ca.fix_windows``, ``callback=fix_windows``); an
+  import or the ``def`` does not. ``case.contracts`` re-exports
+  ``classify_solution_outcome``, so the narration package's import contract
+  cannot see a narrator's use of it; only this census does. Stage S4 removes
+  the re-export.
 * ``FIELD_READS``: every attribute Load of a field in ``FIELDS``:
-  ``completed_milestones``, ``solution_verified``, a mitigation's ``verified``
-  and ``closure_reason``. ``verified`` has no receiver heuristic: all 14 reads
+  ``completed_milestones``, ``solution_verified``, its alias property
+  ``resolution_complete`` (no reader today), a mitigation's ``verified`` and
+  ``closure_reason``. ``verified`` has no receiver heuristic: all 14 reads
   today are ``MitigationRecord.verified``, and a future reader of another
   ``verified`` gets a row with its reason.
-* ``ENTRY_CALLERS`` (pin 5): every reference to a closure entry in
-  ``ENTRIES``, the transitions' executors and the offer record's writers. Each
-  row's note says what that caller answers or closes. Whether it must reach
-  ``closure_outcome`` is stage S1's to declare. An entry referenced other than
-  by a call fails, so every way in stays visible here.
+* ``ENTRY_CALLERS`` (pin 5): every reference to an entry in ``ENTRIES``: the
+  offer record's three writers (``open_offer``, ``answer_offer``,
+  ``lapse_offers``), the transitions' two executors, and the entries that
+  open, answer or close through them. Each row's note says what that caller
+  opens, answers or closes. An entry referenced other than by a call fails, so
+  every way in stays visible here.
+
+Also counted: a call of the builtin ``getattr(x, "name")`` whose name is a
+constant string, as a reference to that name (for an entry, one that is not a
+call). An import of a watched function under another name fails, since every
+later call would go unseen.
+
+A name the innermost enclosing function assigns, and does not declare
+``global`` or ``nonlocal``, is its local variable, not the watched function
+(``open_offer = case.offer_record.open``), so its loads are not counted. A parameter named after a watched function is counted: the
+function is passed in (``_close_on_explicit_intent``'s
+``assess_closure_readiness``).
 
 Not counted:
 
 * ``problem_status``, ``cause_state`` and ``mitigation.disposition``: progress
-  inputs the record reads from (#2615, *The record*). Pin 2's poisoned-case
-  test (stage S2) is #2615's answer for raw reads by a narrator;
-* a read by a computed name (``getattr(case, name)``), or by a key: a
-  subscript, or a milestone map or turn record keyed ``"solution_verified"``
-  or ``"mitigation_verified"``;
+  inputs the record reads from (#2615, *The record*);
+* a read through ``builtins.getattr``, ``operator.attrgetter`` or
+  ``object.__getattribute__``, or by a class pattern
+  (``case Case(closure_reason=r)``): none exists today;
+* a read by a computed name (``getattr(case, name)``);
+* a read by a key: a subscript, or a milestone map or turn record keyed
+  ``"solution_verified"`` or ``"mitigation_verified"``;
 * readers in the clients.
 """
 
 from __future__ import annotations
 
 import ast
+import re
 from collections import Counter
 from functools import lru_cache
 from pathlib import Path
@@ -99,6 +119,7 @@ DERIVATIONS: dict[str, str] = {
             "_no_confirming_window",
             "latest_fix_window",
             "latest_decided_fix_window",
+            "has_resolution_confirmation",
         ),
         _CA,
     ),
@@ -117,6 +138,7 @@ DERIVATIONS: dict[str, str] = {
             "assess_close_summary",
             "should_generate_terminal_summary",
             "terminal_summary_skip_reason",
+            "_resolution_confirmed",
         ),
         _TT,
     ),
@@ -128,16 +150,22 @@ DERIVATIONS: dict[str, str] = {
 FIELDS: dict[str, tuple[str, str]] = {
     "completed_milestones": (_PROGRESS, "InvestigationProgress"),
     "solution_verified": (_PROGRESS, "InvestigationProgress"),
+    "resolution_complete": (_PROGRESS, "InvestigationProgress"),
     "verified": (_PROGRESS, "MitigationRecord"),
     "closure_reason": (_CASE + "domain/models/case.py", "Case"),
 }
 
-#: Each closure entry (#2615, *Closure on demand*), by the module that defines it.
+#: The offer record's writers, the transitions' executors, and the entries that
+#: open, answer or close through them (#2615, *Closure on demand*), by the
+#: module that defines each.
 ENTRIES: dict[str, str] = {
     "_execute_closed_transition": _TT,
     "_execute_resolved_transition": _TT,
     "open_disposition_offer": _TT,
     "disposition_refusal": _TT,
+    "confirm_open_offer": _TT,
+    "execute_user_closure": _TT,
+    "open_offer": _OFFERS,
     "answer_offer": _OFFERS,
     "lapse_offers": _OFFERS,
 }
@@ -168,10 +196,17 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     (_CA, "off_cause_attempt"): {"_cause_pool": 1, "fix_windows": 1},
     (_CA, "problem_leg_anchor"): {"confirming_window": 1},
     (_CA, "subject_index"): {"_cause_pool": 1},
+    (_TT, "_resolution_confirmed"): {"has_resolution_confirmation": 1},
     (_TT, "_suggest_resolve_message"): {"resolution_record_lines": 1},
     (_TT, "assess_close_summary"): {"shown_milestones": 1},
-    (_TT, "assess_closure_readiness"): {"assess_close_summary": 1},
-    (_TT, "assess_resolution_readiness"): {"latest_fix_window": 1},
+    (_TT, "assess_closure_readiness"): {
+        "_resolution_confirmed": 1,
+        "assess_close_summary": 1,
+    },
+    (_TT, "assess_resolution_readiness"): {
+        "_resolution_confirmed": 1,
+        "latest_fix_window": 1,
+    },
     (_TT, "closure_verdict"): {"assess_closure_readiness": 1},
     (_TT, "confirm_open_offer"): {
         "assess_closure_readiness": 1,
@@ -398,6 +433,10 @@ ENTRY_CALLERS: dict[tuple[str, str], tuple[dict[str, int], str]] = {
         {"open_disposition_offer": 1},
         "opens the close offer on a false-alarm finding (basis false_alarm)",
     ),
+    (_TRANSITION_TURNS, "_confirm_pending_transition"): (
+        {"confirm_open_offer": 1},
+        "executes the resolve or close offer the user accepted in the chat",
+    ),
     (_TRANSITION_TURNS, "_close_on_explicit_intent"): (
         {"open_disposition_offer": 2},
         "opens the menu's close offer, or the resolve offer it pivots to "
@@ -432,8 +471,9 @@ ENTRY_CALLERS: dict[tuple[str, str], tuple[dict[str, int], str]] = {
         "answers the open statement-revision offer accepted; not a closure",
     ),
     (_PROBLEM, "propose_revision"): (
-        {"answer_offer": 1},
-        "answers a standing statement-revision offer superseded; not a closure",
+        {"answer_offer": 1, "open_offer": 1},
+        "opens a statement-revision offer, answering a standing one superseded; "
+        "not a closure",
     ),
     (_TT, "confirm_open_offer"): (
         {
@@ -446,6 +486,11 @@ ENTRY_CALLERS: dict[tuple[str, str], tuple[dict[str, int], str]] = {
         "a close on a resolvable case is answered pivoted and the resolve "
         "offer opened instead (INV-37)",
     ),
+    (_TT, "open_disposition_offer"): (
+        {"open_offer": 1},
+        "opens a resolve or close offer, a close with the reason derived from "
+        "the case",
+    ),
     (_TT, "execute_user_closure"): (
         {
             "_execute_closed_transition": 1,
@@ -455,6 +500,10 @@ ENTRY_CALLERS: dict[tuple[str, str], tuple[dict[str, int], str]] = {
         "the REST close: lapses an open offer, or declines the resolve offer "
         "(opening it first), then executes the close",
     ),
+    (_CASE + "domain/services/case_service.py", "CaseService.close_case.apply"): (
+        {"execute_user_closure": 1},
+        "the REST close: closes the case through execute_user_closure",
+    ),
     (_CASE + "infrastructure/case_repository.py", "CaseRepository.prepare_for_save"): (
         {"lapse_offers": 1},
         "lapses, at every save, what lapse_offers lapses, so a write outside "
@@ -463,26 +512,72 @@ ENTRY_CALLERS: dict[tuple[str, str], tuple[dict[str, int], str]] = {
 }
 
 
+class Mark(NamedTuple):
+    """A site no table may hold: ``what`` says why it fails."""
+
+    path: str
+    qualname: str
+    line: int
+    what: str
+
+    def __str__(self) -> str:
+        return f"{self.path}:{self.line} {self.qualname}: {self.what}"
+
+
 class Sites(NamedTuple):
-    """What a walk found, each table keyed by ``(path, qualname)``."""
+    """What a walk found: three tables keyed by ``(path, qualname)``, and the
+    marks that fail wherever they are."""
 
     derivations: dict[tuple[str, str], Counter]
     fields: dict[tuple[str, str], Counter]
     entries: dict[tuple[str, str], Counter]
-    #: ``path:line qualname name`` for each entry referenced other than by a call.
-    uncalled_entries: list[str]
+    #: An entry referenced other than by a call.
+    uncalled_entries: list[Mark]
+    #: A watched function imported under another name.
+    aliased_imports: list[Mark]
+
+
+_FUNCTIONS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
+_NESTED_SCOPES = _FUNCTIONS + (
+    ast.ClassDef,
+    ast.ListComp,
+    ast.SetComp,
+    ast.DictComp,
+    ast.GeneratorExp,
+)
+
+
+def _locals_of(function: ast.AST) -> frozenset[str]:
+    """The names ``function`` assigns in its own scope and does not declare
+    ``global`` or ``nonlocal``. Its parameters are not among them."""
+    stored: set[str] = set()
+    declared: set[str] = set()
+    stack = list(ast.iter_child_nodes(function))
+    while stack:
+        node = stack.pop()
+        if isinstance(node, _NESTED_SCOPES):
+            continue
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            stored.add(node.id)
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            declared.update(node.names)
+        stack.extend(ast.iter_child_nodes(node))
+    return frozenset(stored - declared)
 
 
 def collect(tree: ast.AST, path: str) -> Sites:
     """The sites in ``tree``, the module at ``path``.
 
     A Load of a derivation or an entry as a name or an attribute, an attribute
-    Load of a field, and a ``getattr`` of any of them by a constant name. An
-    import, a ``def``, an assignment or a ``del`` is not a Load.
+    Load of a field, and a builtin ``getattr`` of any of them by a constant
+    name. A name the innermost enclosing function assigns is its local
+    variable, not a site. An import, a ``def``, an assignment or a ``del`` is
+    not a Load; an import under another name is a mark.
     """
     parents = {
         child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)
     }
+    locals_memo: dict[ast.AST, frozenset[str]] = {}
 
     def scope_of(node: ast.AST) -> str:
         names = []
@@ -492,11 +587,37 @@ def collect(tree: ast.AST, path: str) -> Sites:
                 names.append(node.name)
         return ".".join(reversed(names)) or "<module>"
 
-    sites = Sites({}, {}, {}, [])
+    def is_local(node: ast.Name) -> bool:
+        function = parents.get(node)
+        while function is not None and not isinstance(function, _FUNCTIONS):
+            function = parents.get(function)
+        if function is None:
+            return False
+        if function not in locals_memo:
+            locals_memo[function] = _locals_of(function)
+        return node.id in locals_memo[function]
+
+    sites = Sites({}, {}, {}, [], [])
     for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if (
+                    alias.name in DERIVATIONS or alias.name in ENTRIES
+                ) and alias.asname not in (None, alias.name):
+                    sites.aliased_imports.append(
+                        Mark(
+                            path,
+                            scope_of(node),
+                            node.lineno,
+                            f"{alias.name} imported as {alias.asname}",
+                        )
+                    )
+            continue
         if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load):
             name, attribute = node.attr, True
         elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            if is_local(node):
+                continue
             name, attribute = node.id, False
         elif (
             isinstance(node, ast.Call)
@@ -522,13 +643,15 @@ def collect(tree: ast.AST, path: str) -> Sites:
             if isinstance(node, ast.Call) or not (
                 isinstance(parent, ast.Call) and parent.func is node
             ):
-                sites.uncalled_entries.append(f"{path}:{node.lineno} {key[1]} {name}")
+                sites.uncalled_entries.append(
+                    Mark(path, key[1], node.lineno, f"{name}, not called")
+                )
     return sites
 
 
 @lru_cache(maxsize=1)
 def _scan() -> tuple[Sites, int]:
-    sites = Sites({}, {}, {}, [])
+    sites = Sites({}, {}, {}, [], [])
     files = 0
     for path in sorted(_PACKAGE.rglob("*.py")):
         files += 1
@@ -537,6 +660,7 @@ def _scan() -> tuple[Sites, int]:
         sites.fields.update(found.fields)
         sites.entries.update(found.entries)
         sites.uncalled_entries.extend(found.uncalled_entries)
+        sites.aliased_imports.extend(found.aliased_imports)
     return sites, files
 
 
@@ -557,13 +681,24 @@ def _differences(found: dict, declared: dict) -> list[str]:
     return lines
 
 
-def _with(table: str, source: str, path: str) -> dict:
-    """The real scan's ``table`` with ``source``'s rows, as the module at
-    ``path``, laid over it: a new function adds a row, a declared one's row is
-    replaced. The comparison then sees what it would on that tree."""
-    found = dict(getattr(_scan()[0], table))
-    found.update(getattr(collect(parse_source(source, _ROOT / path), path), table))
-    return found
+def _with(source: str, path: str) -> Sites:
+    """The real scan with ``source``, as the module at ``path``, laid over it.
+
+    A row the probe reports replaces the real row with the same key, so a new
+    function adds a row and a declared function's row is recounted. Every row
+    the probe omits is kept, the other functions of the module at ``path``
+    included. The probe's marks are added to the real scan's. The comparisons
+    then see what they would on that tree.
+    """
+    real = _scan()[0]
+    probe = collect(parse_source(source, _ROOT / path), path)
+    return Sites(
+        {**real.derivations, **probe.derivations},
+        {**real.fields, **probe.fields},
+        {**real.entries, **probe.entries},
+        real.uncalled_entries + probe.uncalled_entries,
+        real.aliased_imports + probe.aliased_imports,
+    )
 
 
 _ENTRY_COUNTS = {key: counts for key, (counts, _) in ENTRY_CALLERS.items()}
@@ -577,6 +712,23 @@ _HELP = (
 )
 
 
+def _check_only_called(sites: Sites) -> None:
+    uncalled = [str(mark) for mark in sites.uncalled_entries]
+    assert not uncalled, (
+        "an entry is referenced other than by a call, so its callers are out "
+        "of the enumeration's sight:\n  " + "\n  ".join(uncalled)
+    )
+
+
+def _check_no_alias(sites: Sites) -> None:
+    aliased = [str(mark) for mark in sites.aliased_imports]
+    assert not aliased, (
+        "a watched function is imported under another name, which hides every "
+        "later call from this census; import it under its own name:\n  "
+        + "\n  ".join(aliased)
+    )
+
+
 def test_the_scan_covers_the_package():
     """A positive control: a walk that stopped matching would report nothing
     to declare, which reads as a clean census."""
@@ -588,8 +740,26 @@ def test_the_scan_covers_the_package():
         for counts in table.values()
         for name in counts
     }
-    watched = set(DERIVATIONS) | set(FIELDS) | set(ENTRIES)
-    assert watched <= found, f"never matched: {sorted(watched - found)}"
+    declared = {
+        name
+        for table in (DERIVATION_SITES, FIELD_READS, _ENTRY_COUNTS)
+        for counts in table.values()
+        for name in counts
+    }
+    assert declared <= found, f"never matched: {sorted(declared - found)}"
+
+
+@pytest.mark.parametrize("name", sorted({**DERIVATIONS, **FIELDS, **ENTRIES}))
+def test_the_collector_matches_each_watched_name(name):
+    """A positive control per name, including one with no reader today
+    (``resolution_complete``), which the real scan alone cannot show."""
+    if name in FIELDS:
+        source, table = f"def f(x):\n    return x.{name}", "fields"
+    else:
+        source = f"def f(x):\n    return {name}(x)"
+        table = "derivations" if name in DERIVATIONS else "entries"
+    found = getattr(collect(ast.parse(source), "m.py"), table)
+    assert found == {("m.py", "f"): Counter({name: 1})}
 
 
 def test_every_derivation_site_is_declared():
@@ -615,19 +785,55 @@ def test_every_raw_field_read_is_declared():
 def test_every_closure_entry_caller_is_declared():
     problems = _differences(_scan()[0].entries, _ENTRY_COUNTS)
     assert not problems, (
-        "a closure entry is called where the enumeration does not say:\n  "
+        "an entry is called where the enumeration does not say:\n  "
         + "\n  ".join(problems)
-        + "\nDeclare the caller in ENTRY_CALLERS with what it answers or closes "
-        "(#2615 pin 5); stage S1 declares which must reach closure_outcome."
+        + "\nDeclare the caller in ENTRY_CALLERS with what it opens, answers or "
+        "closes (#2615 pin 5)."
     )
 
 
 def test_a_closure_entry_is_only_called():
-    uncalled = _scan()[0].uncalled_entries
-    assert not uncalled, (
-        "a closure entry is referenced other than by a call, so its callers "
-        "are out of the enumeration's sight:\n  " + "\n  ".join(uncalled)
+    _check_only_called(_scan()[0])
+
+
+def test_no_watched_function_is_imported_under_another_name():
+    _check_no_alias(_scan()[0])
+
+
+_NARRATION = _PACKAGE / "core" / "investigation" / "narration"
+
+
+def _unwalked_directories(root: Path) -> list[str]:
+    """Each directory under ``root``, itself included, that holds a module and
+    has no ``__init__.py``. grimp does not walk into it, so contract 16 does
+    not see what a module there imports."""
+    unwalked = set()
+    for module in root.rglob("*.py"):
+        for directory in module.parents:
+            if not (directory / "__init__.py").is_file():
+                unwalked.add(directory.relative_to(root.parent).as_posix())
+            if directory == root:
+                break
+    return sorted(unwalked)
+
+
+def test_every_narration_directory_is_a_regular_package():
+    unwalked = _unwalked_directories(_NARRATION)
+    assert not unwalked, (
+        "a directory under narration/ holds a module but no __init__.py, so "
+        "the import contract cannot see what it imports (#2615 pin 1); add "
+        "the __init__.py:\n  " + "\n  ".join(unwalked)
     )
+
+
+def test_the_regular_package_check_bites(tmp_path):
+    root = tmp_path / "narration"
+    (root / "sub").mkdir(parents=True)
+    (root / "__init__.py").touch()
+    (root / "sub" / "narrator.py").touch()
+    assert _unwalked_directories(root) == ["narration/sub"]
+    (root / "sub" / "__init__.py").touch()
+    assert _unwalked_directories(root) == []
 
 
 def _module_functions(path: str) -> set[str]:
@@ -682,6 +888,9 @@ class TestTheCollector:
             "def f(case):\n    return case.closure_reason",
             "def f(case):\n    return answer_offer(case, proposal_id='p')",
             "async def f(case):\n    return terminal_transitions.lapse_offers(case)",
+            # A parameter named after a derivation: the derivation, passed in.
+            "def f(case, assess_closure_readiness):\n"
+            "    return assess_closure_readiness(case)",
         ],
     )
     def test_each_shape_is_one_site(self, source):
@@ -699,10 +908,22 @@ class TestTheCollector:
             "def f(case):\n    return 'solution_verified' in case.milestones",
             # A computed name: the collector cannot know what it reads.
             "def f(case, name):\n    return getattr(case, name)",
+            # A local variable named after an entry is not the entry.
+            "def f(case):\n    open_offer = case.offer_record.open\n"
+            "    return open_offer is not None and open_offer.kind",
         ],
     )
-    def test_an_import_a_def_a_write_or_a_string_is_not_a_site(self, source):
+    def test_an_import_a_def_a_write_a_local_or_a_string_is_not_a_site(self, source):
         assert self._count(source) == 0, source
+
+    def test_a_global_declaration_keeps_the_module_function(self):
+        source = (
+            "def f(case):\n    global fix_windows\n"
+            "    fix_windows = wrap(fix_windows)\n    return fix_windows(case)"
+        )
+        assert collect(ast.parse(source), "m.py").derivations == {
+            ("m.py", "f"): Counter({"fix_windows": 2})
+        }
 
     @pytest.mark.parametrize(
         ("source", "field"),
@@ -724,7 +945,29 @@ class TestTheCollector:
             ast.parse("def f(mod):\n    return getattr(mod, 'answer_offer')"), "m.py"
         )
         assert sites.entries == {("m.py", "f"): Counter({"answer_offer": 1})}
-        assert sites.uncalled_entries == ["m.py:2 f answer_offer"]
+        assert [str(m) for m in sites.uncalled_entries] == [
+            "m.py:2 f: answer_offer, not called"
+        ]
+
+    @pytest.mark.parametrize(
+        ("source", "marked"),
+        [
+            (
+                "from x import fix_windows as fw",
+                ["m.py:1 <module>: fix_windows imported as fw"],
+            ),
+            (
+                "from x import answer_offer as ao",
+                ["m.py:1 <module>: answer_offer imported as ao"],
+            ),
+            ("from x import fix_windows as fix_windows", []),
+            ("from x import shown_milestones, fix_windows", []),
+            ("import faultmaven.core.investigation.cause_assurance as ca", []),
+        ],
+    )
+    def test_an_import_under_another_name_is_marked(self, source, marked):
+        sites = collect(ast.parse(source), "m.py")
+        assert [str(m) for m in sites.aliased_imports] == marked
 
     def test_a_site_is_attributed_to_its_enclosing_function(self):
         source = (
@@ -744,11 +987,10 @@ _PROBE = "faultmaven/core/investigation/narration/probe.py"
 def test_a_new_derivation_reference_fails_the_census():
     """A new function's call, and a reference passed as a value."""
     found = _with(
-        "derivations",
         "def summarise(case):\n    return fix_windows(case)\n"
         "def wire(run):\n    return run(callback=fix_windows)\n",
         _PROBE,
-    )
+    ).derivations
     assert _differences(found, DERIVATION_SITES) == [
         f"{_PROBE}::summarise: declared nothing, found {{'fix_windows': 1}}",
         f"{_PROBE}::wire: declared nothing, found {{'fix_windows': 1}}",
@@ -756,14 +998,15 @@ def test_a_new_derivation_reference_fails_the_census():
 
 
 def test_a_changed_count_fails_the_census():
-    """One more call in a declared function."""
+    """One more call in a declared function. The probe holds only
+    ``derive_closure_reason``; ``_with`` keeps the module's other rows, so the
+    one difference is that function's."""
     found = _with(
-        "derivations",
         "def derive_closure_reason(case):\n"
         "    return _mitigation_verified(case) and _mitigation_verified(case)"
         " or _mitigation_declared_stable(case)\n",
         _TT,
-    )
+    ).derivations
     assert _differences(found, DERIVATION_SITES) == [
         f"{_TT}::derive_closure_reason: declared "
         "{'_mitigation_declared_stable': 1, '_mitigation_verified': 1}, found "
@@ -773,11 +1016,10 @@ def test_a_changed_count_fails_the_census():
 
 def test_a_new_raw_field_read_fails_the_census():
     found = _with(
-        "fields",
         "def label(case):\n"
         "    return case.progress.completed_milestones, case.closure_reason\n",
         _PROBE,
-    )
+    ).fields
     assert _differences(found, FIELD_READS) == [
         f"{_PROBE}::label: declared nothing, found "
         "{'closure_reason': 1, 'completed_milestones': 1}"
@@ -786,17 +1028,36 @@ def test_a_new_raw_field_read_fails_the_census():
 
 def test_a_new_entry_caller_fails_the_enumeration():
     found = _with(
-        "entries",
         "def offer(case, kind, basis):\n"
         "    return open_disposition_offer(case, kind=kind, basis=basis)\n",
         _PROBE,
-    )
+    ).entries
     assert _differences(found, _ENTRY_COUNTS) == [
         f"{_PROBE}::offer: declared nothing, found {{'open_disposition_offer': 1}}"
     ]
 
 
-def test_an_entry_referenced_other_than_by_a_call_is_reported():
-    source = "HANDLERS = {'close': _execute_closed_transition}\n"
-    sites = collect(parse_source(source, _ROOT / _PROBE), _PROBE)
-    assert sites.uncalled_entries == [f"{_PROBE}:1 <module> _execute_closed_transition"]
+def test_an_entry_referenced_other_than_by_a_call_fails():
+    sites = _with("HANDLERS = {'close': _execute_closed_transition}\n", _PROBE)
+    with pytest.raises(
+        AssertionError,
+        match=re.escape(f"{_PROBE}:1 <module>: _execute_closed_transition, not called"),
+    ):
+        _check_only_called(sites)
+    assert _differences(sites.entries, _ENTRY_COUNTS) == [
+        f"{_PROBE}::<module>: declared nothing, found "
+        "{'_execute_closed_transition': 1}"
+    ]
+
+
+def test_an_import_under_another_name_fails():
+    sites = _with(
+        "from faultmaven.core.investigation.cause_assurance import fix_windows as fw\n"
+        "def summarise(case):\n    return fw(case)\n",
+        _PROBE,
+    )
+    with pytest.raises(
+        AssertionError,
+        match=re.escape(f"{_PROBE}:1 <module>: fix_windows imported as fw"),
+    ):
+        _check_no_alias(sites)

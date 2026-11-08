@@ -388,8 +388,13 @@ allow_indirect_imports = false
 # ============================================================================
 # #2615 pin 1, Principle 13.2 and 13.3: text that states a case's outcome is
 # composed from the record, so the narrators (#2615 stage S2, the package is
-# empty until then) may not import what derives it, directly or through a
-# chain. TYPE_CHECKING imports count.
+# empty until then) may not import what derives it. The contract forbids
+# imports of the three modules below, direct or through other modules, as
+# import-linter sees them: TYPE_CHECKING and function-local imports count. It
+# does not cover attribute access through a package object (`import
+# faultmaven`, then an attribute chain) or `importlib`. A directory under
+# narration/ without an __init__.py is outside the graph; the census test,
+# named below, refuses one.
 #
 # The ban is on WHOLE modules, which is all import-linter can forbid. For
 # terminal_transitions that is stricter than #2615's "its derivations": a prose
