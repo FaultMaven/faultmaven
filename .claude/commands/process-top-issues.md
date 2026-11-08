@@ -117,37 +117,41 @@ Find the newest proposal or result on the Queue, the issue this prints:
      non-secret `unknown`/`unavailable` lines in the proposal. Dismiss nothing without the owner's ruling on the issue.
 2. **Pick.**
    - **The design-flaw pass** gives one row per seam worked since the last proposal, meaning a seam with a merged or
-     open PR in that window. Its **chain** (the defects fixed and still open on it, by number) and its **open count**,
-     now and at each earlier proposal that printed one for it, say only where to look: recurrence is never the
-     evidence. The evidence is the **design statement**: the document and section (`docs/architecture/`, an ADR, an
-     `INV-*` row), quoted, that is silent or wrong on a decision the system needs, so that code built exactly to it
-     would still fail. It is "none" when the design states the decision and the code breaks it: the chain is then
-     bugs, each item stays ordinary work, and its PR fixes its root. It is "not yet checked" until someone checks.
-     For a statement, the row names its **level** (the system: a rule every part must keep, such as ownership, source
-     of truth, data lifecycle, turn order or execution bounds; or one part's design), the **principle** in
-     `architectural-design-principles.md` it falls under or the one that is missing (two parts' gaps under one
-     missing rule are one system-level flaw), and the **design change** with the open issues it absorbs. Then one
-     **recommendation** no ruling has decided since the counts and statement it reads, the first that applies, for
-     *Needs your call*: a design check, when the statement is "not yet checked" and the seam has an open root issue or
-     neither of its last two printed steps lowered the count (now not below the last printed count, nor that one below
-     the one before it), with whether the seam freezes while it runs; a ruling on the design change, when the row
-     names one; a ruling of no design flaw, when the check found "none" and a root issue is open.
-   - **Rulings carry the state.** A ruling that orders a design check names the seam's root issue (labelled
-     `root-issue`, filed if none is open, in `pile:blocked` with `**Blocked on:** an owner ruling on its design check
-     and design change`). A freeze, and a ruled design change, list exactly the issues they block on the root issue's
-     `**Blocks:**` line: a seam whose design change is ruled gets no per-defect fixes, because its stages deliver its
-     open defects. Each listed issue that no open PR carries and that is not already in `pile:blocked` moves there
-     with `**Blocked on:** #<root>`; one an open PR carries stays with that PR; one already blocked keeps its line.
-     When a listed issue's own blocker clears while the root issue is open, by Sort or by a ruling, its line becomes
-     `**Blocked on:** #<root>`. While the root issue is open, no issue on its `**Blocks:**` line gets a new plan
-     beyond the stages a ruling sets, and an open PR on one finishes by its row in *Where an item stands*. A ruling on
-     the design change names the seam's root issue (filed as above if none is open) and lists its stages, each filed
-     as an issue with its budget and the issues it delivers; a stage's PR closes only those (another it delivers is a
-     change to the list) and says `Refs #<root>`; when the last stage's PR merges, close the root issue under
-     `## Closed`, citing the stages. That list places them, as step 3 places any ruled issue. A ruling of no design
-     flaw, or one that declines the design change, closes the root issue and lists where its issues go. Every change
-     to a root issue's `**Blocks:**` line or a stage's list is a ruling, except a finding added under *Filing what you
-     find*.
+     open PR in that window, or with an open root issue. Its **chain** (the defects fixed and still open on it, by
+     number) and its **open count**, now and at each earlier proposal that printed one for it, say only where to
+     look: recurrence is never the evidence. The evidence is the **design statement**: the document and section
+     (`docs/architecture/`, an ADR, an `INV-*` row), quoted, that is silent or wrong on a decision the system needs,
+     so that code built exactly to it would still fail. It is "none" when the design states the decision and the code
+     breaks it: the chain is then bugs, each item stays ordinary work, and its PR fixes its root. It is "not yet
+     checked" until a check is posted on the seam's root issue (below). For a statement, the row names its **level**
+     (the system: a rule every part must keep, such as ownership, source of truth, data lifecycle, turn order or
+     execution bounds; or one part's design), the **principle** in `architectural-design-principles.md` it falls
+     under or the one that is missing (two parts' gaps under one missing rule are one system-level flaw), and the
+     **design change** with the open issues it absorbs. Then one **recommendation** no ruling has decided since the
+     counts and statement it reads, the first that applies, for *Needs your call*: a design check, when the statement
+     is "not yet checked" and either the seam has an open root issue or neither of its last two printed steps lowered
+     the count (now not below the last printed count, nor that one below the one before it), with whether the seam
+     freezes while it runs; a ruling on the design change, when the row names one; a ruling of no design flaw, when
+     the check found "none" and a root issue is open.
+   - **Rulings carry the state.** A ruling that orders a design check, or freezes a seam, names the seam's root issue
+     (labelled `root-issue`, filed if none is open, in `pile:blocked` with `**Blocked on:** an owner ruling on its
+     design change`). You run an ordered check before the next proposal and post it on the root issue under
+     `## Evidence — design check`: the statement quoted, with its level, principle and design change, the change
+     critiqued first under `## Design critique`; or "none". A freeze, and a ruled design change, list exactly the
+     issues they block on the root issue's `**Blocks:**` line: a seam whose design change is ruled gets no per-defect
+     fixes, because its stages deliver its open defects. Each listed issue that no open PR carries and that is not
+     already in `pile:blocked` moves there with `**Blocked on:** #<root>`; one an open PR carries stays with that PR;
+     one already blocked keeps its line. When a listed issue's own blocker clears while the root issue is open, by
+     Sort or by a ruling, its line becomes `**Blocked on:** #<root>`. While the root issue is open, no issue on its
+     `**Blocks:**` line gets a new plan beyond the stages a ruling sets, and an open PR on one finishes by its row in
+     *Where an item stands*. A ruling on the design change names the seam's root issue (filed as above if none is
+     open) and lists its stages, each filed as an issue with its budget and the issues it delivers; the root issue
+     then stays in `pile:blocked` with `**Blocked on:** condition — its last stage's PR has merged`. A stage's PR
+     closes only the issues it delivers (another it delivers is a change to the list) and says `Refs #<root>`; when
+     the last stage's PR merges, close the root issue under `## Closed`, citing the stages. That list places them, as
+     step 3 places any ruled issue. A ruling of no design flaw, or one that declines the design change, closes the
+     root issue and lists where its issues go. Every change to a root issue's `**Blocks:**` line or a stage's list is
+     a ruling, except a finding added under *Filing what you find*.
    - From `pile:ready` only. **Design flaws first:** an item on a seam whose design change is ruled to be built,
      while its root issue is open, is the next stage that ruling sets, in the order the owner last approved. Then
      `P1`, `P2`, `P3`, oldest first within each. One slot stays reserved for the oldest `P2` waiting over 30 days that
