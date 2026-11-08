@@ -42,16 +42,22 @@ constant string, as a reference to that name (for an entry, one that is not a
 call). An import of a watched function under another name fails, since every
 later call would go unseen.
 
-A name is a local variable, not the watched function, when the innermost
-function whose body holds the load assigns it in that body and nothing else
-there binds it: not a parameter, not a function-local import, not a
-``global`` or ``nonlocal`` declaration (``open_offer =
-case.offer_record.open``). Its loads are not counted. A name a parameter or
-an import binds may be the watched function, so it is counted, rebound or not
-(``_close_on_explicit_intent``'s ``assess_closure_readiness`` is passed in).
-So is a name in a decorator, a default or an annotation, which the enclosing
-scope evaluates, and an alias assigned from a watched name, through its
-right-hand side.
+In doubt, the census counts. A Load of a watched name is dropped as a local
+variable (``open_offer = case.offer_record.open``) only when all of these
+hold:
+
+* the nearest enclosing scope of the load is a function (a ``def`` or a
+  ``lambda``), and the load sits in that function's body;
+* that function's own body assigns the name;
+* nothing else in that function binds the name: no parameter, no
+  function-local import, no ``global`` or ``nonlocal`` declaration;
+* no scope nested in that function declares the name ``nonlocal``.
+
+Every other Load counts. That includes a load in a class body, a
+comprehension, a decorator, a default or an annotation, and a name that a
+parameter or an import binds, rebound or not. For example,
+``_close_on_explicit_intent``'s ``assess_closure_readiness`` is passed in. An
+alias assigned from a watched name counts through its right-hand side.
 
 Not counted:
 
@@ -552,20 +558,21 @@ _NESTED_SCOPES = _FUNCTIONS + (
 )
 
 
-def _in_body(child: ast.AST, function: ast.AST) -> bool:
-    """Whether ``child``, a child node of ``function``, is in its body. Its
-    decorators, defaults and annotations are evaluated in the enclosing scope."""
-    body = function.body
+def _in_body(child: ast.AST, scope: ast.AST) -> bool:
+    """Whether ``child``, a child node of ``scope``, is in its body: not a
+    decorator, a default, an annotation or a base."""
+    body = scope.body
     if isinstance(body, list):
         return any(child is statement for statement in body)
     return child is body
 
 
 def _locals_of(function: ast.AST) -> frozenset[str]:
-    """The names ``function``'s body assigns that nothing else in its scope
-    binds: not a parameter, not a function-local import, not a ``global`` or
-    ``nonlocal`` declaration. A name bound either way may be the watched
-    function, so its loads stay counted."""
+    """The names ``function``'s body assigns that nothing else binds: not a
+    parameter, not a function-local import, not a ``global`` or ``nonlocal``
+    declaration in it, and not a ``nonlocal`` in any scope nested in it. A
+    name bound any of those ways may be the watched function, so its loads
+    stay counted."""
     arguments = function.args
     bound_otherwise = {
         arg.arg
@@ -584,6 +591,14 @@ def _locals_of(function: ast.AST) -> frozenset[str]:
     while stack:
         node = stack.pop()
         if isinstance(node, _NESTED_SCOPES):
+            # Its own names are its own, but a ``nonlocal`` in it rebinds this
+            # function's name.
+            bound_otherwise.update(
+                name
+                for inner in ast.walk(node)
+                if isinstance(inner, ast.Nonlocal)
+                for name in inner.names
+            )
             continue
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
             stored.add(node.id)
@@ -602,10 +617,10 @@ def collect(tree: ast.AST, path: str) -> Sites:
 
     A Load of a derivation or an entry as a name or an attribute, an attribute
     Load of a field, and a builtin ``getattr`` of any of them by a constant
-    name. A name that is a local variable of the innermost function whose
-    body holds it (``_locals_of``) is not a site. An import, a ``def``, an
-    assignment or a ``del`` is not a Load; an import under another name is a
-    mark.
+    name. A load in a function's body, of a name that is that function's
+    local variable (``_locals_of``), is not a site; every other Load is. An
+    import, a ``def``, an assignment or a ``del`` is not a Load; an import
+    under another name is a mark.
     """
     parents = {
         child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)
@@ -621,13 +636,17 @@ def collect(tree: ast.AST, path: str) -> Sites:
         return ".".join(reversed(names)) or "<module>"
 
     def is_local(node: ast.Name) -> bool:
-        child, function = node, parents.get(node)
-        while function is not None and not (
-            isinstance(function, _FUNCTIONS) and _in_body(child, function)
-        ):
-            child, function = function, parents.get(function)
-        if function is None:
+        # The nearest enclosing scope decides. Only a load in a function's
+        # body is judged against its locals; a load in a class body, a
+        # comprehension or a function's signature is counted.
+        child, scope = node, parents.get(node)
+        while scope is not None and not isinstance(scope, _NESTED_SCOPES):
+            child, scope = scope, parents.get(scope)
+        if scope is None or not isinstance(scope, _FUNCTIONS):
             return False
+        if not _in_body(child, scope):
+            return False
+        function = scope
         if function not in locals_memo:
             locals_memo[function] = _locals_of(function)
         return node.id in locals_memo[function]
@@ -1023,6 +1042,67 @@ class TestTheCollector:
         compile(source, "m.py", "exec")
         assert collect(ast.parse(source), "m.py").derivations == {
             ("m.py", scope): Counter({"fix_windows": count})
+        }
+
+    @pytest.mark.parametrize(
+        ("source", "scope"),
+        [
+            # A class body resolves a name itself: an import, a ``global`` or
+            # an assignment after the load leaves the function's local unread.
+            (
+                "def run(case):\n    fix_windows = None\n    class C:\n"
+                "        from ca import fix_windows\n"
+                "        r = fix_windows(case)\n    return C.r",
+                "run.C",
+            ),
+            (
+                "def run(case):\n    fix_windows = None\n    class C:\n"
+                "        global fix_windows\n        r = fix_windows(case)\n"
+                "    return C.r",
+                "run.C",
+            ),
+            (
+                "def run(case):\n    fix_windows = None\n    class C:\n"
+                "        r = fix_windows(case)\n        fix_windows = 1\n"
+                "    return C.r",
+                "run.C",
+            ),
+            # A nested scope's ``nonlocal`` rebinds the function's name.
+            (
+                "def run(case):\n    fix_windows = None\n    def setter():\n"
+                "        nonlocal fix_windows\n        from ca import fix_windows\n"
+                "    setter()\n    return fix_windows(case)",
+                "run",
+            ),
+            (
+                "def run(case):\n    fix_windows = None\n    class C:\n"
+                "        nonlocal fix_windows\n        from ca import fix_windows\n"
+                "    return fix_windows(case)",
+                "run",
+            ),
+            # A comprehension, a nested def's default and a class decorator
+            # are counted even where the function assigns the name.
+            (
+                "def run(cases):\n    fix_windows = None\n"
+                "    return [fix_windows(c) for c in cases]",
+                "run",
+            ),
+            (
+                "def run(case):\n    fix_windows = None\n"
+                "    def g(cb=fix_windows):\n        return cb\n    return g()",
+                "run.g",
+            ),
+            (
+                "def run(case):\n    fix_windows = None\n"
+                "    @fix_windows\n    class C:\n        pass\n    return C",
+                "run.C",
+            ),
+        ],
+    )
+    def test_a_load_outside_the_function_body_proper_is_counted(self, source, scope):
+        compile(source, "m.py", "exec")
+        assert collect(ast.parse(source), "m.py").derivations == {
+            ("m.py", scope): Counter({"fix_windows": 1})
         }
 
     @pytest.mark.parametrize(
