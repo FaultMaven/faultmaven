@@ -33,6 +33,13 @@ concurrency:
 permissions:
   contents: read
 
+# The overall coverage floor, the one number both aggregate jobs (Test
+# Standalone, Test Cloud) gate on. Principle 9 states it in prose
+# (docs/architecture/core-architecture/architectural-design-principles.md);
+# tests/unit/ci/test_coverage_floor_is_one_number.py holds the two equal.
+env:
+  COVERAGE_FAIL_UNDER: "70"
+
 # Every workflow in this directory pins:
 #   - the runner image, `ubuntu-24.04`, not `ubuntu-latest`. That label moves
 #     to 26.04 over 2026-10-19 .. 2026-11-19 (actions/runner-images#14748),
@@ -518,9 +525,9 @@ jobs:
           retention-days: 7
 
   # The required check "Test Standalone": every slice passed, and the coverage of
-  # the three, combined, clears the threshold the unsplit job held. It runs
-  # no test itself. Same condition as the slices, so a docs-only diff skips
-  # it and a failed detector runs it.
+  # the three, combined, clears the floor in COVERAGE_FAIL_UNDER (top of this
+  # file). It runs no test itself. Same condition as the slices, so a
+  # docs-only diff skips it and a failed detector runs it.
   test-standalone:
     needs: [changes, code-quality, test-standalone-slice]
     if: >-
@@ -569,7 +576,7 @@ jobs:
             exit 1
           fi
           coverage combine coverage-data/
-          coverage report --show-missing --fail-under=50
+          coverage report --show-missing --fail-under="$COVERAGE_FAIL_UNDER"
 
   # ============================================================================
   # CLOUD TESTING
@@ -866,9 +873,9 @@ jobs:
           retention-days: 7
 
   # The required check "Test Cloud": every slice passed, and the coverage of
-  # the three, combined, clears the threshold the unsplit job held. It runs
-  # no test itself. Same condition as the slices, so a docs-only diff skips
-  # it and a failed detector runs it.
+  # the three, combined, clears the floor in COVERAGE_FAIL_UNDER (top of this
+  # file). It runs no test itself. Same condition as the slices, so a
+  # docs-only diff skips it and a failed detector runs it.
   test-cloud:
     needs: [changes, code-quality, test-cloud-slice]
     if: >-
@@ -917,7 +924,7 @@ jobs:
             exit 1
           fi
           coverage combine coverage-data/
-          coverage report --show-missing --fail-under=50
+          coverage report --show-missing --fail-under="$COVERAGE_FAIL_UNDER"
 
   # ============================================================================
   # POSTGRESQL INTEGRATION
