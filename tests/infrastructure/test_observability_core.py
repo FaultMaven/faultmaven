@@ -13,22 +13,28 @@ from faultmaven.infrastructure.observability.tracing import trace
 
 
 @pytest.fixture
-def restore_opik_sdk_state():
-    """Contain init_opik_tracing's process-global side effects.
+def restore_opik_sdk_state(monkeypatch):
+    """Contain opik_sdk.configure's process-global side effects.
 
-    init_opik_tracing sets os.environ["OPIK_TRACK_DISABLE"] and calls
-    opik.set_tracing_active() — both process-global with no restore path. A
-    test that calls it would otherwise leave the SDK's tracing flag flipped
-    for every test that runs after it in the session, making any later
-    in-process assertion about tracing order-dependent.
+    configure sets os.environ["OPIK_TRACK_DISABLE"], calls
+    opik.set_tracing_active() and writes the trace record — all process-global
+    with no restore path. A test that calls it would otherwise leave the SDK's
+    tracing flag flipped for every test that runs after it in the session,
+    making any later in-process assertion about tracing order-dependent.
     """
+    from faultmaven.infrastructure.observability import opik_sdk
+
+    monkeypatch.setattr(opik_sdk, "_record", opik_sdk.backend())
+    monkeypatch.setattr(
+        opik_sdk, "_track_disable_prior_value", opik_sdk._track_disable_prior_value
+    )
     previous_env = os.environ.get("OPIK_TRACK_DISABLE")
     try:
         import opik
 
         # ``import opik`` succeeding is not proof the SDK is there: an empty
         # leftover directory imports as a namespace package exposing nothing
-        # (see infrastructure/observability/tracing.py for why that happens).
+        # (see faultmaven/utils/optional_dependency.py for why that happens).
         # Test the discriminator rather than catching AttributeError off the
         # call below — a broad catch would also swallow a genuine SDK API
         # change and, by setting ``opik = None``, silently disable the teardown
@@ -160,9 +166,10 @@ class TestObservabilityIntegration:
         proven in tests/unit/infrastructure/observability/test_opik_fail_closed.py
         under subprocess-controlled environments."""
         from faultmaven.infrastructure.llm import router
+        from faultmaven.infrastructure.observability import opik_sdk
 
         wrapped = hasattr(router.LLMRouter.route, "__wrapped__")
-        assert wrapped == router.OPIK_AVAILABLE
+        assert wrapped == opik_sdk.OPIK_AVAILABLE
 
     def test_agent_has_tracing(self):
         """Verify agent service methods have trace decorators."""
@@ -234,32 +241,27 @@ class TestObservabilityConfiguration:
 
         assert callable(trace)
 
-    def test_tracing_functions_import(self):
-        """Test that tracing utility functions can be imported."""
-        from faultmaven.infrastructure.observability.tracing import init_opik_tracing
-
-        assert callable(init_opik_tracing)
-
-    def test_init_opik_tracing_graceful_failure(self, restore_opik_sdk_state):
-        """Test that init_opik_tracing handles failures gracefully.
+    def test_configure_never_refuses_startup(self, restore_opik_sdk_state):
+        """configure records a failure and returns; it never raises.
 
         Uses restore_opik_sdk_state: with OPIK_ENABLED cleared by conftest
         this call takes the disabled path, which flips the SDK's global
         tracing flag and sets OPIK_TRACK_DISABLE for the rest of the session.
         """
-        from faultmaven.infrastructure.observability.tracing import init_opik_tracing
+        from faultmaven.config.settings import get_settings
+        from faultmaven.infrastructure.observability import opik_sdk
 
-        # Should not raise exceptions even with invalid parameters
-        init_opik_tracing(api_key="invalid-key")
+        assert opik_sdk.configure(get_settings()).configured is False
+        assert opik_sdk.configure(object()).reason == (
+            "configuring the trace backend raised AttributeError"
+        )
 
     def test_observability_constants(self):
         """Test that observability constants are defined."""
-        from faultmaven.infrastructure.observability import tracing
+        from faultmaven.infrastructure.observability import opik_sdk, tracing
 
         # Should have availability flags
-        assert hasattr(tracing, "OPIK_AVAILABLE")
-        assert hasattr(tracing, "PROMETHEUS_AVAILABLE")
-        assert isinstance(tracing.OPIK_AVAILABLE, bool)
+        assert isinstance(opik_sdk.OPIK_AVAILABLE, bool)
         assert isinstance(tracing.PROMETHEUS_AVAILABLE, bool)
 
 
@@ -324,7 +326,7 @@ class TestObservabilityErrorResilience:
         """Test that functions work even when tracing fails."""
 
         with patch(
-            "faultmaven.infrastructure.observability.tracing.OPIK_AVAILABLE", False
+            "faultmaven.infrastructure.observability.opik_sdk.OPIK_AVAILABLE", False
         ):
 
             @trace("resilience_test")

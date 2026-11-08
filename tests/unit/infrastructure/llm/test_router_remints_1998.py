@@ -293,24 +293,6 @@ async def test_what_the_router_keeps_is_plain_text(router, provider):
     assert all(type(m["content"]) is str for m in response.sanitized_messages)
 
 
-async def test_raw_telemetry_fields_are_plain_text(router, monkeypatch):
-    """With raw-prompt logging on, ``raw_prompt``/``raw_messages`` are plain ``str``."""
-    monkeypatch.setattr(router.settings.observability, "opik_log_raw_prompts", True)
-    with sanitize_pii_pinned(False):
-        first = await router.route(
-            prompt=vetted("cache me"), model=MODEL, max_tokens=50
-        )
-        cached = await router.route(
-            prompt=vetted("cache me"), model=MODEL, max_tokens=50
-        )
-        routed = await router.route(messages=_minted_messages(), max_tokens=50)
-    assert type(first.raw_prompt) is str
-    assert type(cached.raw_prompt) is str
-    assert all(type(m["content"]) is str for m in routed.raw_messages)
-    arguments = routed.raw_messages[2]["tool_calls"][0]["function"]["arguments"]
-    assert type(arguments) is str
-
-
 # ---------------------------------------------------------------------------
 # A6: route() checks at entry, without unwrapping, before the SANITIZE_PII pass
 # ---------------------------------------------------------------------------

@@ -1,7 +1,6 @@
 """Infrastructure shims for graceful degradation.
 
 This package provides shim layers for optional enterprise dependencies:
-- Observability (Opik): Distributed tracing
 - Security (Presidio): PII redaction
 - Metrics (Prometheus): Metrics collection
 
@@ -10,18 +9,12 @@ Shims enable FaultMaven to run in both:
 - Enterprise mode: Full observability, security, and metrics features
 
 Environment Variables:
-    ENABLE_TRACING: Set to 'true' to enable Opik distributed tracing
     ENABLE_PII_REDACTION: Set to 'true' to enable Presidio PII redaction
     ENABLE_METRICS: Set to 'true' to enable Prometheus metrics collection
 
 Usage:
-    from faultmaven.infrastructure.shims import track, PIIRedactor
+    from faultmaven.infrastructure.shims import PIIRedactor
     from faultmaven.infrastructure.shims import Counter, Histogram, Gauge
-
-    # Tracing (no-op if Opik not installed or disabled)
-    @track("my_operation")
-    async def my_function():
-        pass
 
     # PII redaction (pass-through if Presidio not installed or disabled)
     redactor = PIIRedactor()
@@ -33,13 +26,9 @@ Usage:
 
     # Check status of shims
     from faultmaven.infrastructure.shims import (
-        get_tracing_status,
         get_pii_redaction_status,
         get_metrics_status,
     )
-
-    tracing = get_tracing_status()
-    print(f"Tracing active: {tracing['active']}")
 
     pii = get_pii_redaction_status()
     print(f"PII redaction available: {pii['would_be_active']}")
@@ -48,7 +37,7 @@ Usage:
     print(f"Metrics active: {metrics['active']}")
 
 Import cost:
-    These names are resolved lazily (PEP 562). Re-exporting all three shims
+    These names are resolved lazily (PEP 562). Re-exporting all the shims
     eagerly meant that importing ANY one of them paid for ALL of them: the
     optional cloud dependencies behind them are heavy, and Presidio's nlp
     engine imports torch at module scope purely to detect a device. Measured
@@ -56,7 +45,6 @@ Import cost:
     submodule, all of it the eager package ``__init__``:
 
         shims.metrics        17.85s   (torch resident: True)
-        shims.observability  13.60s   (torch resident: True)
         shims.security       13.40s   (torch resident: True)
 
     Because `core.investigation` reaches `shims.metrics` via
@@ -98,12 +86,6 @@ if TYPE_CHECKING:  # static analysis only — never executed at runtime
         sla_response_time_p95_seconds,
         sla_status,
     )
-    from .observability import (
-        OPIK_AVAILABLE,
-        get_tracing_status,
-        is_tracing_active,
-        track,
-    )
     from .security import (
         PRESIDIO_AVAILABLE,
         PIIRedactor,
@@ -143,12 +125,6 @@ _EXPORTS_BY_SUBMODULE = {
         "sla_response_time_p95_seconds",
         "sla_status",
     ),
-    "observability": (
-        "OPIK_AVAILABLE",
-        "get_tracing_status",
-        "is_tracing_active",
-        "track",
-    ),
     "security": (
         "PRESIDIO_AVAILABLE",
         "PIIRedactor",
@@ -175,8 +151,7 @@ def __getattr__(name: str):
         return value
 
     # Submodules. Importing a submodule binds it on its parent package, so the
-    # old eager re-exports made `shims.metrics`, `.observability` and
-    # `.security` reachable as plain attributes as a side effect. Resolving any
+    # old eager re-exports made `shims.metrics` and `.security` reachable as plain attributes as a side effect. Resolving any
     # real submodule keeps that working — and only imports the one asked for,
     # so the isolation this laziness buys is preserved.
     try:
@@ -201,11 +176,6 @@ def __dir__() -> list:
 
 
 __all__ = [
-    # Observability exports
-    "track",
-    "get_tracing_status",
-    "is_tracing_active",
-    "OPIK_AVAILABLE",
     # Security exports
     "PIIRedactor",
     "get_pii_redaction_status",

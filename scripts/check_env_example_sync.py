@@ -50,6 +50,9 @@ ALLOWLIST = {
     # os.environ (env_prefix="opik_") and main.py's load_settings_dotenv() puts
     # .env there first. Mirroring it as a settings field would shadow the SDK's default.
     "OPIK_TRACK_DISABLE",
+    # Owned by the Opik SDK the same way, read when it is imported;
+    # infrastructure/observability/opik_sdk.py defaults it to false first.
+    "OPIK_SENTRY_ENABLE",
     # Read via os.getenv in config/protection.py
     # (``resolve_protection_profile``), the one reader that decides which
     # protection preset a deployment installs. Not mirrored as a settings

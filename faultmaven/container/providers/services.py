@@ -36,12 +36,14 @@ def llm_trace_eraser(settings: FaultMavenSettings) -> Any | None:
     case delete (#2102), and the draft and document deletes and ``fm-reset-kb``
     (#2575).
 
-    ``None`` when ``OPIK_ENABLED`` is off or no backend URL is set, as then
-    nothing records a trace (``init_opik_tracing`` disables tracing). A backend
-    configured without the Opik SDK binds an eraser that raises, so every
+    ``None`` when settings name no backend (``OPIK_ENABLED`` off, or neither
+    ``OPIK_USE_LOCAL`` nor ``OPIK_URL_OVERRIDE``): then nothing records a trace.
+    A named backend is bound by the record ``opik_sdk.configure`` wrote: on its
+    project when configured, otherwise as an eraser that raises (no SDK, a
+    configuration that raised, a composition that never configured), so every
     delete fails instead of skipping its traces.
     """
-    from faultmaven.infrastructure.observability import tracing
+    from faultmaven.infrastructure.observability import opik_sdk
     from faultmaven.infrastructure.observability.trace_erasure import (
         LLMTraceEraser,
         UnavailableTraceEraser,
@@ -50,11 +52,10 @@ def llm_trace_eraser(settings: FaultMavenSettings) -> Any | None:
     obs = settings.observability
     if not (obs.opik_enabled and (obs.opik_use_local or obs.opik_url_override)):
         return None
-    if tracing.OPIK_AVAILABLE:
-        # None reads the client's project, where ``init_opik_tracing`` sends
-        # traces when the name is empty; "" would search a project named "".
-        return LLMTraceEraser(obs.opik_project_name or None)
-    return UnavailableTraceEraser("the Opik SDK is not installed")
+    record = opik_sdk.backend()
+    if record.configured:
+        return LLMTraceEraser(record.project)
+    return UnavailableTraceEraser(record.reason or opik_sdk.NOT_CONFIGURED)
 
 
 def case_store_erasers(

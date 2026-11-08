@@ -383,13 +383,9 @@ async def reset_kb(
         return 1
 
     from faultmaven.container.providers.services import llm_trace_eraser
-    from faultmaven.infrastructure.observability import tracing
 
+    # ``run_with_container`` configured the trace backend before this ran.
     purge = TracePurge(llm_trace_eraser(settings))
-    if purge.eraser is not None:
-        # The eraser refuses until this process has configured the backend, as
-        # the API's lifespan does.
-        tracing.init_opik_tracing(settings=settings)
 
     # The survey reads; the wipe writes in a session of its own, after the
     # purge, so no transaction is open across the trace backend's calls.

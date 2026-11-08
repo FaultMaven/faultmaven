@@ -32,9 +32,16 @@ later, so the delete fails when:
 
 - the backend cannot be reached, or the queued traces are not sent in time;
 - the backend answers an error, or pages that disagree with their total;
-- `OPIK_ENABLED` and a backend URL are set but tracing did not initialize, or
-  the Opik SDK is not installed;
+- `OPIK_ENABLED` and a backend URL are set but this process did not configure
+  tracing: the Opik SDK is not installed, configuring it raised, or the
+  process never configured it;
 - the erase takes longer than 60 s.
+
+A trace search for a project the backend does not have answers 404, which is
+nothing to delete only after the same backend lists its projects and none has
+exactly the configured name; anything else fails the delete (#2588). That
+check cannot tell a backend URL or workspace that changed after the traces
+were written (#2581).
 
 With `OPIK_TRACK_DISABLE=true` a delete still purges: the flag stops new spans,
 and the traces already recorded can still be deleted.
@@ -121,9 +128,12 @@ read reports it.
   search may not be found by it.
 - **Traces on another replica (#2573).** After a connection failure the SDK
   parks traces in a SQLite database on that pod. A parked trace replays only
-  when a delete runs on that pod, or after `init_opik_tracing`'s ping interval of
-  999999 s, which is about 11.6 days. A trace parked or still batched on another
-  replica is invisible to the delete and can land after it.
+  when a delete runs on that pod, or after the SDK's ping interval of 999999 s
+  (`opik_sdk.PING_INTERVAL_S`), which is about 11.6 days. A trace parked or
+  still batched on another replica is invisible to the delete and can land
+  after it. Each replica's `GET /admin/config/status` reports it under
+  `trace_backend`: `server_connection` reads `disconnected` while it parks,
+  and `parked_messages` counts what it holds.
 - **The title route (#2580).** It holds no lease, so its trace can land after
   the delete.
 - **Traces recorded before #2102.** They carry no case tag, so they cannot be

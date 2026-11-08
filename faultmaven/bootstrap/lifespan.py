@@ -20,7 +20,7 @@ from faultmaven.bootstrap.composition import (
     stop_config_watcher,
 )
 from faultmaven.infrastructure.concurrency.teardown import cancel_and_wait, run_teardown
-from faultmaven.infrastructure.observability.tracing import init_opik_tracing
+from faultmaven.infrastructure.observability import opik_sdk
 
 if TYPE_CHECKING:
     from faultmaven.config.settings import FaultMavenSettings
@@ -123,6 +123,10 @@ async def lifespan(app: FastAPI):
         logger.error(f"Configuration initialization failed: {e}")
         raise
 
+    # The trace SDK's process policy, recorded before composition reads it: the
+    # case delete's eraser is bound from that record (#2616 part c).
+    opik_sdk.configure(settings)
+
     # Container initialization and the composition root. Failures are refused
     # or tolerated there, per deployment mode — not here. A refused composition
     # takes itself back before it raises.
@@ -212,9 +216,6 @@ async def _start_serving(app: FastAPI, settings: "FaultMavenSettings") -> None:
                     logger.warning(f"Failed to pre-load {model_name}: {e}")
     except Exception as e:
         logger.warning(f"ML model loading configuration error: {e}")
-
-    # Setup tracing
-    init_opik_tracing()
 
     # Check and start local LLM services if needed
     try:

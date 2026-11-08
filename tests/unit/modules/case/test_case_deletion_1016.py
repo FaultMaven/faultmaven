@@ -32,7 +32,7 @@ from faultmaven.config.tenant_context import set_current_enterprise_id
 from faultmaven.container.providers.services import create_case_service
 from faultmaven.exceptions import NotFoundError, ServiceError, ServiceException
 from faultmaven.infrastructure.concurrency.inflight import CaseDeleteGate
-from faultmaven.infrastructure.observability import tracing
+from faultmaven.infrastructure.observability import opik_sdk
 from faultmaven.infrastructure.observability.trace_erasure import LLMTraceEraser
 from faultmaven.infrastructure.persistence.case_vector_store import CaseVectorStore
 from faultmaven.infrastructure.persistence.models import Base
@@ -496,29 +496,30 @@ class TestComposition:
         with pytest.raises(ServiceException, match="Cannot clear case_vectors"):
             await absent.store_erasers[3].erase_case("case_a", ENTERPRISE)
 
-    # The LLM traces (#2102): the same two settings ``init_opik_tracing`` reads,
-    # so an eraser is bound only where something can write a trace.
+    # The LLM traces (#2102): the settings say whether a backend is named, so an
+    # eraser is bound only where something can write a trace; the record
+    # ``opik_sdk.configure`` wrote says which project, or why it cannot.
+
+    @staticmethod
+    def _record(monkeypatch, **fields):
+        record = opik_sdk.TraceBackend(sdk_available=True, **fields)
+        monkeypatch.setattr(opik_sdk, "_record", record)
 
     @pytest.mark.parametrize(
-        "backend, project, searched",
-        [
-            ({"opik_use_local": True}, "fm-project", "fm-project"),
-            ({"opik_url_override": "http://opik.test"}, "fm-project", "fm-project"),
-            # ``init_opik_tracing`` gives an empty name its own default.
-            ({"opik_use_local": True}, "", None),
-        ],
-        ids=["local", "url-override", "empty-project-name"],
+        "backend",
+        [{"opik_use_local": True}, {"opik_url_override": "http://opik.test"}],
+        ids=["local", "url-override"],
     )
     def test_tracing_with_a_backend_binds_the_trace_eraser_first(
-        self, tmp_path, monkeypatch, backend, project, searched
+        self, tmp_path, monkeypatch, backend
     ):
-        monkeypatch.setattr(tracing, "OPIK_AVAILABLE", True)
+        self._record(monkeypatch, configured=True, project="fm-project")
         service = self._build(
             tmp_path,
             skip=True,
             case_vector_store=None,
             opik_enabled=True,
-            opik_project_name=project,
+            opik_project_name="another-name",
             **backend,
         )
 
@@ -530,7 +531,8 @@ class TestComposition:
             "pii_redaction_registry",
         ]
         assert isinstance(service.store_erasers[0], LLMTraceEraser)
-        assert service.store_erasers[0].project_name == searched
+        # The record's project, resolved once, not the setting read again.
+        assert service.store_erasers[0].project_name == "fm-project"
         assert service.stores_not_configured == ("case_vectors",)
 
     @pytest.mark.parametrize(
@@ -544,7 +546,7 @@ class TestComposition:
     def test_no_backend_names_the_traces_not_configured(
         self, tmp_path, monkeypatch, observability
     ):
-        monkeypatch.setattr(tracing, "OPIK_AVAILABLE", True)
+        self._record(monkeypatch, configured=True, project="fm-project")
         service = self._build(
             tmp_path, skip=True, case_vector_store=None, **observability
         )
@@ -552,10 +554,27 @@ class TestComposition:
         assert "llm_traces" not in [e.store_name for e in service.store_erasers]
         assert service.stores_not_configured == ("llm_traces", "case_vectors")
 
-    async def test_a_backend_with_no_sdk_fails_every_delete(
-        self, tmp_path, monkeypatch
+    @pytest.mark.parametrize(
+        "record, refusal",
+        [
+            (
+                {"sdk_available": False, "reason": "the Opik SDK is not installed"},
+                "SDK is not installed",
+            ),
+            (
+                {"reason": "configuring the trace backend raised RuntimeError"},
+                "raised RuntimeError",
+            ),
+            # A composition that never configured: the jobs runner before #2620.
+            ({}, "tracing was not configured in this process"),
+        ],
+        ids=["no-sdk", "configure-raised", "never-configured"],
+    )
+    async def test_a_named_backend_not_configured_fails_every_delete(
+        self, tmp_path, monkeypatch, record, refusal
     ):
-        monkeypatch.setattr(tracing, "OPIK_AVAILABLE", False)
+        """C1: fail closed. A ``None`` here would skip the traces silently."""
+        monkeypatch.setattr(opik_sdk, "_record", opik_sdk.TraceBackend(**record))
         service = self._build(
             tmp_path,
             skip=True,
@@ -565,7 +584,7 @@ class TestComposition:
         )
 
         assert service.stores_not_configured == ("case_vectors",)
-        with pytest.raises(ServiceException, match="llm_traces.*SDK is not installed"):
+        with pytest.raises(ServiceException, match=f"llm_traces.*{refusal}"):
             await service.store_erasers[0].erase_case("case_a", ENTERPRISE)
 
     async def test_a_trace_backend_that_is_down_leaves_the_case_untouched(
@@ -574,8 +593,7 @@ class TestComposition:
         """The real composition through ``hard_delete_case``: the traces clear
         first, and the SDK error, wrapped by the eraser (#2575), names the
         store in the log."""
-        monkeypatch.setattr(tracing, "OPIK_AVAILABLE", True)
-        monkeypatch.setattr(tracing, "_tracing_configured", True)
+        self._record(monkeypatch, configured=True, project="faultmaven")
 
         def unreachable(*_args):
             raise httpx.ConnectError("Connection refused")

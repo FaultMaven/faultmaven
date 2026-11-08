@@ -472,7 +472,10 @@ class TestTheBudgetTable:
         # +1 in #1882: a turn's one commit — its p50 against a regression
         # anchor per pull request, its p99 against the commit reserve in the
         # nightly (#1902). One row: the two statistics are of one window.
-        assert len(performance_table.ALL_BUDGETS) == 29
+        #
+        # -1 in #2620: the observability shim's no-op ``track``, deleted with
+        # the shim.
+        assert len(performance_table.ALL_BUDGETS) == 28
 
     @pytest.mark.parametrize("name", sorted(ALL_ANCHORS))
     def test_the_anchor_is_2_to_3x_its_measured_reference(self, name):
@@ -1660,7 +1663,7 @@ class TestEveryStatisticIsWindowed:
             if module.startswith(f"{_PERF}/")
             and _reaches(definitions, (module, name), WINDOW_AGGREGATORS, False)
         ]
-        assert len(checked) >= 25, checked
+        assert len(checked) >= 24, checked
 
     def test_every_order_statistic_entry_is_live(self):
         """Each entry is a judged test that really times outside the sampler;

@@ -10,8 +10,8 @@ anything else is recorded as before.
 
 Driven through ``LLMRouter.route`` with a real Anthropic provider and only the
 HTTP layer mocked, because the span is written there, from the SANITIZED prompt
-and messages the route builds. ``opik_context`` is patched in: ``opik`` is not a
-dependency of the standalone install.
+and messages the route builds. ``opik_sdk``'s gate and span writers are patched
+in: ``opik`` is not a dependency of the standalone install.
 
 The same span and its trace carry the case and the enterprise, which is how the
 case delete finds them (#2102): ``TestTheTraceIsTaggedWithItsCase`` below. A
@@ -34,6 +34,7 @@ from faultmaven.infrastructure.llm.providers.registry import (
     ProviderState,
 )
 from faultmaven.infrastructure.llm.router import TELEMETRY_PAYLOAD_MAX_CHARS
+from faultmaven.infrastructure.observability import opik_sdk
 from tests.model_content import vetted_kwargs
 
 pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
@@ -99,15 +100,10 @@ async def _routed(*calls: dict, tracing: bool = True, opik_context=None) -> Magi
             "faultmaven.infrastructure.llm.router.get_registry",
             return_value=_registry(),
         ),
-        patch(
-            "faultmaven.infrastructure.llm.router._opik_tracing_enabled",
-            return_value=tracing,
-        ),
-        patch("faultmaven.infrastructure.llm.router.OPIK_AVAILABLE", True),
-        patch(
-            "faultmaven.infrastructure.llm.router.opik_context",
-            opik_context,
-            create=True,
+        patch.object(opik_sdk, "tracing_is_effective", return_value=tracing),
+        patch.object(opik_sdk, "update_current_span", opik_context.update_current_span),
+        patch.object(
+            opik_sdk, "update_current_trace", opik_context.update_current_trace
         ),
         patch("aiohttp.ClientSession", return_value=_session()),
     ):
@@ -275,13 +271,13 @@ class TestTheTraceIsTaggedWithItsCase:
         """With ``create_duplicate_root_span=False`` the SDK would record the
         raw return value as the trace's output."""
         with (
-            patch.object(router_module, "OPIK_AVAILABLE", True),
-            patch.object(router_module, "opik", create=True) as opik,
+            patch.object(opik_sdk, "OPIK_AVAILABLE", True),
+            patch.object(opik_sdk, "track") as track,
         ):
             router_module._opik_track_llm("x")(AsyncMock())
 
-        opik.track.assert_called_once()
-        assert "create_duplicate_root_span" not in opik.track.call_args.kwargs
+        track.assert_called_once()
+        assert "create_duplicate_root_span" not in track.call_args.kwargs
 
 
 @pytest.mark.usefixtures("restore_tenant_context")

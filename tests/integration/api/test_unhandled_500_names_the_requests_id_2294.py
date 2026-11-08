@@ -56,16 +56,14 @@ ALLOWED_ORIGIN = "http://localhost:3333"
 def _app_with_routes(*, skip_service_checks: bool, request_ids: bool = False):
     """The real app, rebuilt. ``request_ids`` mounts ``RequestIdMiddleware``,
     which every deployment runs and ``setup_middleware`` skips in a test
-    environment, by answering that question "no" for the build. The Opik
-    middleware it would also mount stays off: it traces to a server."""
+    environment, by answering that question "no" for the build. No Opik
+    middleware is mounted: the pinned SDK ships none, and no trace backend is
+    configured in a test process."""
     environment = {"SKIP_SERVICE_CHECKS": "true" if skip_service_checks else "false"}
     if request_ids:
-        with (
-            patch(
-                "faultmaven.bootstrap.middleware._is_test_environment",
-                return_value=False,
-            ),
-            patch("faultmaven.bootstrap.middleware.OPIK_MIDDLEWARE_AVAILABLE", False),
+        with patch(
+            "faultmaven.bootstrap.middleware._is_test_environment",
+            return_value=False,
         ):
             app = rebuild_app_under(environment)
     else:

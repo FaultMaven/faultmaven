@@ -1,4 +1,4 @@
-"""Shared AST analysis for the "a swallowed ImportError hides a defect" guards.
+"""Shared AST analysis for the guards that read a module's imports.
 
 Two guards ask the same question about the same construct:
 
@@ -6,6 +6,10 @@ Two guards ask the same question about the same construct:
   availability flag assigned ``True`` inside a try that swallows ImportError?
 * ``tests/unit/architecture/test_swallowed_first_party_imports.py`` — does a
   first-party import inside such a construct name a module that exists?
+
+A third asks which modules import a package at all:
+``tests/unit/architecture/test_opik_imported_in_one_module_2620.py``
+(:func:`imported_modules`).
 
 The guards live in their own modules, but the *analysis* lives here so that
 hardening it hardens every guard at once — the alternative, a copy per module,
@@ -195,3 +199,25 @@ def executed_when_block_runs(body) -> Iterator[ast.AST]:
             yield from emit(node)
 
     yield from _walk_all(body)
+
+
+def imported_modules(tree: ast.AST) -> Iterator[tuple[str, int]]:
+    """Every absolute module name ``tree`` imports, with its line, at any depth:
+    ``import``, ``from ... import`` and a literal ``import_module(...)`` or
+    ``__import__(...)``. A relative import names no package of its own.
+    """
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                yield alias.name, node.lineno
+        elif isinstance(node, ast.ImportFrom):
+            if node.level == 0 and node.module:
+                yield node.module, node.lineno
+        elif (
+            isinstance(node, ast.Call)
+            and ast.unparse(node.func).split(".")[-1] in ("import_module", "__import__")
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+        ):
+            yield node.args[0].value, node.lineno

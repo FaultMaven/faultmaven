@@ -1,12 +1,9 @@
 """A namespace-package shadow must not count as an installed Opik SDK.
 
-Why an empty directory imports at all, and which sites were affected, is
-documented once beside the guard itself — see
-``faultmaven/infrastructure/observability/tracing.py``. This file pins the two
-bare-``import opik`` sites that guard reaches: ``tracing.OPIK_AVAILABLE``
-(which feeds ``OpikTracer.health_check``'s ``opik_sdk_available``) and
-``bootstrap.middleware.OPIK_AVAILABLE`` (which picks the startup log line and
-gates ``OpikMiddleware``; moved out of ``faultmaven.main`` in fm#1707 wave 2).
+Why an empty directory imports at all is documented once beside the guard
+itself — see ``faultmaven/utils/optional_dependency.py``. This file pins the one
+``import opik`` site, ``opik_sdk.OPIK_AVAILABLE``, which every call site, the
+middleware branch and ``OpikTracer.health_check`` read (#2616 part c).
 
 The first test pins the CPython fact the guards rest on rather than assuming
 it, and pins it precisely: a namespace package *sets* ``__file__`` to None
@@ -65,7 +62,7 @@ def test_only_a_file_backed_package_sets_file_and_origin(
 
 
 def _probe(substitute: str) -> dict:
-    """Report both guards from one interpreter, with `substitute` installed.
+    """Report the guard from a fresh interpreter, with `substitute` installed.
 
     A subprocess because the stand-in ``opik`` has to be in ``sys.modules``
     before the modules under test import it, and they read it only once, at
@@ -74,11 +71,6 @@ def _probe(substitute: str) -> dict:
     probe would place an empty dir on PYTHONPATH, namespace scanning would
     continue past it to the real ``opik/__init__.py`` in site-packages, and on
     CI the test would silently measure the real package and pass vacuously.
-
-    One interpreter for both flags, imported explicitly rather than relying on
-    one to pull in the other (``bootstrap.middleware`` does not import
-    ``tracing``): a separate tracing-only probe would pay a second process for
-    a fact this one already has.
 
     Runs in a temporary cwd (importing the app bootstraps settings, which
     writes ``data/``) and pins ``faultmaven`` to this checkout, since the
@@ -93,15 +85,13 @@ sys.modules["opik"] = opik
 
 import json
 
-from faultmaven.infrastructure.observability import tracing
-from faultmaven.bootstrap import middleware as bootstrap_middleware
+from faultmaven.infrastructure.observability import opik_sdk
 
 with open(OUT, "w") as f:
     json.dump(
         {{
-            "tracing_available": tracing.OPIK_AVAILABLE,
-            "main_available": bootstrap_middleware.OPIK_AVAILABLE,
-            "main_middleware_available": bootstrap_middleware.OPIK_MIDDLEWARE_AVAILABLE,
+            "available": opik_sdk.OPIK_AVAILABLE,
+            "middleware": opik_sdk.fastapi_middleware() is not None,
         }},
         f,
     )
@@ -151,16 +141,14 @@ _REAL = (
 
 def test_namespace_shadow_is_not_an_installed_sdk():
     result = _probe(_SHADOW)
-    assert result["tracing_available"] is False
-    assert result["main_available"] is False
-    assert result["main_middleware_available"] is False
+    assert result["available"] is False
+    assert result["middleware"] is False
 
 
 def test_installed_sdk_is_detected():
     result = _probe(_REAL)
-    assert result["tracing_available"] is True
-    assert result["main_available"] is True
+    assert result["available"] is True
     # The middleware lives in a submodule, which the stand-in does not have, so
     # only the top-level flag flips. Asserted rather than merely described:
     # it is what keeps the negative test above measuring two separate facts.
-    assert result["main_middleware_available"] is False
+    assert result["middleware"] is False

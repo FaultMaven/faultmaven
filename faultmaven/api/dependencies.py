@@ -11,7 +11,11 @@ only consumer.
 
 from typing import Any, Optional
 
-from faultmaven.api.models import DatabaseTimeoutsStatus, KnowledgeIndexingStatus
+from faultmaven.api.models import (
+    DatabaseTimeoutsStatus,
+    KnowledgeIndexingStatus,
+    TraceBackendStatus,
+)
 from faultmaven.infrastructure import index_slot
 from faultmaven.infrastructure.chroma_client import chroma_client_kind
 from faultmaven.infrastructure.persistence.database import (
@@ -96,6 +100,31 @@ def knowledge_indexing_status(window_seconds: int) -> KnowledgeIndexingStatus:
         encoding_for_seconds=slot.encoding_for_seconds(),
         host_lock_available=slot.host_lock_available,
         waiting_for_host_lock=slot.waiting_for_host_lock,
+    )
+
+
+def llm_tracing_is_effective() -> bool:
+    """Will a traced call record a span: the record ``opik_sdk.configure``
+    wrote, and the SDK's switch."""
+    from faultmaven.infrastructure.observability import opik_sdk
+
+    return opik_sdk.tracing_is_effective()
+
+
+def trace_backend_status() -> TraceBackendStatus:
+    """The trace SDK's policy from that record, and the state of a client the
+    process already built, never building one (#2616 part c, #2573). Blocking
+    (the parked count is a SQLite read): run it off the event loop."""
+    from faultmaven.infrastructure.observability import opik_sdk
+
+    record = opik_sdk.backend()
+    server_connection, parked_messages = opik_sdk.connection_state()
+    return TraceBackendStatus(
+        sentry_reporting=record.sentry_reporting,
+        project=record.project,
+        ping_interval_s=record.ping_interval_s,
+        server_connection=server_connection,
+        parked_messages=parked_messages,
     )
 
 
