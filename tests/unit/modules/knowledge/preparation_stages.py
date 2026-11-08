@@ -42,8 +42,8 @@ def prepare_and_measure(file_path, content_type, enter):
 def hold_the_lock_forever(file_path, content_type, enter):
     """One C call that holds the interpreter lock and never returns: a deque
     with no room consumes an endless ``itertools.count`` inside C, running no
-    bytecode, so the lock is never dropped. No regex: the repository carries
-    no ReDoS pattern."""
+    bytecode, so the lock is never dropped. No regex: this helper adds no
+    ReDoS pattern."""
     _entered(enter)
     collections.deque(itertools.count(), maxlen=0)
 

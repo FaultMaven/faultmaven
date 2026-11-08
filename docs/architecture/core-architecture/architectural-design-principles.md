@@ -999,7 +999,7 @@ First application: document preparation, built (#2622): Stages 0-5 of a conversi
 
 | Check that fails on the next violation | Status |
 |---|---|
-| A responsiveness test with a stage that holds the interpreter lock in C (a large `re.sub`); it fails on a thread-only design. | Built for document preparation (#2622): `test_a_stage_holding_the_lock_in_c_leaves_the_event_loop_free` in `tests/unit/modules/knowledge/test_document_extraction_off_the_loop_2153.py`. Its stage holds the lock in a C loop without a regex, so the repository carries no ReDoS pattern. |
+| A responsiveness test with a stage that holds the interpreter lock in C (for example a large `re.sub`); it fails on a thread-only design. | Built for document preparation (#2622): `test_a_stage_holding_the_lock_in_c_leaves_the_event_loop_free` in `tests/unit/modules/knowledge/test_document_extraction_off_the_loop_2153.py`. Its stage holds the lock in a C loop without a regex, so the test adds no ReDoS pattern. |
 | A census of thread offloads over user-sized input, each naming the mechanism that keeps its deadline. | Built (#2622): the table below, kept equal to the files by `tests/unit/architecture/test_thread_offload_census_2622.py`. The test checks the set of files, not each one's mechanism: a file that starts or stops offloading fails it until its row is added or removed. |
 
 **The thread offload census.** Every module in `faultmaven/` that calls `asyncio.to_thread`, `run_in_executor` or an executor's `submit`, with what it hands to the thread and what keeps the rule: I/O, native code that releases the interpreter lock and has no deadline to keep, redaction (ruled to keep its thread on #2596, measured inside its bound), or a #2596 stage still to come.
