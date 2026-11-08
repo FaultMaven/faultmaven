@@ -57,11 +57,13 @@ logger = logging.getLogger(__name__)
 MESSAGE_METADATA_USER_EMPTY = "user_message_empty"
 
 #: Set on an ASSISTANT row whose content the SERVER wrote in place of an answer
-#: the model did not usefully give (#1433, #1442, #1451). Two writers set it:
+#: the model did not usefully give (#1433, #1442, #1451). Three writers set it:
 #: ``MilestoneEngine``, which synthesizes a placeholder keyed on the provider's
 #: normalised stop reason (withheld by a safety filter, truncated, empty,
-#: no signal), and :func:`append_message_row`'s ``AGENT_ANSWER`` backstop for a
-#: raw empty answer that bypassed the engine.
+#: no signal); :func:`append_message_row`'s ``AGENT_ANSWER`` backstop for a
+#: raw empty answer that bypassed the engine; and the investigation service,
+#: when it composes a note onto a blank or flagged answer (#1665, beside
+#: :data:`MESSAGE_METADATA_SERVER_NOTE`).
 #:
 #: Shape-neutral on purpose: it was ``agent_response_empty`` until the engine's
 #: placeholders began marking truncated and filtered turns too, which are not
@@ -73,6 +75,15 @@ MESSAGE_METADATA_USER_EMPTY = "user_message_empty"
 #: the placeholder reads as an answer it gave. See
 #: :func:`is_server_written_assistant_row`.
 MESSAGE_METADATA_AGENT_SYNTHESIZED = "agent_response_synthesized"
+
+#: On an ASSISTANT row flagged :data:`MESSAGE_METADATA_AGENT_SYNTHESIZED`: the
+#: note the SERVICE composed onto the unusable answer and showed the user after
+#: it (#1665) — the clarification question for an upload that failed
+#: classification, or #1930's note on system output in the message. Stored
+#: whole and apart from the answer, so a reader can render "no answer" and
+#: still carry the question the user was asked; ``content`` stays what the user
+#: saw, the answer followed by this note. Read through :func:`server_note_of`.
+MESSAGE_METADATA_SERVER_NOTE = "server_note"
 
 #: On an ASSISTANT row: the KB pre-fetch hits that entered the case's context
 #: ON THIS TURN, as published ``Source`` dicts. Absent on every other row.
@@ -167,6 +178,20 @@ def is_server_written_assistant_row(msg: dict) -> bool:
     if msg.get("role") != "assistant":
         return False
     return bool((msg.get("metadata") or {}).get(MESSAGE_METADATA_AGENT_SYNTHESIZED))
+
+
+def server_note_of(msg: dict) -> Optional[str]:
+    """The note the server showed after this row's unusable answer, or ``None``
+    (#1665).
+
+    Only a server-written ASSISTANT row carries one: role-checked and
+    flag-checked through :func:`is_server_written_assistant_row`, so a stray key
+    on any other row is never read as server text.
+    """
+    if not is_server_written_assistant_row(msg):
+        return None
+    note = (msg.get("metadata") or {}).get(MESSAGE_METADATA_SERVER_NOTE)
+    return note if isinstance(note, str) and note.strip() else None
 
 
 # ============================================================

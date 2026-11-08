@@ -1,5 +1,5 @@
-"""Every read of a case's message rows, or of a turn record's summaries, is
-accounted for (#1660, #1666).
+"""Every read of a case's message rows, of a turn record's summaries, or of a
+server note, is accounted for (#1660, #1666, #1665).
 
 #1451's rule — no row the server wrote is rendered to a model as something a
 party SAID — lives at each place that puts those rows in front of a model. PR
@@ -10,8 +10,9 @@ reading, not by anything that would have failed. This is the scan that found
 them, shipped so another cannot arrive silently.
 
 The unit is a READ SITE: a function that takes rows out of a case
-(``case.messages``, ``get_messages``) or a summary out of a turn record
-(``user_message_summary``, ``agent_response_summary``) — by name, or by DUMPING
+(``case.messages``, ``get_messages``) or a summary or the server note out of a
+turn record (``user_message_summary``, ``agent_response_summary``,
+``server_note``) — by name, or by DUMPING
 the whole record: ``model_dump``/``model_dump_json``/``dict``/``json`` on a
 case or a turn record whose include set, or implicit full dump, carries those
 fields, and ``dict(...)``, ``vars(...)``, ``.__dict__`` and ``json.dumps(...)``
@@ -20,9 +21,9 @@ over one. Each site is declared below, with a count, as either
 * a PROMPT reader, naming the function that guards it and what that guard must
   do — call an ``is_server_written_*`` predicate on the row it iterates, as a
   condition; test ``agent_response_synthesized`` on the same record whose reply
-  summary it reads; or test ``is_skipped`` on the same record whose summaries
-  it reads, since both of a backfilled placeholder's summaries are server
-  text (#1666). A summary guard is withheld when the function also reads one
+  summary or server note it reads; or test ``is_skipped`` on the same record
+  whose summaries it reads, since both of a backfilled placeholder's summaries
+  are server text (#1666). A summary guard is withheld when the function also reads one
   of its fields in a shape no record can be tied to — a subscript, ``getattr``
   or ``.get`` by key, or a whole-record dump; or
 * another reader, with the reason it puts nothing in front of a model.
@@ -30,6 +31,10 @@ over one. Each site is declared below, with a count, as either
 A new read site, a moved one or a changed count fails until it is declared.
 Appends and ``len()`` are writes and counts, not reads of what was said, and
 are not collected.
+
+A ROW's server note (#1665) is read only through ``server_note_of``, the one
+reader of its key, and every call of it sits in the true branch of the
+caller's ``is_server_written_assistant_row`` test on the same row.
 
 What this does NOT see, stated so nobody mistakes it for more:
 
@@ -73,13 +78,21 @@ _PACKAGE = _ROOT / "faultmaven"
 
 #: What a read site reads.
 _FIELDS = frozenset(
-    {"messages", "get_messages", "user_message_summary", "agent_response_summary"}
+    {
+        "messages",
+        "get_messages",
+        "user_message_summary",
+        "agent_response_summary",
+        "server_note",
+    }
 )
 
 #: What a whole-record dump carries: a case's rows, and its turn records (whose
-#: summaries are what was said); a turn record's summaries.
+#: summaries are what was said); a turn record's summaries and server note.
 _CASE_CARRIES = frozenset({"messages", "turn_history"})
-_TURN_CARRIES = frozenset({"user_message_summary", "agent_response_summary"})
+_TURN_CARRIES = frozenset(
+    {"user_message_summary", "agent_response_summary", "server_note"}
+)
 _DUMP_METHODS = frozenset({"model_dump", "model_dump_json", "dict", "json"})
 _CASE_NAME = re.compile(r"^(?:.*_)?case(?:_updated|_obj|_copy)?$")
 _TURN_NAME = re.compile(r"^(?:.*_)?(?:turn|record)$")
@@ -96,7 +109,7 @@ _SKIP = frozenset({"is_skipped"})
 #: The fields each summary guard screens. Named, not borrowed from
 #: ``_TURN_CARRIES``: what a dump carries and what a guard covers are two
 #: questions, and a widened dump set must not silently widen a guard.
-_FLAG_READS = frozenset({"agent_response_summary"})
+_FLAG_READS = frozenset({"agent_response_summary", "server_note"})
 _SKIP_READS = frozenset({"user_message_summary", "agent_response_summary"})
 
 _CTX = "faultmaven/core/investigation/prompts/context_builder/history.py"
@@ -117,9 +130,11 @@ PROMPT_READERS: dict[tuple[str, str], tuple[int, dict[str, frozenset[str]]]] = {
             "_preview_turn_from_messages": frozenset({_USER}),
         },
     ),
-    (_CTX, "_build_turn_summary"): (3, {"_build_turn_summary": _FLAG | _SKIP}),
+    # Each also reads the record's ``server_note`` inside its flag branch
+    # (#1665): 3 -> 4 and 2 -> 3 when the census began counting that field.
+    (_CTX, "_build_turn_summary"): (4, {"_build_turn_summary": _FLAG | _SKIP}),
     (_CTX, "_build_compact_history"): (
-        2,
+        3,
         {"_build_compact_history": _FLAG | _SKIP},
     ),
     # The auto-titler's context.
@@ -127,14 +142,17 @@ PROMPT_READERS: dict[tuple[str, str], tuple[int, dict[str, frozenset[str]]]] = {
         1,
         {"CaseService.get_case_conversation_context": _BOTH},
     ),
-    # The out-of-band triage prompt, and the greeting's "Where we left off".
-    # It reads assistant rows only — it filters on role first.
+    # The out-of-band triage prompt, the greeting's "Where we left off" and
+    # the triage's server note, through one helper (#1665 moved the read here
+    # from ``last_investigation_message``). It reads assistant rows only — it
+    # filters on role first — and skips a server-written one when asked; the
+    # note reader takes it only through ``server_note_of`` (below).
     (
         "faultmaven/modules/agent/domain/services/orientation.py",
-        "last_investigation_message",
+        "newest_investigation_reply",
     ): (
         1,
-        {"last_investigation_message": frozenset({_ASSISTANT})},
+        {"newest_investigation_reply": frozenset({_ASSISTANT})},
     ),
 }
 
@@ -525,6 +543,91 @@ def _missing_screens(fn: ast.AST, declared: frozenset[str]) -> set[str]:
     return required - declared
 
 
+_NOTE_ACCESSOR = "server_note_of"
+_NOTE_KEY = "MESSAGE_METADATA_SERVER_NOTE"
+_MESSAGE_ROW = "faultmaven/modules/case/domain/owned_models/message_row.py"
+
+#: Every caller of ``server_note_of``: (file, function) -> calls.
+NOTE_READERS: dict[tuple[str, str], int] = {
+    (_CTX, "_build_graduated_history"): 1,
+    (_CTX, "_build_verbatim_history"): 1,
+    ("faultmaven/modules/agent/domain/services/out_of_band.py", "_last_server_note"): 1,
+}
+
+
+def _scope(node: ast.AST, parents: dict) -> str:
+    names = []
+    while node in parents:
+        node = parents[node]
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.append(node.name)
+    return ".".join(reversed(names)) or "<module>"
+
+
+def _asserts_server_written(test: ast.AST, row: str, parents: dict) -> bool:
+    """Whether *test* being true implies ``is_server_written_assistant_row(row)``:
+    the call, alone or as one operand of an ``and`` chain."""
+    for n in ast.walk(test):
+        if not (
+            isinstance(n, ast.Call)
+            and _ident(n.func) == _ASSISTANT
+            and n.args
+            and isinstance(n.args[0], ast.Name)
+            and n.args[0].id == row
+        ):
+            continue
+        up = n
+        while up is not test:
+            up = parents[up]
+            if not (isinstance(up, ast.BoolOp) and isinstance(up.op, ast.And)):
+                break
+        else:
+            return True
+    return False
+
+
+def _in_server_written_branch(call: ast.Call, parents: dict) -> bool:
+    """Whether *call* sits in the true branch of an ``if``/ternary that
+    asserts ``is_server_written_assistant_row`` of the row it is given."""
+    if not (call.args and isinstance(call.args[0], ast.Name)):
+        return False
+    child, node = call, parents.get(call)
+    while node is not None:
+        in_body = (
+            child in node.body
+            if isinstance(node, ast.If)
+            else isinstance(node, ast.IfExp) and child is node.body
+        )
+        if in_body and _asserts_server_written(node.test, call.args[0].id, parents):
+            return True
+        child, node = node, parents.get(node)
+    return False
+
+
+def note_reads(tree: ast.AST) -> tuple[Counter, Counter, list[int]]:
+    """``server_note_of`` calls and reads of the row key, by function, and the
+    lines of the calls outside their server-written branch."""
+    parents = {c: n for n in ast.walk(tree) for c in ast.iter_child_nodes(n)}
+    calls: Counter = Counter()
+    keys: Counter = Counter()
+    unguarded: list[int] = []
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Call) and _ident(n.func) == _NOTE_ACCESSOR:
+            calls[_scope(n, parents)] += 1
+            if not _in_server_written_branch(n, parents):
+                unguarded.append(n.lineno)
+        elif isinstance(n, ast.Name) and n.id == _NOTE_KEY:
+            parent = parents.get(n)
+            written = (
+                isinstance(parent, ast.Subscript)
+                and parent.slice is n
+                and isinstance(parent.ctx, (ast.Store, ast.Del))
+            )
+            if isinstance(n.ctx, ast.Load) and not written:
+                keys[_scope(n, parents)] += 1
+    return calls, keys, unguarded
+
+
 class TestTheDetector:
     """Reach first: a scan that misses a shape the codebase writes reports a
     clean census over sites it never saw."""
@@ -539,6 +642,8 @@ class TestTheDetector:
             "def f(data):\n    return data.get('messages')",
             "def f(turn):\n    return turn.agent_response_summary",
             "def f(turn):\n    return turn.user_message_summary",
+            "def f(turn):\n    return turn.server_note",
+            "def f(meta):\n    return meta.get('server_note')",
             "def f(data):\n    return data['user_message_summary']",
             # Excluding the reply summary alone still dumps what the user said.
             "def f(turn):\n    return turn.model_dump("
@@ -560,6 +665,11 @@ class TestTheDetector:
             "def f(case):\n    return [t.model_dump() for t in case.turn_history]",
             "def f(case):\n    for t in case.turn_history:\n        yield t.dict()",
             "def f(last_turn):\n    return last_turn.model_dump(mode='json')",
+            # The server note is server text too (#1665): a dump of it alone,
+            # and one that leaves out only the two summaries, both carry it.
+            "def f(turn):\n    return turn.model_dump(include={'server_note'})",
+            "def f(turn):\n    return turn.model_dump("
+            "exclude={'agent_response_summary', 'user_message_summary'})",
             "def f(case):\n    return dict(case)",
             "def f(turn):\n    return vars(turn)",
             "def f(case):\n    return case.__dict__",
@@ -590,8 +700,6 @@ class TestTheDetector:
         [
             "def f(case):\n    return case.model_dump(include={'title', 'state'})",
             "def f(case):\n    return case.model_dump(exclude={'messages', 'turn_history'})",
-            "def f(turn):\n    return turn.model_dump("
-            "exclude={'agent_response_summary', 'user_message_summary'})",
             "def f(case):\n    return case.inquiry.model_dump()",
             "def f(evidence):\n    return evidence.model_dump()",
             "def f(response):\n    return response.json()",
@@ -689,11 +797,16 @@ class TestTheGuardCheck:
         """A read no receiver can be named for sits beside a screened one."""
         assert self._applied(src) == set()
 
-    def test_the_flag_counts_when_it_gates_the_same_record(self):
-        src = (
+    @pytest.mark.parametrize(
+        "src",
+        [
             "def f(turn):\n    if turn.agent_response_synthesized:\n        return ''\n"
-            "    return turn.agent_response_summary"
-        )
+            "    return turn.agent_response_summary",
+            "def f(turn):\n    if turn.agent_response_synthesized:\n"
+            "        return turn.server_note\n    return ''",
+        ],
+    )
+    def test_the_flag_counts_when_it_gates_the_same_record(self, src):
         assert self._applied(src) == _FLAG
 
     @pytest.mark.parametrize(
@@ -730,13 +843,14 @@ def test_every_read_site_is_declared():
     }
 
     assert not undeclared, (
-        "new reads of case message rows or a turn record's summaries "
-        "(user_message_summary, agent_response_summary):\n  "
+        "new reads of case message rows or a turn record's summaries or note "
+        "(user_message_summary, agent_response_summary, server_note):\n  "
         + "\n  ".join(f"{f}::{s} ({n})" for (f, s), n in sorted(undeclared.items()))
         + "\nIf one puts text in front of a model, it must not quote text the "
         "server wrote as a party's words (#1434, #1451, #1666): for message rows "
         "apply is_server_written_user_row / is_server_written_assistant_row; for "
-        "a reply summary test agent_response_synthesized; for either of a turn "
+        "a reply summary or server_note test agent_response_synthesized; for "
+        "either of a turn "
         "record's summaries test is_skipped. Then declare it in PROMPT_READERS; "
         "otherwise in OTHER_READERS, with why."
     )
@@ -804,3 +918,77 @@ def test_a_reader_of_turn_summaries_requires_their_screens(site):
             f"{path}::{qualname} reads a turn record's summaries but its "
             f"declaration omits {sorted(missing)}"
         )
+
+
+def test_an_unguarded_read_of_the_records_note_requires_the_flag():
+    """Positive control: the record's server note is server text, so a reader
+    of it must test the flag on the same record, as a reply-summary reader
+    must (#1665)."""
+    fn = ast.parse("def f(turn):\n    return turn.server_note").body[0]
+    assert _missing_screens(fn, frozenset()) == _FLAG
+    assert _applied_guards(fn) == set()
+
+
+class TestTheRowNoteRule:
+    """The detector for ``server_note_of`` and the row key (#1665)."""
+
+    @pytest.mark.parametrize(
+        "src",
+        [
+            "def f(m):\n    if is_server_written_assistant_row(m):\n"
+            "        return server_note_of(m)",
+            "def f(m):\n    if m and is_server_written_assistant_row(m):\n"
+            "        return server_note_of(m)",
+            "def f(m):\n    return server_note_of(m) "
+            "if is_server_written_assistant_row(m) else None",
+        ],
+    )
+    def test_a_call_inside_its_branch_passes(self, src):
+        assert note_reads(ast.parse(src))[2] == []
+
+    @pytest.mark.parametrize(
+        "src",
+        [
+            "def f(m):\n    return server_note_of(m)",
+            "def f(m):\n    if not is_server_written_assistant_row(m):\n"
+            "        return server_note_of(m)",
+            "def f(m):\n    if is_server_written_assistant_row(m):\n"
+            "        pass\n    else:\n        return server_note_of(m)",
+            "def f(m, n):\n    if is_server_written_assistant_row(n):\n"
+            "        return server_note_of(m)",
+            "def f(m):\n    if x or is_server_written_assistant_row(m):\n"
+            "        return server_note_of(m)",
+        ],
+    )
+    def test_a_call_outside_its_branch_fails(self, src):
+        assert len(note_reads(ast.parse(src))[2]) == 1
+
+    def test_a_key_read_is_collected_and_a_key_write_is_not(self):
+        src = (
+            "def f(meta, note):\n    meta[MESSAGE_METADATA_SERVER_NOTE] = note\n"
+            "    return meta.get(MESSAGE_METADATA_SERVER_NOTE)"
+        )
+        assert note_reads(ast.parse(src))[1] == Counter({"f": 1})
+
+
+def test_a_rows_note_is_read_only_through_its_accessor_inside_its_branch():
+    """``server_note_of`` is the one reader of the row key, and each caller
+    reads it in the branch its own server-written test opens (#1665)."""
+    calls: Counter = Counter()
+    keys: Counter = Counter()
+    unguarded: list[str] = []
+    for path in sorted(_PACKAGE.rglob("*.py")):
+        rel = path.relative_to(_ROOT).as_posix()
+        found_calls, found_keys, lines = note_reads(parse_file(path))
+        calls.update({(rel, f): n for f, n in found_calls.items()})
+        keys.update({(rel, f): n for f, n in found_keys.items()})
+        unguarded += [f"{rel}:{line}" for line in lines]
+
+    assert calls == Counter(NOTE_READERS), "server_note_of callers changed"
+    assert keys == Counter(
+        {(_MESSAGE_ROW, _NOTE_ACCESSOR): 1}
+    ), "the row's server note is read other than through server_note_of"
+    assert not unguarded, (
+        "server_note_of called outside an is_server_written_assistant_row "
+        f"branch on the same row: {unguarded}"
+    )
