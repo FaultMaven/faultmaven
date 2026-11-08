@@ -1,9 +1,12 @@
 """The overall coverage floor is one number (#2619).
 
 ``COVERAGE_FAIL_UNDER`` in ``ci-cd.yml`` is the floor both aggregate jobs gate
-on, and Principle 9's Quality Gates line is its one prose statement. The floor
-and its documents drifted apart twice (#1363, #2619), so the workflow's two
-steps and the principle are tied to the one value here.
+on. Principle 9 states it in three places, each pinned to that value here: its
+row in the summary table, the principle's quote, and its Quality Gates line,
+which names the key. Its Two Testing Dimensions row states no number and points
+to Quality Gates. The Version History and Key Changes rows are dated records
+and stay unpinned. The floor and its documents drifted apart twice (#1363,
+#2619).
 """
 
 import re
@@ -22,11 +25,20 @@ PRINCIPLES = (
 )
 KEY = "COVERAGE_FAIL_UNDER"
 AGGREGATE_JOBS = {"test-standalone", "test-cloud"}
-# Principle 9's canonical statement of the floor, in its Quality Gates list.
-P9_FLOOR = re.compile(
-    r"^- ✅ Overall coverage cannot drop below (\d+)%: .*`COVERAGE_FAIL_UNDER`",
-    re.MULTILINE,
-)
+# Every place Principle 9 states the floor.
+P9_FLOOR = {
+    "summary row": re.compile(
+        r"^\| 9 \| Test Safety Net \| (\d+)% code coverage floor, enforced by CI;",
+        re.MULTILINE,
+    ),
+    "principle quote": re.compile(
+        r'^> \*\*"(\d+)% code coverage floor, enforced by CI,', re.MULTILINE
+    ),
+    "Quality Gates line": re.compile(
+        r"^- ✅ Overall coverage cannot drop below (\d+)%: .*`COVERAGE_FAIL_UNDER`",
+        re.MULTILINE,
+    ),
+}
 
 
 def _workflow_text() -> str:
@@ -67,13 +79,12 @@ def test_both_aggregate_jobs_gate_on_the_one_key():
     ), "a literal floor in ci-cd.yml bypasses the key"
 
 
-def test_principle_9_states_the_floor_ci_enforces():
-    stated = P9_FLOOR.findall(PRINCIPLES.read_text(encoding="utf-8"))
+@pytest.mark.parametrize("where", P9_FLOOR, ids=lambda w: w.replace(" ", "-"))
+def test_principle_9_states_the_floor_ci_enforces(where):
+    stated = P9_FLOOR[where].findall(PRINCIPLES.read_text(encoding="utf-8"))
 
-    assert (
-        len(stated) == 1
-    ), f"Principle 9's Quality Gates states the floor once, naming {KEY}"
-    assert int(stated[0]) == _floor_in_workflow()
+    assert len(stated) == 1, f"Principle 9's {where} states the floor once"
+    assert int(stated[0]) == _floor_in_workflow(), where
 
 
 def test_the_gate_compares_the_total_unrounded():

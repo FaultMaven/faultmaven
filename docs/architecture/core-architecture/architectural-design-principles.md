@@ -717,7 +717,7 @@ Unused files create false signals during audits, confuse AI assistants reading t
 
 | Dimension | What It Tests | Target |
 |-----------|---------------|--------|
-| **Code Coverage** | Lines executed | ≥70% overall, enforced by CI (Quality Gates) |
+| **Code Coverage** | Lines executed | The overall floor, enforced by CI (Quality Gates) |
 | **AI Evaluation** | Output accuracy | ≥85% on benchmark |
 
 ### Code Coverage by Layer
@@ -1027,7 +1027,7 @@ First application: document preparation; Evidence Tier 1 and the runbook validat
 | 2.1 | 2026-04-16 | P8: dead code intolerance. P11: "Clean Moves, Not Rewrites" with pre/post-launch distinction. P12: pre-launch cleanup rule. |
 | 2.2 | 2026-04-19 | P3 table lists synchronized with the storage redesign: removed `sessions` (auth sessions are Redis-only per `case-and-session-concepts.md`), `evidence_artifacts` and `standalone_evidence` (deleted dead-path tables), `agent_tool_calls` v1 (deleted; v2 renamed to canonical `agent_tool_calls`). Added `conversion_jobs` and `conversion_drafts` to case module list. Added `llm_config_overrides` as infrastructure-layer (not a domain module). Cross-reference to `deployment-schema-strategy.md` for the per-table applicability matrix. |
 | 2.3 | 2026-11-08 | P13 "One Owner per Fact" and P14 "Bounded Execution" added as ruled ([#2614](https://github.com/FaultMaven/faultmaven/pull/2614#issuecomment-6716219954); P13's adopted text: [#2617](https://github.com/FaultMaven/faultmaven/issues/2617#issuecomment-6718120222); P14: [#2596](https://github.com/FaultMaven/faultmaven/issues/2596#issuecomment-6716225975)), each with its enforcement table. P3 and P7 point at the [store registry](../data-and-storage/store-registry.md). P5 names `bootstrap/composition.py` as the composition root. P9's AI evaluation gate and P12's automated enforcement are marked not built. |
-| 2.4 | 2026-11-08 | P9: the 70% coverage floor is enforced by CI, which gates on `COVERAGE_FAIL_UNDER` in `ci-cd.yml` ([#2619](https://github.com/FaultMaven/faultmaven/issues/2619)). The per-layer figures are marked targets with no gate, and Quality Gates lists only what CI enforces. |
+| 2.4 | 2026-11-08 | P9: the 70% coverage floor is enforced by CI, which gates on `COVERAGE_FAIL_UNDER` in `ci-cd.yml` ([#2619](https://github.com/FaultMaven/faultmaven/issues/2619)). The Two Testing Dimensions row points to Quality Gates, the per-layer figures are marked targets with no gate, and Quality Gates no longer claims the pipeline enforces all rules. |
 
 ### Key Changes Across Versions
 
