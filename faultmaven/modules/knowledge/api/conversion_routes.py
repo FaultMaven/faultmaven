@@ -85,6 +85,7 @@ from faultmaven.modules.knowledge.domain.services.conversion_service.service imp
 )
 from faultmaven.modules.knowledge.domain.services.document_preprocessor import (
     CONVERSION_BUSY_RETRY_AFTER_SECONDS,
+    PreparationFailed,
 )
 from faultmaven.modules.knowledge.exceptions import KbReceiptExistsError
 from faultmaven.modules.knowledge.taxonomy import (
@@ -391,6 +392,10 @@ async def convert_document(
 
     except RawModelContentRefused:
         # A refusal is answered by its own handler: 500 SERVICE_ERROR (#1998).
+        raise
+    except PreparationFailed:
+        # A worker death not known to be the document's: the global 500, with
+        # the request id and no advice (#2622).
         raise
     except Exception as e:
         logger.error(f"Conversion failed: {e}", exc_info=True)

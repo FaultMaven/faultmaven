@@ -69,6 +69,8 @@ def _get_tiktoken_encoder(model: str = "gpt-4"):
             encoding_name = "cl100k_base"  # Default for modern models
 
         return tiktoken.get_encoding(encoding_name)
+    except MemoryError:
+        raise  # the preparation worker's declared exit, never a fallback (#2622)
     except Exception as e:
         logger.warning(f"Failed to get tiktoken encoder for {model}: {e}")
         return None

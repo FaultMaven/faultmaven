@@ -2426,11 +2426,6 @@ TREE_THRESHOLD_ALLOWLIST = {
         "tests/unit/modules/knowledge/test_gate_stays_off_the_event_loop.py",
         "started < t < finished",
     ): "window membership: which heartbeat ticks fell between two readings",
-    (
-        "tests/unit/modules/knowledge/test_document_extraction_off_the_loop_2153.py",
-        "hopped_ticks >= 3",
-    ): "the same COUNT of event-loop turns as the gate's, through the same "
-    "_ticks_during, for an uploaded document's preparation (#2153)",
 }
 
 #: Timed tests that reach no judge, each with the reason. Checked for being
@@ -2465,10 +2460,6 @@ TREE_UNJUDGED_TIMED_TESTS = {
     (
         "tests/unit/modules/knowledge/test_gate_stays_off_the_event_loop.py",
         "test_the_gate_does_not_stall_the_event_loop",
-    ): "judges a count of event-loop turns (allowlisted)",
-    (
-        "tests/unit/modules/knowledge/test_document_extraction_off_the_loop_2153.py",
-        "test_preparation_does_not_stall_the_event_loop",
     ): "judges a count of event-loop turns (allowlisted)",
     (_SELF, "test_a_faster_machine_is_never_held_to_a_tighter_budget"): (
         _CALIBRATION_SELF_TEST
@@ -2821,18 +2812,19 @@ class TestTheRestOfTheTree:
         assert not dead, dead
 
     def test_the_tree_allowlist_cost_is_what_was_measured(self):
-        """Counted, not tuned: ten comparisons, sixteen tests.
+        """Counted, not tuned: nine comparisons, fifteen tests.
 
-        The ten are orderings of timestamps, two counts of log records, a
-        floor under a sleep, a bracket, two tick counts, a window membership
-        and a test double's TTL check. Ten of the sixteen tests are the
+        The nine are orderings of timestamps, two counts of log records, a
+        floor under a sleep, a bracket, a tick count, a window membership
+        and a test double's TTL check. Ten of the fifteen tests are the
         calibration instrument's own tests, which reach the real measurement
         through the call graph and pin or stub it at run time. One (#1882)
         prints the PostgreSQL measurement a constant is sized from and
-        judges nothing on the clock.
+        judges nothing on the clock. (#2622 retired the second tick count:
+        document preparation's responsiveness is an ordering now.)
         """
-        assert len(TREE_THRESHOLD_ALLOWLIST) == 10
-        assert len(TREE_UNJUDGED_TIMED_TESTS) == 16
+        assert len(TREE_THRESHOLD_ALLOWLIST) == 9
+        assert len(TREE_UNJUDGED_TIMED_TESTS) == 15
 
     def test_the_three_scopes_partition_tests(self):
         """Every module under tests/ is watched by exactly one rule."""

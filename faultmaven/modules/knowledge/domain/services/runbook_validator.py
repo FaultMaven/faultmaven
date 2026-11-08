@@ -28,7 +28,7 @@ from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 import yaml
 
 from faultmaven.exceptions import ValidationException
-from faultmaven.infrastructure.security.redaction import (
+from faultmaven.infrastructure.security.secret_patterns import (
     SECRET_PATTERNS,
     RedactionSpan,
     find_redaction_spans,

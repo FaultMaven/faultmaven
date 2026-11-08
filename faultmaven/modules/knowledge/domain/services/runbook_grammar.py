@@ -100,6 +100,13 @@ HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 # or contain ``<!--``; text inside a fence is never a comment.
 CODE_FENCE_LINE_RE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})")
 
+# The same, matched at a line's start inside the whole text (``match(text, pos,
+# endpos)``), where ``^`` would anchor at offset 0 only.
+_CODE_FENCE_AT_RE = re.compile(CODE_FENCE_LINE_RE.pattern.removeprefix("^"))
+
+# A line terminator, as ``str.splitlines`` reads one: ``\r\n`` is one.
+_LINE_END_RE = re.compile(r"\r\n|[\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029]")
+
 # An inline code span (`` `x` ``, ``` ``x`` ``` …). Same reason: a Statement that
 # quotes ``<!--`` in backticks is describing markup, not opening a comment.
 CODE_SPAN_RE = re.compile(r"(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)", re.DOTALL)
@@ -123,6 +130,19 @@ CHAIN_RUNG_RE = re.compile(
 CONVERGES_REF = "converges"
 
 
+def _lines(text: str):
+    """``(start, end)`` of each line of ``text``, its terminator included, in
+    order and one at a time: the lines ``text.splitlines(keepends=True)``
+    returns, without holding a string for each (#2622: two-character lines
+    held that way cost about 64 bytes a character of the document)."""
+    start = 0
+    for terminator in _LINE_END_RE.finditer(text):
+        yield start, terminator.end()
+        start = terminator.end()
+    if start < len(text):
+        yield start, len(text)
+
+
 def _protected_spans(text: str) -> list[tuple[int, int]]:
     """Character ranges that are markdown CODE — fenced blocks and inline spans.
 
@@ -133,34 +153,24 @@ def _protected_spans(text: str) -> list[tuple[int, int]]:
     second Cause's heading outright.
     """
     spans: list[tuple[int, int]] = []
-    lines = text.splitlines(keepends=True)
-    offsets: list[int] = []
-    running = 0
-    for line in lines:
-        offsets.append(running)
-        running += len(line)
-
-    i = 0
-    while i < len(lines):
-        opener = CODE_FENCE_LINE_RE.match(lines[i])
+    lines = _lines(text)
+    for start, end in lines:
+        opener = _CODE_FENCE_AT_RE.match(text, start, end)
         if not opener:
-            i += 1
             continue
         marker, width = opener.group(1)[0], len(opener.group(1))
-        j = i + 1
-        while j < len(lines):
-            closer = CODE_FENCE_LINE_RE.match(lines[j])
+        # An unclosed fence runs to EOF, which is how markdown renders it too.
+        fence_end = len(text)
+        for line_start, line_end in lines:
+            closer = _CODE_FENCE_AT_RE.match(text, line_start, line_end)
             if (
                 closer
                 and closer.group(1)[0] == marker
                 and len(closer.group(1)) >= width
             ):
+                fence_end = line_end
                 break
-            j += 1
-        # An unclosed fence runs to EOF, which is how markdown renders it too.
-        end = offsets[j] + len(lines[j]) if j < len(lines) else len(text)
-        spans.append((offsets[i], end))
-        i = j + 1
+        spans.append((start, fence_end))
 
     def in_fence(pos: int) -> bool:
         return any(lo <= pos < hi for lo, hi in spans)

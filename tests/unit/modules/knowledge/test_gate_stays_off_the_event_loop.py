@@ -42,9 +42,10 @@ _SYNC_GATE = {
     "validate_file",
     "score_file",
     # An uploaded document's preparation (#2153): #1417's class, back on a path
-    # this guard did not root. The extraction and the stages ``_prepare`` runs
+    # this guard did not root. The extraction and the stages ``prepare`` runs
     # after it, each a name defined once in the tree, so rooting it adds no hit
-    # elsewhere. ``_prepare`` reaches them, so it joins the set too.
+    # elsewhere. ``prepare`` reaches them, so it joins the set too; it runs in
+    # the preparation worker (#2622), and no coroutine calls it.
     "extract_document_text",
     "classify_runbook_shape",
     "cleanup_text",

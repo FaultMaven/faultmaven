@@ -277,7 +277,8 @@ If a user types `<IP_ADDRESS_1>` in their message, `reverse()` would replace it 
 | File | Role |
 | --- | --- |
 | `infrastructure/security/case_redaction.py` | `CaseRedactionContext`: the case-scoped registry, persisted in Redis |
-| `infrastructure/security/redaction.py` | `DataSanitizer`, including `sanitize_text_with_registry()` and the Presidio settings wiring; the regex pattern sets (`SECRET_PATTERNS`, `NETWORK_ADDRESS_PATTERNS`) and `find_redaction_spans()` |
+| `infrastructure/security/redaction.py` | `DataSanitizer`, including `sanitize_text_with_registry()` and the Presidio settings wiring |
+| `infrastructure/security/secret_patterns.py` | The regex pattern sets (`SECRET_PATTERNS`, `NETWORK_ADDRESS_PATTERNS`) and `find_redaction_spans()`; standard library only, so the document preparation worker imports it (#2622) |
 | `infrastructure/security/case_redaction.py` | `should_redact()`, the one redaction decision; `load_case_redaction()`, the case loader; `model_boundary_redaction()`, the knowledge-authoring paths' context |
 | `infrastructure/security/model_content.py` | The send-site helpers, which redact and mint (#1998): `case_redacted()` / `case_redacted_messages()` on the case paths, `model_boundary_redacted()` on the knowledge-authoring paths |
 | `modules/agent/domain/services/investigation_service/service.py` | Loads the turn's one context and hands it to every call on the turn's behalf; saves it after the route |

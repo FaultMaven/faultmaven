@@ -46,22 +46,22 @@ import string
 
 import pytest
 
-from faultmaven.infrastructure.security import redaction
+from faultmaven.infrastructure.security import secret_patterns
 from faultmaven.infrastructure.security.case_redaction import (
     REDACTION_PLACEHOLDER_RE,
     CaseRedactionContext,
 )
-from faultmaven.infrastructure.security.redaction import (
+from faultmaven.infrastructure.security.redaction import DataSanitizer
+from faultmaven.infrastructure.security.secret_patterns import (
     NETWORK_ADDRESS_PATTERNS,
     SANITIZER_PATTERNS,
     SECRET_PATTERNS,
-    DataSanitizer,
     RedactionPattern,
     find_redaction_spans,
     redact_spans,
 )
 from faultmaven.modules.case.api.title_generation import _scrub_title_source
-from faultmaven.modules.knowledge.domain.services.document_preprocessor import (
+from faultmaven.modules.knowledge.domain.services.preparation import (
     redact_sensitive_content,
 )
 from tests.wallclock import assert_linear_growth
@@ -475,8 +475,8 @@ def test_no_path_lets_a_spelling_through(sanitizer, text, entity_type, secret):
     assert f"<{entity_type}_" in regex_half
     assert list(registry) == [entity_type]
     assert f"[REDACTED:{entity_type.lower()}]" in document
-    assert report.total_redacted == 1
-    assert [entry.type for entry in report.redactions] == [entity_type.lower()]
+    assert report["total_redacted"] == 1
+    assert [entry["type"] for entry in report["redactions"]] == [entity_type.lower()]
 
 
 def test_a_url_password_is_cut_at_the_last_at_sign():
@@ -948,7 +948,7 @@ def test_ordinary_text_is_unchanged_but_for_the_justified_spans(sanitizer, text)
         span for span in expected if span[0] not in {"IP_ADDRESS", "MAC_ADDRESS"}
     ]
     document, report = redact_sensitive_content(text)
-    assert report.total_redacted == len(secrets_only)
+    assert report["total_redacted"] == len(secrets_only)
     if not secrets_only:
         assert document == text
 
@@ -974,8 +974,8 @@ def _without(listed: str, entry: str) -> tuple:
 
 
 _CLOSED_LISTS = [
-    (redaction._NON_SECRET_WORDS, entry)
-    for entry in redaction._NON_SECRET_WORDS.split("|")
+    (secret_patterns._NON_SECRET_WORDS, entry)
+    for entry in secret_patterns._NON_SECRET_WORDS.split("|")
 ] + [(r"\d{1,5}", r"\d{1,5}")]
 
 
@@ -1036,10 +1036,10 @@ def test_the_sanitizer_set_is_the_secret_set_then_the_network_identifiers(saniti
     [r[1] for r in POSITIVE] + NEGATIVE,
     ids=[r[0] for r in POSITIVE] + [f"negative-{i}" for i in range(len(NEGATIVE))],
 )
-def test_the_document_preprocessor_redacts_what_the_secret_set_detects(text):
+def test_document_preparation_redacts_what_the_secret_set_detects(text):
     document, report = redact_sensitive_content(text)
     assert document == redact_spans(text, SECRET_PATTERNS, _marker)
-    assert report.total_redacted == len(find_redaction_spans(text, SECRET_PATTERNS))
+    assert report["total_redacted"] == len(find_redaction_spans(text, SECRET_PATTERNS))
 
 
 def test_the_report_counts_by_type_and_says_where_the_first_was_found():
@@ -1049,11 +1049,11 @@ def test_the_report_counts_by_type_and_says_where_the_first_was_found():
         "token=abc123def."
     )
     document, report = redact_sensitive_content(text)
-    assert [(e.type, e.count, e.context) for e in report.redactions] == [
+    assert [(e["type"], e["count"], e["context"]) for e in report["redactions"]] == [
         ("password", 2, "Found in code blocks"),
         ("token", 1, "Found in text content"),
     ]
-    assert report.total_redacted == 3
+    assert report["total_redacted"] == 3
     assert "hunter2" not in document and "hunter3" not in document
     assert "abc123def" not in document
 
@@ -1254,7 +1254,7 @@ def test_one_pass_of_the_sanitizer_is_idempotent(sanitizer):
     assert changed == [], changed[:3]
 
 
-def test_one_pass_of_the_document_preprocessor_is_idempotent():
+def test_one_pass_of_document_preparation_is_idempotent():
     rng = random.Random("1980-idempotent-markers")
     changed = []
     for _ in range(2000):
@@ -1776,10 +1776,10 @@ def _reference_spans(text: str, patterns) -> list:
                     )
 
     scan(text)
-    spans = redaction._merge(candidates, text)
+    spans = secret_patterns._merge(candidates, text)
     while spans:
-        scan(redaction._masked(text, spans))
-        grown = redaction._merge(candidates, text)
+        scan(secret_patterns._masked(text, spans))
+        grown = secret_patterns._merge(candidates, text)
         if [(x.start, x.end) for x in grown] == [(x.start, x.end) for x in spans]:
             return grown
         spans = grown
@@ -2014,7 +2014,7 @@ def test_the_line_bounds_read_the_text_once():
     spans = find_redaction_spans(text, SANITIZER_PATTERNS)
     assert len(spans) == 4000
     _CountingText.covered = 0
-    lines = redaction._lines_of(_CountingText(text), spans)
+    lines = secret_patterns._lines_of(_CountingText(text), spans)
     assert lines == [(0, len(text))]
     assert _CountingText.covered <= 2 * len(text), _CountingText.covered
 

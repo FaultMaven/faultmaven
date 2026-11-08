@@ -93,7 +93,8 @@ CENSUS_COMMAND = 'grep -rn "with TestClient(" tests/ --include=*.py'
 #: literal.
 #: #1812 added one scratch site (the turns route mounted for its K13).
 #: The Starlette 1.9 upgrade added one scratch site (the trailing-slash middleware).
-EXPECTED_TOTAL_SITES = 57
+#: #2622 added one scratch site (the conversion route under the global 500).
+EXPECTED_TOTAL_SITES = 58
 
 #: The functions the resolver reads as entering the real application's
 #: lifespan: the EXPECTED entries marked ``"real"``, not the ``with`` statements
@@ -304,6 +305,15 @@ EXPECTED: dict[str, dict[str, tuple[str, int]]] = {
     },
     "tests/unit/architecture/test_cors_security.py": {
         "_protection_refuses_a_setup_failure": ("scratch", 1),
+    },
+    "tests/unit/modules/knowledge/test_document_extraction_off_the_loop_2153.py": {
+        # The conversion route over the real service, with the global 500
+        # handler added, so a dead preparation worker's answer is the one a
+        # deployment serves (#2622).
+        "test_a_worker_failure_not_the_documents_answers_the_global_500": (
+            "scratch",
+            1,
+        ),
     },
     "tests/unit/modules/auth/test_oauth_rate_limit_signalling.py": {
         "TestThroughTheFullMiddlewareStack.test_the_oauth_refusal_survives_the_middleware_on_the_way_out": (

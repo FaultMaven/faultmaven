@@ -6,9 +6,8 @@ Does not interpret or transform content — that is the LLM's job.
 
 import logging
 import re
-import threading
 from dataclasses import dataclass, replace
-from functools import cache, partial
+from functools import cache
 from io import BytesIO
 from pathlib import Path
 from typing import Optional
@@ -38,28 +37,6 @@ class DocumentTooComplex(DocumentRefusal):
     """pypdf's budgets refused the whole document, or refused pages and no other
     page had text. Mapped by type to ``DOCUMENT_TOO_COMPLEX``, never
     ``FILE_CORRUPT`` (#2153)."""
-
-
-class ExtractionAbandoned(Exception):
-    """Raised between PDF pages (#2153), and between DOCX paragraphs and table
-    rows (#2597), once the caller has stopped waiting. Nobody reads it: it only
-    ends the worker's run after its current page, paragraph or row."""
-
-
-def _stop_if_abandoned(
-    abandoned: Optional[threading.Event], where: str, unit: str, index: int, count: int
-) -> None:
-    """Raise ``ExtractionAbandoned`` before ``unit`` ``index`` once ``abandoned``
-    is set, naming it in the log."""
-    if abandoned is not None and abandoned.is_set():
-        logger.warning(
-            "%s: its caller stopped waiting; stopped before %s %d of %d",
-            where,
-            unit,
-            index + 1,
-            count,
-        )
-        raise ExtractionAbandoned(where)
 
 
 _TOO_COMPLEX = (
@@ -100,6 +77,20 @@ def _is_budget(file_path: Path, error: LimitReachedError) -> bool:
     return True
 
 
+#: libxml2's ``XML_ERR_NO_MEMORY``: lxml reports a failed allocation as an
+#: ``XMLSyntaxError`` with this code (python-docx parses a DOCX with lxml).
+_XML_ERR_NO_MEMORY = 2
+
+
+def _out_of_memory(error: Exception) -> bool:
+    """Whether ``error`` is a parser library's report of a failed allocation."""
+    try:
+        from lxml.etree import XMLSyntaxError
+    except ImportError:
+        return False
+    return isinstance(error, XMLSyntaxError) and error.code == _XML_ERR_NO_MEMORY
+
+
 @dataclass(frozen=True)
 class ParsedDocument:
     """What extraction read. ``page_count`` is set for a PDF only, and
@@ -135,33 +126,27 @@ class DocumentParser:
     }
 
     def extract_document_text(
-        self,
-        file_path: Path,
-        content_type: Optional[str] = None,
-        abandoned: Optional[threading.Event] = None,
+        self, file_path: Path, content_type: Optional[str] = None
     ) -> ParsedDocument:
         """Extract plain text from a document file.
 
         Args:
             file_path: Path to the document file.
             content_type: MIME type hint (used if extension is ambiguous).
-            abandoned: Set once the caller stops waiting; a PDF checks it
-                between pages, a DOCX between paragraphs and table rows.
 
         Returns:
             The extracted text, with a PDF's page count and refused pages.
 
         Raises:
             DocumentTooComplex: pypdf refused the whole document for its limits.
-            ExtractionAbandoned: ``abandoned`` was set between two pages,
-                paragraphs or table rows.
+            MemoryError: past the preparation worker's memory limit (#2622).
             ValueError: If the file format is unsupported or parsing fails.
         """
         fmt = self._detect_format(file_path, content_type)
 
         extractors = {
-            "pdf": partial(self._extract_pdf, abandoned=abandoned),
-            "docx": partial(self._extract_docx, abandoned=abandoned),
+            "pdf": self._extract_pdf,
+            "docx": self._extract_docx,
             "txt": self._extract_txt,
             "markdown": self._extract_markdown,
             "html": self._extract_html,
@@ -173,11 +158,13 @@ class DocumentParser:
 
         try:
             extracted = extractor(file_path)
-        except (DocumentTooComplex, ExtractionAbandoned):
+        except (DocumentTooComplex, MemoryError):
             raise
         except DocumentRefusal as e:
             raise ValueError(f"Failed to parse {file_path.name}: {e}") from e
         except Exception as e:
+            if _out_of_memory(e):
+                raise MemoryError(f"parsing {file_path.name}") from e
             # The library's text goes to the log, never to the caller: the
             # preprocessor turns this message into ``/convert``'s 422 detail.
             logger.warning("document extraction failed for %s: %s", file_path, e)
@@ -226,9 +213,7 @@ class DocumentParser:
             f"Supported: PDF, DOCX, TXT, Markdown, HTML"
         )
 
-    def _extract_pdf(
-        self, file_path: Path, abandoned: Optional[threading.Event] = None
-    ) -> ParsedDocument:
+    def _extract_pdf(self, file_path: Path) -> ParsedDocument:
         """Extract text from PDF using pypdf, page by page.
 
         A page pypdf's budgets refuse costs that page, and its number is kept. A
@@ -252,9 +237,6 @@ class DocumentParser:
             raise DocumentTooComplex(_TOO_COMPLEX) from e
         pages, skipped, bounds = [], [], set()
         for index in range(page_count):
-            _stop_if_abandoned(
-                abandoned, f"PDF {file_path.name}", "page", index, page_count
-            )
             try:
                 text = reader.pages[index].extract_text()
             except LimitReachedError as e:
@@ -284,23 +266,15 @@ class DocumentParser:
 
         return ParsedDocument("\n\n".join(pages), page_count, tuple(skipped))
 
-    def _extract_docx(
-        self, file_path: Path, abandoned: Optional[threading.Event] = None
-    ) -> str:
+    def _extract_docx(self, file_path: Path) -> str:
         """Extract text from DOCX preserving structure.
 
         A paragraph's style is python-docx's own lookup of its ``w:pStyle`` id,
         made once per distinct id: ``Paragraph.style`` scans the document's
         styles on every read, about 4 ms a paragraph (#2597). An id that is
         unknown or not a paragraph style's costs two scans, its lookup and the
-        library's fallback to the default, once per distinct id; the paragraph
-        check below bounds a document of many such ids.
-
-        ``abandoned`` is checked before each paragraph and each table row. One
-        paragraph and one row are each read whole, so a paragraph of millions
-        of runs (about 35 µs a run), or a row of huge width, ``gridSpan`` or
-        vertical-merge depth, runs to its end: the preparation seam's residual,
-        tracked on #2596.
+        library's fallback to the default, once per distinct id; the worker's
+        deadline bounds a document of many such ids (#2622).
         """
         try:
             from docx import Document
@@ -315,11 +289,9 @@ class DocumentParser:
             style = doc.part.get_style(style_id, WD_STYLE_TYPE.PARAGRAPH)
             return style.name if style is not None else None
 
-        where, paragraphs, tables = f"DOCX {file_path.name}", doc.paragraphs, doc.tables
         parts = []
 
-        for index, para in enumerate(paragraphs):
-            _stop_if_abandoned(abandoned, where, "paragraph", index, len(paragraphs))
+        for para in doc.paragraphs:
             text = para.text.strip()
             if not text:
                 continue
@@ -338,25 +310,17 @@ class DocumentParser:
             parts.append(text)
 
         # Extract tables as markdown tables
-        for number, table in enumerate(tables, 1):
-            table_text = self._docx_table_to_markdown(
-                table, abandoned, f"{where} table {number} of {len(tables)}"
-            )
+        for table in doc.tables:
+            table_text = self._docx_table_to_markdown(table)
             if table_text:
                 parts.append(table_text)
 
         return "\n\n".join(parts)
 
-    def _docx_table_to_markdown(
-        self, table, abandoned: Optional[threading.Event], where: str
-    ) -> str:
-        """Convert a DOCX table to markdown format, checking ``abandoned`` before
-        each row. A row is read whole, at a cost set by its width, its cells'
-        ``gridSpan`` and the depth of its vertical merges, not by its table's
-        size."""
-        rows, count = [], len(table.rows)
-        for index, row in enumerate(table.rows):
-            _stop_if_abandoned(abandoned, where, "row", index, count)
+    def _docx_table_to_markdown(self, table) -> str:
+        """Convert a DOCX table to markdown format."""
+        rows = []
+        for row in table.rows:
             cells = [cell.text.strip() for cell in row.cells]
             rows.append("| " + " | ".join(cells) + " |")
 

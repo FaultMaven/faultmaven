@@ -208,17 +208,18 @@ Upload (file + scope + metadata)
   │     PDF/DOCX/HTML → plain text with structure preserved
   │     Markdown/TXT → pass through
   │     Reuse existing extractors from faultmaven/modules/preprocessing/
-  │     Stages 0-5 run off the event loop on two workers (#2153). No worker
-  │     free within 120 s: REJECT with HTTP 503 / CONVERSION_BUSY +
+  │     Stages 0-5 run in a worker process, one per conversion, under two
+  │     slots (Principle 14, #2622): started by spawn, it imports the
+  │     parsers, the secret patterns, token counting and frontmatter, and
+  │     sets its own memory limit, which grows with MAX_UPLOAD_SIZE_MB. No
+  │     slot free within 120 s: REJECT with HTTP 503 / CONVERSION_BUSY +
   │     Retry-After. A PDF page pypdf's budgets refuse is skipped and named
-  │     in a warning. A run past 120 s (the worker stops at its next PDF
-  │     page, or DOCX paragraph or table row, #2597; one DOCX paragraph and
-  │     one table row are each read whole, so a paragraph of millions of runs
-  │     or a row of huge width, gridSpan or merge depth runs to its end, the
-  │     preparation seam's residual, tracked on #2596), a document-level
-  │     budget, or refused pages leaving too little to convert: REJECT with
-  │     HTTP 422 / DOCUMENT_TOO_COMPLEX. Corruption pypdf reports as a
-  │     limit stays FILE_CORRUPT
+  │     in a warning. A worker past 120 s is
+  │     killed; it, a document-level budget, or refused pages leaving too
+  │     little to convert: REJECT with HTTP 422 / DOCUMENT_TOO_COMPLEX, as
+  │     is a worker past its memory limit, or one a signal kills while its
+  │     parser reads the file. Any other end of the worker answers 500 with
+  │     the request id. Corruption pypdf reports as a limit stays FILE_CORRUPT
   │
   ├── 1b. Already-a-Runbook Gate (deterministic, no LLM)
   │     Detect: runbook frontmatter (≥4 of id/domain/service/symptom_class/
@@ -323,7 +324,7 @@ The cleanup step removes content that would waste tokens and dilute embeddings w
 
 ### 2.4 Sensitive Content Handling
 
-The sensitive content scan detects secrets with the sanitizer's own secret pattern set, `SECRET_PATTERNS` in `infrastructure/security/redaction.py` (#1980): private keys, connection URLs with credentials, provider tokens (GitHub, Slack, `sk-`/`pk-` keys, AWS keys), JWTs, `Bearer`/`Basic` credentials, and `password`/`secret`/`token`/`api_key` assignments. It runs on every conversion, whatever `SANITIZE_PII` says. The sanitizer's network-address patterns (internal IPs, MAC addresses) and Presidio's entities (cards, SSNs, emails, phone numbers) are not applied here: on this path they belong to the model-boundary redaction, which `SANITIZE_PII` governs (#1901).
+The sensitive content scan detects secrets with the sanitizer's own secret pattern set, `SECRET_PATTERNS` in `infrastructure/security/secret_patterns.py` (#1980): private keys, connection URLs with credentials, provider tokens (GitHub, Slack, `sk-`/`pk-` keys, AWS keys), JWTs, `Bearer`/`Basic` credentials, and `password`/`secret`/`token`/`api_key` assignments. It runs on every conversion, whatever `SANITIZE_PII` says. The sanitizer's network-address patterns (internal IPs, MAC addresses) and Presidio's entities (cards, SSNs, emails, phone numbers) are not applied here: on this path they belong to the model-boundary redaction, which `SANITIZE_PII` governs (#1901).
 
 Each secret is replaced with a `[REDACTED:{type}]` marker, `{type}` the sanitizer's entity type in lower case (`password`, `database_url`, `private_key`, …). The LLM sees these markers and can note in the runbook that specific values need to be filled in by the user.
 
@@ -1453,7 +1454,7 @@ The parser extracts plain text from supported file formats. It does not interpre
 | Max extracted text | 30,000 tokens (`MAX_TOKEN_LIMIT`, ~120K chars) | Beyond this the LLM context window plus template/response headroom is exceeded. Hard-rejected with HTTP 413 (`DOCUMENT_TOO_LONG`) — no truncation, no section-routing. |
 | Min extracted text | 200 characters (`MIN_TEXT_LENGTH`) | Below this, the source lacks sufficient content. Rejected. |
 
-Measured in **tokens** (tiktoken `cl100k_base`), not characters — see `document_preprocessor.py`. Documents that pass the gate are converted in full per failure mode (§5.2); there is no 50K-character "target input" step or relevant-section extraction.
+Measured in **tokens** (tiktoken `cl100k_base`), not characters — see `preparation.py`. Documents that pass the gate are converted in full per failure mode (§5.2); there is no 50K-character "target input" step or relevant-section extraction.
 
 ### 10.3 BeautifulSoup Dependency
 

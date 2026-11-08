@@ -51,7 +51,7 @@ _LIST_FIELDS = ("symptom_class",)
 # actual Windows default — was still refused until this.
 #
 # Tolerated here rather than stripped at a boundary because this is the ONE
-# place that decides where frontmatter starts; `document_preprocessor` strips a
+# place that decides where frontmatter starts; `preparation` strips a
 # BOM via `_LEADING_NOISE` but only on the CONVERSION path, which is why the
 # upload path never got it. Optional and zero-width, so it changes nothing for
 # a document without one.
@@ -97,7 +97,7 @@ def parse_frontmatter(content: str) -> Dict[str, object]:
     # `if key in fm` is a SUBSTRING test on a str, and `fm[key]` then raises
     # TypeError. That reached an unhandled 500 from `validate_content`,
     # `score_content` and `extract_frontmatter_metadata` on caller-supplied
-    # content. `document_preprocessor` already guarded for this locally; the
+    # content. `preparation` already guarded for this locally; the
     # guard belongs here, where there is one copy of it.
     return loaded if isinstance(loaded, dict) else {}
 

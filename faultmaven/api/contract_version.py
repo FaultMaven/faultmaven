@@ -151,6 +151,39 @@ def validate_contract_changes(changes: tuple[ContractChange, ...]) -> None:
 
 CONTRACT_CHANGES: tuple[ContractChange, ...] = (
     ContractChange(
+        version="14.19.0",
+        level="MINOR",
+        title=(
+            "`POST /knowledge/convert` prepares a document in a worker process, "
+            "and answers two more `DOCUMENT_TOO_COMPLEX` refusals and one 500 "
+            "for how that worker ends (#2622)."
+        ),
+        body=r"""Stages 0-5 of a conversion run in a worker process killed at the 120 s
+deadline (Principle 14). How the worker ends decides the answer:
+
+* Past its memory limit: 422 `DOCUMENT_TOO_COMPLEX`, `detail` "Reading this
+  document needed more memory than the conversion allows, so it was not
+  converted. Export its text to a TXT or Markdown file and convert that
+  instead." The limit is 128 MiB plus 64 MiB per MB of `MAX_UPLOAD_SIZE_MB`
+  (768 MiB at the default 10 MB). The costliest plain text measured needs
+  64 MiB plus 28.4 MiB per MB, so a plain-text file at the upload limit always
+  fits, with 2.2 times its need at the default.
+* Killed by a signal while its parser reads the file: 422
+  `DOCUMENT_TOO_COMPLEX`, `detail` "This document could not be read, so it
+  was not converted. Export its text to a TXT or Markdown file and convert
+  that instead."
+* Any other end (it fails to start, dies before reading the file or after
+  parsing it without the memory code, or our own code raises): 500 from the
+  global handler, with the request id and no advice, not the route's own 500
+  with `LLM_GENERATION_FAILED`.
+
+Past the deadline is the existing 120 s refusal, and a request that waits
+120 s for one of the two workers is still 503 `CONVERSION_BUSY`. Nothing
+structural moves: conversion error codes and their `detail` are not in the
+OpenAPI schema. MINOR because every client survives it: both refusals carry a
+code clients already know.""",
+    ),
+    ContractChange(
         version="14.18.0",
         level="MINOR",
         title=(

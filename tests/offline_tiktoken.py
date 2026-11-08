@@ -60,6 +60,16 @@ def _blob() -> bytes:
     return data
 
 
+def seed_cache(directory: pathlib.Path) -> pathlib.Path:
+    """Write the encoding into ``directory`` where tiktoken's own cache lookup
+    finds it (``read_file_cached``: the SHA-1 of ``BLOB_URL``), and return the
+    file. For a child process, which inherits ``TIKTOKEN_CACHE_DIR`` but not
+    ``install``'s patch: the knowledge tests' preparation workers (#2622)."""
+    path = directory / hashlib.sha1(BLOB_URL.encode()).hexdigest()
+    path.write_bytes(_blob())
+    return path
+
+
 def install() -> None:
     """Serve ``BLOB_URL`` from ``ARCHIVE``. Idempotent (the conftest is imported twice)."""
     global _installed
