@@ -183,9 +183,7 @@ def _build_turn_summary(turn) -> str:
         # A placeholder the server wrote (#1451): say the turn went
         # unanswered, as a bare line — never as ``Agent: <placeholder>`` —
         # then any note the server showed after it (#1665).
-        agent_part = (
-            f" | {_no_answer_lines(turn.server_note, one_line=True, sep=' | ')}"
-        )
+        agent_part = f" | {_no_answer_lines(turn.server_note, sep=' | ')}"
     elif turn.agent_response_summary:
         agent_part = f" | Agent: {turn.agent_response_summary[:200]}"
     elif not outcome_desc:
@@ -255,29 +253,39 @@ NO_ANSWER_LINE = "(no answer — the assistant produced no usable reply this tur
 #: the user was asked, so never dropped — the user's next message answers it.
 SERVER_NOTE_LINE = '(the server then showed the user this note: "{note}")'
 
-#: Where the one-line forms cut a server note: the cap the reply summary gets
-#: in the same forms.
-_ONE_LINE_NOTE_CAP = 200
+#: The one bound on a server note (#1665): the turn record's copy, and every
+#: rendering of it. Sized to keep a note naming several attachments, or a
+#: clarification note followed by #1930's, whole, so its closing question
+#: survives; a cut is marked.
+SERVER_NOTE_CHARS = 1000
 
 
-def _no_answer_lines(
-    note: Optional[str], *, one_line: bool = False, sep: str = "\n"
-) -> str:
+def render_server_note(note: Optional[str]) -> str:
+    """A server note as every reader renders it: one line, at most
+    ``SERVER_NOTE_CHARS``, and a visible ``...`` where it was cut.
+
+    One line because the notes open with a blank line and #1930's carries a
+    ``---`` rule, and each form puts the note on a single line. The marker is
+    ``summarize_for_turn_record``'s, so a note cut in the record and one cut
+    here read the same.
+    """
+    text = " ".join((note or "").split())
+    if len(text) <= SERVER_NOTE_CHARS:
+        return text
+    return text[: SERVER_NOTE_CHARS - 3] + "..."
+
+
+def _no_answer_lines(note: Optional[str], *, sep: str = "\n") -> str:
     """``NO_ANSWER_LINE``, then ``SERVER_NOTE_LINE`` when a note was recorded.
 
     The rule for a server-written assistant row, in every prompt reader
     (#1451, #1665). Takes the note, never a row or a record: each caller reads
     it inside the branch its own server-written test opens (#1660's census).
-
-    ``one_line`` is for the forms that are one line per turn (the EARLIER
-    TURNS summary, ``<previous_turn>``): the note's whitespace collapses — the
-    notes open with a blank line, and #1930's carries a ``---`` rule — and it
-    is cut at ``_ONE_LINE_NOTE_CAP``. Otherwise it renders whole, without its
-    leading and trailing blank lines. Design: ``prompt-assembly-architecture.md``
-    §2.1, "Server-written rows in the conversation slot".
+    ``sep`` is `` | `` in the EARLIER TURNS summary, which is one line per
+    turn. Design: ``prompt-assembly-architecture.md`` §2.1, "Server-written
+    rows in the conversation slot".
     """
-    note = note or ""
-    text = " ".join(note.split())[:_ONE_LINE_NOTE_CAP] if one_line else note.strip()
+    text = render_server_note(note)
     if not text:
         return NO_ANSWER_LINE
     return f"{NO_ANSWER_LINE}{sep}{SERVER_NOTE_LINE.format(note=text)}"
@@ -585,8 +593,7 @@ def _build_compact_history(
                 )
             if last_turn.agent_response_synthesized:
                 # #1451, #1665
-                no_answer = _no_answer_lines(last_turn.server_note, one_line=True)
-                recent_history += f"{no_answer}\n"
+                recent_history += f"{_no_answer_lines(last_turn.server_note)}\n"
             elif last_turn.agent_response_summary:
                 recent_history += f"Agent: {last_turn.agent_response_summary[:200]}\n"
         recent_history += "</previous_turn>"

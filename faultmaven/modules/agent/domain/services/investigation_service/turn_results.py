@@ -7,6 +7,9 @@ from faultmaven.core.investigation.chat_data import TURN_METADATA_CHAT_DATA_OFFE
 from faultmaven.core.investigation.milestone_engine.progress import (
     summarize_for_turn_record,
 )
+from faultmaven.core.investigation.prompts.context_builder.history import (
+    SERVER_NOTE_CHARS,
+)
 from faultmaven.core.investigation.suggestion_liveness import entry_file_id
 from faultmaven.modules.agent.domain.services.investigation_service.chat_data import (
     chat_data_choices,
@@ -51,7 +54,7 @@ def _record_server_note(case: Case, turn_meta: dict[str, Any], note: str) -> Non
     case.turn_history[-1] = case.turn_history[-1].model_copy(
         update={
             "agent_response_synthesized": True,
-            "server_note": summarize_for_turn_record(note.strip(), 500),
+            "server_note": summarize_for_turn_record(note.strip(), SERVER_NOTE_CHARS),
         }
     )
 

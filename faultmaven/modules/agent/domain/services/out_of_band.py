@@ -54,6 +54,9 @@ import re
 from enum import Enum
 from typing import Any, Optional
 
+from faultmaven.core.investigation.prompts.context_builder.history import (
+    render_server_note,
+)
 from faultmaven.exceptions import RawModelContentRefused
 from faultmaven.infrastructure.llm.dispatch import (
     route_model_call,
@@ -289,20 +292,17 @@ def _last_server_note(case: Any) -> Optional[str]:
 
     ``_last_assistant_message`` passes that row over, so without this the
     question the user was just asked never reaches the classifier. Read only
-    off a server-written row, and labelled as server text in the prompt. Asides
-    and orientation replies are passed over, as that helper passes them; the
-    greeting does not read this. Design: ``prompt-assembly-architecture.md``
+    off a server-written row, and labelled as server text in the prompt; the
+    greeting does not read it. Design: ``prompt-assembly-architecture.md``
     §2.1.
     """
-    for msg in reversed(getattr(case, "messages", None) or []):
-        if msg.get("role") != "assistant" or not msg.get("content"):
-            continue
-        meta = msg.get("metadata") or {}
-        if meta.get("out_of_band") or meta.get("orientation"):
-            continue
-        if is_server_written_assistant_row(msg):
-            return server_note_of(msg)
-        return None
+    from faultmaven.modules.agent.domain.services.orientation import (
+        newest_investigation_reply,
+    )
+
+    msg = newest_investigation_reply(case)
+    if msg is not None and is_server_written_assistant_row(msg):
+        return server_note_of(msg)
     return None
 
 
@@ -421,7 +421,7 @@ class OutOfBandTriage:
             previous_block += (
                 "The assistant gave no usable answer on its last turn; the "
                 "server then showed the user this note:\n"
-                f"<<<\n{_bounded(note.strip(), _PREVIOUS_AGENT_CHARS)}\n>>>\n\n"
+                f"<<<\n{render_server_note(note)}\n>>>\n\n"
             )
         if established:
             # Name the incident only when it HAS a name: a case carries the

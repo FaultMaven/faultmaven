@@ -63,6 +63,7 @@ pytestmark = pytest.mark.unit
 
 NOTE_OPENING = "One more thing — I couldn't confidently classify"
 CHAT_NOTE_OPENING = "Your message includes output from a system"
+CHAT_NOTE_CLOSE = "choose below; otherwise ignore this."
 #: How the note line opens, whatever the note.
 NOTE_LINE = cb.SERVER_NOTE_LINE.split("{note}")[0]
 #: The seeded case's last real answer.
@@ -86,13 +87,13 @@ ANSWERS = {
 }
 
 
-def _failed_classification():
+def _failed_classification(index: int = 0):
     result = MagicMock()
     result.summary = "preview summary"
     result.structural_index = "index"
     result.data_type = UnifiedDataType.TEXT
     result.detailed_data_type = DataType.UNSTRUCTURED_TEXT
-    result.content_hash = "c" * 64
+    result.content_hash = f"{index:064x}" if index else "c" * 64
     result.extraction_method = "classification_failed"
     result.extraction_metadata = {"suggested_types": ["documentation"]}
     result.coverage_start_ts = None
@@ -170,15 +171,18 @@ def _seeded_case():
     return case
 
 
-async def _run(answer: str, *, note: bool, records: bool, chat_data: bool = False):
+async def _run(
+    answer: str, *, note: bool, records: bool, chat_data: bool = False, files: int = 1
+):
     text, flagged = ANSWERS[answer]
     repo = MockCaseRepository()
     case = _seeded_case()
     repo._storage[case.case_id] = case
 
     preprocessing = MagicMock()
+    results = iter([_failed_classification(i) for i in range(files)])
     preprocessing.classify_and_extract = AsyncMock(
-        return_value=_failed_classification()
+        side_effect=lambda *a, **k: next(results)
     )
     storage = MagicMock()
     storage.store_file = AsyncMock(return_value={"file_path": "evidence/x/blob.txt"})
@@ -189,18 +193,16 @@ async def _run(answer: str, *, note: bool, records: bool, chat_data: bool = Fals
         preprocessing_service=preprocessing,
         file_storage_service=storage,
     )
-    attachments = (
-        [
-            Attachment(
-                content=b"ambiguous bytes",
-                filename="mystery.txt",
-                content_type="text/plain",
-                source_metadata={"source_type": "file_upload"},
-            )
-        ]
-        if note
-        else []
-    )
+    names = ["mystery.txt"] if files == 1 else [f"dump-{i}.txt" for i in range(files)]
+    attachments = [
+        Attachment(
+            content=f"ambiguous bytes {name}".encode(),
+            filename=name,
+            content_type="text/plain",
+            source_metadata={"source_type": "file_upload"},
+        )
+        for name in (names if note else [])
+    ]
     query = f"The pods won't start:\n\n{_OUTPUT}" if chat_data else "here is the dump"
     response = await service.process_turn(
         case_id=case.case_id,
@@ -276,13 +278,13 @@ async def test_a_note_on_an_unusable_answer_is_server_text_in_every_reader(
     assert saved.turn_history[-1].agent_response_synthesized is True
     assert saved.turn_history[-1].server_note == note.strip()
 
-    whole = cb.SERVER_NOTE_LINE.format(note=note.strip())
-    one_line = cb.SERVER_NOTE_LINE.format(note=" ".join(note.split())[:200])
+    # Every form: the note on one line, whitespace collapsed (F5).
+    line = cb.SERVER_NOTE_LINE.format(note=" ".join(note.split()))
     expected = {
-        "EARLIER": f" | {cb.NO_ANSWER_LINE} | {one_line}",
-        "RECENT": f"\n{cb.NO_ANSWER_LINE}\n{whole}\n",
-        "verbatim": f"\n{cb.NO_ANSWER_LINE}\n{whole}\n",
-        "previous_turn": f"\n{cb.NO_ANSWER_LINE}\n{one_line}\n</previous_turn>",
+        "EARLIER": f" | {cb.NO_ANSWER_LINE} | {line}",
+        "RECENT": f"\n{cb.NO_ANSWER_LINE}\n{line}\n",
+        "verbatim": f"\n{cb.NO_ANSWER_LINE}\n{line}\n",
+        "previous_turn": f"\n{cb.NO_ANSWER_LINE}\n{line}\n</previous_turn>",
     }
     renderings = _renderings(saved)
     assert renderings["EARLIER"].endswith(expected["EARLIER"])
@@ -312,6 +314,36 @@ async def test_the_chat_data_note_is_recorded_by_the_same_rule():
         assert _note_follows_marker(out, "---"), reader
         assert out.count(CHAT_NOTE_OPENING) == 1, reader
         assert RESPONSE_WITHHELD_TEXT not in out, reader
+
+
+@pytest.mark.parametrize(
+    "files, chat_data, question",
+    [
+        (3, False, "How should I treat them?"),
+        (1, True, "How should I treat it?"),
+    ],
+    ids=["three_attachments", "clarification_and_chat_data"],
+)
+async def test_a_long_note_keeps_its_closing_question_in_every_form(
+    files, chat_data, question
+):
+    """Notes past the 200 characters the summaries once cut them at: one naming
+    three attachments, and a clarification note followed by #1930's. Each
+    reader, triage included, carries the whole note, its question with it."""
+    _, saved, row = await _run(
+        "engine_placeholder", note=True, records=True, chat_data=chat_data, files=files
+    )
+    note = " ".join(server_note_of(row).split())
+    assert len(note) > 200 and question in note, "harness: a long note"
+    if chat_data:
+        assert note.endswith(CHAT_NOTE_CLOSE), "harness: the chat-data note closes it"
+
+    forms = _renderings(saved)
+    forms["triage"] = OutOfBandTriage._build_prompt(saved, NEXT_MESSAGE)
+    for reader, out in forms.items():
+        assert cb.SERVER_NOTE_LINE.format(note=note) in out or (
+            reader == "triage" and f"<<<\n{note}\n>>>" in out
+        ), reader
 
 
 @pytest.mark.parametrize("answer", ["engine_placeholder", "blank"])
@@ -390,11 +422,13 @@ def test_a_long_note_reloads_and_the_one_line_forms_stay_one_line():
     )
 
     assert reloaded.server_note == note
+    # Rendered on one line and cut at the one bound, visibly.
+    collapsed = " ".join(note.split())
+    assert len(collapsed) > cb.SERVER_NOTE_CHARS
+    cut = collapsed[: cb.SERVER_NOTE_CHARS - 3] + "..."
     summary = cb._build_turn_summary(reloaded)
     assert "\n" not in summary
-    assert summary.endswith(
-        cb.SERVER_NOTE_LINE.format(note=" ".join(note.split())[:200])
-    )
+    assert summary.endswith(cb.SERVER_NOTE_LINE.format(note=cut))
 
 
 def test_only_this_turns_record_is_ever_rewritten():
