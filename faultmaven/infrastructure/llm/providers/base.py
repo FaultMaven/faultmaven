@@ -488,7 +488,6 @@ class LLMResponse:
     cached: bool = False
     tool_calls: Optional[List[ToolCall]] = None  # Function calling support
     sanitized_prompt: Optional[str] = None  # PII-sanitized prompt for telemetry
-    raw_prompt: Optional[str] = None  # Raw prompt (local debugging only)
     # Provider-specific message-level artifacts that must round-trip across
     # turns. Used by Gemini 3.x to preserve the full `parts[]` array (text +
     # functionCall + thought) verbatim — each part may carry its own

@@ -202,7 +202,6 @@ class TestShimSubmodulesAreIndependent:
         "shim, forbidden",
         [
             ("metrics", ("opik", "presidio_analyzer", "torch")),
-            ("observability", ("presidio_analyzer",)),
             ("security", ("opik",)),
         ],
     )

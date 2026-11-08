@@ -47,12 +47,9 @@ def client(request) -> TestClient:
     ``RequestIdMiddleware`` names the request. Otherwise Starlette's
     ``ServerErrorMiddleware`` answers it through the 500 handler."""
     deployed = request.param == "deployed"
-    with (
-        patch(
-            "faultmaven.bootstrap.middleware._is_test_environment",
-            return_value=not deployed,
-        ),
-        patch("faultmaven.bootstrap.middleware.OPIK_MIDDLEWARE_AVAILABLE", False),
+    with patch(
+        "faultmaven.bootstrap.middleware._is_test_environment",
+        return_value=not deployed,
     ):
         app = rebuild_app_under(
             {"SKIP_SERVICE_CHECKS": "false" if deployed else "true"}

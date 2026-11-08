@@ -22,7 +22,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, List, Optional
 
 from faultmaven.exceptions import ServiceException
-from faultmaven.infrastructure.observability.tracing import trace_backend_configured
+from faultmaven.infrastructure.observability import opik_sdk
 from faultmaven.utils.exception_name import exception_class_name
 
 logger = logging.getLogger(__name__)
@@ -70,21 +70,6 @@ _ERASE_EXECUTOR = ThreadPoolExecutor(
 _REPLAY_LOCK = threading.Lock()
 
 
-def _cached_client() -> Any:
-    """The client ``@opik.track`` writes through, so a flush drains its queue."""
-    from opik.api_objects.opik_client import get_client_cached
-
-    return get_client_cached()
-
-
-def _parsed_filters(filter_string: str, entity_type: str) -> Optional[str]:
-    """The JSON string the SDK's own export sends these endpoints."""
-    from opik.api_objects.opik_query_language import OpikQueryLanguage
-
-    parser = getattr(OpikQueryLanguage, f"for_{entity_type}")
-    return parser(filter_string).parsed_filters
-
-
 def _refused(owner: str, reason: str) -> ServiceException:
     return ServiceException(f"Cannot clear {STORE_NAME} for {owner}: {reason}")
 
@@ -98,7 +83,7 @@ class LLMTraceEraser:
     def __init__(
         self,
         project_name: Optional[str],
-        client_factory: Callable[[], Any] = _cached_client,
+        client_factory: Callable[[], Any] = opik_sdk.cached_client,
         flush_timeout_seconds: int = 20,
         request_timeout_seconds: int = 15,
     ):
@@ -119,7 +104,7 @@ class LLMTraceEraser:
         owner = f"{kind} {owner_id}"
         # Not ``tracing_is_effective()``: with the SDK's switch off spans stop,
         # the traces already recorded remain, and the client still reaches them.
-        if not trace_backend_configured():
+        if not opik_sdk.trace_backend_configured():
             raise _refused(owner, "the trace backend did not initialize")
         for value in (owner_id, enterprise_id):
             if not _SAFE_ID.fullmatch(value):
@@ -164,6 +149,7 @@ class LLMTraceEraser:
         # mid-query ends as cleanly as one that is done.
         rest = client.rest_client
         options = {"timeout_in_seconds": self._request_timeout_seconds}
+        project = self.project_name or client.project_name
         found: List[str] = []
         for get_page, entity, exclude, row_key in (
             (rest.traces.get_traces_by_project, "traces", TRACE_EXCLUDE, "id"),
@@ -171,13 +157,24 @@ class LLMTraceEraser:
         ):
             read_page = functools.partial(
                 get_page,
-                project_name=self.project_name or client.project_name,
-                filters=_parsed_filters(filter_string, entity),
+                project_name=project,
+                filters=opik_sdk.parsed_filters(filter_string, entity),
                 exclude=json.dumps(exclude),
                 size=TRACE_PAGE_SIZE,
                 request_options=options,
             )
-            found += _read_ids(read_page, row_key, owner, deadline)
+            try:
+                found += _read_ids(read_page, row_key, owner, deadline)
+            except Exception as exc:
+                # Only the first read's 404 can mean the project does not exist.
+                if not (entity == "traces" and opik_sdk.is_not_found(exc)):
+                    raise
+                if not _no_such_project(rest, project, options):
+                    raise
+                logger.info(
+                    "No trace project %r: nothing of %s to delete", project, owner
+                )
+                return 0
         ids = list(dict.fromkeys(found))
         for start in range(0, len(ids), TRACE_DELETE_CHUNK_SIZE):
             rest.traces.delete_traces(
@@ -193,14 +190,14 @@ class LLMTraceEraser:
         ``flush`` returning True is not delivery. After one connection failure
         the SDK parks every later trace in a local database with no send, and
         replays them only while its monitor's flag is True, which otherwise
-        waits for a ping that ``init_opik_tracing`` spaces 999999 s apart. So the
-        flag is reset here, through the SDK's internals as it has no public
-        accessor. The ping interval stays as it is: a non-200 ping would park
-        every trace on every pod (#2573). After the flush, a flag that is False
-        again means a send failed, so the backend is unreachable.
+        waits for a ping ``opik_sdk.PING_INTERVAL_S`` apart. So the flag is
+        reset here, through the SDK's internals as it has no public accessor.
+        The ping interval stays as it is: a non-200 ping would park every trace
+        on every pod (#2573). After the flush, a flag that is False again means
+        a send failed, so the backend is unreachable.
         """
         try:
-            monitor = client._streamer._fallback_replay_manager._monitor
+            monitor = opik_sdk.replay_monitor(client)
             if not monitor.has_server_connection:
                 monitor.reset()
             flushed = client.flush(timeout=self._flush_timeout_seconds)
@@ -215,9 +212,10 @@ class LLMTraceEraser:
 
 
 class UnavailableTraceEraser:
-    """Bound where traces cannot be erased: a backend configured without the
-    Opik SDK, or a knowledge service no composition gave an eraser. Every
-    delete that needs a purge fails instead of skipping it."""
+    """Bound where traces cannot be erased: a backend named in settings that
+    this process did not configure (no SDK, a configuration that raised, or a
+    composition that never configured), or a knowledge service no composition
+    gave an eraser. Every delete that needs a purge fails instead of skipping it."""
 
     store_name = STORE_NAME
 
@@ -229,6 +227,24 @@ class UnavailableTraceEraser:
 
     async def erase_conversion(self, conversion_id: str, enterprise_id: str) -> int:
         raise _refused(f"conversion {conversion_id}", self.reason)
+
+
+def _no_such_project(rest: Any, project: str, options: dict) -> bool:
+    """#2588's positive check, after a 404 for ``project``: the backend that
+    answered lists its projects, and none is named exactly ``project``. Its name
+    filter matches partially and ignoring case, and a page holds 10 by default,
+    so one page of the module's size is read, and it is conclusive only when it
+    holds every match (``total``). Anything else raises or answers False, and
+    the delete fails.
+
+    What it cannot tell: a URL or workspace changed after the traces were
+    written, which points the check at a backend that never held them (#2581).
+    """
+    page = rest.projects.find_projects(
+        name=project, size=TRACE_PAGE_SIZE, request_options=options
+    )
+    listed = page.content or []
+    return page.total == len(listed) and all(p.name != project for p in listed)
 
 
 def _read_ids(

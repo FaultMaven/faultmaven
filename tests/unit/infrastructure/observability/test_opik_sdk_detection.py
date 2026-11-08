@@ -1,12 +1,11 @@
 """A namespace-package shadow must not count as an installed Opik SDK.
 
-Why an empty directory imports at all, and which sites were affected, is
-documented once beside the guard itself — see
-``faultmaven/infrastructure/observability/tracing.py``. This file pins the two
-bare-``import opik`` sites that guard reaches: ``tracing.OPIK_AVAILABLE``
-(which feeds ``OpikTracer.health_check``'s ``opik_sdk_available``) and
-``bootstrap.middleware.OPIK_AVAILABLE`` (which picks the startup log line and
-gates ``OpikMiddleware``; moved out of ``faultmaven.main`` in fm#1707 wave 2).
+Why an empty directory imports at all is documented once beside the guard
+itself — see ``faultmaven/utils/optional_dependency.py``. This file pins the one
+``import opik`` site: ``opik_sdk.OPIK_AVAILABLE``, which the middleware branch
+and ``OpikTracer.health_check`` read, and ``SPAN_TAGGING_AVAILABLE``, which also
+needs the span writers and which the router's and the classifier's decorators
+read (#2616 part c).
 
 The first test pins the CPython fact the guards rest on rather than assuming
 it, and pins it precisely: a namespace package *sets* ``__file__`` to None
@@ -64,8 +63,19 @@ def test_only_a_file_backed_package_sets_file_and_origin(
         sys.modules.pop(name, None)
 
 
-def _probe(substitute: str) -> dict:
-    """Report both guards from one interpreter, with `substitute` installed.
+# What the probe reports by default: the two flags of ``opik_sdk``.
+_AVAILABILITY = """
+from faultmaven.infrastructure.observability import opik_sdk
+
+result = {
+    "available": opik_sdk.OPIK_AVAILABLE,
+    "middleware": opik_sdk.fastapi_middleware() is not None,
+}
+"""
+
+
+def _probe(substitute: str, report: str = _AVAILABILITY) -> dict:
+    """Report the guard from a fresh interpreter, with `substitute` installed.
 
     A subprocess because the stand-in ``opik`` has to be in ``sys.modules``
     before the modules under test import it, and they read it only once, at
@@ -74,11 +84,6 @@ def _probe(substitute: str) -> dict:
     probe would place an empty dir on PYTHONPATH, namespace scanning would
     continue past it to the real ``opik/__init__.py`` in site-packages, and on
     CI the test would silently measure the real package and pass vacuously.
-
-    One interpreter for both flags, imported explicitly rather than relying on
-    one to pull in the other (``bootstrap.middleware`` does not import
-    ``tracing``): a separate tracing-only probe would pay a second process for
-    a fact this one already has.
 
     Runs in a temporary cwd (importing the app bootstraps settings, which
     writes ``data/``) and pins ``faultmaven`` to this checkout, since the
@@ -92,19 +97,9 @@ opik = types.ModuleType("opik")
 sys.modules["opik"] = opik
 
 import json
-
-from faultmaven.infrastructure.observability import tracing
-from faultmaven.bootstrap import middleware as bootstrap_middleware
-
+{report}
 with open(OUT, "w") as f:
-    json.dump(
-        {{
-            "tracing_available": tracing.OPIK_AVAILABLE,
-            "main_available": bootstrap_middleware.OPIK_AVAILABLE,
-            "main_middleware_available": bootstrap_middleware.OPIK_MIDDLEWARE_AVAILABLE,
-        }},
-        f,
-    )
+    json.dump(result, f)
 """
     pin = (
         "import faultmaven as _fm, pathlib as _pl\n"
@@ -151,16 +146,123 @@ _REAL = (
 
 def test_namespace_shadow_is_not_an_installed_sdk():
     result = _probe(_SHADOW)
-    assert result["tracing_available"] is False
-    assert result["main_available"] is False
-    assert result["main_middleware_available"] is False
+    assert result["available"] is False
+    assert result["middleware"] is False
 
 
 def test_installed_sdk_is_detected():
     result = _probe(_REAL)
-    assert result["tracing_available"] is True
-    assert result["main_available"] is True
+    assert result["available"] is True
     # The middleware lives in a submodule, which the stand-in does not have, so
     # only the top-level flag flips. Asserted rather than merely described:
     # it is what keeps the negative test above measuring two separate facts.
-    assert result["main_middleware_available"] is False
+    assert result["middleware"] is False
+
+
+# An installed SDK whose ``opik_context`` has, or has lost, the span writers.
+_CONTEXT = (
+    _REAL
+    + "\nopik.track = lambda **options: (lambda func: func)"
+    + '\ncontext = types.ModuleType("opik.opik_context")'
+    + '\ncontext.__file__ = "/nonexistent/site-packages/opik/opik_context.py"'
+    + "\n{writers}"
+    + "\nopik.opik_context = context"
+    + '\nsys.modules["opik.opik_context"] = context'
+)
+
+_DECORATED = """
+from faultmaven.infrastructure.llm.router import _opik_track_llm
+from faultmaven.infrastructure.observability import opik_sdk
+from faultmaven.modules.preprocessing.classifier import _opik_track_classifier
+
+
+async def routed():
+    return None
+
+
+def classified():
+    return None
+
+
+result = {
+    "available": opik_sdk.OPIK_AVAILABLE,
+    "span_tagging": opik_sdk.SPAN_TAGGING_AVAILABLE,
+    "router": _opik_track_llm("probe")(routed) is not routed,
+    "classifier": _opik_track_classifier(classified) is not classified,
+}
+"""
+
+
+@pytest.mark.parametrize(
+    "writers, decorated",
+    [
+        ("", False),
+        ("context.update_current_span = lambda **fields: None", False),
+        (
+            "context.update_current_span = context.update_current_trace = "
+            "lambda **fields: None",
+            True,
+        ),
+    ],
+    ids=["no-writers", "no-trace-writer", "both-writers"],
+)
+def test_an_sdk_without_the_span_writers_decorates_no_call(writers, decorated):
+    """A span the router cannot tag with its owner is one the case delete cannot
+    find (#2102), so neither call site is decorated without both writers."""
+    result = _probe(_CONTEXT.format(writers=writers), report=_DECORATED)
+
+    assert result == {
+        "available": True,
+        "span_tagging": decorated,
+        "router": decorated,
+        "classifier": decorated,
+    }
+
+
+_EFFECTIVE = """
+import asyncio
+
+from faultmaven.infrastructure.health.component_monitor import ComponentHealthMonitor
+from faultmaven.infrastructure.observability import opik_sdk
+
+opik_sdk._record = opik_sdk.TraceBackend(
+    sdk_available=True, enabled=True, configured=True, project="faultmaven"
+)
+health = asyncio.run(ComponentHealthMonitor()._check_tracer_health())
+
+result = {
+    "configured": opik_sdk.trace_backend_configured(),
+    "effective": opik_sdk.tracing_is_effective(),
+    "tracer": health["status"].value,
+}
+"""
+
+
+@pytest.mark.parametrize(
+    "writers, effective",
+    [
+        ("", False),
+        ("context.update_current_span = lambda **fields: None", False),
+        (
+            "context.update_current_span = context.update_current_trace = "
+            "lambda **fields: None",
+            True,
+        ),
+    ],
+    ids=["no-writers", "no-trace-writer", "both-writers"],
+)
+def test_without_the_span_writers_a_configured_backend_records_nothing(
+    writers, effective
+):
+    """#2629's delta K1: with no call decorated, a configured, enabled backend
+    must not read as tracing (#1234), and the tracer probe reads DEGRADED. The
+    eraser's own gate still answers True: written traces stay deletable."""
+    switched_on = _CONTEXT + "\nopik.is_tracing_active = lambda: True"
+
+    result = _probe(switched_on.format(writers=writers), report=_EFFECTIVE)
+
+    assert result == {
+        "configured": True,
+        "effective": effective,
+        "tracer": "healthy" if effective else "degraded",
+    }

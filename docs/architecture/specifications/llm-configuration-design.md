@@ -121,10 +121,10 @@ Settings that are safe and meaningful to change at runtime without infrastructur
 | **Capability Overrides** | `CODE_PROVIDER`, `MULTIMODAL_PROVIDER`, `SYNTHESIS_PROVIDER`, `CLASSIFIER_PROVIDER`, `DA_PROVIDER` | 5 |
 | **Feature Toggles** | `ENABLE_WEB_SEARCH`, `TAVILY_API_KEY` | 2 |
 | **Operational Tuning** | `LOG_LEVEL`, `MAX_UPLOAD_SIZE_MB` | 2 |
-| **Observability** | `OPIK_ENABLED`, `OPIK_TRACK_DISABLE` (SDK-owned), `OPIK_PROJECT_NAME`, `OPIK_USE_LOCAL`, `OPIK_LOCAL_URL`, `OPIK_API_KEY`, `OPIK_LOG_RAW_PROMPTS` | 7 |
+| **Observability** | `OPIK_ENABLED`, `OPIK_TRACK_DISABLE` (SDK-owned), `OPIK_PROJECT_NAME`, `OPIK_USE_LOCAL`, `OPIK_LOCAL_URL`, `OPIK_API_KEY` | 6 |
 | **LLM Behavior** | `LLM_REQUEST_TIMEOUT`, `LLM_MAX_RETRIES`, `LLM_MAX_TOKENS` | 3 |
 
-**Total: ~42 settings**
+**Total: ~41 settings**
 
 ### What stays in `.env` only (never in DB)
 

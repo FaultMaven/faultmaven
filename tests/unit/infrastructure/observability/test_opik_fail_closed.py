@@ -10,8 +10,13 @@ batches (401) plus a ~10s `www.comet.com/is-alive/ping`.
 These tests prove the positive property, not just absence of an error: with
 OPIK_ENABLED unset/false, exercising both decorated call sites — including a
 real `DataClassifier().classify()` — constructs NO Opik client, so nothing can
-reach Comet; and `init_opik_tracing` flips the SDK's own kill switch
+reach Comet; and `opik_sdk.configure` flips the SDK's own kill switch
 (is_tracing_active() becomes False even if the SDK already cached True).
+
+The SDK's crash reporter is off unless an operator turns it on (#2585, the
+#2616 ruling, Q8): `TestCrashReporting`. Every child here is given a Sentry DSN
+on a loopback port this test bound and closed, so no probe, the positive
+controls included, can reach Comet's Sentry.
 
 They assert that property rather than the mechanism. The gate is read per
 CALL, not at import, so the decorator legitimately wraps the function even
@@ -29,6 +34,7 @@ depending on what earlier tests imported or cached.
 import importlib.util
 import json
 import os
+import socket
 import subprocess
 import sys
 import tempfile
@@ -90,15 +96,29 @@ _OPIK_ENV_KEYS = (
     "OPIK_URL_OVERRIDE",
     "OPIK_LOCAL_URL",
     "OPIK_API_KEY",
+    "OPIK_SENTRY_ENABLE",
+    "OPIK_SENTRY_DSN",
+    "FAULTMAVEN_SKIP_DOTENV",
 )
 
 
-def _run_probe(body: str, extra_env: dict | None = None) -> dict:
+def _closed_loopback_port() -> int:
+    """A port this test bound and closed, so nothing answers on it."""
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def _run_probe(
+    body: str, extra_env: dict | None = None, dotenv: str | None = None
+) -> dict:
     """Run `body` in a fresh interpreter and return the JSON it writes to OUT.
 
     Runs in a temporary cwd so pydantic-settings cannot pick up the
-    developer's `.env`; results come back through a file because the app logs
-    on import.
+    developer's `.env` (``dotenv`` writes one there instead); results come back
+    through a file because the app logs on import. The child runs without the
+    network guard, so its crash reporting is off and its DSN is a closed
+    loopback port; a None in ``extra_env`` removes that variable.
 
     Every probe is pinned to THIS checkout before it measures anything. The
     package is installed editable, and the PEP 660 finder resolves
@@ -110,8 +130,13 @@ def _run_probe(body: str, extra_env: dict | None = None) -> dict:
     env = {**os.environ, "PYTHONPATH": str(REPO_ROOT)}
     for key in _OPIK_ENV_KEYS:
         env.pop(key, None)
-    if extra_env:
-        env.update(extra_env)
+    env["OPIK_SENTRY_ENABLE"] = "false"
+    env["OPIK_SENTRY_DSN"] = f"http://k@127.0.0.1:{_closed_loopback_port()}/1"
+    for key, value in (extra_env or {}).items():
+        if value is None:
+            env.pop(key, None)
+        else:
+            env[key] = value
     pin = (
         "import faultmaven as _fm, pathlib as _pl\n"
         f"_root = _pl.Path({str(REPO_ROOT)!r}).resolve()\n"
@@ -122,6 +147,8 @@ def _run_probe(body: str, extra_env: dict | None = None) -> dict:
     )
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "probe.json"
+        if dotenv is not None:
+            (Path(tmp) / ".env").write_text(dotenv)
         program = f"OUT = {str(out)!r}\n" + pin + body
         result = subprocess.run(
             [sys.executable, "-c", program],
@@ -156,11 +183,17 @@ _DISABLED_PROBE = """
 import asyncio
 import json
 
+from faultmaven.config.settings import get_settings
 from faultmaven.infrastructure.llm.router import LLMRouter, _opik_track_llm
+from faultmaven.infrastructure.observability import opik_sdk
 from faultmaven.modules.preprocessing.classifier import (
     DataClassifier,
     _opik_track_classifier,
 )
+
+# As every entrypoint does before it composes: the call sites' gate reads the
+# record this writes.
+opik_sdk.configure(get_settings())
 
 
 async def af():
@@ -243,7 +276,11 @@ def test_importing_call_sites_has_no_side_effects():
     import-time gate read made a plain `import faultmaven...router` write a
     secret file into the process's cwd and freeze settings from the ambient
     environment — ahead of the conftest fixtures that exist to clear it. The
-    probe runs in a temporary cwd, so a created file is unambiguous."""
+    probe runs in a temporary cwd, so a created file is unambiguous.
+
+    Importing them does load the settings' .env into the environment: both
+    import ``opik_sdk``, which loads it before ``import opik`` (#2616 part c).
+    What they must not do is build the settings."""
     result = _run_probe("""
 import json
 import os
@@ -314,9 +351,10 @@ import opik
 # cached True, not merely influence a future first read.
 before = opik.is_tracing_active()
 
-from faultmaven.infrastructure.observability.tracing import init_opik_tracing
+from faultmaven.config.settings import get_settings
+from faultmaven.infrastructure.observability.opik_sdk import configure
 
-init_opik_tracing()
+configure(get_settings())
 
 result = {
     "before": before,
@@ -331,7 +369,7 @@ with open(OUT, "w") as f:
 
 @pytest.mark.skipif(not OPIK_INSTALLED, reason="opik SDK not installed")
 def test_init_disabled_flips_sdk_kill_switch():
-    """init_opik_tracing with OPIK_ENABLED unset must turn the SDK's own
+    """configure with OPIK_ENABLED unset must turn the SDK's own
     tracing flag off — including overriding an already-cached True."""
     result = _run_probe(_INIT_KILL_SWITCH_PROBE)
     assert result["before"] is True  # the hazard existed
@@ -358,9 +396,10 @@ import os
 
 import opik
 
-from faultmaven.infrastructure.observability.tracing import init_opik_tracing
+from faultmaven.config.settings import get_settings
+from faultmaven.infrastructure.observability.opik_sdk import configure
 
-init_opik_tracing()
+configure(get_settings())
 
 result = {
     "tracing_active": opik.is_tracing_active(),
@@ -445,10 +484,10 @@ import os
 
 import opik
 
-from faultmaven.config.settings import reset_settings
-from faultmaven.infrastructure.observability.tracing import init_opik_tracing
+from faultmaven.config.settings import get_settings, reset_settings
+from faultmaven.infrastructure.observability.opik_sdk import configure
 
-init_opik_tracing()  # OPIK_ENABLED unset -> disabled path
+configure(get_settings())  # OPIK_ENABLED unset -> disabled path
 after_disabled = {
     "tracing_active": opik.is_tracing_active(),
     "track_disable_env": os.environ.get("OPIK_TRACK_DISABLE"),
@@ -459,7 +498,7 @@ os.environ["OPIK_URL_OVERRIDE"] = "http://127.0.0.1:1/"
 os.environ["OPIK_CONNECTION_MONITOR_PING_INTERVAL"] = "999999"
 reset_settings()
 
-init_opik_tracing()  # now the enabled path
+configure(get_settings())  # now the enabled path
 
 result = {
     "after_disabled": after_disabled,
@@ -477,6 +516,107 @@ with open(OUT, "w") as f:
     # And the enabled init that followed restored it.
     assert result["tracing_active"] is True
     assert result["track_disable_env"] is None  # our own write, fully undone
+
+
+_SENTRY_ENTRYPOINTS = {
+    "api": "import faultmaven.main  # noqa: F401\n",
+    # An fm-* command: the module, then its runner, which configures the SDK
+    # before the command composes.
+    "fm-reset-kb": (
+        "import faultmaven.cli.reset_kb  # noqa: F401\n"
+        "from faultmaven.cli._container import run_with_container\n"
+        "async def _nothing():\n"
+        "    return 0\n"
+        "run_with_container(_nothing())\n"
+    ),
+}
+
+_SENTRY_PROBE = """
+import json
+import sys
+
+{entrypoint}
+import sentry_sdk
+
+with open(OUT, "w") as f:
+    json.dump(
+        {{
+            "active": sentry_sdk.get_client().is_active(),
+            "opik_imported": "opik" in sys.modules,
+            "pytest_imported": "pytest" in sys.modules,
+        }},
+        f,
+    )
+"""
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(not OPIK_INSTALLED, reason="opik SDK not installed")
+class TestCrashReporting:
+    """#2585: ``import opik`` starts Comet's Sentry unless told not to. The
+    child runs without pytest, which the SDK would otherwise skip Sentry for."""
+
+    @pytest.mark.parametrize("entrypoint", sorted(_SENTRY_ENTRYPOINTS))
+    @pytest.mark.parametrize(
+        "operator, dotenv, active",
+        [
+            (None, None, False),
+            ("true", None, True),
+            (None, "OPIK_SENTRY_ENABLE=true\n", True),
+        ],
+        ids=["unset", "environment-true", "dotenv-true"],
+    )
+    def test_only_an_operators_true_starts_it(
+        self, entrypoint, operator, dotenv, active
+    ):
+        result = _run_probe(
+            _SENTRY_PROBE.format(entrypoint=_SENTRY_ENTRYPOINTS[entrypoint]),
+            extra_env={"OPIK_SENTRY_ENABLE": operator},
+            dotenv=dotenv,
+        )
+
+        assert result == {
+            "active": active,
+            "opik_imported": True,
+            "pytest_imported": False,
+        }
+
+
+def test_only_the_sdk_module_writes_the_environment_at_import():
+    """``tracing`` is imported by some 25 modules; it loads neither the SDK nor
+    ``.env``. ``opik_sdk`` writes one key, the crash-reporting default."""
+    result = _run_probe(
+        """
+import json
+import os
+import sys
+
+before = set(os.environ)
+import faultmaven.infrastructure.observability.tracing  # noqa: F401
+after_tracing = set(os.environ)
+opik_loaded = "opik" in sys.modules
+import faultmaven.infrastructure.observability.opik_sdk  # noqa: F401
+
+with open(OUT, "w") as f:
+    json.dump(
+        {
+            "tracing": sorted(after_tracing - before),
+            "opik_loaded_by_tracing": opik_loaded,
+            "opik_sdk": sorted(set(os.environ) - after_tracing),
+            "sentry_enable": os.environ["OPIK_SENTRY_ENABLE"],
+        },
+        f,
+    )
+""",
+        extra_env={"OPIK_SENTRY_ENABLE": None},
+    )
+
+    assert result == {
+        "tracing": [],
+        "opik_loaded_by_tracing": False,
+        "opik_sdk": ["OPIK_SENTRY_ENABLE"],
+        "sentry_enable": "false",
+    }
 
 
 def test_deployed_configmap_keys_bind_to_settings(monkeypatch):

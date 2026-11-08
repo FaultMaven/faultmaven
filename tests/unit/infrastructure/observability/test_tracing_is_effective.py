@@ -1,10 +1,10 @@
-"""``tracing_is_effective`` reports what ``init_opik_tracing`` actually did.
+"""``tracing_is_effective`` reports what ``opik_sdk.configure`` actually did.
 
 The question ``/admin/config/status`` asks, pinned HERE against the real
-``init_opik_tracing`` rather than only through the endpoint. The endpoint's own
-tests patch ``_tracing_configured`` directly — which is right for testing the
-endpoint, and would keep passing if initialisation stopped recording the flag
-at all. These drive the function and let it set the flag itself.
+``configure`` rather than only through the endpoint. The endpoint's own tests
+patch the record directly — which is right for testing the endpoint, and would
+keep passing if configuration stopped recording its outcome at all. These drive
+the function and let it write the record itself.
 
 Why this exists (#1234, round 2): the first fix answered ``opik_enabled and
 OPIK_AVAILABLE``, mirroring two of initialisation's gates. The third — no
@@ -20,7 +20,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from faultmaven.infrastructure.observability import tracing
+from faultmaven.infrastructure.observability import opik_sdk
 
 
 @pytest.fixture
@@ -35,7 +35,8 @@ def opik_stand_in(monkeypatch):
     ``set_tracing_active`` / ``reset_tracing_to_config_default`` mirror the real
     SDK's contract closely enough for the switch to be observable: the kill
     switch turns it off, and the reset re-derives from ``OPIK_TRACK_DISABLE``
-    exactly as ``_enable_sdk_tracing`` relies on.
+    exactly as ``_enable_sdk_tracing`` relies on. ``configure`` writes the
+    environment variables the SDK reads; each is put back after the test.
     """
     import os
 
@@ -53,12 +54,21 @@ def opik_stand_in(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "opik", fake)
     monkeypatch.setitem(sys.modules, "opik.config", config)
-    monkeypatch.setattr(tracing, "OPIK_AVAILABLE", True)
-    monkeypatch.setattr(tracing, "_tracing_configured", False)
+    monkeypatch.setattr(opik_sdk, "OPIK_AVAILABLE", True)
+    monkeypatch.setattr(opik_sdk, "SPAN_TAGGING_AVAILABLE", True)
+    monkeypatch.setattr(opik_sdk, "_record", opik_sdk.TraceBackend())
     monkeypatch.setattr(
-        tracing, "_track_disable_prior_value", tracing._TRACK_DISABLE_UNRECORDED
+        opik_sdk, "_track_disable_prior_value", opik_sdk._TRACK_DISABLE_UNRECORDED
     )
-    monkeypatch.delenv("OPIK_TRACK_DISABLE", raising=False)
+    for name in (
+        "OPIK_TRACK_DISABLE",
+        "OPIK_URL_OVERRIDE",
+        "OPIK_PROJECT_NAME",
+        "OPIK_WORKSPACE",
+        "OPIK_API_KEY",
+        "OPIK_CONNECTION_MONITOR_PING_INTERVAL",
+    ):
+        monkeypatch.delenv(name, raising=False)
     return state
 
 
@@ -85,10 +95,10 @@ def test_enabled_without_a_backend_url_is_not_effective(opik_stand_in):
     returns. The SDK is present here, so a predicate of ``opik_enabled and
     OPIK_AVAILABLE`` reports True.
     """
-    tracing.init_opik_tracing(settings=_settings(opik_enabled=True))
+    opik_sdk.configure(_settings(opik_enabled=True))
 
-    assert tracing._tracing_configured is False
-    assert tracing.tracing_is_effective() is False
+    assert opik_sdk.trace_backend_configured() is False
+    assert opik_sdk.tracing_is_effective() is False
 
 
 @pytest.mark.unit
@@ -106,17 +116,17 @@ def test_a_configured_backend_is_effective(opik_stand_in, backend):
     Without it every assertion here is satisfied by a function that returns
     False unconditionally.
     """
-    tracing.init_opik_tracing(settings=_settings(opik_enabled=True, **backend))
+    opik_sdk.configure(_settings(opik_enabled=True, **backend))
 
-    assert tracing._tracing_configured is True
-    assert tracing.tracing_is_effective() is True
+    assert opik_sdk.trace_backend_configured() is True
+    assert opik_sdk.tracing_is_effective() is True
 
 
 @pytest.mark.unit
 def test_disabled_is_not_effective(opik_stand_in):
-    tracing.init_opik_tracing(settings=_settings(opik_enabled=False))
+    opik_sdk.configure(_settings(opik_enabled=False))
 
-    assert tracing.tracing_is_effective() is False
+    assert opik_sdk.tracing_is_effective() is False
 
 
 @pytest.mark.unit
@@ -130,13 +140,11 @@ def test_the_operator_kill_switch_is_visible(opik_stand_in, monkeypatch):
     """
     monkeypatch.setenv("OPIK_TRACK_DISABLE", "true")
 
-    tracing.init_opik_tracing(
-        settings=_settings(opik_enabled=True, opik_use_local=True)
-    )
+    opik_sdk.configure(_settings(opik_enabled=True, opik_use_local=True))
 
-    assert tracing._tracing_configured is True
+    assert opik_sdk.trace_backend_configured() is True
     assert opik_stand_in["active"] is False
-    assert tracing.tracing_is_effective() is False
+    assert opik_sdk.tracing_is_effective() is False
 
 
 @pytest.mark.unit
@@ -144,18 +152,20 @@ def test_a_failed_initialisation_is_not_effective(opik_stand_in):
     """A configuration exception leaves the call sites live and recording
     nothing, so it must not report itself as tracing.
 
-    ``opik_local_url`` is made to raise on use; initialisation catches it and
-    logs "Continuing without tracing".
+    ``opik_local_url`` is made to raise on use; ``configure`` catches it, logs
+    "Continuing without tracing" and records the class as the reason, so a
+    case delete refuses with it rather than skipping the traces.
     """
     settings = _settings(opik_enabled=True, opik_use_local=True)
     settings.observability.opik_local_url = MagicMock(
         rstrip=MagicMock(side_effect=RuntimeError("boom"))
     )
 
-    tracing.init_opik_tracing(settings=settings)
+    record = opik_sdk.configure(settings)
 
-    assert tracing._tracing_configured is False
-    assert tracing.tracing_is_effective() is False
+    assert opik_sdk.trace_backend_configured() is False
+    assert opik_sdk.tracing_is_effective() is False
+    assert record.reason == "configuring the trace backend raised RuntimeError"
 
 
 @pytest.mark.unit
@@ -165,23 +175,60 @@ def test_a_previous_success_is_not_inherited(opik_stand_in):
     The reset happens at entry precisely so a second call cannot report the
     first call's backend.
     """
-    tracing.init_opik_tracing(
-        settings=_settings(opik_enabled=True, opik_use_local=True)
-    )
-    assert tracing.tracing_is_effective() is True
+    opik_sdk.configure(_settings(opik_enabled=True, opik_use_local=True))
+    assert opik_sdk.tracing_is_effective() is True
 
-    tracing.init_opik_tracing(settings=_settings(opik_enabled=True))
+    opik_sdk.configure(_settings(opik_enabled=True))
 
-    assert tracing._tracing_configured is False
-    assert tracing.tracing_is_effective() is False
+    assert opik_sdk.trace_backend_configured() is False
+    assert opik_sdk.tracing_is_effective() is False
 
 
 @pytest.mark.unit
 def test_an_absent_sdk_is_not_effective(opik_stand_in, monkeypatch):
-    monkeypatch.setattr(tracing, "OPIK_AVAILABLE", False)
+    monkeypatch.setattr(opik_sdk, "OPIK_AVAILABLE", False)
+    monkeypatch.setattr(opik_sdk, "SPAN_TAGGING_AVAILABLE", False)
 
-    tracing.init_opik_tracing(
-        settings=_settings(opik_enabled=True, opik_use_local=True)
+    opik_sdk.configure(_settings(opik_enabled=True, opik_use_local=True))
+
+    assert opik_sdk.tracing_is_effective() is False
+
+
+@pytest.mark.unit
+def test_the_record_resolves_the_project_once(opik_stand_in):
+    """One default, the setting's: an empty name is not a second one (#2588)."""
+    settings = _settings(opik_enabled=True, opik_use_local=True)
+
+    named = opik_sdk.configure(settings)
+    settings.observability.opik_project_name = ""
+    unnamed = opik_sdk.configure(settings)
+
+    assert (named.project, unnamed.project) == ("faultmaven", "faultmaven")
+    assert named.url == "http://localhost:5173/api/"
+    assert named.ping_interval_s == opik_sdk.PING_INTERVAL_S == 999999
+    assert opik_sdk.backend() is unnamed
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "observability, sdk, reason",
+    [
+        ({"opik_enabled": False}, True, "OPIK_ENABLED is false"),
+        ({"opik_enabled": True}, True, "no backend URL is set"),
+        ({"opik_use_local": True}, False, "the Opik SDK is not installed"),
+    ],
+    ids=["disabled", "no-url", "no-sdk"],
+)
+def test_each_bail_out_records_its_reason(
+    opik_stand_in, monkeypatch, observability, sdk, reason
+):
+    monkeypatch.setattr(opik_sdk, "OPIK_AVAILABLE", sdk)
+    monkeypatch.setattr(opik_sdk, "SPAN_TAGGING_AVAILABLE", sdk)
+
+    record = opik_sdk.configure(_settings(**observability))
+
+    assert (record.configured, record.reason, record.ping_interval_s) == (
+        False,
+        reason,
+        None,
     )
-
-    assert tracing.tracing_is_effective() is False

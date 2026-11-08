@@ -28,9 +28,10 @@ on the development box:
   "What was deleted", and two more that review caught in #1557's own
   first draft: see "Two budgets are one budget" below.
 
-The first 21 rows below are what remains; the next seven were moved here
-by #1579 from tests outside this directory, and ``TURN_COMMIT`` came with
-#1882.
+The first 21 rows below are what remains; the next six were moved here
+by #1579 from tests outside this directory (a seventh, the observability
+shim's no-op ``track``, went with the shim in #2620), and ``TURN_COMMIT``
+came with #1882.
 
 Provenance
 ----------
@@ -409,14 +410,13 @@ API_REQUEST_LOGGING_OVERHEAD = LatencyBudget(
 #                                (and ``processing_time < 10.0`` for
 #                                1000 lines: the same constraint)
 # SANITIZE_DOCUMENT_BATCH        ``documents_per_second > 10``         10/s
-# NOOP_TRACK_CALL                1000 calls ``< 0.1`` s                100 us
 # PII_PASSTHROUGH_CALL           1000 calls ``< 0.05`` s               50 us
 # VOCABULARY_EXTRACTION          ``< 0.5`` s on ~1 MB                  0.5 s
 # TIMESTAMP_EXTRACTION           1000 calls ``< 1.0`` s                1 ms
 # ADVERSARIAL_LINE_EXTRACTION    ``elapsed < TIER1_TIMEOUT_SECONDS``   2.0 s
 # =============================  ====================================  =========
 #
-# All seven were already fastest-of-N statistics (N = 2 to 5) and keep it.
+# All six were already fastest-of-N statistics (N = 2 to 5) and keep it.
 # ``ADVERSARIAL_LINE_EXTRACTION`` is one row for eleven shapes, anchored on
 # each job's worst shape, so it is a loose anchor for the nine cheap ones. The
 # two expensive ones are expensive because the extractor is super-linear on
@@ -463,17 +463,10 @@ SANITIZE_DOCUMENT_BATCH = ThroughputBudget(
 
 # tests/performance/test_shim_overhead.py
 #: Anchored on the WORST of the 26 jobs at the 3x end of the band
-#: (``ANCHOR_ON_WORST_JOB``), not on the p95. This row and the next do not
-#: track the calibration: normalised, their CI p95 is 3.7-3.9x the box term,
-#: and their CI utilisation of the old anchors was already 0.84 and 0.48. A
-#: p95 anchor at 2-2.5x would have failed the worst job.
-NOOP_TRACK_CALL = LatencyBudget(
-    "test_noop_decorator_minimal_overhead",
-    regression=2.0e-6,
-    product_target=1.0e-4,
-    reference=6.7509e-07,
-)
-#: As ``NOOP_TRACK_CALL``: the worst job, at the 3x end of the band.
+#: (``ANCHOR_ON_WORST_JOB``), not on the p95. It does not track the
+#: calibration: normalised, its CI p95 is 3.7-3.9x the box term, and its CI
+#: utilisation of the old anchor was already 0.48. A p95 anchor at 2-2.5x would
+#: have failed the worst job.
 PII_PASSTHROUGH_CALL = LatencyBudget(
     "test_pii_redactor_passthrough_minimal_overhead",
     regression=9.3e-7,
@@ -561,7 +554,7 @@ TURN_COMMIT = LatencyBudget(
 #: Rows anchored on the WORST CI job at the 3x end of the band rather than on
 #: the p95 (``tests/wallclock/collect.py --propose``); each row's comment says
 #: why.
-ANCHOR_ON_WORST_JOB = frozenset({"NOOP_TRACK_CALL", "PII_PASSTHROUGH_CALL"})
+ANCHOR_ON_WORST_JOB = frozenset({"PII_PASSTHROUGH_CALL"})
 
 
 #: Every budget in this table, by constant name.

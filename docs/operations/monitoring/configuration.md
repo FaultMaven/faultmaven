@@ -272,14 +272,15 @@ export LOG_INCLUDE_CALLER_INFO=true
 | Environment Variable | Default Value | Description |
 |---------------------|---------------|-------------|
 | `OPIK_TRACK_DISABLE` | `false` | Suppress all `@opik.track` decorator spans |
+| `OPIK_SENTRY_ENABLE` | `false` | The Opik SDK's own crash reporting to Comet's Sentry. Read by the SDK at import; FaultMaven sets `false` unless the environment or `.env` sets it (#2585) |
 
 Tracing is all-or-nothing. The two variables act at different layers:
 
 - `OPIK_ENABLED` is FaultMaven's own switch, and it is sufficient on its own.
-  With it false, `init_opik_tracing()` configures no backend (URL, project,
+  With it false, `opik_sdk.configure()` configures no backend (URL, project,
   workspace, API key) **and** tracing is actively shut off: every `@opik.track`
-  call site re-checks the flag per call and dispatches straight to the
-  undecorated function, and startup additionally flips the SDK's own kill
+  call site re-checks the recorded outcome per call and dispatches straight to
+  the undecorated function, and startup additionally flips the SDK's own kill
   switch (`OPIK_TRACK_DISABLE=true` plus `set_tracing_active(False)`). No Opik
   client is constructed, so nothing is sent anywhere.
 - `OPIK_TRACK_DISABLE` is read by the **Opik SDK itself**, straight from the
@@ -288,8 +289,8 @@ Tracing is all-or-nothing. The two variables act at different layers:
   sets it, and the enabled path restores exactly the value it found (including
   no value at all) before letting the SDK re-derive `is_tracing_active()` from
   the environment. So `OPIK_TRACK_DISABLE=true` suppresses spans even with
-  `OPIK_ENABLED=true`. `main.py` loads `.env` into the environment before the
-  SDK is imported, so a value in `.env` reaches it.
+  `OPIK_ENABLED=true`. `opik_sdk`, the one module that imports the SDK, loads
+  `.env` into the environment first, so a value in `.env` reaches it.
 
 Setting `OPIK_ENABLED=false` is therefore enough to stop tracing completely,
 including any outbound request to Comet Cloud (the SDK's default backend when

@@ -80,7 +80,7 @@ def module_is_usable(module: Optional[ModuleType], attr: Optional[str] = None) -
     Pass it when the symbol is STABLE. A version-sensitive symbol turns an
     upstream rename into the dependency silently reading as absent, which for
     an observability SDK means tracing switching itself off — see the call site
-    in ``infrastructure/observability/tracing.py``, which deliberately passes
+    in ``infrastructure/observability/opik_sdk.py``, which deliberately passes
     nothing for that reason.
     """
     if module is None:

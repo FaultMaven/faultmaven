@@ -1013,14 +1013,14 @@ class ComponentHealthMonitor:
 
         ``tracing_is_effective()`` live-reads the Opik SDK rather than a
         config flag, so it separates "tracing is off" (fine) from "tracing is
-        configured on and silently recording nothing" (degraded).
+        configured on and silently recording nothing" (degraded). Both read the
+        record ``opik_sdk.configure`` wrote.
         """
-        from faultmaven.config.settings import get_settings
-        from faultmaven.infrastructure.observability.tracing import tracing_is_effective
+        from faultmaven.infrastructure.observability import opik_sdk
 
         try:
-            effective = bool(tracing_is_effective())
-            enabled = bool(get_settings().observability.opik_enabled)
+            effective = bool(opik_sdk.tracing_is_effective())
+            enabled = bool(opik_sdk.backend().enabled)
         except Exception as e:
             return {"status": HealthStatus.UNHEALTHY, "error": str(e), "metadata": {}}
 

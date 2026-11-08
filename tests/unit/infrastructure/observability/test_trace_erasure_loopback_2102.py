@@ -41,8 +41,8 @@ from faultmaven.exceptions import ServiceException  # noqa: E402
 from faultmaven.infrastructure.llm import router as router_module  # noqa: E402
 from faultmaven.infrastructure.llm.providers.base import LLMResponse  # noqa: E402
 from faultmaven.infrastructure.observability import (  # noqa: E402
+    opik_sdk,
     trace_erasure,
-    tracing,
 )
 from faultmaven.infrastructure.observability.trace_erasure import (  # noqa: E402
     SPAN_EXCLUDE,
@@ -74,6 +74,11 @@ class _Backend:
         #: ``(query) -> (status, body)``.
         self.page = {"traces": None, "spans": None}
         self.reads = {"traces": [], "spans": []}
+        #: The workspace's projects, which ``find_projects`` serves as the backend
+        #: does, unless ``projects`` replaces the answer: ``(query) -> (status, body)``.
+        self.project_names: list = []
+        self.projects = None
+        self.project_reads: list = []
         self.deleted: list = []
         self.traces: list = []
         self.spans: list = []
@@ -96,9 +101,13 @@ class _Backend:
             def do_GET(self):
                 url = urllib.parse.urlparse(self.path)
                 kind = url.path.rstrip("/").rsplit("/", 1)[-1]
+                query = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
+                if kind == "projects":
+                    backend.project_reads.append(query)
+                    answer = backend.projects or backend.serve_projects
+                    return self._answer(*answer(query))
                 if kind not in backend.reads:
                     return self._answer(200, {"message": "ok"})
-                query = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
                 backend.reads[kind].append(query)
                 answer = backend.page[kind] or backend.serve
                 self._answer(*answer(query, kind))
@@ -159,6 +168,17 @@ class _Backend:
         ]
         return 200, _page_body(content, total=len(rows), page=page)
 
+    def serve_projects(self, query):
+        """The name filter matches partially, ignoring case; a page is 10 rows
+        unless ``size`` asks for more."""
+        with self._lock:
+            names = [
+                n for n in self.project_names if query["name"].lower() in n.lower()
+            ]
+        page, size = int(query.get("page", 1)), int(query.get("size", 10))
+        rows = [_project(n) for n in names[(page - 1) * size : page * size]]
+        return 200, _page_body(rows, total=len(names), page=page)
+
     def remaining(self, case):
         """What is stored for ``case`` and holds content."""
         with self._lock:
@@ -201,7 +221,11 @@ def client(backend, monkeypatch):
     started: no test leaves one behind."""
     monkeypatch.setenv("OPIK_CONNECTION_MONITOR_PING_INTERVAL", "999999")
     monkeypatch.delenv("OPIK_TRACK_DISABLE", raising=False)
-    monkeypatch.setattr(tracing, "_tracing_configured", True)
+    monkeypatch.setattr(
+        opik_sdk,
+        "_record",
+        opik_sdk.TraceBackend(sdk_available=True, configured=True, project=PROJECT),
+    )
     real_tick = OpikConnectionMonitor.tick
 
     def tick(self):
@@ -259,10 +283,8 @@ async def _route(*, case_id=CASE, conversion_id=None, fails=False):
         ),
     )
     set_current_enterprise_id(ENTERPRISE)
-    with (
-        patch.object(router_module, "get_registry", return_value=registry),
-        patch.object(router_module, "_opik_tracing_enabled", return_value=True),
-    ):
+    # The gate reads the record ``client`` writes and the SDK's live switch.
+    with patch.object(router_module, "get_registry", return_value=registry):
         await router_module.LLMRouter().route(
             prompt=vetted(f"the prompt of {case_id or conversion_id}"),
             model="m",
@@ -400,6 +422,72 @@ class TestTheRead:
         await _eraser(client, project=None).erase_case(CASE, ENTERPRISE)
 
         assert backend.reads["traces"][0]["project_name"] == PROJECT
+
+
+def _project(name):
+    return {"id": f"p-{name}", "name": name}
+
+
+_NOT_FOUND = (404, {"errors": [f"Project {PROJECT} not found"]})
+
+
+class TestAProjectTheBackendDoesNotHave:
+    """#2588's ruling (c): a 404 for the project is nothing to delete only once
+    the backend that answered lists its projects and none is named exactly so."""
+
+    async def test_a_positive_check_reads_as_nothing_to_delete(self, backend, client):
+        backend.page["traces"] = lambda *_: _NOT_FOUND
+        # The name filter matches partially: a longer name is not the project.
+        backend.project_names = [f"{PROJECT}-staging", "another-project"]
+
+        assert await _eraser(client).erase_case(CASE, ENTERPRISE) == 0
+
+        assert backend.project_reads == [
+            {"name": PROJECT, "size": str(TRACE_PAGE_SIZE)}
+        ]
+        assert backend.reads["spans"] == [] and backend.deleted == []
+
+    async def test_more_partial_matches_than_a_default_page_are_all_read(
+        self, backend, client
+    ):
+        """A shared workspace: one default page of ``find_projects`` cannot
+        prove the project absent, and the delete would fail forever."""
+        backend.page["traces"] = lambda *_: _NOT_FOUND
+        backend.project_names = [f"{PROJECT.upper()}-{n:02d}" for n in range(25)]
+
+        assert await _eraser(client).erase_case(CASE, ENTERPRISE) == 0
+
+        assert backend.deleted == []
+
+    @pytest.mark.parametrize(
+        "projects",
+        [
+            lambda _: (200, _page_body([_project(PROJECT)], total=1)),
+            lambda _: (200, _page_body([], total=1)),
+            lambda _: (403, {"errors": ["forbidden"]}),
+        ],
+        ids=["the-project-is-listed", "a-listing-short-of-its-total", "check-fails"],
+    )
+    async def test_without_a_positive_check_the_404_fails_the_delete(
+        self, backend, client, projects
+    ):
+        backend.page["traces"] = lambda *_: _NOT_FOUND
+        backend.projects = projects
+
+        with pytest.raises(ServiceException, match="llm_traces.*: ApiError$"):
+            await _eraser(client).erase_case(CASE, ENTERPRISE)
+
+        assert len(backend.project_reads) == 1 and backend.deleted == []
+
+    async def test_a_spans_404_after_the_traces_read_is_never_checked(
+        self, backend, client
+    ):
+        backend.page["spans"] = lambda *_: _NOT_FOUND
+
+        with pytest.raises(ServiceException, match="llm_traces.*: ApiError$"):
+            await _eraser(client).erase_case(CASE, ENTERPRISE)
+
+        assert backend.project_reads == [] and backend.deleted == []
 
 
 def _hold_the_first_replay(monkeypatch, client):
