@@ -59,9 +59,12 @@ KNOWN_ENV_ACCESS = {
     "faultmaven/config/protection.py": 3,
     "faultmaven/infrastructure/llm/pricing.py": 1,
     "faultmaven/infrastructure/llm/router.py": 3,
-    "faultmaven/infrastructure/observability/tracing.py": 8,
+    # The Opik SDK reads its configuration from the environment (``OpikConfig``),
+    # so the one module that imports it writes there (#2616 part c): the Sentry
+    # default before the import, the backend at ``configure``, the kill switch.
+    # Moved from ``tracing.py`` (8) and the deleted observability shim (1).
+    "faultmaven/infrastructure/observability/opik_sdk.py": 10,
     "faultmaven/infrastructure/shims/metrics.py": 1,
-    "faultmaven/infrastructure/shims/observability.py": 1,
     "faultmaven/infrastructure/shims/security.py": 1,
     "faultmaven/infrastructure/tasks/job_runners.py": 2,
 }

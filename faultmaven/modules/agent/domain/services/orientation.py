@@ -179,6 +179,29 @@ def _pending_need(case: Any) -> Optional[str]:
     return _first_sentence(str(best[1].request_text), _ASK_CHARS)
 
 
+def newest_investigation_reply(
+    case: Any, *, skip_server_written: bool = False
+) -> Optional[dict]:
+    """The newest assistant row of investigation work, or ``None``.
+
+    Passes over empty rows, asides (#1329) and orientation replies, and with
+    ``skip_server_written`` a row the server wrote (#1660). The one place that
+    decides which row is "the newest investigation reply" (#1665): the greeting
+    and triage read the newest the model wrote; triage's server note, the
+    newest of any kind.
+    """
+    for msg in reversed(getattr(case, "messages", None) or []):
+        if msg.get("role") != "assistant" or not msg.get("content"):
+            continue
+        meta = msg.get("metadata") or {}
+        if meta.get("out_of_band") or meta.get("orientation"):
+            continue
+        if skip_server_written and is_server_written_assistant_row(msg):
+            continue
+        return msg
+    return None
+
+
 def last_investigation_message(case: Any, limit: int = _ASK_CHARS) -> Optional[str]:
     """The newest investigation answer the MODEL wrote, or ``None``.
 
@@ -200,18 +223,11 @@ def last_investigation_message(case: Any, limit: int = _ASK_CHARS) -> Optional[s
     quotes this back to the user. That is the auto-titler's reading of #1451,
     not the history renderers'.
 
-    Shared with ``out_of_band`` for the same reason; one predicate, one place.
+    Shared with ``out_of_band`` for the same reason; one predicate, one place
+    (:func:`newest_investigation_reply`).
     """
-    for msg in reversed(getattr(case, "messages", None) or []):
-        if msg.get("role") != "assistant" or not msg.get("content"):
-            continue
-        meta = msg.get("metadata") or {}
-        if meta.get("out_of_band") or meta.get("orientation"):
-            continue
-        if is_server_written_assistant_row(msg):
-            continue
-        return _first_sentence(str(msg["content"]), limit)
-    return None
+    msg = newest_investigation_reply(case, skip_server_written=True)
+    return _first_sentence(str(msg["content"]), limit) if msg else None
 
 
 def describe_issue_follow_up() -> dict[str, Any]:

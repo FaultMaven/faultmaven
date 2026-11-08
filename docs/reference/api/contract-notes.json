@@ -1,10 +1,16 @@
 {
-  "contractVersion": "14.18.0",
+  "contractVersion": "14.19.0",
   "entries": [
     {
       "body": "Stages 0-5 of a conversion run in a worker process killed at the 120 s\ndeadline (Principle 14). How the worker ends decides the answer:\n\n* Past its memory limit: 422 `DOCUMENT_TOO_COMPLEX`, `detail` \"Reading this\n  document needed more memory than the conversion allows, so it was not\n  converted. Export its text to a TXT or Markdown file and convert that\n  instead.\" The limit is 128 MiB plus 64 MiB per MB of `MAX_UPLOAD_SIZE_MB`\n  (768 MiB at the default 10 MB). The costliest plain text measured needs\n  64 MiB plus 28.4 MiB per MB, so a plain-text file at the upload limit always\n  fits, with 2.2 times its need at the default.\n* Killed by a signal while its parser reads the file: 422\n  `DOCUMENT_TOO_COMPLEX`, `detail` \"This document could not be read, so it\n  was not converted. Export its text to a TXT or Markdown file and convert\n  that instead.\"\n* Any other end (it fails to start, dies before reading the file or after\n  parsing it without the memory code, or our own code raises): 500 from the\n  global handler, with the request id and no advice, not the route's own 500\n  with `LLM_GENERATION_FAILED`.\n\nPast the deadline is the existing 120 s refusal, and a request that waits\n120 s for one of the two workers is still 503 `CONVERSION_BUSY`. Nothing\nstructural moves: conversion error codes and their `detail` are not in the\nOpenAPI schema. MINOR because every client survives it: both refusals carry a\ncode clients already know.",
       "level": "MINOR",
       "title": "`POST /knowledge/convert` prepares a document in a worker process, and answers two more `DOCUMENT_TOO_COMPLEX` refusals and one 500 for how that worker ends (#2622).",
+      "version": "14.19.0"
+    },
+    {
+      "body": "`EnvConfigStatusResponse` gains `trace_backend` (`TraceBackendStatus`):\n\n* `sentry_reporting` (bool): whether the trace SDK's crash reporting to\n  Comet's Sentry is active in the process. Off unless an operator sets\n  `OPIK_SENTRY_ENABLE=true` (#2585).\n* `project` and `ping_interval_s`: the Opik project traces go to and the case\n  delete searches, and the SDK's ping interval; null when configuration did\n  not resolve them.\n* `server_connection` (`connected`, `disconnected`, `no_client`, `unknown`)\n  and `parked_messages`: whether the serving worker's trace client last\n  reached its backend, and how many traces that worker holds unsent after a\n  failed send (#2573). Each worker and replica has its own; the response\n  reports the one that answered. Read from a client already built, never\n  building one; `unknown` and null when the SDK's internals cannot be read.\n\nMINOR because every client survives it: a new field on an operator-only\nresponse, which a client that does not read it ignores.",
+      "level": "MINOR",
+      "title": "`GET /admin/config/status` reports the LLM trace SDK's policy and this process's trace client as `trace_backend` (#2620).",
       "version": "14.18.0"
     },
     {

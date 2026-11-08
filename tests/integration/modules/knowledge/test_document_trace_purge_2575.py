@@ -37,7 +37,7 @@ from faultmaven.api.v1.auth_dependencies import require_authentication
 from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.container.providers import services
 from faultmaven.exceptions import ServiceException
-from faultmaven.infrastructure.observability import trace_erasure, tracing
+from faultmaven.infrastructure.observability import opik_sdk
 from faultmaven.infrastructure.observability.trace_erasure import LLMTraceEraser
 from faultmaven.infrastructure.persistence.models import (
     ConversionDraftModel,
@@ -208,9 +208,10 @@ async def _published(kb, job_id: str, title: str, draft_id: str = "") -> str:
 def _unreachable(monkeypatch) -> tuple:
     """The real eraser, its backend configured, over a client whose reads
     raise the SDK's own error, body text included."""
-    monkeypatch.setattr(tracing, "OPIK_AVAILABLE", True)
-    monkeypatch.setattr(tracing, "_tracing_configured", True)
-    monkeypatch.setattr(trace_erasure, "_parsed_filters", lambda text, entity: text)
+    monkeypatch.setattr(
+        opik_sdk, "_record", opik_sdk.TraceBackend(sdk_available=True, configured=True)
+    )
+    monkeypatch.setattr(opik_sdk, "parsed_filters", lambda text, entity: text)
     client = _FakeClient()
 
     def refused(**_):
@@ -638,7 +639,6 @@ class TestTheKbReset:
     def reset_eraser(self, stack, monkeypatch):
         kb = stack()
         monkeypatch.setattr(services, "llm_trace_eraser", lambda settings: kb.eraser)
-        monkeypatch.setattr(tracing, "init_opik_tracing", lambda settings=None: None)
         return kb
 
     @pytest.mark.parametrize("all_drafts", [False, True], ids=["default", "all-drafts"])
@@ -715,7 +715,6 @@ async def test_a_publication_the_reset_lock_waits_on_is_kept(
     factory = own_pg
     eraser = _Eraser(factory, _Sessions(factory))
     monkeypatch.setattr(services, "llm_trace_eraser", lambda settings: eraser)
-    monkeypatch.setattr(tracing, "init_opik_tracing", lambda settings=None: None)
     await _seed_item(factory, _item("ia"))
     await _add(factory, *_model_job("conv_a"), _draft("d_a", "conv_a", item_id="ia"))
     await _seed_item(factory, _item("x", ingest_complete=False))

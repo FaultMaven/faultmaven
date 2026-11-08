@@ -65,11 +65,13 @@ from faultmaven.modules.case.domain.owned_models.message_row import (
     EMPTY_TURN_TEXT,
     MESSAGE_METADATA_AGENT_SYNTHESIZED,
     MESSAGE_METADATA_KB_SOURCES,
+    MESSAGE_METADATA_SERVER_NOTE,
     MESSAGE_METADATA_USER_EMPTY,
     MessageRowKind,
     append_message_row,
     is_server_written_assistant_row,
     is_server_written_user_row,
+    server_note_of,
 )
 
 # Case-owned Report models (Case module owns reports table per module-organization-design.md)
@@ -787,11 +789,13 @@ __all__ = [
     "EMPTY_TURN_TEXT",
     "MESSAGE_METADATA_AGENT_SYNTHESIZED",
     "MESSAGE_METADATA_KB_SOURCES",
+    "MESSAGE_METADATA_SERVER_NOTE",
     "MESSAGE_METADATA_USER_EMPTY",
     "MessageRowKind",
     "append_message_row",
     "is_server_written_assistant_row",
     "is_server_written_user_row",
+    "server_note_of",
     # Repository and Service Contracts
     "ICaseRepository",
     "ICaseMetadataReader",

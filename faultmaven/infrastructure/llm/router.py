@@ -26,6 +26,7 @@ from faultmaven.exceptions import (
 )
 from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.infrastructure.health.sla_tracker import sla_tracker
+from faultmaven.infrastructure.observability import opik_sdk
 from faultmaven.infrastructure.security.model_content import (
     plain_messages,
     plain_text,
@@ -40,7 +41,6 @@ from faultmaven.infrastructure.shims import (
 )
 from faultmaven.models import DataType
 from faultmaven.models.interfaces import ILLMProvider
-from faultmaven.utils.optional_dependency import module_is_usable
 from faultmaven.utils.token_estimation import estimate_tokens
 
 from .cache import LLMResponseCache
@@ -48,23 +48,6 @@ from .dispatch import model_call_violations, refuse
 from .prompt_cache import CACHE_BOUNDARY
 from .providers import LLMResponse, ReasoningIntent, StopReason
 from .providers.registry import get_registry
-
-# Opik native tracing for LLM calls.
-#
-# The `from opik import opik_context` below protects only while opik_context is
-# a MODULE FILE — an uninstall leaves directories, so were it ever shipped as a
-# subpackage the from-import would succeed against the leftover tree just as
-# the bare import does. Depending on that distinction is not worth it when the
-# check is one call; see faultmaven/utils/optional_dependency.py.
-try:
-    import opik
-    from opik import opik_context
-
-    OPIK_AVAILABLE = module_is_usable(opik) and module_is_usable(
-        opik_context, "update_current_span"
-    )
-except ImportError:
-    OPIK_AVAILABLE = False
 
 TELEMETRY_PAYLOAD_MAX_CHARS = 8000
 
@@ -253,50 +236,31 @@ def _opik_owner(
     return owner
 
 
-def _opik_tracing_enabled() -> bool:
-    """FaultMaven-level gate for the @opik.track decorators (OPIK_ENABLED).
-
-    Fail closed: any error reading settings means no tracing. Without this
-    gate the decorators are live even when OPIK_ENABLED=false and the SDK
-    lazily builds a client pointed at its default (Comet Cloud), producing
-    continuous outbound requests from a self-hosted deployment (#1121).
-
-    Read LAZILY, at call time. Reading it at import time would bootstrap the
-    settings singleton merely by importing this module — get_settings() loads
-    .env, applies presets that mutate os.environ, and writes
-    data/.jwt_secret via resolve_local_jwt_secret() — so any script or
-    test that imports the router would write a secret into its cwd and freeze
-    settings ahead of the test fixtures that exist to clear ambient env.
-    """
-    try:
-        return get_settings().observability.opik_enabled
-    except Exception:
-        return False
-
-
 def _opik_track_llm(name: str):
     """Decorator: routes through @opik.track(type='llm') only when Opik is
-    installed AND tracing is enabled at CALL time (OPIK_ENABLED=true).
+    installed AND a traced call would record a span at CALL time
+    (``opik_sdk.tracing_is_effective()``, the record ``configure`` wrote).
 
     The tracked wrapper is built at import time (decoration alone constructs
     no client — the SDK builds one lazily on first traced call), but every
     call re-checks the gate and dispatches to the RAW function when tracing
     is off. So a disabled deployment never reaches the SDK at all: no client,
-    no batch senders, no is-alive ping.
+    no batch senders, no is-alive ping (#1121).
     """
 
     def decorator(func):
-        if not OPIK_AVAILABLE:
-            # Fail-closed passthrough: Opik not installed.
+        if not opik_sdk.SPAN_TAGGING_AVAILABLE:
+            # Fail-closed passthrough: Opik not installed, or its span writers
+            # moved, so a span could not carry the owner the eraser finds it by.
             return func
 
-        tracked = opik.track(
+        tracked = opik_sdk.track(
             name=name, type="llm", capture_input=False, capture_output=False
         )(func)
 
         @functools.wraps(func)
         async def wrapper(*args, **kwargs):
-            if not _opik_tracing_enabled():
+            if not opik_sdk.tracing_is_effective():
                 return await func(*args, **kwargs)
             return await tracked(*args, **kwargs)
 
@@ -720,8 +684,6 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                         f"model={cached_response.model})"
                     )
                 cached_response.sanitized_prompt = prompt_text
-                if self.settings.observability.opik_log_raw_prompts:
-                    cached_response.raw_prompt = plain_text(prompt)
                 self._update_opik_span(
                     cached_response,
                     sanitized_prompt=prompt_text,
@@ -829,9 +791,6 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
 
             # Attach prompt data for telemetry
             response.sanitized_prompt = prompt_text
-            if self.settings.observability.opik_log_raw_prompts:
-                response.raw_prompt = plain_text(prompt)
-                response.raw_messages = plain_messages(messages)
 
             response.sanitized_messages = messages_view
 
@@ -1027,14 +986,14 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         records ``str(exception)`` as ``error_info``, and a provider's exception
         can embed its response body (#2102). A failure here never breaks the call.
         """
-        if not (_opik_tracing_enabled() and OPIK_AVAILABLE):
+        if not opik_sdk.tracing_is_effective():
             return
         try:
             owner = _opik_owner(case_id, conversion_id)
-            opik_context.update_current_trace(
+            opik_sdk.update_current_trace(
                 metadata=owner, **({"thread_id": case_id} if case_id else {})
             )
-            opik_context.update_current_span(metadata=owner)
+            opik_sdk.update_current_span(metadata=owner)
         except Exception as e:
             self.logger.warning(f"Failed to tag Opik trace: {e}")
 
@@ -1049,7 +1008,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
     ) -> None:
         """Update the current Opik span with LLM call data.
 
-        Uses opik_context.update_current_span() to attach prompt, response,
+        Uses ``opik_sdk.update_current_span()`` to attach prompt, response,
         model, provider, and token usage to whichever span is currently active.
         This works whether the span was created by @opik.track on this function
         or by a parent caller.
@@ -1059,18 +1018,10 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         ``LLMTraceEraser`` finds a deleted case's or conversion's traces by those
         metadata keys, on the trace and on the span (#2102, #2575).
         """
-        # Gate FIRST, warn second. Tracing being off is the configured state,
-        # not a problem to report: with tracing disabled there is no span to
-        # update, and update_current_span would raise (then log) once per LLM
-        # call. Ordering this after the OPIK_AVAILABLE warning would silence
-        # that per-call spam only for opik-installed-but-disabled, leaving the
-        # far more common standalone install (opik is not in
-        # requirements/dev.txt) still logging on every call — the same
-        # log-spam defect #1121 is about.
-        if not _opik_tracing_enabled():
-            return
-        if not OPIK_AVAILABLE:
-            self.logger.warning("Opik SDK not available — skipping span update")
+        # Tracing being off is the configured state, not a problem to report:
+        # with no span to update, update_current_span would raise (then log)
+        # once per LLM call (#1121). A configured record implies the SDK.
+        if not opik_sdk.tracing_is_effective():
             return
 
         try:
@@ -1113,10 +1064,10 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             # The trace first: if tagging it raises, the content is not attached.
             # That does not make the two atomic. They travel in separate batches,
             # so the span carries the tags too and the eraser searches both.
-            opik_context.update_current_trace(
+            opik_sdk.update_current_trace(
                 metadata=owner, **({"thread_id": case_id} if case_id else {})
             )
-            opik_context.update_current_span(
+            opik_sdk.update_current_span(
                 input=input_data,
                 output=output_data,
                 metadata=metadata,

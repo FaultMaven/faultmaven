@@ -3125,6 +3125,10 @@
             "title": "Timestamp",
             "type": "string"
           },
+          "trace_backend": {
+            "$ref": "#/components/schemas/TraceBackendStatus",
+            "description": "The LLM trace SDK's process policy (crash reporting, project, ping interval) and the serving worker's trace client: whether its last send reached the backend, and how many traces it holds unsent."
+          },
           "turn_timing": {
             "$ref": "#/components/schemas/TurnTimingStatus",
             "description": "The resolved turn ceiling and response bound for the chat provider in force, as clients read them on GET /api/v1/meta/capabilities."
@@ -3149,6 +3153,7 @@
           "personal_tenant_limits",
           "database_timeouts",
           "knowledge_indexing",
+          "trace_backend",
           "timestamp"
         ],
         "title": "EnvConfigStatusResponse",
@@ -6466,6 +6471,72 @@
         "title": "TokenResponse",
         "type": "object"
       },
+      "TraceBackendStatus": {
+        "description": "The LLM trace SDK's process policy, and its client's state (#2616 part c).\n\nThe first three are the record the process wrote when it configured the\nSDK at startup. The last two are the serving worker's own: read from a\nclient that worker process has already built, never building one. Another\nworker or replica holds its own client and buffer. An SDK whose internals\nmoved reads ``unknown`` and null, never ``disconnected`` or 0.",
+        "properties": {
+          "parked_messages": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Traces the serving worker process holds in the SDK's local replay database, unsent; null when it has built no client, its database is not open, or the SDK's internals could not be read. Other workers and replicas are not counted.",
+            "title": "Parked Messages"
+          },
+          "ping_interval_s": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Seconds between the SDK's connection pings. After a failed send the SDK parks every later trace until a ping succeeds or a delete replays them, so this bounds how long a parked trace waits. Null when no trace backend is configured.",
+            "title": "Ping Interval S"
+          },
+          "project": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The Opik project traces are written to and the case delete searches; null when configuration did not resolve one.",
+            "title": "Project"
+          },
+          "sentry_reporting": {
+            "description": "Whether the trace SDK's crash reporting (Comet's Sentry) is active in this process. Off unless OPIK_SENTRY_ENABLE=true is set in the environment or .env.",
+            "title": "Sentry Reporting",
+            "type": "boolean"
+          },
+          "server_connection": {
+            "description": "The serving worker's SDK client's view of its backend: 'connected'; 'disconnected' after a failed send, while it parks traces locally; 'no_client' when that worker process has built none; 'unknown' when the SDK's internals could not be read. Other workers and replicas are not reported.",
+            "enum": [
+              "connected",
+              "disconnected",
+              "no_client",
+              "unknown"
+            ],
+            "title": "Server Connection",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sentry_reporting",
+          "project",
+          "ping_interval_s",
+          "server_connection",
+          "parked_messages"
+        ],
+        "title": "TraceBackendStatus",
+        "type": "object"
+      },
       "TurnResponse": {
         "description": "Response for POST /cases/{id}/turns.",
         "properties": {
@@ -7202,7 +7273,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "14.18.0"
+    "version": "14.19.0"
   },
   "openapi": "3.1.0",
   "paths": {

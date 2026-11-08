@@ -562,6 +562,19 @@ reported under `knowledge_indexing` on `GET /api/v1/admin/config/status`.
 |----------|------|---------|-------------|
 | `INDEX_REQUEST_WINDOW_SECONDS` | int (0, or 60–3600) | 0 | Seconds a KB write may spend indexing its document. `0` refuses nothing up front; the embedding guard (180 s for a model load plus twice the estimate) still bounds the embed. Set it below the fronting proxy's read timeout, less the rest of the request: for example 600 under an ingress `proxy-read-timeout` of 660 s |
 
+## LLM Trace SDK (Opik)
+
+The Opik SDK reads these straight from the environment, so they are not
+`settings.py` fields. `faultmaven/infrastructure/observability/opik_sdk.py`, the
+one module that imports the SDK, loads `.env` into the environment before it
+does, so a value in either reaches the SDK; the environment wins over `.env`.
+Each is read once, when the process starts.
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `OPIK_SENTRY_ENABLE` | bool | false | The SDK's crash reporting to Comet's Sentry. The SDK's own default is on; FaultMaven sets `false` unless you set it (#2585). `GET /admin/config/status` reports the effect as `trace_backend.sentry_reporting` |
+| `OPIK_TRACK_DISABLE` | bool | false | Suppresses every span while a backend stays configured (`docs/operations/monitoring/configuration.md`) |
+
 ## Related Documentation
 
 - [Context Management Guide](./CONTEXT_MANAGEMENT.md)

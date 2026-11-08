@@ -1,4 +1,4 @@
-"""Middleware stack assembly, and the Opik SDK/middleware availability probe.
+"""Middleware stack assembly.
 
 Moved out of ``faultmaven/main.py`` (fm#1707 wave 2). ``setup_middleware``
 took no parameter and read the module-global ``app`` in ``main.py``; here it
@@ -7,10 +7,6 @@ this move requires, since ``bootstrap/`` modules must not import
 ``faultmaven.main`` (that would cycle against ``main.py`` importing this
 module). ``faultmaven.main`` still calls ``setup_middleware(app)`` at
 import time, at the same point it always has.
-
-The Opik availability probe lives here, rather than in ``main.py`` or
-``bootstrap/composition.py``, because ``setup_middleware`` is its only
-reader: it decides whether ``OpikMiddleware`` is added to the stack.
 """
 
 import logging
@@ -20,43 +16,9 @@ from fastapi.middleware.gzip import GZipMiddleware
 
 from faultmaven.api.middleware.logging import LoggingMiddleware
 from faultmaven.bootstrap.composition import _is_test_environment
-from faultmaven.utils.optional_dependency import module_is_usable
+from faultmaven.infrastructure.observability import opik_sdk
 
 logger = logging.getLogger(__name__)
-
-
-# Optional Opik middleware import.
-#
-# ``import opik`` succeeding is not proof the SDK is installed — see
-# faultmaven/utils/optional_dependency.py. Here that decides only what gets
-# logged: without it this reports "Opik SDK available but middleware not found"
-# instead of "Opik not available". (The OpikMiddleware import below is a
-# from-import and already fails correctly, so the middleware was never at risk.)
-try:
-    import opik
-
-    OPIK_AVAILABLE = module_is_usable(opik)
-    # See tracing.py for why no `attr` is passed.
-    _opik_reason = None if OPIK_AVAILABLE else "shadowed by a namespace package"
-except ImportError:
-    OPIK_AVAILABLE = False
-    _opik_reason = "not installed"
-
-OPIK_MIDDLEWARE_AVAILABLE = False
-if OPIK_AVAILABLE:
-    try:
-        from opik.integrations.fastapi import OpikMiddleware
-
-        OPIK_MIDDLEWARE_AVAILABLE = True
-    except ImportError:
-        logger.debug(
-            "Opik middleware class not available, tracing will work without middleware"
-        )
-else:
-    # Name WHICH cause: an operator staring at an empty site-packages/opik/
-    # tree and one who never installed the extra need different fixes, and
-    # this is the only line here that tells them apart.
-    logger.info("Opik not available (%s), running without tracing", _opik_reason)
 
 
 def _assert_cors_outermost(target_app) -> None:
@@ -304,31 +266,22 @@ def setup_middleware(app):
                 "Skipping PerformanceTrackingMiddleware (SKIP_SERVICE_CHECKS=True)"
             )
 
-    # 9. Opik tracing middleware (if available) - skip in test environments
+    # 9. Opik tracing middleware, where the SDK ships one (opik 1.11.14 does
+    # not) and the trace record says a backend is configured (#2616 part c).
+    # In the API this runs when faultmaven.main is imported, before the
+    # lifespan configures, so it reads the unconfigured record and mounts
+    # nothing there.
+    opik_middleware = opik_sdk.fastapi_middleware()
     if (
-        OPIK_AVAILABLE
-        and OPIK_MIDDLEWARE_AVAILABLE
+        opik_middleware is not None
+        and opik_sdk.backend().configured
         and not settings.server.skip_service_checks
         and not _is_test_environment()
     ):
-        if logging_enabled:
-            if settings.observability.opik_use_local:
-                logger.info("Adding OpikMiddleware for local Opik instance")
-            else:
-                logger.info("Adding OpikMiddleware for cloud instance")
-        app.add_middleware(OpikMiddleware)
+        app.add_middleware(opik_middleware)
         if logging_enabled:
             logger.info(
                 f"After Opik middleware: {[type(m).__name__ for m in app.user_middleware]}"
-            )
-    elif OPIK_AVAILABLE and logging_enabled:
-        if settings.server.skip_service_checks or _is_test_environment():
-            logger.info(
-                "Skipping OpikMiddleware (test environment or SKIP_SERVICE_CHECKS=True)"
-            )
-        else:
-            logger.info(
-                "Opik SDK available but middleware not found - tracing will work at function level"
             )
 
     # 10. Contract Probe middleware (for API compliance monitoring)

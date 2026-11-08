@@ -46,7 +46,15 @@ def run_command(main: Coroutine[Any, Any, T]) -> T:
 
 
 def run_with_container(main: Coroutine[Any, Any, T], container: Any = None) -> T:
-    """:func:`run_command`, shutting ``container`` down before the engine goes."""
+    """:func:`run_command`, shutting ``container`` down before the engine goes.
+
+    The trace SDK is configured first, as the API's lifespan does, so the
+    composition binds its eraser from the record (#2616 part c).
+    """
+    from faultmaven.config.settings import get_settings
+    from faultmaven.infrastructure.observability import opik_sdk
+
+    opik_sdk.configure(get_settings())
     return asyncio.run(_run_then_tear_down(main, composed=True, container=container))
 
 

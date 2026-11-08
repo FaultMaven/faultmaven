@@ -19,7 +19,7 @@ import httpx
 import pytest
 
 from faultmaven.exceptions import ServiceException
-from faultmaven.infrastructure.observability import trace_erasure, tracing
+from faultmaven.infrastructure.observability import opik_sdk, trace_erasure
 from faultmaven.infrastructure.observability.trace_erasure import (
     SPAN_EXCLUDE,
     TRACE_EXCLUDE,
@@ -157,12 +157,14 @@ class _WatchedLock:
 
 @pytest.fixture(autouse=True)
 def backend_configured(monkeypatch):
-    """``init_opik_tracing`` reached a backend. The SDK's filter parser is replaced,
-    as opik is absent from the dev venv; the loopback file pins what it sends."""
-    monkeypatch.setattr(tracing, "OPIK_AVAILABLE", True)
-    monkeypatch.setattr(tracing, "_tracing_configured", True)
+    """``opik_sdk.configure`` reached a backend. The SDK's filter parser is
+    replaced, as opik is absent from the dev venv; the loopback file pins what
+    it sends."""
     monkeypatch.setattr(
-        trace_erasure, "_parsed_filters", lambda text, entity: f"{entity}:{text}"
+        opik_sdk, "_record", opik_sdk.TraceBackend(sdk_available=True, configured=True)
+    )
+    monkeypatch.setattr(
+        opik_sdk, "parsed_filters", lambda text, entity: f"{entity}:{text}"
     )
 
 
@@ -486,7 +488,7 @@ class TestTheGateReadsTheRecordedOutcome:
     async def test_a_backend_that_did_not_initialize_refuses_with_no_client(
         self, monkeypatch
     ):
-        monkeypatch.setattr(tracing, "_tracing_configured", False)
+        monkeypatch.setattr(opik_sdk, "_record", opik_sdk.TraceBackend())
         eraser = LLMTraceEraser("faultmaven", client_factory=_no_client)
 
         with pytest.raises(ServiceException, match="did not initialize"):
@@ -497,7 +499,7 @@ class TestTheGateReadsTheRecordedOutcome:
         fake = types.ModuleType("opik")
         fake.is_tracing_active = lambda: False
         monkeypatch.setitem(sys.modules, "opik", fake)
-        assert tracing.tracing_is_effective() is False
+        assert opik_sdk.tracing_is_effective() is False
         client = _FakeClient(traces=["t1"])
 
         assert await _eraser(client).erase_case(CASE, ENTERPRISE) == 1

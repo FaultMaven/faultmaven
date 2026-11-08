@@ -2350,13 +2350,11 @@ class ObservabilitySettings(BaseSettings):
     opik_enabled: bool = Field(default=False)
     # OPIK_TRACK_DISABLE is deliberately NOT a field here. The Opik SDK owns it:
     # OpikConfig reads it straight from os.environ (env_prefix="opik_") and
-    # derives is_tracing_active() from it, and main.py's load_settings_dotenv()
+    # derives is_tracing_active() from it, and opik_sdk's load_settings_dotenv()
     # puts .env into the environment before the SDK is imported. Declaring it
     # here too would shadow the SDK's default with a second one nothing reads.
-    opik_log_raw_prompts: bool = Field(
-        default=False,
-        description="DANGER: Log raw LLM prompts bypassing sanitization. Only use for local debugging.",
-    )
+    # OPIK_SENTRY_ENABLE likewise: the SDK reads it at import, and opik_sdk
+    # defaults it to false beforehand.
 
     # APM Integration (merged from EnhancedObservabilitySettings)
     # COMMUNITY DEFAULT: Disabled (enterprise feature)
@@ -2410,16 +2408,6 @@ class ObservabilitySettings(BaseSettings):
     )
 
     model_config = {"env_prefix": "", "extra": "ignore"}
-
-    @model_validator(mode="after")
-    def validate_raw_prompt_safety(self) -> "ObservabilitySettings":
-        """Prevent raw prompt logging unless using a local Opik instance."""
-        if self.opik_log_raw_prompts and not self.opik_use_local:
-            raise ValueError(
-                "OPIK_LOG_RAW_PROMPTS=true requires OPIK_USE_LOCAL=true. "
-                "Raw prompt logging is only permitted with local Opik instances."
-            )
-        return self
 
 
 class LoggingSettings(BaseSettings):

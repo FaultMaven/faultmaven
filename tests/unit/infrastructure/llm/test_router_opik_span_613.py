@@ -10,8 +10,8 @@ anything else is recorded as before.
 
 Driven through ``LLMRouter.route`` with a real Anthropic provider and only the
 HTTP layer mocked, because the span is written there, from the SANITIZED prompt
-and messages the route builds. ``opik_context`` is patched in: ``opik`` is not a
-dependency of the standalone install.
+and messages the route builds. ``opik_sdk``'s gate and span writers are patched
+in: ``opik`` is not a dependency of the standalone install.
 
 The same span and its trace carry the case and the enterprise, which is how the
 case delete finds them (#2102): ``TestTheTraceIsTaggedWithItsCase`` below. A
@@ -19,6 +19,9 @@ call carrying a document's text carries its conversion too, which is how the
 draft and document deletes find them (#2575).
 """
 
+import logging
+import sys
+import types
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
@@ -34,6 +37,7 @@ from faultmaven.infrastructure.llm.providers.registry import (
     ProviderState,
 )
 from faultmaven.infrastructure.llm.router import TELEMETRY_PAYLOAD_MAX_CHARS
+from faultmaven.infrastructure.observability import opik_sdk
 from tests.model_content import vetted_kwargs
 
 pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
@@ -99,15 +103,10 @@ async def _routed(*calls: dict, tracing: bool = True, opik_context=None) -> Magi
             "faultmaven.infrastructure.llm.router.get_registry",
             return_value=_registry(),
         ),
-        patch(
-            "faultmaven.infrastructure.llm.router._opik_tracing_enabled",
-            return_value=tracing,
-        ),
-        patch("faultmaven.infrastructure.llm.router.OPIK_AVAILABLE", True),
-        patch(
-            "faultmaven.infrastructure.llm.router.opik_context",
-            opik_context,
-            create=True,
+        patch.object(opik_sdk, "tracing_is_effective", return_value=tracing),
+        patch.object(opik_sdk, "update_current_span", opik_context.update_current_span),
+        patch.object(
+            opik_sdk, "update_current_trace", opik_context.update_current_trace
         ),
         patch("aiohttp.ClientSession", return_value=_session()),
     ):
@@ -275,13 +274,13 @@ class TestTheTraceIsTaggedWithItsCase:
         """With ``create_duplicate_root_span=False`` the SDK would record the
         raw return value as the trace's output."""
         with (
-            patch.object(router_module, "OPIK_AVAILABLE", True),
-            patch.object(router_module, "opik", create=True) as opik,
+            patch.object(opik_sdk, "SPAN_TAGGING_AVAILABLE", True),
+            patch.object(opik_sdk, "track") as track,
         ):
             router_module._opik_track_llm("x")(AsyncMock())
 
-        opik.track.assert_called_once()
-        assert "create_duplicate_root_span" not in opik.track.call_args.kwargs
+        track.assert_called_once()
+        assert "create_duplicate_root_span" not in track.call_args.kwargs
 
 
 @pytest.mark.usefixtures("restore_tenant_context")
@@ -336,3 +335,38 @@ class TestTheTraceIsTaggedWithItsConversion:
 
         opik_context.update_current_trace.assert_called_once_with(metadata=self.OWNER)
         opik_context.update_current_span.assert_called_once_with(metadata=self.OWNER)
+
+
+@pytest.mark.usefixtures("restore_tenant_context")
+class TestAnSdkWithoutTheSpanWriters:
+    """#2629's delta K1: the SDK is configured and switched on, but its
+    ``opik_context`` lost the span writers. No call is decorated, and the
+    per-call gates stop before the writers, so a routed call logs nothing
+    about its span (#1121's log-spam class)."""
+
+    async def test_a_routed_call_logs_no_span_warning(self, monkeypatch, caplog):
+        sdk = types.ModuleType("opik")
+        sdk.is_tracing_active = lambda: True
+        sdk.opik_context = types.ModuleType("opik.opik_context")
+        monkeypatch.setitem(sys.modules, "opik", sdk)
+        monkeypatch.setattr(opik_sdk, "SPAN_TAGGING_AVAILABLE", False)
+        record = opik_sdk.TraceBackend(
+            sdk_available=True, enabled=True, configured=True
+        )
+        monkeypatch.setattr(opik_sdk, "_record", record)
+        set_current_enterprise_id("ent-k1")
+
+        with (
+            patch.object(router_module, "get_registry", return_value=_registry()),
+            patch("aiohttp.ClientSession", return_value=_session()),
+            caplog.at_level(logging.WARNING),
+        ):
+            response = await router_module.LLMRouter().route(
+                model="claude-sonnet-4-6",
+                **vetted_kwargs({"prompt": "hi", "case_id": "case_k1"}),
+            )
+
+        assert response.content == "ok"
+        assert [
+            r.getMessage() for r in caplog.records if "Opik" in r.getMessage()
+        ] == []

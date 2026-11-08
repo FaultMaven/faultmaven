@@ -13,6 +13,7 @@ Endpoints:
 - GET  /api/v1/admin/config/status    — Environment configuration status
 """
 
+import asyncio
 import logging
 import time
 from datetime import datetime, timezone
@@ -747,8 +748,8 @@ def _llm_tracing_is_effective() -> bool:
     """Will a traced call record a span?
 
     Delegates, and that is the whole point. The first attempt at this answered
-    ``opik_enabled and OPIK_AVAILABLE``, which mirrors two of
-    ``init_opik_tracing``'s gates and misses the third: with neither
+    ``opik_enabled and OPIK_AVAILABLE``, which mirrors two of the trace
+    configuration's gates and misses the third: with neither
     ``OPIK_USE_LOCAL`` nor ``OPIK_URL_OVERRIDE`` set it disables the SDK and
     returns, so an install that HAS the SDK and sets ``OPIK_ENABLED=true`` —
     the shape reached by flipping the documented knob and nothing else — traced
@@ -756,13 +757,13 @@ def _llm_tracing_is_effective() -> bool:
     inside the fix for #1234, and it happened because the predicate re-derived
     an answer the tracing module already had.
 
-    So the fact is recorded where it is known and read from here. A new
-    bail-out path in ``init_opik_tracing`` now changes this answer by
-    construction instead of requiring someone to notice this file.
+    So the fact is recorded where it is known and read from here: the record
+    ``opik_sdk.configure`` wrote. A new bail-out path there changes this answer
+    by construction instead of requiring someone to notice this file.
     """
-    from faultmaven.infrastructure.observability.tracing import tracing_is_effective
+    from faultmaven.api.dependencies import llm_tracing_is_effective
 
-    return tracing_is_effective()
+    return llm_tracing_is_effective()
 
 
 def _oauth_flow_is_mounted(app) -> bool:
@@ -1366,6 +1367,12 @@ async def get_env_config_status(
             settings.knowledge.index_request_window_seconds
         )
 
+        # The trace SDK's policy, and its client's state (#2616 part c, #2573).
+        # The parked count is a SQLite read, so it runs off the loop.
+        from faultmaven.api.dependencies import trace_backend_status
+
+        trace_backend = await asyncio.to_thread(trace_backend_status)
+
         return EnvConfigStatusResponse(
             auth_mode=settings.auth.auth_mode,
             deployment=deployment,
@@ -1383,6 +1390,7 @@ async def get_env_config_status(
             personal_tenant_limits=personal_tenant_limits,
             database_timeouts=database_timeouts,
             knowledge_indexing=knowledge_indexing,
+            trace_backend=trace_backend,
             timestamp=datetime.now(timezone.utc),
         )
 

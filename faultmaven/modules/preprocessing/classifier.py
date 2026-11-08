@@ -26,8 +26,8 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, List, Optional, Tuple
 
+from faultmaven.infrastructure.observability import opik_sdk
 from faultmaven.models.api import ClassificationResult, DataType
-from faultmaven.utils.optional_dependency import module_is_usable
 
 if TYPE_CHECKING:
     from faultmaven.models.api import SourceMetadata
@@ -40,56 +40,26 @@ if TYPE_CHECKING:
 # buckets, classification_failed rate) without touching logs.
 # =============================================================================
 
-# See the equivalent block in infrastructure/llm/router.py for why the
-# from-import is not relied on as the guard.
-try:
-    import opik
-    from opik import opik_context
-
-    _OPIK_AVAILABLE = module_is_usable(opik) and module_is_usable(
-        opik_context, "update_current_span"
-    )
-except ImportError:
-    _OPIK_AVAILABLE = False
-
-
-def _opik_tracing_enabled() -> bool:
-    """FaultMaven-level gate for @opik.track (OPIK_ENABLED).
-
-    Fail closed: any error reading settings means no tracing. Without this
-    gate the decorator is live even when OPIK_ENABLED=false and the SDK
-    lazily builds a client pointed at its default (Comet Cloud) (#1121).
-
-    Read LAZILY, at call time — reading it at import time would bootstrap the
-    settings singleton (.env load, preset env mutation, data/.jwt_secret
-    creation) merely by importing this module.
-    """
-    try:
-        from faultmaven.config.settings import get_settings
-
-        return get_settings().observability.opik_enabled
-    except Exception:
-        return False
-
 
 def _opik_track_classifier(func: Callable) -> Callable:
     """Wrap classify() with an Opik span and attach classifier-decision tags.
 
     The tracked wrapper is built at import time (decoration alone constructs
-    no client), but every call re-checks the gate and dispatches to the RAW
-    function when tracing is off, so a disabled deployment never reaches the
-    SDK at this call site.
+    no client), but every call re-checks the gate
+    (``opik_sdk.tracing_is_effective()``) and dispatches to the RAW function
+    when tracing is off, so a disabled deployment never reaches the SDK at this
+    call site (#1121).
     """
-    if _OPIK_AVAILABLE:
+    if opik_sdk.SPAN_TAGGING_AVAILABLE:
         # Records no content and serves no case, so it carries no case tag and
         # the case delete has nothing to purge here (#2102).
-        tracked = opik.track(
+        tracked = opik_sdk.track(
             name="tier0_classify", capture_input=False, capture_output=False
         )(func)
 
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
-            if not _opik_tracing_enabled():
+            if not opik_sdk.tracing_is_effective():
                 return func(*args, **kwargs)
             result: ClassificationResult = tracked(*args, **kwargs)
             try:
@@ -101,7 +71,7 @@ def _opik_track_classifier(func: Callable) -> Callable:
                     bucket = "medium"
                 else:
                     bucket = "low"
-                opik_context.update_current_span(
+                opik_sdk.update_current_span(
                     tags=[
                         f"source:{result.source}",
                         f"data_type:{result.data_type.value}",
@@ -116,8 +86,8 @@ def _opik_track_classifier(func: Callable) -> Callable:
 
         return wrapper
 
-    # Fail-closed passthrough: Opik not installed. (Tracing being disabled is
-    # handled per call inside the wrapper above, not here.)
+    # Fail-closed passthrough: Opik not installed, or its span writers moved.
+    # (Tracing being disabled is handled per call inside the wrapper above.)
     return func
 
 

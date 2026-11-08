@@ -11,7 +11,7 @@ fail every delete.
 
 import pytest
 
-from faultmaven.infrastructure.observability import tracing
+from faultmaven.infrastructure.observability import opik_sdk
 from faultmaven.infrastructure.observability.trace_erasure import (
     LLMTraceEraser,
     UnavailableTraceEraser,
@@ -85,12 +85,18 @@ async def test_the_case_service_is_composed_with_every_stores_eraser(
 async def test_a_configured_trace_backend_binds_the_trace_eraser_first(
     monkeypatch, skip_service_checks, fresh_container
 ):
-    """#2102. ``initialize()`` does not run ``init_opik_tracing`` and no model is
-    called here, so no SDK client is built."""
+    """#2102. ``initialize()`` binds the eraser from the record the entrypoint's
+    ``opik_sdk.configure`` wrote, stood in for here. No model is called, so no
+    SDK client is built."""
     monkeypatch.setenv("OPIK_ENABLED", "true")
     monkeypatch.setenv("OPIK_URL_OVERRIDE", "http://opik.test")
-    monkeypatch.setenv("OPIK_PROJECT_NAME", "fm-project")
-    monkeypatch.setattr(tracing, "OPIK_AVAILABLE", True)
+    monkeypatch.setattr(
+        opik_sdk,
+        "_record",
+        opik_sdk.TraceBackend(
+            sdk_available=True, configured=True, project="fm-project"
+        ),
+    )
     skip_service_checks(True)
     await fresh_container.initialize()
 
@@ -120,7 +126,11 @@ async def test_the_case_draft_and_document_deletes_bind_one_trace_eraser_kind(
     would not."""
     monkeypatch.setenv("OPIK_ENABLED", str(opik_enabled).lower())
     monkeypatch.setenv("OPIK_URL_OVERRIDE", "http://opik.test")
-    monkeypatch.setattr(tracing, "OPIK_AVAILABLE", sdk)
+    monkeypatch.setattr(
+        opik_sdk,
+        "_record",
+        opik_sdk.TraceBackend(sdk_available=sdk, configured=sdk, project="fm-project"),
+    )
     skip_service_checks(True)
     await fresh_container.initialize()
 

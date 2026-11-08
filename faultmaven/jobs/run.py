@@ -437,6 +437,12 @@ async def run_job(
         logger.critical("Refusing to run job: tenant-scope requirements not satisfied")
         raise
 
+    # As the API's lifespan: the composition binds the trace eraser from the
+    # record this writes (#2616 part c).
+    from faultmaven.infrastructure.observability import opik_sdk
+
+    opik_sdk.configure(settings)
+
     try:
         # Initialize container (may already be initialized)
         try:

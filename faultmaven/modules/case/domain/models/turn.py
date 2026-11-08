@@ -298,6 +298,20 @@ class TurnProgress(BaseModel):
         ),
     )
 
+    # The record's copy of the row's ``server_note`` (#1665): the note the
+    # service composed onto an unusable answer, bounded on write by its one
+    # writer. No ``max_length``: that writer replaces the record with
+    # ``model_copy(update=…)``, which skips validation, while the repositories
+    # reload with ``TurnProgress(**t)``, which would not — so a cap here could
+    # make a case unloadable.
+    server_note: Optional[str] = Field(
+        default=None,
+        description=(
+            "On a turn with agent_response_synthesized: the note the server "
+            "showed the user after the unusable answer, as server text"
+        ),
+    )
+
     # ============================================================
     # System Feedback (for iterative correction)
     # ============================================================

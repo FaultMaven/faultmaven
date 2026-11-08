@@ -1,13 +1,13 @@
-"""Per-call cost of the observability and security shims when they are OFF.
+"""Per-call cost of the security shim when it is OFF.
 
 Moved here from ``tests/integration/test_shims_integration.py`` (#1579),
-where each asserted a raw wall-clock total in both required gates — 1000
-calls in under 100 ms for the no-op ``track`` decorator, under 50 ms for the
-``PIIRedactor`` passthrough. Those are product targets for a code path every
-request crosses when tracing and redaction are disabled, so they are kept as
-the ``product_target`` of a calibrated budget in ``budgets.py`` and asserted
-raw in the ``FM_BENCHMARK_ABSOLUTE`` nightly; each pull request asserts a
-regression anchor 2-3x the measured cost instead.
+where it asserted a raw wall-clock total in both required gates — 1000
+calls of the ``PIIRedactor`` passthrough in under 50 ms. That is a product
+target for a code path every request crosses when redaction is disabled, so it
+is kept as the ``product_target`` of a calibrated budget in ``budgets.py`` and
+asserted raw in the ``FM_BENCHMARK_ABSOLUTE`` nightly; each pull request asserts
+a regression anchor 2-3x the measured cost instead. The observability shim's
+no-op ``track`` went with the shim (#2616 part c).
 
 ‼ Every comparison goes through ``assert_latency_within`` (#1557).
 """
@@ -20,7 +20,7 @@ import pytest
 from tests.wallclock import assert_latency_within
 from tests.wallclock.sampling import fastest_of_windows
 
-from .budgets import NOOP_TRACK_CALL, PII_PASSTHROUGH_CALL
+from .budgets import PII_PASSTHROUGH_CALL
 
 CALLS = 1000
 SAMPLES = 5
@@ -35,22 +35,6 @@ def _fastest_per_call(call) -> float:
             call()
 
     return fastest_of_windows(lambda window: window.seconds(calls), SAMPLES) / CALLS
-
-
-@pytest.mark.performance
-def test_noop_decorator_minimal_overhead():
-    """``@track`` with tracing off costs one extra Python frame, no more."""
-    with patch.dict(os.environ, {"ENABLE_TRACING": "false"}):
-        from faultmaven.infrastructure.shims import track
-
-        @track("fast_operation")
-        def fast_function():
-            return 42
-
-        per_call = _fastest_per_call(fast_function)
-
-    print(f"\nNo-op track decorator: {per_call * 1e6:.3f}us per call")
-    assert_latency_within(per_call, NOOP_TRACK_CALL, "no-op @track call")
 
 
 @pytest.mark.performance

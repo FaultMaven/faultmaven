@@ -151,7 +151,7 @@ def validate_contract_changes(changes: tuple[ContractChange, ...]) -> None:
 
 CONTRACT_CHANGES: tuple[ContractChange, ...] = (
     ContractChange(
-        version="14.18.0",
+        version="14.19.0",
         level="MINOR",
         title=(
             "`POST /knowledge/convert` prepares a document in a worker process, "
@@ -182,6 +182,31 @@ Past the deadline is the existing 120 s refusal, and a request that waits
 structural moves: conversion error codes and their `detail` are not in the
 OpenAPI schema. MINOR because every client survives it: both refusals carry a
 code clients already know.""",
+    ),
+    ContractChange(
+        version="14.18.0",
+        level="MINOR",
+        title=(
+            "`GET /admin/config/status` reports the LLM trace SDK's policy and "
+            "this process's trace client as `trace_backend` (#2620)."
+        ),
+        body=r"""`EnvConfigStatusResponse` gains `trace_backend` (`TraceBackendStatus`):
+
+* `sentry_reporting` (bool): whether the trace SDK's crash reporting to
+  Comet's Sentry is active in the process. Off unless an operator sets
+  `OPIK_SENTRY_ENABLE=true` (#2585).
+* `project` and `ping_interval_s`: the Opik project traces go to and the case
+  delete searches, and the SDK's ping interval; null when configuration did
+  not resolve them.
+* `server_connection` (`connected`, `disconnected`, `no_client`, `unknown`)
+  and `parked_messages`: whether the serving worker's trace client last
+  reached its backend, and how many traces that worker holds unsent after a
+  failed send (#2573). Each worker and replica has its own; the response
+  reports the one that answered. Read from a client already built, never
+  building one; `unknown` and null when the SDK's internals cannot be read.
+
+MINOR because every client survives it: a new field on an operator-only
+response, which a client that does not read it ignores.""",
     ),
     ContractChange(
         version="14.17.0",

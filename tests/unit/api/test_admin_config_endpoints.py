@@ -7,7 +7,7 @@ Tests:
 - GET  /api/v1/admin/config/status   — Environment status
 """
 
-from types import MethodType
+from types import MethodType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1811,7 +1811,7 @@ def _pin_first_party(settings) -> None:
 def _set_tracing_runtime(monkeypatch, *, sdk: bool, configured: bool, active=True):
     """Drive the two runtime facts ``tracing_is_effective`` reads.
 
-    ``sdk`` and ``configured`` are patched on the tracing module; ``active`` is
+    ``sdk`` and ``configured`` make the trace record; ``active`` is
     served by a stand-in ``opik`` installed into ``sys.modules``. The stand-in
     matters in BOTH directions of the environment: this repo's venv has no
     ``opik`` at all, while CI's Test Cloud job installs the ``[cloud]`` extra
@@ -1821,10 +1821,11 @@ def _set_tracing_runtime(monkeypatch, *, sdk: bool, configured: bool, active=Tru
     import sys
     import types
 
-    from faultmaven.infrastructure.observability import tracing
+    from faultmaven.infrastructure.observability import opik_sdk
 
-    monkeypatch.setattr(tracing, "OPIK_AVAILABLE", sdk)
-    monkeypatch.setattr(tracing, "_tracing_configured", configured)
+    record = opik_sdk.TraceBackend(sdk_available=sdk, configured=sdk and configured)
+    monkeypatch.setattr(opik_sdk, "_record", record)
+    monkeypatch.setattr(opik_sdk, "SPAN_TAGGING_AVAILABLE", sdk)
 
     fake = types.ModuleType("opik")
     fake.__file__ = "/stand-in/opik/__init__.py"
@@ -2113,7 +2114,7 @@ def _pure_settings_answer(feature: str, settings) -> bool:
 class TestLLMTracingReportsEffect:
     """``llm_tracing.enabled`` must mean "a span will be recorded" (#1234).
 
-    Enablement is necessary and nowhere near sufficient. ``init_opik_tracing``
+    Enablement is necessary and nowhere near sufficient. ``opik_sdk.configure``
     bails on an absent SDK, on ``OPIK_ENABLED=false``, on having no backend URL
     configured, and on any exception while configuring — and after any of those
     the ``@opik.track`` sites are live and record nothing.
@@ -2144,7 +2145,7 @@ class TestLLMTracingReportsEffect:
 
         With the SDK installed — the ``[cloud]`` extra, i.e. every Cloud
         deployment — ``OPIK_ENABLED=true`` and no ``OPIK_USE_LOCAL`` or
-        ``OPIK_URL_OVERRIDE`` makes ``init_opik_tracing`` log "Tracing will be
+        ``OPIK_URL_OVERRIDE`` makes ``opik_sdk.configure`` log "Tracing will be
         disabled" and return. A predicate of ``opik_enabled and
         OPIK_AVAILABLE`` reports True here: #1234 verbatim, inside its own fix.
         """
@@ -2600,7 +2601,7 @@ class TestPersonalTenantLimitsAreReported:
 # a pure-settings implementation passed the sweep unharmed. What each member
 # withholds now:
 #
-#   llm_tracing                  the recorded outcome of init_opik_tracing
+#   llm_tracing                  the recorded outcome of opik_sdk.configure
 #   web_search                   the composed tool on app.state
 #   first_party_consent_skip     the mounted OAuth authorize route
 #
@@ -3230,3 +3231,85 @@ class TestKnowledgeIndexingIsReported:
         }
         assert (busy.queued, busy.encoding_for_seconds) == (2, 42.5)
         assert (busy.host_lock_available, busy.waiting_for_host_lock) == (False, True)
+
+
+class TestTheTraceBackendIsReported:
+    """``trace_backend`` (#2616 part c, #2573): the SDK's policy from the record,
+    and the state of a client the process already built, never building one."""
+
+    @staticmethod
+    async def _status(user, settings, app):
+        with patch(SETTINGS_PATCH, return_value=settings):
+            result = await get_env_config_status(
+                request=_request_for(app), current_user=user
+            )
+        return result.trace_backend.model_dump()
+
+    @staticmethod
+    def _client(monkeypatch, client):
+        from faultmaven.infrastructure.observability import opik_sdk
+
+        record = opik_sdk.TraceBackend(
+            sdk_available=True,
+            configured=True,
+            project="fm-project",
+            ping_interval_s=999999,
+            sentry_reporting=True,
+        )
+        monkeypatch.setattr(opik_sdk, "_record", record)
+        monkeypatch.setattr(opik_sdk, "OPIK_AVAILABLE", True)
+        monkeypatch.setattr(opik_sdk, "SPAN_TAGGING_AVAILABLE", True)
+        monkeypatch.setattr(opik_sdk, "_built_client", lambda: client)
+
+    @staticmethod
+    def _built(*, connected=False, parked=3, db_manager=True):
+        """A client whose replay manager has the SDK 1.11.14 shape."""
+        manager = SimpleNamespace(
+            _monitor=SimpleNamespace(has_server_connection=connected)
+        )
+        if db_manager:
+            manager._db_manager = SimpleNamespace(failed_messages_count=lambda: parked)
+        return SimpleNamespace(
+            _streamer=SimpleNamespace(_fallback_replay_manager=manager)
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "client, connection, parked",
+        [
+            (None, "no_client", None),
+            ("disconnected", "disconnected", 3),
+            ("connected-unopened", "connected", None),
+            ("moved", "unknown", None),
+            ("no-db-manager", "disconnected", None),
+        ],
+    )
+    async def test_the_record_and_the_built_client(
+        self,
+        mock_admin_user,
+        mock_settings,
+        rate_limited_app,
+        monkeypatch,
+        client,
+        connection,
+        parked,
+    ):
+        built = {
+            None: None,
+            "disconnected": self._built(),
+            # -1: the replay database is not open.
+            "connected-unopened": self._built(connected=True, parked=-1),
+            "moved": SimpleNamespace(_streamer=SimpleNamespace()),
+            "no-db-manager": self._built(db_manager=False),
+        }[client]
+        self._client(monkeypatch, built)
+
+        status = await self._status(mock_admin_user, mock_settings, rate_limited_app)
+
+        assert status == {
+            "sentry_reporting": True,
+            "project": "fm-project",
+            "ping_interval_s": 999999,
+            "server_connection": connection,
+            "parked_messages": parked,
+        }

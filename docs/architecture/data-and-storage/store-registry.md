@@ -235,14 +235,15 @@ Citations only. Paths are relative to `faultmaven/` unless they start with
 ### Trace store
 
 - Content class: the [ruling on #2616](https://github.com/FaultMaven/faultmaven/issues/2616#issuecomment-6716225805).
-- Writer and content: `infrastructure/llm/router.py:288-295`, `:1113-1126`;
-  metadata-only span: `modules/preprocessing/classifier.py:84-110`.
-  Other modules import the SDK without writing a trace: `infrastructure/observability/tracing.py`
-  (configures it), `infrastructure/observability/trace_erasure.py` (deletes),
-  `infrastructure/shims/observability.py` and `bootstrap/middleware.py`; one importer is
-  #2616 part (c).
+- Writer and content: `infrastructure/llm/router.py` (`_opik_track_llm`,
+  `_update_opik_span`); metadata-only span: `modules/preprocessing/classifier.py`
+  (`_opik_track_classifier`). The one module that imports the SDK is
+  `infrastructure/observability/opik_sdk.py` (#2616 part (c)): it sets the SDK's
+  process policy and configures it, and the writers, the eraser and
+  `bootstrap/middleware.py` reach the SDK through it.
 - Tenant: `infrastructure/llm/router.py:243-252`.
-- Gate: `config/settings.py:2350`.
+- Gate: the record `opik_sdk.configure` writes from `OPIK_ENABLED` and the backend
+  URL, and the SDK's span writers (`opik_sdk.tracing_is_effective`).
 - Delete: `infrastructure/observability/trace_erasure.py:92-116`;
   `container/providers/services.py:34-56`, `:100-104`;
   [Case deletion](../../operations/case-deletion.md#llm-traces).
@@ -251,8 +252,10 @@ Citations only. Paths are relative to `faultmaven/` unless they start with
 
 ### Trace SDK's local buffer
 
-- `docs/operations/case-deletion.md:122-127` and #2573. FaultMaven's code does not show
-  the buffer; it sets the ping interval: `infrastructure/observability/tracing.py:552`, `:562`.
+- `docs/operations/case-deletion.md` §Residuals and #2573. FaultMaven sets the ping
+  interval (`opik_sdk.PING_INTERVAL_S`), and `GET /admin/config/status` reports the
+  serving worker's buffer under `trace_backend` (`server_connection`,
+  `parked_messages`); each worker of each replica has its own.
 
 ### LLM response cache
 
