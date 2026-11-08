@@ -394,6 +394,8 @@ async def test_the_record_and_the_row_cut_a_long_note_at_one_point():
     rendered = cb.render_server_note(raw)
     assert 500 < len(rendered) <= cb.SERVER_NOTE_CHARS < len(raw.strip()), "harness"
     assert "the text you pasted" in rendered and _LONG_REQUEST in rendered
+    # The record stores the rendered note itself, bounded on write.
+    assert saved.turn_history[-1].server_note == rendered
 
     forms = _renderings(saved)
     forms["triage"] = OutOfBandTriage._build_prompt(saved, NEXT_MESSAGE)
