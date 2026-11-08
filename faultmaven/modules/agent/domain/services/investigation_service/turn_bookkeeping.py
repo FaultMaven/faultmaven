@@ -13,7 +13,6 @@ from faultmaven.core.investigation.kb_push import TURN_METADATA_KB_PROMPTED
 from faultmaven.core.investigation.milestone_engine.progress import (
     record_promptless_turn,
     score_progress,
-    summarize_for_turn_record,
 )
 from faultmaven.core.preprocessing.models import unified_data_type_of
 from faultmaven.infrastructure.observability.evidence_metrics import (
@@ -127,41 +126,6 @@ def _backfill_consumed_turn(
             bool(metadata.get(MESSAGE_METADATA_AGENT_SYNTHESIZED))
             or not (agent_response or "").strip()
         ),
-    )
-
-
-def _record_composed_reply(case: "Case", agent_response: str) -> None:
-    """Re-derive this turn's record when the service composed its reply onto
-    a blank answer (#1660).
-
-    The clarification note is appended AFTER the turn is recorded — by the
-    engine's Step 6, or by :func:`_backfill_consumed_turn` above — and both
-    record a blank answer as unanswered (``agent_response_synthesized``). The
-    note then makes the reply non-blank, so the persistence backstop never
-    fires and the row goes out unflagged. One turn, two verdicts: the EARLIER
-    TURNS summary said "no answer" while the RECENT window quoted the note.
-
-    Settled the way the engine settles its own composition (#1442): prose
-    composed onto a missing answer is a real reply, not a placeholder. The note
-    is the question the user was actually shown, and the next turn needs it —
-    "treat it as application logs" answers it. So the record follows the row,
-    and is re-derived from the text rather than carried over, exactly as the
-    engine re-records after composing a gate notice.
-
-    Only called for a blank base the engine did not flag. A placeholder the
-    engine synthesized is not blank; that row stays flagged and so does its
-    record.
-    """
-    if not case.turn_history or case.turn_history[-1].turn_number != case.current_turn:
-        return
-    # ``TurnProgress`` is frozen: replace the record, never mutate it.
-    case.turn_history[-1] = case.turn_history[-1].model_copy(
-        update={
-            "agent_response_summary": summarize_for_turn_record(
-                agent_response.strip(), 500
-            ),
-            "agent_response_synthesized": not agent_response.strip(),
-        }
     )
 
 

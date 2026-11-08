@@ -64,6 +64,10 @@ from faultmaven.modules.agent.domain.services.query_classifier import (
     ProcessingMode,
     QueryClassification,
 )
+from faultmaven.modules.case.contracts import (
+    is_server_written_assistant_row,
+    server_note_of,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -267,15 +271,39 @@ def _last_assistant_message(case: Any) -> str:
 
     Delegates to ``orientation.last_investigation_message`` so asides,
     orientation replies (PR #1343 review) and server-written placeholders
-    (#1660) are skipped by one predicate. This is the only case row the triage
-    prompt reads: the user text in it is the live message being classified,
-    never a stored row, so a server-written USER row (#1434) has no way in.
+    (#1660) are skipped by one predicate. With :func:`_last_server_note`, this
+    is the only case row the triage prompt reads: the user text in it is the
+    live message being classified, never a stored row, so a server-written USER
+    row (#1434) has no way in.
     """
     from faultmaven.modules.agent.domain.services.orientation import (
         last_investigation_message,
     )
 
     return last_investigation_message(case, _PREVIOUS_AGENT_CHARS) or ""
+
+
+def _last_server_note(case: Any) -> Optional[str]:
+    """The note the server showed after the newest investigation turn's
+    unusable answer, or ``None`` (#1665).
+
+    ``_last_assistant_message`` passes that row over, so without this the
+    question the user was just asked never reaches the classifier. Read only
+    off a server-written row, and labelled as server text in the prompt. Asides
+    and orientation replies are passed over, as that helper passes them; the
+    greeting does not read this. Design: ``prompt-assembly-architecture.md``
+    §2.1.
+    """
+    for msg in reversed(getattr(case, "messages", None) or []):
+        if msg.get("role") != "assistant" or not msg.get("content"):
+            continue
+        meta = msg.get("metadata") or {}
+        if meta.get("out_of_band") or meta.get("orientation"):
+            continue
+        if is_server_written_assistant_row(msg):
+            return server_note_of(msg)
+        return None
+    return None
 
 
 def _role_route_kwargs(settings: Any, role: str) -> dict[str, Any]:
@@ -387,6 +415,14 @@ class OutOfBandTriage:
             if previous
             else ""
         )
+        # #1665: what the user was shown after that unanswered turn.
+        note = _last_server_note(case)
+        if note:
+            previous_block += (
+                "The assistant gave no usable answer on its last turn; the "
+                "server then showed the user this note:\n"
+                f"<<<\n{_bounded(note.strip(), _PREVIOUS_AGENT_CHARS)}\n>>>\n\n"
+            )
         if established:
             # Name the incident only when it HAS a name: a case carries the
             # ``Case-YYMMDD-N`` placeholder until auto-titling has enough

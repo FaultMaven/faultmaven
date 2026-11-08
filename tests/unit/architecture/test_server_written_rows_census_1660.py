@@ -136,6 +136,16 @@ PROMPT_READERS: dict[tuple[str, str], tuple[int, dict[str, frozenset[str]]]] = {
         1,
         {"last_investigation_message": frozenset({_ASSISTANT})},
     ),
+    # The triage prompt's note (#1665): what the server showed after the
+    # newest investigation turn's unusable answer, read off that row only
+    # when it is server-written.
+    (
+        "faultmaven/modules/agent/domain/services/out_of_band.py",
+        "_last_server_note",
+    ): (
+        1,
+        {"_last_server_note": frozenset({_ASSISTANT})},
+    ),
 }
 
 _PERSISTENCE = "persistence: stores or loads the rows, renders nothing"

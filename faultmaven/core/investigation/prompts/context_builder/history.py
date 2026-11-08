@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Optional
 
 from faultmaven.core.investigation.prompts.fence import PromptFence
 from faultmaven.modules.case.contracts import (
@@ -6,6 +6,7 @@ from faultmaven.modules.case.contracts import (
     NeedPriority,
     is_server_written_assistant_row,
     is_server_written_user_row,
+    server_note_of,
 )
 
 from .budget import (
@@ -132,7 +133,8 @@ def _build_turn_summary(turn) -> str:
     - ``TURN {n}: {user_summary} → {structural_metadata} | Agent: {response_summary}``
       for an ordinary record — the ``→`` part is omitted when there is no
       structural metadata, and the ``| Agent:`` part becomes ``| NO_ANSWER_LINE``
-      when the reply was a server placeholder (#1451);
+      when the reply was a server placeholder (#1451), followed on the same
+      line by any note the server showed after it (#1665);
     - ``TURN {n}: ASIDE_LINE`` for an aside (#1329);
     - ``TURN {n}: NOT_RECORDED_LINE`` for a placeholder the server backfilled
       for a turn it never recorded (#1666).
@@ -179,8 +181,11 @@ def _build_turn_summary(turn) -> str:
     agent_part = ""
     if turn.agent_response_synthesized:
         # A placeholder the server wrote (#1451): say the turn went
-        # unanswered, as a bare line — never as ``Agent: <placeholder>``.
-        agent_part = f" | {NO_ANSWER_LINE}"
+        # unanswered, as a bare line — never as ``Agent: <placeholder>`` —
+        # then any note the server showed after it (#1665).
+        agent_part = (
+            f" | {_no_answer_lines(turn.server_note, one_line=True, sep=' | ')}"
+        )
     elif turn.agent_response_summary:
         agent_part = f" | Agent: {turn.agent_response_summary[:200]}"
     elif not outcome_desc:
@@ -242,6 +247,41 @@ ASIDE_LINE = "(aside — not part of the investigation)"
 #: server text and would read as the model's own words (#1434's rule). One line
 #: whatever the stop reason; the reason chose the placeholder, not this.
 NO_ANSWER_LINE = "(no answer — the assistant produced no usable reply this turn)"
+
+#: The line that follows ``NO_ANSWER_LINE`` when the service composed a note
+#: onto the unusable answer and the user was shown it (#1665): the clarification
+#: question for an upload that failed classification, or #1930's note on system
+#: output. Server text, so never ``ASSISTANT:`` or ``Agent:``; but the question
+#: the user was asked, so never dropped — the user's next message answers it.
+SERVER_NOTE_LINE = '(the server then showed the user this note: "{note}")'
+
+#: Where the one-line forms cut a server note: the cap the reply summary gets
+#: in the same forms.
+_ONE_LINE_NOTE_CAP = 200
+
+
+def _no_answer_lines(
+    note: Optional[str], *, one_line: bool = False, sep: str = "\n"
+) -> str:
+    """``NO_ANSWER_LINE``, then ``SERVER_NOTE_LINE`` when a note was recorded.
+
+    The rule for a server-written assistant row, in every prompt reader
+    (#1451, #1665). Takes the note, never a row or a record: each caller reads
+    it inside the branch its own server-written test opens (#1660's census).
+
+    ``one_line`` is for the forms that are one line per turn (the EARLIER
+    TURNS summary, ``<previous_turn>``): the note's whitespace collapses — the
+    notes open with a blank line, and #1930's carries a ``---`` rule — and it
+    is cut at ``_ONE_LINE_NOTE_CAP``. Otherwise it renders whole, without its
+    leading and trailing blank lines. Design: ``prompt-assembly-architecture.md``
+    §2.1, "Server-written rows in the conversation slot".
+    """
+    note = note or ""
+    text = " ".join(note.split())[:_ONE_LINE_NOTE_CAP] if one_line else note.strip()
+    if not text:
+        return NO_ANSWER_LINE
+    return f"{NO_ANSWER_LINE}{sep}{SERVER_NOTE_LINE.format(note=text)}"
+
 
 #: One line for a turn RECORD the server backfilled because the turn was never
 #: recorded (``Case.reconcile_turn_sequence``, ``TurnProgress.is_skipped``) —
@@ -403,7 +443,7 @@ def _build_graduated_history(case: Case, fence: PromptFence) -> str:
         if turn_num in asides:
             continue
         if is_server_written_assistant_row(msg):
-            result += f"{NO_ANSWER_LINE}\n"  # #1451
+            result += f"{_no_answer_lines(server_note_of(msg))}\n"  # #1451, #1665
             continue
 
         if role == "ASSISTANT":
@@ -437,7 +477,8 @@ def _build_verbatim_history(messages: list, fence: PromptFence) -> str:
         if turn_num in asides:
             continue
         if is_server_written_assistant_row(msg):
-            result += f"{NO_ANSWER_LINE}\n"  # #1451, see _build_graduated_history
+            # #1451, #1665, see _build_graduated_history
+            result += f"{_no_answer_lines(server_note_of(msg))}\n"
             continue
 
         result += f"{role}: {content}\n"
@@ -543,7 +584,9 @@ def _build_compact_history(
                     "evidence artifacts\n"
                 )
             if last_turn.agent_response_synthesized:
-                recent_history += f"{NO_ANSWER_LINE}\n"  # #1451
+                # #1451, #1665
+                no_answer = _no_answer_lines(last_turn.server_note, one_line=True)
+                recent_history += f"{no_answer}\n"
             elif last_turn.agent_response_summary:
                 recent_history += f"Agent: {last_turn.agent_response_summary[:200]}\n"
         recent_history += "</previous_turn>"

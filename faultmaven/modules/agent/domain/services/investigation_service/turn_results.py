@@ -1,9 +1,12 @@
-"""Unpacking a turn handler's result dict: turn-history backfill (#1264), reverse-redaction, and rebuilding the case's stored suggestions from this turn's clarification and follow-up choices."""
+"""Unpacking a turn handler's result dict: turn-history backfill (#1264), reverse-redaction, rebuilding the case's stored suggestions from this turn's clarification and follow-up choices, and recording a note composed onto an unusable answer (#1665)."""
 
 from typing import Any
 
 from faultmaven.core.investigation.case_telemetry import TELEMETRY_HANDOFF_KEY
 from faultmaven.core.investigation.chat_data import TURN_METADATA_CHAT_DATA_OFFER
+from faultmaven.core.investigation.milestone_engine.progress import (
+    summarize_for_turn_record,
+)
 from faultmaven.core.investigation.suggestion_liveness import entry_file_id
 from faultmaven.modules.agent.domain.services.investigation_service.chat_data import (
     chat_data_choices,
@@ -15,9 +18,42 @@ from faultmaven.modules.agent.domain.services.investigation_service.clarificatio
 )
 from faultmaven.modules.agent.domain.services.investigation_service.turn_bookkeeping import (
     _backfill_consumed_turn,
-    _record_composed_reply,
 )
-from faultmaven.modules.case.contracts import MESSAGE_METADATA_AGENT_SYNTHESIZED
+from faultmaven.modules.case.contracts import (
+    MESSAGE_METADATA_AGENT_SYNTHESIZED,
+    MESSAGE_METADATA_SERVER_NOTE,
+    Case,
+)
+
+
+def _record_server_note(case: Case, turn_meta: dict[str, Any], note: str) -> None:
+    """Record a note the service composed onto an unusable answer, apart from
+    it (#1665, ruled 2026-09-28 (a)).
+
+    Unusable means blank, or a placeholder the engine flagged. The note — the
+    question about an upload that failed classification, or #1930's note on
+    system output — is appended after the turn is recorded, so read whole the
+    row could only be quoted (server text as the assistant's words, #1451) or
+    hidden (the question the user was asked, gone from every prompt).
+
+    So the row is flagged and carries the note exactly as appended, and this
+    turn's record says the same, with a bounded copy: every prompt reader then
+    renders the no-answer marker, followed by the note as server text the user
+    was shown. The row's content does not change. The engine's own composition
+    (#1442: gate prose in place of a placeholder, unflagged) is a usable answer,
+    not this arm.
+    """
+    turn_meta[MESSAGE_METADATA_AGENT_SYNTHESIZED] = True
+    turn_meta[MESSAGE_METADATA_SERVER_NOTE] = note
+    if not case.turn_history or case.turn_history[-1].turn_number != case.current_turn:
+        return
+    # ``TurnProgress`` is frozen: replace the record, never mutate it.
+    case.turn_history[-1] = case.turn_history[-1].model_copy(
+        update={
+            "agent_response_synthesized": True,
+            "server_note": summarize_for_turn_record(note.strip(), 500),
+        }
+    )
 
 
 def _absorb_engine_result(*, preprocess_results, query, result):
@@ -172,16 +208,13 @@ def _absorb_engine_result(*, preprocess_results, query, result):
     if chat_data_note:
         clarification_note = (clarification_note or "") + chat_data_note
     if clarification_note:
-        # #1660: the note is the whole reply when the answer was blank,
-        # and the turn record — written above as unanswered — has to
-        # say what the row will. A row the engine flagged keeps its
-        # flag below, so its record is left as it is.
-        composed_onto_nothing = not agent_response_text.strip() and not (
-            turn_meta.get(MESSAGE_METADATA_AGENT_SYNTHESIZED)
-        )
+        # #1665: composed onto an unusable answer, the note is recorded apart
+        # from it. Onto a usable one it is part of the reply, as before.
+        if turn_meta.get(MESSAGE_METADATA_AGENT_SYNTHESIZED) or not (
+            agent_response_text.strip()
+        ):
+            _record_server_note(updated_case, turn_meta, clarification_note)
         agent_response_text += clarification_note
-        if composed_onto_nothing:
-            _record_composed_reply(updated_case, agent_response_text)
     return (
         agent_response_text,
         clarification,
