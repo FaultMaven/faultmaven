@@ -243,7 +243,7 @@ Citations only. Paths are relative to `faultmaven/` unless they start with
   `bootstrap/middleware.py` reach the SDK through it.
 - Tenant: `infrastructure/llm/router.py:243-252`.
 - Gate: the record `opik_sdk.configure` writes from `OPIK_ENABLED` and the backend
-  URL (`opik_sdk.tracing_is_effective`).
+  URL, and the SDK's span writers (`opik_sdk.tracing_is_effective`).
 - Delete: `infrastructure/observability/trace_erasure.py:92-116`;
   `container/providers/services.py:34-56`, `:100-104`;
   [Case deletion](../../operations/case-deletion.md#llm-traces).

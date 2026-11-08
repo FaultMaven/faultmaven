@@ -273,12 +273,18 @@ def trace_backend_configured() -> bool:
 
 def tracing_is_effective() -> bool:
     """Will a traced call record a span now? The per-call gate of every span
-    write, and what ``/admin/config/status`` reports (#1234): the record, then
-    the SDK's switch (an operator's ``OPIK_TRACK_DISABLE=true``), read live
-    through ``sys.modules``. An unreadable switch answers True: a renamed symbol
-    is not evidence that tracing stopped.
+    write, and what ``/admin/config/status`` reports (#1234): the record, the
+    span writers, then the SDK's switch (an operator's
+    ``OPIK_TRACK_DISABLE=true``), read live through ``sys.modules``.
+
+    Without the span writers (``SPAN_TAGGING_AVAILABLE``) no call is decorated
+    and a span could not carry the owner the eraser finds it by, so nothing is
+    recorded and this answers False; the gates then stop before calling the
+    missing writers. :func:`trace_backend_configured` ignores them: traces
+    already written can still be deleted. An unreadable switch answers True: a
+    renamed symbol is not evidence that tracing stopped.
     """
-    if not _record.configured:
+    if not (_record.configured and SPAN_TAGGING_AVAILABLE):
         return False
     try:
         import opik as _opik

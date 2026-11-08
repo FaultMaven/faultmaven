@@ -1825,6 +1825,7 @@ def _set_tracing_runtime(monkeypatch, *, sdk: bool, configured: bool, active=Tru
 
     record = opik_sdk.TraceBackend(sdk_available=sdk, configured=sdk and configured)
     monkeypatch.setattr(opik_sdk, "_record", record)
+    monkeypatch.setattr(opik_sdk, "SPAN_TAGGING_AVAILABLE", sdk)
 
     fake = types.ModuleType("opik")
     fake.__file__ = "/stand-in/opik/__init__.py"
@@ -3257,6 +3258,7 @@ class TestTheTraceBackendIsReported:
         )
         monkeypatch.setattr(opik_sdk, "_record", record)
         monkeypatch.setattr(opik_sdk, "OPIK_AVAILABLE", True)
+        monkeypatch.setattr(opik_sdk, "SPAN_TAGGING_AVAILABLE", True)
         monkeypatch.setattr(opik_sdk, "_built_client", lambda: client)
 
     @staticmethod

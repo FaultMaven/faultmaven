@@ -217,3 +217,52 @@ def test_an_sdk_without_the_span_writers_decorates_no_call(writers, decorated):
         "router": decorated,
         "classifier": decorated,
     }
+
+
+_EFFECTIVE = """
+import asyncio
+
+from faultmaven.infrastructure.health.component_monitor import ComponentHealthMonitor
+from faultmaven.infrastructure.observability import opik_sdk
+
+opik_sdk._record = opik_sdk.TraceBackend(
+    sdk_available=True, enabled=True, configured=True, project="faultmaven"
+)
+health = asyncio.run(ComponentHealthMonitor()._check_tracer_health())
+
+result = {
+    "configured": opik_sdk.trace_backend_configured(),
+    "effective": opik_sdk.tracing_is_effective(),
+    "tracer": health["status"].value,
+}
+"""
+
+
+@pytest.mark.parametrize(
+    "writers, effective",
+    [
+        ("", False),
+        ("context.update_current_span = lambda **fields: None", False),
+        (
+            "context.update_current_span = context.update_current_trace = "
+            "lambda **fields: None",
+            True,
+        ),
+    ],
+    ids=["no-writers", "no-trace-writer", "both-writers"],
+)
+def test_without_the_span_writers_a_configured_backend_records_nothing(
+    writers, effective
+):
+    """#2629's delta K1: with no call decorated, a configured, enabled backend
+    must not read as tracing (#1234), and the tracer probe reads DEGRADED. The
+    eraser's own gate still answers True: written traces stay deletable."""
+    switched_on = _CONTEXT + "\nopik.is_tracing_active = lambda: True"
+
+    result = _probe(switched_on.format(writers=writers), report=_EFFECTIVE)
+
+    assert result == {
+        "configured": True,
+        "effective": effective,
+        "tracer": "healthy" if effective else "degraded",
+    }

@@ -455,6 +455,7 @@ async def test_tracer_degraded_when_enabled_and_configuring_raised(monkeypatch):
     from faultmaven.infrastructure.observability import opik_sdk
 
     monkeypatch.setattr(opik_sdk, "OPIK_AVAILABLE", True)
+    monkeypatch.setattr(opik_sdk, "SPAN_TAGGING_AVAILABLE", True)
     monkeypatch.setattr(opik_sdk, "_record", opik_sdk.backend())
     settings = MagicMock()
     settings.observability.opik_enabled = True

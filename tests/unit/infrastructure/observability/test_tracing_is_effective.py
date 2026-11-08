@@ -55,6 +55,7 @@ def opik_stand_in(monkeypatch):
     monkeypatch.setitem(sys.modules, "opik", fake)
     monkeypatch.setitem(sys.modules, "opik.config", config)
     monkeypatch.setattr(opik_sdk, "OPIK_AVAILABLE", True)
+    monkeypatch.setattr(opik_sdk, "SPAN_TAGGING_AVAILABLE", True)
     monkeypatch.setattr(opik_sdk, "_record", opik_sdk.TraceBackend())
     monkeypatch.setattr(
         opik_sdk, "_track_disable_prior_value", opik_sdk._TRACK_DISABLE_UNRECORDED
@@ -186,6 +187,7 @@ def test_a_previous_success_is_not_inherited(opik_stand_in):
 @pytest.mark.unit
 def test_an_absent_sdk_is_not_effective(opik_stand_in, monkeypatch):
     monkeypatch.setattr(opik_sdk, "OPIK_AVAILABLE", False)
+    monkeypatch.setattr(opik_sdk, "SPAN_TAGGING_AVAILABLE", False)
 
     opik_sdk.configure(_settings(opik_enabled=True, opik_use_local=True))
 
@@ -221,6 +223,7 @@ def test_each_bail_out_records_its_reason(
     opik_stand_in, monkeypatch, observability, sdk, reason
 ):
     monkeypatch.setattr(opik_sdk, "OPIK_AVAILABLE", sdk)
+    monkeypatch.setattr(opik_sdk, "SPAN_TAGGING_AVAILABLE", sdk)
 
     record = opik_sdk.configure(_settings(**observability))
 
