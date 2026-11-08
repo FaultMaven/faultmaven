@@ -2,23 +2,7 @@
 
 ## Executive Summary
 
-FaultMaven's storage architecture supports **12 data categories** across primary application data and operational infrastructure. The architecture follows a **storage polyglot** approach, selecting the optimal technology for each data type's access patterns and lifecycle requirements.
-
-### Primary Application Data (7 categories)
-1. **User Information** - Account, authentication, profile, SSO
-2. **Case-Centric Data** - Investigation lifecycle, conversation, context, evidence
-3. **Observability Data** - 8 types of uploaded machine data for analysis
-4. **User Knowledge Base** - User-uploaded runbooks and procedures (permanent)
-5. **Case Working Memory** - Temporary per-case vector store (ephemeral)
-6. **Global Knowledge Base** - System-wide troubleshooting documentation (shared)
-7. **Report & Analytics Data** - Generated reports, post-mortems, analytics
-
-### Operational Infrastructure Data (5 categories)
-8. **Job Queue State** - Async background job tracking
-9. **ML Model Artifacts** - Confidence models, calibration data, feature metadata
-10. **Protection System State** - Rate limiting and request deduplication windows
-11. **Cache Data** - Multi-tier intelligent caching with pattern analysis
-12. **System Operational Data** - Metrics, traces, logs, audit trails (optional)
+FaultMaven's storage architecture follows a **storage polyglot** approach, selecting the technology for each data type's access patterns and lifecycle. The list of stores, with what each holds, its owners, its tenant, its writer, its ends of life and its retention bound, is the **[store registry](./store-registry.md)** (Principle 13.1); this overview does not repeat it.
 
 **Key Design Principles**:
 - **Storage Polyglot**: PostgreSQL for transactional, Redis for sessions, ChromaDB for semantic search
@@ -40,6 +24,8 @@ For the data-type × backend × deployment breakdown, see:
 ---
 
 ## Storage Architecture Diagram
+
+The diagram shows access paths. The stores themselves, and how each one's data ends, are in the [store registry](./store-registry.md).
 
 ```
 ┌───────────────────────────────────────────────────────────────────────┐
@@ -73,11 +59,6 @@ For the data-type × backend × deployment breakdown, see:
              │    ├──> File system (model weights)
              │    └──> PostgreSQL (metadata)
              │
-             ├──> IntelligentCache
-             │    ├──> L1: In-memory (< 1ms)
-             │    ├──> L2: Redis (< 5ms)
-             │    └──> L3: PostgreSQL/S3 (< 20ms)
-             │
              └──> IStorageBackend Interface (Artifacts)
                   └──> S3 (raw uploaded files)
 
@@ -90,10 +71,9 @@ For the data-type × backend × deployment breakdown, see:
 │                                                                        │
 │ Redis (real or FakeRedis for local deployment):                        │
 │   - Session state (session:{id}, TTL 30 min past its last write)     │
-│   - Job queue (job:{id}, TTL: 24 hours)                               │
+│   - Job records (job:{id}, TTL 24 hours; nothing writes one today)    │
 │   - Report metadata now in PostgreSQL (reports table)                 │
 │   - Protection state (rate limit windows, dedup keys)                │
-│   - Cache L2 (multi-tier caching)                                     │
 │   - Token revocation (JTI tracking with TTL)                          │
 │   - Request deduplication (content-hash with Lua scripts)             │
 │   NOTE: Local deployment uses FakeRedis (in-process, full API parity) │
@@ -108,7 +88,7 @@ For the data-type × backend × deployment breakdown, see:
 │                                                                        │
 │ ChromaDB Evidence Instance (PersistentClient at data/chroma-evidence/):│
 │   - case_{case_id}: Per-case evidence (dynamic, ephemeral —         │
-│     created on first upload, deleted on case close)                  │
+│     created on first upload, deleted with the case)                  │
 │   Lifecycle: ephemeral — excluded from backups, safe to wipe.        │
 │                                                                        │
 │   Two separate ChromaDB clients created in DI container:             │
@@ -121,15 +101,8 @@ For the data-type × backend × deployment breakdown, see:
 │   time, never stored). See vector-storage.md §1.1, §4.2, §1.3       │
 │   for collection design, scope-filter examples, and ingestion detail.│
 │                                                                        │
-│ S3-Compatible Storage:                                                │
-│   - Raw uploaded files: artifacts/{case_id}/{file_id}                 │
-│   - ML model artifacts: models/{version}/*.pkl                        │
-│   - Audit logs: logs/{year}/{month}/{day}/                            │
-│   - Lifecycle policy: 90 days default                                 │
-│                                                                        │
-│ File System (Local/NFS):                                              │
-│   - ML model weights: /var/lib/faultmaven/models/                     │
-│   - Calibration data: /var/lib/faultmaven/calibration/                │
+│ Object storage (data/evidence/, S3 or Azure):                         │
+│   - Uploaded files: {enterprise_id}/{case_id}/{date}/{uuid}_{name}    │
 └───────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -172,40 +145,7 @@ See [repository-pattern.md](./repository-pattern.md) for detailed abstraction la
 
 ## Data Retention & Lifecycle
 
-For auth/session TTL detail (JWT lifetimes, the session TTL) see [schemas/user-schema.md §5.3](./schemas/user-schema.md#53-session-ttl-strategy).
-
-| Data Category | Retention Period | Cleanup Strategy |
-|---------------|------------------|------------------|
-| **User Accounts** | Indefinite (soft delete) | Soft delete after 30 days inactive (configurable) |
-| **Active Cases** | Indefinite | User-controlled closure |
-| **Resolved Cases** | 1 year default | Archive to cold storage after 90 days |
-| **Session State** | 30 min past the last write (`SESSION_TIMEOUT_MINUTES`) | Automatic Redis expiration |
-| **Raw Artifacts** | 90 days default | S3 lifecycle policy |
-| **User Knowledge Base** | Indefinite | User-controlled deletion |
-| **Case Working Memory** | Case lifetime + 7 days | TTL-based cleanup after case closure |
-| **Global Knowledge Base** | Indefinite | Admin-controlled updates |
-| **Reports & Analytics** | Persistent (linked to case lifecycle) | Cascade delete with case (TD-001) |
-| **Job Queue State** | 24 hours | Redis TTL expiration |
-| **ML Model Artifacts** | 3 versions retained | Version-based cleanup |
-| **Protection State** | Real-time + 30 days archive | Archive to PostgreSQL |
-| **Cache Data** | Minutes to hours (TTL) | Multi-tier eviction |
-| **Audit Logs** | 1 year | Archive to S3 after 90 days |
-
-### Automated Cleanup Jobs
-
-**Daily Tasks**:
-- Expire old sessions (Redis TTL handles most)
-- Archive resolved cases older than 90 days
-- Delete raw artifacts past retention period
-- Clean up expired case vector store collections
-- Delete expired job queue entries
-- Vacuum PostgreSQL tables
-
-**Weekly Tasks**:
-- Reindex for performance
-- Backup validation
-- Storage usage reporting
-- Model version cleanup
+Each store's end of life per owner kind and its retention bound are in the [store registry](./store-registry.md). For auth/session TTL detail (JWT lifetimes, the session TTL) see [schemas/user-schema.md §5.3](./schemas/user-schema.md#53-session-management).
 
 ---
 
@@ -288,8 +228,6 @@ Summary targets below; per-backend latency breakdown is in [repository-pattern.m
 | KB semantic search | < 200ms | 150ms avg |
 | File preprocessing | < 30s | 5s median, 25s p95 |
 | Rate limit check | < 3ms | 1ms avg |
-| Cache L1 hit | < 1ms | 0.5ms avg |
-| Cache L2 hit | < 5ms | 3ms avg |
 
 ---
 

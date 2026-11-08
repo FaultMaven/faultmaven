@@ -1,7 +1,7 @@
 # FaultMaven Architectural Design Principles
 
-**Version**: 2.1
-**Date**: 2026-04-16
+**Version**: 2.3
+**Date**: 2026-11-08
 **Status**: Active
 **Related Documents**:
 
@@ -20,7 +20,7 @@ This document defines the **core architectural design principles** that guide Fa
 
 These principles optimize for a small team (<15) building an AI-powered SRE tool. They prioritize debuggability over abstraction, and measurable outcomes over theoretical purity.
 
-### The 12 Principles
+### The 14 Principles
 
 | # | Principle | One-Line Rule |
 |---|-----------|---------------|
@@ -28,14 +28,16 @@ These principles optimize for a small team (<15) building an AI-powered SRE tool
 | 2 | Vertical Modules | Organize by domain; modules communicate via explicit contracts |
 | 3 | Database Boundaries | Modules own their tables; no cross-module JOINs |
 | 4 | Interface-Based Design | Protocols for swappable boundaries; concrete classes internally |
-| 5 | Composition Root | All DI wiring in `main.py`; services never touch container |
+| 5 | Composition Root | All DI wiring in `bootstrap/composition.py`; services never touch container |
 | 6 | Errors as Domain Concepts | Every module defines its exception hierarchy |
 | 7 | Observability by Default | Correlation IDs, structured logs, traces on external calls |
 | 8 | Boundary Enforcement | Import-linter enforces rules at build time; dead code is removed, not left behind |
-| 9 | Test Safety Net | 70% code coverage floor + 85% AI evaluation benchmarks |
+| 9 | Test Safety Net | 70% code coverage floor; AI evaluation benchmarks designed, not built (#2520) |
 | 10 | Bounded AI Complexity | The milestone engine owns orchestration state; LLM adapters are stateless |
 | 11 | Clean Moves, Not Rewrites | Move code to its correct location; don't rewrite during the move; don't leave the origin behind |
 | 12 | Escape Hatches | Architectural exceptions are allowed but tracked, counted, and time-limited |
+| 13 | One Owner per Fact | Every stored or stated fact has one writer, one point where it is written, and one end of life, recorded in the design |
+| 14 | Bounded Execution | Every stated deadline names the mechanism that keeps it; work over user-controlled input runs where its deadline can stop it |
 
 ### Principle Hierarchy
 
@@ -51,13 +53,17 @@ IMPORTANT (Violations require documented exception)
 ├── 3. Database Boundaries
 ├── 7. Observability by Default
 ├── 8. Boundary Enforcement
-└── 11. Clean Moves, Not Rewrites
+├── 11. Clean Moves, Not Rewrites
+├── 13. One Owner per Fact
+└── 14. Bounded Execution
 
 RECOMMENDED (Apply judgment)
 ├── 4. Interface-Based Design
 ├── 9. Test Safety Net
 └── 12. Escape Hatches
 ```
+
+Principles 13 and 14 are IMPORTANT, not CRITICAL: parts of the system violate both today (the Status column of each one's Enforcement table), so "violations block deployment" would be false on the day it was written.
 
 ---
 
@@ -75,6 +81,8 @@ RECOMMENDED (Apply judgment)
 10. [Bounded Complexity for AI Integration](#10-bounded-complexity-for-ai-integration)
 11. [Clean Moves, Not Rewrites](#11-clean-moves-not-rewrites)
 12. [Escape Hatches](#12-escape-hatches)
+13. [One Owner per Fact](#13-one-owner-per-fact)
+14. [Bounded Execution](#14-bounded-execution)
 
 ---
 
@@ -305,6 +313,8 @@ For complete recommendations, examples, and edge case handling, see [Module Orga
 
 > **"Modules own their tables. Cross-module data flows through services, not JOINs."**
 
+This table rule is the relational case of [Principle 13.1](#13-one-owner-per-fact); every other store has its row in the [store registry](../data-and-storage/store-registry.md).
+
 ### Table Naming Convention
 
 Tables are named after the business entity they store. Module-name prefixes are **not** required — the live schema uses unprefixed names for the primary entity of a module (`users`, `cases`, `evidence`, `reports`, `knowledge_items`) and semantic prefixes only to disambiguate sub-entities or related collections (`case_messages`, `case_actions`, `case_entities`, `oauth_authorization_codes`).
@@ -450,7 +460,8 @@ class CaseService:
 ### ✅ Correct: Composition Root
 
 ```python
-# main.py - ALL wiring happens here
+# bootstrap/composition.py - ALL wiring happens here: _wire_composition_root,
+# called from compose_application, which bootstrap/lifespan.py calls
 async def startup():
     # Create infrastructure
     redis_store = RedisSessionStore(settings.redis_url)
@@ -595,6 +606,8 @@ recommended route pattern.
 
 > **"Structured logs with correlation IDs. Traces on every external call. Metrics with consistent naming."**
 
+A trace that holds a prompt or a response is customer content, with the case-data obligations wherever it is stored ([ruling on #2616](https://github.com/FaultMaven/faultmaven/issues/2616#issuecomment-6716225805)); its row is in the [store registry](../data-and-storage/store-registry.md). Producing traces stays a core duty.
+
 ### Correlation ID Middleware
 
 ```python
@@ -717,6 +730,8 @@ Unused files create false signals during audits, confuse AI assistants reading t
 
 ### AI Evaluation Strategy
 
+**Designed, not built.** `tests/evaluation/` does not exist and `pytest.ini` registers no `evaluation` marker, so no AI evaluation gate runs. The sketch below and the commands after it are the design; #2520 tracks the outcome instrument the gate needs.
+
 ```python
 # tests/evaluation/test_investigation_accuracy.py
 """
@@ -751,7 +766,7 @@ pytest -m "evaluation" --benchmark
 
 - ✅ All tests must pass before merging
 - ✅ Coverage cannot drop below 70%
-- ✅ AI evaluation accuracy ≥85%
+- ⏳ AI evaluation accuracy ≥85%: not built (#2520)
 - ✅ CI/CD pipeline enforces all rules
 
 ---
@@ -901,6 +916,8 @@ During active development, escape hatches should not defer cleanup. If the corre
 
 ### Automated Enforcement
 
+**Not built.** `scripts/check_architecture_exceptions.py` does not exist, and no `ARCHITECTURE-EXCEPTION` marker appears in the code. The sketch below is the design.
+
 ```python
 # scripts/check_architecture_exceptions.py
 def check_exceptions():
@@ -920,6 +937,8 @@ def check_exceptions():
 
 ### CI Integration
 
+Not built: no CI step runs the check. The design:
+
 ```yaml
 - name: Check architecture exceptions
   run: python scripts/check_architecture_exceptions.py
@@ -935,12 +954,62 @@ def check_exceptions():
 
 ---
 
+## 13. One Owner per Fact
+
+### Principle
+
+> Every fact FaultMaven stores or states has one writer, one point where it is written, and one end of life, and the design records all three. Every other part reads the writer's record.
+
+Ruled on 2026-11-08 ([transcription on #2614](https://github.com/FaultMaven/faultmaven/pull/2614#issuecomment-6716219954)).
+
+- **13.1 Stores.** Every store whose contents outlive a request or cross a process has a row in one store registry: what it holds (customer content, derived data, or operational metadata), its owner kinds (case, conversion, document, user, enterprise, process), its tenant stamp (on the row itself, or derived through the owning row, in which case the retirement path names that join), its writer, where its write sits relative to the turn's commit (inside it, gated on it, or outside it with the reason), its end of life for each owner kind (delete, tenant retirement, wipe), and its retention bound. Principle 3's table rule is the registry's relational rows. A store is written only by the module its row names as its writer.
+- **13.2 Derived facts.** A fact that more than one surface states is held in one form only. Either it is a recorded verdict: final, written once by the decider that made it, with the rows and the problem statement it was read under, and later derivations take it as input and never recompute it. Or it is a recomputation: never stored, or stored only as a cache that no surface states; if the two differ, the cache is wrong. Every surface renders the record.
+- **13.3 Statements.** The model proposes through structured fields. The engine takes no outcome from prose. Text that states a case outcome is composed by the engine from the record.
+- **13.4 Resources, SDK policy and work in flight.** A composition owns what it opens, sets each third-party SDK's process-wide policy once before the SDK is imported, and drains what it started. Resources and work in flight are already built to this (#2503, #2505). SDK policy is not yet (#2616 part (c)).
+
+The registry is [Store Registry](../data-and-storage/store-registry.md).
+
+### Enforcement
+
+One check per clause. This table's Status column is the principle's only status surface.
+
+| Clause | Check that fails on the next violation | Precedent | Status |
+|---|---|---|---|
+| 13.1 Stores | A census of the store client constructors in `faultmaven/` (ChromaDB, Redis, the trace SDK, object storage, metrics, files under the data root), kept equal to the registry's writer column. An in-process cache cannot be censused this way; it gets its row by review. | `tests/unit/architecture/test_server_written_rows_census_1660.py`, `tests/unit/architecture/test_llm_call_metering_census.py` | Pending: a stage of #2616 |
+| 13.2 Derived facts | #2615's pins: a narration package that may not import the derivations; a purity test over a case whose every other attribute raises; a census of derivation calls per function. | `tests/unit/architecture/test_message_rows_have_one_constructor.py` | Pending: #2615 |
+| 13.3 Statements | A turn-order test driven through `process_turn`: outcome text is written only by the renderer, after the record. | `tests/unit/architecture/test_turn_commits_once_1882.py` | Pending: #2615 |
+| 13.4 Resources, SDK policy and work in flight | Resources and work in flight: compose, shut down, and the process's file descriptors and threads return to their baseline. SDK policy: the trace SDK is imported in one module only, and a subprocess probe shows no crash reporter active. | `tests/integration/container/test_a_composition_closes_what_it_opened.py`; `tests/unit/infrastructure/observability/test_opik_fail_closed.py` (the subprocess probe's pattern) | Resources and work in flight: built (#2503). SDK policy: pending, #2616 part (c) |
+
+---
+
+## 14. Bounded Execution
+
+### Principle
+
+> Every deadline the design states names the mechanism that keeps it.
+>
+> A thread keeps neither the event loop free nor a deadline: native code that holds the interpreter lock stalls the loop, and cancelling a thread's future does not stop the thread. A thread is the place for I/O, and for native code that releases the lock and has no deadline to keep.
+>
+> Work over input a user controls, and any work the design gives a deadline, runs where that deadline can stop it: a process the deadline kills, under declared time, memory and output limits.
+
+First application: document preparation; Evidence Tier 1 and the runbook validator gate next ([ruling on #2596](https://github.com/FaultMaven/faultmaven/issues/2596#issuecomment-6716225975)).
+
+### Enforcement
+
+| Check that fails on the next violation | Status |
+|---|---|
+| A responsiveness test with a stage that holds the interpreter lock in C (a large `re.sub`); it fails on a thread-only design. | Pending: #2596 |
+| A census of thread offloads over user-sized input, each naming the mechanism that keeps its deadline. | Pending: #2596 |
+
+---
+
 ## References
 
 ### Core Documents
 
 - **[ADR-001: Monolith Evolution Strategy](../decisions/adr-001-monolith-evolution-strategy.md)**
 - **[Module Organization Design](module-organization-design.md)** — Vertical vs horizontal module organization
+- **[Store Registry](../data-and-storage/store-registry.md)** — One row per store (Principle 13.1)
 
 ### Supporting Documents
 
@@ -956,6 +1025,7 @@ def check_exceptions():
 | 2.0 | 2026-01-09 | Consolidated to 10 principles with enforcement mechanisms |
 | 2.1 | 2026-04-16 | P8: dead code intolerance. P11: "Clean Moves, Not Rewrites" with pre/post-launch distinction. P12: pre-launch cleanup rule. |
 | 2.2 | 2026-04-19 | P3 table lists synchronized with the storage redesign: removed `sessions` (auth sessions are Redis-only per `case-and-session-concepts.md`), `evidence_artifacts` and `standalone_evidence` (deleted dead-path tables), `agent_tool_calls` v1 (deleted; v2 renamed to canonical `agent_tool_calls`). Added `conversion_jobs` and `conversion_drafts` to case module list. Added `llm_config_overrides` as infrastructure-layer (not a domain module). Cross-reference to `deployment-schema-strategy.md` for the per-table applicability matrix. |
+| 2.3 | 2026-11-08 | P13 "One Owner per Fact" and P14 "Bounded Execution" added as ruled ([#2614](https://github.com/FaultMaven/faultmaven/pull/2614#issuecomment-6716219954), [#2596](https://github.com/FaultMaven/faultmaven/issues/2596#issuecomment-6716225975)), each with its enforcement table. P3 and P7 point at the [store registry](../data-and-storage/store-registry.md). P5 names `bootstrap/composition.py` as the composition root. P9's AI evaluation gate and P12's automated enforcement are marked not built. |
 
 ### Key Changes Across Versions
 
@@ -976,4 +1046,4 @@ def check_exceptions():
 
 **Document Owner**: Engineering Leadership
 **Status**: Active
-**Last Updated**: 2026-04-16
+**Last Updated**: 2026-11-08

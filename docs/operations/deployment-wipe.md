@@ -82,8 +82,9 @@ when the campaign ends and the baseline is frozen.
 
 ## The surfaces
 
-A wipe that covers only the database is not a wipe. Five surfaces hold state,
-and they fail differently when missed:
+A wipe that covers only the database is not a wipe. Six surfaces hold state,
+and they fail differently when missed. Every store and what the wipe does to it
+is in the [store registry](../architecture/data-and-storage/store-registry.md):
 
 | Surface | Holds | If missed |
 |---------|-------|-----------|
@@ -91,11 +92,14 @@ and they fail differently when missed:
 | ChromaDB | KB + per-case embeddings | searches return chunks whose SQL rows are gone |
 | Object storage (S3/MinIO or `data/evidence/`) | uploaded file bytes | orphaned files, and the storage bill |
 | Redis | sessions, revocation watermarks, idempotency, SSO state | a stale session or watermark shadows the new tenant |
+| Trace store (Opik), where `OPIK_ENABLED` | the prompts and responses of model calls, tagged with their case or conversion and enterprise | the old deployment's case and document text stays in the trace backend. `fm-wipe-deployment` does not reach it, and no wipe step exists yet (#2616) |
 | Slack agent PVC — **two** SQLite stores | `credentials.db`: the agent's OAuth refresh credential. `cases.db` (`CASE_STORE_PATH`): the Slack thread → case-id map | a leftover `credentials.db` shadows the new credential seed and the agent authenticates as a user that no longer exists; a leftover `cases.db` resolves every pre-wipe thread to a case id that is gone |
 
 `fm-wipe-deployment` covers ChromaDB, object storage and Redis, and **verifies
-all four of the server-side surfaces**. The database itself is an operator step
-(below), and the agent's PVC is an infra step in the cutover runbook.
+four of the five server-side surfaces**: the database, ChromaDB, object storage and
+Redis. The database itself is an operator step (below), and the agent's PVC is
+an infra step in the cutover runbook. The trace store it neither wipes nor
+verifies (#2616).
 
 ⚠️ **`cases.db` is easy to miss and nothing here can catch it.** It holds
 cross-database references — case ids living in `faultmaven`, mapped from a store
@@ -325,8 +329,8 @@ so the pack comes from the audited `kb_seed` job — not from a restart.
   prefixes — `session:`, `client_index:`, `sessions:user:`, `idempotency:`,
   `sso:state:`, `sso:login:`, `oauth:code:`, `password_reset:`, `case_seq:`,
   `redaction:`, the configured token-revocation prefix, and **every**
-  protection preset's `<prefix>:rl` / `<prefix>:dedup` (`faultmaven_dev` *and*
-  `faultmaven_prod`) —
+  protection preset's `<prefix>:rl` / `<prefix>:dedup` (`faultmaven_dev`,
+  `faultmaven_prod` *and* `faultmaven_staging`) —
   and *reports* the count of keys under any other prefix rather than silently
   skipping them. `--verify` judges Redis against **the same set the wipe
   deletes**, so the two cannot disagree and a Redis shared with another
@@ -344,6 +348,21 @@ so the pack comes from the audited `kb_seed` job — not from a restart.
   prefix during the #819 cutover (fm#1052).
   Use `--redis-all-keys` only if that logical Redis database is FaultMaven's
   alone.
+
+  FaultMaven also writes families the scoped wipe does not list. Each is left,
+  reported as under no known FaultMaven prefix, and never fails `--verify`:
+
+  - `case-deleting:` (the delete's tombstone) expires 30 s, and `case-inflight:`
+    (the case lease) 35 s, after its holder's last renewal;
+  - `turn-inflight:` expires at the turn's response bound plus 30 s, and
+    `kb-inflight:` 60 s after its last renewal;
+  - `oauth:claim:` expires with its authorization code (`OAUTH_CODE_EXPIRY_SECONDS`);
+  - `auth:` (the Redis user store, composed only when the database user store
+    is not) and `faultmaven:llm_config:version` have no TTL;
+  - `job:` and `lock:report_generation:case:` have no writer today.
+
+  The [store registry](../architecture/data-and-storage/store-registry.md)
+  holds each family's row.
 - **FakeRedis has nothing to wipe — but only when it is the intended backend.**
   In a base/standalone install the `redis` package is absent, the keyspace lives
   inside the API process, and a CLI process has its own empty copy; the command

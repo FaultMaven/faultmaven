@@ -16,7 +16,7 @@ The current LLM configuration system has several design flaws:
 
 ## Design Principles
 
-1. **One source of truth per deployment mode.** Local: `.env` file. Cloud: config DB.
+1. **One precedence chain.** A setting resolves from the process environment, over `.env`, over the field's default (`faultmaven/config/settings.py:3651-3653`, `:3714-3730`). Under cloud only, the stored `config_overrides` values for the LLM keys in `_ALLOWED_OVERRIDES` are applied over those settings at startup, re-applied on every configuration write and, on the other replicas, when the shared config version moves; the stored value wins (`faultmaven/bootstrap/composition.py:319-329`, `faultmaven/config/llm_config_overrides.py:1-5`, `:42-62`, `:103-175`, `:227-275`). Standalone applies no stored overrides: the environment and `.env` are its only sources.
 2. **Configuration determines capability.** Missing key = feature unavailable, not a runtime error. (The Tavily pattern.)
 3. **Separate credential management from routing.** Adding an API key ≠ activating a provider.
 4. **Design for per-user preferences from day one**, even if the initial implementation is system-wide only.

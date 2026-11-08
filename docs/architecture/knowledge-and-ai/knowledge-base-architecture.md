@@ -201,7 +201,7 @@ Live (during investigation):
 |--------|-------|
 | Embedding model | BGE-M3 via sentence-transformers (1024 dims, multilingual) |
 | Chunking | Structure-aware splitting on markdown headers (3000-char max, 100-char min, sentence-boundary fallback) |
-| Supported formats | Markdown, TXT, PDF, DOCX, CSV, JSON, YAML |
+| Accepted formats | Two paths, two sets. `POST /documents` (upload a runbook) takes Markdown and plain text: a `text/markdown` or `text/plain` content type, or a `.md`, `.markdown` or `.txt` name. `POST /convert` (convert to a runbook) also takes PDF, DOCX, DOC and HTML: a `text/html`, `application/pdf`, `application/msword` or DOCX content type, or a `.pdf`, `.docx`, `.doc`, `.html` or `.htm` name, beside `.md` and `.txt`. Anything else is refused with 415 (`faultmaven/modules/knowledge/api/routes.py:500-524`, `faultmaven/modules/knowledge/api/conversion_routes.py:104-123`, `:238-249`) |
 | Ingestion entry point | `KnowledgeService.ingest_runbook()` |
 | Pre-deployed runbooks | Startup bootstrap — `faultmaven/bootstrap/kb_init.py` ingests the **KB pack** (pre-chunked + pre-embedded; no model) via `ingest_runbook(prechunked=...)`, idempotent on the pack content hash stamped on the row |
 | Case-generated drafts | `conversion_drafts` → `ConversionService.verify_draft()` (status flips to VERIFIED only after ingestion succeeds) |
@@ -526,7 +526,7 @@ The update path's own row write is targeted too, so an unpublish that commits du
 
 Managed through the Knowledge module (`/api/v1/knowledge/`):
 
-- `POST /documents` — Upload document (SQLite record + chunked vector indexing). Accepts `text/markdown` and `text/plain` only; other content types are rejected with 415.
+- `POST /documents` — Upload document (SQLite record + chunked vector indexing). Its accepted formats are in [Ingestion Details](#ingestion-details); others are rejected with 415.
 - `GET /documents` — List documents — reads from SQLite. **Note:** `domain=`, `service=`, and `severity=` filter query params are specified but not yet implemented; all documents in scope are returned.
 - `GET /documents/{id}` — Get specific document (SQLite + file from disk)
 - `PUT /documents/{id}` — Update document metadata in-place (`update_document_metadata`: loads the row, applies updates, persists, and re-indexes ChromaDB on content change). New content is stored as sent, line endings normalised, and never rewritten; content holding a credential or a destructive command is refused with 422 naming each one's line and type, and nothing is saved (#2012, [Case-Scoped PII Redaction](../security/case-scoped-pii-redaction.md) §Knowledge Item Titles).
