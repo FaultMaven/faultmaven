@@ -376,6 +376,8 @@ omit = [
 ]
 
 [tool.coverage.report]
+# --fail-under compares round(total, precision): at the default 0 a floor of 70 passed 69.5% (#2619).
+precision = 2
 exclude_lines = [
     "pragma: no cover",
     "def __repr__",
