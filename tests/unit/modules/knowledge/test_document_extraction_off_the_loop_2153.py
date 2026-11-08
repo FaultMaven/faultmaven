@@ -402,8 +402,8 @@ async def test_a_stage_holding_the_lock_in_c_leaves_the_event_loop_free(
 ):
     """Principle 14's responsiveness check, by ordering alone.
 
-    The stage holds the interpreter lock in one C call that never returns by
-    itself (a catastrophically backtracking ``re.sub``). Once it has entered,
+    The stage holds the interpreter lock in one C call that never returns (a
+    C-level loop over an endless iterator, no regex). Once it has entered,
     this loop must run three turns (each a sleep: the loop blocks in its
     selector and wakes) while the worker is still alive in that stage, and the
     deadline's kill must then reap it. In the worker the call holds the
@@ -412,7 +412,7 @@ async def test_a_stage_holding_the_lock_in_c_leaves_the_event_loop_free(
     is held, and the run hangs until the CI job's own timeout (demonstrated on
     #2622 under an outer timeout, not run here).
     """
-    _stage(monkeypatch, "backtrack_forever")
+    _stage(monkeypatch, "hold_the_lock_forever")
     monkeypatch.setattr(dp, "EXTRACTION_TIMEOUT_SECONDS", 5)
     loop, alive_after_three_turns, tasks = asyncio.get_running_loop(), [], []
 

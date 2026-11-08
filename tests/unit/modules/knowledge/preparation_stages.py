@@ -6,9 +6,10 @@ imports it, so this module imports the standard library and nothing else
 Each takes ``prepare``'s arguments and calls ``enter`` as ``prepare`` does.
 """
 
+import collections
+import itertools
 import logging
 import os
-import re
 import time
 from pathlib import Path
 
@@ -38,11 +39,13 @@ def prepare_and_measure(file_path, content_type, enter):
     return {"refused": "DOCUMENT_TOO_SHORT", "reason": f"{refused} {peak}"}
 
 
-def backtrack_forever(file_path, content_type, enter):
-    """One C call that holds the interpreter lock and never returns by itself:
-    a catastrophically backtracking ``re.sub``."""
+def hold_the_lock_forever(file_path, content_type, enter):
+    """One C call that holds the interpreter lock and never returns: a deque
+    with no room consumes an endless ``itertools.count`` inside C, running no
+    bytecode, so the lock is never dropped. No regex: the repository carries
+    no ReDoS pattern."""
     _entered(enter)
-    re.sub(r"(a+)+$", "", "a" * 64 + "!")
+    collections.deque(itertools.count(), maxlen=0)
 
 
 def never_return(file_path, content_type, enter):
