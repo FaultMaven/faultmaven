@@ -10,7 +10,7 @@ comment without reading the diff, so every PR you hand over must have been throu
 
 This file is self-contained. Memory notes point here and never restate it; where they disagree, this file wins.
 **Changing this file:** you propose the edit as a PR, it goes through step 4 at `xhigh` with a design critique, and the
-owner merges it; an edit replaces or tightens an existing rule where it can, and the file stays under 380 lines.
+owner merges it; an edit replaces or tightens an existing rule where it can.
 
 **Roles.** The owner rules on questions, approves rounds, and merges. You (the owning agent) propose, plan, verify
 and report. Lanes (subagents) each implement one plan you wrote, in their own worktree; at most three run at once.
@@ -116,11 +116,47 @@ Find the newest proposal or result on the Queue, the issue this prints:
      its URL, kind and count. Raise secret-scanning alerts with the owner in session, never in writing. Report the
      non-secret `unknown`/`unavailable` lines in the proposal. Dismiss nothing without the owner's ruling on the issue.
 2. **Pick.**
-   - From `pile:ready` only. **Design flaws first:** for each item on a seam with earlier fixes, ask whether its root
-     keeps producing the same type of defect, naming the chain; confirmed ones come in the order the owner last
-     approved. Then `P1`, `P2`, `P3`, oldest first within each. One slot stays reserved for the oldest `P2` waiting
-     over 30 days, even when design flaws could fill it. Skip an item that an open PR from an earlier round
-     still carries (its PR, *Where an item stands*), and any item on that PR's seam until it merges.
+   - **The design-flaw pass** gives one row per seam worked since the last proposal, meaning a seam with a merged or
+     open PR in that window, or with an open root issue. Its **chain** (the defects fixed and still open on it, by
+     number) and its **open count**, now and at each earlier proposal that printed one for it, say only where to
+     look: recurrence is never the evidence. The evidence is the **design statement**: the document and section
+     (`docs/architecture/`, an ADR, an `INV-*` row), quoted, that is silent or wrong on a decision the system needs,
+     so that code built exactly to it would still fail. It is "none" when the design states the decision and the code
+     breaks it: the chain is then bugs, each item stays ordinary work, and its PR fixes its root. It is "not yet
+     checked" until a check is posted on the seam's root issue (below). For a statement, the row names its **level**
+     (the system: a rule every part must keep, such as ownership, source of truth, data lifecycle, turn order or
+     execution bounds; or one part's design), the **principle** in `architectural-design-principles.md` it falls
+     under or the one that is missing (two parts' gaps under one missing rule are one system-level flaw), and the
+     **design change** with the open issues it absorbs. Then one **recommendation** no ruling has decided since the
+     counts and statement it reads, the first that applies, for *Needs your call*: a design check, when the statement
+     is "not yet checked" and either the seam has an open root issue or neither of its last two printed steps lowered
+     the count (now not below the last printed count, nor that one below the one before it), with whether the seam
+     freezes while it runs; a ruling on the design change, when the row names one; a ruling of no design flaw, when
+     the check found "none" and a root issue is open.
+   - **Rulings carry the state.** A ruling that orders a design check, or freezes a seam, names the seam's root issue
+     (labelled `root-issue`, filed if none is open, in `pile:blocked` with `**Blocked on:** an owner ruling on its
+     design change`). You run an ordered check before the next proposal and post it on the root issue under
+     `## Evidence — design check`: the statement quoted, with its level, principle and design change, the change
+     critiqued first under `## Design critique`; or "none". A freeze, and a ruled design change, list exactly the
+     issues they block on the root issue's `**Blocks:**` line: a seam whose design change is ruled gets no per-defect
+     fixes, because its stages deliver its open defects. Each listed issue that no open PR carries and that is not
+     already in `pile:blocked` moves there with `**Blocked on:** #<root>`; one an open PR carries stays with that PR;
+     one already blocked keeps its line. When a listed issue's own blocker clears while the root issue is open, by
+     Sort or by a ruling, its line becomes `**Blocked on:** #<root>`. While the root issue is open, no issue on its
+     `**Blocks:**` line gets a new plan beyond the stages a ruling sets, and an open PR on one finishes by its row in
+     *Where an item stands*. A ruling on the design change names the seam's root issue (filed as above if none is
+     open) and lists its stages, each filed as an issue with its budget and the issues it delivers; the root issue
+     then stays in `pile:blocked` with `**Blocked on:** condition — its last stage's PR has merged`. A stage's PR
+     closes only the issues it delivers (another it delivers is a change to the list) and says `Refs #<root>`; when
+     the last stage's PR merges, close the root issue under `## Closed`, citing the stages. That list places them, as
+     step 3 places any ruled issue. A ruling of no design flaw, or one that declines the design change, closes the
+     root issue and lists where its issues go. Every change to a root issue's `**Blocks:**` line or a stage's list is
+     a ruling, except a finding added under *Filing what you find*.
+   - From `pile:ready` only. **Design flaws first:** an item on a seam whose design change is ruled to be built,
+     while its root issue is open, is the next stage that ruling sets, in the order the owner last approved. Then
+     `P1`, `P2`, `P3`, oldest first within each. One slot stays reserved for the oldest `P2` waiting over 30 days that
+     may be planned, even when design flaws could fill it. Skip an item that an open PR from an earlier round still
+     carries (its PR, *Where an item stands*), and any item on that PR's seam until it merges.
    - Items on one seam share a lane and a PR.
    - Size the round by review effort: at most 5 items and 3 lanes, plus up to 3 **Next** items the approval also
      covers, none a migration. An item touching a security boundary or storage takes its own lane and PR; a migration
@@ -131,7 +167,7 @@ Find the newest proposal or result on the Queue, the issue this prints:
 
    ```
    ## Round <N> — proposal
-   ### Design-flaw pass
+   ### Design-flaw pass (per seam: chain · counts · statement · level · principle · design change · recommendation)
    ### Building
    | # | P | root (one line) | done when (observable behaviour) | size (product / test lines, est.) |
    ### Next (same columns; each starts when a lane's PR is merge-ready or pulled, or its item closes)
@@ -255,6 +291,8 @@ free slot). Each starts at its row in *Where an item stands*; one whose plan (ne
      review and two fix deltas, plus the text-or-test one above; more fix rounds pull the item to the owner (a
      rebuild, row 13, is a new plan and PR). A re-entry, a refresh, a conflict resolution or a change the owner asks
      for is a delta of only what is new, outside that cap. A whole-PR review is never repeated, nor run as a delta.
+   - **No cap narrows a design change.** A stage's budget is the one its ruling sets. Reaching the size bound or the
+     fix-round cap pulls it to the owner with the question, and never narrows the change.
 6. **Merge-ready.** Every required context must be `SUCCESS` or `SKIPPED` on the head:
 
    ```bash
@@ -331,6 +369,10 @@ To **pull** an item:
   pile and a priority.
 - **Search open and closed issues first.** If an open issue already covers it, add the evidence there under
   `## Evidence`. If a closed issue matches, cite it in the new issue. Findings that share one root go in one issue.
+- **A filed finding that shares an open root issue's root,** and that no open issue other than the root issue covers,
+  is filed as its own issue, in `pile:blocked` with `**Blocked on:** an owner ruling on its place in #<root>`, and
+  appended to the root issue's `**Blocks:**` line (a body edit), with an `## Evidence` comment there naming it; the
+  next ruling on the root issue places it.
 - **Fix the item's own root, a symptom of it, or a part of it in its PR;** file it only when a ruling waived it.
 
 ## 5. Report on the Queue
