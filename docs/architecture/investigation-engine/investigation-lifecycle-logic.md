@@ -1006,7 +1006,7 @@ def close_from_inquiry(case: Case, user_id: str):
     # DISPOSITION - no further case actions
 ```
 
-#### 1.4.1 State Update Timing
+#### State Update Timing
 
 State updates occur at specific points within a turn to ensure consistency:
 

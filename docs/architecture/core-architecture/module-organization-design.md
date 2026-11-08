@@ -324,6 +324,13 @@ A component is **horizontal** (infrastructure) if it fails **ANY** of the three 
 - Should remain in `core/` as shared domain logic
 - **Future**: Consider moving into `modules/agent/` or `modules/case/` if it becomes module-specific
 
+**Dependency direction, as it stands**:
+- `core/` depends on module contracts and on `infrastructure/`. Some `core/` modules import a module's `domain` package directly rather than its contracts: import-linter's one contract on `core/`, contract 13 (`.importlinter:312-320`), forbids only `faultmaven.modules.case.infrastructure`. #2522 removes those imports.
+- Modules call into `core/`: the agent's investigation service drives the engine, and the case module calls its helpers.
+- `infrastructure/` does not depend on `core/`, with one exception: `faultmaven/infrastructure/llm/router.py:20` imports `core.investigation.turn_budget`.
+
+**Target** (#2522; [ADR-021](../decisions/adr-021-earned-autonomy-direction.md), Phase 1 exit criterion 7): `core/investigation`'s generic layer (router, budgets, repair, tool loop) depends on an abstract state protocol instead of `Case`.
+
 ---
 
 ## Stability Guarantees
@@ -959,7 +966,7 @@ These components provide **technical capabilities** and should remain horizontal
 - **Structure**: Keep as-is (providers, router, registry)
 
 #### 2. **`infrastructure/storage/`** ❌ **KEEP HORIZONTAL**
-- **Purpose**: File storage abstraction (S3, filesystem, Azure Blob)
+- **Purpose**: File storage abstraction (S3, filesystem)
 - **Why Horizontal**:
   - Used by Evidence, Knowledge, Report modules
   - Provider-agnostic abstraction

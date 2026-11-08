@@ -2,23 +2,7 @@
 
 ## Executive Summary
 
-FaultMaven's storage architecture supports **12 data categories** across primary application data and operational infrastructure. The architecture follows a **storage polyglot** approach, selecting the optimal technology for each data type's access patterns and lifecycle requirements.
-
-### Primary Application Data (7 categories)
-1. **User Information** - Account, authentication, profile, SSO
-2. **Case-Centric Data** - Investigation lifecycle, conversation, context, evidence
-3. **Observability Data** - 8 types of uploaded machine data for analysis
-4. **User Knowledge Base** - User-uploaded runbooks and procedures (permanent)
-5. **Case Working Memory** - Temporary per-case vector store (ephemeral)
-6. **Global Knowledge Base** - System-wide troubleshooting documentation (shared)
-7. **Report & Analytics Data** - Generated reports, post-mortems, analytics
-
-### Operational Infrastructure Data (5 categories)
-8. **Job Queue State** - Async background job tracking
-9. **ML Model Artifacts** - Confidence models, calibration data, feature metadata
-10. **Protection System State** - Rate limiting and request deduplication windows
-11. **Cache Data** - Multi-tier intelligent caching with pattern analysis
-12. **System Operational Data** - Metrics, traces, logs, audit trails (optional)
+FaultMaven's storage architecture follows a **storage polyglot** approach, selecting the technology for each data type's access patterns and lifecycle. The list of stores, with what each holds, its owners, its tenant, its writer, its ends of life and its retention bound, is the **[store registry](./store-registry.md)** (Principle 13.1); this overview does not repeat it.
 
 **Key Design Principles**:
 - **Storage Polyglot**: PostgreSQL for transactional, Redis for sessions, ChromaDB for semantic search
@@ -41,97 +25,58 @@ For the data-type × backend × deployment breakdown, see:
 
 ## Storage Architecture Diagram
 
+The diagram shows access paths only. What each backend holds, and how each store's data ends, is in the [store registry](./store-registry.md).
+
 ```
 ┌───────────────────────────────────────────────────────────────────────┐
-│                       APPLICATION LAYER                                │
-│                  (FastAPI + Service Layer)                            │
+│                           APPLICATION LAYER                           │
+│                       (FastAPI + Service Layer)                       │
 └────────────┬──────────────────────────────────────────────────────────┘
              │
-             ├──> UserRepository Interface
-             │    └──> PostgreSQL (users table)
+             ├──> UserRepository
+             │    └──> relational database (users and the auth tables)
              │
-             ├──> CaseRepository Interface
-             │    └──> PostgreSQL (cases + case-domain tables, hybrid schema)
+             ├──> ICaseRepository
+             │    └──> relational database (cases, case-domain tables, reports)
              │
-             ├──> ISessionStore Interface
-             │    ├──> Redis (primary, TTL-based)
-             │    └──> PostgreSQL (archive, optional)
+             ├──> ISessionStore (RedisSessionStore)
+             │    └──> Redis
              │
-             ├──> IKnowledgeVectorStore Interface (global KB)
-             │    └──> KnowledgeVectorStore: ChromaDB (faultmaven_kb)
+             ├──> Protection middleware, claims, PII registry
+             │    └──> Redis (the shared redis_client)
              │
-             ├──> CaseVectorStore (per-case evidence)
-             │    └──> ChromaDB (case_{case_id}, dynamic collections)
+             ├──> Token revocation store
+             │    ├──> Redis (cloud: RedisTokenRevocationStore)
+             │    └──> relational database (standalone: token_revocations)
              │
-             ├──> ICaseRepository Interface (Report methods)
-             │    └──> PostgreSQL (reports table, FK to cases)
+             ├──> IKnowledgeVectorStore (KnowledgeVectorStore)
+             │    └──> ChromaDB KB instance (faultmaven_kb, every scope)
              │
-             ├──> IJobService Interface
-             │    └──> Redis (job:{job_id})
+             ├──> CaseVectorStore
+             │    └──> ChromaDB evidence instance (case_{case_id})
              │
-             ├──> IGlobalConfidenceService Interface
-             │    ├──> File system (model weights)
-             │    └──> PostgreSQL (metadata)
+             ├──> FileStorageService → IFileStorageBackend
+             │    └──> object storage (filesystem or S3)
              │
-             ├──> IntelligentCache
-             │    ├──> L1: In-memory (< 1ms)
-             │    ├──> L2: Redis (< 5ms)
-             │    └──> L3: PostgreSQL/S3 (< 20ms)
-             │
-             └──> IStorageBackend Interface (Artifacts)
-                  └──> S3 (raw uploaded files)
+             └──> LLMRouter
+                  └──> Opik (where OPIK_ENABLED)
 
 ┌───────────────────────────────────────────────────────────────────────┐
-│                     INFRASTRUCTURE LAYER                               │
+│                          INFRASTRUCTURE LAYER                         │
 ├───────────────────────────────────────────────────────────────────────┤
-│ PostgreSQL (one database; SQLite in standalone):                      │
-│   - Users, organizations, teams, roles, SSO mappings                  │
-│   - Cases, evidence, hypotheses, reports, knowledge items             │
-│                                                                        │
-│ Redis (real or FakeRedis for local deployment):                        │
-│   - Session state (session:{id}, TTL 30 min past its last write)     │
-│   - Job queue (job:{id}, TTL: 24 hours)                               │
-│   - Report metadata now in PostgreSQL (reports table)                 │
-│   - Protection state (rate limit windows, dedup keys)                │
-│   - Cache L2 (multi-tier caching)                                     │
-│   - Token revocation (JTI tracking with TTL)                          │
-│   - Request deduplication (content-hash with Lua scripts)             │
-│   NOTE: Local deployment uses FakeRedis (in-process, full API parity) │
-│                                                                        │
-│ ChromaDB KB Instance (PersistentClient at data/chroma-kb/):           │
-│   - faultmaven_kb: the instance's ONLY collection. All KB documents  │
-│     (filtered by metadata: scope, owner_id — team shares resolve to  │
-│     an id allowlist at query time) AND runbooks, which have no       │
-│     collection of their own and are told apart only by              │
-│     document_type="runbook"                                          │
-│   Lifecycle: permanent — backed up, never wiped.                     │
-│                                                                        │
-│ ChromaDB Evidence Instance (PersistentClient at data/chroma-evidence/):│
-│   - case_{case_id}: Per-case evidence (dynamic, ephemeral —         │
-│     created on first upload, deleted on case close)                  │
-│   Lifecycle: ephemeral — excluded from backups, safe to wipe.        │
-│                                                                        │
-│   Two separate ChromaDB clients created in DI container:             │
-│   - kb_chromadb_client → data/chroma-kb/ (permanent KB data)         │
-│   - evidence_chromadb_client → data/chroma-evidence/ (ephemeral)     │
-│   Cloud: both use HttpClient to external ChromaDB server             │
-│                                                                        │
-│   Scope isolation: faultmaven_kb queries use metadata filters        │
-│   (scope/owner_id; team shares resolve to an id allowlist at query  │
-│   time, never stored). See vector-storage.md §1.1, §4.2, §1.3       │
-│   for collection design, scope-filter examples, and ingestion detail.│
-│                                                                        │
-│ S3-Compatible Storage:                                                │
-│   - Raw uploaded files: artifacts/{case_id}/{file_id}                 │
-│   - ML model artifacts: models/{version}/*.pkl                        │
-│   - Audit logs: logs/{year}/{month}/{day}/                            │
-│   - Lifecycle policy: 90 days default                                 │
-│                                                                        │
-│ File System (Local/NFS):                                              │
-│   - ML model weights: /var/lib/faultmaven/models/                     │
-│   - Calibration data: /var/lib/faultmaven/calibration/                │
+│ Relational: PostgreSQL (cloud) or SQLite (standalone), one database   │
+│ Redis: a real server (cloud) or in-process FakeRedis (standalone)     │
+│ ChromaDB: kb_chromadb_client and evidence_chromadb_client;            │
+│   PersistentClient trees data/chroma-kb/ and data/chroma-evidence/    │
+│   (standalone), HttpClient to one server (cloud)                      │
+│ Object storage: data/evidence/ (filesystem) or an S3 bucket           │
+│ Opik: the trace backend, where OPIK_ENABLED                           │
+│                                                                       │
+│ What each one holds, and how it ends: the store registry              │
 └───────────────────────────────────────────────────────────────────────┘
 ```
+
+The KB instance is backed up and the evidence instance is not; the deployment wipe clears both ([Deployment Wipe](../../operations/deployment-wipe.md)). Collection design, scope filters and ingestion: [vector-storage.md](./vector-storage.md) §1.1, §4.2, §1.3.
 
 ---
 
@@ -172,40 +117,7 @@ See [repository-pattern.md](./repository-pattern.md) for detailed abstraction la
 
 ## Data Retention & Lifecycle
 
-For auth/session TTL detail (JWT lifetimes, the session TTL) see [schemas/user-schema.md §5.3](./schemas/user-schema.md#53-session-ttl-strategy).
-
-| Data Category | Retention Period | Cleanup Strategy |
-|---------------|------------------|------------------|
-| **User Accounts** | Indefinite (soft delete) | Soft delete after 30 days inactive (configurable) |
-| **Active Cases** | Indefinite | User-controlled closure |
-| **Resolved Cases** | 1 year default | Archive to cold storage after 90 days |
-| **Session State** | 30 min past the last write (`SESSION_TIMEOUT_MINUTES`) | Automatic Redis expiration |
-| **Raw Artifacts** | 90 days default | S3 lifecycle policy |
-| **User Knowledge Base** | Indefinite | User-controlled deletion |
-| **Case Working Memory** | Case lifetime + 7 days | TTL-based cleanup after case closure |
-| **Global Knowledge Base** | Indefinite | Admin-controlled updates |
-| **Reports & Analytics** | Persistent (linked to case lifecycle) | Cascade delete with case (TD-001) |
-| **Job Queue State** | 24 hours | Redis TTL expiration |
-| **ML Model Artifacts** | 3 versions retained | Version-based cleanup |
-| **Protection State** | Real-time + 30 days archive | Archive to PostgreSQL |
-| **Cache Data** | Minutes to hours (TTL) | Multi-tier eviction |
-| **Audit Logs** | 1 year | Archive to S3 after 90 days |
-
-### Automated Cleanup Jobs
-
-**Daily Tasks**:
-- Expire old sessions (Redis TTL handles most)
-- Archive resolved cases older than 90 days
-- Delete raw artifacts past retention period
-- Clean up expired case vector store collections
-- Delete expired job queue entries
-- Vacuum PostgreSQL tables
-
-**Weekly Tasks**:
-- Reindex for performance
-- Backup validation
-- Storage usage reporting
-- Model version cleanup
+Each store's end of life per owner kind and its retention bound are in the [store registry](./store-registry.md). For auth/session TTL detail (JWT lifetimes, the session TTL) see [schemas/user-schema.md §5.3](./schemas/user-schema.md#53-session-management).
 
 ---
 
@@ -288,8 +200,6 @@ Summary targets below; per-backend latency breakdown is in [repository-pattern.m
 | KB semantic search | < 200ms | 150ms avg |
 | File preprocessing | < 30s | 5s median, 25s p95 |
 | Rate limit check | < 3ms | 1ms avg |
-| Cache L1 hit | < 1ms | 0.5ms avg |
-| Cache L2 hit | < 5ms | 3ms avg |
 
 ---
 
@@ -303,4 +213,4 @@ This overview provides the high-level architecture story. See **[README.md](./RE
 
 - **Security**: [../security/iam-design.md](../security/iam-design.md) - Identity and Access Management
 - **AI/RAG**: [../knowledge-and-ai/knowledge-base-architecture.md](../knowledge-and-ai/knowledge-base-architecture.md) - RAG pipeline and embeddings
-- **Investigation**: [../investigation-engine/milestone-based-investigation-framework.md](../investigation-engine/milestone-based-investigation-framework.md) - Case lifecycle
+- **Investigation**: [../investigation-engine/investigation-lifecycle-logic.md](../investigation-engine/investigation-lifecycle-logic.md) - Case lifecycle

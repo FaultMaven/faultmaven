@@ -15,6 +15,11 @@ Documentation for FaultMaven's persistence layer, database design, and storage a
 
 ### Core Architecture
 
+- **[store-registry.md](./store-registry.md)** - The list of stores (Principle 13.1)
+  - One row per store that outlives a request or crosses a process
+  - What each holds, its owners and tenant, its writer, its place relative to the turn's commit
+  - Each owner's end of life, tenant retirement, the deployment wipe, and the retention bound
+
 - **[evidence-file-storage.md](./evidence-file-storage.md)** - Where raw evidence blobs live
   - The FileStorageService → IFileStorageBackend seam (domain vs vendor)
   - Backend selection via `STORAGE_BACKEND` (filesystem / S3)
@@ -25,7 +30,7 @@ Documentation for FaultMaven's persistence layer, database design, and storage a
   - ChromaDB collection layout (faultmaven_kb — documents and runbooks alike — plus ephemeral case_{id})
   - Shared client injection pattern (Principle 5)
   - Access patterns, interfaces, and DI wiring
-  - Data retention, security, and performance targets
+  - Security and performance targets (retention: the store registry)
 
 ### Schema Specifications
 
@@ -59,7 +64,7 @@ Documentation for FaultMaven's persistence layer, database design, and storage a
 
 ## Storage Technologies
 
-High-level summary below. For the full per-data-type detail (data type × storage backend × deployment), see [repository-pattern.md §3](./repository-pattern.md#3-storage-technologies-by-data-type).
+High-level summary below. For the full per-data-type detail (data type × storage backend × deployment), see [repository-pattern.md §3](./repository-pattern.md#3-storage-technologies-by-data-type). The list of stores is the [store registry](./store-registry.md).
 
 | Layer | Local Deployment | Cloud Deployment |
 |-------|-----------------|------------------|
@@ -80,7 +85,7 @@ High-level summary below. For the full per-data-type detail (data type × storag
 
 - **Security**: [../security/iam-design.md](../security/iam-design.md) - Identity and Access Management
 - **AI/RAG**: [../knowledge-and-ai/knowledge-base-architecture.md](../knowledge-and-ai/knowledge-base-architecture.md) - RAG pipeline and embeddings
-- **Investigation**: [../investigation-engine/milestone-based-investigation-framework.md](../investigation-engine/milestone-based-investigation-framework.md) - Case lifecycle
+- **Investigation**: [../investigation-engine/investigation-lifecycle-logic.md](../investigation-engine/investigation-lifecycle-logic.md) - Case lifecycle
 
 ## Directory Structure
 
@@ -88,6 +93,7 @@ High-level summary below. For the full per-data-type detail (data type × storag
 data-and-storage/
 ├── README.md               # This file — master index
 ├── overview.md              # High-level architecture + collection layout
+├── store-registry.md        # One row per store (Principle 13.1)
 ├── vector-storage.md        # ChromaDB implementation guide
 ├── repository-pattern.md    # Database abstraction layer spec
 ├── er-diagram.md            # ER diagram (auto-generated, authoritative table enumeration)

@@ -1,18 +1,19 @@
 # FaultMaven Architecture Overview
 
 **Status**: Active
-**Last Updated**: 2026-04-16
+**Last Updated**: 2026-11-08
 
 This document is the top-level tour of FaultMaven's architecture. For depth, follow the links into canonical documents.
 
 ## Canonical Source of Truth
 
-These four documents are authoritative. On any conflict, they supersede other docs:
+These five documents are authoritative. On any conflict, they supersede other docs:
 
-1. **[Architectural Design Principles](core-architecture/architectural-design-principles.md)** — The 12 design principles
+1. **[Architectural Design Principles](core-architecture/architectural-design-principles.md)** — The 14 design principles
 2. **[Investigation Lifecycle Logic](investigation-engine/investigation-lifecycle-logic.md)** — State transitions, stage routing, turns
-3. **[Agent Behavioral Rules](investigation-engine/agent-behavioral-rules.md)** — 6 prompt-injected rules
+3. **[Agent Behavioral Rules](investigation-engine/agent-behavioral-rules.md)** — The prompt-injected rules
 4. **[Knowledge Base Architecture](knowledge-and-ai/knowledge-base-architecture.md)** — 3-tier KB, storage, retrieval
+5. **[Store Registry](data-and-storage/store-registry.md)** — Every store: what it holds, its owners, its writer, its end of life and its retention bound
 
 ## System Shape
 
@@ -88,13 +89,13 @@ See [Module Organization Design](core-architecture/module-organization-design.md
 
 ## Investigation Engine
 
-Investigation is driven by the `MilestoneEngine` (not a rigid phase machine). Turns flow through stages — SYMPTOM_VERIFICATION → HYPOTHESIS_FORMULATION → HYPOTHESIS_VALIDATION → SOLUTION — but milestones can complete opportunistically when evidence is sufficient.
+Investigation is driven by the `MilestoneEngine` (not a rigid phase machine). Milestones complete opportunistically when evidence is sufficient. Within INVESTIGATING, the stages DIAGNOSIS (the default), MITIGATION (an optional insert) and TREATMENT are labels derived from the gate milestones; they never drive prompt dispatch.
 
 Key concepts:
 - **Case Status**: INQUIRY → INVESTIGATING → RESOLVED / CLOSED
 - **Milestones** drive progress: 4 gate milestones (`mitigation_accepted`, `mitigation_verified`, `solution_accepted`, `solution_verified`) drive stage transitions; 3 progress indicators (`symptom_verified`, `root_cause_identified`, `solution_proposed`) provide LLM context
 - **Hypotheses** are formed only on a verified problem and have a lifecycle: ACTIVE → VALIDATED / REFUTED / INCONCLUSIVE / RETIRED, with confidence decay (×0.85 per stagnant turn; causally supported, uncontradicted hypotheses are not aged by time)
-- **Behavioral rules** (6 total) constrain every agent response via prompt injection — see [Agent Behavioral Rules](investigation-engine/agent-behavioral-rules.md)
+- **Behavioral rules** constrain every agent response via prompt injection — see [Agent Behavioral Rules](investigation-engine/agent-behavioral-rules.md), which owns their list
 
 Full lifecycle and routing logic: [Investigation Lifecycle Logic](investigation-engine/investigation-lifecycle-logic.md).
 
@@ -117,10 +118,14 @@ Structured output handling: [Structured Output Capability System](core-architect
 
 ## Data & Storage
 
-- **Relational (SQLAlchemy + Alembic)** — 33 tables across 3 domains (user, case, config). Schema: [data-and-storage/schemas/](data-and-storage/schemas/), ER diagram: [er-diagram.md](data-and-storage/er-diagram.md).
+- **Relational (SQLAlchemy + Alembic)** — each module owns its tables (Principle 3). Schema: [data-and-storage/schemas/](data-and-storage/schemas/), ER diagram: [er-diagram.md](data-and-storage/er-diagram.md).
+- **LLM usage ledger** — two tables of token spend per enterprise and per turn, written in their own transaction. See [The usage ledger](../operations/monitoring/llm-cost-observability.md#the-usage-ledger).
 - **Vector (ChromaDB)** — knowledge base + per-case evidence collections. BGE-M3 embeddings (1024 dims). See [vector-retrieval-architecture.md](knowledge-and-ai/vector-retrieval-architecture.md).
 - **Sessions / cache (Redis or FakeRedis)** — FakeRedis is the default local-mode backend (full API parity, no external server).
-- **File storage (local filesystem, S3, Azure)** — pluggable backend via `IStorageBackend`.
+- **File storage (local filesystem or S3)** — pluggable backend via `IFileStorageBackend`.
+- **Trace store (Opik)** — the prompts and responses of model calls, where `OPIK_ENABLED`. Customer content, with the case-data obligations.
+
+Every store, with its owners, writer, end of life and retention bound, is in the [Store Registry](data-and-storage/store-registry.md).
 
 ## Security
 
@@ -137,13 +142,13 @@ See [security/iam-design.md](security/iam-design.md), [security/case-scoped-pii-
 | Mode | Database | Sessions | Storage | Vector | Tenancy |
 |------|----------|----------|---------|--------|---------|
 | **Standalone (self-hosted)** | SQLite | FakeRedis | Filesystem | ChromaDB PersistentClient | Single |
-| **Cloud** | PostgreSQL | Redis | S3 / Azure | ChromaDB HTTP | Multi |
+| **Cloud** | PostgreSQL | Redis | S3 | ChromaDB HTTP | Multi |
 
-The **same codebase** runs in both modes — provider selection happens in `main.py` via settings (Principle 1: Deployment Agnostic).
+The **same codebase** runs in both modes — provider selection happens in the composition root (`bootstrap/composition.py`) via settings (Principle 1: Deployment Agnostic).
 
 ## Architectural Enforcement
 
-Import boundaries are enforced at build time by `import-linter` with 12 contracts covering module privacy, layer separation, and cross-module import rules. Run `lint-imports` locally; CI enforces on every PR.
+Import boundaries are enforced at build time by `import-linter` with 15 contracts today (`lint-imports` prints them) covering module privacy, layer separation, and cross-module import rules. Run `lint-imports` locally; CI enforces on every PR.
 
 See `.importlinter` at repo root for the current contracts. Architecture principles: [Architectural Design Principles](core-architecture/architectural-design-principles.md).
 

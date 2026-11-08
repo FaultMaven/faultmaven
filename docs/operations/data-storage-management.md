@@ -12,7 +12,7 @@ All runtime data lives under `data/` relative to the project root. This director
 
 ```
 data/
-├── faultmaven.db              # SQLite — all relational data (37 tables; see er-diagram.md)
+├── faultmaven.db              # SQLite — all relational data (the tables: er-diagram.md)
 │
 ├── chroma-kb/                 # ChromaDB instance — permanent KB vectors
 │   ├── chroma.sqlite3         #   Collection metadata, doc IDs, text, full-text index
@@ -25,10 +25,10 @@ data/
 ├── chroma-evidence/           # ChromaDB instance — ephemeral case evidence vectors
 │   ├── chroma.sqlite3         #   Same structure as chroma-kb/
 │   └── <uuid>/                #   Collections: case_{case_id} (dynamic, per-case)
-│       └── ...                #   Created on evidence upload, deleted on case closure
+│       └── ...                #   Created on evidence upload, deleted with the case
 │
 ├── evidence/                  # Raw uploaded files (not vectors)
-│   └── <organization_id>/     #   Organized by organization (tenant isolation)
+│   └── <enterprise_id>/       #   Organized by enterprise (tenant isolation)
 │       └── <case_id>/         #     then by case
 │           └── <YYYY-MM-DD>/  #       then by upload date
 │               └── <uuid>_<filename>  # UUID-prefixed to prevent collisions
@@ -44,21 +44,23 @@ The runbooks themselves are not on disk. The built-ins ship in the KB pack (`res
 
 ### What stores what
 
-| Physical Path | Storage Technology | Logical Data | Lifecycle |
-| --- | --- | --- | --- |
-| `faultmaven.db` | SQLite | Cases, users, evidence metadata, hypotheses, solutions, messages, RBAC, audit logs, conversion jobs/drafts (with the draft text), knowledge items (with the published runbook text) | Application-managed |
-| `chroma-kb/` | ChromaDB (permanent) | KB embeddings: one `faultmaven_kb` collection holding KB documents and runbooks alike. Backed up, never wiped. | Permanent |
-| `chroma-evidence/` | ChromaDB (ephemeral) | Case evidence embeddings: `case_{case_id}` collections (one per active case). Excluded from backups, safe to wipe. | Per-case lifecycle |
-| `evidence/<organization_id>/<case_id>/<YYYY-MM-DD>/` | Filesystem | Raw uploaded files (logs, configs, CSVs, PDFs). Not vectors — original files only. UUID-prefixed filenames prevent collisions. | 90-day retention |
-| `resources/knowledge/pack/` | Image / `KB_PACK_DIR` | The **KB pack** — pre-deployed runbooks + build-time vectors. Ingested at startup with no embedding model; built by `faultmaven-kb-toolkit`. See [kb-pack-architecture.md](../architecture/knowledge-and-ai/kb-pack-architecture.md). | Shipped |
-| `knowledge/` | Filesystem (standalone only) | The **import directory** for `POST /api/v1/knowledge/scan`: each hand-placed `.md` file becomes a draft whose text is stored in `conversion_drafts.content`. Not runtime storage: nothing writes here, no startup step reads it, and the scan refuses (422) under `TENANT_PROVIDER=multi`. | Manual file drop |
+The physical view of `data/`. Each store's owners, ends of life and retention bound are in the [store registry](../architecture/data-and-storage/store-registry.md).
+
+| Physical Path | Storage Technology | Logical Data |
+| --- | --- | --- |
+| `faultmaven.db` | SQLite | Cases, users, evidence metadata, hypotheses, solutions, messages, RBAC, audit logs, conversion jobs/drafts (with the draft text), knowledge items (with the published runbook text). The tables are in the [ER diagram](../architecture/data-and-storage/er-diagram.md). |
+| `chroma-kb/` | ChromaDB (permanent) | KB embeddings: one `faultmaven_kb` collection holding KB documents and runbooks alike. Backed up; the [deployment wipe](deployment-wipe.md) clears it. |
+| `chroma-evidence/` | ChromaDB (ephemeral) | Case evidence embeddings: `case_{case_id}` collections, one per case with indexed evidence. Excluded from backups, safe to wipe. |
+| `evidence/<enterprise_id>/<case_id>/<YYYY-MM-DD>/` | Filesystem | Raw uploaded files (logs, configs, CSVs, PDFs). Not vectors — original files only. UUID-prefixed filenames prevent collisions. |
+| `resources/knowledge/pack/` | Image / `KB_PACK_DIR` | The **KB pack** — pre-deployed runbooks + build-time vectors. Ingested at startup with no embedding model; built by `faultmaven-kb-toolkit`. See [kb-pack-architecture.md](../architecture/knowledge-and-ai/kb-pack-architecture.md). |
+| `knowledge/` | Filesystem (standalone only) | The **import directory** for `POST /api/v1/knowledge/scan`: each hand-placed `.md` file becomes a draft whose text is stored in `conversion_drafts.content`. Not runtime storage: nothing writes here, no startup step reads it, and the scan refuses (422) under `TENANT_PROVIDER=multi`. |
 
 ### Why two ChromaDB instances
 
 KB data and case evidence have fundamentally different lifecycles:
 
 - **KB** is permanent, curated, and valuable — it must be backed up and protected from corruption.
-- **Case evidence vectors** are ephemeral, created on upload, deleted on case closure, and fully reconstructable from `data/evidence/` raw files.
+- **Case evidence vectors** are ephemeral, created on upload, deleted with the case, and fully reconstructable from `data/evidence/` raw files.
 
 Separating them into two ChromaDB instances (`chroma-kb/` and `chroma-evidence/`) ensures:
 - KB backups exclude disposable evidence data
@@ -74,7 +76,7 @@ Dashboard / API conversion  →  draft row  →  verify  →  body: knowledge_it
 Dashboard / API upload  →  draft row verified on the spot  →  body: knowledge_items; chunks: chroma-kb/
 knowledge/*.md  →  POST /knowledge/scan (standalone, manual)  →  draft row  →  verify  →  body: knowledge_items; chunks: chroma-kb/
 
-evidence/<organization_id>/<case_id>/<date>/<uuid>_<file>  →  background vectorization  →  chroma-evidence/ (case_{id} collection)
+evidence/<enterprise_id>/<case_id>/<date>/<uuid>_<file>  →  background vectorization  →  chroma-evidence/ (case_{id} collection)
 ```
 
 - `resources/knowledge/pack/` (or `KB_PACK_DIR`) holds the **KB pack** — pre-deployed runbooks + build-time vectors. The startup bootstrap (`faultmaven/bootstrap/kb_init.py`) ingests it with **no embedding model**: it writes each runbook's body to its `knowledge_items` row and the pack's chunk texts + pre-computed vectors to `chroma-kb/`. A chunk is served only while its row is complete and published (#2397). Content-hash idempotency makes restarts free for unchanged runbooks; removed runbooks are pruned. The pack is built/owned by `faultmaven-kb-toolkit` — see [`kb-pack-architecture.md`](../architecture/knowledge-and-ai/kb-pack-architecture.md).
@@ -300,13 +302,13 @@ For bulk removal, `fm-reset-kb --yes` (without `--rebuild`) wipes the full KB st
 
 ### Directory structure
 
-Evidence files are organized by organization, case, and upload date. Filenames are UUID-prefixed to prevent collisions when the same filename is uploaded twice:
+Evidence files are organized by enterprise, case, and upload date. Filenames are UUID-prefixed to prevent collisions when the same filename is uploaded twice:
 
 ```
 data/evidence/
-└── local-user-org/                          # organization_id
-    │                                         #   (default org in Local Deployment;
-    │                                         #    real org ID in Cloud Deployment)
+└── 00000000-0000-0000-0000-000000000002/    # enterprise_id
+    │                                         #   (the standalone enterprise; a
+    │                                         #    tenant's enterprise id in Cloud)
     ├── 01dfc7e3c882/                        # case_id (no "case_" prefix)
     │   └── 2026-04-18/                      # YYYY-MM-DD of upload
     │       ├── a1b2c3d4e5f6_system-logs.txt # UUID prefix + sanitized filename
@@ -341,10 +343,10 @@ find data/evidence/ -type f -mtime -7
 
 Each uploaded file is stored in two places:
 
-1. `data/evidence/<organization_id>/<case_id>/<YYYY-MM-DD>/<uuid>_<filename>` — the raw file (90-day retention)
+1. `data/evidence/<enterprise_id>/<case_id>/<YYYY-MM-DD>/<uuid>_<filename>` — the raw file
 2. `data/faultmaven.db` — structured metadata in the `evidence` table (evidence ID, category, summary, preprocessing result) and the `uploaded_files` table (file path reference, upload metadata)
 
-After upload, a background task vectorizes the content into `data/chroma-evidence/` — a `case_{case_id}` collection for semantic search during investigation (ephemeral, cleaned up on case closure). The raw file and relational metadata are written synchronously during upload. The vector embedding is a background task that runs after the API response — it may silently fail without affecting the upload.
+After upload, a background task vectorizes the content into `data/chroma-evidence/` — a `case_{case_id}` collection for semantic search during investigation (ephemeral, deleted with the case). The raw file and relational metadata are written synchronously during upload. The vector embedding is a background task that runs after the API response — it may silently fail without affecting the upload.
 
 ---
 
@@ -519,10 +521,10 @@ du -sh data/faultmaven.db data/chroma-kb/ data/chroma-evidence/ data/evidence/ d
 
 | Path | Growth Driver | Cleanup |
 | --- | --- | --- |
-| `data/evidence/` | User uploads (largest consumer) | 90-day retention policy; manual cleanup of closed cases |
-| `data/chroma-evidence/` | Per-case vector collections | Auto-cleaned on case closure; safe to wipe entirely |
+| `data/evidence/` | User uploads (largest consumer) | Deleted with its case; no retention policy is built ([store registry](../architecture/data-and-storage/store-registry.md)); manual cleanup of closed cases |
+| `data/chroma-evidence/` | Per-case vector collections | Deleted with its case; safe to wipe entirely |
 | `data/chroma-kb/` | KB ingestion | Minimal growth; permanent |
-| `data/faultmaven.db` | All relational writes | Archive resolved cases older than 90 days |
+| `data/faultmaven.db` | All relational writes | No archive or retention is built for cases ([store registry](../architecture/data-and-storage/store-registry.md)) |
 | `data/knowledge/` | Standalone scan import directory (hand-placed runbook files) | Minimal growth; manual curation |
 
 ### Manual cleanup of closed case evidence
@@ -530,9 +532,9 @@ du -sh data/faultmaven.db data/chroma-kb/ data/chroma-evidence/ data/evidence/ d
 ```bash
 # List evidence directories for cases older than 90 days
 # (cross-reference with database to find resolved cases)
-# Paths look like: data/evidence/<organization_id>/<case_id>/
+# Paths look like: data/evidence/<enterprise_id>/<case_id>/
 sqlite3 data/faultmaven.db "
-  SELECT 'data/evidence/' || organization_id || '/' || case_id
+  SELECT 'data/evidence/' || enterprise_id || '/' || case_id
   FROM cases
   WHERE state IN ('resolved', 'closed')
   AND resolved_at < datetime('now', '-90 days');
