@@ -57,8 +57,8 @@ the Redis rows live in the API process's in-process FakeRedis and end with it;
 | **Relational tables** | SQLite (standalone) or PostgreSQL, one database | per table: customer content, derived data, operational metadata | case · conversion · document · user · enterprise | stamped on every tenant-scoped row (`enterprise_id`, the RLS key) | the module that owns the table | inside: a turn's rows commit once; other writes commit in their own request |
 | **Usage ledger** (`llm_usage_daily`, `llm_turn_spend`) | the same database | operational metadata: token counts and estimated cost | enterprise (daily rows) · case (turn rows) | stamped on the row | `infrastructure/llm/usage_ledger.py` | outside: its own transaction, awaited at the end of `process_turn`; it records spend that happened, and fails open |
 | **Case evidence vectors** (`case_{case_id}`) | ChromaDB, the evidence instance | customer content: chunks of evidence text, with embeddings | case | derived through the case row (the collection is named by case id; chunks carry `case_id`, no `enterprise_id`) | `core/preprocessing/vector_storage.py`, through the agent's `vectorize_file` tool | outside: does not depend on the turn's commit; chunk ids are keyed by evidence id, and a lost `vectorized` flag is retried by a later turn |
-| **KB vectors** (`faultmaven_kb`) | ChromaDB, the KB instance | customer content: runbook chunks, with embeddings | document | stamped on chunk metadata (`enterprise_id`, refused on write when absent; chunks written before #1168 carry none until #1777) | the knowledge module's `KnowledgeService`, through `KnowledgeVectorStore`, the collection's only writer | not written by turns |
-| **Evidence objects** | `data/evidence/`, S3 or Azure | customer content: uploaded file bytes, and a `.meta.json` sidecar per object (the filesystem backend adds a `.meta`) | case | stamped in the key: `{enterprise_id}/{case_id}/{date}/{uuid}_{filename}` | the evidence module's `FileStorageService` | outside: stored at the turn's intake, before its commit; the sidecar is marked linked only after the commit |
+| **KB vectors** (`faultmaven_kb`) | ChromaDB, the KB instance | customer content: runbook chunks, with embeddings | document | stamped on chunk metadata (`enterprise_id`, refused on write when absent since #1168); a chunk written earlier carries it once an operator runs the `kb_vector_enterprise_backfill` job (#1777) | the knowledge module's `KnowledgeService`, through `KnowledgeVectorStore`, the collection's only writer | not written by turns |
+| **Evidence objects** | `data/evidence/` (filesystem) or S3 | customer content: uploaded file bytes, and a `.meta.json` sidecar per object (the filesystem backend adds a `.meta`) | case | stamped in the key: `{enterprise_id}/{case_id}/{date}/{uuid}_{filename}` | the evidence module's `FileStorageService` | outside: stored at the turn's intake, before its commit; the sidecar is marked linked only after the commit |
 | **Redis `session:`, `sessions:user:`, `client_index:`** (auth sessions) | Redis | operational metadata: the session record and its indexes | user | derived through the user row | the auth module's `RedisSessionStore` | not written by turns |
 | **Redis `session:case_seq:`** (case number counters) | Redis | operational metadata: a counter | user | derived through the user row | the case module's `CaseService`, through the session store | not written by turns |
 | **Redis `session:session:…:current_case_id`** (session pointers) | Redis | operational metadata: a case id | case | derived through the case row | the case module's `CaseService`, through the session store | not written by turns |
@@ -90,7 +90,7 @@ the Redis rows live in the API process's in-process FakeRedis and end with it;
 
 | Store | Delete, per owner kind | Tenant retirement | Wipe | Retention bound |
 |---|---|---|---|---|
-| **Relational tables** | case: the row goes after its erasers, with its `CASCADE` children; document: an authored one's row is deleted, a built-in one is unpublished; conversion: a case delete removes the case's conversion jobs and drafts, and a document delete discards its drafts with their text kept; user: `DELETE /auth/users/{username}`, refused while the account created cases, and deactivation is a soft delete; enterprise: `not built` | by `enterprise_id` (`ON DELETE CASCADE` from `enterprises`); a retirement soft-deletes the enterprise row and keeps its rows: `not built` | `DROP DATABASE`, an operator step; `--verify` asserts every data table empty | none, except the usage ledger |
+| **Relational tables** | case: the row goes after its erasers, with its `CASCADE` children; document: an authored one's row is deleted, a built-in one is unpublished; conversion: a case delete removes the case's conversion jobs and drafts, and a document delete discards its drafts with their text kept; user: `DELETE /auth/users/{username}`, refused while the account created cases, and deactivation is a soft delete; enterprise: `not built` | by `enterprise_id` (`ON DELETE CASCADE` from `enterprises`); a retirement soft-deletes the enterprise row and keeps its rows: `not built` | `DROP DATABASE`, an operator step. `--verify` asserts the tenant, case and identity tables empty and the five migration-seeded tables (`enterprises`, `teams`, `permissions`, `role_permissions`, `roles`) non-empty, and reports `knowledge_items` without asserting it | none, except the usage ledger and `token_revocations` (standalone): a revocation stops revoking at its `expires_at`, and each write that adds a revocation deletes every elapsed row |
 | **Usage ledger** | case: turn rows go with the case (`ON DELETE CASCADE`); daily rows name no case and stay | by the row's `enterprise_id`: `not built` | `DROP DATABASE` | daily rows 400 days, turn rows 90 days (`LLM_USAGE_DAILY_RETENTION_DAYS`, `LLM_USAGE_TURN_RETENTION_DAYS`), pruned by the `llm_usage_retention` job where it runs: the job runner, or the in-process scheduler under `RUN_SCHEDULER` (default off) |
 | **Case evidence vectors** | case: the collection is deleted before the row; a closed case keeps it | through the case row's `enterprise_id`: `not built` | cleared | none built. The orphan sweep reclaims a collection whose case row is gone: in-process every 6 h under `RUN_SCHEDULER` (refused under multi-tenancy), or the `case_cleanup` job |
 | **KB vectors** | document: an authored one's vectors are deleted best effort after its row; a leftover chunk is never served (every read is row-checked) and the authored-orphan sweep removes it where an operator arms it; a built-in one's vectors go at the next pack-loading bootstrap | by the chunk's `enterprise_id` stamp: `not built` | cleared | none |
@@ -98,7 +98,7 @@ the Redis rows live in the API process's in-process FakeRedis and end with it;
 | **Redis `session:`, `sessions:user:`, `client_index:`** | user: `DELETE /sessions/{session_id}` deletes one session | through the user row: `not built` | cleared | `SESSION_TIMEOUT_MINUTES` (default 30) past the last write; an index lives as long as its newest session |
 | **Redis `session:case_seq:`** | none | through the user row: `not built` | cleared, under `session:` (the wipe's `case_seq:` prefix matches none of these keys) | 48 h |
 | **Redis `session:session:…:current_case_id`** | case: erased by the case delete | through the case row: `not built` | cleared, under `session:` | 24 h |
-| **Redis `idempotency:`** | none: a case delete does not reach it | no stamp to reach it by: `not built` | cleared | 1 h |
+| **Redis `idempotency:`** | none: a case delete does not reach it. Eraser or a stated exclusion: pending #2624 | no stamp to reach it by: `not built` | cleared | 1 h |
 | **Redis `sso:state:`, `sso:login:`** | consumed once | none needed: bounded by its TTL | cleared | 600 s and 60 s |
 | **Redis `oauth:code:`, `oauth:claim:`** | claimed once | none needed: bounded by its TTL | `oauth:code:` cleared; `oauth:claim:` left, reported under no known prefix | `OAUTH_CODE_EXPIRY_SECONDS` (default 600); a claim inherits its code's remaining TTL |
 | **Redis `password_reset:`** | none | none needed: bounded by its TTL | cleared | 1 h |
@@ -114,10 +114,10 @@ the Redis rows live in the API process's in-process FakeRedis and end with it;
 | **Redis `lock:report_generation:case:`** | no writer | — | left, reported under no known prefix | 300 s, were one written |
 | **Redis `auth:`** | user: the account's keys | no stamp to reach it by: `not built` | left, reported under no known prefix | none |
 | **Redis `faultmaven:llm_config:version`** | none | not tenant data | left, reported under no known prefix | none |
-| **Trace store** | case and conversion: purged by their tags before the case delete and the draft and document deletes, with the residuals in [Case deletion](../../operations/case-deletion.md#residuals) | by the `enterprise_id` tag: `not built`; ruled to be covered by the retention bound | not covered by `fm-wipe-deployment`: pending #2616 | none built. Ruled: content off by default, and on only with a verified retention bound: pending #2616 |
+| **Trace store** | case and conversion: purged by their tags before the case delete and the draft and document deletes, with the residuals in [Case deletion](../../operations/case-deletion.md#residuals) | by the `enterprise_id` tag: `not built`; covered by the retention bound once it is built (#2616) | not covered by `fm-wipe-deployment`: pending #2616 | none built. Ruled: content off by default, and on only with a verified retention bound: pending #2616 |
 | **Trace SDK's local buffer** | replayed to the backend when a delete runs on that pod, and only then purgeable there | as the trace store | not covered: pending #2616 | none: a parked trace otherwise replays only after the SDK's ping interval, set to 999999 s (about 11.6 days): #2573 |
-| **LLM response cache** | none: entries outlive a case delete until evicted (oldest first, by count) or the process restarts. Eraser or a stated exclusion: pending #2616 | no stamp to reach it by; ends with the process | ends with the process | none: eviction is by count only |
-| **`cached_content_tokens`** | none: entries outlive a case delete until evicted (least recently used) or the process restarts. Eraser or a stated exclusion: pending #2616 | no stamp to reach it by; ends with the process | ends with the process | none: eviction is by count only |
+| **LLM response cache** | none: entries outlive a case delete until evicted (oldest first, by count) or the process restarts. Eraser or a stated exclusion: pending #2624 | no stamp to reach it by; ends with the process | ends with the process | none: eviction is by count only |
+| **`cached_content_tokens`** | none: entries outlive a case delete until evicted (least recently used) or the process restarts. Eraser or a stated exclusion: pending #2624 | no stamp to reach it by; ends with the process | ends with the process | none: eviction is by count only |
 | **Metrics** | none | not tenant data | ends with the process | the process's lifetime; the scraper's retention is the operator's |
 | **Logs** | none | no stamp to reach it by: `not built` | not covered | the operator's log pipeline |
 | **Secret files under the data root** | none | not tenant data | not covered | none |
@@ -144,7 +144,9 @@ Citations only. Paths are relative to `faultmaven/` unless they start with
 - Tenant retirement: `cli/personal_tenant.py:59-60`;
   `docs/operations/sso-org-provisioning.md:535-537`.
 - Wipe: [Deployment Wipe](../../operations/deployment-wipe.md#the-database-drop-and-recreate-never-delete);
-  `cli/wipe_deployment.py:129`.
+  `cli/wipe_deployment.py:128-129`, `:198-219`, `:420-457`.
+- Retention, `token_revocations`: `modules/auth/infrastructure/stores/token_revocation_store.py:268-277`,
+  `:319-334`; `cleanup_expired` (`:532-536`) has no caller in `faultmaven/`.
 
 ### Usage ledger
 
@@ -171,13 +173,15 @@ Citations only. Paths are relative to `faultmaven/` unless they start with
 
 ### KB vectors
 
-- Tenant and writer: `infrastructure/knowledge/knowledge_vector_store.py:9-16`, `:1480-1488`;
-  `modules/knowledge/domain/services/knowledge_service.py:1145`.
+- Tenant and writer: `infrastructure/knowledge/knowledge_vector_store.py:1480-1488`;
+  `modules/knowledge/domain/services/knowledge_service.py:1145`; the backfill:
+  `jobs/kb_vector_enterprise_backfill.py:1-8` (a dry run unless `--no-dry-run`).
 - Delete: `modules/knowledge/domain/services/knowledge_service.py:599-640`, `:747-751`;
   `bootstrap/kb_orphan_sweep.py:1-18`; `bootstrap/kb_init.py:713`.
 
 ### Evidence objects
 
+- Backend: `config/settings.py:104-108`; `infrastructure/storage/factory.py:75-80` (no other backend).
 - Key and tenant: `modules/evidence/domain/services/file_storage_service.py:540-555`.
 - Sidecars: `modules/evidence/domain/services/file_storage_service.py:28-33`;
   `infrastructure/storage/filesystem.py:167`.
@@ -296,7 +300,8 @@ Each of these was considered and is not a row, for the reason given.
 | The OAuth endpoints' rate limiter (`modules/auth/api/rate_limiting.py:58-63`) | Process-local windows keyed by client IP and endpoint; no tenant data |
 | `InMemoryTurnLedger` (`infrastructure/protection/tenant_turn_cap.py:315`) | Never composed: the composition wires `SqlTurnLedger` (`container/providers/services.py:394-417`), a relational table |
 | `InMemoryOAuthCodeRepository` (`container/providers/services.py:1053-1057`) | Selected only when no Redis client is passed; the composition passes one (`:1500-1503`) |
-| `SimpleStorageBackend` (`modules/case/domain/services/case_data_ingestion_service.py:1711`) | Composed into the data service (`container/providers/services.py:503`), but nothing in `faultmaven/` calls `ingest_data`, so it is never written |
+| `SimpleStorageBackend` (`modules/case/domain/services/case_data_ingestion_service.py:1711`) | Composed into the data service (`container/providers/services.py:503`), which stores into it (`case_data_ingestion_service.py:343`, `:532`), but nothing outside the service resolves it: only `app.state.data_service` holds it (`bootstrap/composition.py:579`), and its dependency (`api/v1/dependencies.py:204`) is used by no route |
+| `GlobalConfidenceService` (`infrastructure/observability/confidence_service.py:58`) | Never constructed: nothing sets `container.confidence_service` (`_container_impl.py:836-843`). It writes no file: a model reaches it as bytes (`:593-602`) |
 | `IntelligentCache` (`infrastructure/caching/intelligent_cache.py:314`) | Never constructed: nothing sets `container.intelligent_cache` (`_container_impl.py:383-391`) |
 | APScheduler job stores (`infrastructure/tasks/job_runners.py:89`, `infrastructure/tasks/case_cleanup.py:165`) | In-memory schedule definitions; no tenant data |
 | `faultmaven-kb-index.lock` in the temporary directory (`infrastructure/index_slot.py:83`) | A host-wide lock file; holds no data |

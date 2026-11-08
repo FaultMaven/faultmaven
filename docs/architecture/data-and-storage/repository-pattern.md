@@ -292,20 +292,9 @@ REDIS_HOST=redis.example.com   # Triggers real Redis client
 REDIS_PORT=6379
 ```
 
-**Data Includes**:
-- User sessions
-- Investigation state (current turn, pending requests)
-- Temporary caches
-- Rate limiting data
-- Real-time message queues
+**Data Includes**: every Redis key family, with its writer and TTL, is a row in the [store registry](./store-registry.md). Investigation state is not among them: it is in the case's rows.
 
-**TTL Strategy** (distinct concepts — do not conflate; see [schemas/user-schema.md §5.3](./schemas/user-schema.md#53-session-ttl-strategy) for the canonical auth/session domain reference):
-
-- **JWT access token**: 15 min default (`JWT_ACCESS_TOKEN_EXPIRY_MINUTES`)
-- **JWT refresh token**: 7 days default (`JWT_REFRESH_TOKEN_EXPIRY_DAYS`)
-- **Session TTL (Redis)**: 30 min default (`SESSION_TIMEOUT_MINUTES`). Every session write (creation, resumption, heartbeat, update) re-arms it, so a session lapses that long after its last write, and its `expires_at` is that instant. There is no separate inactivity timeout and no absolute lifetime (#2301)
-- Investigation state: 7 days
-- Temporary caches: 1 hour
+**TTL Strategy**: each family's TTL is its registry row's retention bound. Token lifetimes and the session TTL, which are distinct concepts, are in [schemas/user-schema.md §5.3](./schemas/user-schema.md#53-session-management).
 
 ---
 
@@ -343,13 +332,7 @@ CHROMADB_API_KEY=your_chromadb_token_here
 CHROMADB_COLLECTION=faultmaven_kb
 ```
 
-**Data Includes**:
-
-- Knowledge base documents
-- Document embeddings (BGE-M3, 1024 dimensions, multilingual)
-- Evidence summaries (for semantic search)
-- Historical solution patterns
-- Troubleshooting playbooks
+**Data Includes**: the KB collection and the per-case evidence collections, each a row in the [store registry](./store-registry.md).
 
 **Note**: ChromaDB is used for all deployments. `PersistentClient` runs in-process for local deployment; `HttpClient` connects to an external ChromaDB server for cloud/K8s. There is no in-memory alternative — `InMemoryVectorStore` was removed (see §3.3 note).
 

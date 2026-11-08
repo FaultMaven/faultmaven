@@ -85,7 +85,7 @@ High-level summary below. For the full per-data-type detail (data type × storag
 
 - **Security**: [../security/iam-design.md](../security/iam-design.md) - Identity and Access Management
 - **AI/RAG**: [../knowledge-and-ai/knowledge-base-architecture.md](../knowledge-and-ai/knowledge-base-architecture.md) - RAG pipeline and embeddings
-- **Investigation**: [../investigation-engine/milestone-based-investigation-framework.md](../investigation-engine/milestone-based-investigation-framework.md) - Case lifecycle
+- **Investigation**: [../investigation-engine/investigation-lifecycle-logic.md](../investigation-engine/investigation-lifecycle-logic.md) - Case lifecycle
 
 ## Directory Structure
 

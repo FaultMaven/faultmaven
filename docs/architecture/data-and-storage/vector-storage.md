@@ -8,7 +8,7 @@
 ## Table of Contents
 
 1. [Physical Architecture](#1-physical-architecture) - ChromaDB deployment and embedding models
-2. [Three Vector Storage Systems](#2-three-vector-storage-systems) - User KB, Case Working Memory, Global KB
+2. [Vector Storage Systems](#2-vector-storage-systems) - User KB, Case Working Memory, Global KB
 3. [Document Ingestion Pipeline](#3-document-ingestion-pipeline) - How data gets vectorized
 4. [Query Execution Flow](#4-query-execution-flow) - How semantic search works
 5. [Collection Lifecycle Management](#5-collection-lifecycle-management) - Creation, usage, cleanup
@@ -328,7 +328,7 @@ async def search_kb(user_id: str, query: str, k: int = 5) -> List[Document]:
     )
 ```
 
-`KnowledgeVectorStore` rejects any `faultmaven_kb` query whose filter names no scope key. That is a **presence** check, not a tenant check (#1167): cross-tenant isolation comes from `build_kb_scope_filter`, keyed on the caller's own ids. The vector layer's own tenant key is the `enterprise_id` every chunk written since #1168 carries (older chunks carry none until #1777); conjuncting it on read is #1775.
+`KnowledgeVectorStore` rejects any `faultmaven_kb` query whose filter names no scope key. That is a **presence** check, not a tenant check (#1167): cross-tenant isolation comes from `build_kb_scope_filter`, keyed on the caller's own ids. The vector layer's own tenant key is the `enterprise_id` every chunk written since #1168 carries; an older chunk carries it once an operator runs the `kb_vector_enterprise_backfill` job (#1777). Conjuncting it on read is #1775.
 
 ### 4.3 Performance Characteristics
 
@@ -343,8 +343,8 @@ async def search_kb(user_id: str, query: str, k: int = 5) -> List[Document]:
 **Optimization Techniques**:
 - Embedding model cached in memory
 - ChromaDB connection pooling
-- Popular queries cached in Redis L2 (7-day TTL for Global KB)
-- Pre-warmed cache for common queries
+
+No query result or embedding is cached; the stores are in the [store registry](./store-registry.md).
 
 ---
 
@@ -352,7 +352,7 @@ async def search_kb(user_id: str, query: str, k: int = 5) -> List[Document]:
 
 ### 5.1 Unified KB Collection (`faultmaven_kb`)
 
-**Lifecycle**: Permanent. Single collection created at deployment; never deleted as a whole. Individual documents are added, updated, or removed by users and admins. Global, personal, and team content coexist in this collection, distinguished by the `scope` metadata field.
+**Lifecycle**: Permanent. Single collection created at deployment; deleted as a whole only by an operator, through `fm-reset-kb` or the deployment wipe. Individual documents are added, updated, or removed by users and admins. Global, personal, and team content coexist in this collection, distinguished by the `scope` metadata field.
 
 **Creation**:
 
@@ -420,7 +420,7 @@ await case_vector_store.add_documents(case_id, documents)
 - Terminal cases (RESOLVED / CLOSED) and archived cases keep their vectors — users may still query the evidence via `answer_from_case_evidence`. Cleanup happens only when the case row is **deleted** (or has been deleted and the sweep catches an orphan collection).
 - The 6-hour sweep is a safety net for cases deleted directly at the database level (admin action, test cleanup) and for a collection a turn in flight wrote after the delete cleared it. A ChromaDB failure during `DELETE /cases/{id}` fails the delete and keeps the case for a retry (#1016), so it leaves no orphan.
 
-**Configuration**: the sweep interval is set in [main.py](../../faultmaven/main.py) via `start_case_cleanup_scheduler(..., interval_hours=6)`. See [case-evidence-store.md](../case-and-session/case-evidence-store.md) for the full design.
+**Configuration**: the sweep interval is set in [bootstrap/lifespan.py](../../../faultmaven/bootstrap/lifespan.py), under `RUN_SCHEDULER`, via `start_case_cleanup_scheduler(..., interval_hours=6)`. See [case-evidence-store.md](../case-and-session/case-evidence-store.md) for the full design.
 
 **Monitoring**:
 
@@ -618,7 +618,6 @@ On Docker Compose this runs from the host (in the checkout's venv, against the b
    - Reindex documents
 
 3. **Embedding model unavailable**:
-   - Fallback to cached embeddings (30 days TTL)
    - Queue ingestion jobs for retry
    - Alert on-call engineer
 

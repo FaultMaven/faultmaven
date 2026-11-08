@@ -12,7 +12,7 @@ All runtime data lives under `data/` relative to the project root. This director
 
 ```
 data/
-├── faultmaven.db              # SQLite — all relational data (37 tables; see er-diagram.md)
+├── faultmaven.db              # SQLite — all relational data (the tables: er-diagram.md)
 │
 ├── chroma-kb/                 # ChromaDB instance — permanent KB vectors
 │   ├── chroma.sqlite3         #   Collection metadata, doc IDs, text, full-text index
@@ -48,8 +48,8 @@ The physical view of `data/`. Each store's owners, ends of life and retention bo
 
 | Physical Path | Storage Technology | Logical Data |
 | --- | --- | --- |
-| `faultmaven.db` | SQLite | Cases, users, evidence metadata, hypotheses, solutions, messages, RBAC, audit logs, conversion jobs/drafts (with the draft text), knowledge items (with the published runbook text) |
-| `chroma-kb/` | ChromaDB (permanent) | KB embeddings: one `faultmaven_kb` collection holding KB documents and runbooks alike. Backed up, never wiped. |
+| `faultmaven.db` | SQLite | Cases, users, evidence metadata, hypotheses, solutions, messages, RBAC, audit logs, conversion jobs/drafts (with the draft text), knowledge items (with the published runbook text). The tables are in the [ER diagram](../architecture/data-and-storage/er-diagram.md). |
+| `chroma-kb/` | ChromaDB (permanent) | KB embeddings: one `faultmaven_kb` collection holding KB documents and runbooks alike. Backed up; the [deployment wipe](deployment-wipe.md) clears it. |
 | `chroma-evidence/` | ChromaDB (ephemeral) | Case evidence embeddings: `case_{case_id}` collections, one per case with indexed evidence. Excluded from backups, safe to wipe. |
 | `evidence/<enterprise_id>/<case_id>/<YYYY-MM-DD>/` | Filesystem | Raw uploaded files (logs, configs, CSVs, PDFs). Not vectors — original files only. UUID-prefixed filenames prevent collisions. |
 | `resources/knowledge/pack/` | Image / `KB_PACK_DIR` | The **KB pack** — pre-deployed runbooks + build-time vectors. Ingested at startup with no embedding model; built by `faultmaven-kb-toolkit`. See [kb-pack-architecture.md](../architecture/knowledge-and-ai/kb-pack-architecture.md). |

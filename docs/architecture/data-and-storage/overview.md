@@ -25,86 +25,54 @@ For the data-type × backend × deployment breakdown, see:
 
 ## Storage Architecture Diagram
 
-The diagram shows access paths. The stores themselves, and how each one's data ends, are in the [store registry](./store-registry.md).
+The diagram shows access paths only. What each backend holds, and how each store's data ends, is in the [store registry](./store-registry.md).
 
 ```
 ┌───────────────────────────────────────────────────────────────────────┐
-│                       APPLICATION LAYER                                │
-│                  (FastAPI + Service Layer)                            │
+│                           APPLICATION LAYER                           │
+│                       (FastAPI + Service Layer)                       │
 └────────────┬──────────────────────────────────────────────────────────┘
              │
-             ├──> UserRepository Interface
-             │    └──> PostgreSQL (users table)
+             ├──> UserRepository
+             │    └──> relational database (users and the auth tables)
              │
-             ├──> CaseRepository Interface
-             │    └──> PostgreSQL (cases + case-domain tables, hybrid schema)
+             ├──> ICaseRepository
+             │    └──> relational database (cases, case-domain tables, reports)
              │
-             ├──> ISessionStore Interface
-             │    ├──> Redis (primary, TTL-based)
-             │    └──> PostgreSQL (archive, optional)
+             ├──> ISessionStore (RedisSessionStore)
+             │    └──> Redis
              │
-             ├──> IKnowledgeVectorStore Interface (global KB)
-             │    └──> KnowledgeVectorStore: ChromaDB (faultmaven_kb)
+             ├──> Protection middleware, claims, revocations, PII registry
+             │    └──> Redis (the shared redis_client)
              │
-             ├──> CaseVectorStore (per-case evidence)
-             │    └──> ChromaDB (case_{case_id}, dynamic collections)
+             ├──> IKnowledgeVectorStore (KnowledgeVectorStore)
+             │    └──> ChromaDB KB instance (faultmaven_kb, every scope)
              │
-             ├──> ICaseRepository Interface (Report methods)
-             │    └──> PostgreSQL (reports table, FK to cases)
+             ├──> CaseVectorStore
+             │    └──> ChromaDB evidence instance (case_{case_id})
              │
-             ├──> IJobService Interface
-             │    └──> Redis (job:{job_id})
+             ├──> FileStorageService → IFileStorageBackend
+             │    └──> object storage (filesystem or S3)
              │
-             ├──> IGlobalConfidenceService Interface
-             │    ├──> File system (model weights)
-             │    └──> PostgreSQL (metadata)
-             │
-             └──> IStorageBackend Interface (Artifacts)
-                  └──> S3 (raw uploaded files)
+             └──> LLMRouter
+                  └──> Opik (where OPIK_ENABLED)
 
 ┌───────────────────────────────────────────────────────────────────────┐
-│                     INFRASTRUCTURE LAYER                               │
+│                          INFRASTRUCTURE LAYER                         │
 ├───────────────────────────────────────────────────────────────────────┤
-│ PostgreSQL (one database; SQLite in standalone):                      │
-│   - Users, organizations, teams, roles, SSO mappings                  │
-│   - Cases, evidence, hypotheses, reports, knowledge items             │
-│                                                                        │
-│ Redis (real or FakeRedis for local deployment):                        │
-│   - Session state (session:{id}, TTL 30 min past its last write)     │
-│   - Job records (job:{id}, TTL 24 hours; nothing writes one today)    │
-│   - Report metadata now in PostgreSQL (reports table)                 │
-│   - Protection state (rate limit windows, dedup keys)                │
-│   - Token revocation (JTI tracking with TTL)                          │
-│   - Request deduplication (content-hash with Lua scripts)             │
-│   NOTE: Local deployment uses FakeRedis (in-process, full API parity) │
-│                                                                        │
-│ ChromaDB KB Instance (PersistentClient at data/chroma-kb/):           │
-│   - faultmaven_kb: the instance's ONLY collection. All KB documents  │
-│     (filtered by metadata: scope, owner_id — team shares resolve to  │
-│     an id allowlist at query time) AND runbooks, which have no       │
-│     collection of their own and are told apart only by              │
-│     document_type="runbook"                                          │
-│   Lifecycle: permanent — backed up, never wiped.                     │
-│                                                                        │
-│ ChromaDB Evidence Instance (PersistentClient at data/chroma-evidence/):│
-│   - case_{case_id}: Per-case evidence (dynamic, ephemeral —         │
-│     created on first upload, deleted with the case)                  │
-│   Lifecycle: ephemeral — excluded from backups, safe to wipe.        │
-│                                                                        │
-│   Two separate ChromaDB clients created in DI container:             │
-│   - kb_chromadb_client → data/chroma-kb/ (permanent KB data)         │
-│   - evidence_chromadb_client → data/chroma-evidence/ (ephemeral)     │
-│   Cloud: both use HttpClient to external ChromaDB server             │
-│                                                                        │
-│   Scope isolation: faultmaven_kb queries use metadata filters        │
-│   (scope/owner_id; team shares resolve to an id allowlist at query  │
-│   time, never stored). See vector-storage.md §1.1, §4.2, §1.3       │
-│   for collection design, scope-filter examples, and ingestion detail.│
-│                                                                        │
-│ Object storage (data/evidence/, S3 or Azure):                         │
-│   - Uploaded files: {enterprise_id}/{case_id}/{date}/{uuid}_{name}    │
+│ Relational: PostgreSQL (cloud) or SQLite (standalone), one database   │
+│ Redis: a real server (cloud) or in-process FakeRedis (standalone)     │
+│ ChromaDB: kb_chromadb_client and evidence_chromadb_client;            │
+│   PersistentClient trees data/chroma-kb/ and data/chroma-evidence/    │
+│   (standalone), HttpClient to one server (cloud)                      │
+│ Object storage: data/evidence/ (filesystem) or an S3 bucket           │
+│ Opik: the trace backend, where OPIK_ENABLED                           │
+│                                                                       │
+│ What each one holds, and how it ends: the store registry              │
 └───────────────────────────────────────────────────────────────────────┘
 ```
+
+The KB instance is backed up and the evidence instance is not; the deployment wipe clears both ([Deployment Wipe](../../operations/deployment-wipe.md)). Collection design, scope filters and ingestion: [vector-storage.md](./vector-storage.md) §1.1, §4.2, §1.3.
 
 ---
 
@@ -241,4 +209,4 @@ This overview provides the high-level architecture story. See **[README.md](./RE
 
 - **Security**: [../security/iam-design.md](../security/iam-design.md) - Identity and Access Management
 - **AI/RAG**: [../knowledge-and-ai/knowledge-base-architecture.md](../knowledge-and-ai/knowledge-base-architecture.md) - RAG pipeline and embeddings
-- **Investigation**: [../investigation-engine/milestone-based-investigation-framework.md](../investigation-engine/milestone-based-investigation-framework.md) - Case lifecycle
+- **Investigation**: [../investigation-engine/investigation-lifecycle-logic.md](../investigation-engine/investigation-lifecycle-logic.md) - Case lifecycle
