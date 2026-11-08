@@ -569,7 +569,7 @@ jobs:
             exit 1
           fi
           coverage combine coverage-data/
-          coverage report --show-missing --fail-under=50
+          coverage report --show-missing --fail-under=70
 
   # ============================================================================
   # CLOUD TESTING
@@ -917,7 +917,7 @@ jobs:
             exit 1
           fi
           coverage combine coverage-data/
-          coverage report --show-missing --fail-under=50
+          coverage report --show-missing --fail-under=70
 
   # ============================================================================
   # POSTGRESQL INTEGRATION

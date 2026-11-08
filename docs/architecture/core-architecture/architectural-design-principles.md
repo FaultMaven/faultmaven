@@ -32,7 +32,7 @@ These principles optimize for a small team (<15) building an AI-powered SRE tool
 | 6 | Errors as Domain Concepts | Every module defines its exception hierarchy |
 | 7 | Observability by Default | Correlation IDs, structured logs, traces on external calls |
 | 8 | Boundary Enforcement | Import-linter enforces rules at build time; dead code is removed, not left behind |
-| 9 | Test Safety Net | 70% code coverage floor; AI evaluation benchmarks designed, not built (#2520) |
+| 9 | Test Safety Net | 70% code coverage floor, enforced by CI; AI evaluation benchmarks designed, not built (#2520) |
 | 10 | Bounded AI Complexity | The milestone engine owns orchestration state; LLM adapters are stateless |
 | 11 | Clean Moves, Not Rewrites | Move code to its correct location; don't rewrite during the move; don't leave the origin behind |
 | 12 | Escape Hatches | Architectural exceptions are allowed but tracked, counted, and time-limited |
@@ -711,16 +711,20 @@ Unused files create false signals during audits, confuse AI assistants reading t
 
 ### Principle
 
-> **"70% code coverage floor, plus evaluation benchmarks for AI behavior."**
+> **"70% code coverage floor, enforced by CI, plus evaluation benchmarks for AI behavior."**
 
 ### Two Testing Dimensions
 
 | Dimension | What It Tests | Target |
 |-----------|---------------|--------|
-| **Code Coverage** | Lines executed | ≥70% |
+| **Code Coverage** | Lines executed | ≥70%, enforced: `coverage report --fail-under=70` in the Test Standalone and Test Cloud jobs |
 | **AI Evaluation** | Output accuracy | ≥85% on benchmark |
 
+Overall coverage measured 83% in both jobs on 2026-11-08 (#2619).
+
 ### Code Coverage by Layer
+
+These per-layer figures are targets with no gate: CI gates only the overall total.
 
 | Layer | Target | Test Type |
 |-------|--------|-----------|
@@ -765,7 +769,7 @@ pytest -m "evaluation" --benchmark
 ### Quality Gates
 
 - ✅ All tests must pass before merging
-- ✅ Coverage cannot drop below 70%
+- ✅ Coverage cannot drop below 70%: `coverage report --fail-under=70` in the Test Standalone and Test Cloud jobs (`.github/workflows/ci-cd.yml`)
 - ⏳ AI evaluation accuracy ≥85%: not built (#2520)
 - ✅ CI/CD pipeline enforces all rules
 

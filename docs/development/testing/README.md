@@ -4,14 +4,14 @@ Comprehensive testing documentation for FaultMaven contributors.
 
 ## Overview
 
-FaultMaven maintains **71%+ test coverage** with a strong emphasis on test-first development. All new code requires tests before merging.
+FaultMaven maintains **70%+ test coverage**, the floor CI enforces, with a strong emphasis on test-first development. All new code requires tests before merging.
 
 ## Testing Documents
 
 ### Core Standards
 
 - **[Testing Standards](./standards.md)** - Testing requirements, coverage targets, and mandatory practices
-  - Coverage requirements (71%+ overall, 80%+ for new code)
+  - Coverage requirements (70%+ overall, 80%+ for new code)
   - Test categories (unit, integration, performance, security)
   - PR testing checklist
   - Exemption process
@@ -105,7 +105,7 @@ assert not bad, bad[:5]
 
 Read the raw data, as the snippet does. `coverage report` and `coverage json` keep only statement lines, so they can never show a line past the end of a file. The check works per run, not per file. One such line anywhere means the run misattributed, but a file without one can still be off; the run above has a file off by 6 lines with none of its own.
 
-**CI leaves it off.** Greenlet tracking cost +39% to +52% on database-heavy tests. CI's coverage gate is `--fail-under`. The misattribution moves the total slightly (13 of 56,591 missed statements in one measurement), but it cannot flip 80% against a threshold of 50%. Both test jobs also print `--cov-report=term-missing`, a per-line listing that carries the same error, so do not read line-level conclusions from it.
+**CI leaves it off.** Greenlet tracking cost +39% to +52% on database-heavy tests. CI's coverage gate is `--fail-under`. The misattribution moves the total slightly (13 of 56,591 missed statements in one measurement), but it cannot flip 80% against a threshold of 70%. Both test jobs also print `--cov-report=term-missing`, a per-line listing that carries the same error, so do not read line-level conclusions from it.
 
 ### Writing Your First Test
 
@@ -163,7 +163,7 @@ FaultMaven follows these testing principles:
 
 1. **Test-First Development** - Write tests before or during implementation
 2. **No Code Without Tests** - All new code requires tests (no exceptions without approval)
-3. **Maintain Coverage** - Never decrease overall coverage below 71%
+3. **Maintain Coverage** - CI fails a change that takes overall coverage below 70% (`--fail-under=70` in `ci-cd.yml`)
 4. **Test Behavior, Not Implementation** - Focus on what code does, not how
 5. **Fast Tests** - Keep unit tests fast (<1s), use mocking for external dependencies
 6. **Isolated Tests** - Each test should be independent and repeatable
