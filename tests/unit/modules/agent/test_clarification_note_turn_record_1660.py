@@ -104,16 +104,17 @@ def _failed_classification(index: int = 0):
 class _Engine:
     """Answers exactly what the test asks. With ``records=True`` it writes the
     turn record the way the real Step 6 does; without, the service's backfill
-    writes it — the path the engine's terminal short-circuit takes. With
-    ``chat_data=True`` it offers the system output in the message, as the real
-    engine does when the model names it (#1930)."""
+    writes it — the path the engine's terminal short-circuit takes. Given an
+    ``offer`` — the system output in the message, and an optional state
+    request — it offers that output, as the real engine does when the model
+    names it (#1930)."""
 
-    def __init__(self, text: str, flagged: bool, records: bool, chat_data: bool):
+    def __init__(self, text: str, flagged: bool, records: bool, offer=None):
         self.deps = SimpleNamespace(
             llm_provider=MagicMock(), sanitizer=None, redis_client=None
         )
         self._text, self._flagged, self._records = text, flagged, records
-        self._chat_data = chat_data
+        self._offer = offer
         self.process_turn = AsyncMock(side_effect=self._turn)
 
     async def _turn(self, *, case, user_message, **_kw):
@@ -133,14 +134,16 @@ class _Engine:
         metadata = {"milestones_completed": [], "progress_made": False}
         if self._flagged:
             metadata[MESSAGE_METADATA_AGENT_SYNTHESIZED] = True
-        if self._chat_data:
-            lines = _OUTPUT.splitlines()
+        if self._offer:
+            output, request = self._offer
+            lines = output.splitlines()
             offer = mint_chat_data_offer(
                 case,
                 user_message=user_message,
                 named_blocks=[
                     SimpleNamespace(first_line=lines[0], last_line=lines[-1])
                 ],
+                state_report=SimpleNamespace(request=request) if request else None,
             )
             metadata[TURN_METADATA_CHAT_DATA_OFFER] = offer.offer_id
         return {
@@ -172,7 +175,14 @@ def _seeded_case():
 
 
 async def _run(
-    answer: str, *, note: bool, records: bool, chat_data: bool = False, files: int = 1
+    answer: str,
+    *,
+    note: bool,
+    records: bool,
+    chat_data: bool = False,
+    names: tuple[str, ...] = ("mystery.txt",),
+    output: str = _OUTPUT,
+    request: str | None = None,
 ):
     text, flagged = ANSWERS[answer]
     repo = MockCaseRepository()
@@ -180,7 +190,7 @@ async def _run(
     repo._storage[case.case_id] = case
 
     preprocessing = MagicMock()
-    results = iter([_failed_classification(i) for i in range(files)])
+    results = iter([_failed_classification(i) for i in range(len(names))])
     preprocessing.classify_and_extract = AsyncMock(
         side_effect=lambda *a, **k: next(results)
     )
@@ -188,12 +198,13 @@ async def _run(
     storage.store_file = AsyncMock(return_value={"file_path": "evidence/x/blob.txt"})
     storage.mark_linked = AsyncMock(return_value=True)
     service = InvestigationService(
-        milestone_engine=_Engine(text, flagged, records, chat_data),
+        milestone_engine=_Engine(
+            text, flagged, records, (output, request) if chat_data else None
+        ),
         case_repository=repo,
         preprocessing_service=preprocessing,
         file_storage_service=storage,
     )
-    names = ["mystery.txt"] if files == 1 else [f"dump-{i}.txt" for i in range(files)]
     attachments = [
         Attachment(
             content=f"ambiguous bytes {name}".encode(),
@@ -203,7 +214,7 @@ async def _run(
         )
         for name in (names if note else [])
     ]
-    query = f"The pods won't start:\n\n{_OUTPUT}" if chat_data else "here is the dump"
+    query = f"The pods won't start:\n\n{output}" if chat_data else "here is the dump"
     response = await service.process_turn(
         case_id=case.case_id,
         user_id="user_owner",
@@ -251,7 +262,7 @@ async def test_the_record_and_the_row_agree(answer, note, records):
     assert record.agent_response_synthesized is row_flagged
     # #1665: and on the note the server showed after an unusable answer.
     row_note = server_note_of(row)
-    assert record.server_note == (row_note.strip() if row_note else None)
+    assert record.server_note == (cb.render_server_note(row_note) if row_note else None)
 
     # And therefore the two fidelities of the next prompt say the same thing.
     earlier = cb._build_turn_summary(record)
@@ -276,7 +287,7 @@ async def test_a_note_on_an_unusable_answer_is_server_text_in_every_reader(
     assert note.strip().startswith(NOTE_OPENING)
     assert is_server_written_assistant_row(row) and server_note_of(row) == note
     assert saved.turn_history[-1].agent_response_synthesized is True
-    assert saved.turn_history[-1].server_note == note.strip()
+    assert saved.turn_history[-1].server_note == cb.render_server_note(note)
 
     # Every form: the note on one line, whitespace collapsed (F5).
     line = cb.SERVER_NOTE_LINE.format(note=" ".join(note.split()))
@@ -317,21 +328,21 @@ async def test_the_chat_data_note_is_recorded_by_the_same_rule():
 
 
 @pytest.mark.parametrize(
-    "files, chat_data, question",
+    "names, chat_data, question",
     [
-        (3, False, "How should I treat them?"),
-        (1, True, "How should I treat it?"),
+        (("dump-0.txt", "dump-1.txt", "dump-2.txt"), False, "How should I treat them?"),
+        (("mystery.txt",), True, "How should I treat it?"),
     ],
     ids=["three_attachments", "clarification_and_chat_data"],
 )
 async def test_a_long_note_keeps_its_closing_question_in_every_form(
-    files, chat_data, question
+    names, chat_data, question
 ):
     """Notes past the 200 characters the summaries once cut them at: one naming
     three attachments, and a clarification note followed by #1930's. Each
     reader, triage included, carries the whole note, its question with it."""
     _, saved, row = await _run(
-        "engine_placeholder", note=True, records=True, chat_data=chat_data, files=files
+        "engine_placeholder", note=True, records=True, chat_data=chat_data, names=names
     )
     note = " ".join(server_note_of(row).split())
     assert len(note) > 200 and question in note, "harness: a long note"
@@ -344,6 +355,50 @@ async def test_a_long_note_keeps_its_closing_question_in_every_form(
         assert cb.SERVER_NOTE_LINE.format(note=note) in out or (
             reader == "triage" and f"<<<\n{note}\n>>>" in out
         ), reader
+
+
+#: Wide ``kubectl`` lines: their runs of spaces make the raw note longer than
+#: the text every reader renders.
+_WIDE_OUTPUT = (
+    "NAME                                READY   STATUS             RESTARTS   AGE\n"
+    "payments-api-7d9f8b6c5-x2x9q        0/1     CrashLoopBackOff   14         3h"
+)
+#: A state request near ``StateReport``'s 300-character cap.
+_LONG_REQUEST = (
+    "the output of kubectl get pods -n payments -o wide and kubectl describe "
+    "pod payments-api after the rollout restart, together with the events for "
+    "the namespace sorted by time, so the reported recovery can be checked "
+    "against what the cluster shows after the restart has completed fully"
+)
+
+
+async def test_the_record_and_the_row_cut_a_long_note_at_one_point():
+    """The real composers, at length: a long filename and a paste that fail
+    classification, then #1930's note with a state request near its cap. The
+    note renders to 500–1,000 characters and is longer raw. The forms reading
+    the record (EARLIER, ``<previous_turn>``) and those reading the row (RECENT,
+    verbatim, triage) carry the same note text."""
+    _, saved, row = await _run(
+        "engine_placeholder",
+        note=True,
+        records=True,
+        chat_data=True,
+        names=(
+            "payments-api-" + "x" * 180 + ".log",
+            "pasted-content-20260709T105531.txt",
+        ),
+        output=_WIDE_OUTPUT,
+        request=_LONG_REQUEST,
+    )
+    raw = server_note_of(row)
+    rendered = cb.render_server_note(raw)
+    assert 500 < len(rendered) <= cb.SERVER_NOTE_CHARS < len(raw.strip()), "harness"
+    assert "the text you pasted" in rendered and _LONG_REQUEST in rendered
+
+    forms = _renderings(saved)
+    forms["triage"] = OutOfBandTriage._build_prompt(saved, NEXT_MESSAGE)
+    for reader, out in forms.items():
+        assert rendered in out, reader
 
 
 @pytest.mark.parametrize("answer", ["engine_placeholder", "blank"])

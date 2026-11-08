@@ -88,9 +88,11 @@ _FIELDS = frozenset(
 )
 
 #: What a whole-record dump carries: a case's rows, and its turn records (whose
-#: summaries are what was said); a turn record's summaries.
+#: summaries are what was said); a turn record's summaries and server note.
 _CASE_CARRIES = frozenset({"messages", "turn_history"})
-_TURN_CARRIES = frozenset({"user_message_summary", "agent_response_summary"})
+_TURN_CARRIES = frozenset(
+    {"user_message_summary", "agent_response_summary", "server_note"}
+)
 _DUMP_METHODS = frozenset({"model_dump", "model_dump_json", "dict", "json"})
 _CASE_NAME = re.compile(r"^(?:.*_)?case(?:_updated|_obj|_copy)?$")
 _TURN_NAME = re.compile(r"^(?:.*_)?(?:turn|record)$")
@@ -663,6 +665,11 @@ class TestTheDetector:
             "def f(case):\n    return [t.model_dump() for t in case.turn_history]",
             "def f(case):\n    for t in case.turn_history:\n        yield t.dict()",
             "def f(last_turn):\n    return last_turn.model_dump(mode='json')",
+            # The server note is server text too (#1665): a dump of it alone,
+            # and one that leaves out only the two summaries, both carry it.
+            "def f(turn):\n    return turn.model_dump(include={'server_note'})",
+            "def f(turn):\n    return turn.model_dump("
+            "exclude={'agent_response_summary', 'user_message_summary'})",
             "def f(case):\n    return dict(case)",
             "def f(turn):\n    return vars(turn)",
             "def f(case):\n    return case.__dict__",
@@ -693,8 +700,6 @@ class TestTheDetector:
         [
             "def f(case):\n    return case.model_dump(include={'title', 'state'})",
             "def f(case):\n    return case.model_dump(exclude={'messages', 'turn_history'})",
-            "def f(turn):\n    return turn.model_dump("
-            "exclude={'agent_response_summary', 'user_message_summary'})",
             "def f(case):\n    return case.inquiry.model_dump()",
             "def f(evidence):\n    return evidence.model_dump()",
             "def f(response):\n    return response.json()",

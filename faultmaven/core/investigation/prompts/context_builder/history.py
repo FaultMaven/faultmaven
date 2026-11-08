@@ -253,10 +253,10 @@ NO_ANSWER_LINE = "(no answer — the assistant produced no usable reply this tur
 #: the user was asked, so never dropped — the user's next message answers it.
 SERVER_NOTE_LINE = '(the server then showed the user this note: "{note}")'
 
-#: The one bound on a server note (#1665): the turn record's copy, and every
-#: rendering of it. Sized to keep a note naming several attachments, or a
-#: clarification note followed by #1930's, whole, so its closing question
-#: survives; a cut is marked.
+#: The one bound on a server note (#1665), applied by ``render_server_note``.
+#: Sized to keep a note naming several attachments, or a clarification note
+#: followed by #1930's, whole, so its closing question survives; a cut is
+#: marked.
 SERVER_NOTE_CHARS = 1000
 
 
@@ -265,9 +265,10 @@ def render_server_note(note: Optional[str]) -> str:
     ``SERVER_NOTE_CHARS``, and a visible ``...`` where it was cut.
 
     One line because the notes open with a blank line and #1930's carries a
-    ``---`` rule, and each form puts the note on a single line. The marker is
-    ``summarize_for_turn_record``'s, so a note cut in the record and one cut
-    here read the same.
+    ``---`` rule, and each form puts the note on a single line. The turn
+    record stores this same text (``_record_server_note``), so the forms that
+    read the record and those that read the row cut a note at the same point.
+    Idempotent: rendering the record's copy again changes nothing.
     """
     text = " ".join((note or "").split())
     if len(text) <= SERVER_NOTE_CHARS:

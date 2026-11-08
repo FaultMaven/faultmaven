@@ -4,11 +4,8 @@ from typing import Any
 
 from faultmaven.core.investigation.case_telemetry import TELEMETRY_HANDOFF_KEY
 from faultmaven.core.investigation.chat_data import TURN_METADATA_CHAT_DATA_OFFER
-from faultmaven.core.investigation.milestone_engine.progress import (
-    summarize_for_turn_record,
-)
 from faultmaven.core.investigation.prompts.context_builder.history import (
-    SERVER_NOTE_CHARS,
+    render_server_note,
 )
 from faultmaven.core.investigation.suggestion_liveness import entry_file_id
 from faultmaven.modules.agent.domain.services.investigation_service.chat_data import (
@@ -40,11 +37,12 @@ def _record_server_note(case: Case, turn_meta: dict[str, Any], note: str) -> Non
     hidden (the question the user was asked, gone from every prompt).
 
     So the row is flagged and carries the note exactly as appended, and this
-    turn's record says the same, with a bounded copy: every prompt reader then
-    renders the no-answer marker, followed by the note as server text the user
-    was shown. The row's content does not change. The engine's own composition
-    (#1442: gate prose in place of a placeholder, unflagged) is a usable answer,
-    not this arm.
+    turn's record says the same, holding the note as every reader renders it
+    (``render_server_note``), so all of them cut it at one point. Every prompt
+    reader then renders the no-answer marker, followed by the note as server
+    text the user was shown. The row's content does not change. The engine's
+    own composition (#1442: gate prose in place of a placeholder, unflagged) is
+    a usable answer, not this arm.
     """
     turn_meta[MESSAGE_METADATA_AGENT_SYNTHESIZED] = True
     turn_meta[MESSAGE_METADATA_SERVER_NOTE] = note
@@ -54,7 +52,7 @@ def _record_server_note(case: Case, turn_meta: dict[str, Any], note: str) -> Non
     case.turn_history[-1] = case.turn_history[-1].model_copy(
         update={
             "agent_response_synthesized": True,
-            "server_note": summarize_for_turn_record(note.strip(), SERVER_NOTE_CHARS),
+            "server_note": render_server_note(note),
         }
     )
 
