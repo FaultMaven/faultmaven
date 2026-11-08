@@ -54,7 +54,7 @@ Key modules to test: auth, case, knowledge, agent, evidence, api-gateway, invest
 - Never disable tests without understanding root cause
 
 ### 4. Improve Coverage
-- Maintain ≥71% baseline, aim for 80%+ on business logic
+- Keep overall coverage above the floor CI enforces, and work toward the per-layer targets: both are in Principle 9 (`docs/architecture/core-architecture/architectural-design-principles.md`, §Quality Gates and §Code Coverage by Layer)
 - Focus on critical business logic first
 - Use `pytest --cov=faultmaven --cov-report=html` to identify gaps
 - Comparing which lines tests cover (a refactor's "no coverage decrease", a review's "is this line covered"): run both sides with `FM_COVERAGE_CONCURRENCY=greenlet`, confirm the setting took effect on each side, and check the raw data for lines past the end of their file. Without it, per-line data over async database code is misattributed (`docs/development/testing/README.md` §Line-level coverage comparisons)

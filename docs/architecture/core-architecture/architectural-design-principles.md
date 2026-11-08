@@ -1,6 +1,6 @@
 # FaultMaven Architectural Design Principles
 
-**Version**: 2.3
+**Version**: 2.4
 **Date**: 2026-11-08
 **Status**: Active
 **Related Documents**:
@@ -32,7 +32,7 @@ These principles optimize for a small team (<15) building an AI-powered SRE tool
 | 6 | Errors as Domain Concepts | Every module defines its exception hierarchy |
 | 7 | Observability by Default | Correlation IDs, structured logs, traces on external calls |
 | 8 | Boundary Enforcement | Import-linter enforces rules at build time; dead code is removed, not left behind |
-| 9 | Test Safety Net | 70% code coverage floor; AI evaluation benchmarks designed, not built (#2520) |
+| 9 | Test Safety Net | 70% code coverage floor, enforced by CI; AI evaluation benchmarks designed, not built (#2520) |
 | 10 | Bounded AI Complexity | The milestone engine owns orchestration state; LLM adapters are stateless |
 | 11 | Clean Moves, Not Rewrites | Move code to its correct location; don't rewrite during the move; don't leave the origin behind |
 | 12 | Escape Hatches | Architectural exceptions are allowed but tracked, counted, and time-limited |
@@ -711,16 +711,18 @@ Unused files create false signals during audits, confuse AI assistants reading t
 
 ### Principle
 
-> **"70% code coverage floor, plus evaluation benchmarks for AI behavior."**
+> **"70% code coverage floor, enforced by CI, plus evaluation benchmarks for AI behavior."**
 
 ### Two Testing Dimensions
 
 | Dimension | What It Tests | Target |
 |-----------|---------------|--------|
-| **Code Coverage** | Lines executed | ≥70% |
+| **Code Coverage** | Lines executed | The overall floor, enforced by CI (Quality Gates) |
 | **AI Evaluation** | Output accuracy | ≥85% on benchmark |
 
 ### Code Coverage by Layer
+
+These per-layer figures are targets with no gate: CI gates only the overall total.
 
 | Layer | Target | Test Type |
 |-------|--------|-----------|
@@ -765,9 +767,8 @@ pytest -m "evaluation" --benchmark
 ### Quality Gates
 
 - ✅ All tests must pass before merging
-- ✅ Coverage cannot drop below 70%
+- ✅ Overall coverage cannot drop below 70%: the Test Standalone and Test Cloud jobs fail under the floor `COVERAGE_FAIL_UNDER` sets in `.github/workflows/ci-cd.yml`
 - ⏳ AI evaluation accuracy ≥85%: not built (#2520)
-- ✅ CI/CD pipeline enforces all rules
 
 ---
 
@@ -1049,7 +1050,8 @@ First application: document preparation, built (#2622): Stages 0-5 of a conversi
 | 2.1 | 2026-04-16 | P8: dead code intolerance. P11: "Clean Moves, Not Rewrites" with pre/post-launch distinction. P12: pre-launch cleanup rule. |
 | 2.2 | 2026-04-19 | P3 table lists synchronized with the storage redesign: removed `sessions` (auth sessions are Redis-only per `case-and-session-concepts.md`), `evidence_artifacts` and `standalone_evidence` (deleted dead-path tables), `agent_tool_calls` v1 (deleted; v2 renamed to canonical `agent_tool_calls`). Added `conversion_jobs` and `conversion_drafts` to case module list. Added `llm_config_overrides` as infrastructure-layer (not a domain module). Cross-reference to `deployment-schema-strategy.md` for the per-table applicability matrix. |
 | 2.3 | 2026-11-08 | P13 "One Owner per Fact" and P14 "Bounded Execution" added as ruled ([#2614](https://github.com/FaultMaven/faultmaven/pull/2614#issuecomment-6716219954); P13's adopted text: [#2617](https://github.com/FaultMaven/faultmaven/issues/2617#issuecomment-6718120222); P14: [#2596](https://github.com/FaultMaven/faultmaven/issues/2596#issuecomment-6716225975)), each with its enforcement table. P3 and P7 point at the [store registry](../data-and-storage/store-registry.md). P5 names `bootstrap/composition.py` as the composition root. P9's AI evaluation gate and P12's automated enforcement are marked not built. |
-| 2.4 | 2026-11-08 | P14 applied to document preparation ([#2622](https://github.com/FaultMaven/faultmaven/issues/2622)): its responsiveness test and the thread offload census built. |
+| 2.4 | 2026-11-08 | P9: the 70% coverage floor is enforced by CI, which gates on `COVERAGE_FAIL_UNDER` in `ci-cd.yml` ([#2619](https://github.com/FaultMaven/faultmaven/issues/2619)). The Two Testing Dimensions row points to Quality Gates, the per-layer figures are marked targets with no gate, and Quality Gates no longer claims the pipeline enforces all rules. |
+| 2.5 | 2026-11-08 | P14 applied to document preparation ([#2622](https://github.com/FaultMaven/faultmaven/issues/2622)): its responsiveness test and the thread offload census built. |
 
 ### Key Changes Across Versions
 
