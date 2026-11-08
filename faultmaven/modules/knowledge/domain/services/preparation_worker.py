@@ -61,18 +61,13 @@ class _Forward(logging.Handler):
             message += "\n" + "".join(traceback.format_exception(*record.exc_info))
         self._send({"log": [record.name, record.levelno, _clipped(message)]})
 
-    def close(self) -> None:
+    def report_dropped(self) -> None:
+        """Count the records past the cap, once: before the result, which the
+        parent stops reading at."""
         if self._dropped:
-            self._send(
-                {
-                    "log": [
-                        __name__,
-                        logging.WARNING,
-                        f"{self._dropped} more log records were not forwarded",
-                    ]
-                }
-            )
-        super().close()
+            dropped, self._dropped = self._dropped, 0
+            message = f"{dropped} more log records were not forwarded"
+            self._send({"log": [__name__, logging.WARNING, message]})
 
 
 def _bound(parent_pid: int, memory_bytes: int, cpu_seconds: int) -> None:
@@ -97,7 +92,7 @@ def _bound(parent_pid: int, memory_bytes: int, cpu_seconds: int) -> None:
     resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
 
 
-def _run(request: Dict[str, Any], send) -> None:
+def _run(request: Dict[str, Any], send, forward: _Forward) -> None:
     """Import the stage the request names, bound this process, and run it."""
     module_name, _, function_name = request["stage"].partition(":")
     stage = getattr(importlib.import_module(module_name), function_name)
@@ -110,6 +105,7 @@ def _run(request: Dict[str, Any], send) -> None:
             request["content_type"],
             lambda n: send({"stage": n}),
         )
+    forward.report_dropped()
     send({"result": result})
 
 
@@ -121,7 +117,10 @@ def main() -> int:
     os.dup2(2, 1)
 
     def send(frame: Dict[str, Any]) -> None:
-        out.write(json.dumps(frame, ensure_ascii=False).encode() + b"\n")
+        # A lone surrogate (pypdf decodes one from a ToUnicode map) is framed
+        # as it is; the parent's ``json.loads`` reads it back the same way.
+        line = json.dumps(frame, ensure_ascii=False) + "\n"
+        out.write(line.encode("utf-8", errors="surrogatepass"))
         out.flush()
 
     try:
@@ -130,9 +129,9 @@ def main() -> int:
         logging.getLogger().handlers[:] = [forward]
         logging.getLogger().setLevel(request["log_level"])
         try:
-            _run(request, send)
+            _run(request, send, forward)
         finally:
-            forward.close()
+            forward.report_dropped()
     except MemoryError:
         os._exit(OUT_OF_MEMORY_EXIT)
     except Exception:

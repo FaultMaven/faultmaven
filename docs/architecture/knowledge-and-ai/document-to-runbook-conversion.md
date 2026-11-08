@@ -211,14 +211,15 @@ Upload (file + scope + metadata)
   │     Stages 0-5 run in a worker process, one per conversion, under two
   │     slots (Principle 14, #2622): started by spawn, it imports the
   │     parsers, the secret patterns, token counting and frontmatter, and
-  │     sets its own memory limit. No slot free within 120 s: REJECT with
-  │     HTTP 503 / CONVERSION_BUSY + Retry-After. A PDF page pypdf's budgets
-  │     refuse is skipped and named in a warning. A worker past 120 s is
+  │     sets its own memory limit, which grows with MAX_UPLOAD_SIZE_MB. No
+  │     slot free within 120 s: REJECT with HTTP 503 / CONVERSION_BUSY +
+  │     Retry-After. A PDF page pypdf's budgets refuse is skipped and named
+  │     in a warning. A worker past 120 s is
   │     killed; it, a document-level budget, or refused pages leaving too
   │     little to convert: REJECT with HTTP 422 / DOCUMENT_TOO_COMPLEX, as
-  │     is a worker past its memory limit, or one that dies while parsing
-  │     the file. Any other death of the worker answers 500 with the request
-  │     id. Corruption pypdf reports as a limit stays FILE_CORRUPT
+  │     is a worker past its memory limit, or one a signal kills while its
+  │     parser reads the file. Any other end of the worker answers 500 with
+  │     the request id. Corruption pypdf reports as a limit stays FILE_CORRUPT
   │
   ├── 1b. Already-a-Runbook Gate (deterministic, no LLM)
   │     Detect: runbook frontmatter (≥4 of id/domain/service/symptom_class/

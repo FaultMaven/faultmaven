@@ -21,14 +21,17 @@ real process: they are few, and their deadlines short.
 from __future__ import annotations
 
 import asyncio
+import errno
 import hashlib
+import io
 import logging
 import os
 import random
 import signal
+import string
 import subprocess
 import sys
-import time
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -62,6 +65,8 @@ _DENSE = b"BT /F1 12 Tf 72 720 Td " + b"(ab) Tj " * 600 + b"ET"
 
 #: A parse budget the dense stream exceeds and a one-string page does not.
 _LOW_BUDGET = {"stream_parsing_work_maximum_count": 1_000}
+
+_DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 _CATALOG = b"<< /Type /Catalog /Pages 2 0 R >>"
 _FONT = b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"
@@ -394,25 +399,27 @@ async def _preprocess(path: Path, content_type: str = "text/plain"):
 
 
 async def test_a_stage_holding_the_lock_in_c_leaves_the_event_loop_free(
-    tmp_path, monkeypatch, on_entered
+    tmp_path, monkeypatch, spawned, on_entered
 ):
-    """Principle 14's responsiveness check, ordered rather than timed.
+    """Principle 14's responsiveness check, by ordering alone.
 
-    The stage holds the interpreter lock through one C call, a large
-    ``re.sub``, and answers with the moment that call returned. Once the stage
-    has entered, the loop must complete three turns (each a sleep: the loop
-    blocks in its selector and wakes) before then. In the worker the call holds
-    the worker's lock. On a thread of this process it holds this one's, and no
-    turn can run until the call has returned: the same test, pointed at an
-    in-thread run of the stage, fails (demonstrated on #2622, not run here).
+    The stage holds the interpreter lock in one C call that never returns by
+    itself (a catastrophically backtracking ``re.sub``). Once it has entered,
+    this loop must run three turns (each a sleep: the loop blocks in its
+    selector and wakes) while the worker is still alive in that stage, and the
+    deadline's kill must then reap it. In the worker the call holds the
+    worker's lock. On a thread of this process it would hold this one's for
+    ever: the turns never run, and that run fails by its timeout guard, not by
+    a measured threshold (demonstrated on #2622, not run here).
     """
-    _stage(monkeypatch, "hold_the_lock")
-    loop, turned, tasks = asyncio.get_running_loop(), [], []
+    _stage(monkeypatch, "backtrack_forever")
+    monkeypatch.setattr(dp, "EXTRACTION_TIMEOUT_SECONDS", 5)
+    loop, alive_after_three_turns, tasks = asyncio.get_running_loop(), [], []
 
     async def three_turns() -> None:
         for _ in range(3):
             await asyncio.sleep(0.005)
-        turned.append(time.monotonic())
+        alive_after_three_turns.append(spawned[0].returncode is None)
 
     on_entered(
         lambda: loop.call_soon_threadsafe(
@@ -422,9 +429,9 @@ async def test_a_stage_holding_the_lock_in_c_leaves_the_event_loop_free(
     result = await _preprocess(_text_file(tmp_path))
     await asyncio.gather(*tasks)
 
-    returned = float(result.rejection_reason)
-    assert turned, "the stage's entry never reached the loop"
-    assert turned[0] < returned, "the loop was held while the stage held its lock"
+    assert alive_after_three_turns == [True], "the loop did not run beside the stage"
+    assert "took longer than the 5-second limit" in result.rejection_reason
+    assert spawned[0].returncode == -signal.SIGKILL
 
 
 async def test_a_preparation_past_its_deadline_is_killed_and_its_slot_frees(
@@ -465,6 +472,49 @@ async def test_a_cancelled_request_kills_its_worker(
         await request
 
     assert spawned[0].returncode == -signal.SIGKILL
+    assert not dp._preparation_slots().locked()
+
+
+async def test_a_second_cancellation_still_waits_for_the_reap(
+    tmp_path, monkeypatch, on_entered
+):
+    """The slot frees only once the killed worker is reaped, however often the
+    request is cancelled meanwhile."""
+    _stage(monkeypatch, "never_return")
+    _slots(monkeypatch, 1)
+    loop, processes = asyncio.get_running_loop(), []
+    entered, reaping, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    on_entered(lambda: loop.call_soon_threadsafe(entered.set))
+    spawn = asyncio.create_subprocess_exec
+
+    async def record(*args, **kwargs):
+        process = await spawn(*args, **kwargs)
+        communicate = process.communicate
+
+        async def held(*args, **kwargs):
+            reaping.set()
+            await release.wait()
+            return await communicate(*args, **kwargs)
+
+        process.communicate = held
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(dp.asyncio, "create_subprocess_exec", record)
+    request = asyncio.create_task(_preprocess(_text_file(tmp_path)))
+    await asyncio.wait_for(entered.wait(), 60)
+    request.cancel()
+    await asyncio.wait_for(reaping.wait(), 60)
+    request.cancel()
+    for _ in range(20):
+        await asyncio.sleep(0)
+
+    assert not request.done(), "the second cancellation ended it before the reap"
+    assert dp._preparation_slots().locked()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await request
+    assert processes[0].returncode == -signal.SIGKILL
     assert not dp._preparation_slots().locked()
 
 
@@ -510,6 +560,11 @@ def test_post_convert_answers_conversion_busy_with_retry_after(tmp_path, monkeyp
         pytest.param("run_out_of_memory", _OUT_OF_MEMORY, id="memory-code"),
         pytest.param("die_while_parsing", _UNREADABLE, id="dies-in-stage-1"),
         pytest.param("die_before_reading", None, id="dies-in-stage-0"),
+        pytest.param(
+            "tear_a_frame_while_parsing", _UNREADABLE, id="torn-frame-in-stage-1"
+        ),
+        pytest.param("raise_while_parsing", None, id="raises-in-stage-1"),
+        pytest.param("die_in_stage_1b", None, id="dies-in-stage-1b"),
         pytest.param("die_after_parsing", None, id="dies-in-stage-2"),
         pytest.param("no_such_stage", None, id="fails-to-start"),
     ],
@@ -517,10 +572,11 @@ def test_post_convert_answers_conversion_busy_with_retry_after(tmp_path, monkeyp
 async def test_a_dead_worker_is_refused_only_for_a_cause_in_the_document(
     tmp_path, monkeypatch, spawned, caplog, stage, refusal
 ):
-    """The owner's ruling on #2622. Its memory code, or a death while parsing,
-    is the document's: ``DOCUMENT_TOO_COMPLEX`` with the ruled sentence. Any
-    other death may be the server's: a server error, the exit and the stage
-    logged."""
+    """The owner's ruling on #2622. Its memory code, or a death by a signal
+    while the parser runs (stage 1, a frame torn by it included), is the
+    document's: ``DOCUMENT_TOO_COMPLEX`` with the ruled sentence. Any other end
+    may be the server's, our own code raising in stage 1 included: a server
+    error, the exit and the stage logged."""
     _stage(monkeypatch, stage)
 
     with caplog.at_level(logging.WARNING):
@@ -537,10 +593,21 @@ async def test_a_dead_worker_is_refused_only_for_a_cause_in_the_document(
     assert [m for m in caplog.messages if f"exited {code} in stage" in m]
 
 
-def test_a_worker_death_after_parsing_answers_the_global_500(tmp_path, monkeypatch):
+@pytest.mark.parametrize("cause", ["dies-after-parsing", "cannot-start"])
+def test_a_worker_failure_not_the_documents_answers_the_global_500(
+    tmp_path, monkeypatch, caplog, cause
+):
     """Through the route: not the route's own "try again" 500, but the global
-    handler's, with the request id and no advice."""
-    _stage(monkeypatch, "die_after_parsing")
+    handler's, with the request id and no advice. A worker that cannot start
+    (``EAGAIN`` from the fork) is logged with its cause."""
+    if cause == "cannot-start":
+
+        async def refuse(*args, **kwargs):
+            raise OSError(errno.EAGAIN, "Resource temporarily unavailable")
+
+        monkeypatch.setattr(dp.asyncio, "create_subprocess_exec", refuse)
+    else:
+        _stage(monkeypatch, "die_after_parsing")
     app = _app_with_real_service().app
     app.add_exception_handler(500, internal_server_error_handler)
     app.add_middleware(RequestIdMiddleware)
@@ -557,6 +624,10 @@ def test_a_worker_death_after_parsing_answers_the_global_500(tmp_path, monkeypat
     assert body["detail"] == "Internal server error"
     assert body["request_id"] == response.headers["X-Request-ID"]
     assert "error_code" not in body
+    if cause == "cannot-start":
+        assert [
+            m for m in caplog.messages if "could not start: BlockingIOError(11" in m
+        ]
 
 
 def test_post_convert_answers_a_death_while_parsing_with_its_sentence(
@@ -597,13 +668,15 @@ async def test_a_worker_past_its_output_limit_is_killed_and_a_server_error(
 async def test_a_text_file_at_the_upload_limit_fits_under_the_memory_limit(tmp_path):
     """The memory refusal's advice, to export the text, is true because a
     plain-text file at ``MAX_UPLOAD_SIZE_MB`` always gets through Stages 0-5
-    (the owner's ruling on #2622). This one is the costliest text measured
-    when the limit was set: random bytes 0x80-0xFF, read as Latin-1, 14.5
-    million tokens. It is refused for its length, not its memory."""
+    under the limit derived from it (the owner's ruling on #2622). This one is
+    the costliest shape measured when the limit was set: ASCII letters and
+    punctuation behind one astral character, so the text is held four bytes a
+    character. It is refused for its length, not its memory."""
     size = get_settings().upload.max_upload_size_mb * 1024 * 1024
-    head = b"ERROR timeout; kubectl rollout restart the api.\n"
-    high = bytes(range(0x80, 0x100)) * 2
-    body = random.Random(2622).randbytes(size - len(head)).translate(high)
+    head = "\U0001f600 ERROR timeout; kubectl rollout restart the api.\n".encode()
+    alphabet = (string.ascii_letters + "!#$%&()*+,-./:;<=>?@[]^_{|}~").encode()
+    table = (alphabet * (256 // len(alphabet) + 1))[:256]
+    body = random.Random(2622).randbytes(size - len(head)).translate(table)
     path = tmp_path / "export.txt"
     path.write_bytes(head + body)
 
@@ -614,9 +687,143 @@ async def test_a_text_file_at_the_upload_limit_fits_under_the_memory_limit(tmp_p
     ), result.rejection_reason
 
 
+def test_the_memory_limit_follows_the_upload_limit():
+    """128 MiB plus 64 MiB a MB of the upload limit: 768 MiB at the default
+    10 MB, and a deployment that raises the upload limit raises it too."""
+    mib = 1024 * 1024
+    assert dp.preparation_memory_limit(10) == 768 * mib
+    assert dp.preparation_memory_limit(20) - dp.preparation_memory_limit(10) == (
+        640 * mib
+    )
+
+
+async def test_text_extracted_far_past_the_upload_is_refused_for_its_length(
+    tmp_path,
+):
+    """A 10 MB HTML upload whose ``<pre><code>`` holds high-byte Latin-1 text
+    extracts twice over, 20 MB and 29 million tokens: counted a chunk at a
+    time, it is refused for its length, with its count, not a dead worker."""
+    head = b"<html><body><p>ERROR timeout; kubectl rollout restart.</p><pre><code>"
+    tail = b"</code></pre></body></html>"
+    high = bytes(range(0x80, 0x100)) * 2
+    body = random.Random(2622).randbytes(10_481_664 - len(head) - len(tail))
+    path = tmp_path / "export.html"
+    path.write_bytes(head + body.translate(high) + tail)
+
+    result = await _preprocess(path, "text/html")
+
+    assert (
+        result.error_code == ConversionErrorCode.DOCUMENT_TOO_LONG
+    ), result.rejection_reason
+    assert "Document contains 2" in result.rejection_reason
+
+
+def _docx_with_document_xml(path: Path, paragraphs: int) -> Path:
+    """python-docx's default document, its body ``paragraphs`` paragraphs long:
+    about 48 bytes of XML each, which deflate to almost nothing."""
+    from docx import Document
+
+    template = io.BytesIO()
+    Document().save(template)
+    source = zipfile.ZipFile(template)
+    head, _, tail = source.read("word/document.xml").partition(b"<w:body>")
+    block = b"<w:p><w:r><w:t>kubectl restart</w:t></w:r></w:p>" * 10_000
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as out:
+        for item in source.infolist():
+            if item.filename != "word/document.xml":
+                out.writestr(item, source.read(item.filename))
+                continue
+            with out.open(item.filename, "w", force_zip64=True) as xml:
+                xml.write(head + b"<w:body>")
+                for _ in range(paragraphs // 10_000):
+                    xml.write(block)
+                xml.write(tail)
+    return path
+
+
+async def test_a_docx_whose_xml_exhausts_the_memory_limit_is_refused_for_memory(
+    tmp_path,
+):
+    """A 0.4 MB DOCX whose ``document.xml`` is 130 MB: lxml reports the failed
+    allocation as an ``XMLSyntaxError`` (``XML_ERR_NO_MEMORY``), which is the
+    memory refusal, not a corrupt file."""
+    path = _docx_with_document_xml(tmp_path / "huge.docx", 2_700_000)
+    assert path.stat().st_size < 1024 * 1024
+
+    result = await _preprocess(path, _DOCX)
+
+    assert result.error_code == ConversionErrorCode.DOCUMENT_TOO_COMPLEX
+    assert result.rejection_reason == _OUT_OF_MEMORY
+
+
+def _pdf_mapping_q_to_a_lone_surrogate(tmp_path: Path) -> Path:
+    """One page of ``_TEXT`` and a ``Q``, whose font's ToUnicode map reads
+    ``Q`` as U+D800, a lone surrogate: pypdf extracts it as such."""
+    cmap = (
+        b"/CIDInit /ProcSet findresource begin 12 dict begin begincmap\n"
+        b"/CMapName /Surrogate def /CMapType 2 def\n"
+        b"1 begincodespacerange <00> <FF> endcodespacerange\n"
+        b"1 beginbfchar <51> <D800> endbfchar\n"
+        b"endcmap CMapName currentdict /CMap defineresource pop end end"
+    )
+    stream = _stream(_TEXT + " Q")
+    return _write(
+        tmp_path,
+        [
+            _CATALOG,
+            b"<< /Type /Pages /Kids [4 0 R] /Count 1 >>",
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica"
+            b" /ToUnicode 6 0 R >>",
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 5 0 R"
+            b" /Resources << /Font << /F1 3 0 R >> >> >>",
+            b"<< /Length %d >>\nstream\n" % len(stream) + stream + b"\nendstream",
+            b"<< /Length %d >>\nstream\n" % len(cmap) + cmap + b"\nendstream",
+        ],
+    )
+
+
+async def test_a_lone_surrogate_in_the_text_is_framed_not_a_server_error(tmp_path):
+    result = await _preprocess(
+        _pdf_mapping_q_to_a_lone_surrogate(tmp_path), "application/pdf"
+    )
+
+    assert not result.is_rejected, result.rejection_reason
+    assert "\ud800" in result.extracted_text
+
+
+async def test_a_document_quoting_a_special_token_is_counted(tmp_path):
+    """``<|endoftext|>`` in a document is text, counted as such, not a
+    special token tiktoken refuses."""
+    path = tmp_path / "note.md"
+    path.write_text(
+        "# Tokenizer note\n\nThe model stops at `<|endoftext|>`. " + _TEXT,
+        encoding="utf-8",
+    )
+
+    result = await _preprocess(path, "text/markdown")
+
+    assert not result.is_rejected, result.rejection_reason
+    counted = _get_tiktoken_encoder("gpt-4").encode(
+        result.extracted_text, disallowed_special=()
+    )
+    assert result.token_count == len(counted)
+
+
+async def test_records_past_the_cap_are_counted_before_the_result(
+    tmp_path, monkeypatch, caplog
+):
+    _stage(monkeypatch, "log_past_the_cap")
+
+    with caplog.at_level(logging.WARNING):
+        result = await _preprocess(_text_file(tmp_path))
+
+    assert result.rejection_reason == "logged"
+    assert "11 more log records were not forwarded" in caplog.messages
+
+
 async def test_the_worker_counts_tokens_as_this_process_does(tmp_path):
     """The worker inherits the environment, so it loads the encoding from
-    ``TIKTOKEN_CACHE_DIR`` (the knowledge conftest seeds it). Were the file
+    ``TIKTOKEN_CACHE_DIR`` (``tests/conftest.py`` seeds it). Were the file
     missing, the worker would download it: refused here instead."""
     seeded = (
         Path(os.environ["TIKTOKEN_CACHE_DIR"])

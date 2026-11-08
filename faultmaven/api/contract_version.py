@@ -164,14 +164,16 @@ deadline (Principle 14). How the worker ends decides the answer:
 * Past its memory limit: 422 `DOCUMENT_TOO_COMPLEX`, `detail` "Reading this
   document needed more memory than the conversion allows, so it was not
   converted. Export its text to a TXT or Markdown file and convert that
-  instead." A plain-text file at the upload limit always fits under it.
-* Dead while parsing the file: 422 `DOCUMENT_TOO_COMPLEX`, `detail` "This
-  document could not be read, so it was not converted. Export its text to a
-  TXT or Markdown file and convert that instead."
-* Any other death (it fails to start, dies before reading the file, or after
-  parsing it without the memory code): 500 from the global handler, with the
-  request id and no advice, not the route's own 500 with
-  `LLM_GENERATION_FAILED`.
+  instead." The limit grows with `MAX_UPLOAD_SIZE_MB`, so a plain-text file at
+  the upload limit always fits under it.
+* Killed by a signal while its parser reads the file: 422
+  `DOCUMENT_TOO_COMPLEX`, `detail` "This document could not be read, so it
+  was not converted. Export its text to a TXT or Markdown file and convert
+  that instead."
+* Any other end (it fails to start, dies before reading the file or after
+  parsing it without the memory code, or our own code raises): 500 from the
+  global handler, with the request id and no advice, not the route's own 500
+  with `LLM_GENERATION_FAILED`.
 
 Past the deadline is the existing 120 s refusal, and a request that waits
 120 s for one of the two workers is still 503 `CONVERSION_BUSY`. Nothing

@@ -22,14 +22,11 @@ def _entered(enter) -> None:
     logger.warning(ENTERED)
 
 
-def hold_the_lock(file_path, content_type, enter):
-    """One C call that holds the interpreter lock throughout (a large
-    ``re.sub``), then the moment it returned, as the refusal's reason."""
-    text = "ab" * 5_000_000
+def backtrack_forever(file_path, content_type, enter):
+    """One C call that holds the interpreter lock and never returns by itself:
+    a catastrophically backtracking ``re.sub``."""
     _entered(enter)
-    re.sub("a", "c", text)
-    ended = time.monotonic()
-    return {"refused": "DOCUMENT_TOO_SHORT", "reason": repr(ended)}
+    re.sub(r"(a+)+$", "", "a" * 64 + "!")
 
 
 def never_return(file_path, content_type, enter):
@@ -61,6 +58,38 @@ def die_before_reading(file_path, content_type, enter):
 def die_while_parsing(file_path, content_type, enter):
     _entered(enter)
     os.abort()
+
+
+def raise_while_parsing(file_path, content_type, enter):
+    _entered(enter)
+    raise RuntimeError("a fault in our own code, not the document's")
+
+
+def die_in_stage_1b(file_path, content_type, enter):
+    _entered(enter)
+    enter("1b")
+    os.abort()
+
+
+def tear_a_frame_while_parsing(file_path, content_type, enter):
+    """Dies mid-frame, as a worker killed while writing one does. The frame
+    file is the one ``enter`` writes through (``preparation_worker.main``)."""
+    _entered(enter)
+    out = _free_variable(_free_variable(enter, "send"), "out")
+    out.write(b'{"result": {"refused": "DOCUMENT_TOO_SH')
+    out.flush()
+    os.abort()
+
+
+def log_past_the_cap(file_path, content_type, enter):
+    _entered(enter)
+    for n in range(60):
+        logger.warning("record %d", n)
+    return {"refused": "DOCUMENT_TOO_SHORT", "reason": "logged"}
+
+
+def _free_variable(function, name: str):
+    return function.__closure__[function.__code__.co_freevars.index(name)].cell_contents
 
 
 def die_after_parsing(file_path, content_type, enter):

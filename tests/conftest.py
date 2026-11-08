@@ -809,6 +809,24 @@ def clean_test_environment():
     # If restoration is needed, save original values before clearing
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _tiktoken_cache_for_child_processes(tmp_path_factory):
+    """A child process (the document preparation worker, #2622) inherits the
+    environment, not ``offline_tiktoken.install``'s patch, and the network
+    guard does not reach it. So the encoding is written where tiktoken's own
+    cache lookup finds it, hash-checked, and ``TIKTOKEN_CACHE_DIR`` names that
+    directory for every child this session starts: none asks the network."""
+    directory = tmp_path_factory.mktemp("tiktoken")
+    offline_tiktoken.seed_cache(directory)
+    previous = os.environ.get("TIKTOKEN_CACHE_DIR")
+    os.environ["TIKTOKEN_CACHE_DIR"] = str(directory)
+    yield directory
+    if previous is None:
+        os.environ.pop("TIKTOKEN_CACHE_DIR", None)
+    else:
+        os.environ["TIKTOKEN_CACHE_DIR"] = previous
+
+
 # ---------------------------------------------------------------------------
 # One booted application per module (fm#1569)
 # ---------------------------------------------------------------------------

@@ -77,6 +77,20 @@ def _is_budget(file_path: Path, error: LimitReachedError) -> bool:
     return True
 
 
+#: libxml2's ``XML_ERR_NO_MEMORY``: lxml reports a failed allocation as an
+#: ``XMLSyntaxError`` with this code (python-docx parses a DOCX with lxml).
+_XML_ERR_NO_MEMORY = 2
+
+
+def _out_of_memory(error: Exception) -> bool:
+    """Whether ``error`` is a parser library's report of a failed allocation."""
+    try:
+        from lxml.etree import XMLSyntaxError
+    except ImportError:
+        return False
+    return isinstance(error, XMLSyntaxError) and error.code == _XML_ERR_NO_MEMORY
+
+
 @dataclass(frozen=True)
 class ParsedDocument:
     """What extraction read. ``page_count`` is set for a PDF only, and
@@ -149,6 +163,8 @@ class DocumentParser:
         except DocumentRefusal as e:
             raise ValueError(f"Failed to parse {file_path.name}: {e}") from e
         except Exception as e:
+            if _out_of_memory(e):
+                raise MemoryError(f"parsing {file_path.name}") from e
             # The library's text goes to the log, never to the caller: the
             # preprocessor turns this message into ``/convert``'s 422 detail.
             logger.warning("document extraction failed for %s: %s", file_path, e)

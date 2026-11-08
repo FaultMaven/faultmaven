@@ -310,7 +310,10 @@ EXPECTED: dict[str, dict[str, tuple[str, int]]] = {
         # The conversion route over the real service, with the global 500
         # handler added, so a dead preparation worker's answer is the one a
         # deployment serves (#2622).
-        "test_a_worker_death_after_parsing_answers_the_global_500": ("scratch", 1),
+        "test_a_worker_failure_not_the_documents_answers_the_global_500": (
+            "scratch",
+            1,
+        ),
     },
     "tests/unit/modules/auth/test_oauth_rate_limit_signalling.py": {
         "TestThroughTheFullMiddlewareStack.test_the_oauth_refusal_survives_the_middleware_on_the_way_out": (

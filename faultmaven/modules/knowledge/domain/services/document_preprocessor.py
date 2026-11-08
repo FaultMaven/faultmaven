@@ -73,18 +73,18 @@ CONVERSION_BUSY_RETRY_AFTER_SECONDS = EXTRACTION_TIMEOUT_SECONDS
 #: Preparations at once. A slot frees only once its worker is dead.
 PREPARATION_SLOTS = 2
 
-#: The worker's address-space limit (``RLIMIT_AS``), so that a plain-text file
-#: at the default 10 MB upload limit always gets through Stages 0-5 and a
-#: memory failure can come only from parsing a PDF, DOCX or HTML file (a larger
-#: ``MAX_UPLOAD_SIZE_MB`` needs a larger limit). Measured on
-#: seven 10 MB text shapes: 238 MiB peak for log text, 299 MiB for CJK, 532 MiB
-#: for random bytes 0x80-0xFF read as Latin-1 (14.5 million tokens, the
-#: costliest), against 64 MiB once imported; this is 1.44 times the costliest.
-#: Two slots of it are 1.5 GiB of address space, at most 2 x 489 MiB resident
-#: as measured. Beside a 1.5 GiB API process that passes a 2 GiB pod limit, so
-#: the worker volunteers for the OOM killer (``preparation_worker``): it is
-#: killed before the API is (#2622).
-PREPARATION_MEMORY_LIMIT_BYTES = 768 * 1024 * 1024
+#: The worker's address-space limit (``RLIMIT_AS``), from the upload limit:
+#: ``preparation_memory_limit``. A plain-text file at the upload limit always
+#: gets through Stages 0-5 under it, so a memory failure can come only from
+#: parsing a PDF, DOCX or HTML file (#2622). Measured on six text shapes at 5,
+#: 10 and 20 MB, the costliest peaks at 64 MiB plus 20 MiB a MB (ASCII with one
+#: astral character, held four bytes a character: 464 MiB at 20 MB). The limit
+#: is 128 MiB plus 64 MiB a MB, twice the base and 3.2 times the slope: 768 MiB
+#: at the default 10 MB. Two of them, 1.5 GiB, beside a 1.5 GiB API process
+#: pass a 2 GiB pod limit, so the worker volunteers for the OOM killer
+#: (``preparation_worker``): it is killed before the API is.
+PREPARATION_MEMORY_BASE_MIB = 128
+PREPARATION_MEMORY_MIB_PER_UPLOAD_MB = 64
 
 #: The worker's CPU-time limit: the deadline, plus 10 s. The parent's kill at
 #: the deadline always comes first; this bounds a worker whose parent died.
@@ -140,6 +140,15 @@ def _refusal(reason: str, error_code: ConversionErrorCode) -> PreprocessingResul
     )
 
 
+def preparation_memory_limit(max_upload_mb: int) -> int:
+    """The worker's address-space limit in bytes, for an upload limit in MB."""
+    mib = (
+        PREPARATION_MEMORY_BASE_MIB
+        + PREPARATION_MEMORY_MIB_PER_UPLOAD_MB * max_upload_mb
+    )
+    return mib * 1024 * 1024
+
+
 def _preparation_slots() -> asyncio.Semaphore:
     """The slots, made on the running loop: a ``Semaphore`` binds to one."""
     global _slots
@@ -150,15 +159,16 @@ def _preparation_slots() -> asyncio.Semaphore:
 
 
 async def _frames(proc: asyncio.subprocess.Process, seen: Dict[str, Any]):
-    """The worker's result, or None at its end of output. Stage frames set
-    ``seen["stage"]``; log records are emitted here, under this request."""
+    """The worker's result, or None at its end of output, a line torn by its
+    death included. Stage frames set ``seen["stage"]``; log records are
+    emitted here, under this request."""
     received = 0
     while True:
         try:
             line = await proc.stdout.readline()
         except ValueError as e:  # one line past the stream's limit
             raise PreparationFailed("the worker's output passed its limit") from e
-        if not line:
+        if not line.endswith(b"\n"):
             return None
         received += len(line)
         if received > PREPARATION_OUTPUT_LIMIT_BYTES:
@@ -168,7 +178,7 @@ async def _frames(proc: asyncio.subprocess.Process, seen: Dict[str, Any]):
             if "result" in frame:
                 return frame["result"]
             if "stage" in frame:
-                seen["stage"] = int(frame["stage"])
+                seen["stage"] = frame["stage"]
             else:
                 name, level, message = frame["log"]
                 logging.getLogger(name).log(level, message)
@@ -176,29 +186,59 @@ async def _frames(proc: asyncio.subprocess.Process, seen: Dict[str, Any]):
             raise PreparationFailed("the worker wrote a malformed frame") from e
 
 
+async def _reap(proc: asyncio.subprocess.Process) -> None:
+    """Kill the worker and wait until it is reaped, a cancellation meanwhile
+    included, so its slot frees only once it is dead. Its output is read to
+    the end, unread: a wait alone never returns while a full pipe holds the
+    worker's stdout open."""
+    if proc.returncode is None:
+        proc.kill()
+    reaping = asyncio.ensure_future(proc.communicate())
+    cancelled: Optional[asyncio.CancelledError] = None
+    while not reaping.done():
+        try:
+            await asyncio.shield(reaping)
+        except asyncio.CancelledError as e:
+            cancelled = e
+    reaping.result()
+    if cancelled is not None:
+        raise cancelled
+
+
 async def _run_worker(file_path: Path, content_type: str) -> Any:
     """One worker over the file: its result, or the refusal its end means.
     The worker is dead and reaped before this returns or raises."""
+    from faultmaven.config.settings import get_settings
+
+    upload_mb = get_settings().upload.max_upload_size_mb
     request = {
         "stage": _PREPARATION_STAGE,
         "file_path": os.path.abspath(file_path),
         "content_type": content_type,
         "pdf_limits": dataclasses.asdict(get_configuration()),
         "parent_pid": os.getpid(),
-        "memory_bytes": PREPARATION_MEMORY_LIMIT_BYTES,
+        "memory_bytes": preparation_memory_limit(upload_mb),
         "cpu_seconds": PREPARATION_CPU_SECONDS,
         "log_level": logging.getLogger().getEffectiveLevel(),
     }
     seen: Dict[str, Any] = {"stage": None}
-    proc = await asyncio.create_subprocess_exec(
-        sys.executable,
-        "-m",
-        preparation_worker.__name__,
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        cwd=_PACKAGE_ROOT,
-        limit=PREPARATION_OUTPUT_LIMIT_BYTES,
-    )
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            preparation_worker.__name__,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            cwd=_PACKAGE_ROOT,
+            limit=PREPARATION_OUTPUT_LIMIT_BYTES,
+        )
+    except OSError as e:
+        logger.error(
+            "conversion failed: the preparation worker of %s could not start: %r",
+            file_path.name,
+            e,
+        )
+        raise PreparationFailed("the preparation worker could not start") from e
     try:
         async with asyncio.timeout(EXTRACTION_TIMEOUT_SECONDS) as deadline:
             try:
@@ -225,11 +265,7 @@ async def _run_worker(file_path: Path, content_type: str) -> Any:
             ConversionErrorCode.DOCUMENT_TOO_COMPLEX,
         )
     finally:
-        if proc.returncode is None:
-            proc.kill()
-        # Reads its output to the end, unread: a wait alone never returns while
-        # a full pipe holds the worker's stdout open.
-        await proc.communicate()
+        await _reap(proc)
 
     ended = (
         f"the preparation worker of {file_path.name} exited {code} "
@@ -238,8 +274,8 @@ async def _run_worker(file_path: Path, content_type: str) -> Any:
     if code == OUT_OF_MEMORY_EXIT:
         logger.warning("conversion refused, out of memory: %s", ended)
         return _refusal(_OUT_OF_MEMORY, ConversionErrorCode.DOCUMENT_TOO_COMPLEX)
-    if seen["stage"] == 1:
-        logger.warning("conversion refused, dead while parsing: %s", ended)
+    if seen["stage"] == 1 and code < 0:
+        logger.warning("conversion refused, killed while parsing: %s", ended)
         return _refusal(_UNREADABLE, ConversionErrorCode.DOCUMENT_TOO_COMPLEX)
     logger.error("conversion failed: %s", ended)
     raise PreparationFailed(ended)

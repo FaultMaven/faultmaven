@@ -65,16 +65,47 @@ def _get_encoder():
     return _get_tiktoken_encoder("gpt-4")
 
 
+#: The most characters one tiktoken call encodes. A call returns every token
+#: of its text at once, about 40 bytes each, so one call over the whole of a
+#: large text ran out of the worker's memory: 20 MB of text extracted from a
+#: 10 MB HTML upload is 29 million tokens (#2622).
+_COUNT_CHUNK_CHARS = 1 << 20
+
+
+def _chunks(text: str):
+    """``text`` in pieces of at most ``_COUNT_CHUNK_CHARS``, each ending after
+    a newline that a non-space character follows. cl100k's pre-tokenizer
+    always splits there, so the pieces' tokens are the whole's. A window with
+    no such newline is cut at its limit, where the count can be off by one or
+    two tokens."""
+    start = 0
+    while len(text) - start > _COUNT_CHUNK_CHARS:
+        end = start + _COUNT_CHUNK_CHARS
+        cut = text.rfind("\n", start, end - 1)
+        while cut >= start and text[cut + 1].isspace():
+            cut = text.rfind("\n", start, cut)
+        end = cut + 1 if cut >= start else end
+        yield text[start:end]
+        start = end
+    yield text[start:]
+
+
 def _measure(text: str) -> tuple[int, str]:
     """The token count, and the triage sample: the first
-    ``TRIAGE_SAMPLE_TOKENS`` tokens, from the one encoding of the text."""
+    ``TRIAGE_SAMPLE_TOKENS`` tokens, from one encoding of the text, a chunk
+    at a time. A special token's spelling (``<|endoftext|>``) is counted as
+    the text it is."""
     encoder = _get_encoder()
     if encoder is None:
         return len(text) // 4, text[: TRIAGE_SAMPLE_TOKENS * 4]
-    tokens = encoder.encode(text)
-    if len(tokens) > TRIAGE_SAMPLE_TOKENS:
-        return len(tokens), encoder.decode(tokens[:TRIAGE_SAMPLE_TOKENS])
-    return len(tokens), text
+    count, head = 0, []
+    for chunk in _chunks(text):
+        tokens = encoder.encode(chunk, disallowed_special=())
+        count += len(tokens)
+        head += tokens[: TRIAGE_SAMPLE_TOKENS + 1 - len(head)]
+    if count > TRIAGE_SAMPLE_TOKENS:
+        return count, encoder.decode(head[:TRIAGE_SAMPLE_TOKENS])
+    return count, text
 
 
 def count_tokens(text: str) -> int:
@@ -486,8 +517,8 @@ def prepare(
 ) -> Dict[str, Any]:
     """Stages 0-5 over the caller's file. Returns a refusal (``refused``, a
     ``ConversionErrorCode`` value, and its ``reason``) or what Stage 6 needs.
-    ``enter(n)`` is called as each stage starts; Stage 1 is the parse,
-    through its runbook-shape check (1b)."""
+    ``enter(n)`` is called as each stage starts: 0 to 5, and ``"1b"`` once the
+    parse is done and the runbook-shape check starts."""
     enter(0)
     warnings: list[str] = []
 
@@ -545,6 +576,7 @@ def prepare(
     # refusal costs nothing. ``ALREADY_A_RUNBOOK`` already had its 422 in
     # ``conversion_routes`` and its user-facing copy in the Dashboard; this
     # is the raise site they were waiting for.
+    enter("1b")
     is_runbook, near_runbook = classify_runbook_shape(extracted_text)
     if is_runbook:
         return _refusal(
