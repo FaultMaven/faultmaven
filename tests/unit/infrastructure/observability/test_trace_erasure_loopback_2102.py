@@ -74,8 +74,10 @@ class _Backend:
         #: ``(query) -> (status, body)``.
         self.page = {"traces": None, "spans": None}
         self.reads = {"traces": [], "spans": []}
-        #: What ``find_projects`` answers: ``(query) -> (status, body)``.
-        self.projects = lambda _: (200, _page_body([], total=0))
+        #: The workspace's projects, which ``find_projects`` serves as the backend
+        #: does, unless ``projects`` replaces the answer: ``(query) -> (status, body)``.
+        self.project_names: list = []
+        self.projects = None
         self.project_reads: list = []
         self.deleted: list = []
         self.traces: list = []
@@ -102,7 +104,8 @@ class _Backend:
                 query = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
                 if kind == "projects":
                     backend.project_reads.append(query)
-                    return self._answer(*backend.projects(query))
+                    answer = backend.projects or backend.serve_projects
+                    return self._answer(*answer(query))
                 if kind not in backend.reads:
                     return self._answer(200, {"message": "ok"})
                 backend.reads[kind].append(query)
@@ -164,6 +167,17 @@ class _Backend:
             for row in rows[(page - 1) * size : page * size]
         ]
         return 200, _page_body(content, total=len(rows), page=page)
+
+    def serve_projects(self, query):
+        """The name filter matches partially, ignoring case; a page is 10 rows
+        unless ``size`` asks for more."""
+        with self._lock:
+            names = [
+                n for n in self.project_names if query["name"].lower() in n.lower()
+            ]
+        page, size = int(query.get("page", 1)), int(query.get("size", 10))
+        rows = [_project(n) for n in names[(page - 1) * size : page * size]]
+        return 200, _page_body(rows, total=len(names), page=page)
 
     def remaining(self, case):
         """What is stored for ``case`` and holds content."""
@@ -424,15 +438,26 @@ class TestAProjectTheBackendDoesNotHave:
     async def test_a_positive_check_reads_as_nothing_to_delete(self, backend, client):
         backend.page["traces"] = lambda *_: _NOT_FOUND
         # The name filter matches partially: a longer name is not the project.
-        backend.projects = lambda _: (
-            200,
-            _page_body([_project(f"{PROJECT}-staging")], total=1),
-        )
+        backend.project_names = [f"{PROJECT}-staging", "another-project"]
 
         assert await _eraser(client).erase_case(CASE, ENTERPRISE) == 0
 
-        assert backend.project_reads == [{"name": PROJECT}]
+        assert backend.project_reads == [
+            {"name": PROJECT, "size": str(TRACE_PAGE_SIZE)}
+        ]
         assert backend.reads["spans"] == [] and backend.deleted == []
+
+    async def test_more_partial_matches_than_a_default_page_are_all_read(
+        self, backend, client
+    ):
+        """A shared workspace: one default page of ``find_projects`` cannot
+        prove the project absent, and the delete would fail forever."""
+        backend.page["traces"] = lambda *_: _NOT_FOUND
+        backend.project_names = [f"{PROJECT.upper()}-{n:02d}" for n in range(25)]
+
+        assert await _eraser(client).erase_case(CASE, ENTERPRISE) == 0
+
+        assert backend.deleted == []
 
     @pytest.mark.parametrize(
         "projects",

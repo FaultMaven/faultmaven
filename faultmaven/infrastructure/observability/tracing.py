@@ -128,8 +128,9 @@ class OpikTracer(BaseExternalClient, ITracer):
             settings = get_settings()
 
         self.settings = settings
-        # Imported here, not at module load: this module's importers must not
-        # load the SDK, or the settings' .env, by importing it.
+        # Imported here, not at module load, so importing this module loads
+        # neither the SDK nor the settings' .env. opik_sdk loads both when it
+        # is imported, and the router and the classifier import it at load.
         from faultmaven.infrastructure.observability import opik_sdk
 
         self.opik_available = opik_sdk.OPIK_AVAILABLE

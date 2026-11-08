@@ -6,6 +6,11 @@ Here the settings stay the same in both arms (tracing enabled, a backend named)
 and only the record flips: each reader follows the record, none reads the
 setting. Before #2620 the call sites gated on ``OPIK_ENABLED`` and the
 middleware on the SDK's presence, so the "unconfigured" arm traced.
+
+The middleware arm shows only that the branch reads the record. In the API,
+``setup_middleware`` runs when ``faultmaven.main`` is imported, before the
+lifespan configures, so the branch reads the unconfigured placeholder and
+mounts nothing there. Here the record is set before the app is rebuilt.
 """
 
 import asyncio
@@ -50,6 +55,7 @@ def sdk(monkeypatch):
     fake.is_tracing_active = lambda: True
     monkeypatch.setitem(sys.modules, "opik", fake)
     monkeypatch.setattr(opik_sdk, "OPIK_AVAILABLE", True)
+    monkeypatch.setattr(opik_sdk, "SPAN_TAGGING_AVAILABLE", True)
     monkeypatch.setattr(opik_sdk, "fastapi_middleware", lambda: _OpikMiddleware)
 
     def track(**_options):

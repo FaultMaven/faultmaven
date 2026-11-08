@@ -163,13 +163,14 @@ CONTRACT_CHANGES: tuple[ContractChange, ...] = (
   Comet's Sentry is active in the process. Off unless an operator sets
   `OPIK_SENTRY_ENABLE=true` (#2585).
 * `project` and `ping_interval_s`: the Opik project traces go to and the case
-  delete searches, and the SDK's ping interval; both null when no trace backend
-  is configured.
+  delete searches, and the SDK's ping interval; null when configuration did
+  not resolve them.
 * `server_connection` (`connected`, `disconnected`, `no_client`, `unknown`)
-  and `parked_messages`: whether the process's trace client last reached its
-  backend, and how many traces it holds unsent after a failed send (#2573).
-  Read from a client already built, never building one; `unknown` and null
-  when the SDK's internals cannot be read.
+  and `parked_messages`: whether the serving worker's trace client last
+  reached its backend, and how many traces that worker holds unsent after a
+  failed send (#2573). Each worker and replica has its own; the response
+  reports the one that answered. Read from a client already built, never
+  building one; `unknown` and null when the SDK's internals cannot be read.
 
 MINOR because every client survives it: a new field on an operator-only
 response, which a client that does not read it ignores.""",

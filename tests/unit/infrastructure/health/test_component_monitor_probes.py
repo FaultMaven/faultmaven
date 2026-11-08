@@ -449,6 +449,26 @@ async def test_tracer_healthy_when_tracing_is_deliberately_off(monkeypatch):
     assert out["status"] is HealthStatus.HEALTHY
 
 
+async def test_tracer_degraded_when_enabled_and_configuring_raised(monkeypatch):
+    """The real ``configure``: a failure keeps ``enabled`` on the record, so an
+    enabled deployment recording nothing reads DEGRADED, as on ``main``."""
+    from faultmaven.infrastructure.observability import opik_sdk
+
+    monkeypatch.setattr(opik_sdk, "OPIK_AVAILABLE", True)
+    monkeypatch.setattr(opik_sdk, "_record", opik_sdk.backend())
+    settings = MagicMock()
+    settings.observability.opik_enabled = True
+    settings.observability.opik_use_local = True
+    settings.observability.opik_local_url.rstrip.side_effect = RuntimeError("boom")
+    _use_container(monkeypatch, None)
+
+    record = opik_sdk.configure(settings)
+    out = await ComponentHealthMonitor()._check_tracer_health()
+
+    assert (record.enabled, record.configured) == (True, False)
+    assert out["status"] is HealthStatus.DEGRADED
+
+
 # --------------------------------------------------------------------------
 # No probe may report HEALTHY without evidence
 # --------------------------------------------------------------------------

@@ -526,9 +526,10 @@ class TraceBackendStatus(BaseModel):
     """The LLM trace SDK's process policy, and its client's state (#2616 part c).
 
     The first three are the record the process wrote when it configured the
-    SDK at startup. The last two are read from a client the process has already
-    built, and never build one. An SDK whose internals moved reads ``unknown``
-    and null, never ``disconnected`` or 0.
+    SDK at startup. The last two are the serving worker's own: read from a
+    client that worker process has already built, never building one. Another
+    worker or replica holds its own client and buffer. An SDK whose internals
+    moved reads ``unknown`` and null, never ``disconnected`` or 0.
     """
 
     sentry_reporting: bool = Field(
@@ -541,7 +542,7 @@ class TraceBackendStatus(BaseModel):
     project: Optional[str] = Field(
         description=(
             "The Opik project traces are written to and the case delete "
-            "searches; null when no trace backend is configured."
+            "searches; null when configuration did not resolve one."
         )
     )
     ping_interval_s: Optional[int] = Field(
@@ -555,18 +556,20 @@ class TraceBackendStatus(BaseModel):
     server_connection: Literal["connected", "disconnected", "no_client", "unknown"] = (
         Field(
             description=(
-                "The SDK client's view of its backend: 'connected'; "
-                "'disconnected' after a failed send, while it parks traces "
-                "locally; 'no_client' when this process has built none; "
-                "'unknown' when the SDK's internals could not be read."
+                "The serving worker's SDK client's view of its backend: "
+                "'connected'; 'disconnected' after a failed send, while it "
+                "parks traces locally; 'no_client' when that worker process has "
+                "built none; 'unknown' when the SDK's internals could not be "
+                "read. Other workers and replicas are not reported."
             )
         )
     )
     parked_messages: Optional[int] = Field(
         description=(
-            "Traces this process holds in the SDK's local replay database, "
-            "unsent; null when no client is built, its database is not open, "
-            "or the SDK's internals could not be read."
+            "Traces the serving worker process holds in the SDK's local replay "
+            "database, unsent; null when it has built no client, its database "
+            "is not open, or the SDK's internals could not be read. Other "
+            "workers and replicas are not counted."
         )
     )
 
@@ -656,8 +659,8 @@ class EnvConfigStatusResponse(BaseModel):
     trace_backend: TraceBackendStatus = Field(
         description=(
             "The LLM trace SDK's process policy (crash reporting, project, "
-            "ping interval) and this process's trace client: whether its last "
-            "send reached the backend, and how many traces it holds unsent."
+            "ping interval) and the serving worker's trace client: whether its "
+            "last send reached the backend, and how many traces it holds unsent."
         )
     )
     timestamp: datetime

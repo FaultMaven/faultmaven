@@ -50,7 +50,7 @@ def _opik_track_classifier(func: Callable) -> Callable:
     when tracing is off, so a disabled deployment never reaches the SDK at this
     call site (#1121).
     """
-    if opik_sdk.OPIK_AVAILABLE:
+    if opik_sdk.SPAN_TAGGING_AVAILABLE:
         # Records no content and serves no case, so it carries no case tag and
         # the case delete has nothing to purge here (#2102).
         tracked = opik_sdk.track(
@@ -86,8 +86,8 @@ def _opik_track_classifier(func: Callable) -> Callable:
 
         return wrapper
 
-    # Fail-closed passthrough: Opik not installed. (Tracing being disabled is
-    # handled per call inside the wrapper above, not here.)
+    # Fail-closed passthrough: Opik not installed, or its span writers moved.
+    # (Tracing being disabled is handled per call inside the wrapper above.)
     return func
 
 

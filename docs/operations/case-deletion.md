@@ -131,9 +131,11 @@ read reports it.
   when a delete runs on that pod, or after the SDK's ping interval of 999999 s
   (`opik_sdk.PING_INTERVAL_S`), which is about 11.6 days. A trace parked or
   still batched on another replica is invisible to the delete and can land
-  after it. Each replica's `GET /admin/config/status` reports it under
-  `trace_backend`: `server_connection` reads `disconnected` while it parks,
-  and `parked_messages` counts what it holds.
+  after it. `GET /admin/config/status` reports it under `trace_backend` for
+  the worker process that served the request: `server_connection` reads
+  `disconnected` while that worker parks, and `parked_messages` counts what it
+  holds. Each worker of each replica parks its own traces, so one response
+  says nothing about the others.
 - **The title route (#2580).** It holds no lease, so its trace can land after
   the delete.
 - **Traces recorded before #2102.** They carry no case tag, so they cannot be

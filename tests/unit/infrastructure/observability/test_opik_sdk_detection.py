@@ -2,8 +2,10 @@
 
 Why an empty directory imports at all is documented once beside the guard
 itself — see ``faultmaven/utils/optional_dependency.py``. This file pins the one
-``import opik`` site, ``opik_sdk.OPIK_AVAILABLE``, which every call site, the
-middleware branch and ``OpikTracer.health_check`` read (#2616 part c).
+``import opik`` site: ``opik_sdk.OPIK_AVAILABLE``, which the middleware branch
+and ``OpikTracer.health_check`` read, and ``SPAN_TAGGING_AVAILABLE``, which also
+needs the span writers and which the router's and the classifier's decorators
+read (#2616 part c).
 
 The first test pins the CPython fact the guards rest on rather than assuming
 it, and pins it precisely: a namespace package *sets* ``__file__`` to None
@@ -61,7 +63,18 @@ def test_only_a_file_backed_package_sets_file_and_origin(
         sys.modules.pop(name, None)
 
 
-def _probe(substitute: str) -> dict:
+# What the probe reports by default: the two flags of ``opik_sdk``.
+_AVAILABILITY = """
+from faultmaven.infrastructure.observability import opik_sdk
+
+result = {
+    "available": opik_sdk.OPIK_AVAILABLE,
+    "middleware": opik_sdk.fastapi_middleware() is not None,
+}
+"""
+
+
+def _probe(substitute: str, report: str = _AVAILABILITY) -> dict:
     """Report the guard from a fresh interpreter, with `substitute` installed.
 
     A subprocess because the stand-in ``opik`` has to be in ``sys.modules``
@@ -84,17 +97,9 @@ opik = types.ModuleType("opik")
 sys.modules["opik"] = opik
 
 import json
-
-from faultmaven.infrastructure.observability import opik_sdk
-
+{report}
 with open(OUT, "w") as f:
-    json.dump(
-        {{
-            "available": opik_sdk.OPIK_AVAILABLE,
-            "middleware": opik_sdk.fastapi_middleware() is not None,
-        }},
-        f,
-    )
+    json.dump(result, f)
 """
     pin = (
         "import faultmaven as _fm, pathlib as _pl\n"
@@ -152,3 +157,63 @@ def test_installed_sdk_is_detected():
     # only the top-level flag flips. Asserted rather than merely described:
     # it is what keeps the negative test above measuring two separate facts.
     assert result["middleware"] is False
+
+
+# An installed SDK whose ``opik_context`` has, or has lost, the span writers.
+_CONTEXT = (
+    _REAL
+    + "\nopik.track = lambda **options: (lambda func: func)"
+    + '\ncontext = types.ModuleType("opik.opik_context")'
+    + '\ncontext.__file__ = "/nonexistent/site-packages/opik/opik_context.py"'
+    + "\n{writers}"
+    + "\nopik.opik_context = context"
+    + '\nsys.modules["opik.opik_context"] = context'
+)
+
+_DECORATED = """
+from faultmaven.infrastructure.llm.router import _opik_track_llm
+from faultmaven.infrastructure.observability import opik_sdk
+from faultmaven.modules.preprocessing.classifier import _opik_track_classifier
+
+
+async def routed():
+    return None
+
+
+def classified():
+    return None
+
+
+result = {
+    "available": opik_sdk.OPIK_AVAILABLE,
+    "span_tagging": opik_sdk.SPAN_TAGGING_AVAILABLE,
+    "router": _opik_track_llm("probe")(routed) is not routed,
+    "classifier": _opik_track_classifier(classified) is not classified,
+}
+"""
+
+
+@pytest.mark.parametrize(
+    "writers, decorated",
+    [
+        ("", False),
+        ("context.update_current_span = lambda **fields: None", False),
+        (
+            "context.update_current_span = context.update_current_trace = "
+            "lambda **fields: None",
+            True,
+        ),
+    ],
+    ids=["no-writers", "no-trace-writer", "both-writers"],
+)
+def test_an_sdk_without_the_span_writers_decorates_no_call(writers, decorated):
+    """A span the router cannot tag with its owner is one the case delete cannot
+    find (#2102), so neither call site is decorated without both writers."""
+    result = _probe(_CONTEXT.format(writers=writers), report=_DECORATED)
+
+    assert result == {
+        "available": True,
+        "span_tagging": decorated,
+        "router": decorated,
+        "classifier": decorated,
+    }

@@ -169,7 +169,7 @@ class TestObservabilityIntegration:
         from faultmaven.infrastructure.observability import opik_sdk
 
         wrapped = hasattr(router.LLMRouter.route, "__wrapped__")
-        assert wrapped == opik_sdk.OPIK_AVAILABLE
+        assert wrapped == opik_sdk.SPAN_TAGGING_AVAILABLE
 
     def test_agent_has_tracing(self):
         """Verify agent service methods have trace decorators."""

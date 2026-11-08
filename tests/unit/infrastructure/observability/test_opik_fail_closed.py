@@ -276,7 +276,11 @@ def test_importing_call_sites_has_no_side_effects():
     import-time gate read made a plain `import faultmaven...router` write a
     secret file into the process's cwd and freeze settings from the ambient
     environment — ahead of the conftest fixtures that exist to clear it. The
-    probe runs in a temporary cwd, so a created file is unambiguous."""
+    probe runs in a temporary cwd, so a created file is unambiguous.
+
+    Importing them does load the settings' .env into the environment: both
+    import ``opik_sdk``, which loads it before ``import opik`` (#2616 part c).
+    What they must not do is build the settings."""
     result = _run_probe("""
 import json
 import os

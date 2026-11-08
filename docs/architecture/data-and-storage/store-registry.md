@@ -254,7 +254,8 @@ Citations only. Paths are relative to `faultmaven/` unless they start with
 
 - `docs/operations/case-deletion.md` §Residuals and #2573. FaultMaven sets the ping
   interval (`opik_sdk.PING_INTERVAL_S`), and `GET /admin/config/status` reports the
-  buffer under `trace_backend` (`server_connection`, `parked_messages`).
+  serving worker's buffer under `trace_backend` (`server_connection`,
+  `parked_messages`); each worker of each replica has its own.
 
 ### LLM response cache
 

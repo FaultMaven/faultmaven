@@ -14,7 +14,7 @@ part (c), Principle 13.4).
 
 import logging
 import os
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 from faultmaven.config.settings import (
@@ -47,6 +47,18 @@ try:
         )
 except ImportError:
     OPIK_AVAILABLE = False
+
+# The span writers every traced call tags its owner with. The eraser finds a
+# trace only by those tags, so an SDK that moved either decorates no call.
+try:
+    from opik import opik_context
+
+    SPAN_TAGGING_AVAILABLE = OPIK_AVAILABLE and all(
+        module_is_usable(opik_context, attr)
+        for attr in ("update_current_span", "update_current_trace")
+    )
+except ImportError:
+    SPAN_TAGGING_AVAILABLE = False
 
 #: The SDK's connection-monitor ping interval. Its default is 10 s, but its ping
 #: URL drops the ``/opik/api/`` prefix (``urljoin`` with an absolute path), so it
@@ -159,36 +171,40 @@ def _enable_sdk_tracing() -> None:
 def configure(settings: Any) -> TraceBackend:
     """Point the SDK at the configured backend, or switch it off, and record the
     outcome. Once per process, before composition. Never raises: a failure is
-    recorded as the reason, and the process runs without tracing.
+    recorded as the reason, beside every field resolved before it, and the
+    process runs without tracing.
 
     It sets the environment variables the SDK's ``OpikConfig`` reads rather than
     calling ``opik.configure()``, which prompts, pings and writes
     ``~/.opik.config``. ``@opik.track`` builds its client lazily from them.
     """
     global _record
-    observed = TraceBackend(
-        sdk_available=OPIK_AVAILABLE, sentry_reporting=_sentry_reporting()
-    )
+    resolved: dict = {
+        "sdk_available": OPIK_AVAILABLE,
+        "sentry_reporting": _sentry_reporting(),
+    }
     try:
-        _record = _configure(settings, observed)
+        reason = _configure(settings, resolved)
     except Exception as e:
         logger.error(f"Failed to initialize Opik tracing: {e}")
         logger.info("Continuing without tracing...")
         reason = f"configuring the trace backend raised {exception_class_name(e)}"
-        _record = replace(observed, reason=reason)
+    _record = TraceBackend(**resolved, configured=reason is None, reason=reason)
     return _record
 
 
-def _configure(settings: Any, observed: TraceBackend) -> TraceBackend:
+def _configure(settings: Any, resolved: dict) -> Optional[str]:
+    """Resolve the backend into ``resolved``, as far as it gets, and apply it.
+    Returns why tracing is off, or None once a backend is configured."""
     obs = settings.observability
-    observed = replace(observed, enabled=bool(obs.opik_enabled))
+    resolved["enabled"] = bool(obs.opik_enabled)
     if not OPIK_AVAILABLE:
         logger.warning("Opik SDK not installed, skipping tracing initialization")
-        return replace(observed, reason="the Opik SDK is not installed")
-    if not observed.enabled:
+        return "the Opik SDK is not installed"
+    if not resolved["enabled"]:
         _disable_sdk_tracing()
         logger.info("Opik tracing disabled (OPIK_ENABLED=false)")
-        return replace(observed, reason="OPIK_ENABLED is false")
+        return "OPIK_ENABLED is false"
 
     if obs.opik_use_local:
         # Self-hosted Opik (local Docker or K8s) expects {base}/api/.
@@ -204,16 +220,17 @@ def _configure(settings: Any, observed: TraceBackend) -> TraceBackend:
             "Opik enabled but no URL configured. "
             "Set OPIK_USE_LOCAL=true or OPIK_URL_OVERRIDE. Tracing will be disabled."
         )
-        return replace(observed, reason="no backend URL is set")
+        return "no backend URL is set"
+    resolved["url"] = url
 
     # One project: the setting's, or its default when it is set empty (#2588).
-    project = (
+    project = resolved["project"] = (
         obs.opik_project_name
         or ObservabilitySettings.model_fields["opik_project_name"].default
     )
     api_key = obs.opik_api_key.get_secret_value() if obs.opik_api_key else None
     # FaultMaven reads COMET_WORKSPACE; the SDK reads OPIK_WORKSPACE.
-    workspace = obs.comet_workspace or "default"
+    workspace = resolved["workspace"] = obs.comet_workspace or "default"
 
     _enable_sdk_tracing()
     os.environ["OPIK_URL_OVERRIDE"] = url
@@ -240,15 +257,8 @@ def _configure(settings: Any, observed: TraceBackend) -> TraceBackend:
     logger.info(
         f"Opik tracing initialized: url={url}, project={project}, workspace={workspace}"
     )
-    return replace(
-        observed,
-        configured=True,
-        url=url,
-        project=project,
-        workspace=workspace,
-        ping_interval_s=PING_INTERVAL_S,
-        reason=None,
-    )
+    resolved["ping_interval_s"] = PING_INTERVAL_S
+    return None
 
 
 def trace_backend_configured() -> bool:

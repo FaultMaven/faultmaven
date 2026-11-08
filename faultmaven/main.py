@@ -85,11 +85,11 @@ from .api.v1.auth_dependencies import require_authentication, require_platform_a
 from .bootstrap.lifespan import lifespan
 
 # SessionManager now handled via DI container - services.session.SessionService
-# Middleware assembly, and the Opik SDK/middleware availability probe that
-# decides whether it adds ``OpikMiddleware`` to the stack, both live in
-# bootstrap/middleware.py (fm#1707 wave 2) — imported here, at the point the
-# probe used to run inline, so its import-time side effect (attempting
-# ``import opik``) still happens at the same place in this module's execution.
+# Middleware assembly lives in bootstrap/middleware.py (fm#1707 wave 2). It
+# imports no SDK: ``opik`` is imported by infrastructure/observability/opik_sdk.py
+# alone (#2616 part c), which this module first reaches through the
+# ``tenant_scope`` import above (its dependencies load the preprocessing
+# classifier).
 from .bootstrap.middleware import setup_middleware
 
 # Import API routes from modules

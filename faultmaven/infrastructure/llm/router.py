@@ -249,8 +249,9 @@ def _opik_track_llm(name: str):
     """
 
     def decorator(func):
-        if not opik_sdk.OPIK_AVAILABLE:
-            # Fail-closed passthrough: Opik not installed.
+        if not opik_sdk.SPAN_TAGGING_AVAILABLE:
+            # Fail-closed passthrough: Opik not installed, or its span writers
+            # moved, so a span could not carry the owner the eraser finds it by.
             return func
 
         tracked = opik_sdk.track(

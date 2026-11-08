@@ -271,7 +271,7 @@ class TestTheTraceIsTaggedWithItsCase:
         """With ``create_duplicate_root_span=False`` the SDK would record the
         raw return value as the trace's output."""
         with (
-            patch.object(opik_sdk, "OPIK_AVAILABLE", True),
+            patch.object(opik_sdk, "SPAN_TAGGING_AVAILABLE", True),
             patch.object(opik_sdk, "track") as track,
         ):
             router_module._opik_track_llm("x")(AsyncMock())

@@ -232,13 +232,17 @@ class UnavailableTraceEraser:
 def _no_such_project(rest: Any, project: str, options: dict) -> bool:
     """#2588's positive check, after a 404 for ``project``: the backend that
     answered lists its projects, and none is named exactly ``project``. Its name
-    filter matches partially and ignoring case, so the listing must hold every
-    match. Anything else raises or answers False, and the delete fails.
+    filter matches partially and ignoring case, and a page holds 10 by default,
+    so one page of the module's size is read, and it is conclusive only when it
+    holds every match (``total``). Anything else raises or answers False, and
+    the delete fails.
 
     What it cannot tell: a URL or workspace changed after the traces were
     written, which points the check at a backend that never held them (#2581).
     """
-    page = rest.projects.find_projects(name=project, request_options=options)
+    page = rest.projects.find_projects(
+        name=project, size=TRACE_PAGE_SIZE, request_options=options
+    )
     listed = page.content or []
     return page.total == len(listed) and all(p.name != project for p in listed)
 

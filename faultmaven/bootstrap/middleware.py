@@ -268,6 +268,9 @@ def setup_middleware(app):
 
     # 9. Opik tracing middleware, where the SDK ships one (opik 1.11.14 does
     # not) and the trace record says a backend is configured (#2616 part c).
+    # In the API this runs when faultmaven.main is imported, before the
+    # lifespan configures, so it reads the unconfigured record and mounts
+    # nothing there.
     opik_middleware = opik_sdk.fastapi_middleware()
     if (
         opik_middleware is not None
