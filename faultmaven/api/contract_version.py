@@ -164,8 +164,10 @@ deadline (Principle 14). How the worker ends decides the answer:
 * Past its memory limit: 422 `DOCUMENT_TOO_COMPLEX`, `detail` "Reading this
   document needed more memory than the conversion allows, so it was not
   converted. Export its text to a TXT or Markdown file and convert that
-  instead." The limit grows with `MAX_UPLOAD_SIZE_MB`, so a plain-text file at
-  the upload limit always fits under it.
+  instead." The limit is 128 MiB plus 64 MiB per MB of `MAX_UPLOAD_SIZE_MB`
+  (768 MiB at the default 10 MB). The costliest plain text measured needs
+  64 MiB plus 28.4 MiB per MB, so a plain-text file at the upload limit always
+  fits, with 2.2 times its need at the default.
 * Killed by a signal while its parser reads the file: 422
   `DOCUMENT_TOO_COMPLEX`, `detail` "This document could not be read, so it
   was not converted. Export its text to a TXT or Markdown file and convert

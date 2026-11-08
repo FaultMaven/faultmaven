@@ -76,13 +76,14 @@ PREPARATION_SLOTS = 2
 #: The worker's address-space limit (``RLIMIT_AS``), from the upload limit:
 #: ``preparation_memory_limit``. A plain-text file at the upload limit always
 #: gets through Stages 0-5 under it, so a memory failure can come only from
-#: parsing a PDF, DOCX or HTML file (#2622). Measured on six text shapes at 5,
-#: 10 and 20 MB, the costliest peaks at 64 MiB plus 20 MiB a MB (ASCII with one
-#: astral character, held four bytes a character: 464 MiB at 20 MB). The limit
-#: is 128 MiB plus 64 MiB a MB, twice the base and 3.2 times the slope: 768 MiB
-#: at the default 10 MB. Two of them, 1.5 GiB, beside a 1.5 GiB API process
-#: pass a 2 GiB pod limit, so the worker volunteers for the OOM killer
-#: (``preparation_worker``): it is killed before the API is.
+#: parsing a PDF, DOCX or HTML file (#2622). Measured through the worker on ten
+#: text shapes, the costliest is secret-dense lines (``password=hunter22``):
+#: 204, 348 and 632 MiB at 5, 10 and 20 MB, which is 64 MiB plus 28.4 MiB a MB.
+#: The limit is 128 MiB plus 64 MiB a MB, twice the base and 2.25 times the
+#: slope: 768 MiB at the default 10 MB, 2.2 times the costliest there. Two of
+#: them, 1.5 GiB, beside a 1.5 GiB API process pass a 2 GiB pod limit, so the
+#: worker volunteers for the OOM killer (``preparation_worker``): it is killed
+#: before the API is.
 PREPARATION_MEMORY_BASE_MIB = 128
 PREPARATION_MEMORY_MIB_PER_UPLOAD_MB = 64
 

@@ -28,7 +28,6 @@ import logging
 import os
 import random
 import signal
-import string
 import subprocess
 import sys
 import zipfile
@@ -409,8 +408,9 @@ async def test_a_stage_holding_the_lock_in_c_leaves_the_event_loop_free(
     selector and wakes) while the worker is still alive in that stage, and the
     deadline's kill must then reap it. In the worker the call holds the
     worker's lock. On a thread of this process it would hold this one's for
-    ever: the turns never run, and that run fails by its timeout guard, not by
-    a measured threshold (demonstrated on #2622, not run here).
+    ever: the turns never run, no guard in this process can fire while the lock
+    is held, and the run hangs until the CI job's own timeout (demonstrated on
+    #2622 under an outer timeout, not run here).
     """
     _stage(monkeypatch, "backtrack_forever")
     monkeypatch.setattr(dp, "EXTRACTION_TIMEOUT_SECONDS", 5)
@@ -665,26 +665,45 @@ async def test_a_worker_past_its_output_limit_is_killed_and_a_server_error(
     assert spawned[0].returncode is not None
 
 
-async def test_a_text_file_at_the_upload_limit_fits_under_the_memory_limit(tmp_path):
+#: Frontmatter with four of the six runbook fields: Stage 1b scans the body for
+#: code spans.
+_RUNBOOK_FRONTMATTER = b"---\nid: a\ndomain: b\nservice: c\nsymptom_class: d\n---\n"
+
+
+@pytest.mark.parametrize(
+    "prefix, line",
+    [
+        # The costliest measured when the limit was last derived: the redaction
+        # holds every one of its matches.
+        pytest.param(b"", b"password=hunter22\n", id="secret-dense-lines"),
+        # The code-span scan once held every line: 97% of the limit at 10 MB,
+        # and past it from about 18 MB.
+        pytest.param(
+            _RUNBOOK_FRONTMATTER, b"\xe9\n", id="runbook-frontmatter-short-lines"
+        ),
+    ],
+)
+async def test_a_text_file_at_the_upload_limit_fits_under_the_memory_limit(
+    tmp_path, monkeypatch, prefix, line
+):
     """The memory refusal's advice, to export the text, is true because a
     plain-text file at ``MAX_UPLOAD_SIZE_MB`` always gets through Stages 0-5
-    under the limit derived from it (the owner's ruling on #2622). This one is
-    the costliest shape measured when the limit was set: ASCII letters and
-    punctuation behind one astral character, so the text is held four bytes a
-    character. It is refused for its length, not its memory."""
-    size = get_settings().upload.max_upload_size_mb * 1024 * 1024
-    head = "\U0001f600 ERROR timeout; kubectl rollout restart the api.\n".encode()
-    alphabet = (string.ascii_letters + "!#$%&()*+,-./:;<=>?@[]^_{|}~").encode()
-    table = (alphabet * (256 // len(alphabet) + 1))[:256]
-    body = random.Random(2622).randbytes(size - len(head)).translate(table)
+    under the limit derived from it (the owner's ruling on #2622). Each shape
+    is refused for its length, and the worker's peak address space leaves at
+    least 30% of the limit spare, the margin the limit was derived with."""
+    _stage(monkeypatch, "prepare_and_measure")
+    upload_mb = get_settings().upload.max_upload_size_mb
+    head = prefix + b"ERROR timeout; kubectl rollout restart the api.\n"
+    body = line * ((upload_mb * 1024 * 1024 - len(head)) // len(line))
     path = tmp_path / "export.txt"
     path.write_bytes(head + body)
 
     result = await _preprocess(path)
 
-    assert (
-        result.error_code == ConversionErrorCode.DOCUMENT_TOO_LONG
-    ), result.rejection_reason
+    refused, peak = result.rejection_reason.split()
+    limit = dp.preparation_memory_limit(upload_mb)
+    assert refused == ConversionErrorCode.DOCUMENT_TOO_LONG
+    assert int(peak) < 0.7 * limit, f"peak {int(peak):,} of a {limit:,}-byte limit"
 
 
 def test_the_memory_limit_follows_the_upload_limit():

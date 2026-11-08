@@ -1,7 +1,8 @@
 """Stages the preparation worker runs in place of ``preparation.prepare`` (#2622).
 
 A test names one in the parent's ``_PREPARATION_STAGE``; only the worker
-imports it, so this module imports the standard library and nothing else.
+imports it, so this module imports the standard library and nothing else
+(``prepare_and_measure`` imports the stage it wraps when it runs).
 Each takes ``prepare``'s arguments and calls ``enter`` as ``prepare`` does.
 """
 
@@ -9,6 +10,7 @@ import logging
 import os
 import re
 import time
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +22,20 @@ def _entered(enter) -> None:
     enter(0)
     enter(1)
     logger.warning(ENTERED)
+
+
+def prepare_and_measure(file_path, content_type, enter):
+    """``prepare``, answering with its refusal code and the worker's peak
+    address space in bytes (``VmPeak``), as the refusal's reason."""
+    from faultmaven.modules.knowledge.domain.services.preparation import prepare
+
+    refused = prepare(file_path, content_type, enter).get("refused")
+    status = dict(
+        line.split(":", 1)
+        for line in Path("/proc/self/status").read_text().splitlines()
+    )
+    peak = int(status["VmPeak"].split()[0]) * 1024
+    return {"refused": "DOCUMENT_TOO_SHORT", "reason": f"{refused} {peak}"}
 
 
 def backtrack_forever(file_path, content_type, enter):
