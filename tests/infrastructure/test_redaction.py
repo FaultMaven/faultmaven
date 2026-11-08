@@ -11,10 +11,10 @@ from faultmaven.infrastructure.security.pseudonym_key import (
     reset_pseudonym_key_cache,
 )
 from faultmaven.infrastructure.security.redaction import (
-    SANITIZER_PATTERNS,
     DataSanitizer,
     RedactionUnavailableError,
 )
+from faultmaven.infrastructure.security.secret_patterns import SANITIZER_PATTERNS
 
 
 class TestDataSanitizer:

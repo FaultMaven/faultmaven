@@ -111,7 +111,7 @@ def decode_text(
     Raises ``UnicodeDecodeError`` exactly as ``bytes.decode(encoding, errors)``
     does, so an encoding-fallback caller keeps working unchanged. A UTF-8 BOM is
     PRESERVED (only ``utf-8-sig`` strips one), which matters because
-    ``document_preprocessor._LEADING_NOISE`` is what removes it and #1375 was
+    ``preparation._LEADING_NOISE`` is what removes it and #1375 was
     reopened once by a BOM already.
 
     Decoding is incremental, so both a multi-byte character and a CRLF pair can

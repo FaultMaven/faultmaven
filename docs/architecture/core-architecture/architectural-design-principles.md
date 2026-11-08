@@ -992,14 +992,36 @@ One check per clause. This table's Status column is the principle's only status 
 >
 > Work over input a user controls, and any work the design gives a deadline, runs where that deadline can stop it: a process the deadline kills, under declared time, memory and output limits.
 
-First application: document preparation; Evidence Tier 1 and the runbook validator gate next ([ruling on #2596](https://github.com/FaultMaven/faultmaven/issues/2596#issuecomment-6716225975)).
+First application: document preparation, built (#2622): Stages 0-5 of a conversion run in a spawned worker process, one per job under two slots, killed at the 120 s deadline, under its own memory, CPU-time and output limits (`document_preprocessor.py`, `preparation_worker.py`). Evidence Tier 1 and the runbook validator gate next ([ruling on #2596](https://github.com/FaultMaven/faultmaven/issues/2596#issuecomment-6716225975)).
 
 ### Enforcement
 
 | Check that fails on the next violation | Status |
 |---|---|
-| A responsiveness test with a stage that holds the interpreter lock in C (a large `re.sub`); it fails on a thread-only design. | Pending: #2596 |
-| A census of thread offloads over user-sized input, each naming the mechanism that keeps its deadline. | Pending: #2596 |
+| A responsiveness test with a stage that holds the interpreter lock in C (a large `re.sub`); it fails on a thread-only design. | Built for document preparation (#2622): `test_a_stage_holding_the_lock_in_c_leaves_the_event_loop_free` in `tests/unit/modules/knowledge/test_document_extraction_off_the_loop_2153.py` |
+| A census of thread offloads over user-sized input, each naming the mechanism that keeps its deadline. | Built (#2622): the table below, kept equal to the files by `tests/unit/architecture/test_thread_offload_census_2622.py`. The test checks the set of files, not each one's mechanism: a file that starts or stops offloading fails it until its row is added or removed. |
+
+**The thread offload census.** Every module in `faultmaven/` that calls `asyncio.to_thread`, `run_in_executor` or an executor's `submit`, with what it hands to the thread and what keeps the rule: I/O, native code that releases the interpreter lock and has no deadline to keep, redaction (ruled to keep its thread on #2596, measured inside its bound), or a #2596 stage still to come.
+
+| Module | What runs in the thread | Kind |
+|---|---|---|
+| `faultmaven/cli/personal_tenant.py` | The identity provider's organization calls | I/O |
+| `faultmaven/infrastructure/base_client.py` | A blocking client's calls (the ChromaDB HTTP client) | I/O |
+| `faultmaven/infrastructure/embedding_guard.py` | BGE-M3's tokenizer over the texts to index | Pending: #2596, the knowledge-base upload path |
+| `faultmaven/infrastructure/health/component_monitor.py` | Health probes | I/O |
+| `faultmaven/infrastructure/index_slot.py` | Indexing a document: chunking, embedding, vector writes | Pending: #2596, the knowledge-base upload path |
+| `faultmaven/infrastructure/model_cache.py` | BGE-M3 encoding a query | Native code that releases the lock |
+| `faultmaven/infrastructure/observability/trace_erasure.py` | The trace backend's deletes | I/O |
+| `faultmaven/infrastructure/security/case_redaction.py` | Case redaction | Redaction |
+| `faultmaven/infrastructure/security/redaction.py` | `DataSanitizer.sanitize`: Presidio's calls and the regex layer | Redaction |
+| `faultmaven/infrastructure/storage/filesystem.py` | File reads, writes and walks | I/O |
+| `faultmaven/infrastructure/storage/s3.py` | S3 calls | I/O |
+| `faultmaven/modules/auth/domain/services/sso_login_service.py` | The identity provider's calls | I/O |
+| `faultmaven/modules/case/api/title_generation.py` | Redacting a title candidate | Redaction |
+| `faultmaven/modules/knowledge/api/conversion_routes.py` | Copying and hashing the upload | I/O |
+| `faultmaven/modules/knowledge/api/routes.py` | Hashing the upload for its idempotency fingerprint | I/O |
+| `faultmaven/modules/knowledge/domain/services/runbook_validator.py` | The runbook validator gate | Pending: #2596, the validator gate |
+| `faultmaven/modules/preprocessing/preprocessing_service.py` | Evidence Tier 1's extractors | Pending: #2596, Evidence Tier 1 |
 
 ---
 
@@ -1026,6 +1048,7 @@ First application: document preparation; Evidence Tier 1 and the runbook validat
 | 2.1 | 2026-04-16 | P8: dead code intolerance. P11: "Clean Moves, Not Rewrites" with pre/post-launch distinction. P12: pre-launch cleanup rule. |
 | 2.2 | 2026-04-19 | P3 table lists synchronized with the storage redesign: removed `sessions` (auth sessions are Redis-only per `case-and-session-concepts.md`), `evidence_artifacts` and `standalone_evidence` (deleted dead-path tables), `agent_tool_calls` v1 (deleted; v2 renamed to canonical `agent_tool_calls`). Added `conversion_jobs` and `conversion_drafts` to case module list. Added `llm_config_overrides` as infrastructure-layer (not a domain module). Cross-reference to `deployment-schema-strategy.md` for the per-table applicability matrix. |
 | 2.3 | 2026-11-08 | P13 "One Owner per Fact" and P14 "Bounded Execution" added as ruled ([#2614](https://github.com/FaultMaven/faultmaven/pull/2614#issuecomment-6716219954); P13's adopted text: [#2617](https://github.com/FaultMaven/faultmaven/issues/2617#issuecomment-6718120222); P14: [#2596](https://github.com/FaultMaven/faultmaven/issues/2596#issuecomment-6716225975)), each with its enforcement table. P3 and P7 point at the [store registry](../data-and-storage/store-registry.md). P5 names `bootstrap/composition.py` as the composition root. P9's AI evaluation gate and P12's automated enforcement are marked not built. |
+| 2.4 | 2026-11-08 | P14 applied to document preparation ([#2622](https://github.com/FaultMaven/faultmaven/issues/2622)): its responsiveness test and the thread offload census built. |
 
 ### Key Changes Across Versions
 

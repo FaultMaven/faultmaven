@@ -78,7 +78,7 @@ from faultmaven.infrastructure.persistence.models import (
     KnowledgeItemModel,
     UploadedFileModel,
 )
-from faultmaven.infrastructure.security.redaction import SECRET_PATTERNS
+from faultmaven.infrastructure.security.secret_patterns import SECRET_PATTERNS
 from faultmaven.modules.knowledge.api import routes
 from faultmaven.modules.knowledge.api.routes import (
     RUNBOOK_SECURITY_HELP,

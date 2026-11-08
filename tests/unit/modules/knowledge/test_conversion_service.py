@@ -628,7 +628,7 @@ class TestTokenLimitRejection:
     @pytest.mark.asyncio
     async def test_preprocessor_hard_limit_constant(self):
         """MAX_TOKEN_LIMIT is 30,000."""
-        from faultmaven.modules.knowledge.domain.services.document_preprocessor import (
+        from faultmaven.modules.knowledge.domain.services.preparation import (
             MAX_TOKEN_LIMIT,
         )
 
@@ -664,7 +664,7 @@ class TestPIIRedaction:
 
         # The preprocessor does redaction in stage 3, so we use the real
         # redact_sensitive_content to prove it works, then mock the rest.
-        from faultmaven.modules.knowledge.domain.services.document_preprocessor import (
+        from faultmaven.modules.knowledge.domain.services.preparation import (
             redact_sensitive_content,
         )
 
@@ -672,12 +672,12 @@ class TestPIIRedaction:
 
         # Verify redaction happened
         assert "[REDACTED:api_key]" in redacted_text
-        assert report.total_redacted > 0
+        assert report["total_redacted"] > 0
 
         # Now use the redacted text in the pipeline
         preprocessing = _make_preprocessing_result(
             redacted_text,
-            warnings=[f"{report.total_redacted} sensitive items were redacted."],
+            warnings=[f"{report['total_redacted']} sensitive items were redacted."],
         )
         with patch.object(
             service._preprocessor, "preprocess", return_value=preprocessing
@@ -716,7 +716,7 @@ class TestPIIRedaction:
     def test_redaction_covers_multiple_patterns(self):
         """Redaction catches API keys, passwords and connection URLs; the
         marker names the sanitizer's entity type (#1980)."""
-        from faultmaven.modules.knowledge.domain.services.document_preprocessor import (
+        from faultmaven.modules.knowledge.domain.services.preparation import (
             redact_sensitive_content,
         )
 
@@ -730,7 +730,7 @@ class TestPIIRedaction:
         assert "[REDACTED:api_key]" in redacted
         assert "[REDACTED:password]" in redacted
         assert "[REDACTED:database_url]" in redacted
-        assert report.total_redacted >= 3
+        assert report["total_redacted"] >= 3
 
 
 # =============================================================================

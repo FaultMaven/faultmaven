@@ -765,7 +765,7 @@ def _pdf_with_filter(name: bytes) -> bytes:
 
 
 class TestParseFailureClassification:
-    """``DocumentPreprocessor`` classifies a parse failure by words in its
+    """``preparation.prepare`` classifies a parse failure by words in its
     message ("encoding"/"decode", "unsupported"). Since #836 a parser library's
     own exception contributes only its CLASS to that message, because its text
     can name the file's server path. The parser's own refusals
@@ -773,29 +773,24 @@ class TestParseFailureClassification:
     classification, both ways."""
 
     @pytest.mark.unit
-    async def test_a_foreign_extractor_error_is_file_corrupt(self, tmp_path):
+    def test_a_foreign_extractor_error_is_file_corrupt(self, tmp_path):
         """A real PDF with an unknown stream filter: pypdf raises
         ``NotImplementedError("Unsupported filter /Foo")``. Its text used to
         reach the classifier, and "Unsupported" made it UNSUPPORTED_FORMAT
         (415, whose copy says to upload a PDF, which this is). Only the class
         reaches it now, so it is FILE_CORRUPT (422)."""
-        from faultmaven.modules.knowledge.domain.services.document_preprocessor import (  # noqa: E501
-            DocumentPreprocessor,
-        )
+        from faultmaven.modules.knowledge.domain.services.preparation import prepare
 
         pdf = tmp_path / "odd-filter.pdf"
         pdf.write_bytes(_pdf_with_filter(b"Foo"))
 
-        result = await DocumentPreprocessor().preprocess(
-            pdf, "application/pdf", conversion_id="conv_test"
-        )
+        result = prepare(pdf, "application/pdf", lambda stage: None)
 
-        assert result.is_rejected
-        assert result.error_code == "FILE_CORRUPT"
-        assert result.rejection_reason.endswith("(NotImplementedError)")
+        assert result["refused"] == "FILE_CORRUPT"
+        assert result["reason"].endswith("(NotImplementedError)")
 
     @pytest.mark.unit
-    async def test_the_parsers_own_decode_refusal_is_still_an_encoding_error(
+    def test_the_parsers_own_decode_refusal_is_still_an_encoding_error(
         self, tmp_path, monkeypatch
     ):
         """``DocumentRefusal`` keeps its sentence, so "Cannot decode" still
@@ -805,9 +800,7 @@ class TestParseFailureClassification:
         from faultmaven.modules.knowledge.domain.services.document_parser import (
             DocumentRefusal,
         )
-        from faultmaven.modules.knowledge.domain.services.document_preprocessor import (  # noqa: E501
-            DocumentPreprocessor,
-        )
+        from faultmaven.modules.knowledge.domain.services.preparation import prepare
 
         def refuse(self, file_path):
             raise DocumentRefusal(
@@ -819,10 +812,7 @@ class TestParseFailureClassification:
         notes = tmp_path / "notes.txt"
         notes.write_text("some text that will not be read", encoding="utf-8")
 
-        result = await DocumentPreprocessor().preprocess(
-            notes, "text/plain", conversion_id="conv_test"
-        )
+        result = prepare(notes, "text/plain", lambda stage: None)
 
-        assert result.is_rejected
-        assert result.error_code == "ENCODING_ERROR"
-        assert "Cannot decode file" in result.rejection_reason
+        assert result["refused"] == "ENCODING_ERROR"
+        assert "Cannot decode file" in result["reason"]

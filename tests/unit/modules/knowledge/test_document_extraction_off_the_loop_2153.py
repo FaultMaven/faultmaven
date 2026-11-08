@@ -1,45 +1,54 @@
-"""An uploaded document is prepared off the event loop, under time bounds, and
-a PDF page pypdf refuses for its limits costs that page, not the document (#2153).
+"""An uploaded document is prepared in a worker process its parent kills at the
+deadline (#2153, #2622), and a PDF page pypdf refuses for its limits costs that
+page, not the document (#2153).
 
 ``DocumentPreprocessor.preprocess`` ran Stages 0-5 (extraction, cleanup,
 redaction, token counting) inline in a coroutine: a dense PDF measured 53.6 s
 of event-loop stall, during which every other request in the process waited.
-And one page pypdf refused for its limits raised out of the page loop, so the
-whole document was rejected as ``FILE_CORRUPT`` and every other page's text was
-lost.
+A thread pool then moved them off the loop, but a thread holds the interpreter
+lock through a C call, and one whose caller gave up runs on (Principle 14). And
+one page pypdf refused for its limits raised out of the page loop, so the whole
+document was rejected as ``FILE_CORRUPT`` and every other page's text was lost.
 
 PDFs here are a few hundred bytes, built by hand. A page is refused by lowering
 pypdf's per-stream parse budget in the test's own context, never by a stream
-dense enough to hit the default, which costs tens of seconds of CPU. Tests that
-hold the two extraction workers release them, and wait for them, before they
-end.
+dense enough to hit the default, which costs tens of seconds of CPU. A test
+that needs the worker to do something a document cannot make it do names a
+stage from ``preparation_stages`` in ``_PREPARATION_STAGE``. Every worker is a
+real process: they are few, and their deadlines short.
 """
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import logging
-import threading
-from contextlib import contextmanager
+import os
+import random
+import signal
+import subprocess
+import sys
+import time
 from pathlib import Path
 
 import pytest
-from pypdf import PageObject, apply_configuration
-from pypdf.errors import LimitReachedError
+from fastapi.testclient import TestClient
+from pypdf import apply_configuration
 
+from faultmaven.api.exception_handlers import internal_server_error_handler
+from faultmaven.api.middleware.request_id import RequestIdMiddleware
+from faultmaven.config.settings import get_settings
 from faultmaven.modules.knowledge.domain.models.conversion import ConversionErrorCode
 from faultmaven.modules.knowledge.domain.services import document_preprocessor as dp
-from faultmaven.modules.knowledge.domain.services.document_parser import (
-    DocumentParser,
-    ParsedDocument,
-)
 from faultmaven.modules.knowledge.domain.services.document_preprocessor import (
     DocumentPreprocessor,
+    PreparationFailed,
 )
+from faultmaven.utils.token_estimation import _get_tiktoken_encoder
+from tests import offline_tiktoken
+from tests.unit.modules.knowledge import preparation_stages
 from tests.unit.modules.knowledge.test_document_preprocessor_existing_runbook import (
     _app_with_real_service,
-)
-from tests.unit.modules.knowledge.test_gate_stays_off_the_event_loop import (
-    _ticks_during,
 )
 
 pytestmark = [pytest.mark.unit, pytest.mark.knowledge_base]
@@ -136,31 +145,6 @@ def _text_file(tmp_path: Path, name: str = "notes.txt") -> Path:
     return path
 
 
-@contextmanager
-def _both_workers_held():
-    """Both extraction workers busy until the block ends. On the way out the
-    queue is drained through a two-worker barrier, so any job still queued
-    behind the holds has run, and finished, before the caller asserts."""
-    release, running = threading.Event(), threading.Semaphore(0)
-
-    def hold():
-        running.release()
-        release.wait(5)
-
-    holds = [dp._EXTRACTION_POOL.submit(hold) for _ in range(2)]
-    try:
-        for _ in holds:
-            assert running.acquire(timeout=5), "a worker never took its hold"
-        yield
-    finally:
-        release.set()
-        for job in holds:
-            job.result(timeout=5)
-        barrier = threading.Barrier(2, timeout=5)
-        for job in [dp._EXTRACTION_POOL.submit(barrier.wait) for _ in range(2)]:
-            job.result(timeout=5)
-
-
 def _warnings(caplog) -> list[str]:
     return [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
 
@@ -176,8 +160,8 @@ async def test_a_refused_page_costs_that_page_and_the_limit_reaches_the_worker(
     """Page 2 is refused, page 1's text is kept, and the warning names page 2.
 
     The budget is lowered in THIS coroutine. pypdf's limits are a context
-    variable, so page 2 is refused only if the worker runs in a copy of the
-    caller's context: an executor does not copy it by itself.
+    variable, so page 2 is refused only if they reach the worker process: the
+    request passes them. The warning is the worker's own record, emitted here.
     """
     path = _pdf(tmp_path, _stream(_TEXT), _DENSE)
 
@@ -308,28 +292,6 @@ async def test_corruption_pypdf_reports_as_a_limit_stays_file_corrupt(
     assert [m for m in _warnings(caplog) if "read as corruption" in m]
 
 
-def test_post_convert_answers_document_too_complex(tmp_path, monkeypatch):
-    """Through the route, with the real service and preprocessor. The status
-    map answers 422 for a code it does not list, so the code is what this
-    asserts, not only the status."""
-
-    def refuse(self, *args, **kwargs):
-        raise LimitReachedError("Reached maximum number of tokens per stream.")
-
-    monkeypatch.setattr(PageObject, "extract_text", refuse)
-    pdf = _pdf(tmp_path, _stream(_TEXT)).read_bytes()
-
-    with _app_with_real_service() as client:
-        response = client.post(
-            "/api/v1/knowledge/convert",
-            data={"scope": "personal"},
-            files={"file": ("dense.pdf", pdf, "application/pdf")},
-        )
-
-    assert response.status_code == 422, response.text
-    assert response.json()["error_code"] == "DOCUMENT_TOO_COMPLEX", response.text
-
-
 @pytest.mark.parametrize(
     "name, body, content_type, code",
     [
@@ -354,164 +316,181 @@ async def test_the_other_refusals_keep_their_codes_in_the_worker(
 
 
 # ---------------------------------------------------------------------------
-# Off the loop, in the pool, under the bounds
+# In a worker process, killed at its deadline (Principle 14, #2622)
 # ---------------------------------------------------------------------------
 
+_REPO_ROOT = Path(__file__).resolve().parents[4]
 
-async def test_preparation_runs_in_the_extraction_pool(tmp_path, monkeypatch):
-    seen: list[str] = []
+#: The two sentences the owner ruled for #2622, verbatim.
+_OUT_OF_MEMORY = (
+    "Reading this document needed more memory than the conversion allows, so it "
+    "was not converted. Export its text to a TXT or Markdown file and convert "
+    "that instead."
+)
+_UNREADABLE = (
+    "This document could not be read, so it was not converted. Export its text "
+    "to a TXT or Markdown file and convert that instead."
+)
 
-    def record(self, *args, **kwargs):
-        seen.append(threading.current_thread().name)
-        return ParsedDocument(_TEXT)
 
-    monkeypatch.setattr(DocumentParser, "extract_document_text", record)
-
-    await DocumentPreprocessor().preprocess(
-        _text_file(tmp_path), "text/plain", conversion_id="conv_test"
+def _stage(monkeypatch, name: str) -> None:
+    """The worker runs ``preparation_stages.<name>`` in place of ``prepare``."""
+    monkeypatch.setattr(
+        dp, "_PREPARATION_STAGE", f"{preparation_stages.__name__}:{name}"
     )
 
-    assert len(seen) == 1 and seen[0].startswith("document-extract"), seen
+
+def _slots(monkeypatch, count: int) -> None:
+    monkeypatch.setattr(dp, "PREPARATION_SLOTS", count)
+    monkeypatch.setattr(dp, "_slots", None)
 
 
-async def test_preparation_does_not_stall_the_event_loop(tmp_path, monkeypatch):
-    """A tick count, not a duration, for the reason ``_ticks_during`` gives.
+@pytest.fixture
+def spawned(monkeypatch):
+    """Every worker the test starts, to read how it ended."""
+    processes: list[asyncio.subprocess.Process] = []
+    spawn = asyncio.create_subprocess_exec
 
-    The inline run is the positive control: Stages 0-5 called from a coroutine,
-    as before the fix, give the loop no tick at all. Without it a payload too
-    small to stall anything would pass this while proving nothing.
+    async def record(*args, **kwargs):
+        processes.append(await spawn(*args, **kwargs))
+        return processes[-1]
+
+    monkeypatch.setattr(dp.asyncio, "create_subprocess_exec", record)
+    return processes
+
+
+class _OnEntered(logging.Handler):
+    """Calls ``then`` on the record a test stage logs once it has entered: in a
+    worker it reaches this process through the worker's pipe."""
+
+    def __init__(self, then) -> None:
+        super().__init__()
+        self._then = then
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if record.getMessage() == preparation_stages.ENTERED:
+            self._then()
+
+
+@pytest.fixture
+def on_entered(caplog):
+    """Install ``_OnEntered(then)`` for the test; WARNING reaches the worker."""
+    caplog.set_level(logging.WARNING)
+    logger, handlers = logging.getLogger(preparation_stages.__name__), []
+
+    def install(then) -> None:
+        handlers.append(_OnEntered(then))
+        logger.addHandler(handlers[-1])
+
+    yield install
+    for handler in handlers:
+        logger.removeHandler(handler)
+
+
+async def _preprocess(path: Path, content_type: str = "text/plain"):
+    return await DocumentPreprocessor().preprocess(
+        path, content_type, conversion_id="conv_test"
+    )
+
+
+async def test_a_stage_holding_the_lock_in_c_leaves_the_event_loop_free(
+    tmp_path, monkeypatch, on_entered
+):
+    """Principle 14's responsiveness check, ordered rather than timed.
+
+    The stage holds the interpreter lock through one C call, a large
+    ``re.sub``, and answers with the moment that call returned. Once the stage
+    has entered, the loop must complete three turns (each a sleep: the loop
+    blocks in its selector and wakes) before then. In the worker the call holds
+    the worker's lock. On a thread of this process it holds this one's, and no
+    turn can run until the call has returned: the same test, pointed at an
+    in-thread run of the stage, fails (demonstrated on #2622, not run here).
     """
+    _stage(monkeypatch, "hold_the_lock")
+    loop, turned, tasks = asyncio.get_running_loop(), [], []
 
-    def burn(self, *args, **kwargs):
-        sum(i * i for i in range(2_000_000))
-        return ParsedDocument(_TEXT)
+    async def three_turns() -> None:
+        for _ in range(3):
+            await asyncio.sleep(0.005)
+        turned.append(time.monotonic())
 
-    monkeypatch.setattr(DocumentParser, "extract_document_text", burn)
-    preprocessor, path = DocumentPreprocessor(), _text_file(tmp_path)
-
-    async def inline():
-        return preprocessor._prepare(path, "text/plain")
-
-    async def through_preprocess():
-        return await preprocessor.preprocess(
-            path, "text/plain", conversion_id="conv_test"
+    on_entered(
+        lambda: loop.call_soon_threadsafe(
+            lambda: tasks.append(loop.create_task(three_turns()))
         )
-
-    inline_ticks = await _ticks_during(inline)
-    hopped_ticks = await _ticks_during(through_preprocess)
-
-    assert inline_ticks == 0, (
-        f"positive control failed: the loop ran {inline_ticks} times during the "
-        "inline preparation, so the stub is not burning enough CPU to mean anything"
     )
-    assert hopped_ticks >= 3, (
-        f"the loop ran only {hopped_ticks} times while preprocess prepared the "
-        "document: the stages are not leaving the event loop"
-    )
+    result = await _preprocess(_text_file(tmp_path))
+    await asyncio.gather(*tasks)
+
+    returned = float(result.rejection_reason)
+    assert turned, "the stage's entry never reached the loop"
+    assert turned[0] < returned, "the loop was held while the stage held its lock"
 
 
-async def test_a_preparation_past_its_time_limit_is_refused(
-    tmp_path, monkeypatch, caplog
+async def test_a_preparation_past_its_deadline_is_killed_and_its_slot_frees(
+    tmp_path, monkeypatch, spawned, caplog
 ):
-    """The request is answered at the limit, while the worker runs on. The
-    worker is released and waited for, so none outlives the test."""
-    release, finished = threading.Event(), threading.Event()
+    _stage(monkeypatch, "never_return")
+    _slots(monkeypatch, 1)
+    monkeypatch.setattr(dp, "EXTRACTION_TIMEOUT_SECONDS", 1)
 
-    def block(self, *args, **kwargs):
-        try:
-            release.wait(5)
-            return ParsedDocument(_TEXT)
-        finally:
-            finished.set()
-
-    monkeypatch.setattr(DocumentParser, "extract_document_text", block)
-    monkeypatch.setattr(dp, "EXTRACTION_TIMEOUT_SECONDS", 0.05)
-
-    try:
-        with caplog.at_level(logging.WARNING):
-            result = await DocumentPreprocessor().preprocess(
-                _text_file(tmp_path), "text/plain", conversion_id="conv_test"
-            )
-    finally:
-        release.set()
-        assert finished.wait(5), "the blocked worker outlived the test"
-
-    assert result.is_rejected
-    assert result.error_code == ConversionErrorCode.DOCUMENT_TOO_COMPLEX
-    assert "took longer than the 0.05-second limit" in result.rejection_reason
-    assert [m for m in _warnings(caplog) if "notes.txt" in m and "0.05 s" in m]
-
-
-async def test_an_abandoned_worker_stops_after_its_current_page(
-    tmp_path, monkeypatch, caplog
-):
-    """Once its caller has timed out, the worker finishes the page it is on and
-    reads no other: a thread cannot be killed, so this is what bounds it."""
-    gate, finished, read = threading.Event(), threading.Event(), []
-    read_page, extract = PageObject.extract_text, DocumentParser.extract_document_text
-
-    def slow_page(self, *args, **kwargs):
-        gate.wait(5)
-        read.append(1)
-        return read_page(self, *args, **kwargs)
-
-    def extract_then_signal(self, *args, **kwargs):
-        try:
-            return extract(self, *args, **kwargs)
-        finally:
-            finished.set()
-
-    monkeypatch.setattr(PageObject, "extract_text", slow_page)
-    monkeypatch.setattr(DocumentParser, "extract_document_text", extract_then_signal)
-    monkeypatch.setattr(dp, "EXTRACTION_TIMEOUT_SECONDS", 0.05)
-    path = _pdf(tmp_path, *[_stream(_TEXT)] * 5)
-
-    try:
-        with caplog.at_level(logging.WARNING):
-            result = await DocumentPreprocessor().preprocess(
-                path, "application/pdf", conversion_id="conv_test"
-            )
-            gate.set()
-            assert finished.wait(5), "the worker never finished"
-    finally:
-        gate.set()
+    with caplog.at_level(logging.WARNING):
+        result = await _preprocess(_text_file(tmp_path))
 
     assert result.error_code == ConversionErrorCode.DOCUMENT_TOO_COMPLEX
-    assert len(read) == 1, f"the worker read {len(read)} pages after its caller left"
-    assert [m for m in _warnings(caplog) if "stopped before page 2 of 5" in m]
+    assert "took longer than the 1-second limit" in result.rejection_reason
+    assert [m for m in _warnings(caplog) if "notes.txt" in m and "past 1 s" in m]
+    assert spawned[0].returncode == -signal.SIGKILL
+    assert not dp._preparation_slots().locked(), "the killed worker kept its slot"
+
+    # The next job takes the slot, in a process of its own.
+    _stage(monkeypatch, "answer_with_my_pid")
+    monkeypatch.setattr(dp, "EXTRACTION_TIMEOUT_SECONDS", 120)
+    result = await _preprocess(_text_file(tmp_path))
+    assert int(result.rejection_reason) == spawned[1].pid != os.getpid()
 
 
-async def test_a_request_with_no_free_worker_is_busy_and_its_work_never_runs(
-    tmp_path, monkeypatch, caplog
+async def test_a_cancelled_request_kills_its_worker(
+    tmp_path, monkeypatch, spawned, on_entered
 ):
-    """Time spent queued is not the document's fault: the answer is the
-    server's capacity, and the queued work is cancelled, not left to run."""
-    ran: list[str] = []
+    _stage(monkeypatch, "never_return")
+    _slots(monkeypatch, 1)
+    loop, entered = asyncio.get_running_loop(), asyncio.Event()
+    on_entered(lambda: loop.call_soon_threadsafe(entered.set))
 
-    def record(self, file_path, *args, **kwargs):
-        ran.append(file_path.name)
-        return ParsedDocument(_TEXT)
+    request = asyncio.create_task(_preprocess(_text_file(tmp_path)))
+    await asyncio.wait_for(entered.wait(), 60)
+    request.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await request
 
-    monkeypatch.setattr(DocumentParser, "extract_document_text", record)
+    assert spawned[0].returncode == -signal.SIGKILL
+    assert not dp._preparation_slots().locked()
+
+
+async def test_a_request_with_no_free_slot_is_busy_and_starts_no_worker(
+    tmp_path, monkeypatch, spawned, caplog
+):
+    """Time spent waiting is not the document's fault: the answer is the
+    server's capacity, and nothing of the request runs."""
+    _slots(monkeypatch, 0)
     monkeypatch.setattr(dp, "EXTRACTION_TIMEOUT_SECONDS", 0.05)
 
-    with caplog.at_level(logging.WARNING), _both_workers_held():
-        result = await DocumentPreprocessor().preprocess(
-            _text_file(tmp_path, "queued.txt"), "text/plain", conversion_id="conv_test"
-        )
+    with caplog.at_level(logging.WARNING):
+        result = await _preprocess(_text_file(tmp_path, "queued.txt"))
 
     assert [m for m in _warnings(caplog) if "queued.txt: no extraction worker" in m]
     assert result.error_code == ConversionErrorCode.CONVERSION_BUSY
     assert "busy converting other documents" in result.rejection_reason
-    assert "complex" not in result.rejection_reason
-    assert ran == [], f"the queued work ran after its caller left: {ran}"
+    assert spawned == []
 
 
 def test_post_convert_answers_conversion_busy_with_retry_after(tmp_path, monkeypatch):
+    _slots(monkeypatch, 0)
     monkeypatch.setattr(dp, "EXTRACTION_TIMEOUT_SECONDS", 0.05)
     pdf = _pdf(tmp_path, _stream(_TEXT)).read_bytes()
 
-    with _both_workers_held(), _app_with_real_service() as client:
+    with _app_with_real_service() as client:
         response = client.post(
             "/api/v1/knowledge/convert",
             data={"scope": "personal"},
@@ -525,16 +504,161 @@ def test_post_convert_answers_conversion_busy_with_retry_after(tmp_path, monkeyp
     )
 
 
-async def test_a_timeout_error_raised_in_the_worker_propagates(tmp_path, monkeypatch):
-    """Only the bounds' own expiry is the time limit. A ``TimeoutError`` from
-    inside the work (an ``ETIMEDOUT`` from a read) is an error, not a refusal."""
+@pytest.mark.parametrize(
+    "stage, refusal",
+    [
+        pytest.param("run_out_of_memory", _OUT_OF_MEMORY, id="memory-code"),
+        pytest.param("die_while_parsing", _UNREADABLE, id="dies-in-stage-1"),
+        pytest.param("die_before_reading", None, id="dies-in-stage-0"),
+        pytest.param("die_after_parsing", None, id="dies-in-stage-2"),
+        pytest.param("no_such_stage", None, id="fails-to-start"),
+    ],
+)
+async def test_a_dead_worker_is_refused_only_for_a_cause_in_the_document(
+    tmp_path, monkeypatch, spawned, caplog, stage, refusal
+):
+    """The owner's ruling on #2622. Its memory code, or a death while parsing,
+    is the document's: ``DOCUMENT_TOO_COMPLEX`` with the ruled sentence. Any
+    other death may be the server's: a server error, the exit and the stage
+    logged."""
+    _stage(monkeypatch, stage)
 
-    def fail(self, *args, **kwargs):
-        raise TimeoutError("ETIMEDOUT reading the upload")
+    with caplog.at_level(logging.WARNING):
+        if refusal is None:
+            with pytest.raises(PreparationFailed, match="exited"):
+                await _preprocess(_text_file(tmp_path))
+        else:
+            result = await _preprocess(_text_file(tmp_path))
+            assert result.error_code == ConversionErrorCode.DOCUMENT_TOO_COMPLEX
+            assert result.rejection_reason == refusal
 
-    monkeypatch.setattr(DocumentParser, "extract_document_text", fail)
+    code = spawned[0].returncode
+    assert code is not None
+    assert [m for m in caplog.messages if f"exited {code} in stage" in m]
 
-    with pytest.raises(TimeoutError, match="ETIMEDOUT"):
-        await DocumentPreprocessor().preprocess(
-            _text_file(tmp_path), "text/plain", conversion_id="conv_test"
+
+def test_a_worker_death_after_parsing_answers_the_global_500(tmp_path, monkeypatch):
+    """Through the route: not the route's own "try again" 500, but the global
+    handler's, with the request id and no advice."""
+    _stage(monkeypatch, "die_after_parsing")
+    app = _app_with_real_service().app
+    app.add_exception_handler(500, internal_server_error_handler)
+    app.add_middleware(RequestIdMiddleware)
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post(
+            "/api/v1/knowledge/convert",
+            data={"scope": "personal"},
+            files={"file": ("notes.txt", _TEXT.encode(), "text/plain")},
         )
+
+    assert response.status_code == 500, response.text
+    body = response.json()
+    assert body["detail"] == "Internal server error"
+    assert body["request_id"] == response.headers["X-Request-ID"]
+    assert "error_code" not in body
+
+
+def test_post_convert_answers_a_death_while_parsing_with_its_sentence(
+    tmp_path, monkeypatch
+):
+    """Through the route, with the real service and preprocessor. The status
+    map answers 422 for a code it does not list, so the code is asserted too."""
+    _stage(monkeypatch, "die_while_parsing")
+
+    with _app_with_real_service() as client:
+        response = client.post(
+            "/api/v1/knowledge/convert",
+            data={"scope": "personal"},
+            files={"file": ("notes.txt", _TEXT.encode(), "text/plain")},
+        )
+
+    assert response.status_code == 422, response.text
+    assert response.json() == {
+        "detail": _UNREADABLE,
+        "error_code": "DOCUMENT_TOO_COMPLEX",
+    }
+
+
+async def test_a_worker_past_its_output_limit_is_killed_and_a_server_error(
+    tmp_path, monkeypatch, spawned
+):
+    """An accepted document's frames fit the limit by construction, so a worker
+    past it is a fault, not the document's."""
+    _stage(monkeypatch, "answer_too_much")
+    monkeypatch.setattr(dp, "PREPARATION_OUTPUT_LIMIT_BYTES", 64 * 1024)
+
+    with pytest.raises(PreparationFailed, match="output passed its limit"):
+        await _preprocess(_text_file(tmp_path))
+
+    assert spawned[0].returncode is not None
+
+
+async def test_a_text_file_at_the_upload_limit_fits_under_the_memory_limit(tmp_path):
+    """The memory refusal's advice, to export the text, is true because a
+    plain-text file at ``MAX_UPLOAD_SIZE_MB`` always gets through Stages 0-5
+    (the owner's ruling on #2622). This one is the costliest text measured
+    when the limit was set: random bytes 0x80-0xFF, read as Latin-1, 14.5
+    million tokens. It is refused for its length, not its memory."""
+    size = get_settings().upload.max_upload_size_mb * 1024 * 1024
+    head = b"ERROR timeout; kubectl rollout restart the api.\n"
+    high = bytes(range(0x80, 0x100)) * 2
+    body = random.Random(2622).randbytes(size - len(head)).translate(high)
+    path = tmp_path / "export.txt"
+    path.write_bytes(head + body)
+
+    result = await _preprocess(path)
+
+    assert (
+        result.error_code == ConversionErrorCode.DOCUMENT_TOO_LONG
+    ), result.rejection_reason
+
+
+async def test_the_worker_counts_tokens_as_this_process_does(tmp_path):
+    """The worker inherits the environment, so it loads the encoding from
+    ``TIKTOKEN_CACHE_DIR`` (the knowledge conftest seeds it). Were the file
+    missing, the worker would download it: refused here instead."""
+    seeded = (
+        Path(os.environ["TIKTOKEN_CACHE_DIR"])
+        / hashlib.sha1(offline_tiktoken.BLOB_URL.encode()).hexdigest()
+    )
+    assert hashlib.sha256(seeded.read_bytes()).hexdigest() == (
+        offline_tiktoken.BLOB_SHA256
+    ), "the worker's tiktoken cache is missing: it would ask the network"
+    path = tmp_path / "notes.txt"
+    path.write_text("支付服务在部署后开始返回错误 " + _TEXT, encoding="utf-8")
+
+    result = await _preprocess(path)
+
+    assert not result.is_rejected, result.rejection_reason
+    counted = len(_get_tiktoken_encoder("gpt-4").encode(result.extracted_text))
+    assert result.token_count == counted != len(result.extracted_text) // 4
+
+
+def test_the_worker_imports_the_parsers_and_nothing_heavy():
+    """The worker's import surface, in a fresh interpreter: no store, model,
+    tracing or settings library, and no thread beside the main one, so its
+    address-space limit counts no thread pool's reservations."""
+    probe = (
+        "import sys, threading\n"
+        "import faultmaven\n"
+        "import faultmaven.modules.knowledge.domain.services.preparation_worker\n"
+        "import faultmaven.modules.knowledge.domain.services.preparation\n"
+        "heavy = ('chromadb', 'sqlalchemy', 'torch', 'opik', 'numpy', 'pydantic')\n"
+        "print(faultmaven.__file__)\n"
+        "print([name for name in heavy if name in sys.modules])\n"
+        "print(threading.active_count())\n"
+    )
+    done = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    assert done.returncode == 0, done.stderr
+    where, heavy, threads = done.stdout.splitlines()
+    assert Path(where).is_relative_to(_REPO_ROOT), where
+    assert heavy == "[]"
+    assert threads == "1"

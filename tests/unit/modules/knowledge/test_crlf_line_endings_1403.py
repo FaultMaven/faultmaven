@@ -146,7 +146,7 @@ def test_decode_text_agrees_with_decode_then_normalize():
 
 def test_decode_text_preserves_a_bom_and_still_raises_on_bad_utf8():
     """Two behaviours the upload route depends on. The BOM must survive because
-    ``document_preprocessor._LEADING_NOISE`` is what strips it and #1375 was
+    ``preparation._LEADING_NOISE`` is what strips it and #1375 was
     reopened by a BOM once already; the error must still raise because the route
     catches it to fall back to latin-1."""
     assert decode_text("﻿---\r\n".encode("utf-8"))[0] == "﻿"

@@ -22,10 +22,12 @@ import pytest
 from faultmaven.modules.knowledge.domain.models.conversion import ConversionErrorCode
 from faultmaven.modules.knowledge.domain.services.document_parser import DocumentParser
 from faultmaven.modules.knowledge.domain.services.document_preprocessor import (
+    DocumentPreprocessor,
+)
+from faultmaven.modules.knowledge.domain.services.preparation import (
     _RUNBOOK_BODY_SECTIONS,
     _RUNBOOK_FRONTMATTER_FIELDS,
     _RUNBOOK_FRONTMATTER_MIN_FIELDS,
-    DocumentPreprocessor,
     _has_runbook_body,
     cleanup_text,
     detect_existing_runbook,
@@ -538,7 +540,7 @@ def test_incident_report_gets_no_near_runbook_warning():
     ``is_near_runbook`` keys on ``symptom_class`` as well, which no tracker
     export carries.
     """
-    from faultmaven.modules.knowledge.domain.services.document_preprocessor import (
+    from faultmaven.modules.knowledge.domain.services.preparation import (
         _has_runbook_frontmatter,
         is_near_runbook,
     )
@@ -550,7 +552,7 @@ def test_incident_report_gets_no_near_runbook_warning():
 
 def test_a_full_runbook_is_not_a_near_runbook():
     """A runbook the gate refuses outright is not also warned about."""
-    from faultmaven.modules.knowledge.domain.services.document_preprocessor import (
+    from faultmaven.modules.knowledge.domain.services.preparation import (
         is_near_runbook,
     )
 
