@@ -966,7 +966,7 @@ These components provide **technical capabilities** and should remain horizontal
 - **Structure**: Keep as-is (providers, router, registry)
 
 #### 2. **`infrastructure/storage/`** ❌ **KEEP HORIZONTAL**
-- **Purpose**: File storage abstraction (S3, filesystem, Azure Blob)
+- **Purpose**: File storage abstraction (S3, filesystem)
 - **Why Horizontal**:
   - Used by Evidence, Knowledge, Report modules
   - Provider-agnostic abstraction

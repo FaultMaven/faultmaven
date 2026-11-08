@@ -131,7 +131,7 @@ flowchart TB
         subgraph BLOB["Artifacts · IStorageBackend"]
             direction TB
             LocalFS[(Local FS<br/>data/evidence/)]
-            S3Back[(S3 / Azure)]
+            S3Back[(S3)]
         end
     end
 
@@ -144,7 +144,7 @@ flowchart TB
         Tavily["Tavily<br/>(web search API)"]
         OpikExt["Opik<br/>(LLM tracing)"]
         PromExt["Prometheus<br/>(metrics scrape)"]
-        ObjStore["S3 / Azure Blob"]
+        ObjStore["S3"]
     end
 
     %% ============================================================

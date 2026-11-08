@@ -42,8 +42,12 @@ The diagram shows access paths only. What each backend holds, and how each store
              ├──> ISessionStore (RedisSessionStore)
              │    └──> Redis
              │
-             ├──> Protection middleware, claims, revocations, PII registry
+             ├──> Protection middleware, claims, PII registry
              │    └──> Redis (the shared redis_client)
+             │
+             ├──> Token revocation store
+             │    ├──> Redis (cloud: RedisTokenRevocationStore)
+             │    └──> relational database (standalone: token_revocations)
              │
              ├──> IKnowledgeVectorStore (KnowledgeVectorStore)
              │    └──> ChromaDB KB instance (faultmaven_kb, every scope)

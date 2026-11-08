@@ -412,7 +412,7 @@ async def generate_bulk_report(case_ids: list[str]):
 |-----------|---------------------------|---------------|
 | LLM providers | Yes (9 providers: Anthropic, OpenAI, Gemini, Fireworks, Groq, HuggingFace, Cohere, OpenRouter, Local Ollama/vLLM) | ✅ Yes |
 | Vector stores | No (one class per store; PersistentClient or HttpClient is the injected client, not a second implementation) | KB only: `IKnowledgeVectorStore`, which `KnowledgeService` is typed against (#2284). No generic vector-store protocol (#1782) |
-| Storage backends | Yes (S3, Azure Blob, filesystem) | ✅ Yes |
+| Storage backends | Yes (S3, filesystem) | ✅ Yes |
 | Session stores | Yes (Redis, FakeRedis) | ✅ Yes |
 | Module contracts | Yes (for cross-module calls) | ✅ Yes |
 | CaseService | No (one implementation) | ❌ No |
@@ -429,7 +429,7 @@ If "Go to Definition" takes you to a Protocol instead of real code, ask: **"Will
 | `ILLMProvider` | LLM integration | Anthropic, OpenAI, Gemini, Fireworks, Groq, HuggingFace, Cohere, OpenRouter, Local (Ollama/vLLM) |
 | `IKnowledgeVectorStore` | Knowledge-base search and writes (one collection, every scope) | `KnowledgeVectorStore` over ChromaDB |
 | `ISessionStore` | Session management | Redis (cloud), FakeRedis (local) |
-| `IStorageBackend` | File storage | S3, Azure Blob, Filesystem |
+| `IFileStorageBackend` | File storage | S3, filesystem |
 | `ICaseRepository` | Cross-module case access | SQLite, PostgreSQL hybrid, sessionless variants |
 
 ---

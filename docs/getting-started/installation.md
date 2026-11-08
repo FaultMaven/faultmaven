@@ -27,7 +27,7 @@ FaultMaven is **one codebase**. Standalone and Cloud run the same code and schem
 | **Tenancy / users** | Single-tenant, single-user | Multi-tenant, multi-user |
 | **Database** | SQLite (fixed) | PostgreSQL |
 | **Sessions** | In-process FakeRedis (fixed) | Redis |
-| **File storage** | Local filesystem (fixed) | Object storage (S3 / Azure Blob) |
+| **File storage** | Local filesystem (fixed) | Object storage (S3) |
 | **Observability / PII** | Basic logging | Opik tracing, Prometheus, Presidio PII redaction |
 | **Configuration surface** | Single slim `.env` | Kubernetes ConfigMaps + Secrets |
 
@@ -154,7 +154,7 @@ Once running, access the API at:
 
 Standalone runs on **fixed simple defaults** (SQLite, in-process FakeRedis, embedded ChromaDB, local filesystem) and is **single-user**. Production-grade, multi-tenant infrastructure (PostgreSQL, Redis, object storage) is provided by the **Cloud** deployment architecture.
 
-Cloud is cloud-native: the same core engine plus the composed proprietary modules (billing, usage metering, hosted IAM/admin), configured through **Kubernetes ConfigMaps and Secrets** (not a `.env` file) and operated either as FaultMaven-hosted SaaS or self-hosted as a private cloud. The data-tier wiring (PostgreSQL, Redis, S3/Azure Blob), observability (Opik, Prometheus), and PII redaction (Presidio) live in the cloud config surface.
+Cloud is cloud-native: the same core engine plus the composed proprietary modules (billing, usage metering, hosted IAM/admin), configured through **Kubernetes ConfigMaps and Secrets** (not a `.env` file) and operated either as FaultMaven-hosted SaaS or self-hosted as a private cloud. The data-tier wiring (PostgreSQL, Redis, S3), observability (Opik, Prometheus), and PII redaction (Presidio) live in the cloud config surface.
 
 - **Managed SaaS:** [app.faultmaven.ai](https://app.faultmaven.ai/) — no installation required. Cloud beta is open: sign up with your email, free while it is in beta.
 - **Self-hosted Cloud (private cloud):** see the Kubernetes manifests and Helm charts in the **faultmaven-enterprise-infra** repository. Its PostgreSQL must not let `PUBLIC` create in schema `public` — the default on a cluster initialised by PostgreSQL 14 or earlier; [Database Migrations](../guides/database-migrations.md#postgresql-no-one-but-the-schemas-owner-creates-in-public) says how to check and the one command that fixes it.
