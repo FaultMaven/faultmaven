@@ -9,7 +9,9 @@ the tables as it moves its readers.
 
 Each site is keyed by ``(path, qualname of the enclosing function)``, the path
 as the scan writes it (``rel.as_posix()``), with an exact count per name.
-Module level is ``<module>``. Three tables:
+Module level is ``<module>``. A ``getattr`` by a constant name counts as the
+attribute would: ``getattr(case, "closure_reason", None)`` is a field read, and
+an entry reached that way is a reference that is not a call. Three tables:
 
 * ``DERIVATION_SITES``: every Load reference to a function in ``DERIVATIONS``,
   the functions #2615's tables name as deciding an outcome. A call counts, and
@@ -20,7 +22,7 @@ Module level is ``<module>``. Three tables:
   census does. Stage S4 removes the re-export.
 * ``FIELD_READS``: every attribute Load of a field in ``FIELDS``:
   ``completed_milestones``, ``solution_verified``, a mitigation's ``verified``
-  and ``closure_reason``. ``verified`` has no receiver heuristic: all 13 reads
+  and ``closure_reason``. ``verified`` has no receiver heuristic: all 14 reads
   today are ``MitigationRecord.verified``, and a future reader of another
   ``verified`` gets a row with its reason.
 * ``ENTRY_CALLERS`` (pin 5): every reference to a closure entry in
@@ -34,10 +36,9 @@ Not counted:
 * ``problem_status``, ``cause_state`` and ``mitigation.disposition``: progress
   inputs the record reads from (#2615, *The record*). Pin 2's poisoned-case
   test (stage S2) is #2615's answer for raw reads by a narrator;
-* a field read by a name string: a milestone map or turn record keyed
-  ``"solution_verified"`` or ``"mitigation_verified"``, a subscript, or
-  ``getattr`` (two today: ``_mitigation_verified`` and
-  ``ReportGenerationService._generate_closure_summary``);
+* a read by a computed name (``getattr(case, name)``), or by a key: a
+  subscript, or a milestone map or turn record keyed ``"solution_verified"``
+  or ``"mitigation_verified"``;
 * readers in the clients.
 """
 
@@ -321,6 +322,8 @@ FIELD_READS: dict[tuple[str, str], dict[str, int]] = {
     (_VALIDATOR, "StateValidator._validate_state_consistency"): {
         "solution_verified": 1
     },
+    # By ``getattr(mitigation, "verified", False)``.
+    (_TT, "_mitigation_verified"): {"verified": 1},
     (_TT, "confirm_open_offer"): {"closure_reason": 1},
     (_TT, "derive_solution_surface"): {"solution_verified": 1},
     (_TT, "should_generate_terminal_summary"): {"completed_milestones": 1},
@@ -358,6 +361,10 @@ FIELD_READS: dict[tuple[str, str], dict[str, int]] = {
     (_PG + "rows.py", "_case_record_params"): {"closure_reason": 2},
     (_SQLITE + "rows.py", "_case_record_params"): {"closure_reason": 2},
     (_SQLITE + "rows.py", "_row_to_case"): {"closure_reason": 1},
+    # The report, by ``getattr(case, "closure_reason", None)``.
+    (_REPORT, "ReportGenerationService._generate_closure_summary"): {
+        "closure_reason": 1
+    },
 }
 
 #: (path, qualname) -> ({entry: calls}, what the caller answers or closes).
@@ -469,9 +476,9 @@ class Sites(NamedTuple):
 def collect(tree: ast.AST, path: str) -> Sites:
     """The sites in ``tree``, the module at ``path``.
 
-    A Load of a derivation or an entry as a name or an attribute, and an
-    attribute Load of a field. An import, a ``def``, an assignment or a
-    ``del`` is not a Load.
+    A Load of a derivation or an entry as a name or an attribute, an attribute
+    Load of a field, and a ``getattr`` of any of them by a constant name. An
+    import, a ``def``, an assignment or a ``del`` is not a Load.
     """
     parents = {
         child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)
@@ -491,6 +498,17 @@ def collect(tree: ast.AST, path: str) -> Sites:
             name, attribute = node.attr, True
         elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
             name, attribute = node.id, False
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "getattr"
+            and len(node.args) >= 2
+            and isinstance(node.args[1], ast.Constant)
+            and isinstance(node.args[1].value, str)
+        ):
+            # ``getattr(x, "name")`` reads what ``x.name`` reads; it is never
+            # a call of that name.
+            name, attribute = node.args[1].value, True
         else:
             continue
         key = (path, scope_of(node))
@@ -501,7 +519,9 @@ def collect(tree: ast.AST, path: str) -> Sites:
         elif name in ENTRIES:
             sites.entries.setdefault(key, Counter())[name] += 1
             parent = parents.get(node)
-            if not (isinstance(parent, ast.Call) and parent.func is node):
+            if isinstance(node, ast.Call) or not (
+                isinstance(parent, ast.Call) and parent.func is node
+            ):
                 sites.uncalled_entries.append(f"{path}:{node.lineno} {key[1]} {name}")
     return sites
 
@@ -677,10 +697,34 @@ class TestTheCollector:
             "def f(m):\n    del m.verified",
             "def f(verified):\n    return verified",
             "def f(case):\n    return 'solution_verified' in case.milestones",
+            # A computed name: the collector cannot know what it reads.
+            "def f(case, name):\n    return getattr(case, name)",
         ],
     )
     def test_an_import_a_def_a_write_or_a_string_is_not_a_site(self, source):
         assert self._count(source) == 0, source
+
+    @pytest.mark.parametrize(
+        ("source", "field"),
+        [
+            (
+                "def f(case):\n    return getattr(case, 'closure_reason', None)",
+                "closure_reason",
+            ),
+            ("def f(m):\n    return getattr(m, 'verified')", "verified"),
+        ],
+    )
+    def test_a_getattr_by_a_constant_name_is_a_field_read(self, source, field):
+        assert collect(ast.parse(source), "m.py").fields == {
+            ("m.py", "f"): Counter({field: 1})
+        }
+
+    def test_a_getattr_of_an_entry_is_an_uncalled_reference(self):
+        sites = collect(
+            ast.parse("def f(mod):\n    return getattr(mod, 'answer_offer')"), "m.py"
+        )
+        assert sites.entries == {("m.py", "f"): Counter({"answer_offer": 1})}
+        assert sites.uncalled_entries == ["m.py:2 f answer_offer"]
 
     def test_a_site_is_attributed_to_its_enclosing_function(self):
         source = (
