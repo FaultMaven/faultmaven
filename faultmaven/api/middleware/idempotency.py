@@ -164,13 +164,13 @@ def declare_replay_case(request: Request, case_id: str) -> None:
     setattr(request.state, _REPLAY_CASE, case_id)
 
 
-def declare_replay_case_from_path(request: Request) -> None:
+async def declare_replay_case_from_path(request: Request) -> None:
     """A router dependency: the case a route's ``{case_id}`` path names."""
     if case_id := request.path_params.get("case_id"):
         declare_replay_case(request, case_id)
 
 
-def declare_replay_case_from_query(request: Request) -> None:
+async def declare_replay_case_from_query(request: Request) -> None:
     """A route dependency: the case a route's ``case_id`` query names."""
     if case_id := request.query_params.get("case_id"):
         declare_replay_case(request, case_id)
@@ -903,12 +903,13 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
 
 class IdempotencyReplayEraser:
     """The case delete's eraser for replayed answers (#2624): every entry whose
-    request acted on the case. The index is read and dropped in ONE MULTI/EXEC,
-    so an entry cached after that starts a new index rather than joining a
-    dropped one; then its members are unlinked. Returns the entries actually
-    removed, which can be fewer than the index listed: a member outlives an
-    entry that already expired. A Redis error raises, which keeps the case row
-    for a retry (#1016).
+    request acted on the case. It reads the index, then unlinks each batch and
+    removes it from the index in ONE MULTI/EXEC, never dropping the index whole:
+    a failure part-way leaves the rest indexed for the retry, and an entry
+    cached after the read stays indexed for a later delete. Returns the entries
+    actually removed, which can be fewer than the index listed: a member
+    outlives an entry that already expired. A Redis error raises, which keeps
+    the case row for a retry (#1016).
 
     It reaches the middleware's keys only because both hold the same Redis: in
     production both come from the composition root (``bootstrap/composition.py``
@@ -924,15 +925,16 @@ class IdempotencyReplayEraser:
         self.key_prefix = key_prefix
 
     async def erase_case(self, case_id: str, enterprise_id: str) -> int:
-        snapshot = self.redis_client.pipeline(transaction=True)
         index = case_index_key(self.key_prefix, case_id)
-        snapshot.zrange(index, 0, -1)
-        snapshot.delete(index)
-        entries, _ = await snapshot.execute()
+        entries = await self.redis_client.zrange(index, 0, -1)
         removed = 0
         for start in range(0, len(entries), ERASE_BATCH):
             batch = entries[start : start + ERASE_BATCH]
-            removed += int(await self.redis_client.unlink(*batch))
+            transaction = self.redis_client.pipeline(transaction=True)
+            transaction.unlink(*batch)
+            transaction.zrem(index, *batch)
+            unlinked, _ = await transaction.execute()
+            removed += int(unlinked)
         return removed
 
 

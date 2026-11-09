@@ -230,10 +230,11 @@ async def test_idempotency_stores_a_keyed_response_and_replays_its_retry(
 
 
 async def test_idempotency_indexes_the_declared_case_and_its_eraser_clears_it(
-    real_redis, namespace
+    real_redis, namespace, monkeypatch
 ):
     """#2624 on the server: the entry, its case index and the prune commit in
-    one MULTI/EXEC; the eraser snapshots and drops the index, then unlinks."""
+    one MULTI/EXEC; the eraser reads the index, then unlinks and unindexes each
+    batch in one MULTI/EXEC, so an entry cached after the read stays indexed."""
     prefix, case_id, runs = f"{namespace}idempotency:", "case_2624aaaaaaaa", []
     app = FastAPI()
 
@@ -268,13 +269,24 @@ async def test_idempotency_indexes_the_declared_case_and_its_eraser_clears_it(
         assert len(entries) == 2 and expired not in entries
         assert 0 < await real_redis.ttl(index) <= 3600
 
-        eraser = IdempotencyReplayEraser(real_redis, key_prefix=prefix)
+        eraser, zrange = IdempotencyReplayEraser(real_redis, prefix), real_redis.zrange
+
+        async def read_then_cache_one(*args, **kwargs):
+            read = await zrange(*args, **kwargs)
+            await post(str(uuid.uuid4()))
+            return read
+
+        monkeypatch.setattr(real_redis, "zrange", read_then_cache_one)
         assert await eraser.erase_case(case_id, "ent_2624") == 2
-        assert await real_redis.exists(index, *entries) == 0
+        monkeypatch.undo()
+        assert await real_redis.exists(*entries) == 0
+        (late,) = await real_redis.zrange(index, 0, -1)
+        assert await eraser.erase_case(case_id, "ent_2624") == 1
+        assert await real_redis.exists(index, late) == 0
         retry = await post(first_key)
 
     assert IDEMPOTENCY_REPLAYED_HEADER not in retry.headers
-    assert len(runs) == 3
+    assert len(runs) == 4
 
 
 def _namespaced_session_store(

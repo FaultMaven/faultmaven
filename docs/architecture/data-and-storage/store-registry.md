@@ -207,11 +207,13 @@ Citations only. Paths are relative to `faultmaven/` unless they start with
   (`api/middleware/idempotency.py:144-176`, read at `:400-411`): the case router
   by its `{case_id}` path (`modules/case/api/routes/router.py:27`), the create
   route by the new case (`modules/case/api/routes/cases.py:416`), the report
-  routes by `case_id` and by the report's case (`modules/report/api/routes.py:329`,
-  `:912`). Case search answers many cases and is `never_replayed` (`main.py:214-225`).
+  routes by `case_id` and by the report's case (`modules/report/api/routes.py:331`,
+  `:915`). Case search answers many cases and is `never_replayed` (`main.py:214-225`).
   The entry joins that case's index in its own MULTI/EXEC, with the prune
   (`api/middleware/idempotency.py:838-845`). `IdempotencyReplayEraser`
-  (`:904-936`) reads and drops the index in one MULTI/EXEC, then unlinks; it is
+  (`:904-938`) reads the index, then unlinks and unindexes each batch in one
+  MULTI/EXEC, so a member cached after the read stays indexed for a later delete
+  and a failed batch leaves the rest indexed for the retry; it is
   bound in `container/providers/services.py:121-126`, and reported
   `not_configured` under `SKIP_SERVICE_CHECKS`, where the middleware is not
   mounted (`bootstrap/middleware.py:104-119`). The index's bounds: a member can

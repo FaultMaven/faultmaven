@@ -3,6 +3,7 @@ through the real middleware on one FakeRedis, on a single event loop. An entry
 is indexed by the case its route declares, never by ids its exchange mentions.
 """
 
+import inspect
 import time
 
 import fakeredis.aioredis as fakeredis_aio
@@ -102,6 +103,13 @@ async def test_only_the_declared_case_indexes_the_entry(path, body):
     assert not await fake.exists(case_index_key(KEY_PREFIX, CASE_B))
 
 
+def test_the_declarations_run_on_the_event_loop():
+    """A sync dependency runs in a worker thread, here on every case-router
+    request; these do no I/O."""
+    assert inspect.iscoroutinefunction(declare_replay_case_from_path)
+    assert inspect.iscoroutinefunction(declare_replay_case_from_query)
+
+
 async def test_an_undeclared_answer_naming_a_case_is_indexed_by_none():
     app, fake = _app()
     async with _client(app) as client:
@@ -141,24 +149,79 @@ async def test_the_next_write_prunes_expired_members():
     assert member != "idempotency:key-2624-expired:h"
 
 
-async def test_an_entry_cached_after_the_snapshot_starts_a_new_index(monkeypatch):
+def _watch_unlinks(monkeypatch, fake, refuse=None):
+    """Record each ``UNLINK`` batch, a client call or one queued in a
+    transaction, and refuse batch number ``refuse`` with a Redis error."""
+    batches, unlink, pipeline = [], fake.unlink, fake.pipeline
+
+    def record(keys):
+        batches.append(len(keys))
+        if len(batches) == refuse:
+            raise ConnectionError("redis unreachable")
+
+    async def client_unlink(*keys):
+        record(keys)
+        return await unlink(*keys)
+
+    def watched_pipeline(*args, **kwargs):
+        transaction = pipeline(*args, **kwargs)
+        queue = transaction.unlink
+
+        def queued_unlink(*keys):
+            record(keys)
+            return queue(*keys)
+
+        transaction.unlink = queued_unlink
+        return transaction
+
+    monkeypatch.setattr(fake, "unlink", client_unlink)
+    monkeypatch.setattr(fake, "pipeline", watched_pipeline)
+    return batches
+
+
+async def test_a_retried_delete_after_a_failed_batch_removes_the_rest(monkeypatch):
+    """A failed batch fails the delete and keeps the case row (#1016), so the
+    retry must still find the entries the failure left."""
+    monkeypatch.setattr(idempotency, "ERASE_BATCH", 1)
     app, fake = _app()
-    index = case_index_key(KEY_PREFIX, CASE_A)
-    unlink = fake.unlink
+    title = f"/api/v1/cases/{CASE_A}/title"
     async with _client(app) as client:
-        await _post(client, f"/api/v1/cases/{CASE_A}/title", KEY_A)
-        (first,) = await fake.zrange(index, 0, -1)
+        for key in (KEY_A, KEY_B):
+            await _post(client, title, key)
+        _watch_unlinks(monkeypatch, fake, refuse=2)
+        eraser = IdempotencyReplayEraser(fake)
 
-        async def cache_one_first(*keys):
-            await _post(client, f"/api/v1/cases/{CASE_A}/title", KEY_B)
-            return await unlink(*keys)
+        with pytest.raises(ConnectionError):
+            await eraser.erase_case(CASE_A, ENTERPRISE)
+        assert await eraser.erase_case(CASE_A, ENTERPRISE) == 1
+        retries = [await _post(client, title, key) for key in (KEY_A, KEY_B)]
 
-        monkeypatch.setattr(fake, "unlink", cache_one_first)
-        assert await IdempotencyReplayEraser(fake).erase_case(CASE_A, ENTERPRISE) == 1
+    assert not any(_replayed(retry) for retry in retries)
 
-        (later,) = await fake.zrange(index, 0, -1)
-        assert later != first and not await fake.exists(first)
-        assert _replayed(await _post(client, f"/api/v1/cases/{CASE_A}/title", KEY_B))
+
+async def test_an_entry_cached_after_the_read_stays_indexed_for_a_later_delete(
+    monkeypatch,
+):
+    app, fake = _app()
+    index, title = case_index_key(KEY_PREFIX, CASE_A), f"/api/v1/cases/{CASE_A}/title"
+    zrange = fake.zrange
+    async with _client(app) as client:
+        await _post(client, title, KEY_A)
+
+        async def read_then_cache_one(*args, **kwargs):
+            read = await zrange(*args, **kwargs)
+            await _post(client, title, KEY_B)
+            return read
+
+        monkeypatch.setattr(fake, "zrange", read_then_cache_one)
+        eraser = IdempotencyReplayEraser(fake)
+        assert await eraser.erase_case(CASE_A, ENTERPRISE) == 1
+        monkeypatch.undo()
+
+        (late,) = await fake.zrange(index, 0, -1)
+        assert await fake.exists(late)
+        assert await eraser.erase_case(CASE_A, ENTERPRISE) == 1
+        assert not await fake.exists(index, late)
 
 
 async def test_the_erase_unlinks_in_batches_and_counts_what_it_removed(monkeypatch):
@@ -172,30 +235,18 @@ async def test_the_erase_unlinks_in_batches_and_counts_what_it_removed(monkeypat
     index = case_index_key(KEY_PREFIX, CASE_A)
     expiry = time.time() + 3600
     await fake.zadd(index, {k: expiry for k in [*live, "idempotency:key-2624-gone:h"]})
-    calls, unlink = [], fake.unlink
-
-    async def counted(*keys):
-        calls.append(len(keys))
-        return await unlink(*keys)
-
-    monkeypatch.setattr(fake, "unlink", counted)
+    batches = _watch_unlinks(monkeypatch, fake)
     eraser = IdempotencyReplayEraser(fake)
 
     assert await eraser.erase_case(CASE_B, ENTERPRISE) == 0
-    assert calls == []
+    assert batches == []
     assert await eraser.erase_case(CASE_A, ENTERPRISE) == 3
-    assert calls == [2, 2]
+    assert batches == [2, 2]
     assert await fake.keys("*") == []
 
 
 class _Unreachable:
-    def pipeline(self, transaction=False):
-        return self
-
-    def __getattr__(self, command):
-        return lambda *args, **kwargs: None
-
-    async def execute(self):
+    async def zrange(self, *args, **kwargs):
         raise ConnectionError("redis unreachable")
 
 
