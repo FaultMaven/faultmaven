@@ -110,6 +110,19 @@ class DatabaseTimeout(TimeoutError):
     """
 
 
+class UsageStoreUnavailable(Exception):
+    """The LLM usage ledger's tables could not be read (#1764).
+
+    Raised by ``infrastructure/llm/usage_report.read_usage_report`` for a
+    ``DatabaseTimeout``, any SQLAlchemy error, an ``OSError`` (a refused or
+    dropped connection), or asyncpg's ``PostgresError``/``InterfaceError``
+    raised unwrapped at pool checkout, and answered by
+    ``GET /admin/llm/usage`` as 503 ``DATABASE_UNAVAILABLE``, never as a
+    zero-filled report. Carries no driver text: a driver message holds the
+    statement and its parameters.
+    """
+
+
 class ExternalCallTimeout(ExternalServiceException, TimeoutError):
     """A call to an external service exceeded its CLIENT-SIDE deadline.
 

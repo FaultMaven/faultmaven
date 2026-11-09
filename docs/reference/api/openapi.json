@@ -4137,6 +4137,65 @@
         "title": "LLMConnectionTestResponse",
         "type": "object"
       },
+      "LLMHeavyTurn": {
+        "description": "One of the heaviest turns. Ids and numbers only: no title, no content.",
+        "properties": {
+          "calls": {
+            "title": "Calls",
+            "type": "integer"
+          },
+          "case_id": {
+            "title": "Case Id",
+            "type": "string"
+          },
+          "estimated_cost_usd": {
+            "title": "Estimated Cost Usd",
+            "type": "number"
+          },
+          "investigation_turn": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The ordinal to display",
+            "title": "Investigation Turn"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "spend_weighted_tokens": {
+            "title": "Spend Weighted Tokens",
+            "type": "integer"
+          },
+          "turn_number": {
+            "description": "The message clock",
+            "title": "Turn Number",
+            "type": "integer"
+          },
+          "unpriced_calls": {
+            "title": "Unpriced Calls",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "case_id",
+          "turn_number",
+          "investigation_turn",
+          "occurred_at",
+          "spend_weighted_tokens",
+          "calls",
+          "estimated_cost_usd",
+          "unpriced_calls"
+        ],
+        "title": "LLMHeavyTurn",
+        "type": "object"
+      },
       "LLMProviderDetail": {
         "description": "Individual LLM provider status for dashboard display.",
         "properties": {
@@ -4296,6 +4355,602 @@
           "provider_initialized"
         ],
         "title": "LLMRoleRouting",
+        "type": "object"
+      },
+      "LLMSpendPercentiles": {
+        "description": "Nearest-rank percentiles of `spend_weighted_tokens`; null with no turns.",
+        "properties": {
+          "max": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max"
+          },
+          "p50": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P50"
+          },
+          "p95": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P95"
+          }
+        },
+        "required": [
+          "p50",
+          "p95",
+          "max"
+        ],
+        "title": "LLMSpendPercentiles",
+        "type": "object"
+      },
+      "LLMTurnBudget": {
+        "description": "The in-effect per-turn settings, read at request time.",
+        "properties": {
+          "ceiling": {
+            "description": "PROMPT_TURN_TOKEN_CEILING",
+            "title": "Ceiling",
+            "type": "integer"
+          },
+          "soft": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "PROMPT_TURN_TOKEN_BUDGET; null when it is 0 (disabled)",
+            "title": "Soft"
+          }
+        },
+        "required": [
+          "soft",
+          "ceiling"
+        ],
+        "title": "LLMTurnBudget",
+        "type": "object"
+      },
+      "LLMTurnHistogramBin": {
+        "description": "Turns with lower <= spend_weighted_tokens < upper.",
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "lower": {
+            "title": "Lower",
+            "type": "integer"
+          },
+          "upper": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "null: no upper bound",
+            "title": "Upper"
+          }
+        },
+        "required": [
+          "lower",
+          "upper",
+          "count"
+        ],
+        "title": "LLMTurnHistogramBin",
+        "type": "object"
+      },
+      "LLMTurnSpendSummary": {
+        "description": "Engine turns from `coverage.turns_since` to the window's last day: the\nwindow clipped to the turn-retention horizon. Turn rows go with their case,\nso a case deletion shrinks these and not `totals` or `by_day`.",
+        "properties": {
+          "budget": {
+            "$ref": "#/components/schemas/LLMTurnBudget"
+          },
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "heaviest": {
+            "description": "The ten heaviest, heaviest first",
+            "items": {
+              "$ref": "#/components/schemas/LLMHeavyTurn"
+            },
+            "title": "Heaviest",
+            "type": "array"
+          },
+          "histogram": {
+            "description": "Edges 0, soft/2, soft, ceiling, then open-ended; the soft edges are dropped when the budget is disabled, and the edges are sorted and de-duplicated",
+            "items": {
+              "$ref": "#/components/schemas/LLMTurnHistogramBin"
+            },
+            "title": "Histogram",
+            "type": "array"
+          },
+          "over_ceiling": {
+            "description": "Turns whose spend exceeded `budget.ceiling`",
+            "title": "Over Ceiling",
+            "type": "integer"
+          },
+          "over_soft": {
+            "description": "Turns whose spend exceeded `budget.soft`",
+            "title": "Over Soft",
+            "type": "integer"
+          },
+          "spend_weighted_tokens": {
+            "$ref": "#/components/schemas/LLMSpendPercentiles"
+          }
+        },
+        "required": [
+          "count",
+          "spend_weighted_tokens",
+          "budget",
+          "over_soft",
+          "over_ceiling",
+          "histogram",
+          "heaviest"
+        ],
+        "title": "LLMTurnSpendSummary",
+        "type": "object"
+      },
+      "LLMUnpricedModel": {
+        "description": "A model the running price table cannot price, with calls in the window.",
+        "properties": {
+          "calls": {
+            "description": "Its stored `unpriced_calls` in the window",
+            "title": "Calls",
+            "type": "integer"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "model",
+          "calls"
+        ],
+        "title": "LLMUnpricedModel",
+        "type": "object"
+      },
+      "LLMUsageBucket": {
+        "description": "Summed figures over a set of billed calls.",
+        "properties": {
+          "cache_hit_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "cache_read / (input + cache_read); null when that is 0",
+            "title": "Cache Hit Rate"
+          },
+          "calls": {
+            "$ref": "#/components/schemas/LLMUsageCalls"
+          },
+          "cost_complete": {
+            "description": "False whenever `unpriced_calls` > 0: the cost is a lower bound",
+            "title": "Cost Complete",
+            "type": "boolean"
+          },
+          "estimated_cost_usd": {
+            "description": "Priced calls only, estimated at call time from the price table then in force. Not a bill.",
+            "title": "Estimated Cost Usd",
+            "type": "number"
+          },
+          "tokens": {
+            "$ref": "#/components/schemas/LLMUsageTokens"
+          },
+          "unpriced_calls": {
+            "description": "Calls that had no price entry when made: left out of the cost",
+            "title": "Unpriced Calls",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "calls",
+          "tokens",
+          "cache_hit_rate",
+          "estimated_cost_usd",
+          "unpriced_calls",
+          "cost_complete"
+        ],
+        "title": "LLMUsageBucket",
+        "type": "object"
+      },
+      "LLMUsageCalls": {
+        "properties": {
+          "kept": {
+            "description": "Calls whose answer was returned to the caller",
+            "title": "Kept",
+            "type": "integer"
+          },
+          "low_confidence": {
+            "description": "Calls billed and then discarded by the fallback chain",
+            "title": "Low Confidence",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total",
+          "kept",
+          "low_confidence"
+        ],
+        "title": "LLMUsageCalls",
+        "type": "object"
+      },
+      "LLMUsageCoverage": {
+        "description": "How much of the window the ledger can speak for. There is no backfill.",
+        "properties": {
+          "metering_since": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The earliest day with recorded spend for this enterprise; null when none is recorded. Not when metering began: days before it have no recorded spend, either before the ledger was deployed, metered with nothing spent, or pruned past LLM_USAGE_DAILY_RETENTION_DAYS.",
+            "title": "Metering Since"
+          },
+          "turns_fully_covered": {
+            "description": "True when the turn-retention horizon reaches the window's first day",
+            "title": "Turns Fully Covered",
+            "type": "boolean"
+          },
+          "turns_since": {
+            "description": "The first day `turns` reads: the later of the window's first day and the turn-retention horizon (today minus LLM_USAGE_TURN_RETENTION_DAYS, plus one). Turn rows before it are pruned, or will be, so `turns` never reads them and can cover less of the window than `totals`.",
+            "format": "date",
+            "title": "Turns Since",
+            "type": "string"
+          },
+          "window_fully_covered": {
+            "description": "True when `metering_since` is on or before the window's first day",
+            "title": "Window Fully Covered",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "metering_since",
+          "window_fully_covered",
+          "turns_since",
+          "turns_fully_covered"
+        ],
+        "title": "LLMUsageCoverage",
+        "type": "object"
+      },
+      "LLMUsageDay": {
+        "properties": {
+          "cache_hit_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "cache_read / (input + cache_read); null when that is 0",
+            "title": "Cache Hit Rate"
+          },
+          "calls": {
+            "$ref": "#/components/schemas/LLMUsageCalls"
+          },
+          "cost_complete": {
+            "description": "False whenever `unpriced_calls` > 0: the cost is a lower bound",
+            "title": "Cost Complete",
+            "type": "boolean"
+          },
+          "date": {
+            "format": "date",
+            "title": "Date",
+            "type": "string"
+          },
+          "estimated_cost_usd": {
+            "description": "Priced calls only, estimated at call time from the price table then in force. Not a bill.",
+            "title": "Estimated Cost Usd",
+            "type": "number"
+          },
+          "tokens": {
+            "$ref": "#/components/schemas/LLMUsageTokens"
+          },
+          "unpriced_calls": {
+            "description": "Calls that had no price entry when made: left out of the cost",
+            "title": "Unpriced Calls",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "calls",
+          "tokens",
+          "cache_hit_rate",
+          "estimated_cost_usd",
+          "unpriced_calls",
+          "cost_complete",
+          "date"
+        ],
+        "title": "LLMUsageDay",
+        "type": "object"
+      },
+      "LLMUsageGroup": {
+        "description": "One row of `groups`, keyed by the request's `group_by`.",
+        "properties": {
+          "cache_hit_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "cache_read / (input + cache_read); null when that is 0",
+            "title": "Cache Hit Rate"
+          },
+          "calls": {
+            "$ref": "#/components/schemas/LLMUsageCalls"
+          },
+          "cost_complete": {
+            "description": "False whenever `unpriced_calls` > 0: the cost is a lower bound",
+            "title": "Cost Complete",
+            "type": "boolean"
+          },
+          "estimated_cost_usd": {
+            "description": "Priced calls only, estimated at call time from the price table then in force. Not a bill.",
+            "title": "Estimated Cost Usd",
+            "type": "number"
+          },
+          "key": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "description": "`provider_model`: {provider, model}. `user`: {user_id}, where \"\" is no actor. `billing_subject`: {kind, id}, kind one of `organization | account | none` and id \"\" for `none`. Under multi-tenancy every `account` subject is one group with id null: an account's id is a user id, shown in standalone only.",
+            "title": "Key",
+            "type": "object"
+          },
+          "rate_status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "priced",
+                  "zero_cost",
+                  "unpriced"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`provider_model` groups only, null otherwise: how the RUNNING price table prices the model now. `zero_cost` is a declared-free self-hosted provider, not an unpriced one.",
+            "title": "Rate Status"
+          },
+          "tokens": {
+            "$ref": "#/components/schemas/LLMUsageTokens"
+          },
+          "unpriced_calls": {
+            "description": "Calls that had no price entry when made: left out of the cost",
+            "title": "Unpriced Calls",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "calls",
+          "tokens",
+          "cache_hit_rate",
+          "estimated_cost_usd",
+          "unpriced_calls",
+          "cost_complete",
+          "key",
+          "rate_status"
+        ],
+        "title": "LLMUsageGroup",
+        "type": "object"
+      },
+      "LLMUsageReport": {
+        "description": "`GET /admin/llm/usage`: the bound enterprise's LLM usage, from the ledger.",
+        "properties": {
+          "as_of": {
+            "format": "date-time",
+            "title": "As Of",
+            "type": "string"
+          },
+          "by_day": {
+            "description": "Every day in the window, zeros included",
+            "items": {
+              "$ref": "#/components/schemas/LLMUsageDay"
+            },
+            "title": "By Day",
+            "type": "array"
+          },
+          "coverage": {
+            "$ref": "#/components/schemas/LLMUsageCoverage"
+          },
+          "groups": {
+            "description": "Shaped by `group_by`; largest token total first",
+            "items": {
+              "$ref": "#/components/schemas/LLMUsageGroup"
+            },
+            "title": "Groups",
+            "type": "array"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/LLMUsageScope"
+          },
+          "totals": {
+            "$ref": "#/components/schemas/LLMUsageBucket"
+          },
+          "turns": {
+            "$ref": "#/components/schemas/LLMTurnSpendSummary"
+          },
+          "unpriced": {
+            "description": "Models the running price table cannot price that have unpriced calls in the window. Non-empty: cost is under-reported.",
+            "items": {
+              "$ref": "#/components/schemas/LLMUnpricedModel"
+            },
+            "title": "Unpriced",
+            "type": "array"
+          },
+          "window": {
+            "$ref": "#/components/schemas/LLMUsageWindow"
+          }
+        },
+        "required": [
+          "window",
+          "scope",
+          "coverage",
+          "as_of",
+          "totals",
+          "by_day",
+          "groups",
+          "unpriced",
+          "turns"
+        ],
+        "title": "LLMUsageReport",
+        "type": "object"
+      },
+      "LLMUsageScope": {
+        "description": "Whose usage this is: the enterprise the request is bound to, only.",
+        "properties": {
+          "deployment": {
+            "enum": [
+              "standalone",
+              "cloud"
+            ],
+            "title": "Deployment",
+            "type": "string"
+          },
+          "enterprise_id": {
+            "title": "Enterprise Id",
+            "type": "string"
+          },
+          "tenancy": {
+            "description": "`multi`: the figures are this enterprise's only, never the deployment's. `single`: the enterprise is the whole deployment.",
+            "enum": [
+              "single",
+              "multi"
+            ],
+            "title": "Tenancy",
+            "type": "string"
+          }
+        },
+        "required": [
+          "enterprise_id",
+          "deployment",
+          "tenancy"
+        ],
+        "title": "LLMUsageScope",
+        "type": "object"
+      },
+      "LLMUsageTokens": {
+        "description": "Disjoint buckets: `total` is their sum.",
+        "properties": {
+          "cache_read": {
+            "title": "Cache Read",
+            "type": "integer"
+          },
+          "cache_write": {
+            "title": "Cache Write",
+            "type": "integer"
+          },
+          "input": {
+            "title": "Input",
+            "type": "integer"
+          },
+          "output": {
+            "title": "Output",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "input",
+          "output",
+          "cache_read",
+          "cache_write",
+          "total"
+        ],
+        "title": "LLMUsageTokens",
+        "type": "object"
+      },
+      "LLMUsageWindow": {
+        "description": "Whole UTC days ending today, inclusive.",
+        "properties": {
+          "days": {
+            "description": "Days in the window",
+            "title": "Days",
+            "type": "integer"
+          },
+          "from": {
+            "description": "First day of the window (UTC)",
+            "format": "date",
+            "title": "From",
+            "type": "string"
+          },
+          "timezone": {
+            "const": "UTC",
+            "default": "UTC",
+            "title": "Timezone",
+            "type": "string"
+          },
+          "to": {
+            "description": "Last day of the window: today (UTC)",
+            "format": "date",
+            "title": "To",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "days"
+        ],
+        "title": "LLMUsageWindow",
         "type": "object"
       },
       "LinkCaseRequest": {
@@ -7273,7 +7928,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "14.19.0"
+    "version": "14.20.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -8114,6 +8769,96 @@
         "summary": "Check Llm Connection",
         "tags": [
           "Admin - Configuration"
+        ]
+      }
+    },
+    "/api/v1/admin/llm/usage": {
+      "get": {
+        "description": "The bound enterprise's LLM usage, read from the usage ledger.\n\nCosts are estimated at call time from the price table, never billed.\nCoverage starts when the ledger was deployed; there is no backfill.",
+        "operationId": "get_llm_usage_api_v1_admin_llm_usage_get",
+        "parameters": [
+          {
+            "description": "Whole UTC days ending today, inclusive",
+            "in": "query",
+            "name": "window",
+            "required": false,
+            "schema": {
+              "default": "7d",
+              "description": "Whole UTC days ending today, inclusive",
+              "enum": [
+                "1d",
+                "7d",
+                "30d",
+                "90d"
+              ],
+              "title": "Window",
+              "type": "string"
+            }
+          },
+          {
+            "description": "What `groups` is keyed by",
+            "in": "query",
+            "name": "group_by",
+            "required": false,
+            "schema": {
+              "default": "provider_model",
+              "description": "What `groups` is keyed by",
+              "enum": [
+                "provider_model",
+                "user",
+                "billing_subject"
+              ],
+              "title": "Group By",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LLMUsageReport"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Not a platform administrator, or the request is not scoped to an enterprise"
+          },
+          "422": {
+            "description": "An unknown `window` or `group_by`, or `group_by=user` under multi-tenancy"
+          },
+          "503": {
+            "description": "`DATABASE_UNAVAILABLE`: the usage store could not be read. Never answered as a zero-filled 200.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "x-error-code": {
+                "description": "DATABASE_UNAVAILABLE",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Llm Usage",
+        "tags": [
+          "Admin - Usage"
         ]
       }
     },

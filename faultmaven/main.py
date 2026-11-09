@@ -75,6 +75,7 @@ from .api.routes.admin import router as admin_users_router
 from .api.routes.admin_cases import router as admin_cases_router
 from .api.routes.admin_config import router as admin_config_router
 from .api.routes.admin_grants import router as admin_grants_router
+from .api.routes.admin_usage import router as admin_usage_router
 from .api.v1.auth_dependencies import require_authentication, require_platform_admin
 
 # The application lifespan (startup fail-fast gates, background tasks,
@@ -265,6 +266,9 @@ logger.info("✅ Admin configuration endpoints added")
 
 app.include_router(admin_cases_router)  # prefix already set on router: /api/v1/admin
 logger.info("✅ Admin cross-tenant case listing endpoint added")
+
+app.include_router(admin_usage_router)  # prefix already set on router: /api/v1/admin
+logger.info("✅ Admin LLM usage endpoint added")
 
 # prefix already set on router: /api/v1/admin/grants
 app.include_router(admin_grants_router)

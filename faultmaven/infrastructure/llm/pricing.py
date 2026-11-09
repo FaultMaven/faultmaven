@@ -291,6 +291,18 @@ def lookup_rates(provider: str | None, model: str | None) -> TokenRates | None:
     return best_rates
 
 
+def rate_status(provider: str | None, model: str | None) -> str:
+    """How the RUNNING price table prices ``(provider, model)`` now (#640 Q7).
+
+    ``zero_cost`` for a declared-free provider, ``unpriced`` when no rate
+    resolves, else ``priced``. A read-time fact: the stored ``unpriced_calls``
+    say what was unpriced when each call was made.
+    """
+    if _normalize_provider(provider) in _ZERO_COST_PROVIDERS:
+        return "zero_cost"
+    return "unpriced" if lookup_rates(provider, model) is None else "priced"
+
+
 def estimate_cost_usd(
     provider: str | None,
     model: str | None,

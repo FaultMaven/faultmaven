@@ -75,8 +75,9 @@ tenant-attributed record of the same spend (#640): two tables in the
 application database, written at the same chokepoint, surviving restarts and
 summing correctly across replicas because every write is an atomic
 `INSERT … ON CONFLICT DO UPDATE SET col = col + excluded.col`. It needs no
-Prometheus. The in-product view over it — `GET /admin/llm/usage` and the
-Dashboard's Usage page — is filed as #1764 and #1765.
+Prometheus. The operator reads it with
+[`GET /admin/llm/usage`](#reading-it-get-adminllmusage); the Dashboard's Usage
+page over that endpoint is filed as #1765.
 
 | Table | One row per | Holds |
 |---|---|---|
@@ -119,8 +120,9 @@ row. A turn that made no billed call writes no turn row.
 - `outcome=low_confidence` rows are the fallback chain's billed-and-discarded
   attempts, kept apart as on the Prometheus counter.
 - The tables **start empty** when this ships. There is no backfill, because
-  neither Prometheus nor the logs carry a tenant; a window before the first row
-  is "not recorded", never "no spend".
+  neither Prometheus nor the logs carry a tenant. A day before an enterprise's
+  first row has no recorded spend: it may predate the ledger, or have been
+  metered with nothing spent.
 
 **Deletions.**
 
@@ -143,6 +145,65 @@ to agree.
 (`python -m faultmaven.jobs.run`) installs no ledger, so a job's call would be
 counted `not_composed`. A job that starts calling an LLM must install the ledger
 in the runner.
+
+### Reading it: `GET /admin/llm/usage`
+
+`GET /api/v1/admin/llm/usage` answers the ledger for the enterprise the request
+is bound to, and nothing else. Platform administrators only. It is **not
+audited**: it is the operator's own tenant, numbers and case ids only, with the
+standing of `GET /admin/llm/config`.
+
+| Parameter | Values |
+|---|---|
+| `window` | `1d`, `7d` (default), `30d`, `90d`: whole UTC days ending today, inclusive |
+| `group_by` | `provider_model` (default), `user`, `billing_subject`. Shapes `groups` only; every other block is always present |
+
+Anything else is a 422. So is `group_by=user` under `TENANT_PROVIDER=multi`:
+per-user figures are shown to the operator in standalone only. For the same
+reason, `group_by=billing_subject` under `multi` folds every `account` subject
+into one group with `id: null` — an account's id is its user's id —
+and keeps `organization` groups as they are.
+
+**What the response holds.**
+
+| Field | Meaning |
+|---|---|
+| `window` | `from`, `to`, `days`, `timezone: "UTC"` |
+| `scope` | `enterprise_id`, `deployment` (`standalone`/`cloud`) and `tenancy`. Under `multi` the figures are **your enterprise's only**, never the deployment's |
+| `coverage` | `metering_since` is the earliest day with recorded spend for the enterprise (`null` when none) — not when metering began: an earlier day may predate the ledger, have been metered with nothing spent, or have been pruned past `LLM_USAGE_DAILY_RETENTION_DAYS`. `window_fully_covered` is false when the window starts before it. `turns_since` is the first day `turns` reads: the later of the window's first day and the turn-retention horizon (today minus `LLM_USAGE_TURN_RETENTION_DAYS`, plus one). `turns_fully_covered` is false when the horizon is later than the window's first day, as for a 90-day window under a shorter turn retention |
+| `as_of` | When the report was read |
+| `totals`, each `by_day` entry, each `groups` entry | A bucket: `calls` (`total`, `kept`, `low_confidence`), `tokens` (`input`, `output`, `cache_read`, `cache_write`, `total`), `cache_hit_rate` = `cache_read / (input + cache_read)` (`null` when that is 0), `estimated_cost_usd`, `unpriced_calls` and `cost_complete` (false whenever `unpriced_calls` > 0) |
+| `by_day` | Every day in the window, zeros included |
+| `groups` | Keyed `{provider, model}`, `{user_id}` (`""` is no actor) or `{kind, id}` (`id` `""` for `none`). Model groups carry `rate_status`: `priced`, `zero_cost` (a self-hosted provider, priced at $0) or `unpriced`; the others carry `null` |
+| `unpriced` | Models the **running** price table cannot price that have unpriced calls in the window, with those calls. Non-empty: the cost is under-reported; add the model to `LLM_PRICING_OVERRIDES` |
+| `turns` | Engine turns from `coverage.turns_since` to the window's last day: `count`; nearest-rank `p50`/`p95`/`max` of `spend_weighted_tokens`; `budget` (`soft` = `PROMPT_TURN_TOKEN_BUDGET`, `null` when 0, and `ceiling` = `PROMPT_TURN_TOKEN_CEILING`, both as in effect now); `over_soft` and `over_ceiling`; a `histogram` with edges 0, soft/2, soft, ceiling and open above; and the ten `heaviest` turns by case id, message clock and investigation turn. No title or content anywhere |
+
+**How to read it.**
+
+- Every cost is **estimated at call time** from the price table then in force.
+  It is not a bill. A bucket with `cost_complete: false` is a lower bound.
+- `unpriced_calls` and `cost_complete` are history: what was unpriced when the
+  call was made. `rate_status` and `unpriced` are read from the running table,
+  so a model priced after its calls drops out of `unpriced` and keeps its
+  `unpriced_calls`. An override takes effect on restart.
+- Coverage starts when the ledger was deployed. There is no backfill.
+- Turn rows are pruned sooner than daily rows, so `turns` reads only from
+  `coverage.turns_since` and can cover less of the window than `totals`. It
+  reads the same whether or not the prune has run, as long as the prune used
+  the same `LLM_USAGE_TURN_RETENTION_DAYS`.
+- The histogram edges and `budget` are the settings in effect at read time, so
+  history re-buckets when the budget changes.
+- Deleting a case shrinks `turns.*`, because its turn rows go with it.
+  `totals` and `by_day` do not shrink.
+- These figures do not reconcile with `turn_usage`, as above.
+- When the tables cannot be read, a refused connection included, the answer is
+  **503** `DATABASE_UNAVAILABLE` with `Retry-After: 5`, never a zero-filled
+  report.
+
+`GET /admin/config/status` reports `features.llm_usage_metering`: true when the
+database ledger is installed and its tables can be read now. It does not say
+every call was written; `llm_usage_unpersisted_calls_total` counts the ones that
+were not. Its `description` names which half failed when it is false.
 
 ### When a write fails
 

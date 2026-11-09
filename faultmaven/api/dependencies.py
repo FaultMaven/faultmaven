@@ -2,7 +2,8 @@
 
 The names of the runtime backends ``GET /admin/config/status`` reports, decided
 by the infrastructure predicates that own each question, and the database
-bounds it reports beside them.
+bounds it reports beside them; and the LLM usage ledger's read side
+(``GET /admin/llm/usage`` and ``features.llm_usage_metering``).
 
 The request-scoped service factory and every dependency built on it were
 removed in #1935, together with the case-nested session routes that were their
@@ -13,6 +14,7 @@ from typing import Any, Optional
 
 from faultmaven.api.models import (
     DatabaseTimeoutsStatus,
+    FeatureStatus,
     KnowledgeIndexingStatus,
     TraceBackendStatus,
 )
@@ -38,6 +40,8 @@ from faultmaven.models.exceptions import IndexAdmissionRefused
 __all__ = [
     "database_backend_name",
     "database_timeouts_status",
+    "llm_usage_metering_status",
+    "llm_usage_report",
     "session_storage_backend_name",
     "vector_storage_backend_name",
 ]
@@ -163,3 +167,70 @@ def vector_storage_backend_name(kb_client: Any, evidence_client: Any) -> str:
     if kb == evidence == "persistent":
         return "chromadb (persistent, split: kb + evidence)"
     return f"chromadb (kb: {kb or 'disabled'}, evidence: {evidence or 'disabled'})"
+
+
+# ============================================================
+# The LLM usage ledger (#640, #1764)
+# ============================================================
+
+
+async def llm_usage_report(**kwargs: Any) -> dict:
+    """The bound enterprise's usage report, read from the ledger
+    (``read_usage_report``'s keywords).
+
+    Raises:
+        UsageStoreUnavailable: the store could not be read.
+    """
+    from faultmaven.infrastructure.llm.usage_report import read_usage_report
+
+    return await read_usage_report(**kwargs)
+
+
+async def llm_usage_metering_status() -> FeatureStatus:
+    """``features["llm_usage_metering"]``: is LLM spend being persisted (#1764)?
+
+    The effect, not a setting: the installed ledger must be the database one
+    (``isinstance``, as ``token_revocation_durable`` decides), AND a one-row
+    read of its tables must succeed now. The probe catches its own failure and
+    publishes the exception type only, so it cannot fail this response.
+    """
+    from faultmaven.infrastructure.llm.usage_ledger import (
+        SqlUsageLedger,
+        get_installed_usage_ledger,
+    )
+    from faultmaven.infrastructure.llm.usage_report import probe_usage_store
+
+    ledger = get_installed_usage_ledger()
+    fault = await probe_usage_store() if isinstance(ledger, SqlUsageLedger) else None
+    if ledger is None:
+        detail = (
+            "No usage ledger is installed, so LLM spend is not persisted: the "
+            "composition root did not run."
+        )
+    elif not isinstance(ledger, SqlUsageLedger):
+        detail = (
+            f"The installed usage ledger is {type(ledger).__name__}, not the "
+            "database ledger, so LLM spend is not persisted."
+        )
+    elif fault is not None:
+        detail = (
+            f"The usage tables cannot be read ({fault}); see the server log. "
+            "GET /admin/llm/usage answers 503 until they can."
+        )
+    else:
+        detail = (
+            "The database usage ledger is installed and llm_usage_daily and "
+            "llm_turn_spend can be read. Calls whose write failed are not in "
+            "them: llm_usage_unpersisted_calls_total{reason} counts those."
+        )
+    return FeatureStatus(
+        enabled=isinstance(ledger, SqlUsageLedger) and fault is None,
+        description=detail,
+        config_hint=(
+            "True when the database usage ledger is installed AND its tables "
+            "can be read; it does not say every call was written. Every "
+            "deployment that boots the API installs it; "
+            "False with the tables unreadable means the database is down or "
+            "was not migrated to head."
+        ),
+    )

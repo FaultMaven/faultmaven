@@ -151,6 +151,50 @@ def validate_contract_changes(changes: tuple[ContractChange, ...]) -> None:
 
 CONTRACT_CHANGES: tuple[ContractChange, ...] = (
     ContractChange(
+        version="14.20.0",
+        level="MINOR",
+        title=(
+            "`GET /admin/llm/usage` reads the LLM usage ledger back for the "
+            "operator's own enterprise, and `GET /admin/config/status` reports "
+            "`features.llm_usage_metering` (#1764, #640)."
+        ),
+        body=r"""A new path and new schemas only: `LLMUsageReport` and its parts
+`LLMUsageBucket`, `LLMUsageDay`, `LLMUsageGroup`, `LLMTurnSpendSummary`,
+`LLMHeavyTurn`, `LLMUsageWindow`, `LLMUsageScope`, `LLMUsageCoverage`,
+`LLMUsageCalls`, `LLMUsageTokens`, `LLMUnpricedModel`, `LLMSpendPercentiles`,
+`LLMTurnBudget` and `LLMTurnHistogramBin`.
+
+* Platform admin only: 401 unauthenticated, 403 not a platform admin or a
+  request scoped to no enterprise. Not audited: it is the operator's own
+  tenant, numbers and case ids only, no titles or content.
+* `window` = `1d | 7d | 30d | 90d` (default `7d`), whole UTC days ending today.
+  `group_by` = `provider_model` (default) `| user | billing_subject`. Anything
+  else is 422, and so is `group_by=user` under `TENANT_PROVIDER=multi`:
+  per-user figures are shown to the operator in standalone only (#640 Q3).
+* Scope is the enterprise the request is bound to; under multi it is that
+  enterprise only, never the deployment (`scope.tenancy`). Under multi,
+  `group_by=billing_subject` folds every `account` subject into one group
+  `{"kind": "account", "id": null}`: an account's id is a user id.
+* 503 `DATABASE_UNAVAILABLE` + `Retry-After: 5` when the usage store cannot be
+  read, a refused or dropped connection included. Never a zero-filled 200.
+* `unpriced_calls` and `cost_complete` are stored history; `rate_status` and
+  `unpriced[]` are read from the running price table, so a model priced after
+  its calls leaves the banner and keeps its `unpriced_calls`.
+* Costs are estimated at call time, not billed. `coverage.metering_since` is
+  the earliest day with recorded spend, not when metering began.
+  `turns` reads from `coverage.turns_since`, the later of the window's first
+  day and the turn-retention horizon (today minus
+  `LLM_USAGE_TURN_RETENTION_DAYS`, plus one), since turn rows are pruned sooner
+  than daily rows; `turns_fully_covered` is whether the horizon reaches the
+  window's first day.
+* `LLMHeavyTurn.investigation_turn` is nullable, as on every schema that
+  publishes a turn for display (#1391).
+
+`features.llm_usage_metering` is one more key in the existing
+`Dict[str, FeatureStatus]`: true when the database ledger is installed and its
+tables can be read now. MINOR because every client survives an added path.""",
+    ),
+    ContractChange(
         version="14.19.0",
         level="MINOR",
         title=(

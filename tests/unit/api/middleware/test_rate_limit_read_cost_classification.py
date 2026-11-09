@@ -72,6 +72,7 @@ MOUNTS = (
     ("", "faultmaven.api.routes.admin_cases"),
     ("", "faultmaven.api.routes.admin_config"),
     ("", "faultmaven.api.routes.admin_grants"),
+    ("", "faultmaven.api.routes.admin_usage"),
 )
 
 # Dependency providers and modules that put an embedder or a vector store within
