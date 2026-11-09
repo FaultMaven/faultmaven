@@ -259,6 +259,36 @@ class TestTheJob:
         with pytest.raises(ValidationError):
             ObservabilitySettings()
 
+    @pytest.mark.parametrize(
+        "name", ["LLM_USAGE_DAILY_RETENTION_DAYS", "LLM_USAGE_TURN_RETENTION_DAYS"]
+    )
+    def test_a_horizon_past_a_century_fails_startup(self, monkeypatch, name):
+        """A larger one overflows the date arithmetic of the prune and the
+        usage reader, so every prune and every usage read would raise."""
+        from pydantic import ValidationError
+
+        from faultmaven.config.settings import ObservabilitySettings
+
+        monkeypatch.setenv(name, "36500")
+        field = name.lower()
+        assert getattr(ObservabilitySettings(), field) == 36500
+        monkeypatch.setenv(name, "36501")
+        with pytest.raises(ValidationError) as refused:
+            ObservabilitySettings()
+        assert name in str(refused.value)
+
+    async def test_the_horizons_at_the_bound_compute(self, usage_db):
+        """At a century, both horizons are dates the arithmetic can reach, and
+        nothing within them goes."""
+        old = NOW - timedelta(days=500)
+        await _seed(usage_db, days=[old.date()], turn_ages=[old])
+
+        result = await prune_expired_usage(
+            daily_retention_days=36500, turn_retention_days=36500, now=NOW
+        )
+
+        assert (result.daily_rows_deleted, result.turn_rows_deleted) == (0, 0)
+
 
 class TestTheInProcessScheduler:
     def test_refused_under_multi(self):

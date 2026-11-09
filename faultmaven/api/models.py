@@ -6,7 +6,7 @@ Pydantic models for FastAPI request validation and response serialization:
 - The backend-capabilities response (``GET /api/v1/meta/capabilities``)
 """
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -350,6 +350,218 @@ class FeatureStatus(BaseModel):
         default="",
         description="What the user needs to set to enable this feature",
     )
+
+
+# ============================================================
+# LLM usage view (GET /admin/llm/usage, #640, #1764)
+# ============================================================
+
+
+class LLMUsageWindow(BaseModel):
+    """Whole UTC days ending today, inclusive."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    from_: date = Field(alias="from", description="First day of the window (UTC)")
+    to: date = Field(description="Last day of the window: today (UTC)")
+    days: int = Field(description="Days in the window")
+    timezone: Literal["UTC"] = "UTC"
+
+
+class LLMUsageScope(BaseModel):
+    """Whose usage this is: the enterprise the request is bound to, only."""
+
+    enterprise_id: str
+    deployment: Literal["standalone", "cloud"]
+    tenancy: Literal["single", "multi"] = Field(
+        description=(
+            "`multi`: the figures are this enterprise's only, never the "
+            "deployment's. `single`: the enterprise is the whole deployment."
+        )
+    )
+
+
+class LLMUsageCoverage(BaseModel):
+    """How much of the window the ledger can speak for. There is no backfill."""
+
+    metering_since: Optional[date] = Field(
+        description=(
+            "The earliest day with recorded spend for this enterprise; null "
+            "when none is recorded. Not when metering began: days before it "
+            "have no recorded spend, either before the ledger was deployed, "
+            "metered with nothing spent, or pruned past "
+            "LLM_USAGE_DAILY_RETENTION_DAYS."
+        )
+    )
+    window_fully_covered: bool = Field(
+        description="True when `metering_since` is on or before the window's first day"
+    )
+    turns_since: date = Field(
+        description=(
+            "The first day `turns` reads: the later of the window's first day "
+            "and the turn-retention horizon (today minus "
+            "LLM_USAGE_TURN_RETENTION_DAYS, plus one). Turn rows before it are "
+            "pruned, or will be, so `turns` never reads them and can cover less "
+            "of the window than `totals`."
+        )
+    )
+    turns_fully_covered: bool = Field(
+        description="True when the turn-retention horizon reaches the window's first day"
+    )
+
+
+class LLMUsageCalls(BaseModel):
+    total: int
+    kept: int = Field(description="Calls whose answer was returned to the caller")
+    low_confidence: int = Field(
+        description="Calls billed and then discarded by the fallback chain"
+    )
+
+
+class LLMUsageTokens(BaseModel):
+    """Disjoint buckets: `total` is their sum."""
+
+    input: int
+    output: int
+    cache_read: int
+    cache_write: int
+    total: int
+
+
+class LLMUsageBucket(BaseModel):
+    """Summed figures over a set of billed calls."""
+
+    calls: LLMUsageCalls
+    tokens: LLMUsageTokens
+    cache_hit_rate: Optional[float] = Field(
+        description="cache_read / (input + cache_read); null when that is 0"
+    )
+    estimated_cost_usd: float = Field(
+        description=(
+            "Priced calls only, estimated at call time from the price table "
+            "then in force. Not a bill."
+        )
+    )
+    unpriced_calls: int = Field(
+        description="Calls that had no price entry when made: left out of the cost"
+    )
+    cost_complete: bool = Field(
+        description="False whenever `unpriced_calls` > 0: the cost is a lower bound"
+    )
+
+
+class LLMUsageDay(LLMUsageBucket):
+    date: date
+
+
+class LLMUsageGroup(LLMUsageBucket):
+    """One row of `groups`, keyed by the request's `group_by`."""
+
+    key: Dict[str, Optional[str]] = Field(
+        description=(
+            "`provider_model`: {provider, model}. `user`: {user_id}, where "
+            '"" is no actor. `billing_subject`: {kind, id}, kind one of '
+            '`organization | account | none` and id "" for `none`. Under '
+            "multi-tenancy every `account` subject is one group with id null: "
+            "an account's id is a user id, shown in standalone only."
+        )
+    )
+    rate_status: Optional[Literal["priced", "zero_cost", "unpriced"]] = Field(
+        description=(
+            "`provider_model` groups only, null otherwise: how the RUNNING "
+            "price table prices the model now. `zero_cost` is a declared-free "
+            "self-hosted provider, not an unpriced one."
+        )
+    )
+
+
+class LLMUnpricedModel(BaseModel):
+    """A model the running price table cannot price, with calls in the window."""
+
+    provider: str
+    model: str
+    calls: int = Field(description="Its stored `unpriced_calls` in the window")
+
+
+class LLMSpendPercentiles(BaseModel):
+    """Nearest-rank percentiles of `spend_weighted_tokens`; null with no turns."""
+
+    p50: Optional[int]
+    p95: Optional[int]
+    max: Optional[int]
+
+
+class LLMTurnBudget(BaseModel):
+    """The in-effect per-turn settings, read at request time."""
+
+    soft: Optional[int] = Field(
+        description="PROMPT_TURN_TOKEN_BUDGET; null when it is 0 (disabled)"
+    )
+    ceiling: int = Field(description="PROMPT_TURN_TOKEN_CEILING")
+
+
+class LLMTurnHistogramBin(BaseModel):
+    """Turns with lower <= spend_weighted_tokens < upper."""
+
+    lower: int
+    upper: Optional[int] = Field(description="null: no upper bound")
+    count: int
+
+
+class LLMHeavyTurn(BaseModel):
+    """One of the heaviest turns. Ids and numbers only: no title, no content."""
+
+    case_id: str
+    turn_number: int = Field(description="The message clock")
+    investigation_turn: Optional[int] = Field(description="The ordinal to display")
+    occurred_at: datetime
+    spend_weighted_tokens: int
+    calls: int
+    estimated_cost_usd: float
+    unpriced_calls: int
+
+
+class LLMTurnSpendSummary(BaseModel):
+    """Engine turns from `coverage.turns_since` to the window's last day: the
+    window clipped to the turn-retention horizon. Turn rows go with their case,
+    so a case deletion shrinks these and not `totals` or `by_day`."""
+
+    count: int
+    spend_weighted_tokens: LLMSpendPercentiles
+    budget: LLMTurnBudget
+    over_soft: int = Field(description="Turns whose spend exceeded `budget.soft`")
+    over_ceiling: int = Field(description="Turns whose spend exceeded `budget.ceiling`")
+    histogram: List[LLMTurnHistogramBin] = Field(
+        description=(
+            "Edges 0, soft/2, soft, ceiling, then open-ended; the soft edges "
+            "are dropped when the budget is disabled, and the edges are sorted "
+            "and de-duplicated"
+        )
+    )
+    heaviest: List[LLMHeavyTurn] = Field(description="The ten heaviest, heaviest first")
+
+
+class LLMUsageReport(BaseModel):
+    """`GET /admin/llm/usage`: the bound enterprise's LLM usage, from the ledger."""
+
+    window: LLMUsageWindow
+    scope: LLMUsageScope
+    coverage: LLMUsageCoverage
+    as_of: datetime
+    totals: LLMUsageBucket
+    by_day: List[LLMUsageDay] = Field(
+        description="Every day in the window, zeros included"
+    )
+    groups: List[LLMUsageGroup] = Field(
+        description="Shaped by `group_by`; largest token total first"
+    )
+    unpriced: List[LLMUnpricedModel] = Field(
+        description=(
+            "Models the running price table cannot price that have unpriced "
+            "calls in the window. Non-empty: cost is under-reported."
+        )
+    )
+    turns: LLMTurnSpendSummary
 
 
 class PersonalTenantLimitsStatus(BaseModel):

@@ -417,8 +417,8 @@ for when that job runs.
 
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
-| `LLM_USAGE_DAILY_RETENTION_DAYS` | int (>= 1) | 400 | Days of `llm_usage_daily` rows kept; a row goes when its UTC `usage_date` is older than today minus this |
-| `LLM_USAGE_TURN_RETENTION_DAYS` | int (>= 1) | 90 | Days of `llm_turn_spend` rows kept; a row goes when its `occurred_at` is older than now minus this |
+| `LLM_USAGE_DAILY_RETENTION_DAYS` | int (1–36500) | 400 | Days of `llm_usage_daily` rows kept; a row goes when its UTC `usage_date` is older than today minus this |
+| `LLM_USAGE_TURN_RETENTION_DAYS` | int (1–36500) | 90 | Days of `llm_turn_spend` rows kept; a row goes when its `occurred_at` is older than now minus this |
 
 ## Database Pool and Timeouts
 

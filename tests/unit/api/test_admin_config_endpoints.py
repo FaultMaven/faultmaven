@@ -2103,6 +2103,14 @@ def _pure_settings_answer(feature: str, settings) -> bool:
         # of them — and False on a development process that mounts the router
         # with the flag unset, which is the shipped default.
         return bool(settings.server.enable_debug_endpoints)
+    if feature == "llm_usage_metering":
+        # The obvious version: "a database is configured, so spend is
+        # persisted". It reports True on a process that installed no ledger, or
+        # whose usage tables cannot be read. Spelled as a prefix test so an
+        # unconfigured settings object (a MagicMock) reports False.
+        return str(getattr(settings.database, "database_url", "")).startswith(
+            ("sqlite", "postgresql")
+        )
     raise AssertionError(f"no settings-only stand-in defined for {feature}")
 
 
@@ -2791,6 +2799,61 @@ def _scenario_request_protection_fails_open(settings, app, monkeypatch, reality)
     )
 
 
+def _usage_store_over_a_real_schema(monkeypatch, *, with_tables: bool):
+    """Point ``get_db_session`` at a scratch SQLite file, with or without the
+    usage tables; return the coroutine that disposes it."""
+    import shutil
+    import tempfile
+    from contextlib import asynccontextmanager
+    from pathlib import Path
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from faultmaven.infrastructure.persistence import database
+    from faultmaven.infrastructure.persistence.models import Base
+
+    scratch = Path(tempfile.mkdtemp(prefix="fm-usage-scenario-"))
+    engine = create_async_engine(f"sqlite+aiosqlite:///{scratch / 'usage.db'}")
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    created = {"done": not with_tables}
+
+    @asynccontextmanager
+    async def factory():
+        if not created["done"]:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            created["done"] = True
+        async with sessions() as session:
+            yield session
+
+    monkeypatch.setattr(database, "get_db_session", factory)
+
+    async def close() -> None:
+        await engine.dispose()
+        shutil.rmtree(scratch, ignore_errors=True)
+
+    return close
+
+
+def _scenario_llm_usage_metering(settings, app, monkeypatch, reality):
+    """The runtime fact withheld here is the ledger the composition root installed.
+
+    A database is configured in BOTH arms, which is what a settings-only
+    implementation would read ("a database exists, so spend is persisted"). What
+    decides it is whether the database ledger was installed and its tables can
+    be read now (#1764).
+    """
+    from faultmaven.infrastructure.llm import usage_ledger
+
+    settings.database.database_url = "sqlite+aiosqlite:///./data/faultmaven.db"
+    if reality:
+        monkeypatch.setattr(
+            usage_ledger, "_installed_ledger", usage_ledger.SqlUsageLedger()
+        )
+        return _usage_store_over_a_real_schema(monkeypatch, with_tables=True)
+    monkeypatch.setattr(usage_ledger, "_installed_ledger", None)
+
+
 FEATURE_SCENARIOS = {
     "debug_endpoints": _scenario_debug_endpoints,
     "kb_prefetch": _scenario_kb_prefetch,
@@ -2800,6 +2863,7 @@ FEATURE_SCENARIOS = {
     "token_revocation_durable": _scenario_token_revocation_durable,
     "request_protection_hardened": _scenario_request_protection_hardened,
     "request_protection_fails_open": _scenario_request_protection_fails_open,
+    "llm_usage_metering": _scenario_llm_usage_metering,
 }
 
 
@@ -3021,6 +3085,58 @@ class TestEveryFeatureReportsEffectNotIntent:
             f"reporting False, so that arm cannot discriminate and the sweep "
             f"does not cover this member."
         )
+
+
+# ============================================================
+# features.llm_usage_metering (#1764)
+# ============================================================
+
+
+class TestLlmUsageMeteringNamesWhatFailed:
+    """The two OFF states the sweep does not name: a ledger that is not the
+    database one, and a database ledger whose tables cannot be read."""
+
+    @pytest.mark.asyncio
+    async def test_an_in_memory_ledger_reports_disabled(
+        self, mock_admin_user, mock_settings, rate_limited_app, monkeypatch
+    ):
+        from faultmaven.infrastructure.llm import usage_ledger
+
+        monkeypatch.setattr(
+            usage_ledger, "_installed_ledger", usage_ledger.InMemoryUsageLedger()
+        )
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            result = await get_env_config_status(
+                request=_request_for(rate_limited_app), current_user=mock_admin_user
+            )
+
+        status = result.features["llm_usage_metering"]
+        assert status.enabled is False
+        assert "InMemoryUsageLedger" in status.description
+
+    @pytest.mark.asyncio
+    async def test_unreadable_tables_report_disabled_without_failing_the_status(
+        self, mock_admin_user, mock_settings, rate_limited_app, monkeypatch
+    ):
+        from faultmaven.infrastructure.llm import usage_ledger
+
+        monkeypatch.setattr(
+            usage_ledger, "_installed_ledger", usage_ledger.SqlUsageLedger()
+        )
+        close = _usage_store_over_a_real_schema(monkeypatch, with_tables=False)
+        try:
+            with patch(SETTINGS_PATCH, return_value=mock_settings):
+                result = await get_env_config_status(
+                    request=_request_for(rate_limited_app),
+                    current_user=mock_admin_user,
+                )
+        finally:
+            await close()
+
+        status = result.features["llm_usage_metering"]
+        assert status.enabled is False
+        assert "cannot be read (OperationalError)" in status.description
+        assert "no such table" not in status.description
 
 
 # ============================================================

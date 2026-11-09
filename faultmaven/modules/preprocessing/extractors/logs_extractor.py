@@ -13,7 +13,9 @@ from faultmaven.modules.preprocessing.extractors.protocol import ExtractResult
 from faultmaven.modules.preprocessing.extractors.sshd_auth import read_sshd_auth_line
 from faultmaven.modules.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
+    HOST_PORT_RE,
     PID_MAX,
+    PORT_KEYWORD_RE,
     distinct_on_line,
     extract_time_range,
     extract_time_range_ts,
@@ -626,21 +628,11 @@ class LogsAndErrorsExtractor:
     # rendered JSON-quoted, so its extent is unambiguous; every other name
     # renders exactly as before.
 
-    # Port matchers. A port number is a numeric token that needs *structural*
-    # context on the left: either an explicit `port` keyword, or a
-    # host-or-address token before the colon. A bare `:\d+` would match every
-    # `MM:SS` fragment in a timestamp.
+    # Port matchers: `PORT_KEYWORD_RE` and `HOST_PORT_RE` in `extractors.utils`,
+    # whose docstrings state the rule and which paths share it. The principle: a
+    # port needs *structural* context on the left, because a bare `:\d+` would
+    # match every `MM:SS` fragment in a timestamp.
     #
-    # The general rule for `<lhs>:<port>` is that the left-hand side contains
-    # at least one non-digit character (a hostname letter, or an IPv4's dot).
-    # Pure-digit LHS (timestamp fragments like `04:47`) is rejected.
-    _PORT_KEYWORD_RE = re.compile(r"\bport[= :]+(\d{1,5})\b", re.IGNORECASE)
-    _HOST_PORT_RE = re.compile(
-        # LHS must contain at least one non-digit char (letter or dot).
-        # `(?<![\w.-])` pins the start; `[\w.-]*[A-Za-z.]` requires a
-        # non-digit somewhere in the LHS.
-        r"(?<![\w.-])[\w-]*[A-Za-z.][\w.-]*:(\d{1,5})\b"
-    )
     # PID matchers. Same principle: a PID needs structural context.
     # `[\d+]` alone (with a closing bracket) is the classic syslog form;
     # `pid=N` is the explicit keyword form. We do NOT accept `[\d+` without
@@ -1155,9 +1147,7 @@ class LogsAndErrorsExtractor:
                 user_all_counts[user] += 1
                 if is_error:
                     user_error_counts[user] += 1
-            for port_str in distinct_on_line(
-                line, self._PORT_KEYWORD_RE, self._HOST_PORT_RE
-            ):
+            for port_str in distinct_on_line(line, PORT_KEYWORD_RE, HOST_PORT_RE):
                 if is_port(port_str):
                     port_counts[port_str] += 1
             for pid_str in distinct_on_line(
