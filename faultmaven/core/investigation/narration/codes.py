@@ -15,6 +15,11 @@ import hashlib
 import json
 from enum import StrEnum
 
+#: Set by the test suite (``tests/conftest.py``): a decision token left
+#: unrendered at the turn record raises there instead of being logged and
+#: stripped (``turn_application.record_turn``).
+TOKENS_FAIL = False
+
 #: Where a turn's decisions accumulate, beside ``system_notices``.
 DECISIONS_KEY = "outcome_decisions"
 
@@ -47,6 +52,8 @@ class NoticeCode(StrEnum):
     HYPOTHESIS_RETIRED = "hypothesis_retired"
     MITIGATION_DISPOSED = "mitigation_disposed"
     OFFER_LAPSED = "offer_lapsed"
+    # (R) the engine's offer standing, read at the end of the cycle.
+    ENGINE_OFFER_STANDS = "engine_offer_stands"
 
 
 class OfferCode(StrEnum):

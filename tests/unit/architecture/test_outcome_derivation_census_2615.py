@@ -224,10 +224,10 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     (_TT, "assess_close_summary"): {"shown_milestones": 1},
     # The pivot's record lines, when its message is read (#2636; offers read
     # the record's ``resolution.statement`` instead).
+    (_TT, "_suggest_resolve_message"): {"resolution_record_lines": 1},
     (_TT, "assess_closure_readiness"): {
         "_resolution_confirmed": 1,
         "assess_close_summary": 1,
-        "resolution_record_lines": 1,
     },
     (_TT, "assess_resolution_readiness"): {
         "_resolution_confirmed": 1,
@@ -525,10 +525,10 @@ ENTRY_CALLERS: dict[tuple[str, str], tuple[dict[str, int], str]] = {
         "opens the resolve offer on a ready recheck (basis model), or the close "
         "offer on an unmet request (basis needs_info_unmet)",
     ),
-    (_ME + "turn_application.py", "_lapse_unlicensed_offer"): (
-        {"answer_offer": 1},
-        "lapses a deferred-disposition offer this cycle opened when the final "
-        "recompute withdrew the M5 licence it needs (#2636); not a closure",
+    (_ME + "turn_application.py", "_lapse_after_recompute"): (
+        {"lapse_offers": 1},
+        "lapses, after the final recompute, an open offer whose premise has "
+        "gone (a deferred disposition whose M5 licence fell, #2636)",
     ),
     (_ME + "turn_application.py", "_apply_turn_response"): (
         {"lapse_offers": 1},

@@ -1727,10 +1727,7 @@ def assess_closure_readiness(case: "Case") -> ClosureReadiness:
         # disposition eligibility on every save) never compose it.
         return ClosureReadiness(
             verdict=ClosureReadiness.SUGGEST_RESOLVE,
-            message=lambda: suggest_resolve_message(
-                **_suggest_resolve_params(case, has_solutions),
-                record_lines=resolution_record_lines(case),
-            ),
+            message=lambda: _suggest_resolve_message(case, has_solutions),
             params=lambda: _suggest_resolve_params(case, has_solutions),
         )
 
@@ -1828,15 +1825,24 @@ def resolution_record_lines(case) -> str:
     return "\n".join(lines)
 
 
+def _suggest_resolve_message(case: "Case", has_solutions: bool) -> str:
+    params = _suggest_resolve_params(case, has_solutions)
+    return suggest_resolve_message(
+        params["root_cause"],
+        params["solution_titles"],
+        resolution_record_lines(case),
+    )
+
+
 def _suggest_resolve_params(case: "Case", has_solutions: bool) -> dict:
     """What the closure→resolve pivot's prompt names (``narration.offers``):
     the root cause only when a cause-identification leg stands on it, as the
     record lines decide, and the solutions on record."""
-    rc = getattr(case.root_cause_conclusion, "root_cause", None)
-    if cause_identification_leg(case) is None:
-        rc = None
+    name = getattr(case.root_cause_conclusion, "root_cause", None)
     return {
-        "root_cause": rc,
+        "root_cause": name if cause_identification_leg(case) is not None else None,
+        # Named after the record when it identifies a cause (#2636).
+        "root_cause_name": name,
         "solution_titles": (
             _solution_display_titles(case.solutions) if has_solutions else []
         ),
@@ -1855,12 +1861,11 @@ def assess_close_summary(case: "Case") -> ClosureReadiness:
     evidence_count = len(case.evidence) if case.evidence else 0
     hypothesis_count = len(case.hypotheses) if case.hypotheses else 0
     milestones_completed = len(shown_milestones(case))
-    root_cause = None
-    if _cause_identified(case):
-        root_cause = (
-            getattr(case.root_cause_conclusion, "root_cause", None)
-            or "the identified root cause"
-        )
+    name = (
+        getattr(case.root_cause_conclusion, "root_cause", None)
+        or "the identified root cause"
+    )
+    root_cause = name if _cause_identified(case) else None
     titles = _solution_display_titles(case.solutions) if case.solutions else []
     trivial = (
         not (evidence_count or hypothesis_count or milestones_completed or root_cause)
@@ -1878,7 +1883,7 @@ def assess_close_summary(case: "Case") -> ClosureReadiness:
             ClosureReadiness.TRIVIAL if trivial else ClosureReadiness.HAS_SUBSTANCE
         ),
         message=close_summary_message(**summary),
-        params=summary,
+        params={**summary, "root_cause_name": name},
     )
 
 

@@ -17,12 +17,13 @@ from faultmaven.core.investigation.milestone_engine.turn_records import (
     _perform_hypothesis_housekeeping,
     _resolve_id_ref,
 )
+from faultmaven.core.investigation.narration import codes as narration_codes
 from faultmaven.core.investigation.narration.codes import (
     DECISIONS_KEY,
     NoticeCode,
     is_token,
 )
-from faultmaven.core.investigation.offers import answer_offer, lapse_offers
+from faultmaven.core.investigation.offers import lapse_offers
 from faultmaven.core.investigation.outcome import record_case_outcome
 from faultmaven.core.investigation.problem_status import problem_on_hold
 from faultmaven.core.investigation.state_validator import ValidationSeverity
@@ -30,11 +31,8 @@ from faultmaven.core.investigation.working_conclusion_generator import (
     calculate_progress_metrics,
 )
 from faultmaven.modules.case.contracts import (
-    AnswerKind,
-    AnswerVia,
     CauseState,
     HypothesisState,
-    OfferBasis,
     TurnOutcome,
 )
 
@@ -50,7 +48,6 @@ from .stage_gates import (
     SYSTEM_NOTICE_KEYS,
     _add_system_feedback,
     _refresh_working_conclusion,
-    _solution_cause_validated,
     fix_cause,
     merge_decisions,
     merge_system_notices,
@@ -95,8 +92,8 @@ async def _final_recompute(responses, case, metadata: dict, llm_outcome) -> None
     milestone (the recompute writes it) and step 1's KB remediation warm-up
     (INV-35). Either way the turn's outcome is re-derived; ``progress_made``
     and housekeeping's ``investigation_advanced`` keep the step-1 reading
-    (A12). An offer this cycle opened on the M5 licence that fell is lapsed
-    (A17, INV-32)."""
+    (A12). The offer record's lapse rule then runs on the pool it left
+    (INV-32)."""
     before = case.progress.cause_state
     _recompute_assessment_state(
         case,
@@ -116,30 +113,20 @@ async def _final_recompute(responses, case, metadata: dict, llm_outcome) -> None
     )
     if query:
         await responses.kb_prefetcher.prefetch_kb_context(case, query, "root_cause")
-    _lapse_unlicensed_offer(case, metadata)
+    _lapse_after_recompute(case, metadata)
 
 
-def _lapse_unlicensed_offer(case, metadata: dict) -> None:
-    """A deferred-disposition offer this cycle opened says the root cause and
-    fix are documented, which needs the M5 licence (INV-32). When the final
-    recompute withdrew that licence, the offer lapses, as an offer whose
-    premise went does (``offers.lapse_offers``), and its prose is not
-    rendered."""
+def _lapse_after_recompute(case, metadata: dict) -> None:
+    """The offer record's lapse rule (``offers.lapse_offers``) once more, on
+    the pool the final recompute left: a deferred-disposition offer whose M5
+    licence fell lapses this cycle (INV-32), and the lapse is a code the
+    narration reads."""
     offer = case.offer_record.open
-    if (
-        offer is None
-        or offer.basis != OfferBasis.DEFERRED
-        or offer.opened_at_turn != case.current_turn
-        or _solution_cause_validated(case)
-    ):
-        return
-    case.offer_record = answer_offer(
-        case,
-        proposal_id=offer.proposal_id,
-        answer=AnswerKind.LAPSED,
-        via=AnswerVia.ENGINE,
-    )
-    record_decision(metadata, NoticeCode.OFFER_LAPSED, proposal_id=offer.proposal_id)
+    case.offer_record = lapse_offers(case)
+    if offer is not None and case.offer_record.open is None:
+        record_decision(
+            metadata, NoticeCode.OFFER_LAPSED, proposal_id=offer.proposal_id
+        )
 
 
 def record_turn(
@@ -150,6 +137,11 @@ def record_turn(
     it is logged and stripped, never recorded or shown to the model."""
     notices = metadata.get("system_notices") or []
     leftover = [n for n in notices if is_token(n)]
+    if leftover and narration_codes.TOKENS_FAIL:
+        raise AssertionError(
+            f"{len(leftover)} decision token(s) left unrendered at the turn "
+            "record (#2636)"
+        )
     if leftover:
         logger.error(
             "Case %s turn %s: %d decision token(s) left unrendered (#2636)",

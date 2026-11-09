@@ -70,6 +70,7 @@ from faultmaven.core.investigation.terminal_transitions import (
     _mitigation_declared_stable,
     _mitigation_verified,
     assess_resolution_readiness,
+    cause_identification_leg,
     closure_verdict,
     declined_resolve_entry,
     derive_closure_reason,
@@ -78,6 +79,7 @@ from faultmaven.core.investigation.terminal_transitions import (
     shown_milestones,
 )
 from faultmaven.modules.case.contracts import (
+    NO_STORED_RECORD,
     AttemptOutcome,
     BindableRows,
     CaseOutcome,
@@ -161,8 +163,11 @@ class _Disagreements:
     record keeps the turn each was first read, and each is counted and logged
     once, when it first appears."""
 
-    def __init__(self, case: "Case", prior: Optional[CaseOutcome]) -> None:
+    def __init__(
+        self, case: "Case", prior: Optional[CaseOutcome], *, count: bool = True
+    ) -> None:
         self.case = case
+        self.count = count
         self.known = dict(prior.disagreements) if prior is not None else {}
         self.read: dict[str, int] = {}
 
@@ -172,6 +177,8 @@ class _Disagreements:
             self.read[key] = self.known[key]
             return
         self.read[key] = self.case.current_turn
+        if not self.count:
+            return
         logger.warning(
             "Case %s: the outcome record's carried %s (%s) disagrees with a "
             "fresh derivation (%s); the carried verdict stands (#2615)",
@@ -188,14 +195,17 @@ def compute_case_outcome(
     case: "Case",
     *,
     closure: Optional[ClosureOutcome] = None,
+    count: bool = True,
 ) -> CaseOutcome:
     """The case's outcome, folded over ``prior`` (None: computed once from
     the case as it stands). ``closure``: the closure a terminal transition
-    persists (``record_case_outcome``)."""
+    persists (``record_case_outcome``). ``count`` False: a pass that is not
+    stored (the narration's, when the cycle's write failed) counts and logs no
+    disagreement, which the failed write already read."""
     subjects = subject_index(case)
     windows = fix_windows(case, subjects)
     statement = current_statement(case)
-    seen = _Disagreements(case, prior)
+    seen = _Disagreements(case, prior, count=count)
     unbound = _unbound_rechecks(prior, case, subjects, windows)
     record = CaseOutcome(
         folded_under=case.state,
@@ -221,12 +231,14 @@ def compute_case_outcome(
     return record
 
 
-def _before_narration(prior: Optional[CaseOutcome]) -> frozenset:
+def _before_narration(prior: Optional[CaseOutcome]):
     """The unbound re-checks a record held before the case was first
     narrated (#2636): a stored record's own, carried through the records this
-    process computed since. A row first appearing after is narrated."""
+    process computed since; with no stored record at all,
+    ``NO_STORED_RECORD``, and every row observed before the first narrated
+    turn counts as narrated. A row first appearing after is narrated."""
     if prior is None:
-        return frozenset()
+        return NO_STORED_RECORD
     if prior._before_narration is not None:
         return prior._before_narration
     return frozenset(u.evidence_id for u in prior.unbound_rechecks)
@@ -251,6 +263,7 @@ def _cause(case: "Case", subjects: "SubjectIndex") -> CauseOutcome:
         # hypotheses: the withdrawal notice's variant (#2636).
         identification_held_open=bool(held_open_root_ids(case))
         and not identified_root_ids(case),
+        identification_leg=cause_identification_leg(case),
     )
 
 

@@ -7,6 +7,7 @@ regressions for #2603 and #2555 fail on ``main``. No live LLM: the generator is
 stubbed.
 """
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -376,12 +377,14 @@ def test_a_proposals_summary_renders_the_decided_branch_and_counts_a_conflict(
         "hypothesis_count": 0,
         "milestones_completed": 0,
         "root_cause": None,
+        "root_cause_name": "the identified root cause",
         "solution_titles": [],
     }
     text = render_offer(OfferCode.MODEL_PROPOSAL, params, record)
     assert text.startswith("Here's what was accomplished")
     turn_narration._conflict(OfferCode.MODEL_PROPOSAL, params, record)
-    assert counted == ["narration.model_proposal"]
+    # The verdict, and the identified cause the decision did not name.
+    assert counted == ["narration.model_proposal", "narration.model_proposal"]
 
 
 # ---------------------------------------------------------------------------
@@ -570,8 +573,7 @@ async def test_momentum_reads_this_turns_stall_count():
     assert case.turn_history[-1].momentum == "blocked"
 
 
-def test_a_token_left_unrendered_is_stripped_from_the_turn_record(caplog):
-    """Review item 14: the leak guard."""
+def _record_with_a_token():
     case, _shown = _pending()
     metadata = {"system_notices": ["KEPT"]}
     record_decision(metadata, NoticeCode.FIX_UNTARGETED, action_id="act_1")
@@ -590,5 +592,209 @@ def test_a_token_left_unrendered_is_stripped_from_the_turn_record(caplog):
         user_message="m",
         response_obj=SimpleNamespace(agent_response="Noted."),
     )
+    return case
+
+
+def test_a_token_left_unrendered_fails_the_test_suite():
+    """Review item 11 (second delta): the leak guard fails a test."""
+    with pytest.raises(AssertionError, match="left unrendered"):
+        _record_with_a_token()
+
+
+def test_a_token_left_unrendered_is_stripped_in_production(caplog, monkeypatch):
+    """Review item 14: in production the token is logged and stripped."""
+    from faultmaven.core.investigation.narration import codes
+
+    monkeypatch.setattr(codes, "TOKENS_FAIL", False)
+    case = _record_with_a_token()
     assert case.turn_history[-1].system_notices == ["KEPT"]
     assert "left unrendered" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# The second fix delta (review probes A, B, D, E, F, G, H)
+# ---------------------------------------------------------------------------
+
+
+def _model_proposes(case, metadata, to_state):
+    engine = MilestoneEngine(MagicMock(), _make_repo(), investigation_tools=MagicMock())
+    response = MagicMock()
+    response.state_updates.proposed_transition = MagicMock(
+        to_state=to_state, evidence_ids=[]
+    )
+    metadata["response_obj"] = response
+    asyncio.run(
+        engine.transitions.check_automatic_transitions(case, metadata, to_state)
+    )
+    metadata.pop("response_obj")
+
+
+def test_a_lapsed_engine_offer_supersedes_nothing():
+    """Probe A: step 2 dropped the model's ``closed`` for the engine's deferred
+    offer, and the final recompute lapsed that offer. Nothing is said to stand,
+    and the turn does not report the model's proposal superseded."""
+    case = _deferred_case()
+    metadata = _cycle_metadata()
+    _maybe_propose_deferred_close(case, metadata)
+    _model_proposes(case, metadata, "closed")
+    assert metadata["transition_superseded_by_engine"] is True
+    for hypothesis in case.hypotheses.values():
+        hypothesis.likelihood = 0.2
+    asyncio.run(
+        turn_application._final_recompute(
+            _responses(), case, metadata, TurnOutcome.CONVERSATION
+        )
+    )
+    notices = narrated(case, metadata)
+    assert case.offer_record.open is None
+    assert not any("the engine already offered" in n for n in notices)
+    assert metadata["transition_superseded_by_engine"] is False
+
+
+def test_a_deferred_offer_lapses_on_a_later_turn_whose_licence_fell():
+    """Review item 10: one lapse rule, every turn (``offers.lapse_offers``)."""
+    from faultmaven.core.investigation.offers import lapse_offers
+
+    case = _deferred_case()
+    _maybe_propose_deferred_close(case, _cycle_metadata())
+    case.current_turn += 1
+    for hypothesis in case.hypotheses.values():
+        hypothesis.likelihood = 0.2
+    from faultmaven.core.investigation.milestone_engine.stage_gates import (
+        _refresh_working_conclusion,
+    )
+
+    _refresh_working_conclusion(case)
+    case.offer_record = lapse_offers(case)
+    assert case.offer_record.open is None
+
+
+def test_a_pivot_with_no_record_renders_no_empty_record_block():
+    """Probe B: the closure pivot's summary with no outcome."""
+    from faultmaven.core.investigation.narration.offers import render_offer
+
+    params = {
+        "composer": "closure",
+        "verdict": "suggest_resolve",
+        "root_cause": "max_connections is 20",
+        "root_cause_name": "max_connections is 20",
+        "solution_titles": ["raise it"],
+        "proposal_id": "p1",
+    }
+    text = render_offer(OfferCode.MODEL_PROPOSAL, params, None)
+    assert "The record shows" not in text
+    assert "- **Root cause**: max_connections is 20" in text
+
+
+def test_two_unbound_entries_render_the_rows_once():
+    """Probe D: a replay bundle's code and the live recompute's."""
+    _eng, case = _held_recheck()
+    decline_revision(case, via=AnswerVia.CLICK)
+    metadata = {"milestones_completed": []}
+    record_decision(metadata, NoticeCode.UNBOUND_RECHECKS, fix_dated=False)
+    record_decision(metadata, NoticeCode.UNBOUND_RECHECKS, fix_dated=True)
+    notices = narrated(case, metadata)
+    assert len([n for n in notices if _eid("held") in n]) == 1
+
+
+def test_an_in_memory_pass_counts_nothing_and_narrates_nothing(monkeypatch):
+    """Probe E: the cycle's write failed after it counted a disagreement; the
+    narration's in-memory pass counts it again, nor marks rows narrated on a
+    copy that is thrown away."""
+    from faultmaven.core.investigation import outcome as outcome_module
+    from faultmaven.core.investigation.milestone_engine import turn_narration
+    from faultmaven.core.investigation.outcome import record_case_outcome
+    from tests.unit.core.investigation import golden_cases_2636 as golden
+
+    case, _metadata = golden.an_unnamed_recheck_after_the_fix()
+    assert record_case_outcome(case, at="cycle")
+    action = next(a for a in case.proposed_actions if a.state == "accepted")
+    action.accepted_in_turn = 5  # the carried verdict disagrees from here on
+    counted = []
+    monkeypatch.setattr(
+        outcome_module,
+        "case_outcome_conflicts_total",
+        SimpleNamespace(
+            labels=lambda field: SimpleNamespace(inc=lambda: counted.append(field))
+        ),
+    )
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("the write fails after the attempts fold")
+
+    monkeypatch.setattr(outcome_module, "_mitigation", _boom)
+    written = record_case_outcome(case, at="cycle")
+    assert written is False and counted == ["attempts.accepted_in_turn"]
+    monkeypatch.setattr(outcome_module, "_mitigation", lambda *a, **k: None)
+    metadata = {"milestones_completed": [], turn_narration.OUTCOME_WRITTEN_KEY: False}
+    record_decision(metadata, NoticeCode.UNBOUND_RECHECKS, fix_dated=True)
+    narrate_turn(case, metadata)
+    assert counted == ["attempts.accepted_in_turn"]
+    assert not [n for n in metadata["system_notices"] if "Post-fix" in n]
+    assert all(u.narrated_turn is None for u in case.progress.outcome.unbound_rechecks)
+
+
+async def test_with_no_stored_record_old_rows_count_as_narrated():
+    """Probe F: a case the backfill skipped narrates none of the rows observed
+    before its first narrated turn."""
+    eng, case = _held_recheck()
+    decline_revision(case, via=AnswerVia.CLICK)
+    assert case.progress.outcome is None
+    case.current_turn = 30
+    meta = await _apply(eng, case, _DSU())
+    assert not _unbound_line(meta)
+    (row,) = case.progress.outcome.unbound_rechecks
+    assert row.narrated_turn == 30
+
+
+def test_a_model_close_names_no_cause_the_record_no_longer_identifies(monkeypatch):
+    """Probe G (INV-32): the model's ``closed`` decided on a summary naming the
+    identified cause; housekeeping retired its hypothesis and the final
+    recompute withdrew the cause. The summary names no cause, and the
+    disagreement is counted."""
+    from faultmaven.core.investigation.milestone_engine import turn_narration
+    from tests.unit.core.investigation import golden_cases_2636 as golden
+
+    counted = []
+    monkeypatch.setattr(
+        turn_narration,
+        "case_outcome_conflicts_total",
+        SimpleNamespace(
+            labels=lambda field: SimpleNamespace(inc=lambda: counted.append(field))
+        ),
+    )
+    case, _root, hyp = _identified_case()
+    golden._pending_fix(case)
+    metadata = _cycle_metadata()
+    _model_proposes(case, metadata, "closed")
+    decided = next(
+        e["params"]
+        for e in metadata["outcome_decisions"]
+        if e["code"] == OfferCode.MODEL_PROPOSAL
+    )
+    assert decided["root_cause"] is not None, "premise: decided on a cause"
+    hyp.state = HypothesisState.RETIRED
+    asyncio.run(
+        turn_application._final_recompute(
+            _responses(), case, metadata, TurnOutcome.CONVERSATION
+        )
+    )
+    narrated(case, metadata)
+    assert "Root cause identified" not in case.offer_record.open.summary
+    assert "narration.model_proposal" in counted
+
+
+def test_the_withdrawal_variant_is_read_at_the_record():
+    """Probe H, an expected difference: housekeeping retires the hypothesis
+    whose root held identification open, so the record, written after it,
+    reads the cause fallen."""
+    from tests.unit.core.investigation import golden_cases_2636 as golden
+
+    case, metadata = golden.withdrawn_held_open_beside_a_retired_validated_root()
+    assert case.progress.cause_identification_held_open, "held open at decision"
+    case.hypotheses["hyp_00000000b0b0"].state = HypothesisState.RETIRED
+    notices = narrated(case, metadata)
+    assert not case.progress.outcome.cause.identification_held_open
+    assert notices[0].startswith(
+        "SYSTEM: Your pending SOLUTION proposal was withdrawn because"
+    )

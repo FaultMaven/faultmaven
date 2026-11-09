@@ -29,7 +29,11 @@ from faultmaven.core.investigation.narration.notices import (
 from faultmaven.core.investigation.narration.offers import render_offer
 from faultmaven.core.investigation.offers import summarize_offer
 from faultmaven.core.investigation.outcome import compute_case_outcome
-from faultmaven.modules.case.contracts import CaseOutcome, ResolutionReason
+from faultmaven.modules.case.contracts import (
+    NO_STORED_RECORD,
+    CaseOutcome,
+    ResolutionReason,
+)
 
 from .stage_gates import _NOTICES_HEAD_KEY
 
@@ -61,16 +65,27 @@ def _conflict(code: str, params: dict, outcome: Optional[CaseOutcome]) -> None:
         decided, recorded = params["reason"], outcome.resolution.reason
     elif "verdict" in params and code == OfferCode.MODEL_PROPOSAL:
         decided, recorded = params["verdict"], outcome.closure.eligibility
+        # The cause the summary names is the record's: one decided on a cause
+        # the record no longer identifies, or the reverse, is a conflict too.
+        if (params["root_cause"] is not None) != (
+            outcome.cause.identification_leg is not None
+        ):
+            _count(code, "identified cause", params["root_cause"], "none")
     else:
         return
     if recorded != decided:
-        logger.info(
-            "Case narration: %s decided on %s, the record reads %s (#2636)",
-            code,
-            decided,
-            recorded,
-        )
-        case_outcome_conflicts_total.labels(field=f"narration.{code}").inc()
+        _count(code, "decision", decided, recorded)
+
+
+def _count(code: str, what: str, decided, recorded) -> None:
+    logger.info(
+        "Case narration: %s's %s was %s, the record reads %s (#2636)",
+        code,
+        what,
+        decided,
+        recorded,
+    )
+    case_outcome_conflicts_total.labels(field=f"narration.{code}").inc()
 
 
 _READINESS_CODES = (
@@ -80,31 +95,38 @@ _READINESS_CODES = (
 )
 
 
-def _outcome(case: Any, metadata: dict, log: list) -> Optional[CaseOutcome]:
-    """The record the cycle wrote; when its write failed, the outcome
-    computed in memory for the narration alone, never stored (#2636). None
-    only when that fails too."""
+def _outcome(case: Any, metadata: dict, log: list) -> tuple:
+    """``(outcome, stored)``: the record the cycle wrote; when its write
+    failed, the outcome computed in memory for the narration alone, never
+    stored, counting no disagreement (#2636). None only when that fails too."""
     if metadata.get(OUTCOME_WRITTEN_KEY):
-        return case.progress.outcome
+        return case.progress.outcome, True
     if not log:
-        return None
+        return None, False
     try:
-        return compute_case_outcome(case.progress.outcome, case)
+        return compute_case_outcome(case.progress.outcome, case, count=False), False
     except Exception:  # noqa: BLE001 — the write's failure is already counted
         logger.exception(
             "Case %s: no outcome to narrate from (#2636)",
             getattr(case, "case_id", None),
         )
-        return None
+        return None, False
 
 
 def _first_narration(case: Any, outcome: CaseOutcome) -> None:
     """The watermark (#2555): the first time a case is narrated, the unbound
-    re-checks a record before it held are marked narrated, unrendered; every
+    re-checks a stored record held before it are marked narrated, unrendered;
+    with no record stored at all, every one observed before this turn. Every
     row that first appears after is narrated once."""
-    before = outcome._before_narration or frozenset()
+    before = outcome._before_narration
     for recheck in outcome.unbound_rechecks:
-        if recheck.evidence_id in before and recheck.narrated_turn is None:
+        if recheck.narrated_turn is not None:
+            continue
+        if (
+            recheck.observed_turn < case.current_turn
+            if before == NO_STORED_RECORD
+            else recheck.evidence_id in (before or ())
+        ):
             recheck.narrated_turn = case.current_turn
     outcome.narration_since = case.current_turn
 
@@ -124,13 +146,17 @@ def narrate_turn(case: Any, metadata: dict, *, offers_only: bool = False) -> Non
     step-0 exit after a replay, which narrates the offers it holds and no
     notice (A11)."""
     log = metadata.get(DECISIONS_KEY) or []
-    outcome = _outcome(case, metadata, log)
-    if outcome is not None and outcome.narration_since is None:
+    outcome, stored = _outcome(case, metadata, log)
+    # The record's narration marks are written only onto a stored record; an
+    # in-memory pass leaves the unbound rows to a later turn.
+    if stored and outcome.narration_since is None:
         _first_narration(case, outcome)
+    unbound = [i for i, e in enumerate(log) if e["code"] == NoticeCode.UNBOUND_RECHECKS]
     named = []
-    for entry in log:
+    for index, entry in enumerate(log):
         code, params = entry["code"], entry["params"]
-        _conflict(code, params, outcome)
+        if stored:
+            _conflict(code, params, outcome)
         if code in set(OfferCode):
             if code == OfferCode.REQUEST_READY or (
                 params.get("composer") == "confirmation"
@@ -146,9 +172,17 @@ def narrate_turn(case: Any, metadata: dict, *, offers_only: bool = False) -> Non
             continue
         if offers_only or entry["token"] is None:
             continue
-        texts = render_notice(code, params, outcome, log)
+        if code == NoticeCode.UNBOUND_RECHECKS and (not stored or index != unbound[-1]):
+            # The rows render once per narration, at the last entry's place.
+            texts = []
+        else:
+            texts = render_notice(code, params, outcome, log)
         if code == NoticeCode.UNBOUND_RECHECKS and texts:
             named = named_rechecks(outcome)
+        if code == NoticeCode.ENGINE_OFFER_STANDS and not texts:
+            # The engine's offer lapsed later in the cycle: it superseded
+            # nothing the user will answer.
+            metadata["transition_superseded_by_engine"] = False
         _replace_token(metadata, entry["token"], texts)
     # Only the rows the notice named: the rest are narrated on a later turn.
     for recheck in named:

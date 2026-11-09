@@ -86,10 +86,9 @@ TEXT: dict[tuple[str, str], tuple[int, str]] = {
     (_SG, "decide_fix_acceptance"): (1, "a ref without solution_accepted: " + _ORDER),
     (_SG, "_apply_stage_gate_signals"): (3, "milestone order errors: " + _ORDER),
     (_TR, "TransitionManager._apply_model_proposal"): (
-        5,
-        "a revision pending, an invalid edge, a non-disposition, the engine's "
-        "offer standing, and the turn quiet (TRANSITION_QUIET_FEEDBACK, "
-        "amendment 9): " + _EMISSION,
+        4,
+        "a revision pending, an invalid edge, a non-disposition, and the turn "
+        "quiet (TRANSITION_QUIET_FEEDBACK, amendment 9): " + _EMISSION,
     ),
     (_TA, "_apply_turn_response"): (
         2,
@@ -160,9 +159,10 @@ DECISIONS: dict[tuple[str, str], dict[str, tuple[int, str]]] = {
         "OfferCode.RESOLUTION_NEEDS_INFO": (1, "offer"),
         "NoticeCode.DECLINED_RESOLUTION_REASK": (1, "R"),
         "OfferCode.MODEL_PROPOSAL": (1, "offer"),
+        "NoticeCode.ENGINE_OFFER_STANDS": (1, "R"),
     },
     (_TA, "_apply_turn_response"): {"NoticeCode.HYPOTHESIS_RETIRED": (1, "context")},
-    (_TA, "_lapse_unlicensed_offer"): {"NoticeCode.OFFER_LAPSED": (1, "context")},
+    (_TA, "_lapse_after_recompute"): {"NoticeCode.OFFER_LAPSED": (1, "context")},
 }
 
 #: The functions whose every notice became a code: none may call

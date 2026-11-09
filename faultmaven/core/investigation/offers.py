@@ -105,6 +105,7 @@ place an affordance is derived from the record: ``disposition_eligibility``
 decline stands and the problem is not on hold).
 """
 
+import importlib
 import logging
 import secrets
 from enum import StrEnum
@@ -639,10 +640,22 @@ def answer_offer(
 
 
 def _premise_gone(case: "Case", offer: Offer) -> bool:
-    """Whether an open terminal offer's premise has gone: the case is terminal,
-    or a false-alarm close's finding was withdrawn, edited away or replaced."""
+    """Whether an open terminal offer's premise has gone: the case is terminal;
+    a false-alarm close's finding was withdrawn, edited away or replaced; or a
+    deferred disposition, which says the root cause and fix are documented, has
+    lost the M5 licence it was opened on (INV-32, #2636)."""
     if case.is_terminal:
         return True
+    if offer.basis == OfferBasis.DEFERRED:
+        # The one predicate M5 and the deferred proposer read
+        # (``stage_gates.solution_licence_leg``). Loaded by name at call time,
+        # as ``terminal_transitions`` loads the outcome module: that module
+        # imports this one, so an import here would close a cycle.
+        transitions = importlib.import_module(
+            "faultmaven.core.investigation.terminal_transitions"
+        )
+        if transitions.cause_identification_leg(case) is None:
+            return True
     if _is_false_alarm(offer.kind, offer.closure_reason):
         finding = _finding_turn(case)
         return finding is None or finding > offer.opened_at_turn

@@ -605,6 +605,7 @@ from faultmaven.modules.case.domain.models.offer import (
     ResolveRequest,
 )
 from faultmaven.modules.case.domain.models.outcome import (
+    NO_STORED_RECORD,
     AttemptOutcome,
     BindableRows,
     CaseOutcome,
@@ -896,6 +897,7 @@ __all__ = [
     "CauseAssuranceGrade",
     "CauseState",
     # The case outcome record (#2615 stage S1)
+    "NO_STORED_RECORD",
     "AttemptOutcome",
     "BindableRows",
     "CaseOutcome",

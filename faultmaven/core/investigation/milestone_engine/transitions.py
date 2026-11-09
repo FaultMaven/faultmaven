@@ -491,13 +491,14 @@ class TransitionManager:
             )
             # Read by the turn's ``transition_compliance`` line: the model's
             # proposal was dropped, not pivoted.
+            # Both read at the end of the cycle (#2636): an engine offer that
+            # lapses later in it no longer stands, so neither is reported.
             metadata["transition_superseded_by_engine"] = True
-            _add_system_feedback(
+            record_decision(
                 metadata,
-                "TRANSITION NOT PROPOSED: the engine already offered the "
-                f"user a {engine_offer.kind.to_state!r} transition this turn, "
-                "and that offer is what they will answer. Do not re-propose a "
-                "transition until they have answered it.",
+                NoticeCode.ENGINE_OFFER_STANDS,
+                proposal_id=engine_offer.proposal_id,
+                to_state=engine_offer.kind.to_state,
             )
             return
 

@@ -138,6 +138,13 @@ class CauseOutcome(BaseModel):
     pool_empty_reason: Optional[PoolEmptyReason] = Field(
         default=None, description="Why the confirmation pool is empty"
     )
+    identification_leg: Optional[str] = Field(
+        default=None,
+        description=(
+            "The leg the root cause is identified on (chain, rcc or "
+            "working_conclusion; ``cause_identification_leg``), or None"
+        ),
+    )
     identification_held_open: bool = Field(
         default=False,
         description=(
@@ -288,6 +295,11 @@ class ClosureOutcome(BaseModel):
     )
 
 
+#: ``CaseOutcome._before_narration`` when no record was stored before the
+#: case's first narration (#2636).
+NO_STORED_RECORD = "no_stored_record"
+
+
 class CaseOutcome(BaseModel):
     """The case's outcome, folded over its prior (#2615, *The record*)."""
 
@@ -317,10 +329,19 @@ class CaseOutcome(BaseModel):
             "re-checks a record before it held count as narrated"
         ),
     )
-    #: Not stored. The unbound re-checks the record held before the case was
-    #: first narrated, carried by the fold until that narration marks them
-    #: narrated unrendered (``core/investigation/outcome.py``).
-    _before_narration: Optional[frozenset] = PrivateAttr(default=None)
+    #: Not stored, and no part of the record's equality. The unbound
+    #: re-checks a stored record held before the case was first narrated
+    #: (or ``NO_STORED_RECORD``), carried by the fold until that narration
+    #: marks them narrated unrendered (``core/investigation/outcome.py``).
+    _before_narration: object = PrivateAttr(default=None)
+
+    def __eq__(self, other: object) -> bool:
+        """Two records are equal when their stored fields are: the transient
+        watermark carrier is not part of the record (#2636)."""
+        if not isinstance(other, CaseOutcome):
+            return NotImplemented
+        return self.__dict__ == other.__dict__
+
     disagreements: Dict[str, int] = Field(
         default_factory=dict,
         description=(

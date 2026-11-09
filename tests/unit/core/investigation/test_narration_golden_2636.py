@@ -426,6 +426,17 @@ NOTICES = [
         [_M5.format("the fix the user reported running at turn 4")],
     ),
     (
+        "engine-offer-stands",
+        NoticeCode.ENGINE_OFFER_STANDS,
+        {"proposal_id": "p1", "to_state": "closed"},
+        outcome(),
+        [
+            "TRANSITION NOT PROPOSED: the engine already offered the user a "
+            "'closed' transition this turn, and that offer is what they will "
+            "answer. Do not re-propose a transition until they have answered it."
+        ],
+    ),
+    (
         "report-ignored-not-failed",
         NoticeCode.FIX_REPORT_IGNORED,
         {"reason": "window_not_failed", "fix_turn": 6, "previous": 9, "turn": 10},
@@ -651,6 +662,7 @@ def test_the_codes_are_append_only():
         "hypothesis_retired",
         "mitigation_disposed",
         "offer_lapsed",
+        "engine_offer_stands",
     ]
     assert [m.value for m in OfferCode] == [
         "rca_infeasible_close",

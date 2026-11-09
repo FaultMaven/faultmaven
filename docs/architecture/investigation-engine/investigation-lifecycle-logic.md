@@ -1060,9 +1060,10 @@ states an outcome is rendered from that record.
       leaves the turn's milestones; one it raises gets the milestone and step
       1's KB remediation warm-up; either way the turn's outcome is re-derived.
       `progress_made` and housekeeping's `investigation_advanced` keep the
-      step-1 reading (residual, stated). A deferred-disposition offer this
-      cycle opened on the M5 licence the recompute withdrew lapses, unrendered
-      (INV-32).
+      step-1 reading (residual, stated). The offer record's lapse rule
+      (`offers.lapse_offers`) then runs again: a deferred-disposition offer
+      whose M5 licence has fallen lapses (INV-32), the same rule step 3b and
+      every save apply.
    5. **The backstop**, last among the openers (INV-43), reading the same pool
       the record reads.
    6. **Metrics, the working conclusion, the state validator**, and
@@ -1075,9 +1076,11 @@ states an outcome is rendered from that record.
    rendered too. The step writes the narrated unbound re-checks (only those
    its notice named) into the record. The first time a case is narrated
    (`narration_since`), the re-checks a record before it held are marked
-   narrated unrendered; every one that appears after is narrated once. When the
-   cycle's record write failed, the outcome is computed in memory for the
-   narration alone.
+   narrated unrendered (with no record stored at all, every one observed before
+   that turn); every one that appears after is narrated once. When the cycle's
+   record write failed, the outcome is computed in memory for the narration
+   alone: it counts no disagreement, narrates no unbound row and writes no
+   mark.
 5. **The turn record** copies the rendered notices; then the terminal summary,
    the follow-ups and the reply are composed.
 
@@ -1090,6 +1093,16 @@ Two consequences of this order are expected differences from the order before
 - **Momentum reads this turn's stall count**: metrics run after the stall
   counter, so the turn that makes the fifth stall records `blocked` momentum,
   and its `blocked_reasons` and `next_steps` follow.
+- **A deferred offer lapses in the cycle that opened it** when the final
+  recompute withdraws its licence; the model's proposal it displaced is then
+  not reported superseded, and no "the engine already offered" notice renders.
+- **The withdrawal notice's variant is read when the record is written**,
+  after housekeeping: a hypothesis housekeeping retires can move it from "its
+  why is open" to "no longer established".
+- **A rising edge in the final recompute** records `root_cause_identified`,
+  re-derives the turn's outcome and runs the KB warm-up on this turn.
+- **The close-to-resolve pivot's record lines, and the cause a model close's
+  summary names, are read at the end of the cycle**, from the record.
 
 Within a decision cycle no text that states an outcome is composed before the
 last decider has run and `progress.outcome` is written. A notice that states

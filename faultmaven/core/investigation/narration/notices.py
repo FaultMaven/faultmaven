@@ -369,14 +369,15 @@ def _mitigation_refused(params: dict, outcome: Optional[CaseOutcome], log) -> li
     mitigation = outcome.mitigation if outcome is not None else None
     disposition = mitigation.disposition if mitigation is not None else None
     if outcome is None:
-        # No record: the disposition this cycle recorded is the log's.
+        # No record: the disposition this cycle recorded is the log's, else
+        # the one stored before the cycle.
         disposition = next(
             (
                 e["params"]["value"]
                 for e in log
                 if e["code"] == NoticeCode.MITIGATION_DISPOSED
             ),
-            None,
+            params.get("stored_disposition"),
         )
     if disposition == "proceed_unmitigated":
         return [_MITIGATION_PROCEEDED]
@@ -472,6 +473,29 @@ def _declined_resolution(params: dict, outcome, log) -> list:
     return [
         f"{DECLINED_RESOLVE_FEEDBACK} {_DECLINED_RESOLVE_CHIPS_FEEDBACK} "
         f"{resolve_declined_actions(params['pending_check_holds'])}"
+    ]
+
+
+def lapsed(log: list, proposal_id: str) -> bool:
+    """Whether the cycle lapsed the offer ``proposal_id`` (``OFFER_LAPSED``)."""
+    return any(
+        e["code"] == NoticeCode.OFFER_LAPSED
+        and e["params"].get("proposal_id") == proposal_id
+        for e in log
+    )
+
+
+@_renders(NoticeCode.ENGINE_OFFER_STANDS)
+def _engine_offer_stands(params: dict, outcome, log: list) -> list:
+    """The model's proposal was dropped for the engine's offer; said only if
+    that offer still stands at the end of the cycle."""
+    if lapsed(log, params["proposal_id"]):
+        return []
+    return [
+        "TRANSITION NOT PROPOSED: the engine already offered the "
+        f"user a {params['to_state']!r} transition this turn, "
+        "and that offer is what they will answer. Do not re-propose a "
+        "transition until they have answered it."
     ]
 
 

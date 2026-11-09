@@ -168,12 +168,12 @@ def suggest_resolve_message(
     if solution_titles:
         detail += "- **Solution**: " + ", ".join(solution_titles) + "\n"
     kept = "; the confirmed fix stays on record." if solution_titles else "."
+    # Never an empty "The record shows:" block.
+    shows = f"The record shows:\n\n{record_lines}\n" if record_lines else ""
     return (
         "This case qualifies for **resolved** status rather than closed. "
         f"Closing would close it without marking it resolved{kept}\n\n"
-        "The record shows:\n\n"
-        + record_lines
-        + "\n"
+        + shows
         + detail
         + "\nWould you like to mark it **resolved** instead?"
     )
@@ -223,12 +223,19 @@ _SUMMARY_PARAMS = (
 )
 
 
-def closure_message(params: dict, record_lines: str) -> str:
+def closure_message(params: dict, outcome: Optional[CaseOutcome]) -> str:
     """``ClosureReadiness.message`` for the verdict its decider chose, from
-    its ``offer_params``; the pivot's record lines are the record's."""
+    its ``offer_params``. The cause it names and the pivot's record lines are
+    the record's: the root cause is named only while the record identifies
+    one (``cause.identification_leg``)."""
+    params = dict(params)
+    if outcome is not None:
+        identified = outcome.cause.identification_leg is not None
+        params["root_cause"] = params["root_cause_name"] if identified else None
     if params["verdict"] == "suggest_resolve":
+        lines = outcome.resolution.statement if outcome is not None else ""
         return suggest_resolve_message(
-            params["root_cause"], params["solution_titles"], record_lines
+            params["root_cause"], params["solution_titles"], lines
         )
     return close_summary_message(**{k: params[k] for k in _SUMMARY_PARAMS})
 
@@ -323,5 +330,5 @@ def render_offer(code: str, params: dict, outcome: Optional[CaseOutcome]) -> str
     if code == OfferCode.MODEL_PROPOSAL and params["composer"] == "readiness":
         return _readiness(params, outcome)
     if code == OfferCode.MODEL_PROPOSAL and params["composer"] == "closure":
-        return closure_message(params, resolution)
+        return closure_message(params, outcome)
     raise KeyError(code)
