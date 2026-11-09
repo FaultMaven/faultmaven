@@ -1,6 +1,7 @@
-"""The shared host-and-port pattern: the same matches as before, in linear time (fm#2641).
+"""The shared port patterns: the same matches as before, in linear time (fm#2641).
 
-The old pattern is kept here as the oracle. On a long run of word characters
+The old host-and-port pattern is kept here as the oracle, and so is the port
+keyword pattern, which three modules used to define for themselves. On a long run of word characters
 with no colon it tried every split between its two classes, so its cost was
 quadratic in the run: 23 s for a 64 KB hex run.
 """
@@ -25,21 +26,30 @@ from faultmaven.modules.preprocessing.extractors.utils import (
     is_port,
 )
 from tests.unit.modules.preprocessing.extractors.test_sshd_auth_anchoring import (
-    _SETTLE_PER_LINE_BYTE,
     ADVERSARIAL_SHAPES,
+    SETTLE_PER_LINE_BYTE,
     adversarial_length,
     adversarial_line,
 )
 from tests.wallclock import assert_linear_growth
 
 OLD_HOST_PORT_RE = re.compile(r"(?<![\w.-])[\w-]*[A-Za-z.][\w.-]*:(\d{1,5})\b")
+OLD_PORT_KEYWORD_RE = re.compile(r"\bport[= :]+(\d{1,5})\b", re.IGNORECASE)
 
 #: Negatives first: a digits-only or empty host, a port that is too long or
-#: runs on into a word, a non-ASCII host. Then the shapes that do match,
-#: including a port in non-ASCII digits, which ``\d`` takes.
-EDGE_CASES = ["", "12345", "a" * 50, "1-2-3:", ":80", "-:80", "_:80", "9:80"]
-EDGE_CASES += ["é:80", "host:123456", "a:80x", "a:80_", "a:8.0", "04:47:44"]
-EDGE_CASES += ["1.2:80", "x.y-z:65535 b:1", "db.local:5432", "-a:1", "h:٣٣"]
+#: runs on into a word, a non-ASCII host.
+NEGATIVES = ["", "12345", "a" * 50, "1-2-3:", ":80", "-:80", "_:80", "9:80"]
+NEGATIVES += ["é:80", "host:123456", "a:80x", "a:80_", "04:47:44"]
+#: Then the shapes that match, including a port in non-ASCII digits, which
+#: ``\d`` takes, and a version tag: ``a:8.0`` gives ``8`` as ``nginx:1.25``
+#: gives ``1``, a false reading (fm#2677).
+EDGE_CASES = NEGATIVES + ["1.2:80", "x.y-z:65535 b:1", "db.local:5432", "-a:1"]
+EDGE_CASES += ["h:٣٣", "a:8.0"]
+
+#: The keyword in any case, after any of ``= :``, and not inside a word or
+#: before a port that is too long.
+KEYWORD_CASES = {"Port 22": ["22"], "PORT=80": ["80"], "port: 80": ["80"]}
+KEYWORD_CASES |= {"port 123456": [], "sport 22": [], "port:80": ["80"]}
 
 
 def _corpus(count: int) -> list[str]:
@@ -60,7 +70,7 @@ def _expected_ports(lines: list[str]) -> Counter:
     return Counter(
         port
         for line in lines
-        for port in distinct_on_line(line, PORT_KEYWORD_RE, OLD_HOST_PORT_RE)
+        for port in distinct_on_line(line, OLD_PORT_KEYWORD_RE, OLD_HOST_PORT_RE)
         if is_port(port)
     )
 
@@ -70,9 +80,17 @@ class TestSameMatchesAsTheOldPattern:
     def test_edge_cases(self):
         for text in EDGE_CASES:
             assert _matches(HOST_PORT_RE, text) == _matches(OLD_HOST_PORT_RE, text)
-        assert not HOST_PORT_RE.search("a:80x 04:47:44 _:80 9:80 host:123456")
+        assert not any(HOST_PORT_RE.search(text) for text in NEGATIVES)
+        assert HOST_PORT_RE.findall("a:8.0") == ["8"]
         assert HOST_PORT_RE.findall("x.y-z:65535 b:1") == ["65535", "1"]
         assert HOST_PORT_RE.findall("h:٣٣") == ["٣٣"]
+
+    def test_the_port_keyword(self):
+        for text, ports in KEYWORD_CASES.items():
+            assert PORT_KEYWORD_RE.findall(text) == ports, text
+            assert _matches(PORT_KEYWORD_RE, text) == _matches(
+                OLD_PORT_KEYWORD_RE, text
+            )
 
     def test_random_corpus(self):
         corpus = _corpus(50_000)
@@ -115,6 +133,6 @@ def test_the_pattern_is_linear_on_a_hex_run():
         lambda repetitions: adversarial_line("hex-run", repetitions),
         small=max(1, ADVERSARIAL_SHAPES["hex-run"][3] // 512),
         label="HOST_PORT_RE on hex-run",
-        settle_bytes=lambda repetitions: _SETTLE_PER_LINE_BYTE
+        settle_bytes=lambda repetitions: SETTLE_PER_LINE_BYTE
         * adversarial_length("hex-run", repetitions),
     )

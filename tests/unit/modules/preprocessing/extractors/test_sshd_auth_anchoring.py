@@ -1060,7 +1060,7 @@ def adversarial_length(name: str, repetitions: int) -> int:
 #: copy. It need not: settled 4x, a window's top faulted at most 36 pages a
 #: call at 64 KB and 1780 at 512 KB (``timestamps``), 1-4 ms of system time
 #: beside 0.6-2.7 s of the extractor's own work there, so no figure moves.
-_SETTLE_PER_LINE_BYTE = 4
+SETTLE_PER_LINE_BYTE = 4
 
 
 ADVERSARIAL_LINES = {
@@ -1097,7 +1097,7 @@ class TestAdversarialLines:
             lambda repetitions: adversarial_line(name, repetitions),
             small=max(1, ADVERSARIAL_SHAPES[name][3] // 512),
             label=f"read_sshd_auth_line on {name}",
-            settle_bytes=lambda repetitions: _SETTLE_PER_LINE_BYTE
+            settle_bytes=lambda repetitions: SETTLE_PER_LINE_BYTE
             * adversarial_length(name, repetitions),
         )
 
@@ -1128,7 +1128,7 @@ class TestAdversarialLines:
             small=max(1, ADVERSARIAL_SHAPES[name][3] // 64),
             label=f"LogsAndErrorsExtractor.extract beside {name}",
             max_escalations=1,
-            settle_bytes=lambda repetitions: _SETTLE_PER_LINE_BYTE
+            settle_bytes=lambda repetitions: SETTLE_PER_LINE_BYTE
             * adversarial_length(name, repetitions),
         )
 

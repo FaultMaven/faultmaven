@@ -12,8 +12,8 @@ Provides:
 - The entity value limits both entity paths share (``is_port``,
   ``is_pid``, ``PID_MAX``) and the pattern precondition
   (``check_entity_pattern``)
-- The port patterns both entity paths share (``PORT_KEYWORD_RE``,
-  ``HOST_PORT_RE``)
+- The port patterns both entity paths read in logs evidence
+  (``PORT_KEYWORD_RE``, ``HOST_PORT_RE``)
 """
 
 import re
@@ -90,15 +90,20 @@ def is_pid(value: str) -> bool:
 
 
 PORT_KEYWORD_RE = re.compile(r"\bport[= :]+(\d{1,5})\b", re.IGNORECASE)
-"""A port after the word ``port``, as in ``port 22`` or ``port=8080``."""
+"""A port after the word ``port``, as in ``port 22`` or ``port=8080``.
+
+Read in logs evidence by both entity paths, and by the registry in command
+output, where it is paired with an IP-and-port pattern instead.
+"""
 
 HOST_PORT_RE = re.compile(r"(?<![\w.-])(?=[\w.-]*?[A-Za-z.])[\w.-]++:(\d{1,5})\b")
 """A port after a colon that follows a ``[\\w.-]`` run with an ASCII letter or dot.
 
 ``db.local:5432`` and ``10.0.0.5:22`` match. A digits-only run (``04:47`` in
 a syslog time) does not. Any run with a letter does, so an ISO-8601 time
-(``T06:55:45Z`` gives ``55``) and a ``file:line`` reference (``app.py:118``)
-read as ports too, and ``\\d`` takes any Unicode digit (``h:٣٣``) (fm#2677).
+(``T06:55:45Z`` gives ``55``), a ``file:line`` reference (``app.py:118``) and
+a version tag (``nginx:1.25`` gives ``1``) read as ports too, and ``\\d`` takes
+any Unicode digit (``h:٣٣``) (fm#2677).
 
 The cost is linear because of the lookbehind and the lookahead together. The
 lookbehind lets a match start only at the beginning of a run, and the lazy
@@ -106,8 +111,10 @@ lookahead scans that run once. The possessive ``++`` adds nothing: a plain
 ``+`` measures the same. The old ``[\\w-]*[A-Za-z.][\\w.-]*`` tried every
 split of a long run without a colon: 23 s on a 64 KB hex run (fm#2641).
 
-``PORT_KEYWORD_RE`` and this pattern are the logs extractor's profile and the
-entity registry's one port rule.
+In logs evidence, ``PORT_KEYWORD_RE`` and this pattern are the one port rule
+of the logs extractor's profile and the entity registry. Command output pairs
+``PORT_KEYWORD_RE`` with an IP-and-port pattern of its own, and config evidence
+has its own port pattern.
 """
 
 

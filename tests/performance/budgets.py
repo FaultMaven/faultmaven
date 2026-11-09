@@ -417,11 +417,12 @@ API_REQUEST_LOGGING_OVERHEAD = LatencyBudget(
 # =============================  ====================================  =========
 #
 # All six were already fastest-of-N statistics (N = 2 to 5) and keep it.
-# ``ADVERSARIAL_LINE_EXTRACTION`` is one row for fourteen shapes, anchored on
-# each job's worst shape. When it was anchored the worst were ``tag-chain`` and
-# ``sshd-word-chain``, on which the extractor was then super-linear; since #1700
-# it is linear on these shapes (``test_the_extractor_is_linear``), so the anchor
-# is loose for all of them. Its target is the deadline the Tier 1 worker puts on
+# ``ADVERSARIAL_LINE_EXTRACTION`` is one row for every ``ADVERSARIAL_LINES``
+# shape, anchored on each job's worst shape. When it was anchored the worst were
+# ``tag-chain`` and ``sshd-word-chain``, on which the extractor was then
+# super-linear. It has been linear on those since #1700, and on ``hex-run``
+# since #2641 (``test_the_extractor_is_linear`` covers every shape), so the
+# anchor is loose for all of them. Its target is the deadline the Tier 1 worker puts on
 # ``extract`` alone (#2637), the call the test times in process.
 
 # tests/performance/test_sanitization_throughput.py
