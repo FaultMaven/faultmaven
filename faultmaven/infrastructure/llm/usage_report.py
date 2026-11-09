@@ -63,11 +63,12 @@ def _utc_now() -> datetime:
 def _store_failures() -> tuple:
     """What a read that could not reach the store raises: a database error, a
     timeout, or a refused or dropped connection, which pool checkout raises raw
-    (``OSError``, or asyncpg's own when the driver is loaded)."""
+    (``OSError``, or asyncpg's ``PostgresError``/``InterfaceError`` when the
+    driver is loaded: a refused role, a restarting server, a lost socket)."""
     failures = [DatabaseTimeout, SQLAlchemyError, OSError]
     asyncpg = sys.modules.get("asyncpg")
     if asyncpg is not None:
-        failures += [asyncpg.PostgresConnectionError, asyncpg.InterfaceError]
+        failures += [asyncpg.PostgresError, asyncpg.InterfaceError]
     return tuple(failures)
 
 
@@ -153,8 +154,9 @@ async def read_usage_report(
     """One enterprise's usage over ``window``, in the ``LLMUsageReport`` shape
     less ``scope``, which is the caller's.
 
-    ``turn_retention_days`` bounds what the ``turns`` block can speak for:
-    rows older than it are pruned (``coverage.turns_since``).
+    ``turn_retention_days`` bounds what the ``turns`` block can speak for: it
+    reads turns from ``coverage.turns_since``, the window's first day clipped
+    to the retention horizon, so it says the same whether or not a prune ran.
 
     Raises:
         UsageStoreUnavailable: the database did not answer or refused a read.
@@ -171,7 +173,10 @@ async def read_usage_report(
     last = now.date()
     first = last - timedelta(days=days - 1)
     # Aware UTC bounds only: SQLite strips an offset before comparing.
-    start = datetime.combine(first, time.min, tzinfo=timezone.utc)
+    # Turn rows from before the horizon are pruned, or will be: never read.
+    horizon = last - timedelta(days=turn_retention_days - 1)
+    turns_since = max(first, horizon)
+    start = datetime.combine(turns_since, time.min, tzinfo=timezone.utc)
     end = datetime.combine(last + timedelta(days=1), time.min, tzinfo=timezone.utc)
 
     in_daily = (
@@ -219,11 +224,6 @@ async def read_usage_report(
             [(metering_since,)] = await rows(
                 select(func.min(daily.usage_date)).where(
                     daily.enterprise_id == enterprise_id
-                )
-            )
-            [(earliest_turn,)] = await rows(
-                select(func.min(turn.occurred_at)).where(
-                    turn.enterprise_id == enterprise_id
                 )
             )
             day_rows = await rows(by(daily.usage_date))
@@ -281,20 +281,13 @@ async def read_usage_report(
             }
             for row in group_rows
         ),
-        key=lambda g: (-g["tokens"]["total"], sorted(g["key"].items())),
+        # A folded account group's id is None: it sorts after every string.
+        key=lambda g: (
+            -g["tokens"]["total"],
+            [(k, v is None, v or "") for k, v in sorted(g["key"].items())],
+        ),
     )
     edges = histogram_edges(soft_budget, ceiling)
-    # The first day the turns block can speak for: the window's first day,
-    # clipped to the turn-retention horizon and to the earliest turn row.
-    turns_since = (
-        max(
-            first,
-            last - timedelta(days=turn_retention_days - 1),
-            _as_utc(earliest_turn).date(),
-        )
-        if earliest_turn is not None
-        else None
-    )
     return {
         "window": {"from": first, "to": last, "days": days, "timezone": "UTC"},
         "coverage": {
@@ -302,7 +295,7 @@ async def read_usage_report(
             "window_fully_covered": metering_since is not None
             and metering_since <= first,
             "turns_since": turns_since,
-            "turns_fully_covered": turns_since == first,
+            "turns_fully_covered": horizon <= first,
         },
         "as_of": now,
         "totals": _bucket(total_row),

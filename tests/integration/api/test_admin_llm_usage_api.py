@@ -18,6 +18,7 @@ from sqlalchemy import text
 
 from faultmaven.api.models import LLMHeavyTurn
 from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
+from faultmaven.config.tenant_context import set_current_enterprise_id
 from faultmaven.exceptions import DatabaseTimeout
 from faultmaven.infrastructure.llm import pricing, usage_report
 from faultmaven.infrastructure.llm.usage_ledger import (
@@ -278,8 +279,8 @@ async def test_an_empty_window_is_zeros_with_coverage(usage_db, as_user):
     assert report["coverage"] == {
         "metering_since": None,
         "window_fully_covered": False,
-        "turns_since": None,
-        "turns_fully_covered": False,
+        "turns_since": str(TODAY - timedelta(days=6)),
+        "turns_fully_covered": True,
     }
     assert report["totals"]["calls"] == {"total": 0, "kept": 0, "low_confidence": 0}
     assert report["totals"]["cache_hit_rate"] is None
@@ -367,6 +368,25 @@ async def test_under_multi_account_subjects_are_one_group_with_no_id(
     }
     assert keyed(multi) == {("account", None): 5, ("organization", "org_1"): 5}
     assert USER not in str(multi["groups"]) and "u2" not in str(multi["groups"])
+
+
+async def test_under_multi_tied_payer_groups_sort_with_the_null_id(
+    usage_db, as_user, monkeypatch
+):
+    """Groups that record no tokens tie; the folded group's null id still sorts."""
+    from faultmaven.api.routes import admin_usage
+
+    no_tokens = {"input_tokens": 0, "output_tokens": 0}
+    await _call(TODAY, who=_who(kind="account", subject=USER), **no_tokens)
+    await _call(TODAY, who=_who(kind="organization", subject="org_1"), **no_tokens)
+    monkeypatch.setattr(admin_usage, "requested_tenant_provider", lambda: "multi")
+
+    report = await _admin_get(as_user, group_by="billing_subject")
+
+    assert [g["key"] for g in report["groups"]] == [
+        {"kind": "organization", "id": "org_1"},
+        {"kind": "account", "id": None},
+    ]
 
 
 async def test_an_unpriced_call_makes_cost_incomplete_at_every_level(usage_db, as_user):
@@ -514,17 +534,18 @@ async def test_turns_coverage_follows_turn_retention_through_the_prune(
     usage_db, as_user, monkeypatch
 ):
     """Turn rows are pruned sooner than daily rows: a 30-day window under a
-    5-day turn retention has full daily coverage and five days of turns."""
+    5-day turn retention has full daily coverage and five days of turns, and
+    says the same whether or not the prune has run (a default standalone
+    install never prunes)."""
     from faultmaven.infrastructure.llm.usage_ledger import prune_expired_usage
 
     for age in (0, 3, 10, 29):  # 29: the 30-day window's first day
         day = NOW - timedelta(days=age)
         await _call(day.date())
-        await _turn(100 + age, 1_000, at=day)
+        await _turn(100 + age, 1_000 * (age + 1), at=day)
     monkeypatch.setenv("LLM_USAGE_TURN_RETENTION_DAYS", "5")
     reset_settings_singleton()
 
-    # Before the prune runs, the horizon alone clips: older rows still exist.
     unpruned = await _admin_get(as_user, window="30d")
     pruned = await prune_expired_usage(
         daily_retention_days=400, turn_retention_days=5, now=NOW
@@ -532,18 +553,24 @@ async def test_turns_coverage_follows_turn_retention_through_the_prune(
     month = await _admin_get(as_user, window="30d")
     today = await _admin_get(as_user, window="1d")
 
-    assert unpruned["coverage"]["turns_since"] == str(TODAY - timedelta(days=4))
     assert pruned.turn_rows_deleted == 2
-    assert month["coverage"]["window_fully_covered"] is True
-    # After it, the earliest surviving turn row is later than the horizon.
-    assert month["coverage"]["turns_since"] == str(TODAY - timedelta(days=3))
-    assert month["coverage"]["turns_fully_covered"] is False
-    assert month["turns"]["count"] == 2
+    for report in (unpruned, month):
+        assert report["coverage"]["window_fully_covered"] is True
+        assert report["coverage"]["turns_since"] == str(TODAY - timedelta(days=4))
+        assert report["coverage"]["turns_fully_covered"] is False
+        turns = report["turns"]
+        assert turns["count"] == 2
+        assert turns["spend_weighted_tokens"]["max"] == 4_000
+        assert sum(b["count"] for b in turns["histogram"]) == 2
+        assert [h["spend_weighted_tokens"] for h in turns["heaviest"]] == [4_000, 1_000]
+    assert unpruned["turns"] == month["turns"]
     assert today["coverage"]["turns_since"] == str(TODAY)
     assert today["coverage"]["turns_fully_covered"] is True
 
 
-async def test_an_unscoped_request_under_multi_is_403(usage_db, monkeypatch):
+async def test_an_unscoped_request_under_multi_is_403(
+    usage_db, monkeypatch, restore_tenant_context
+):
     """The sentinel enterprise is no tenant under multi: refused, never read."""
     from fastapi import HTTPException
 
@@ -560,6 +587,8 @@ async def test_an_unscoped_request_under_multi_is_403(usage_db, monkeypatch):
         raise AssertionError("the store was read for an unscoped request")
 
     monkeypatch.setattr(admin_usage, "llm_usage_report", _never)
+    # The request is bound to the Standalone sentinel, which multi refuses.
+    set_current_enterprise_id(STANDALONE_ENTERPRISE_ID)
 
     with pytest.raises(HTTPException) as refused:
         await admin_usage.get_llm_usage(

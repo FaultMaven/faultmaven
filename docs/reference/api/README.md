@@ -5984,8 +5984,8 @@ How much of the window the ledger can speak for. There is no backfill.
 **Properties:**
 
 - `metering_since` (object, required) — The earliest day with recorded spend for this enterprise; null when none is recorded. Not when metering began: days before it have no recorded spend, either before the ledger was deployed or metered with nothing spent.
-- `turns_fully_covered` (boolean, required) — True when `turns_since` is the window's first day
-- `turns_since` (object, required) — The first day `turns` speaks for: the window's first day, clipped to the turn-retention horizon (today minus LLM_USAGE_TURN_RETENTION_DAYS, plus one) and to the earliest turn row. Null when no turn is recorded. Turn rows are pruned sooner than daily rows, so `turns` can cover less of the window than `totals`.
+- `turns_fully_covered` (boolean, required) — True when the turn-retention horizon reaches the window's first day
+- `turns_since` (string, required) — The first day `turns` reads: the later of the window's first day and the turn-retention horizon (today minus LLM_USAGE_TURN_RETENTION_DAYS, plus one). Turn rows before it are pruned, or will be, so `turns` never reads them and can cover less of the window than `totals`.
 - `window_fully_covered` (boolean, required) — True when `metering_since` is on or before the window's first day
 
 ---

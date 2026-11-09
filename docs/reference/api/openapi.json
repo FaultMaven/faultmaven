@@ -4629,22 +4629,15 @@
             "title": "Metering Since"
           },
           "turns_fully_covered": {
-            "description": "True when `turns_since` is the window's first day",
+            "description": "True when the turn-retention horizon reaches the window's first day",
             "title": "Turns Fully Covered",
             "type": "boolean"
           },
           "turns_since": {
-            "anyOf": [
-              {
-                "format": "date",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "The first day `turns` speaks for: the window's first day, clipped to the turn-retention horizon (today minus LLM_USAGE_TURN_RETENTION_DAYS, plus one) and to the earliest turn row. Null when no turn is recorded. Turn rows are pruned sooner than daily rows, so `turns` can cover less of the window than `totals`.",
-            "title": "Turns Since"
+            "description": "The first day `turns` reads: the later of the window's first day and the turn-retention horizon (today minus LLM_USAGE_TURN_RETENTION_DAYS, plus one). Turn rows before it are pruned, or will be, so `turns` never reads them and can cover less of the window than `totals`.",
+            "format": "date",
+            "title": "Turns Since",
+            "type": "string"
           },
           "window_fully_covered": {
             "description": "True when `metering_since` is on or before the window's first day",

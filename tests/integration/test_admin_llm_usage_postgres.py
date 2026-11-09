@@ -74,7 +74,12 @@ def limited_sessions(tenant_sessions, monkeypatch):
 
 
 async def _seed(
-    superuser_engine, enterprise_id: str, calls: int, spend: int, account: str = ""
+    superuser_engine,
+    enterprise_id: str,
+    calls: int,
+    spend: int,
+    account: str = "",
+    kind: str = "account",
 ):
     """One call and one turn for ``enterprise_id``, written as the limited role."""
     case_id = f"case_{uuid4().hex[:12]}"
@@ -87,7 +92,7 @@ async def _seed(
             {"c": case_id, "e": enterprise_id},
         )
     who = (
-        UsageAttribution(enterprise_id, "account", account, account)
+        UsageAttribution(enterprise_id, kind, account, account)
         if account
         else UsageAttribution(enterprise_id, "none", "", "")
     )
@@ -163,6 +168,15 @@ async def test_the_route_scopes_to_the_bound_enterprise_under_multi(
     ent_a, ent_b = enterprises
     await _seed(superuser_engine, ent_a, calls=3, spend=10_000, account="u_1764_a")
     await _seed(superuser_engine, ent_a, calls=4, spend=10_000, account="u_1764_b")
+    # Every seed records no tokens, so the two payer groups tie on the sort.
+    await _seed(
+        superuser_engine,
+        ent_a,
+        calls=1,
+        spend=1,
+        account="org_1764",
+        kind="organization",
+    )
     await _seed(superuser_engine, ent_b, calls=5, spend=10_000)
     monkeypatch.setenv("TENANT_PROVIDER", "multi")
     monkeypatch.setenv("DEPLOYMENT_MODE", "cloud")
@@ -188,8 +202,61 @@ async def test_the_route_scopes_to_the_bound_enterprise_under_multi(
 
     assert report.scope.enterprise_id == ent_a
     assert report.scope.tenancy == "multi"
-    assert report.totals.calls.total == 7
-    # #640 Q3: under multi, the account subjects (user ids) are one group.
+    assert report.totals.calls.total == 8
+    # #640 Q3: under multi, the account subjects (user ids) are one group, and
+    # its null id sorts after an organization's id on a tie.
     assert [(g.key, g.calls.total) for g in payers.groups] == [
-        ({"kind": "account", "id": None}, 7)
+        ({"kind": "organization", "id": "org_1764"}, 1),
+        ({"kind": "account", "id": None}, 7),
     ]
+
+
+async def test_a_refused_checkout_is_503_not_500(superuser_engine, monkeypatch):
+    """A REAL checkout failure: a role PostgreSQL refuses at connect
+    (``CONNECTION LIMIT 0``), which asyncpg raises unwrapped by SQLAlchemy."""
+    from fastapi import HTTPException
+    from sqlalchemy.engine import make_url
+
+    from faultmaven.api.routes.admin_usage import get_llm_usage
+    from faultmaven.infrastructure.persistence.database import (
+        close_database,
+        reset_engine,
+    )
+
+    role = f"fm_usage_refused_{uuid4().hex[:8]}"
+    async with superuser_engine.begin() as conn:
+        await conn.exec_driver_sql(
+            f"CREATE ROLE {role} LOGIN PASSWORD 'pw' NOSUPERUSER CONNECTION LIMIT 0"
+        )
+    refused_url = make_url(os.environ["DATABASE_URL"]).set(username=role, password="pw")
+    monkeypatch.setenv(
+        "DATABASE_URL", refused_url.render_as_string(hide_password=False)
+    )
+    reset_settings_singleton()
+    reset_engine()
+    operator = AuthenticatedUser(
+        user_id="op_1764",
+        enterprise_id="ent_1764",
+        email="op@example.com",
+        roles=["platform_admin"],
+        permissions=[],
+    )
+    try:
+        with pytest.raises(HTTPException) as refused:
+            await get_llm_usage(
+                window="7d", group_by="provider_model", current_user=operator
+            )
+    finally:
+        await close_database()
+        monkeypatch.undo()
+        reset_settings_singleton()
+        reset_engine()
+        async with superuser_engine.begin() as conn:
+            await conn.exec_driver_sql(f"DROP ROLE IF EXISTS {role}")
+
+    assert refused.value.status_code == 503
+    assert refused.value.headers == {
+        "x-error-code": "DATABASE_UNAVAILABLE",
+        "Retry-After": "5",
+    }
+    assert role not in str(refused.value.detail)

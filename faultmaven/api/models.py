@@ -395,18 +395,17 @@ class LLMUsageCoverage(BaseModel):
     window_fully_covered: bool = Field(
         description="True when `metering_since` is on or before the window's first day"
     )
-    turns_since: Optional[date] = Field(
+    turns_since: date = Field(
         description=(
-            "The first day `turns` speaks for: the window's first day, clipped "
-            "to the turn-retention horizon (today minus "
-            "LLM_USAGE_TURN_RETENTION_DAYS, plus one) and to the earliest turn "
-            "row. Null when no turn is recorded. Turn rows are pruned sooner "
-            "than daily rows, so `turns` can cover less of the window than "
-            "`totals`."
+            "The first day `turns` reads: the later of the window's first day "
+            "and the turn-retention horizon (today minus "
+            "LLM_USAGE_TURN_RETENTION_DAYS, plus one). Turn rows before it are "
+            "pruned, or will be, so `turns` never reads them and can cover less "
+            "of the window than `totals`."
         )
     )
     turns_fully_covered: bool = Field(
-        description="True when `turns_since` is the window's first day"
+        description="True when the turn-retention horizon reaches the window's first day"
     )
 
 

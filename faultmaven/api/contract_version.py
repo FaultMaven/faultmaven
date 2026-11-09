@@ -182,9 +182,11 @@ CONTRACT_CHANGES: tuple[ContractChange, ...] = (
   its calls leaves the banner and keeps its `unpriced_calls`.
 * Costs are estimated at call time, not billed. `coverage.metering_since` is
   the earliest day with recorded spend, not when metering began.
-  `coverage.turns_since` / `turns_fully_covered` say how much of the window
-  `turns` covers: turn rows are pruned sooner
-  (`LLM_USAGE_TURN_RETENTION_DAYS`) than daily rows.
+  `turns` reads from `coverage.turns_since`, the later of the window's first
+  day and the turn-retention horizon (today minus
+  `LLM_USAGE_TURN_RETENTION_DAYS`, plus one), since turn rows are pruned sooner
+  than daily rows; `turns_fully_covered` is whether the horizon reaches the
+  window's first day.
 * `LLMHeavyTurn.investigation_turn` is nullable, as on every schema that
   publishes a turn for display (#1391).
 
