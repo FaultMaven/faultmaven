@@ -983,7 +983,7 @@ def test_every_rule_needs_an_event_word(owner, rule, phrase):
 # need three sizes of the same shape, and
 # ``tests/performance/test_extraction_speed.py`` times the 64 KB form against
 # that timeout. ``ADVERSARIAL_LINES`` is the 64 KB form, byte for byte what this
-# module used before #1579, plus ``pam-chain`` (#1700).
+# module used before #1579, plus ``pam-chain`` and ``call-chain`` (#1700).
 _64K = 65536
 ADVERSARIAL_SHAPES = {
     "unclosed-bracket-spaced": ("[", "1 ", "password", _64K // 2),
@@ -991,6 +991,12 @@ ADVERSARIAL_SHAPES = {
     "tag-chain": ("Sep 20 10:00:00 web1 bob: ", "a sshd ", "password", _64K // 7),
     "sshd-word-chain": ("", "sshd ", "password", _64K // 5),
     "pam-chain": ("", "pam_unix(", " password", _64K // 9),
+    "call-chain": (
+        "2026-11-09T01:00:00Z web1 app: trace",
+        " f(",
+        " password",
+        _64K // 3,
+    ),
     "unit-parens": ("sshd@", "(", " password", _64K),
     "csv-unterminated": ("", '"a",', '"password', _64K // 4),
     "tsv": ("", "a\t", "password", _64K // 2),
@@ -1040,6 +1046,13 @@ def adversarial_length(name: str, repetitions: int) -> int:
 #: can learn from, so on a 4 MB line it faults ~32,000 pages a call whatever
 #: this says. It is latent: that shape decides at its first or second window
 #: (8 KB-65 KB), nowhere near.
+#:
+#: The extractor's check settles the same block. Its working set peaks higher
+#: (tracemalloc, 64 KB lines): 4.2x its line for most shapes, up to 8.8x for
+#: ``rhost-repeats`` and 37.6x for ``timestamps``, so 4x does not cover every
+#: copy. It need not: settled 4x, a window's top faulted at most 36 pages a
+#: call at 64 KB and 1780 at 512 KB (``timestamps``), 1-4 ms of system time
+#: beside 0.6-2.7 s of the extractor's own work there, so no figure moves.
 _SETTLE_PER_LINE_BYTE = 4
 
 
@@ -1095,9 +1108,9 @@ class TestAdversarialLines:
         out at the 64 KB line: the extractor's linear per-byte cost hides a
         quadratic term below about that, and the reader's window read
         ``pam-chain`` as linear with its pattern reverted (2 of 3 runs).
-        Here each reverted pattern fails its shapes after one escalation,
-        and a second would ask the allocator to settle past
-        ``MAX_SETTLE_BYTES``.
+        ``max_escalations=1`` because one is all a regression needs: each
+        reverted pattern fails its shapes at the second window (top 512 KB),
+        and a cap of one keeps a failing run to about two minutes a shape.
         """
         genuine = BSD + f"Failed password for root from {SRC} port 22 ssh2"
         extractor = LogsAndErrorsExtractor()
@@ -1156,6 +1169,11 @@ _BEFORE_1700 = {
         ("pam_unix(", "PAM_UNIX(", "(pam_unix)", "[", "]", "[7]", "(", ")", ":")
         + (" ", "x", "): ", "authentication failure", "AUTHENTICATION FAILURE"),
     ),
+    "_SYSLOG_SERVICE_RE": (
+        re.compile(r"\s([\w.-]+)(?:\([^)]*\))?\[\d+\]"),
+        (" ", "\t", "a", "sshd", "-", ".", "(", ")", "[", "]", "1", "[1]", ")[1]")
+        + (":", "x("),
+    ),
 }
 _PATTERN_EDGES = [
     "",
@@ -1174,18 +1192,33 @@ _PATTERN_EDGES = [
     "session opened for user root sshd[1]:",
     "pam_unix(a(b)): authentication failure",
     "(pam_unix)[]: authentication failure",
+    " sshd(a(b)[1]",
+    " a( b[1]",
+    " a(x y[1] z)[2]",
+    " f( f( f()[1]",
+    ") c[1]",
+    " a(b) c(d)[1]",
+    " sshd[1] cron[2]",
 ]
+
+
+def _caller_reads(pattern: re.Pattern, line: str) -> tuple | None:
+    """What a caller reads: whether the line matched, and its groups."""
+    match = pattern.search(line)
+    return None if match is None else match.groups()
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize("rule", sorted(_BEFORE_1700))
 def test_a_rewritten_pattern_matches_the_lines_it_matched_before(rule):
-    """#1700 anchored two patterns so each scans a line once; same lines matched.
+    """#1700 anchored three patterns so each scans a line once; each reads the same.
 
-    Each old pattern's delimiter is the first one after its literal, which
-    holds exactly when the segment it closes contains the literal, since the
-    literal holds no delimiter. Edge and genuine lines, then a seeded random
-    corpus; the count of matches keeps it from passing on lines neither reads.
+    The session and PAM patterns' delimiter is the first one after their
+    literal, which holds exactly when the segment it closes contains the
+    literal, since the literal holds no delimiter. Every ``name(`` the syslog
+    service pattern reads closes at its segment's ``)``. Compared on what a
+    caller reads, over edge and genuine lines and a seeded random corpus; the
+    count of matches keeps it from passing on lines neither reads.
     """
     before, tokens = _BEFORE_1700[rule]
     after = getattr(LogsAndErrorsExtractor, rule)
@@ -1193,10 +1226,12 @@ def test_a_rewritten_pattern_matches_the_lines_it_matched_before(rule):
     corpus = _PATTERN_EDGES + [
         "".join(rng.choices(tokens, k=rng.randint(0, 10))) for _ in range(4000)
     ]
-    assert [
-        line for line in corpus if bool(before.search(line)) != bool(after.search(line))
-    ] == []
-    assert sum(bool(after.search(line)) for line in corpus[len(_PATTERN_EDGES) :]) > 20
+    readings = [
+        (line, _caller_reads(before, line), _caller_reads(after, line))
+        for line in corpus
+    ]
+    assert [reading for reading in readings if reading[1] != reading[2]] == []
+    assert sum(r[2] is not None for r in readings[len(_PATTERN_EDGES) :]) > 20
 
 
 @pytest.mark.unit

@@ -696,10 +696,13 @@ class LogsAndErrorsExtractor:
     # Both must match — the loghub Linux fixture is format B; OpenSSH and most
     # post-2010 distros are format A.
     #
-    # Format A's attempt starts only at the line's start or after a ``)``, so
-    # ``[^)]*+`` crosses each ``)``-delimited segment once. Unanchored, it
-    # restarted at every ``pam_unix(`` and ran to the end of a line with no
-    # ``)``: quadratic in its length (#1700). The same lines match.
+    # Format A's attempt starts only at the line's start or after a ``)``, and
+    # its lookahead admits only a segment holding ``pam_unix(``, so each
+    # ``)``-delimited segment is crossed a bounded number of times. Unanchored,
+    # it restarted at every ``pam_unix(`` and ran to the end of a line with no
+    # ``)``: quadratic in its length (#1700). The anchor and the lookahead bound
+    # the cost, not the possessive (``*`` measures the same); a lazy
+    # ``(?:^|\))[^)]*?pam_unix\(`` form is quadratic again. Same lines match.
     _PAM_AUTH_FAILURE_RE = re.compile(
         r"(?:(?:^|\))(?=[^)]*pam_unix\()[^)]*+\)|\(pam_unix\)\[\d+\]):\s*authentication failure",
         re.IGNORECASE,
@@ -730,10 +733,13 @@ class LogsAndErrorsExtractor:
     # local su/kerberos sessions (which also emit "session opened" but from
     # a different service process).
     #
-    # An attempt starts only at the line's start or after a ``:``, so
-    # ``[^:]*+`` crosses each colon-delimited segment once. Unanchored,
-    # ``sshd[^:]*:`` restarted at every ``sshd`` and ran to the end of a line
-    # with no colon: quadratic in its length (#1700). The same lines match.
+    # An attempt starts only at the line's start or after a ``:``, and its
+    # lookahead admits only a segment holding ``sshd``, so each colon-delimited
+    # segment is crossed a bounded number of times. Unanchored, ``sshd[^:]*:``
+    # restarted at every ``sshd`` and ran to the end of a line with no colon:
+    # quadratic in its length (#1700). The anchor and the lookahead bound the
+    # cost, not the possessive (``*`` measures the same); a lazy
+    # ``(?:^|:)[^:]*?sshd`` form is quadratic again. Same lines match.
     _SSH_SESSION_RE = re.compile(
         r"(?:^|:)(?=[^:]*sshd)[^:]*+:\s*session opened for user", re.IGNORECASE
     )
@@ -801,7 +807,20 @@ class LogsAndErrorsExtractor:
     # when the token is preceded by whitespace (avoids false matches inside
     # message bodies) and followed by an optional paren group and a PID bracket.
     # Examples: " sshd(pam_unix)[19939]" → "sshd"; " ftpd[29504]" → "ftpd".
-    _SYSLOG_SERVICE_RE = re.compile(r"\s([\w.-]+)(?:\([^)]*\))?\[\d+\]")
+    #
+    # Read once per ``)``-delimited segment (#1700). The searched form,
+    # ``\s([\w.-]+)(?:\([^)]*\))?\[\d+\]``, ran ``[^)]*`` from every
+    # ``name(`` to the end of a line with no ``)``: quadratic. Every ``name(``
+    # in a segment closes at the same ``)``, so the lookahead at the segment's
+    # start decides once whether that ``)`` is followed by ``[PID]``; the first
+    # candidate of the segment is then taken — ``name(`` if it is, otherwise
+    # only ``name[PID]``. Group 1 is the service the searched form read.
+    _SYSLOG_SERVICE_RE = re.compile(
+        r"(?:^|\))"
+        r"(?:(?=[^)]*+\)\[\d+\])[^)]*?(?=\s[\w.-]+(?:\(|\[\d+\]))"
+        r"|[^)]*?(?=\s[\w.-]+\[\d+\]))"
+        r"\s([\w.-]+)"
+    )
 
     # Syslog hostname extractor — captures the host token in the BSD-syslog
     # 3rd-field position: "Mon DD HH:MM:SS HOSTNAME service[pid]: msg".

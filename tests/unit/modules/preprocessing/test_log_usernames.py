@@ -1036,7 +1036,7 @@ _NOT_THE_RULE = {
     ): (1, "presence test for the event counter, extracts no name"),
     (
         "faultmaven/modules/preprocessing/extractors/logs_extractor.py",
-        r"sshd[^:]*:\s*session opened for user",
+        r"(?:^|:)(?=[^:]*sshd)[^:]*+:\s*session opened for user",
     ): (1, "event matcher for the session counter, extracts no name"),
     # fm#1657's anchored reading of the same events, beside the search above
     # (which it leaves to lines whose header it does not read).

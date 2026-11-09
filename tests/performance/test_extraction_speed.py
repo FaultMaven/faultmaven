@@ -17,11 +17,12 @@ Each number is a product target, so it stays: as a row's
 ``FM_BENCHMARK_ABSOLUTE`` nightly, while a pull request asserts a regression
 anchor 2-3x measured cost through ``assert_latency_within``.
 
-The third's growth SHAPE is asserted next to the correctness test, for the
-sshd reader and the whole extractor (``test_the_reader_is_linear``,
-``test_the_extractor_is_linear``). The extractor was super-linear on
-``tag-chain`` and ``sshd-word-chain`` until #1700 (``sshd-word-chain``:
-0.70 s at 64 KB, 2.58 s at 128 KB on the development box).
+The third's growth SHAPE on these shapes is asserted next to the correctness
+test, for the sshd reader and the whole extractor
+(``test_the_reader_is_linear``, ``test_the_extractor_is_linear``). The
+extractor was super-linear on ``tag-chain`` and ``sshd-word-chain`` until
+#1700 (``sshd-word-chain``: 0.70 s at 64 KB, 2.58 s at 128 KB on the
+development box).
 
 ‼ Every comparison goes through ``assert_latency_within`` (#1557).
 """
