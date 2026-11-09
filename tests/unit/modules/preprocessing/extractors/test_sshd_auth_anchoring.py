@@ -1204,6 +1204,12 @@ _PATTERN_EDGES = [
     " a(b)[] c[1]",
     "host\xa0sshd[1]",
     " sshd[\u0661]",
+    " a(b)[\u0661]",
+    " a[\u0661] b(c)[1]",
+    "x\xa0a(b)[1]",
+    " a[] b(c)[1]",
+    " \xe9[1]",
+    " \xe9(b)[1]",
 ]
 
 
@@ -1216,7 +1222,7 @@ def _caller_reads(pattern: re.Pattern, line: str) -> tuple | None:
 @pytest.mark.unit
 @pytest.mark.parametrize("rule", sorted(_BEFORE_1700))
 def test_a_rewritten_pattern_matches_the_lines_it_matched_before(rule):
-    """#1700 anchored three patterns so each scans a line once; each reads the same.
+    """#1700 anchored three patterns so each reads a line in linear time; each reads the same.
 
     The session and PAM patterns' delimiter is the first one after their
     literal, which holds exactly when the segment it closes contains the
