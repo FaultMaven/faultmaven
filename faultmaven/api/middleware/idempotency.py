@@ -913,8 +913,14 @@ class IdempotencyReplayEraser:
     It reads only members scored after now. A stale member's entry expired by
     the index's own record, and its key, which names no case, may since hold
     another case's entry: a later write of it for this case would have
-    re-scored the member. Clocks out of step between replicas move that line
-    by their skew.
+    re-scored the member. That line is approximate. A score is taken before
+    its write commits, so it falls short of its entry's expiry by the write's
+    commit delay: the eraser skips an entry of the case in that last interval,
+    and the entry outlives the delete by at most the delay. Clocks out of step
+    between replicas move the line by their skew, either way: a writer clock
+    behind the eraser's lengthens that interval by the skew, and one ahead
+    lets a case's delete unlink another case's entry whose key was reused
+    within the skew of its expiry.
 
     It reaches the middleware's keys only because both hold the same Redis: in
     production both come from the composition root (``bootstrap/composition.py``

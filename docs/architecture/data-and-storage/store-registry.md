@@ -211,12 +211,19 @@ Citations only. Paths are relative to `faultmaven/` unless they start with
   `:915`). Case search answers many cases and is `never_replayed` (`main.py:214-225`).
   The entry joins that case's index in its own MULTI/EXEC, with the prune
   (`api/middleware/idempotency.py:838-845`). `IdempotencyReplayEraser`
-  (`:904-945`) reads the index's members scored after now, then unlinks and
+  (`:904-951`) reads the index's members scored after now, then unlinks and
   unindexes each batch in one MULTI/EXEC, so a member cached after the read stays
   indexed for a later delete and a failed batch leaves the rest indexed for the
   retry. A stale member is skipped: its entry expired by the index's own record,
-  and its key, which names no case, may since hold another case's entry. Clocks
-  out of step between replicas move that line by their skew. It is
+  and its key, which names no case, may since hold another case's entry. That
+  line is approximate. A score is taken before its write commits (`:841`,
+  executed at `:845`), so it falls short of the entry's expiry by the write's
+  commit delay: the eraser skips an entry of the case in that last interval,
+  which outlives the delete by at most the delay. Clocks out of step between
+  replicas move the line by their skew, either way: a writer clock behind the
+  eraser's lengthens that interval by the skew, and one ahead lets a case's
+  delete unlink another case's entry whose key was reused within the skew of its
+  expiry. It is
   bound in `container/providers/services.py:121-126`, and reported
   `not_configured` under `SKIP_SERVICE_CHECKS`, where the middleware is not
   mounted (`bootstrap/middleware.py:104-119`). The index's bounds: a member can
