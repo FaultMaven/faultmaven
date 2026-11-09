@@ -79,12 +79,20 @@ set -o pipefail; gh pr list -R FaultMaven/faultmaven --state all --search "<n> i
     + "((FaultMaven/faultmaven)?#|https://github\\.com/FaultMaven/faultmaven/issues/)" + $n + "\\b"))] | map(del(.body)) | sort_by(.createdAt)' || echo error
 ```
 
+A PR in another FaultMaven repo names the item qualified; these are its candidates too:
+
+```bash
+gh search prs --owner FaultMaven --match body "FaultMaven/faultmaven#<n>" --limit 100 --json url,body | jq -r --arg n <n> '.[]
+  | select(.body | test("(?i)\\b(close[sd]?|fix(e[sd])?|resolve[sd]?|refs):?[ \\t]+(FaultMaven/faultmaven#|https://github\\.com/FaultMaven/faultmaven/issues/)"
+    + $n + "\\b")) | .url' | while read -r u; do gh pr view "$u" --json url,state,headRefName,createdAt; done
+```
+
 | # | the records show | next |
 |---|---|---|
 | 1 | its PR merged | at step 1: its merged head must be the head its newest `## Merge-ready` names, with no `## Pulled` after it; else file `PR #<p> merged at an unvouched head` (search first), naming `git log --oneline R..<merged head>`, or the whole PR when no `R` exists, in `pile:blocked` on an owner ruling on how to review them. At step 4, an open item whose PR merged since this round's proposal waits for step 1's edit-down and a new proposal; one whose PR merged before it reads on from row 11 |
 | 2 | the item, or an item its PR closes, in `pile:blocked` with a `**Blocked on:** an owner ruling on …` line or with no `**Blocked on:**` line; and either that PR open, or a plan of the round being settled with no pull newer than it | that item's pull is unfinished: finish *To pull an item* for it from its first step not done |
 | 3 | the item in `pile:blocked` | it waits on its blocker |
-| 4 | its PR open, its newest `## Review` or `## Delta` clean or its findings waived by a live ruling, and a required check red because `main` is (a `main red` issue, step 4.6) or a service it needs is down; or a stage's PR with an `evidence` finding questioning the stage's own design and no live ruling since | waiting: leave it until that issue closes or the check passes when re-run (`gh run rerun <run-id> --failed`); then merge `main` in and go on at row 6 or 9. On the design finding: waiting on an owner ruling on its design, asked under *Needs your call*; never merge-ready until a live ruling sends it on (row 9) or rebuilds it (row 13) |
+| 4 | its PR open, its newest `## Review` or `## Delta` clean or its findings waived by a live ruling, and a required check red because `main` is (a `main red` issue, step 4.6) or a service it needs is down; or a stage's PR with an `evidence` finding questioning the stage's own design and no live ruling since | waiting: leave it until that issue closes or the check passes when re-run (`gh run rerun <run-id> --failed`); then merge `main` in and go on at row 6 or 9. On the design finding: waiting on an owner ruling on its design, asked under *Needs your call*; never merge-ready until a live ruling sends it on (row 8 or 9) or rebuilds it (row 13) |
 | 5 | its PR in the merge queue at a merge-ready's `H`, with none of row 6's triggers (`gh api graphql -f query='{repository(owner:"FaultMaven",name:"faultmaven"){pullRequest(number:<p>){isInMergeQueue timelineItems(last:5,itemTypes:[REMOVED_FROM_MERGE_QUEUE_EVENT]){nodes{... on RemovedFromMergeQueueEvent{createdAt reason}}}}}}'`) | leave it |
 | 6 | its PR open after a merge-ready, and code after the merge-ready's head (the vouched-head check), an owner comment after the merge-ready, a conflict with `main`, a queue removal dated after it with the PR not back in the queue (row 5's query; quote its `reason`), or a red required check | refresh: merge `main` in, the change made (by the lane, by you for a conflict), a delta of what changed (step 4.5), CI, merge-ready again; a refresh with a `## Delta` after the merge-ready goes on at row 8 or 9, unless an owner comment, a conflict or a red check is newer than that delta. A `fixed` finding in that delta gets one fix commit and one delta; a `fixed` finding in that one pulls the item. A red check the merge base also has makes it row 4, never a pull |
 | 7 | its PR open after a merge-ready at `H` | merge-ready: carried under *Yours to run*; while an item it closes is in `pile:blocked` (other than one a stage's PR closes whose line is `**Blocked on:** #<root>` for that stage's root), it is not merge-ready and waits on that item's blocker |
@@ -124,9 +132,9 @@ Find the newest proposal or result on the Queue, the issue this prints:
 verbatim. A stop, fixed before posting: `unclassified` not below `was` (until it is 0), or any `multi`; a design check
 due while fewer than two ran since the last proposal; when the round dispatches, fewer design lanes picked than
 offered (less any stage on an open PR's seam, or in a migration round), or two from one root; a finding its root
-neither lists nor names. While `in flight` is past either limit (five open PRs this procedure opened, in any
-FaultMaven repo; three pulled items awaiting a ruling), nothing new is dispatched: the round finishes, settles or asks
-instead. Labels not yet in use read as empty. The output names a PR only in a public repo:
+neither lists nor names. While `in flight` is past either limit (five open PRs by this account in `faultmaven`, or
+naming a core issue; three pulled items awaiting a ruling), nothing new is dispatched: the round finishes, settles
+or asks instead. Labels not yet in use read as empty. The output names a PR only in a public repo:
 
 ```bash
 R=FaultMaven/faultmaven; lanes="<the lead issue of each lane you pick>"; now=$(date -u +%s)
@@ -143,11 +151,11 @@ cls='def has($l): any(.labels[]; .name | IN($l[])); def free: has(["tracking", "
   def by($u): map(cls | ltrimstr("class:") | sub("^none$"; $u)) | group_by(.) | map("\(.[0]) \(length)") | join(" · ");
   def core($c): "(" + (if $c then "(FaultMaven/faultmaven)?#" else "FaultMaven/faultmaven#" end) + "|https://github\\.com/FaultMaven/faultmaven/issues/)";
   def refs($r): any($prs[]; . as $x | .body | test(kw + core($x.c) + "\($r)\\b"));
-  def stage: .body | capture("\\*\\*Stage of:\\*\\* (FaultMaven/faultmaven)?#(?<r>[0-9]+)").r;'
-# the PRs this procedure opened, in any FaultMaven repo: one in faultmaven, or one whose body names a core issue
+  def stage: (.body | capture("\\*\\*Stage of:\\*\\* (FaultMaven/faultmaven)?#(?<r>[0-9]+)").r) // "?";'
+# open PRs by this account in faultmaven, or naming a core issue (the PRs this procedure opened)
 prs=$(gh search prs --owner FaultMaven --state open --author @me --limit 200 --json repository,number,createdAt,body \
   | jq "$cls"'[.[] | . + {c: (.repository.name == "faultmaven")} | select(.c or (.body | test(kw + core(false) + "[0-9]")))]')
-was=$(jq -r 'map(select(.p) | .b | [scan("(?m)^open by class: [^\n]*?unclassified ([0-9]+)")[0]] | last) | map(select(.)) | last // "none"' <<<"$qc")
+was=$(jq -r 'map(select(.p) | .b | [scan("(?m)^open by class: [^\n]*")] | last | select(.) | ([scan("unclassified ([0-9]+)")[0]] | first // "0")) | last // "none"' <<<"$qc")
 jq -r --arg was "$was" "$cls"'[.[] | select(free)] | "open by class: \(by("unclassified")) (unclassified was \($was))"' <<<"$open"
 due=; ran=0; for n in $(jq -r "$cls"'.[] | select(has(["root-candidate"])) | .number' <<<"$open"); do
   c=$(lines "$n" | grep ' ## Evidence — design check') || { due+="#$n "; continue; }
@@ -156,7 +164,7 @@ echo "design checks due, not run: ${due:-none} · run since the last proposal: $
 u=$(for n in $(jq -r "$cls"'.[] | select(has(["pile:blocked"]) and (.body | test("\\*\\*Blocked on:\\*\\* an owner ruling"))) | .number' <<<"$open"); do
   lines "$n" | grep -q ' ## Pulled' && printf '#%s ' "$n"; done); np=$(wc -w <<<"$u"); na=$(jq length <<<"$prs")
 jq -r --argjson prs "$prs" --arg lanes "$lanes" --argjson lim "$([ "$na" -gt 5 ] || [ "$np" -gt 3 ] && echo true || echo false)" "$cls"'
-  [.[] | select(has(["design-stage"]) and ready) | {n: .number, r: stage} | select((refs(.n) or refs(.r)) | not)] as $a
+  [.[] | select(has(["design-stage"]) and ready) | {n: .number, r: stage} | select((refs(.n) or (.r != "?" and refs(.r))) | not)] as $a
   | [$a[] | select(.n | tostring | IN($lanes | scan("[0-9]+")))] as $p | (if $lim then 0 else [($a | map(.r) | unique | length), 2] | min end) as $k
   | "design lanes: picked \($p | length) of \($k) offered, one per root: \(if ($p | map(.r) | unique | length) == ($p | length) then "yes" else "no" end)"
   + " (actionable: \($a | map("#\(.n) of #\(.r)") | join(", ") | if . == "" then "none" end))"' <<<"$open"
@@ -164,7 +172,7 @@ jq -r --argjson prs "$prs" --arg cut "$(ago 30)" "$cls"'[.[] | select(free and r
   and (has(["class:chore", "class:design", "design-stage"]) | not))] | [.[] | select(has(["P0", "P1"]))] as $p1
   | ($p1 | sort_by((has(["P0"]) | not), .createdAt)) + ([.[] | select(has(["P2"]) and .createdAt < $cut)] | sort_by(.createdAt))
   | map("#\(.number)") | "slot: \(first // "none, the ordinary order")\(if length > 1 then " (then \(.[1:3] | join(" ")))" else "" end)"' <<<"$open"
-roots=$(jq "$cls"'[.[] | select(has(["root-issue", "root-candidate"])) | {n: .number, b: [.body | scan("(?m)^\\*\\*Blocks:\\*\\*.*") | scan("#([0-9]+)")[0] | tonumber]}]' <<<"$open")
+roots=$(jq "$cls"'[.[] | select(has(["root-issue", "root-candidate"])) | {n: .number, b: [.body | scan("(?m)^\\*\\*Blocks:\\*\\*.*") | gsub("\\([^)]*\\)"; "") | scan("#([0-9]+)")[0] | tonumber]}]' <<<"$open")
 off=$(gh issue list -R $R --state all --search "created:>=$since \"Found while working on\" in:body" --limit 300 --json number,body \
   --jq '.[] | "\(.number) \(.body | [scan("Found while working on #([0-9]+)")[0]] | first // "")"' | while read -r f m; do
   [ -n "$m" ] || continue; up=$(gh api "repos/$R/issues/$m" --jq .body | grep -oP '\*\*(Blocked on|Stage of):\*\* (FaultMaven/faultmaven)?#\K[0-9]+' | paste -sd,)
@@ -184,7 +192,7 @@ jq -r "$cls"'def med: sort | if length == 0 then "none" else .[length / 2 | floo
   | "median age in days: P1 \(map(select(.p == "P1") | .d) | med) · P2 \(map(select(.p == "P2") | .d) | med)"' <<<"$open"
 jq -r --argjson prs "$prs" --arg due "$due" "$cls"'"roots: candidates \(map(select(has(["root-candidate"]))) | length) (check due \($due
   | [scan("[0-9]+")] | length)) · ruled \([.[] | select(has(["root-issue"])) | .number] | "\(length) (stage PR open \(map(select(refs(.))) | length))")"' <<<"$open"
-echo "in flight: open PRs this procedure opened $na of 5 · pulled, awaiting a ruling $np of 3 (${u:-none})"
+echo "in flight: open PRs by this account in faultmaven, or naming a core issue, $na of 5 · pulled, awaiting a ruling $np of 3 (${u:-none})"
 jq -r --arg t "$r2" --argjson pub "$pub" '[.[] | select($t != "none" and .createdAt < $t)] | (map(select(.repository.name | IN($pub[])) | "\(.repository.name)#\(.number)"))
   as $n | "open across two results: \($n | join(" ") | if . == "" then "none" end)\(if length > ($n | length) then " + \(length - ($n | length)) private" else "" end)"' <<<"$prs"
 mp=$(gh pr list -R $R --state merged --search "merged:>=$since" --limit 300 --json body)
@@ -199,8 +207,10 @@ echo "since the last proposal: merged $(jq length <<<"$mp") · PRs opened $(gh p
      default is a label, not a verdict: a chore is relabelled when the item is next read.
    - **The transition,** in the first round under this text: create the labels `class:defect`, `class:chore`,
      `class:design`, `root-candidate` and `design-stage`; give each ruled root's `**Blocks:**` issues `class:design`,
-     and each of its open stages `design-stage` and a `**Stage of:** #<root>` line. Its existing code stages are exempt
-     from the docs stage coming first, and take their pins at their next ruling.
+     and each of its open stages `design-stage`, `class:design`, the root's priority and a `**Stage of:** #<root>`
+     line; and give every other open issue outside `tracking`, `root-issue` and `root-candidate` its class
+     (`class:defect` where nothing says chore), so `unclassified` is 0 from the second round. A ruled root's existing
+     code stages are exempt from the docs stage coming first, and take their pins at their next ruling.
    - Move to ready any blocked item whose blocking issue has closed or whose condition holds (run each you can).
    - **The closable sweep:** close each issue the `closable` line lists whose PR delivered it all (else edit it down
      to the remainder), each duplicate, each dead premise (reproduced as in step 4.2), and each tracker whose tracked
@@ -245,7 +255,8 @@ echo "since the last proposal: merged $(jq length <<<"$mp") · PRs opened $(gh p
      owner ruling on its pins`. The root issue then stays in `pile:blocked` with `**Blocked on:** condition — its last
      stage's PR has merged`. A stage's PR closes only the issues it delivers (another it delivers is a change to the
      list) and says `Refs #<root>`; when the last stage's PR merges, close the root issue under `## Closed`, citing
-     the stages. That list places them, as step 3 places any ruled issue. A ruling of no design flaw, or one that
+     the stages and filing each `## Evidence` finding no stage delivered as an issue, or declining it with the
+     reason. That list places them, as step 3 places any ruled issue. A ruling of no design flaw, or one that
      declines the design change, closes the root or candidate and lists where its issues go; its `## Closed` comment
      files each `## Evidence` finding on it as an issue, or declines it with the reason. Every change to a root issue's
      `**Blocks:**` line or a stage's list is a ruling, except a finding added under *Filing what you find*.
@@ -279,10 +290,10 @@ echo "since the last proposal: merged $(jq length <<<"$mp") · PRs opened $(gh p
    ### Needs your call
    At most five, ranked: question · options · recommendation · what it unblocks. A backlog-health question (what to
    stop filing, what to batch or close by ruling, what to defer) is first when this and the last proposal's ratio are
-   both above 1.2; then any unanswered for two rounds; then, while the `pulled` count is past its limit, the pulls;
-   then design rulings due. Other items awaiting a ruling: numbers.
+   both above 1.2; then any unanswered for two rounds; then, while the `pulled` count is past its limit, the oldest
+   pulls, as many as bring it down to the limit; then design rulings due. Other items awaiting a ruling: numbers.
    Every condition you could not check: what checking it needs; you run it, re-rule, or close the item.
-   ### Open across two results (each agent PR with its blocker)
+   ### Open across two results (each PR with its blocker; a private repo's by count only)
    ### Priorities I set (change any)
    ### Yours to run
    ### Settled from last round
@@ -306,9 +317,9 @@ Dispatch only approved items that the ready query returns with a single pile lab
 merge-ready or pulled or its item closes, the first **Next** item not on any open PR's seam (a refresh waits for a
 free slot), and nothing new while the health block's `in flight` line is past a limit. Each starts at its row in
 *Where an item stands*; one whose plan (newer than any pull) says `Shares lane with #<lead>`, at its lead's. Each
-lane aims to end the round merged or merge-ready. A design stage's PR open at two consecutive results, and neither
-merged nor merge-ready at either, has not converged: it is pulled with a re-plan into smaller sub-stages (4.1)
-recommended, never given more fix rounds.
+lane aims to end the round merged or merge-ready. A design stage's PR open at two consecutive results, neither
+merged nor merge-ready at either and not waiting at row 4 at the second, has not converged: it is pulled with a
+re-plan into smaller sub-stages (4.1) recommended, never given more fix rounds.
 
 1. **Plan** it yourself on `origin/main`, posted on the issue as `## Plan — round <N>`. Items sharing a seam name
    their lead as `Shares lane with #<lead>`. The plan covers:
@@ -494,7 +505,7 @@ To **pull** an item:
   gap, reachable today or latent; a style preference, or a simplification that changes no outcome, is not) and **not
   part of the item** (a different root). A latent one is a ready `P3` (`P1` if *State* makes it one) whose body says
   what would make it reachable, if known. File it as you find it, with `Found while working on #<n>`, the evidence, a
-  pile and a priority.
+  pile, a priority and a class.
 - **Search open and closed issues first.** If an open issue already covers it, add the evidence there under
   `## Evidence`. If a closed issue matches, cite it in the new issue. Findings that share one root go in one issue.
 - **Classify it first** (*State*). A finding that shares a `root-issue`'s root is an `## Evidence` comment on it, not
@@ -520,7 +531,8 @@ Filed: #<n> (P<k>) — <what, found while working on #<m>> — one line each
 Waiting on you: queue each PR at its vouched head: gh pr merge <n> --match-head-commit <sha>
 ```
 
-Post it when every dispatched item is merged, merge-ready, closed, pulled or waiting, with a row per item and its PR.
+Post it when every dispatched item is merged, merge-ready, closed, pulled or waiting, with a row per item and its PR;
+the PR column names a PR only in a public repo, and reads `private` otherwise.
 Every report states those four numbers and lists every issue filed. It carries forward a row for every PR still open
 from an earlier round, until that PR merges or closes; a carried row adds nothing to the four numbers, which count
 each PR in the round that first reports it. Then stop.
@@ -552,5 +564,7 @@ each PR in the round that first reports it. Then stop.
   issue only for a reason *State* allows.
 - **Never ask mid-build:** pull the item instead. Never build an item with an open question.
 - **Never stack PRs.** Never hand over a PR that is not merge-ready.
+- **Never quote a closing keyword followed by an issue number** in a PR body or comment, not even in a code span:
+  the queries here read code spans.
 - **Never file or relay a finding you have not verified:** reproduced, or shown at `path:line` on `origin/main`.
 - **Never poll CI in the foreground,** and never from a lane or a review.
