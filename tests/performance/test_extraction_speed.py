@@ -22,7 +22,8 @@ test, for the sshd reader and the whole extractor
 (``test_the_reader_is_linear``, ``test_the_extractor_is_linear``). The
 extractor was super-linear on ``tag-chain`` and ``sshd-word-chain`` until
 #1700 (``sshd-word-chain``: 0.70 s at 64 KB, 2.58 s at 128 KB on the
-development box).
+development box), and on ``hex-run`` until #2641 (the host-and-port pattern
+alone took 23 s at 64 KB).
 
 ‼ Every comparison goes through ``assert_latency_within`` (#1557).
 """

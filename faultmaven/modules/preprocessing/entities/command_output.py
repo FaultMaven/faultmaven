@@ -30,12 +30,12 @@ from faultmaven.modules.preprocessing.entities.line_tally import (
     tally_entity_lines,
 )
 from faultmaven.modules.preprocessing.entities.protocol import EntityObservation
+from faultmaven.modules.preprocessing.extractors.utils import PORT_KEYWORD_RE
 
 _IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 # A bare column-style PID: at least one whitespace before and after.
 # Requires 1-7 digits; the range check is ``is_pid``.
 _PID_COLUMN_RE = re.compile(r"(?:^|\s)(\d{1,7})(?=\s)")
-_PORT_KEYWORD_RE = re.compile(r"\bport[= :]+(\d{1,5})\b", re.IGNORECASE)
 _IP_PORT_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}:(\d{1,5})\b")
 _ABS_PATH_RE = re.compile(r"(?<![/\w])(/(?:[a-zA-Z0-9_\-.]+/){0,10}[a-zA-Z0-9_\-.]+)")
 # Exclude /usr/bin-style binary paths from high-noise headers — they
@@ -56,7 +56,7 @@ class CommandOutputEntityExtractor:
         # numbers — kthreads live in low PIDs.
         EntityRule(EntityType.PID, patterns=(_PID_COLUMN_RE,), keep=is_pid),
         EntityRule(
-            EntityType.PORT, patterns=(_PORT_KEYWORD_RE, _IP_PORT_RE), keep=is_port
+            EntityType.PORT, patterns=(PORT_KEYWORD_RE, _IP_PORT_RE), keep=is_port
         ),
         EntityRule(
             EntityType.PATH,
