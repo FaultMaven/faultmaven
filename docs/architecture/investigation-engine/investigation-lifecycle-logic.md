@@ -1054,12 +1054,15 @@ states an outcome is rendered from that record.
       retires INCONCLUSIVE hypotheses), and the **needs sweeps**. A hypothesis
       one of them retires is recorded in the decision log.
    4. **The final recompute**: the assessment recompute once more, on the pool
-      housekeeping and the monitor left, where step 1 ran it. A
+      housekeeping and the monitor left, where step 1 ran it. Either edge of
+      identification is handled as step 1 handles it: a
       `root_cause_identified` this turn added and this recompute dropped
-      leaves the turn's milestones, and the turn's outcome is re-derived;
+      leaves the turn's milestones; one it raises gets the milestone and step
+      1's KB remediation warm-up; either way the turn's outcome is re-derived.
       `progress_made` and housekeeping's `investigation_advanced` keep the
-      step-1 reading (residual, stated). The KB warm-up on a rise stays in
-      step 1.
+      step-1 reading (residual, stated). A deferred-disposition offer this
+      cycle opened on the M5 licence the recompute withdrew lapses, unrendered
+      (INV-32).
    5. **The backstop**, last among the openers (INV-43), reading the same pool
       the record reads.
    6. **Metrics, the working conclusion, the state validator**, and
@@ -1069,10 +1072,24 @@ states an outcome is rendered from that record.
    decision code renders from the record and the decision log
    (`core/investigation/narration/`), at the place its token holds in
    `system_notices`; the summary and prose of each offer the cycle opened are
-   rendered too. The step writes the narrated unbound re-checks and its
-   watermark (`narration_since`) into the record.
+   rendered too. The step writes the narrated unbound re-checks (only those
+   its notice named) into the record. The first time a case is narrated
+   (`narration_since`), the re-checks a record before it held are marked
+   narrated unrendered; every one that appears after is narrated once. When the
+   cycle's record write failed, the outcome is computed in memory for the
+   narration alone.
 5. **The turn record** copies the rendered notices; then the terminal summary,
    the follow-ups and the reply are composed.
+
+Two consequences of this order are expected differences from the order before
+#2636:
+
+- **The backstop's pending-check notice follows** the anchoring, stall and
+  progress-monitor notices, so under the record's notice cap it is the first
+  of them cut.
+- **Momentum reads this turn's stall count**: metrics run after the stall
+  counter, so the turn that makes the fifth stall records `blocked` momentum,
+  and its `blocked_reasons` and `next_steps` follow.
 
 Within a decision cycle no text that states an outcome is composed before the
 last decider has run and `progress.outcome` is written. A notice that states

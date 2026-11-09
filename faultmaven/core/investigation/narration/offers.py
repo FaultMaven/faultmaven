@@ -214,6 +214,25 @@ def close_summary_message(
     )
 
 
+_SUMMARY_PARAMS = (
+    "evidence_count",
+    "hypothesis_count",
+    "milestones_completed",
+    "root_cause",
+    "solution_titles",
+)
+
+
+def closure_message(params: dict, record_lines: str) -> str:
+    """``ClosureReadiness.message`` for the verdict its decider chose, from
+    its ``offer_params``; the pivot's record lines are the record's."""
+    if params["verdict"] == "suggest_resolve":
+        return suggest_resolve_message(
+            params["root_cause"], params["solution_titles"], record_lines
+        )
+    return close_summary_message(**{k: params[k] for k in _SUMMARY_PARAMS})
+
+
 #: The step-0 close when a remembered resolution request is still unmet.
 _REQUEST_UNMET_CLOSE = (
     "I understand. Without confirmation that the root cause "
@@ -262,11 +281,11 @@ def render_offer(code: str, params: dict, outcome: Optional[CaseOutcome]) -> str
         line = outcome.closure.statement if outcome is not None else None
         lead = mitigation_sentence(line or "a mitigation was applied")
         return f"{lead} Since {params['rationale']}, shall we close this case?"
+    # Never an empty "The record shows:" block: with no record lines, none.
+    shows = f"The record shows:\n\n{resolution}\n\n" if resolution else ""
     if code == OfferCode.DEFERRED_RESOLVE:
         return (
-            "The record shows:\n\n"
-            + resolution
-            + "\n\nThe implementation work you flagged as out-of-band (a change "
+            shows + "The implementation work you flagged as out-of-band (a change "
             "request, maintenance window, or another team) is follow-up: it "
             "stays documented on the resolved case and does not need the "
             "incident held open. Shall I mark this case resolved?"
@@ -286,10 +305,7 @@ def render_offer(code: str, params: dict, outcome: Optional[CaseOutcome]) -> str
                 "The case is still open until you confirm: marking it resolved "
                 "writes up what happened."
             )
-        return (
-            f"The record shows:\n\n{resolution}\n\n{still_open} "
-            "Shall I mark this case resolved?"
-        )
+        return f"{shows}{still_open} Shall I mark this case resolved?"
     if code == OfferCode.FALSE_ALARM_CLOSE:
         return (
             "The evidence shows the reported problem was not present where and "
@@ -304,4 +320,8 @@ def render_offer(code: str, params: dict, outcome: Optional[CaseOutcome]) -> str
         return _readiness(params, outcome)
     if code == OfferCode.RESOLUTION_NEEDS_INFO:
         return _readiness(params, outcome)
+    if code == OfferCode.MODEL_PROPOSAL and params["composer"] == "readiness":
+        return _readiness(params, outcome)
+    if code == OfferCode.MODEL_PROPOSAL and params["composer"] == "closure":
+        return closure_message(params, resolution)
     raise KeyError(code)

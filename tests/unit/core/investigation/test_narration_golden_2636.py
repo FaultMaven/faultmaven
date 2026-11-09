@@ -2,7 +2,9 @@
 
 One fixture per code (amendment 15): the code's params and the record's fields
 it reads, and the text ``origin/main``'s composer wrote for the same inputs at
-the decision point (``58386f934``), transcribed from that composer. The
+the decision point (``58386f934``), transcribed from that composer. Beside
+them, real cases whose text was captured by running ``main``'s composers
+(``golden_cases_2636.py``, ``golden_main_2636.json``). The
 renderer must reproduce it exactly; the plan's expected differences are
 fixtures of their own, named for their issue. The rendered paths are also
 pinned end to end by the ~43 text-pinning tests that run through the deciders.
@@ -10,6 +12,8 @@ pinned end to end by the ~43 text-pinning tests that run through the deciders.
 Pin 6: every ``NoticeCode`` and ``OfferCode`` member has a renderer and a
 fixture, and the members are pinned (the enums are append-only).
 """
+
+import json
 
 import pytest
 
@@ -48,6 +52,8 @@ from faultmaven.modules.case.contracts import (
     ResolutionVerdict,
     UnboundRecheck,
 )
+from tests.unit.core.investigation import golden_cases_2636 as golden_cases
+from tests.unit.core.investigation.narrated import narrated
 
 pytestmark = pytest.mark.unit
 
@@ -106,6 +112,7 @@ def _failed_window(fix_turn, *, disconfirmed: bool) -> list:
 _HELD_OPEN = CauseOutcome(
     held_open_root_ids=["cn_000000000001"],
     pool_empty_reason=PoolEmptyReason.HELD_OPEN,
+    identification_held_open=True,
 )
 _UNBOUND = {
     "unbound_rechecks": [
@@ -127,7 +134,7 @@ NOTICES = [
     (
         "withdrawn-fallen",
         NoticeCode.SOLUTION_OFFER_WITHDRAWN,
-        {"count": 1},
+        {},
         outcome(),
         [
             "SYSTEM: Your pending SOLUTION proposal was withdrawn because the "
@@ -139,7 +146,7 @@ NOTICES = [
     (
         "withdrawn-held-open",
         NoticeCode.SOLUTION_OFFER_WITHDRAWN,
-        {"count": 2},
+        {},
         outcome(cause=_HELD_OPEN),
         [
             "SYSTEM: Your pending SOLUTION proposal was withdrawn: the cause it "
@@ -154,7 +161,7 @@ NOTICES = [
     (
         "absence-disconfirmed",
         NoticeCode.ABSENCE_IN_FAILED_WINDOW,
-        {"fix_turn": 6, "rows": ["ev_x"]},
+        {"fix_turn": 6},
         outcome(attempts=_failed_window(6, disconfirmed=True)),
         [
             "SYSTEM: The fix executed at turn 6 did not hold: the cause was shown "
@@ -172,7 +179,7 @@ NOTICES = [
     (
         "absence-window-zero-relapse",
         NoticeCode.ABSENCE_IN_FAILED_WINDOW,
-        {"fix_turn": None, "rows": ["ev_x"]},
+        {"fix_turn": None},
         outcome(attempts=_failed_window(None, disconfirmed=False)),
         [
             "SYSTEM: The fix done outside the case did not hold: the problem was "
@@ -448,10 +455,16 @@ DIFFERENCES = [
         ],
     ),
     (
-        "2555-unbound-before-the-watermark-is-narrated",
+        "2555-unbound-already-narrated-is-not-repeated",
         NoticeCode.UNBOUND_RECHECKS,
         {"fix_dated": True},
-        outcome(**_UNBOUND, narration_since=9),
+        outcome(
+            unbound_rechecks=[
+                u.model_copy(update={"narrated_turn": 8})
+                for u in _UNBOUND["unbound_rechecks"]
+            ],
+            bindable=_UNBOUND["bindable"],
+        ),
         [],
     ),
 ]
@@ -636,6 +649,8 @@ def test_the_codes_are_append_only():
         "fix_licence_refused",
         "fix_report_ignored",
         "hypothesis_retired",
+        "mitigation_disposed",
+        "offer_lapsed",
     ]
     assert [m.value for m in OfferCode] == [
         "rca_infeasible_close",
@@ -657,3 +672,30 @@ def test_the_declined_actions_name_both_chips_unless_a_check_holds():
 
     assert resolve_declined_actions(False) == RESOLVE_DECLINED_ACTIONS
     assert resolve_declined_actions(True) == RESOLVE_DECLINED_CLOSE_ACTION
+
+
+# ---------------------------------------------------------------------------
+# Real cases: main's text captured at 056423e33, rendered through the record
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", sorted(golden_cases.SCENARIOS))
+def test_each_real_case_renders_the_text_main_composed(name):
+    """Review item 13: each scenario builds a real case and runs its decider;
+    ``main``'s text for it was captured by running ``main``'s composers
+    (``golden_cases_2636.capture_main``) and checked in. Here the same case
+    renders through the record and the narration step."""
+    case, metadata = golden_cases.SCENARIOS[name]()
+    narrated(case, metadata)
+    captured = json.loads(golden_cases.GOLDEN.read_text())[name]
+    assert golden_cases.text_of(case, metadata) == captured
+
+
+def test_the_held_open_case_is_one_the_pool_legs_would_misread():
+    """Review item 2's premise: the record's pool legs read the retired
+    hypothesis's root as identified, while the standing hypotheses hold the
+    identification open; the withdrawal reads the latter."""
+    case, metadata = golden_cases.withdrawn_held_open_beside_a_retired_validated_root()
+    narrated(case, metadata)
+    cause = case.progress.outcome.cause
+    assert cause.identified_root_ids and cause.identification_held_open

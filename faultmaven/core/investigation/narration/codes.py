@@ -2,7 +2,8 @@
 
 A decider records what it decided as a code with its params
 (``stage_gates.record_decision``), never as text. The narration step renders
-the codes after the turn's record is written (``narrate.py``). Params carry
+the codes after the turn's record is written
+(``milestone_engine/turn_narration.py``). Params carry
 identities, the model's own emission, and what the engine did this turn;
 every verdict a text states is read from the record at render time.
 
@@ -44,6 +45,8 @@ class NoticeCode(StrEnum):
     FIX_REPORT_IGNORED = "fix_report_ignored"
     # Context only: read by other renderers, never rendered itself.
     HYPOTHESIS_RETIRED = "hypothesis_retired"
+    MITIGATION_DISPOSED = "mitigation_disposed"
+    OFFER_LAPSED = "offer_lapsed"
 
 
 class OfferCode(StrEnum):
@@ -64,10 +67,16 @@ class OfferCode(StrEnum):
 
 
 #: Codes that write no notice: other renderers read them.
-CONTEXT_ONLY = frozenset({NoticeCode.HYPOTHESIS_RETIRED})
+CONTEXT_ONLY = frozenset(
+    {
+        NoticeCode.HYPOTHESIS_RETIRED,
+        NoticeCode.MITIGATION_DISPOSED,
+        NoticeCode.OFFER_LAPSED,
+    }
+)
 
-#: Deduplicated by code alone, their ``count`` summed (A9): two recomputes in
-#: one turn withdraw into one notice.
+#: Deduplicated by code alone (A9): two recomputes in one turn withdraw into
+#: one notice.
 AGGREGATED = frozenset({NoticeCode.SOLUTION_OFFER_WITHDRAWN})
 
 #: The metadata key each offer code's prose is published under.
@@ -84,7 +93,7 @@ PROSE_KEYS = {
 
 def decision_key(code: str, params: dict) -> str:
     """What a decision is deduplicated by: its code, and its params unless the
-    code aggregates."""
+    code is deduplicated by code alone."""
     if code in AGGREGATED:
         return str(code)
     return f"{code}:{json.dumps(params, sort_keys=True, default=str)}"
@@ -94,7 +103,7 @@ def decision_token(key: str) -> str:
     """The placeholder a notice decision holds its place with in
     ``system_notices`` until the narration step replaces it (A10). The same
     decision always yields the same token, so a merge deduplicates it."""
-    digest = hashlib.sha1(key.encode()).hexdigest()[:16]
+    digest = hashlib.sha1(key.encode(), usedforsecurity=False).hexdigest()[:16]
     return f"⁣notice:{digest}⁣"
 
 

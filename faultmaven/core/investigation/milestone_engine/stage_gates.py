@@ -19,7 +19,6 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     solution_offer_superseded_total,
 )
 from faultmaven.core.investigation.narration.codes import (
-    AGGREGATED,
     CONTEXT_ONLY,
     DECISIONS_KEY,
     NoticeCode,
@@ -800,9 +799,7 @@ def _withdraw_unlicensed_solution_offers(
         # The variant (the why open, or the cause fallen) is the record's
         # (#2636). Prepend: notices are dropped whole from the tail, so this
         # goes last.
-        record_decision(
-            metadata, NoticeCode.SOLUTION_OFFER_WITHDRAWN, prepend=True, count=count
-        )
+        record_decision(metadata, NoticeCode.SOLUTION_OFFER_WITHDRAWN, prepend=True)
     return count
 
 
@@ -846,17 +843,15 @@ def _flag_absence_inside_a_failed_fix_window(
         EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
         EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
     )
-    rows = [
-        e.evidence_id
-        for e in case.evidence or []
-        if getattr(e, "category", None) in absence
+    if not any(
+        getattr(e, "category", None) in absence
         and getattr(e, "collected_by", None) != ENGINE_EVIDENCE_AUTHOR
         and (getattr(e, "collected_at_turn", 0) or 0) == case.current_turn
         # After the failure: the rows that established it are not an attempt
         # to confirm anything.
         and case.current_turn > window.failure_turn
-    ]
-    if not rows:
+        for e in case.evidence or []
+    ):
         return False
     # The window's shape is the record's (#2636).
     record_decision(
@@ -864,7 +859,6 @@ def _flag_absence_inside_a_failed_fix_window(
         NoticeCode.ABSENCE_IN_FAILED_WINDOW,
         prepend=True,
         fix_turn=window.fix_turn,
-        rows=rows,
     )
     return True
 
@@ -967,18 +961,15 @@ def record_decision(
     the turn's record is written. ``params`` carry identities, the model's own
     emission and what the engine did; never a verdict the record holds.
 
-    Deduplicated by code and params (by code alone for an aggregated code,
-    whose ``count`` is summed), so a second recompute cannot double it. A
+    Deduplicated by code and params (by code alone for an ``AGGREGATED``
+    code), so a second recompute cannot double it. A
     notice code holds its place in ``system_notices`` with a token the
     narration step replaces (A10), so order and ``prepend`` are as the text's
     were; a context-only code writes none."""
     key = decision_key(code, params)
     log = metadata.setdefault(DECISIONS_KEY, [])
-    for entry in log:
-        if entry["key"] == key:
-            if code in AGGREGATED:
-                entry["params"]["count"] += params.get("count", 0)
-            return
+    if any(entry["key"] == key for entry in log):
+        return
     token = None
     if isinstance(code, NoticeCode) and code not in CONTEXT_ONLY:
         token = decision_token(key)
@@ -988,19 +979,13 @@ def record_decision(
 
 def merge_decisions(metadata: dict[str, Any], incoming: dict[str, Any]) -> None:
     """Fold another accumulator's decision log into ``metadata``'s (A1), beside
-    ``merge_system_notices``, which carries the tokens. An aggregated code's
-    counts are summed."""
+    ``merge_system_notices``, which carries the tokens."""
     log = metadata.setdefault(DECISIONS_KEY, [])
-    known = {entry["key"]: entry for entry in log}
+    known = {entry["key"] for entry in log}
     for entry in incoming.get(DECISIONS_KEY) or []:
-        if entry is known.get(entry["key"]):
-            continue
-        if entry["key"] in known:
-            if entry["code"] in AGGREGATED:
-                known[entry["key"]]["params"]["count"] += entry["params"]["count"]
-            continue
-        log.append({**entry, "params": dict(entry["params"])})
-        known[entry["key"]] = log[-1]
+        if entry["key"] not in known:
+            log.append({**entry, "params": dict(entry["params"])})
+            known.add(entry["key"])
 
 
 def _drop_system_notice(metadata: dict[str, Any], notice: str) -> None:
@@ -2195,6 +2180,8 @@ def _register_disposition(case: Case, value: str, metadata: dict[str, Any]) -> b
     turn = emission_turn(case, metadata)
     settles = not record.verified
     record.disposition, record.disposition_at_turn = value, turn
+    # Read by the refusal's line when no record was written (#2636).
+    record_decision(metadata, NoticeCode.MITIGATION_DISPOSED, value=value)
     if value == DECLARED_STABLE and record.completed_at_turn is None:
         record.completed_at_turn = turn
     if settles:

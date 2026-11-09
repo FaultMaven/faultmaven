@@ -221,11 +221,13 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     (_CA, "problem_leg_anchor"): {"confirming_window": 1},
     (_CA, "subject_index"): {"_cause_pool": 1},
     (_TT, "_resolution_confirmed"): {"has_resolution_confirmation": 1},
-    (_TT, "_suggest_resolve_message"): {"resolution_record_lines": 1},
     (_TT, "assess_close_summary"): {"shown_milestones": 1},
+    # The pivot's record lines, when its message is read (#2636; offers read
+    # the record's ``resolution.statement`` instead).
     (_TT, "assess_closure_readiness"): {
         "_resolution_confirmed": 1,
         "assess_close_summary": 1,
+        "resolution_record_lines": 1,
     },
     (_TT, "assess_resolution_readiness"): {
         "_resolution_confirmed": 1,
@@ -311,12 +313,9 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     # The record's write points (#2636): the end of a decision cycle and each
     # bundle of a statement-revision replay; the transitions are above.
     (_ME + "turn_application.py", "_apply_turn_response"): {"record_case_outcome": 1},
-    # The two summaries composed from the case at the narration step, after
-    # the record (#2636): stage S2 moves them into ``narration``.
-    (_ME + "turn_narration.py", "_case_summary"): {
-        "assess_closure_readiness": 1,
-        "assess_resolution_readiness": 1,
-    },
+    # The outcome computed in memory for the narration alone when the
+    # cycle's record write failed, never stored (#2636).
+    (_ME + "turn_narration.py", "_outcome"): {"compute_case_outcome": 1},
     (_ME + "statement_revision.py", "confirm_revision"): {"record_case_outcome": 1},
     (_TRANSITIONS, "TransitionManager._apply_model_proposal"): {
         "assess_closure_readiness": 1,
@@ -525,6 +524,11 @@ ENTRY_CALLERS: dict[tuple[str, str], tuple[dict[str, int], str]] = {
         {"open_disposition_offer": 2},
         "opens the resolve offer on a ready recheck (basis model), or the close "
         "offer on an unmet request (basis needs_info_unmet)",
+    ),
+    (_ME + "turn_application.py", "_lapse_unlicensed_offer"): (
+        {"answer_offer": 1},
+        "lapses a deferred-disposition offer this cycle opened when the final "
+        "recompute withdrew the M5 licence it needs (#2636); not a closure",
     ),
     (_ME + "turn_application.py", "_apply_turn_response"): (
         {"lapse_offers": 1},

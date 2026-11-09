@@ -197,8 +197,7 @@ def has_renderer(code: str) -> bool:
 def _withdrawn(params: dict, outcome: Optional[CaseOutcome], log: list) -> list:
     # #2036: the cause holds but its why is open, so the fix acts on a state
     # something re-creates.
-    cause = outcome.cause if outcome is not None else None
-    if cause is not None and cause.held_open_root_ids and not cause.identified_root_ids:
+    if outcome is not None and outcome.cause.identification_held_open:
         return [
             "SYSTEM: Your pending SOLUTION proposal was withdrawn: the cause "
             "it targets validated, but its why is open (ROOT-CAUSE TEST, "
@@ -269,16 +268,25 @@ def _absence_in_failed(params: dict, outcome: Optional[CaseOutcome], log) -> lis
 
 def unnarrated_rechecks(outcome: Optional[CaseOutcome]) -> list[UnboundRecheck]:
     """The unbound re-checks the record has not narrated, on a verified
-    problem (#2555): an entry observed before the record's watermark
-    (``narration_since``) counts as narrated."""
+    problem (#2555), whatever turn recorded them or their data."""
     if outcome is None or outcome.problem.status != ProblemStatus.VERIFIED:
         return []
-    since = outcome.narration_since
-    return [
-        u
-        for u in outcome.unbound_rechecks
-        if u.narrated_turn is None and (since is None or u.observed_turn >= since)
-    ]
+    return [u for u in outcome.unbound_rechecks if u.narrated_turn is None]
+
+
+def _named(found: list[UnboundRecheck]) -> tuple[list[str], list[str]]:
+    """The ids the unbound notice names: five of each line, so a row it does
+    not name stays unnarrated for a later turn."""
+    unnamed = [u.evidence_id for u in found if not u.uncited][:5]
+    uncited = [u.evidence_id for u in found if u.uncited][:5]
+    return unnamed, uncited
+
+
+def named_rechecks(outcome: Optional[CaseOutcome]) -> list[UnboundRecheck]:
+    """The unnarrated re-checks the unbound notice names."""
+    found = unnarrated_rechecks(outcome)
+    unnamed, uncited = _named(found)
+    return [u for u in found if u.evidence_id in {*unnamed, *uncited}]
 
 
 @_renders(NoticeCode.UNBOUND_RECHECKS)
@@ -291,8 +299,7 @@ def _unbound(params: dict, outcome: Optional[CaseOutcome], log: list) -> list:
         return []
     bindable = outcome.bindable
     by_mitigation = {u.evidence_id for u in found if u.after_mitigation}
-    unnamed = [u.evidence_id for u in found if not u.uncited]
-    uncited = [u.evidence_id for u in found if u.uncited]
+    unnamed, uncited = _named(found)
     problem_ids = ", ".join(bindable.problem_row_ids[:5])
     cause_ids = ", ".join(bindable.cause_row_ids[:5])
     why = bindable.why
@@ -310,15 +317,13 @@ def _unbound(params: dict, outcome: Optional[CaseOutcome], log: list) -> list:
     if uncited:
         lines.append(
             f"SYSTEM: {'Post-fix row(s)' if params['fix_dated'] else 'Row(s)'} "
-            f"{', '.join(uncited[:5])} confirm nothing: "
+            f"{', '.join(uncited)} confirm nothing: "
             + (f"{why}." if cause_ids else cause_text)
         )
     if unnamed:
-        after = (
-            "Post-mitigation" if by_mitigation.issuperset(unnamed[:5]) else "Post-fix"
-        )
+        after = "Post-mitigation" if by_mitigation.issuperset(unnamed) else "Post-fix"
         lines.append(
-            f"SYSTEM: {after} row(s) {', '.join(unnamed[:5])} name nothing they "
+            f"SYSTEM: {after} row(s) {', '.join(unnamed)} name nothing they "
             "re-check that binds, so they confirm and disconfirm nothing. Set "
             "rechecks — symptom rows: "
             + (
@@ -363,6 +368,16 @@ def _mitigation_refused(params: dict, outcome: Optional[CaseOutcome], log) -> li
     named only while the record carries no disposition."""
     mitigation = outcome.mitigation if outcome is not None else None
     disposition = mitigation.disposition if mitigation is not None else None
+    if outcome is None:
+        # No record: the disposition this cycle recorded is the log's.
+        disposition = next(
+            (
+                e["params"]["value"]
+                for e in log
+                if e["code"] == NoticeCode.MITIGATION_DISPOSED
+            ),
+            None,
+        )
     if disposition == "proceed_unmitigated":
         return [_MITIGATION_PROCEEDED]
     reason = (mitigation.refusal_reason if mitigation is not None else None) or (
@@ -400,9 +415,10 @@ def _mitigation_refused(params: dict, outcome: Optional[CaseOutcome], log) -> li
         seen = (
             f" (it was seen present at turn {present})" if present is not None else ""
         )
+        when = f" (turn {turn})" if turn is not None else ""
         line = (
             head + "no re-check bound to the problem shows it relieved after the "
-            f"mitigation (turn {turn}){seen}: record the post-mitigation "
+            f"mitigation{when}{seen}: record the post-mitigation "
             "symptom_absence_evidence with rechecks "
             + (
                 f"naming one of {ids}"

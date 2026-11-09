@@ -515,7 +515,7 @@ class TransitionManager:
             metadata["resolution_readiness_missing"] = readiness.missing
             if readiness.verdict == readiness.SUGGEST_CLOSE:
                 kind = OfferKind.CLOSE
-                composer = "readiness"
+                composer = {"composer": "readiness", **readiness.offer_params()}
                 logger.info(
                     f"Agent proposed RESOLVED but case {case.case_id} "
                     f"verdict=SUGGEST_CLOSE (missing: {readiness.missing}); "
@@ -552,11 +552,11 @@ class TransitionManager:
                 )
                 return
             else:
-                composer = "confirmation"
+                composer = {"composer": "confirmation"}
         else:
             closure = assess_closure_readiness(case)
             metadata["closure_readiness_verdict"] = closure.verdict
-            composer = "closure"
+            composer = {"composer": "closure", **closure.offer_params()}
             if closure.verdict == closure.SUGGEST_RESOLVE:
                 kind = OfferKind.RESOLVE
                 logger.info(
@@ -633,12 +633,12 @@ class TransitionManager:
             )
             return
         case.offer_record = record
-        # Its summary is composed after the record, from today's composer.
+        # Its summary renders the branch decided here, after the record (A6).
         record_decision(
             metadata,
             OfferCode.MODEL_PROPOSAL,
             proposal_id=record.open.proposal_id,
-            composer=composer,
+            **composer,
         )
         logger.info(
             f"Agent proposed transition → {kind.to_state} (pending user confirmation)"

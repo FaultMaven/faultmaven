@@ -125,7 +125,8 @@ DECISIONS: dict[tuple[str, str], dict[str, tuple[int, str]]] = {
         "NoticeCode.MITIGATION_VERIFY_REFUSED": (1, "R"),
     },
     (_SG, "_register_disposition"): {
-        "NoticeCode.MITIGATION_DISPOSITION_REFUSED": (1, "R")
+        "NoticeCode.MITIGATION_DISPOSITION_REFUSED": (1, "R"),
+        "NoticeCode.MITIGATION_DISPOSED": (1, "context"),
     },
     (_CE, "_record_verdict_on_root"): {
         "NoticeCode.ROOT_TERMINAL_NOT_QUALIFYING": (1, "D"),
@@ -161,6 +162,7 @@ DECISIONS: dict[tuple[str, str], dict[str, tuple[int, str]]] = {
         "OfferCode.MODEL_PROPOSAL": (1, "offer"),
     },
     (_TA, "_apply_turn_response"): {"NoticeCode.HYPOTHESIS_RETIRED": (1, "context")},
+    (_TA, "_lapse_unlicensed_offer"): {"NoticeCode.OFFER_LAPSED": (1, "context")},
 }
 
 #: The functions whose every notice became a code: none may call

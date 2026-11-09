@@ -20,7 +20,7 @@ pinned by ``tests/unit/modules/case/test_case_outcome_record_2636.py``.
 from enum import StrEnum
 from typing import Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, PrivateAttr, model_validator
 
 from .lifecycle import CaseState, ClosureReason
 from .problem import ProblemStatus
@@ -137,6 +137,13 @@ class CauseOutcome(BaseModel):
     )
     pool_empty_reason: Optional[PoolEmptyReason] = Field(
         default=None, description="Why the confirmation pool is empty"
+    )
+    identification_held_open: bool = Field(
+        default=False,
+        description=(
+            "A standing hypothesis's validated root has its why open and no "
+            "root is identified (``cause_identification_held_open``, #2036)"
+        ),
     )
 
     @model_validator(mode="after")
@@ -306,10 +313,14 @@ class CaseOutcome(BaseModel):
     narration_since: Optional[int] = Field(
         default=None,
         description=(
-            "The turn stage R first narrated the case (#2636): an unbound "
-            "re-check observed before it and never narrated counts as narrated"
+            "The turn stage R first narrated the case (#2636): the unbound "
+            "re-checks a record before it held count as narrated"
         ),
     )
+    #: Not stored. The unbound re-checks the record held before the case was
+    #: first narrated, carried by the fold until that narration marks them
+    #: narrated unrendered (``core/investigation/outcome.py``).
+    _before_narration: Optional[frozenset] = PrivateAttr(default=None)
     disagreements: Dict[str, int] = Field(
         default_factory=dict,
         description=(

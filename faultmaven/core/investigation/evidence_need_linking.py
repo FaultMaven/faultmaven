@@ -348,8 +348,14 @@ def suggestions_are_engine_replaced(
         return True
     if gate_pending:
         return True
-    return any(metadata.get(flag) for flag in _REPLACEMENT_METADATA_FLAGS) or any(
+    if any(metadata.get(flag) for flag in _REPLACEMENT_METADATA_FLAGS):
+        return True
+    # Only while the offer it names is open: a replayed bundle's offer may
+    # have closed since, and its prose is then not rendered (#2636).
+    offer = getattr(getattr(case, "offer_record", None), "open", None)
+    return offer is not None and any(
         entry["code"] in _REPLACEMENT_OFFER_CODES
+        and entry["params"].get("proposal_id") == offer.proposal_id
         for entry in metadata.get(DECISIONS_KEY) or []
     )
 

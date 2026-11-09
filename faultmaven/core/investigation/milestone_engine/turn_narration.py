@@ -23,11 +23,12 @@ from faultmaven.core.investigation.narration.codes import (
     OfferCode,
 )
 from faultmaven.core.investigation.narration.notices import (
+    named_rechecks,
     render_notice,
-    unnarrated_rechecks,
 )
 from faultmaven.core.investigation.narration.offers import render_offer
 from faultmaven.core.investigation.offers import summarize_offer
+from faultmaven.core.investigation.outcome import compute_case_outcome
 from faultmaven.modules.case.contracts import CaseOutcome, ResolutionReason
 
 from .stage_gates import _NOTICES_HEAD_KEY
@@ -39,48 +40,73 @@ logger = logging.getLogger(__name__)
 OUTCOME_WRITTEN_KEY = "outcome_written"
 
 
-def _case_summary(case: Any, code: str, params: dict) -> str:
-    """The summaries composed from the case, after the record (moved into
-    ``narration`` in S2): the step-0 request turned READY, and the model's
-    proposal, by the composer its branch chose."""
-    from faultmaven.core.investigation.terminal_transitions import (
-        assess_closure_readiness,
-        assess_resolution_readiness,
-    )
-
+def _confirmation(case: Any) -> str:
+    """The resolve confirmation, composed from the case after the record
+    (stage S2 moves it into ``narration``)."""
     from .terminal_replies import _build_resolution_confirmation
 
-    composer = params.get("composer", "confirmation")
-    if code == OfferCode.REQUEST_READY or composer == "confirmation":
-        return _build_resolution_confirmation(case)
-    if composer == "readiness":
-        return assess_resolution_readiness(case).message
-    return assess_closure_readiness(case).message
+    return _build_resolution_confirmation(case)
 
 
 def _conflict(code: str, params: dict, outcome: Optional[CaseOutcome]) -> None:
-    """The decision and the record disagree on the resolution's reason: the
-    decision's code is rendered, and the conflict counted (A4); stage S3
-    switches the deciders to the record."""
+    """The decision and the record disagree on what it decided from (the
+    resolution's reason, or the closure verdict): the decision's branch is
+    rendered, and the conflict counted (A4); stage S3 switches the deciders
+    to the record."""
     if outcome is None:
         return
     if code == NoticeCode.PENDING_CHECK:
-        decided = ResolutionReason.PENDING_CHECK
-    elif "reason" in params and code in (
-        OfferCode.NEEDS_INFO_UNMET_CLOSE,
-        OfferCode.RESOLUTION_NEEDS_INFO,
-    ):
-        decided = params["reason"]
+        decided, recorded = ResolutionReason.PENDING_CHECK, outcome.resolution.reason
+    elif "reason" in params and code in _READINESS_CODES:
+        decided, recorded = params["reason"], outcome.resolution.reason
+    elif "verdict" in params and code == OfferCode.MODEL_PROPOSAL:
+        decided, recorded = params["verdict"], outcome.closure.eligibility
     else:
         return
-    if outcome.resolution.reason != decided:
+    if recorded != decided:
         logger.info(
             "Case narration: %s decided on %s, the record reads %s (#2636)",
             code,
             decided,
-            outcome.resolution.reason,
+            recorded,
         )
         case_outcome_conflicts_total.labels(field=f"narration.{code}").inc()
+
+
+_READINESS_CODES = (
+    OfferCode.NEEDS_INFO_UNMET_CLOSE,
+    OfferCode.RESOLUTION_NEEDS_INFO,
+    OfferCode.MODEL_PROPOSAL,
+)
+
+
+def _outcome(case: Any, metadata: dict, log: list) -> Optional[CaseOutcome]:
+    """The record the cycle wrote; when its write failed, the outcome
+    computed in memory for the narration alone, never stored (#2636). None
+    only when that fails too."""
+    if metadata.get(OUTCOME_WRITTEN_KEY):
+        return case.progress.outcome
+    if not log:
+        return None
+    try:
+        return compute_case_outcome(case.progress.outcome, case)
+    except Exception:  # noqa: BLE001 — the write's failure is already counted
+        logger.exception(
+            "Case %s: no outcome to narrate from (#2636)",
+            getattr(case, "case_id", None),
+        )
+        return None
+
+
+def _first_narration(case: Any, outcome: CaseOutcome) -> None:
+    """The watermark (#2555): the first time a case is narrated, the unbound
+    re-checks a record before it held are marked narrated, unrendered; every
+    row that first appears after is narrated once."""
+    before = outcome._before_narration or frozenset()
+    for recheck in outcome.unbound_rechecks:
+        if recheck.evidence_id in before and recheck.narrated_turn is None:
+            recheck.narrated_turn = case.current_turn
+    outcome.narration_since = case.current_turn
 
 
 def _replace_token(metadata: dict, token: str, texts: list[str]) -> None:
@@ -97,20 +123,19 @@ def narrate_turn(case: Any, metadata: dict, *, offers_only: bool = False) -> Non
     """Render the turn's decision log after its record. ``offers_only``: a
     step-0 exit after a replay, which narrates the offers it holds and no
     notice (A11)."""
-    outcome: Optional[CaseOutcome] = (
-        case.progress.outcome if metadata.get(OUTCOME_WRITTEN_KEY) else None
-    )
-    # The watermark (#2555): the first turn this step narrates the case.
-    if outcome is not None and outcome.narration_since is None:
-        outcome.narration_since = case.current_turn
     log = metadata.get(DECISIONS_KEY) or []
-    narrated = []
+    outcome = _outcome(case, metadata, log)
+    if outcome is not None and outcome.narration_since is None:
+        _first_narration(case, outcome)
+    named = []
     for entry in log:
         code, params = entry["code"], entry["params"]
         _conflict(code, params, outcome)
-        if code in OfferCode.__members__.values():
-            if code in (OfferCode.REQUEST_READY, OfferCode.MODEL_PROPOSAL):
-                text = _case_summary(case, code, params)
+        if code in set(OfferCode):
+            if code == OfferCode.REQUEST_READY or (
+                params.get("composer") == "confirmation"
+            ):
+                text = _confirmation(case)
             else:
                 text = render_offer(code, params, outcome)
             pid = params.get("proposal_id")
@@ -123,7 +148,8 @@ def narrate_turn(case: Any, metadata: dict, *, offers_only: bool = False) -> Non
             continue
         texts = render_notice(code, params, outcome, log)
         if code == NoticeCode.UNBOUND_RECHECKS and texts:
-            narrated = unnarrated_rechecks(outcome)
+            named = named_rechecks(outcome)
         _replace_token(metadata, entry["token"], texts)
-    for recheck in narrated:
+    # Only the rows the notice named: the rest are narrated on a later turn.
+    for recheck in named:
         recheck.narrated_turn = case.current_turn

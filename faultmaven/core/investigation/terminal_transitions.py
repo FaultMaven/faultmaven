@@ -1617,9 +1617,22 @@ class ClosureReadiness:
     TRIVIAL = "trivial"
     SUGGEST_RESOLVE = "suggest_resolve"
 
-    def __init__(self, verdict: str, message: "str | Callable[[], str]"):
+    def __init__(
+        self,
+        verdict: str,
+        message: "str | Callable[[], str]",
+        params: "dict | Callable[[], dict] | None" = None,
+    ):
         self.verdict = verdict
         self._message = message
+        self._params = params
+
+    def offer_params(self) -> dict:
+        """What an offer code carries to render this prompt after the record
+        (#2636, ``narration.offers.closure_message``): the verdict and the
+        builder's inputs; the record lines are the record's."""
+        params = self._params() if callable(self._params) else self._params
+        return {"verdict": self.verdict, **(params or {})}
 
     @property
     def message(self) -> str:
@@ -1714,7 +1727,11 @@ def assess_closure_readiness(case: "Case") -> ClosureReadiness:
         # disposition eligibility on every save) never compose it.
         return ClosureReadiness(
             verdict=ClosureReadiness.SUGGEST_RESOLVE,
-            message=lambda: _suggest_resolve_message(case, has_solutions),
+            message=lambda: suggest_resolve_message(
+                **_suggest_resolve_params(case, has_solutions),
+                record_lines=resolution_record_lines(case),
+            ),
+            params=lambda: _suggest_resolve_params(case, has_solutions),
         )
 
     return assess_close_summary(case)
@@ -1811,18 +1828,19 @@ def resolution_record_lines(case) -> str:
     return "\n".join(lines)
 
 
-def _suggest_resolve_message(case: "Case", has_solutions: bool) -> str:
-    """The closure→resolve pivot's prompt (``narration.offers``): the root
-    cause named only when a cause-identification leg stands on it, as the
-    record lines decide."""
+def _suggest_resolve_params(case: "Case", has_solutions: bool) -> dict:
+    """What the closure→resolve pivot's prompt names (``narration.offers``):
+    the root cause only when a cause-identification leg stands on it, as the
+    record lines decide, and the solutions on record."""
     rc = getattr(case.root_cause_conclusion, "root_cause", None)
     if cause_identification_leg(case) is None:
         rc = None
-    return suggest_resolve_message(
-        rc,
-        _solution_display_titles(case.solutions) if has_solutions else [],
-        resolution_record_lines(case),
-    )
+    return {
+        "root_cause": rc,
+        "solution_titles": (
+            _solution_display_titles(case.solutions) if has_solutions else []
+        ),
+    }
 
 
 def assess_close_summary(case: "Case") -> ClosureReadiness:
@@ -1848,17 +1866,19 @@ def assess_close_summary(case: "Case") -> ClosureReadiness:
         not (evidence_count or hypothesis_count or milestones_completed or root_cause)
         and not titles
     )
+    summary = {
+        "evidence_count": evidence_count,
+        "hypothesis_count": hypothesis_count,
+        "milestones_completed": milestones_completed,
+        "root_cause": root_cause,
+        "solution_titles": titles,
+    }
     return ClosureReadiness(
         verdict=(
             ClosureReadiness.TRIVIAL if trivial else ClosureReadiness.HAS_SUBSTANCE
         ),
-        message=close_summary_message(
-            evidence_count=evidence_count,
-            hypothesis_count=hypothesis_count,
-            milestones_completed=milestones_completed,
-            root_cause=root_cause,
-            solution_titles=titles,
-        ),
+        message=close_summary_message(**summary),
+        params=summary,
     )
 
 

@@ -7,16 +7,26 @@ regressions for #2603 and #2555 fail on ``main``. No live LLM: the generator is
 stubbed.
 """
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from faultmaven.core.investigation.milestone_engine import turn_application
+from faultmaven.core.investigation.milestone_engine.cause_state import (
+    _recompute_assessment_state,
+)
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.milestone_engine.stage_gates import (
     record_decision,
 )
-from faultmaven.core.investigation.narration.codes import NoticeCode
+from faultmaven.core.investigation.milestone_engine.terminal_proposals import (
+    _maybe_propose_confirmed_resolution,
+    _maybe_propose_deferred_close,
+)
+from faultmaven.core.investigation.milestone_engine.turn_narration import narrate_turn
+from faultmaven.core.investigation.narration.codes import NoticeCode, OfferCode
+from faultmaven.core.investigation.narration.notices import render_notice
 from faultmaven.core.investigation.outcome import compute_case_outcome
 from faultmaven.core.investigation.problem_status import (
     decline_revision,
@@ -35,6 +45,7 @@ from faultmaven.core.investigation.schemas import (
 )
 from faultmaven.modules.case.contracts import (
     AnswerVia,
+    CaseOutcome,
     CauseState,
     EvidenceCategory,
     HypothesisState,
@@ -60,7 +71,10 @@ from tests.unit.core.investigation.test_refutation_needs_data_1911 import (
     _engine,
     _standing,
 )
-from tests.unit.core.investigation.test_resolution_backstop_turn import _make_repo
+from tests.unit.core.investigation.test_resolution_backstop_turn import (
+    _confirmed_case,
+    _make_repo,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -216,19 +230,158 @@ async def test_2555_a_recheck_held_through_a_revision_is_narrated_once_it_ends()
     assert entry.narrated_turn == 8
 
 
-async def test_the_watermark_narrates_no_row_a_record_before_it_holds():
-    """A stored case whose record PR A wrote: its unbound row predates the
-    first narration, so it is treated as narrated, not narrated on the first
-    turn after the deploy."""
+def _stored(case) -> None:
+    """The record PR A stored for ``case``: as loaded, with no narration."""
+    record = compute_case_outcome(None, case)
+    case.progress.outcome = CaseOutcome.model_validate(record.model_dump())
+
+
+async def test_the_watermark_marks_the_stored_rows_and_narrates_every_later_one():
+    """Review item 5. The rows a stored record held before the first narration
+    are marked narrated, unrendered; a row that first appears after it is
+    narrated once, though its data predates the watermark (#2555)."""
     eng, case = _held_recheck()
     decline_revision(case, via=AnswerVia.CLICK)
-    case.progress.outcome = compute_case_outcome(None, case)
-    assert case.progress.outcome.narration_since is None
-    assert case.progress.outcome.unbound_rechecks
+    _stored(case)
     case.current_turn = 9
-    meta = await _apply(eng, case, _DSU())
-    assert not _unbound_line(meta)
-    assert case.progress.outcome.narration_since == 9
+    first = await _apply(eng, case, _DSU())
+    assert not _unbound_line(first), "the stored row is not narrated"
+    (stored,) = case.progress.outcome.unbound_rechecks
+    assert stored.narrated_turn == 9 and case.progress.outcome.narration_since == 9
+
+    late = _row(
+        case,
+        EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+        turn=8,
+        evidence_id=_eid("late"),
+        summary="checkout answers 200 again",
+    )
+    late.collected_at_turn = 10
+    case.current_turn = 10
+    later = await _apply(eng, case, _DSU())
+    lines = [n for n in later["system_notices"] if _eid("late") in n]
+    assert len(lines) == 1 and _eid("held") not in lines[0]
+
+
+async def test_a_row_the_notice_did_not_name_is_narrated_on_a_later_turn():
+    """Review item 6: the notice names five rows a line; only those are
+    marked narrated, and the other three are named on the next turn."""
+    eng, case = _held_recheck()
+    for n in range(7):
+        _row(
+            case,
+            EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+            turn=7,
+            evidence_id=_eid(f"more{n}"),
+            summary=f"checkout answers 200 ({n})",
+        )
+    await _apply(eng, case, _DSU())
+    case.current_turn = 8
+    decline_revision(case, via=AnswerVia.CLICK)
+    first = await _apply(eng, case, _DSU())
+    rows = case.progress.outcome.unbound_rechecks
+    named = {u.evidence_id for u in rows if u.narrated_turn == 8}
+    assert len(rows) == 8 and len(named) == 5
+    assert all(e in "\n".join(first["system_notices"]) for e in named)
+    case.current_turn = 9
+    second = "\n".join((await _apply(eng, case, _DSU()))["system_notices"])
+    rest = {u.evidence_id for u in rows} - named
+    assert len(rest) == 3 and all(e in second for e in rest)
+    assert all(
+        u.narrated_turn is not None for u in case.progress.outcome.unbound_rechecks
+    )
+
+
+# ---------------------------------------------------------------------------
+# No record written: an outcome in memory, never an empty block
+# ---------------------------------------------------------------------------
+
+
+def _backstop(monkeypatch=None):
+    case = _confirmed_case()
+    case.current_turn = 2
+    metadata: dict = {}
+    _maybe_propose_confirmed_resolution(case, metadata)
+    return case, metadata
+
+
+def test_with_no_record_the_offer_renders_from_an_outcome_in_memory():
+    """Review item 3: the cycle's write failed (no ``OUTCOME_WRITTEN_KEY``);
+    the narration computes the outcome in memory and stores nothing."""
+    case, metadata = _backstop()
+    narrate_turn(case, metadata)
+    text = metadata["resolution_ready_gate_message"]
+    assert text.startswith("The record shows:\n\n- **The cause**")
+    assert case.progress.outcome is None, "nothing stored"
+
+
+def test_with_no_outcome_at_all_no_empty_record_block_renders(monkeypatch):
+    from faultmaven.core.investigation.milestone_engine import turn_narration
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("no outcome")
+
+    monkeypatch.setattr(turn_narration, "compute_case_outcome", _boom)
+    case, metadata = _backstop()
+    narrate_turn(case, metadata)
+    text = metadata["resolution_ready_gate_message"]
+    assert "The record shows" not in text
+    assert text.startswith("The case is still open until you confirm")
+
+
+def test_with_no_record_a_proceeded_mitigation_asks_for_no_recheck():
+    """Review item 4: the disposition comes from the log, and no turn clause
+    names an absent turn."""
+    params = {"reason": "no_bound_relief", "problem_row_ids": ["ev_p"]}
+    disposed = {
+        "code": NoticeCode.MITIGATION_DISPOSED,
+        "params": {"value": "proceed_unmitigated"},
+    }
+    code = NoticeCode.MITIGATION_VERIFY_REFUSED
+    assert render_notice(code, params, None, [disposed]) == [_PROCEEDED]
+    (line,) = render_notice(code, params, None, [])
+    assert "None" not in line
+    assert "relieved after the mitigation: record" in line
+
+
+# ---------------------------------------------------------------------------
+# The proposal's summary renders the branch decided
+# ---------------------------------------------------------------------------
+
+
+def test_a_proposals_summary_renders_the_decided_branch_and_counts_a_conflict(
+    monkeypatch,
+):
+    """Review item 7: the model's ``closed`` decided on a close summary; the
+    record now reads the case resolvable. The summary is the decided branch,
+    never re-derived, and the disagreement is counted."""
+    from faultmaven.core.investigation.milestone_engine import turn_narration
+    from faultmaven.core.investigation.narration.offers import render_offer
+
+    counted = []
+    monkeypatch.setattr(
+        turn_narration,
+        "case_outcome_conflicts_total",
+        SimpleNamespace(
+            labels=lambda field: SimpleNamespace(inc=lambda: counted.append(field))
+        ),
+    )
+    case = _confirmed_case()
+    record = compute_case_outcome(None, case)
+    assert record.closure.eligibility == "suggest_resolve"
+    params = {
+        "composer": "closure",
+        "verdict": "has_substance",
+        "evidence_count": 2,
+        "hypothesis_count": 0,
+        "milestones_completed": 0,
+        "root_cause": None,
+        "solution_titles": [],
+    }
+    text = render_offer(OfferCode.MODEL_PROPOSAL, params, record)
+    assert text.startswith("Here's what was accomplished")
+    turn_narration._conflict(OfferCode.MODEL_PROPOSAL, params, record)
+    assert counted == ["narration.model_proposal"]
 
 
 # ---------------------------------------------------------------------------
@@ -236,50 +389,206 @@ async def test_the_watermark_narrates_no_row_a_record_before_it_holds():
 # ---------------------------------------------------------------------------
 
 
+def _responses():
+    return SimpleNamespace(
+        kb_prefetcher=SimpleNamespace(prefetch_kb_context=AsyncMock())
+    )
+
+
+def _cycle_metadata(**extra) -> dict:
+    return {
+        "milestones_completed": [],
+        "hypotheses_validated": [],
+        "progress_made": True,
+        turn_application.ASSESSMENT_RECOMPUTED_KEY: "stub",
+        **extra,
+    }
+
+
 def test_a_decision_recorded_twice_holds_one_place():
     metadata: dict = {}
     for _ in range(2):
         record_decision(metadata, NoticeCode.FIX_UNTARGETED, action_id="act_1")
-        record_decision(metadata, NoticeCode.SOLUTION_OFFER_WITHDRAWN, count=1)
+        record_decision(metadata, NoticeCode.SOLUTION_OFFER_WITHDRAWN)
     assert len(metadata["system_notices"]) == 2
-    (withdrawn,) = [
-        e
-        for e in metadata["outcome_decisions"]
-        if e["code"] == NoticeCode.SOLUTION_OFFER_WITHDRAWN
-    ]
-    assert withdrawn["params"]["count"] == 2, "the counts aggregate (A9)"
 
 
-def test_the_final_recompute_drops_a_fallen_identification(monkeypatch):
-    """The falling edge (A12): an identification this turn's step 1 recorded
-    and the final recompute dropped leaves the turn's milestones, and the
-    turn's outcome is re-derived; ``progress_made`` keeps step 1's reading."""
-    case, _root, _hyp = _identified_case()
-    monkeypatch.setattr(
-        turn_application, "_recompute_assessment_state", lambda *a, **k: None
+async def test_the_final_recompute_drops_a_fallen_identification():
+    """The falling edge (A12), through the real recompute: step 1 identified
+    the cause, and the hypothesis it rests on left the pool after it (as
+    housekeeping retires one)."""
+    case, _root, hyp = _identified_case()
+    case.progress.cause_state = CauseState.CANDIDATES  # as the turn began
+    step_one = _cycle_metadata()
+    _recompute_assessment_state(case, metadata=step_one)
+    assert case.progress.cause_state == CauseState.IDENTIFIED
+    assert step_one["milestones_completed"] == ["root_cause_identified"]
+    step_one["outcome"] = TurnOutcome.MILESTONE_COMPLETED
+    hyp.state = HypothesisState.RETIRED
+    await turn_application._final_recompute(
+        _responses(), case, step_one, TurnOutcome.CONVERSATION
     )
+    assert case.progress.cause_state != CauseState.IDENTIFIED
+    assert step_one["milestones_completed"] == []
+    assert step_one["outcome"] != TurnOutcome.MILESTONE_COMPLETED
+    assert step_one["progress_made"] is True
+
+
+async def test_the_final_recompute_takes_a_rising_edge_as_step_one_does():
+    """Review item 11: an identification the final recompute raises records
+    the milestone, re-derives the outcome and runs step 1's KB warm-up."""
+    case, _root, _hyp = _identified_case()
     case.progress.cause_state = CauseState.CANDIDATES
-    metadata = {
-        "milestones_completed": ["root_cause_identified"],
-        "progress_made": True,
-        "outcome": TurnOutcome.MILESTONE_COMPLETED,
-        turn_application.ASSESSMENT_RECOMPUTED_KEY: "stub",
-    }
-    turn_application._final_recompute(case, metadata, TurnOutcome.CONVERSATION)
-    assert metadata["milestones_completed"] == []
-    assert metadata["outcome"] != TurnOutcome.MILESTONE_COMPLETED
-    assert metadata["progress_made"] is True
+    metadata = _cycle_metadata(outcome=TurnOutcome.CONVERSATION)
+    responses = _responses()
+    await turn_application._final_recompute(
+        responses, case, metadata, TurnOutcome.CONVERSATION
+    )
+    assert case.progress.cause_state == CauseState.IDENTIFIED
+    assert metadata["milestones_completed"] == ["root_cause_identified"]
+    assert metadata["outcome"] != TurnOutcome.CONVERSATION
+    responses.kb_prefetcher.prefetch_kb_context.assert_awaited_once()
+    assert responses.kb_prefetcher.prefetch_kb_context.await_args.args[2] == (
+        "root_cause"
+    )
 
 
 async def test_the_final_recompute_does_not_double_a_step_one_notice():
-    """Two recomputes in one cycle flag the same unbound row into one notice."""
-    from faultmaven.core.investigation.milestone_engine.stage_gates import (
-        _flag_unbound_post_fix_rows,
-    )
-
+    """Step 1's recompute and the final one flag the same unbound row into
+    one notice."""
     _eng, case = _held_recheck()
     decline_revision(case, via=AnswerVia.CLICK)
-    metadata: dict = {}
-    _flag_unbound_post_fix_rows(case, metadata)
-    _flag_unbound_post_fix_rows(case, metadata)
+    metadata = _cycle_metadata()
+    _recompute_assessment_state(case, metadata=metadata)
+    await turn_application._final_recompute(
+        _responses(), case, metadata, TurnOutcome.CONVERSATION
+    )
     assert len(narrated(case, metadata)) == 1
+
+
+async def test_a_deferred_offer_whose_licence_decayed_lapses_unrendered():
+    """Review item 8 (INV-32): the deferred close opened in step 1 on a
+    working conclusion; housekeeping's decay takes it below the bar, the final
+    recompute withdraws the licence, and the offer lapses without its "the
+    root cause and fix are documented" prose."""
+    case = _deferred_case()
+    metadata = _cycle_metadata()
+    _maybe_propose_deferred_close(case, metadata)
+    assert case.offer_record.open is not None
+    for hypothesis in case.hypotheses.values():
+        hypothesis.likelihood = 0.2  # housekeeping's decay
+    await turn_application._final_recompute(
+        _responses(), case, metadata, TurnOutcome.CONVERSATION
+    )
+    assert case.offer_record.open is None
+    (answer,) = case.offer_record.answers
+    assert (answer.answer, answer.via) == ("lapsed", "engine")
+    narrated(case, metadata)
+    assert "deferred_solution_gate_message" not in metadata
+    codes = [e["code"] for e in metadata["outcome_decisions"]]
+    assert NoticeCode.OFFER_LAPSED in codes
+
+
+def _deferred_case():
+    """Deferred fix, licensed only by a working conclusion at 0.8."""
+    from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
+    from faultmaven.core.investigation.milestone_engine.stage_gates import (
+        _refresh_working_conclusion,
+        _solution_cause_validated,
+    )
+    from faultmaven.modules.case.contracts import HypothesisCategory, SolutionFeasible
+    from tests.unit.core.investigation.test_surgical_strip_and_cause_state import (
+        TestDeferredImplementationClose,
+        _solution,
+    )
+
+    case = TestDeferredImplementationClose()._case(
+        feasible=SolutionFeasible.DEFERRED,
+        solution_proposed=True,
+        cause_identified=False,
+    )
+    case.solutions = [_solution()]
+    case.progress.problem_status = ProblemStatus.VERIFIED
+    h = HypothesisManager().create_hypothesis(
+        statement="the role's trust policy names the wrong OIDC provider",
+        category=HypothesisCategory.CONFIG,
+        initial_likelihood=0.8,
+        current_turn=1,
+    )
+    h.likelihood = 0.8
+    case.hypotheses[h.hypothesis_id] = h
+    _refresh_working_conclusion(case)
+    assert _solution_cause_validated(case), "premise: licensed"
+    return case
+
+
+# ---------------------------------------------------------------------------
+# The two order changes the plan's order makes (review items 9 and 10)
+# ---------------------------------------------------------------------------
+
+
+async def test_the_pending_check_notice_follows_the_monitors(monkeypatch):
+    """An expected difference: the backstop now runs after the progress
+    monitor, so its pending-check notice follows the monitor's injection."""
+    from tests.unit.core.investigation.test_pending_check_holds_the_offer_1906 import (
+        _engine as _held_engine,
+    )
+    from tests.unit.core.investigation.test_pending_check_holds_the_offer_1906 import (
+        _held_case,
+    )
+    from tests.unit.core.investigation.test_pending_check_holds_the_offer_1906 import (
+        _turn as _held_turn,
+    )
+
+    engine, case = _held_engine(), _held_case()
+    monkeypatch.setattr(
+        engine.deps.progress_monitor,
+        "check_progress",
+        lambda _case: ProgressCheckResult(
+            transparent_mode=True, prompt_injection="MONITOR INJECTION"
+        ),
+    )
+    await _held_turn(engine, case, 8, "still checking")
+    notices = case.turn_history[-1].system_notices
+    held = next(i for i, n in enumerate(notices) if n.startswith("RESOLUTION HELD"))
+    assert notices.index("MONITOR INJECTION") < held
+
+
+async def test_momentum_reads_this_turns_stall_count():
+    """An expected difference: metrics run after the stall counter, so a turn
+    that makes the fifth stall reads BLOCKED on its own record."""
+    case, _shown = _pending()
+    case.turns_without_progress = 4
+    engine = MilestoneEngine(MagicMock(), _make_repo(), investigation_tools=MagicMock())
+    engine.generator.generate_structured_output = AsyncMock(
+        return_value=InvestigationResponse_Diagnosis(
+            agent_response="Noted.", state_updates={}
+        )
+    )
+    await engine.process_turn(case=case, user_message="ok", redaction_ctx=None)
+    assert case.turns_without_progress == 5
+    assert case.turn_history[-1].momentum == "blocked"
+
+
+def test_a_token_left_unrendered_is_stripped_from_the_turn_record(caplog):
+    """Review item 14: the leak guard."""
+    case, _shown = _pending()
+    metadata = {"system_notices": ["KEPT"]}
+    record_decision(metadata, NoticeCode.FIX_UNTARGETED, action_id="act_1")
+    inputs = turn_application.TurnRecordInputs(
+        progress_metrics=SimpleNamespace(
+            investigation_momentum="moderate", blocked_reasons=[], next_steps=[]
+        ),
+        stagnation_str=None,
+        validation_repairs=[],
+        cause_at_start=None,
+    )
+    turn_application.record_turn(
+        case,
+        metadata,
+        inputs,
+        user_message="m",
+        response_obj=SimpleNamespace(agent_response="Noted."),
+    )
+    assert case.turn_history[-1].system_notices == ["KEPT"]
+    assert "left unrendered" in caplog.text

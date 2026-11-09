@@ -40,7 +40,10 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Optional
 
-from faultmaven.core.investigation.causal_graph.projection import held_open_root_ids
+from faultmaven.core.investigation.causal_graph.projection import (
+    held_open_root_ids,
+    identified_root_ids,
+)
 from faultmaven.core.investigation.cause_assurance import (
     FIX_FAILED,
     SUBJECT_PROBLEM,
@@ -194,7 +197,7 @@ def compute_case_outcome(
     statement = current_statement(case)
     seen = _Disagreements(case, prior)
     unbound = _unbound_rechecks(prior, case, subjects, windows)
-    return CaseOutcome(
+    record = CaseOutcome(
         folded_under=case.state,
         problem=ProblemOutcome(
             status=case.progress.problem_status,
@@ -213,6 +216,20 @@ def compute_case_outcome(
         narration_since=prior.narration_since if prior is not None else None,
         disagreements=seen.read,
     )
+    if record.narration_since is None:
+        record._before_narration = _before_narration(prior)
+    return record
+
+
+def _before_narration(prior: Optional[CaseOutcome]) -> frozenset:
+    """The unbound re-checks a record held before the case was first
+    narrated (#2636): a stored record's own, carried through the records this
+    process computed since. A row first appearing after is narrated."""
+    if prior is None:
+        return frozenset()
+    if prior._before_narration is not None:
+        return prior._before_narration
+    return frozenset(u.evidence_id for u in prior.unbound_rechecks)
 
 
 def _cause(case: "Case", subjects: "SubjectIndex") -> CauseOutcome:
@@ -229,6 +246,11 @@ def _cause(case: "Case", subjects: "SubjectIndex") -> CauseOutcome:
             if rows
         },
         pool_empty_reason=cause_pool_empty_reason(case),
+        # The predicate the cause recompute writes to
+        # ``progress.cause_identification_held_open``, over the standing
+        # hypotheses: the withdrawal notice's variant (#2636).
+        identification_held_open=bool(held_open_root_ids(case))
+        and not identified_root_ids(case),
     )
 
 

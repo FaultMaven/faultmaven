@@ -17,8 +17,12 @@ from faultmaven.core.investigation.milestone_engine.turn_records import (
     _perform_hypothesis_housekeeping,
     _resolve_id_ref,
 )
-from faultmaven.core.investigation.narration.codes import DECISIONS_KEY, NoticeCode
-from faultmaven.core.investigation.offers import lapse_offers
+from faultmaven.core.investigation.narration.codes import (
+    DECISIONS_KEY,
+    NoticeCode,
+    is_token,
+)
+from faultmaven.core.investigation.offers import answer_offer, lapse_offers
 from faultmaven.core.investigation.outcome import record_case_outcome
 from faultmaven.core.investigation.problem_status import problem_on_hold
 from faultmaven.core.investigation.state_validator import ValidationSeverity
@@ -26,13 +30,19 @@ from faultmaven.core.investigation.working_conclusion_generator import (
     calculate_progress_metrics,
 )
 from faultmaven.modules.case.contracts import (
+    AnswerKind,
+    AnswerVia,
     CauseState,
     HypothesisState,
+    OfferBasis,
     TurnOutcome,
 )
 
 from .affordances import engine_owned_affordances
-from .cause_state import _recompute_assessment_state
+from .cause_state import (
+    _kb_prefetch_query_on_identification,
+    _recompute_assessment_state,
+)
 from .progress import restatement_stall_notice, score_progress
 from .response_application import ASSESSMENT_RECOMPUTED_KEY, FIX_CAUSE_AT_START_KEY
 from .response_synthesis import is_agent_response_synthesized
@@ -40,6 +50,7 @@ from .stage_gates import (
     SYSTEM_NOTICE_KEYS,
     _add_system_feedback,
     _refresh_working_conclusion,
+    _solution_cause_validated,
     fix_cause,
     merge_decisions,
     merge_system_notices,
@@ -73,14 +84,20 @@ def _standing_hypothesis_ids(case) -> set[str]:
     }
 
 
-def _final_recompute(case, metadata: dict, llm_outcome) -> None:
+async def _final_recompute(responses, case, metadata: dict, llm_outcome) -> None:
     """The cycle's last recompute (#2636, Q8 (a)): the pool after
     housekeeping, the monitor's repair and the needs sweeps. Its notices are
-    codes, so they deduplicate against step 1's. A ``root_cause_identified``
-    this turn added and this recompute dropped is removed from the turn's
-    milestones (the falling edge), and the turn's outcome is re-derived;
-    ``progress_made`` and housekeeping's ``investigation_advanced`` keep the
-    step-1 reading (A12)."""
+    codes, so they deduplicate against step 1's.
+
+    Either edge of identification it moves is handled as step 1 handles it:
+    a ``root_cause_identified`` this turn added and this recompute dropped
+    leaves the turn's milestones (the falling edge); one it raises gets the
+    milestone (the recompute writes it) and step 1's KB remediation warm-up
+    (INV-35). Either way the turn's outcome is re-derived; ``progress_made``
+    and housekeeping's ``investigation_advanced`` keep the step-1 reading
+    (A12). An offer this cycle opened on the M5 licence that fell is lapsed
+    (A17, INV-32)."""
+    before = case.progress.cause_state
     _recompute_assessment_state(
         case,
         exclusion_survivors=metadata.get("deductive_survivor_ids", frozenset()),
@@ -88,20 +105,59 @@ def _final_recompute(case, metadata: dict, llm_outcome) -> None:
         metadata=metadata,
         provider_name=metadata[ASSESSMENT_RECOMPUTED_KEY],
     )
+    after = case.progress.cause_state
     milestones = metadata.get("milestones_completed") or []
-    if (
-        "root_cause_identified" in milestones
-        and case.progress.cause_state != CauseState.IDENTIFIED
-    ):
+    if "root_cause_identified" in milestones and after != CauseState.IDENTIFIED:
         milestones.remove("root_cause_identified")
+    if (before == CauseState.IDENTIFIED) != (after == CauseState.IDENTIFIED):
         metadata["outcome"] = _determine_turn_outcome(case, metadata, llm_outcome)
+    query = _kb_prefetch_query_on_identification(
+        before, after, case.root_cause_conclusion, case.working_conclusion
+    )
+    if query:
+        await responses.kb_prefetcher.prefetch_kb_context(case, query, "root_cause")
+    _lapse_unlicensed_offer(case, metadata)
+
+
+def _lapse_unlicensed_offer(case, metadata: dict) -> None:
+    """A deferred-disposition offer this cycle opened says the root cause and
+    fix are documented, which needs the M5 licence (INV-32). When the final
+    recompute withdrew that licence, the offer lapses, as an offer whose
+    premise went does (``offers.lapse_offers``), and its prose is not
+    rendered."""
+    offer = case.offer_record.open
+    if (
+        offer is None
+        or offer.basis != OfferBasis.DEFERRED
+        or offer.opened_at_turn != case.current_turn
+        or _solution_cause_validated(case)
+    ):
+        return
+    case.offer_record = answer_offer(
+        case,
+        proposal_id=offer.proposal_id,
+        answer=AnswerKind.LAPSED,
+        via=AnswerVia.ENGINE,
+    )
+    record_decision(metadata, NoticeCode.OFFER_LAPSED, proposal_id=offer.proposal_id)
 
 
 def record_turn(
     case, metadata: dict, inputs: TurnRecordInputs, *, user_message, response_obj
 ) -> None:
     """Step 6: the turn record, after the narration step rendered the
-    notices it copies (#2636)."""
+    notices it copies (#2636). A decision's token left unrendered is a defect:
+    it is logged and stripped, never recorded or shown to the model."""
+    notices = metadata.get("system_notices") or []
+    leftover = [n for n in notices if is_token(n)]
+    if leftover:
+        logger.error(
+            "Case %s turn %s: %d decision token(s) left unrendered (#2636)",
+            case.case_id,
+            case.current_turn,
+            len(leftover),
+        )
+        metadata["system_notices"] = [n for n in notices if not is_token(n)]
     case.turn_history.append(
         _create_turn_record(
             turn_number=case.current_turn,
@@ -375,7 +431,7 @@ async def _apply_turn_response(
     # monitor's repair, read once more, so the backstop and the record read
     # one pool. Only where the apply step's dispatch ran the first.
     if metadata.get(ASSESSMENT_RECOMPUTED_KEY):
-        _final_recompute(case_updated, metadata, llm_outcome)
+        await _final_recompute(responses, case_updated, metadata, llm_outcome)
 
     # 4c. Resolution backstop (INV-43). LAST of the openers, which is what
     # makes it a backstop rather than a fourth competing proposer: step 4 has

@@ -809,10 +809,16 @@ class TestAsksTheUserNeverSeesAreNotRecorded:
     suppressed.
     """
 
-    def _case(self, state, terminal=False):
+    def _case(self, state, terminal=False, open_offer=None):
         from types import SimpleNamespace
 
-        return SimpleNamespace(state=state, is_terminal=terminal)
+        return SimpleNamespace(
+            state=state,
+            is_terminal=terminal,
+            offer_record=SimpleNamespace(
+                open=SimpleNamespace(proposal_id=open_offer) if open_offer else None
+            ),
+        )
 
     def test_gate_turn_is_treated_as_replaced(self):
         from faultmaven.core.investigation.evidence_need_linking import (
@@ -852,8 +858,12 @@ class TestAsksTheUserNeverSeesAreNotRecorded:
             {"resolution_ready_for_confirmation": True},
             {"resolution_suggest_close": True},
             # The rca-infeasible close's prose is rendered after linking, so
-            # its offer code is read (#2636).
-            {"outcome_decisions": [{"code": "rca_infeasible_close"}]},
+            # its offer code is read while its offer is open (#2636).
+            {
+                "outcome_decisions": [
+                    {"code": "rca_infeasible_close", "params": {"proposal_id": "p1"}}
+                ]
+            },
         ],
     )
     def test_each_resolution_branch_flag_is_treated_as_replaced(self, metadata):
@@ -863,7 +873,23 @@ class TestAsksTheUserNeverSeesAreNotRecorded:
         from faultmaven.modules.case.contracts import CaseState
 
         assert suggestions_are_engine_replaced(
-            self._case(CaseState.INVESTIGATING), metadata, gate_pending=False
+            self._case(CaseState.INVESTIGATING, open_offer="p1"),
+            metadata,
+            gate_pending=False,
+        )
+
+    def test_a_replayed_rca_close_whose_offer_closed_is_not_counted(self):
+        """#2636 review item 12: the code names an offer no longer open."""
+        from faultmaven.core.investigation.evidence_need_linking import (
+            suggestions_are_engine_replaced,
+        )
+        from faultmaven.modules.case.contracts import CaseState
+
+        code = {"code": "rca_infeasible_close", "params": {"proposal_id": "p1"}}
+        assert not suggestions_are_engine_replaced(
+            self._case(CaseState.INVESTIGATING, open_offer="p2"),
+            {"outcome_decisions": [code]},
+            gate_pending=False,
         )
 
     def test_an_ordinary_investigating_turn_is_not_replaced(self):

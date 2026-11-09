@@ -1,0 +1,58 @@
+{
+  "withdrawn_held_open_beside_a_retired_validated_root": {
+    "notices": [
+      "SYSTEM: Your pending SOLUTION proposal was withdrawn: the cause it targets validated, but its why is open (ROOT-CAUSE TEST, clause b), so the fix would only intercept a state that comes back. Ask for what produced that state; then re-root onto that cause or mark the root terminal (root_is_terminal true, citing the causal_evidence row in terminal_basis_evidence_ids) and re-propose. To restore service now, propose it as a temporary mitigation (WORKAROUND)."
+    ],
+    "prose": {},
+    "summary": null
+  },
+  "withdrawn_once_the_cause_fell": {
+    "notices": [
+      "SYSTEM: Your pending SOLUTION proposal was withdrawn because the root cause it targeted is no longer established. Re-ground the root cause with evidence before re-proposing a permanent fix, or propose a temporary mitigation (WORKAROUND) instead."
+    ],
+    "prose": {},
+    "summary": null
+  },
+  "absence_inside_a_failed_window": {
+    "notices": [
+      "SYSTEM: The fix executed at turn 8 did not hold: the cause was shown removed, then the problem was seen again. Absence evidence recorded after that cannot confirm a resolution. If the user has applied (or will apply) a new fix, record it: propose it as a SolutionToAdd and, once the user says it ran, set solution_accepted with accepted_action_ref naming it (new_index_N, or its ACTION_ID once proposed) — re-assert the cause with a root_cause_conclusion on a new hypothesis if the same cause was addressed again — then record the cause gone and the problem gone after it. If the problem is only quiet after a workaround, offer to close instead."
+    ],
+    "prose": {},
+    "summary": null
+  },
+  "an_unnamed_recheck_after_the_fix": {
+    "notices": [
+      "SYSTEM: Post-fix row(s) ev_5023f4c5e04f name nothing they re-check that binds, so they confirm and disconfirm nothing. Set rechecks — symptom rows: one of ev_00000000fe01; causal_absence rows: one of ev_07d5d98e9ea3, ev_764e9f09ceef (the cited basis of the root cause)."
+    ],
+    "prose": {},
+    "summary": null
+  },
+  "the_backstop_offers_a_confirmed_case": {
+    "notices": [],
+    "prose": {
+      "resolution_ready_gate_message": "The record shows:\n\n- **The cause** — max_connections is set to 20, below the worker pool size: After the provider client-ID correction the pods obtained credentials and the AssumeRole failures stopped (turn 1)\n- **The problem** — the reported problem, as first shown, re-checked: AssumeRoleWithWebIdentity succeeds for the data-processor pods (turn 1)\n\nThe case is still open until you confirm: marking it resolved records the attribution and writes up the resolution summary. Shall I mark this case resolved?"
+    },
+    "summary": "The record shows:\n\n- **The cause** — max_connections is set to 20, below the worker pool size: After the provider client-ID correction the pods obtained credentials and the AssumeRole failures stopped (turn 1)\n- **The problem** — the reported problem, as first shown, re-checked: AssumeRoleWithWebIdentity succeeds for the data-processor pods (turn 1)\n\nThe case is still open until you confirm: marking it resolved records the attribution and writes up the resolution summary. Shall I mark this case resolved?"
+  },
+  "the_backstop_held_by_a_pending_check": {
+    "notices": [
+      "RESOLUTION HELD: the check you asked for is still pending ([eneed_00000000c0c0] Prometheus targets page showing job=billing UP). The resolution is offered once an answer showing the problem gone is on record: record the row and mark the need FULFILLED citing it. If the user cannot run the check, SUPERSEDE the need with the reason."
+    ],
+    "prose": {},
+    "summary": null
+  },
+  "a_deferred_fix_on_a_confirmed_case": {
+    "notices": [],
+    "prose": {
+      "deferred_solution_gate_message": "The record shows:\n\n- **The cause** — max_connections is set to 20, below the worker pool size: the re-check after the fix (turn 7)\n- **The problem** — the reported problem, as first shown, re-checked: the re-check after the fix (turn 7)\n\nThe implementation work you flagged as out-of-band (a change request, maintenance window, or another team) is follow-up: it stays documented on the resolved case and does not need the incident held open. Shall I mark this case resolved?"
+    },
+    "summary": "The record shows:\n\n- **The cause** — max_connections is set to 20, below the worker pool size: the re-check after the fix (turn 7)\n- **The problem** — the reported problem, as first shown, re-checked: the re-check after the fix (turn 7)\n\nThe implementation work you flagged as out-of-band (a change request, maintenance window, or another team) is follow-up: it stays documented on the resolved case and does not need the incident held open. Shall I mark this case resolved?"
+  },
+  "the_models_resolved_on_an_unconfirmed_case": {
+    "notices": [],
+    "prose": {
+      "resolution_needs_info_message": "To mark this **resolved** and write up the resolution summary, I just need a few essentials:\n\n- **What fixed it** — the action that resolved it.\n- **Confirmation it's resolved** — the output of a check showing the original problem is now gone (e.g. the latest output, with the error no longer in it).\n\nSubmit check output as data (pasted or attached, not typed into your message): what you write is your account, and the output is what shows it. If the problem was already fixed outside this session, the same applies, and I'll document it.\n\nIf it was only **stabilized** (a workaround/failover while the root cause is still pending) or the real fix is **deferred** (a change window, hardware RMA, another team), you can **close** the case instead — that keeps the investigation and the documented (or deferred) solution on record without claiming it's permanently fixed."
+    },
+    "summary": null
+  }
+}
