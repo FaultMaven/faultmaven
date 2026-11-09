@@ -73,12 +73,15 @@ def case_store_erasers(
     their backend is the one store likely to be down, so its failure leaves the
     case untouched. The delete's gate has already refused new turns.
 
-    Two stores can be absent by configuration: the case vector store, as under
-    ``SKIP_SERVICE_CHECKS`` none is built, so nothing in the process writes
-    vectors; and the LLM traces (:func:`llm_trace_eraser`). Any other missing
-    store is a construction failure, bound as an eraser that raises so every
-    delete fails instead of skipping it.
+    Three stores can be absent by configuration: under ``SKIP_SERVICE_CHECKS``
+    the case vector store, as none is built, so nothing in the process writes
+    vectors, and the replayed answers, as the idempotency middleware is not
+    mounted (``bootstrap/middleware.py``); and the LLM traces
+    (:func:`llm_trace_eraser`). Any other missing store is a construction
+    failure, bound as an eraser that raises so every delete fails instead of
+    skipping it.
     """
+    from faultmaven.api.middleware.idempotency import IdempotencyReplayEraser
     from faultmaven.infrastructure.persistence.database import get_db_session
     from faultmaven.infrastructure.security.case_redaction import (
         CaseRedactionRegistryEraser,
@@ -115,6 +118,12 @@ def case_store_erasers(
     erasers.append(
         bound("pii_redaction_registry", redis_client, CaseRedactionRegistryEraser)
     )
+    if settings.server.skip_service_checks:
+        not_configured += ("idempotency_replays",)
+    else:
+        erasers.append(
+            bound("idempotency_replays", redis_client, IdempotencyReplayEraser)
+        )
     return erasers, not_configured
 
 

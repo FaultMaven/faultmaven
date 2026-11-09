@@ -212,6 +212,19 @@ if len(_TURN_ROUTE_PATHS) != 1:
     )
 declare_route_policy(app, *_TURN_ROUTE_PATHS, never_replayed=True)
 
+# Case search answers many cases' content and declares none, so no case delete
+# could reach its cached answer; no client keys it (#2624).
+from .modules.case.api.routes.cases import search_cases
+
+_SEARCH_ROUTE_PATHS = [
+    route.path
+    for route in app.routes
+    if getattr(route, "endpoint", None) is search_cases
+]
+if len(_SEARCH_ROUTE_PATHS) != 1:
+    raise RuntimeError(f"expected exactly one case search route: {_SEARCH_ROUTE_PATHS}")
+declare_route_policy(app, *_SEARCH_ROUTE_PATHS, never_replayed=True)
+
 app.include_router(knowledge_router, prefix="/api/v1")
 logger.info("✅ Knowledge endpoints added")
 

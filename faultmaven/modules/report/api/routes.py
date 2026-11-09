@@ -26,12 +26,25 @@ import logging
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, status
+from fastapi import (
+    APIRouter,
+    Body,
+    Depends,
+    HTTPException,
+    Path,
+    Query,
+    Request,
+    status,
+)
 from pydantic import BaseModel, Field
 
 from faultmaven.api.exception_handlers import (
     is_quota_exhausted_service_error,
     quota_exhausted_http_exception,
+)
+from faultmaven.api.middleware.idempotency import (
+    declare_replay_case,
+    declare_replay_case_from_query,
 )
 from faultmaven.api.v1.auth_dependencies import require_authentication
 from faultmaven.api.v1.dependencies import (
@@ -313,6 +326,10 @@ async def authorize_case_access(
     "/generate",
     response_model=ReportGenerationResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[
+        Depends(require_authentication),
+        Depends(declare_replay_case_from_query),
+    ],
     summary="Generate reports for a case",
     description="Generate post-mortem, executive summary, or technical analysis reports using LLM",
 )
@@ -841,6 +858,7 @@ async def get_report_versions(
 )
 @trace("api_link_report_to_case")
 async def link_report_to_case_closure(
+    raw_request: Request,
     report_id: str = Path(..., description="Report UUID"),
     request: LinkCaseRequest = Body(default=LinkCaseRequest()),
     current_user: UserDTO = Depends(require_authentication),
@@ -894,6 +912,7 @@ async def link_report_to_case_closure(
             # may rewrite, delete or close-link it (ADR-020 D2).
             driver_only=True,
         )
+        declare_replay_case(raw_request, report.case_id)
 
         # Check if already linked
         if report.linked_to_closure:

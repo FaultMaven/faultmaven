@@ -953,7 +953,8 @@ def _resolution_order(dependant) -> list:
     return order
 
 
-#: The only dependency permitted to resolve ahead of an auth gate.
+#: The only dependency permitted to resolve ahead of an auth gate WITH its
+#: subtree (one leaf is permitted alone: ``_PERMITTED_LEAVES_BEFORE_A_GATE``).
 #:
 #: ``bind_request_enterprise_context`` is declared as a GLOBAL on ``app`` — the
 #: module docstring's "the app's only global dependency is the tenant binder,
@@ -980,13 +981,28 @@ _PERMITTED_BEFORE_A_GATE = frozenset(
     }
 )
 
+#: Permitted ahead of an auth gate as a LEAF: its own node is excused by ``id``,
+#: and anything it comes to depend on is still reported.
+#:
+#: The case router's replay declaration (#2624) is a router dependency, so it
+#: resolves ahead of every route's gate. It reads the path into
+#: ``request.state``, calls nothing and cannot answer or raise. Excusing its
+#: subtree by name would let a ``Depends(<service>)`` added to it resolve ahead
+#: of the gate on every case route, the #1467 shape, unnoticed.
+_PERMITTED_LEAVES_BEFORE_A_GATE = frozenset(
+    {
+        "faultmaven.api.middleware.idempotency.declare_replay_case_from_path",
+    }
+)
+
 
 def _gate_failure(dependant) -> str | None:
     """``None`` if an auth gate resolves before every other dependency.
 
     "First" is not literally "index 0": the tenant binder above is, on every
-    route. So the property asserted is that nothing EXCEPT the binder resolves
-    ahead of the gate, over the whole tree in
+    route. So the property asserted is that nothing EXCEPT the binder (and the
+    leaves in ``_PERMITTED_LEAVES_BEFORE_A_GATE``, alone) resolves ahead of the
+    gate, over the whole tree in
     :func:`_resolution_order` — which covers all three shapes measured so far: a
     gate declared as a trailing handler parameter behind a service (#1467), a
     collaborator ahead of the gate in the same ``dependencies=[...]``, and a
@@ -1060,6 +1076,7 @@ def _gate_failure(dependant) -> str | None:
     # 2. Whatever ``excusable`` names, with its subtree — the app-level tenant
     #    binder, and the refusals a route makes on purpose before anyone is
     #    authenticated (rate limiters, optional auth).
+    # 3. A leaf in ``_PERMITTED_LEAVES_BEFORE_A_GATE``, without its subtree.
     #
     # Excluded by ``id`` rather than by name, so a collaborator that happens to
     # share a name with something in either tree is still reported.
@@ -1069,6 +1086,8 @@ def _gate_failure(dependant) -> str | None:
         if _qualified(dependency.call) in excusable:
             excused.add(id(dependency))
             excused.update(id(d) for d in _resolution_order(dependency))
+        elif _qualified(dependency.call) in _PERMITTED_LEAVES_BEFORE_A_GATE:
+            excused.add(id(dependency))
 
     early = [
         f"{dependency.name or '<decorator>'}={_qualified(dependency.call)}"
@@ -2065,6 +2084,45 @@ def test_an_auth_module_service_provider_ahead_of_the_gate_is_reported():
         "lives in an auth module. The predicate's excusal has widened to the "
         "flat NON_MANDATORY_AUTH_DEPENDENCIES, which excuses the #1467 shape"
     )
+
+
+@pytest.mark.integration
+@pytest.mark.security
+def test_the_replay_declaration_is_excused_as_a_leaf_only():
+    """#2624: the case router's declaration resolves ahead of every gate and is
+    excused, but a service it came to depend on would not be."""
+    from fastapi import Depends as _Depends
+    from fastapi import FastAPI, Request
+    from fastapi.routing import APIRoute
+
+    from faultmaven.api.middleware.idempotency import declare_replay_case_from_path
+    from faultmaven.api.v1.auth_dependencies import (
+        get_user_store,
+        require_authentication,
+    )
+
+    async def with_a_service(
+        request: Request, store=_Depends(get_user_store)
+    ):  # pragma: no cover
+        return None
+
+    with_a_service.__name__ = declare_replay_case_from_path.__name__
+    with_a_service.__module__ = declare_replay_case_from_path.__module__
+    assert _qualified(with_a_service) == _qualified(declare_replay_case_from_path)
+
+    probe = FastAPI()
+    for path, declaration in [
+        ("/leaf", declare_replay_case_from_path),
+        ("/with-a-service", with_a_service),
+    ]:
+        gate = [_Depends(declaration), _Depends(require_authentication)]
+        probe.add_api_route(path, lambda: {}, methods=["POST"], dependencies=gate)
+    leaf, served = [r.dependant for r in probe.routes if isinstance(r, APIRoute)]
+
+    assert _gate_failure(leaf) is None
+    assert "get_user_store" in (
+        _gate_failure(served) or ""
+    ), "a service the declaration depends on resolved ahead of the gate unreported"
 
 
 @pytest.mark.integration
