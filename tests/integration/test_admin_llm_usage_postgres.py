@@ -214,8 +214,10 @@ async def test_the_route_scopes_to_the_bound_enterprise_under_multi(
 async def test_a_refused_checkout_is_503_not_500(superuser_engine, monkeypatch):
     """A REAL checkout failure: a role PostgreSQL refuses at connect
     (``CONNECTION LIMIT 0``), which asyncpg raises unwrapped by SQLAlchemy."""
+    import asyncpg
     from fastapi import HTTPException
     from sqlalchemy.engine import make_url
+    from sqlalchemy.exc import SQLAlchemyError
 
     from faultmaven.api.routes.admin_usage import get_llm_usage
     from faultmaven.infrastructure.persistence.database import (
@@ -260,3 +262,8 @@ async def test_a_refused_checkout_is_503_not_500(superuser_engine, monkeypatch):
         "Retry-After": "5",
     }
     assert role not in str(refused.value.detail)
+    # The asyncpg path, not the SQLAlchemy one: the store error's cause is
+    # asyncpg's own, unwrapped.
+    cause = refused.value.__context__.__cause__
+    assert isinstance(cause, asyncpg.PostgresError), type(cause)
+    assert not isinstance(cause, SQLAlchemyError)

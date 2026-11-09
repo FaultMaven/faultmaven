@@ -5925,8 +5925,9 @@ Turns with lower <= spend_weighted_tokens < upper.
 
 ### LLMTurnSpendSummary
 
-Engine turns in the window. Turn rows go with their case, so a case
-deletion shrinks these and not `totals` or `by_day`.
+Engine turns from `coverage.turns_since` to the window's last day: the
+window clipped to the turn-retention horizon. Turn rows go with their case,
+so a case deletion shrinks these and not `totals` or `by_day`.
 
 **Properties:**
 
@@ -5983,7 +5984,7 @@ How much of the window the ledger can speak for. There is no backfill.
 
 **Properties:**
 
-- `metering_since` (object, required) — The earliest day with recorded spend for this enterprise; null when none is recorded. Not when metering began: days before it have no recorded spend, either before the ledger was deployed or metered with nothing spent.
+- `metering_since` (object, required) — The earliest day with recorded spend for this enterprise; null when none is recorded. Not when metering began: days before it have no recorded spend, either before the ledger was deployed, metered with nothing spent, or pruned past LLM_USAGE_DAILY_RETENTION_DAYS.
 - `turns_fully_covered` (boolean, required) — True when the turn-retention horizon reaches the window's first day
 - `turns_since` (string, required) — The first day `turns` reads: the later of the window's first day and the turn-retention horizon (today minus LLM_USAGE_TURN_RETENTION_DAYS, plus one). Turn rows before it are pruned, or will be, so `turns` never reads them and can cover less of the window than `totals`.
 - `window_fully_covered` (boolean, required) — True when `metering_since` is on or before the window's first day

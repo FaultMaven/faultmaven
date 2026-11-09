@@ -4463,7 +4463,7 @@
         "type": "object"
       },
       "LLMTurnSpendSummary": {
-        "description": "Engine turns in the window. Turn rows go with their case, so a case\ndeletion shrinks these and not `totals` or `by_day`.",
+        "description": "Engine turns from `coverage.turns_since` to the window's last day: the\nwindow clipped to the turn-retention horizon. Turn rows go with their case,\nso a case deletion shrinks these and not `totals` or `by_day`.",
         "properties": {
           "budget": {
             "$ref": "#/components/schemas/LLMTurnBudget"
@@ -4625,7 +4625,7 @@
                 "type": "null"
               }
             ],
-            "description": "The earliest day with recorded spend for this enterprise; null when none is recorded. Not when metering began: days before it have no recorded spend, either before the ledger was deployed or metered with nothing spent.",
+            "description": "The earliest day with recorded spend for this enterprise; null when none is recorded. Not when metering began: days before it have no recorded spend, either before the ledger was deployed, metered with nothing spent, or pruned past LLM_USAGE_DAILY_RETENTION_DAYS.",
             "title": "Metering Since"
           },
           "turns_fully_covered": {

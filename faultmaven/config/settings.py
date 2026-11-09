@@ -2388,9 +2388,11 @@ class ObservabilitySettings(BaseSettings):
     # by the in-process scheduler — which is opt-in (RUN_SCHEDULER), so a
     # default standalone install does not prune at all. A bad value fails
     # startup rather than deleting a year of spend.
+    # Capped at a century: more overflows the prune's and the reader's date math.
     llm_usage_daily_retention_days: int = Field(
         default=400,
         ge=1,
+        le=36500,
         validation_alias="LLM_USAGE_DAILY_RETENTION_DAYS",
         description=(
             "Days of llm_usage_daily rows the retention job keeps: a row goes "
@@ -2400,6 +2402,7 @@ class ObservabilitySettings(BaseSettings):
     llm_usage_turn_retention_days: int = Field(
         default=90,
         ge=1,
+        le=36500,
         validation_alias="LLM_USAGE_TURN_RETENTION_DAYS",
         description=(
             "Days of llm_turn_spend rows the retention job keeps: a row goes "

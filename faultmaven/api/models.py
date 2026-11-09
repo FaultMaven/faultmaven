@@ -388,8 +388,9 @@ class LLMUsageCoverage(BaseModel):
         description=(
             "The earliest day with recorded spend for this enterprise; null "
             "when none is recorded. Not when metering began: days before it "
-            "have no recorded spend, either before the ledger was deployed or "
-            "metered with nothing spent."
+            "have no recorded spend, either before the ledger was deployed, "
+            "metered with nothing spent, or pruned past "
+            "LLM_USAGE_DAILY_RETENTION_DAYS."
         )
     )
     window_fully_covered: bool = Field(
@@ -521,8 +522,9 @@ class LLMHeavyTurn(BaseModel):
 
 
 class LLMTurnSpendSummary(BaseModel):
-    """Engine turns in the window. Turn rows go with their case, so a case
-    deletion shrinks these and not `totals` or `by_day`."""
+    """Engine turns from `coverage.turns_since` to the window's last day: the
+    window clipped to the turn-retention horizon. Turn rows go with their case,
+    so a case deletion shrinks these and not `totals` or `by_day`."""
 
     count: int
     spend_weighted_tokens: LLMSpendPercentiles

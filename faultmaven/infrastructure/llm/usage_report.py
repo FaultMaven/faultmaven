@@ -156,7 +156,8 @@ async def read_usage_report(
 
     ``turn_retention_days`` bounds what the ``turns`` block can speak for: it
     reads turns from ``coverage.turns_since``, the window's first day clipped
-    to the retention horizon, so it says the same whether or not a prune ran.
+    to the retention horizon, so it says the same whether or not a prune ran,
+    as long as that prune used the same turn retention.
 
     Raises:
         UsageStoreUnavailable: the database did not answer or refused a read.
@@ -172,10 +173,10 @@ async def read_usage_report(
     days = WINDOW_DAYS[window]
     last = now.date()
     first = last - timedelta(days=days - 1)
-    # Aware UTC bounds only: SQLite strips an offset before comparing.
     # Turn rows from before the horizon are pruned, or will be: never read.
     horizon = last - timedelta(days=turn_retention_days - 1)
     turns_since = max(first, horizon)
+    # Aware UTC bounds only: SQLite strips an offset before comparing.
     start = datetime.combine(turns_since, time.min, tzinfo=timezone.utc)
     end = datetime.combine(last + timedelta(days=1), time.min, tzinfo=timezone.utc)
 

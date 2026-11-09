@@ -170,13 +170,13 @@ and keeps `organization` groups as they are.
 |---|---|
 | `window` | `from`, `to`, `days`, `timezone: "UTC"` |
 | `scope` | `enterprise_id`, `deployment` (`standalone`/`cloud`) and `tenancy`. Under `multi` the figures are **your enterprise's only**, never the deployment's |
-| `coverage` | `metering_since` is the earliest day with recorded spend for the enterprise (`null` when none) — not when metering began: an earlier day may predate the ledger or have been metered with nothing spent. `window_fully_covered` is false when the window starts before it. `turns_since` is the first day `turns` reads: the later of the window's first day and the turn-retention horizon (today minus `LLM_USAGE_TURN_RETENTION_DAYS`, plus one). `turns_fully_covered` is false when the horizon is later than the window's first day, as for a 90-day window under a shorter turn retention |
+| `coverage` | `metering_since` is the earliest day with recorded spend for the enterprise (`null` when none) — not when metering began: an earlier day may predate the ledger, have been metered with nothing spent, or have been pruned past `LLM_USAGE_DAILY_RETENTION_DAYS`. `window_fully_covered` is false when the window starts before it. `turns_since` is the first day `turns` reads: the later of the window's first day and the turn-retention horizon (today minus `LLM_USAGE_TURN_RETENTION_DAYS`, plus one). `turns_fully_covered` is false when the horizon is later than the window's first day, as for a 90-day window under a shorter turn retention |
 | `as_of` | When the report was read |
 | `totals`, each `by_day` entry, each `groups` entry | A bucket: `calls` (`total`, `kept`, `low_confidence`), `tokens` (`input`, `output`, `cache_read`, `cache_write`, `total`), `cache_hit_rate` = `cache_read / (input + cache_read)` (`null` when that is 0), `estimated_cost_usd`, `unpriced_calls` and `cost_complete` (false whenever `unpriced_calls` > 0) |
 | `by_day` | Every day in the window, zeros included |
 | `groups` | Keyed `{provider, model}`, `{user_id}` (`""` is no actor) or `{kind, id}` (`id` `""` for `none`). Model groups carry `rate_status`: `priced`, `zero_cost` (a self-hosted provider, priced at $0) or `unpriced`; the others carry `null` |
 | `unpriced` | Models the **running** price table cannot price that have unpriced calls in the window, with those calls. Non-empty: the cost is under-reported; add the model to `LLM_PRICING_OVERRIDES` |
-| `turns` | Engine turns in the window: `count`; nearest-rank `p50`/`p95`/`max` of `spend_weighted_tokens`; `budget` (`soft` = `PROMPT_TURN_TOKEN_BUDGET`, `null` when 0, and `ceiling` = `PROMPT_TURN_TOKEN_CEILING`, both as in effect now); `over_soft` and `over_ceiling`; a `histogram` with edges 0, soft/2, soft, ceiling and open above; and the ten `heaviest` turns by case id, message clock and investigation turn. No title or content anywhere |
+| `turns` | Engine turns from `coverage.turns_since` to the window's last day: `count`; nearest-rank `p50`/`p95`/`max` of `spend_weighted_tokens`; `budget` (`soft` = `PROMPT_TURN_TOKEN_BUDGET`, `null` when 0, and `ceiling` = `PROMPT_TURN_TOKEN_CEILING`, both as in effect now); `over_soft` and `over_ceiling`; a `histogram` with edges 0, soft/2, soft, ceiling and open above; and the ten `heaviest` turns by case id, message clock and investigation turn. No title or content anywhere |
 
 **How to read it.**
 
@@ -189,7 +189,8 @@ and keeps `organization` groups as they are.
 - Coverage starts when the ledger was deployed. There is no backfill.
 - Turn rows are pruned sooner than daily rows, so `turns` reads only from
   `coverage.turns_since` and can cover less of the window than `totals`. It
-  reads the same whether or not the prune has run.
+  reads the same whether or not the prune has run, as long as the prune used
+  the same `LLM_USAGE_TURN_RETENTION_DAYS`.
 - The histogram edges and `budget` are the settings in effect at read time, so
   history re-buckets when the budget changes.
 - Deleting a case shrinks `turns.*`, because its turn rows go with it.

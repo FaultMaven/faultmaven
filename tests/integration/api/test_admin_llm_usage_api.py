@@ -544,6 +544,9 @@ async def test_turns_coverage_follows_turn_retention_through_the_prune(
         await _call(day.date())
         await _turn(100 + age, 1_000 * (age + 1), at=day)
     monkeypatch.setenv("LLM_USAGE_TURN_RETENTION_DAYS", "5")
+    # Spends 1k/4k in the horizon, 11k/30k before it: the budgets split them.
+    monkeypatch.setenv("PROMPT_TURN_TOKEN_BUDGET", "2000")
+    monkeypatch.setenv("PROMPT_TURN_TOKEN_CEILING", "10000")
     reset_settings_singleton()
 
     unpruned = await _admin_get(as_user, window="30d")
@@ -561,11 +564,36 @@ async def test_turns_coverage_follows_turn_retention_through_the_prune(
         turns = report["turns"]
         assert turns["count"] == 2
         assert turns["spend_weighted_tokens"]["max"] == 4_000
+        assert (turns["over_soft"], turns["over_ceiling"]) == (1, 0)
         assert sum(b["count"] for b in turns["histogram"]) == 2
         assert [h["spend_weighted_tokens"] for h in turns["heaviest"]] == [4_000, 1_000]
     assert unpruned["turns"] == month["turns"]
     assert today["coverage"]["turns_since"] == str(TODAY)
     assert today["coverage"]["turns_fully_covered"] is True
+
+
+@pytest.mark.parametrize(
+    "retention, count, fully_covered",
+    [(29, 1, False), (30, 2, True), (36500, 2, True)],  # 36500: the setting's bound
+)
+async def test_a_turn_retention_equal_to_the_window_covers_it(
+    usage_db, as_user, monkeypatch, retention, count, fully_covered
+):
+    """The horizon is ``today - retention + 1``: a retention equal to the
+    window's days lands on its first day, which is read; one day less starts a
+    day later. A retention up to the setting's bound computes its horizon."""
+    first = NOW - timedelta(days=29)  # the 30-day window's first day
+    for number, at in enumerate((first, NOW), start=1):
+        await _turn(number, 1_000, at=at)
+    monkeypatch.setenv("LLM_USAGE_TURN_RETENTION_DAYS", str(retention))
+    reset_settings_singleton()
+
+    report = await _admin_get(as_user, window="30d")
+
+    expected_since = first.date() if fully_covered else first.date() + timedelta(1)
+    assert report["coverage"]["turns_since"] == str(expected_since)
+    assert report["coverage"]["turns_fully_covered"] is fully_covered
+    assert report["turns"]["count"] == count
 
 
 async def test_an_unscoped_request_under_multi_is_403(
