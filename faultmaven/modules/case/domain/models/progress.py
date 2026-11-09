@@ -4,6 +4,7 @@ from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from .outcome import CaseOutcome
 from .problem import InvestigationStage, ProblemStatus
 
 # ============================================================
@@ -522,6 +523,19 @@ class InvestigationProgress(BaseModel):
     root_cause_method: Optional[str] = Field(
         default=None,
         description="How root cause was identified: direct_analysis | hypothesis_validation | single_shot_validation | correlation | user_provided | other",
+    )
+
+    # ============================================================
+    # The case outcome record (#2615 stage S1)
+    # ============================================================
+    outcome: Optional[CaseOutcome] = Field(
+        default=None,
+        description=(
+            "The case's outcome, folded over the prior record at the end of "
+            "each decision cycle and at both terminal transitions "
+            "(core/investigation/outcome.py). None until the first write or "
+            "the backfill (fm-backfill-case-outcome)."
+        ),
     )
 
     # ============================================================

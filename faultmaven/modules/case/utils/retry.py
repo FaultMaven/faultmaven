@@ -32,6 +32,7 @@ from faultmaven.modules.case.exceptions import (
 )
 
 CaseMutator = Callable[[Case], Awaitable[None]]
+CaseSave = Callable[[Case], Awaitable[Case]]
 
 
 async def update_case_with_retry(
@@ -39,6 +40,8 @@ async def update_case_with_retry(
     case_id: str,
     mutator: CaseMutator,
     max_attempts: int = 3,
+    *,
+    save: CaseSave | None = None,
 ) -> Case:
     """Load the case, apply ``mutator``, save — retry on version conflict.
 
@@ -55,6 +58,9 @@ async def update_case_with_retry(
             helper is the save path.
         max_attempts: How many times to reload-and-retry on OCC conflict.
             Default 3; raise ``StaleCaseException`` if exhausted.
+        save: The versioned write to use instead of ``repo.save``, such as
+            ``repo.save_progress`` (#2636). It must raise
+            ``StaleCaseException`` on a version conflict, as ``save`` does.
 
     Returns:
         The saved ``Case`` (the same instance the mutator operated on,
@@ -69,13 +75,14 @@ async def update_case_with_retry(
             surface the exception upward.
     """
     last_stale: StaleCaseException | None = None
+    write = repo.save if save is None else save
     for attempt in range(max_attempts):
         case = await repo.get(case_id)
         if case is None:
             raise CaseNotFoundError(case_id=case_id)
         await mutator(case)
         try:
-            return await repo.save(case)
+            return await write(case)
         except StaleCaseException as exc:
             last_stale = exc
             # Reload and re-apply on the next iteration.

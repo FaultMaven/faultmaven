@@ -81,6 +81,10 @@ COMMANDS = {
         f"fm-reassign-cases --enterprise-id {ENTERPRISE_ID} --from-user alice "
         "--to-user bob --case-ids-file case-ids.txt --dry-run",
     ),
+    "backfill_case_outcome": (
+        "backfill_case_outcome",
+        "fm-backfill-case-outcome --dry-run",
+    ),
     "personal_tenant:retire": (
         "retire",
         "fm-personal-tenant retire --subject user_01HPLANTED",

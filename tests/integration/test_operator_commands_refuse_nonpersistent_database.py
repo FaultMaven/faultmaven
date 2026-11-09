@@ -88,6 +88,7 @@ ARGV: dict[str, list[list[str]]] = {
         ["purge-idp-org", "--provider-org-id", "org_01H", "--apply"],
     ],
     "fm-reassign-cases": [[*_REASSIGN, "--dry-run"], [*_REASSIGN, "--yes"]],
+    "fm-backfill-case-outcome": [["--dry-run"], [*_ENT, "--yes"]],
     "fm-reset-kb": [["--dry-run"], ["--yes"], ["--yes", "--rebuild"]],
     "fm-set-turn-cap": [
         [*_ENT, *_ORG, "--show"],

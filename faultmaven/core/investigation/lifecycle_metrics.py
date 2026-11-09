@@ -928,3 +928,44 @@ for _reason in ("same_turn", "not_bare"):
 for _gate in ("terminal", "gate1", "none"):
     for _refusal in ("stale", "untargeted"):
         confirmation_click_refused_total.labels(gate=_gate, reason=_refusal)
+
+# The case outcome record (#2615 stage S1). A verdict the rules call final is
+# carried in ``progress.outcome`` and never re-derived; a fresh derivation that
+# disagrees with it is a disagreement, counted here by the record's field once,
+# when it first appears (the record keeps the turn it was first read), and the
+# carried verdict stands. In this stage the deciders still read fresh
+# derivations, so a disagreement is a case where a decider and the record
+# disagree; stage S3 switches the deciders. Labelled by field only: never a
+# case, user or tenant.
+case_outcome_conflicts_total = Counter(
+    "faultmaven_case_outcome_conflicts_total",
+    "A carried final verdict in the case outcome record disagreed with a "
+    "fresh derivation (#2615), counted once when the disagreement first "
+    "appears. Labelled by the record field "
+    "(attempts.window|attempts.accepted_in_turn|resolution.confirmed_row_ids|"
+    "closure).",
+    labelnames=["field"],
+)
+
+# A write of the record that raised. Nothing reads the record in this stage,
+# so the write never fails the turn or the transition it rides on; the failure
+# is logged with its traceback and counted here, by write point
+# (cycle|replay|resolved|closed).
+case_outcome_write_failures_total = Counter(
+    "faultmaven_case_outcome_write_failures_total",
+    "A case outcome record write raised and was skipped (#2615), by write "
+    "point (cycle|replay|resolved|closed).",
+    labelnames=["at"],
+)
+
+# Every child exists from import, at 0, so the first increment is visible to
+# ``increase()`` (see the terminal-confirmation pair above).
+for _field in (
+    "attempts.window",
+    "attempts.accepted_in_turn",
+    "resolution.confirmed_row_ids",
+    "closure",
+):
+    case_outcome_conflicts_total.labels(field=_field)
+for _at in ("cycle", "replay", "resolved", "closed"):
+    case_outcome_write_failures_total.labels(at=_at)

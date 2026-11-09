@@ -12,6 +12,7 @@ from typing import (
     Sequence,
 )
 
+from faultmaven.core.investigation.cause_assurance import mitigation_settled
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
 from faultmaven.core.investigation.lifecycle_metrics import (
     pending_action_superseded_stale_total,
@@ -46,6 +47,7 @@ from faultmaven.modules.case.contracts import (
     InterventionQuadrant,
     InvestigationActionType,
     MitigationRecord,
+    MitigationRefusalReason,
     NodeType,
     OfferBasis,
     OfferKind,
@@ -927,12 +929,10 @@ def _flag_unbound_post_fix_rows(case: Case, metadata: dict[str, Any] | None) -> 
     Only on a verified problem: before it, nothing can bind. Returns whether
     the line was added."""
     from faultmaven.core.investigation.cause_assurance import (
-        FIX_FAILED,
-        SUBJECT_UNBOUND,
         fix_application_turn,
         fix_windows,
-        mitigation_attempt_turn,
         subject_index,
+        unbound_post_fix_rows,
         uncited_recheck_why,
     )
 
@@ -940,68 +940,16 @@ def _flag_unbound_post_fix_rows(case: Case, metadata: dict[str, Any] | None) -> 
         return False
     fix_turn = fix_application_turn(case)
     subjects = subject_index(case)
-    windows = fix_windows(case, subjects)
-    failed = [w for w in windows if w.state == FIX_FAILED]
-    # A kinded window binds its rows to the cause its fix ran against (#2036).
-    window_bound = {e.evidence_id for w in windows for e in w.cause_rows}
-    absence = (
-        EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
-        EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
-    )
-
-    def after_a_fix(row, turn) -> bool:
-        if fix_turn is None:
-            return bool(subjects.pool_roots) and row.evidence_id in window_bound
-        if row.category in absence:
-            return turn >= fix_turn
-        return (
-            row.category == EvidenceCategory.SYMPTOM_EVIDENCE
-            and turn > fix_turn
-            and row.evidence_id not in subjects.verifying
-        )
-
-    mitigated = mitigation_attempt_turn(case) if _mitigation_unsettled(case) else None
-    by_mitigation: set = set()
-
-    def after_the_fix(row) -> bool:
-        turn = subjects.observed(row)
-        if any(window.holds(turn) for window in failed):
-            return False
-        if after_a_fix(row, turn):
-            return True
-        if mitigated is None or turn < mitigated:
-            return False
-        problem = row.category == EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE or (
-            row.category == EvidenceCategory.SYMPTOM_EVIDENCE
-            and turn > mitigated
-            and row.evidence_id not in subjects.verifying
-        )
-        if problem:
-            by_mitigation.add(row.evidence_id)
-        return problem
-
-    def confirms_nothing(row) -> bool:
-        if (
-            row.category == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
-            and subjects.pool_roots
-        ):
-            return subjects.subject(row) == SUBJECT_UNBOUND
-        return (
-            subjects.subject(row, windows=True) == SUBJECT_UNBOUND
-            and row.evidence_id not in window_bound
-        )
-
-    unbound = [
-        e.evidence_id
-        for e in subjects.rows.values()
-        if e.collected_at_turn == case.current_turn
-        and after_the_fix(e)
-        and confirms_nothing(e)
+    found = [
+        u
+        for u in unbound_post_fix_rows(case, subjects, fix_windows(case, subjects))
+        if u.row.collected_at_turn == case.current_turn
     ]
-    if not unbound:
+    if not found:
         return False
-    unnamed = [i for i in unbound if i not in window_bound]
-    uncited = [i for i in unbound if i in window_bound]
+    by_mitigation = {u.row.evidence_id for u in found if u.after_mitigation}
+    unnamed = [u.row.evidence_id for u in found if not u.uncited]
+    uncited = [u.row.evidence_id for u in found if u.uncited]
     problem, cause = subjects.bindable_rows()
     problem_ids = ", ".join(e.evidence_id for e in problem[:5])
     cause_ids = ", ".join(e.evidence_id for e in cause[:5])
@@ -1041,19 +989,6 @@ def _flag_unbound_post_fix_rows(case: Case, metadata: dict[str, Any] | None) -> 
         + cause_text,
     )
     return True
-
-
-def _mitigation_settled(case: Case) -> bool:
-    """Whether the mitigation is settled: verified, or carrying a disposition
-    (#2100). What leaves MITIGATION, and what 3B fires on, once."""
-    record = case.progress.mitigation
-    return record is not None and (record.verified or record.disposition is not None)
-
-
-def _mitigation_unsettled(case: Case) -> bool:
-    """Accepted and not yet settled: the MITIGATION stage's record."""
-    record = case.progress.mitigation
-    return record is not None and record.accepted and not _mitigation_settled(case)
 
 
 def _normalise_id_ref(ref: Any) -> Any:
@@ -2143,7 +2078,7 @@ def _apply_stage_gate_signals(
     stab_verified_signal = bool(getattr(m, "mitigation_verified", False))
     disposition = getattr(m, "mitigation_disposition", None)
     # 3B fires on the turn that settles the mitigation, once (#2100).
-    settled_before = _mitigation_settled(case)
+    settled_before = mitigation_settled(case)
 
     if stab_accepted_signal and p.mitigation is not None and p.mitigation.accepted:
         # Already registered. Single-mitigation model (INV-24): a SECOND
@@ -2295,51 +2230,49 @@ def _apply_stage_gate_signals(
 
 
 def _mitigation_verify_refusal(case: Case) -> Optional[tuple[str, str]]:
-    """Why ``mitigation_verified`` does not register, or None (#2100, D3.1):
-    the verdict is derived, from a problem-bound re-check dated at or after
-    the mitigation's attempt and not followed by a bound persistence
-    (``cause_assurance.mitigation_holds``). An attempt with no turn can never
-    be re-checked, so its line names the disposition alone. Without a
-    verified problem nothing binds, so the line asks for the verification
-    first (ruling (iii)); under a pending revision, for its confirmation.
-    Returns ``(line, how to settle it)``: the caller appends the second while
-    the record carries no disposition."""
+    """Why ``mitigation_verified`` does not register, or None, worded for the
+    model (``mitigation_refusal_reason`` decides which). An attempt with no
+    turn can never be re-checked, so its line names the disposition alone.
+    Without a verified problem nothing binds, so the line asks for the
+    verification first (ruling (iii)); under a pending revision, for its
+    confirmation. Returns ``(line, how to settle it)``: the caller appends
+    the second while the record carries no disposition."""
     from faultmaven.core.investigation.cause_assurance import (
         mitigation_attempt_turn,
-        mitigation_holds,
+        mitigation_refusal_reason,
         mitigation_relief,
         subject_index,
     )
 
+    reason = mitigation_refusal_reason(case)
+    if reason is None:
+        return None
     head = "SYSTEM: mitigation_verified was not recorded — "
     declare = (
         "; or, if the user says it holds, set mitigation_disposition declared_stable"
     )
-    turn = mitigation_attempt_turn(case)
-    if turn is None:
+    if reason == MitigationRefusalReason.ATTEMPT_UNDATED:
         return (
             head + "the mitigation's execution is not dated, so no re-check can "
             "verify it",
             "; settle it with mitigation_disposition: declared_stable if the "
             "user says it holds, proceed_unmitigated to go on without one",
         )
-    status = case.progress.problem_status
-    if status == ProblemStatus.REVISION_PENDING:
+    if reason == MitigationRefusalReason.REVISION_PENDING:
         return (
             head + "the revised problem statement awaits the user's "
             "confirmation: re-check the problem once it is confirmed",
             declare,
         )
-    if status != ProblemStatus.VERIFIED:
+    if reason == MitigationRefusalReason.PROBLEM_UNVERIFIED:
         return (
             head + "the problem is not verified: verify the problem first, "
             "citing symptom_verification_evidence_ids, then re-check it",
             declare,
         )
+    turn = mitigation_attempt_turn(case)
     subjects = subject_index(case)
-    relief, present = mitigation_relief(case, subjects)
-    if relief is not None and mitigation_holds(relief, present):
-        return None
+    _relief, present = mitigation_relief(case, subjects)
     problem, _cause = subjects.bindable_rows()
     ids = ", ".join(e.evidence_id for e in problem[:5])
     seen = f" (it was seen present at turn {present})" if present is not None else ""

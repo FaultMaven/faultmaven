@@ -28,7 +28,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from faultmaven.core.investigation.coverage_trust import is_vouched
 from faultmaven.core.investigation.lifecycle_metrics import (
@@ -43,18 +43,26 @@ from faultmaven.modules.case.contracts import (
     EvidenceStance,
     HypothesisState,
     InvestigationActionType,
+    MitigationRefusalReason,
     NeedPurpose,
     NeedState,
     NodeEvidenceLink,
     NodeState,
     NodeType,
+    PoolEmptyReason,
+    ProblemStatus,
     RootCauseConclusion,
     SolutionOutcome,
     classify_solution_outcome,
 )
 
 if TYPE_CHECKING:
-    from faultmaven.modules.case.contracts import Case, CausalNode, EvidenceNeed
+    from faultmaven.modules.case.contracts import (
+        Case,
+        CausalNode,
+        Evidence,
+        EvidenceNeed,
+    )
 
 __all__ = [
     "CONFIRMED_RCC_LIKELIHOOD_FLOOR",
@@ -74,10 +82,12 @@ __all__ = [
     "FixWindow",
     "MitigationObservation",
     "SubjectIndex",
+    "UnboundPostFixRow",
     "absence_row_link_refused",
     "bearing_frame",
     "cached_content_tokens",
     "cause_elimination_rows",
+    "cause_pool_empty_reason",
     "conclusion_overclaims",
     "confirm_root_from_resolution_absence",
     "confirmation_stamp_rows",
@@ -102,6 +112,9 @@ __all__ = [
     "latest_fix_window",
     "licensed_roots",
     "mitigation_observation",
+    "mitigation_refusal_reason",
+    "mitigation_settled",
+    "mitigation_unsettled",
     "observation_subject",
     "observed_turn",
     "off_cause_attempt",
@@ -113,6 +126,7 @@ __all__ = [
     "runbook_conversion_ready",
     "subject_index",
     "symptom_elimination_rows",
+    "unbound_post_fix_rows",
 ]
 
 # The marker on an engine-synthesized RootCauseConclusion (§9.3) — distinguishes
@@ -771,21 +785,9 @@ def _cause_pool(case: "Case") -> tuple[frozenset, frozenset, frozenset]:
         return frozenset(identified), frozenset(identified | fallen), frozenset()
     if held:
         return frozenset(held), frozenset(held | fallen), frozenset()
-    other_standing = any(
-        h is not None
-        and h.state in _STANDING_HYP_STATES
-        and h.root_node_id
-        and h.root_node_id not in fallen
-        for h in (getattr(case, "hypotheses", None) or {}).values()
-    )
-    if fallen and not other_standing:
-        fixes = _window_fixes(case)
-        kinded, targets = fixes[max(fixes)] if fixes else (False, ())
-        if not kinded:
-            return frozenset(fallen), frozenset(fallen), frozenset()
-        named = fallen.intersection(targets)
-        if named:
-            return frozenset(named), frozenset(fallen), frozenset()
+    leg, _why = _fallen_leg(case, fallen)
+    if leg:
+        return leg, frozenset(fallen), frozenset()
     return (
         frozenset(),
         frozenset(fallen),
@@ -797,6 +799,49 @@ def _cause_pool(case: "Case") -> tuple[frozenset, frozenset, frozenset]:
             and not h.root_node_id
         ),
     )
+
+
+def _fallen_leg(case: "Case", fallen: set) -> tuple[frozenset, PoolEmptyReason | None]:
+    """``_cause_pool``'s third leg: the fallen roots that stand for the
+    confirmation pool, or none with why (None when nothing fell)."""
+    if not fallen:
+        return frozenset(), None
+    if any(
+        h is not None
+        and h.state in _STANDING_HYP_STATES
+        and h.root_node_id
+        and h.root_node_id not in fallen
+        for h in (getattr(case, "hypotheses", None) or {}).values()
+    ):
+        return frozenset(), PoolEmptyReason.FALLEN_WITH_OTHER_STANDING
+    fixes = _window_fixes(case)
+    kinded, targets = fixes[max(fixes)] if fixes else (False, ())
+    if not kinded:
+        return frozenset(fallen), None
+    named = frozenset(fallen.intersection(targets))
+    return named, None if named else PoolEmptyReason.FIX_TARGETS_OTHER_CAUSE
+
+
+def cause_pool_empty_reason(case: "Case") -> PoolEmptyReason | None:
+    """Why the confirmation pool (``_cause_pool``) is empty, or None while it
+    is not: the first that holds of identification held open, the MECE
+    contest, the fallen leg's refusal (``_fallen_leg``), and only rootless
+    VALIDATED hypotheses; else no cause at all (#2615, ``pool_empty_reason``)."""
+    confirmation, _window, hypotheses = _cause_pool(case)
+    if confirmation:
+        return None
+    progress = getattr(case, "progress", None)
+    if getattr(progress, "cause_identification_held_open", False):
+        return PoolEmptyReason.HELD_OPEN
+    if getattr(progress, "cause_identification_contested", False):
+        return PoolEmptyReason.IDENTIFICATION_CONTESTED
+    _identified, _held, fallen = _pool_legs(case)
+    _leg, why = _fallen_leg(case, fallen)
+    if why is not None:
+        return why
+    if hypotheses:
+        return PoolEmptyReason.ROOTLESS_VALIDATED_ONLY
+    return PoolEmptyReason.NO_CAUSE
 
 
 def _pool_legs(case: "Case") -> tuple[set, set, set]:
@@ -2086,6 +2131,121 @@ def mitigation_observation(
         disposition=getattr(mitigation, "disposition", None),
         disposition_turn=getattr(mitigation, "disposition_at_turn", None),
     )
+
+
+def mitigation_settled(case: "Case") -> bool:
+    """Whether the mitigation is settled: verified, or carrying a disposition
+    (#2100). What leaves MITIGATION, and what 3B fires on, once."""
+    record = case.progress.mitigation
+    return record is not None and (record.verified or record.disposition is not None)
+
+
+def mitigation_unsettled(case: "Case") -> bool:
+    """Accepted and not yet settled: the MITIGATION stage's record."""
+    record = case.progress.mitigation
+    return record is not None and record.accepted and not mitigation_settled(case)
+
+
+def mitigation_refusal_reason(case: "Case") -> MitigationRefusalReason | None:
+    """Why ``mitigation_verified`` does not register, or None (#2100, D3.1):
+    the verdict is derived, from a problem-bound re-check dated at or after
+    the mitigation's attempt and not followed by a bound persistence
+    (``cause_assurance.mitigation_holds``). An attempt with no turn can never
+    be re-checked; without a verified problem nothing binds; under a pending
+    revision the statement awaits its confirmation. The one copy of the
+    branches ``_mitigation_verify_refusal`` words and the case outcome
+    records (#2615)."""
+    if mitigation_attempt_turn(case) is None:
+        return MitigationRefusalReason.ATTEMPT_UNDATED
+    status = case.progress.problem_status
+    if status == ProblemStatus.REVISION_PENDING:
+        return MitigationRefusalReason.REVISION_PENDING
+    if status != ProblemStatus.VERIFIED:
+        return MitigationRefusalReason.PROBLEM_UNVERIFIED
+    relief, present = mitigation_relief(case)
+    if relief is not None and mitigation_holds(relief, present):
+        return None
+    return MitigationRefusalReason.NO_BOUND_RELIEF
+
+
+class UnboundPostFixRow(NamedTuple):
+    """A post-fix row bound to nothing (``unbound_post_fix_rows``)."""
+
+    row: Evidence
+    #: Inside a fix window (``FixWindow.cause_rows``), but not bound by the
+    #: root's citation; otherwise it names nothing that binds.
+    uncited: bool
+    #: Post-fix only because it follows the unsettled mitigation's attempt.
+    after_mitigation: bool
+
+
+def unbound_post_fix_rows(
+    case: "Case", subjects: SubjectIndex, windows: list
+) -> list[UnboundPostFixRow]:
+    """Every post-fix row that binds to nothing, in the case's order, whatever
+    turn recorded it and whatever the problem's status: what
+    ``stage_gates._flag_unbound_post_fix_rows`` narrates for this turn's rows on a
+    verified problem, and what the case outcome records (#2615,
+    ``unbound_rechecks``). Post-fix and bound-to-nothing as that notice's
+    docstring states. ``subjects`` and ``windows`` are the caller's
+    ``subject_index(case)`` and ``fix_windows(case, subjects)``."""
+    fix_turn = fix_application_turn(case)
+    failed = [w for w in windows if w.state == FIX_FAILED]
+    # A kinded window binds its rows to the cause its fix ran against (#2036).
+    window_bound = {e.evidence_id for w in windows for e in w.cause_rows}
+    absence = (
+        EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+        EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+    )
+
+    def after_a_fix(row, turn) -> bool:
+        if fix_turn is None:
+            return bool(subjects.pool_roots) and row.evidence_id in window_bound
+        if row.category in absence:
+            return turn >= fix_turn
+        return (
+            row.category == EvidenceCategory.SYMPTOM_EVIDENCE
+            and turn > fix_turn
+            and row.evidence_id not in subjects.verifying
+        )
+
+    mitigated = mitigation_attempt_turn(case) if mitigation_unsettled(case) else None
+
+    def after_the_fix(row) -> bool | None:
+        """True after a fix, None after the mitigation alone, else False."""
+        turn = subjects.observed(row)
+        if any(window.holds(turn) for window in failed):
+            return False
+        if after_a_fix(row, turn):
+            return True
+        if mitigated is None or turn < mitigated:
+            return False
+        problem = row.category == EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE or (
+            row.category == EvidenceCategory.SYMPTOM_EVIDENCE
+            and turn > mitigated
+            and row.evidence_id not in subjects.verifying
+        )
+        return None if problem else False
+
+    def confirms_nothing(row) -> bool:
+        if (
+            row.category == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
+            and subjects.pool_roots
+        ):
+            return subjects.subject(row) == SUBJECT_UNBOUND
+        return (
+            subjects.subject(row, windows=True) == SUBJECT_UNBOUND
+            and row.evidence_id not in window_bound
+        )
+
+    found = []
+    for e in subjects.rows.values():
+        after = after_the_fix(e)
+        if after is not False and confirms_nothing(e):
+            found.append(
+                UnboundPostFixRow(e, e.evidence_id in window_bound, after is None)
+            )
+    return found
 
 
 def symptom_elimination_rows(

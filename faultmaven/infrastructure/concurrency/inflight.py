@@ -503,6 +503,18 @@ class CaseDeleteGate:
             raise CaseWorkInProgress(_seconds(left_ms))
         return tombstone
 
+    async def work_in_flight(self, case: CaseKey) -> bool:
+        """Whether a lease on ``case`` stands: a turn, or a task one spawned,
+        holds it on some replica (read as ``begin`` reads it, writing no
+        tombstone). ``False`` with no store, where no lease is ever written.
+        A read that fails raises: a caller that writes the case refuses on it.
+        Read by ``fm-backfill-case-outcome`` before it writes a case (#2636).
+        """
+        if self._redis is None:
+            return False
+        live, _left_ms = await self._redis.eval(READ_LEASES, 1, lease_key(case))
+        return bool(live)
+
     async def deleting(self, case: CaseKey) -> bool:
         """Whether a delete of ``case`` runs: its tombstone stands (#2510).
 
