@@ -32,7 +32,7 @@ from ...modules.auth.contracts import IUserQuery
 
 # Lazy import to avoid circular dependency - DataService, SessionService imported in functions or TYPE_CHECKING
 # OLD: from ...services.agentic.orchestration.agent_service import AgentService (ARCHIVED)
-from ...modules.preprocessing import PreprocessingService
+from ...modules.preprocessing.preprocessing_service import PreprocessingService
 
 # Type hints for lazy imports
 if TYPE_CHECKING:

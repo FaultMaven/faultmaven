@@ -23,6 +23,7 @@ import pytest
 from faultmaven.core.preprocessing.models import PreprocessingResult
 from faultmaven.models.api import DataType, SourceMetadata
 from faultmaven.modules.preprocessing.preprocessing_service import PreprocessingService
+from tests.unit.modules.preprocessing.extraction_stubs import CrimeScene, marked
 
 # ============================================================
 # Fixtures (mirror style of test_classify_and_extract.py)
@@ -68,26 +69,12 @@ def mock_classifier():
 
 
 @pytest.fixture
-def mock_logs_extractor():
-    """Logs extractor mock — must NOT be called on the page_capture path."""
-    from faultmaven.modules.preprocessing.extractors.protocol import ExtractResult
-
-    extractor = MagicMock()
-    extractor.strategy_name = "crime_scene"
-    extractor.llm_calls_used = 0
-    extractor.extract.return_value = ExtractResult(
-        file_extract="should not be reached",
-        search_map="",
-        file_meta={},
-    )
-    return extractor
-
-
-@pytest.fixture
-def service(mock_classifier, mock_logs_extractor):
+def service(mock_classifier):
+    """The logs extractor must NOT run on the page_capture path: a result
+    from it carries ``marked(CrimeScene)``."""
     return PreprocessingService(
         classifier=mock_classifier,
-        logs_extractor=mock_logs_extractor,
+        logs_extractor=CrimeScene(),
     )
 
 
@@ -173,18 +160,18 @@ class TestPageCapturePassthrough:
         assert meta.get("source_type") == "page_capture"
 
     @pytest.mark.asyncio
-    async def test_page_capture_skips_extractor(self, service, mock_logs_extractor):
+    async def test_page_capture_skips_extractor(self, service):
         """The whole reason the passthrough exists: extractors must NOT be
         invoked on already-structured page captures. This is the regression
         line — silently invoking an extractor would garble the htmlToStructuredText
         output without changing the method label."""
-        await service.classify_and_extract(
+        result = await service.classify_and_extract(
             content=_page_capture_content(),
             filename="captured.html",
             source_metadata=_page_capture_metadata(),
         )
 
-        mock_logs_extractor.extract.assert_not_called()
+        assert marked(CrimeScene) not in result.structural_index
 
     @pytest.mark.asyncio
     async def test_page_capture_still_invokes_classifier(
@@ -234,9 +221,7 @@ class TestPageCapturePassthroughDoesNotFireForOtherSources:
     """
 
     @pytest.mark.asyncio
-    async def test_file_upload_runs_normal_extraction(
-        self, service, mock_classifier, mock_logs_extractor
-    ):
+    async def test_file_upload_runs_normal_extraction(self, service, mock_classifier):
         """source_type=file_upload → extractor runs; method != passthrough."""
         # Configure classifier to return file_upload origin (no boost path).
         mock_classifier.classify.return_value = _make_classification_mock(
@@ -250,14 +235,12 @@ class TestPageCapturePassthroughDoesNotFireForOtherSources:
         )
 
         # Extractor was invoked and the result reflects its strategy_name.
-        mock_logs_extractor.extract.assert_called_once()
+        assert marked(CrimeScene) in result.structural_index
         assert result.extraction_method == "crime_scene"
         assert result.extraction_method != "page_capture_passthrough"
 
     @pytest.mark.asyncio
-    async def test_text_paste_runs_normal_extraction(
-        self, service, mock_classifier, mock_logs_extractor
-    ):
+    async def test_text_paste_runs_normal_extraction(self, service, mock_classifier):
         """source_type=text_paste → extractor runs; method != passthrough.
 
         Pasted text is unstructured and benefits from the type-specific
@@ -273,12 +256,12 @@ class TestPageCapturePassthroughDoesNotFireForOtherSources:
             source_metadata=SourceMetadata(source_type="text_paste"),
         )
 
-        mock_logs_extractor.extract.assert_called_once()
+        assert marked(CrimeScene) in result.structural_index
         assert result.extraction_method != "page_capture_passthrough"
 
     @pytest.mark.asyncio
     async def test_no_source_metadata_runs_normal_extraction(
-        self, service, mock_classifier, mock_logs_extractor
+        self, service, mock_classifier
     ):
         """When source_metadata is omitted entirely, the classifier returns
         ``source_type=None`` and the passthrough branch's equality check
@@ -292,5 +275,5 @@ class TestPageCapturePassthroughDoesNotFireForOtherSources:
             filename="server.log",
         )
 
-        mock_logs_extractor.extract.assert_called_once()
+        assert marked(CrimeScene) in result.structural_index
         assert result.extraction_method != "page_capture_passthrough"

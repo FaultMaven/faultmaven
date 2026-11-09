@@ -153,18 +153,11 @@ class TestYieldRatioEmitted:
         cls_result.suggested_types = None
         classifier.classify.return_value = cls_result
 
-        from faultmaven.modules.preprocessing.extractors.protocol import ExtractResult
+        from tests.unit.modules.preprocessing.extraction_stubs import CrimeScene
 
-        extractor = MagicMock()
-        extractor.strategy_name = "crime_scene"
-        extractor.llm_calls_used = 0
-        extractor.extract.return_value = ExtractResult(
-            file_extract="extracted summary",
-            search_map="",
-            file_meta={},
+        service = PreprocessingService(
+            classifier=classifier, logs_extractor=CrimeScene()
         )
-
-        service = PreprocessingService(classifier=classifier, logs_extractor=extractor)
         await service.classify_and_extract(content="x" * 200)
 
         after = _histogram_sample_count(

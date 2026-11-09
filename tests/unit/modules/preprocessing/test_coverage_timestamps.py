@@ -24,6 +24,7 @@ import pytest
 from faultmaven.models.api import DataType
 from faultmaven.modules.preprocessing.extractors.utils import extract_time_range_ts
 from faultmaven.modules.preprocessing.preprocessing_service import PreprocessingService
+from tests.unit.modules.preprocessing.extraction_stubs import CrimeScene
 
 
 def _make_classifier(data_type: DataType = DataType.LOGS_AND_ERRORS):
@@ -39,12 +40,8 @@ def _make_classifier(data_type: DataType = DataType.LOGS_AND_ERRORS):
     return classifier
 
 
-def _make_extractor(output: str = "extracted"):
-    ext = MagicMock()
-    ext.strategy_name = "crime_scene"
-    ext.llm_calls_used = 0
-    ext.extract.return_value = output
-    return ext
+def _make_extractor():
+    return CrimeScene()
 
 
 # ---------------------------------------------------------------------------

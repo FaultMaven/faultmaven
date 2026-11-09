@@ -6,8 +6,8 @@ import pytest
 
 from faultmaven.core.preprocessing.models import PreprocessingResult, UnifiedDataType
 from faultmaven.models.api import DataType
-from faultmaven.modules.preprocessing.extractors.protocol import ExtractResult
 from faultmaven.modules.preprocessing.preprocessing_service import PreprocessingService
+from tests.unit.modules.preprocessing.extraction_stubs import CrimeScene, marked
 
 
 @pytest.fixture
@@ -25,27 +25,10 @@ def mock_classifier():
 
 
 @pytest.fixture
-def mock_logs_extractor():
-    extractor = MagicMock()
-    extractor.strategy_name = "crime_scene"
-    extractor.llm_calls_used = 0
-    extractor.extract.return_value = ExtractResult(
-        file_extract=(
-            "=== Crime Scene ===\n"
-            "Error cluster at line 42: NullPointerException\n"
-            "Context: Connection pool exhausted"
-        ),
-        search_map="",
-        file_meta={},
-    )
-    return extractor
-
-
-@pytest.fixture
-def service(mock_classifier, mock_logs_extractor):
+def service(mock_classifier):
     return PreprocessingService(
         classifier=mock_classifier,
-        logs_extractor=mock_logs_extractor,
+        logs_extractor=CrimeScene(),
     )
 
 
@@ -122,23 +105,21 @@ class TestClassifyAndExtract:
         assert len(result.summary) > 0
 
     @pytest.mark.asyncio
-    async def test_small_file_passthrough_skips_extractor(
-        self, service, mock_logs_extractor
-    ):
+    async def test_small_file_passthrough_skips_extractor(self, service):
         """Files below MIN_EXTRACTION_LINES skip extraction and use raw content."""
         small_content = "\n".join(f"2024-01-01 INFO line {i}" for i in range(50))
         result = await service.classify_and_extract(content=small_content)
 
         assert result.extraction_method == "raw_passthrough"
-        mock_logs_extractor.extract.assert_not_called()
+        assert marked(CrimeScene) not in result.structural_index
 
     @pytest.mark.asyncio
-    async def test_file_at_threshold_runs_extractor(self, service, mock_logs_extractor):
+    async def test_file_at_threshold_runs_extractor(self, service):
         """Files at or above MIN_EXTRACTION_LINES still go through extraction."""
         result = await service.classify_and_extract(content=_log_content(250))
 
         assert result.extraction_method == "crime_scene"
-        mock_logs_extractor.extract.assert_called_once()
+        assert marked(CrimeScene) in result.structural_index
 
 
 class TestEmptyContentGracefulDegradation:
@@ -151,20 +132,18 @@ class TestEmptyContentGracefulDegradation:
     """
 
     @pytest.fixture
-    def real_classifier_service(self, mock_logs_extractor):
+    def real_classifier_service(self):
         """Service wired with the real DataClassifier so we exercise the
         empty-content short-circuit end-to-end."""
         from faultmaven.modules.preprocessing.classifier import DataClassifier
 
         return PreprocessingService(
             classifier=DataClassifier(),
-            logs_extractor=mock_logs_extractor,
+            logs_extractor=CrimeScene(),
         )
 
     @pytest.mark.asyncio
-    async def test_empty_content_routes_to_unanalyzable(
-        self, real_classifier_service, mock_logs_extractor
-    ):
+    async def test_empty_content_routes_to_unanalyzable(self, real_classifier_service):
         result = await real_classifier_service.classify_and_extract(
             content="", filename="empty.bin"
         )
@@ -174,7 +153,7 @@ class TestEmptyContentGracefulDegradation:
         assert result.detailed_data_type == DataType.UNANALYZABLE
         # Extractor must not be invoked on empty content — it would either
         # produce a misleading "no errors" tail or waste a Tier 1 budget.
-        mock_logs_extractor.extract.assert_not_called()
+        assert marked(CrimeScene) not in result.structural_index
 
     @pytest.mark.asyncio
     async def test_empty_content_produces_human_readable_placeholder(

@@ -15,6 +15,7 @@ Design Reference:
 import asyncio
 import hashlib
 import logging
+import math
 import time
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
@@ -31,12 +32,15 @@ from faultmaven.core.preprocessing.models import (
     generate_concise_summary,
     to_unified_data_type,
 )
+from faultmaven.infrastructure import worker_process
+from faultmaven.infrastructure.index_slot import index_cores
 from faultmaven.infrastructure.observability.evidence_metrics import (
     CASE_ENTITIES_OVERFLOW_TOTAL,
     PREPROCESSING_EXTRACTION_YIELD_RATIO,
 )
 from faultmaven.models.api import DataType, SourceMetadata
 from faultmaven.modules.case.contracts import minted_filename_phrase
+from faultmaven.modules.preprocessing import extraction_worker
 from faultmaven.modules.preprocessing.classifier import DataClassifier
 from faultmaven.modules.preprocessing.entities import (
     extract_entities_for_data_type,
@@ -60,8 +64,47 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Tier 1 timeout: extractors must complete within this budget.
-# On timeout, falls back to TEXT extraction (preview-only).
+# On timeout, falls back to TEXT extraction (preview-only). It covers the wait
+# for a slot, the worker's start (about 0.12-0.2 s) and the extraction; the
+# worker is killed at it (Principle 14, #2637).
 TIER1_TIMEOUT_SECONDS = 2.0
+
+#: Tier 1 extractions at once, each in a worker process of its own; a slot
+#: frees only once its worker is dead. Capped as indexing is (``index_cores``),
+#: since Tier 1 shares the box with it.
+TIER1_SLOTS = max(2, int(index_cores()))
+
+#: The worker's address-space limit (``RLIMIT_AS``). Measured through the
+#: worker at the 10 MB upload limit (``MAX_UPLOAD_SIZE_MB``), one input shape per
+#: extractor: a worker starts at 23 MiB, and the most any reached within the
+#: deadline is 306 MiB (source code, still growing when killed; error-report
+#: frames peak at 265 MiB and finish in 1.8 s). The limit is four times that,
+#: rounded up. Under memory pressure the worker dies before the API process: it
+#: volunteers for the OOM killer (``worker_process``).
+TIER1_MEMORY_BYTES = 1280 * 1024 * 1024
+
+#: The worker's CPU-time limit: the deadline plus 1 s. The parent's kill at the
+#: deadline comes first; this bounds a worker whose parent died.
+TIER1_CPU_SECONDS = math.ceil(TIER1_TIMEOUT_SECONDS) + 1
+
+#: What the parent reads from one worker. Some results grow with their input:
+#: at the upload limit, error-report frames answer 14.1 MiB (1.4 times their
+#: input) within the deadline, and the visual placeholder, which quotes its
+#: input, 10.2 MiB. The limit is over twice the largest, with room for the 50
+#: forwarded log records. A worker past it is a fault: ``error_fallback``.
+TIER1_OUTPUT_LIMIT_BYTES = 32 * 1024 * 1024
+
+_tier1_slots_state: Optional[tuple[asyncio.AbstractEventLoop, asyncio.Semaphore]] = None
+
+
+def _tier1_slots() -> asyncio.Semaphore:
+    """The slots, made on the running loop: a ``Semaphore`` binds to one."""
+    global _tier1_slots_state
+    loop = asyncio.get_running_loop()
+    if _tier1_slots_state is None or _tier1_slots_state[0] is not loop:
+        _tier1_slots_state = (loop, asyncio.Semaphore(TIER1_SLOTS))
+    return _tier1_slots_state[1]
+
 
 # Files smaller than this threshold are passed through raw instead of
 # running extraction — the raw content is already a better "file extract"
@@ -1081,28 +1124,41 @@ class PreprocessingService:
         filename: str,
     ) -> ExtractionResult:
         """
-        Run a Tier 1 extractor with timeout enforcement.
+        Run a Tier 1 extractor in a worker process its deadline kills.
 
-        If the extractor exceeds TIER1_TIMEOUT_SECONDS, cancel it and
-        return a TEXT extraction (preview-only) as fallback.
+        ``TIER1_TIMEOUT_SECONDS`` covers the wait for a slot, the worker's
+        start and the extraction. Past it the worker is killed and reaped,
+        and the answer is a TEXT extraction (preview-only), with
+        ``timeout_fallback``. Any other end without a result (the memory
+        limit, a signal, output past its limit, a failed start, a malformed
+        frame) is the same preview with ``error_fallback``, its reason logged.
+        The extractor's class runs in the worker, by name: no Tier 1 work runs
+        on this process (Principle 14, #2637).
 
         Design Reference:
-            data-preprocessing-design-specification.md Section 4.9
+            data-preprocessing-design-specification.md Section 2.4
         """
+        cls = type(extractor)
+        request = {
+            "extractor": f"{cls.__module__}:{cls.__qualname__}",
+            "content": content,
+        }
         try:
-            result_content = await asyncio.wait_for(
-                asyncio.to_thread(extractor.extract, content),
-                timeout=TIER1_TIMEOUT_SECONDS,
-            )
-            # Every Tier 1 extractor returns ``ExtractResult`` per the
-            # protocol in ``extractors/protocol.py`` — enforce here so a
-            # broken extractor surfaces immediately rather than silently
-            # round-tripping through ``str()``.
-            if not isinstance(result_content, ExtractResult):
-                raise TypeError(
-                    f"Extractor {type(extractor).__name__} returned "
-                    f"{type(result_content).__name__}, expected ExtractResult"
-                )
+            async with asyncio.timeout(TIER1_TIMEOUT_SECONDS):
+                async with _tier1_slots():
+                    end = await worker_process.run(
+                        extraction_worker.__name__,
+                        request,
+                        memory_bytes=TIER1_MEMORY_BYTES,
+                        cpu_seconds=TIER1_CPU_SECONDS,
+                        output_limit_bytes=TIER1_OUTPUT_LIMIT_BYTES,
+                    )
+            if end.result is None:
+                ended = f"exited {end.code}"
+                if end.code == worker_process.OUT_OF_MEMORY_EXIT:
+                    ended = "passed its memory limit"
+                raise RuntimeError(f"the extraction worker {ended}")
+            result_content = ExtractResult.from_json(end.result)
             return ExtractionResult(
                 method=extractor.strategy_name,
                 # content holds file_extract text for sanity checks;
@@ -1110,7 +1166,7 @@ class PreprocessingService:
                 content=result_content.file_extract,
                 metadata={"extract_result_json": result_content.to_json()},
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(
                 f"Tier 1 extraction timed out after {TIER1_TIMEOUT_SECONDS}s "
                 f"for {filename}. Falling back to TEXT preview."

@@ -14,23 +14,20 @@ Stages:
 6. Content triage (LLM classifier)
 
 Stages 0-5 are ``preparation.prepare``, run in a worker process this module
-starts and kills (Principle 14, #2622): during them no byte of the document is
-parsed, cleaned, redacted or counted on the API process. Stage 6 runs here, on
-the loop, over the triage sample the worker cut.
+starts and kills through ``worker_process`` (Principle 14, #2622): during them
+no byte of the document is parsed, cleaned, redacted or counted on the API
+process. Stage 6 runs here, on the loop, over the triage sample the worker cut.
 """
 
 import asyncio
 import dataclasses
-import json
 import logging
 import os
-import sys
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from pypdf import get_configuration
 
-import faultmaven
 from faultmaven.core.investigation.confidence_repair import (
     ConfidenceAction,
     ConfidenceRepair,
@@ -41,6 +38,7 @@ from faultmaven.core.investigation.confidence_repair import (
     count as count_confidence_repair,
 )
 from faultmaven.exceptions import RawModelContentRefused
+from faultmaven.infrastructure import worker_process
 from faultmaven.infrastructure.llm.dispatch import (
     route_model_call,
 )
@@ -53,9 +51,6 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
     TriageResult,
 )
 from faultmaven.modules.knowledge.domain.services import preparation_worker
-from faultmaven.modules.knowledge.domain.services.preparation_worker import (
-    OUT_OF_MEMORY_EXIT,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -94,13 +89,9 @@ PREPARATION_CPU_SECONDS = EXTRACTION_TIMEOUT_SECONDS + 10
 #: What the parent reads from one worker. An accepted document is at most
 #: 30,000 tokens, and a cl100k token at most 128 bytes in JSON (a run of
 #: spaces): 3.84 MB of text, 0.26 MB of triage sample, and 50 log records of
-#: at most 2,000 characters (``preparation_worker``). A worker past it is a
+#: at most 2,000 characters (``worker_process``). A worker past it is a
 #: fault, not the document's: a server error.
 PREPARATION_OUTPUT_LIMIT_BYTES = 5 * 1024 * 1024
-
-#: Where the worker runs: the directory holding this process's ``faultmaven``,
-#: so ``-m``, which searches the working directory first, imports the same code.
-_PACKAGE_ROOT = Path(faultmaven.__file__).resolve().parents[1]
 
 #: The stage the worker runs, by reference. Always this value: tests point it at
 #: a stage of their own, and no input of a request reaches it.
@@ -159,53 +150,6 @@ def _preparation_slots() -> asyncio.Semaphore:
     return _slots[1]
 
 
-async def _frames(proc: asyncio.subprocess.Process, seen: Dict[str, Any]):
-    """The worker's result, or None at its end of output, a line torn by its
-    death included. Stage frames set ``seen["stage"]``; log records are
-    emitted here, under this request."""
-    received = 0
-    while True:
-        try:
-            line = await proc.stdout.readline()
-        except ValueError as e:  # one line past the stream's limit
-            raise PreparationFailed("the worker's output passed its limit") from e
-        if not line.endswith(b"\n"):
-            return None
-        received += len(line)
-        if received > PREPARATION_OUTPUT_LIMIT_BYTES:
-            raise PreparationFailed("the worker's output passed its limit")
-        try:
-            frame = json.loads(line)
-            if "result" in frame:
-                return frame["result"]
-            if "stage" in frame:
-                seen["stage"] = frame["stage"]
-            else:
-                name, level, message = frame["log"]
-                logging.getLogger(name).log(level, message)
-        except (ValueError, TypeError, KeyError) as e:
-            raise PreparationFailed("the worker wrote a malformed frame") from e
-
-
-async def _reap(proc: asyncio.subprocess.Process) -> None:
-    """Kill the worker and wait until it is reaped, a cancellation meanwhile
-    included, so its slot frees only once it is dead. Its output is read to
-    the end, unread: a wait alone never returns while a full pipe holds the
-    worker's stdout open."""
-    if proc.returncode is None:
-        proc.kill()
-    reaping = asyncio.ensure_future(proc.communicate())
-    cancelled: Optional[asyncio.CancelledError] = None
-    while not reaping.done():
-        try:
-            await asyncio.shield(reaping)
-        except asyncio.CancelledError as e:
-            cancelled = e
-    reaping.result()
-    if cancelled is not None:
-        raise cancelled
-
-
 async def _run_worker(file_path: Path, content_type: str) -> Any:
     """One worker over the file: its result, or the refusal its end means.
     The worker is dead and reaped before this returns or raises."""
@@ -217,65 +161,50 @@ async def _run_worker(file_path: Path, content_type: str) -> Any:
         "file_path": os.path.abspath(file_path),
         "content_type": content_type,
         "pdf_limits": dataclasses.asdict(get_configuration()),
-        "parent_pid": os.getpid(),
-        "memory_bytes": preparation_memory_limit(upload_mb),
-        "cpu_seconds": PREPARATION_CPU_SECONDS,
-        "log_level": logging.getLogger().getEffectiveLevel(),
     }
-    seen: Dict[str, Any] = {"stage": None}
     try:
-        proc = await asyncio.create_subprocess_exec(
-            sys.executable,
-            "-m",
+        end = await worker_process.run(
             preparation_worker.__name__,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            cwd=_PACKAGE_ROOT,
-            limit=PREPARATION_OUTPUT_LIMIT_BYTES,
+            request,
+            memory_bytes=preparation_memory_limit(upload_mb),
+            cpu_seconds=PREPARATION_CPU_SECONDS,
+            output_limit_bytes=PREPARATION_OUTPUT_LIMIT_BYTES,
+            deadline_seconds=EXTRACTION_TIMEOUT_SECONDS,
         )
-    except OSError as e:
+    except worker_process.WorkerNotStarted as e:
         logger.error(
             "conversion failed: the preparation worker of %s could not start: %r",
             file_path.name,
-            e,
+            e.__cause__,
         )
-        raise PreparationFailed("the preparation worker could not start") from e
-    try:
-        async with asyncio.timeout(EXTRACTION_TIMEOUT_SECONDS) as deadline:
-            try:
-                proc.stdin.write(json.dumps(request).encode() + b"\n")
-                await proc.stdin.drain()
-                proc.stdin.close()
-            except (BrokenPipeError, ConnectionResetError):
-                pass  # it died before reading; its exit answers below
-            result = await _frames(proc, seen)
-            if result is not None:
-                return result
-            code = await proc.wait()
-    except TimeoutError:
-        if not deadline.expired():
-            raise
+        raise PreparationFailed("the preparation worker could not start") from (
+            e.__cause__
+        )
+    except worker_process.WorkerFailed as e:
+        raise PreparationFailed(str(e)) from e
+    if end.timed_out:
         logger.warning(
             "conversion of %s: extraction ran past %s s in stage %s; killed",
             file_path.name,
             EXTRACTION_TIMEOUT_SECONDS,
-            seen["stage"],
+            end.stage,
         )
         return _refusal(
             _TOO_SLOW.format(limit=EXTRACTION_TIMEOUT_SECONDS),
             ConversionErrorCode.DOCUMENT_TOO_COMPLEX,
         )
-    finally:
-        await _reap(proc)
+    if end.result is not None:
+        return end.result
 
+    code = end.code
     ended = (
         f"the preparation worker of {file_path.name} exited {code} "
-        f"in stage {seen['stage']}"
+        f"in stage {end.stage}"
     )
-    if code == OUT_OF_MEMORY_EXIT:
+    if code == worker_process.OUT_OF_MEMORY_EXIT:
         logger.warning("conversion refused, out of memory: %s", ended)
         return _refusal(_OUT_OF_MEMORY, ConversionErrorCode.DOCUMENT_TOO_COMPLEX)
-    if seen["stage"] == 1 and code < 0:
+    if end.stage == 1 and code < 0:
         logger.warning("conversion refused, killed while parsing: %s", ended)
         return _refusal(_UNREADABLE, ConversionErrorCode.DOCUMENT_TOO_COMPLEX)
     logger.error("conversion failed: %s", ended)

@@ -338,7 +338,7 @@ Knowledge queries still get tool access (with `tool_choice="auto"`) so the LLM c
 Runs synchronously on every submission that contains attachments (file uploads and pasted text, both submitted via `POST /cases/{id}/turns`). Two sub-phases:
 
 - **Tier 0 (Classification)**: Rule-based data type detection. <100ms. Zero LLM calls.
-- **Tier 1 (Extraction)**: Domain-specific structural indexing. <2s with timeout enforcement and fallback chain. Zero LLM calls.
+- **Tier 1 (Extraction)**: Domain-specific structural indexing. <2s, kept by a worker process killed at the deadline (Principle 14, §2.4), with a fallback chain. Zero LLM calls.
 
 ### 2.1 Two-Layer Classification: 12 DetailedDataTypes → 6 UnifiedDataTypes
 
@@ -515,7 +515,7 @@ investigation_service.process_turn(payload: TurnPayload)
   │                 → DataClassifier.classify(...)        [Tier 0]
   │                 → short-circuit (UNANALYZABLE | classification_failed
   │                   | page_capture | raw_passthrough)? → placeholder/skip
-  │                 → extractor.extract(content)          [Tier 1, 2s timeout]
+  │                 → extractor.extract(content)          [Tier 1, worker killed at 2s]
   │                 → optional Phase 2 sanity-retry with alternative DataType
   │                   (gated on `extractor_retry_enabled`; ≤ 2 retries) — §2.6
   │                 → extract_time_range_ts(content)      [Phase 3 timestamps]
@@ -565,7 +565,9 @@ investigation_service.process_turn(payload: TurnPayload)
 - `source_type == "page_capture"` → `page_capture_passthrough` (copilot already produced structured markdown).
 - `line_count < MIN_EXTRACTION_LINES` (200) → `raw_passthrough` (the raw content is itself a better orientation than any compressed structural index for files this small; extractors are skipped and the raw bytes are stored as `file_extract`).
 
-Otherwise the type-specific extractor runs under a 2-second timeout (Phase 2 sanity-retry may run on top — see §2.6). The reclassification entry point (§2.6) reuses this same method via `user_override`.
+Otherwise the type-specific extractor runs under a 2-second deadline (Phase 2 sanity-retry may run on top — see §2.6). The reclassification entry point (§2.6) reuses this same method via `user_override`.
+
+**The deadline's mechanism** (Principle 14, #2637). Each extraction runs in a worker process of its own (`extraction_worker.py`, through the shared `infrastructure/worker_process.py`), started by spawn: it imports the extractor class by name and runs `extract`, and its `ExtractResult.to_json()` comes back as the result. `TIER1_TIMEOUT_SECONDS` (2 s) covers the wait for one of `TIER1_SLOTS` slots (`max(2, int(index_cores()))`), the worker's start (about 0.12–0.2 s) and the extraction. Past it the worker is killed and reaped, and the answer is the truncated preview with `timeout_fallback`; a slot frees only once its worker is dead. The worker sets its own address-space limit (`TIER1_MEMORY_BYTES`) and CPU-time limit (the deadline plus 1 s), and the parent reads at most `TIER1_OUTPUT_LIMIT_BYTES` from it. Any other end without a result (the memory limit, a signal, output past its limit, a failed start, a malformed frame) is the same preview with `error_fallback`, its reason logged. No Tier 1 work runs on a thread of the API process.
 
 **Output**: `PreprocessingResult` — Pydantic model defined canonically in [`faultmaven/core/preprocessing/models.py`](../../../faultmaven/core/preprocessing/models.py). The model carries (in addition to the obvious `data_type`, `summary`, `structural_index`, `content_ref`, `content_hash`, `extraction_method`, `extraction_metadata`):
 
@@ -1522,7 +1524,7 @@ PII_REDACT_PASSWORDS=true
 
 ## Appendix B: Extractor Reference
 
-All 11 extractors share the uniform `extract(content: str) -> ExtractResult` contract. They are stateless, return an `ExtractResult` with three parts: `file_extract` (orientation content), `search_map` (entity profile + search hints), and `file_meta` (coverage data as a structured dict). All run under a 2-second Tier 1 timeout. None accept per-call parameter overrides; when the agent needs a different slice of the data it uses keyword or regex search via `search_file`.
+All 11 extractors share the uniform `extract(content: str) -> ExtractResult` contract. They are stateless, take no constructor arguments, and return an `ExtractResult` with three parts: `file_extract` (orientation content), `search_map` (entity profile + search hints), and `file_meta` (coverage data as a structured dict). All run under the 2-second Tier 1 deadline, each extraction in a worker process killed at it (§2.4). None accept per-call parameter overrides; when the agent needs a different slice of the data it uses keyword or regex search via `search_file`.
 
 ### Strategy names
 
@@ -1548,7 +1550,7 @@ Runtime markers (set by `PreprocessingService`, not by any extractor):
 | --- | --- |
 | `page_capture_passthrough` | `source_type == "page_capture"` — content is already structured markdown from the copilot; extractor is skipped |
 | `raw_passthrough` | `line_count < MIN_EXTRACTION_LINES` (200) — small file, raw content stored directly as `file_extract` (no compression value); extractor is skipped |
-| `structure_extraction` | Tier 1 timed out or raised — falls back to a truncated preview with `timeout_fallback=True` or `error_fallback=True` in metadata |
+| `structure_extraction` | Tier 1 timed out (its worker killed at the deadline) or ended without a result — falls back to a truncated preview with `timeout_fallback=True` or `error_fallback=True` in metadata |
 | `none` | `detailed_data_type == UNANALYZABLE` — placeholder returned, no extractor runs |
 | `classification_failed` | `confidence < 0.50` — placeholder returned with `suggested_types` in metadata; frontend shows modal |
 
