@@ -360,3 +360,33 @@ async def test_a_postgresql_row_without_the_record_loads_with_none():
     del stored["outcome"]
     loaded = await _load_pg(json.dumps(stored))
     assert loaded.progress.outcome is None
+
+
+async def test_the_in_memory_progress_write_is_versioned():
+    """``InMemoryCaseRepository.save_progress``: the version bump, the stale
+    refusal and a case that is not stored."""
+    from faultmaven.modules.case.exceptions import StaleCaseException
+    from faultmaven.modules.case.infrastructure.case_repository import (
+        InMemoryCaseRepository,
+    )
+
+    repo = InMemoryCaseRepository()
+    case = _case()
+    await repo.save(case)
+    version = case.version
+    stale = case.model_copy(deep=True)
+    case.progress.outcome = _outcome()
+    assert await repo.save_progress(case) is case
+    stored = await repo.get(case.case_id)
+    assert (case.version, stored.version) == (version + 1, version + 1)
+    assert stored.progress.outcome == _outcome()
+
+    with pytest.raises(StaleCaseException) as refused:
+        await repo.save_progress(stale)
+    assert (refused.value.expected_version, refused.value.actual_version) == (
+        version,
+        version + 1,
+    )
+    with pytest.raises(StaleCaseException) as missing:
+        await repo.save_progress(_case())
+    assert missing.value.actual_version == 0

@@ -12,8 +12,9 @@ It also repairs one record: a terminal case's record that no terminal write
 folded (``CaseOutcome.folded_under`` is an open state). That is what a
 terminal transition leaves when its record write raised (the write is in
 shadow, so the transition went on): the record still holds the open case's
-closure, which is not final. It is recomputed the same way, with no prior and
-from the case as stored.
+closure, which is not final. The repair folds over that stored record, so its
+final verdicts (a FAILED window, ``accepted_in_turn``) are carried, while the
+closure, folded open, is read off the closed case.
 
 Usage (``fm-backfill-case-outcome``, installed with the package)::
 
@@ -40,13 +41,14 @@ Only the ``progress`` blob, compare-and-swap on ``version``
 loaded the case before the write fails its save with a version conflict rather
 than writing the old progress back, and ``updated_at`` is kept, so no user's
 case list re-sorts. No save-time derivation runs (no offer lapses). A write
-that loses the version race is retried from a fresh load
-(``update_case_with_retry``), up to three times.
+that loses the version race is tried again from a fresh load
+(``update_case_with_retry``): tried up to three times in all.
 
-A case with work in flight (a turn, or a task one spawned, holds its lease on
-some replica: ``CaseDeleteGate.work_in_flight``, the lease a delete reads) is
-skipped and listed, and so is a case whose lease cannot be read; a re-run
-picks them up. Under standalone the lease store lives in the API's own process,
+A case that needs a record while work on it is in flight (a turn, or a task
+one spawned, holds its lease on some replica: ``CaseDeleteGate.work_in_flight``,
+the lease a delete reads) is skipped and listed, and so is one whose lease
+cannot be read; a re-run picks them up. A case that has its record is left
+alone before its lease is read. Under standalone the lease store lives in the API's own process,
 which this command cannot see: run it with the API idle there.
 
 A case that has a record is left alone, so the command is idempotent: a second
@@ -156,6 +158,8 @@ async def backfill_case_outcome(
         print(f"\nEnterprise:   {enterprise.name} ({enterprise_id})")
 
     async def _apply(case: Any) -> None:
+        if not needs_record(case):
+            raise _Leave("it has a record")
         if gate is not None:
             try:
                 busy = await gate.work_in_flight((case.enterprise_id, case.case_id))
@@ -165,10 +169,11 @@ async def backfill_case_outcome(
                 ) from exc
             if busy:
                 raise _Leave("a turn or its task is in flight", skipped=True)
-        if not needs_record(case):
-            raise _Leave("it has a record")
         repairing[case.case_id] = case.progress.outcome is not None
-        record = compute_case_outcome(None, case)
+        # Over the stored record: none for a case without one (ruled on
+        # #2636), and for a repair the record the terminal write left, whose
+        # final verdicts carry while its open closure does not.
+        record = compute_case_outcome(case.progress.outcome, case)
         if dry_run:
             raise _Leave("dry run", would_write=True)
         case.progress.outcome = record

@@ -5,8 +5,10 @@
 on ``version``. A full-row save would stamp ``updated_at``, and both
 repositories order a case list by it, so a backfill through ``save`` re-sorted
 every user's list. Each check runs on SQLite (always) and on PostgreSQL (when
-``DATABASE_URL`` names one, as CI's postgres job does), against the dialect
-repository's real SQL:
+``DATABASE_URL`` names one, as CI's postgres job does), through the production
+``SessionlessCaseRepository`` (its ``get_db_session`` replaced by one with the
+production shape over the test's database, as #1882's test does), which picks
+the dialect repository and its real SQL:
 
 - a backfilled case keeps its ``updated_at``, and the list keeps its order;
 - the write bumps ``version`` and changes no other column;
@@ -16,6 +18,7 @@ repository's real SQL:
 from __future__ import annotations
 
 import os
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -29,6 +32,12 @@ from faultmaven.cli.backfill_case_outcome import backfill_case_outcome
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.modules.case.contracts import Case
 from faultmaven.modules.case.exceptions import StaleCaseException
+from faultmaven.modules.case.infrastructure import (
+    sessionless_case_repository as sessionless_module,
+)
+from faultmaven.modules.case.infrastructure.sessionless_case_repository import (
+    SessionlessCaseRepository,
+)
 
 pytestmark = [pytest.mark.integration]
 
@@ -49,23 +58,17 @@ _PG = os.environ.get("DATABASE_URL", "").startswith("postgresql")
         ),
     ]
 )
-async def world(request, tmp_path):
-    """A dialect repository on a real database, with an enterprise and an
-    account of its own."""
+async def world(request, tmp_path, monkeypatch):
+    """The production case repository on a real database, with an enterprise
+    and an account of its own."""
     if request.param == "sqlite":
         path = tmp_path / "outcome.db"
         sync = create_engine(f"sqlite:///{path}")
         Base.metadata.create_all(sync)
         sync.dispose()
         engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
-        from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
-            SQLiteCaseRepository as Repository,
-        )
     else:
         engine = create_async_engine(os.environ["DATABASE_URL"])
-        from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.repository import (
-            PostgreSQLHybridCaseRepository as Repository,
-        )
     enterprise, user = f"ent_{uuid4().hex[:8]}", f"u_{uuid4().hex[:8]}"
     Session = async_sessionmaker(engine, expire_on_commit=False)
     async with Session() as session:
@@ -84,8 +87,22 @@ async def world(request, tmp_path):
             {"u": user, "e": enterprise, "m": f"{user}@example.com"},
         )
         await session.commit()
+
+    @asynccontextmanager
+    async def _get_db_session():
+        session = Session()
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+        finally:
+            await session.close()
+
+    monkeypatch.setattr(sessionless_module, "get_db_session", _get_db_session)
     try:
-        yield _World(Session, Repository, enterprise, user)
+        yield _World(Session, SessionlessCaseRepository(), enterprise, user)
     finally:
         async with Session() as session:
             for table in ("cases", "users", "enterprises"):
@@ -98,25 +115,23 @@ async def world(request, tmp_path):
 
 
 class _World:
-    """The dialect repository, one session per call, as the sessionless
-    wrapper composes it in a deployment."""
+    """The production wrapper, with the backfill's sweep scoped to this
+    test's own cases (a shared PostgreSQL holds other tests' rows): ``get``
+    and ``save_progress`` are the wrapper's own."""
 
-    def __init__(self, Session, Repository, enterprise, user):
-        self.Session, self.Repository = Session, Repository
+    def __init__(self, Session, repository, enterprise, user):
+        self.Session, self.repository = Session, repository
         self.enterprise, self.user = enterprise, user
 
-    async def run(self, method, *args, **kwargs):
-        async with self.Session() as session:
-            return await getattr(self.Repository(session), method)(*args, **kwargs)
-
     async def list_all_case_ids(self):
-        return [c.case_id for c in (await self.run("list", user_id=self.user))[0]]
+        listed, _total = await self.repository.list(user_id=self.user)
+        return [c.case_id for c in listed]
 
     async def get(self, case_id):
-        return await self.run("get", case_id)
+        return await self.repository.get(case_id)
 
     async def save_progress(self, case):
-        return await self.run("save_progress", case)
+        return await self.repository.save_progress(case)
 
     async def stamp(self, case_id, updated_at):
         async with self.Session() as session:
@@ -157,7 +172,7 @@ async def _stored(world, count=3):
             enterprise_id=world.enterprise,
             title=f"Case {i}",
         )
-        await world.run("save", case)
+        await world.repository.save(case)
         await world.stamp(case.case_id, base + timedelta(days=i))
         ids.append(case.case_id)
     return ids

@@ -52,17 +52,19 @@ the release that first switches a reader onto it.
   existed cannot be recovered.
 - It also repairs a terminal case whose record no terminal write folded
   (`folded_under` an open state): what a transition leaves when its record
-  write raised. That record's closure is the open case's, which is not final,
-  so it is recomputed the same way, from the case as stored.
+  write raised. The repair folds over that stored record: its final verdicts
+  (a FAILED window, `accepted_in_turn`) are carried, and its closure, the open
+  case's, which is not final, is read off the closed case.
 - It writes the `progress` blob alone, compare-and-swap on `version`
   (`ICaseRepository.save_progress`). The version is bumped, so a turn that
   loaded the case before the write gets 409 and the user re-sends; `updated_at`
   is kept, so no user's case list re-sorts; no save-time derivation runs (no
-  offer lapses). A write that loses the version race is retried from a fresh
-  load, up to three times.
-- It skips a case with work in flight: a turn, or a task one spawned, holds the
-  case's lease on some replica (the lease a case delete reads). A case whose
-  lease cannot be read is skipped too. Both are listed, the exit status is 3,
+  offer lapses). A write that loses the version race is tried again from a
+  fresh load: tried up to three times in all.
+- It skips a case that needs a record while work on it is in flight: a turn,
+  or a task one spawned, holds the case's lease on some replica (the lease a
+  case delete reads). A case whose lease cannot be read is skipped too; a case
+  that has its record is left alone without reading the lease. Both are listed, the exit status is 3,
   and a re-run picks them up. Under standalone the lease store lives in the
   API's own process, which the command cannot see: run it with the API idle.
 - It is idempotent: a case that has a record is left alone.

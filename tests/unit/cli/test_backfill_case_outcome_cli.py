@@ -24,7 +24,7 @@ from faultmaven.core.investigation.outcome import (
 )
 from faultmaven.core.investigation.terminal_transitions import execute_user_closure
 from faultmaven.infrastructure.persistence.models import Base
-from faultmaven.modules.case.contracts import CaseState, ProblemStatus
+from faultmaven.modules.case.contracts import CaseState, FixWindowState, ProblemStatus
 from tests.case_builders import inquiry_case
 from tests.unit.core.investigation.test_m6_cause_gone_problem_persists_1927 import (
     _identified_case,
@@ -196,6 +196,10 @@ async def test_a_lost_version_race_is_retried_from_a_fresh_load(repository, stor
     assert calls[1] == calls[0] + 1, "the second write carries the fresh version"
 
 
+def _boom(*_a, **_k):
+    raise RuntimeError("the record write raised")
+
+
 async def _closed_with_an_open_record(repository, monkeypatch):
     """A case closed while its record write raised: the record it keeps was
     folded at the last cycle, under the open state."""
@@ -204,9 +208,6 @@ async def _closed_with_an_open_record(repository, monkeypatch):
     # The evidence then shows the problem was never there: the close records
     # a false alarm, which the open record's closure does not say.
     case.progress.problem_status = ProblemStatus.INVALIDATED
-
-    def _boom(*_a, **_k):
-        raise RuntimeError("the record write raised")
 
     with monkeypatch.context() as patched:
         patched.setattr(outcome_module, "compute_case_outcome", _boom)
@@ -265,3 +266,55 @@ async def test_the_delete_gate_reads_a_turns_lease(repository, stored):
     assert await gate.work_in_flight(("o", busy)) is False
     assert await CaseDeleteGate(None).work_in_flight(("o", busy)) is False
     assert await _run(repository, gate=gate) == 0
+
+
+async def test_a_repair_folds_over_the_stored_record_and_keeps_a_failed_window(
+    repository, monkeypatch
+):
+    """#2595's shape: a FAILED window is carried, a re-root makes the fresh
+    read UNKNOWN, the closed write raises. The repair keeps FAILED, carried
+    from the stored record, and the closed case's closure."""
+    from tests.unit.core.investigation.test_case_outcome_fold_2636 import (
+        _deepen,
+        _eid,
+        _fix,
+        _recompute_at,
+        _relapse,
+        _window,
+    )
+
+    case, root, hyp = _identified_case()
+    fix = _fix(case)
+    _relapse(case, rechecks=_eid("pool_log"))
+    _recompute_at(case, 9)
+    record_case_outcome(case, at="cycle")
+    _deepen(case, hyp, root)
+    record_case_outcome(case, at="cycle")
+    assert _window(case.progress.outcome, fix.action_id).state == FixWindowState.FAILED
+    assert compute_case_outcome(None, case).attempts[0].window.state != (
+        FixWindowState.FAILED
+    ), "premise: the fresh read is not FAILED"
+    with monkeypatch.context() as patched:
+        patched.setattr(outcome_module, "compute_case_outcome", _boom)
+        execute_user_closure(case, case.user_id)
+    assert case.progress.outcome.folded_under == CaseState.INVESTIGATING, "premise"
+    await repository.save(case)
+
+    assert await _run(repository) == 0
+    after = await repository.get(case.case_id)
+    assert after.progress.outcome.folded_under == CaseState.CLOSED
+    assert _window(after.progress.outcome, fix.action_id).state == (
+        FixWindowState.FAILED
+    )
+    assert after.progress.outcome.closure.reason == after.closure_reason
+
+
+async def test_a_busy_rerun_on_recorded_cases_skips_nothing(repository, stored, capsys):
+    await _run(repository)
+    capsys.readouterr()
+    gate = _Gate(busy=set(stored))
+    assert await _run(repository, gate=gate) == 0
+    assert gate.read == [], "a recorded case's lease is not read"
+    out = capsys.readouterr().out
+    assert "Skipped" not in out
+    assert "Have one:     2 (left alone)" in out

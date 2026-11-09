@@ -40,6 +40,7 @@ from faultmaven.core.investigation.problem_status import (
     stage_cause_work,
 )
 from faultmaven.core.investigation.terminal_transitions import (
+    confirm_open_offer,
     derive_closure_reason,
     disposition_refusal,
     execute_user_closure,
@@ -967,6 +968,33 @@ async def test_an_accepted_close_on_a_resolvable_case_persists_its_closure(
     closure = entry_closures[-1]
     assert closure.reason == ClosureReason.RESOLUTION_DECLINED
     assert case.progress.outcome.closure is closure
+
+
+def test_a_close_accepted_on_its_stored_reason_writes_the_terminal_record(
+    monkeypatch,
+):
+    """The ordinary turn-confirmed close: an INVESTIGATING close offer that
+    is not re-derived passes no closure, and the record reads the closed
+    case's, folded under CLOSED, with no write failure."""
+    failures = []
+    monkeypatch.setattr(
+        outcome_module,
+        "case_outcome_write_failures_total",
+        SimpleNamespace(
+            labels=lambda at: SimpleNamespace(inc=lambda: failures.append(at))
+        ),
+    )
+    case, _root, _hyp = _identified_case()
+    record_case_outcome(case, at="cycle")
+    case.offer_record = open_disposition_offer(
+        case, kind=OfferKind.CLOSE, basis=OfferBasis.MENU
+    )
+    stored = case.offer_record.open.closure_reason
+    assert confirm_open_offer(case, case.effective_driver_id, via=AnswerVia.CLICK)
+    assert case.state == CaseState.CLOSED and case.closure_reason == stored
+    assert case.progress.outcome.folded_under == CaseState.CLOSED
+    assert case.progress.outcome.closure.reason == stored
+    assert failures == []
 
 
 def test_an_offer_openers_closure_is_not_kept_the_record_computes_fresh():

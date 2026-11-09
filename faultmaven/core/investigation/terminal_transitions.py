@@ -84,6 +84,7 @@ from faultmaven.modules.case.contracts import (
     CaseState,
     CauseState,
     CloseEligibility,
+    ClosureOutcome,
     ClosureReason,
     ConfirmationGap,
     DispositionEligibility,
@@ -1124,8 +1125,8 @@ def confirm_open_offer(case: Case, user_id: str, *, via: AnswerVia) -> bool:
     # while a resolve decline stands (``close_pivots_to_resolve``, #2360): the
     # user said "not resolved", so the close closes, whoever offered it.
     if offer.kind == OfferKind.CLOSE and case.state == CaseState.INVESTIGATING:
-        closure = assess_closure_readiness(case)
-        if close_pivots_to_resolve(case, closure.verdict):
+        readiness = assess_closure_readiness(case)
+        if close_pivots_to_resolve(case, readiness.verdict):
             before = case.offer_record
             case.offer_record = answer_offer(
                 case,
@@ -1138,7 +1139,7 @@ def confirm_open_offer(case: Case, user_id: str, *, via: AnswerVia) -> bool:
                 case,
                 kind=OfferKind.RESOLVE,
                 basis=offer.basis,
-                summary=closure.message,
+                summary=readiness.message,
                 pivoted_from_close=True,
             )
             if record is not None:
@@ -1154,7 +1155,7 @@ def confirm_open_offer(case: Case, user_id: str, *, via: AnswerVia) -> bool:
             # A decline binds the resolve after all: the close closes.
             case.offer_record = before
         if (
-            closure.verdict == ClosureReadiness.SUGGEST_RESOLVE
+            readiness.verdict == ClosureReadiness.SUGGEST_RESOLVE
             or reason == ClosureReason.RESOLUTION_DECLINED
         ):
             # Re-derived: the stored reason may describe a state that no
@@ -1260,7 +1261,7 @@ def _execute_closed_transition(
     user_id: str,
     closure_reason: ClosureReason,
     *,
-    closure: Any = None,
+    closure: Optional[ClosureOutcome] = None,
 ) -> None:
     """Execute → CLOSED after user confirmation.
 
