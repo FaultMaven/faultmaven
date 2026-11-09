@@ -67,6 +67,7 @@ from faultmaven.modules.case.infrastructure.sqlite_case_repository.loading impor
     _load_uploaded_files_bulk,
 )
 from faultmaven.modules.case.infrastructure.sqlite_case_repository.rows import (
+    _case_record_params,
     _row_to_case,
     _row_to_report,
 )
@@ -1124,6 +1125,31 @@ class SQLiteCaseRepository(CaseRepository):
             raise RepositoryException(
                 f"Failed to update activity timestamp for case {case_id}: {e}"
             ) from e
+
+    async def save_progress(self, case: Case) -> Case:
+        """The versioned write of ``case.progress`` alone, keeping
+        ``updated_at`` (``ICaseRepository.save_progress``, #2636)."""
+        version = await case_driver_sql.update_progress(
+            self.db,
+            case_id=case.case_id,
+            progress=_case_record_params(case, case.updated_at)["progress"],
+            expected_version=case.version,
+            is_pg=False,
+        )
+        if version is None:
+            actual = (
+                await self.db.execute(
+                    text("SELECT version FROM cases WHERE case_id = :case_id"),
+                    {"case_id": case.case_id},
+                )
+            ).scalar()
+            raise StaleCaseException(
+                case_id=case.case_id,
+                expected_version=case.version,
+                actual_version=actual or 0,
+            )
+        case.version = version
+        return case
 
     async def update_metadata_fields(
         self,

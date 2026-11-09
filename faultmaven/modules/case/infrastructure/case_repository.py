@@ -672,6 +672,12 @@ class CaseRepository(ABC):
         pass
 
     @abstractmethod
+    async def save_progress(self, case: Case) -> Case:
+        """Versioned write of ``case.progress`` alone, keeping ``updated_at``
+        (see ``ICaseRepository.save_progress``)."""
+        pass
+
+    @abstractmethod
     async def update_metadata_fields(
         self,
         case_id: str,
@@ -1086,6 +1092,22 @@ class InMemoryCaseRepository(CaseRepository):
     ) -> Optional[TurnReceipt]:
         """The receipt stored under the table's unique key, or ``None``."""
         return self._receipts.get((enterprise_id, case_id, author_id, idempotency_key))
+
+    async def save_progress(self, case: Case) -> Case:
+        """The SQL repositories' versioned progress write: the stored case
+        takes ``case.progress`` and a bumped version, nothing else."""
+        from faultmaven.modules.case.exceptions import StaleCaseException
+
+        existing = self._cases.get(case.case_id)
+        if existing is None or existing.version != case.version:
+            raise StaleCaseException(
+                case_id=case.case_id,
+                expected_version=case.version,
+                actual_version=0 if existing is None else existing.version,
+            )
+        existing.progress = case.progress.model_copy(deep=True)
+        existing.version = case.version = case.version + 1
+        return case
 
     def _store_driver(self, case: Case, driver_id: Optional[str]) -> None:
         """Store a COPY carrying the new driver and the bumped version, so a

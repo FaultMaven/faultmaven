@@ -21,7 +21,7 @@ from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
-from .lifecycle import ClosureReason
+from .lifecycle import CaseState, ClosureReason
 from .problem import ProblemStatus
 
 
@@ -226,7 +226,8 @@ class ResolutionOutcome(BaseModel):
 
 
 class UnboundRecheck(BaseModel):
-    """A post-fix row bound to nothing (``unbound_post_fix_rows``)."""
+    """A post-fix row bound to nothing (``unbound_post_fix_rows``); what it
+    could name instead is the record's ``bindable``."""
 
     evidence_id: str
     observed_turn: int
@@ -234,12 +235,20 @@ class UnboundRecheck(BaseModel):
         description="Inside a fix window, but not bound by the root's citation"
     )
     after_mitigation: bool = False
-    problem_row_ids: List[str] = Field(default_factory=list)
-    cause_row_ids: List[str] = Field(default_factory=list)
-    why: str = ""
     narrated_turn: Optional[int] = Field(
         default=None, description="The turn the row was last narrated"
     )
+
+
+class BindableRows(BaseModel):
+    """What an unbound re-check could name, the same for every unbound row:
+    the rows that showed the problem, the cited basis of the root cause
+    (``SubjectIndex.bindable_rows``), and why an uncited re-check confirms
+    nothing (``uncited_recheck_why``)."""
+
+    problem_row_ids: List[str] = Field(default_factory=list)
+    cause_row_ids: List[str] = Field(default_factory=list)
+    why: str = ""
 
 
 class MitigationOutcome(BaseModel):
@@ -274,12 +283,30 @@ class ClosureOutcome(BaseModel):
 class CaseOutcome(BaseModel):
     """The case's outcome, folded over its prior (#2615, *The record*)."""
 
+    folded_under: CaseState = Field(
+        description=(
+            "The case's state when the record was folded: a terminal case "
+            "whose record was folded under an open state was never written "
+            "by a terminal write, and the backfill recomputes it"
+        )
+    )
     problem: ProblemOutcome
     cause: CauseOutcome
     attempts: List[AttemptOutcome] = Field(default_factory=list)
     demotions: List[Demotion] = Field(default_factory=list)
     resolution: ResolutionOutcome
     unbound_rechecks: List[UnboundRecheck] = Field(default_factory=list)
+    bindable: Optional[BindableRows] = Field(
+        default=None, description="Set with any unbound re-check"
+    )
     mitigation: Optional[MitigationOutcome] = None
     milestones_shown: List[str] = Field(default_factory=list)
     closure: ClosureOutcome
+    disagreements: Dict[str, int] = Field(
+        default_factory=dict,
+        description=(
+            "Each carried verdict a fresh derivation disagrees with, by field "
+            "and entry, and the turn the disagreement was first read: counted "
+            "once, when it first appears"
+        ),
+    )

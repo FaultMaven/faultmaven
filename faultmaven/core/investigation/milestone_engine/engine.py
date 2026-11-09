@@ -71,7 +71,6 @@ from faultmaven.core.investigation.milestone_engine.vectorization import (
     EvidenceVectorizer,
 )
 from faultmaven.core.investigation.offers import answer_offer, open_terminal_offer
-from faultmaven.core.investigation.outcome import decision_cycle
 from faultmaven.core.investigation.problem_status import (
     cancel_revision,
     decline_revision,
@@ -1295,24 +1294,22 @@ class MilestoneEngine:
                 kb_rendered=metadata[TURN_METADATA_KB_PROMPTED],
             )
 
-            # 4. Apply state from the final accepted response (exactly once):
-            # one decision cycle (#2615), which the case outcome record ends.
-            with decision_cycle():
-                case_updated, stagnation_str, validation_repairs = (
-                    await _apply_turn_response(
-                        self.deps.hypothesis_manager,
-                        self.deps.progress_monitor,
-                        self.deps.state_validator,
-                        self.responses,
-                        self.transitions,
-                        attachments=attachments,
-                        case=case,
-                        metadata=metadata,
-                        response_obj=response_obj,
-                        upload_report=upload_report,
-                        user_message=user_message,
-                    )
+            # 4. Apply state from the final accepted response (exactly once)
+            case_updated, stagnation_str, validation_repairs = (
+                await _apply_turn_response(
+                    self.deps.hypothesis_manager,
+                    self.deps.progress_monitor,
+                    self.deps.state_validator,
+                    self.responses,
+                    self.transitions,
+                    attachments=attachments,
+                    case=case,
+                    metadata=metadata,
+                    response_obj=response_obj,
+                    upload_report=upload_report,
+                    user_message=user_message,
                 )
+            )
 
             # System output the user typed into this message, offered back for
             # them to declare (#1930). Here, on the live turn only: the blocks

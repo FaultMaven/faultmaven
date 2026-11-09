@@ -344,15 +344,13 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
         "confirmation_stamp_rows": 1,
         "resolution_record_lines": 1,
     },
-    (_OUTCOME, "_unbound_rechecks"): {
-        "unbound_post_fix_rows": 1,
-        "uncited_recheck_why": 1,
-    },
+    (_OUTCOME, "_bindable"): {"uncited_recheck_why": 1},
+    (_OUTCOME, "_unbound_rechecks"): {"unbound_post_fix_rows": 1},
     (_OUTCOME, "closure_outcome"): {"derive_closure_reason": 1},
     (_OUTCOME, "compute_case_outcome"): {"fix_windows": 1, "shown_milestones": 1},
     (_OUTCOME, "record_case_outcome"): {"compute_case_outcome": 1},
     # The backfill: once per stored case without a record, from the case.
-    ("faultmaven/cli/backfill_case_outcome.py", "backfill_case_outcome"): {
+    ("faultmaven/cli/backfill_case_outcome.py", "backfill_case_outcome._apply"): {
         "compute_case_outcome": 1
     },
     (_MONITOR, "ProgressMonitor._detect_fix_failure_cycle"): {"fix_windows": 1},
@@ -406,7 +404,6 @@ FIELD_READS: dict[tuple[str, str], dict[str, int]] = {
     # the refusal reason is read beside.
     (_OUTCOME, "_closure"): {"closure_reason": 1},
     (_OUTCOME, "_mitigation"): {"verified": 1},
-    (_OUTCOME, "_take_entry_closure"): {"closure_reason": 1},
     (_OUTCOME, "record_case_outcome"): {"closure_reason": 1},
     (_MONITOR, "ProgressMonitor._detect_fix_failure_cycle"): {"verified": 1},
     (_MONITOR, "ProgressMonitor._find_pending_milestone"): {"completed_milestones": 1},

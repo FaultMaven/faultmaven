@@ -8,8 +8,9 @@ turn's save fails with a version conflict) and writes its
 
 It also holds the read an account deletion asks first: how many cases the
 account CREATED, since ``cases.user_id`` refuses the delete while any exist
-(#1923), and a case's own hard delete: its share rows, its row and its
-``case_deleted`` audit row in ONE transaction (#1016).
+(#1923), a case's own hard delete: its share rows, its row and its
+``case_deleted`` audit row in ONE transaction (#1016), and the versioned write
+of the ``progress`` blob alone (#2636).
 
 The functions take primitives, not domain objects, so this infrastructure
 module needs nothing from the domain layer.
@@ -32,6 +33,33 @@ _RELEASE = text(
 )
 
 _VERSION = text("SELECT version FROM cases WHERE case_id = :case_id")
+
+
+async def update_progress(
+    db: Any, *, case_id: str, progress: str, expected_version: int, is_pg: bool
+) -> Optional[int]:
+    """Compare-and-swap ``cases.progress`` on ``version``, bump it, commit,
+    and leave every other column (``updated_at`` included) as it is. The new
+    version, or ``None`` and a rollback when the version moved. ``progress``
+    is the dialect repository's own serialization of the blob."""
+    value = "CAST(:progress AS JSONB)" if is_pg else ":progress"
+    result = await db.execute(
+        text(
+            f"UPDATE cases SET progress = {value}, version = version + 1 "
+            "WHERE case_id = :case_id AND version = :expected_version"
+        ),
+        {
+            "case_id": case_id,
+            "progress": progress,
+            "expected_version": expected_version,
+        },
+    )
+    if (result.rowcount or 0) != 1:
+        await db.rollback()
+        return None
+    await db.commit()
+    return expected_version + 1
+
 
 _DRIVEN_BY = text(
     "SELECT case_id, enterprise_id, user_id, driver_id FROM cases "

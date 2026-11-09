@@ -32,9 +32,7 @@ from faultmaven.core.investigation.milestone_engine.statement_revision import (
 )
 from faultmaven.core.investigation.offers import answer_offer
 from faultmaven.core.investigation.outcome import (
-    closure_outcome,
     compute_case_outcome,
-    decision_cycle,
     record_case_outcome,
 )
 from faultmaven.core.investigation.problem_status import (
@@ -366,6 +364,77 @@ def test_window_zero_is_one_entry_carried_across_cycles(conflicts):
     assert zero[0].kind is None and zero[0].accepted_in_turn is None
 
 
+def test_a_standing_disagreement_counts_once_over_ten_cycles(conflicts):
+    case, root, hyp = _identified_case()
+    fix = _fix(case)
+    _relapse(case, rechecks=_eid("pool_log"))
+    _recompute_at(case, 9)
+    record = compute_case_outcome(None, case)
+    _deepen(case, hyp, root)
+    for _ in range(10):
+        record = compute_case_outcome(record, case)
+    assert conflicts == ["attempts.window"]
+    assert record.disagreements == {f"attempts.window:{fix.action_id}": 10}
+
+
+async def test_a_replay_adds_nothing_for_a_disagreement_already_counted(conflicts):
+    case, root, hyp = _identified_case()
+    _fix(case)
+    _relapse(case, rechecks=_eid("pool_log"))
+    _recompute_at(case, 9)
+    record_case_outcome(case, at="cycle")
+    _deepen(case, hyp, root)
+    record_case_outcome(case, at="cycle")
+    assert conflicts == ["attempts.window"], "premise: counted once"
+
+    propose_revision(
+        case,
+        text="checkout returns 503 under load",
+        evidence_ids=[VERIFYING_ID],
+        basis="only under load",
+        wording_key="k",
+    )
+    for turn in (11, 12, 13):
+        case.current_turn = turn
+        stage_cause_work(case, updates={}, evidence_added=[])
+    case.current_turn = 14
+    responses = SimpleNamespace(
+        kb_prefetcher=SimpleNamespace(prefetch_kb_context=AsyncMock()),
+        _apply_investigation_updates=AsyncMock(),
+    )
+    await confirm_revision(responses, case, {}, via=AnswerVia.CLICK)
+    assert responses._apply_investigation_updates.await_count == 3
+    assert conflicts == ["attempts.window"]
+
+
+def test_a_disagreement_that_returns_counts_again(conflicts):
+    case, _root, _hyp = _identified_case()
+    fix = _fix(case)
+    record = compute_case_outcome(None, case)
+    for accepted in (5, 5, 6, 5):
+        fix.accepted_in_turn = accepted
+        record = compute_case_outcome(record, case)
+    assert conflicts == ["attempts.accepted_in_turn"] * 2
+
+
+def test_a_terminal_case_does_not_carry_a_closure_folded_open(conflicts):
+    """A record a terminal write never folded (its write raised) holds the
+    open case's closure, which is not final: the next fold reads the closed
+    case's own."""
+    case, _root, _hyp = _identified_case()
+    open_record = compute_case_outcome(None, case)
+    case.atomic_update(
+        state=CaseState.CLOSED,
+        closed_at=case.updated_at,
+        closure_reason=ClosureReason.SOLUTION_DEFERRED,
+    )
+    assert open_record.closure.reason != ClosureReason.SOLUTION_DEFERRED, "premise"
+    record = compute_case_outcome(open_record, case)
+    assert record.closure.reason == ClosureReason.SOLUTION_DEFERRED
+    assert record.folded_under == CaseState.CLOSED
+    assert conflicts == []
+
+
 def test_window_zero_is_recorded_only_once_observed():
     case, _root, _hyp = _identified_case()
     assert compute_case_outcome(None, case).attempts == []
@@ -434,7 +503,10 @@ def test_each_section_of_an_identified_case():
     assert resolution.pending_check_need_id is None
     assert resolution.declined_stands is False
     assert resolution.confirmed_row_ids == [] and resolution.statement == ""
-    assert record.unbound_rechecks == [] and record.mitigation is None
+    assert record.unbound_rechecks == [] and record.bindable is None
+    assert record.mitigation is None
+    assert record.folded_under == CaseState.INVESTIGATING
+    assert record.disagreements == {}
     assert record.milestones_shown == ["symptom_verified", "root_cause_identified"]
     assert record.closure.eligibility == ClosureEligibility.HAS_SUBSTANCE
     assert record.closure.reason == derive_closure_reason(case)
@@ -512,8 +584,9 @@ def test_the_unbound_rechecks_list_every_turn_and_carry_the_narrated_turn():
     (unbound,) = first.unbound_rechecks
     assert (unbound.evidence_id, unbound.observed_turn) == (_eid("unnamed"), 7)
     assert unbound.uncited is False and unbound.after_mitigation is False
-    assert unbound.problem_row_ids == [VERIFYING_ID]
     assert unbound.narrated_turn is None
+    assert first.bindable.problem_row_ids == [VERIFYING_ID]
+    assert first.bindable.cause_row_ids == [_eid("pool_log"), _eid("pool_metric")]
     narrated = first.model_copy(
         update={"unbound_rechecks": [unbound.model_copy(update={"narrated_turn": 8})]}
     )
@@ -896,30 +969,19 @@ async def test_an_accepted_close_on_a_resolvable_case_persists_its_closure(
     assert case.progress.outcome.closure is closure
 
 
-def test_inside_a_cycle_the_closure_is_computed_fresh(monkeypatch):
-    monkeypatch.setattr(
-        outcome_module,
-        "_ENTRY_CLOSURE",
-        outcome_module.ContextVar("probe", default=None),
-    )
+def test_an_offer_openers_closure_is_not_kept_the_record_computes_fresh():
+    """An in-cycle opener computes a closure for its offer; nothing keeps it,
+    so the cycle-end record reads the case as it ends."""
     case, _root, _hyp = _identified_case()
-    with decision_cycle():
-        record = open_disposition_offer(
-            case, kind=OfferKind.CLOSE, basis=OfferBasis.MENU
-        )
-        assert outcome_module._ENTRY_CLOSURE.get() is None, "nothing memoized"
-        case.progress.problem_status = ProblemStatus.INVALIDATED
-        record_case_outcome(case, at="cycle")
+    record = open_disposition_offer(case, kind=OfferKind.CLOSE, basis=OfferBasis.MENU)
+    case.progress.problem_status = ProblemStatus.INVALIDATED
+    record_case_outcome(case, at="cycle")
     assert record.open.closure_reason != ClosureReason.CLOSED_FALSE_ALARM, "premise"
     assert case.progress.outcome.closure.reason == ClosureReason.CLOSED_FALSE_ALARM
 
-    closure = closure_outcome(case)
-    assert outcome_module._ENTRY_CLOSURE.get() == (case, closure), "memoized outside"
-
 
 def test_two_close_offers_on_one_case_each_read_the_case_as_it_stands():
-    """Outside a cycle the memo feeds only the record: each entry still
-    decides on the case as it stands, as on main."""
+    """Each entry decides on the case as it stands, as on main."""
     case, _root, _hyp = _identified_case()
     first = open_disposition_offer(case, kind=OfferKind.CLOSE, basis=OfferBasis.MENU)
     case.offer_record = first
@@ -940,9 +1002,7 @@ def test_two_close_offers_on_one_case_each_read_the_case_as_it_stands():
 # ---------------------------------------------------------------------------
 
 
-async def test_a_turn_writes_the_record_last_in_its_cycle_inside_the_cycle(
-    monkeypatch,
-):
+async def test_a_turn_writes_the_record_last_in_its_cycle(monkeypatch):
     from faultmaven.core.investigation.milestone_engine import turn_application
 
     order = []
@@ -956,7 +1016,7 @@ async def test_a_turn_writes_the_record_last_in_its_cycle_inside_the_cycle(
     real_record = turn_application.record_case_outcome
 
     def _record(case, *, at):
-        order.append((at, outcome_module._IN_DECISION_CYCLE.get()))
+        order.append(at)
         real_record(case, at=at)
 
     monkeypatch.setattr(turn_application, "record_case_outcome", _record)
@@ -966,10 +1026,10 @@ async def test_a_turn_writes_the_record_last_in_its_cycle_inside_the_cycle(
     assert order == [
         "_sweep_needs_for_terminal_hypotheses",
         "sweep_silent_inferred_needs",
-        ("cycle", True),
+        "cycle",
     ]
     assert case.progress.outcome.resolution.reason == ResolutionReason.CONFIRMED
-    assert outcome_module._IN_DECISION_CYCLE.get() is False
+    assert case.progress.outcome.folded_under == CaseState.INVESTIGATING
 
 
 async def test_writing_the_record_changes_no_text_and_no_decision(monkeypatch):
@@ -1040,3 +1100,68 @@ def test_a_write_that_raises_fails_nothing_and_is_counted(monkeypatch, caplog):
     assert case.progress.outcome is None
     assert counted == ["closed"]
     assert "the case outcome record was not written at closed" in caplog.text
+
+
+_SERIES_CHILD = r"""
+import json
+
+from prometheus_client import REGISTRY
+
+import faultmaven.core.investigation.lifecycle_metrics as lifecycle_metrics
+
+series = {}
+for family in REGISTRY.collect():
+    if family.name in (
+        "faultmaven_case_outcome_conflicts",
+        "faultmaven_case_outcome_write_failures",
+    ):
+        for sample in family.samples:
+            if sample.name.endswith("_total"):
+                (label,) = sample.labels.values()
+                series[f"{family.name}|{label}"] = sample.value
+print("@@RESULT@@" + json.dumps({"file": lifecycle_metrics.__file__, "series": series}))
+"""
+
+
+def test_both_counters_expose_every_series_at_zero_from_import():
+    """A series born by its first increment is born at 1, and ``increase()``
+    never sees it. A subprocess, because the shim picks real-or-NoOp at
+    import (``ENABLE_METRICS``), and ``prometheus-client`` is a cloud extra:
+    the standalone leg skips, as for the terminal-confirmation counters."""
+    import json
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    pytest.importorskip("prometheus_client")
+    repo_root = Path(__file__).resolve().parents[4]
+    env = dict(os.environ, ENABLE_METRICS="true")
+    env["PYTHONPATH"] = os.pathsep.join(
+        p for p in (str(repo_root), env.get("PYTHONPATH")) if p
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", _SERIES_CHILD],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    line = next(x for x in proc.stdout.splitlines() if x.startswith("@@RESULT@@"))
+    result = json.loads(line[len("@@RESULT@@") :])
+    assert result["file"].startswith(str(repo_root))
+    fields = (
+        "attempts.window",
+        "attempts.accepted_in_turn",
+        "resolution.confirmed_row_ids",
+        "closure",
+    )
+    assert result["series"] == {
+        **{f"faultmaven_case_outcome_conflicts|{f}": 0.0 for f in fields},
+        **{
+            f"faultmaven_case_outcome_write_failures|{at}": 0.0
+            for at in ("cycle", "replay", "resolved", "closed")
+        },
+    }

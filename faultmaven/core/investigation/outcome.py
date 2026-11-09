@@ -9,31 +9,35 @@ re-derived:
   it was read under (#2569 / Q1 (b): it stays FAILED against that statement);
 - an attempt's ``accepted_in_turn``;
 - at RESOLVED, the confirmed rows, the stamp's included;
-- a terminal case's closure.
+- a terminal case's closure, once a terminal write folded it.
 
-A fresh derivation that disagrees with a carried verdict is a conflict: it is
-logged and counted on ``case_outcome_conflicts_total{field}``, and the carried
-verdict stands. In this stage the deciders still read fresh derivations, so a
-conflict is a place where a decider and the record disagree; stage S3 switches
-them.
+A fresh derivation that disagrees with a carried verdict is a disagreement:
+the carried verdict stands, and the record keeps the turn the disagreement was
+first read (``CaseOutcome.disagreements``). It is logged and counted on
+``case_outcome_conflicts_total{field}`` once, when it first appears; a
+recompute that reads it again counts nothing, and one that reads it gone drops
+it, so its return counts again. In this stage the deciders still read fresh
+derivations, so a disagreement is a place where a decider and the record
+disagree; stage S3 switches them.
 
 Where it is written (``record_case_outcome``): at the end of each decision
 cycle (``_apply_turn_response``, after every decider, before the save), after
 each bundle of a statement-revision replay, and at both terminal transitions.
 Nothing reads it in this stage. ``closure_outcome`` computes the closure
-section on demand at the four closure entries.
+section on demand at the four closure entries, and the two that close hand it
+to ``_execute_closed_transition``, whose record persists it.
 
 Every stored case gets its first record from ``fm-backfill-case-outcome``
 (``faultmaven/cli/backfill_case_outcome.py``), computed once from the case as
-stored. No reader computes a record on ``None``: there is no legacy read path.
+stored, and recomputes a terminal case's record that no terminal write
+folded (``CaseOutcome.folded_under``). No reader computes a record on
+``None``: there is no legacy read path.
 """
 
 from __future__ import annotations
 
 import logging
-from contextlib import contextmanager
-from contextvars import ContextVar
-from typing import TYPE_CHECKING, Iterator, Optional
+from typing import TYPE_CHECKING, Optional
 
 from faultmaven.core.investigation.causal_graph.projection import held_open_root_ids
 from faultmaven.core.investigation.cause_assurance import (
@@ -71,6 +75,7 @@ from faultmaven.core.investigation.terminal_transitions import (
 )
 from faultmaven.modules.case.contracts import (
     AttemptOutcome,
+    BindableRows,
     CaseOutcome,
     CaseState,
     CauseOutcome,
@@ -95,32 +100,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_TERMINAL = (CaseState.RESOLVED, CaseState.CLOSED)
-
-#: Whether the running code is inside a decision cycle: one application of
-#: step 1 plus steps 2-4 (``_apply_turn_response``), or one bundle of a
-#: statement-revision replay.
-_IN_DECISION_CYCLE: ContextVar[bool] = ContextVar(
-    "case_outcome_in_decision_cycle", default=False
-)
-#: The closure a closure entry computed outside a decision cycle, with the
-#: case it was computed on: the one memo, read by the terminal transition's
-#: record write.
-_ENTRY_CLOSURE: ContextVar[Optional[tuple]] = ContextVar(
-    "case_outcome_entry_closure", default=None
-)
-
-
-@contextmanager
-def decision_cycle() -> Iterator[None]:
-    """Mark the code run inside as one decision cycle: ``closure_outcome``
-    memoizes nothing there."""
-    token = _IN_DECISION_CYCLE.set(True)
-    try:
-        yield
-    finally:
-        _IN_DECISION_CYCLE.reset(token)
-
 
 def _closure_of(case: "Case", reason: Optional[ClosureReason]) -> ClosureOutcome:
     return ClosureOutcome(
@@ -134,46 +113,29 @@ def closure_outcome(case: "Case") -> ClosureOutcome:
     """The closure section of ``compute_case_outcome``, computed on demand at
     the four closure entries: ``open_disposition_offer``,
     ``disposition_refusal``, ``confirm_open_offer`` and
-    ``execute_user_closure`` (#2615, *Closure on demand*).
-
-    Always computed fresh, so each entry decides on what
-    ``derive_closure_reason`` gives. Outside a decision cycle (step 0's
-    decline-then-close, the REST close) the result is also memoized in one
-    request-scoped slot, which the terminal transition's record write reads:
-    the record persists the closure its entry decided on, not one re-derived
-    after the state moved. Inside a cycle nothing is memoized, since an offer
-    opener's closure would be stale by the cycle's end; the record computes
-    the closure fresh there."""
-    closure = _closure_of(case, derive_closure_reason(case))
-    if not _IN_DECISION_CYCLE.get():
-        _ENTRY_CLOSURE.set((case, closure))
-    return closure
+    ``execute_user_closure`` (#2615, *Closure on demand*). Always computed
+    fresh, so each entry decides on what ``derive_closure_reason`` gives. The
+    two entries that close hand it to ``_execute_closed_transition``, whose
+    record persists the closure its entry decided on; nothing else keeps it,
+    so the cycle-end record computes the closure fresh."""
+    return _closure_of(case, derive_closure_reason(case))
 
 
-def _take_entry_closure(case: "Case") -> Optional[ClosureOutcome]:
-    """The memoized entry closure for ``case`` when it names the reason the
-    case closed with, emptying the slot; else None."""
-    held = _ENTRY_CLOSURE.get()
-    _ENTRY_CLOSURE.set(None)
-    if held is None or held[0] is not case:
-        return None
-    closure = held[1]
-    return closure if closure.reason == getattr(case, "closure_reason", None) else None
-
-
-def record_case_outcome(case: "Case", *, at: str) -> None:
+def record_case_outcome(
+    case: "Case", *, at: str, closure: Optional[ClosureOutcome] = None
+) -> None:
     """Fold the case's outcome over ``progress.outcome`` and store it there.
 
     ``at`` names the write point: ``cycle``, ``replay``, ``resolved`` or
-    ``closed``. At a terminal transition the closure is the one its entry
-    memoized (``closure_outcome``), else the one the case now stands on.
+    ``closed``. ``closure``: at a terminal transition, the closure its entry
+    computed (``closure_outcome``); with none (a resolve, or a close offer
+    accepted on its stored reason), the one the case now stands on.
     Nothing reads the record in this stage, so a write that raises fails
     neither the turn nor the transition: it is logged with its traceback and
     counted on ``case_outcome_write_failures_total{at}``."""
-    closure = _take_entry_closure(case) if at in ("resolved", "closed") else None
     try:
-        if at in ("resolved", "closed") and closure is None:
-            closure = _closure_of(case, getattr(case, "closure_reason", None))
+        if case.is_terminal and closure is None:
+            closure = _closure_of(case, case.closure_reason)
         case.progress.outcome = compute_case_outcome(
             case.progress.outcome, case, closure=closure
         )
@@ -186,16 +148,31 @@ def record_case_outcome(case: "Case", *, at: str) -> None:
         case_outcome_write_failures_total.labels(at=at).inc()
 
 
-def _conflict(case: "Case", field: str, carried, fresh) -> None:
-    logger.warning(
-        "Case %s: the outcome record's carried %s (%s) disagrees with a fresh "
-        "derivation (%s); the carried verdict stands (#2615)",
-        getattr(case, "case_id", None),
-        field,
-        carried,
-        fresh,
-    )
-    case_outcome_conflicts_total.labels(field=field).inc()
+class _Disagreements:
+    """The disagreements one computation reads, keyed by field and entry: the
+    record keeps the turn each was first read, and each is counted and logged
+    once, when it first appears."""
+
+    def __init__(self, case: "Case", prior: Optional[CaseOutcome]) -> None:
+        self.case = case
+        self.known = dict(prior.disagreements) if prior is not None else {}
+        self.read: dict[str, int] = {}
+
+    def add(self, field: str, entry: Optional[str], carried, fresh) -> None:
+        key = f"{field}:{entry}" if entry else field
+        if key in self.known:
+            self.read[key] = self.known[key]
+            return
+        self.read[key] = self.case.current_turn
+        logger.warning(
+            "Case %s: the outcome record's carried %s (%s) disagrees with a "
+            "fresh derivation (%s); the carried verdict stands (#2615)",
+            getattr(self.case, "case_id", None),
+            key,
+            carried,
+            fresh,
+        )
+        case_outcome_conflicts_total.labels(field=field).inc()
 
 
 def compute_case_outcome(
@@ -210,20 +187,25 @@ def compute_case_outcome(
     subjects = subject_index(case)
     windows = fix_windows(case, subjects)
     statement = current_statement(case)
+    seen = _Disagreements(case, prior)
+    unbound = _unbound_rechecks(prior, case, subjects, windows)
     return CaseOutcome(
+        folded_under=case.state,
         problem=ProblemOutcome(
             status=case.progress.problem_status,
             verifying_row_ids=list(subjects.verifying),
             statement=statement,
         ),
         cause=_cause(case, subjects),
-        attempts=_attempts(prior, case, subjects, windows, statement),
+        attempts=_attempts(prior, case, subjects, windows, statement, seen),
         demotions=list(prior.demotions) if prior is not None else [],
-        resolution=_resolution(prior, case, subjects, windows),
-        unbound_rechecks=_unbound_rechecks(prior, case, subjects, windows),
+        resolution=_resolution(prior, case, subjects, windows, seen),
+        unbound_rechecks=unbound,
+        bindable=_bindable(subjects) if unbound else None,
         mitigation=_mitigation(case, subjects),
         milestones_shown=shown_milestones(case),
-        closure=_closure(prior, case, closure),
+        closure=_closure(prior, case, closure, seen),
+        disagreements=seen.read,
     )
 
 
@@ -298,6 +280,7 @@ def _attempts(
     subjects: "SubjectIndex",
     windows: list,
     statement: str,
+    seen: _Disagreements,
 ) -> list[AttemptOutcome]:
     """Every accepted SOLUTION, keyed by its ``action_id``, with the window
     it opened; window 0, the fix done outside the case, as ``action_id``
@@ -342,9 +325,9 @@ def _attempts(
             old.accepted_in_turn is not None
             and attempt.accepted_in_turn != old.accepted_in_turn
         ):
-            _conflict(
-                case,
+            seen.add(
                 "attempts.accepted_in_turn",
+                attempt.action_id,
                 old.accepted_in_turn,
                 attempt.accepted_in_turn,
             )
@@ -352,12 +335,12 @@ def _attempts(
         if old.window is not None and old.window.state == FixWindowState.FAILED:
             if attempt.window is None or attempt.window.state != FIX_FAILED:
                 fresh_state = attempt.window.state if attempt.window else None
-                _conflict(case, "attempts.window", FIX_FAILED, fresh_state)
+                seen.add("attempts.window", attempt.action_id, FIX_FAILED, fresh_state)
             update["window"] = old.window
         out.append(attempt.model_copy(update=update) if update else attempt)
     for old in carried.values():
         if old.window is not None and old.window.state == FixWindowState.FAILED:
-            _conflict(case, "attempts.window", FIX_FAILED, None)
+            seen.add("attempts.window", old.action_id, FIX_FAILED, None)
             out.append(old)
     return out
 
@@ -367,6 +350,7 @@ def _resolution(
     case: "Case",
     subjects: "SubjectIndex",
     windows: list,
+    seen: _Disagreements,
 ) -> ResolutionOutcome:
     readiness = assess_resolution_readiness(case)
     cause_rows = cause_elimination_rows(case, subjects=subjects, windows=windows)
@@ -384,7 +368,7 @@ def _resolution(
         carried = prior.resolution.confirmed_row_ids if prior is not None else []
         if carried:
             if carried != confirmed:
-                _conflict(case, "resolution.confirmed_row_ids", carried, confirmed)
+                seen.add("resolution.confirmed_row_ids", None, carried, confirmed)
             confirmed = list(carried)
     check = readiness.pending_check
     return ResolutionOutcome(
@@ -417,21 +401,27 @@ def _unbound_rechecks(
         u.evidence_id: u.narrated_turn
         for u in (prior.unbound_rechecks if prior is not None else [])
     }
-    problem, cause = subjects.bindable_rows()
-    why = uncited_recheck_why(subjects)
     return [
         UnboundRecheck(
             evidence_id=u.row.evidence_id,
             observed_turn=subjects.observed(u.row),
             uncited=u.uncited,
             after_mitigation=u.after_mitigation,
-            problem_row_ids=[e.evidence_id for e in problem],
-            cause_row_ids=[e.evidence_id for e in cause],
-            why=why,
             narrated_turn=narrated.get(u.row.evidence_id),
         )
         for u in found
     ]
+
+
+def _bindable(subjects: "SubjectIndex") -> BindableRows:
+    """What an unbound re-check could name instead, and why an uncited one
+    confirms nothing: the same for every unbound row, so held once."""
+    problem, cause = subjects.bindable_rows()
+    return BindableRows(
+        problem_row_ids=[e.evidence_id for e in problem],
+        cause_row_ids=[e.evidence_id for e in cause],
+        why=uncited_recheck_why(subjects),
+    )
 
 
 def _mitigation(case: "Case", subjects: "SubjectIndex") -> Optional[MitigationOutcome]:
@@ -460,18 +450,22 @@ def _mitigation(case: "Case", subjects: "SubjectIndex") -> Optional[MitigationOu
 
 
 def _closure(
-    prior: Optional[CaseOutcome], case: "Case", closure: Optional[ClosureOutcome]
+    prior: Optional[CaseOutcome],
+    case: "Case",
+    closure: Optional[ClosureOutcome],
+    seen: _Disagreements,
 ) -> ClosureOutcome:
-    """The closure a terminal transition hands in; a terminal case's carried
-    closure (final); a terminal case's own (the backfill); else what a close
-    of the case would be now."""
+    """The closure a terminal transition hands in; a terminal case's closure
+    a terminal write folded (final, carried); a terminal case's own, read off
+    the case (the backfill, or a record no terminal write folded); else what
+    a close of the case would be now."""
     if closure is not None:
         return closure
-    if case.state not in _TERMINAL:
+    if not case.is_terminal:
         return _closure_of(case, derive_closure_reason(case))
-    stored = case.closure_reason if case.state == CaseState.CLOSED else None
-    if prior is None:
+    stored = case.closure_reason
+    if prior is None or not prior.folded_under.is_terminal:
         return _closure_of(case, stored)
     if prior.closure.reason != stored:
-        _conflict(case, "closure", prior.closure.reason, stored)
+        seen.add("closure", None, prior.closure.reason, stored)
     return prior.closure

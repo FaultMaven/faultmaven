@@ -311,6 +311,16 @@ class ICaseRepository(Protocol):
         """Update case last_activity_at timestamp."""
         ...
 
+    async def save_progress(self, case: "Case") -> "Case":
+        """Write ``case.progress`` alone, compare-and-swap on ``version``
+        (#2636): the version is bumped, so a turn holding an older copy fails
+        with a version conflict rather than writing it back, and
+        ``updated_at`` is kept, so no case list re-sorts. Nothing else on the
+        case is written, and no save-time derivation runs. Raises
+        ``StaleCaseException`` when the stored version moved; on success
+        ``case.version`` is the new one and the case is returned."""
+        ...
+
     async def update_metadata_fields(
         self,
         case_id: str,
@@ -596,6 +606,7 @@ from faultmaven.modules.case.domain.models.offer import (
 )
 from faultmaven.modules.case.domain.models.outcome import (
     AttemptOutcome,
+    BindableRows,
     CaseOutcome,
     CauseOutcome,
     ClosureEligibility,
@@ -886,6 +897,7 @@ __all__ = [
     "CauseState",
     # The case outcome record (#2615 stage S1)
     "AttemptOutcome",
+    "BindableRows",
     "CaseOutcome",
     "CauseOutcome",
     "ClosureEligibility",

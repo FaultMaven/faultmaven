@@ -482,6 +482,12 @@ class SessionlessCaseRepository(CaseRepository):
             repo = get_repository_for_session(session)
             return await repo.update_activity_timestamp(case_id)
 
+    async def save_progress(self, case: Case) -> Case:
+        """The versioned progress write, keeping ``updated_at`` (#2636)."""
+        async with get_db_session() as session:
+            repo = get_repository_for_session(session)
+            return await repo.save_progress(case)
+
     async def update_metadata_fields(
         self,
         case_id: str,

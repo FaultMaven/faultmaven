@@ -3,29 +3,35 @@
 ``CaseOutcome`` lives in the ``progress`` blob as ``progress.outcome``, with no
 migration. Two things keep every stored case loadable:
 
-* each enum the record stores is APPEND-ONLY. A stored case names members by
-  value, so a member renamed or removed would fail every load of that case.
-  ``PINNED`` holds every member in declaration order, as
+* each enum and Literal the record stores is APPEND-ONLY. A stored case names
+  members by value, so a member renamed or removed would fail every load of
+  that case. ``PINNED`` holds every member in declaration order, as
   ``alembic/revision_fingerprints.txt`` holds every applied revision: a new
-  member is appended here with its enum, and nothing here is ever edited;
+  member is appended here with its type, and nothing here is ever edited.
+  Every such type is found by walking ``CaseOutcome``'s field annotations,
+  so a new field's type is held to the pin too;
 * the record round-trips through both repositories' row codecs, and a row
   stored without it loads with ``outcome`` None.
 """
 
+import enum
 import json
+import typing
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.modules.case.contracts import (
     AttemptOutcome,
+    BindableRows,
     CaseOutcome,
+    CaseState,
     CauseOutcome,
     ClosureEligibility,
     ClosureOutcome,
@@ -60,9 +66,10 @@ from tests.case_builders import make_case
 
 pytestmark = pytest.mark.unit
 
-#: Every member of every enum the record stores, in declaration order.
+#: Every member of every enum and Literal the record stores, in declaration
+#: order: an enum by its type, a Literal by the field that declares it.
 #: APPEND-ONLY: a stored case names these values.
-PINNED = {
+PINNED: dict = {
     FixWindowState: ["unknown", "succeeded", "failed"],
     PoolEmptyReason: [
         "held_open",
@@ -106,30 +113,73 @@ PINNED = {
         "closed_restatement_held",
         "closed_insufficient_evidence",
     ],
+    CaseState: ["inquiry", "investigating", "resolved", "closed"],
+    "AttemptOutcome.kind": ["remediation", "interception"],
 }
 
 
-@pytest.mark.parametrize("enum", list(PINNED), ids=lambda e: e.__name__)
-def test_every_stored_enum_member_is_pinned(enum):
-    assert [m.value for m in enum] == PINNED[enum], (
-        f"{enum.__name__} changed. Its members are append-only: a stored case "
-        "names them by value, so renaming or removing one fails every load of "
-        "that case. Append a new member at the end, here and on the enum."
+def _stored_types(model: type, found: dict | None = None) -> dict:
+    """Every Enum and Literal ``model`` stores, through every nested model,
+    container and union, with its members: an Enum keyed by its type, a
+    Literal by ``Model.field``."""
+    found = {} if found is None else found
+
+    def walk(annotation, where: str) -> None:
+        if isinstance(annotation, type) and issubclass(annotation, enum.Enum):
+            found[annotation] = [m.value for m in annotation]
+        elif isinstance(annotation, type) and issubclass(annotation, BaseModel):
+            if annotation not in found:
+                found[annotation] = None
+                for name, field in annotation.model_fields.items():
+                    walk(field.annotation, f"{annotation.__name__}.{name}")
+        elif typing.get_origin(annotation) is typing.Literal:
+            found[where] = list(typing.get_args(annotation))
+        else:
+            for arg in typing.get_args(annotation):
+                walk(arg, where)
+
+    walk(model, model.__name__)
+    return {k: v for k, v in found.items() if v is not None}
+
+
+def _unpinned(model: type) -> list[str]:
+    """Each stored Enum or Literal whose members ``PINNED`` does not hold
+    exactly."""
+    return [
+        getattr(key, "__name__", key)
+        for key, members in _stored_types(model).items()
+        if PINNED.get(key) != members
+    ]
+
+
+def test_every_type_the_record_stores_is_pinned_member_for_member():
+    assert _unpinned(CaseOutcome) == [], (
+        "A type the record stores changed or is new. Its members are "
+        "append-only: a stored case names them by value, so renaming or "
+        "removing one fails every load of that case. Append a new member at "
+        "the end, here and on the type; pin a new type here."
     )
+    assert set(_stored_types(CaseOutcome)) == set(PINNED), "a stale pin"
 
 
-def test_the_pin_covers_every_enum_the_record_declares():
-    from faultmaven.modules.case.domain.models import outcome
+def test_the_walk_finds_a_foreign_enum_and_a_literal_in_a_nested_field():
+    class _Foreign(enum.Enum):
+        A = "a"
 
-    declared = {
-        value
-        for value in vars(outcome).values()
-        if isinstance(value, type)
-        and issubclass(value, outcome.StrEnum)
-        and value is not outcome.StrEnum
-        and value.__module__ == outcome.__name__
+    class _Inner(BaseModel):
+        state: typing.Optional[_Foreign] = None
+        kinds: typing.List[typing.Literal["x", "y"]] = []
+
+    class _Probe(BaseModel):
+        inner: typing.Dict[str, _Inner] = {}
+        verdict: FixWindowState = FixWindowState.UNKNOWN
+
+    assert _stored_types(_Probe) == {
+        _Foreign: ["a"],
+        "_Inner.kinds": ["x", "y"],
+        FixWindowState: ["unknown", "succeeded", "failed"],
     }
-    assert declared <= set(PINNED)
+    assert _unpinned(_Probe) == ["_Foreign", "_Inner.kinds"]
 
 
 def test_a_reason_is_required_exactly_when_the_pool_is_empty():
@@ -162,6 +212,7 @@ def _outcome() -> CaseOutcome:
         read_under="checkout returns 503",
     )
     return CaseOutcome(
+        folded_under=CaseState.CLOSED,
         problem=ProblemOutcome(
             status=ProblemStatus.VERIFIED,
             verifying_row_ids=["ev_s"],
@@ -194,6 +245,11 @@ def _outcome() -> CaseOutcome:
         unbound_rechecks=[
             UnboundRecheck(evidence_id="ev_3", observed_turn=7, uncited=True)
         ],
+        bindable=BindableRows(
+            problem_row_ids=["ev_s"],
+            cause_row_ids=["ev_0"],
+            why="it re-checks a row the root's verdict does not cite",
+        ),
         mitigation=MitigationOutcome(
             attempt_turn=5,
             span_seconds=7200.0,
@@ -206,6 +262,7 @@ def _outcome() -> CaseOutcome:
             reason=ClosureReason.CLOSED_INSUFFICIENT_EVIDENCE,
             statement="a mitigation was applied (turn 5)",
         ),
+        disagreements={"attempts.window:act_1": 9},
     )
 
 

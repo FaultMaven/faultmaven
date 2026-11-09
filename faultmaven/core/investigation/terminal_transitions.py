@@ -1114,6 +1114,7 @@ def confirm_open_offer(case: Case, user_id: str, *, via: AnswerVia) -> bool:
     require_answerer(case, user_id)
 
     reason = offer.closure_reason
+    closure = None
     # Closed-gate resolve-preservation (INV-37): a resolvable case must never
     # terminally commit to CLOSED. A resolution confirmation can land AFTER the
     # close was offered, so the pivot is re-checked here, at the execution
@@ -1161,12 +1162,15 @@ def confirm_open_offer(case: Case, user_id: str, *, via: AnswerVia) -> bool:
             # would record a confirmed fix as ``solution_deferred``; one
             # offered under the decline, before a failed fix, would record an
             # unconfirmed fix as ``resolution_declined``.
-            reason = _outcome().closure_outcome(case).reason
+            closure = _outcome().closure_outcome(case)
+            reason = closure.reason
 
     if offer.kind == OfferKind.RESOLVE:
         _execute_resolved_transition(case, user_id)
     else:
-        _execute_closed_transition(case, user_id, ClosureReason(reason))
+        _execute_closed_transition(
+            case, user_id, ClosureReason(reason), closure=closure
+        )
     case.offer_record = answer_offer(
         case,
         proposal_id=offer.proposal_id,
@@ -1252,16 +1256,22 @@ def _execute_resolved_transition(case: Case, user_id: str):
 
 
 def _execute_closed_transition(
-    case: Case, user_id: str, closure_reason: ClosureReason
+    case: Case,
+    user_id: str,
+    closure_reason: ClosureReason,
+    *,
+    closure: Any = None,
 ) -> None:
     """Execute → CLOSED after user confirmation.
 
     closure_reason is the engine-derived reason. Callers are
     `confirm_open_offer`, which reads it from the close offer, where
     `open_disposition_offer` placed it via `closure_outcome`, and
-    `execute_user_closure`, which derives it. The case outcome record is
-    written with the transition (#2615), carrying the closure its entry
-    computed.
+    `execute_user_closure`, which derives it. ``closure``: the
+    ``ClosureOutcome`` the caller computed just before (``closure_outcome``),
+    which the case outcome record written with the transition persists
+    (#2615); None for a close offer accepted on its stored reason, whose
+    closure the record reads off the closed case.
 
     Raises:
         ValueError: If case is not in INVESTIGATING or INQUIRY status.
@@ -1303,7 +1313,7 @@ def _execute_closed_transition(
         )
     )
 
-    _outcome().record_case_outcome(case, at="closed")
+    _outcome().record_case_outcome(case, at="closed", closure=closure)
     logger.info(f"Case {case.case_id} transitioned to CLOSED (terminal state)")
 
 
@@ -1383,9 +1393,9 @@ def execute_user_closure(case: Case, user_id: str) -> ClosureReason:
             via=AnswerVia.MENU,
             actor_id=user_id,
         )
-    reason = _outcome().closure_outcome(case).reason
-    _execute_closed_transition(case, user_id, reason)
-    return reason
+    closure = _outcome().closure_outcome(case)
+    _execute_closed_transition(case, user_id, closure.reason, closure=closure)
+    return closure.reason
 
 
 # ============================================================
