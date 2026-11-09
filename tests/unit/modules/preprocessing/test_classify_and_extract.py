@@ -105,13 +105,13 @@ class TestClassifyAndExtract:
         assert len(result.summary) > 0
 
     @pytest.mark.asyncio
-    async def test_small_file_passthrough_skips_extractor(self, service):
+    async def test_small_file_passthrough_skips_extractor(self, service, spawned):
         """Files below MIN_EXTRACTION_LINES skip extraction and use raw content."""
         small_content = "\n".join(f"2024-01-01 INFO line {i}" for i in range(50))
         result = await service.classify_and_extract(content=small_content)
 
         assert result.extraction_method == "raw_passthrough"
-        assert marked(CrimeScene) not in result.structural_index
+        assert spawned == [], "an extractor ran"
 
     @pytest.mark.asyncio
     async def test_file_at_threshold_runs_extractor(self, service):
@@ -143,7 +143,9 @@ class TestEmptyContentGracefulDegradation:
         )
 
     @pytest.mark.asyncio
-    async def test_empty_content_routes_to_unanalyzable(self, real_classifier_service):
+    async def test_empty_content_routes_to_unanalyzable(
+        self, real_classifier_service, spawned
+    ):
         result = await real_classifier_service.classify_and_extract(
             content="", filename="empty.bin"
         )
@@ -153,7 +155,7 @@ class TestEmptyContentGracefulDegradation:
         assert result.detailed_data_type == DataType.UNANALYZABLE
         # Extractor must not be invoked on empty content — it would either
         # produce a misleading "no errors" tail or waste a Tier 1 budget.
-        assert marked(CrimeScene) not in result.structural_index
+        assert spawned == [], "an extractor ran"
 
     @pytest.mark.asyncio
     async def test_empty_content_produces_human_readable_placeholder(

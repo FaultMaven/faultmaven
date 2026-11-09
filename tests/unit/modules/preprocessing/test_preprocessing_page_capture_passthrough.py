@@ -160,7 +160,7 @@ class TestPageCapturePassthrough:
         assert meta.get("source_type") == "page_capture"
 
     @pytest.mark.asyncio
-    async def test_page_capture_skips_extractor(self, service):
+    async def test_page_capture_skips_extractor(self, service, spawned):
         """The whole reason the passthrough exists: extractors must NOT be
         invoked on already-structured page captures. This is the regression
         line — silently invoking an extractor would garble the htmlToStructuredText
@@ -171,6 +171,7 @@ class TestPageCapturePassthrough:
             source_metadata=_page_capture_metadata(),
         )
 
+        assert spawned == [], "an extractor ran"
         assert marked(CrimeScene) not in result.structural_index
 
     @pytest.mark.asyncio

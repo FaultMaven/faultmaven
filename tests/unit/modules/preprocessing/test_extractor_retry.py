@@ -175,7 +175,7 @@ class TestFlagOffBehaviour:
 
 class TestFlagOnRetryPath:
     @pytest.mark.asyncio
-    async def test_healthy_output_passes_sanity_no_retry(self):
+    async def test_healthy_output_passes_sanity_no_retry(self, spawned):
         """When the initial extractor's output passes sanity, the retry
         loop must not fire — single attempt, labelled initial."""
         classifier = _make_classifier(data_type=DataType.METRICS_AND_PERFORMANCE)
@@ -197,6 +197,7 @@ class TestFlagOnRetryPath:
         assert attempts[0]["sanity_passed"] is True
         # The metrics extractor's result stands: the text fallback never ran.
         assert marked(HealthyMetrics) in result.structural_index
+        assert len(spawned) == 1
 
     @pytest.mark.asyncio
     async def test_degenerate_output_triggers_retry_with_fallback(self):
@@ -301,7 +302,7 @@ class TestFlagOnRetryPath:
 
 class TestThinCaseNoRetry:
     @pytest.mark.asyncio
-    async def test_short_content_skips_retry_even_on_degenerate_output(self):
+    async def test_short_content_skips_retry_even_on_degenerate_output(self, spawned):
         """Even if the extractor produces what looks like degenerate
         output, the sanity check's thin-case safeguard passes for short
         content so no retry fires. Critical for the Flexibility Contract
@@ -322,4 +323,4 @@ class TestThinCaseNoRetry:
             "attempts"
         ]
         assert len(attempts) == 1
-        assert marked(TextFindings) not in result.structural_index
+        assert spawned == [], "an extractor ran"

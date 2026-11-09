@@ -418,7 +418,9 @@ API_REQUEST_LOGGING_OVERHEAD = LatencyBudget(
 #
 # All six were already fastest-of-N statistics (N = 2 to 5) and keep it.
 # ``ADVERSARIAL_LINE_EXTRACTION`` is one row for eleven shapes, anchored on
-# each job's worst shape, so it is a loose anchor for the nine cheap ones. The
+# each job's worst shape, so it is a loose anchor for the nine cheap ones. Its
+# target is the deadline the Tier 1 worker puts on ``extract`` alone (#2637),
+# the call the test times in process. The
 # two expensive ones are expensive because the extractor is super-linear on
 # them (#1700) — see ``tests/performance/test_extraction_speed.py``.
 

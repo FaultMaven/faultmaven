@@ -142,11 +142,9 @@ def preparation_memory_limit(max_upload_mb: int) -> int:
 
 
 def _preparation_slots() -> asyncio.Semaphore:
-    """The slots, made on the running loop: a ``Semaphore`` binds to one."""
+    """The slots, made on the running loop (``worker_process.loop_slots``)."""
     global _slots
-    loop = asyncio.get_running_loop()
-    if _slots is None or _slots[0] is not loop:
-        _slots = (loop, asyncio.Semaphore(PREPARATION_SLOTS))
+    _slots = worker_process.loop_slots(_slots, PREPARATION_SLOTS)
     return _slots[1]
 
 
@@ -172,14 +170,13 @@ async def _run_worker(file_path: Path, content_type: str) -> Any:
             deadline_seconds=EXTRACTION_TIMEOUT_SECONDS,
         )
     except worker_process.WorkerNotStarted as e:
+        cause = e.__cause__
         logger.error(
             "conversion failed: the preparation worker of %s could not start: %r",
             file_path.name,
-            e.__cause__,
+            cause,
         )
-        raise PreparationFailed("the preparation worker could not start") from (
-            e.__cause__
-        )
+        raise PreparationFailed("the preparation worker could not start") from cause
     except worker_process.WorkerFailed as e:
         raise PreparationFailed(str(e)) from e
     if end.timed_out:

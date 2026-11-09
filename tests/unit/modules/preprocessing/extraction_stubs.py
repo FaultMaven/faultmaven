@@ -134,7 +134,7 @@ class NeverReturns(_Answers):
 
 class RunsOutOfMemory(_Answers):
     def extract(self, content: str) -> ExtractResult:
-        bytearray(4 * 1024**3)
+        bytearray(64 * 1024**3)
         return super().extract(content)
 
 
@@ -147,3 +147,10 @@ class AnswersAString(_Answers):
 
     def extract(self, content: str) -> str:  # type: ignore[override]
         return self.FILE_EXTRACT
+
+
+if __name__ == "__main__":
+    # Run as a worker module (``-m``), this one never reports ready: the start
+    # bound's test.
+    while True:
+        time.sleep(1)
