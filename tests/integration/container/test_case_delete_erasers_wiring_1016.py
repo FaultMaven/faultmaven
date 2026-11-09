@@ -60,14 +60,19 @@ async def test_the_case_service_is_composed_with_every_stores_eraser(
         "file_storage_service"
     )
     if skip:
-        # The test profile builds no case vector store, so nothing writes one.
+        # The test profile builds no case vector store and mounts no
+        # idempotency middleware (#2624), so nothing writes either.
         assert names == [
             "session_pointers",
             "runbook_conversion",
             "uploads",
             "pii_redaction_registry",
         ]
-        assert service.stores_not_configured == ("llm_traces", "case_vectors")
+        assert service.stores_not_configured == (
+            "llm_traces",
+            "case_vectors",
+            "idempotency_replays",
+        )
     else:
         assert names == [
             "session_pointers",
@@ -75,8 +80,12 @@ async def test_the_case_service_is_composed_with_every_stores_eraser(
             "uploads",
             "case_vectors",
             "pii_redaction_registry",
+            "idempotency_replays",
         ]
         assert service.store_erasers[3] is fresh_container.case_vector_store
+        # The client the composition root serves the middleware (#2624).
+        replays = service.store_erasers[5]
+        assert replays.redis_client is fresh_container.get_redis_client()
         assert service.stores_not_configured == ("llm_traces",)
 
 
@@ -104,7 +113,7 @@ async def test_a_configured_trace_backend_binds_the_trace_eraser_first(
     eraser = service.store_erasers[0]
     assert isinstance(eraser, LLMTraceEraser)
     assert eraser.project_name == "fm-project"
-    assert service.stores_not_configured == ("case_vectors",)
+    assert service.stores_not_configured == ("case_vectors", "idempotency_replays")
 
 
 @pytest.mark.integration

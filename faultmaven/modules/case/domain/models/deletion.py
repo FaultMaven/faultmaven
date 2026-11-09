@@ -10,17 +10,19 @@ import json
 from dataclasses import dataclass, field
 from typing import Dict, Tuple
 
-#: Content-bearing stores the delete does NOT clear, each an expiring cache
-#: that cannot be looked up by case (ruled 2026-10-19). Named in every audit
-#: row so the record says what the delete did not reach.
+#: Content-bearing stores the delete does NOT clear, each a bounded cache that
+#: cannot be looked up by case (ruled 2026-10-19; ``cached_content_tokens`` on
+#: #2624). Named in every audit row so the record says what the delete did not
+#: reach.
 NOT_CLEARED: Dict[str, str] = {
-    "idempotency_replay_cache": (
-        "Redis replay bodies of non-turn writes (api/middleware/idempotency.py), "
-        "keyed by request hash; expire after 1 h"
-    ),
     "llm_response_cache": (
         "in-process LLM response cache (infrastructure/llm/cache.py), per "
         "process; armed only by the structured-output provider override"
+    ),
+    "cached_content_tokens": (
+        "in-process memo of evidence text to its tokens "
+        "(core/investigation/cause_assurance.py, @lru_cache(maxsize=4096)), "
+        "per process; evicted least recently used"
     ),
 }
 

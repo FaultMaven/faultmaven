@@ -233,6 +233,7 @@ async def test_delete_denies_before_disclosing_report_type(
 async def test_link_case_denies_stranger(case_service, case_repository):
     with pytest.raises(HTTPException) as exc:
         await routes.link_report_to_case_closure(
+            raw_request=MagicMock(),
             report_id=REPORT_ID,
             request=routes.LinkCaseRequest(),
             current_user=_attacker(),
