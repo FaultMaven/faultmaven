@@ -48,8 +48,9 @@ A case that needs a record while work on it is in flight (a turn, or a task
 one spawned, holds its lease on some replica: ``CaseDeleteGate.work_in_flight``,
 the lease a delete reads) is skipped and listed, and so is one whose lease
 cannot be read; a re-run picks them up. A case that has its record is left
-alone before its lease is read. Under standalone the lease store lives in the API's own process,
-which this command cannot see: run it with the API idle there.
+alone, and its lease is not read. Under standalone the lease store lives in
+the API's own process, which this command cannot see: run it with the API
+idle there.
 
 A case that has a record is left alone, so the command is idempotent: a second
 run writes nothing.
