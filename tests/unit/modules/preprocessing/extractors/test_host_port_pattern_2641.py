@@ -1,9 +1,10 @@
 """The shared port patterns: the same matches as before, in linear time (fm#2641).
 
-The old host-and-port pattern is kept here as the oracle, and so is the port
-keyword pattern, which three modules used to define for themselves. On a long run of word characters
-with no colon it tried every split between its two classes, so its cost was
-quadratic in the run: 23 s for a 64 KB hex run.
+Both old patterns are kept here as oracles: the host-and-port pattern, and the
+port keyword pattern that three modules used to define for themselves. On a long
+run of word characters with no colon, the old host-and-port pattern tried every
+split between its two classes, so its cost was quadratic in the run: 23 s for a
+64 KB hex run.
 """
 
 from __future__ import annotations
@@ -36,8 +37,9 @@ from tests.wallclock import assert_linear_growth
 OLD_HOST_PORT_RE = re.compile(r"(?<![\w.-])[\w-]*[A-Za-z.][\w.-]*:(\d{1,5})\b")
 OLD_PORT_KEYWORD_RE = re.compile(r"\bport[= :]+(\d{1,5})\b", re.IGNORECASE)
 
-#: Negatives first: a digits-only or empty host, a port that is too long or
-#: runs on into a word, a non-ASCII host.
+#: Negatives first: lines with no colon-and-port at all (``""``, ``12345``, a
+#: run of ``a``, ``1-2-3:``), an empty, punctuation-only or digits-only host, a
+#: non-ASCII host, and a port that is too long or runs on into a word.
 NEGATIVES = ["", "12345", "a" * 50, "1-2-3:", ":80", "-:80", "_:80", "9:80"]
 NEGATIVES += ["é:80", "host:123456", "a:80x", "a:80_", "04:47:44"]
 #: Then the shapes that match, including a port in non-ASCII digits, which
@@ -46,17 +48,21 @@ NEGATIVES += ["é:80", "host:123456", "a:80x", "a:80_", "04:47:44"]
 EDGE_CASES = NEGATIVES + ["1.2:80", "x.y-z:65535 b:1", "db.local:5432", "-a:1"]
 EDGE_CASES += ["h:٣٣", "a:8.0"]
 
-#: The keyword in any case, after any of ``= :``, and not inside a word or
+#: The keyword in any case, after ``= :`` only, with a port of up to five
+#: digits in any script; not inside a longer word, after another separator, or
 #: before a port that is too long.
 KEYWORD_CASES = {"Port 22": ["22"], "PORT=80": ["80"], "port: 80": ["80"]}
-KEYWORD_CASES |= {"port 123456": [], "sport 22": [], "port:80": ["80"]}
+KEYWORD_CASES |= {"port:80": ["80"], "port 65535": ["65535"], "port ٣٣": ["٣٣"]}
+KEYWORD_CASES |= {"port 123456": [], "sport 22": [], "ports 22": []}
+KEYWORD_CASES |= {"port\t22": [], "port, 22": [], "port-22": [], "port #22": []}
 
 
 def _corpus(count: int) -> list[str]:
+    """Random lines; the ``port`` tokens reach the keyword pattern too."""
     rng = random.Random(2641)
-    alphabet = "aZ9_-.:é 1/x\t٣５"
+    tokens = [*"aZ9_-.:é 1/x\t٣５=", "port", "PORT", "ports"]
     return [
-        "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 24)))
+        "".join(rng.choice(tokens) for _ in range(rng.randint(0, 24)))
         for _ in range(count)
     ]
 
@@ -95,8 +101,12 @@ class TestSameMatchesAsTheOldPattern:
     def test_random_corpus(self):
         corpus = _corpus(50_000)
         assert sum(bool(OLD_HOST_PORT_RE.search(text)) for text in corpus) > 1_000
+        assert sum(bool(OLD_PORT_KEYWORD_RE.search(text)) for text in corpus) > 100
         for text in corpus:
             assert _matches(HOST_PORT_RE, text) == _matches(OLD_HOST_PORT_RE, text)
+            assert _matches(PORT_KEYWORD_RE, text) == _matches(
+                OLD_PORT_KEYWORD_RE, text
+            )
 
     def test_the_entity_registry_counts_the_same_ports(self):
         lines = _corpus(5_000)

@@ -93,7 +93,8 @@ PORT_KEYWORD_RE = re.compile(r"\bport[= :]+(\d{1,5})\b", re.IGNORECASE)
 """A port after the word ``port``, as in ``port 22`` or ``port=8080``.
 
 Read in logs evidence by both entity paths, and by the registry in command
-output, where it is paired with an IP-and-port pattern instead.
+output, where it is paired with an IP-and-port pattern instead. ``\\d`` takes
+any Unicode digit (``port ٣٣``), as in ``HOST_PORT_RE`` (fm#2677).
 """
 
 HOST_PORT_RE = re.compile(r"(?<![\w.-])(?=[\w.-]*?[A-Za-z.])[\w.-]++:(\d{1,5})\b")

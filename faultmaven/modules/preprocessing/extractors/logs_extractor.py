@@ -628,11 +628,10 @@ class LogsAndErrorsExtractor:
     # rendered JSON-quoted, so its extent is unambiguous; every other name
     # renders exactly as before.
 
-    # Port matchers. A port number is a numeric token that needs *structural*
-    # context on the left: either an explicit `port` keyword, or a
-    # host-or-address token before the colon. A bare `:\d+` would match every
-    # `MM:SS` fragment in a timestamp. The two patterns are `PORT_KEYWORD_RE`
-    # and `HOST_PORT_RE` in `extractors.utils`, shared with the entity registry.
+    # Port matchers: `PORT_KEYWORD_RE` and `HOST_PORT_RE` in `extractors.utils`,
+    # whose docstrings state the rule and which paths share it. The principle: a
+    # port needs *structural* context on the left, because a bare `:\d+` would
+    # match every `MM:SS` fragment in a timestamp.
     #
     # PID matchers. Same principle: a PID needs structural context.
     # `[\d+]` alone (with a closing bracket) is the classic syslog form;
