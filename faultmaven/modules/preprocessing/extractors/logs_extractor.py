@@ -695,8 +695,13 @@ class LogsAndErrorsExtractor:
     #   B. older Red Hat:     "sshd(pam_unix)[19939]: authentication failure"
     # Both must match — the loghub Linux fixture is format B; OpenSSH and most
     # post-2010 distros are format A.
+    #
+    # Format A's attempt starts only at the line's start or after a ``)``, so
+    # ``[^)]*+`` crosses each ``)``-delimited segment once. Unanchored, it
+    # restarted at every ``pam_unix(`` and ran to the end of a line with no
+    # ``)``: quadratic in its length (#1700). The same lines match.
     _PAM_AUTH_FAILURE_RE = re.compile(
-        r"(?:pam_unix\([^)]*\)|\(pam_unix\)\[\d+\]):\s*authentication failure",
+        r"(?:(?:^|\))(?=[^)]*pam_unix\()[^)]*+\)|\(pam_unix\)\[\d+\]):\s*authentication failure",
         re.IGNORECASE,
     )
     # ``connection_closed`` is searched on every line, under both readings:
@@ -724,7 +729,14 @@ class LogsAndErrorsExtractor:
     # separately so the breakdown table distinguishes SSH successes from
     # local su/kerberos sessions (which also emit "session opened" but from
     # a different service process).
-    _SSH_SESSION_RE = re.compile(r"sshd[^:]*:\s*session opened for user", re.IGNORECASE)
+    #
+    # An attempt starts only at the line's start or after a ``:``, so
+    # ``[^:]*+`` crosses each colon-delimited segment once. Unanchored,
+    # ``sshd[^:]*:`` restarted at every ``sshd`` and ran to the end of a line
+    # with no colon: quadratic in its length (#1700). The same lines match.
+    _SSH_SESSION_RE = re.compile(
+        r"(?:^|:)(?=[^:]*sshd)[^:]*+:\s*session opened for user", re.IGNORECASE
+    )
     # Auth-relevant event types included in the per-IP breakdown table, in
     # the order the table renders them.
     # ssh_session_opened is intentionally excluded: "session opened" lines

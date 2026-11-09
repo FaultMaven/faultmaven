@@ -17,13 +17,11 @@ Each number is a product target, so it stays: as a row's
 ``FM_BENCHMARK_ABSOLUTE`` nightly, while a pull request asserts a regression
 anchor 2-3x measured cost through ``assert_latency_within``.
 
-The third is a latency budget rather than a growth check for a measured
-reason: the extractor is NOT linear on two of these shapes. ``tag-chain``
-and ``sshd-word-chain`` cost 3.5-3.9x per doubling between 64 KB and 128 KB
-on the development box (``sshd-word-chain``: 0.70 s at 64 KB, 2.58 s at
-128 KB), so a growth bound would either fail today or be set loose enough
-to hide it — filed as #1700. The sshd READER alone is linear and is checked
-as such next to the correctness test.
+The third's growth SHAPE is asserted next to the correctness test, for the
+sshd reader and the whole extractor (``test_the_reader_is_linear``,
+``test_the_extractor_is_linear``). The extractor was super-linear on
+``tag-chain`` and ``sshd-word-chain`` until #1700 (``sshd-word-chain``:
+0.70 s at 64 KB, 2.58 s at 128 KB on the development box).
 
 ‼ Every comparison goes through ``assert_latency_within`` (#1557).
 """
