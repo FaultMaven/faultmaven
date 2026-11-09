@@ -570,6 +570,19 @@ def open_offer(
     return record.model_copy(update={"open": offer, "resolve_request": None})
 
 
+def summarize_offer(case: "Case", proposal_id: str, summary: str) -> bool:
+    """Fill the summary of the offer ``proposal_id`` while it is the one open:
+    an offer a decision cycle opened is summarized after the cycle's record
+    (#2636). Returns whether it was."""
+    record = case.offer_record
+    if record.open is None or record.open.proposal_id != proposal_id:
+        return False
+    case.offer_record = record.model_copy(
+        update={"open": record.open.model_copy(update={"summary": summary})}
+    )
+    return True
+
+
 def answer_offer(
     case: "Case",
     *,

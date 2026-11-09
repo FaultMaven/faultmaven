@@ -18,6 +18,19 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     pending_action_superseded_stale_total,
     solution_offer_superseded_total,
 )
+from faultmaven.core.investigation.narration.codes import (
+    AGGREGATED,
+    CONTEXT_ONLY,
+    DECISIONS_KEY,
+    NoticeCode,
+    OfferCode,
+    decision_key,
+    decision_token,
+)
+from faultmaven.core.investigation.narration.notices import (
+    NO_PENDING_SOLUTION_NOTICE,
+    fix_report_reason,
+)
 from faultmaven.core.investigation.offers import (
     awaiting_request_recheck,
     open_terminal_offer,
@@ -720,8 +733,9 @@ def _withdraw_unlicensed_solution_offers(
     derivation — rather than kept standing as "awaiting execution" for a
     cause the engine no longer asserts (#656 DF-3: the frame latch).
 
-    The withdrawal is surfaced to the LLM via ``system_feedback`` so the next
-    turn re-grounds the cause (or proposes a WORKAROUND mitigation) instead of
+    The withdrawal is surfaced to the LLM as a code (``SOLUTION_OFFER_WITHDRAWN``,
+    rendered from the record after the cycle, #2636) so the next turn
+    re-grounds the cause (or proposes a WORKAROUND mitigation) instead of
     referencing a proposal the user can no longer see as pending. The notice
     is PREPENDED: the turn record truncates feedback head-first, and on messy
     turns (exactly when withdrawals happen) earlier accumulators can push a
@@ -736,9 +750,11 @@ def _withdraw_unlicensed_solution_offers(
       re-check (``_refresh_working_conclusion`` in the recompute, after the
       cause recompute), so a license resting solely on it clears in the same
       turn when this turn's likelihood updates or an M6 demotion take the
-      leading hypothesis below the bar. Housekeeping decay runs AFTER the
-      recompute, so a license lost to decay clears on the FOLLOWING turn —
-      one-turn lag. The prompt frame still exits same-turn regardless: the
+      leading hypothesis below the bar. Housekeeping decay runs after the
+      step-1 recompute and before the cycle's final recompute (#2636), which
+      re-runs this re-check, so a license lost to decay clears the same turn;
+      two recomputes withdraw into one notice (the code aggregates). The
+      prompt frame exits same-turn regardless: the
       Zone-3-pending conjunction requires ``cause_state == IDENTIFIED``,
       which the demotion drops in this same recompute. cause_state / RCC /
       contest falls withdraw same-turn.
@@ -781,32 +797,11 @@ def _withdraw_unlicensed_solution_offers(
         },
     )
     if metadata is not None:
-        _add_system_feedback(
-            metadata,
-            (
-                (
-                    # #2036: the cause holds but its why is open, so the fix acts on
-                    # a state something re-creates.
-                    "SYSTEM: Your pending SOLUTION proposal was withdrawn: the cause "
-                    "it targets validated, but its why is open (ROOT-CAUSE TEST, "
-                    "clause b), so the fix would only intercept a state that comes "
-                    "back. Ask for what produced that state; then re-root onto that "
-                    "cause or mark the root terminal (root_is_terminal true, "
-                    "citing the causal_evidence row in "
-                    "terminal_basis_evidence_ids) and re-propose. To restore "
-                    "service now, propose it as a temporary mitigation "
-                    "(WORKAROUND)."
-                )
-                if case.progress.cause_identification_held_open
-                else (
-                    "SYSTEM: Your pending SOLUTION proposal was withdrawn because "
-                    "the root cause it targeted is no longer established. Re-ground "
-                    "the root cause with evidence before re-proposing a permanent "
-                    "fix, or propose a temporary mitigation (WORKAROUND) instead."
-                )
-            ),
-            # Prepend: notices are dropped whole from the tail, so this goes last.
-            prepend=True,
+        # The variant (the why open, or the cause fallen) is the record's
+        # (#2636). Prepend: notices are dropped whole from the tail, so this
+        # goes last.
+        record_decision(
+            metadata, NoticeCode.SOLUTION_OFFER_WITHDRAWN, prepend=True, count=count
         )
     return count
 
@@ -851,59 +846,34 @@ def _flag_absence_inside_a_failed_fix_window(
         EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
         EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
     )
-    if not any(
-        getattr(e, "category", None) in absence
+    rows = [
+        e.evidence_id
+        for e in case.evidence or []
+        if getattr(e, "category", None) in absence
         and getattr(e, "collected_by", None) != ENGINE_EVIDENCE_AUTHOR
         and (getattr(e, "collected_at_turn", 0) or 0) == case.current_turn
         # After the failure: the rows that established it are not an attempt
         # to confirm anything.
         and case.current_turn > window.failure_turn
-        for e in case.evidence or []
-    ):
+    ]
+    if not rows:
         return False
-    if window.disconfirms_cause:
-        shape = "the cause was shown removed, then the problem was seen again"
-        cause = (
-            " — re-assert the cause with a root_cause_conclusion on a new "
-            "hypothesis if the same cause was addressed again — then"
-        )
-    else:
-        shape = (
-            f"the problem was seen gone at turn {window.relief_turn}, then seen "
-            "again"
-        )
-        if window.fix_turn is None:
-            shape += f" at turn {window.failure_turn}"
-        cause = (
-            " — a problem that went away after the fix and came back does not "
-            "by itself disprove the cause the fix addressed: if that cause still "
-            "stands, no new hypothesis is needed; if it no longer stands, "
-            "re-assert it with a root_cause_conclusion on a new hypothesis — then"
-        )
-    # Window 0 (#2501): a fix done outside the case carries no execution turn.
-    which = (
-        "The fix done outside the case"
-        if window.fix_turn is None
-        else f"The fix executed at turn {window.fix_turn}"
-    )
-    _add_system_feedback(
+    # The window's shape is the record's (#2636).
+    record_decision(
         metadata,
-        f"SYSTEM: {which} did not hold: {shape}. Absence evidence recorded "
-        "after that cannot confirm a resolution. If the user has applied (or "
-        "will apply) a new fix, record it: propose it as a SolutionToAdd and, "
-        "once the user says it ran, set solution_accepted with "
-        "accepted_action_ref naming it (new_index_N, or its ACTION_ID once "
-        f"proposed){cause} record the "
-        "cause gone and the problem gone after it. If the problem is only "
-        "quiet after a workaround, offer to close instead.",
+        NoticeCode.ABSENCE_IN_FAILED_WINDOW,
         prepend=True,
+        fix_turn=window.fix_turn,
+        rows=rows,
     )
     return True
 
 
 def _flag_unbound_post_fix_rows(case: Case, metadata: dict[str, Any] | None) -> bool:
-    """One same-turn line when this turn recorded a post-fix observation that
-    binds to nothing (#1906 D1.5), naming no ``rechecks`` or one that binds to
+    """A code when a post-fix observation on record binds to nothing; the
+    narration renders a line for each such row the record has not narrated,
+    whatever turn recorded it (#2555, #2636). A row binds to nothing
+    (#1906 D1.5) when it names no ``rechecks`` or one that binds to
     no subject (``cause_assurance.SubjectIndex.subject``: the window pool for
     a symptom row, the confirmation pool for a causal_absence row, #2557).
     Such a row confirms and disconfirms nothing, so the model is told which
@@ -927,66 +897,25 @@ def _flag_unbound_post_fix_rows(case: Case, metadata: dict[str, Any] | None) -> 
     whether or not a fix is dated, and its line says "Post-mitigation" when
     only the mitigation makes it one (#2100).
     Only on a verified problem: before it, nothing can bind. Returns whether
-    the line was added."""
+    the code was recorded."""
     from faultmaven.core.investigation.cause_assurance import (
         fix_application_turn,
         fix_windows,
         subject_index,
         unbound_post_fix_rows,
-        uncited_recheck_why,
     )
 
     if metadata is None or case.progress.problem_status != ProblemStatus.VERIFIED:
         return False
-    fix_turn = fix_application_turn(case)
     subjects = subject_index(case)
-    found = [
-        u
-        for u in unbound_post_fix_rows(case, subjects, fix_windows(case, subjects))
-        if u.row.collected_at_turn == case.current_turn
-    ]
-    if not found:
+    if not unbound_post_fix_rows(case, subjects, fix_windows(case, subjects)):
         return False
-    by_mitigation = {u.row.evidence_id for u in found if u.after_mitigation}
-    unnamed = [u.row.evidence_id for u in found if not u.uncited]
-    uncited = [u.row.evidence_id for u in found if u.uncited]
-    problem, cause = subjects.bindable_rows()
-    problem_ids = ", ".join(e.evidence_id for e in problem[:5])
-    cause_ids = ", ".join(e.evidence_id for e in cause[:5])
-    why = uncited_recheck_why(subjects)
-    if cause_ids:
-        cause_text = f"one of {cause_ids} (the cited basis of the root cause)."
-    elif subjects.pool_roots:
-        cause_text = (
-            f"{why}; re-send root_is_terminal true citing the causal_evidence "
-            "rows that show why it arose (RE-ROOT if a deeper cause produced "
-            "it), then re-check one of them."
-        )
-    else:
-        cause_text = "none supports the root cause alone yet."
-    if uncited:
-        _add_system_feedback(
-            metadata,
-            f"SYSTEM: {'Row(s)' if fix_turn is None else 'Post-fix row(s)'} "
-            f"{', '.join(uncited[:5])} confirm nothing: "
-            + (f"{why}." if cause_ids else cause_text),
-        )
-    if not unnamed:
-        return True
-    after = "Post-mitigation" if by_mitigation.issuperset(unnamed[:5]) else "Post-fix"
-    _add_system_feedback(
+    # Which rows, and what they could name, are the record's: every unbound
+    # row it has not narrated, whatever turn recorded it (#2555, #2636).
+    record_decision(
         metadata,
-        f"SYSTEM: {after} row(s) {', '.join(unnamed[:5])} name nothing they "
-        "re-check that binds, so they confirm and disconfirm nothing. Set "
-        "rechecks — symptom rows: "
-        + (
-            f"one of {problem_ids}"
-            if problem_ids
-            else "none is on record as having shown the problem; cite those "
-            "rows in symptom_verification_evidence_ids"
-        )
-        + "; causal_absence rows: "
-        + cause_text,
+        NoticeCode.UNBOUND_RECHECKS,
+        fix_dated=fix_application_turn(case) is not None,
     )
     return True
 
@@ -1029,6 +958,49 @@ def _add_system_feedback(
         metadata[_NOTICES_HEAD_KEY] = metadata.get(_NOTICES_HEAD_KEY, 0) + 1
     else:
         notices.append(message)
+
+
+def record_decision(
+    metadata: dict[str, Any], code: str, *, prepend: bool = False, **params: Any
+) -> None:
+    """Record a decision as a code (#2636): the narration step renders it after
+    the turn's record is written. ``params`` carry identities, the model's own
+    emission and what the engine did; never a verdict the record holds.
+
+    Deduplicated by code and params (by code alone for an aggregated code,
+    whose ``count`` is summed), so a second recompute cannot double it. A
+    notice code holds its place in ``system_notices`` with a token the
+    narration step replaces (A10), so order and ``prepend`` are as the text's
+    were; a context-only code writes none."""
+    key = decision_key(code, params)
+    log = metadata.setdefault(DECISIONS_KEY, [])
+    for entry in log:
+        if entry["key"] == key:
+            if code in AGGREGATED:
+                entry["params"]["count"] += params.get("count", 0)
+            return
+    token = None
+    if isinstance(code, NoticeCode) and code not in CONTEXT_ONLY:
+        token = decision_token(key)
+        _add_system_feedback(metadata, token, prepend=prepend)
+    log.append({"code": str(code), "params": params, "key": key, "token": token})
+
+
+def merge_decisions(metadata: dict[str, Any], incoming: dict[str, Any]) -> None:
+    """Fold another accumulator's decision log into ``metadata``'s (A1), beside
+    ``merge_system_notices``, which carries the tokens. An aggregated code's
+    counts are summed."""
+    log = metadata.setdefault(DECISIONS_KEY, [])
+    known = {entry["key"]: entry for entry in log}
+    for entry in incoming.get(DECISIONS_KEY) or []:
+        if entry is known.get(entry["key"]):
+            continue
+        if entry["key"] in known:
+            if entry["code"] in AGGREGATED:
+                known[entry["key"]]["params"]["count"] += entry["params"]["count"]
+            continue
+        log.append({**entry, "params": dict(entry["params"])})
+        known[entry["key"]] = log[-1]
 
 
 def _drop_system_notice(metadata: dict[str, Any], notice: str) -> None:
@@ -1178,56 +1150,6 @@ class _FixEntry(NamedTuple):
     is_fix: bool
 
 
-_NO_PENDING_SOLUTION_NOTICE = (
-    "SYSTEM: 'solution_accepted' was not registered — no "
-    "SOLUTION proposal is currently pending (it may have been "
-    "downgraded, withdrawn or superseded since it was made). If "
-    "the user has already carried out the fix and the root cause "
-    "stands established, register it in ONE response: re-propose "
-    "it as a SolutionToAdd and set solution_accepted with "
-    "accepted_action_ref new_index_N naming it, justified by "
-    "their report; do not ask them to accept it again. If the root "
-    "cause is not established, re-ground it with evidence first. If "
-    "the problem is already resolved, record the confirming "
-    "evidence instead: causal_absence for the cause gone and "
-    "symptom_absence for the reported problem gone."
-)
-
-
-def _license_notice(subject: str) -> str:
-    """The M5 refusal: a permanent fix registers only on an established cause."""
-    return (
-        f"SYSTEM: 'solution_accepted' was not registered: {subject} targets a "
-        "root cause that is no longer established, and a permanent fix needs "
-        "one (M5). Re-ground the root cause with evidence first, or propose a "
-        "temporary mitigation (WORKAROUND)."
-    )
-
-
-def _withdrawn_notice(action_id: str) -> str:
-    """The ruled refusal of a fix withdrawn ``license_lost`` once the license
-    holds again: the name does not register it, a re-proposal does."""
-    return (
-        f"SYSTEM: 'solution_accepted' was not registered: {action_id} was "
-        "withdrawn while its root cause was not established, and a withdrawn fix "
-        "does not register by its ACTION_ID. If the user carried it out, "
-        "re-propose it as a SolutionToAdd and set solution_accepted with "
-        "accepted_action_ref new_index_N naming it."
-    )
-
-
-def _downgraded_notice(action_id: str) -> str:
-    """The refusal of a fix whose only bearer is its M5-downgraded copy once
-    the license holds again: the copy cannot register, a re-proposal can."""
-    return (
-        f"SYSTEM: 'solution_accepted' was not registered: {action_id} was "
-        "downgraded to a DIAGNOSTIC when it was proposed, because its root cause "
-        "was not established then. The cause is established now: if the user "
-        "carried out the fix, re-propose it as a SolutionToAdd and set "
-        "solution_accepted with accepted_action_ref new_index_N naming it."
-    )
-
-
 def _withdrawn_before(bearer: Any, held_since_turn: int) -> bool:
     """Withdrawn ``license_lost`` before the hold began, not by the hold
     itself: the hold changes nothing about it, so the ruled refusal stands."""
@@ -1239,8 +1161,12 @@ def _withdrawn_before(bearer: Any, held_since_turn: int) -> bool:
 
 
 def _refuse_withdrawn(metadata: dict[str, Any], action_id: str, licensed: bool) -> None:
-    notice = _withdrawn_notice if licensed else _license_notice
-    _add_system_feedback(metadata, notice(action_id))
+    record_decision(
+        metadata,
+        NoticeCode.FIX_LICENCE_REFUSED,
+        variant="withdrawn" if licensed else "licence",
+        subject=action_id,
+    )
 
 
 def _license_holds(case: Case, metadata: dict[str, Any]) -> bool:
@@ -1254,12 +1180,10 @@ def _note_failed_fix(case: Case, bearer: Any, metadata: dict[str, Any]) -> None:
     """A registered fix named again but not re-sent, that identity no longer
     keeps (its window failed, or a later fix followed): it may be re-applied."""
     if standing_fix_action(case, bearer.description) is not bearer:
-        _add_system_feedback(
+        record_decision(
             metadata,
-            f"SYSTEM: 'solution_accepted' was not registered again: SOLUTION "
-            f"{bearer.action_id} is registered, and its fix window failed or a "
-            "later fix followed it. If the user re-applied it, re-propose it as a "
-            "SolutionToAdd and set accepted_action_ref new_index_N naming it.",
+            NoticeCode.FAILED_FIX_NOT_REREGISTERED,
+            action_id=bearer.action_id,
         )
 
 
@@ -1428,7 +1352,7 @@ def _resolve_fix_identity(
             f"Rejected stage-gate milestone 'solution_accepted' for case "
             f"{case.case_id}: no pending SOLUTION ProposedAction exists"
         )
-        _add_system_feedback(metadata, _NO_PENDING_SOLUTION_NOTICE)
+        _add_system_feedback(metadata, NO_PENDING_SOLUTION_NOTICE)
         return None
     if ref.startswith("new_index_"):
         try:
@@ -1497,8 +1421,12 @@ def _bearer_registers(
     carried decision; a live turn passes nothing (its downgrade proves the
     license down) and reads it here only for a superseded bearer."""
     if bearer.action_type != InvestigationActionType.SOLUTION:
-        notice = _downgraded_notice if licensed else _license_notice
-        _add_system_feedback(metadata, notice(bearer.action_id))
+        record_decision(
+            metadata,
+            NoticeCode.FIX_LICENCE_REFUSED,
+            variant="downgraded" if licensed else "licence",
+            subject=bearer.action_id,
+        )
         return False
     if bearer.state == "pending":
         return True
@@ -1624,7 +1552,7 @@ def decide_fix_acceptance(
                 "carrying out that fix.",
             )
         if declared:
-            _ignore_fix_report(case, metadata, "it is read only with solution_accepted")
+            _ignore_fix_report(case, metadata, "unaccepted")
         return None
     entries = _fix_entries(proposals, held, fixes)
     resolved = _resolve_fix_identity(
@@ -1639,12 +1567,7 @@ def decide_fix_acceptance(
         if _registration_justified(case, metadata):
             _carry_fix(case, identity, user_message, metadata)
             if declared:
-                _ignore_fix_report(
-                    case,
-                    metadata,
-                    "a fix carried through a revision hold is dated to its hold "
-                    f"turn, {case.current_turn}",
-                )
+                _ignore_fix_report(case, metadata, "carried", turn=case.current_turn)
         return None
     bearer = _newest_fix_bearer(case, identity, fixes)
     if bearer is None:
@@ -1672,11 +1595,11 @@ def _register_carried_fix(
     licensed = _license_holds(case, metadata)
     bearer = _newest_fix_bearer(case, carried.held_fix, fixes, licensed=licensed)
     if bearer is None:
-        _add_system_feedback(
+        record_decision(
             metadata,
-            _license_notice(
-                f"the fix the user reported running at turn {carried.turn}"
-            ),
+            NoticeCode.FIX_LICENCE_REFUSED,
+            variant="licence",
+            subject=f"the fix the user reported running at turn {carried.turn}",
         )
         return None
     if bearer.action_type == InvestigationActionType.SOLUTION and _withdrawn_before(
@@ -1690,20 +1613,20 @@ def _register_carried_fix(
     return bearer if registers else None
 
 
-def _ignore_fix_report(case: Case, metadata: dict[str, Any], reason: str) -> None:
+def _ignore_fix_report(
+    case: Case, metadata: dict[str, Any], reason: str, **turns: Any
+) -> None:
     """``accepted_fix_reported_in`` previous_message was not applied (#2427):
     logged, and one line so the model does not go on reading the fix as dated
-    to the previous message, as for an ignored ``accepted_action_ref``."""
+    to the previous message, as for an ignored ``accepted_action_ref``.
+    ``reason`` is the decider's code, ``turns`` the turns its line names."""
     logger.info(
         "Case %s: accepted_fix_reported_in=previous_message ignored at turn %s: %s",
         case.case_id,
         case.current_turn,
-        reason,
+        fix_report_reason({"reason": reason, **turns}),
     )
-    _add_system_feedback(
-        metadata,
-        f"SYSTEM: accepted_fix_reported_in previous_message was ignored: {reason}.",
-    )
+    record_decision(metadata, NoticeCode.FIX_REPORT_IGNORED, reason=reason, **turns)
 
 
 def _date_to_the_report(case: Case, target: Any, metadata: dict[str, Any]) -> None:
@@ -1729,11 +1652,8 @@ def _date_to_the_report(case: Case, target: Any, metadata: dict[str, Any]) -> No
     from faultmaven.core.investigation.cause_assurance import FIX_FAILED, fix_windows
 
     turn, previous = case.current_turn, case.current_turn - 1
-    dated_here = f"the fix is dated to turn {turn}"
     if previous < 1:
-        _ignore_fix_report(
-            case, metadata, f"there is no message before turn {turn}; {dated_here}"
-        )
+        _ignore_fix_report(case, metadata, "no_previous", turn=turn)
         return
     # The window before this fix, ending at this turn.
     judged = fix_windows(case)[-2]
@@ -1743,9 +1663,10 @@ def _date_to_the_report(case: Case, target: Any, metadata: dict[str, Any]) -> No
         _ignore_fix_report(
             case,
             metadata,
-            f"the fix executed at turn {judged.fix_turn} was not seen failing "
-            f"before turn {previous}, so turn {previous}'s observations stay "
-            f"with it; {dated_here}",
+            "window_not_failed",
+            fix_turn=judged.fix_turn,
+            previous=previous,
+            turn=turn,
         )
         return
     target.accepted_in_turn = previous
@@ -1757,9 +1678,10 @@ def _date_to_the_report(case: Case, target: Any, metadata: dict[str, Any]) -> No
         _ignore_fix_report(
             case,
             metadata,
-            f"turn {previous}'s observations decide whether the fix executed at "
-            f"turn {judged.fix_turn} was disconfirmed, so they stay with it; "
-            f"{dated_here}",
+            "decides_disconfirmation",
+            fix_turn=judged.fix_turn,
+            previous=previous,
+            turn=turn,
         )
         return
     # A hold turn's record holds the pool without its staged cause work, which
@@ -1767,10 +1689,7 @@ def _date_to_the_report(case: Case, target: Any, metadata: dict[str, Any]) -> No
     if _previous_turn_held(case):
         target.accepted_in_turn = turn
         _ignore_fix_report(
-            case,
-            metadata,
-            f"turn {previous} was held for the revised statement confirmed now, "
-            f"so its record lacks the cause work replayed since; {dated_here}",
+            case, metadata, "previous_held", previous=previous, turn=turn
         )
         return
     target.registered_in_turn = turn
@@ -1937,8 +1856,6 @@ def _apply_stage_gate_side_effects(
         from faultmaven.core.investigation.terminal_transitions import (
             ClosureReadiness,
             closure_verdict,
-            mitigation_closure_line,
-            mitigation_sentence,
         )
 
         # Don't clobber an in-flight disposition handshake, and never on a
@@ -1973,12 +1890,6 @@ def _apply_stage_gate_side_effects(
                 declared_rationale
                 or "root cause analysis is not feasible for this problem"
             )
-            # The lead is the mitigation's record (#2100, C1), never a verdict
-            # the record does not hold.
-            lead = mitigation_sentence(
-                mitigation_closure_line(case) or "a mitigation was applied"
-            )
-            closure_message = f"{lead} Since {rationale}, shall we close this case?"
             # Its decline binds nothing (the record's rules,
             # ``core/investigation/offers.py``), so the open is refused only
             # under a standing false-alarm decline, which an infeasible-RCA
@@ -1987,11 +1898,17 @@ def _apply_stage_gate_side_effects(
                 case,
                 kind=OfferKind.CLOSE,
                 basis=OfferBasis.RCA_INFEASIBLE,
-                summary=closure_message,
             )
             if record is not None:
                 case.offer_record = record
-                metadata["rca_infeasible_closure_message"] = closure_message
+                # Its prose leads with the mitigation's record (#2100, C1),
+                # rendered after the cycle's record (#2636).
+                record_decision(
+                    metadata,
+                    OfferCode.RCA_INFEASIBLE_CLOSE,
+                    proposal_id=record.open.proposal_id,
+                    rationale=rationale,
+                )
                 # The reason the open just derived, read rather than
                 # re-derived: an rca_infeasible declaration beside a standing
                 # working conclusion and a solution record derives
@@ -2159,7 +2076,7 @@ def _apply_stage_gate_signals(
         )
 
     # --- mitigation_verified: derived, never the model's label (#2100) --
-    refusal: Optional[tuple[str, str]] = None
+    refusal: Optional[dict[str, Any]] = None
     settled: set[str] = set()
     if stab_verified_signal:
         # Ordering guard: verification presupposes acceptance. If accept
@@ -2189,11 +2106,7 @@ def _apply_stage_gate_signals(
             )
         elif p.mitigation.disposition == PROCEED_UNMITIGATED:
             # The record's validator: a proceeded mitigation is never verified.
-            _add_system_feedback(
-                metadata,
-                "SYSTEM: mitigation_verified was not recorded — the mitigation "
-                "is recorded as proceed_unmitigated, which is written once.",
-            )
+            record_decision(metadata, NoticeCode.MITIGATION_VERIFY_PROCEEDED)
         elif not p.mitigation.verified:
             refusal = _mitigation_verify_refusal(case)
             if refusal is None:
@@ -2210,11 +2123,10 @@ def _apply_stage_gate_signals(
     if disposition is not None and _register_disposition(case, disposition, metadata):
         settled.add("mitigation_disposed")
     if refusal is not None:
-        line, settle = refusal
-        # The way to settle it, only while the record carries no disposition.
-        _add_system_feedback(
-            metadata, line + (settle if p.mitigation.disposition is None else "") + "."
-        )
+        # Worded from the record, after the disposition above (#2603): the way
+        # to settle it only while the record carries no disposition, and no
+        # re-check asked once it carries proceed_unmitigated.
+        record_decision(metadata, NoticeCode.MITIGATION_VERIFY_REFUSED, **refusal)
     settled |= {"mitigation_verified"} & set(metadata["milestones_completed"])
     if settled:
         # 3B only on the turn that settles it: never a second close offer.
@@ -2229,65 +2141,24 @@ def _apply_stage_gate_signals(
         )
 
 
-def _mitigation_verify_refusal(case: Case) -> Optional[tuple[str, str]]:
-    """Why ``mitigation_verified`` does not register, or None, worded for the
-    model (``mitigation_refusal_reason`` decides which). An attempt with no
-    turn can never be re-checked, so its line names the disposition alone.
-    Without a verified problem nothing binds, so the line asks for the
-    verification first (ruling (iii)); under a pending revision, for its
-    confirmation. Returns ``(line, how to settle it)``: the caller appends
-    the second while the record carries no disposition."""
+def _mitigation_verify_refusal(case: Case) -> Optional[dict[str, Any]]:
+    """Why ``mitigation_verified`` does not register, as the params of its
+    code, or None (``mitigation_refusal_reason`` decides which; the line is
+    the record's, ``narration.notices``). With no bound relief the line names
+    the rows that showed the problem, which a re-check could name."""
     from faultmaven.core.investigation.cause_assurance import (
-        mitigation_attempt_turn,
         mitigation_refusal_reason,
-        mitigation_relief,
         subject_index,
     )
 
     reason = mitigation_refusal_reason(case)
     if reason is None:
         return None
-    head = "SYSTEM: mitigation_verified was not recorded — "
-    declare = (
-        "; or, if the user says it holds, set mitigation_disposition declared_stable"
-    )
-    if reason == MitigationRefusalReason.ATTEMPT_UNDATED:
-        return (
-            head + "the mitigation's execution is not dated, so no re-check can "
-            "verify it",
-            "; settle it with mitigation_disposition: declared_stable if the "
-            "user says it holds, proceed_unmitigated to go on without one",
-        )
-    if reason == MitigationRefusalReason.REVISION_PENDING:
-        return (
-            head + "the revised problem statement awaits the user's "
-            "confirmation: re-check the problem once it is confirmed",
-            declare,
-        )
-    if reason == MitigationRefusalReason.PROBLEM_UNVERIFIED:
-        return (
-            head + "the problem is not verified: verify the problem first, "
-            "citing symptom_verification_evidence_ids, then re-check it",
-            declare,
-        )
-    turn = mitigation_attempt_turn(case)
-    subjects = subject_index(case)
-    _relief, present = mitigation_relief(case, subjects)
-    problem, _cause = subjects.bindable_rows()
-    ids = ", ".join(e.evidence_id for e in problem[:5])
-    seen = f" (it was seen present at turn {present})" if present is not None else ""
-    return (
-        head + "no re-check bound to the problem shows it relieved after the "
-        f"mitigation (turn {turn}){seen}: record the post-mitigation "
-        "symptom_absence_evidence with rechecks "
-        + (
-            f"naming one of {ids}"
-            if ids
-            else "naming a row that showed the problem (none is on record: "
-            "cite them in symptom_verification_evidence_ids)"
-        ),
-        declare,
-    )
+    rows: list[str] = []
+    if reason == MitigationRefusalReason.NO_BOUND_RELIEF:
+        problem, _cause = subject_index(case).bindable_rows()
+        rows = [e.evidence_id for e in problem[:5]]
+    return {"reason": reason, "problem_row_ids": rows}
 
 
 def _register_disposition(case: Case, value: str, metadata: dict[str, Any]) -> bool:
@@ -2305,17 +2176,20 @@ def _register_disposition(case: Case, value: str, metadata: dict[str, Any]) -> b
     record = case.progress.mitigation
     refused = None
     if record is None or not record.accepted:
-        refused = "no mitigation is accepted"
+        refused = "not_accepted"
     elif record.disposition is not None:
         if record.disposition == value:
             return False
-        refused = f"the mitigation already carries {record.disposition}, written once"
+        refused = "carries"
     elif value == PROCEED_UNMITIGATED and record.verified:
-        refused = "a problem-bound re-check already showed the mitigation holding"
+        refused = "verified"
     if refused is not None:
-        _add_system_feedback(
+        record_decision(
             metadata,
-            f"SYSTEM: mitigation_disposition {value} was not recorded — {refused}.",
+            NoticeCode.MITIGATION_DISPOSITION_REFUSED,
+            value=value,
+            why=refused,
+            carried=record.disposition if record is not None else None,
         )
         return False
     turn = emission_turn(case, metadata)

@@ -8,8 +8,9 @@ under, and carried: a FAILED fix window, an attempt's ``accepted_in_turn``, and
 the confirmed rows at RESOLVED. A conflict between a carried verdict and a fresh
 derivation is logged and counted, and the carried verdict stands.
 
-Nothing reads the record yet: the narrators (S2), the deciders (S3) and the
-report and API (S4) switch to it stage by stage.
+The narration step reads it (stage R, #2636): every verdict an outcome-bearing
+notice or offer states is the record's. The deciders (S3) and the report and
+API (S4) switch to it stage by stage.
 
 Every enum here is APPEND-ONLY. A stored case names its members by value, so a
 member renamed or removed would fail every load of that case. The members are
@@ -302,6 +303,13 @@ class CaseOutcome(BaseModel):
     mitigation: Optional[MitigationOutcome] = None
     milestones_shown: List[str] = Field(default_factory=list)
     closure: ClosureOutcome
+    narration_since: Optional[int] = Field(
+        default=None,
+        description=(
+            "The turn stage R first narrated the case (#2636): an unbound "
+            "re-check observed before it and never narrated counts as narrated"
+        ),
+    )
     disagreements: Dict[str, int] = Field(
         default_factory=dict,
         description=(

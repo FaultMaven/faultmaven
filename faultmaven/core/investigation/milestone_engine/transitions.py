@@ -3,6 +3,8 @@
 import logging
 from typing import Any
 
+from faultmaven.core.investigation.cause_assurance import pending_symptom_check
+from faultmaven.core.investigation.narration.codes import NoticeCode, OfferCode
 from faultmaven.core.investigation.offer_projection import project_offers
 from faultmaven.core.investigation.offers import (
     OfferRefusal,
@@ -14,12 +16,9 @@ from faultmaven.core.investigation.problem_status import (
     record_confirmed_statement,
 )
 from faultmaven.core.investigation.terminal_transitions import (
-    RESOLVE_DECLINED_RULE,
     declined_resolve_entry,
     disposition_refusal,
     open_disposition_offer,
-    pending_check_feedback,
-    resolve_declined_actions,
 )
 from faultmaven.modules.case.contracts import (
     Case,
@@ -33,27 +32,17 @@ from faultmaven.modules.case.contracts import (
     UrgencyLevel,
 )
 
-from .stage_gates import _add_system_feedback
+from .stage_gates import _add_system_feedback, record_decision
 from .statement_revision import revision_pending
-from .terminal_replies import _build_resolution_confirmation
+from .terminal_proposals import pending_check_params
 
 logger = logging.getLogger(__name__)
 
-#: How a refused re-proposal tells the model what binds it. Conditional, never
-#: a flat ban: a model that obeys a ban never proposes, so a user who later
-#: types "ok, close it" (on Slack, with no status menu) gets no refusal and no
-#: card, and no way to close at all.
-_DIRECTED_ONLY = (
-    "Propose {what} only if the user directs it; the engine then attaches the "
-    "Close action to your reply. Do not propose it unprompted."
-)
 
-
-def declined_close_reask(
-    case: Case, *, closing: bool = False
-) -> tuple[str, str] | None:
+def declined_close_reask(case: Case, *, closing: bool = False) -> dict | None:
     """Whether a transition the model proposes now re-asks a close the user
-    declined, as ``(side, feedback)``, or None (#1889).
+    declined, as the params of its code (``side``, and the turn a false-alarm
+    close was declined), or None (#1889).
 
     The one read for both declined engine closes:
 
@@ -71,39 +60,13 @@ def declined_close_reask(
     """
     declined_at = false_alarm_close_declined_at(case)
     if declined_at is not None:
-        return (
-            "false_alarm",
-            "TRANSITION NOT PROPOSED: resolution is not eligible on a false "
-            "alarm, and the user declined closing on this finding at turn "
-            f"{declined_at}. " + _DIRECTED_ONLY.format(what="a close"),
-        )
+        return {"side": "false_alarm", "declined_at": declined_at}
     if not closing:
         return None
     if standing_deferred_decline(case) is not None:
-        return (
-            "deferred",
-            "TRANSITION NOT PROPOSED: the user declined closing this case with "
-            "the solution documented (the deferred-implementation close), and "
-            "no new solution or confirmation has been recorded since. "
-            + _DIRECTED_ONLY.format(what="that close"),
-        )
+        return {"side": "deferred", "declined_at": None}
     return None
 
-
-#: The feedback when step 2 refuses a resolution the user declined (#1895),
-#: the part that holds on every case: ``RESOLVE_DECLINED_RULE``, the binding
-#: half the prompt line states too.
-DECLINED_RESOLVE_FEEDBACK = (
-    "TRANSITION NOT PROPOSED: the user declined marking this case resolved, "
-    "and no new confirmation that the fix held has been recorded since. "
-    + RESOLVE_DECLINED_RULE
-)
-
-#: Added to it only when the reply carries the engine's two chips (#2472).
-_DECLINED_RESOLVE_CHIPS_FEEDBACK = (
-    "The engine has attached its 'Mark it resolved' and 'Close without "
-    "resolving' actions to this reply."
-)
 
 _QUIET = (
     "TRANSITION NOT PROPOSED: the user set aside the {} offer this turn, so it "
@@ -122,9 +85,9 @@ TRANSITION_QUIET_FEEDBACK = {
 }
 
 
-def declined_resolution_reask(case: Case) -> str | None:
-    """The feedback refusing a resolution the model proposes while the user's
-    decline of it stands, or None (#1895).
+def declined_resolution_reask(case: Case) -> dict | None:
+    """The params of the code refusing a resolution the model proposes while
+    the user's decline of it stands, or None (#1895).
 
     A resolution is earned, never requested. After a decline it is due back
     when a solution or a confirmation the decline never saw is recorded
@@ -138,19 +101,17 @@ def declined_resolution_reask(case: Case) -> str | None:
     """
     if declined_resolve_entry(case) is None:
         return None
-    if project_offers(case).reopen_chip is None:
-        return DECLINED_RESOLVE_FEEDBACK
-    return (
-        f"{DECLINED_RESOLVE_FEEDBACK} {_DECLINED_RESOLVE_CHIPS_FEEDBACK} "
-        f"{resolve_declined_actions(case)}"
-    )
+    return {
+        "chips": project_offers(case).reopen_chip is not None,
+        "pending_check_holds": pending_symptom_check(case) is not None,
+    }
 
 
-def _refuse_declined_reask(metadata: dict[str, Any], side: str, feedback: str) -> None:
+def _refuse_declined_reask(metadata: dict[str, Any], side: str, **params: Any) -> None:
     """Refuse the model's re-proposal: the feedback for its next turn, and the
     close card appended to this turn's follow-ups (``declined_close_card``),
     so a user who did ask still has the close one step away."""
-    _add_system_feedback(metadata, feedback)
+    record_decision(metadata, NoticeCode.DECLINED_CLOSE_REASK, side=side, **params)
     # Read at the end of the turn: the card is appended once the follow-up
     # list is settled, and ``transition_compliance`` reports the refusal.
     metadata["declined_close_card"] = side
@@ -358,10 +319,7 @@ class TransitionManager:
         metadata["resolution_readiness_missing"] = readiness.missing
         if readiness.verdict == readiness.READY:
             record = open_disposition_offer(
-                case,
-                kind=OfferKind.RESOLVE,
-                basis=OfferBasis.MODEL,
-                summary=_build_resolution_confirmation(case),
+                case, kind=OfferKind.RESOLVE, basis=OfferBasis.MODEL
             )
             if record is None:
                 # A resolve decline binds it: the request turned READY on the
@@ -371,10 +329,16 @@ class TransitionManager:
                 # a turn that re-checks one.
                 reask = declined_resolution_reask(case)
                 if reask is not None:
-                    _add_system_feedback(metadata, reask)
+                    record_decision(
+                        metadata, NoticeCode.DECLINED_RESOLUTION_REASK, **reask
+                    )
                     metadata["declined_resolve_card"] = True
                 return
             case.offer_record = record
+            # Its summary is the confirmation, composed after the record.
+            record_decision(
+                metadata, OfferCode.REQUEST_READY, proposal_id=record.open.proposal_id
+            )
             metadata["resolution_ready_for_confirmation"] = True
             logger.info(
                 f"Case {case.case_id}: the resolution request is met — "
@@ -392,31 +356,23 @@ class TransitionManager:
                 f"check ({readiness.pending_check.need_id}); no close offered"
             )
             return
-        if readiness.verdict == readiness.SUGGEST_CLOSE:
-            summary = readiness.message
-        else:
-            summary = (
-                "I understand. Without confirmation that the root cause "
-                "was **eliminated** (e.g. the original error is now "
-                "absent after the fix), I can't mark this as "
-                "**resolved** — a restored-but-stabilized or "
-                "deferred-fix case isn't a resolution.\n\n"
-                "You can **close** the case instead — this preserves "
-                "the root cause analysis and the documented (or "
-                "deferred) solution."
-            )
         record = open_disposition_offer(
-            case,
-            kind=OfferKind.CLOSE,
-            basis=OfferBasis.NEEDS_INFO_UNMET,
-            summary=summary,
+            case, kind=OfferKind.CLOSE, basis=OfferBasis.NEEDS_INFO_UNMET
         )
         if record is None:
             # A decline binds it (the quiet cannot meet step 0, as above).
             return
         case.offer_record = record
         metadata["resolution_suggest_close"] = True
-        metadata["resolution_readiness_message"] = summary
+        # The readiness message on SUGGEST_CLOSE, else the unmet request's
+        # close, rendered after the record (#2636).
+        record_decision(
+            metadata,
+            OfferCode.NEEDS_INFO_UNMET_CLOSE,
+            proposal_id=record.open.proposal_id,
+            suggest_close=readiness.verdict == readiness.SUGGEST_CLOSE,
+            **readiness.offer_params(),
+        )
         logger.info(
             f"Case {case.case_id}: the resolution request was not met, "
             f"proposing Close (missing: {readiness.missing})"
@@ -511,7 +467,7 @@ class TransitionManager:
         # not a supersession, is what the turn reports.
         reask = declined_close_reask(case)
         if reask is not None:
-            _refuse_declined_reask(metadata, *reask)
+            _refuse_declined_reask(metadata, **reask)
             logger.info(
                 f"Case {case.case_id}: model proposed {proposed.to_state!r} on "
                 f"a false-alarm finding whose close the user declined — refused."
@@ -559,7 +515,7 @@ class TransitionManager:
             metadata["resolution_readiness_missing"] = readiness.missing
             if readiness.verdict == readiness.SUGGEST_CLOSE:
                 kind = OfferKind.CLOSE
-                summary = readiness.message
+                composer = "readiness"
                 logger.info(
                     f"Agent proposed RESOLVED but case {case.case_id} "
                     f"verdict=SUGGEST_CLOSE (missing: {readiness.missing}); "
@@ -577,12 +533,18 @@ class TransitionManager:
                         case, readiness.missing
                     )
                 else:
-                    _add_system_feedback(
-                        metadata, pending_check_feedback(case, check, proposed=True)
+                    record_decision(
+                        metadata,
+                        NoticeCode.PENDING_CHECK,
+                        **pending_check_params(case, check, proposed=True),
                     )
                     metadata["resolution_pending_check"] = check.need_id
                 metadata["resolution_needs_info_first_pass"] = True
-                metadata["resolution_needs_info_message"] = readiness.message
+                record_decision(
+                    metadata,
+                    OfferCode.RESOLUTION_NEEDS_INFO,
+                    **readiness.offer_params(),
+                )
                 logger.info(
                     f"Agent proposed RESOLVED but case {case.case_id} "
                     f"verdict=NEEDS_INFO (missing: {readiness.missing}); "
@@ -590,11 +552,11 @@ class TransitionManager:
                 )
                 return
             else:
-                summary = _build_resolution_confirmation(case)
+                composer = "confirmation"
         else:
             closure = assess_closure_readiness(case)
             metadata["closure_readiness_verdict"] = closure.verdict
-            summary = closure.message
+            composer = "closure"
             if closure.verdict == closure.SUGGEST_RESOLVE:
                 kind = OfferKind.RESOLVE
                 logger.info(
@@ -611,7 +573,6 @@ class TransitionManager:
             case,
             kind=kind,
             basis=OfferBasis.MODEL,
-            summary=summary,
             evidence_ids=getattr(proposed, "evidence_ids", None) or (),
             readiness_pivot=readiness_pivot,
         )
@@ -647,7 +608,7 @@ class TransitionManager:
         if refusal is OfferRefusal.DECLINED and kind == OfferKind.CLOSE:
             reask = declined_close_reask(case, closing=True)
             if reask is not None:
-                _refuse_declined_reask(metadata, *reask)
+                _refuse_declined_reask(metadata, **reask)
             logger.info(
                 f"Case {case.case_id}: model proposed CLOSED while the user's "
                 f"decline of the deferred close stands — refused."
@@ -661,9 +622,9 @@ class TransitionManager:
             # the "Mark it resolved" chip on the turn. The user's own close
             # pick closes while the decline stands (#2360): this binds the
             # model, never the user.
-            feedback = declined_resolution_reask(case)
-            if feedback is not None:
-                _add_system_feedback(metadata, feedback)
+            reask = declined_resolution_reask(case)
+            if reask is not None:
+                record_decision(metadata, NoticeCode.DECLINED_RESOLUTION_REASK, **reask)
                 # Read by ``transition_compliance``, which reports the refusal.
                 metadata["declined_resolve_card"] = True
             logger.info(
@@ -672,6 +633,13 @@ class TransitionManager:
             )
             return
         case.offer_record = record
+        # Its summary is composed after the record, from today's composer.
+        record_decision(
+            metadata,
+            OfferCode.MODEL_PROPOSAL,
+            proposal_id=record.open.proposal_id,
+            composer=composer,
+        )
         logger.info(
             f"Agent proposed transition → {kind.to_state} (pending user confirmation)"
         )

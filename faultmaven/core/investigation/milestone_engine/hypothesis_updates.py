@@ -22,6 +22,7 @@ from faultmaven.core.investigation.milestone_engine.chain_emission import (
     record_root_verdict,
 )
 from faultmaven.core.investigation.milestone_engine.turn_records import _resolve_id_ref
+from faultmaven.core.investigation.narration.codes import NoticeCode
 from faultmaven.modules.case.contracts import (
     Case,
     EvidenceStance,
@@ -30,6 +31,7 @@ from faultmaven.modules.case.contracts import (
 
 from .stage_gates import (
     _add_system_feedback,
+    record_decision,
 )
 
 logger = logging.getLogger(__name__)
@@ -393,28 +395,14 @@ def _apply_pending_refutations(
             case.case_id,
             h_id,
         )
-        hedged = (
-            " Its REFUTES links are self-hedged (stance_confidence below 0.6), "
-            "which is not a disproof."
-            if _has_hedged_refutes(hypothesis)
-            else ""
-        )
-        where = (
-            "Its links lowered its likelihood enough to set it aside (RETIRED), "
-            "which is not a disproof."
-            if hypothesis.state == HypothesisState.RETIRED
-            else "It stays open."
-        )
-        _add_system_feedback(
+        # What the link pass did is the decision's; a later step's
+        # retirement of the same hypothesis is the log's (A19).
+        record_decision(
             metadata,
-            f"Hypothesis {h_id} was NOT refuted: nothing on record refutes it."
-            f"{hedged} A refutation stands only on an evidence row from submitted "
-            f"data linked with stance REFUTES to the hypothesis "
-            f"(hypothesis_evidence_links) or to a node of its chain "
-            f"(node_evidence_links), this turn or earlier, or on a recorded "
-            f"failed fix of it. {where} Do not tell the user it is ruled out: "
-            f"ask for the check that would settle it, or set state=RETIRED if "
-            f"you are setting it aside without a disproof.",
+            NoticeCode.REFUTATION_REFUSED,
+            hypothesis_id=h_id,
+            hedged=_has_hedged_refutes(hypothesis),
+            retired=hypothesis.state == HypothesisState.RETIRED,
         )
 
 

@@ -99,6 +99,7 @@ from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING, Any
 
 from faultmaven.core.investigation.evidence_need_surfacing import is_ask_exhausted
+from faultmaven.core.investigation.narration.codes import DECISIONS_KEY, OfferCode
 from faultmaven.modules.case.contracts import (
     CaseState,
     EvidenceNeed,
@@ -303,8 +304,10 @@ def _ask_text(follow_up: Any) -> str:
 _REPLACEMENT_METADATA_FLAGS = (
     "resolution_ready_for_confirmation",
     "resolution_suggest_close",
-    "rca_infeasible_closure_message",
 )
+#: The offer codes whose prose branch replaces them too: their prose is
+#: rendered after linking runs (#2636), so the decision log is read.
+_REPLACEMENT_OFFER_CODES = (OfferCode.RCA_INFEASIBLE_CLOSE,)
 
 
 def suggestions_are_engine_replaced(
@@ -345,7 +348,10 @@ def suggestions_are_engine_replaced(
         return True
     if gate_pending:
         return True
-    return any(metadata.get(flag) for flag in _REPLACEMENT_METADATA_FLAGS)
+    return any(metadata.get(flag) for flag in _REPLACEMENT_METADATA_FLAGS) or any(
+        entry["code"] in _REPLACEMENT_OFFER_CODES
+        for entry in metadata.get(DECISIONS_KEY) or []
+    )
 
 
 def link_evidence_suggestions_to_needs(

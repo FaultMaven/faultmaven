@@ -23,7 +23,8 @@ disagree; stage S3 switches them.
 Where it is written (``record_case_outcome``): at the end of each decision
 cycle (``_apply_turn_response``, after every decider, before the save), after
 each bundle of a statement-revision replay, and at both terminal transitions.
-Nothing reads it in this stage. ``closure_outcome`` computes the closure
+The narration step reads it, and writes the narrated re-checks and the
+watermark into it (stage R, #2636). ``closure_outcome`` computes the closure
 section on demand at the four closure entries, and the two that close hand it
 to ``_execute_closed_transition``, whose record persists it.
 
@@ -123,22 +124,25 @@ def closure_outcome(case: "Case") -> ClosureOutcome:
 
 def record_case_outcome(
     case: "Case", *, at: str, closure: Optional[ClosureOutcome] = None
-) -> None:
+) -> bool:
     """Fold the case's outcome over ``progress.outcome`` and store it there.
 
     ``at`` names the write point: ``cycle``, ``replay``, ``resolved`` or
     ``closed``. ``closure``: at a terminal transition, the closure its entry
     computed (``closure_outcome``); with none (a resolve, or a close offer
     accepted on its stored reason), the one the case now stands on.
-    Nothing reads the record in this stage, so a write that raises fails
-    neither the turn nor the transition: it is logged with its traceback and
-    counted on ``case_outcome_write_failures_total{at}``."""
+    A write that raises fails neither the turn nor the transition: it is
+    logged with its traceback and counted on
+    ``case_outcome_write_failures_total{at}``, and returns False, so the
+    narration step renders no notice from a record this cycle did not write
+    (#2636). Returns whether it was written."""
     try:
         if case.is_terminal and closure is None:
             closure = _closure_of(case, case.closure_reason)
         case.progress.outcome = compute_case_outcome(
             case.progress.outcome, case, closure=closure
         )
+        return True
     except Exception:  # noqa: BLE001 — the record is written in shadow (S1)
         logger.exception(
             "Case %s: the case outcome record was not written at %s (#2615)",
@@ -146,6 +150,7 @@ def record_case_outcome(
             at,
         )
         case_outcome_write_failures_total.labels(at=at).inc()
+        return False
 
 
 class _Disagreements:
@@ -205,6 +210,7 @@ def compute_case_outcome(
         mitigation=_mitigation(case, subjects),
         milestones_shown=shown_milestones(case),
         closure=_closure(prior, case, closure, seen),
+        narration_since=prior.narration_since if prior is not None else None,
         disagreements=seen.read,
     )
 
@@ -392,8 +398,8 @@ def _unbound_rechecks(
     windows: list,
 ) -> list[UnboundRecheck]:
     """Every post-fix row bound to nothing, whatever turn recorded it and
-    whatever the problem's status. ``narrated_turn`` is carried: stage R's
-    renderer writes it."""
+    whatever the problem's status. ``narrated_turn`` is carried: the
+    narration step writes it (#2555)."""
     found = unbound_post_fix_rows(case, subjects, windows)
     if not found:
         return []

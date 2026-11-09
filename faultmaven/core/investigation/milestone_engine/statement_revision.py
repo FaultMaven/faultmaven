@@ -24,10 +24,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-from faultmaven.core.investigation.offers import (
-    open_revision,
-    terminal_offer_opened_this_turn,
-)
+from faultmaven.core.investigation.offers import open_revision
 from faultmaven.core.investigation.outcome import record_case_outcome
 from faultmaven.core.investigation.problem_status import (
     commit_revision,
@@ -40,11 +37,13 @@ from .stage_gates import (
     CARRIED_FIX_KEY,
     REPLAY_HELD_SINCE_KEY,
     _add_system_feedback,
+    merge_decisions,
     merge_system_notices,
 )
 from .transition_consent import (
     TYPED_CONFIRMATION_LINE,
 )
+from .turn_narration import OUTCOME_WRITTEN_KEY
 from .turn_records import REFUSED_EVIDENCE_SLOT
 
 if TYPE_CHECKING:
@@ -67,24 +66,6 @@ REPLAY_FIX_SLOTS_KEY = "replay_fix_slots"
 #: Set on a replayed bundle's metadata to the turn it was staged in: the turn
 #: the cause work it carries was emitted (``emission_turn``, #2537).
 REPLAY_TURN_KEY = "replay_emission_turn"
-
-#: The prose an offer made inside the replay writes beside it. Carried into the
-#: turn's own metadata whenever the replay leaves an offer open, whichever
-#: proposer made it, so the offer reaches the user with its reason; its card
-#: comes from the offer projection at compose. The offer is opened on the
-#: confirmation turn (``Offer.opened_at_turn``), so the gate, which answers
-#: only an offer opened on an earlier turn, never executes it on the user's
-#: "yes" to the revised statement (#722). The proposers in the apply path's
-#: tail also stand down under ``REPLAY_METADATA_KEY``; this covers the ones
-#: that do not (the stage-gate side effects) and any added later.
-PROPOSAL_KEYS = (
-    "rca_infeasible_closure_message",
-    "deferred_solution_gate_message",
-    "false_alarm_closure_message",
-    "resolution_ready_gate_message",
-    "resolution_readiness_verdict",
-    "resolution_readiness_missing",
-)
 
 #: The keys a replayed turn's apply step writes that the confirmation turn's
 #: progress reading and turn record must see. The LLM's own response metadata
@@ -212,14 +193,16 @@ async def confirm_revision(
         # folds over the previous bundle's, so a FAILED window read here
         # survives a later bundle's re-root. Steps 2-4 run once, in the live
         # turn.
-        record_case_outcome(case, at="replay")
-        if terminal_offer_opened_this_turn(case) is not None:
-            for key in PROPOSAL_KEYS:
-                if key in bundle_metadata:
-                    metadata[key] = bundle_metadata[key]
+        metadata[OUTCOME_WRITTEN_KEY] = record_case_outcome(case, at="replay")
         for key in REPLAYED_KEYS:
             replayed[key].extend(bundle_metadata.get(key, []))
+        # The bundle's text notices and its decision codes join the turn's
+        # (A1, A2): an offer it opened is opened on the confirmation turn
+        # (``Offer.opened_at_turn``), so the gate, which answers only an offer
+        # opened on an earlier turn, never executes it on the user's "yes"
+        # (#722), and its prose is rendered once, after the live record.
         merge_system_notices(metadata, bundle_metadata)
+        merge_decisions(metadata, bundle_metadata)
 
     metadata["statement_commit"] = {
         "statement": pending.text,
