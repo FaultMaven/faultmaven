@@ -142,10 +142,11 @@ async def delete_case(
     Permanently delete a case and all associated data, or fail and keep it.
 
     Every store that holds the case's data is cleared before the case itself:
-    its evidence search index, its uploaded files, its PII redaction
-    registry, the sessions pointing at it, its team shares and its runbook
-    conversion jobs and drafts (a published runbook is kept). An audit record
-    names who deleted it and what was cleared.
+    its LLM traces, its evidence search index, its uploaded files, its PII
+    redaction registry, the sessions pointing at it, the answers cached for
+    replay of keyed requests (`Idempotency-Key`) that name it, its team shares
+    and its runbook conversion jobs and drafts (a published runbook is kept).
+    An audit record names who deleted it and what was cleared.
 
     If any store cannot be cleared, the request answers 500
     `DELETE_CASE_ERROR` and the case stays, so the delete can be retried. A

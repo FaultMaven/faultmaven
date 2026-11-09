@@ -149,7 +149,10 @@ class TestHardDeleteCase:
         assert (deletion.case_id, deletion.actor_user_id) == (cid, CREATOR)
         assert deletion.cleared == {"uploads": 3, "pii_redaction_registry": 1}
         assert deletion.not_configured == ("case_vectors",)
-        assert set(json_of(deletion)["not_cleared"]) == {"llm_response_cache"}
+        assert set(json_of(deletion)["not_cleared"]) == {
+            "llm_response_cache",
+            "cached_content_tokens",
+        }
 
     async def test_a_store_that_cannot_be_cleared_keeps_the_case(self):
         w = await _world(("uploads", {}), ("case_vectors", {"fail": True}))
