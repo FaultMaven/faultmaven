@@ -158,7 +158,10 @@ standing of `GET /admin/llm/config`.
 | `group_by` | `provider_model` (default), `user`, `billing_subject`. Shapes `groups` only; every other block is always present |
 
 Anything else is a 422. So is `group_by=user` under `TENANT_PROVIDER=multi`:
-per-user figures are shown to the operator in standalone only.
+per-user figures are shown to the operator in standalone only. For the same
+reason, `group_by=billing_subject` under `multi` folds every `account` subject
+into one group with `id: null` — an account's id is its user's id —
+and keeps `organization` groups as they are.
 
 **What the response holds.**
 
@@ -166,7 +169,7 @@ per-user figures are shown to the operator in standalone only.
 |---|---|
 | `window` | `from`, `to`, `days`, `timezone: "UTC"` |
 | `scope` | `enterprise_id`, `deployment` (`standalone`/`cloud`) and `tenancy`. Under `multi` the figures are **your enterprise's only**, never the deployment's |
-| `coverage` | `metering_since` is the earliest day recorded for the enterprise (`null` when none). `window_fully_covered` is false when the window starts before it: earlier days are "not recorded", not zero spend |
+| `coverage` | `metering_since` is the earliest day with recorded spend for the enterprise (`null` when none) — not when metering began: an earlier day may predate the ledger or have been metered with nothing spent. `window_fully_covered` is false when the window starts before it. `turns_since` is the first day `turns` speaks for — the window's first day, clipped to the turn-retention horizon (today minus `LLM_USAGE_TURN_RETENTION_DAYS`, plus one) and to the earliest turn row — and `turns_fully_covered` is false when that is later than the window's first day, as for a 90-day window under a shorter turn retention |
 | `as_of` | When the report was read |
 | `totals`, each `by_day` entry, each `groups` entry | A bucket: `calls` (`total`, `kept`, `low_confidence`), `tokens` (`input`, `output`, `cache_read`, `cache_write`, `total`), `cache_hit_rate` = `cache_read / (input + cache_read)` (`null` when that is 0), `estimated_cost_usd`, `unpriced_calls` and `cost_complete` (false whenever `unpriced_calls` > 0) |
 | `by_day` | Every day in the window, zeros included |
@@ -183,17 +186,21 @@ per-user figures are shown to the operator in standalone only.
   so a model priced after its calls drops out of `unpriced` and keeps its
   `unpriced_calls`. An override takes effect on restart.
 - Coverage starts when the ledger was deployed. There is no backfill.
+- Turn rows are pruned sooner than daily rows, so `turns` can cover less of the
+  window than `totals`; `coverage.turns_since` says from when.
 - The histogram edges and `budget` are the settings in effect at read time, so
   history re-buckets when the budget changes.
 - Deleting a case shrinks `turns.*`, because its turn rows go with it.
   `totals` and `by_day` do not shrink.
 - These figures do not reconcile with `turn_usage`, as above.
-- When the tables cannot be read the answer is **503** `DATABASE_UNAVAILABLE`
-  with `Retry-After: 5`, never a zero-filled report.
+- When the tables cannot be read, a refused connection included, the answer is
+  **503** `DATABASE_UNAVAILABLE` with `Retry-After: 5`, never a zero-filled
+  report.
 
 `GET /admin/config/status` reports `features.llm_usage_metering`: true when the
-database ledger is installed and its tables can be read now. Its `description`
-names which half failed when it is false.
+database ledger is installed and its tables can be read now. It does not say
+every call was written; `llm_usage_unpersisted_calls_total` counts the ones that
+were not. Its `description` names which half failed when it is false.
 
 ### When a write fails
 

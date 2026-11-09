@@ -4153,9 +4153,16 @@
             "type": "number"
           },
           "investigation_turn": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "description": "The ordinal to display",
-            "title": "Investigation Turn",
-            "type": "integer"
+            "title": "Investigation Turn"
           },
           "occurred_at": {
             "format": "date-time",
@@ -4618,8 +4625,26 @@
                 "type": "null"
               }
             ],
-            "description": "The earliest day recorded for this enterprise; null when nothing is recorded. Days before it are not recorded, not zero spend.",
+            "description": "The earliest day with recorded spend for this enterprise; null when none is recorded. Not when metering began: days before it have no recorded spend, either before the ledger was deployed or metered with nothing spent.",
             "title": "Metering Since"
+          },
+          "turns_fully_covered": {
+            "description": "True when `turns_since` is the window's first day",
+            "title": "Turns Fully Covered",
+            "type": "boolean"
+          },
+          "turns_since": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The first day `turns` speaks for: the window's first day, clipped to the turn-retention horizon (today minus LLM_USAGE_TURN_RETENTION_DAYS, plus one) and to the earliest turn row. Null when no turn is recorded. Turn rows are pruned sooner than daily rows, so `turns` can cover less of the window than `totals`.",
+            "title": "Turns Since"
           },
           "window_fully_covered": {
             "description": "True when `metering_since` is on or before the window's first day",
@@ -4629,7 +4654,9 @@
         },
         "required": [
           "metering_since",
-          "window_fully_covered"
+          "window_fully_covered",
+          "turns_since",
+          "turns_fully_covered"
         ],
         "title": "LLMUsageCoverage",
         "type": "object"
@@ -4717,9 +4744,16 @@
           },
           "key": {
             "additionalProperties": {
-              "type": "string"
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
-            "description": "`provider_model`: {provider, model}. `user`: {user_id}, where \"\" is no actor. `billing_subject`: {kind, id}, kind one of `organization | account | none` and id \"\" for `none`.",
+            "description": "`provider_model`: {provider, model}. `user`: {user_id}, where \"\" is no actor. `billing_subject`: {kind, id}, kind one of `organization | account | none` and id \"\" for `none`. Under multi-tenancy every `account` subject is one group with id null: an account's id is a user id, shown in standalone only.",
             "title": "Key",
             "type": "object"
           },

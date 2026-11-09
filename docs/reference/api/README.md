@@ -5836,7 +5836,7 @@ One of the heaviest turns. Ids and numbers only: no title, no content.
 - `calls` (integer, required)
 - `case_id` (string, required)
 - `estimated_cost_usd` (number, required)
-- `investigation_turn` (integer, required) — The ordinal to display
+- `investigation_turn` (object, required) — The ordinal to display
 - `occurred_at` (string, required)
 - `spend_weighted_tokens` (integer, required)
 - `turn_number` (integer, required) — The message clock
@@ -5983,7 +5983,9 @@ How much of the window the ledger can speak for. There is no backfill.
 
 **Properties:**
 
-- `metering_since` (object, required) — The earliest day recorded for this enterprise; null when nothing is recorded. Days before it are not recorded, not zero spend.
+- `metering_since` (object, required) — The earliest day with recorded spend for this enterprise; null when none is recorded. Not when metering began: days before it have no recorded spend, either before the ledger was deployed or metered with nothing spent.
+- `turns_fully_covered` (boolean, required) — True when `turns_since` is the window's first day
+- `turns_since` (object, required) — The first day `turns` speaks for: the window's first day, clipped to the turn-retention horizon (today minus LLM_USAGE_TURN_RETENTION_DAYS, plus one) and to the earliest turn row. Null when no turn is recorded. Turn rows are pruned sooner than daily rows, so `turns` can cover less of the window than `totals`.
 - `window_fully_covered` (boolean, required) — True when `metering_since` is on or before the window's first day
 
 ---
@@ -6012,7 +6014,7 @@ One row of `groups`, keyed by the request's `group_by`.
 - `calls` (object, required)
 - `cost_complete` (boolean, required) — False whenever `unpriced_calls` > 0: the cost is a lower bound
 - `estimated_cost_usd` (number, required) — Priced calls only, estimated at call time from the price table then in force. Not a bill.
-- `key` (object, required) — `provider_model`: {provider, model}. `user`: {user_id}, where "" is no actor. `billing_subject`: {kind, id}, kind one of `organization | account | none` and id "" for `none`.
+- `key` (object, required) — `provider_model`: {provider, model}. `user`: {user_id}, where "" is no actor. `billing_subject`: {kind, id}, kind one of `organization | account | none` and id "" for `none`. Under multi-tenancy every `account` subject is one group with id null: an account's id is a user id, shown in standalone only.
 - `rate_status` (object, required) — `provider_model` groups only, null otherwise: how the RUNNING price table prices the model now. `zero_cost` is a declared-free self-hosted provider, not an unpriced one.
 - `tokens` (object, required)
 - `unpriced_calls` (integer, required) — Calls that had no price entry when made: left out of the cost

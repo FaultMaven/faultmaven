@@ -117,6 +117,10 @@ async def get_llm_usage(
             group_by=group_by,
             soft_budget=settings.prompt_budget.turn_token_budget,
             ceiling=settings.prompt_budget.turn_token_ceiling,
+            turn_retention_days=settings.observability.llm_usage_turn_retention_days,
+            # #640 Q3: an account subject's id is a user id, shown to the
+            # operator in standalone only.
+            hide_account_ids=multi,
         )
     except UsageStoreUnavailable:
         raise HTTPException(

@@ -73,7 +73,9 @@ def limited_sessions(tenant_sessions, monkeypatch):
     monkeypatch.setattr(database, "get_db_session", _get_db_session)
 
 
-async def _seed(superuser_engine, enterprise_id: str, calls: int, spend: int):
+async def _seed(
+    superuser_engine, enterprise_id: str, calls: int, spend: int, account: str = ""
+):
     """One call and one turn for ``enterprise_id``, written as the limited role."""
     case_id = f"case_{uuid4().hex[:12]}"
     async with superuser_engine.begin() as conn:
@@ -84,7 +86,11 @@ async def _seed(superuser_engine, enterprise_id: str, calls: int, spend: int):
             ),
             {"c": case_id, "e": enterprise_id},
         )
-    who = UsageAttribution(enterprise_id, "none", "", "")
+    who = (
+        UsageAttribution(enterprise_id, "account", account, account)
+        if account
+        else UsageAttribution(enterprise_id, "none", "", "")
+    )
     now = datetime.now(timezone.utc)
     bucket = CallBucket("anthropic", "claude-sonnet-4-6", "kept", calls=calls)
     turn = TurnSpend(
@@ -114,6 +120,8 @@ async def _report(enterprise_id: str):
         group_by="provider_model",
         soft_budget=100_000,
         ceiling=150_000,
+        turn_retention_days=90,
+        hide_account_ids=True,
     )
 
 
@@ -153,7 +161,8 @@ async def test_the_route_scopes_to_the_bound_enterprise_under_multi(
     from faultmaven.api.routes.admin_usage import get_llm_usage
 
     ent_a, ent_b = enterprises
-    await _seed(superuser_engine, ent_a, calls=3, spend=10_000)
+    await _seed(superuser_engine, ent_a, calls=3, spend=10_000, account="u_1764_a")
+    await _seed(superuser_engine, ent_a, calls=4, spend=10_000, account="u_1764_b")
     await _seed(superuser_engine, ent_b, calls=5, spend=10_000)
     monkeypatch.setenv("TENANT_PROVIDER", "multi")
     monkeypatch.setenv("DEPLOYMENT_MODE", "cloud")
@@ -170,10 +179,17 @@ async def test_the_route_scopes_to_the_bound_enterprise_under_multi(
             report = await get_llm_usage(
                 window="7d", group_by="provider_model", current_user=operator
             )
+            payers = await get_llm_usage(
+                window="7d", group_by="billing_subject", current_user=operator
+            )
     finally:
         monkeypatch.undo()
         reset_settings_singleton()
 
     assert report.scope.enterprise_id == ent_a
     assert report.scope.tenancy == "multi"
-    assert report.totals.calls.total == 3
+    assert report.totals.calls.total == 7
+    # #640 Q3: under multi, the account subjects (user ids) are one group.
+    assert [(g.key, g.calls.total) for g in payers.groups] == [
+        ({"kind": "account", "id": None}, 7)
+    ]

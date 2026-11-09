@@ -174,23 +174,16 @@ def vector_storage_backend_name(kb_client: Any, evidence_client: Any) -> str:
 # ============================================================
 
 
-async def llm_usage_report(
-    *, enterprise_id: str, window: str, group_by: str, soft_budget: int, ceiling: int
-) -> dict:
-    """The bound enterprise's usage report, read from the ledger.
+async def llm_usage_report(**kwargs: Any) -> dict:
+    """The bound enterprise's usage report, read from the ledger
+    (``read_usage_report``'s keywords).
 
     Raises:
-        UsageStoreUnavailable: the tables could not be read.
+        UsageStoreUnavailable: the store could not be read.
     """
     from faultmaven.infrastructure.llm.usage_report import read_usage_report
 
-    return await read_usage_report(
-        enterprise_id=enterprise_id,
-        window=window,
-        group_by=group_by,
-        soft_budget=soft_budget,
-        ceiling=ceiling,
-    )
+    return await read_usage_report(**kwargs)
 
 
 async def llm_usage_metering_status() -> FeatureStatus:
@@ -226,15 +219,17 @@ async def llm_usage_metering_status() -> FeatureStatus:
         )
     else:
         detail = (
-            "Every billed LLM call is persisted to llm_usage_daily and "
-            "llm_turn_spend, and GET /admin/llm/usage reads them."
+            "The database usage ledger is installed and llm_usage_daily and "
+            "llm_turn_spend can be read. Calls whose write failed are not in "
+            "them: llm_usage_unpersisted_calls_total{reason} counts those."
         )
     return FeatureStatus(
         enabled=isinstance(ledger, SqlUsageLedger) and fault is None,
         description=detail,
         config_hint=(
             "True when the database usage ledger is installed AND its tables "
-            "can be read. Every deployment that boots the API installs it; "
+            "can be read; it does not say every call was written. Every "
+            "deployment that boots the API installs it; "
             "False with the tables unreadable means the database is down or "
             "was not migrated to head."
         ),

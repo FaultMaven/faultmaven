@@ -223,26 +223,32 @@ async def _drop_usage_table():
         await session.execute(text("DROP TABLE llm_usage_daily"))
 
 
-def _timeout_sessions(monkeypatch):
+def _sessions_raising(monkeypatch, error: BaseException):
     from faultmaven.infrastructure.persistence import database
 
     @asynccontextmanager
     async def _raising():
-        raise DatabaseTimeout("the database did not answer in time")
+        raise error
         yield  # pragma: no cover
 
     monkeypatch.setattr(database, "get_db_session", _raising)
 
 
-@pytest.mark.parametrize("failure", ["missing_table", "timeout"])
+@pytest.mark.parametrize("failure", ["missing_table", "timeout", "refused"])
 async def test_an_unreadable_store_is_503_never_zeros(
     usage_db, as_user, monkeypatch, failure
 ):
     await _call(TODAY)
     if failure == "missing_table":
         await _drop_usage_table()
+    elif failure == "timeout":
+        _sessions_raising(monkeypatch, DatabaseTimeout("did not answer in time"))
     else:
-        _timeout_sessions(monkeypatch)
+        # What pool checkout raises, unwrapped, when PostgreSQL refuses the
+        # connection (``get_db_session`` does not name it: #2670).
+        _sessions_raising(
+            monkeypatch, ConnectionRefusedError(111, "Connect call failed 10.0.0.5")
+        )
 
     response = await _get(as_user(_user("platform_admin")))
 
@@ -252,6 +258,7 @@ async def test_an_unreadable_store_is_503_never_zeros(
     body = response.text
     assert "totals" not in body
     assert "llm_usage_daily" not in body and "SELECT" not in body
+    assert "10.0.0.5" not in body
 
 
 # ---------------------------------------------------------------------------
@@ -268,7 +275,12 @@ async def test_an_empty_window_is_zeros_with_coverage(usage_db, as_user):
         "days": 7,
         "timezone": "UTC",
     }
-    assert report["coverage"] == {"metering_since": None, "window_fully_covered": False}
+    assert report["coverage"] == {
+        "metering_since": None,
+        "window_fully_covered": False,
+        "turns_since": None,
+        "turns_fully_covered": False,
+    }
     assert report["totals"]["calls"] == {"total": 0, "kept": 0, "low_confidence": 0}
     assert report["totals"]["cache_hit_rate"] is None
     assert report["totals"]["cost_complete"] is True
@@ -299,10 +311,8 @@ async def test_by_day_has_every_day_of_the_window(usage_db, as_user):
     calls = [entry["calls"]["total"] for entry in report["by_day"]]
     assert calls == [0, 2, 0, 0, 0, 0, 3]
     assert report["totals"]["calls"] == {"total": 5, "kept": 2, "low_confidence": 3}
-    assert report["coverage"] == {
-        "metering_since": str(TODAY - timedelta(days=40)),
-        "window_fully_covered": True,
-    }
+    assert report["coverage"]["metering_since"] == str(TODAY - timedelta(days=40))
+    assert report["coverage"]["window_fully_covered"] is True
 
 
 async def test_each_group_by_keys_its_groups(usage_db, as_user):
@@ -328,6 +338,35 @@ async def test_each_group_by_keys_its_groups(usage_db, as_user):
     assert all(
         g["rate_status"] is None for g in by_user["groups"] + by_subject["groups"]
     )
+
+
+async def test_under_multi_account_subjects_are_one_group_with_no_id(
+    usage_db, as_user, monkeypatch
+):
+    """#640 Q3: an account subject's id is a user id, standalone-only."""
+    from faultmaven.api.routes import admin_usage
+
+    await _call(TODAY, calls=2, who=_who(kind="account", subject=USER, actor=USER))
+    await _call(TODAY, calls=3, who=_who(kind="account", subject="u2", actor="u2"))
+    await _call(TODAY, calls=5, who=_who(kind="organization", subject="org_1"))
+    standalone = await _admin_get(as_user, group_by="billing_subject")
+    monkeypatch.setattr(admin_usage, "requested_tenant_provider", lambda: "multi")
+
+    multi = await _admin_get(as_user, group_by="billing_subject")
+
+    def keyed(report):
+        return {
+            (g["key"]["kind"], g["key"]["id"]): g["calls"]["total"]
+            for g in report["groups"]
+        }
+
+    assert keyed(standalone) == {
+        ("account", USER): 2,
+        ("account", "u2"): 3,
+        ("organization", "org_1"): 5,
+    }
+    assert keyed(multi) == {("account", None): 5, ("organization", "org_1"): 5}
+    assert USER not in str(multi["groups"]) and "u2" not in str(multi["groups"])
 
 
 async def test_an_unpriced_call_makes_cost_incomplete_at_every_level(usage_db, as_user):
@@ -469,6 +508,68 @@ async def test_cache_hit_rate(usage_db, as_user):
         g for g in report["groups"] if g["key"]["model"] == "claude-sonnet-4-6"
     )
     assert sonnet["cache_hit_rate"] is None
+
+
+async def test_turns_coverage_follows_turn_retention_through_the_prune(
+    usage_db, as_user, monkeypatch
+):
+    """Turn rows are pruned sooner than daily rows: a 30-day window under a
+    5-day turn retention has full daily coverage and five days of turns."""
+    from faultmaven.infrastructure.llm.usage_ledger import prune_expired_usage
+
+    for age in (0, 3, 10, 29):  # 29: the 30-day window's first day
+        day = NOW - timedelta(days=age)
+        await _call(day.date())
+        await _turn(100 + age, 1_000, at=day)
+    monkeypatch.setenv("LLM_USAGE_TURN_RETENTION_DAYS", "5")
+    reset_settings_singleton()
+
+    # Before the prune runs, the horizon alone clips: older rows still exist.
+    unpruned = await _admin_get(as_user, window="30d")
+    pruned = await prune_expired_usage(
+        daily_retention_days=400, turn_retention_days=5, now=NOW
+    )
+    month = await _admin_get(as_user, window="30d")
+    today = await _admin_get(as_user, window="1d")
+
+    assert unpruned["coverage"]["turns_since"] == str(TODAY - timedelta(days=4))
+    assert pruned.turn_rows_deleted == 2
+    assert month["coverage"]["window_fully_covered"] is True
+    # After it, the earliest surviving turn row is later than the horizon.
+    assert month["coverage"]["turns_since"] == str(TODAY - timedelta(days=3))
+    assert month["coverage"]["turns_fully_covered"] is False
+    assert month["turns"]["count"] == 2
+    assert today["coverage"]["turns_since"] == str(TODAY)
+    assert today["coverage"]["turns_fully_covered"] is True
+
+
+async def test_an_unscoped_request_under_multi_is_403(usage_db, monkeypatch):
+    """The sentinel enterprise is no tenant under multi: refused, never read."""
+    from fastapi import HTTPException
+
+    from faultmaven.api.routes import admin_usage
+    from faultmaven.config.tenant_context import UNSCOPED_REQUEST_MSG
+
+    monkeypatch.setattr(
+        "faultmaven.providers.tenancy.factory.requested_tenant_provider",
+        lambda: "multi",
+    )
+    monkeypatch.setattr(admin_usage, "requested_tenant_provider", lambda: "multi")
+
+    async def _never(**_kwargs):
+        raise AssertionError("the store was read for an unscoped request")
+
+    monkeypatch.setattr(admin_usage, "llm_usage_report", _never)
+
+    with pytest.raises(HTTPException) as refused:
+        await admin_usage.get_llm_usage(
+            window="7d",
+            group_by="provider_model",
+            current_user=_user("platform_admin"),
+        )
+
+    assert refused.value.status_code == 403
+    assert refused.value.detail == UNSCOPED_REQUEST_MSG
 
 
 # ---------------------------------------------------------------------------

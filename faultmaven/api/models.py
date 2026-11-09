@@ -386,12 +386,27 @@ class LLMUsageCoverage(BaseModel):
 
     metering_since: Optional[date] = Field(
         description=(
-            "The earliest day recorded for this enterprise; null when nothing "
-            "is recorded. Days before it are not recorded, not zero spend."
+            "The earliest day with recorded spend for this enterprise; null "
+            "when none is recorded. Not when metering began: days before it "
+            "have no recorded spend, either before the ledger was deployed or "
+            "metered with nothing spent."
         )
     )
     window_fully_covered: bool = Field(
         description="True when `metering_since` is on or before the window's first day"
+    )
+    turns_since: Optional[date] = Field(
+        description=(
+            "The first day `turns` speaks for: the window's first day, clipped "
+            "to the turn-retention horizon (today minus "
+            "LLM_USAGE_TURN_RETENTION_DAYS, plus one) and to the earliest turn "
+            "row. Null when no turn is recorded. Turn rows are pruned sooner "
+            "than daily rows, so `turns` can cover less of the window than "
+            "`totals`."
+        )
+    )
+    turns_fully_covered: bool = Field(
+        description="True when `turns_since` is the window's first day"
     )
 
 
@@ -442,11 +457,13 @@ class LLMUsageDay(LLMUsageBucket):
 class LLMUsageGroup(LLMUsageBucket):
     """One row of `groups`, keyed by the request's `group_by`."""
 
-    key: Dict[str, str] = Field(
+    key: Dict[str, Optional[str]] = Field(
         description=(
             "`provider_model`: {provider, model}. `user`: {user_id}, where "
             '"" is no actor. `billing_subject`: {kind, id}, kind one of '
-            '`organization | account | none` and id "" for `none`.'
+            '`organization | account | none` and id "" for `none`. Under '
+            "multi-tenancy every `account` subject is one group with id null: "
+            "an account's id is a user id, shown in standalone only."
         )
     )
     rate_status: Optional[Literal["priced", "zero_cost", "unpriced"]] = Field(
@@ -496,7 +513,7 @@ class LLMHeavyTurn(BaseModel):
 
     case_id: str
     turn_number: int = Field(description="The message clock")
-    investigation_turn: int = Field(description="The ordinal to display")
+    investigation_turn: Optional[int] = Field(description="The ordinal to display")
     occurred_at: datetime
     spend_weighted_tokens: int
     calls: int

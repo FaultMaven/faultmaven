@@ -172,14 +172,21 @@ CONTRACT_CHANGES: tuple[ContractChange, ...] = (
   else is 422, and so is `group_by=user` under `TENANT_PROVIDER=multi`:
   per-user figures are shown to the operator in standalone only (#640 Q3).
 * Scope is the enterprise the request is bound to; under multi it is that
-  enterprise only, never the deployment (`scope.tenancy`).
+  enterprise only, never the deployment (`scope.tenancy`). Under multi,
+  `group_by=billing_subject` folds every `account` subject into one group
+  `{"kind": "account", "id": null}`: an account's id is a user id.
 * 503 `DATABASE_UNAVAILABLE` + `Retry-After: 5` when the usage store cannot be
-  read. Never a zero-filled 200.
+  read, a refused or dropped connection included. Never a zero-filled 200.
 * `unpriced_calls` and `cost_complete` are stored history; `rate_status` and
   `unpriced[]` are read from the running price table, so a model priced after
   its calls leaves the banner and keeps its `unpriced_calls`.
-* Costs are estimated at call time, not billed. Coverage starts when the
-  ledger was deployed (`coverage.metering_since`, the earliest recorded day).
+* Costs are estimated at call time, not billed. `coverage.metering_since` is
+  the earliest day with recorded spend, not when metering began.
+  `coverage.turns_since` / `turns_fully_covered` say how much of the window
+  `turns` covers: turn rows are pruned sooner
+  (`LLM_USAGE_TURN_RETENTION_DAYS`) than daily rows.
+* `LLMHeavyTurn.investigation_turn` is nullable, as on every schema that
+  publishes a turn for display (#1391).
 
 `features.llm_usage_metering` is one more key in the existing
 `Dict[str, FeatureStatus]`: true when the database ledger is installed and its

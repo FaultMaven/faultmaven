@@ -15,19 +15,24 @@ validates.
   and keeps its ``unpriced_calls``.
 * **The budget.** The histogram edges and ``budget`` are the in-effect settings,
   passed in at request time, so history re-buckets against the current budget.
-* **Failure.** A database error raises :class:`UsageStoreUnavailable`; the route
-  answers 503, never a zero-filled report. Nothing is held between requests.
+* **Payers under multi-tenancy (#640 Q3).** An ``account`` billing subject's id
+  is a user id, so ``hide_account_ids`` collapses every ``account`` subject into
+  one group with a null id; ``organization`` groups keep theirs.
+* **Failure.** A database error, a timeout or a refused or dropped connection
+  raises :class:`UsageStoreUnavailable`; the route answers 503, never a
+  zero-filled report. Nothing is held between requests.
 """
 
 from __future__ import annotations
 
 import logging
 import math
+import sys
 from datetime import datetime, time, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import case, func, literal, select
+from sqlalchemy import case, func, literal, null, select
 from sqlalchemy.exc import SQLAlchemyError
 
 from faultmaven.exceptions import DatabaseTimeout, UsageStoreUnavailable
@@ -53,6 +58,17 @@ _NOTHING = SimpleNamespace(**dict.fromkeys(_SUMMED + ("kept", "low_confidence"),
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _store_failures() -> tuple:
+    """What a read that could not reach the store raises: a database error, a
+    timeout, or a refused or dropped connection, which pool checkout raises raw
+    (``OSError``, or asyncpg's own when the driver is loaded)."""
+    failures = [DatabaseTimeout, SQLAlchemyError, OSError]
+    asyncpg = sys.modules.get("asyncpg")
+    if asyncpg is not None:
+        failures += [asyncpg.PostgresConnectionError, asyncpg.InterfaceError]
+    return tuple(failures)
 
 
 def _sums(daily):
@@ -125,10 +141,20 @@ def _group_key(group_by: str, row: Any) -> Dict[str, str]:
 
 
 async def read_usage_report(
-    *, enterprise_id: str, window: str, group_by: str, soft_budget: int, ceiling: int
+    *,
+    enterprise_id: str,
+    window: str,
+    group_by: str,
+    soft_budget: int,
+    ceiling: int,
+    turn_retention_days: int,
+    hide_account_ids: bool,
 ) -> Dict[str, Any]:
     """One enterprise's usage over ``window``, in the ``LLMUsageReport`` shape
     less ``scope``, which is the caller's.
+
+    ``turn_retention_days`` bounds what the ``turns`` block can speak for:
+    rows older than it are pruned (``coverage.turns_since``).
 
     Raises:
         UsageStoreUnavailable: the database did not answer or refused a read.
@@ -160,7 +186,17 @@ async def read_usage_report(
     )
     group_columns = {
         "user": (daily.actor_user_id,),
-        "billing_subject": (daily.billing_subject_kind, daily.billing_subject_id),
+        "billing_subject": (
+            daily.billing_subject_kind,
+            (
+                case(
+                    (daily.billing_subject_kind == "account", null()),
+                    else_=daily.billing_subject_id,
+                )
+                if hide_account_ids
+                else daily.billing_subject_id
+            ).label("billing_subject_id"),
+        ),
     }.get(group_by)
 
     soft = soft_budget if soft_budget > 0 else None
@@ -183,6 +219,11 @@ async def read_usage_report(
             [(metering_since,)] = await rows(
                 select(func.min(daily.usage_date)).where(
                     daily.enterprise_id == enterprise_id
+                )
+            )
+            [(earliest_turn,)] = await rows(
+                select(func.min(turn.occurred_at)).where(
+                    turn.enterprise_id == enterprise_id
                 )
             )
             day_rows = await rows(by(daily.usage_date))
@@ -215,7 +256,7 @@ async def read_usage_report(
                 .scalars()
                 .all()
             )
-    except (DatabaseTimeout, SQLAlchemyError) as exc:
+    except _store_failures() as exc:
         # The TYPE only: a driver message carries the statement and its
         # parameters.
         logger.warning(
@@ -243,12 +284,25 @@ async def read_usage_report(
         key=lambda g: (-g["tokens"]["total"], sorted(g["key"].items())),
     )
     edges = histogram_edges(soft_budget, ceiling)
+    # The first day the turns block can speak for: the window's first day,
+    # clipped to the turn-retention horizon and to the earliest turn row.
+    turns_since = (
+        max(
+            first,
+            last - timedelta(days=turn_retention_days - 1),
+            _as_utc(earliest_turn).date(),
+        )
+        if earliest_turn is not None
+        else None
+    )
     return {
         "window": {"from": first, "to": last, "days": days, "timezone": "UTC"},
         "coverage": {
             "metering_since": metering_since,
             "window_fully_covered": metering_since is not None
             and metering_since <= first,
+            "turns_since": turns_since,
+            "turns_fully_covered": turns_since == first,
         },
         "as_of": now,
         "totals": _bucket(total_row),
