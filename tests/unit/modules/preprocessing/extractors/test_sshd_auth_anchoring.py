@@ -983,7 +983,8 @@ def test_every_rule_needs_an_event_word(owner, rule, phrase):
 # need three sizes of the same shape, and
 # ``tests/performance/test_extraction_speed.py`` times the 64 KB form against
 # that timeout. ``ADVERSARIAL_LINES`` is the 64 KB form, byte for byte what this
-# module used before #1579, plus ``pam-chain`` and ``call-chain`` (#1700).
+# module used before #1579, plus ``pam-chain`` and ``call-chain`` (#1700) and
+# ``hex-run``, a long run with no colon (the host-and-port pattern, #2641).
 _64K = 65536
 ADVERSARIAL_SHAPES = {
     "unclosed-bracket-spaced": ("[", "1 ", "password", _64K // 2),
@@ -1019,6 +1020,12 @@ ADVERSARIAL_SHAPES = {
         '"}',
         2000,
     ),
+    "hex-run": (
+        "Dec 10 06:55:46 LabSZ app[1]: blob=",
+        "0123456789abcdef",
+        " password",
+        _64K // 16,
+    ),
 }
 
 
@@ -1053,7 +1060,7 @@ def adversarial_length(name: str, repetitions: int) -> int:
 #: copy. It need not: settled 4x, a window's top faulted at most 36 pages a
 #: call at 64 KB and 1780 at 512 KB (``timestamps``), 1-4 ms of system time
 #: beside 0.6-2.7 s of the extractor's own work there, so no figure moves.
-_SETTLE_PER_LINE_BYTE = 4
+SETTLE_PER_LINE_BYTE = 4
 
 
 ADVERSARIAL_LINES = {
@@ -1090,7 +1097,7 @@ class TestAdversarialLines:
             lambda repetitions: adversarial_line(name, repetitions),
             small=max(1, ADVERSARIAL_SHAPES[name][3] // 512),
             label=f"read_sshd_auth_line on {name}",
-            settle_bytes=lambda repetitions: _SETTLE_PER_LINE_BYTE
+            settle_bytes=lambda repetitions: SETTLE_PER_LINE_BYTE
             * adversarial_length(name, repetitions),
         )
 
@@ -1121,7 +1128,7 @@ class TestAdversarialLines:
             small=max(1, ADVERSARIAL_SHAPES[name][3] // 64),
             label=f"LogsAndErrorsExtractor.extract beside {name}",
             max_escalations=1,
-            settle_bytes=lambda repetitions: _SETTLE_PER_LINE_BYTE
+            settle_bytes=lambda repetitions: SETTLE_PER_LINE_BYTE
             * adversarial_length(name, repetitions),
         )
 

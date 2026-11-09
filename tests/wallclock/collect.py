@@ -56,8 +56,8 @@ commit, not a commit on any branch. Join runs by ``run_id`` (with
 prints, per row of ``tests/performance/budgets.py``, the anchor the rule in
 that module's docstring gives for the per-PR rows under ``rows/``
 (``PROPOSE_PROFILES``). The row's statistic per CI job is its WORST comparison
-in that job (a test that asserts one row several times, such as thirteen
-extraction shapes or four deduplication sizes, must pass all of them), and:
+in that job (a test that asserts one row several times, such as once per
+``ADVERSARIAL_LINES`` shape or once per deduplication size, must pass all of them), and:
 
 * latency: ``reference = max(box, p95 of the jobs)``, where the box term is the
   reference at ``--box-rev`` divided by ``--box-factor`` (that table was
