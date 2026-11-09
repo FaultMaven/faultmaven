@@ -125,7 +125,10 @@ def test_an_adversarial_line_extracts_inside_the_tier1_timeout(name):
 
     The product target is ``TIER1_TIMEOUT_SECONDS`` itself: past it the
     pipeline replaces the file's extraction with a text preview, which is
-    what a crafted line is trying to cause.
+    what a crafted line is trying to cause. That deadline bounds ``extract``
+    alone, in the Tier 1 worker once its imports are done (#2637), which is
+    the call timed here: the worker's start and transfers have bounds of
+    their own.
     """
     genuine = BSD + f"Failed password for root from {SRC} port 22 ssh2"
     body = genuine + "\n" + ADVERSARIAL_LINES[name] + "\n"

@@ -13,8 +13,10 @@ Design Reference:
 """
 
 import asyncio
+import dataclasses
 import hashlib
 import logging
+import math
 import time
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
@@ -31,12 +33,15 @@ from faultmaven.core.preprocessing.models import (
     generate_concise_summary,
     to_unified_data_type,
 )
+from faultmaven.infrastructure import worker_process
+from faultmaven.infrastructure.index_slot import index_cores
 from faultmaven.infrastructure.observability.evidence_metrics import (
     CASE_ENTITIES_OVERFLOW_TOTAL,
     PREPROCESSING_EXTRACTION_YIELD_RATIO,
 )
 from faultmaven.models.api import DataType, SourceMetadata
 from faultmaven.modules.case.contracts import minted_filename_phrase
+from faultmaven.modules.preprocessing import extraction_worker
 from faultmaven.modules.preprocessing.classifier import DataClassifier
 from faultmaven.modules.preprocessing.entities import (
     extract_entities_for_data_type,
@@ -44,10 +49,7 @@ from faultmaven.modules.preprocessing.entities import (
 from faultmaven.modules.preprocessing.extractors.logs_extractor import (
     LogsAndErrorsExtractor,
 )
-from faultmaven.modules.preprocessing.extractors.protocol import (
-    Extractor,
-    ExtractResult,
-)
+from faultmaven.modules.preprocessing.extractors.protocol import Extractor
 from faultmaven.modules.preprocessing.extractors.sanity_check import (
     SanityResult,
     run_sanity_check,
@@ -59,9 +61,65 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Tier 1 timeout: extractors must complete within this budget.
-# On timeout, falls back to TEXT extraction (preview-only).
+# Tier 1 timeout: ``extract`` alone, in its worker (Principle 14, #2637); past
+# it the worker is killed and the answer is TEXT extraction (preview-only). The
+# steps around it have bounds of their own, so what falls back is as on a thread.
 TIER1_TIMEOUT_SECONDS = 2.0
+
+#: Extractions at once, capped as indexing is; a slot frees once its worker dies.
+TIER1_SLOTS = max(2, int(index_cores()))
+
+#: The wait for a slot: the 2 s the deadline once spent on the executor queue.
+#: Past it, the preview with ``busy_fallback``: the server was busy.
+TIER1_SLOT_WAIT_SECONDS = 2.0
+
+#: Spawn to ``ready``: the interpreter and imports. Over 100 starts, one, four
+#: and eight at once: median 125-136 ms, at most 254 ms; about 8x the slowest.
+TIER1_START_SECONDS = 2.0
+
+#: Each transfer, the request in and the result out. At the 10 MB upload
+#: limit, one shape per extractor: requests 24-65 ms, the largest result 420 ms
+#: (error reports, 25.7 MiB). 0.5 s plus 0.2 s a MB: 2.5 s, about 6x the slowest.
+TIER1_TRANSFER_BASE_SECONDS = 0.5
+TIER1_TRANSFER_SECONDS_PER_MB = 0.2
+
+#: ``RLIMIT_AS``. At the 10 MB limit a worker starts at 23 MiB, and the most
+#: any reached within the deadline is 620 MiB (source code, killed while still
+#: growing; error reports finish at 278 MiB). Four times the start and the growth
+#: a MB: 2,496 MiB at 10 MB. The worker is the OOM killer's first choice.
+TIER1_MEMORY_BASE_MIB = 96
+TIER1_MEMORY_MIB_PER_MB = 240
+
+#: What the parent reads. Some results grow with their input: at the 10 MB
+#: limit, error reports answer 25.7 MiB (2.6 bytes a byte), the visual
+#: placeholder 20.1 MiB. 1 MiB for log records plus 6 MiB a MB, over twice that.
+TIER1_OUTPUT_BASE_MIB = 1
+TIER1_OUTPUT_MIB_PER_MB = 6
+
+#: The worker module. Always this value: tests point it at one of their own.
+_EXTRACTION_WORKER = extraction_worker.__name__
+
+_tier1_slots_state: Optional[tuple[asyncio.AbstractEventLoop, asyncio.Semaphore]] = None
+
+
+def tier1_limits(upload_mb: int) -> tuple[worker_process.Phases, int, int]:
+    """Each step's bound, the address-space limit and the output limit in
+    bytes, for an upload limit in MB."""
+    transfer = TIER1_TRANSFER_BASE_SECONDS + TIER1_TRANSFER_SECONDS_PER_MB * upload_mb
+    phases = worker_process.Phases(
+        TIER1_START_SECONDS, transfer, TIER1_TIMEOUT_SECONDS, transfer
+    )
+    memory = TIER1_MEMORY_BASE_MIB + TIER1_MEMORY_MIB_PER_MB * upload_mb
+    output = TIER1_OUTPUT_BASE_MIB + TIER1_OUTPUT_MIB_PER_MB * upload_mb
+    return phases, memory * 1024 * 1024, output * 1024 * 1024
+
+
+def _tier1_slots() -> asyncio.Semaphore:
+    """The slots, made on the running loop (``worker_process.loop_slots``)."""
+    global _tier1_slots_state
+    _tier1_slots_state = worker_process.loop_slots(_tier1_slots_state, TIER1_SLOTS)
+    return _tier1_slots_state[1]
+
 
 # Files smaller than this threshold are passed through raw instead of
 # running extraction — the raw content is already a better "file extract"
@@ -319,12 +377,20 @@ class PreprocessingService:
         if command_output_extractor:
             self.extractors[DataType.COMMAND_OUTPUT] = command_output_extractor
 
+        # The Tier 1 worker imports each extractor's class by name: refuse here
+        # one it cannot import, not as a preview at run time.
+        for extractor in filter(None, self.extractors.values()):
+            name = f"{type(extractor).__module__}:{type(extractor).__qualname__}"
+            if name.startswith("__main__:") or "." in name.partition(":")[2]:
+                raise ValueError(f"{name} cannot run in the Tier 1 worker")
+
         # Phase 4 — entity registry settings (feature flag + hard cap).
         # Read once at construction so per-call overhead is zero; hot-
         # reload in cloud mode flows through the settings singleton at
         # the next service instance.
         from faultmaven.config.settings import get_settings
 
+        self._upload_mb: int = get_settings().upload.max_upload_size_mb
         preprocessing_cfg = get_settings().preprocessing
         self._entity_registry_enabled: bool = bool(
             getattr(preprocessing_cfg, "entity_registry_enabled", False)
@@ -1081,53 +1147,77 @@ class PreprocessingService:
         filename: str,
     ) -> ExtractionResult:
         """
-        Run a Tier 1 extractor with timeout enforcement.
+        Run a Tier 1 extractor in a worker process its deadline kills.
 
-        If the extractor exceeds TIER1_TIMEOUT_SECONDS, cancel it and
-        return a TEXT extraction (preview-only) as fallback.
+        ``extract`` past ``TIER1_TIMEOUT_SECONDS`` is the TEXT preview with
+        ``timeout_fallback``; no slot within ``TIER1_SLOT_WAIT_SECONDS``, with
+        ``busy_fallback``; any other end without a result, with
+        ``error_fallback`` and its reason (Principle 14, #2637).
 
         Design Reference:
-            data-preprocessing-design-specification.md Section 4.9
+            data-preprocessing-design-specification.md Section 2.4
         """
-        try:
-            result_content = await asyncio.wait_for(
-                asyncio.to_thread(extractor.extract, content),
-                timeout=TIER1_TIMEOUT_SECONDS,
-            )
-            # Every Tier 1 extractor returns ``ExtractResult`` per the
-            # protocol in ``extractors/protocol.py`` — enforce here so a
-            # broken extractor surfaces immediately rather than silently
-            # round-tripping through ``str()``.
-            if not isinstance(result_content, ExtractResult):
-                raise TypeError(
-                    f"Extractor {type(extractor).__name__} returned "
-                    f"{type(result_content).__name__}, expected ExtractResult"
-                )
-            return ExtractionResult(
-                method=extractor.strategy_name,
-                # content holds file_extract text for sanity checks;
-                # extract_result_json carries the full structured payload.
-                content=result_content.file_extract,
-                metadata={"extract_result_json": result_content.to_json()},
-            )
-        except asyncio.TimeoutError:
-            logger.warning(
-                f"Tier 1 extraction timed out after {TIER1_TIMEOUT_SECONDS}s "
-                f"for {filename}. Falling back to TEXT preview."
-            )
+        cls = type(extractor)
+        phases, memory_bytes, output_limit_bytes = tier1_limits(self._upload_mb)
+
+        def preview(**metadata) -> ExtractionResult:
             # Fallback: truncated preview (always fast)
             return ExtractionResult(
                 method="structure_extraction",
                 content=self._fallback_direct_extraction(content),
-                metadata={"timeout_fallback": True},
+                metadata=metadata,
             )
+
+        slots = _tier1_slots()
+        try:
+            async with asyncio.timeout(TIER1_SLOT_WAIT_SECONDS):
+                await slots.acquire()
+        except TimeoutError:
+            logger.warning(
+                f"Tier 1 extraction found no slot free within "
+                f"{TIER1_SLOT_WAIT_SECONDS}s for {filename}. "
+                f"Falling back to TEXT preview."
+            )
+            return preview(busy_fallback=True)
+        try:
+            end = await worker_process.run(
+                _EXTRACTION_WORKER,
+                {"extractor": f"{cls.__module__}:{cls.__qualname__}"},
+                memory_bytes=memory_bytes,
+                cpu_seconds=math.ceil(sum(dataclasses.astuple(phases))) + 1,
+                output_limit_bytes=output_limit_bytes,
+                phases=phases,
+                parts=(content,),
+            )
+            if end.timed_out and end.phase == "work":
+                logger.warning(
+                    f"Tier 1 extraction timed out after {TIER1_TIMEOUT_SECONDS}s "
+                    f"for {filename}. Falling back to TEXT preview."
+                )
+                return preview(timeout_fallback=True)
+            if end.timed_out:
+                raise RuntimeError(
+                    f"the extraction worker ran past its {end.phase} bound"
+                )
+            if end.result is None:
+                if end.code == worker_process.OUT_OF_MEMORY_EXIT:
+                    raise RuntimeError("the extraction worker passed its memory limit")
+                raise RuntimeError(
+                    end.failure or f"the extraction worker exited {end.code}"
+                )
+            extract_result_json, file_extract = end.result
         except Exception as e:
             logger.error(
                 f"Tier 1 extraction failed for {filename}: {e}. "
                 f"Falling back to TEXT preview."
             )
-            return ExtractionResult(
-                method="structure_extraction",
-                content=self._fallback_direct_extraction(content),
-                metadata={"error_fallback": True, "error": str(e)[:200]},
-            )
+            return preview(error_fallback=True, error=str(e)[:200])
+        finally:
+            slots.release()
+        return ExtractionResult(
+            method=extractor.strategy_name,
+            # content holds file_extract text for sanity checks;
+            # extract_result_json carries the full structured payload.
+            content=file_extract,
+            metadata={"extract_result_json": extract_result_json},
+        )

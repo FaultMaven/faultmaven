@@ -421,7 +421,8 @@ API_REQUEST_LOGGING_OVERHEAD = LatencyBudget(
 # each job's worst shape. When it was anchored the worst were ``tag-chain`` and
 # ``sshd-word-chain``, on which the extractor was then super-linear; since #1700
 # it is linear on these shapes (``test_the_extractor_is_linear``), so the anchor
-# is loose for all of them.
+# is loose for all of them. Its target is the deadline the Tier 1 worker puts on
+# ``extract`` alone (#2637), the call the test times in process.
 
 # tests/performance/test_sanitization_throughput.py
 SANITIZE_LARGE_DOCUMENT = ThroughputBudget(

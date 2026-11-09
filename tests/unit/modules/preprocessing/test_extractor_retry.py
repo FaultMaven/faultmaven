@@ -24,6 +24,17 @@ from faultmaven.modules.preprocessing.preprocessing_service import (
     PreprocessingService,
     _build_alternative_chain,
 )
+from tests.unit.modules.preprocessing.extraction_stubs import (
+    CrimeScene,
+    DegenerateMetrics,
+    Empty,
+    EmptyConfig,
+    HealthyMetrics,
+    NoErrorsLogs,
+    TextFindings,
+    UnknownSource,
+    marked,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -46,20 +57,6 @@ def _make_classifier(
     result.suggested_types = suggested_types
     classifier.classify.return_value = result
     return classifier
-
-
-def _make_extractor(output: str, strategy_name: str = "crime_scene"):
-    from faultmaven.modules.preprocessing.extractors.protocol import ExtractResult
-
-    ext = MagicMock()
-    ext.strategy_name = strategy_name
-    ext.llm_calls_used = 0
-    ext.extract.return_value = ExtractResult(
-        file_extract=output,
-        search_map="",
-        file_meta={},
-    )
-    return ext
 
 
 def _enable_retry(value: bool):
@@ -152,15 +149,11 @@ class TestFlagOffBehaviour:
         """With the flag off, the service must not run sanity checks
         and must produce the same single-attempt metadata shape Phase 1
         tests pinned."""
-        metrics_extractor = _make_extractor(
-            output="degenerate output (no analysis block)",
-            strategy_name="statistical",
-        )
         classifier = _make_classifier(data_type=DataType.METRICS_AND_PERFORMANCE)
         service = PreprocessingService(
             classifier=classifier,
-            logs_extractor=_make_extractor("logs output"),
-            metrics_extractor=metrics_extractor,
+            logs_extractor=CrimeScene(),
+            metrics_extractor=DegenerateMetrics(),
         )
         with _enable_retry(False):
             result = await service.classify_and_extract(content=_LONG_CONTENT)
@@ -171,8 +164,8 @@ class TestFlagOffBehaviour:
         # Single attempt, no retries, no sanity-passed field drift.
         assert len(attempts) == 1
         assert attempts[0]["triggered_by"] == "initial"
-        # Metrics extractor was called exactly once.
-        assert metrics_extractor.extract.call_count == 1
+        # The one attempt is the metrics extractor's.
+        assert marked(DegenerateMetrics) in result.structural_index
 
 
 # ---------------------------------------------------------------------------
@@ -182,26 +175,16 @@ class TestFlagOffBehaviour:
 
 class TestFlagOnRetryPath:
     @pytest.mark.asyncio
-    async def test_healthy_output_passes_sanity_no_retry(self):
+    async def test_healthy_output_passes_sanity_no_retry(self, spawned):
         """When the initial extractor's output passes sanity, the retry
         loop must not fire — single attempt, labelled initial."""
-        metrics_output = (
-            "=== METRICS ANALYSIS SUMMARY ===\n"
-            "Analyzed 1 metric(s)\n"
-            "\n"
-            "--- COVERAGE METADATA ---\n"
-            "Format: csv\n"
-            "Total data points: 100\n"
-        )
-        metrics_extractor = _make_extractor(metrics_output, "statistical")
-        text_extractor = _make_extractor("text output")
         classifier = _make_classifier(data_type=DataType.METRICS_AND_PERFORMANCE)
 
         service = PreprocessingService(
             classifier=classifier,
-            logs_extractor=_make_extractor("logs"),
-            metrics_extractor=metrics_extractor,
-            text_extractor=text_extractor,
+            logs_extractor=CrimeScene(),
+            metrics_extractor=HealthyMetrics(),
+            text_extractor=TextFindings(),
         )
         with _enable_retry(True):
             result = await service.classify_and_extract(content=_LONG_CONTENT)
@@ -212,8 +195,9 @@ class TestFlagOnRetryPath:
         assert len(attempts) == 1
         assert attempts[0]["triggered_by"] == "initial"
         assert attempts[0]["sanity_passed"] is True
-        # Text extractor (fallback) never ran.
-        assert text_extractor.extract.call_count == 0
+        # The metrics extractor's result stands: the text fallback never ran.
+        assert marked(HealthyMetrics) in result.structural_index
+        assert len(spawned) == 1
 
     @pytest.mark.asyncio
     async def test_degenerate_output_triggers_retry_with_fallback(self):
@@ -221,29 +205,17 @@ class TestFlagOnRetryPath:
         produces degenerate single-data-point output. suggested_types
         is empty (confident classification). Retry falls through to
         UNSTRUCTURED_TEXT, which always produces valid output."""
-        degenerate_metrics = (
-            "=== METRICS ANALYSIS SUMMARY ===\n"
-            "Analyzed 1 metric(s)\n"
-            "\n"
-            "--- COVERAGE METADATA ---\n"
-            "Format: csv\n"
-            "Total data points: 1\n"
-        )
-        metrics_extractor = _make_extractor(degenerate_metrics, "statistical")
-        # UNSTRUCTURED_TEXT extractor output — permissive default passes.
-        text_extractor = _make_extractor(
-            "=== ERROR MESSAGES ===\nsome content here\n", "direct"
-        )
         classifier = _make_classifier(
             data_type=DataType.METRICS_AND_PERFORMANCE,
             suggested_types=None,
         )
 
+        # UNSTRUCTURED_TEXT extractor output — permissive default passes.
         service = PreprocessingService(
             classifier=classifier,
-            logs_extractor=_make_extractor("logs"),
-            metrics_extractor=metrics_extractor,
-            text_extractor=text_extractor,
+            logs_extractor=CrimeScene(),
+            metrics_extractor=DegenerateMetrics(),
+            text_extractor=TextFindings(),
         )
         with _enable_retry(True):
             result = await service.classify_and_extract(content=_LONG_CONTENT)
@@ -264,10 +236,7 @@ class TestFlagOnRetryPath:
     async def test_retry_budget_enforced(self):
         """Total attempts must not exceed initial + _MAX_ALT_RETRIES."""
         # All extractors return degenerate output so every sanity check fails.
-        degenerate_metrics = "=== METRICS ANALYSIS SUMMARY ===\nTotal data points: 1\n"
-        metrics_extractor = _make_extractor(degenerate_metrics, "statistical")
         # UNSTRUCTURED_TEXT with empty output so its sanity-check fails too.
-        text_extractor = _make_extractor("", "direct")
         classifier = _make_classifier(
             data_type=DataType.METRICS_AND_PERFORMANCE,
             suggested_types=[
@@ -280,17 +249,11 @@ class TestFlagOnRetryPath:
         # Logs/config/code extractors all produce output that fails sanity.
         service = PreprocessingService(
             classifier=classifier,
-            logs_extractor=_make_extractor(
-                "CRIME SCENE EXTRACTION: No errors detected - showing last 2 lines\n"
-            ),
-            metrics_extractor=metrics_extractor,
-            config_extractor=_make_extractor(
-                "\n\n--- COVERAGE METADATA ---\nFormat: key-value\nTotal keys: 0\n"
-            ),
-            source_code_extractor=_make_extractor(
-                "=== SOURCE CODE ANALYSIS (Pattern-based) ===\n\nDetected Language: Unknown\n"
-            ),
-            text_extractor=text_extractor,
+            logs_extractor=NoErrorsLogs(),
+            metrics_extractor=DegenerateMetrics(),
+            config_extractor=EmptyConfig(),
+            source_code_extractor=UnknownSource(),
+            text_extractor=Empty(),
         )
         with _enable_retry(True):
             result = await service.classify_and_extract(content=_LONG_CONTENT)
@@ -311,23 +274,19 @@ class TestFlagOnRetryPath:
         review fix expanded it from a single-element tuple. Both must
         be wired to fail to exercise the direct_fallback exit.
         """
-        degenerate_metrics = "=== METRICS ANALYSIS SUMMARY ===\nTotal data points: 1\n"
-        empty_text = ""  # UNSTRUCTURED_TEXT fallback produces empty → fails sanity
-        empty_doc = ""  # DOCUMENTATION fallback produces empty → fails sanity
-        metrics_extractor = _make_extractor(degenerate_metrics, "statistical")
-        text_extractor = _make_extractor(empty_text, "direct")
-        documentation_extractor = _make_extractor(empty_doc, "documentation_structure")
         classifier = _make_classifier(
             data_type=DataType.METRICS_AND_PERFORMANCE,
             suggested_types=None,
         )
 
+        # The UNSTRUCTURED_TEXT and DOCUMENTATION fallbacks produce empty
+        # output, which fails sanity.
         service = PreprocessingService(
             classifier=classifier,
-            logs_extractor=_make_extractor("logs"),
-            metrics_extractor=metrics_extractor,
-            text_extractor=text_extractor,
-            documentation_extractor=documentation_extractor,
+            logs_extractor=CrimeScene(),
+            metrics_extractor=DegenerateMetrics(),
+            text_extractor=Empty(),
+            documentation_extractor=Empty(),
         )
         with _enable_retry(True):
             result = await service.classify_and_extract(content=_LONG_CONTENT)
@@ -343,21 +302,18 @@ class TestFlagOnRetryPath:
 
 class TestThinCaseNoRetry:
     @pytest.mark.asyncio
-    async def test_short_content_skips_retry_even_on_degenerate_output(self):
+    async def test_short_content_skips_retry_even_on_degenerate_output(self, spawned):
         """Even if the extractor produces what looks like degenerate
         output, the sanity check's thin-case safeguard passes for short
         content so no retry fires. Critical for the Flexibility Contract
         thin-case scenario — 1-word pastes must not spiral."""
-        degenerate_metrics = "=== METRICS ANALYSIS SUMMARY ===\nTotal data points: 1\n"
-        metrics_extractor = _make_extractor(degenerate_metrics, "statistical")
-        text_extractor = _make_extractor("text", "direct")
         classifier = _make_classifier(data_type=DataType.METRICS_AND_PERFORMANCE)
 
         service = PreprocessingService(
             classifier=classifier,
-            logs_extractor=_make_extractor("logs"),
-            metrics_extractor=metrics_extractor,
-            text_extractor=text_extractor,
+            logs_extractor=CrimeScene(),
+            metrics_extractor=DegenerateMetrics(),
+            text_extractor=TextFindings(),
         )
         with _enable_retry(True):
             # content < 50 chars triggers the thin-case safeguard.
@@ -367,4 +323,4 @@ class TestThinCaseNoRetry:
             "attempts"
         ]
         assert len(attempts) == 1
-        assert text_extractor.extract.call_count == 0
+        assert spawned == [], "an extractor ran"

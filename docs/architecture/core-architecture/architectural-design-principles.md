@@ -993,13 +993,13 @@ One check per clause. This table's Status column is the principle's only status 
 >
 > Work over input a user controls, and any work the design gives a deadline, runs where that deadline can stop it: a process the deadline kills, under declared time, memory and output limits.
 
-First application: document preparation, built (#2622): Stages 0-5 of a conversion run in a spawned worker process, one per job under two slots, killed at the 120 s deadline, under its own memory, CPU-time and output limits (`document_preprocessor.py`, `preparation_worker.py`). Evidence Tier 1 and the runbook validator gate next ([ruling on #2596](https://github.com/FaultMaven/faultmaven/issues/2596#issuecomment-6716225975)).
+The mechanism is one shared worker, `faultmaven/infrastructure/worker_process.py`: a job runs in a spawned process of its own (`python -m` its worker module, which imports what the job needs and little else), killed and reaped at its deadline, a cancellation and any other end included, before its slot frees. The worker bounds itself before it touches the input: it dies with its parent, volunteers for the OOM killer, and sets its CPU-time and address-space limits, and the parent reads its output under a limit. A phased job gives each step a bound of its own (the start, the request, the work, the result), so the work's deadline counts the work alone. Each application declares its deadlines and limits. Built for **document preparation** (#2622): Stages 0-5 of a conversion, one worker per job under two slots, killed at the 120 s deadline (`document_preprocessor.py`, `preparation_worker.py`). Built for **Evidence Tier 1** (#2637): one phased worker per extraction under `max(2, int(index_cores()))` slots, killed when `extract` runs past its 2 s deadline; the wait for a slot, the start and each transfer have declared bounds of their own (`preprocessing_service.py`, `extraction_worker.py`). The runbook validator gate is next ([ruling on #2596](https://github.com/FaultMaven/faultmaven/issues/2596#issuecomment-6716225975)).
 
 ### Enforcement
 
 | Check that fails on the next violation | Status |
 |---|---|
-| A responsiveness test with a stage that holds the interpreter lock in C (for example a large `re.sub`); it fails on a thread-only design. | Built for document preparation (#2622): `test_a_stage_holding_the_lock_in_c_leaves_the_event_loop_free` in `tests/unit/modules/knowledge/test_document_extraction_off_the_loop_2153.py`. Its stage holds the lock in a C loop without a regex, so the test adds no ReDoS pattern. |
+| A responsiveness test with a stage that holds the interpreter lock in C (for example a large `re.sub`); it fails on a thread-only design. | Built for document preparation (#2622): `test_a_stage_holding_the_lock_in_c_leaves_the_event_loop_free` in `tests/unit/modules/knowledge/test_document_extraction_off_the_loop_2153.py`. Its stage holds the lock in a C loop without a regex, so the test adds no ReDoS pattern. Built for Evidence Tier 1 (#2637): `test_an_extraction_past_its_deadline_stops_at_it` in `tests/unit/modules/preprocessing/test_tier1_runs_in_a_killable_worker_2637.py`, with an extractor that holds the lock in C (a cubic `re.sub` over a constant) and one that loops in Python: while it runs the loop turns three times with its worker alive, and once the preview is given no thread of the API process is inside the extractor and its worker was killed. |
 | A census of thread offloads over user-sized input, each naming the mechanism that keeps its deadline. | Built (#2622): the table below, kept equal to the files by `tests/unit/architecture/test_thread_offload_census_2622.py`. The test checks the set of files, not each one's mechanism: a file that starts or stops offloading fails it until its row is added or removed. |
 
 **The thread offload census.** Every module in `faultmaven/` that calls `asyncio.to_thread`, `run_in_executor` or an executor's `submit`, with what it hands to the thread and what keeps the rule: I/O, native code that releases the interpreter lock and has no deadline to keep, redaction (ruled to keep its thread on #2596, measured inside its bound), or a #2596 stage still to come.
@@ -1023,7 +1023,6 @@ First application: document preparation, built (#2622): Stages 0-5 of a conversi
 | `faultmaven/modules/knowledge/api/conversion_routes.py` | Copying and hashing the upload | I/O |
 | `faultmaven/modules/knowledge/api/routes.py` | Hashing the upload for its idempotency fingerprint | I/O |
 | `faultmaven/modules/knowledge/domain/services/runbook_validator.py` | The runbook validator gate | Pending: #2596, the validator gate |
-| `faultmaven/modules/preprocessing/preprocessing_service.py` | Evidence Tier 1's extractors | Pending: #2596, Evidence Tier 1 |
 
 ---
 
@@ -1052,6 +1051,7 @@ First application: document preparation, built (#2622): Stages 0-5 of a conversi
 | 2.3 | 2026-11-08 | P13 "One Owner per Fact" and P14 "Bounded Execution" added as ruled ([#2614](https://github.com/FaultMaven/faultmaven/pull/2614#issuecomment-6716219954); P13's adopted text: [#2617](https://github.com/FaultMaven/faultmaven/issues/2617#issuecomment-6718120222); P14: [#2596](https://github.com/FaultMaven/faultmaven/issues/2596#issuecomment-6716225975)), each with its enforcement table. P3 and P7 point at the [store registry](../data-and-storage/store-registry.md). P5 names `bootstrap/composition.py` as the composition root. P9's AI evaluation gate and P12's automated enforcement are marked not built. |
 | 2.4 | 2026-11-08 | P9: the 70% coverage floor is enforced by CI, which gates on `COVERAGE_FAIL_UNDER` in `ci-cd.yml` ([#2619](https://github.com/FaultMaven/faultmaven/issues/2619)). The Two Testing Dimensions row points to Quality Gates, the per-layer figures are marked targets with no gate, and Quality Gates no longer claims the pipeline enforces all rules. |
 | 2.5 | 2026-11-08 | P14 applied to document preparation ([#2622](https://github.com/FaultMaven/faultmaven/issues/2622)): its responsiveness test and the thread offload census built. |
+| 2.6 | 2026-11-09 | P14 applied to Evidence Tier 1 ([#2637](https://github.com/FaultMaven/faultmaven/issues/2637)): the shared worker named as the mechanism of both applications, phased bounds for Tier 1, its responsiveness test built, and its census row removed. |
 
 ### Key Changes Across Versions
 
@@ -1072,4 +1072,4 @@ First application: document preparation, built (#2622): Stages 0-5 of a conversi
 
 **Document Owner**: Engineering Leadership
 **Status**: Active
-**Last Updated**: 2026-11-08
+**Last Updated**: 2026-11-09

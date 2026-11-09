@@ -1,12 +1,6 @@
+"""Evidence preprocessing: Tier 0 classification and Tier 1 extraction.
+
+Import a name from the module that defines it: this ``__init__`` imports
+nothing, so the Tier 1 worker (``extraction_worker``) loads the extractors and
+not the service, its settings or its models (#2637).
 """
-Preprocessing services module
-
-Exports:
-- PreprocessingService: Main 4-step pipeline orchestrator
-- DataClassifier: Rule-based data type classification
-"""
-
-from faultmaven.modules.preprocessing.classifier import DataClassifier
-from faultmaven.modules.preprocessing.preprocessing_service import PreprocessingService
-
-__all__ = ["PreprocessingService", "DataClassifier"]

@@ -26,24 +26,16 @@ from faultmaven.modules.preprocessing.classifier import DataClassifier
 from faultmaven.modules.preprocessing.preprocessing_service import (
     PreprocessingService,
 )
+from tests.unit.modules.preprocessing.extraction_stubs import CrimeScene
 
 
 @pytest.fixture
-def mock_logs_extractor():
-    extractor = MagicMock()
-    extractor.strategy_name = "crime_scene"
-    extractor.llm_calls_used = 0
-    extractor.extract.return_value = "irrelevant — never called for failed paths"
-    return extractor
-
-
-@pytest.fixture
-def real_classifier_service(mock_logs_extractor):
+def real_classifier_service():
     """Service wired with the real DataClassifier so we exercise the
-    classification_failed path end-to-end."""
+    classification_failed path end-to-end. Its extractor never runs on it."""
     return PreprocessingService(
         classifier=DataClassifier(),
-        logs_extractor=mock_logs_extractor,
+        logs_extractor=CrimeScene(),
     )
 
 
@@ -255,7 +247,7 @@ class TestClassificationFailedPlaceholderNaming:
     MINTED_CAPTURE = "page-capture-20260709T105531.txt"
 
     @staticmethod
-    def _service_that_always_fails_classification(mock_logs_extractor):
+    def _service_that_always_fails_classification():
         real = DataClassifier()
 
         class _AlwaysUncertain(DataClassifier):
@@ -267,14 +259,12 @@ class TestClassificationFailedPlaceholderNaming:
 
         return PreprocessingService(
             classifier=_AlwaysUncertain(),
-            logs_extractor=mock_logs_extractor,
+            logs_extractor=CrimeScene(),
         )
 
     @pytest.mark.asyncio
-    async def test_paste_placeholder_does_not_name_the_minted_file(
-        self, mock_logs_extractor
-    ):
-        svc = self._service_that_always_fails_classification(mock_logs_extractor)
+    async def test_paste_placeholder_does_not_name_the_minted_file(self):
+        svc = self._service_that_always_fails_classification()
         result = await svc.classify_and_extract(
             content=AMBIGUOUS_CSV, filename=self.MINTED_PASTE
         )
@@ -284,10 +274,8 @@ class TestClassificationFailedPlaceholderNaming:
         assert "the text you pasted" in result.structural_index
 
     @pytest.mark.asyncio
-    async def test_capture_placeholder_does_not_name_the_minted_file(
-        self, mock_logs_extractor
-    ):
-        svc = self._service_that_always_fails_classification(mock_logs_extractor)
+    async def test_capture_placeholder_does_not_name_the_minted_file(self):
+        svc = self._service_that_always_fails_classification()
         result = await svc.classify_and_extract(
             content=AMBIGUOUS_CSV, filename=self.MINTED_CAPTURE
         )
@@ -305,11 +293,9 @@ class TestClassificationFailedPlaceholderNaming:
         assert "'ambiguous-service-data.csv'" in result.structural_index
 
     @pytest.mark.asyncio
-    async def test_a_users_prefix_colliding_file_is_still_quoted(
-        self, mock_logs_extractor
-    ):
+    async def test_a_users_prefix_colliding_file_is_still_quoted(self):
         """Rule 2 of the detection rule: the user named this one."""
-        svc = self._service_that_always_fails_classification(mock_logs_extractor)
+        svc = self._service_that_always_fails_classification()
         result = await svc.classify_and_extract(
             content=AMBIGUOUS_CSV, filename="pasted-content-notes.txt"
         )
