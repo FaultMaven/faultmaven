@@ -1062,29 +1062,31 @@ states an outcome is rendered from that record.
       `progress_made` and housekeeping's `investigation_advanced` keep the
       step-1 reading (residual, stated). The offer record's lapse rule
       (`offers.lapse_offers`) then runs again: a deferred-disposition offer
-      whose M5 licence has fallen lapses (INV-32), the same rule step 3b and
-      every save apply.
+      whose M5 licence has fallen lapses (INV-32), on the predicate its
+      proposer opened it on, the same rule step 3b and every save apply.
    5. **The backstop**, last among the openers (INV-43), reading the same pool
       the record reads.
    6. **Metrics, the working conclusion, the state validator**, and
       **suggestion linking**.
-   7. **The record**: `record_case_outcome(at="cycle")`.
+   7. **The record**: `record_case_outcome(at="cycle")`. A disagreement the
+      fold reads is counted once the record carrying it is stored, so a
+      failed write counts none.
 4. **Narration** (`_finalize_turn`, `turn_narration.narrate_turn`): each
    decision code renders from the record and the decision log
    (`core/investigation/narration/`), at the place its token holds in
    `system_notices`; the summary and prose of each offer the cycle opened are
    rendered too. The step writes the narrated unbound re-checks (only those
-   its notice named) into the record. The first time a case is narrated
-   (`narration_since`), the re-checks a record before it held are marked
-   narrated unrendered (with no record stored at all, every one observed before
-   that turn); every one that appears after is narrated once. When the cycle's
-   record write failed, the outcome is computed in memory for the narration
-   alone: it counts no disagreement, narrates no unbound row and writes no
-   mark.
+   named by a line the turn record keeps under its notice cap) into the
+   record. The first time a case is narrated (`narration_since`), the
+   re-checks a record before it held are marked narrated unrendered (with no
+   record stored at all, every one written before that turn); every one that
+   appears after is narrated once. When the cycle's record write failed, the
+   outcome is computed in memory for the narration alone: its fold counts no
+   disagreement, and it narrates no unbound row and writes no mark.
 5. **The turn record** copies the rendered notices; then the terminal summary,
    the follow-ups and the reply are composed.
 
-Two consequences of this order are expected differences from the order before
+Six consequences of this order are expected differences from the order before
 #2636:
 
 - **The backstop's pending-check notice follows** the anchoring, stall and
@@ -1095,7 +1097,10 @@ Two consequences of this order are expected differences from the order before
   and its `blocked_reasons` and `next_steps` follow.
 - **A deferred offer lapses in the cycle that opened it** when the final
   recompute withdraws its licence; the model's proposal it displaced is then
-  not reported superseded, and no "the engine already offered" notice renders.
+  not reported superseded, and no "the engine already offered" notice renders:
+  the model is told instead that its proposal was not proposed and that the
+  engine's offer lapsed, and the turn's `transition_compliance` line records
+  the drop (`transition_dropped_for_lapsed_offer`).
 - **The withdrawal notice's variant is read when the record is written**,
   after housekeeping: a hypothesis housekeeping retires can move it from "its
   why is open" to "no longer established".

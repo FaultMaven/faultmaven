@@ -2094,10 +2094,6 @@ def _apply_stage_gate_signals(
             record_decision(metadata, NoticeCode.MITIGATION_VERIFY_PROCEEDED)
         elif not p.mitigation.verified:
             refusal = _mitigation_verify_refusal(case)
-            if refusal is not None:
-                # The disposition stored before this cycle, for a line
-                # rendered with no record (#2636).
-                refusal["stored_disposition"] = p.mitigation.disposition
             if refusal is None:
                 # A staged verification is dated at its hold turn (#2537).
                 # Local import: statement_revision imports this module.

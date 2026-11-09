@@ -491,8 +491,9 @@ class TransitionManager:
             )
             # Read by the turn's ``transition_compliance`` line: the model's
             # proposal was dropped, not pivoted.
-            # Both read at the end of the cycle (#2636): an engine offer that
-            # lapses later in it no longer stands, so neither is reported.
+            # Both read at the end of the cycle (#2636): when the engine's
+            # offer lapses later in it, the narration step reports the
+            # proposal dropped for a lapsed offer instead.
             metadata["transition_superseded_by_engine"] = True
             record_decision(
                 metadata,

@@ -598,6 +598,11 @@ async def _compose_turn_reply(
             "engine_effective_to_status": _engine_to_status,
             "transition_pivoted": _transition_pivoted,
             "transition_superseded_by_engine": _transition_superseded,
+            # The proposal was dropped for an engine offer that then lapsed in
+            # the same cycle, so nothing was proposed (#2636).
+            "transition_dropped_for_lapsed_offer": bool(
+                metadata.get("transition_dropped_for_lapsed_offer")
+            ),
             # The model's proposal re-asked a disposition the user declined
             # and was refused: ``false_alarm`` or ``deferred`` (#1889),
             # ``resolve`` (#1895), else None.

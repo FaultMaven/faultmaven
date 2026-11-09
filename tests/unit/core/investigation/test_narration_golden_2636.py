@@ -428,7 +428,7 @@ NOTICES = [
     (
         "engine-offer-stands",
         NoticeCode.ENGINE_OFFER_STANDS,
-        {"proposal_id": "p1", "to_state": "closed"},
+        {"proposal_id": "p1", "to_state": "closed", "stands": True},
         outcome(),
         [
             "TRANSITION NOT PROPOSED: the engine already offered the user a "

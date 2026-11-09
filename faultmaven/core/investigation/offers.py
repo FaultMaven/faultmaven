@@ -647,14 +647,14 @@ def _premise_gone(case: "Case", offer: Offer) -> bool:
     if case.is_terminal:
         return True
     if offer.basis == OfferBasis.DEFERRED:
-        # The one predicate M5 and the deferred proposer read
-        # (``stage_gates.solution_licence_leg``). Loaded by name at call time,
-        # as ``terminal_transitions`` loads the outcome module: that module
-        # imports this one, so an import here would close a cycle.
-        transitions = importlib.import_module(
-            "faultmaven.core.investigation.terminal_transitions"
+        # The predicate the deferred proposer opens it on, M5's
+        # (``stage_gates._solution_cause_validated``). Loaded by name at call
+        # time, as ``terminal_transitions`` loads the outcome module: that
+        # module imports this one, so an import here would close a cycle.
+        gates = importlib.import_module(
+            "faultmaven.core.investigation.milestone_engine.stage_gates"
         )
-        if transitions.cause_identification_leg(case) is None:
+        if not gates._solution_cause_validated(case):
             return True
     if _is_false_alarm(offer.kind, offer.closure_reason):
         finding = _finding_turn(case)

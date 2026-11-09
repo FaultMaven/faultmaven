@@ -144,9 +144,13 @@ def record_case_outcome(
     try:
         if case.is_terminal and closure is None:
             closure = _closure_of(case, case.closure_reason)
+        found: list = []
         case.progress.outcome = compute_case_outcome(
-            case.progress.outcome, case, closure=closure
+            case.progress.outcome, case, closure=closure, unreported=found
         )
+        # Counted once the record that carries them is stored: a write that
+        # fails counts nothing, and the next one reads them anew (#2636).
+        _report(case, found)
         return True
     except Exception:  # noqa: BLE001 — the record is written in shadow (S1)
         logger.exception(
@@ -161,15 +165,13 @@ def record_case_outcome(
 class _Disagreements:
     """The disagreements one computation reads, keyed by field and entry: the
     record keeps the turn each was first read, and each is counted and logged
-    once, when it first appears."""
+    once, when it first appears (``_report``)."""
 
-    def __init__(
-        self, case: "Case", prior: Optional[CaseOutcome], *, count: bool = True
-    ) -> None:
+    def __init__(self, case: "Case", prior: Optional[CaseOutcome]) -> None:
         self.case = case
-        self.count = count
         self.known = dict(prior.disagreements) if prior is not None else {}
         self.read: dict[str, int] = {}
+        self.new: list[tuple] = []
 
     def add(self, field: str, entry: Optional[str], carried, fresh) -> None:
         key = f"{field}:{entry}" if entry else field
@@ -177,12 +179,16 @@ class _Disagreements:
             self.read[key] = self.known[key]
             return
         self.read[key] = self.case.current_turn
-        if not self.count:
-            return
+        self.new.append((field, key, carried, fresh))
+
+
+def _report(case: "Case", found: list) -> None:
+    """Count and log the disagreements a computation first read."""
+    for field, key, carried, fresh in found:
         logger.warning(
             "Case %s: the outcome record's carried %s (%s) disagrees with a "
             "fresh derivation (%s); the carried verdict stands (#2615)",
-            getattr(self.case, "case_id", None),
+            getattr(case, "case_id", None),
             key,
             carried,
             fresh,
@@ -195,17 +201,18 @@ def compute_case_outcome(
     case: "Case",
     *,
     closure: Optional[ClosureOutcome] = None,
-    count: bool = True,
+    unreported: Optional[list] = None,
 ) -> CaseOutcome:
     """The case's outcome, folded over ``prior`` (None: computed once from
     the case as it stands). ``closure``: the closure a terminal transition
-    persists (``record_case_outcome``). ``count`` False: a pass that is not
-    stored (the narration's, when the cycle's write failed) counts and logs no
-    disagreement, which the failed write already read."""
+    persists (``record_case_outcome``). ``unreported``: the disagreements the
+    fold first read go there, uncounted, for a caller that counts them once
+    the record is stored (``record_case_outcome``) or never (the narration's
+    in-memory pass, #2636); without it they are counted here."""
     subjects = subject_index(case)
     windows = fix_windows(case, subjects)
     statement = current_statement(case)
-    seen = _Disagreements(case, prior, count=count)
+    seen = _Disagreements(case, prior)
     unbound = _unbound_rechecks(prior, case, subjects, windows)
     record = CaseOutcome(
         folded_under=case.state,
@@ -228,6 +235,10 @@ def compute_case_outcome(
     )
     if record.narration_since is None:
         record._before_narration = _before_narration(prior)
+    if unreported is None:
+        _report(case, seen.new)
+    else:
+        unreported.extend(seen.new)
     return record
 
 
@@ -235,7 +246,7 @@ def _before_narration(prior: Optional[CaseOutcome]):
     """The unbound re-checks a record held before the case was first
     narrated (#2636): a stored record's own, carried through the records this
     process computed since; with no stored record at all,
-    ``NO_STORED_RECORD``, and every row observed before the first narrated
+    ``NO_STORED_RECORD``, and every row written before the first narrated
     turn counts as narrated. A row first appearing after is narrated."""
     if prior is None:
         return NO_STORED_RECORD

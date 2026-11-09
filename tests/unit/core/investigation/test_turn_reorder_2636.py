@@ -378,6 +378,7 @@ def test_a_proposals_summary_renders_the_decided_branch_and_counts_a_conflict(
         "milestones_completed": 0,
         "root_cause": None,
         "root_cause_name": "the identified root cause",
+        "identification_leg": None,
         "solution_titles": [],
     }
     text = render_offer(OfferCode.MODEL_PROPOSAL, params, record)
@@ -649,6 +650,10 @@ def test_a_lapsed_engine_offer_supersedes_nothing():
     assert case.offer_record.open is None
     assert not any("the engine already offered" in n for n in notices)
     assert metadata["transition_superseded_by_engine"] is False
+    # Review item 4 (third delta): the model is told, and the turn says why.
+    (told,) = [n for n in notices if n.startswith("TRANSITION NOT PROPOSED")]
+    assert "your proposal was not opened, and that offer then lapsed" in told
+    assert metadata["transition_dropped_for_lapsed_offer"] is True
 
 
 def test_a_deferred_offer_lapses_on_a_later_turn_whose_licence_fell():
@@ -698,9 +703,10 @@ def test_two_unbound_entries_render_the_rows_once():
 
 
 def test_an_in_memory_pass_counts_nothing_and_narrates_nothing(monkeypatch):
-    """Probe E: the cycle's write failed after it counted a disagreement; the
-    narration's in-memory pass counts it again, nor marks rows narrated on a
-    copy that is thrown away."""
+    """Probes E and r4: the cycle's write failed after its fold read a
+    disagreement. Neither the failed write nor the narration's in-memory pass
+    counts it, and the in-memory pass narrates no row; the next stored write
+    counts it once, and the next narration names the row once."""
     from faultmaven.core.investigation import outcome as outcome_module
     from faultmaven.core.investigation.milestone_engine import turn_narration
     from faultmaven.core.investigation.outcome import record_case_outcome
@@ -708,6 +714,7 @@ def test_an_in_memory_pass_counts_nothing_and_narrates_nothing(monkeypatch):
 
     case, _metadata = golden.an_unnamed_recheck_after_the_fix()
     assert record_case_outcome(case, at="cycle")
+    case.progress.outcome.narration_since = 1  # narrated since, no watermark
     action = next(a for a in case.proposed_actions if a.state == "accepted")
     action.accepted_in_turn = 5  # the carried verdict disagrees from here on
     counted = []
@@ -724,14 +731,23 @@ def test_an_in_memory_pass_counts_nothing_and_narrates_nothing(monkeypatch):
 
     monkeypatch.setattr(outcome_module, "_mitigation", _boom)
     written = record_case_outcome(case, at="cycle")
-    assert written is False and counted == ["attempts.accepted_in_turn"]
+    assert written is False and counted == []
     monkeypatch.setattr(outcome_module, "_mitigation", lambda *a, **k: None)
     metadata = {"milestones_completed": [], turn_narration.OUTCOME_WRITTEN_KEY: False}
     record_decision(metadata, NoticeCode.UNBOUND_RECHECKS, fix_dated=True)
     narrate_turn(case, metadata)
-    assert counted == ["attempts.accepted_in_turn"]
+    assert counted == []
     assert not [n for n in metadata["system_notices"] if "Post-fix" in n]
-    assert all(u.narrated_turn is None for u in case.progress.outcome.unbound_rechecks)
+
+    case.current_turn += 1
+    later = {"milestones_completed": []}
+    record_decision(later, NoticeCode.UNBOUND_RECHECKS, fix_dated=True)
+    lines = [n for n in narrated(case, later) if "Post-fix" in n]
+    assert counted == ["attempts.accepted_in_turn"], "counted once, when stored"
+    assert len(lines) == 1, "the row the failed turn left is named on this one"
+    assert {u.narrated_turn for u in case.progress.outcome.unbound_rechecks} == {
+        case.current_turn
+    }
 
 
 async def test_with_no_stored_record_old_rows_count_as_narrated():
@@ -798,3 +814,183 @@ def test_the_withdrawal_variant_is_read_at_the_record():
     assert notices[0].startswith(
         "SYSTEM: Your pending SOLUTION proposal was withdrawn because"
     )
+
+
+# ---------------------------------------------------------------------------
+# The third fix delta (review probes r1-r4, items 1-10)
+# ---------------------------------------------------------------------------
+
+
+def _counted(monkeypatch) -> list:
+    from faultmaven.core.investigation.milestone_engine import turn_narration
+
+    counted: list = []
+    monkeypatch.setattr(
+        turn_narration,
+        "case_outcome_conflicts_total",
+        SimpleNamespace(
+            labels=lambda field: SimpleNamespace(inc=lambda: counted.append(field))
+        ),
+    )
+    return counted
+
+
+async def test_two_refusals_in_one_cycle_render_one_line():
+    """Probe r3: two applications in one cycle (a replayed bundle's, then the
+    live response's) refuse the verify; the first records declared_stable.
+    One refusal, one line."""
+    from faultmaven.core.investigation.milestone_engine.stage_gates import (
+        _apply_stage_gate_signals,
+    )
+
+    _eng, case, _shown = await _accepted()
+    case.current_turn = 7
+    metadata: dict = {"milestones_completed": []}
+    for disposition in ("declared_stable", None):
+        signals = MilestoneUpdates(
+            mitigation_verified=True, mitigation_disposition=disposition
+        )
+        _apply_stage_gate_signals(case, signals, "", metadata)
+    assert case.progress.mitigation.disposition == "declared_stable"
+    refused = [n for n in narrated(case, metadata) if "was not recorded" in n]
+    assert len(refused) == 1
+
+
+async def test_with_no_record_the_refusal_reads_the_disposition_stored_before(
+    monkeypatch,
+):
+    """Item 1: with no outcome at all, a refusal's line reads the disposition
+    stored before the cycle, which the decision no longer carries."""
+    from faultmaven.core.investigation.milestone_engine import turn_narration
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("no outcome")
+
+    _eng, case, _shown = await _accepted()
+    case.progress.mitigation.disposition = "proceed_unmitigated"
+    monkeypatch.setattr(turn_narration, "compute_case_outcome", _boom)
+    metadata = {"milestones_completed": [], turn_narration.OUTCOME_WRITTEN_KEY: False}
+    record_decision(
+        metadata,
+        NoticeCode.MITIGATION_VERIFY_REFUSED,
+        reason="no_bound_relief",
+        problem_row_ids=[],
+    )
+    narrate_turn(case, metadata)
+    assert metadata["system_notices"] == [_PROCEEDED]
+
+
+def test_a_cause_identified_on_the_chain_is_no_conflict(monkeypatch):
+    """Probe r1: the pivot decided on a cause the chain identifies, with no
+    root-cause conclusion to name it; the record identifies it too."""
+    from faultmaven.core.investigation.milestone_engine import turn_narration
+    from faultmaven.core.investigation.terminal_transitions import (
+        assess_closure_readiness,
+    )
+
+    counted = _counted(monkeypatch)
+    case = _confirmed_case()
+    case.root_cause_conclusion = None
+    case.progress.cause_state = CauseState.IDENTIFIED
+    params = assess_closure_readiness(case).offer_params()
+    record = compute_case_outcome(None, case)
+    assert (params["root_cause"], record.cause.identification_leg) == (None, "chain")
+    turn_narration._conflict(OfferCode.MODEL_PROPOSAL, params, record)
+    assert counted == []
+
+
+async def test_with_no_stored_record_a_row_written_this_turn_is_narrated():
+    """Probe r2: the row is written on the first narrated turn, from data
+    uploaded on an earlier post-fix turn; it is narrated, not watermarked."""
+    eng, case = _held_recheck()
+    decline_revision(case, via=AnswerVia.CLICK)
+    late = _row(
+        case,
+        EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+        turn=8,
+        evidence_id=_eid("late"),
+        summary="checkout answers 200 again",
+    )
+    late.collected_at_turn = 30
+    case.current_turn = 30
+    assert case.progress.outcome is None
+    meta = await _apply(eng, case, _DSU())
+    assert [n for n in meta["system_notices"] if _eid("late") in n]
+    assert not _unbound_line(meta), "the row written before stays watermarked"
+
+
+def test_the_engine_offer_is_read_at_the_end_of_the_cycle():
+    """Item 5: an engine offer gone by the end of the cycle without an
+    ``OFFER_LAPSED`` code (step 3b's lapse) stands for nothing."""
+    from faultmaven.core.investigation.offers import lapse_offers
+
+    case = _deferred_case()
+    metadata = _cycle_metadata()
+    _maybe_propose_deferred_close(case, metadata)
+    _model_proposes(case, metadata, "closed")
+    for hypothesis in case.hypotheses.values():
+        hypothesis.likelihood = 0.2
+    from faultmaven.core.investigation.milestone_engine.stage_gates import (
+        _refresh_working_conclusion,
+    )
+
+    _refresh_working_conclusion(case)
+    case.offer_record = lapse_offers(case)
+    assert case.offer_record.open is None
+    notices = narrated(case, metadata)
+    assert not any("the engine already offered" in n for n in notices)
+    assert metadata["transition_dropped_for_lapsed_offer"] is True
+
+
+def test_an_in_memory_pass_counts_the_decisions_conflict(monkeypatch):
+    """Item 6: with the cycle's write failed, the decision and the outcome
+    computed in memory still disagree, and that is counted, once."""
+    from faultmaven.core.investigation.milestone_engine import turn_narration
+
+    counted = _counted(monkeypatch)
+    case = _confirmed_case()
+    metadata = {"milestones_completed": [], turn_narration.OUTCOME_WRITTEN_KEY: False}
+    record_decision(
+        metadata,
+        OfferCode.MODEL_PROPOSAL,
+        composer="closure",
+        verdict="has_substance",
+        evidence_count=2,
+        hypothesis_count=0,
+        milestones_completed=0,
+        root_cause="the identified root cause",
+        root_cause_name="the identified root cause",
+        identification_leg="rcc",
+        solution_titles=[],
+    )
+    narrate_turn(case, metadata)
+    assert counted == ["narration.model_proposal"]
+
+
+def test_the_lapse_rule_reads_the_predicate_the_deferred_opener_reads(monkeypatch):
+    """Item 8: one predicate opens a deferred offer and lapses it."""
+    from faultmaven.core.investigation.milestone_engine import stage_gates
+    from faultmaven.core.investigation.offers import lapse_offers
+
+    case = _deferred_case()
+    _maybe_propose_deferred_close(case, _cycle_metadata())
+    assert case.offer_record.open is not None
+    monkeypatch.setattr(stage_gates, "_solution_cause_validated", lambda _c: False)
+    assert lapse_offers(case).open is None
+
+
+def test_a_row_whose_line_the_notice_cap_cut_stays_unnarrated():
+    """Item 10: the turn record keeps the first notices; a row named only on
+    a line it cut is narrated on a later turn."""
+    from faultmaven.modules.case.contracts import MAX_SYSTEM_NOTICES
+
+    _eng, case = _held_recheck()
+    decline_revision(case, via=AnswerVia.CLICK)
+    metadata = {
+        "milestones_completed": [],
+        "system_notices": [f"NOTICE {n}" for n in range(MAX_SYSTEM_NOTICES)],
+    }
+    record_decision(metadata, NoticeCode.UNBOUND_RECHECKS, fix_dated=True)
+    assert [n for n in narrated(case, metadata) if _eid("held") in n]
+    (row,) = case.progress.outcome.unbound_rechecks
+    assert row.narrated_turn is None

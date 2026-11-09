@@ -36,6 +36,7 @@ from faultmaven.modules.case.contracts import (
 )
 
 from .stage_gates import _NOTICES_HEAD_KEY
+from .turn_records import recorded_notices
 
 logger = logging.getLogger(__name__)
 
@@ -65,12 +66,13 @@ def _conflict(code: str, params: dict, outcome: Optional[CaseOutcome]) -> None:
         decided, recorded = params["reason"], outcome.resolution.reason
     elif "verdict" in params and code == OfferCode.MODEL_PROPOSAL:
         decided, recorded = params["verdict"], outcome.closure.eligibility
-        # The cause the summary names is the record's: one decided on a cause
-        # the record no longer identifies, or the reverse, is a conflict too.
-        if (params["root_cause"] is not None) != (
-            outcome.cause.identification_leg is not None
-        ):
-            _count(code, "identified cause", params["root_cause"], "none")
+        # The cause the summary names is the record's: one decided on an
+        # identification the record no longer states, or the reverse, is a
+        # conflict too. Like with like: the leg, as the record states it.
+        decided_leg = params["identification_leg"]
+        recorded_leg = outcome.cause.identification_leg
+        if (decided_leg is None) != (recorded_leg is None):
+            _count(code, "identified cause", decided_leg, recorded_leg)
     else:
         return
     if recorded != decided:
@@ -98,13 +100,15 @@ _READINESS_CODES = (
 def _outcome(case: Any, metadata: dict, log: list) -> tuple:
     """``(outcome, stored)``: the record the cycle wrote; when its write
     failed, the outcome computed in memory for the narration alone, never
-    stored, counting no disagreement (#2636). None only when that fails too."""
+    stored, its fold counting no disagreement (#2636). None only when that
+    fails too."""
     if metadata.get(OUTCOME_WRITTEN_KEY):
         return case.progress.outcome, True
     if not log:
         return None, False
     try:
-        return compute_case_outcome(case.progress.outcome, case, count=False), False
+        record = compute_case_outcome(case.progress.outcome, case, unreported=[])
+        return record, False
     except Exception:  # noqa: BLE001 — the write's failure is already counted
         logger.exception(
             "Case %s: no outcome to narrate from (#2636)",
@@ -116,14 +120,16 @@ def _outcome(case: Any, metadata: dict, log: list) -> tuple:
 def _first_narration(case: Any, outcome: CaseOutcome) -> None:
     """The watermark (#2555): the first time a case is narrated, the unbound
     re-checks a stored record held before it are marked narrated, unrendered;
-    with no record stored at all, every one observed before this turn. Every
+    with no record stored at all, every one written before this turn. Every
     row that first appears after is narrated once."""
     before = outcome._before_narration
+    # The turn each row was written, not its data's upload turn.
+    written = {e.evidence_id: e.collected_at_turn for e in case.evidence}
     for recheck in outcome.unbound_rechecks:
         if recheck.narrated_turn is not None:
             continue
         if (
-            recheck.observed_turn < case.current_turn
+            written.get(recheck.evidence_id, case.current_turn) < case.current_turn
             if before == NO_STORED_RECORD
             else recheck.evidence_id in (before or ())
         ):
@@ -141,6 +147,23 @@ def _replace_token(metadata: dict, token: str, texts: list[str]) -> None:
         metadata[_NOTICES_HEAD_KEY] += len(texts) - 1
 
 
+def _disposition_before(case: Any, log: list) -> Optional[str]:
+    """The mitigation's disposition stored before this cycle: it is written
+    once, so the case's own, unless this cycle wrote it
+    (``MITIGATION_DISPOSED``)."""
+    if any(e["code"] == NoticeCode.MITIGATION_DISPOSED for e in log):
+        return None
+    mitigation = case.progress.mitigation
+    return mitigation.disposition if mitigation is not None else None
+
+
+def _offer_stands(case: Any, proposal_id: str) -> bool:
+    """Whether the engine's offer ``proposal_id`` is open at the end of the
+    cycle."""
+    offer = case.offer_record.open
+    return offer is not None and offer.proposal_id == proposal_id
+
+
 def narrate_turn(case: Any, metadata: dict, *, offers_only: bool = False) -> None:
     """Render the turn's decision log after its record. ``offers_only``: a
     step-0 exit after a replay, which narrates the offers it holds and no
@@ -152,11 +175,19 @@ def narrate_turn(case: Any, metadata: dict, *, offers_only: bool = False) -> Non
     if stored and outcome.narration_since is None:
         _first_narration(case, outcome)
     unbound = [i for i, e in enumerate(log) if e["code"] == NoticeCode.UNBOUND_RECHECKS]
-    named = []
+    named, lines = [], []
     for index, entry in enumerate(log):
         code, params = entry["code"], entry["params"]
-        if stored:
-            _conflict(code, params, outcome)
+        _conflict(code, params, outcome)
+        if code == NoticeCode.MITIGATION_VERIFY_REFUSED:
+            params = {**params, "stored_disposition": _disposition_before(case, log)}
+        elif code == NoticeCode.ENGINE_OFFER_STANDS:
+            params = {**params, "stands": _offer_stands(case, params["proposal_id"])}
+            if not params["stands"]:
+                # The engine's offer lapsed later in the cycle: the model's
+                # proposal was dropped for nothing the user will answer.
+                metadata["transition_superseded_by_engine"] = False
+                metadata["transition_dropped_for_lapsed_offer"] = True
         if code in set(OfferCode):
             if code == OfferCode.REQUEST_READY or (
                 params.get("composer") == "confirmation"
@@ -178,12 +209,12 @@ def narrate_turn(case: Any, metadata: dict, *, offers_only: bool = False) -> Non
         else:
             texts = render_notice(code, params, outcome, log)
         if code == NoticeCode.UNBOUND_RECHECKS and texts:
-            named = named_rechecks(outcome)
-        if code == NoticeCode.ENGINE_OFFER_STANDS and not texts:
-            # The engine's offer lapsed later in the cycle: it superseded
-            # nothing the user will answer.
-            metadata["transition_superseded_by_engine"] = False
+            named, lines = named_rechecks(outcome), texts
         _replace_token(metadata, entry["token"], texts)
-    # Only the rows the notice named: the rest are narrated on a later turn.
+    # Only the rows a line the turn record keeps names (``recorded_notices``):
+    # the rest are narrated on a later turn.
+    notices = metadata.get("system_notices") or []
+    kept = [k for k, n in zip(recorded_notices(notices), notices) if n in lines]
     for recheck in named:
-        recheck.narrated_turn = case.current_turn
+        if any(recheck.evidence_id in line for line in kept):
+            recheck.narrated_turn = case.current_turn

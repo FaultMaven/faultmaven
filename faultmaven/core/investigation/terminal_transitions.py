@@ -1839,10 +1839,13 @@ def _suggest_resolve_params(case: "Case", has_solutions: bool) -> dict:
     the root cause only when a cause-identification leg stands on it, as the
     record lines decide, and the solutions on record."""
     name = getattr(case.root_cause_conclusion, "root_cause", None)
+    leg = cause_identification_leg(case)
     return {
-        "root_cause": name if cause_identification_leg(case) is not None else None,
+        "root_cause": name if leg is not None else None,
         # Named after the record when it identifies a cause (#2636).
         "root_cause_name": name,
+        # The identification decided on, as the record states it (#2636).
+        "identification_leg": leg,
         "solution_titles": (
             _solution_display_titles(case.solutions) if has_solutions else []
         ),
@@ -1865,7 +1868,8 @@ def assess_close_summary(case: "Case") -> ClosureReadiness:
         getattr(case.root_cause_conclusion, "root_cause", None)
         or "the identified root cause"
     )
-    root_cause = name if _cause_identified(case) else None
+    leg = cause_identification_leg(case)
+    root_cause = name if leg is not None else None
     titles = _solution_display_titles(case.solutions) if case.solutions else []
     trivial = (
         not (evidence_count or hypothesis_count or milestones_completed or root_cause)
@@ -1883,7 +1887,7 @@ def assess_close_summary(case: "Case") -> ClosureReadiness:
             ClosureReadiness.TRIVIAL if trivial else ClosureReadiness.HAS_SUBSTANCE
         ),
         message=close_summary_message(**summary),
-        params={**summary, "root_cause_name": name},
+        params={**summary, "root_cause_name": name, "identification_leg": leg},
     )
 
 

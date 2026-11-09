@@ -82,6 +82,19 @@ def _bounded_notice(notice: str) -> str:
     )
 
 
+def recorded_notices(notices: list[str]) -> list[str]:
+    """``notices`` as the turn record stores them (#2499): each bounded
+    (``_bounded_notice``), and at most ``MAX_SYSTEM_NOTICES``, the last of them
+    saying how many more were dropped."""
+    kept = [_bounded_notice(n) for n in notices]
+    if len(kept) <= MAX_SYSTEM_NOTICES:
+        return kept
+    dropped = len(kept) - (MAX_SYSTEM_NOTICES - 1)
+    return kept[: MAX_SYSTEM_NOTICES - 1] + [
+        f"[{dropped} more notices from this turn dropped at the record]"
+    ]
+
+
 def _create_turn_record(
     turn_number: int,
     milestones_completed: list[str],
@@ -114,18 +127,14 @@ def _create_turn_record(
     # one chokepoint: a notice over MAX_SYSTEM_NOTICE_CHARS cut at its end
     # with a marker, and at most MAX_SYSTEM_NOTICES notices, the last of
     # them saying how many more the turn wrote, so nothing goes in silence.
-    notices = [_bounded_notice(n) for n in system_notices or []]
-    if len(notices) > MAX_SYSTEM_NOTICES:
-        dropped = len(notices) - (MAX_SYSTEM_NOTICES - 1)
+    if len(system_notices or []) > MAX_SYSTEM_NOTICES:
         logger.warning(
             "Turn %s wrote %d system notices; the record keeps the first %d",
             turn_number,
-            len(notices),
+            len(system_notices),
             MAX_SYSTEM_NOTICES - 1,
         )
-        notices = notices[: MAX_SYSTEM_NOTICES - 1] + [
-            f"[{dropped} more notices from this turn dropped at the record]"
-        ]
+    notices = recorded_notices(system_notices or [])
     return TurnProgress(
         turn_number=turn_number,
         cause_at_start=cause_at_start,
