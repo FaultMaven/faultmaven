@@ -27,24 +27,24 @@ from faultmaven.modules.knowledge.domain.services.runbook_validator import (
 
 logger = logging.getLogger(__name__)
 
-#: The check alone, in its worker. At 100,000 characters ``validate_and_score``
-#: took 75-141 ms on runbook-shaped text and 1.16 s on the slowest shape found
-#: (5,000 duplicate causes, which answers 10,432 errors); about 4x that.
-GATE_WORK_SECONDS = 5.0
+#: The check alone, in its worker. At 100,000 characters the slowest check took
+#: 0.08-0.11 s on runbook-shaped text and 2.34 s CPU on the slowest shape found
+#: (about 1,250 causes with near-duplicate Statements); about 4x that.
+GATE_WORK_SECONDS = 10.0
 
 #: Spawn to ``ready``: the interpreter and the validator's imports, about
 #: 0.3 s alone (0.6 s here) and at most 0.82 s with four starting at once.
 GATE_START_SECONDS = 5.0
 
-#: Each transfer: at most 400 KB of UTF-8 in, at most about 1 MB out.
+#: Each transfer: at most 400 KB of UTF-8 in, at most about 2.3 MB out.
 GATE_TRANSFER_SECONDS = 1.0
 
-#: ``RLIMIT_AS``: a worker peaked at 54 MiB on the slowest shape; about 4x.
+#: ``RLIMIT_AS``: a worker peaked at 58 MiB on the largest answer; about 4x.
 GATE_MEMORY_BYTES = 256 * 1024 * 1024
 
-#: What the parent reads: the largest answer measured is 1.05 MB (the 10,432
-#: errors above), 4x that plus 1 MiB of forwarded log records.
-GATE_OUTPUT_LIMIT_BYTES = 5 * 1024 * 1024
+#: What the parent reads: the largest answer measured is 2.31 MB (3,316 causes
+#: with one-word Statements, an error each), 4x that plus 1 MiB of log records.
+GATE_OUTPUT_LIMIT_BYTES = 10 * 1024 * 1024
 
 #: Checks at once, as before the worker.
 GATE_SLOTS = 4
@@ -69,7 +69,7 @@ class GateTimedOut(RunbookQualityError):
 
     reason = "validation_timeout"
 
-    def __init__(self) -> None:
+    def __init__(self, *_args) -> None:  # ``args`` back from copy and pickle
         super().__init__(
             errors=[f"The check did not finish within {GATE_WORK_SECONDS:g} seconds."]
         )
@@ -92,7 +92,7 @@ class GateBusy(GateUnavailable):
 
     error_code = "RUNBOOK_VALIDATION_BUSY"
 
-    def __init__(self) -> None:
+    def __init__(self, *_args) -> None:  # ``args`` back from copy and pickle
         super().__init__("The server is busy checking other runbooks.")
 
 
@@ -103,11 +103,14 @@ def _gate_slots() -> worker_process.FairSlots:
     return _gate_slots_state[1]
 
 
-async def _run(check: str, content: str, principal: str) -> Dict[str, Any]:
-    """One check in its worker, under a slot: its answer, or a refusal."""
+async def _run(
+    check: str, content: str, principal: str, slot_wait: Optional[float] = None
+) -> Dict[str, Any]:
+    """One check in its worker, under a slot: its answer, or a refusal. A caller
+    no request waits on passes a ``slot_wait`` of its own deadline."""
     slots = _gate_slots()
     try:
-        async with asyncio.timeout(GATE_SLOT_WAIT_SECONDS):
+        async with asyncio.timeout(slot_wait or GATE_SLOT_WAIT_SECONDS):
             await slots.acquire(principal)
     except TimeoutError:
         logger.warning("runbook check %s found no slot free", check)
@@ -150,10 +153,10 @@ def _enforce(answer: Dict[str, Any]) -> None:
 
 
 async def avalidate_and_score(
-    content: str, *, principal: str
+    content: str, *, principal: str, slot_wait: Optional[float] = None
 ) -> tuple[ValidationResult, QualityScore]:
     """``validate_and_score``, in a worker."""
-    answer = await _run("validate_and_score", content, principal)
+    answer = await _run("validate_and_score", content, principal, slot_wait)
     return (
         ValidationResult.model_validate(answer["validation"]),
         QualityScore.model_validate(answer["quality"]),

@@ -118,6 +118,7 @@ from faultmaven.modules.knowledge.domain.services.conversion_service.runbook_sca
     _scan_for_runbooks_impl,
 )
 from faultmaven.modules.knowledge.domain.services.document_preprocessor import (
+    EXTRACTION_TIMEOUT_SECONDS,
     DocumentPreprocessor,
 )
 from faultmaven.modules.knowledge.domain.services.runbook_gate import (
@@ -1225,8 +1226,13 @@ class ConversionService:
             # inside the conversion request, so the several seconds this costs
             # on a large draft were paid by every other request the process was
             # serving, not just this one.
+            # A case's conversion runs in the background, where no request
+            # waits: it waits for a slot as long as a conversion's preparation
+            # may, so its paid-for draft is not dropped as busy (#2661).
             validation, quality = await avalidate_and_score(
-                runbook_content, principal=user_id
+                runbook_content,
+                principal=user_id,
+                slot_wait=None if case_id is None else EXTRACTION_TIMEOUT_SECONDS,
             )
 
             quality_warning = None
@@ -1277,12 +1283,10 @@ class ConversionService:
             raise
         except (GateTimedOut, GateUnavailable) as gate:
             # No retry changes the gate's deadline; a retry may find a worker.
-            timed_out = isinstance(gate, GateTimedOut)
             return ConversionError(
                 failure_mode_id=failure_mode.id,
                 error=str(gate),
-                retryable=not timed_out,
-                reason=GateTimedOut.reason if timed_out else None,
+                retryable=not isinstance(gate, GateTimedOut),
             )
         except Exception as e:
             # The exception's CLASS, never its text (#836). Every hand-written
@@ -1356,55 +1360,6 @@ class ConversionService:
             )
             draft_models = draft_result.scalars().all()
 
-            drafts = []
-            for dm in draft_models:
-                # A KB upload's draft row carries no score (the upload runs the
-                # quality GATE, not the scorer), and ``QualityScore(**{})``
-                # failed the whole read with a 500. Score its text instead: the
-                # same verdict an edit of it would record.
-                if dm.quality_details:
-                    quality = QualityScore(**dm.quality_details)
-                else:
-                    _validation, quality = await avalidate_and_score(
-                        dm.content, principal=user_id
-                    )
-                # The text is the row's own column (#1950): the same on every
-                # replica, whatever disk this pod has.
-                drafts.append(
-                    ConversionDraft(
-                        draft_id=dm.id,
-                        runbook_id=dm.runbook_id,
-                        title=dm.title,
-                        scope=job.scope,
-                        status=DraftStatus(dm.status),
-                        source_type=SourceType(dm.source_type or "document"),
-                        case_id=job.case_id,
-                        validation=ValidationResult(
-                            passed=dm.validation_passed,
-                            errors=dm.validation_errors or [],
-                            warnings=dm.validation_warnings or [],
-                        ),
-                        quality_score=quality,
-                        content_preview=dm.content[:500],
-                        content=dm.content,
-                    )
-                )
-
-            analysis = AnalysisResult(
-                **(
-                    job.analysis_result
-                    or {
-                        "is_actionable": True,
-                        "failure_modes": [],
-                        "source_assessment": {
-                            "content_type": "unknown",
-                            "actionability_rating": "low",
-                            "missing_information": [],
-                        },
-                    }
-                )
-            )
-
             # Source file metadata lives on ``uploaded_files``; traverse
             # via the ``source_file_id`` FK to read filename / size /
             # content_type. Not ``storage_ref``: a conversion source's is NULL,
@@ -1424,20 +1379,71 @@ class ConversionService:
                 )
             )
 
-            return ConversionResponse(
-                conversion_id=job.id,
-                status=ConversionStatus(job.status),
-                source_file=source_file,
-                analysis=analysis,
-                drafts=drafts,
-                # NULL (a pre-048 row, or a job with nothing to report) becomes
-                # ``[]`` here because the response field is non-optional. This
-                # is the one place that distinction is collapsed; see migration
-                # 048. Without this the field was ALWAYS ``[]`` on read-back, so
-                # the reason a job was PARTIAL survived exactly one response.
-                warnings=job.warnings or [],
-                created_at=job.created_at,
+        # The session closes before the gate below, which can wait for a slot
+        # and a worker: no pooled connection idles through it (#2661).
+        drafts = []
+        for dm in draft_models:
+            # A KB upload's draft row carries no score (the upload runs the
+            # quality GATE, not the scorer), and ``QualityScore(**{})``
+            # failed the whole read with a 500. Score its text instead: the
+            # same verdict an edit of it would record.
+            if dm.quality_details:
+                quality = QualityScore(**dm.quality_details)
+            else:
+                _validation, quality = await avalidate_and_score(
+                    dm.content, principal=user_id
+                )
+            # The text is the row's own column (#1950): the same on every
+            # replica, whatever disk this pod has.
+            drafts.append(
+                ConversionDraft(
+                    draft_id=dm.id,
+                    runbook_id=dm.runbook_id,
+                    title=dm.title,
+                    scope=job.scope,
+                    status=DraftStatus(dm.status),
+                    source_type=SourceType(dm.source_type or "document"),
+                    case_id=job.case_id,
+                    validation=ValidationResult(
+                        passed=dm.validation_passed,
+                        errors=dm.validation_errors or [],
+                        warnings=dm.validation_warnings or [],
+                    ),
+                    quality_score=quality,
+                    content_preview=dm.content[:500],
+                    content=dm.content,
+                )
             )
+
+        analysis = AnalysisResult(
+            **(
+                job.analysis_result
+                or {
+                    "is_actionable": True,
+                    "failure_modes": [],
+                    "source_assessment": {
+                        "content_type": "unknown",
+                        "actionability_rating": "low",
+                        "missing_information": [],
+                    },
+                }
+            )
+        )
+
+        return ConversionResponse(
+            conversion_id=job.id,
+            status=ConversionStatus(job.status),
+            source_file=source_file,
+            analysis=analysis,
+            drafts=drafts,
+            # NULL (a pre-048 row, or a job with nothing to report) becomes
+            # ``[]`` here because the response field is non-optional. This
+            # is the one place that distinction is collapsed; see migration
+            # 048. Without this the field was ALWAYS ``[]`` on read-back, so
+            # the reason a job was PARTIAL survived exactly one response.
+            warnings=job.warnings or [],
+            created_at=job.created_at,
+        )
 
     async def get_conversion_by_case(
         self, case_id: str, user_id: str
@@ -1827,6 +1833,8 @@ class ConversionService:
         and so is every draft after it; verifying it again runs it in a fresh
         window. A draft too large for any window is ``failed`` with that
         reason, and the batch goes on. At a window of 0 nothing is deferred.
+        A draft the runbook check is too busy for, or cannot run on, is
+        ``deferred`` the same way, with the rest of the batch (#2661).
         """
         from faultmaven.config.settings import get_settings
 
@@ -1900,6 +1908,12 @@ class ConversionService:
                     deferring = True
                     defer(conversion_id, draft_id)
                     deferred += 1
+            except GateUnavailable:
+                # The gate is busy or failing: as for busy indexing, this draft
+                # and the rest wait for a later batch (#2661).
+                deferring = True
+                defer(conversion_id, draft_id)
+                deferred += 1
             except AuthorizationError as e:
                 # Global-tier authoring denial (multi-tenant / non-admin). Not a
                 # failure of THIS draft — a policy refusal; record it distinctly
@@ -2270,8 +2284,9 @@ class ConversionService:
                 record=record,
                 index_window_seconds=index_window_seconds,
             )
-        except (RunbookQualityError, IndexAdmissionRefused):
-            # The body holds a credential (#2012), or the indexing window
+        except (RunbookQualityError, IndexAdmissionRefused, GateUnavailable):
+            # The body holds a credential (#2012), the gate is busy or did not
+            # answer (#2661), or the indexing window
             # cannot fit it (#2055): refused before anything was written, and
             # the draft stays a draft. A client-side outcome, so not logged as
             # an ingestion failure.

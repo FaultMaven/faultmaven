@@ -202,7 +202,9 @@ async def test_update_document_metadata_does_not_report_success_on_failure():
         with patch(_EMBED_TEXTS, new=MagicMock(return_value=None)):
             with pytest.raises(KnowledgeBaseError):
                 await service.update_document_metadata(
-                    document_id="doc-1", content="# New content\n\nUpdated."
+                    document_id="doc-1",
+                    content="# New content\n\nUpdated.",
+                    principal="u1",
                 )
 
     assert (

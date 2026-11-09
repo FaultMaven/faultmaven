@@ -772,7 +772,9 @@ class TestUpdateDocument:
             **_ingest_args("personal", document_id="kb_0123456789ac", title=title)
         )
 
-        await service.update_document_metadata("kb_0123456789ab", title=title)
+        await service.update_document_metadata(
+            "kb_0123456789ab", title=title, principal="u1"
+        )
 
         async with session_factory() as session:
             rows = {
@@ -792,7 +794,9 @@ class TestUpdateDocument:
         service = _knowledge(session_factory)
         await service.ingest_runbook(**_ingest_args("personal"))
 
-        await service.update_document_metadata("kb_0123456789ab", title=title)
+        await service.update_document_metadata(
+            "kb_0123456789ab", title=title, principal="u1"
+        )
 
         (stored,) = await _runbook_titles(session_factory)
         _assert_scrubbed(stored, secret)
@@ -801,7 +805,9 @@ class TestUpdateDocument:
         service = _knowledge(session_factory)
         await service.ingest_runbook(**_ingest_args("personal", title="Old"))
 
-        await service.update_document_metadata("kb_0123456789ab", title=PLAIN_TITLE)
+        await service.update_document_metadata(
+            "kb_0123456789ab", title=PLAIN_TITLE, principal="u1"
+        )
 
         assert await _runbook_titles(session_factory) == [PLAIN_TITLE]
 
@@ -1559,7 +1565,9 @@ class TestTheColumnCutComesAfterTheScrub:
         service = _knowledge(session_factory)
         await service.ingest_runbook(**_ingest_args("personal"))
 
-        await service.update_document_metadata("kb_0123456789ab", title="y" * 600)
+        await service.update_document_metadata(
+            "kb_0123456789ab", title="y" * 600, principal="u1"
+        )
 
         (stored,) = await _runbook_titles(session_factory)
         assert len(stored) == 512

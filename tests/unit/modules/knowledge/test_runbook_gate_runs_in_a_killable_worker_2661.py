@@ -17,6 +17,7 @@ with no deadline it fails by the bound instead of hanging.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import signal
 import sys
@@ -57,6 +58,9 @@ from tests.utils import regex_only_sanitizer
 
 pytestmark = [pytest.mark.unit, pytest.mark.knowledge_base, pytest.mark.security]
 
+#: The authenticated caller: every gate check must run under this principal.
+USER = "user-7"
+
 #: The harness bound: a design whose check cannot be stopped fails by it.
 _HARNESS_SECONDS = 60
 
@@ -69,8 +73,21 @@ _TEMPLATE = {
     "scope": "personal",
     "symptom_recognition": "Requests fail with pool timeout errors under load.",
     "applicability": "Any service using a bounded PostgreSQL connection pool.",
-    "diagnostic_steps": "### Step 1: Check pool usage\nCount the connections.",
-    "causes": "### Cause A: Pool leak\n**Statement:** connections leak.",
+    "diagnostic_steps": (
+        "### Step 1: Check pool usage\n```bash\npsql -c 'select count(*) from "
+        "pg_stat_activity'\n```\nLook for a count near the pool ceiling."
+    ),
+    "causes": (
+        "### Cause A: Pool leak\n"
+        "**Statement:** connections are never returned to the pool.\n"
+        "**Indicators:**\n- root: [Step 1] active connections pinned at the cap\n"
+        "**Interventions:**\n- **remediation** (root): fix the leak.\n"
+        "  **Verification:** Re-run Step 1.\n\n"
+        "### Cause Z: Unidentified\n"
+        "**Statement:** none of the causes match.\n"
+        "**Indicators:**\n- [Default]\n"
+        "**Interventions:**\n- **mitigation** (D): consult an SME.\n"
+    ),
     "prevention": "Alert on pool saturation above eighty percent.",
 }
 
@@ -130,7 +147,7 @@ def client(session_factory):
 
     async def user():
         return SimpleNamespace(
-            user_id="u1",
+            user_id=USER,
             enterprise_id=STANDALONE_ENTERPRISE_ID,
             is_platform_admin=lambda: False,
         )
@@ -138,7 +155,9 @@ def client(session_factory):
     app.dependency_overrides[routes.get_knowledge_service] = lambda: knowledge
     app.dependency_overrides[require_authentication] = user
     transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
-    return httpx.AsyncClient(transport=transport, base_url="http://kb")
+    client = httpx.AsyncClient(transport=transport, base_url="http://kb")
+    client.knowledge = knowledge
+    return client
 
 
 def _upload(client):
@@ -359,16 +378,16 @@ async def test_each_check_through_a_real_worker_answers_as_in_process(monkeypatc
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("case_id,slot_wait", [(None, None), ("case-1", 120)])
 @pytest.mark.parametrize(
-    "refusal,retryable,reason",
-    [
-        (runbook_gate.GateTimedOut, False, "validation_timeout"),
-        (runbook_gate.GateBusy, True, None),
-    ],
+    "refusal,retryable",
+    [(runbook_gate.GateTimedOut, False), (runbook_gate.GateBusy, True)],
 )
-async def test_a_conversion_draft_fails_with_the_gates_reason(
-    monkeypatch, refusal, retryable, reason
+async def test_a_conversion_draft_fails_with_the_gates_answer(
+    monkeypatch, refusal, retryable, case_id, slot_wait
 ):
+    """A case's conversion, which no request waits on, waits for a slot within
+    the conversion's own 120 s; a document's, the interactive 10 s."""
     from unittest.mock import AsyncMock, MagicMock
 
     from faultmaven.infrastructure.llm.providers import LLMResponse, StopReason
@@ -380,9 +399,11 @@ async def test_a_conversion_draft_fails_with_the_gates_reason(
         service as service_module,
     )
 
-    async def refuse(content, *, principal):
-        assert principal == "u1"
+    async def refuse(content, *, principal, slot_wait=None):
+        assert (principal, slot_wait) == ("u1", slot_wait_expected)
         raise refusal()
+
+    slot_wait_expected = slot_wait
 
     monkeypatch.setattr(service_module, "avalidate_and_score", refuse)
     router = MagicMock()
@@ -426,11 +447,227 @@ async def test_a_conversion_draft_fails_with_the_gates_reason(
         scope="global",
         user_id="u1",
         enterprise_id=None,
+        case_id=case_id,
     )
 
     assert result == ConversionError(
-        failure_mode_id="fm-1",
-        error=str(refusal()),
-        retryable=retryable,
-        reason=reason,
+        failure_mode_id="fm-1", error=str(refusal()), retryable=retryable
     )
+
+
+# ---------------------------------------------------------------------------
+# The principal, by value, at every gate call site
+# ---------------------------------------------------------------------------
+
+
+async def test_every_gate_check_runs_under_the_callers_principal(
+    monkeypatch, tmp_path, session_factory, client
+):
+    """Upload (the quality gate, then ingest's security half), document edit,
+    template create, draft edit, draft verify (its own check, then ingest's),
+    the conversion read that scores an upload's draft, and the scan."""
+    seen: list[tuple[str, str]] = []
+    real_run = runbook_gate._run
+
+    async def run(check, content, principal, slot_wait=None):
+        seen.append((check, principal))
+        return await real_run(check, content, principal, slot_wait)
+
+    monkeypatch.setattr(runbook_gate, "_run", run)
+    from faultmaven.utils import runbook_id
+
+    monkeypatch.setattr(runbook_id, "KNOWLEDGE_ROOT", tmp_path)
+    folder = tmp_path / f"personal_{USER}"
+    folder.mkdir(parents=True)
+    scanned = valid_runbook("A Runbook Found On Disk")
+    (folder / "scanned.md").write_text(
+        scanned.replace("id: sample-runbook", "id: on-disk")
+    )
+
+    uploaded = (await _upload(client)).json()
+    async with session_factory() as session:
+        (upload_job,) = (
+            await session.execute(select(ConversionDraftModel.conversion_id))
+        ).scalars()
+    edited = await client.put(
+        f"/api/v1/knowledge/documents/{uploaded['document_id']}",
+        json={"content": valid_runbook("Redis Evictions, Edited"), "principal": "x"},
+    )
+    created = (await _create(client)).json()
+    draft = f"/api/v1/knowledge/conversions/{created['conversion_id']}/drafts/"
+    draft += created["draft"]["draft_id"]
+    body = valid_runbook("Connection Pool Exhausted On The API")
+    responses = [
+        edited,
+        await client.put(draft, json={"content": body}),
+        await client.post(f"{draft}/verify"),
+        await client.get(f"/api/v1/knowledge/conversions/{upload_job}"),
+        await client.post("/api/v1/knowledge/scan"),
+    ]
+
+    assert [r.status_code for r in responses] == [200] * 5, [r.text for r in responses]
+    assert {principal for _, principal in seen} == {USER}
+    assert [check for check, _ in seen] == [
+        "enforce_runbook_quality",
+        "enforce_runbook_security",
+        "enforce_runbook_security",
+        "validate_and_score",
+        "validate_and_score",
+        "enforce_runbook_security",
+        "enforce_runbook_security",
+        "validate_and_score",
+        "validate_and_score",
+    ]
+
+
+async def test_bulk_update_never_takes_the_principal_from_its_body(monkeypatch):
+    from unittest.mock import MagicMock
+
+    service = KnowledgeService(
+        sanitizer=regex_only_sanitizer(),
+        tracer=None,
+        vector_store=None,
+        db_session_factory=MagicMock(),
+    )
+    service.update_document_metadata = AsyncMock(return_value={"document_id": "d"})
+
+    await service.bulk_update_documents(
+        ["d"], {"tags": ["a"], "principal": "someone-else"}, principal=USER
+    )
+
+    service.update_document_metadata.assert_awaited_once_with(
+        "d", principal=USER, tags=["a"]
+    )
+
+
+# ---------------------------------------------------------------------------
+# The bounds the gate's limits are measured at
+# ---------------------------------------------------------------------------
+
+
+def _causes(statement: str, size: int = 100_000) -> str:
+    """A runbook filled to ``size`` characters with causes."""
+    head = valid_runbook().partition("## Causes")[0] + "## Causes\n"
+    body, i = head, 0
+    while len(body) < size - 60:
+        body += f"### Cause {chr(65 + i % 25)}: c{i}\n**Statement:** "
+        body += statement.format(i=i) + "\n"
+        i += 1
+    return body[: size - 30] + "\n## Prevention\nAlert.\n"
+
+
+def test_near_duplicate_statements_are_named_up_to_a_cap():
+    """One warning per pair grew as the square of the causes: 300 near-
+    duplicates answered 6.6 MB. Twenty pairs are named, one line counts the
+    rest."""
+    statements = [
+        (chr(65 + i % 25), f"the connection pool is exhausted by leak {i}")
+        for i in range(30)
+    ]
+
+    _, warnings = runbook_validator.check_cause_statement_invariants(statements)
+
+    assert len(warnings) == 21
+    assert warnings[-1] == (
+        "And 415 more pairs of causes have near-duplicate Statements."
+    )
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        pytest.param("the connection pool is exhausted by leak number {i}", id="near"),
+        pytest.param("a", id="one-word"),
+        pytest.param("w{i} x{i} y{i} z{i}", id="distinct"),
+    ],
+)
+async def test_the_worst_shapes_at_the_bound_are_answered(monkeypatch, statement):
+    """The shapes the limits were measured on, at 100,000 characters: each is
+    answered by a real worker under the declared limits, not refused, and its
+    answer is under a quarter of the output limit."""
+    monkeypatch.setattr(runbook_gate, "_gate_slots_state", None)
+    content = _causes(statement)
+    answer = validation_worker.CHECKS["validate_and_score"](content)
+
+    async with asyncio.timeout(_HARNESS_SECONDS):
+        v, q = await runbook_gate.avalidate_and_score(content, principal=USER)
+
+    assert (v.model_dump(), q.model_dump()) == (answer["validation"], answer["quality"])
+    assert 4 * len(json.dumps(answer).encode()) < runbook_gate.GATE_OUTPUT_LIMIT_BYTES
+
+
+# ---------------------------------------------------------------------------
+# The callers of a busy or failing gate
+# ---------------------------------------------------------------------------
+
+
+async def test_a_conversion_read_holds_no_session_through_the_gate(
+    monkeypatch, session_factory, client
+):
+    from contextlib import asynccontextmanager
+
+    from faultmaven.modules.knowledge.domain.services.conversion_service import (
+        service as service_module,
+    )
+
+    assert (await _upload(client)).status_code == 201
+    async with session_factory() as session:
+        (conversion_id,) = (
+            await session.execute(select(ConversionDraftModel.conversion_id))
+        ).scalars()
+    open_sessions, at_the_gate = [0], []
+
+    @asynccontextmanager
+    async def counted():
+        open_sessions[0] += 1
+        try:
+            async with session_factory() as session:
+                yield session
+        finally:
+            open_sessions[0] -= 1
+
+    async def gate(content, *, principal, slot_wait=None):
+        at_the_gate.append(open_sessions[0])
+        return runbook_validator.validate_and_score(content)
+
+    monkeypatch.setattr(service_module, "avalidate_and_score", gate)
+    service = ConversionService(
+        llm_router=None, settings=None, db_session_factory=counted
+    )
+
+    assert await service.get_conversion(conversion_id, USER) is not None
+    assert at_the_gate == [0]
+
+
+async def test_a_busy_gate_defers_the_rest_of_a_batch():
+    service = ConversionService(llm_router=None, settings=None, db_session_factory=None)
+    service.verify_draft = AsyncMock(side_effect=runbook_gate.GateBusy())
+
+    result = await service.verify_batch([("c", "d1"), ("c", "d2")], user_id=USER)
+
+    assert (result["deferred"], result["failed"]) == (2, 0)
+    service.verify_draft.assert_awaited_once()
+
+
+async def test_a_busy_gate_in_ingest_is_not_logged_as_an_ingestion_failure(
+    caplog, session_factory, client
+):
+    created = (await _create(client)).json()
+    draft = f"/api/v1/knowledge/conversions/{created['conversion_id']}/drafts/"
+    draft += created["draft"]["draft_id"]
+    client.knowledge.ingest_runbook = AsyncMock(side_effect=runbook_gate.GateBusy())
+
+    response = await client.post(f"{draft}/verify")
+
+    assert response.headers["x-error-code"] == "RUNBOOK_VALIDATION_BUSY"
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert await _written(session_factory) == 1  # the draft, unverified
+
+
+@pytest.mark.parametrize("refusal", [runbook_gate.GateTimedOut, runbook_gate.GateBusy])
+def test_a_refusal_survives_copy_and_pickle(refusal):
+    import copy
+    import pickle
+
+    for clone in (copy.copy(refusal()), pickle.loads(pickle.dumps(refusal()))):
+        assert (type(clone), str(clone)) == (refusal, str(refusal()))

@@ -659,7 +659,9 @@ async def test_an_edited_then_unpublished_builtin_stays_unpublished_after_a_rebo
     pack_dir = _write_pack(tmp_path)
     shipped = item_id_from_runbook_id("example-runbook")
     await kb.boot(tmp_path, pack_dir)
-    assert await kb.svc.update_document_metadata(shipped, content="# Edited\nfix")
+    assert await kb.svc.update_document_metadata(
+        shipped, content="# Edited\nfix", principal="u1"
+    )
     assert (await kb.svc.delete_document(shipped))["action"] == "unpublished"
 
     second = await kb.boot(tmp_path, pack_dir)
@@ -708,7 +710,9 @@ async def test_a_row_from_before_the_stamp_is_compared_by_content_once(kb, tmp_p
     assert stamped.metadata == {PACK_CONTENT_HASH_KEY: PACK_V1_HASH}
     assert stamped.updated_at == before.updated_at
 
-    await kb.svc.update_document_metadata(shipped, content="# Edited\nfix")
+    await kb.svc.update_document_metadata(
+        shipped, content="# Edited\nfix", principal="u1"
+    )
     await kb.svc.delete_document(shipped)
     await kb.boot(tmp_path, pack_dir)
     assert (await kb.row(shipped)).is_published is False
@@ -724,7 +728,9 @@ async def test_a_pre_stamp_row_edited_and_unpublished_is_not_republished(kb, tmp
     pack_dir = _write_pack(tmp_path)
     shipped = item_id_from_runbook_id("example-runbook")
     await kb.boot(tmp_path, pack_dir)
-    await kb.svc.update_document_metadata(shipped, content="# Edited\nfix")
+    await kb.svc.update_document_metadata(
+        shipped, content="# Edited\nfix", principal="u1"
+    )
     await kb.svc.delete_document(shipped)
     async with kb.factory() as session:  # what an older version left behind
         await DatabaseKnowledgeItemRepository(session).update_fields(

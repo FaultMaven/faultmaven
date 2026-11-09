@@ -615,7 +615,8 @@ async def verify_batch(
     window (#2055): a draft the window has no room left for is ``deferred``
     (unverified; verify it again), as is every draft after it, and the envelope
     counts them in ``deferred``. A draft too large for any window is
-    ``failed``.
+    ``failed``. From the first draft the runbook check is busy for or cannot
+    run on, every draft is ``deferred`` too (#2661).
     """
     result = await service.verify_batch(
         draft_refs=[(ref.conversion_id, ref.draft_id) for ref in body.draft_ids],

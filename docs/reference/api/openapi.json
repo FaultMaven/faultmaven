@@ -12174,7 +12174,7 @@
             "description": "`x-error-code: RUNBOOK_VALIDATION_BUSY`: no runbook check was free within its wait; `RUNBOOK_VALIDATION_UNAVAILABLE`: the check did not answer. Retry after `Retry-After` seconds.",
             "headers": {
               "Retry-After": {
-                "description": "Seconds, with either.",
+                "description": "Seconds, with RUNBOOK_VALIDATION_BUSY or RUNBOOK_VALIDATION_UNAVAILABLE.",
                 "schema": {
                   "type": "integer"
                 }
@@ -12297,7 +12297,7 @@
             "description": "`x-error-code: RUNBOOK_VALIDATION_BUSY`: no runbook check was free within its wait; `RUNBOOK_VALIDATION_UNAVAILABLE`: the check did not answer. Retry after `Retry-After` seconds.",
             "headers": {
               "Retry-After": {
-                "description": "Seconds, with either.",
+                "description": "Seconds, with RUNBOOK_VALIDATION_BUSY or RUNBOOK_VALIDATION_UNAVAILABLE.",
                 "schema": {
                   "type": "integer"
                 }
@@ -12373,7 +12373,7 @@
             "description": "Unavailable; nothing was saved. `x-error-code: KNOWLEDGE_INDEXING_BUSY`: within the request window there is no room for this document because other indexing is queued on this server, the indexing model is loading, or an encode is stuck past its time bound; retry after `Retry-After` seconds. `x-error-code: RUNBOOK_VALIDATION_BUSY`: no runbook check was free within its wait; `RUNBOOK_VALIDATION_UNAVAILABLE`: the check did not answer. Retry after `Retry-After` seconds.",
             "headers": {
               "Retry-After": {
-                "description": "Seconds, with KNOWLEDGE_INDEXING_BUSY. Seconds, with either.",
+                "description": "Seconds, with KNOWLEDGE_INDEXING_BUSY. Seconds, with RUNBOOK_VALIDATION_BUSY or RUNBOOK_VALIDATION_UNAVAILABLE.",
                 "schema": {
                   "type": "integer"
                 }
@@ -12707,7 +12707,7 @@
             "description": "Unavailable; nothing was saved. `x-error-code: KNOWLEDGE_INDEXING_BUSY`: within the request window there is no room for this document because other indexing is queued on this server, the indexing model is loading, or an encode is stuck past its time bound; retry after `Retry-After` seconds. `x-error-code: RUNBOOK_VALIDATION_BUSY`: no runbook check was free within its wait; `RUNBOOK_VALIDATION_UNAVAILABLE`: the check did not answer. Retry after `Retry-After` seconds.",
             "headers": {
               "Retry-After": {
-                "description": "Seconds, with KNOWLEDGE_INDEXING_BUSY. Seconds, with either.",
+                "description": "Seconds, with KNOWLEDGE_INDEXING_BUSY. Seconds, with RUNBOOK_VALIDATION_BUSY or RUNBOOK_VALIDATION_UNAVAILABLE.",
                 "schema": {
                   "type": "integer"
                 }
@@ -13019,7 +13019,7 @@
             "description": "Unavailable; nothing was saved. `x-error-code: KNOWLEDGE_INDEXING_BUSY`: within the request window there is no room for this document because other indexing is queued on this server, the indexing model is loading, or an encode is stuck past its time bound; retry after `Retry-After` seconds. `x-error-code: RUNBOOK_VALIDATION_BUSY`: no runbook check was free within its wait; `RUNBOOK_VALIDATION_UNAVAILABLE`: the check did not answer. Retry after `Retry-After` seconds.",
             "headers": {
               "Retry-After": {
-                "description": "Seconds, with KNOWLEDGE_INDEXING_BUSY. Seconds, with either.",
+                "description": "Seconds, with KNOWLEDGE_INDEXING_BUSY. Seconds, with RUNBOOK_VALIDATION_BUSY or RUNBOOK_VALIDATION_UNAVAILABLE.",
                 "schema": {
                   "type": "integer"
                 }
@@ -13183,7 +13183,7 @@
     },
     "/api/v1/knowledge/drafts/verify-batch": {
       "post": {
-        "description": "Activate multiple drafts sequentially (verify + ingest into KB).\n\nWith ``INDEX_REQUEST_WINDOW_SECONDS`` set, the drafts share the request's\nwindow (#2055): a draft the window has no room left for is ``deferred``\n(unverified; verify it again), as is every draft after it, and the envelope\ncounts them in ``deferred``. A draft too large for any window is\n``failed``.",
+        "description": "Activate multiple drafts sequentially (verify + ingest into KB).\n\nWith ``INDEX_REQUEST_WINDOW_SECONDS`` set, the drafts share the request's\nwindow (#2055): a draft the window has no room left for is ``deferred``\n(unverified; verify it again), as is every draft after it, and the envelope\ncounts them in ``deferred``. A draft too large for any window is\n``failed``. From the first draft the runbook check is busy for or cannot\nrun on, every draft is ``deferred`` too (#2661).",
         "operationId": "verify_batch_api_v1_knowledge_drafts_verify_batch_post",
         "requestBody": {
           "content": {
@@ -13256,7 +13256,7 @@
             "description": "`x-error-code: RUNBOOK_VALIDATION_BUSY`: no runbook check was free within its wait; `RUNBOOK_VALIDATION_UNAVAILABLE`: the check did not answer. Retry after `Retry-After` seconds.",
             "headers": {
               "Retry-After": {
-                "description": "Seconds, with either.",
+                "description": "Seconds, with RUNBOOK_VALIDATION_BUSY or RUNBOOK_VALIDATION_UNAVAILABLE.",
                 "schema": {
                   "type": "integer"
                 }
@@ -13298,7 +13298,7 @@
             "description": "`x-error-code: RUNBOOK_VALIDATION_BUSY`: no runbook check was free within its wait; `RUNBOOK_VALIDATION_UNAVAILABLE`: the check did not answer. Retry after `Retry-After` seconds.",
             "headers": {
               "Retry-After": {
-                "description": "Seconds, with either.",
+                "description": "Seconds, with RUNBOOK_VALIDATION_BUSY or RUNBOOK_VALIDATION_UNAVAILABLE.",
                 "schema": {
                   "type": "integer"
                 }

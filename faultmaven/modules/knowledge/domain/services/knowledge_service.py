@@ -3093,7 +3093,7 @@ class KnowledgeService:
             }
 
     async def update_document_metadata(
-        self, document_id: str, principal: Optional[str] = None, **kwargs
+        self, document_id: str, *, principal: str, **kwargs
     ) -> Optional[Dict[str, Any]]:
         """Update a published runbook's fields in knowledge_items.
 
@@ -3111,7 +3111,8 @@ class KnowledgeService:
         bound is refused with ``ValidationException`` (422), and one the
         indexing window cannot fit with ``IndexAdmissionRefused`` (413/503),
         both before anything is embedded or written (#2055).
-        ``principal``, the user who asked, holds the check's slot (#2661).
+        ``principal``, the user who asked, holds the check's slot (#2661); no
+        caller passes it from a request body.
 
         **A content change writes a new generation** (#2388, #952). The new
         content's chunks are written first, under a freshly minted
@@ -3383,7 +3384,7 @@ class KnowledgeService:
             raise
 
     async def bulk_update_documents(
-        self, document_ids: List[str], updates: Dict[str, Any]
+        self, document_ids: List[str], updates: Dict[str, Any], *, principal: str
     ) -> Dict[str, Any]:
         """Bulk update document metadata. An ``updates`` naming ``content`` is
         refused with ``ValidationException`` (422) before any document is
@@ -3406,7 +3407,10 @@ class KnowledgeService:
 
         for doc_id in document_ids:
             try:
-                result = await self.update_document_metadata(doc_id, **updates)
+                fields = {k: v for k, v in updates.items() if k != "principal"}
+                result = await self.update_document_metadata(
+                    doc_id, principal=principal, **fields
+                )
                 if result:  # If not None (document found and updated)
                     updated_count += 1
                 else:

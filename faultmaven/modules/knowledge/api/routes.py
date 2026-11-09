@@ -189,7 +189,8 @@ GATE_RESPONSES: Dict[int | str, Dict[str, Any]] = {
                 "schema": {"type": "string"},
             },
             "Retry-After": {
-                "description": "Seconds, with either.",
+                "description": "Seconds, with RUNBOOK_VALIDATION_BUSY or "
+                "RUNBOOK_VALIDATION_UNAVAILABLE.",
                 "schema": {"type": "integer"},
             },
         },
@@ -1472,7 +1473,7 @@ async def bulk_update_documents(
         )
 
         result = await knowledge_service.bulk_update_documents(
-            document_ids=permitted_ids, updates=updates
+            document_ids=permitted_ids, updates=updates, principal=current_user.user_id
         )
         result["errors"] = gate_errors + list(result.get("errors") or [])
         result["total_requested"] = len(document_ids)

@@ -1595,15 +1595,15 @@ This provides a tight feedback loop: the user edits, saves, and immediately sees
 
 ### 12.5 Where the Gate Runs: a Worker Its Deadline Kills (#2661)
 
-No gate check runs in the API process (Principle 14). Each one, `validate_and_score` for a draft's verdict and score, `enforce_runbook_quality` on upload and `enforce_runbook_security` wherever a body is published or edited, runs through `runbook_gate` in a process of its own (`validation_worker`), under four slots shared by the users waiting by Principle 14's admission rule. Every input is bounded at 100,000 characters first, and the limits are measured there: the work deadline is 5 s (the slowest shape found took 1.16 s; a runbook-shaped one, 0.14 s). The gate fails closed, so content is admitted only by a check that finished and passed:
+No gate check runs in the API process (Principle 14). Each one, `validate_and_score` for a draft's verdict and score, `enforce_runbook_quality` on upload and `enforce_runbook_security` wherever a body is published or edited, runs through `runbook_gate` in a process of its own (`validation_worker`), under four slots shared by the users waiting by Principle 14's admission rule. Every input is bounded at 100,000 characters first, and the limits are measured there: the work deadline is 10 s (the slowest shape found, about 1,250 causes with near-duplicate Statements, took 2.34 s of CPU; a runbook-shaped one, 0.11 s). The gate fails closed, so content is admitted only by a check that finished and passed:
 
 | The check | Upload, edit, draft edit, verify, template create; `GET /conversions/{id}` scoring a stored unscored draft | A conversion's draft | `POST /knowledge/scan` |
 |---|---|---|---|
-| Past its 5 s deadline, killed | 422, `reason: validation_timeout`, `help` "This document took too long to check. Split it into smaller runbooks." | The draft fails with that sentence, not retryable | That file is listed in `errors` |
-| No slot within 10 s | 503 `RUNBOOK_VALIDATION_BUSY` + `Retry-After` | The draft fails, retryable | 503; the files before it stay imported |
+| Past its 10 s deadline, killed | 422, `reason: validation_timeout`, `help` "This document took too long to check. Split it into smaller runbooks." | The draft fails with that sentence, not retryable | That file is listed in `errors` |
+| No slot within 10 s | 503 `RUNBOOK_VALIDATION_BUSY` + `Retry-After` | The draft fails, retryable; a case's conversion, which no request waits on, waits up to 120 s first | 503; the files before it stay imported |
 | Any other end of its worker | 503 `RUNBOOK_VALIDATION_UNAVAILABLE` + `Retry-After` | As above | As above |
 
-`verify-batch` records each refusal as that draft's `failed`.
+`verify-batch` records a timeout as that draft's `failed`, and defers that draft and the rest of the batch on a busy or failed check.
 
 ## 13. Implementation Phases
 

@@ -425,7 +425,9 @@ async def test_an_incomplete_row_is_read_and_deleted_but_never_edited_or_reindex
 
     assert (
         await service.update_document_metadata(
-            DOC_ID, content=valid_runbook("An Edit Of The Stray Runbook")
+            DOC_ID,
+            content=valid_runbook("An Edit Of The Stray Runbook"),
+            principal="u1",
         )
         is None
     )

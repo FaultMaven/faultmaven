@@ -460,6 +460,9 @@ def _rm_target_is_catastrophic(target: str) -> bool:
 
 _STEP_MARKER_RE = re.compile(r"\[step\s*\d+\]", re.IGNORECASE)
 _SIBLING_NEAR_DUP_JACCARD = 0.6
+#: Near-duplicate pairs named one by one; past it one line counts the rest, so
+#: the warnings grow with the causes, not with their pairs (#2661).
+_NEAR_DUP_PAIRS_NAMED = 20
 
 
 def _norm_statement(s: str) -> str:
@@ -469,9 +472,7 @@ def _norm_statement(s: str) -> str:
     return " ".join(re.findall(r"[a-z0-9]+", s.lower()))
 
 
-def _statement_jaccard(a: str, b: str) -> float:
-    ta = set(re.findall(r"[a-z0-9]+", a.lower()))
-    tb = set(re.findall(r"[a-z0-9]+", b.lower()))
+def _statement_jaccard(ta: Set[str], tb: Set[str]) -> float:
     return len(ta & tb) / len(ta | tb) if (ta | tb) else 0.0
 
 
@@ -515,20 +516,35 @@ def check_cause_statement_invariants(
                 f"causes must be mutually discriminative (MECE) or the matcher abstains."
             )
     # Near-duplicates (high lexical overlap but not identical): pairwise warn.
+    # Only Statements sharing a word can overlap, so each is compared with those.
+    tokens = [set(norm.split()) for _, norm in norms]
+    sharing: Dict[str, List[int]] = {}
+    for i, words in enumerate(tokens):
+        for word in words:
+            sharing.setdefault(word, []).append(i)
+    near = 0
     for i in range(len(statements)):
-        li, si = statements[i]
+        li = statements[i][0]
         if not norms[i][1]:
             continue
-        for j in range(i + 1, len(statements)):
-            lj, sj = statements[j]
-            if not norms[j][1] or norms[i][1] == norms[j][1]:
+        for j in sorted({j for w in tokens[i] for j in sharing[w] if j > i}):
+            lj = statements[j][0]
+            if norms[i][1] == norms[j][1]:
                 continue
-            if _statement_jaccard(si, sj) >= _SIBLING_NEAR_DUP_JACCARD:
-                warnings.append(
-                    f"Causes {li} and {lj} have near-duplicate Statements (lexical "
-                    f"overlap >= {_SIBLING_NEAR_DUP_JACCARD:.0%}); make them "
-                    f"discriminative or holistic matching may return 'multiple'."
-                )
+            if _statement_jaccard(tokens[i], tokens[j]) >= _SIBLING_NEAR_DUP_JACCARD:
+                near += 1
+                if near <= _NEAR_DUP_PAIRS_NAMED:
+                    warnings.append(
+                        f"Causes {li} and {lj} have near-duplicate Statements "
+                        f"(lexical overlap >= {_SIBLING_NEAR_DUP_JACCARD:.0%}); make "
+                        f"them discriminative or holistic matching may return "
+                        f"'multiple'."
+                    )
+    if near > _NEAR_DUP_PAIRS_NAMED:
+        warnings.append(
+            f"And {near - _NEAR_DUP_PAIRS_NAMED} more pairs of causes have "
+            f"near-duplicate Statements."
+        )
     return errors, warnings
 
 

@@ -170,9 +170,12 @@ CONTRACT_CHANGES: tuple[ContractChange, ...] = (
   any other end of the check: 503 `RUNBOOK_VALIDATION_UNAVAILABLE` +
   `Retry-After`. On those routes and `POST /knowledge/scan`.
 
-A conversion's draft fails instead (the sentence in the job's `warnings`),
-the scan lists the file in `errors`, and `verify-batch` records the draft
-`failed`. MINOR: a field added to a 422 and new codes on a 503.""",
+A conversion's draft fails instead (the sentence in the job's `warnings`)
+and the scan lists the file in `errors`. `verify-batch` records a timed-out
+draft `failed`; from a busy or failed check on, it defers the draft and the
+rest of the batch, as for busy indexing. A draft's validation `warnings` name
+at most 20 pairs of near-duplicate cause Statements, and one line counts the
+rest. MINOR: a field added to a 422 and new codes on a 503.""",
     ),
     ContractChange(
         version="14.19.0",

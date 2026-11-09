@@ -847,7 +847,10 @@ class TestUpdate:
 
         with pytest.raises(RunbookQualityError) as refused:
             await service.update_document_metadata(
-                "kb_0123456789ab", content=body, title="Login fails (password=hunter2)"
+                "kb_0123456789ab",
+                content=body,
+                title="Login fails (password=hunter2)",
+                principal="u1",
             )
 
         _assert_named_not_echoed(refused.value, entity_type, line, secret)
@@ -871,6 +874,7 @@ class TestUpdate:
             "kb_0123456789ab",
             content=body.replace("\n", "\r\n"),
             title="Login fails (password=hunter2)",
+            principal="u1",
         )
 
         assert result["content"] == body
@@ -889,7 +893,9 @@ class TestUpdate:
 
         for path in bodies:
             text = path.read_text(encoding="utf-8")
-            await service.update_document_metadata("kb_0123456789ab", content=text)
+            await service.update_document_metadata(
+                "kb_0123456789ab", content=text, principal="u1"
+            )
             assert await _published(session_factory) == [text], path.name
 
 
@@ -1051,7 +1057,7 @@ class TestBulkUpdate:
         with caplog.at_level(logging.INFO, logger=name):
             with pytest.raises(ValidationException, match="metadata only"):
                 await service.bulk_update_documents(
-                    ["kb_0123456789ab"], {"content": body}
+                    ["kb_0123456789ab"], {"content": body}, principal="u1"
                 )
 
         assert await _published(session_factory) == [valid_runbook()]

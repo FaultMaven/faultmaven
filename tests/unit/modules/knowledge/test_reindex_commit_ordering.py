@@ -222,7 +222,7 @@ async def test_row_is_not_committed_when_the_embedder_is_unavailable():
         with patch(_EMBED_TEXTS, new=MagicMock(return_value=None)):
             with pytest.raises(KnowledgeBaseError):
                 await service.update_document_metadata(
-                    document_id="doc-1", content=NEW_CONTENT
+                    document_id="doc-1", content=NEW_CONTENT, principal="u1"
                 )
 
     assert calls == [], f"the update wrote to a store despite failing: {calls}"
@@ -244,7 +244,7 @@ async def test_row_is_not_committed_when_the_vector_swap_fails():
         with patch(_EMBED_TEXTS, new=MagicMock(return_value=[[0.1] * 1024])):
             with pytest.raises(KnowledgeBaseError):
                 await service.update_document_metadata(
-                    document_id="doc-1", content=NEW_CONTENT
+                    document_id="doc-1", content=NEW_CONTENT, principal="u1"
                 )
 
     assert "sql_commit" not in _kinds(calls)
@@ -266,7 +266,7 @@ async def test_vectors_are_written_before_the_row_commits():
     with patch(_REPO, return_value=repo):
         with patch(_EMBED_TEXTS, new=MagicMock(return_value=[[0.1] * 1024])):
             result = await service.update_document_metadata(
-                document_id="doc-1", content=NEW_CONTENT
+                document_id="doc-1", content=NEW_CONTENT, principal="u1"
             )
 
     assert result["content"] == NEW_CONTENT
@@ -292,7 +292,7 @@ async def test_indexed_chunks_carry_the_updated_timestamp_not_the_previous_one()
     with patch(_REPO, return_value=repo):
         with patch(_EMBED_TEXTS, new=MagicMock(return_value=[[0.1] * 1024])):
             await service.update_document_metadata(
-                document_id="doc-1", content=NEW_CONTENT
+                document_id="doc-1", content=NEW_CONTENT, principal="u1"
             )
 
     stamped = [value for kind, value in calls if kind == "chunk_updated_at"]
@@ -326,7 +326,7 @@ async def test_a_content_edit_still_commits_when_no_vector_store_is_wired():
 
     with patch(_REPO, return_value=repo):
         result = await service.update_document_metadata(
-            document_id="doc-1", content=NEW_CONTENT
+            document_id="doc-1", content=NEW_CONTENT, principal="u1"
         )
 
     assert result["content"] == NEW_CONTENT
@@ -342,7 +342,7 @@ async def test_metadata_only_update_commits_without_touching_the_vectors():
 
     with patch(_REPO, return_value=repo):
         result = await service.update_document_metadata(
-            document_id="doc-1", tags=["kubernetes"]
+            document_id="doc-1", tags=["kubernetes"], principal="u1"
         )
 
     assert result is not None
@@ -376,7 +376,7 @@ async def test_a_concurrent_unpublish_is_not_resurrected_by_the_commit():
     with patch(_REPO, return_value=repo):
         with patch(_EMBED_TEXTS, new=_embed_then_someone_unpublishes):
             await service.update_document_metadata(
-                document_id="doc-1", content=NEW_CONTENT
+                document_id="doc-1", content=NEW_CONTENT, principal="u1"
             )
 
     assert (
@@ -401,7 +401,7 @@ async def test_a_row_deleted_mid_update_leaves_no_admitted_vector():
     with patch(_REPO, return_value=repo):
         with patch(_EMBED_TEXTS, new=_embed_then_someone_deletes):
             result = await service.update_document_metadata(
-                document_id="doc-1", content=NEW_CONTENT
+                document_id="doc-1", content=NEW_CONTENT, principal="u1"
             )
         admitted = await service.admitted_generations(["doc-1"])
 
@@ -430,7 +430,7 @@ async def test_a_failed_commit_serves_the_previous_content():
         with patch(_EMBED_TEXTS, new=MagicMock(return_value=[[0.1] * 1024])):
             with pytest.raises(RuntimeError):
                 await service.update_document_metadata(
-                    document_id="doc-1", content=NEW_CONTENT
+                    document_id="doc-1", content=NEW_CONTENT, principal="u1"
                 )
 
     assert _kinds(calls) == ["vector_add", "sql_commit"], _kinds(calls)
@@ -451,7 +451,7 @@ async def test_a_commit_that_landed_but_raised_serves_the_new_content():
         with patch(_EMBED_TEXTS, new=MagicMock(return_value=[[0.1] * 1024])):
             with pytest.raises(RuntimeError):
                 await service.update_document_metadata(
-                    document_id="doc-1", content=NEW_CONTENT
+                    document_id="doc-1", content=NEW_CONTENT, principal="u1"
                 )
 
     assert _kinds(calls) == ["vector_add", "sql_commit"], _kinds(calls)
@@ -480,7 +480,9 @@ async def test_two_racing_updates_serve_the_content_that_committed(last):
         with patch(_EMBED_TEXTS, new=MagicMock(return_value=[[0.1] * 1024])):
             updates = [
                 asyncio.create_task(
-                    service.update_document_metadata(document_id="doc-1", content=c)
+                    service.update_document_metadata(
+                        document_id="doc-1", content=c, principal="u1"
+                    )
                 )
                 for c in (NEW_CONTENT, OTHER_CONTENT)
             ]
@@ -520,7 +522,7 @@ async def test_a_concurrent_unpublish_leaves_the_vectors_we_added_unadmitted():
     with patch(_REPO, return_value=repo):
         with patch(_EMBED_TEXTS, new=_embed_then_someone_unpublishes):
             await service.update_document_metadata(
-                document_id="doc-1", content=NEW_CONTENT
+                document_id="doc-1", content=NEW_CONTENT, principal="u1"
             )
         admitted = await service.admitted_generations(["doc-1"])
 
@@ -546,7 +548,7 @@ async def test_a_failed_commit_on_a_row_unpublished_meanwhile_writes_nothing_mor
         with patch(_EMBED_TEXTS, new=_embed_then_someone_unpublishes):
             with pytest.raises(RuntimeError):
                 await service.update_document_metadata(
-                    document_id="doc-1", content=NEW_CONTENT
+                    document_id="doc-1", content=NEW_CONTENT, principal="u1"
                 )
         admitted = await service.admitted_generations(["doc-1"])
 
@@ -567,7 +569,7 @@ async def test_a_failed_generation_delete_is_logged_and_the_update_stands(caplog
     with patch(_REPO, return_value=repo):
         with patch(_EMBED_TEXTS, new=MagicMock(return_value=[[0.1] * 1024])):
             result = await service.update_document_metadata(
-                document_id="doc-1", content=NEW_CONTENT
+                document_id="doc-1", content=NEW_CONTENT, principal="u1"
             )
 
     assert result["content"] == NEW_CONTENT
@@ -591,7 +593,7 @@ async def test_the_response_describes_the_committed_row_not_the_snapshot():
     with patch(_REPO, return_value=repo):
         with patch(_EMBED_TEXTS, new=_embed_then_someone_retitles):
             result = await service.update_document_metadata(
-                document_id="doc-1", content=NEW_CONTENT
+                document_id="doc-1", content=NEW_CONTENT, principal="u1"
             )
 
     assert (
@@ -623,7 +625,7 @@ async def test_a_failing_re_read_leaves_the_previous_content_served():
         with patch(_EMBED_TEXTS, new=MagicMock(return_value=[[0.1] * 1024])):
             with pytest.raises(RuntimeError):
                 await service.update_document_metadata(
-                    document_id="doc-1", content=NEW_CONTENT
+                    document_id="doc-1", content=NEW_CONTENT, principal="u1"
                 )
 
     assert _kinds(calls) == ["vector_add"], _kinds(calls)

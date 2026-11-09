@@ -236,10 +236,6 @@ class ConversionError(BaseModel):
     failure_mode_id: str
     error: str
     retryable: bool = False
-    reason: Optional[str] = Field(
-        default=None,
-        description="`validation_timeout`: the runbook check ran past its deadline.",
-    )
 
 
 # =============================================================================

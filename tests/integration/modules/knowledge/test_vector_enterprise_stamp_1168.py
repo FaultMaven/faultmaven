@@ -361,7 +361,9 @@ async def test_a_content_update_restamps_from_the_row(service, chroma, session_f
     edited = _BODY + "\n\n## Verification\n\nThe queue drains within a minute."
 
     with _ambient_enterprise(ENTERPRISE_A):
-        result = await service.update_document_metadata("kb_edited", content=edited)
+        result = await service.update_document_metadata(
+            "kb_edited", content=edited, principal="u1"
+        )
 
     assert result is not None and result["content"] == edited
     chunks = _chunks(chroma, "kb_edited")
@@ -410,7 +412,9 @@ async def test_a_failed_commit_on_a_row_deleted_meanwhile_deletes_no_vector(
         ) as vector_delete,
     ):
         with pytest.raises(RuntimeError, match="commit failed"):
-            await service.update_document_metadata("kb_vanished", content=edited)
+            await service.update_document_metadata(
+                "kb_vanished", content=edited, principal="u1"
+            )
 
     # No pre-delete and no discard (#2388).
     assert vector_delete.await_count == 0
