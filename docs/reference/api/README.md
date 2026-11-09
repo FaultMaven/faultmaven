@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 14.19.0
+**Version:** 14.20.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -450,6 +450,36 @@ Raises:
 
 - `200` — Successful Response ([`LLMConnectionTestResponse`](#llmconnectiontestresponse))
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
+
+---
+
+### `/api/v1/admin/llm/usage`
+
+#### GET
+
+**Get Llm Usage**
+
+The bound enterprise's LLM usage, read from the usage ledger.
+
+Costs are estimated at call time from the price table, never billed.
+Coverage starts when the ledger was deployed; there is no backfill.
+
+**Tags:** `Admin - Usage`
+
+**Auth:** `HTTPBearer`
+
+**Parameters:**
+
+- `window` (query, optional) — Whole UTC days ending today, inclusive
+- `group_by` (query, optional) — What `groups` is keyed by
+
+**Responses:**
+
+- `200` — Successful Response ([`LLMUsageReport`](#llmusagereport))
+- `401` — Not authenticated
+- `403` — Not a platform administrator, or the request is not scoped to an enterprise
+- `422` — An unknown `window` or `group_by`, or `group_by=user` under multi-tenancy
+- `503` — `DATABASE_UNAVAILABLE`: the usage store could not be read. Never answered as a zero-filled 200.
 
 ---
 
@@ -5795,6 +5825,23 @@ Result of an LLM provider connection test.
 
 ---
 
+### LLMHeavyTurn
+
+One of the heaviest turns. Ids and numbers only: no title, no content.
+
+**Properties:**
+
+- `calls` (integer, required)
+- `case_id` (string, required)
+- `estimated_cost_usd` (number, required)
+- `investigation_turn` (integer, required) — The ordinal to display
+- `occurred_at` (string, required)
+- `spend_weighted_tokens` (integer, required)
+- `turn_number` (integer, required) — The message clock
+- `unpriced_calls` (integer, required)
+
+---
+
 ### LLMProviderDetail
 
 Individual LLM provider status for dashboard display.
@@ -5836,6 +5883,194 @@ reports a configuration that omits load-bearing routing (#1206).
 - `provider_key` (string, required) — Environment key carrying the provider decision, e.g. CLASSIFIER_PROVIDER
 - `provider_source` (string, required) — Where the provider came from: 'env-default' (this role's own key is set), 'admin-override' (dashboard-written), or 'inherited' (no role key — follows CHAT_PROVIDER and moves with it)
 - `role` (string, required) — Capability role: chat, multimodal, synthesis, classifier, code, da, knowledge, structured_output
+
+---
+
+### LLMSpendPercentiles
+
+Nearest-rank percentiles of `spend_weighted_tokens`; null with no turns.
+
+**Properties:**
+
+- `max` (object, required)
+- `p50` (object, required)
+- `p95` (object, required)
+
+---
+
+### LLMTurnBudget
+
+The in-effect per-turn settings, read at request time.
+
+**Properties:**
+
+- `ceiling` (integer, required) — PROMPT_TURN_TOKEN_CEILING
+- `soft` (object, required) — PROMPT_TURN_TOKEN_BUDGET; null when it is 0 (disabled)
+
+---
+
+### LLMTurnHistogramBin
+
+Turns with lower <= spend_weighted_tokens < upper.
+
+**Properties:**
+
+- `count` (integer, required)
+- `lower` (integer, required)
+- `upper` (object, required) — null: no upper bound
+
+---
+
+### LLMTurnSpendSummary
+
+Engine turns in the window. Turn rows go with their case, so a case
+deletion shrinks these and not `totals` or `by_day`.
+
+**Properties:**
+
+- `budget` (object, required)
+- `count` (integer, required)
+- `heaviest` (array, required) — The ten heaviest, heaviest first
+- `histogram` (array, required) — Edges 0, soft/2, soft, ceiling, then open-ended; the soft edges are dropped when the budget is disabled, and the edges are sorted and de-duplicated
+- `over_ceiling` (integer, required) — Turns whose spend exceeded `budget.ceiling`
+- `over_soft` (integer, required) — Turns whose spend exceeded `budget.soft`
+- `spend_weighted_tokens` (object, required)
+
+---
+
+### LLMUnpricedModel
+
+A model the running price table cannot price, with calls in the window.
+
+**Properties:**
+
+- `calls` (integer, required) — Its stored `unpriced_calls` in the window
+- `model` (string, required)
+- `provider` (string, required)
+
+---
+
+### LLMUsageBucket
+
+Summed figures over a set of billed calls.
+
+**Properties:**
+
+- `cache_hit_rate` (object, required) — cache_read / (input + cache_read); null when that is 0
+- `calls` (object, required)
+- `cost_complete` (boolean, required) — False whenever `unpriced_calls` > 0: the cost is a lower bound
+- `estimated_cost_usd` (number, required) — Priced calls only, estimated at call time from the price table then in force. Not a bill.
+- `tokens` (object, required)
+- `unpriced_calls` (integer, required) — Calls that had no price entry when made: left out of the cost
+
+---
+
+### LLMUsageCalls
+
+**Properties:**
+
+- `kept` (integer, required) — Calls whose answer was returned to the caller
+- `low_confidence` (integer, required) — Calls billed and then discarded by the fallback chain
+- `total` (integer, required)
+
+---
+
+### LLMUsageCoverage
+
+How much of the window the ledger can speak for. There is no backfill.
+
+**Properties:**
+
+- `metering_since` (object, required) — The earliest day recorded for this enterprise; null when nothing is recorded. Days before it are not recorded, not zero spend.
+- `window_fully_covered` (boolean, required) — True when `metering_since` is on or before the window's first day
+
+---
+
+### LLMUsageDay
+
+**Properties:**
+
+- `cache_hit_rate` (object, required) — cache_read / (input + cache_read); null when that is 0
+- `calls` (object, required)
+- `cost_complete` (boolean, required) — False whenever `unpriced_calls` > 0: the cost is a lower bound
+- `date` (string, required)
+- `estimated_cost_usd` (number, required) — Priced calls only, estimated at call time from the price table then in force. Not a bill.
+- `tokens` (object, required)
+- `unpriced_calls` (integer, required) — Calls that had no price entry when made: left out of the cost
+
+---
+
+### LLMUsageGroup
+
+One row of `groups`, keyed by the request's `group_by`.
+
+**Properties:**
+
+- `cache_hit_rate` (object, required) — cache_read / (input + cache_read); null when that is 0
+- `calls` (object, required)
+- `cost_complete` (boolean, required) — False whenever `unpriced_calls` > 0: the cost is a lower bound
+- `estimated_cost_usd` (number, required) — Priced calls only, estimated at call time from the price table then in force. Not a bill.
+- `key` (object, required) — `provider_model`: {provider, model}. `user`: {user_id}, where "" is no actor. `billing_subject`: {kind, id}, kind one of `organization | account | none` and id "" for `none`.
+- `rate_status` (object, required) — `provider_model` groups only, null otherwise: how the RUNNING price table prices the model now. `zero_cost` is a declared-free self-hosted provider, not an unpriced one.
+- `tokens` (object, required)
+- `unpriced_calls` (integer, required) — Calls that had no price entry when made: left out of the cost
+
+---
+
+### LLMUsageReport
+
+`GET /admin/llm/usage`: the bound enterprise's LLM usage, from the ledger.
+
+**Properties:**
+
+- `as_of` (string, required)
+- `by_day` (array, required) — Every day in the window, zeros included
+- `coverage` (object, required)
+- `groups` (array, required) — Shaped by `group_by`; largest token total first
+- `scope` (object, required)
+- `totals` (object, required)
+- `turns` (object, required)
+- `unpriced` (array, required) — Models the running price table cannot price that have unpriced calls in the window. Non-empty: cost is under-reported.
+- `window` (object, required)
+
+---
+
+### LLMUsageScope
+
+Whose usage this is: the enterprise the request is bound to, only.
+
+**Properties:**
+
+- `deployment` (string, required)
+- `enterprise_id` (string, required)
+- `tenancy` (string, required) — `multi`: the figures are this enterprise's only, never the deployment's. `single`: the enterprise is the whole deployment.
+
+---
+
+### LLMUsageTokens
+
+Disjoint buckets: `total` is their sum.
+
+**Properties:**
+
+- `cache_read` (integer, required)
+- `cache_write` (integer, required)
+- `input` (integer, required)
+- `output` (integer, required)
+- `total` (integer, required)
+
+---
+
+### LLMUsageWindow
+
+Whole UTC days ending today, inclusive.
+
+**Properties:**
+
+- `days` (integer, required) — Days in the window
+- `from` (string, required) — First day of the window (UTC)
+- `timezone` (string, optional)
+- `to` (string, required) — Last day of the window: today (UTC)
 
 ---
 

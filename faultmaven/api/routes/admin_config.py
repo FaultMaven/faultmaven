@@ -1264,6 +1264,12 @@ async def get_env_config_status(
             ),
         )
 
+        # Whether LLM spend is being persisted (#1764), read off the ledger
+        # the composition root installed and a live read of its tables.
+        from faultmaven.api.dependencies import llm_usage_metering_status
+
+        features["llm_usage_metering"] = await llm_usage_metering_status()
+
         # The three settings that bound self-service sign-up, at the values
         # this process is running with (fm#1320, fm#1324).
         #
