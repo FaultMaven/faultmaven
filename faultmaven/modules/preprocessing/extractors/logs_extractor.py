@@ -808,13 +808,14 @@ class LogsAndErrorsExtractor:
     # message bodies) and followed by an optional paren group and a PID bracket.
     # Examples: " sshd(pam_unix)[19939]" → "sshd"; " ftpd[29504]" → "ftpd".
     #
-    # Read once per ``)``-delimited segment (#1700). The searched form,
-    # ``\s([\w.-]+)(?:\([^)]*\))?\[\d+\]``, ran ``[^)]*`` from every
-    # ``name(`` to the end of a line with no ``)``: quadratic. Every ``name(``
-    # in a segment closes at the same ``)``, so the lookahead at the segment's
-    # start decides once whether that ``)`` is followed by ``[PID]``; the first
-    # candidate of the segment is then taken — ``name(`` if it is, otherwise
-    # only ``name[PID]``. Group 1 is the service the searched form read.
+    # Each ``)``-delimited segment is read a bounded number of times (#1700).
+    # The searched form, ``\s([\w.-]+)(?:\([^)]*\))?\[\d+\]``, ran ``[^)]*``
+    # from every ``name(`` to the end of a line with no ``)``: quadratic. Every
+    # ``name(`` in a segment closes at the same ``)``, so the lookahead at the
+    # segment's start decides once whether that ``)`` is followed by ``[PID]``;
+    # the segment then gives its first ``name(`` or ``name[PID]`` if it is,
+    # otherwise its first ``name[PID]``. Group 1 is the service the searched
+    # form read.
     _SYSLOG_SERVICE_RE = re.compile(
         r"(?:^|\))"
         r"(?:(?=[^)]*+\)\[\d+\])[^)]*?(?=\s[\w.-]+(?:\(|\[\d+\]))"

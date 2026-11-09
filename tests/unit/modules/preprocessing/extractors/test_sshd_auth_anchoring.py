@@ -1109,8 +1109,9 @@ class TestAdversarialLines:
         quadratic term below about that, and the reader's window read
         ``pam-chain`` as linear with its pattern reverted (2 of 3 runs).
         ``max_escalations=1`` because one is all a regression needs: each
-        reverted pattern fails its shapes at the second window (top 512 KB),
-        and a cap of one keeps a failing run to about two minutes a shape.
+        reverted pattern fails its shapes by the second window at the latest
+        (the syslog pattern's at the first), and a cap of one keeps a failing
+        run to about two minutes a shape.
         """
         genuine = BSD + f"Failed password for root from {SRC} port 22 ssh2"
         extractor = LogsAndErrorsExtractor()
@@ -1153,7 +1154,7 @@ def test_adversarial_length_is_the_length_of_the_line(name):
         )
 
 
-# The two patterns as they were before #1700, the oracle for their rewrites,
+# The three patterns as they were before #1700, the oracle for their rewrites,
 # with the tokens a random line is built from.
 _BEFORE_1700 = {
     "_SSH_SESSION_RE": (
@@ -1199,6 +1200,10 @@ _PATTERN_EDGES = [
     ") c[1]",
     " a(b) c(d)[1]",
     " sshd[1] cron[2]",
+    " a[1] b(c)[2]",
+    " a(b)[] c[1]",
+    "host\xa0sshd[1]",
+    " sshd[\u0661]",
 ]
 
 
