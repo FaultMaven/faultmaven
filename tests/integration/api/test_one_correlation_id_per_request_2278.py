@@ -210,10 +210,13 @@ def test_a_duplicate_refusal_names_the_requests_id_not_the_callers(
     }
     body = {"query": f"dedup-2278-{uuid.uuid4().hex}"}
 
-    first = booted_app_client.post("/api/v1/cases/search", json=body, headers=headers)
+    # Session search: case search is never_replayed, so never collapsed (#2624).
+    first = booted_app_client.post(
+        "/api/v1/sessions/search", json=body, headers=headers
+    )
     assert first.status_code == 200, first.text
     duplicate = booted_app_client.post(
-        "/api/v1/cases/search", json=body, headers=headers
+        "/api/v1/sessions/search", json=body, headers=headers
     )
 
     assert duplicate.status_code == 409, duplicate.text

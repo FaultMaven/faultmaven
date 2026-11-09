@@ -9,8 +9,9 @@ and path cannot be both empty" if the prefix sat only here, because
 ``create_case``/``list_cases`` register on path ``""``).
 """
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
+from faultmaven.api.middleware.idempotency import declare_replay_case_from_path
 from faultmaven.modules.case.api.routes.cases import router as cases_router
 from faultmaven.modules.case.api.routes.conversation import (
     router as conversation_router,
@@ -21,7 +22,9 @@ from faultmaven.modules.case.api.routes.evidence import router as evidence_route
 from faultmaven.modules.case.api.routes.reports import router as reports_router
 from faultmaven.modules.case.api.routes.sharing import router as sharing_router
 
-router = APIRouter()
+# A keyed POST's cached answer is indexed by the case its path names, so the
+# case delete erases it (#2624).
+router = APIRouter(dependencies=[Depends(declare_replay_case_from_path)])
 router.include_router(cases_router)
 router.include_router(conversation_router)
 router.include_router(data_router)
