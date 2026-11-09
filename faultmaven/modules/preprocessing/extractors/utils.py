@@ -87,6 +87,18 @@ def is_pid(value: str) -> bool:
     return value.isdigit() and 0 < int(value) <= PID_MAX
 
 
+HOST_PORT_RE = re.compile(r"(?<![\w.-])(?=[\w.-]*?[A-Za-z.])[\w.-]++:(\d{1,5})\b")
+"""A port after a ``host:`` token that has a letter or dot, as in ``db.local:5432``.
+
+A digits-only left side (``04:47`` in a timestamp) is not a host. The logs
+extractor's profile and the entity registry share this pattern, so they
+find the same ports. The lookbehind allows one start per ``[\\w.-]`` run.
+The possessive run takes it whole, and the lazy lookahead scans it once,
+so the cost is linear. The old ``[\\w-]*[A-Za-z.][\\w.-]*`` tried every
+split of a long run without a colon: 23 s on a 64 KB hex run (fm#2641).
+"""
+
+
 def check_entity_pattern(pattern: "re.Pattern[str]") -> None:
     """Raise unless ``pattern`` can yield entity values.
 
