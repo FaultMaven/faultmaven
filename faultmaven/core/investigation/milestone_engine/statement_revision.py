@@ -28,6 +28,7 @@ from faultmaven.core.investigation.offers import (
     open_revision,
     terminal_offer_opened_this_turn,
 )
+from faultmaven.core.investigation.outcome import decision_cycle, record_case_outcome
 from faultmaven.core.investigation.problem_status import (
     commit_revision,
     current_statement,
@@ -206,7 +207,13 @@ async def confirm_revision(
         if bundle.held_fix:
             bundle_metadata[CARRIED_FIX_KEY] = bundle
             bundle_metadata[REPLAY_HELD_SINCE_KEY] = pending.held_since_turn
-        await responses._apply_investigation_updates(case, updates, bundle_metadata)
+        # One decision cycle per bundle (#2615, ruled 2026-11-09): the outcome
+        # folds over the previous bundle's, so a FAILED window read here
+        # survives a later bundle's re-root. Steps 2-4 run once, in the live
+        # turn.
+        with decision_cycle():
+            await responses._apply_investigation_updates(case, updates, bundle_metadata)
+            record_case_outcome(case, at="replay")
         if terminal_offer_opened_this_turn(case) is not None:
             for key in PROPOSAL_KEYS:
                 if key in bundle_metadata:

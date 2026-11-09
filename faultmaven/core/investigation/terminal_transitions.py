@@ -23,6 +23,7 @@ Flow:
 Reference: investigation-lifecycle-logic.md Section 1.4
 """
 
+import importlib
 import logging
 import math
 import re
@@ -84,6 +85,7 @@ from faultmaven.modules.case.contracts import (
     CauseState,
     CloseEligibility,
     ClosureReason,
+    ConfirmationGap,
     DispositionEligibility,
     EvidenceCategory,
     EvidenceNeed,
@@ -94,6 +96,7 @@ from faultmaven.modules.case.contracts import (
     OfferKind,
     OfferRecord,
     ProblemStatus,
+    ResolutionReason,
     ResolveEligibility,
     SolutionState,
     WorkingConclusion,
@@ -1004,6 +1007,15 @@ def pending_check_feedback(case: Case, check: EvidenceNeed, *, proposed: bool) -
     return f"{lead}: {status}. {then}: record the row and {exits}"
 
 
+def _outcome():
+    """The case outcome record's module (#2615): ``closure_outcome`` for the
+    four closure entries below and ``record_case_outcome`` for the two
+    transitions. Loaded by name at call time, as ``cause_assurance`` loads
+    ``causal_graph``: the record imports this module for the derivations it
+    records, so an import of it here would close a cycle."""
+    return importlib.import_module("faultmaven.core.investigation.outcome")
+
+
 def open_disposition_offer(
     case: Case,
     *,
@@ -1015,7 +1027,7 @@ def open_disposition_offer(
     readiness_pivot: bool = False,
 ) -> Optional[OfferRecord]:
     """``offers.open_offer`` for a resolve or close offer: a close carries the
-    reason derived from the case as it stands (``derive_closure_reason``).
+    reason derived from the case as it stands (``closure_outcome``, #2615).
     Returns the new record, or None when a standing decline binds the offer or
     the turn quiet holds it (``disposition_refusal`` names which).
     """
@@ -1026,7 +1038,7 @@ def open_disposition_offer(
         summary=summary,
         evidence_ids=evidence_ids,
         closure_reason=(
-            derive_closure_reason(case) if kind == OfferKind.CLOSE else None
+            _outcome().closure_outcome(case).reason if kind == OfferKind.CLOSE else None
         ),
         pivoted_from_close=pivoted_from_close,
         readiness_pivot=readiness_pivot,
@@ -1047,7 +1059,7 @@ def disposition_refusal(
         kind=kind,
         basis=basis,
         closure_reason=(
-            derive_closure_reason(case) if kind == OfferKind.CLOSE else None
+            _outcome().closure_outcome(case).reason if kind == OfferKind.CLOSE else None
         ),
         readiness_pivot=readiness_pivot,
     )
@@ -1149,7 +1161,7 @@ def confirm_open_offer(case: Case, user_id: str, *, via: AnswerVia) -> bool:
             # would record a confirmed fix as ``solution_deferred``; one
             # offered under the decline, before a failed fix, would record an
             # unconfirmed fix as ``resolution_declined``.
-            reason = derive_closure_reason(case)
+            reason = _outcome().closure_outcome(case).reason
 
     if offer.kind == OfferKind.RESOLVE:
         _execute_resolved_transition(case, user_id)
@@ -1235,6 +1247,7 @@ def _execute_resolved_transition(case: Case, user_id: str):
         )
     )
 
+    _outcome().record_case_outcome(case, at="resolved")
     logger.info(f"Case {case.case_id} transitioned to RESOLVED (terminal state)")
 
 
@@ -1245,8 +1258,10 @@ def _execute_closed_transition(
 
     closure_reason is the engine-derived reason. Callers are
     `confirm_open_offer`, which reads it from the close offer, where
-    `open_disposition_offer` placed it via `derive_closure_reason`, and
-    `execute_user_closure`, which derives it.
+    `open_disposition_offer` placed it via `closure_outcome`, and
+    `execute_user_closure`, which derives it. The case outcome record is
+    written with the transition (#2615), carrying the closure its entry
+    computed.
 
     Raises:
         ValueError: If case is not in INVESTIGATING or INQUIRY status.
@@ -1288,6 +1303,7 @@ def _execute_closed_transition(
         )
     )
 
+    _outcome().record_case_outcome(case, at="closed")
     logger.info(f"Case {case.case_id} transitioned to CLOSED (terminal state)")
 
 
@@ -1367,7 +1383,7 @@ def execute_user_closure(case: Case, user_id: str) -> ClosureReason:
             via=AnswerVia.MENU,
             actor_id=user_id,
         )
-    reason = derive_closure_reason(case)
+    reason = _outcome().closure_outcome(case).reason
     _execute_closed_transition(case, user_id, reason)
     return reason
 
@@ -1397,6 +1413,8 @@ class ResolutionReadiness:
         missing: list[str],
         *,
         pending_check: EvidenceNeed | None = None,
+        reason: ResolutionReason | None = None,
+        confirmation_gaps: list[ConfirmationGap] | None = None,
     ):
         self.verdict = verdict
         self.message = message
@@ -1405,6 +1423,10 @@ class ResolutionReadiness:
         # the fix, still unanswered (``pending_symptom_check``, #1906 D5.2).
         # The readers branch on it, never on the message.
         self.pending_check = pending_check
+        # Which return answered, and each confirmation ask the
+        # documentation-gap return made, for the case outcome record (#2615).
+        self.reason = reason
+        self.confirmation_gaps = list(confirmation_gaps or [])
 
 
 #: The NEEDS_INFO frame's opening line and its data sentence, shared by the
@@ -1543,6 +1565,7 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
                 "it will be recorded as a false alarm."
             ),
             missing=[],
+            reason=ResolutionReason.FALSE_ALARM,
         )
 
     has_cause = _cause_identified(case)
@@ -1571,11 +1594,13 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
                 ),
                 missing=["the check you asked for"],
                 pending_check=check,
+                reason=ResolutionReason.PENDING_CHECK,
             )
         return ResolutionReadiness(
             verdict=ResolutionReadiness.READY,
             message="",
             missing=[],
+            reason=ResolutionReason.CONFIRMED,
         )
 
     # Not confirmed yet: the user wants to resolve but the case does not show the
@@ -1605,6 +1630,7 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
                 "your message); I'll document the resolution."
             ),
             missing=missing,
+            reason=ResolutionReason.NOTHING_ON_RECORD,
         )
 
     # The latest fix was seen failing (#1927): the cause shown removed, then the
@@ -1634,6 +1660,7 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
                 "fixed."
             ),
             missing=["a fix of the root cause", *missing],
+            reason=ResolutionReason.FIX_OFF_CAUSE,
         )
     if window.state == FIX_FAILED:
         return ResolutionReadiness(
@@ -1651,12 +1678,14 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
                 "record without claiming the fix worked."
             ),
             missing=["a new fix after the one that did not hold", *missing],
+            reason=ResolutionReason.FIX_FAILED,
         )
 
     # Otherwise: ask the user to fill the documentation gaps. The problem may
     # have been resolved out of band — invite the missing essentials rather than
     # rejecting the request.
     asks = []
+    gaps: list[ConfirmationGap] = []
     if "root cause" in missing:
         asks.append("- **Root cause** — what caused the problem?")
     if "solution" in missing:
@@ -1668,6 +1697,7 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
             # is unconfirmed. Ask for the leg that is missing, not the one the
             # user just gave.
             asks.append(_cause_recheck_ask(case, window))
+            gaps.append(ConfirmationGap.RELIEF_WITHOUT_CAUSE_RECHECK)
         elif cause_elimination_rows(case):
             # The cause leg stands; only the problem the user reported is
             # unchecked (#1906). Say so, rather than re-asking for the fix.
@@ -1677,6 +1707,7 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
                 "too: the output of the failing check or of the place the error "
                 "appeared, now clean."
             )
+            gaps.append(ConfirmationGap.PROBLEM_UNRECHECKED)
         else:
             asks.append(
                 "- **Confirmation it's resolved** — the output of a check "
@@ -1702,6 +1733,7 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
             "output isn't on record as what showed the problem; submit it as "
             "data (pasted or attached) so the fix can be confirmed against it."
         )
+        gaps.append(ConfirmationGap.NO_SYMPTOM_ROW)
     return ResolutionReadiness(
         verdict=ResolutionReadiness.NEEDS_INFO,
         message=(
@@ -1719,6 +1751,8 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
             "fixed."
         ),
         missing=missing,
+        reason=ResolutionReason.DOCUMENTATION_GAPS,
+        confirmation_gaps=gaps,
     )
 
 

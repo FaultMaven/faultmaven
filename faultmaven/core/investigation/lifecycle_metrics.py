@@ -928,3 +928,30 @@ for _reason in ("same_turn", "not_bare"):
 for _gate in ("terminal", "gate1", "none"):
     for _refusal in ("stale", "untargeted"):
         confirmation_click_refused_total.labels(gate=_gate, reason=_refusal)
+
+# The case outcome record (#2615 stage S1). A verdict the rules call final is
+# carried in ``progress.outcome`` and never re-derived; a fresh derivation that
+# disagrees with it is a conflict, logged and counted here by the record's
+# field, and the carried verdict stands. In this stage the deciders still read
+# fresh derivations, so a conflict is a case where a decider and the record
+# disagree; stage S3 switches the deciders. Labelled by field only: never a
+# case, user or tenant.
+case_outcome_conflicts_total = Counter(
+    "faultmaven_case_outcome_conflicts_total",
+    "A carried final verdict in the case outcome record disagreed with a "
+    "fresh derivation (#2615). Labelled by the record field "
+    "(attempts.window|attempts.accepted_in_turn|resolution.confirmed_row_ids|"
+    "closure).",
+    labelnames=["field"],
+)
+
+# A write of the record that raised. Nothing reads the record in this stage,
+# so the write never fails the turn or the transition it rides on; the failure
+# is logged with its traceback and counted here, by write point
+# (cycle|replay|resolved|closed).
+case_outcome_write_failures_total = Counter(
+    "faultmaven_case_outcome_write_failures_total",
+    "A case outcome record write raised and was skipped (#2615), by write "
+    "point (cycle|replay|resolved|closed).",
+    labelnames=["at"],
+)

@@ -17,6 +17,7 @@ from faultmaven.core.investigation.milestone_engine.turn_records import (
     _resolve_id_ref,
 )
 from faultmaven.core.investigation.offers import lapse_offers
+from faultmaven.core.investigation.outcome import record_case_outcome
 from faultmaven.core.investigation.problem_status import problem_on_hold
 from faultmaven.core.investigation.state_validator import ValidationSeverity
 from faultmaven.core.investigation.working_conclusion_generator import (
@@ -409,4 +410,10 @@ async def _apply_turn_response(
                 evidence_suggestion_unlinked_total.labels(resolution="error").inc()
             except Exception:
                 pass
+
+    # The case outcome record (#2615 stage S1), folded over the prior one
+    # after every decider of the cycle, the progress monitor's repair, the
+    # needs sweeps and the need linking included, and before the save.
+    # Nothing reads it in this stage.
+    record_case_outcome(case_updated, at="cycle")
     return case_updated, stagnation_str, validation_repairs

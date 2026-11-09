@@ -18,7 +18,10 @@ Module level is ``<module>``. Three tables:
 * ``DERIVATION_SITES``: every Load reference to a function in ``DERIVATIONS``,
   the functions #2615's tables name as deciding an outcome, and two one-line
   wrappers of them (``has_resolution_confirmation``,
-  ``_resolution_confirmed``). A call counts, and so does a bare reference, as a
+  ``_resolution_confirmed``). Stage S1 (#2636) adds the record's own:
+  ``compute_case_outcome``, ``closure_outcome``, ``record_case_outcome`` (its
+  callers are the write points) and the three codes the record reads at the
+  deciders. A call counts, and so does a bare reference, as a
   name or an attribute (``ca.fix_windows``, ``callback=fix_windows``); an
   import or the ``def`` does not. ``case.contracts`` re-exports
   ``classify_solution_outcome``, so the narration package's import contract
@@ -99,6 +102,7 @@ _TT = _INV + "terminal_transitions.py"
 _DISCONF = _INV + "causal_graph/disconfirmation.py"
 _OFFERS = _INV + "offers.py"
 _PROBLEM = _INV + "problem_status.py"
+_OUTCOME = _INV + "outcome.py"
 _MONITOR = _INV + "progress_monitor.py"
 _VALIDATOR = _INV + "state_validator.py"
 _SG = _ME + "stage_gates.py"
@@ -155,6 +159,14 @@ DERIVATIONS: dict[str, str] = {
     ),
     "failed_fix_of": _DISCONF,
     "classify_solution_outcome": _CASE + "domain/models/solution.py",
+    # Stage S1 (#2636): the record, and the codes it reads at the deciders.
+    "cause_pool_empty_reason": _CA,
+    "mitigation_refusal_reason": _CA,
+    "unbound_post_fix_rows": _CA,
+    "compute_case_outcome": _OUTCOME,
+    "closure_outcome": _OUTCOME,
+    # Its callers are the record's write points.
+    "record_case_outcome": _OUTCOME,
 }
 
 #: Each outcome field read raw, by the module and class that define it.
@@ -189,6 +201,7 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     (_DISCONF, "failed_fix_of"): {"latest_decided_fix_window": 1},
     (_DISCONF, "m6_disconfirmation_basis"): {"latest_decided_fix_window": 1},
     (_CA, "_cause_pool"): {"_pool_legs": 1},
+    (_CA, "cause_pool_empty_reason"): {"_cause_pool": 1, "_pool_legs": 1},
     (_CA, "attempt_window"): {"fix_windows": 1},
     (_CA, "cause_elimination_rows"): {"cause_recheck_status": 1},
     (_CA, "cause_recheck_status"): {
@@ -219,9 +232,10 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
         "latest_fix_window": 1,
     },
     (_TT, "closure_verdict"): {"assess_closure_readiness": 1},
+    # The four closure entries compute the closure on demand (#2636, pin 5).
     (_TT, "confirm_open_offer"): {
         "assess_closure_readiness": 1,
-        "derive_closure_reason": 1,
+        "closure_outcome": 1,
     },
     (_TT, "declined_resolve_entry"): {"closure_verdict": 1},
     (_TT, "derive_closure_reason"): {
@@ -232,14 +246,16 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
         "assess_resolution_readiness": 1,
         "closure_verdict": 1,
     },
-    (_TT, "disposition_refusal"): {"derive_closure_reason": 1},
+    (_TT, "_execute_closed_transition"): {"record_case_outcome": 1},
+    (_TT, "_execute_resolved_transition"): {"record_case_outcome": 1},
+    (_TT, "disposition_refusal"): {"closure_outcome": 1},
     (_TT, "execute_user_closure"): {
         "assess_closure_readiness": 1,
+        "closure_outcome": 1,
         "closure_verdict": 1,
-        "derive_closure_reason": 1,
     },
     (_TT, "mitigation_closure_line"): {"mitigation_observation": 1},
-    (_TT, "open_disposition_offer"): {"derive_closure_reason": 1},
+    (_TT, "open_disposition_offer"): {"closure_outcome": 1},
     (_TT, "resolution_record_lines"): {"resolution_confirmation_rows": 1},
     (_TT, "shown_milestones"): {"_mitigation_verified": 1},
     (_TT, "terminal_summary_skip_reason"): {"should_generate_terminal_summary": 1},
@@ -256,7 +272,12 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     },
     (_SG, "_date_to_the_report"): {"fix_windows": 2},
     (_SG, "_flag_absence_inside_a_failed_fix_window"): {"latest_fix_window": 1},
-    (_SG, "_flag_unbound_post_fix_rows"): {"fix_windows": 1, "uncited_recheck_why": 1},
+    (_SG, "_flag_unbound_post_fix_rows"): {
+        "fix_windows": 1,
+        "unbound_post_fix_rows": 1,
+        "uncited_recheck_why": 1,
+    },
+    (_SG, "_mitigation_verify_refusal"): {"mitigation_refusal_reason": 1},
     (_SG, "fix_cause"): {"_cause_pool": 1, "_pool_legs": 1},
     (_SG, "licence_leg_ids"): {"_cause_pool": 1},
     (_SG, "licence_subject"): {"_pool_legs": 1},
@@ -291,6 +312,10 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
         "assess_closure_readiness": 1,
     },
     (_TRANSITION_TURNS, "_resolve_on_reopen_chip"): {"assess_resolution_readiness": 1},
+    # The record's write points (#2636): the end of a decision cycle and each
+    # bundle of a statement-revision replay; the transitions are above.
+    (_ME + "turn_application.py", "_apply_turn_response"): {"record_case_outcome": 1},
+    (_ME + "statement_revision.py", "confirm_revision"): {"record_case_outcome": 1},
     (_TRANSITIONS, "TransitionManager._apply_model_proposal"): {
         "assess_closure_readiness": 1,
         "assess_resolution_readiness": 1,
@@ -303,6 +328,33 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     },
     (_OFFERS, "_confirmation_ids"): {"resolution_confirmation_rows": 1},
     (_PROBLEM, "invalidation_refusal"): {"fix_windows": 1},
+    # The case outcome record (#2636, stage S1): the one place every outcome
+    # is computed for the record, and its write point.
+    (_OUTCOME, "_cause"): {"_pool_legs": 1, "cause_pool_empty_reason": 1},
+    (_OUTCOME, "_closure"): {"derive_closure_reason": 1},
+    (_OUTCOME, "_closure_of"): {"closure_verdict": 1, "mitigation_closure_line": 1},
+    (_OUTCOME, "_mitigation"): {
+        "_mitigation_declared_stable": 1,
+        "_mitigation_verified": 1,
+        "mitigation_observation": 1,
+        "mitigation_refusal_reason": 1,
+    },
+    (_OUTCOME, "_resolution"): {
+        "assess_resolution_readiness": 1,
+        "confirmation_stamp_rows": 1,
+        "resolution_record_lines": 1,
+    },
+    (_OUTCOME, "_unbound_rechecks"): {
+        "unbound_post_fix_rows": 1,
+        "uncited_recheck_why": 1,
+    },
+    (_OUTCOME, "closure_outcome"): {"derive_closure_reason": 1},
+    (_OUTCOME, "compute_case_outcome"): {"fix_windows": 1, "shown_milestones": 1},
+    (_OUTCOME, "record_case_outcome"): {"compute_case_outcome": 1},
+    # The backfill: once per stored case without a record, from the case.
+    ("faultmaven/cli/backfill_case_outcome.py", "backfill_case_outcome"): {
+        "compute_case_outcome": 1
+    },
     (_MONITOR, "ProgressMonitor._detect_fix_failure_cycle"): {"fix_windows": 1},
     (_MONITOR, "ProgressMonitor._repair_fix_failure_cycle"): {"fix_windows": 1},
     # The prompt.
@@ -339,7 +391,6 @@ FIELD_READS: dict[tuple[str, str], dict[str, int]] = {
     (_ME + "milestone_inference.py", "_milestone_already_recorded"): {"verified": 1},
     (_SG, "_apply_stage_gate_side_effects"): {"closure_reason": 1},
     (_SG, "_apply_stage_gate_signals"): {"verified": 1},
-    (_SG, "_mitigation_settled"): {"verified": 1},
     (_SG, "_register_disposition"): {"verified": 2},
     (_SG, "justification_skipped"): {"solution_verified": 1},
     (_ME + "terminal_replies.py", "_terminal_confirmation_response"): {
@@ -351,6 +402,12 @@ FIELD_READS: dict[tuple[str, str], dict[str, int]] = {
     (_OFFERS, "lapse_offers"): {"closure_reason": 3},
     (_PROBLEM, "_acted_on_bar"): {"solution_verified": 1, "verified": 1},
     (_PROBLEM, "is_false_alarm_close"): {"closure_reason": 1},
+    # The record (#2636): a CLOSED case's stored reason, and the stored verdict
+    # the refusal reason is read beside.
+    (_OUTCOME, "_closure"): {"closure_reason": 1},
+    (_OUTCOME, "_mitigation"): {"verified": 1},
+    (_OUTCOME, "_take_entry_closure"): {"closure_reason": 1},
+    (_OUTCOME, "record_case_outcome"): {"closure_reason": 1},
     (_MONITOR, "ProgressMonitor._detect_fix_failure_cycle"): {"verified": 1},
     (_MONITOR, "ProgressMonitor._find_pending_milestone"): {"completed_milestones": 1},
     (_CB + "assembly.py", "build_investigation_context"): {
@@ -368,6 +425,9 @@ FIELD_READS: dict[tuple[str, str], dict[str, int]] = {
     (_VALIDATOR, "StateValidator._validate_state_consistency"): {
         "solution_verified": 1
     },
+    # Moved from stage_gates' ``_mitigation_settled`` with #2636, which the
+    # record and the stage gate share.
+    (_CA, "mitigation_settled"): {"verified": 1},
     # By ``getattr(mitigation, "verified", False)``.
     (_TT, "_mitigation_verified"): {"verified": 1},
     (_TT, "confirm_open_offer"): {"closure_reason": 1},
@@ -844,6 +904,25 @@ def test_every_closure_entry_caller_is_declared():
         + "\nDeclare the caller in ENTRY_CALLERS with what it opens, answers or "
         "closes (#2615 pin 5)."
     )
+
+
+#: The four closure entries that decide a closure reason (#2615, *Closure on
+#: demand*), each of which computes it through ``closure_outcome`` (#2636).
+_CLOSURE_ENTRIES = (
+    "open_disposition_offer",
+    "disposition_refusal",
+    "confirm_open_offer",
+    "execute_user_closure",
+)
+
+
+@pytest.mark.parametrize("entry", _CLOSURE_ENTRIES)
+def test_each_closure_entry_reaches_closure_outcome(entry):
+    """Pin 5's other half: an entry that decides a closure computes it on
+    demand, and none derives the reason around the record's function."""
+    found = _scan()[0].derivations.get((_TT, entry), {})
+    assert found.get("closure_outcome") == 1
+    assert "derive_closure_reason" not in found
 
 
 def test_a_closure_entry_is_only_called():
