@@ -12,6 +12,8 @@ Provides:
 - The entity value limits both entity paths share (``is_port``,
   ``is_pid``, ``PID_MAX``) and the pattern precondition
   (``check_entity_pattern``)
+- The port patterns both entity paths share (``PORT_KEYWORD_RE``,
+  ``HOST_PORT_RE``)
 """
 
 import re
@@ -87,15 +89,25 @@ def is_pid(value: str) -> bool:
     return value.isdigit() and 0 < int(value) <= PID_MAX
 
 
-HOST_PORT_RE = re.compile(r"(?<![\w.-])(?=[\w.-]*?[A-Za-z.])[\w.-]++:(\d{1,5})\b")
-"""A port after a ``host:`` token that has a letter or dot, as in ``db.local:5432``.
+PORT_KEYWORD_RE = re.compile(r"\bport[= :]+(\d{1,5})\b", re.IGNORECASE)
+"""A port after the word ``port``, as in ``port 22`` or ``port=8080``."""
 
-A digits-only left side (``04:47`` in a timestamp) is not a host. The logs
-extractor's profile and the entity registry share this pattern, so they
-find the same ports. The lookbehind allows one start per ``[\\w.-]`` run.
-The possessive run takes it whole, and the lazy lookahead scans it once,
-so the cost is linear. The old ``[\\w-]*[A-Za-z.][\\w.-]*`` tried every
+HOST_PORT_RE = re.compile(r"(?<![\w.-])(?=[\w.-]*?[A-Za-z.])[\w.-]++:(\d{1,5})\b")
+"""A port after a colon that follows a ``[\\w.-]`` run with an ASCII letter or dot.
+
+``db.local:5432`` and ``10.0.0.5:22`` match. A digits-only run (``04:47`` in
+a syslog time) does not. Any run with a letter does, so an ISO-8601 time
+(``T06:55:45Z`` gives ``55``) and a ``file:line`` reference (``app.py:118``)
+read as ports too, and ``\\d`` takes any Unicode digit (``h:٣٣``) (fm#2677).
+
+The cost is linear because of the lookbehind and the lookahead together. The
+lookbehind lets a match start only at the beginning of a run, and the lazy
+lookahead scans that run once. The possessive ``++`` adds nothing: a plain
+``+`` measures the same. The old ``[\\w-]*[A-Za-z.][\\w.-]*`` tried every
 split of a long run without a colon: 23 s on a 64 KB hex run (fm#2641).
+
+``PORT_KEYWORD_RE`` and this pattern are the logs extractor's profile and the
+entity registry's one port rule.
 """
 
 

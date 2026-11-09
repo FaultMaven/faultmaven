@@ -10,7 +10,10 @@ from faultmaven.modules.preprocessing.extractors.logs_extractor import (
     LogsAndErrorsExtractor,
     _normalize_template,
 )
-from faultmaven.modules.preprocessing.extractors.utils import HOST_PORT_RE
+from faultmaven.modules.preprocessing.extractors.utils import (
+    HOST_PORT_RE,
+    PORT_KEYWORD_RE,
+)
 
 
 def _fe(result) -> str:
@@ -246,9 +249,7 @@ class TestEntityProfileRegexes:
 
     @staticmethod
     def _ports(line: str) -> list[str]:
-        return LogsAndErrorsExtractor._PORT_KEYWORD_RE.findall(
-            line
-        ) + HOST_PORT_RE.findall(line)
+        return PORT_KEYWORD_RE.findall(line) + HOST_PORT_RE.findall(line)
 
     @staticmethod
     def _pids(line: str) -> list[str]:

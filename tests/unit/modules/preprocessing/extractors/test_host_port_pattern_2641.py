@@ -20,23 +20,31 @@ from faultmaven.modules.preprocessing.extractors.logs_extractor import (
 )
 from faultmaven.modules.preprocessing.extractors.utils import (
     HOST_PORT_RE,
+    PORT_KEYWORD_RE,
     distinct_on_line,
     is_port,
+)
+from tests.unit.modules.preprocessing.extractors.test_sshd_auth_anchoring import (
+    _SETTLE_PER_LINE_BYTE,
+    ADVERSARIAL_SHAPES,
+    adversarial_length,
+    adversarial_line,
 )
 from tests.wallclock import assert_linear_growth
 
 OLD_HOST_PORT_RE = re.compile(r"(?<![\w.-])[\w-]*[A-Za-z.][\w.-]*:(\d{1,5})\b")
 
 #: Negatives first: a digits-only or empty host, a port that is too long or
-#: runs on into a word, a non-ASCII host. Then the shapes that do match.
+#: runs on into a word, a non-ASCII host. Then the shapes that do match,
+#: including a port in non-ASCII digits, which ``\d`` takes.
 EDGE_CASES = ["", "12345", "a" * 50, "1-2-3:", ":80", "-:80", "_:80", "9:80"]
 EDGE_CASES += ["é:80", "host:123456", "a:80x", "a:80_", "a:8.0", "04:47:44"]
-EDGE_CASES += ["1.2:80", "x.y-z:65535 b:1", "db.local:5432", "-a:1"]
+EDGE_CASES += ["1.2:80", "x.y-z:65535 b:1", "db.local:5432", "-a:1", "h:٣٣"]
 
 
 def _corpus(count: int) -> list[str]:
     rng = random.Random(2641)
-    alphabet = "aZ9_-.:é 1/x\t"
+    alphabet = "aZ9_-.:é 1/x\t٣５"
     return [
         "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 24)))
         for _ in range(count)
@@ -49,11 +57,10 @@ def _matches(pattern: re.Pattern[str], text: str) -> list:
 
 def _expected_ports(lines: list[str]) -> Counter:
     """Port counts by the old pattern, one mention per line."""
-    keyword = LogsAndErrorsExtractor._PORT_KEYWORD_RE
     return Counter(
         port
         for line in lines
-        for port in distinct_on_line(line, keyword, OLD_HOST_PORT_RE)
+        for port in distinct_on_line(line, PORT_KEYWORD_RE, OLD_HOST_PORT_RE)
         if is_port(port)
     )
 
@@ -65,6 +72,7 @@ class TestSameMatchesAsTheOldPattern:
             assert _matches(HOST_PORT_RE, text) == _matches(OLD_HOST_PORT_RE, text)
         assert not HOST_PORT_RE.search("a:80x 04:47:44 _:80 9:80 host:123456")
         assert HOST_PORT_RE.findall("x.y-z:65535 b:1") == ["65535", "1"]
+        assert HOST_PORT_RE.findall("h:٣٣") == ["٣٣"]
 
     def test_random_corpus(self):
         corpus = _corpus(50_000)
@@ -94,28 +102,19 @@ class TestSameMatchesAsTheOldPattern:
         assert {port: int(count) for port, count in counts} == expected
 
 
-def _hex_run(length: int) -> str:
-    return ("0123456789abcdef" * (length // 16 + 1))[:length]
-
-
 @pytest.mark.unit
 @pytest.mark.performance
-class TestLinearInALongHexRun:
-    def test_the_pattern_is_linear(self):
-        assert_linear_growth(
-            HOST_PORT_RE.findall,
-            lambda length: "blob=" + _hex_run(length),
-            small=128,
-            label="HOST_PORT_RE on a colon-less hex run",
-        )
+def test_the_pattern_is_linear_on_a_hex_run():
+    """The pattern alone, on the shared ``hex-run`` shape.
 
-    def test_the_extractor_is_linear(self):
-        genuine = "Dec 10 06:55:45 LabSZ app[1]: connect db.local:5432 refused"
-        extractor = LogsAndErrorsExtractor()
-        assert_linear_growth(
-            lambda line: extractor.extract(genuine + "\n" + line + "\n"),
-            lambda length: "Dec 10 06:55:46 LabSZ app[1]: blob=" + _hex_run(length),
-            small=1024,
-            label="LogsAndErrorsExtractor.extract beside a hex run",
-            max_escalations=1,
-        )
+    The whole extractor on the same shape is ``test_the_extractor_is_linear``
+    in ``test_sshd_auth_anchoring.py``.
+    """
+    assert_linear_growth(
+        HOST_PORT_RE.findall,
+        lambda repetitions: adversarial_line("hex-run", repetitions),
+        small=max(1, ADVERSARIAL_SHAPES["hex-run"][3] // 512),
+        label="HOST_PORT_RE on hex-run",
+        settle_bytes=lambda repetitions: _SETTLE_PER_LINE_BYTE
+        * adversarial_length("hex-run", repetitions),
+    )

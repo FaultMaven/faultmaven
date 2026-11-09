@@ -983,7 +983,8 @@ def test_every_rule_needs_an_event_word(owner, rule, phrase):
 # need three sizes of the same shape, and
 # ``tests/performance/test_extraction_speed.py`` times the 64 KB form against
 # that timeout. ``ADVERSARIAL_LINES`` is the 64 KB form, byte for byte what this
-# module used before #1579, plus ``pam-chain`` and ``call-chain`` (#1700).
+# module used before #1579, plus ``pam-chain`` and ``call-chain`` (#1700) and
+# ``hex-run``, a long run with no colon (the host-and-port pattern, #2641).
 _64K = 65536
 ADVERSARIAL_SHAPES = {
     "unclosed-bracket-spaced": ("[", "1 ", "password", _64K // 2),
@@ -1018,6 +1019,12 @@ ADVERSARIAL_SHAPES = {
         json.dumps('{"MESSAGE": "password"}')[1:-1],
         '"}',
         2000,
+    ),
+    "hex-run": (
+        "Dec 10 06:55:46 LabSZ app[1]: blob=",
+        "0123456789abcdef",
+        " password",
+        _64K // 16,
     ),
 }
 

@@ -30,20 +30,21 @@ from faultmaven.modules.preprocessing.entities.line_tally import (
     tally_entity_lines,
 )
 from faultmaven.modules.preprocessing.entities.protocol import EntityObservation
-from faultmaven.modules.preprocessing.extractors.utils import HOST_PORT_RE
+from faultmaven.modules.preprocessing.extractors.utils import (
+    HOST_PORT_RE,
+    PORT_KEYWORD_RE,
+)
 from faultmaven.modules.preprocessing.log_usernames import extract_usernames
 
-# Regexes mirror ``logs_extractor.py``. Kept local so this module can
-# evolve independently if the logs extractor's formatting changes (e.g. if
-# it dropped the entity profile). The cost is a second compile —
-# negligible.
+# The IP, PID and HTTP-path regexes below are copies of ``logs_extractor.py``'s.
+# The port patterns are not copied: both modules import ``PORT_KEYWORD_RE``
+# and ``HOST_PORT_RE`` from ``extractors.utils`` (fm#2641).
 #
 # ‼ The copies are NOT identical, and the difference decides which values
 # exist at all, which decides every count derived from them: the two
 # modules' IPv4/IPv6 shapes disagree, so ``4.10.300.999`` is registry-only
 # and ``2001:db8::`` is profile-only. That divergence is **fm#1573**, filed
-# and not fixed here. The host-and-port pattern is one shared definition
-# (``extractors.utils.HOST_PORT_RE``, fm#2641).
+# and not fixed here.
 #
 # What IS shared, deliberately, is everything that decides how a value is
 # COUNTED once found: the username rule (a second copy of it cost fm#522),
@@ -65,7 +66,6 @@ _IPV6_RE = re.compile(
     r")"
     r"(?![0-9A-Fa-f:.])"
 )
-_PORT_KEYWORD_RE = re.compile(r"\bport[= :]+(\d{1,5})\b", re.IGNORECASE)
 _PID_KEYWORD_RE = re.compile(r"\bpid[= ]+(\d{1,7})\b", re.IGNORECASE)
 _PID_BRACKET_RE = re.compile(r"\[(\d{1,7})\]")
 _HTTP_PATH_RE = re.compile(r"\b(?:GET|POST|PUT|DELETE|PATCH)\s+(/[^\s\?]*)\b")
@@ -83,7 +83,7 @@ class LogsEntityExtractor:
         EntityRule(EntityType.IP, patterns=(_IPV4_RE, _IPV6_RE), error_context=True),
         EntityRule(EntityType.USER, matcher=extract_usernames, error_context=True),
         EntityRule(
-            EntityType.PORT, patterns=(_PORT_KEYWORD_RE, HOST_PORT_RE), keep=is_port
+            EntityType.PORT, patterns=(PORT_KEYWORD_RE, HOST_PORT_RE), keep=is_port
         ),
         EntityRule(
             EntityType.PID, patterns=(_PID_KEYWORD_RE, _PID_BRACKET_RE), keep=is_pid
