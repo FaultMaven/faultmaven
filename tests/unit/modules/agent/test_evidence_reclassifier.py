@@ -416,6 +416,7 @@ class TestTheTerminalRefusalIsOneText:
                 case=case,
                 file_id="file_aaaaaaaaaaaa",
                 data_type_value="logs_and_errors",
+                user_id="u1",
             )
         assert str(exc.value) == _FILES_REFUSAL
         assert exc.value.details == {"case_state": CaseState.CLOSED.value}

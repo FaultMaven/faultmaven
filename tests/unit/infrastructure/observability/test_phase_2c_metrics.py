@@ -158,7 +158,7 @@ class TestYieldRatioEmitted:
         service = PreprocessingService(
             classifier=classifier, logs_extractor=CrimeScene()
         )
-        await service.classify_and_extract(content="x" * 200)
+        await service.classify_and_extract(content="x" * 200, principal="u1")
 
         after = _histogram_sample_count(
             PREPROCESSING_EXTRACTION_YIELD_RATIO, data_type=data_type_label

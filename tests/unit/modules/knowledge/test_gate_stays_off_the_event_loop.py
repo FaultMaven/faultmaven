@@ -328,11 +328,10 @@ def test_the_async_forms_exist_and_are_coroutines():
     """The remedy the failure message names has to be real."""
     import inspect
 
-    from faultmaven.modules.knowledge.domain.services import runbook_validator as rv
+    from faultmaven.modules.knowledge.domain.services import runbook_gate as rv
 
     for name in (
         "avalidate_and_score",
-        "avalidate_content",
         "aenforce_runbook_quality",
     ):
         fn = getattr(rv, name, None)
@@ -418,8 +417,10 @@ async def test_the_gate_does_not_stall_the_event_loop():
     unbroken block inline against a 47.2 ms worst slice hopped. The residual is
     the longest SINGLE regex call, not the total.
     """
-    from faultmaven.modules.knowledge.domain.services.runbook_validator import (
+    from faultmaven.modules.knowledge.domain.services.runbook_gate import (
         avalidate_and_score,
+    )
+    from faultmaven.modules.knowledge.domain.services.runbook_validator import (
         validate_and_score,
     )
 
@@ -429,7 +430,7 @@ async def test_the_gate_does_not_stall_the_event_loop():
         return validate_and_score(content)  # inline: what main did
 
     async def hopped():
-        return await avalidate_and_score(content)
+        return await avalidate_and_score(content, principal="u1")
 
     inline_ticks = await _ticks_during(blocking)
     hopped_ticks = await _ticks_during(hopped)
@@ -448,8 +449,10 @@ async def test_the_gate_does_not_stall_the_event_loop():
 @pytest.mark.asyncio
 async def test_the_async_form_returns_what_the_sync_form_returns():
     """The hop must not change the answer."""
-    from faultmaven.modules.knowledge.domain.services.runbook_validator import (
+    from faultmaven.modules.knowledge.domain.services.runbook_gate import (
         avalidate_and_score,
+    )
+    from faultmaven.modules.knowledge.domain.services.runbook_validator import (
         validate_and_score,
     )
 
@@ -458,7 +461,7 @@ async def test_the_async_form_returns_what_the_sync_form_returns():
     )[:8]:
         content = path.read_text(encoding="utf-8")
         sv, sq = validate_and_score(content)
-        av, aq = await avalidate_and_score(content)
+        av, aq = await avalidate_and_score(content, principal="u1")
         assert (sv.passed, sorted(sv.errors), sorted(sv.warnings)) == (
             av.passed,
             sorted(av.errors),

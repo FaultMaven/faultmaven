@@ -112,7 +112,7 @@ _UNREADABLE = (
     "a TXT or Markdown file and convert that instead."
 )
 
-_slots: Optional[tuple[asyncio.AbstractEventLoop, asyncio.Semaphore]] = None
+_slots: Optional[tuple[asyncio.AbstractEventLoop, worker_process.FairSlots]] = None
 
 
 class PreparationFailed(RuntimeError):
@@ -141,7 +141,7 @@ def preparation_memory_limit(max_upload_mb: int) -> int:
     return mib * 1024 * 1024
 
 
-def _preparation_slots() -> asyncio.Semaphore:
+def _preparation_slots() -> worker_process.FairSlots:
     """The slots, made on the running loop (``worker_process.loop_slots``)."""
     global _slots
     _slots = worker_process.loop_slots(_slots, PREPARATION_SLOTS)
@@ -208,13 +208,13 @@ async def _run_worker(file_path: Path, content_type: str) -> Any:
     raise PreparationFailed(ended)
 
 
-async def _prepare(file_path: Path, content_type: str) -> Any:
+async def _prepare(file_path: Path, content_type: str, principal: str) -> Any:
     """Stages 0-5 in a worker, under a slot: the worker's result, or a
     refusal. No slot within the bound is ``CONVERSION_BUSY``."""
     slots = _preparation_slots()
     try:
         async with asyncio.timeout(EXTRACTION_TIMEOUT_SECONDS):
-            await slots.acquire()
+            await slots.acquire(principal)
     except TimeoutError:
         logger.warning(
             "conversion of %s: no extraction worker free within %s s",
@@ -230,7 +230,7 @@ async def _prepare(file_path: Path, content_type: str) -> Any:
     try:
         return await _run_worker(file_path, content_type)
     finally:
-        slots.release()
+        slots.release(principal)
 
 
 # =============================================================================
@@ -305,11 +305,12 @@ class DocumentPreprocessor:
         self._sanitizer = sanitizer
 
     async def preprocess(
-        self, file_path: Path, content_type: str, *, conversion_id: str
+        self, file_path: Path, content_type: str, *, conversion_id: str, principal: str
     ) -> PreprocessingResult:
         """Run the full preprocessing pipeline: Stages 0-5 in a worker process,
         then Stage 6 on the loop. ``conversion_id`` tags the triage call's
-        trace (#2575).
+        trace (#2575). ``principal``, the user who asked, waits for a slot
+        under Principle 14's admission rule (#2645).
 
         Two waits, each up to ``EXTRACTION_TIMEOUT_SECONDS``: for a slot, then
         for the worker, timed from its start. A request that gets no slot is
@@ -317,7 +318,7 @@ class DocumentPreprocessor:
         document refused. A worker that dies is refused by its memory code or
         its stage (``_run_worker``), else raises ``PreparationFailed``.
         """
-        prepared = await _prepare(file_path, content_type)
+        prepared = await _prepare(file_path, content_type, principal)
         if isinstance(prepared, PreprocessingResult):
             return prepared
         if "refused" in prepared:

@@ -82,6 +82,11 @@ from faultmaven.models.exceptions import (
     OAuthProtocolError,
 )
 from faultmaven.modules.auth.exceptions import TeamOperationRefused
+from faultmaven.modules.knowledge.domain.services.runbook_gate import (
+    GATE_TIMEOUT_MESSAGE,
+    GateTimedOut,
+    GateUnavailable,
+)
 from faultmaven.modules.knowledge.exceptions import (
     INGEST_OUTCOME_UNKNOWN_DETAIL,
     KB_INGEST_OUTCOME_UNKNOWN,
@@ -581,6 +586,38 @@ async def index_admission_refused_handler(
             },
         )
     return await http_exception_handler(request, answer)
+
+
+async def gate_timed_out_handler(request: Request, exc: GateTimedOut) -> JSONResponse:
+    """A runbook check past its deadline (#2661): the gate's 422 on every route,
+    with ``reason`` and the ruled help. Nothing was saved."""
+    logger.warning("Runbook check timed out: %s %s", request.method, request.url.path)
+    detail = str(exc)
+    return JSONResponse(
+        status_code=422,
+        content={
+            "error": "Validation Error",
+            "detail": detail,
+            "status_code": 422,
+            "message": detail,
+            "errors": exc.errors,
+            "warnings": exc.warnings,
+            "help": GATE_TIMEOUT_MESSAGE,
+            "reason": exc.reason,
+        },
+    )
+
+
+async def gate_unavailable_handler(request: Request, exc: GateUnavailable):
+    """A runbook check with no slot within its wait (``RUNBOOK_VALIDATION_BUSY``)
+    or no answer (``RUNBOOK_VALIDATION_UNAVAILABLE``): 503 + ``Retry-After``
+    (#2661). The gate fails closed, so nothing was saved."""
+    logger.warning("Runbook check refused (%s): %s", exc.error_code, request.url.path)
+    headers = {
+        "x-error-code": exc.error_code,
+        "Retry-After": str(exc.retry_after_seconds),
+    }
+    return JSONResponse({"detail": str(exc)}, status_code=503, headers=headers)
 
 
 async def item_title_scrub_unavailable_handler(
@@ -1257,6 +1294,8 @@ def get_exception_handlers() -> dict[Type[Exception], Callable]:
         ItemTitleScrubUnavailable: item_title_scrub_unavailable_handler,
         IngestOutcomeUnknown: ingest_outcome_unknown_handler,
         IndexAdmissionRefused: index_admission_refused_handler,
+        GateTimedOut: gate_timed_out_handler,
+        GateUnavailable: gate_unavailable_handler,
         ServiceError: service_error_handler,
         ServiceException: service_exception_handler,
         LLMException: service_exception_handler,

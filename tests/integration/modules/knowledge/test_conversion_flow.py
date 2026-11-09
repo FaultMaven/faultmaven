@@ -36,11 +36,13 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
     ConversionStatus,
     DraftStatus,
     FailureModeAnalysis,
-    QualityScore,
     SourceAssessment,
     SourceFileInfo,
-    ValidationResult,
     VerifyResponse,
+)
+from faultmaven.modules.knowledge.domain.models.validation import (
+    QualityScore,
+    ValidationResult,
 )
 from faultmaven.modules.knowledge.domain.services.conversion_service.errors import (
     ConversionRejectedError,

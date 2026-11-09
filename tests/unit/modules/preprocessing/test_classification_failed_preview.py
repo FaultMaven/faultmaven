@@ -68,7 +68,7 @@ class TestClassificationFailedContentPreviewCsv:
         """The placeholder structural_index must surface the CSV column names
         so the agent can cite them when explaining the ambiguity."""
         result = await real_classifier_service.classify_and_extract(
-            content=AMBIGUOUS_CSV, filename="ambiguous-service-data.csv"
+            content=AMBIGUOUS_CSV, filename="ambiguous-service-data.csv", principal="u1"
         )
 
         assert result.extraction_method == "classification_failed"
@@ -94,7 +94,7 @@ class TestClassificationFailedContentPreviewCsv:
         """At least one concrete data row must appear so the agent can ground
         its answer with example values (e.g. 'latency 145, status degraded')."""
         result = await real_classifier_service.classify_and_extract(
-            content=AMBIGUOUS_CSV, filename="ambiguous-service-data.csv"
+            content=AMBIGUOUS_CSV, filename="ambiguous-service-data.csv", principal="u1"
         )
 
         idx = result.structural_index
@@ -115,7 +115,7 @@ class TestClassificationFailedContentPreviewCsv:
         suggested_types must still propagate so the cooperative-clarification
         UX still fires."""
         result = await real_classifier_service.classify_and_extract(
-            content=AMBIGUOUS_CSV, filename="ambiguous-service-data.csv"
+            content=AMBIGUOUS_CSV, filename="ambiguous-service-data.csv", principal="u1"
         )
 
         meta = result.extraction_metadata or {}
@@ -131,7 +131,7 @@ class TestClassificationFailedContentPreviewCsv:
         """Preview must be small — never echo the whole file. ~5-10 lines max
         keeps the agent context budget intact."""
         result = await real_classifier_service.classify_and_extract(
-            content=AMBIGUOUS_CSV, filename="ambiguous-service-data.csv"
+            content=AMBIGUOUS_CSV, filename="ambiguous-service-data.csv", principal="u1"
         )
 
         idx = result.structural_index
@@ -162,7 +162,7 @@ class TestClassificationFailedContentPreviewText:
             "Tag: v2.3.8\n"
         )
         result = await real_classifier_service.classify_and_extract(
-            content=ambiguous_text, filename="notice.txt"
+            content=ambiguous_text, filename="notice.txt", principal="u1"
         )
 
         if result.extraction_method != "classification_failed":
@@ -187,7 +187,7 @@ class TestClassificationFailedContentPreviewIsAdditive:
         """The original 'Classification uncertain' line must still appear so
         anything downstream that greps for it (logs, UI, tests) keeps working."""
         result = await real_classifier_service.classify_and_extract(
-            content=AMBIGUOUS_CSV, filename="ambiguous-service-data.csv"
+            content=AMBIGUOUS_CSV, filename="ambiguous-service-data.csv", principal="u1"
         )
 
         assert "Classification uncertain" in result.structural_index
@@ -199,7 +199,7 @@ class TestClassificationFailedContentPreviewIsAdditive:
         there's nothing to preview, and it would muddy the 'file is empty'
         message."""
         result = await real_classifier_service.classify_and_extract(
-            content="", filename="empty.bin"
+            content="", filename="empty.bin", principal="u1"
         )
 
         # No 'Preview:' or 'Columns:' marker should appear on the empty path.
@@ -213,7 +213,7 @@ class TestClassificationFailedContentPreviewIsAdditive:
         like 'Columns:' or 'Preview:' so the agent (and a human reading logs)
         can see where the orienting hint starts."""
         result = await real_classifier_service.classify_and_extract(
-            content=AMBIGUOUS_CSV, filename="ambiguous-service-data.csv"
+            content=AMBIGUOUS_CSV, filename="ambiguous-service-data.csv", principal="u1"
         )
 
         idx_lower = result.structural_index.lower()
@@ -266,7 +266,7 @@ class TestClassificationFailedPlaceholderNaming:
     async def test_paste_placeholder_does_not_name_the_minted_file(self):
         svc = self._service_that_always_fails_classification()
         result = await svc.classify_and_extract(
-            content=AMBIGUOUS_CSV, filename=self.MINTED_PASTE
+            content=AMBIGUOUS_CSV, filename=self.MINTED_PASTE, principal="u1"
         )
         assert result.extraction_method == "classification_failed"
         assert self.MINTED_PASTE not in result.structural_index
@@ -277,7 +277,7 @@ class TestClassificationFailedPlaceholderNaming:
     async def test_capture_placeholder_does_not_name_the_minted_file(self):
         svc = self._service_that_always_fails_classification()
         result = await svc.classify_and_extract(
-            content=AMBIGUOUS_CSV, filename=self.MINTED_CAPTURE
+            content=AMBIGUOUS_CSV, filename=self.MINTED_CAPTURE, principal="u1"
         )
         assert result.extraction_method == "classification_failed"
         assert self.MINTED_CAPTURE not in result.structural_index
@@ -287,7 +287,7 @@ class TestClassificationFailedPlaceholderNaming:
     async def test_a_real_filename_is_still_quoted(self, real_classifier_service):
         """Unforced — this one reaches the failed path on its own."""
         result = await real_classifier_service.classify_and_extract(
-            content=AMBIGUOUS_CSV, filename="ambiguous-service-data.csv"
+            content=AMBIGUOUS_CSV, filename="ambiguous-service-data.csv", principal="u1"
         )
         assert result.extraction_method == "classification_failed"
         assert "'ambiguous-service-data.csv'" in result.structural_index
@@ -297,7 +297,7 @@ class TestClassificationFailedPlaceholderNaming:
         """Rule 2 of the detection rule: the user named this one."""
         svc = self._service_that_always_fails_classification()
         result = await svc.classify_and_extract(
-            content=AMBIGUOUS_CSV, filename="pasted-content-notes.txt"
+            content=AMBIGUOUS_CSV, filename="pasted-content-notes.txt", principal="u1"
         )
         assert result.extraction_method == "classification_failed"
         assert "'pasted-content-notes.txt'" in result.structural_index

@@ -59,9 +59,11 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
     ConversionStatus,
     DraftStatus,
     PreprocessingResult,
-    QualityScore,
     SourceAssessment,
     SourceFileInfo,
+)
+from faultmaven.modules.knowledge.domain.models.validation import (
+    QualityScore,
     ValidationResult,
 )
 from faultmaven.modules.knowledge.domain.services.conversion_service.service import (

@@ -430,6 +430,7 @@ async def _preprocess_attachment(
         content=content,
         filename=attachment.filename,
         source_metadata=source_meta,
+        principal=user_id,
     )
 
     # Per-case content-hash dedup short-circuit. Post-010: dedup is

@@ -7273,7 +7273,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "14.19.0"
+    "version": "14.20.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -12145,7 +12145,7 @@
     },
     "/api/v1/knowledge/conversions/{conversion_id}": {
       "get": {
-        "description": "Get conversion job details with all drafts.",
+        "description": "Get conversion job details with all drafts.\n\nA draft stored without a score (a KB upload's) is scored on this read, so\nthe runbook check's 422 ``validation_timeout`` and 503s can answer it\n(#2661).",
         "operationId": "get_conversion_api_v1_knowledge_conversions__conversion_id__get",
         "parameters": [
           {
@@ -12168,14 +12168,24 @@
             "description": "Successful Response"
           },
           "422": {
-            "content": {
-              "application/json": {
+            "description": "Refused, or the request did not bind. `reason: validation_timeout`: the runbook check ran past its deadline, and nothing was saved. Split the document into smaller runbooks."
+          },
+          "503": {
+            "description": "`x-error-code: RUNBOOK_VALIDATION_BUSY`: no runbook check was free within its wait; `RUNBOOK_VALIDATION_UNAVAILABLE`: the check did not answer. Retry after `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds, with either.",
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "type": "integer"
+                }
+              },
+              "x-error-code": {
+                "description": "RUNBOOK_VALIDATION_BUSY or RUNBOOK_VALIDATION_UNAVAILABLE, when sent.",
+                "schema": {
+                  "type": "string"
                 }
               }
-            },
-            "description": "Validation Error"
+            }
           }
         },
         "security": [
@@ -12281,14 +12291,24 @@
             "description": "Successful Response"
           },
           "422": {
-            "content": {
-              "application/json": {
+            "description": "Refused, or the request did not bind. `reason: validation_timeout`: the runbook check ran past its deadline, and nothing was saved. Split the document into smaller runbooks."
+          },
+          "503": {
+            "description": "`x-error-code: RUNBOOK_VALIDATION_BUSY`: no runbook check was free within its wait; `RUNBOOK_VALIDATION_UNAVAILABLE`: the check did not answer. Retry after `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds, with either.",
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "type": "integer"
+                }
+              },
+              "x-error-code": {
+                "description": "RUNBOOK_VALIDATION_BUSY or RUNBOOK_VALIDATION_UNAVAILABLE, when sent.",
+                "schema": {
+                  "type": "string"
                 }
               }
-            },
-            "description": "Validation Error"
+            }
           }
         },
         "security": [
@@ -12347,26 +12367,19 @@
             }
           },
           "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
+            "description": "Refused, or the request did not bind. `reason: validation_timeout`: the runbook check ran past its deadline, and nothing was saved. Split the document into smaller runbooks."
           },
           "503": {
-            "description": "Unavailable; nothing was saved. `x-error-code: KNOWLEDGE_INDEXING_BUSY`: within the request window there is no room for this document because other indexing is queued on this server, the indexing model is loading, or an encode is stuck past its time bound; retry after `Retry-After` seconds.",
+            "description": "Unavailable; nothing was saved. `x-error-code: KNOWLEDGE_INDEXING_BUSY`: within the request window there is no room for this document because other indexing is queued on this server, the indexing model is loading, or an encode is stuck past its time bound; retry after `Retry-After` seconds. `x-error-code: RUNBOOK_VALIDATION_BUSY`: no runbook check was free within its wait; `RUNBOOK_VALIDATION_UNAVAILABLE`: the check did not answer. Retry after `Retry-After` seconds.",
             "headers": {
               "Retry-After": {
-                "description": "Seconds, with KNOWLEDGE_INDEXING_BUSY.",
+                "description": "Seconds, with KNOWLEDGE_INDEXING_BUSY. Seconds, with either.",
                 "schema": {
                   "type": "integer"
                 }
               },
               "x-error-code": {
-                "description": "KNOWLEDGE_INDEXING_BUSY, when sent.",
+                "description": "KNOWLEDGE_INDEXING_BUSY, when sent. RUNBOOK_VALIDATION_BUSY or RUNBOOK_VALIDATION_UNAVAILABLE, when sent.",
                 "schema": {
                   "type": "string"
                 }
@@ -12688,26 +12701,19 @@
             }
           },
           "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
+            "description": "Refused, or the request did not bind. `reason: validation_timeout`: the runbook check ran past its deadline, and nothing was saved. Split the document into smaller runbooks."
           },
           "503": {
-            "description": "Unavailable; nothing was saved. `x-error-code: KNOWLEDGE_INDEXING_BUSY`: within the request window there is no room for this document because other indexing is queued on this server, the indexing model is loading, or an encode is stuck past its time bound; retry after `Retry-After` seconds.",
+            "description": "Unavailable; nothing was saved. `x-error-code: KNOWLEDGE_INDEXING_BUSY`: within the request window there is no room for this document because other indexing is queued on this server, the indexing model is loading, or an encode is stuck past its time bound; retry after `Retry-After` seconds. `x-error-code: RUNBOOK_VALIDATION_BUSY`: no runbook check was free within its wait; `RUNBOOK_VALIDATION_UNAVAILABLE`: the check did not answer. Retry after `Retry-After` seconds.",
             "headers": {
               "Retry-After": {
-                "description": "Seconds, with KNOWLEDGE_INDEXING_BUSY.",
+                "description": "Seconds, with KNOWLEDGE_INDEXING_BUSY. Seconds, with either.",
                 "schema": {
                   "type": "integer"
                 }
               },
               "x-error-code": {
-                "description": "KNOWLEDGE_INDEXING_BUSY, when sent.",
+                "description": "KNOWLEDGE_INDEXING_BUSY, when sent. RUNBOOK_VALIDATION_BUSY or RUNBOOK_VALIDATION_UNAVAILABLE, when sent.",
                 "schema": {
                   "type": "string"
                 }
@@ -13007,19 +13013,19 @@
             }
           },
           "422": {
-            "description": "Refused; nothing was saved. The new `content` holds a credential or a destructive command, or is longer than a draft may be (100,000 characters). Or the body did not bind."
+            "description": "Refused; nothing was saved. The new `content` holds a credential or a destructive command, or is longer than a draft may be (100,000 characters). Or the body did not bind. `reason: validation_timeout`: the runbook check ran past its deadline, and nothing was saved. Split the document into smaller runbooks."
           },
           "503": {
-            "description": "Unavailable; nothing was saved. `x-error-code: KNOWLEDGE_INDEXING_BUSY`: within the request window there is no room for this document because other indexing is queued on this server, the indexing model is loading, or an encode is stuck past its time bound; retry after `Retry-After` seconds.",
+            "description": "Unavailable; nothing was saved. `x-error-code: KNOWLEDGE_INDEXING_BUSY`: within the request window there is no room for this document because other indexing is queued on this server, the indexing model is loading, or an encode is stuck past its time bound; retry after `Retry-After` seconds. `x-error-code: RUNBOOK_VALIDATION_BUSY`: no runbook check was free within its wait; `RUNBOOK_VALIDATION_UNAVAILABLE`: the check did not answer. Retry after `Retry-After` seconds.",
             "headers": {
               "Retry-After": {
-                "description": "Seconds, with KNOWLEDGE_INDEXING_BUSY.",
+                "description": "Seconds, with KNOWLEDGE_INDEXING_BUSY. Seconds, with either.",
                 "schema": {
                   "type": "integer"
                 }
               },
               "x-error-code": {
-                "description": "KNOWLEDGE_INDEXING_BUSY, when sent.",
+                "description": "KNOWLEDGE_INDEXING_BUSY, when sent. RUNBOOK_VALIDATION_BUSY or RUNBOOK_VALIDATION_UNAVAILABLE, when sent.",
                 "schema": {
                   "type": "string"
                 }
@@ -13244,14 +13250,24 @@
             "description": "Successful Response"
           },
           "422": {
-            "content": {
-              "application/json": {
+            "description": "Refused, or the request did not bind. `reason: validation_timeout`: the runbook check ran past its deadline, and nothing was saved. Split the document into smaller runbooks."
+          },
+          "503": {
+            "description": "`x-error-code: RUNBOOK_VALIDATION_BUSY`: no runbook check was free within its wait; `RUNBOOK_VALIDATION_UNAVAILABLE`: the check did not answer. Retry after `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds, with either.",
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "type": "integer"
+                }
+              },
+              "x-error-code": {
+                "description": "RUNBOOK_VALIDATION_BUSY or RUNBOOK_VALIDATION_UNAVAILABLE, when sent.",
+                "schema": {
+                  "type": "string"
                 }
               }
-            },
-            "description": "Validation Error"
+            }
           }
         },
         "security": [
@@ -13277,6 +13293,23 @@
               }
             },
             "description": "Successful Response"
+          },
+          "503": {
+            "description": "`x-error-code: RUNBOOK_VALIDATION_BUSY`: no runbook check was free within its wait; `RUNBOOK_VALIDATION_UNAVAILABLE`: the check did not answer. Retry after `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds, with either.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "x-error-code": {
+                "description": "RUNBOOK_VALIDATION_BUSY or RUNBOOK_VALIDATION_UNAVAILABLE, when sent.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [

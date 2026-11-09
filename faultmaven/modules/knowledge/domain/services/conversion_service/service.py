@@ -66,15 +66,17 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
     ConversionStatus,
     DraftStatus,
     FailureModeAnalysis,
-    QualityScore,
     SourceAssessment,
     SourceFileInfo,
     SourceType,
-    ValidationResult,
     VerifyResponse,
     generate_conversion_id,
     generate_draft_id,
     generate_runbook_id,
+)
+from faultmaven.modules.knowledge.domain.models.validation import (
+    QualityScore,
+    ValidationResult,
 )
 from faultmaven.modules.knowledge.domain.request_receipts import (
     KbReceiptKey,
@@ -118,10 +120,14 @@ from faultmaven.modules.knowledge.domain.services.conversion_service.runbook_sca
 from faultmaven.modules.knowledge.domain.services.document_preprocessor import (
     DocumentPreprocessor,
 )
-from faultmaven.modules.knowledge.domain.services.runbook_validator import (
-    RunbookQualityError,
+from faultmaven.modules.knowledge.domain.services.runbook_gate import (
+    GateTimedOut,
+    GateUnavailable,
     aenforce_runbook_security,
     avalidate_and_score,
+)
+from faultmaven.modules.knowledge.domain.services.runbook_validator import (
+    RunbookQualityError,
 )
 from faultmaven.modules.knowledge.domain.trace_purge import (
     TRACE_ERASER_NOT_WIRED,
@@ -373,7 +379,7 @@ class ConversionService:
         )
 
         preprocessing = await self._preprocessor.preprocess(
-            file_path, content_type, conversion_id=conversion_id
+            file_path, content_type, conversion_id=conversion_id, principal=user_id
         )
 
         if preprocessing.is_rejected:
@@ -1219,7 +1225,9 @@ class ConversionService:
             # inside the conversion request, so the several seconds this costs
             # on a large draft were paid by every other request the process was
             # serving, not just this one.
-            validation, quality = await avalidate_and_score(runbook_content)
+            validation, quality = await avalidate_and_score(
+                runbook_content, principal=user_id
+            )
 
             quality_warning = None
             if quality.overall < QUALITY_WARNING_THRESHOLD:
@@ -1267,6 +1275,15 @@ class ConversionService:
         except RawModelContentRefused:
             # A refusal is a programming error, never a fallback (#1998).
             raise
+        except (GateTimedOut, GateUnavailable) as gate:
+            # No retry changes the gate's deadline; a retry may find a worker.
+            timed_out = isinstance(gate, GateTimedOut)
+            return ConversionError(
+                failure_mode_id=failure_mode.id,
+                error=str(gate),
+                retryable=not timed_out,
+                reason=GateTimedOut.reason if timed_out else None,
+            )
         except Exception as e:
             # The exception's CLASS, never its text (#836). Every hand-written
             # failure in this method returns its ``ConversionError`` above, so
@@ -1348,7 +1365,9 @@ class ConversionService:
                 if dm.quality_details:
                     quality = QualityScore(**dm.quality_details)
                 else:
-                    _validation, quality = await avalidate_and_score(dm.content)
+                    _validation, quality = await avalidate_and_score(
+                        dm.content, principal=user_id
+                    )
                 # The text is the row's own column (#1950): the same on every
                 # replica, whatever disk this pod has.
                 drafts.append(
@@ -1691,7 +1710,7 @@ class ConversionService:
         # because the new text and its verdict are committed together below, in
         # one transaction, or not at all. A reviewer can never read a verdict
         # about text the gate never saw.
-        validation, quality = await avalidate_and_score(content)
+        validation, quality = await avalidate_and_score(content, principal=user_id)
 
         # The text and its verdict, written as ONE CONDITIONAL UPDATE: only
         # while the row is still a draft. Splitting the sessions widened the
@@ -2104,7 +2123,7 @@ class ConversionService:
         # draft's own text so the refusal names the lines its author sees: the
         # frontmatter is rewritten below, which moves them. ``ingest_runbook``
         # checks the text it is handed again, for every caller.
-        await aenforce_runbook_security(read_content)
+        await aenforce_runbook_security(read_content, principal=user_id)
 
         # The verified frontmatter, written into the draft's text (#1950). The
         # validation gate above passed, so the frontmatter parses. This text can
@@ -2408,7 +2427,9 @@ status: draft
         )
 
         # Off the event loop, and validating ONCE (#1417).
-        validation_result, quality = await avalidate_and_score(content)
+        validation_result, quality = await avalidate_and_score(
+            content, principal=user_id
+        )
 
         draft_id = generate_draft_id()
 

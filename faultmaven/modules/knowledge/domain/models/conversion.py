@@ -19,6 +19,10 @@ from faultmaven.modules.case.contracts import (
     classify_solution_outcome,
     mechanism_for_display,
 )
+from faultmaven.modules.knowledge.domain.models.validation import (
+    QualityScore,
+    ValidationResult,
+)
 from faultmaven.modules.knowledge.draft_content import DRAFT_CONTENT_MAX_CHARS
 from faultmaven.modules.knowledge.taxonomy import RunbookDomain
 from faultmaven.utils.runbook_id import runbook_id_from_parts
@@ -182,26 +186,6 @@ class PreprocessingResult(BaseModel):
 
 
 # =============================================================================
-# Validation and Quality Models
-# =============================================================================
-
-
-class ValidationResult(BaseModel):
-    passed: bool
-    errors: List[str] = Field(default_factory=list)
-    warnings: List[str] = Field(default_factory=list)
-
-
-class QualityScore(BaseModel):
-    overall: float
-    grade: str
-    completeness: float
-    clarity: float
-    actionability: float
-    comprehensiveness: float
-
-
-# =============================================================================
 # Source File Info
 # =============================================================================
 
@@ -252,6 +236,10 @@ class ConversionError(BaseModel):
     failure_mode_id: str
     error: str
     retryable: bool = False
+    reason: Optional[str] = Field(
+        default=None,
+        description="`validation_timeout`: the runbook check ran past its deadline.",
+    )
 
 
 # =============================================================================

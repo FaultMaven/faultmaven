@@ -203,8 +203,8 @@ class TestUpdateDraftWritesTheTextWithItsVerdict:
         draft_id = created["draft"].draft_id
         real_gate = service_module.avalidate_and_score
 
-        async def _gate_then_discard(content):
-            verdict = await real_gate(content)
+        async def _gate_then_discard(content, *, principal):
+            verdict = await real_gate(content, principal=principal)
             async with session_factory() as session:
                 (await session.get(ConversionDraftModel, draft_id)).status = "discarded"
                 await session.commit()
@@ -727,8 +727,8 @@ class TestEditAndVerifyDoNotLoseEachOther:
             await session.commit()
         real_gate = service_module.avalidate_and_score
 
-        async def _gate_then_verify(content):
-            verdict = await real_gate(content)
+        async def _gate_then_verify(content, *, principal):
+            verdict = await real_gate(content, principal=principal)
             await pod.service.verify_draft(cid, did, "u1")
             return verdict
 

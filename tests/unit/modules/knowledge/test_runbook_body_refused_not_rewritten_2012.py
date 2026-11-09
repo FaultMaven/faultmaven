@@ -90,10 +90,12 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
     ConversionDraft,
     ConversionStatus,
     DraftStatus,
-    QualityScore,
     SourceAssessment,
     SourceFileInfo,
     SourceType,
+)
+from faultmaven.modules.knowledge.domain.models.validation import (
+    QualityScore,
     ValidationResult,
 )
 from faultmaven.modules.knowledge.domain.services.conversion_service.job_persistence import (  # noqa: E501

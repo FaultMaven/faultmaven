@@ -171,7 +171,7 @@ async def test_a_refused_page_costs_that_page_and_the_limit_reaches_the_worker(
 
     with caplog.at_level(logging.WARNING), apply_configuration(**_LOW_BUDGET):
         result = await DocumentPreprocessor().preprocess(
-            path, "application/pdf", conversion_id="conv_test"
+            path, "application/pdf", conversion_id="conv_test", principal="u1"
         )
 
     assert not result.is_rejected, (result.error_code, result.rejection_reason)
@@ -204,7 +204,7 @@ async def test_a_limit_refusal_is_document_too_complex(
 
     with caplog.at_level(logging.WARNING), apply_configuration(**limit):
         result = await DocumentPreprocessor().preprocess(
-            path, "application/pdf", conversion_id="conv_test"
+            path, "application/pdf", conversion_id="conv_test", principal="u1"
         )
 
     assert result.is_rejected
@@ -230,7 +230,7 @@ async def test_refused_pages_that_leave_too_little_are_document_too_complex(
 
     with apply_configuration(**_LOW_BUDGET):
         result = await DocumentPreprocessor().preprocess(
-            path, "application/pdf", conversion_id="conv_test"
+            path, "application/pdf", conversion_id="conv_test", principal="u1"
         )
 
     assert result.error_code == ConversionErrorCode.DOCUMENT_TOO_COMPLEX
@@ -242,7 +242,7 @@ async def test_the_skipped_page_list_names_ten_and_counts_the_rest(tmp_path):
 
     with apply_configuration(**_LOW_BUDGET):
         result = await DocumentPreprocessor().preprocess(
-            path, "application/pdf", conversion_id="conv_test"
+            path, "application/pdf", conversion_id="conv_test", principal="u1"
         )
 
     assert not result.is_rejected, result.rejection_reason
@@ -288,7 +288,10 @@ async def test_corruption_pypdf_reports_as_a_limit_stays_file_corrupt(
     files: FILE_CORRUPT for the whole document, as before #2153."""
     with caplog.at_level(logging.WARNING):
         result = await DocumentPreprocessor().preprocess(
-            build(tmp_path), "application/pdf", conversion_id="conv_test"
+            build(tmp_path),
+            "application/pdf",
+            conversion_id="conv_test",
+            principal="u1",
         )
 
     assert result.error_code == ConversionErrorCode.FILE_CORRUPT
@@ -312,7 +315,7 @@ async def test_the_other_refusals_keep_their_codes_in_the_worker(
     path.write_bytes(body)
 
     result = await DocumentPreprocessor().preprocess(
-        path, content_type, conversion_id="conv_test"
+        path, content_type, conversion_id="conv_test", principal="u1"
     )
 
     assert result.is_rejected
@@ -393,7 +396,7 @@ def on_entered(caplog):
 
 async def _preprocess(path: Path, content_type: str = "text/plain"):
     return await DocumentPreprocessor().preprocess(
-        path, content_type, conversion_id="conv_test"
+        path, content_type, conversion_id="conv_test", principal="u1"
     )
 
 

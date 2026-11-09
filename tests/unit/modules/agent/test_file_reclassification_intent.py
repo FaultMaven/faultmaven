@@ -2208,6 +2208,7 @@ class TestHandlerValidation:
                 case=case,
                 file_id=None,
                 data_type_value=None,
+                user_id="u1",
             )
 
     @pytest.mark.asyncio
@@ -2220,6 +2221,7 @@ class TestHandlerValidation:
                 case=case,
                 file_id="file_aaaaaaaaaaaa",
                 data_type_value="not_a_type",
+                user_id="u1",
             )
 
     @pytest.mark.asyncio
@@ -2232,6 +2234,7 @@ class TestHandlerValidation:
                 case=case,
                 file_id="file_zzzzzzzzzzzz",
                 data_type_value="logs_and_errors",
+                user_id="u1",
             )
 
     @pytest.mark.asyncio
@@ -2247,6 +2250,7 @@ class TestHandlerValidation:
                 case=case,
                 file_id="file_aaaaaaaaaaaa",
                 data_type_value="logs_and_errors",
+                user_id="u1",
             )
 
     @pytest.mark.asyncio
@@ -2654,6 +2658,7 @@ class TestTerminalCaseGuard:
                 case=terminal,
                 file_id="file_aaaaaaaaaaaa",
                 data_type_value="logs_and_errors",
+                user_id="u1",
             )
         # Refused before any re-extraction was attempted.
         service.preprocessing_service.reclassify_evidence.assert_not_called()

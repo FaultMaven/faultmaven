@@ -151,6 +151,30 @@ def validate_contract_changes(changes: tuple[ContractChange, ...]) -> None:
 
 CONTRACT_CHANGES: tuple[ContractChange, ...] = (
     ContractChange(
+        version="14.20.0",
+        level="MINOR",
+        title=(
+            "The runbook check runs in a worker its deadline kills, and answers "
+            "a 422 with `reason: validation_timeout` and two 503 codes when it "
+            "cannot finish (#2661)."
+        ),
+        body=r"""Nothing is saved on any of these answers:
+
+* Past its deadline: 422 with `reason: "validation_timeout"`, `detail` and
+  `help` "This document took too long to check. Split it into smaller
+  runbooks.", `errors` and `warnings`, on the upload, document edit, draft
+  edit, draft verify and runbook create routes, and `GET /conversions/{id}`,
+  which scores a draft stored without a score. No other 422 has `reason`.
+  The declared 422 replaces the generated `HTTPValidationError` one.
+* No check free within 10 s: 503 `RUNBOOK_VALIDATION_BUSY` + `Retry-After`;
+  any other end of the check: 503 `RUNBOOK_VALIDATION_UNAVAILABLE` +
+  `Retry-After`. On those routes and `POST /knowledge/scan`.
+
+A conversion's draft fails instead (the sentence in the job's `warnings`),
+the scan lists the file in `errors`, and `verify-batch` records the draft
+`failed`. MINOR: a field added to a 422 and new codes on a 503.""",
+    ),
+    ContractChange(
         version="14.19.0",
         level="MINOR",
         title=(

@@ -277,7 +277,9 @@ async def test_preprocessor_skips_entities_when_flag_off(monkeypatch):
         logs_extractor=LogsAndErrorsExtractor(),
     )
     content = "ERROR Failed password for root from 192.168.1.1 port 22"
-    result = await svc.classify_and_extract(content=content, filename="auth.log")
+    result = await svc.classify_and_extract(
+        content=content, filename="auth.log", principal="u1"
+    )
     assert result.entities == []
     assert result.entity_overflow_types == []
 
@@ -303,7 +305,9 @@ async def test_preprocessor_emits_entities_when_flag_on(monkeypatch):
         logs_extractor=LogsAndErrorsExtractor(),
     )
     content = "ERROR Failed password for root from 192.168.1.1 port 22"
-    result = await svc.classify_and_extract(content=content, filename="auth.log")
+    result = await svc.classify_and_extract(
+        content=content, filename="auth.log", principal="u1"
+    )
     # At minimum we expect the IP + port to surface as entities.
     values_by_type = {(e["entity_type"], e["entity_value"]) for e in result.entities}
     assert ("ip", "192.168.1.1") in values_by_type
@@ -347,7 +351,9 @@ async def test_preprocessor_caps_per_type_and_records_overflow(monkeypatch):
         classifier=DataClassifier(),
         logs_extractor=LogsAndErrorsExtractor(),
     )
-    result = await svc.classify_and_extract(content=content, filename="auth.log")
+    result = await svc.classify_and_extract(
+        content=content, filename="auth.log", principal="u1"
+    )
 
     ip_entries = [e for e in result.entities if e["entity_type"] == "ip"]
     assert len(ip_entries) == 5  # capped
@@ -401,7 +407,9 @@ async def test_preprocessor_increments_overflow_counter_on_cap_trip(monkeypatch)
         classifier=DataClassifier(),
         logs_extractor=LogsAndErrorsExtractor(),
     )
-    await svc.classify_and_extract(content="\n".join(lines), filename="auth.log")
+    await svc.classify_and_extract(
+        content="\n".join(lines), filename="auth.log", principal="u1"
+    )
 
     after = _ip_sample()
     assert after == pytest.approx(before + 1.0), (

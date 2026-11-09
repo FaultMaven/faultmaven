@@ -99,7 +99,9 @@ TIER1_OUTPUT_MIB_PER_MB = 6
 #: The worker module. Always this value: tests point it at one of their own.
 _EXTRACTION_WORKER = extraction_worker.__name__
 
-_tier1_slots_state: Optional[tuple[asyncio.AbstractEventLoop, asyncio.Semaphore]] = None
+_tier1_slots_state: Optional[
+    tuple[asyncio.AbstractEventLoop, worker_process.FairSlots]
+] = None
 
 
 def tier1_limits(upload_mb: int) -> tuple[worker_process.Phases, int, int]:
@@ -114,7 +116,7 @@ def tier1_limits(upload_mb: int) -> tuple[worker_process.Phases, int, int]:
     return phases, memory * 1024 * 1024, output * 1024 * 1024
 
 
-def _tier1_slots() -> asyncio.Semaphore:
+def _tier1_slots() -> worker_process.FairSlots:
     """The slots, made on the running loop (``worker_process.loop_slots``)."""
     global _tier1_slots_state
     _tier1_slots_state = worker_process.loop_slots(_tier1_slots_state, TIER1_SLOTS)
@@ -405,6 +407,8 @@ class PreprocessingService:
         filename: str = "pasted_content.txt",
         source_metadata: Optional[SourceMetadata] = None,
         user_override: Optional[DataType] = None,
+        *,
+        principal: str,
     ) -> PreprocessingResult:
         """
         Tier 0+1 unified entry point: classify content, run matched extractor, package result.
@@ -435,6 +439,9 @@ class PreprocessingService:
 
         PII redaction is handled at the LLM boundary (MilestoneEngine),
         not here. Structural indexes are stored raw.
+
+        ``principal`` is the user whose turn this is: their extraction waits
+        for a worker slot under Principle 14's admission rule (#2645).
 
         Returns:
             PreprocessingResult with structural_index, summary, and
@@ -636,6 +643,7 @@ class PreprocessingService:
         return await self._dispatch_with_optional_retry(
             content=content,
             filename=filename,
+            principal=principal,
             classification=classification,
             initial_data_type=detailed_data_type,
             initial_triggered_by=(
@@ -652,6 +660,7 @@ class PreprocessingService:
         initial_data_type: DataType,
         initial_triggered_by: str,
         start_time: float,
+        principal: str,
     ) -> PreprocessingResult:
         """Run the initial extractor, then retry with alternatives on
         sanity-check failure (Phase 2 feature flag). When the flag is
@@ -667,7 +676,9 @@ class PreprocessingService:
 
         retry_enabled = get_settings().preprocessing.extractor_retry_enabled
 
-        initial = await self._run_single_dispatch(content, filename, initial_data_type)
+        initial = await self._run_single_dispatch(
+            content, filename, initial_data_type, principal
+        )
 
         if not retry_enabled:
             # Phase 0 / Phase 1 behaviour: single-shot, no sanity check.
@@ -725,7 +736,7 @@ class PreprocessingService:
                 alt_type.value,
             )
             alt_extraction = await self._run_single_dispatch(
-                content, filename, alt_type
+                content, filename, alt_type, principal
             )
             alt_sanity = run_sanity_check(alt_type, content, alt_extraction.content)
             attempts.append(
@@ -778,6 +789,7 @@ class PreprocessingService:
         content: str,
         filename: str,
         data_type: DataType,
+        principal: str,
     ) -> ExtractionResult:
         """Run one extractor and return its ExtractionResult.
 
@@ -787,7 +799,9 @@ class PreprocessingService:
         """
         extractor = self.extractors.get(data_type)
         if extractor:
-            return await self._extract_with_timeout(extractor, content, filename)
+            return await self._extract_with_timeout(
+                extractor, content, filename, principal
+            )
         logger.warning(f"No extractor for {data_type.value}, using direct truncation")
         return ExtractionResult(
             method="direct",
@@ -801,6 +815,8 @@ class PreprocessingService:
         filename: str,
         user_override: DataType,
         previous_metadata: Optional[Dict[str, Any]] = None,
+        *,
+        principal: str,
     ) -> PreprocessingResult:
         """Re-run the preprocessing pipeline on *content* under a
         user-specified data type.
@@ -831,6 +847,7 @@ class PreprocessingService:
             content=content,
             filename=filename,
             user_override=user_override,
+            principal=principal,
         )
         return self._merge_attempts(result, previous_metadata)
 
@@ -1145,6 +1162,7 @@ class PreprocessingService:
         extractor: object,
         content: str,
         filename: str,
+        principal: str,
     ) -> ExtractionResult:
         """
         Run a Tier 1 extractor in a worker process its deadline kills.
@@ -1171,7 +1189,7 @@ class PreprocessingService:
         slots = _tier1_slots()
         try:
             async with asyncio.timeout(TIER1_SLOT_WAIT_SECONDS):
-                await slots.acquire()
+                await slots.acquire(principal)
         except TimeoutError:
             logger.warning(
                 f"Tier 1 extraction found no slot free within "
@@ -1213,7 +1231,7 @@ class PreprocessingService:
             )
             return preview(error_fallback=True, error=str(e)[:200])
         finally:
-            slots.release()
+            slots.release(principal)
         return ExtractionResult(
             method=extractor.strategy_name,
             # content holds file_extract text for sanity checks;

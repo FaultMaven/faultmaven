@@ -45,7 +45,8 @@ from faultmaven.modules.knowledge.domain.services.conversion_service.draft_retir
 from faultmaven.modules.knowledge.domain.services.conversion_service.job_persistence import (
     _persist_job,
 )
-from faultmaven.modules.knowledge.domain.services.runbook_validator import (
+from faultmaven.modules.knowledge.domain.services.runbook_gate import (
+    GateTimedOut,
     avalidate_and_score,
 )
 from faultmaven.modules.knowledge.draft_content import DRAFT_CONTENT_MAX_CHARS
@@ -309,7 +310,13 @@ async def _scan_for_runbooks_impl(
         # Off the event loop, and validating ONCE (#1417). The scan
         # walks every runbook on disk, so this is the site where the
         # duplicated validation pass cost the most in aggregate.
-        validation, quality = await avalidate_and_score(content)
+        try:
+            validation, quality = await avalidate_and_score(content, principal=user_id)
+        except GateTimedOut as timed_out:
+            # This file's refusal, as "too long" is (#2661). A busy or failed
+            # gate stops the scan instead (503), the files before it imported.
+            errors.append(f"{md_file.name}: {timed_out}")
+            continue
 
         draft_id = generate_draft_id()
         quality_warning = None
