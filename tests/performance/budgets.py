@@ -54,8 +54,8 @@ Each row's statistic is **normalised by the job's raw_ratio**, the axis
 ``observed / raw_ratio``, a throughput ``observed x raw_ratio``. That is the
 same axis the per-PR comparison scales back up from, so the calibration
 applies exactly once. Per job, a row's statistic is the WORST of its
-comparisons in that job (``ADVERSARIAL_LINE_EXTRACTION``'s eleven shapes,
-``DEDUPLICATION_OP``'s four sizes).
+comparisons in that job (``ADVERSARIAL_LINE_EXTRACTION``'s shapes, eleven
+then; ``DEDUPLICATION_OP``'s four sizes).
 
 * latency: ``reference = max(old reference / 3.53, p95 of the 26 jobs)``;
 * throughput: ``reference = min(old reference x 3.53, p5 of the 26 jobs)``;
@@ -417,10 +417,11 @@ API_REQUEST_LOGGING_OVERHEAD = LatencyBudget(
 # =============================  ====================================  =========
 #
 # All six were already fastest-of-N statistics (N = 2 to 5) and keep it.
-# ``ADVERSARIAL_LINE_EXTRACTION`` is one row for eleven shapes, anchored on
-# each job's worst shape, so it is a loose anchor for the nine cheap ones. The
-# two expensive ones are expensive because the extractor is super-linear on
-# them (#1700) — see ``tests/performance/test_extraction_speed.py``.
+# ``ADVERSARIAL_LINE_EXTRACTION`` is one row for thirteen shapes, anchored on
+# each job's worst shape. When it was anchored the worst were ``tag-chain`` and
+# ``sshd-word-chain``, on which the extractor was then super-linear; since #1700
+# it is linear on these shapes (``test_the_extractor_is_linear``), so the anchor
+# is loose for all of them.
 
 # tests/performance/test_sanitization_throughput.py
 SANITIZE_LARGE_DOCUMENT = ThroughputBudget(
