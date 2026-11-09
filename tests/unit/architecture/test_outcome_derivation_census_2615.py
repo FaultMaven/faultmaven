@@ -266,30 +266,26 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
         "closure_verdict": 1,
     },
     (_ME + "hypothesis_updates.py", "_refutation_grounds"): {"failed_fix_of": 1},
-    (_SG, "_apply_stage_gate_side_effects"): {
-        "closure_verdict": 1,
-        "mitigation_closure_line": 1,
-    },
+    # The rca-infeasible close's lead is the record's (#2636).
+    (_SG, "_apply_stage_gate_side_effects"): {"closure_verdict": 1},
     (_SG, "_date_to_the_report"): {"fix_windows": 2},
     (_SG, "_flag_absence_inside_a_failed_fix_window"): {"latest_fix_window": 1},
+    # What the rows could name, and why, is the record's (#2636).
     (_SG, "_flag_unbound_post_fix_rows"): {
         "fix_windows": 1,
         "unbound_post_fix_rows": 1,
-        "uncited_recheck_why": 1,
     },
     (_SG, "_mitigation_verify_refusal"): {"mitigation_refusal_reason": 1},
     (_SG, "fix_cause"): {"_cause_pool": 1, "_pool_legs": 1},
     (_SG, "licence_leg_ids"): {"_cause_pool": 1},
     (_SG, "licence_subject"): {"_pool_legs": 1},
     (_SG, "standing_fix_action"): {"fix_windows": 1},
+    # Their offers' record lines are the record's ``resolution.statement``
+    # (#2636).
     (_PROPOSALS, "_maybe_propose_confirmed_resolution"): {
-        "assess_resolution_readiness": 1,
-        "resolution_record_lines": 1,
+        "assess_resolution_readiness": 1
     },
-    (_PROPOSALS, "_maybe_propose_deferred_close"): {
-        "assess_closure_readiness": 1,
-        "resolution_record_lines": 1,
-    },
+    (_PROPOSALS, "_maybe_propose_deferred_close"): {"assess_closure_readiness": 1},
     (_ME + "terminal_replies.py", "_build_resolution_confirmation"): {
         "resolution_record_lines": 1
     },
@@ -315,6 +311,12 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     # The record's write points (#2636): the end of a decision cycle and each
     # bundle of a statement-revision replay; the transitions are above.
     (_ME + "turn_application.py", "_apply_turn_response"): {"record_case_outcome": 1},
+    # The two summaries composed from the case at the narration step, after
+    # the record (#2636): stage S2 moves them into ``narration``.
+    (_ME + "turn_narration.py", "_case_summary"): {
+        "assess_closure_readiness": 1,
+        "assess_resolution_readiness": 1,
+    },
     (_ME + "statement_revision.py", "confirm_revision"): {"record_case_outcome": 1},
     (_TRANSITIONS, "TransitionManager._apply_model_proposal"): {
         "assess_closure_readiness": 1,

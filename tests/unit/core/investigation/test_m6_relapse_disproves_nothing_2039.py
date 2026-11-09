@@ -54,6 +54,7 @@ from faultmaven.modules.case.contracts import (
     NodeState,
 )
 from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
+from tests.unit.core.investigation.narrated import narrated
 from tests.unit.core.investigation.test_m6_cause_gone_problem_persists_1927 import (
     _accept,
     _assert_demoted,
@@ -257,7 +258,7 @@ def _notice(case, turn):
     case.evidence.append(_problem_gone(turn, label=f"fine_now_{turn}"))
     metadata = {}
     assert _flag_absence_inside_a_failed_fix_window(case, metadata) is True
-    return "\n".join(metadata["system_notices"])
+    return "\n".join(narrated(case, metadata))
 
 
 def test_after_a_relapse_the_notice_keeps_the_fix_under_a_standing_cause():

@@ -17,8 +17,10 @@ from unittest.mock import AsyncMock
 import pytest
 
 from faultmaven.core.investigation.milestone_engine.transitions import (
-    DECLINED_RESOLVE_FEEDBACK,
     TRANSITION_QUIET_FEEDBACK,
+)
+from faultmaven.core.investigation.narration.notices import (
+    DECLINED_RESOLVE_FEEDBACK,
 )
 from faultmaven.core.investigation.schemas import (
     InvestigationResponse_Diagnosis,

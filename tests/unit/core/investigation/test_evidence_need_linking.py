@@ -847,21 +847,23 @@ class TestAsksTheUserNeverSeesAreNotRecorded:
         )
 
     @pytest.mark.parametrize(
-        "flag",
+        "metadata",
         [
-            "resolution_ready_for_confirmation",
-            "resolution_suggest_close",
-            "rca_infeasible_closure_message",
+            {"resolution_ready_for_confirmation": True},
+            {"resolution_suggest_close": True},
+            # The rca-infeasible close's prose is rendered after linking, so
+            # its offer code is read (#2636).
+            {"outcome_decisions": [{"code": "rca_infeasible_close"}]},
         ],
     )
-    def test_each_resolution_branch_flag_is_treated_as_replaced(self, flag):
+    def test_each_resolution_branch_flag_is_treated_as_replaced(self, metadata):
         from faultmaven.core.investigation.evidence_need_linking import (
             suggestions_are_engine_replaced,
         )
         from faultmaven.modules.case.contracts import CaseState
 
         assert suggestions_are_engine_replaced(
-            self._case(CaseState.INVESTIGATING), {flag: True}, gate_pending=False
+            self._case(CaseState.INVESTIGATING), metadata, gate_pending=False
         )
 
     def test_an_ordinary_investigating_turn_is_not_replaced(self):

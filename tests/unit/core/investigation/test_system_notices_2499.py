@@ -23,9 +23,14 @@ from faultmaven.core.investigation.milestone_engine.statement_revision import (
 )
 from faultmaven.core.investigation.milestone_engine.turn_application import (
     _apply_turn_response,
+    record_turn,
 )
+from faultmaven.core.investigation.milestone_engine.turn_narration import narrate_turn
 from faultmaven.core.investigation.milestone_engine.turn_records import (
     _create_turn_record,
+)
+from faultmaven.core.investigation.narration.notices import (
+    PENDING_CHECK_DECLINE_CLAUSE,
 )
 from faultmaven.core.investigation.prompts.context_builder import (
     assembly as context_assembly,
@@ -37,9 +42,6 @@ from faultmaven.core.investigation.prompts.templates.assembly import (
     get_prompt_for_case,
 )
 from faultmaven.core.investigation.schemas import InvestigationResponse_Diagnosis
-from faultmaven.core.investigation.terminal_transitions import (
-    PENDING_CHECK_DECLINE_CLAUSE,
-)
 from faultmaven.modules.case.contracts import (
     MAX_SYSTEM_NOTICE_CHARS,
     MAX_SYSTEM_NOTICES,
@@ -300,7 +302,7 @@ async def test_9_the_live_prepend_heads_the_record_over_an_early_one():
     early = "EARLY: prepended before the model call."
     _add_system_feedback(metadata, early, prepend=True)
 
-    case_updated, _, _ = await _apply_turn_response(
+    case_updated, inputs = await _apply_turn_response(
         engine.deps.hypothesis_manager,
         engine.deps.progress_monitor,
         engine.deps.state_validator,
@@ -312,6 +314,15 @@ async def test_9_the_live_prepend_heads_the_record_over_an_early_one():
         response_obj=_unjustified_mitigation(),
         upload_report=None,
         user_message="the workaround is in",
+    )
+    # The narration step, then the turn record (#2636, ``_finalize_turn``).
+    narrate_turn(case_updated, metadata)
+    record_turn(
+        case_updated,
+        metadata,
+        inputs,
+        user_message="the workaround is in",
+        response_obj=_unjustified_mitigation(),
     )
 
     notices = case_updated.turn_history[-1].system_notices

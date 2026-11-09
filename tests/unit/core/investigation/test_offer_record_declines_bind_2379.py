@@ -25,7 +25,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
-from faultmaven.core.investigation.milestone_engine.transitions import (
+from faultmaven.core.investigation.narration.notices import (
     DECLINED_RESOLVE_FEEDBACK,
 )
 from faultmaven.core.investigation.schemas import (

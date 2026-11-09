@@ -85,6 +85,7 @@ from faultmaven.modules.case.domain.models.solution import (
 )
 from tests.case_builders import investigating_case
 from tests.unit.core.investigation.bound_rows import mitigated
+from tests.unit.core.investigation.narrated import narrated
 
 _FILE_ID = "file_0123456789ab"
 
@@ -315,7 +316,7 @@ class TestLicenseLostWithdrawal:
         assert withdrawn[0].superseded_in_turn == 7
         assert case.progress.solution_proposed is False
         assert case.progress.solution_state == SolutionState.UNKNOWN
-        assert "withdrawn" in "\n".join(metadata.get("system_notices") or [])
+        assert "withdrawn" in "\n".join(narrated(case, metadata))
 
     async def test_withdrawal_logs_warning_event(self, caplog):
         import logging
@@ -509,7 +510,7 @@ class TestSameTurnCreateThenWithdraw:
         assert len(withdrawn) == 1
         assert withdrawn[0].superseded_reason == "license_lost"
         assert case.progress.solution_proposed is False
-        assert "withdrawn" in "\n".join(metadata.get("system_notices") or [])
+        assert "withdrawn" in "\n".join(narrated(case, metadata))
 
 
 # ---------------------------------------------------------------------------
@@ -600,7 +601,7 @@ class TestWorkingConclusionLicense:
         case.progress.cause_identification_contested = True
         metadata = {"system_notices": ["EARLIER ACCUMULATED FEEDBACK"]}
         assert _withdraw_unlicensed_solution_offers(case, metadata=metadata) == 1
-        fb = "\n".join(metadata["system_notices"])
+        fb = "\n".join(narrated(case, metadata))
         assert fb.startswith("SYSTEM: Your pending SOLUTION proposal was withdrawn")
         assert "EARLIER ACCUMULATED FEEDBACK" in fb
 
@@ -690,7 +691,7 @@ class TestTypeMatchedStageGates:
         assert case.progress.solution_accepted is False
         assert diag.state == "pending"
         assert "solution_accepted" not in metadata["milestones_completed"]
-        assert "was not registered" in "\n".join(metadata.get("system_notices") or [])
+        assert "was not registered" in "\n".join(narrated(case, metadata))
 
     async def test_solution_accepted_targets_the_solution_not_newest_pending(self):
         case = _make_case()
@@ -715,7 +716,7 @@ class TestTypeMatchedStageGates:
         )
         assert case.progress.mitigation is None
         assert sol.state == "pending"
-        assert "was not registered" in "\n".join(metadata.get("system_notices") or [])
+        assert "was not registered" in "\n".join(narrated(case, metadata))
 
     async def test_mitigation_verified_needs_no_pending_action(self):
         # Accept-then-verify-later: the mitigation action left pending at the
@@ -899,7 +900,7 @@ class TestMitigationRejectionCoherence:
             _milestone_updates(mitigation_accepted=True, mitigation_verified=True),
             metadata,
         )
-        fb = "\n".join(metadata.get("system_notices") or [])
+        fb = "\n".join(narrated(case, metadata))
         assert "'mitigation_accepted' was not registered" in fb
         assert "The same applies to 'mitigation_verified'" in fb
         assert "MILESTONE ORDER ERROR" not in fb

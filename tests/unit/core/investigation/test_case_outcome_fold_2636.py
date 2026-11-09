@@ -27,9 +27,13 @@ from faultmaven.core.investigation.cause_assurance import (
     FIX_SUCCEEDED,
     fix_windows,
 )
+from faultmaven.core.investigation.milestone_engine.stage_gates import (
+    record_decision,
+)
 from faultmaven.core.investigation.milestone_engine.statement_revision import (
     confirm_revision,
 )
+from faultmaven.core.investigation.narration.codes import NoticeCode
 from faultmaven.core.investigation.offers import answer_offer
 from faultmaven.core.investigation.outcome import (
     compute_case_outcome,
@@ -79,6 +83,7 @@ from faultmaven.modules.case.contracts import (
 )
 from tests.case_builders import investigating_case
 from tests.unit.core.investigation.bound_rows import VERIFYING_ID, _row
+from tests.unit.core.investigation.narrated import narrated
 from tests.unit.core.investigation.test_declined_resolution_binds_the_model_1895 import (
     _engine as _turn_engine,
 )
@@ -588,10 +593,17 @@ def test_the_unbound_rechecks_list_every_turn_and_carry_the_narrated_turn():
     assert unbound.narrated_turn is None
     assert first.bindable.problem_row_ids == [VERIFYING_ID]
     assert first.bindable.cause_row_ids == [_eid("pool_log"), _eid("pool_metric")]
-    narrated = first.model_copy(
+    told = first.model_copy(
         update={"unbound_rechecks": [unbound.model_copy(update={"narrated_turn": 8})]}
     )
-    assert compute_case_outcome(narrated, case).unbound_rechecks[0].narrated_turn == 8
+    assert compute_case_outcome(told, case).unbound_rechecks[0].narrated_turn == 8
+    # #2636 (PR B): the narration step writes it, once the problem is verified.
+    case.progress.problem_status = ProblemStatus.VERIFIED
+    meta = {"outcome_decisions": [], "system_notices": []}
+    record_decision(meta, NoticeCode.UNBOUND_RECHECKS, fix_dated=True)
+    case.progress.outcome = first.model_copy(update={"narration_since": 7})
+    narrated(case, meta)
+    assert case.progress.outcome.unbound_rechecks[0].narrated_turn == 9
 
 
 def test_the_mitigation_section_reads_its_observation():
@@ -1031,60 +1043,62 @@ def test_two_close_offers_on_one_case_each_read_the_case_as_it_stands():
 
 
 async def test_a_turn_writes_the_record_last_in_its_cycle(monkeypatch):
-    from faultmaven.core.investigation.milestone_engine import turn_application
+    """Rewritten by #2636 (PR B, the turn reorder): the needs sweeps, the
+    final recompute and the backstop, then the record; the narration step
+    then writes into it, and only then is the turn recorded."""
+    from faultmaven.core.investigation.milestone_engine import (
+        turn_application,
+        turn_completion,
+    )
 
     order = []
-    for name in ("_sweep_needs_for_terminal_hypotheses", "sweep_silent_inferred_needs"):
-        real = getattr(turn_application, name)
-        monkeypatch.setattr(
-            turn_application,
-            name,
-            lambda *a, _n=name, _r=real, **k: (order.append(_n), _r(*a, **k))[1],
-        )
+
+    def spy(module, name, label=None):
+        real = getattr(module, name)
+
+        def _call(*a, **k):
+            order.append(label or name)
+            return real(*a, **k)
+
+        monkeypatch.setattr(module, name, _call)
+
+    for name in (
+        "_sweep_needs_for_terminal_hypotheses",
+        "sweep_silent_inferred_needs",
+        "_final_recompute",
+        "_maybe_propose_confirmed_resolution",
+    ):
+        spy(turn_application, name)
     real_record = turn_application.record_case_outcome
 
     def _record(case, *, at):
         order.append(at)
-        real_record(case, at=at)
+        return real_record(case, at=at)
 
     monkeypatch.setattr(turn_application, "record_case_outcome", _record)
+    spy(turn_completion, "narrate_turn")
+    spy(turn_completion, "record_turn")
     case = _confirmed_case()
     engine = _turn_engine()
     await _turn(engine, case, "errors gone")
     assert order == [
         "_sweep_needs_for_terminal_hypotheses",
         "sweep_silent_inferred_needs",
+        "_final_recompute",
+        "_maybe_propose_confirmed_resolution",
         "cycle",
+        "narrate_turn",
+        "record_turn",
     ]
     assert case.progress.outcome.resolution.reason == ResolutionReason.CONFIRMED
     assert case.progress.outcome.folded_under == CaseState.INVESTIGATING
+    # The narration wrote its watermark into the record (A13).
+    assert case.progress.outcome.narration_since == case.current_turn
 
 
-async def test_writing_the_record_changes_no_text_and_no_decision(monkeypatch):
-    """The same turn with and without the write: one reply, one set of
-    notices, one offer."""
-
-    async def _run():
-        case = _confirmed_case()
-        case.case_id = "case_00000000c0de"
-        engine = _turn_engine()
-        result = await _turn(engine, case, "errors gone")
-        offer = case.offer_record.open
-        return (
-            result["agent_response"],
-            [f["label"] for f in result["suggested_follow_ups"]],
-            case.turn_history[-1].system_notices,
-            (offer.kind, offer.basis, offer.summary),
-        ), case
-
-    written, with_record = await _run()
-    monkeypatch.setattr(
-        outcome_module, "compute_case_outcome", lambda prior, case, **_: prior
-    )
-    unwritten, without = await _run()
-    assert with_record.progress.outcome is not None
-    assert without.progress.outcome is None
-    assert written == unwritten
+# ``test_writing_the_record_changes_no_text_and_no_decision`` was replaced by
+# #2636 (PR B): the record now decides the text, which pin 4
+# (``test_turn_reorder_2636.py``) drives through ``process_turn``.
 
 
 async def test_both_terminal_transitions_write_the_record():

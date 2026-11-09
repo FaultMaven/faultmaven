@@ -33,9 +33,8 @@ from faultmaven.core.investigation.milestone_engine.cause_state import (
 from faultmaven.core.investigation.milestone_engine.transition_turns import (
     _pending_transition_reask,
 )
-from faultmaven.core.investigation.milestone_engine.transitions import (
+from faultmaven.core.investigation.narration.notices import (
     DECLINED_RESOLVE_FEEDBACK,
-    declined_resolution_reask,
 )
 from faultmaven.core.investigation.offer_projection import project_offers
 from faultmaven.core.investigation.offers import confirmation_pair
@@ -54,6 +53,7 @@ from faultmaven.modules.agent.domain.services.out_of_band import OutOfBandTriage
 from faultmaven.modules.case.contracts import AnswerVia, CaseState, ProblemStatus
 from tests.case_builders import inquiry_case, with_declined_offer, with_open_offer
 from tests.model_content import disabled_redaction
+from tests.unit.core.investigation.narrated import reask_feedback
 from tests.unit.core.investigation.test_declined_resolution_binds_the_model_1895 import (
     _MODEL_FOLLOW_UPS,
     _declined,
@@ -528,7 +528,7 @@ def test_the_decline_prompt_and_feedback_name_the_close_chip():
     assert RESOLVE_DECLINED_LINE in prompt
     assert "'Close without resolving'" in prompt
     # The chips are on this reply, so the refusal names them (#2472).
-    feedback = declined_resolution_reask(case)
+    feedback = reask_feedback(case)
     assert feedback.startswith(DECLINED_RESOLVE_FEEDBACK)
     assert (
         "attached its 'Mark it resolved' and 'Close without resolving' actions"

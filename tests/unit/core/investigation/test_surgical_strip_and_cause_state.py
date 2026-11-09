@@ -49,6 +49,7 @@ from faultmaven.modules.case.contracts import (
 )
 from tests.case_builders import with_open_offer
 from tests.unit.core.investigation.bound_rows import bound_row
+from tests.unit.core.investigation.narrated import narrated
 
 _FILE_ID = "file_0123456789ab"
 
@@ -291,6 +292,9 @@ class TestDeferredImplementationClose:
         case.solutions = [_solution()]
         meta = {}
         _maybe_propose_deferred_close(case, meta)
+        narrated(
+            case, meta
+        )  # The decider records a code; the narration step renders it (#2636).
         assert case.offer_record.open is None
 
     def test_no_proposal_when_feasible_now(self):
@@ -301,6 +305,9 @@ class TestDeferredImplementationClose:
         case = self._case(feasible=SolutionFeasible.NOW, solution_proposed=True)
         meta = {}
         _maybe_propose_deferred_close(case, meta)
+        narrated(
+            case, meta
+        )  # The decider records a code; the narration step renders it (#2636).
         assert case.offer_record.open is None
 
     def test_no_proposal_when_deferred_but_no_solution(self):
@@ -311,6 +318,9 @@ class TestDeferredImplementationClose:
         case = self._case(feasible=SolutionFeasible.DEFERRED, solution_proposed=False)
         meta = {}
         _maybe_propose_deferred_close(case, meta)
+        narrated(
+            case, meta
+        )  # The decider records a code; the narration step renders it (#2636).
         assert case.offer_record.open is None
 
     def test_proposes_close_when_deferred_with_solution(self):
@@ -321,6 +331,9 @@ class TestDeferredImplementationClose:
         case = self._case(feasible=SolutionFeasible.DEFERRED, solution_proposed=True)
         meta = {}
         _maybe_propose_deferred_close(case, meta)
+        narrated(
+            case, meta
+        )  # The decider records a code; the narration step renders it (#2636).
         offer = case.offer_record.open
         assert (offer.kind, offer.basis) == ("close", "deferred")
         assert _labels(case)[0] == "Yes, close this case"
@@ -338,6 +351,9 @@ class TestDeferredImplementationClose:
         before = case.offer_record.open
         meta = {}
         _maybe_propose_deferred_close(case, meta)
+        narrated(
+            case, meta
+        )  # The decider records a code; the narration step renders it (#2636).
         # the open offer must not be clobbered
         assert case.offer_record.open == before
 
@@ -374,6 +390,9 @@ class TestDeferredImplementationClose:
 
         meta = {}
         _maybe_propose_deferred_close(case, meta)
+        narrated(
+            case, meta
+        )  # The decider records a code; the narration step renders it (#2636).
 
         assert case.offer_record.open.kind == "resolve"
         labels = _labels(case)
@@ -391,6 +410,9 @@ class TestDeferredImplementationClose:
         case.solutions = [_solution()]
         meta = {}
         _maybe_propose_deferred_close(case, meta)
+        narrated(
+            case, meta
+        )  # The decider records a code; the narration step renders it (#2636).
 
         assert case.offer_record.open.kind == "close"
         labels = _labels(case)
@@ -417,6 +439,9 @@ class TestDeferredImplementationClose:
         case.solutions = [_solution()]
         meta = {}
         _maybe_propose_deferred_close(case, meta)
+        narrated(
+            case, meta
+        )  # The decider records a code; the narration step renders it (#2636).
 
         message = meta.get("deferred_solution_gate_message")
         assert message, "the proposal must publish its rationale for rendering"
@@ -451,6 +476,9 @@ class TestDeferredImplementationClose:
 
         meta = {}
         _maybe_propose_deferred_close(case, meta)
+        narrated(
+            case, meta
+        )  # The decider records a code; the narration step renders it (#2636).
         message = meta["deferred_solution_gate_message"]
 
         assert message != borrowed
@@ -704,6 +732,9 @@ class TestDeferredImplementationClose:
 
         meta = {}
         _maybe_propose_deferred_close(case, meta)
+        narrated(
+            case, meta
+        )  # The decider records a code; the narration step renders it (#2636).
 
         assert case.offer_record.open is None
         assert meta == {}
@@ -728,6 +759,9 @@ class TestDeferredImplementationClose:
         case.solutions = [_solution()]
         meta = {}
         _maybe_propose_deferred_close(case, meta)
+        narrated(
+            case, meta
+        )  # The decider records a code; the narration step renders it (#2636).
 
         assert case.offer_record.open is None
         assert "deferred_solution_gate_message" not in meta

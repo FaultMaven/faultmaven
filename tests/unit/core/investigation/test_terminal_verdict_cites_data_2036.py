@@ -71,6 +71,7 @@ from faultmaven.modules.case.contracts import (
     RootCauseConclusion,
 )
 from tests.unit.core.investigation.bound_rows import bound_evidence, upload
+from tests.unit.core.investigation.narrated import narrated
 from tests.unit.core.investigation.test_terminal_root_identification_2036 import (
     _open_chain_case,
 )
@@ -119,6 +120,8 @@ def _apply(case, **fields) -> dict:
             case, _Updates(**fields), meta
         )
     )
+    # The apply step records codes; the narration step renders them (#2636).
+    narrated(case, meta)
     return meta
 
 
@@ -520,7 +523,7 @@ def test_no_consumer_reads_a_refuted_root_as_held():
     )
     metadata: dict = {}
     assert _withdraw_unlicensed_solution_offers(case, metadata=metadata) == 1
-    assert "no longer established" in "\n".join(metadata["system_notices"])
+    assert "no longer established" in "\n".join(narrated(case, metadata))
     # response_application: M5 at proposal gives the generic recovery.
     from tests.unit.core.investigation.test_m5_recovery_1679 import _fix
 

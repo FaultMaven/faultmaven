@@ -1030,17 +1030,61 @@ State updates occur at specific points within a turn to ensure consistency:
 - **Progress indicators** (`symptom_verified`, `solution_proposed`): Provide LLM context and analytics. Do NOT drive stage transitions. `symptom_verified` is LLM-set; `solution_proposed` is engine-derived from live SOLUTION offers (INV-32) and can flip back to False when the standing offer leaves liveness.
 - **Assessment variables** (`cause_state`, `solution_state`, `solution_feasible`): Engine-derived truth signals recomputed each turn. `cause_state` (not a gate, not a path) is what drives whether the diagnostic machinery runs. Never path-stripped.
 
-**Order of Operations Within a Turn**:
+**Order of Operations Within a Turn** (#2615 stage R, #2636): the deciders
+decide first, the record is written after the last of them, and the text that
+states an outcome is rendered from that record.
 
-1. **Receive user message**
-2. **LLM processes** and generates response + `state_updates`
-3. **Apply state updates**: progress milestones, gate milestones, evidence, hypotheses (all from LLM structured output)
-4. **Gate milestone side effects**: When a gate milestone is set, mark the corresponding ProposedAction as accepted; stage transition takes effect next turn
-5. **Record turn progress** (detect what changed)
-6. **Check disposition actions** (RESOLVED/CLOSED) if conditions met
-7. **Return response to user**
+1. **Before the model call** (step 0): an offer opened on an earlier turn is
+   answered at the gate (0b), and a confirmed revision replays its staged cause
+   work, one decision cycle per bundle, each folded into the record
+   (`record_case_outcome(at="replay")`). The bundles' decision codes join the
+   turn's log; their prose is rendered once, after the live record. A step-0
+   exit after the replay (the menu close, the reopen chip, a refused click)
+   ends the turn there and summarizes only the offers the replay opened.
+2. **The model generates** its reply and `state_updates`.
+3. **The decision cycle** (`_apply_turn_response`):
+   1. **Apply** (step 1): evidence, hypotheses, the chain, the gate signals
+      and their side effects, then the assessment recompute (the cause, the
+      solution's licence, the fix windows). The deferred and false-alarm
+      proposers run here.
+   2. **The offer record's lapse rule** (3b) and **the transitions** (step 2:
+      a remembered resolution request, then the model's `proposed_transition`).
+   3. **Progress scoring**, then **housekeeping** (decay, anchoring, age-out),
+      the **stall counter**, the **progress monitor** (its deadlock repair
+      retires INCONCLUSIVE hypotheses), and the **needs sweeps**. A hypothesis
+      one of them retires is recorded in the decision log.
+   4. **The final recompute**: the assessment recompute once more, on the pool
+      housekeeping and the monitor left, where step 1 ran it. A
+      `root_cause_identified` this turn added and this recompute dropped
+      leaves the turn's milestones, and the turn's outcome is re-derived;
+      `progress_made` and housekeeping's `investigation_advanced` keep the
+      step-1 reading (residual, stated). The KB warm-up on a rise stays in
+      step 1.
+   5. **The backstop**, last among the openers (INV-43), reading the same pool
+      the record reads.
+   6. **Metrics, the working conclusion, the state validator**, and
+      **suggestion linking**.
+   7. **The record**: `record_case_outcome(at="cycle")`.
+4. **Narration** (`_finalize_turn`, `turn_narration.narrate_turn`): each
+   decision code renders from the record and the decision log
+   (`core/investigation/narration/`), at the place its token holds in
+   `system_notices`; the summary and prose of each offer the cycle opened are
+   rendered too. The step writes the narrated unbound re-checks and its
+   watermark (`narration_since`) into the record.
+5. **The turn record** copies the rendered notices; then the terminal summary,
+   the follow-ups and the reply are composed.
 
-**Rationale**: Disposition actions happen last to ensure all state is consistent before case becomes immutable. Gate milestones are applied from the LLM's structured output alongside progress milestones; the new stage's prompt takes effect on the next turn.
+Within a decision cycle no text that states an outcome is composed before the
+last decider has run and `progress.outcome` is written. A notice that states
+no outcome the cycle can change (an ordering or schema error in the response,
+a problem-status refusal at step 1) stays text, declared with its reason in
+`tests/unit/architecture/test_system_notice_census_2636.py`.
+
+**Rationale**: a decider's text written at its decision point could be
+contradicted by a later step of the same cycle (a refusal's advice after the
+same response's disposition, #2603; "it stays open" of a hypothesis housekeeping
+then retired). Disposition actions still execute only on the user's answer, on
+a later turn.
 
 ### 1.4.1 Verifying the problem statement: three outcomes
 

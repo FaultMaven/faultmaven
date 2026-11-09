@@ -41,6 +41,7 @@ from faultmaven.modules.case.contracts import (
     RootCauseConclusion,
 )
 from tests.case_builders import investigating_case
+from tests.unit.core.investigation.narrated import narrated
 from tests.utils import bridge_flat_hypotheses_to_graph
 
 pytestmark = pytest.mark.unit
@@ -171,6 +172,9 @@ def test_refuted_on_a_reason_alone_is_refused_with_feedback():
 
     with patch(f"{_UPDATES}.hypothesis_refutation_refused_total") as counter:
         _refute(eng, case, h, meta, reason="all nodes run the same code")
+    narrated(
+        case, meta
+    )  # The decider records a code; the narration step renders it (#2636).
 
     assert h.state == HypothesisState.ACTIVE
     assert h.refutation_reason is None
@@ -192,6 +196,9 @@ def test_a_self_hedged_refutes_link_does_not_back_a_refutation():
     meta = _empty_metadata()
 
     _refute(eng, case, h, meta)
+    narrated(
+        case, meta
+    )  # The decider records a code; the narration step renders it (#2636).
 
     assert h.state == HypothesisState.ACTIVE
     assert "self-hedged" in "\n".join(meta["system_notices"])
