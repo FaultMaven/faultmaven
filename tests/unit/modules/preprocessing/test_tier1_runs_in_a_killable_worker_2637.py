@@ -189,9 +189,14 @@ def test_every_registered_extractor_has_a_sample():
 @pytest.mark.parametrize("name", sorted(create_extractors()))
 async def test_the_worker_answers_as_the_extractor_does_in_process(monkeypatch, name):
     """Each extractor the composition registers gives, through the worker, the
-    result it gives in this process. A loaded runner's start is not under test
-    here."""
-    monkeypatch.setattr(ps, "TIER1_TIMEOUT_SECONDS", 60)
+    result it gives in this process. A loaded runner's start, transfers and
+    extraction time are not under test here: each step's bound is relaxed."""
+    for bound in (
+        "TIER1_START_SECONDS",
+        "TIER1_TRANSFER_BASE_SECONDS",
+        "TIER1_TIMEOUT_SECONDS",
+    ):
+        monkeypatch.setattr(ps, bound, 60)
     extractor, content = create_extractors()[name], _SAMPLES[name]
 
     result = await _service()._extract_with_timeout(extractor, content, "sample")
