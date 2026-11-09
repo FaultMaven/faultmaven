@@ -16,8 +16,8 @@ holds the case's data before it deletes the row:
 - its uploaded files;
 - its evidence search index (the `case_{case_id}` ChromaDB collection);
 - its PII redaction registry;
-- the answers cached for replay (`Idempotency-Key`) whose request path, query
-  or answer names the case (#2624).
+- the answers cached for replay (`Idempotency-Key`) of the requests that acted
+  on the case, as each route declares (#2624).
 
 Then the row goes, in one transaction with its team shares and a
 `case_deleted` audit row. If a store cannot be cleared, the delete answers
@@ -183,11 +183,15 @@ read reports it.
   (`POST /cases/sessions/{session_id}/resume/{case_id}`) is not a turn and
   holds no lease. One that passed its access check before the delete can
   re-write the session pointer.
-- **An answer cached for replay after the eraser ran (#2624).** A keyed POST on
-  a case route that holds no lease (title, reports, close, resume, or the
-  create's own answer arriving late) can cache its answer after the delete's
-  eraser has run. Only the same caller replaying the same key can read it, for
-  at most 1 h.
+- **An answer cached for replay after the eraser read the index (#2624).** A
+  keyed POST on a case route that holds no lease (title, reports, close,
+  resume, or the create's own answer arriving late) can cache its answer after
+  the delete's eraser read the case's replay index. Only the same caller
+  replaying the same key can read it, for at most 1 h.
+- **A lost replay index (#2624).** An eviction under a `volatile-*` policy, or
+  a failover, can drop a case's replay index while its entries survive. The
+  delete cannot reach them, and the same caller can replay them with the same
+  key for up to 1 h.
 - **Two in-process caches, stated exclusions.** Their entries outlive a
   delete, on each replica: the LLM response cache, at most 1,000 entries,
   evicted oldest first, and `cached_content_tokens`, at most 4,096, least

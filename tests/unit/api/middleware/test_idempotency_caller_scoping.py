@@ -23,12 +23,13 @@ swallow into a pass.
 import fakeredis.aioredis as fakeredis_aio
 import httpx
 import pytest
-from fastapi import Body, FastAPI, HTTPException, Request, UploadFile
+from fastapi import Body, Depends, FastAPI, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 
 from faultmaven.api.middleware.idempotency import (
     MAX_FINGERPRINTED_BODY_BYTES,
     IdempotencyMiddleware,
+    declare_replay_case_from_path,
 )
 
 VICTIM = "Bearer victim-token-aaaaaaaaaaaaaaaa"
@@ -127,6 +128,14 @@ def _build_app(redis_client=None):
         role, and it sits *inside* this middleware.
         """
         return await _create_case(request, payload)
+
+    @app.post(
+        "/api/v1/cases/{case_id}/title",
+        dependencies=[Depends(declare_replay_case_from_path)],
+    )
+    async def case_title(case_id: str, payload: dict = Body(default={})):
+        """Declares its case, as every route on the case router does (#2624)."""
+        return {"title": payload.get("title")}
 
     @app.post("/api/v1/anon-okay")
     async def anon_okay(request: Request):
@@ -934,16 +943,19 @@ async def test_failing_route_is_not_executed_twice():
     assert app.state.route_calls["boom"] == 1, "route must run at most once"
 
 
-class _SetexFailsRedis:
+class _TransactionFailsRedis:
     """A Redis stand-in that accepts reads and fails every write.
 
     Models a real Cloud condition: Redis reachable-then-not, or a write refused
     under memory pressure, in the window between draining the response body and
-    restoring it.
+    restoring it. The entry and its case index are written in one transaction
+    (#2624), which records its commands, refuses any it does not model, and
+    fails at ``EXEC``.
     """
 
     def __init__(self, inner):
         self._inner = inner
+        self.transaction = None
 
     async def get(self, key):
         return await self._inner.get(key)
@@ -951,21 +963,22 @@ class _SetexFailsRedis:
     async def keys(self, pattern):
         return await self._inner.keys(pattern)
 
-    async def setex(self, *args, **kwargs):
-        raise ConnectionError("redis unreachable")
-
-    def pipeline(self, transaction=True):
-        """The entry is written in a transaction with its case index (#2624):
-        the write fails at ``EXEC``, not as an ``AttributeError``."""
+    def pipeline(self, transaction=False):
+        assert transaction, "the entry and its index must commit together"
         self.transaction = _FailingTransaction()
         return self.transaction
 
 
 class _FailingTransaction:
-    executed = False
+    COMMANDS = ["setex", "zadd", "zremrangebyscore", "expire"]
+
+    def __init__(self):
+        self.commands, self.executed = [], False
 
     def __getattr__(self, command):
-        return lambda *args, **kwargs: self
+        if command not in self.COMMANDS:
+            raise AttributeError(f"the transaction does not model {command!r}")
+        return lambda *args, **kwargs: self.commands.append(command) or self
 
     async def execute(self):
         self.executed = True
@@ -981,20 +994,22 @@ async def test_client_still_receives_full_body_when_caching_fails():
     bytes. Caching is best-effort; delivering the response is not.
     """
     inner = fakeredis_aio.FakeRedis(decode_responses=True)
-    app, redis = _build_app(redis_client=_SetexFailsRedis(inner))
+    app, redis = _build_app(redis_client=_TransactionFailsRedis(inner))
     payload = {"title": "y" * 4000}
 
     async with _client(app) as client:
         response = await client.post(
-            "/api/v1/cases",
+            "/api/v1/cases/case_2624aaaaaaaa/title",
             headers={"Authorization": VICTIM, "Idempotency-Key": KEY},
             json=payload,
         )
 
     assert response.status_code == 200
     assert response.content, "response body must not be empty"
-    assert response.json() == {"owner": VICTIM, "title": payload["title"]}
+    assert response.json() == {"title": payload["title"]}
     assert len(response.content) == int(response.headers["content-length"])
+    # The declared case's transaction carried the entry and its index write.
+    assert redis.transaction.commands == _FailingTransaction.COMMANDS
     assert redis.transaction.executed, "the write must fail at EXEC"
 
 

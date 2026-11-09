@@ -24,6 +24,7 @@ from fastapi import (
 )
 from fastapi.responses import JSONResponse
 
+from faultmaven.api.middleware.idempotency import declare_replay_case
 from faultmaven.api.v1.auth_dependencies import require_authentication
 from faultmaven.exceptions import (
     CASE_TERMINAL,
@@ -144,8 +145,9 @@ async def delete_case(
     Every store that holds the case's data is cleared before the case itself:
     its LLM traces, its evidence search index, its uploaded files, its PII
     redaction registry, the sessions pointing at it, the answers cached for
-    replay of keyed requests (`Idempotency-Key`) that name it, its team shares
-    and its runbook conversion jobs and drafts (a published runbook is kept).
+    replay of keyed requests (`Idempotency-Key`) that acted on it, its team
+    shares and its runbook conversion jobs and drafts (a published runbook is
+    kept).
     An audit record names who deleted it and what was cleared.
 
     If any store cannot be cleared, the request answers 500
@@ -289,6 +291,7 @@ async def delete_case(
 async def create_case(
     request: CaseCreateRequest,
     response: Response,
+    raw_request: Request,
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     session_service: ISessionService = Depends(_di_get_session_service_dependency),
     current_user: UserDTO = Depends(require_authentication),
@@ -410,6 +413,7 @@ async def create_case(
 
         # Set Location header
         response.headers["Location"] = f"/api/v1/cases/{case_entity.case_id}"
+        declare_replay_case(raw_request, case_entity.case_id)
 
         # Return summary (v2.0 API model), with the creator's name (ADR-020
         # D5): the creator drives a new case.

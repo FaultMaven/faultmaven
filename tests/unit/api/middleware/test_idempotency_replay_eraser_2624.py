@@ -1,10 +1,14 @@
 """The replay cache's per-case index and the case delete's eraser (#2624),
-through the real middleware on one FakeRedis, on a single event loop."""
+through the real middleware on one FakeRedis, on a single event loop. An entry
+is indexed by the case its route declares, never by ids its exchange mentions.
+"""
+
+import time
 
 import fakeredis.aioredis as fakeredis_aio
 import httpx
 import pytest
-from fastapi import Body, FastAPI
+from fastapi import Body, Depends, FastAPI, Request
 
 from faultmaven.api.middleware import idempotency
 from faultmaven.api.middleware.idempotency import (
@@ -12,8 +16,10 @@ from faultmaven.api.middleware.idempotency import (
     IdempotencyMiddleware,
     IdempotencyReplayEraser,
     case_index_key,
+    declare_replay_case,
+    declare_replay_case_from_path,
+    declare_replay_case_from_query,
 )
-from faultmaven.modules.case.contracts import CASE_ID_PATTERN, Case
 
 pytestmark = [pytest.mark.unit]
 
@@ -21,23 +27,35 @@ CASE_A, CASE_B = "case_0123456789ab", "case_ba9876543210"
 KEY_A, KEY_B = "key-2624-aaaaaaaa", "key-2624-bbbbbbbb"
 CALLER = "Bearer caller-2624-aaaaaaaa"
 ENTERPRISE = "ent_2624"
+# What the regex scan missed or wrongly matched: an escape, a Unicode letter
+# before the id, an ``_`` after it.
+MENTIONS = f"案件{CASE_B}\n{CASE_B}_postmortem.md"
 
 
 def _app(prefix: str = KEY_PREFIX):
     app, fake, runs = FastAPI(), fakeredis_aio.FakeRedis(decode_responses=True), []
 
     @app.post("/api/v1/cases")
-    async def create(payload: dict = Body(default={})):
+    async def create(request: Request, payload: dict = Body(default={})):
         runs.append(payload)
-        return {"case_id": payload["case_id"], "run": len(runs)}
+        declare_replay_case(request, payload["case_id"])
+        return {"case_id": payload["case_id"], "title": MENTIONS, "run": len(runs)}
 
-    @app.post("/api/v1/cases/{case_id}/title")
+    path_case = [Depends(declare_replay_case_from_path)]
+
+    @app.post("/api/v1/cases/{case_id}/title", dependencies=path_case)
     async def title(case_id: str):
-        return {"title": "Disk full"}
+        return {"title": MENTIONS}
 
-    @app.post("/api/v1/reports/generate")
-    async def generate(case_id: str = "", q: str = ""):
-        return {"report": "ok"}
+    query_case = [Depends(declare_replay_case_from_query)]
+
+    @app.post("/api/v1/reports/generate", dependencies=query_case)
+    async def generate(case_id: str):
+        return {"report": MENTIONS}
+
+    @app.post("/api/v1/echo")
+    async def echo():
+        return {"named": f"{CASE_A} {MENTIONS}"}
 
     def middleware(inner, *, redis_client):
         built = IdempotencyMiddleware(inner, redis_client=redis_client)
@@ -63,32 +81,33 @@ def _replayed(response) -> bool:
     return response.headers.get("X-Idempotency-Replayed") == "true"
 
 
-def test_a_built_case_id_matches_the_grammar():
-    case_id = Case(user_id="u_2624", enterprise_id=ENTERPRISE, title="t").case_id
-    assert CASE_ID_PATTERN.fullmatch(case_id)
-    assert not CASE_ID_PATTERN.search(f"case_{case_id}")  # Chroma's collection name
-
-
 @pytest.mark.parametrize(
     "path, body",
     [
+        ("/api/v1/cases", {"case_id": CASE_A}),
         (f"/api/v1/cases/{CASE_A}/title", None),
         (f"/api/v1/reports/generate?case_id={CASE_A}", None),
-        # Decoded first: in the raw query ``%3D`` hides the id from ``\b``.
-        (f"/api/v1/reports/generate?q=case_id%3D{CASE_A}", None),
-        ("/api/v1/cases", {"case_id": CASE_A}),
     ],
-    ids=["path", "query", "encoded-query", "answer"],
+    ids=["create", "path", "query"],
 )
-async def test_the_index_records_the_case_an_exchange_names(path, body):
+async def test_only_the_declared_case_indexes_the_entry(path, body):
     app, fake = _app()
     async with _client(app) as client:
         assert (await _post(client, path, KEY_A, body)).status_code == 200
 
     index = case_index_key(KEY_PREFIX, CASE_A)
     (entry,) = [key for key in await fake.keys("idempotency:*") if key != index]
-    assert await fake.smembers(index) == {entry}
+    assert await fake.zrange(index, 0, -1) == [entry]
     assert 0 < await fake.ttl(index) <= 3600
+    assert not await fake.exists(case_index_key(KEY_PREFIX, CASE_B))
+
+
+async def test_an_undeclared_answer_naming_a_case_is_indexed_by_none():
+    app, fake = _app()
+    async with _client(app) as client:
+        assert (await _post(client, "/api/v1/echo", KEY_A)).status_code == 200
+
+    assert await fake.keys(f"{KEY_PREFIX}case:*") == []
 
 
 async def test_the_eraser_clears_the_case_and_leaves_another_cases_replay():
@@ -100,44 +119,83 @@ async def test_the_eraser_clears_the_case_and_leaves_another_cases_replay():
         await _post(client, "/api/v1/cases", KEY_B, {"case_id": CASE_B})
 
         eraser = IdempotencyReplayEraser(fake, key_prefix=prefix)
-        assert await eraser.erase_case(CASE_A, ENTERPRISE) == 1
-        assert not await fake.exists(case_index_key(prefix, CASE_A))
+        assert await eraser.erase_case(CASE_B, ENTERPRISE) == 1
+        assert not await fake.exists(case_index_key(prefix, CASE_B))
 
         again_a = await _post(client, "/api/v1/cases", KEY_A, {"case_id": CASE_A})
         again_b = await _post(client, "/api/v1/cases", KEY_B, {"case_id": CASE_B})
 
-    assert not _replayed(again_a) and again_a.json()["run"] == 3
-    assert _replayed(again_b) and again_b.json()["run"] == 2
+    # A's answer mentions B, and B's delete leaves it replaying.
+    assert _replayed(again_a) and again_a.json()["run"] == 1
+    assert not _replayed(again_b) and again_b.json()["run"] == 3
 
 
-async def test_the_erase_deletes_in_batches_and_counts_what_it_deleted(monkeypatch):
-    """A member can outlive its entry, so the count is ``DEL``'s, not the
-    set's; a case with no index sends no ``DEL``, which Redis refuses."""
+async def test_the_next_write_prunes_expired_members():
+    app, fake = _app()
+    index = case_index_key(KEY_PREFIX, CASE_A)
+    await fake.zadd(index, {"idempotency:key-2624-expired:h": time.time() - 1})
+    async with _client(app) as client:
+        await _post(client, f"/api/v1/cases/{CASE_A}/title", KEY_A)
+
+    (member,) = await fake.zrange(index, 0, -1)
+    assert member != "idempotency:key-2624-expired:h"
+
+
+async def test_an_entry_cached_after_the_snapshot_starts_a_new_index(monkeypatch):
+    app, fake = _app()
+    index = case_index_key(KEY_PREFIX, CASE_A)
+    unlink = fake.unlink
+    async with _client(app) as client:
+        await _post(client, f"/api/v1/cases/{CASE_A}/title", KEY_A)
+        (first,) = await fake.zrange(index, 0, -1)
+
+        async def cache_one_first(*keys):
+            await _post(client, f"/api/v1/cases/{CASE_A}/title", KEY_B)
+            return await unlink(*keys)
+
+        monkeypatch.setattr(fake, "unlink", cache_one_first)
+        assert await IdempotencyReplayEraser(fake).erase_case(CASE_A, ENTERPRISE) == 1
+
+        (later,) = await fake.zrange(index, 0, -1)
+        assert later != first and not await fake.exists(first)
+        assert _replayed(await _post(client, f"/api/v1/cases/{CASE_A}/title", KEY_B))
+
+
+async def test_the_erase_unlinks_in_batches_and_counts_what_it_removed(monkeypatch):
+    """A member can outlive its entry, so the count is ``UNLINK``'s, not the
+    index's; a case with no index unlinks nothing."""
     monkeypatch.setattr(idempotency, "ERASE_BATCH", 2)
     fake = fakeredis_aio.FakeRedis(decode_responses=True)
     live = [f"idempotency:key-2624-{n}aaaaaaa:h" for n in range(3)]
     for key in live:
         await fake.set(key, "{}")
     index = case_index_key(KEY_PREFIX, CASE_A)
-    await fake.sadd(index, *live, "idempotency:key-2624-expired:h")
-    calls, delete = [], fake.delete
+    expiry = time.time() + 3600
+    await fake.zadd(index, {k: expiry for k in [*live, "idempotency:key-2624-gone:h"]})
+    calls, unlink = [], fake.unlink
 
     async def counted(*keys):
         calls.append(len(keys))
-        return await delete(*keys)
+        return await unlink(*keys)
 
-    monkeypatch.setattr(fake, "delete", counted)
+    monkeypatch.setattr(fake, "unlink", counted)
     eraser = IdempotencyReplayEraser(fake)
 
     assert await eraser.erase_case(CASE_B, ENTERPRISE) == 0
     assert calls == []
     assert await eraser.erase_case(CASE_A, ENTERPRISE) == 3
-    assert calls == [2, 2, 1]  # the four members, then the index
+    assert calls == [2, 2]
     assert await fake.keys("*") == []
 
 
 class _Unreachable:
-    async def smembers(self, key):
+    def pipeline(self, transaction=False):
+        return self
+
+    def __getattr__(self, command):
+        return lambda *args, **kwargs: None
+
+    async def execute(self):
         raise ConnectionError("redis unreachable")
 
 

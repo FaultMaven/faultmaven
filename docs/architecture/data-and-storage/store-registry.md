@@ -62,7 +62,7 @@ the Redis rows live in the API process's in-process FakeRedis and end with it;
 | **Redis `session:`, `sessions:user:`, `client_index:`** (auth sessions) | Redis | operational metadata: the session record and its indexes | user | derived through the user row | the auth module's `RedisSessionStore` | not written by turns |
 | **Redis `session:case_seq:`** (case number counters) | Redis | operational metadata: a counter | user | derived through the user row | the case module's `CaseService`, through the session store | not written by turns |
 | **Redis `session:session:…:current_case_id`** (session pointers) | Redis | operational metadata: a case id | case | derived through the case row | the case module's `CaseService`, through the session store | not written by turns |
-| **Redis `idempotency:`** (replayed POST answers) | Redis | customer content: the cached response's status, headers and body | user · case | none: the caller's identity is hashed into the key | `api/middleware/idempotency.py` | outside: cached after the route answers |
+| **Redis `idempotency:`** (replayed POST answers) and **`idempotency:case:{case_id}`** (their index by case) | Redis | customer content: the cached response's status, headers and body. The index, a sorted set keyed by case id, holds the entry keys of the requests that acted on the case, each scored by its expiry; each write drops expired members, and it lapses 1 h after its newest entry | user · case | none: the caller's identity is hashed into the key; the index names the case | `api/middleware/idempotency.py`, the index from the case a route declares, in the entry's transaction | outside: cached after the route answers |
 | **Redis `sso:state:`, `sso:login:`** | Redis | operational metadata: sign-in state and its completion code | user | none | the auth module's `SSOEphemeralStore` | not written by turns |
 | **Redis `oauth:code:`, `oauth:claim:`** | Redis, when `OAUTH_ENABLED` | operational metadata: authorization codes and their single-use claims | user | none on the key | the auth module's `RedisOAuthCodeRepository` | not written by turns |
 | **Redis `password_reset:`** | Redis | operational metadata: a reset token's id | user | none | the auth module's `UserService` | not written by turns |
@@ -98,7 +98,7 @@ the Redis rows live in the API process's in-process FakeRedis and end with it;
 | **Redis `session:`, `sessions:user:`, `client_index:`** | user: `DELETE /sessions/{session_id}` deletes one session | through the user row: `not built` | cleared | `SESSION_TIMEOUT_MINUTES` (default 30) past the last write; an index lives as long as its newest session |
 | **Redis `session:case_seq:`** | none | through the user row: `not built` | cleared, under `session:` (the wipe's `case_seq:` prefix matches none of these keys) | 48 h |
 | **Redis `session:session:…:current_case_id`** | case: erased by the case delete | through the case row: `not built` | cleared, under `session:` | 24 h |
-| **Redis `idempotency:`** | case: every entry whose request target or answer names the case, through `idempotency:case:{case_id}`, erased by the case delete; one cached after the eraser ran is a [residual](../../operations/case-deletion.md#residuals); user: none | no stamp to reach it by: `not built` | cleared, the indexes with it | 1 h |
+| **Redis `idempotency:`** | case: every entry whose request acted on the case, as its route declared, not every case it mentions, through `idempotency:case:{case_id}`, erased by the case delete; one cached after the eraser read the index, or under an index Redis lost, is a [residual](../../operations/case-deletion.md#residuals); user: none | no stamp to reach it by: `not built` | cleared, the indexes with it | 1 h; an index, 1 h past its newest entry |
 | **Redis `sso:state:`, `sso:login:`** | consumed once | none needed: bounded by its TTL | cleared | 600 s and 60 s |
 | **Redis `oauth:code:`, `oauth:claim:`** | claimed once | none needed: bounded by its TTL | `oauth:code:` cleared; `oauth:claim:` left, reported under no known prefix | `OAUTH_CODE_EXPIRY_SECONDS` (default 600); a claim inherits its code's remaining TTL |
 | **Redis `password_reset:`** | none | none needed: bounded by its TTL | cleared | 1 h |
@@ -202,20 +202,23 @@ Citations only. Paths are relative to `faultmaven/` unless they start with
   the store's prefix: `modules/auth/infrastructure/stores/redis_session_store.py:205-212`.
 - Session pointers: `modules/case/domain/services/case_erasure.py:14-31`;
   `modules/case/domain/services/case_service.py:323-327`, `:783-787`.
-- `idempotency:`: `api/middleware/idempotency.py:162-163`, `:743-752`, `:793-821`, `:570-574`.
-  Delete, case: the entry's key joins the index of each case id its path, decoded
-  query or answer names (`CASE_ID_PATTERN`, `modules/case/contracts.py:481-484`),
-  in the entry's own MULTI/EXEC (`api/middleware/idempotency.py:144-153`,
-  `:809-821`); `IdempotencyReplayEraser` (`:880-910`) is bound in
-  `container/providers/services.py:121-126`, and reported `not_configured` under
-  `SKIP_SERVICE_CHECKS`, where the middleware is not mounted
-  (`bootstrap/middleware.py:104-119`). The index's bounds: a member can outlive
-  its entry, until the set's 1 h TTL; a caller grows another case's index only
-  with its own entries, by naming that case's id in a keyed request answered 2xx
-  (a query the route ignores, text the answer echoes), so by its POST rate × 1 h,
-  and an erase drops only that caller's replays; a `WRONGTYPE` inside the
-  transaction does not roll back the `SETEX`, reachable only if something wrote a
-  non-set under an index key, and nothing does.
+- `idempotency:`: `api/middleware/idempotency.py:185-186`, `:772-781`, `:823-845`, `:599-603`.
+  Delete, case: a route declares the case its request acts on
+  (`api/middleware/idempotency.py:144-176`, read at `:400-411`): the case router
+  by its `{case_id}` path (`modules/case/api/routes/router.py:27`), the create
+  route by the new case (`modules/case/api/routes/cases.py:416`), the report
+  routes by `case_id` and by the report's case (`modules/report/api/routes.py:329`,
+  `:912`). Case search answers many cases and is `never_replayed` (`main.py:214-225`).
+  The entry joins that case's index in its own MULTI/EXEC, with the prune
+  (`api/middleware/idempotency.py:838-845`). `IdempotencyReplayEraser`
+  (`:904-936`) reads and drops the index in one MULTI/EXEC, then unlinks; it is
+  bound in `container/providers/services.py:121-126`, and reported
+  `not_configured` under `SKIP_SERVICE_CHECKS`, where the middleware is not
+  mounted (`bootstrap/middleware.py:104-119`). The index's bounds: a member can
+  outlive its entry until the next write to the index prunes it or the index
+  lapses; a `WRONGTYPE` inside the transaction does not roll back the `SETEX`,
+  reachable only if something wrote another type under an index key, and nothing
+  does; an eviction or a failover can lose an index while its entries survive.
 - SSO: `modules/auth/infrastructure/stores/sso_ephemeral_store.py:19-47`;
   `modules/auth/domain/services/sso_login_service.py:117`, `:121`.
 - OAuth: `modules/auth/infrastructure/repositories/oauth_code_repository.py:87-103`,

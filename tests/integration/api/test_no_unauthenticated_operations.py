@@ -974,9 +974,14 @@ def _resolution_order(dependant) -> list:
 #: refusals a route makes ON PURPOSE before anyone is authenticated. Those are
 #: named in the sibling module beside ``MANDATORY_AUTH_DEPENDENCIES``, not here,
 #: because they are shared vocabulary rather than this predicate's private list.
+#:
+#: The case router's replay declaration (#2624) is a router dependency, so it
+#: resolves ahead of every route's gate. It reads the path into
+#: ``request.state``, calls nothing and cannot answer or raise.
 _PERMITTED_BEFORE_A_GATE = frozenset(
     {
         "faultmaven.api.middleware.tenant_scope.bind_request_enterprise_context",
+        "faultmaven.api.middleware.idempotency.declare_replay_case_from_path",
     }
 )
 

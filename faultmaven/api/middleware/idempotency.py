@@ -18,6 +18,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import time
 from typing import Any, Dict, Optional
 
 from fastapi import Request, Response
@@ -31,7 +32,6 @@ from faultmaven.config.idempotency_key import (
     is_valid_idempotency_key,
 )
 from faultmaven.infrastructure.logging.coordinator import current_correlation_id
-from faultmaven.modules.case.contracts import CASE_ID_PATTERN
 
 from .route_policy import (
     APP_STATE_POLICY_ATTR as APP_STATE_POLICY_ATTR_INTERNAL,
@@ -143,14 +143,37 @@ UNFINGERPRINTED_BODY = "body-unfingerprinted"
 #: Where the replay entries live, and their per-case indexes beside them.
 KEY_PREFIX = "idempotency:"
 
-#: How many entries one ``DEL`` of the case delete names.
+#: How many entries one ``UNLINK`` of the case delete names.
 ERASE_BATCH = 500
+
+#: The ``request.state`` attribute naming the case a keyed request acts on.
+_REPLAY_CASE = "idempotency_replay_case_id"
 
 
 def case_index_key(key_prefix: str, case_id: str) -> str:
-    """The set of replay entries whose exchange names ``case_id`` (#2624). An
-    entry key never takes this shape: a key has at least 8 characters."""
+    """The sorted set of replay entries whose request acted on ``case_id``,
+    each scored by its expiry (#2624). An entry key never takes this shape: a
+    key has at least 8 characters."""
     return f"{key_prefix}case:{case_id}"
+
+
+def declare_replay_case(request: Request, case_id: str) -> None:
+    """Name the case this request acts on, so its cached answer is indexed by
+    that case and erased by its delete (#2624). Set by the route or a
+    dependency; the middleware reads it after the route answers."""
+    setattr(request.state, _REPLAY_CASE, case_id)
+
+
+def declare_replay_case_from_path(request: Request) -> None:
+    """A router dependency: the case a route's ``{case_id}`` path names."""
+    if case_id := request.path_params.get("case_id"):
+        declare_replay_case(request, case_id)
+
+
+def declare_replay_case_from_query(request: Request) -> None:
+    """A route dependency: the case a route's ``case_id`` query names."""
+    if case_id := request.query_params.get("case_id"):
+        declare_replay_case(request, case_id)
 
 
 class IdempotencyMiddleware(BaseHTTPMiddleware):
@@ -372,14 +395,20 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
                 )
                 return self._create_response_from_cache(cached_response)
 
-            # Process request normally
+            # Process request normally. The state is created in the scope
+            # first, so the case a route declares lands where this reads it.
+            state = request.state
             downstream_invoked = True
             response = await call_next(request)
 
             # Cache successful responses (2xx status codes)
             if 200 <= response.status_code < 300:
                 await self._cache_response(
-                    cache_key, response, idempotency_key, body_fingerprint, request
+                    cache_key,
+                    response,
+                    idempotency_key,
+                    body_fingerprint,
+                    getattr(state, _REPLAY_CASE, None),
                 )
 
             return response
@@ -767,7 +796,7 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         response: Response,
         idempotency_key: str,
         body_fingerprint: str,
-        request: Request,
+        case_id: Optional[str],
     ):
         """Cache response in Redis with TTL.
 
@@ -778,11 +807,12 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         status and Content-Length with a zero-byte body: a silent truncation of
         every idempotent POST response for as long as Redis is unreachable.
 
-        The entry's key also joins the index of every case id the request path,
-        its decoded query or the answer names (``case_index_key``), so the case
-        delete can find it (#2624). Entry and index commit in ONE MULTI/EXEC:
-        a pipeline that is not a transaction can commit the entry and lose the
-        index on a dropped connection.
+        The entry's key also joins the index of the case its route declared
+        (``declare_replay_case``), scored by its expiry, so the case delete can
+        find it (#2624); the same write drops the index's expired members.
+        Entry and index commit in ONE MULTI/EXEC: a pipeline that is not a
+        transaction can commit the entry and lose the index on a dropped
+        connection.
         """
         body = b""
         try:
@@ -791,11 +821,10 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
                 body += chunk
 
             # Prepare cache data
-            text = body.decode("utf-8") if body else ""
             cache_data = {
                 "status_code": response.status_code,
                 "headers": dict(response.headers),
-                "body": text,
+                "body": body.decode("utf-8") if body else "",
                 "content_type": response.headers.get(
                     "content-type", "application/json"
                 ),
@@ -806,17 +835,12 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
                 "cached_at": self._get_timestamp(),
             }
 
-            named = [request.url.path, text]
-            named += [
-                part for pair in request.query_params.multi_items() for part in pair
-            ]
-            case_ids = {m for part in named for m in CASE_ID_PATTERN.findall(part)}
-
             transaction = self.redis_client.pipeline(transaction=True)
             transaction.setex(cache_key, self.ttl_seconds, json.dumps(cache_data))
-            for case_id in sorted(case_ids):
-                index = case_index_key(self.key_prefix, case_id)
-                transaction.sadd(index, cache_key)
+            if case_id:
+                index, now = case_index_key(self.key_prefix, case_id), time.time()
+                transaction.zadd(index, {cache_key: now + self.ttl_seconds})
+                transaction.zremrangebyscore(index, "-inf", now)
                 transaction.expire(index, self.ttl_seconds)
             await transaction.execute()
 
@@ -879,10 +903,12 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
 
 class IdempotencyReplayEraser:
     """The case delete's eraser for replayed answers (#2624): every entry whose
-    request target or answer names the case, read from the case's index, then
-    the index. Returns the entries actually deleted, which can be fewer than
-    the index lists: a member outlives an entry that already expired. A Redis
-    error raises, which keeps the case row for a retry (#1016).
+    request acted on the case. The index is read and dropped in ONE MULTI/EXEC,
+    so an entry cached after that starts a new index rather than joining a
+    dropped one; then its members are unlinked. Returns the entries actually
+    removed, which can be fewer than the index listed: a member outlives an
+    entry that already expired. A Redis error raises, which keeps the case row
+    for a retry (#1016).
 
     It reaches the middleware's keys only because both hold the same Redis: in
     production both come from the composition root (``bootstrap/composition.py``
@@ -898,16 +924,16 @@ class IdempotencyReplayEraser:
         self.key_prefix = key_prefix
 
     async def erase_case(self, case_id: str, enterprise_id: str) -> int:
+        snapshot = self.redis_client.pipeline(transaction=True)
         index = case_index_key(self.key_prefix, case_id)
-        entries = sorted(await self.redis_client.smembers(index))
-        if not entries:  # ``DEL`` with no keys is an error
-            return 0
-        deleted = 0
+        snapshot.zrange(index, 0, -1)
+        snapshot.delete(index)
+        entries, _ = await snapshot.execute()
+        removed = 0
         for start in range(0, len(entries), ERASE_BATCH):
             batch = entries[start : start + ERASE_BATCH]
-            deleted += int(await self.redis_client.delete(*batch))
-        await self.redis_client.delete(index)
-        return deleted
+            removed += int(await self.redis_client.unlink(*batch))
+        return removed
 
 
 def create_idempotency_middleware(

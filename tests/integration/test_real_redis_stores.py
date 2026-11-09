@@ -29,10 +29,15 @@ from pathlib import Path
 
 import httpx
 import pytest
-from fastapi import Body, FastAPI
+from fastapi import Body, Depends, FastAPI
 from redis.utils import HIREDIS_AVAILABLE
 
-from faultmaven.api.middleware.idempotency import IdempotencyMiddleware
+from faultmaven.api.middleware.idempotency import (
+    IdempotencyMiddleware,
+    IdempotencyReplayEraser,
+    case_index_key,
+    declare_replay_case_from_path,
+)
 from faultmaven.config.idempotency_key import IDEMPOTENCY_REPLAYED_HEADER
 from faultmaven.infrastructure.protection.rate_limiter import RedisRateLimiter
 from faultmaven.models.common import SessionContext
@@ -222,6 +227,54 @@ async def test_idempotency_stores_a_keyed_response_and_replays_its_retry(
     assert retry.headers[IDEMPOTENCY_REPLAYED_HEADER] == "true"
     assert retry.json() == first.json() == {"created": 1, "title": "t"}
     assert len(calls) == 1, "the replayed retry must not reach the route"
+
+
+async def test_idempotency_indexes_the_declared_case_and_its_eraser_clears_it(
+    real_redis, namespace
+):
+    """#2624 on the server: the entry, its case index and the prune commit in
+    one MULTI/EXEC; the eraser snapshots and drops the index, then unlinks."""
+    prefix, case_id, runs = f"{namespace}idempotency:", "case_2624aaaaaaaa", []
+    app = FastAPI()
+
+    @app.post(
+        "/api/v1/cases/{case_id}/title",
+        dependencies=[Depends(declare_replay_case_from_path)],
+    )
+    async def title(case_id: str):
+        runs.append(case_id)
+        return {"title": "Disk full"}
+
+    def namespaced_idempotency(inner, *, redis_client):
+        middleware = IdempotencyMiddleware(inner, redis_client=redis_client)
+        middleware.key_prefix = prefix
+        return middleware
+
+    app.add_middleware(namespaced_idempotency, redis_client=real_redis)
+    index, expired = case_index_key(prefix, case_id), f"{prefix}expired:h"
+    await real_redis.zadd(index, {expired: time.time() - 1})
+    first_key = str(uuid.uuid4())
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://x") as client:
+
+        async def post(key):
+            headers = {"Authorization": "Bearer caller", "Idempotency-Key": key}
+            return await client.post(f"/api/v1/cases/{case_id}/title", headers=headers)
+
+        await post(first_key)
+        await post(str(uuid.uuid4()))
+        entries = await real_redis.zrange(index, 0, -1)
+        assert len(entries) == 2 and expired not in entries
+        assert 0 < await real_redis.ttl(index) <= 3600
+
+        eraser = IdempotencyReplayEraser(real_redis, key_prefix=prefix)
+        assert await eraser.erase_case(case_id, "ent_2624") == 2
+        assert await real_redis.exists(index, *entries) == 0
+        retry = await post(first_key)
+
+    assert IDEMPOTENCY_REPLAYED_HEADER not in retry.headers
+    assert len(runs) == 3
 
 
 def _namespaced_session_store(

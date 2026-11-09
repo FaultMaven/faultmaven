@@ -990,7 +990,7 @@ class CaseService(CaseDriverMixin, ICaseService):
         - the title route holds no lease, so its trace can land after the delete
           (#2580);
         - a keyed POST that holds no lease can cache its answer for replay after
-          the replay eraser ran (#2624).
+          the replay eraser read the case's index (#2624).
 
         Returns:
             True when deleted, False when ``user_id`` can see the case but did

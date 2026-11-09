@@ -9,7 +9,10 @@ that mounts it, with ONE FakeRedis held by the middleware and the erasers, as
 the composition root's shared client is.
 """
 
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from uuid import uuid4
 
 import chromadb
 import fakeredis.aioredis as fakeredis_aio
@@ -30,11 +33,12 @@ from faultmaven.modules.auth.contracts import UserDTO
 from faultmaven.modules.auth.infrastructure.stores.redis_session_store import (
     RedisSessionStore,
 )
-from faultmaven.modules.case.api.routes.cases import router
 from faultmaven.modules.case.api.routes.dependencies import (
     _di_get_case_service_dependency,
     _di_get_session_service_dependency,
 )
+from faultmaven.modules.case.api.routes.router import router
+from faultmaven.modules.case.contracts import Case, CaseState
 from faultmaven.modules.case.infrastructure.case_repository import (
     InMemoryCaseRepository,
 )
@@ -49,10 +53,8 @@ from tests.chroma_clients import closed_at_teardown
 pytestmark = [pytest.mark.integration]
 
 OWNER = "u_2624"
-HEADERS = {
-    "Idempotency-Key": "create-2624-aaaaaaaa",
-    "Authorization": "Bearer token-2624-aaaaaaaa",
-}
+KEY, OTHER_KEY = "create-2624-aaaaaaaa", "create-2624-bbbbbbbb"
+AUTHORIZATION = {"Authorization": "Bearer token-2624-aaaaaaaa"}
 
 
 @pytest.fixture(autouse=True)
@@ -62,7 +64,8 @@ def _tenant():
     set_current_enterprise_id(STANDALONE_ENTERPRISE_ID)
 
 
-async def test_a_deleted_cases_keyed_create_runs_again(tmp_path, monkeypatch):
+@pytest.fixture
+async def world(tmp_path, monkeypatch):
     # The conversion eraser's SQL is test_case_deletion_repository_1016's.
     monkeypatch.setattr(
         RunbookConversionEraser, "erase_case", AsyncMock(return_value=0)
@@ -88,25 +91,69 @@ async def test_a_deleted_cases_keyed_create_runs_again(tmp_path, monkeypatch):
     app.dependency_overrides[_di_get_case_service_dependency] = lambda: service
     app.dependency_overrides[_di_get_session_service_dependency] = lambda: None
     app.add_middleware(IdempotencyMiddleware, redis_client=fake)
-
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://testserver"
     ) as client:
+        yield SimpleNamespace(client=client, service=service)
 
-        async def create() -> httpx.Response:
-            return await client.post(
-                "/api/v1/cases", headers=HEADERS, json={"title": "Disk full"}
-            )
 
-        first, replay = await create(), await create()
-        case_id = first.json()["case_id"]
-        assert first.status_code == replay.status_code == 201
-        assert replay.headers.get(IDEMPOTENCY_REPLAYED_HEADER) == "true"
-        assert replay.json()["case_id"] == case_id
+def _create(world, title="Disk full", key=KEY):
+    headers = {**AUTHORIZATION, "Idempotency-Key": key}
+    return world.client.post("/api/v1/cases", headers=headers, json={"title": title})
 
-        assert (await client.delete(f"/api/v1/cases/{case_id}")).status_code == 204
-        again = await create()
+
+def _replayed(response) -> bool:
+    return response.headers.get(IDEMPOTENCY_REPLAYED_HEADER) == "true"
+
+
+async def test_a_deleted_cases_keyed_create_runs_again(world):
+    first, replay = await _create(world), await _create(world)
+    case_id = first.json()["case_id"]
+    assert first.status_code == replay.status_code == 201
+    assert _replayed(replay) and replay.json()["case_id"] == case_id
+
+    assert (await world.client.delete(f"/api/v1/cases/{case_id}")).status_code == 204
+    again = await _create(world)
 
     assert again.status_code == 201
-    assert IDEMPOTENCY_REPLAYED_HEADER not in again.headers
+    assert not _replayed(again)
     assert again.json()["case_id"] != case_id
+
+
+async def test_another_cases_create_naming_it_keeps_replaying(world):
+    """The create of Y answers Y, though its title names X."""
+    x = (await _create(world)).json()["case_id"]
+    y = (await _create(world, title=f"dup of {x}", key=OTHER_KEY)).json()["case_id"]
+
+    assert (await world.client.delete(f"/api/v1/cases/{x}")).status_code == 204
+    retry = await _create(world, title=f"dup of {x}", key=OTHER_KEY)
+
+    assert _replayed(retry) and retry.json()["case_id"] == y
+
+
+async def test_a_keyed_post_on_the_cases_path_is_erased_whatever_it_answers(world):
+    """Its path declares the case; the answer names it only after a Unicode
+    letter, which the regex scan missed and nothing depends on now."""
+    now, case_id = datetime.now(timezone.utc), f"case_{uuid4().hex[:12]}"
+    case = await world.service.repository.save(
+        Case(
+            case_id=case_id,
+            user_id=OWNER,
+            enterprise_id="ent_2624",
+            title=f"案件{case_id}",
+            state=CaseState.CLOSED,
+            created_at=now - timedelta(minutes=1),
+            closed_at=now,
+            closure_reason="closed_insufficient_evidence",
+        )
+    )
+    title = f"/api/v1/cases/{case.case_id}/title"
+    headers = {**AUTHORIZATION, "Idempotency-Key": KEY}
+    first = await world.client.post(title, headers=headers)
+    assert first.status_code == 200 and first.json()["title"] == f"案件{case_id}"
+    assert _replayed(await world.client.post(title, headers=headers))
+
+    assert (await world.client.delete(title.removesuffix("/title"))).status_code == 204
+    after = await world.client.post(title, headers=headers)
+
+    assert after.status_code == 404 and not _replayed(after)
