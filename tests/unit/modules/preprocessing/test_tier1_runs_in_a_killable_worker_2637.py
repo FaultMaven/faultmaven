@@ -279,6 +279,8 @@ async def test_a_slot_frees_after_more_kills_than_there_are_slots(monkeypatch, s
     """With one slot, two extractions past the deadline in turn are each
     killed, and a third still gets the slot: no killed worker kept it."""
     _slots(monkeypatch, 1)
+    monkeypatch.setattr(ps, "TIER1_START_SECONDS", 60)
+    monkeypatch.setattr(ps, "TIER1_TRANSFER_BASE_SECONDS", 60)
     monkeypatch.setattr(ps, "TIER1_TIMEOUT_SECONDS", 0.5)
     service = _service()
 
@@ -332,6 +334,8 @@ async def test_no_slot_within_its_bound_is_the_busy_preview(
     """A slot wait has its own bound and reason: the server was busy, and no
     worker starts for it."""
     _slots(monkeypatch, 1)
+    monkeypatch.setattr(ps, "TIER1_START_SECONDS", 60)
+    monkeypatch.setattr(ps, "TIER1_TRANSFER_BASE_SECONDS", 60)
     monkeypatch.setattr(ps, "TIER1_TIMEOUT_SECONDS", 60)
     monkeypatch.setattr(ps, "TIER1_SLOT_WAIT_SECONDS", 0.2)
     loop, entered, service = asyncio.get_running_loop(), asyncio.Event(), _service()
@@ -356,6 +360,8 @@ async def test_a_cancelled_extraction_kills_and_reaps_its_worker(
     monkeypatch, spawned, on_entered
 ):
     _slots(monkeypatch, 1)
+    monkeypatch.setattr(ps, "TIER1_START_SECONDS", 60)
+    monkeypatch.setattr(ps, "TIER1_TRANSFER_BASE_SECONDS", 60)
     monkeypatch.setattr(ps, "TIER1_TIMEOUT_SECONDS", 60)
     loop, entered = asyncio.get_running_loop(), asyncio.Event()
     on_entered(lambda: loop.call_soon_threadsafe(entered.set))
