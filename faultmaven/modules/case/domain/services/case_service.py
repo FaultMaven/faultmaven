@@ -961,10 +961,11 @@ class CaseService(CaseDriverMixin, ICaseService):
 
         Every store that holds the case's data is cleared BEFORE the row, by
         ``store_erasers`` in their bound order: LLM traces, session pointers,
-        runbook conversion, uploads, case vectors, PII registry. The traces go
-        first, so a trace backend that is down leaves the case untouched. The
-        first eraser that raises is logged by store and propagates, so the row
-        stays and a retry can finish the delete.
+        runbook conversion, uploads, case vectors, PII registry, replayed
+        answers (``idempotency:``, #2624). The traces go first, so a trace
+        backend that is down leaves the case untouched. The first eraser that
+        raises is logged by store and propagates, so the row stays and a retry
+        can finish the delete.
         The row then goes in one transaction with its share rows and its
         ``case_deleted`` audit row (``ICaseRepository.delete``); child tables
         go by their FK cascade. A save of a copy loaded before the delete is
@@ -987,7 +988,9 @@ class CaseService(CaseDriverMixin, ICaseService):
         - a trace parked or still batched on another replica is invisible to the
           delete and can land after it (#2573);
         - the title route holds no lease, so its trace can land after the delete
-          (#2580).
+          (#2580);
+        - a keyed POST that holds no lease can cache its answer for replay after
+          the replay eraser ran (#2624).
 
         Returns:
             True when deleted, False when ``user_id`` can see the case but did

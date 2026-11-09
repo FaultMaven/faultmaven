@@ -15,7 +15,9 @@ holds the case's data before it deletes the row:
 - its runbook conversion jobs and drafts (a published runbook is kept);
 - its uploaded files;
 - its evidence search index (the `case_{case_id}` ChromaDB collection);
-- its PII redaction registry.
+- its PII redaction registry;
+- the answers cached for replay (`Idempotency-Key`) whose request path, query
+  or answer names the case (#2624).
 
 Then the row goes, in one transaction with its team shares and a
 `case_deleted` audit row. If a store cannot be cleared, the delete answers
@@ -181,6 +183,18 @@ read reports it.
   (`POST /cases/sessions/{session_id}/resume/{case_id}`) is not a turn and
   holds no lease. One that passed its access check before the delete can
   re-write the session pointer.
+- **An answer cached for replay after the eraser ran (#2624).** A keyed POST on
+  a case route that holds no lease (title, reports, close, resume, or the
+  create's own answer arriving late) can cache its answer after the delete's
+  eraser has run. Only the same caller replaying the same key can read it, for
+  at most 1 h.
+- **Two in-process caches, stated exclusions.** Their entries outlive a
+  delete, on each replica: the LLM response cache, at most 1,000 entries,
+  evicted oldest first, and `cached_content_tokens`, at most 4,096, least
+  recently used, each until evicted or the process ends. No request asks for a
+  deleted case id again, or reads a key back as text, and an eraser would need
+  a cross-replica broadcast for memory nothing can read
+  ([ruling on #2624](https://github.com/FaultMaven/faultmaven/issues/2624#issuecomment-6719598372)).
 
 ## At shutdown
 

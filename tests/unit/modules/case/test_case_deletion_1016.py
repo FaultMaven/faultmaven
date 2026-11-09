@@ -27,9 +27,14 @@ from fastapi import HTTPException, Response
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from faultmaven.api.middleware.idempotency import IdempotencyReplayEraser
 from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
+from faultmaven.config.settings import get_settings
 from faultmaven.config.tenant_context import set_current_enterprise_id
-from faultmaven.container.providers.services import create_case_service
+from faultmaven.container.providers.services import (
+    case_store_erasers,
+    create_case_service,
+)
 from faultmaven.exceptions import NotFoundError, ServiceError, ServiceException
 from faultmaven.infrastructure.concurrency.inflight import CaseDeleteGate
 from faultmaven.infrastructure.observability import opik_sdk
@@ -45,7 +50,10 @@ from faultmaven.modules.auth.infrastructure.stores.redis_session_store import (
 )
 from faultmaven.modules.case.api.routes.cases import delete_case, get_case
 from faultmaven.modules.case.contracts import Case, CaseState
-from faultmaven.modules.case.domain.services.case_erasure import SessionPointerEraser
+from faultmaven.modules.case.domain.services.case_erasure import (
+    SessionPointerEraser,
+    UnavailableStoreEraser,
+)
 from faultmaven.modules.case.domain.services.case_service import CaseService
 from faultmaven.modules.case.exceptions import StaleCaseException
 from faultmaven.modules.case.infrastructure.case_repository import (
@@ -141,10 +149,7 @@ class TestHardDeleteCase:
         assert (deletion.case_id, deletion.actor_user_id) == (cid, CREATOR)
         assert deletion.cleared == {"uploads": 3, "pii_redaction_registry": 1}
         assert deletion.not_configured == ("case_vectors",)
-        assert set(json_of(deletion)["not_cleared"]) == {
-            "idempotency_replay_cache",
-            "llm_response_cache",
-        }
+        assert set(json_of(deletion)["not_cleared"]) == {"llm_response_cache"}
 
     async def test_a_store_that_cannot_be_cleared_keeps_the_case(self):
         w = await _world(("uploads", {}), ("case_vectors", {"fail": True}))
@@ -449,8 +454,6 @@ class TestComposition:
             self._build(tmp_path, skip=True, case_vector_store=None)
 
     def _build(self, tmp_path, *, skip, case_vector_store, **observability):
-        from faultmaven.config.settings import get_settings
-
         settings = get_settings().model_copy(deep=True)
         settings.server.skip_service_checks = skip
         for name, value in observability.items():
@@ -475,7 +478,12 @@ class TestComposition:
             "uploads",
             "pii_redaction_registry",
         ]
-        assert service.stores_not_configured == ("llm_traces", "case_vectors")
+        # The idempotency middleware is not mounted here (#2624).
+        assert service.stores_not_configured == (
+            "llm_traces",
+            "case_vectors",
+            "idempotency_replays",
+        )
         # The delete is gated on the case's in-flight lease, in the shared
         # Redis client (#2096).
         assert isinstance(service.delete_gate, CaseDeleteGate)
@@ -489,6 +497,26 @@ class TestComposition:
         assert isinstance(service, CaseService)
         assert service.store_erasers[3] is vectors
         assert service.stores_not_configured == ("llm_traces",)
+        # The replayed answers clear last, on the shared client (#2624).
+        assert [e.store_name for e in service.store_erasers[-2:]] == [
+            "pii_redaction_registry",
+            "idempotency_replays",
+        ]
+        assert isinstance(service.store_erasers[-1], IdempotencyReplayEraser)
+        assert service.store_erasers[-1].redis_client is self.redis
+
+    def test_production_without_redis_binds_an_eraser_that_raises(self):
+        settings = get_settings().model_copy(deep=True)
+        settings.server.skip_service_checks = False
+        erasers, _ = case_store_erasers(
+            session_store=None,
+            file_storage_service=None,
+            case_vector_store=None,
+            redis_client=None,
+            settings=settings,
+        )
+        assert isinstance(erasers[-1], UnavailableStoreEraser)
+        assert erasers[-1].store_name == "idempotency_replays"
 
     async def test_an_unconstructed_store_fails_the_delete(self, tmp_path):
         absent = self._build(tmp_path, skip=False, case_vector_store=None)
@@ -533,7 +561,7 @@ class TestComposition:
         assert isinstance(service.store_erasers[0], LLMTraceEraser)
         # The record's project, resolved once, not the setting read again.
         assert service.store_erasers[0].project_name == "fm-project"
-        assert service.stores_not_configured == ("case_vectors",)
+        assert service.stores_not_configured == ("case_vectors", "idempotency_replays")
 
     @pytest.mark.parametrize(
         "observability",
@@ -552,7 +580,11 @@ class TestComposition:
         )
 
         assert "llm_traces" not in [e.store_name for e in service.store_erasers]
-        assert service.stores_not_configured == ("llm_traces", "case_vectors")
+        assert service.stores_not_configured == (
+            "llm_traces",
+            "case_vectors",
+            "idempotency_replays",
+        )
 
     @pytest.mark.parametrize(
         "record, refusal",
@@ -583,7 +615,7 @@ class TestComposition:
             opik_use_local=True,
         )
 
-        assert service.stores_not_configured == ("case_vectors",)
+        assert service.stores_not_configured == ("case_vectors", "idempotency_replays")
         with pytest.raises(ServiceException, match=f"llm_traces.*{refusal}"):
             await service.store_erasers[0].erase_case("case_a", ENTERPRISE)
 

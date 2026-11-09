@@ -954,6 +954,23 @@ class _SetexFailsRedis:
     async def setex(self, *args, **kwargs):
         raise ConnectionError("redis unreachable")
 
+    def pipeline(self, transaction=True):
+        """The entry is written in a transaction with its case index (#2624):
+        the write fails at ``EXEC``, not as an ``AttributeError``."""
+        self.transaction = _FailingTransaction()
+        return self.transaction
+
+
+class _FailingTransaction:
+    executed = False
+
+    def __getattr__(self, command):
+        return lambda *args, **kwargs: self
+
+    async def execute(self):
+        self.executed = True
+        raise ConnectionError("redis unreachable")
+
 
 async def test_client_still_receives_full_body_when_caching_fails():
     """A Redis write failure must not truncate the response.
@@ -964,7 +981,7 @@ async def test_client_still_receives_full_body_when_caching_fails():
     bytes. Caching is best-effort; delivering the response is not.
     """
     inner = fakeredis_aio.FakeRedis(decode_responses=True)
-    app, _ = _build_app(redis_client=_SetexFailsRedis(inner))
+    app, redis = _build_app(redis_client=_SetexFailsRedis(inner))
     payload = {"title": "y" * 4000}
 
     async with _client(app) as client:
@@ -978,6 +995,7 @@ async def test_client_still_receives_full_body_when_caching_fails():
     assert response.content, "response body must not be empty"
     assert response.json() == {"owner": VICTIM, "title": payload["title"]}
     assert len(response.content) == int(response.headers["content-length"])
+    assert redis.transaction.executed, "the write must fail at EXEC"
 
 
 async def test_non_json_body_is_not_buffered_but_still_replays_for_same_caller():

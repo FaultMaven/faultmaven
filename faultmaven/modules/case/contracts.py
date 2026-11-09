@@ -13,6 +13,7 @@ Per module-organization-design.md (lines 592-605, 757-770):
 - Case contracts export models for Case-owned tables (evidence, reports)
 """
 
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -475,6 +476,12 @@ class CaseStateDTO(str, Enum):
     INVESTIGATING = "investigating"
     RESOLVED = "resolved"
     CLOSED = "closed"
+
+
+#: A case id as the case factory mints it (``Case.case_id``,
+#: ``f"case_{uuid4().hex[:12]}"``), standing as a word. The replay cache indexes
+#: its entries by the case ids an exchange names (#2624).
+CASE_ID_PATTERN = re.compile(r"\bcase_[0-9a-f]{12}\b")
 
 
 @dataclass

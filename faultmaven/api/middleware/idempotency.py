@@ -31,6 +31,7 @@ from faultmaven.config.idempotency_key import (
     is_valid_idempotency_key,
 )
 from faultmaven.infrastructure.logging.coordinator import current_correlation_id
+from faultmaven.modules.case.contracts import CASE_ID_PATTERN
 
 from .route_policy import (
     APP_STATE_POLICY_ATTR as APP_STATE_POLICY_ATTR_INTERNAL,
@@ -139,6 +140,18 @@ MAX_FINGERPRINTED_BODY_BYTES = 256 * 1024
 # Not a hex digest, so it can never collide with a real fingerprint.
 UNFINGERPRINTED_BODY = "body-unfingerprinted"
 
+#: Where the replay entries live, and their per-case indexes beside them.
+KEY_PREFIX = "idempotency:"
+
+#: How many entries one ``DEL`` of the case delete names.
+ERASE_BATCH = 500
+
+
+def case_index_key(key_prefix: str, case_id: str) -> str:
+    """The set of replay entries whose exchange names ``case_id`` (#2624). An
+    entry key never takes this shape: a key has at least 8 characters."""
+    return f"{key_prefix}case:{case_id}"
+
 
 class IdempotencyMiddleware(BaseHTTPMiddleware):
     """Middleware to handle idempotency keys for POST operations."""
@@ -147,7 +160,7 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
         self.redis_client = redis_client
         self.ttl_seconds = 3600  # 1 hour TTL for idempotency keys
-        self.key_prefix = "idempotency:"
+        self.key_prefix = KEY_PREFIX
         # (policy object, derived replay-exclusion set). policy_for returns a
         # stable object per declaration, so this is an identity check on the hot
         # path rather than a rebuild of the set on every POST.
@@ -366,7 +379,7 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
             # Cache successful responses (2xx status codes)
             if 200 <= response.status_code < 300:
                 await self._cache_response(
-                    cache_key, response, idempotency_key, body_fingerprint
+                    cache_key, response, idempotency_key, body_fingerprint, request
                 )
 
             return response
@@ -754,6 +767,7 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         response: Response,
         idempotency_key: str,
         body_fingerprint: str,
+        request: Request,
     ):
         """Cache response in Redis with TTL.
 
@@ -763,6 +777,12 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         restore used to do exactly that — the client receives the original
         status and Content-Length with a zero-byte body: a silent truncation of
         every idempotent POST response for as long as Redis is unreachable.
+
+        The entry's key also joins the index of every case id the request path,
+        its decoded query or the answer names (``case_index_key``), so the case
+        delete can find it (#2624). Entry and index commit in ONE MULTI/EXEC:
+        a pipeline that is not a transaction can commit the entry and lose the
+        index on a dropped connection.
         """
         body = b""
         try:
@@ -771,10 +791,11 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
                 body += chunk
 
             # Prepare cache data
+            text = body.decode("utf-8") if body else ""
             cache_data = {
                 "status_code": response.status_code,
                 "headers": dict(response.headers),
-                "body": body.decode("utf-8") if body else "",
+                "body": text,
                 "content_type": response.headers.get(
                     "content-type", "application/json"
                 ),
@@ -785,10 +806,19 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
                 "cached_at": self._get_timestamp(),
             }
 
-            # Store in Redis with TTL
-            await self.redis_client.setex(
-                cache_key, self.ttl_seconds, json.dumps(cache_data)
-            )
+            named = [request.url.path, text]
+            named += [
+                part for pair in request.query_params.multi_items() for part in pair
+            ]
+            case_ids = {m for part in named for m in CASE_ID_PATTERN.findall(part)}
+
+            transaction = self.redis_client.pipeline(transaction=True)
+            transaction.setex(cache_key, self.ttl_seconds, json.dumps(cache_data))
+            for case_id in sorted(case_ids):
+                index = case_index_key(self.key_prefix, case_id)
+                transaction.sadd(index, cache_key)
+                transaction.expire(index, self.ttl_seconds)
+            await transaction.execute()
 
             logger.info(f"Cached response for idempotency key: {idempotency_key}")
 
@@ -845,6 +875,39 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         from faultmaven.utils.serialization import to_json_compatible
 
         return to_json_compatible(datetime.now(timezone.utc))
+
+
+class IdempotencyReplayEraser:
+    """The case delete's eraser for replayed answers (#2624): every entry whose
+    request target or answer names the case, read from the case's index, then
+    the index. Returns the entries actually deleted, which can be fewer than
+    the index lists: a member outlives an entry that already expired. A Redis
+    error raises, which keeps the case row for a retry (#1016).
+
+    It reaches the middleware's keys only because both hold the same Redis: in
+    production both come from the composition root (``bootstrap/composition.py``
+    sets ``app.state.redis_client``, and ``create_case_service`` hands the same
+    client to the erasers); on standalone every FakeRedis client shares the one
+    in-process server (``infrastructure/redis_client.py``).
+    """
+
+    store_name = "idempotency_replays"
+
+    def __init__(self, redis_client: Any, key_prefix: str = KEY_PREFIX):
+        self.redis_client = redis_client
+        self.key_prefix = key_prefix
+
+    async def erase_case(self, case_id: str, enterprise_id: str) -> int:
+        index = case_index_key(self.key_prefix, case_id)
+        entries = sorted(await self.redis_client.smembers(index))
+        if not entries:  # ``DEL`` with no keys is an error
+            return 0
+        deleted = 0
+        for start in range(0, len(entries), ERASE_BATCH):
+            batch = entries[start : start + ERASE_BATCH]
+            deleted += int(await self.redis_client.delete(*batch))
+        await self.redis_client.delete(index)
+        return deleted
 
 
 def create_idempotency_middleware(

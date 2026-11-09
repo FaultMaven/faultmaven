@@ -62,7 +62,7 @@ the Redis rows live in the API process's in-process FakeRedis and end with it;
 | **Redis `session:`, `sessions:user:`, `client_index:`** (auth sessions) | Redis | operational metadata: the session record and its indexes | user | derived through the user row | the auth module's `RedisSessionStore` | not written by turns |
 | **Redis `session:case_seq:`** (case number counters) | Redis | operational metadata: a counter | user | derived through the user row | the case module's `CaseService`, through the session store | not written by turns |
 | **Redis `session:session:…:current_case_id`** (session pointers) | Redis | operational metadata: a case id | case | derived through the case row | the case module's `CaseService`, through the session store | not written by turns |
-| **Redis `idempotency:`** (replayed POST answers) | Redis | customer content: the cached response's status, headers and body | user | none: the caller's identity is hashed into the key | `api/middleware/idempotency.py` | outside: cached after the route answers |
+| **Redis `idempotency:`** (replayed POST answers) | Redis | customer content: the cached response's status, headers and body | user · case | none: the caller's identity is hashed into the key | `api/middleware/idempotency.py` | outside: cached after the route answers |
 | **Redis `sso:state:`, `sso:login:`** | Redis | operational metadata: sign-in state and its completion code | user | none | the auth module's `SSOEphemeralStore` | not written by turns |
 | **Redis `oauth:code:`, `oauth:claim:`** | Redis, when `OAUTH_ENABLED` | operational metadata: authorization codes and their single-use claims | user | none on the key | the auth module's `RedisOAuthCodeRepository` | not written by turns |
 | **Redis `password_reset:`** | Redis | operational metadata: a reset token's id | user | none | the auth module's `UserService` | not written by turns |
@@ -98,7 +98,7 @@ the Redis rows live in the API process's in-process FakeRedis and end with it;
 | **Redis `session:`, `sessions:user:`, `client_index:`** | user: `DELETE /sessions/{session_id}` deletes one session | through the user row: `not built` | cleared | `SESSION_TIMEOUT_MINUTES` (default 30) past the last write; an index lives as long as its newest session |
 | **Redis `session:case_seq:`** | none | through the user row: `not built` | cleared, under `session:` (the wipe's `case_seq:` prefix matches none of these keys) | 48 h |
 | **Redis `session:session:…:current_case_id`** | case: erased by the case delete | through the case row: `not built` | cleared, under `session:` | 24 h |
-| **Redis `idempotency:`** | none: a case delete does not reach it. Eraser or a stated exclusion: pending #2624 | no stamp to reach it by: `not built` | cleared | 1 h |
+| **Redis `idempotency:`** | case: every entry whose request target or answer names the case, through `idempotency:case:{case_id}`, erased by the case delete; one cached after the eraser ran is a [residual](../../operations/case-deletion.md#residuals); user: none | no stamp to reach it by: `not built` | cleared, the indexes with it | 1 h |
 | **Redis `sso:state:`, `sso:login:`** | consumed once | none needed: bounded by its TTL | cleared | 600 s and 60 s |
 | **Redis `oauth:code:`, `oauth:claim:`** | claimed once | none needed: bounded by its TTL | `oauth:code:` cleared; `oauth:claim:` left, reported under no known prefix | `OAUTH_CODE_EXPIRY_SECONDS` (default 600); a claim inherits its code's remaining TTL |
 | **Redis `password_reset:`** | none | none needed: bounded by its TTL | cleared | 1 h |
@@ -116,8 +116,8 @@ the Redis rows live in the API process's in-process FakeRedis and end with it;
 | **Redis `faultmaven:llm_config:version`** | none | not tenant data | left, reported under no known prefix | none |
 | **Trace store** | case and conversion: purged by their tags before the case delete and the draft and document deletes, with the residuals in [Case deletion](../../operations/case-deletion.md#residuals) | by the `enterprise_id` tag: `not built`; covered by the retention bound once it is built (#2616) | not covered by `fm-wipe-deployment`: pending #2616 | none built. Ruled: content off by default, and on only with a verified retention bound: pending #2616 |
 | **Trace SDK's local buffer** | replayed to the backend when a delete runs on that pod, and only then purgeable there | as the trace store | not covered: pending #2616 | none: a parked trace otherwise replays only after the SDK's ping interval, set to 999999 s (about 11.6 days): #2573 |
-| **LLM response cache** | none: entries outlive a case delete until evicted (oldest first, by count) or the process restarts. Eraser or a stated exclusion: pending #2624 | no stamp to reach it by; ends with the process | ends with the process | none: eviction is by count only |
-| **`cached_content_tokens`** | none: entries outlive a case delete until evicted (least recently used) or the process restarts. Eraser or a stated exclusion: pending #2624 | no stamp to reach it by; ends with the process | ends with the process | none: eviction is by count only |
+| **LLM response cache** | none, a stated exclusion ([ruling on #2624](https://github.com/FaultMaven/faultmaven/issues/2624#issuecomment-6719598372)): entries outlive a case delete, at most 1,000 per replica, evicted oldest first, or until the process ends. No request asks for a deleted case id again, and an eraser would need a cross-replica broadcast for memory nothing can read | no stamp to reach it by; ends with the process | ends with the process | none: eviction is by count only |
+| **`cached_content_tokens`** | none, a stated exclusion ([ruling on #2624](https://github.com/FaultMaven/faultmaven/issues/2624#issuecomment-6719598372)): entries outlive a case delete, at most 4,096 per replica, least recently used, or until the process ends. No request reads a key back as text, and an eraser would need a cross-replica broadcast for memory nothing can read | no stamp to reach it by; ends with the process | ends with the process | none: eviction is by count only |
 | **Metrics** | none | not tenant data | ends with the process | the process's lifetime; the scraper's retention is the operator's |
 | **Logs** | none | no stamp to reach it by: `not built` | not covered | the operator's log pipeline |
 | **Secret files under the data root** | none | not tenant data | not covered | none |
@@ -133,8 +133,8 @@ Citations only. Paths are relative to `faultmaven/` unless they start with
   [Principle 3](../core-architecture/architectural-design-principles.md#3-database-per-module-boundaries)
   and the [ER diagram](er-diagram.md).
 - Place: `core/investigation/milestone_engine/engine.py:410-415` (#1882).
-- Delete, case: `modules/case/domain/services/case_service.py:945`, `:1039`;
-  `container/providers/services.py:60-117` (the erasers, in order);
+- Delete, case: `modules/case/domain/services/case_service.py:945`, `:1042`;
+  `container/providers/services.py:61-127` (the erasers, in order);
   `modules/knowledge/domain/services/conversion_service/case_erasure.py:1-9`;
   `infrastructure/persistence/models.py:31-33`, `:39-41`;
   [Case deletion](../../operations/case-deletion.md).
@@ -202,11 +202,24 @@ Citations only. Paths are relative to `faultmaven/` unless they start with
   the store's prefix: `modules/auth/infrastructure/stores/redis_session_store.py:205-212`.
 - Session pointers: `modules/case/domain/services/case_erasure.py:14-31`;
   `modules/case/domain/services/case_service.py:323-327`, `:783-787`.
-- `idempotency:`: `api/middleware/idempotency.py:149-150`, `:730-739`, `:773-790`, `:557-561`.
+- `idempotency:`: `api/middleware/idempotency.py:162-163`, `:743-752`, `:793-821`, `:570-574`.
+  Delete, case: the entry's key joins the index of each case id its path, decoded
+  query or answer names (`CASE_ID_PATTERN`, `modules/case/contracts.py:481-484`),
+  in the entry's own MULTI/EXEC (`api/middleware/idempotency.py:144-153`,
+  `:809-821`); `IdempotencyReplayEraser` (`:880-910`) is bound in
+  `container/providers/services.py:121-126`, and reported `not_configured` under
+  `SKIP_SERVICE_CHECKS`, where the middleware is not mounted
+  (`bootstrap/middleware.py:104-119`). The index's bounds: a member can outlive
+  its entry, until the set's 1 h TTL; a caller grows another case's index only
+  with its own entries, by naming that case's id in a keyed request answered 2xx
+  (a query the route ignores, text the answer echoes), so by its POST rate × 1 h,
+  and an erase drops only that caller's replays; a `WRONGTYPE` inside the
+  transaction does not roll back the `SETEX`, reachable only if something wrote a
+  non-set under an index key, and nothing does.
 - SSO: `modules/auth/infrastructure/stores/sso_ephemeral_store.py:19-47`;
   `modules/auth/domain/services/sso_login_service.py:117`, `:121`.
 - OAuth: `modules/auth/infrastructure/repositories/oauth_code_repository.py:87-103`,
-  `:117-119`, `:178-182`; `container/providers/services.py:1042-1057`, `:1496-1503`;
+  `:117-119`, `:178-182`; `container/providers/services.py:1051-1066`, `:1505-1512`;
   `config/settings.py:1864-1867`.
 - `password_reset:`: `modules/auth/domain/services/user_service.py:123`, `:460-462`;
   `modules/auth/domain/services/jwt_token_generator.py:67`.
@@ -215,7 +228,7 @@ Citations only. Paths are relative to `faultmaven/` unless they start with
 - Pseudonym key fingerprint: `infrastructure/security/pseudonym_key.py:233`, `:283`;
   rotation by hand: `:86-92`.
 - Token revocations: `modules/auth/infrastructure/stores/token_revocation_store.py:157-196`;
-  `config/settings.py:1723`; `container/providers/services.py:1081-1091`;
+  `config/settings.py:1723`; `container/providers/services.py:1090-1100`;
   `modules/auth/domain/services/auth_service.py:642-703`.
 - Rate limits: `infrastructure/protection/rate_limiter.py:135-137`, `:222`, `:842-848`;
   `api/middleware/rate_limiting.py:161`; `config/protection.py:75-82`.
@@ -227,7 +240,7 @@ Citations only. Paths are relative to `faultmaven/` unless they start with
 - `job:`: `infrastructure/jobs/job_service.py:51-52`; `bootstrap/composition.py:591`;
   no caller of `create_job` in `faultmaven/`.
 - `lock:report_generation:case:`: `infrastructure/concurrency/report_lock_manager.py:51`;
-  `container/providers/services.py:1650-1655`; nothing sets `container.lock_manager`.
+  `container/providers/services.py:1659-1664`; nothing sets `container.lock_manager`.
 - `auth:`: `infrastructure/auth/user_store.py:74-78`, `:534-537`;
   `container/providers/infrastructure.py:548-553`, `:604-627`.
 - `faultmaven:llm_config:version`: `config/llm_config_overrides.py:28-34`, `:256`.
@@ -245,7 +258,7 @@ Citations only. Paths are relative to `faultmaven/` unless they start with
 - Gate: the record `opik_sdk.configure` writes from `OPIK_ENABLED` and the backend
   URL, and the SDK's span writers (`opik_sdk.tracing_is_effective`).
 - Delete: `infrastructure/observability/trace_erasure.py:92-116`;
-  `container/providers/services.py:34-56`, `:100-104`;
+  `container/providers/services.py:34-58`, `:103-107`;
   [Case deletion](../../operations/case-deletion.md#llm-traces).
 - Wipe: no trace store in `cli/wipe_deployment.py`.
 - Retention: no retention call in `faultmaven/`; ruled direction: #2616 (Q0, Q1).
@@ -261,11 +274,12 @@ Citations only. Paths are relative to `faultmaven/` unless they start with
 
 - `infrastructure/llm/cache.py:39-44`, `:74-88`, `:145-166`; constructed per router:
   `infrastructure/llm/router.py:384`, read and written at `:691`, `:822`.
-- No case eraser: `container/providers/services.py:60-117`.
+- No case eraser, as ruled ([ruling on #2624](https://github.com/FaultMaven/faultmaven/issues/2624#issuecomment-6719598372)): `container/providers/services.py:61-127`.
 
 ### `cached_content_tokens`
 
-- `core/investigation/cause_assurance.py:403-409`.
+- `core/investigation/cause_assurance.py:403-409`. No case eraser, as ruled
+  ([ruling on #2624](https://github.com/FaultMaven/faultmaven/issues/2624#issuecomment-6719598372)).
 
 ### Metrics
 
@@ -301,9 +315,9 @@ Each of these was considered and is not a row, for the reason given.
 | Log-throttle sets keyed by ids: `_log_undated` (`core/investigation/cause_assurance.py:711`), `_PROFILE_DEGRADE_WARNED` (`modules/auth/api/auth.py:1357`), `_session_not_found_log_tracker` (`modules/auth/api/session.py:63`) | Hold identifiers to throttle a log line, no content |
 | Work in flight: `inflight._TRACKED` and `_LEASES` (`infrastructure/concurrency/inflight.py:117-119`), `EvidenceVectorizer._inflight_vectorize` (`core/investigation/milestone_engine/vectorization.py:21`) | Live only while the work runs; drained at shutdown (#2505) |
 | The OAuth endpoints' rate limiter (`modules/auth/api/rate_limiting.py:58-63`) | Process-local windows keyed by client IP and endpoint; no tenant data |
-| `InMemoryTurnLedger` (`infrastructure/protection/tenant_turn_cap.py:315`) | Never composed: the composition wires `SqlTurnLedger` (`container/providers/services.py:394-417`), a relational table |
-| `InMemoryOAuthCodeRepository` (`container/providers/services.py:1053-1057`) | Selected only when no Redis client is passed; the composition passes one (`:1500-1503`) |
-| `SimpleStorageBackend` (`modules/case/domain/services/case_data_ingestion_service.py:1711`) | Composed into the data service (`container/providers/services.py:503`), which stores into it (`case_data_ingestion_service.py:343`, `:532`), but nothing outside the service resolves it: only `app.state.data_service` holds it (`bootstrap/composition.py:579`), and its dependency (`api/v1/dependencies.py:204`) is used by no route |
+| `InMemoryTurnLedger` (`infrastructure/protection/tenant_turn_cap.py:315`) | Never composed: the composition wires `SqlTurnLedger` (`container/providers/services.py:403-426`), a relational table |
+| `InMemoryOAuthCodeRepository` (`container/providers/services.py:1062-1066`) | Selected only when no Redis client is passed; the composition passes one (`:1509-1512`) |
+| `SimpleStorageBackend` (`modules/case/domain/services/case_data_ingestion_service.py:1711`) | Composed into the data service (`container/providers/services.py:512`), which stores into it (`case_data_ingestion_service.py:343`, `:532`), but nothing outside the service resolves it: only `app.state.data_service` holds it (`bootstrap/composition.py:579`), and its dependency (`api/v1/dependencies.py:204`) is used by no route |
 | `GlobalConfidenceService` (`infrastructure/observability/confidence_service.py:58`) | Never constructed: nothing sets `container.confidence_service` (`_container_impl.py:836-843`). It writes no file: a model reaches it as bytes (`:593-602`) |
 | `IntelligentCache` (`infrastructure/caching/intelligent_cache.py:314`) | Never constructed: nothing sets `container.intelligent_cache` (`_container_impl.py:383-391`) |
 | APScheduler job stores (`infrastructure/tasks/job_runners.py:89`, `infrastructure/tasks/case_cleanup.py:165`) | In-memory schedule definitions; no tenant data |

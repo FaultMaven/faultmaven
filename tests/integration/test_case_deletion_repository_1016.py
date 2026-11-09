@@ -200,10 +200,7 @@ async def test_delete_takes_the_shares_and_writes_one_audit_row(world):
     parsed = json.loads(details)
     # The two share rows its own transaction removed are counted (#1016).
     assert parsed["cleared"] == {"uploads": 2, "resource_shares": 2}
-    assert set(parsed["not_cleared"]) == {
-        "idempotency_replay_cache",
-        "llm_response_cache",
-    }
+    assert set(parsed["not_cleared"]) == {"llm_response_cache"}
 
 
 async def test_a_refused_audit_row_keeps_the_case_and_its_shares(world):

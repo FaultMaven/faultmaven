@@ -14,10 +14,6 @@ from typing import Dict, Tuple
 #: that cannot be looked up by case (ruled 2026-10-19). Named in every audit
 #: row so the record says what the delete did not reach.
 NOT_CLEARED: Dict[str, str] = {
-    "idempotency_replay_cache": (
-        "Redis replay bodies of non-turn writes (api/middleware/idempotency.py), "
-        "keyed by request hash; expire after 1 h"
-    ),
     "llm_response_cache": (
         "in-process LLM response cache (infrastructure/llm/cache.py), per "
         "process; armed only by the structured-output provider override"
