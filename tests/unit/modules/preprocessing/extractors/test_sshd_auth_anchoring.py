@@ -31,6 +31,7 @@ pinned at the bottom.
 from __future__ import annotations
 
 import json
+import random
 import re
 
 import pytest
@@ -978,16 +979,24 @@ def test_every_rule_needs_an_event_word(owner, rule, phrase):
 # runs past ``TIER1_TIMEOUT_SECONDS``.
 #
 # Each line is (prefix, repeated unit, suffix, repetitions at 64 KB), so a test
-# can build it at any size: the reader's growth check below needs three sizes
-# of the same shape, and ``tests/performance/test_extraction_speed.py`` times the
-# 64 KB form against that timeout. ``ADVERSARIAL_LINES`` is the 64 KB form,
-# byte for byte what this module used before #1579.
+# can build it at any size: the reader's and the extractor's growth checks below
+# need three sizes of the same shape, and
+# ``tests/performance/test_extraction_speed.py`` times the 64 KB form against
+# that timeout. ``ADVERSARIAL_LINES`` is the 64 KB form, byte for byte what this
+# module used before #1579, plus ``pam-chain`` and ``call-chain`` (#1700).
 _64K = 65536
 ADVERSARIAL_SHAPES = {
     "unclosed-bracket-spaced": ("[", "1 ", "password", _64K // 2),
     "unclosed-bracket": ("", "[1", " password", _64K // 2),
     "tag-chain": ("Sep 20 10:00:00 web1 bob: ", "a sshd ", "password", _64K // 7),
     "sshd-word-chain": ("", "sshd ", "password", _64K // 5),
+    "pam-chain": ("", "pam_unix(", " password", _64K // 9),
+    "call-chain": (
+        "2026-11-09T01:00:00Z web1 app: trace",
+        " f(",
+        " password",
+        _64K // 3,
+    ),
     "unit-parens": ("sshd@", "(", " password", _64K),
     "csv-unterminated": ("", '"a",', '"password', _64K // 4),
     "tsv": ("", "a\t", "password", _64K // 2),
@@ -1037,6 +1046,13 @@ def adversarial_length(name: str, repetitions: int) -> int:
 #: can learn from, so on a 4 MB line it faults ~32,000 pages a call whatever
 #: this says. It is latent: that shape decides at its first or second window
 #: (8 KB-65 KB), nowhere near.
+#:
+#: The extractor's check settles the same block. Its working set peaks higher
+#: (tracemalloc, 64 KB lines): 4.2x its line for most shapes, up to 8.8x for
+#: ``rhost-repeats`` and 37.6x for ``timestamps``, so 4x does not cover every
+#: copy. It need not: settled 4x, a window's top faulted at most 36 pages a
+#: call at 64 KB and 1780 at 512 KB (``timestamps``), 1-4 ms of system time
+#: beside 0.6-2.7 s of the extractor's own work there, so no figure moves.
 _SETTLE_PER_LINE_BYTE = 4
 
 
@@ -1078,6 +1094,37 @@ class TestAdversarialLines:
             * adversarial_length(name, repetitions),
         )
 
+    @pytest.mark.performance
+    @pytest.mark.parametrize("name", sorted(ADVERSARIAL_LINES))
+    def test_the_extractor_is_linear(self, name):
+        """The whole extractor beside one genuine line, as a growth SHAPE (#1700).
+
+        The reader's sibling. The session and PAM patterns used to restart at
+        every ``sshd`` or ``pam_unix(`` and run to the end of a line without
+        their delimiter: 2.58 s at 128 KB, past ``TIER1_TIMEOUT_SECONDS``,
+        where the pipeline replaces the file's extraction with a preview.
+
+        The window starts 8x higher than the reader's, so the first one tops
+        out at the 64 KB line: the extractor's linear per-byte cost hides a
+        quadratic term below about that, and the reader's window read
+        ``pam-chain`` as linear with its pattern reverted (2 of 3 runs).
+        ``max_escalations=1`` because one is all a regression needs: each
+        reverted pattern fails its shapes by the second window at the latest
+        (the syslog pattern's at the first), and a cap of one keeps a failing
+        run to about two minutes a shape.
+        """
+        genuine = BSD + f"Failed password for root from {SRC} port 22 ssh2"
+        extractor = LogsAndErrorsExtractor()
+        assert_linear_growth(
+            lambda line: extractor.extract(genuine + "\n" + line + "\n"),
+            lambda repetitions: adversarial_line(name, repetitions),
+            small=max(1, ADVERSARIAL_SHAPES[name][3] // 64),
+            label=f"LogsAndErrorsExtractor.extract beside {name}",
+            max_escalations=1,
+            settle_bytes=lambda repetitions: _SETTLE_PER_LINE_BYTE
+            * adversarial_length(name, repetitions),
+        )
+
     @pytest.mark.parametrize("name", sorted(ADVERSARIAL_LINES))
     def test_extraction_survives_the_line(self, name):
         """The genuine line beside a 64 KB hostile one still gets its row.
@@ -1105,6 +1152,97 @@ def test_adversarial_length_is_the_length_of_the_line(name):
         assert adversarial_length(name, repetitions) == len(
             adversarial_line(name, repetitions)
         )
+
+
+# The three patterns as they were before #1700, the oracle for their rewrites,
+# with the tokens a random line is built from.
+_BEFORE_1700 = {
+    "_SSH_SESSION_RE": (
+        re.compile(r"sshd[^:]*:\s*session opened for user", re.IGNORECASE),
+        ("sshd", "SSHD", "ssh", "[1]", ":", " ", "\t", "x")
+        + ("session opened for user", "session opened"),
+    ),
+    "_PAM_AUTH_FAILURE_RE": (
+        re.compile(
+            r"(?:pam_unix\([^)]*\)|\(pam_unix\)\[\d+\]):\s*authentication failure",
+            re.IGNORECASE,
+        ),
+        ("pam_unix(", "PAM_UNIX(", "(pam_unix)", "[", "]", "[7]", "(", ")", ":")
+        + (" ", "x", "): ", "authentication failure", "AUTHENTICATION FAILURE"),
+    ),
+    "_SYSLOG_SERVICE_RE": (
+        re.compile(r"\s([\w.-]+)(?:\([^)]*\))?\[\d+\]"),
+        (" ", "\t", "a", "sshd", "-", ".", "(", ")", "[", "]", "1", "[1]", ")[1]")
+        + (":", "x("),
+    ),
+}
+_PATTERN_EDGES = [
+    "",
+    ":",
+    "sshd:",
+    "::sshd::session opened for user",
+    BSD + "session opened for user root by (uid=0)",
+    BSD + "pam_unix(sshd:session): session opened for user root by (uid=0)",
+    BSD + f"pam_unix(sshd:auth): authentication failure; rhost={SRC}",
+    "Jun 14 15:16:01 combo sshd(pam_unix)[19939]: session opened for user test",
+    f"Jun 14 15:16:01 combo sshd(pam_unix)[19939]: authentication failure; rhost={SRC}",
+    "Jun 14 15:16:01 combo su(pam_unix)[1]: session opened for user news by (uid=0)",
+    "Jun 14 15:16:01 combo CRON[2]: pam_unix(cron:session): session opened for user",
+    "SSHD[1]:\tSESSION OPENED FOR USER root",
+    "PAM_UNIX(SSHD:AUTH):\tAUTHENTICATION FAILURE",
+    "session opened for user root sshd[1]:",
+    "pam_unix(a(b)): authentication failure",
+    "(pam_unix)[]: authentication failure",
+    " sshd(a(b)[1]",
+    " a( b[1]",
+    " a(x y[1] z)[2]",
+    " f( f( f()[1]",
+    ") c[1]",
+    " a(b) c(d)[1]",
+    " sshd[1] cron[2]",
+    " a[1] b(c)[2]",
+    " a(b)[] c[1]",
+    "host\xa0sshd[1]",
+    " sshd[\u0661]",
+    " a(b)[\u0661]",
+    " a[\u0661] b(c)[1]",
+    "x\xa0a(b)[1]",
+    " a[] b(c)[1]",
+    " \xe9[1]",
+    " \xe9(b)[1]",
+]
+
+
+def _caller_reads(pattern: re.Pattern, line: str) -> tuple | None:
+    """What a caller reads: whether the line matched, and its groups."""
+    match = pattern.search(line)
+    return None if match is None else match.groups()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("rule", sorted(_BEFORE_1700))
+def test_a_rewritten_pattern_matches_the_lines_it_matched_before(rule):
+    """#1700 anchored three patterns so each reads a line in linear time; each reads the same.
+
+    The session and PAM patterns' delimiter is the first one after their
+    literal, which holds exactly when the segment it closes contains the
+    literal, since the literal holds no delimiter. Every ``name(`` the syslog
+    service pattern reads closes at its segment's ``)``. Compared on what a
+    caller reads, over edge and genuine lines and a seeded random corpus; the
+    count of matches keeps it from passing on lines neither reads.
+    """
+    before, tokens = _BEFORE_1700[rule]
+    after = getattr(LogsAndErrorsExtractor, rule)
+    rng = random.Random(1700)
+    corpus = _PATTERN_EDGES + [
+        "".join(rng.choices(tokens, k=rng.randint(0, 10))) for _ in range(4000)
+    ]
+    readings = [
+        (line, _caller_reads(before, line), _caller_reads(after, line))
+        for line in corpus
+    ]
+    assert [reading for reading in readings if reading[1] != reading[2]] == []
+    assert sum(r[2] is not None for r in readings[len(_PATTERN_EDGES) :]) > 20
 
 
 @pytest.mark.unit
