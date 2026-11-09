@@ -149,6 +149,25 @@ async def test_the_next_write_prunes_expired_members():
     assert member != "idempotency:key-2624-expired:h"
 
 
+async def test_a_stale_member_whose_key_now_serves_another_case_is_skipped():
+    """A create's key names no case: reused after its entry expired, it caches
+    case Y's answer while case X's index still lists it, stale."""
+    app, fake = _app()
+    x_index = case_index_key(KEY_PREFIX, CASE_A)
+    async with _client(app) as client:
+        await _post(client, "/api/v1/cases", KEY_A, {"case_id": CASE_A})
+        (entry,) = await fake.zrange(x_index, 0, -1)
+        await fake.delete(entry)  # its hour passes
+        await fake.zadd(x_index, {entry: time.time() - 1})
+        await _post(client, "/api/v1/cases", KEY_A, {"case_id": CASE_B})
+
+        assert await IdempotencyReplayEraser(fake).erase_case(CASE_A, ENTERPRISE) == 0
+        retry = await _post(client, "/api/v1/cases", KEY_A, {"case_id": CASE_B})
+
+    assert _replayed(retry)
+    assert (retry.json()["case_id"], retry.json()["run"]) == (CASE_B, 2)
+
+
 def _watch_unlinks(monkeypatch, fake, refuse=None):
     """Record each ``UNLINK`` batch, a client call or one queued in a
     transaction, and refuse batch number ``refuse`` with a Redis error."""

@@ -907,9 +907,14 @@ class IdempotencyReplayEraser:
     removes it from the index in ONE MULTI/EXEC, never dropping the index whole:
     a failure part-way leaves the rest indexed for the retry, and an entry
     cached after the read stays indexed for a later delete. Returns the entries
-    actually removed, which can be fewer than the index listed: a member
-    outlives an entry that already expired. A Redis error raises, which keeps
-    the case row for a retry (#1016).
+    actually removed. A Redis error raises, which keeps the case row for a
+    retry (#1016).
+
+    It reads only members scored after now. A stale member's entry expired by
+    the index's own record, and its key, which names no case, may since hold
+    another case's entry: a later write of it for this case would have
+    re-scored the member. Clocks out of step between replicas move that line
+    by their skew.
 
     It reaches the middleware's keys only because both hold the same Redis: in
     production both come from the composition root (``bootstrap/composition.py``
@@ -926,7 +931,9 @@ class IdempotencyReplayEraser:
 
     async def erase_case(self, case_id: str, enterprise_id: str) -> int:
         index = case_index_key(self.key_prefix, case_id)
-        entries = await self.redis_client.zrange(index, 0, -1)
+        entries = await self.redis_client.zrange(
+            index, time.time(), "+inf", byscore=True
+        )
         removed = 0
         for start in range(0, len(entries), ERASE_BATCH):
             batch = entries[start : start + ERASE_BATCH]

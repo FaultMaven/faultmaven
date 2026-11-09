@@ -268,6 +268,10 @@ async def test_idempotency_indexes_the_declared_case_and_its_eraser_clears_it(
         entries = await real_redis.zrange(index, 0, -1)
         assert len(entries) == 2 and expired not in entries
         assert 0 < await real_redis.ttl(index) <= 3600
+        # A stale member whose key now holds another case's entry is skipped.
+        other = f"{prefix}other-2624:h"
+        await real_redis.set(other, "{}", ex=60)
+        await real_redis.zadd(index, {other: time.time() - 1})
 
         eraser, zrange = IdempotencyReplayEraser(real_redis, prefix), real_redis.zrange
 
@@ -280,9 +284,10 @@ async def test_idempotency_indexes_the_declared_case_and_its_eraser_clears_it(
         assert await eraser.erase_case(case_id, "ent_2624") == 2
         monkeypatch.undo()
         assert await real_redis.exists(*entries) == 0
-        (late,) = await real_redis.zrange(index, 0, -1)
+        (late,) = await real_redis.zrange(index, time.time(), "+inf", byscore=True)
         assert await eraser.erase_case(case_id, "ent_2624") == 1
-        assert await real_redis.exists(index, late) == 0
+        assert await real_redis.exists(late) == 0
+        assert await real_redis.exists(other) == 1
         retry = await post(first_key)
 
     assert IDEMPOTENCY_REPLAYED_HEADER not in retry.headers
