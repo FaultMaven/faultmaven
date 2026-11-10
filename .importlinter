@@ -387,8 +387,12 @@ allow_indirect_imports = false
 # CONTRACT 16: Narrators Render the Outcome, Never Derive It
 # ============================================================================
 # #2615 pin 1, Principle 13.2 and 13.3: text that states a case's outcome is
-# composed from the record, so the narrators (#2615 stage S2, the package is
-# empty until then) may not import what derives it. The contract forbids
+# composed from the record, so the narrators may not import what derives it.
+# Today the package holds the composers keyed on a decider's reason and its
+# params (#2636 B1a: offers.py, the readiness, pivot and close-summary prose;
+# notices.py, the resolve-declined rule and actions, the pending-check
+# feedback and the solution_accepted refusals); terminal_transitions and its
+# callers import them, never the reverse. The contract forbids
 # imports of the three modules below, direct or through other modules, as
 # import-linter sees them: TYPE_CHECKING and function-local imports count. It
 # does not cover attribute access through a package object (`import

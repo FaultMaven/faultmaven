@@ -1219,9 +1219,11 @@ class ReportGenerationService:
         """
         # Function-local import: the _assurance_note precedent for report →
         # core.investigation reads.
+        from faultmaven.core.investigation.narration.offers import (
+            mitigation_sentence,
+        )
         from faultmaven.core.investigation.terminal_transitions import (
             mitigation_closure_line,
-            mitigation_sentence,
             shown_milestones,
         )
 

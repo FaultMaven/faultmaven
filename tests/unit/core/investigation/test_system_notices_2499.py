@@ -27,6 +27,9 @@ from faultmaven.core.investigation.milestone_engine.turn_application import (
 from faultmaven.core.investigation.milestone_engine.turn_records import (
     _create_turn_record,
 )
+from faultmaven.core.investigation.narration.notices import (
+    PENDING_CHECK_DECLINE_CLAUSE,
+)
 from faultmaven.core.investigation.prompts.context_builder import (
     assembly as context_assembly,
 )
@@ -37,9 +40,6 @@ from faultmaven.core.investigation.prompts.templates.assembly import (
     get_prompt_for_case,
 )
 from faultmaven.core.investigation.schemas import InvestigationResponse_Diagnosis
-from faultmaven.core.investigation.terminal_transitions import (
-    PENDING_CHECK_DECLINE_CLAUSE,
-)
 from faultmaven.modules.case.contracts import (
     MAX_SYSTEM_NOTICE_CHARS,
     MAX_SYSTEM_NOTICES,

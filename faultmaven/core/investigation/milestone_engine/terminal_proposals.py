@@ -253,7 +253,7 @@ def _maybe_propose_confirmed_resolution(case: "Case", metadata: dict) -> None:
         ResolutionReadiness,
         assess_resolution_readiness,
         cause_identification_leg,
-        pending_check_feedback,
+        held_check_feedback,
     )
 
     if not getattr(case, "progress", None):
@@ -268,7 +268,7 @@ def _maybe_propose_confirmed_resolution(case: "Case", metadata: dict) -> None:
             # block renders only after DIAGNOSIS), unless step 2 already
             # answered its ``resolved`` with the same need.
             _add_system_feedback(
-                metadata, pending_check_feedback(case, check, proposed=False)
+                metadata, held_check_feedback(case, check, proposed=False)
             )
             metadata["resolution_pending_check"] = check.need_id
         return

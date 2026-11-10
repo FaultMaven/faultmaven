@@ -36,6 +36,10 @@ from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommi
 from faultmaven.core.investigation.milestone_engine.turn_completion import (
     _compose_turn_reply,
 )
+from faultmaven.core.investigation.narration.notices import (
+    RESOLVE_DECLINED_ACTIONS,
+    RESOLVE_DECLINED_RULE,
+)
 from faultmaven.core.investigation.offer_projection import (
     DECLINED_RESOLVE_CARD_LABEL,
     DECLINED_RESOLVE_CLOSE_LABEL,
@@ -51,8 +55,6 @@ from faultmaven.core.investigation.schemas import (
     SuggestedFollowUp,
 )
 from faultmaven.core.investigation.terminal_transitions import (
-    RESOLVE_DECLINED_ACTIONS,
-    RESOLVE_DECLINED_RULE,
     ClosureReadiness,
     ResolutionReadiness,
     closure_verdict,
@@ -71,6 +73,7 @@ from faultmaven.modules.case.contracts import (
     InvestigationStage,
     MitigationRecord,
     ProblemStatus,
+    ResolutionReason,
 )
 from faultmaven.modules.case.domain.models.causal import (
     CausalNode,
@@ -774,8 +777,8 @@ class TestTheChip:
         intent = _chip_intent(case)
         not_ready = ResolutionReadiness(
             verdict=ResolutionReadiness.NEEDS_INFO,
-            message="What confirmed the fix held?",
             missing=["confirmation the problem is now resolved"],
+            reason=ResolutionReason.DOCUMENTATION_GAPS,
         )
         with patch(
             "faultmaven.core.investigation.terminal_transitions."

@@ -1,0 +1,272 @@
+{
+  "readiness_false_alarm": {
+    "verdict": "suggest_close",
+    "reason": "false_alarm",
+    "missing": [],
+    "gaps": [],
+    "message": "The evidence showed the reported problem was never present, so there is nothing to resolve. You can **close** the case instead; it will be recorded as a false alarm."
+  },
+  "readiness_pending_check": {
+    "verdict": "needs_info",
+    "reason": "pending_check",
+    "missing": [
+      "the check you asked for"
+    ],
+    "gaps": [],
+    "message": "To mark this **resolved** and write up the resolution summary, I just need a few essentials:\n\n- **The check I asked for** — Prometheus targets page showing job=billing UP\n\nSubmit check output as data (pasted or attached, not typed into your message): what you write is your account, and the output is what shows it."
+  },
+  "readiness_confirmed": {
+    "verdict": "ready",
+    "reason": "confirmed",
+    "missing": [],
+    "gaps": [],
+    "message": ""
+  },
+  "readiness_nothing_on_record": {
+    "verdict": "suggest_close",
+    "reason": "nothing_on_record",
+    "missing": [
+      "confirmation the problem is now resolved",
+      "root cause",
+      "solution"
+    ],
+    "gaps": [],
+    "message": "This case has nothing investigated yet, so there's nothing to document as a resolution.\n\nIf it's no longer relevant you can **close** it. If it was actually fixed, tell me what the problem was, what caused it, and how it was fixed, and submit the output of a check that shows it gone as data (pasted or attached, not typed into your message); I'll document the resolution."
+  },
+  "readiness_fix_off_cause": {
+    "verdict": "needs_info",
+    "reason": "fix_off_cause",
+    "missing": [
+      "a fix of the root cause",
+      "confirmation the problem is now resolved",
+      "solution"
+    ],
+    "gaps": [],
+    "message": "The last fix (turn 6) did not act on the root cause now identified, so no check after it can show that cause gone. To mark this **resolved** I need a **fix of the root cause** — tell me what you changed (or plan to change) there, and once it's applied, submit the output of checks showing the cause gone and the original problem gone with it, as data (pasted or attached, not typed into your message).\n\nIf the problem is only quiet for now, or the root's fix is **deferred**, you can **close** the case instead — that keeps the investigation on record without claiming the cause was fixed."
+  },
+  "readiness_fix_failed": {
+    "verdict": "needs_info",
+    "reason": "fix_failed",
+    "missing": [
+      "a new fix after the one that did not hold",
+      "confirmation the problem is now resolved",
+      "solution"
+    ],
+    "gaps": [],
+    "message": "The last fix didn't hold: the cause was shown removed, but the problem was seen again afterwards. To mark this **resolved** I need a **new fix** — tell me what you changed (or what you plan to change), and once it's applied, submit the output of checks showing the cause gone and the original problem gone with it, as data (pasted or attached, not typed into your message).\n\nIf the problem is only quiet for now (a restart, a failover or another workaround), or the real fix is **deferred**, you can **close** the case instead — that keeps the investigation on record without claiming the fix worked."
+  },
+  "readiness_gaps_no_cause_no_fix": {
+    "verdict": "needs_info",
+    "reason": "documentation_gaps",
+    "missing": [
+      "confirmation the problem is now resolved",
+      "root cause",
+      "solution"
+    ],
+    "gaps": [],
+    "message": "To mark this **resolved** and write up the resolution summary, I just need a few essentials:\n\n- **Root cause** — what caused the problem?\n- **What fixed it** — the action that resolved it.\n- **Confirmation it's resolved** — the output of a check showing the original problem is now gone (e.g. the latest output, with the error no longer in it).\n\nSubmit check output as data (pasted or attached, not typed into your message): what you write is your account, and the output is what shows it. If the problem was already fixed outside this session, the same applies, and I'll document it.\n\nIf it was only **stabilized** (a workaround/failover while the root cause is still pending) or the real fix is **deferred** (a change window, hardware RMA, another team), you can **close** the case instead — that keeps the investigation and the documented (or deferred) solution on record without claiming it's permanently fixed."
+  },
+  "readiness_gaps_identified": {
+    "verdict": "needs_info",
+    "reason": "documentation_gaps",
+    "missing": [
+      "confirmation the problem is now resolved",
+      "solution"
+    ],
+    "gaps": [],
+    "message": "To mark this **resolved** and write up the resolution summary, I just need a few essentials:\n\n- **What fixed it** — the action that resolved it.\n- **Confirmation it's resolved** — the output of a check showing the original problem is now gone (e.g. the latest output, with the error no longer in it).\n\nSubmit check output as data (pasted or attached, not typed into your message): what you write is your account, and the output is what shows it. If the problem was already fixed outside this session, the same applies, and I'll document it.\n\nIf it was only **stabilized** (a workaround/failover while the root cause is still pending) or the real fix is **deferred** (a change window, hardware RMA, another team), you can **close** the case instead — that keeps the investigation and the documented (or deferred) solution on record without claiming it's permanently fixed."
+  },
+  "readiness_gaps_relief_named": {
+    "verdict": "needs_info",
+    "reason": "documentation_gaps",
+    "missing": [
+      "confirmation the problem is now resolved",
+      "solution"
+    ],
+    "gaps": [
+      "relief_without_cause_recheck"
+    ],
+    "message": "To mark this **resolved** and write up the resolution summary, I just need a few essentials:\n\n- **What fixed it** — the action that resolved it.\n- **The cause re-checked after the fix** — what you reported is shown gone; the cause the fix addressed, \"max_connections is set to 20, below the checkout pool size\", needs to be seen removed too: the output of a check showing what \"raise max_connections to 100\" changed at it.\n\nSubmit check output as data (pasted or attached, not typed into your message): what you write is your account, and the output is what shows it. If the problem was already fixed outside this session, the same applies, and I'll document it.\n\nIf it was only **stabilized** (a workaround/failover while the root cause is still pending) or the real fix is **deferred** (a change window, hardware RMA, another team), you can **close** the case instead — that keeps the investigation and the documented (or deferred) solution on record without claiming it's permanently fixed."
+  },
+  "readiness_gaps_relief_unnamed": {
+    "verdict": "needs_info",
+    "reason": "documentation_gaps",
+    "missing": [
+      "confirmation the problem is now resolved",
+      "solution"
+    ],
+    "gaps": [
+      "relief_without_cause_recheck"
+    ],
+    "message": "To mark this **resolved** and write up the resolution summary, I just need a few essentials:\n\n- **What fixed it** — the action that resolved it.\n- **The cause re-checked after the fix** — what you reported is shown gone; the cause the fix addressed needs to be seen removed too: the output of a check showing it (e.g. the setting now reads the new value, or the corrected process is the one running).\n\nSubmit check output as data (pasted or attached, not typed into your message): what you write is your account, and the output is what shows it. If the problem was already fixed outside this session, the same applies, and I'll document it.\n\nIf it was only **stabilized** (a workaround/failover while the root cause is still pending) or the real fix is **deferred** (a change window, hardware RMA, another team), you can **close** the case instead — that keeps the investigation and the documented (or deferred) solution on record without claiming it's permanently fixed."
+  },
+  "readiness_gaps_relief_names_clip_empty": {
+    "verdict": "needs_info",
+    "reason": "documentation_gaps",
+    "missing": [
+      "confirmation the problem is now resolved",
+      "solution"
+    ],
+    "gaps": [
+      "relief_without_cause_recheck"
+    ],
+    "message": "To mark this **resolved** and write up the resolution summary, I just need a few essentials:\n\n- **What fixed it** — the action that resolved it.\n- **The cause re-checked after the fix** — what you reported is shown gone; the cause the fix addressed, \"\", needs to be seen removed too: the output of a check showing what \"\" changed at it.\n\nSubmit check output as data (pasted or attached, not typed into your message): what you write is your account, and the output is what shows it. If the problem was already fixed outside this session, the same applies, and I'll document it.\n\nIf it was only **stabilized** (a workaround/failover while the root cause is still pending) or the real fix is **deferred** (a change window, hardware RMA, another team), you can **close** the case instead — that keeps the investigation and the documented (or deferred) solution on record without claiming it's permanently fixed."
+  },
+  "readiness_gaps_relief_cause_clips_empty": {
+    "verdict": "needs_info",
+    "reason": "documentation_gaps",
+    "missing": [
+      "confirmation the problem is now resolved",
+      "solution"
+    ],
+    "gaps": [
+      "relief_without_cause_recheck"
+    ],
+    "message": "To mark this **resolved** and write up the resolution summary, I just need a few essentials:\n\n- **What fixed it** — the action that resolved it.\n- **The cause re-checked after the fix** — what you reported is shown gone; the cause the fix addressed, \"\", needs to be seen removed too: the output of a check showing what \"raise max_connections to 100\" changed at it.\n\nSubmit check output as data (pasted or attached, not typed into your message): what you write is your account, and the output is what shows it. If the problem was already fixed outside this session, the same applies, and I'll document it.\n\nIf it was only **stabilized** (a workaround/failover while the root cause is still pending) or the real fix is **deferred** (a change window, hardware RMA, another team), you can **close** the case instead — that keeps the investigation and the documented (or deferred) solution on record without claiming it's permanently fixed."
+  },
+  "readiness_gaps_relief_fix_clips_empty": {
+    "verdict": "needs_info",
+    "reason": "documentation_gaps",
+    "missing": [
+      "confirmation the problem is now resolved",
+      "solution"
+    ],
+    "gaps": [
+      "relief_without_cause_recheck"
+    ],
+    "message": "To mark this **resolved** and write up the resolution summary, I just need a few essentials:\n\n- **What fixed it** — the action that resolved it.\n- **The cause re-checked after the fix** — what you reported is shown gone; the cause the fix addressed, \"max_connections is set to 20\", needs to be seen removed too: the output of a check showing what \"\" changed at it.\n\nSubmit check output as data (pasted or attached, not typed into your message): what you write is your account, and the output is what shows it. If the problem was already fixed outside this session, the same applies, and I'll document it.\n\nIf it was only **stabilized** (a workaround/failover while the root cause is still pending) or the real fix is **deferred** (a change window, hardware RMA, another team), you can **close** the case instead — that keeps the investigation and the documented (or deferred) solution on record without claiming it's permanently fixed."
+  },
+  "readiness_gaps_cause_leg": {
+    "verdict": "needs_info",
+    "reason": "documentation_gaps",
+    "missing": [
+      "confirmation the problem is now resolved",
+      "solution"
+    ],
+    "gaps": [
+      "problem_unrechecked"
+    ],
+    "message": "To mark this **resolved** and write up the resolution summary, I just need a few essentials:\n\n- **What fixed it** — the action that resolved it.\n- **Confirmation the original problem is gone** — the cause is shown removed; what you first reported needs to be seen gone too: the output of the failing check or of the place the error appeared, now clean.\n\nSubmit check output as data (pasted or attached, not typed into your message): what you write is your account, and the output is what shows it. If the problem was already fixed outside this session, the same applies, and I'll document it.\n\nIf it was only **stabilized** (a workaround/failover while the root cause is still pending) or the real fix is **deferred** (a change window, hardware RMA, another team), you can **close** the case instead — that keeps the investigation and the documented (or deferred) solution on record without claiming it's permanently fixed."
+  },
+  "readiness_gaps_no_symptom_row": {
+    "verdict": "needs_info",
+    "reason": "documentation_gaps",
+    "missing": [
+      "confirmation the problem is now resolved",
+      "solution"
+    ],
+    "gaps": [
+      "no_symptom_row"
+    ],
+    "message": "To mark this **resolved** and write up the resolution summary, I just need a few essentials:\n\n- **What fixed it** — the action that resolved it.\n- **Confirmation it's resolved** — the output of a check showing the original problem is now gone (e.g. the latest output, with the error no longer in it).\n- **The check that showed the problem** — the original failing output isn't on record as what showed the problem; submit it as data (pasted or attached) so the fix can be confirmed against it.\n\nSubmit check output as data (pasted or attached, not typed into your message): what you write is your account, and the output is what shows it. If the problem was already fixed outside this session, the same applies, and I'll document it.\n\nIf it was only **stabilized** (a workaround/failover while the root cause is still pending) or the real fix is **deferred** (a change window, hardware RMA, another team), you can **close** the case instead — that keeps the investigation and the documented (or deferred) solution on record without claiming it's permanently fixed."
+  },
+  "readiness_gaps_pair": {
+    "verdict": "needs_info",
+    "reason": "documentation_gaps",
+    "missing": [
+      "confirmation the problem is now resolved",
+      "solution"
+    ],
+    "gaps": [
+      "problem_unrechecked",
+      "no_symptom_row"
+    ],
+    "message": "To mark this **resolved** and write up the resolution summary, I just need a few essentials:\n\n- **What fixed it** — the action that resolved it.\n- **Confirmation the original problem is gone** — the cause is shown removed; what you first reported needs to be seen gone too: the output of the failing check or of the place the error appeared, now clean.\n- **The check that showed the problem** — the original failing output isn't on record as what showed the problem; submit it as data (pasted or attached) so the fix can be confirmed against it.\n\nSubmit check output as data (pasted or attached, not typed into your message): what you write is your account, and the output is what shows it. If the problem was already fixed outside this session, the same applies, and I'll document it.\n\nIf it was only **stabilized** (a workaround/failover while the root cause is still pending) or the real fix is **deferred** (a change window, hardware RMA, another team), you can **close** the case instead — that keeps the investigation and the documented (or deferred) solution on record without claiming it's permanently fixed."
+  },
+  "closure_pivot": {
+    "verdict": "suggest_resolve",
+    "message": "This case qualifies for **resolved** status rather than closed. Closing would close it without marking it resolved; the confirmed fix stays on record.\n\nThe record shows:\n\n- **The cause** — max_connections is set to 20, below the worker pool size: the re-check after the fix (turn 7)\n- **The problem** — the reported problem, as first shown, re-checked: the re-check after the fix (turn 7)\n- **Root cause**: The IAM OIDC provider is registered with client ID sts.amazonaws.com.cn while the projected token audience is sts.amazonaws.com.\n- **Solution**: Correct the OIDC provider client ID\n\nWould you like to mark it **resolved** instead?"
+  },
+  "closure_pivot_no_cause_leg_no_solutions": {
+    "verdict": "suggest_resolve",
+    "message": "This case qualifies for **resolved** status rather than closed. Closing would close it without marking it resolved.\n\nThe record shows:\n\n- **The cause** — no root cause on record: the re-check after the fix (turn 7)\n- **The problem** — the reported problem, as first shown, re-checked: the re-check after the fix (turn 7)\n\nWould you like to mark it **resolved** instead?"
+  },
+  "closure_pivot_named_with_solutions": {
+    "verdict": "suggest_resolve",
+    "message": "This case qualifies for **resolved** status rather than closed. Closing would close it without marking it resolved; the confirmed fix stays on record.\n\nThe record shows:\n\n- **The cause** — max_connections is set to 20, below the worker pool size: After the provider client-ID correction the pods obtained credentials and the AssumeRole failures stopped (turn 1)\n- **The problem** — the reported problem, as first shown, re-checked: AssumeRoleWithWebIdentity succeeds for the data-processor pods (turn 1)\n- **Root cause**: max_connections is 20\n- **Solution**: Correct the OIDC provider client ID, raise the limit, Solution 3\n\nWould you like to mark it **resolved** instead?"
+  },
+  "closure_unconfirmed": {
+    "verdict": "has_substance",
+    "message": "Here's what was accomplished during this investigation:\n\n- **Evidence collected**: 3 items\n- **Hypotheses explored**: 1\n- **Milestones completed**: 2\n- **Root cause identified**: max_connections is set to 20, below the checkout pool size\n\nAre you sure you want to close this case without resolution?"
+  },
+  "summary_trivial": {
+    "verdict": "trivial",
+    "message": "This case has minimal investigation data. Are you sure you want to close it?"
+  },
+  "summary_one_row": {
+    "verdict": "has_substance",
+    "message": "Here's what was accomplished during this investigation:\n\n- **Evidence collected**: 1 item\n- **Milestones completed**: 1\n\nAre you sure you want to close this case without resolution?"
+  },
+  "summary_named_cause_with_solutions": {
+    "verdict": "has_substance",
+    "message": "Here's what was accomplished during this investigation:\n\n- **Evidence collected**: 3 items\n- **Hypotheses explored**: 1\n- **Milestones completed**: 2\n- **Root cause identified**: max_connections is 20\n- **Solutions on record**: Solution 1, raise the limit\n\nAre you sure you want to close this case without resolution?"
+  },
+  "summary_unnamed_cause": {
+    "verdict": "has_substance",
+    "message": "Here's what was accomplished during this investigation:\n\n- **Milestones completed**: 2\n- **Root cause identified**: the identified root cause\n\nAre you sure you want to close this case without resolution?"
+  },
+  "summary_on_a_confirmed_case": {
+    "verdict": "has_substance",
+    "message": "Here's what was accomplished during this investigation:\n\n- **Evidence collected**: 4 items\n- **Hypotheses explored**: 1\n- **Milestones completed**: 1\n- **Root cause identified**: The IAM OIDC provider is registered with client ID sts.amazonaws.com.cn while the projected token audience is sts.amazonaws.com.\n- **Solutions on record**: Correct the OIDC provider client ID\n\nAre you sure you want to close this case without resolution?"
+  },
+  "declined_both_chips": {
+    "reask": "TRANSITION NOT PROPOSED: the user declined marking this case resolved, and no new confirmation that the fix held has been recorded since. Do not propose resolved on the evidence already on record. If the user reports a NEW verification that the fix held, record it (the cause gone as causal_absence_evidence, the problem gone as symptom_absence_evidence) and propose resolved in the same turn. A request is not a verification: never record a confirmation row from a request. The engine has attached its 'Mark it resolved' and 'Close without resolving' actions to this reply. A user who changes their mind without a new verification uses the engine's 'Mark it resolved' action: point them to it. A user who wants to close the case instead uses the engine's 'Close without resolving' action: point them to it.",
+    "prompt_line": "\n**THE USER DECLINED MARKING THIS CASE RESOLVED.** It stays open on their answer. Do not propose resolved on the evidence already on record. If the user reports a NEW verification that the fix held, record it (the cause gone as causal_absence_evidence, the problem gone as symptom_absence_evidence) and propose resolved in the same turn. A request is not a verification: never record a confirmation row from a request. Do not narrate the case as resolved. A user who changes their mind without a new verification uses the engine's 'Mark it resolved' action: point them to it. A user who wants to close the case instead uses the engine's 'Close without resolving' action: point them to it.\n**THE USER HAS JUST DECLINED MARKING THIS CASE RESOLVED.** The case record already holds the confirmation the offer rested on (the cause shown removed, the reported problem seen gone after the fix); do not record the cause or the problem as gone again this turn. Ask what they still need to see before calling it resolved, or what makes them doubt the fix, and name the one check that would settle it (for example the fix mechanism's own state, a schedule's last run, or a window with no recurrence). If their message itself reports the state of their system, follow the chat-data rules: request that output with `system_state_report.request`, not in your reply.\n"
+  },
+  "declined_held_by_a_check": {
+    "reask": "TRANSITION NOT PROPOSED: the user declined marking this case resolved, and no new confirmation that the fix held has been recorded since. Do not propose resolved on the evidence already on record. If the user reports a NEW verification that the fix held, record it (the cause gone as causal_absence_evidence, the problem gone as symptom_absence_evidence) and propose resolved in the same turn. A request is not a verification: never record a confirmation row from a request. The engine has attached its 'Mark it resolved' and 'Close without resolving' actions to this reply. A user who wants to close the case instead uses the engine's 'Close without resolving' action: point them to it.",
+    "prompt_line": "\n**THE USER DECLINED MARKING THIS CASE RESOLVED.** It stays open on their answer. Do not propose resolved on the evidence already on record. If the user reports a NEW verification that the fix held, record it (the cause gone as causal_absence_evidence, the problem gone as symptom_absence_evidence) and propose resolved in the same turn. A request is not a verification: never record a confirmation row from a request. Do not narrate the case as resolved. A user who wants to close the case instead uses the engine's 'Close without resolving' action: point them to it.\n**THE USER HAS JUST DECLINED MARKING THIS CASE RESOLVED.** The case record already holds the confirmation the offer rested on (the cause shown removed, the reported problem seen gone after the fix); do not record the cause or the problem as gone again this turn. Ask what they still need to see before calling it resolved, or what makes them doubt the fix, and name the one check that would settle it (for example the fix mechanism's own state, a schedule's last run, or a window with no recurrence). If their message itself reports the state of their system, follow the chat-data rules: request that output with `system_state_report.request`, not in your reply.\n"
+  },
+  "declined_on_hold": {
+    "reask": "TRANSITION NOT PROPOSED: the user declined marking this case resolved, and no new confirmation that the fix held has been recorded since. Do not propose resolved on the evidence already on record. If the user reports a NEW verification that the fix held, record it (the cause gone as causal_absence_evidence, the problem gone as symptom_absence_evidence) and propose resolved in the same turn. A request is not a verification: never record a confirmation row from a request.",
+    "prompt_line": "\n**THE USER DECLINED MARKING THIS CASE RESOLVED.** It stays open on their answer. Do not propose resolved on the evidence already on record. If the user reports a NEW verification that the fix held, record it (the cause gone as causal_absence_evidence, the problem gone as symptom_absence_evidence) and propose resolved in the same turn. A request is not a verification: never record a confirmation row from a request. Do not narrate the case as resolved.\n**THE USER HAS JUST DECLINED MARKING THIS CASE RESOLVED.** The case record already holds the confirmation the offer rested on (the cause shown removed, the reported problem seen gone after the fix); do not record the cause or the problem as gone again this turn. Ask what they still need to see before calling it resolved, or what makes them doubt the fix, and name the one check that would settle it (for example the fix mechanism's own state, a schedule's last run, or a window with no recurrence). If their message itself reports the state of their system, follow the chat-data rules: request that output with `system_state_report.request`, not in your reply.\n"
+  },
+  "pending_check_backstop": {
+    "notices": [
+      "RESOLUTION HELD: the check you asked for is still pending ([eneed_00000000c0c0] Prometheus targets page showing job=billing UP). The resolution is offered once an answer showing the problem gone is on record: record the row and mark the need FULFILLED citing it. If the user cannot run the check, SUPERSEDE the need with the reason."
+    ],
+    "needs_info": null
+  },
+  "pending_check_backstop_fulfilled": {
+    "notices": [
+      "RESOLUTION HELD: the check you asked for ([eneed_00000000c0c0] Prometheus targets page showing job=billing UP) is marked FULFILLED, but the rows you cited predate the ask. The resolution is offered once an answer showing the problem gone is on record: record the row and mark the need FULFILLED citing it. If the user cannot run the check, SUPERSEDE the need with the reason."
+    ],
+    "needs_info": null
+  },
+  "pending_check_backstop_declined": {
+    "notices": [
+      "RESOLUTION HELD: the check you asked for is still pending ([eneed_00000000c0c0] Prometheus targets page showing job=billing UP). Record its answer as a row and mark the need FULFILLED citing it. If the user cannot run the check, SUPERSEDE the need with the reason. The user declined the resolution. Once an answer showing the problem gone is on record, a new problem-bound row showing it lapses that decline; if that answer is on any other row, the decline still binds, and the user re-opens the resolution with 'Mark it resolved'."
+    ],
+    "needs_info": null
+  },
+  "pending_check_backstop_declined_fulfilled": {
+    "notices": [
+      "RESOLUTION HELD: the check you asked for ([eneed_00000000c0c0] Prometheus targets page showing job=billing UP) is marked FULFILLED, but the rows you cited predate the ask. Record its answer as a row and mark the need FULFILLED citing it. If the user cannot run the check, SUPERSEDE the need with the reason. The user declined the resolution. Once an answer showing the problem gone is on record, a new problem-bound row showing it lapses that decline; if that answer is on any other row, the decline still binds, and the user re-opens the resolution with 'Mark it resolved'."
+    ],
+    "needs_info": null
+  },
+  "pending_check_step2": {
+    "notices": [
+      "RESOLVED NOT PROPOSED: the check you asked for is still pending ([eneed_00000000c0c0] Prometheus targets page showing job=billing UP). Propose resolved once an answer showing the problem gone is on record: record the row and mark the need FULFILLED citing it. If the user cannot run the check, SUPERSEDE the need with the reason."
+    ],
+    "needs_info": "To mark this **resolved** and write up the resolution summary, I just need a few essentials:\n\n- **The check I asked for** — Prometheus targets page showing job=billing UP\n\nSubmit check output as data (pasted or attached, not typed into your message): what you write is your account, and the output is what shows it."
+  },
+  "pending_check_step2_fulfilled": {
+    "notices": [
+      "RESOLVED NOT PROPOSED: the check you asked for ([eneed_00000000c0c0] Prometheus targets page showing job=billing UP) is marked FULFILLED, but the rows you cited predate the ask. Propose resolved once an answer showing the problem gone is on record: record the row and mark the need FULFILLED citing it. If the user cannot run the check, SUPERSEDE the need with the reason."
+    ],
+    "needs_info": "To mark this **resolved** and write up the resolution summary, I just need a few essentials:\n\n- **The check I asked for** — Prometheus targets page showing job=billing UP\n\nSubmit check output as data (pasted or attached, not typed into your message): what you write is your account, and the output is what shows it."
+  },
+  "pending_check_step2_declined": {
+    "notices": [
+      "RESOLVED NOT PROPOSED: the check you asked for is still pending ([eneed_00000000c0c0] Prometheus targets page showing job=billing UP). Record its answer as a row and mark the need FULFILLED citing it. If the user cannot run the check, SUPERSEDE the need with the reason. The user declined the resolution. Once an answer showing the problem gone is on record, a new problem-bound row showing it lapses that decline; if that answer is on any other row, the decline still binds, and the user re-opens the resolution with 'Mark it resolved'."
+    ],
+    "needs_info": "To mark this **resolved** and write up the resolution summary, I just need a few essentials:\n\n- **The check I asked for** — Prometheus targets page showing job=billing UP\n\nSubmit check output as data (pasted or attached, not typed into your message): what you write is your account, and the output is what shows it."
+  },
+  "pending_check_step2_declined_fulfilled": {
+    "notices": [
+      "RESOLVED NOT PROPOSED: the check you asked for ([eneed_00000000c0c0] Prometheus targets page showing job=billing UP) is marked FULFILLED, but the rows you cited predate the ask. Record its answer as a row and mark the need FULFILLED citing it. If the user cannot run the check, SUPERSEDE the need with the reason. The user declined the resolution. Once an answer showing the problem gone is on record, a new problem-bound row showing it lapses that decline; if that answer is on any other row, the decline still binds, and the user re-opens the resolution with 'Mark it resolved'."
+    ],
+    "needs_info": "To mark this **resolved** and write up the resolution summary, I just need a few essentials:\n\n- **The check I asked for** — Prometheus targets page showing job=billing UP\n\nSubmit check output as data (pasted or attached, not typed into your message): what you write is your account, and the output is what shows it."
+  }
+}
