@@ -15,6 +15,7 @@ Provider capability matrix for FaultMaven's LLM routing system. These capabiliti
 | HuggingFace | No | BEST_EFFORT | No DA tool use, degraded investigation |
 | Local (Ollama/vLLM) | Transport-dependent | Model-dependent | Assumed on the OpenAI-compatible path; never on Ollama's native `/api/chat` transport |
 | OpenRouter | Inherited | Inherited | Depends on underlying model |
+| Azure OpenAI | Yes | Inherited from OpenAI | `AZURE_OPENAI_MODEL` is a deployment name; capability is read from it, so name the deployment after its model |
 
 ## Role Routing
 

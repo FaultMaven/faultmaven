@@ -65,6 +65,7 @@ class LLMProvider(str, Enum):
     OPENROUTER = "openrouter"
     LOCAL = "local"
     GROQ = "groq"
+    AZURE_OPENAI = "azure_openai"
     NOT_SET = "NOT_SET"
 
 
@@ -304,6 +305,12 @@ class LLMSettings(BaseSettings):
     groq_api_key: Optional[SecretStr] = Field(
         default=None, validation_alias="GROQ_API_KEY"
     )
+    # Azure OpenAI names its resource key AZURE_OPENAI_KEY (Azure's own
+    # spelling); the field is the variable lower-cased, the rule
+    # llm_validation.api_key_field reads it by.
+    azure_openai_key: Optional[SecretStr] = Field(
+        default=None, validation_alias="AZURE_OPENAI_KEY"
+    )
 
     # Flexible model configuration per provider and task
     # Per-task model overrides (all Optional — fall back to {provider}_model)
@@ -443,6 +450,15 @@ class LLMSettings(BaseSettings):
     groq_da_model: Optional[str] = Field(default=None)
     groq_knowledge_model: Optional[str] = Field(default=None)
 
+    # Azure OpenAI (each value is a DEPLOYMENT name on the resource)
+    azure_openai_chat_model: Optional[str] = Field(default=None)
+    azure_openai_multimodal_model: Optional[str] = Field(default=None)
+    azure_openai_synthesis_model: Optional[str] = Field(default=None)
+    azure_openai_classifier_model: Optional[str] = Field(default=None)
+    azure_openai_code_model: Optional[str] = Field(default=None)
+    azure_openai_da_model: Optional[str] = Field(default=None)
+    azure_openai_knowledge_model: Optional[str] = Field(default=None)
+
     # Default chat model per provider (the effective default when the user does
     # not pin a model). Canonical set = .claude/rules/llm-providers.md
     # "Supported LLM Providers".
@@ -469,6 +485,10 @@ class LLMSettings(BaseSettings):
     gemini_model: str = Field(default="gemini-3.7-flash")
     huggingface_model: str = Field(default="mistralai/Mistral-Large-Instruct-2411")
     openrouter_model: str = Field(default="anthropic/claude-sonnet-4-6")
+    # The DEPLOYMENT name on the Azure resource. The default assumes the
+    # deployment is named after the model, the convention the inherited
+    # OpenAI capability rules key on (AzureOpenAIProvider).
+    azure_openai_model: str = Field(default="gpt-5.6-luna")
 
     # Local provider configuration
     local_url: Optional[str] = Field(default=None, validation_alias="LOCAL_LLM_URL")
@@ -527,6 +547,11 @@ class LLMSettings(BaseSettings):
     )
     groq_base_url: str = Field(
         default="https://api.groq.com/openai/v1", validation_alias="GROQ_API_BASE"
+    )
+    # Per-resource, so there is no default: the v1 endpoint of the operator's
+    # own resource, https://<resource>.openai.azure.com/openai/v1.
+    azure_openai_endpoint: Optional[str] = Field(
+        default=None, validation_alias="AZURE_OPENAI_ENDPOINT"
     )
 
     # Request configuration
@@ -798,6 +823,7 @@ class LLMSettings(BaseSettings):
             LLMProvider.HUGGINGFACE: self.huggingface_model,
             LLMProvider.OPENROUTER: self.openrouter_model,
             LLMProvider.GROQ: self.groq_model,
+            LLMProvider.AZURE_OPENAI: self.azure_openai_model,
         }
 
         base = base_models.get(provider, "")
@@ -832,6 +858,7 @@ class LLMSettings(BaseSettings):
             LLMProvider.HUGGINGFACE: self.huggingface_base_url,
             LLMProvider.OPENROUTER: self.openrouter_base_url,
             LLMProvider.GROQ: self.groq_base_url,
+            LLMProvider.AZURE_OPENAI: self.azure_openai_endpoint or "",
             LLMProvider.LOCAL: self.local_url,
         }
         return url_map.get(provider, "")

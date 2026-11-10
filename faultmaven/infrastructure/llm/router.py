@@ -109,7 +109,7 @@ def _span_prompt_views(
 # fallback is load-bearing for other callers (prompt budgeting) that want a
 # middle-of-the-road estimate rather than this one's deliberate bias.
 _TOKENIZER_BACKED_PROVIDERS = frozenset(
-    {"openai", "openrouter", "anthropic", "fireworks"}
+    {"openai", "openrouter", "azure_openai", "anthropic", "fireworks"}
 )
 
 # Longest body handed to a real tokenizer. Above this we do not sample it —

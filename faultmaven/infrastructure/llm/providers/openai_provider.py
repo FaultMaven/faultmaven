@@ -56,6 +56,19 @@ class OpenAIProvider(BaseLLMProvider):
         """Get list of supported models"""
         return self.config.models.copy()
 
+    def _request_headers(self) -> Dict[str, str]:
+        """The HTTP headers every /chat/completions request carries.
+
+        OpenAI and the gateways that speak its protocol authenticate with a
+        bearer token. Overridable so an endpoint that names its credential
+        differently (Azure OpenAI's ``api-key`` header) keeps the rest of the
+        wire protocol unchanged.
+        """
+        return {
+            "Authorization": f"Bearer {self.config.api_key}",
+            "Content-Type": "application/json",
+        }
+
     # Modern OpenAI models with strict json_schema support
     # (response_format.type = "json_schema", strict=True).
     # Order: most-specific first to avoid false-positive prefix matches.
@@ -611,10 +624,7 @@ class OpenAIProvider(BaseLLMProvider):
         effective_model = self.get_effective_model(model)
 
         # Prepare request
-        headers = {
-            "Authorization": f"Bearer {self.config.api_key}",
-            "Content-Type": "application/json",
-        }
+        headers = self._request_headers()
 
         # Handle messages for multi-turn conversations
         messages = kwargs.pop("messages", None)

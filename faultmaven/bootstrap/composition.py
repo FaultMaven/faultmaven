@@ -128,6 +128,11 @@ def _check_llm_configuration(llm_provider, settings=None) -> None:
             if llm_settings.gemini_api_key
             else ""
         ),
+        "Azure OpenAI": (
+            llm_settings.azure_openai_key.get_secret_value()
+            if llm_settings.azure_openai_key
+            else ""
+        ),
     }
 
     for name, key in llm_keys.items():

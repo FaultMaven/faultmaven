@@ -198,7 +198,7 @@ def estimate_tokens(
     provider = provider.lower()
 
     # Route to provider-specific estimator
-    if provider in ("openai", "openrouter"):
+    if provider in ("openai", "openrouter", "azure_openai"):
         return estimate_tokens_openai(text, model or "gpt-4")
     elif provider == "anthropic":
         return estimate_tokens_anthropic(text, model or "claude-sonnet-4-6")

@@ -181,6 +181,13 @@ TARGETS = [
     Target("fireworks", "fireworks", _OPENAI_RESP),
     Target("openai", "openai", _OPENAI_RESP),
     Target("openrouter", "openrouter", _OPENAI_RESP),
+    # No default endpoint (each Azure resource has its own host).
+    Target(
+        "azure_openai",
+        "azure_openai",
+        _OPENAI_RESP,
+        "https://example-resource.openai.azure.com/openai/v1",
+    ),
     Target("groq", "groq", _OPENAI_RESP),
     Target("cohere", "cohere", _COHERE_RESP),
     Target("gemini", "gemini", _GEMINI_RESP),
@@ -620,6 +627,7 @@ _JSON_OBJECT_IS_SENT_AS = {
     "fireworks": lambda b: b["response_format"] == _JSON_OBJECT,
     "openai": lambda b: b["response_format"] == _JSON_OBJECT,
     "openrouter": lambda b: b["response_format"] == _JSON_OBJECT,
+    "azure_openai": lambda b: b["response_format"] == _JSON_OBJECT,
     "groq": lambda b: b["response_format"] == _JSON_OBJECT,
     "cohere": lambda b: b["response_format"] == _JSON_OBJECT,
     "local-openai": lambda b: b["response_format"] == _JSON_OBJECT,
@@ -860,6 +868,7 @@ def _anthropic_tools(body, required):
 _TOOLS_ON_THE_WIRE = {
     "openai": _openai_tools,
     "openrouter": _openai_tools,
+    "azure_openai": _openai_tools,
     "groq": _openai_tools,
     "fireworks": _openai_tools,
     "local-openai": _openai_tools,

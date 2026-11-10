@@ -55,6 +55,7 @@ PROVIDER_DISPLAY_NAMES = {
     "huggingface": "HuggingFace",
     "cohere": "Cohere",
     "openrouter": "OpenRouter",
+    "azure_openai": "Azure OpenAI",
     "local": "Local (Ollama/vLLM)",
 }
 

@@ -487,12 +487,13 @@ def test_the_exempt_files_are_the_adapters_and_the_dispatch():
             for n in ast.walk(parse_file(_ROOT / rel))
         )
     ]
-    # base.py declares it abstract; every adapter but OpenRouter (which
-    # inherits OpenAI's) defines its own.
+    # base.py declares it abstract; every adapter but OpenRouter and Azure
+    # OpenAI (which inherit OpenAI's) defines its own.
     assert len(defining) >= 9, defining
     assert set(adapters) - set(defining) <= {
         _PROVIDERS + "__init__.py",
         _PROVIDERS + "openrouter_provider.py",
+        _PROVIDERS + "azure_openai_provider.py",
     }
 
 

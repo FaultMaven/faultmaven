@@ -447,6 +447,7 @@ check_env_file() {
         "huggingface|HuggingFace|HUGGINGFACE_API_KEY"
         "cohere|Cohere|COHERE_API_KEY"
         "openrouter|OpenRouter|OPENROUTER_API_KEY"
+        "azure_openai|Azure OpenAI|AZURE_OPENAI_KEY"
         "local|Local (Ollama/vLLM)|LOCAL_LLM_URL"
     )
 

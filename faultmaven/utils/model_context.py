@@ -153,6 +153,7 @@ _PROVIDER_FALLBACK_KEY: Dict[str, str] = {
     # (128K) while shipping a 922K model, and openrouter pointed at gpt-4o
     # while defaulting to anthropic/claude-sonnet-4-6.
     "openai": "gpt-5.6",
+    "azure_openai": "gpt-5.6",
     "openrouter": "claude",
     "google": "gemini",
     "gemini": "gemini",

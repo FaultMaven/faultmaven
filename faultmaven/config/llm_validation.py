@@ -100,4 +100,16 @@ def validate_llm_provider_credentials(settings: "Settings") -> None:
             "credential is — one must always be configured. See .env.example "
             "section 1."
         )
+    # A provider the registry says needs more than its key (azure_openai: its
+    # resource endpoint) is refused here too, rather than skipped at first use.
+    from faultmaven.infrastructure.llm.providers.registry import required_env_vars
+
+    for var in required_env_vars(provider):
+        if var != env_name and not _secret_present(
+            getattr(settings.llm, var.lower(), None)
+        ):
+            raise ValueError(
+                f"CHAT_PROVIDER={provider!r} requires {var}, which is missing or "
+                "empty. See .env.example section 1."
+            )
     logger.info("✅ LLM provider '%s' configured (%s set)", provider, env_name)
