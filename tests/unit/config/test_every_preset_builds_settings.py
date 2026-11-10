@@ -8,7 +8,10 @@ process could start (#1784).
 
 Each case is a fresh interpreter with no environment of the parent's and an
 empty working directory, isolated as ``test_get_settings_cold_process.py`` is,
-so no ``.env`` and no CI profile variable can supply what the preset lacks.
+so no ``.env`` and no CI profile variable can supply what the preset lacks. The
+child reports the preset's keys as the settings process saw them, so a case
+also fails when the preset was never applied. The suite's network guard is
+installed in the child too: the ``local`` preset names a model server.
 """
 
 from __future__ import annotations
@@ -22,30 +25,31 @@ import pytest
 
 import faultmaven
 from faultmaven.config.presets import PRESETS, PresetName, preset_required_keys
-from faultmaven.config.settings import DeploymentMode
 
 pytestmark = pytest.mark.unit
 
 ROOT = str(Path(faultmaven.__file__).resolve().parents[1])
 
 _CHILD = """
-import json, sys
+import json, os, sys
 
-root = sys.argv[1]
-from faultmaven.config.settings import DeploymentMode, get_settings
+root, keys = sys.argv[1], json.loads(sys.argv[2])
+from tests import network_guard
+
+network_guard.install()
+
+from faultmaven.config.settings import get_settings
 import faultmaven
 
 assert faultmaven.__file__.startswith(root), (faultmaven.__file__, root)
 settings = get_settings()
-# ``use_enum_values``: the field holds the member's value, not the member.
 print("RESULT " + json.dumps({
-    "mode": DeploymentMode(settings.deployment_mode).value,
+    "environ": {key: os.environ.get(key) for key in keys},
+    "mode": settings.deployment_mode,
     "is_cloud": settings.is_cloud,
+    "network_refusals": network_guard.drain_refusals(),
 }))
 """
-
-#: ``minimal`` is an alias of ``local``: the same definition.
-_DISTINCT_PRESETS = [name for name in PresetName if name is not PresetName.MINIMAL]
 
 
 def _build_settings_under(tmp_path: Path, preset: PresetName, **extra: str) -> dict:
@@ -61,7 +65,7 @@ def _build_settings_under(tmp_path: Path, preset: PresetName, **extra: str) -> d
     script = tmp_path / "child.py"
     script.write_text(_CHILD)
     result = subprocess.run(
-        [sys.executable, str(script), ROOT],
+        [sys.executable, str(script), ROOT, json.dumps(list(definition.defaults))],
         cwd=work,
         env={
             "PATH": "/usr/bin:/bin",
@@ -78,18 +82,33 @@ def _build_settings_under(tmp_path: Path, preset: PresetName, **extra: str) -> d
     assert result.returncode == 0, result.stderr[-3000:]
     lines = [ln for ln in result.stdout.splitlines() if ln.startswith("RESULT ")]
     assert lines, result.stdout[-2000:]
-    return json.loads(lines[-1].removeprefix("RESULT "))
+    answer = json.loads(lines[-1].removeprefix("RESULT "))
+    assert answer["network_refusals"] == []
+    return answer
 
 
-@pytest.mark.parametrize("preset", _DISTINCT_PRESETS, ids=lambda p: p.value)
+#: The deployment mode each preset builds. ``minimal`` is an alias of ``local``
+#: (the same definition); a preset added without an entry here fails its case.
+_MODE = {
+    PresetName.LOCAL: "standalone",
+    PresetName.STANDARD: "standalone",
+    PresetName.ENTERPRISE: "cloud",
+}
+
+
+@pytest.mark.parametrize(
+    "preset",
+    [name for name in PresetName if name is not PresetName.MINIMAL],
+    ids=lambda name: name.value,
+)
 def test_the_preset_builds_the_settings(tmp_path, preset):
-    mode = _build_settings_under(tmp_path, preset)["mode"]
+    answer = _build_settings_under(tmp_path, preset)
 
-    assert mode in {member.value for member in DeploymentMode}
-
-
-def test_the_enterprise_preset_is_a_cloud_deployment(tmp_path):
-    assert _build_settings_under(tmp_path, PresetName.ENTERPRISE)["is_cloud"] is True
+    assert answer["environ"] == {
+        key: str(value) for key, value in PRESETS[preset].defaults.items()
+    }
+    assert answer["mode"] == _MODE[preset]
+    assert answer["is_cloud"] is (_MODE[preset] == "cloud")
 
 
 def test_an_explicit_deployment_mode_beats_the_enterprise_preset(tmp_path):

@@ -15,7 +15,7 @@ Usage:
     # Via environment variable
     CONFIG_PRESET=local  # Local LLM and local stores, no external deps
     CONFIG_PRESET=standard  # Requires Redis, ChromaDB
-    CONFIG_PRESET=enterprise  # Production settings, four workers; names no services
+    CONFIG_PRESET=enterprise  # Cloud production settings, four workers; names no services
     CONFIG_PRESET=none  # No preset: none applied, and none auto-detected
 
     # Presets can be overridden by specific env vars
@@ -39,7 +39,8 @@ class PresetName(str, Enum):
     LOCAL = "local"  # Zero-config for local development
     MINIMAL = "minimal"  # Alias for local
     STANDARD = "standard"  # Basic production with Redis + ChromaDB
-    ENTERPRISE = "enterprise"  # Production settings, four workers; names no services
+    # Cloud production settings, four workers; names no services
+    ENTERPRISE = "enterprise"
 
 
 @dataclass
@@ -139,9 +140,9 @@ PRESETS: Dict[str, PresetDefinition] = {
     ),
     PresetName.ENTERPRISE: PresetDefinition(
         name="enterprise",
-        description="Production settings with four workers and vectors in "
-        "ChromaDB. Names no service: set DATABASE_URL (PostgreSQL), REDIS_HOST "
-        "and CHROMADB_URL.",
+        description="Production settings for a cloud deployment, with four "
+        "workers and vectors in ChromaDB. Names no service: set DATABASE_URL "
+        "(PostgreSQL), REDIS_HOST and CHROMADB_URL.",
         defaults={
             # Server
             "ENVIRONMENT": "production",
@@ -151,7 +152,7 @@ PRESETS: Dict[str, PresetDefinition] = {
             "RELOAD": "false",
             "WORKERS": "4",
             "SKIP_SERVICE_CHECKS": "false",
-            # Deployment mode: the startup coherence gate names what cloud requires.
+            # Deployment mode: a cloud deployment; DEPLOYMENT_MODE=standalone overrides.
             "DEPLOYMENT_MODE": "cloud",
             # Storage - full external services (Redis via REDIS_HOST)
             "VECTOR_STORAGE_TYPE": "chromadb",

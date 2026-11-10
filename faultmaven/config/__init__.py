@@ -15,7 +15,7 @@ Zero-Config Quick Start:
     # Or explicitly set a preset:
     CONFIG_PRESET=local      # Local LLM and local stores
     CONFIG_PRESET=standard   # Redis + ChromaDB, cloud LLM
-    CONFIG_PRESET=enterprise # Production settings, four workers; names no services
+    CONFIG_PRESET=enterprise # Cloud production settings, four workers; names no services
     CONFIG_PRESET=none       # No preset: none applied, none auto-detected
 """
 
