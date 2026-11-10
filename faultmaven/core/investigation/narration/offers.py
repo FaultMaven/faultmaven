@@ -31,8 +31,10 @@ _SUBMIT_AS_DATA = (
 
 def _cause_recheck_ask(cause: Optional[str], fix: Optional[str]) -> str:
     """The readiness ask for the cause leg after a dated fix (#1927, #2557),
-    naming the root's statement and the fix when the decider could."""
-    if cause and fix:
+    naming the root's statement and the fix when the decider named them. The
+    choice rests on whether they were named, not on their text: a name can
+    clip to nothing and is still named."""
+    if cause is not None and fix is not None:
         return (
             "- **The cause re-checked after the fix** — what you reported is "
             f'shown gone; the cause the fix addressed, "{cause}", needs to be '
@@ -48,6 +50,12 @@ def _cause_recheck_ask(cause: Optional[str], fix: Optional[str]) -> str:
     )
 
 
+def _required(reason: str, **params) -> None:
+    for name, value in params.items():
+        if value is None:
+            raise ValueError(f"readiness reason {reason!r} needs {name!r}")
+
+
 def readiness_message(
     reason: str,
     *,
@@ -58,7 +66,8 @@ def readiness_message(
     recheck_cause: Optional[str] = None,
     recheck_fix: Optional[str] = None,
 ) -> str:
-    """``ResolutionReadiness.message``, keyed by which branch answered."""
+    """``ResolutionReadiness.message``, keyed by which branch answered. An
+    unknown reason, or one without the param its text names, raises."""
     if reason == ResolutionReason.FALSE_ALARM:
         return (
             "The evidence showed the reported problem was never present, so "
@@ -66,6 +75,7 @@ def readiness_message(
             "it will be recorded as a false alarm."
         )
     if reason == ResolutionReason.PENDING_CHECK:
+        _required(reason, request_text=request_text)
         return (
             _NEEDS_INFO_INTRO
             + f"- **The check I asked for** — {request_text}"
@@ -85,6 +95,7 @@ def readiness_message(
             "your message); I'll document the resolution."
         )
     if reason == ResolutionReason.FIX_OFF_CAUSE:
+        _required(reason, off_cause_turn=off_cause_turn)
         return (
             f"The last fix (turn {off_cause_turn}) did not act on the root cause "
             "now identified, so no check after it can show that cause gone. "
@@ -111,26 +122,29 @@ def readiness_message(
             "**close** the case instead — that keeps the investigation on "
             "record without claiming the fix worked."
         )
+    if reason != ResolutionReason.DOCUMENTATION_GAPS:
+        raise ValueError(f"no readiness message for reason {reason!r}")
     asks = []
     if "root cause" in missing:
         asks.append("- **Root cause** — what caused the problem?")
     if "solution" in missing:
         asks.append("- **What fixed it** — the action that resolved it.")
-    if ConfirmationGap.RELIEF_WITHOUT_CAUSE_RECHECK in gaps:
-        asks.append(_cause_recheck_ask(recheck_cause, recheck_fix))
-    elif ConfirmationGap.PROBLEM_UNRECHECKED in gaps:
-        asks.append(
-            "- **Confirmation the original problem is gone** — the cause is "
-            "shown removed; what you first reported needs to be seen gone "
-            "too: the output of the failing check or of the place the error "
-            "appeared, now clean."
-        )
-    else:
-        asks.append(
-            "- **Confirmation it's resolved** — the output of a check "
-            "showing the original problem is now gone (e.g. the latest "
-            "output, with the error no longer in it)."
-        )
+    if "confirmation the problem is now resolved" in missing:
+        if ConfirmationGap.RELIEF_WITHOUT_CAUSE_RECHECK in gaps:
+            asks.append(_cause_recheck_ask(recheck_cause, recheck_fix))
+        elif ConfirmationGap.PROBLEM_UNRECHECKED in gaps:
+            asks.append(
+                "- **Confirmation the original problem is gone** — the cause is "
+                "shown removed; what you first reported needs to be seen gone "
+                "too: the output of the failing check or of the place the error "
+                "appeared, now clean."
+            )
+        else:
+            asks.append(
+                "- **Confirmation it's resolved** — the output of a check "
+                "showing the original problem is now gone (e.g. the latest "
+                "output, with the error no longer in it)."
+            )
     if ConfirmationGap.NO_SYMPTOM_ROW in gaps:
         asks.append(
             "- **The check that showed the problem** — the original failing "
@@ -175,6 +189,7 @@ def suggest_resolve_message(
 
 def close_summary_message(
     *,
+    trivial: bool,
     evidence_count: int,
     hypothesis_count: int,
     milestones_completed: int,
@@ -182,7 +197,13 @@ def close_summary_message(
     solution_titles: Sequence[str],
 ) -> str:
     """What the investigation accomplished, for a close's confirmation
-    prompt; the TRIVIAL prompt when it accomplished nothing."""
+    prompt; the TRIVIAL prompt when the decider found it accomplished
+    nothing (``trivial``)."""
+    if trivial:
+        return (
+            "This case has minimal investigation data. "
+            "Are you sure you want to close it?"
+        )
     parts = []
     if evidence_count > 0:
         parts.append(
@@ -196,11 +217,6 @@ def close_summary_message(
         parts.append(f"- **Root cause identified**: {root_cause}")
     if solution_titles:
         parts.append(f"- **Solutions on record**: {', '.join(solution_titles)}")
-    if not parts:
-        return (
-            "This case has minimal investigation data. "
-            "Are you sure you want to close it?"
-        )
     return (
         "Here's what was accomplished during this investigation:\n\n"
         + "\n".join(parts)

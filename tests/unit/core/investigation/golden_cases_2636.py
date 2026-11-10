@@ -17,7 +17,10 @@ holding this module::
     cd <scratch> && python -c "from tests.unit.core.investigation import \\
         golden_cases_2636 as g; g.capture_main()"
 
-``test_golden_composers_2636.py`` runs them on this tree and compares.
+``capture_main`` refuses any other tree: one whose ``faultmaven`` is not its
+own, or one holding ``narration/offers.py``, where the golden would compare
+the code with itself. ``test_golden_composers_2636.py`` runs them on this
+tree and compares.
 """
 
 import asyncio
@@ -62,6 +65,9 @@ from tests.unit.core.investigation.test_case_outcome_fold_2636 import (
     _invalidated,
     _no_symptom_row,
     _relief_only,
+)
+from tests.unit.core.investigation.test_m6_cause_gone_problem_persists_1927 import (
+    _ROOT_ID,
 )
 from tests.unit.core.investigation.test_pending_check_holds_the_offer_1906 import (
     _held_case,
@@ -121,6 +127,15 @@ def _relief_unnamed():
     """The relief window's fix names a record id, so the ask is generic."""
     case = _relief_only()
     case.proposed_actions[-1].description = "apply act_0123456789ab"
+    return case
+
+
+def _relief_clipped_empty(statement: str, fix: str):
+    """The relief window's names exist but clip to nothing: ``main`` picks the
+    named ask on their presence, not on their clipped text."""
+    case = _relief_only()
+    case.causal_nodes[_ROOT_ID].statement = statement
+    case.proposed_actions[-1].description = fix
     return case
 
 
@@ -225,6 +240,15 @@ SCENARIOS = {
     "readiness_gaps_identified": lambda: _readiness(_identified_case()[0]),
     "readiness_gaps_relief_named": lambda: _readiness(_relief_only()),
     "readiness_gaps_relief_unnamed": lambda: _readiness(_relief_unnamed()),
+    "readiness_gaps_relief_names_clip_empty": lambda: _readiness(
+        _relief_clipped_empty(".", "...")
+    ),
+    "readiness_gaps_relief_cause_clips_empty": lambda: _readiness(
+        _relief_clipped_empty(".", "raise max_connections to 100")
+    ),
+    "readiness_gaps_relief_fix_clips_empty": lambda: _readiness(
+        _relief_clipped_empty("max_connections is set to 20", "...")
+    ),
     "readiness_gaps_cause_leg": lambda: _readiness(_cause_leg_only()),
     "readiness_gaps_no_symptom_row": lambda: _readiness(
         _no_symptom_row(_identified_case()[0])
@@ -288,6 +312,10 @@ def capture_main() -> None:  # pragma: no cover - run once, on main
     assert (
         Path(faultmaven.__file__).resolve().is_relative_to(root)
     ), f"faultmaven imported from {faultmaven.__file__}, not {root}"
+    # Only a pre-extraction tree is main's: on this branch the golden would
+    # compare the code with itself.
+    extracted = root / "faultmaven/core/investigation/narration/offers.py"
+    assert not extracted.exists(), f"{extracted} exists: capture on main only"
     print(f"faultmaven: {faultmaven.__file__}")
     GOLDEN.write_text(
         json.dumps(

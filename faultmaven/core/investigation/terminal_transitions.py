@@ -60,6 +60,7 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     close_pivoted_to_resolve_total,
     resolution_cause_leg_total,
 )
+from faultmaven.core.investigation.narration.notices import pending_check_feedback
 from faultmaven.core.investigation.narration.offers import (
     close_summary_message,
     readiness_message,
@@ -892,6 +893,20 @@ def declined_resolve_entry(
     return standing_resolve_decline(case)
 
 
+def held_check_feedback(case: Case, check: EvidenceNeed, *, proposed: bool) -> str:
+    """The feedback while the model's own check holds the resolution (#1906
+    D5.2), for the backstop's hold and step 2's refusal: what the check's
+    state and a standing resolve decline (``declined_resolve_entry``) decide,
+    composed by ``narration.notices.pending_check_feedback``."""
+    return pending_check_feedback(
+        check.need_id,
+        check.request_text,
+        fulfilled=check.state == NeedState.FULFILLED,
+        proposed=proposed,
+        declined_stands=declined_resolve_entry(case) is not None,
+    )
+
+
 def close_pivots_to_resolve(case: Case, verdict: str) -> bool:
     """Whether a close on this case becomes a resolve proposal (INV-37), given
     its closure ``verdict``: the verdict is SUGGEST_RESOLVE and no resolve
@@ -1333,8 +1348,9 @@ class ResolutionReadiness:
     ):
         self.verdict = verdict
         self.missing = missing
-        # What the message names beyond the reason, the missing items and
-        # the gaps (#2636): the composer is ``narration.offers``.
+        # What the message names beyond the reason, the missing items, the
+        # gaps and the pending check (#2636): the composer is
+        # ``narration.offers``.
         self.params = params
         # NEEDS_INFO on a confirmed case: the check the model asked for after
         # the fix, still unanswered (``pending_symptom_check``, #1906 D5.2).
@@ -1344,16 +1360,21 @@ class ResolutionReadiness:
         # documentation-gap return made, for the case outcome record (#2615).
         self.reason = reason
         self.confirmation_gaps = list(confirmation_gaps or [])
+        # Composed once, here: a reason without its params, or a param no
+        # reason takes, fails where the readiness is built, not where its
+        # message is read.
+        self._message = readiness_message(
+            reason,
+            missing=missing,
+            gaps=self.confirmation_gaps,
+            request_text=getattr(pending_check, "request_text", None),
+            **params,
+        )
 
     @property
     def message(self) -> str:
         """The user-facing message (``narration.offers.readiness_message``)."""
-        return readiness_message(
-            self.reason,
-            missing=self.missing,
-            gaps=self.confirmation_gaps,
-            **self.params,
-        )
+        return self._message
 
 
 #: What a model-authored name can carry: a record id, or the ref the model writes.
@@ -1489,7 +1510,6 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
                 missing=["the check you asked for"],
                 pending_check=check,
                 reason=ResolutionReason.PENDING_CHECK,
-                request_text=check.request_text,
             )
         return ResolutionReadiness(
             verdict=ResolutionReadiness.READY,
@@ -1850,6 +1870,7 @@ def assess_close_summary(case: "Case") -> ClosureReadiness:
             ClosureReadiness.TRIVIAL if trivial else ClosureReadiness.HAS_SUBSTANCE
         ),
         message=close_summary_message(
+            trivial=trivial,
             evidence_count=evidence_count,
             hypothesis_count=hypothesis_count,
             milestones_completed=milestones_completed,

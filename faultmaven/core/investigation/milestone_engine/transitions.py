@@ -6,7 +6,6 @@ from typing import Any
 from faultmaven.core.investigation.cause_assurance import pending_symptom_check
 from faultmaven.core.investigation.narration.notices import (
     RESOLVE_DECLINED_RULE,
-    pending_check_feedback,
     resolve_declined_actions,
 )
 from faultmaven.core.investigation.offer_projection import project_offers
@@ -22,6 +21,7 @@ from faultmaven.core.investigation.problem_status import (
 from faultmaven.core.investigation.terminal_transitions import (
     declined_resolve_entry,
     disposition_refusal,
+    held_check_feedback,
     open_disposition_offer,
 )
 from faultmaven.modules.case.contracts import (
@@ -29,7 +29,6 @@ from faultmaven.modules.case.contracts import (
     CaseAction,
     CaseState,
     InvestigationProgress,
-    NeedState,
     OfferBasis,
     OfferKind,
     ProblemVerification,
@@ -582,14 +581,7 @@ class TransitionManager:
                     )
                 else:
                     _add_system_feedback(
-                        metadata,
-                        pending_check_feedback(
-                            check.need_id,
-                            check.request_text,
-                            fulfilled=check.state == NeedState.FULFILLED,
-                            proposed=True,
-                            declined_stands=declined_resolve_entry(case) is not None,
-                        ),
+                        metadata, held_check_feedback(case, check, proposed=True)
                     )
                     metadata["resolution_pending_check"] = check.need_id
                 metadata["resolution_needs_info_first_pass"] = True

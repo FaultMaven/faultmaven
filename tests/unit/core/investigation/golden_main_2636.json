@@ -100,6 +100,42 @@
     ],
     "message": "To mark this **resolved** and write up the resolution summary, I just need a few essentials:\n\n- **What fixed it** — the action that resolved it.\n- **The cause re-checked after the fix** — what you reported is shown gone; the cause the fix addressed needs to be seen removed too: the output of a check showing it (e.g. the setting now reads the new value, or the corrected process is the one running).\n\nSubmit check output as data (pasted or attached, not typed into your message): what you write is your account, and the output is what shows it. If the problem was already fixed outside this session, the same applies, and I'll document it.\n\nIf it was only **stabilized** (a workaround/failover while the root cause is still pending) or the real fix is **deferred** (a change window, hardware RMA, another team), you can **close** the case instead — that keeps the investigation and the documented (or deferred) solution on record without claiming it's permanently fixed."
   },
+  "readiness_gaps_relief_names_clip_empty": {
+    "verdict": "needs_info",
+    "reason": "documentation_gaps",
+    "missing": [
+      "confirmation the problem is now resolved",
+      "solution"
+    ],
+    "gaps": [
+      "relief_without_cause_recheck"
+    ],
+    "message": "To mark this **resolved** and write up the resolution summary, I just need a few essentials:\n\n- **What fixed it** — the action that resolved it.\n- **The cause re-checked after the fix** — what you reported is shown gone; the cause the fix addressed, \"\", needs to be seen removed too: the output of a check showing what \"\" changed at it.\n\nSubmit check output as data (pasted or attached, not typed into your message): what you write is your account, and the output is what shows it. If the problem was already fixed outside this session, the same applies, and I'll document it.\n\nIf it was only **stabilized** (a workaround/failover while the root cause is still pending) or the real fix is **deferred** (a change window, hardware RMA, another team), you can **close** the case instead — that keeps the investigation and the documented (or deferred) solution on record without claiming it's permanently fixed."
+  },
+  "readiness_gaps_relief_cause_clips_empty": {
+    "verdict": "needs_info",
+    "reason": "documentation_gaps",
+    "missing": [
+      "confirmation the problem is now resolved",
+      "solution"
+    ],
+    "gaps": [
+      "relief_without_cause_recheck"
+    ],
+    "message": "To mark this **resolved** and write up the resolution summary, I just need a few essentials:\n\n- **What fixed it** — the action that resolved it.\n- **The cause re-checked after the fix** — what you reported is shown gone; the cause the fix addressed, \"\", needs to be seen removed too: the output of a check showing what \"raise max_connections to 100\" changed at it.\n\nSubmit check output as data (pasted or attached, not typed into your message): what you write is your account, and the output is what shows it. If the problem was already fixed outside this session, the same applies, and I'll document it.\n\nIf it was only **stabilized** (a workaround/failover while the root cause is still pending) or the real fix is **deferred** (a change window, hardware RMA, another team), you can **close** the case instead — that keeps the investigation and the documented (or deferred) solution on record without claiming it's permanently fixed."
+  },
+  "readiness_gaps_relief_fix_clips_empty": {
+    "verdict": "needs_info",
+    "reason": "documentation_gaps",
+    "missing": [
+      "confirmation the problem is now resolved",
+      "solution"
+    ],
+    "gaps": [
+      "relief_without_cause_recheck"
+    ],
+    "message": "To mark this **resolved** and write up the resolution summary, I just need a few essentials:\n\n- **What fixed it** — the action that resolved it.\n- **The cause re-checked after the fix** — what you reported is shown gone; the cause the fix addressed, \"max_connections is set to 20\", needs to be seen removed too: the output of a check showing what \"\" changed at it.\n\nSubmit check output as data (pasted or attached, not typed into your message): what you write is your account, and the output is what shows it. If the problem was already fixed outside this session, the same applies, and I'll document it.\n\nIf it was only **stabilized** (a workaround/failover while the root cause is still pending) or the real fix is **deferred** (a change window, hardware RMA, another team), you can **close** the case instead — that keeps the investigation and the documented (or deferred) solution on record without claiming it's permanently fixed."
+  },
   "readiness_gaps_cause_leg": {
     "verdict": "needs_info",
     "reason": "documentation_gaps",

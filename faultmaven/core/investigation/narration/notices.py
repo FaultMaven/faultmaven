@@ -3,8 +3,11 @@ stage R).
 
 Composers keyed on what a decider decided, never on the case: the rule that
 binds the model while a resolve decline stands and the actions it points at,
-the feedback while the model's own check holds the resolution, and the
-``solution_accepted`` refusals. The deciders derive the params; these compose.
+the feedback while the model's own check holds the resolution, and two of the
+``solution_accepted`` refusals (no pending SOLUTION, and the M5 licence). The
+withdrawn and downgraded refusals stay in ``milestone_engine.stage_gates``
+until a later sub-stage moves them. The deciders derive the params; these
+compose.
 """
 
 #: What binds the model while a resolve decline stands (#1895): the ONE rule the
