@@ -78,7 +78,9 @@ def run_server(app: str = "faultmaven.main:app") -> None:
 
     settings = get_settings()
     server = settings.server
-    if serving_processes(settings) > 1:
+    # A process that supervises children (several workers, or the reloader)
+    # refuses before it starts them.
+    if serving_processes(settings) > 1 or server.reload:
         _prepare_workers(settings)
     # Always passed: with ``workers`` unset uvicorn reads WEB_CONCURRENCY, and
     # the settings would no longer say how many processes serve (#2281).
@@ -124,16 +126,19 @@ STARTUP_FAILURE = 3
 
 
 def _prepare_workers(settings: Any) -> None:
-    """What several workers need done once, before uvicorn forks them (#2281).
+    """What several workers, or the reloader's child, need done once, before
+    uvicorn starts them (#2281, #2669).
 
     The configuration's refusals run here: refused only in each worker's
     lifespan, they would not stop uvicorn, whose supervisor restarts a worker
-    that exits during startup forever. Then the startup migration runs once, so
-    the workers do not race on a first boot; each worker's own run then finds
-    the schema at head. With one process the lifespan does both, and its
-    refusal stops uvicorn.
+    that exits during startup forever, and whose reloader outlives its child.
+    Then, for several workers, the startup migration runs once, so they do not
+    race on a first boot; each worker's own run then finds the schema at head.
+    The reloader's one child migrates in its lifespan. With one process and no
+    reloader the lifespan does both, and its refusal stops uvicorn.
     """
     from faultmaven.bootstrap.configuration_gates import validate_configuration
+    from faultmaven.config.worker_stores import serving_processes
     from faultmaven.infrastructure.logging.config import get_logger
 
     # The app's logging, which nothing else installs in this process before
@@ -148,7 +153,7 @@ def _prepare_workers(settings: Any) -> None:
         # reason, and a bug inside a gate is not lost.
         logger.error(f"Configuration initialization failed: {error}", exc_info=True)
         sys.exit(STARTUP_FAILURE)
-    if settings.run_startup_migrations:
+    if settings.run_startup_migrations and serving_processes(settings) > 1:
         from faultmaven.bootstrap.data_init import migrate_before_workers
 
         migrate_before_workers()

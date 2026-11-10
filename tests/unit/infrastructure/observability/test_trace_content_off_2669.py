@@ -61,6 +61,8 @@ def sdk(monkeypatch):
                         seen.append(("raised", e))
                         raise
                     seen.append(("returned", result))
+                    if broken.error:
+                        raise broken.error
                     return result
 
             return wrapper
@@ -197,12 +199,13 @@ class TestTheGuard:
         finally:
             gc.enable()
 
-    async def test_an_sdk_failure_after_the_call_keeps_the_original(self, sdk):
+    @pytest.mark.parametrize("build", [_sync_failing, _async_failing])
+    async def test_an_sdk_failure_after_the_call_keeps_the_original(self, sdk, build):
         sdk.broken.error = RuntimeError("the SDK's own failure")
         error = ValueError(SECRET)
 
         with pytest.raises(ValueError) as raised:
-            await opik_sdk.track(name="probe")(_async_failing(error))()
+            await _invoke(opik_sdk.track(name="probe")(build(error)))
 
         assert raised.value is error
         assert raised.value.__context__ is sdk.broken.error

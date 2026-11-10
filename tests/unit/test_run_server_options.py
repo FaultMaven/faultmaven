@@ -241,6 +241,36 @@ def test_a_refusal_the_configuration_decides_exits_before_uvicorn_starts(
         reset_settings()
 
 
+def test_a_refusal_under_reload_exits_before_uvicorn_starts(monkeypatch):
+    """uvicorn's reloader outlives a child whose lifespan refuses, so the
+    launcher refuses under RELOAD too, though it serves one process (#2669)."""
+    from faultmaven.config.settings import reset_settings
+
+    for name, value in {
+        "CONFIG_PRESET": "none",
+        "RELOAD": "true",
+        "WORKERS": "1",
+        "OPIK_CAPTURE_CONTENT": "true",
+    }.items():
+        monkeypatch.setenv(name, value)
+    reset_settings()
+    try:
+        with (
+            patch("uvicorn.run", autospec=True) as run,
+            patch("faultmaven.bootstrap.data_init.migrate_before_workers") as migrate,
+            patch("faultmaven.infrastructure.logging.config.get_logger") as logging,
+        ):
+            with pytest.raises(SystemExit) as exited:
+                run_server()
+        assert exited.value.code == 3  # uvicorn's STARTUP_FAILURE
+        (logged,) = logging.return_value.error.call_args.args
+        assert "retention bound" in logged
+        migrate.assert_not_called()
+        run.assert_not_called()
+    finally:
+        reset_settings()
+
+
 @pytest.mark.parametrize("workers", ["0", "-1"])
 def test_fewer_than_one_worker_is_refused_by_the_settings(monkeypatch, workers):
     """``workers`` reaches uvicorn whatever its value now (#2281), and no count
@@ -310,7 +340,9 @@ def test_malformed_app_is_rejected_before_uvicorn_starts(app):
         # One process: the lifespan refuses and migrates, and its refusal
         # stops uvicorn.
         (1, False, True, ["run"]),
-        (2, True, True, ["run"]),  # RELOAD serves one process
+        # RELOAD serves one process, which migrates itself; the reloader still
+        # refuses first, or it would outlive the child it refused (#2669).
+        (2, True, True, ["logging", "gates", "run"]),
     ],
 )
 def test_several_workers_are_validated_and_migrated_once_before_uvicorn_forks(
