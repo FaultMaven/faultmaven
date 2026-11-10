@@ -90,8 +90,8 @@ class TestPresetDefinitions:
         enterprise_preset = PRESETS[PresetName.ENTERPRISE]
         defaults = enterprise_preset.defaults
 
-        # Should be multi-tenant
-        assert defaults.get("DEPLOYMENT_MODE") == "multi-tenant"
+        # A cloud deployment: the one DeploymentMode for multi-tenant (ADR-004)
+        assert defaults.get("DEPLOYMENT_MODE") == "cloud"
 
         # Should have PII redaction enabled
         assert defaults.get("PROTECTION_ENABLED") == "true"
