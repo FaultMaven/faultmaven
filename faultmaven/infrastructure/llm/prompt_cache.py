@@ -24,9 +24,10 @@ Three users read ``CACHE_BOUNDARY``:
   places an explicit ``cache_control`` breakpoint at the end of its line.
   Providers with automatic prefix caching (OpenAI, Gemini, Fireworks) need no
   marker; the stable prefix is enough for them.
-- ``faultmaven.infrastructure.llm.router`` records an Opik span's prompt input
-  from the boundary on, so the truncated telemetry payload shows this turn's
-  case rather than the same static instructions on every call.
+- ``faultmaven.infrastructure.llm.router``, where content capture is on
+  (#2616 K0), records an Opik span's prompt input from the boundary on, so the
+  truncated telemetry payload shows this turn's case rather than the same
+  static instructions on every call.
 
 It lives in ``infrastructure`` rather than beside the template because the
 provider and the router have to read it, and ``infrastructure`` must not

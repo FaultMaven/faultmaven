@@ -7,15 +7,21 @@ part (c), Principle 13.4).
 - ``configure(settings)`` runs once per process before composition (the API's
   lifespan, ``run_with_container``, the jobs runner) and records the outcome in
   one :class:`TraceBackend`, which every span write, the case delete's eraser
-  and ``GET /admin/config/status`` read.
+  and ``GET /admin/config/status`` read. It refuses content capture until a
+  retention bound is verified (#2616 K0), which stops the process.
+- :func:`track` keeps an exception's text out of every span (#2669).
 - The SDK names other modules use. The internals reached here are pinned by
   ``test_trace_erasure_loopback_2102.py``, their upgrade gate.
 """
 
+import functools
+import inspect
 import logging
 import os
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterator, Optional
 
 from faultmaven.config.settings import (
     ObservabilitySettings,
@@ -96,6 +102,9 @@ class TraceBackend:
     workspace: Optional[str] = None
     ping_interval_s: Optional[int] = None
     sentry_reporting: bool = False
+    #: ``OPIK_CAPTURE_CONTENT``: spans carry prompts and responses. False in
+    #: every record this release writes, since :func:`configure` refuses True.
+    capture_content: bool = False
     #: Why ``configured`` is False; None when it is True.
     reason: Optional[str] = NOT_CONFIGURED
 
@@ -168,17 +177,42 @@ def _enable_sdk_tracing() -> None:
         logger.debug(f"Could not reset Opik SDK tracing switch: {e}")
 
 
+class TraceContentCaptureRefused(RuntimeError):
+    """``OPIK_CAPTURE_CONTENT=true`` without a verified retention bound."""
+
+
+def content_capture_refusal(obs: Any) -> Optional[str]:
+    """Why ``obs`` may not capture content, or None when it asks for none.
+
+    #2616 K0: the trace store holds prompts and responses only under a verified
+    retention bound (K3), and none is verified yet, so a request is always
+    refused. K3 adds the verification here. The field is a pydantic bool: only
+    ``True`` is a request, and settings without the field ask for nothing.
+    """
+    if getattr(obs, "opik_capture_content", False) is not True:
+        return None
+    return (
+        "OPIK_CAPTURE_CONTENT=true is refused: recording prompts, responses and "
+        "exception text in the trace store needs a verified retention bound for "
+        "it, and none exists yet (#2616 K3). Unset OPIK_CAPTURE_CONTENT."
+    )
+
+
 def configure(settings: Any) -> TraceBackend:
     """Point the SDK at the configured backend, or switch it off, and record the
-    outcome. Once per process, before composition. Never raises: a failure is
-    recorded as the reason, beside every field resolved before it, and the
-    process runs without tracing.
+    outcome. Once per process, before composition. Raises only
+    :class:`TraceContentCaptureRefused`, whatever ``OPIK_ENABLED`` holds, so the
+    process stops (#2616 K0). Any other failure is recorded as the reason,
+    beside every field resolved before it, and the process runs without tracing.
 
     It sets the environment variables the SDK's ``OpikConfig`` reads rather than
     calling ``opik.configure()``, which prompts, pings and writes
     ``~/.opik.config``. ``@opik.track`` builds its client lazily from them.
     """
     global _record
+    refusal = content_capture_refusal(getattr(settings, "observability", None))
+    if refusal is not None:
+        raise TraceContentCaptureRefused(refusal)
     resolved: dict = {
         "sdk_available": OPIK_AVAILABLE,
         "sentry_reporting": _sentry_reporting(),
@@ -198,6 +232,7 @@ def _configure(settings: Any, resolved: dict) -> Optional[str]:
     Returns why tracing is off, or None once a backend is configured."""
     obs = settings.observability
     resolved["enabled"] = bool(obs.opik_enabled)
+    resolved["capture_content"] = getattr(obs, "opik_capture_content", False) is True
     if not OPIK_AVAILABLE:
         logger.warning("Opik SDK not installed, skipping tracing initialization")
         return "the Opik SDK is not installed"
@@ -301,11 +336,109 @@ def tracing_is_effective() -> bool:
 # --------------------------------------------------------------------------- #
 
 
+#: Per call, the exception :func:`track`'s guard caught: set by the outer
+#: function before the SDK's wrapper runs, read after it returns.
+_CAUGHT: ContextVar[Optional[list]] = ContextVar("opik_sdk_caught", default=None)
+
+
+@contextmanager
+def _caught() -> Iterator[list]:
+    slot: list = []
+    token = _CAUGHT.set(slot)
+    try:
+        yield slot
+    finally:
+        _CAUGHT.reset(token)
+
+
+def _hold(exc: Exception) -> None:
+    """Keep ``exc`` for the outer function, and put its class, never its text,
+    on the span. A failed span write must not replace ``exc``. With no slot (no
+    outer function ran) it re-raises, so nothing is lost."""
+    slot = _CAUGHT.get()
+    if slot is None:
+        raise exc
+    slot.append(exc)
+    try:
+        update_current_span(metadata={"error_class": exception_class_name(exc)})
+    except Exception as e:
+        logger.warning(
+            "Could not tag the span with the error class: %s", exception_class_name(e)
+        )
+
+
+def _sdk_reads_as_async(func: Callable) -> bool:
+    """Whether the SDK wraps ``func`` as a coroutine function, by its own test,
+    so the guard is built the same way. An SDK that moved the test: the
+    stdlib's, which agrees for a plain ``def`` or ``async def``."""
+    try:
+        from opik.decorator.inspect_helpers import is_async
+    except ImportError:
+        return inspect.iscoroutinefunction(func)
+    return bool(is_async(func))
+
+
 def track(**options: Any) -> Callable:
-    """``opik.track(**options)``. Decoration builds no client."""
+    """``opik.track(**options)``, with no exception text crossing it.
+
+    The SDK records a tracked function's exception as ``error_info``: its
+    message and traceback, which can embed a provider's response body (#2102).
+    So the SDK wraps a guard that catches ``Exception``, holds it in a per-call
+    slot, writes its class to the span and returns None; the outer function
+    re-raises the same object. A ``BaseException`` that is not an ``Exception``
+    (a cancellation) carries no provider text and passes through. Unconditional
+    while content capture is refused; K3 decides whether text returns with
+    capture on (#2616). Generators are refused: the SDK records their errors on
+    a path the guard does not cover. Decoration builds no client.
+    """
     import opik as _opik
 
-    return _opik.track(**options)
+    sdk_track = _opik.track(**options)
+
+    def decorate(func: Callable) -> Callable:
+        if inspect.isgeneratorfunction(func) or inspect.isasyncgenfunction(func):
+            raise TypeError(
+                f"opik_sdk.track does not trace generators: {func.__qualname__}"
+            )
+        if _sdk_reads_as_async(func):
+
+            async def guard(*args: Any, **kwargs: Any) -> Any:
+                try:
+                    return await func(*args, **kwargs)
+                except Exception as e:
+                    return _hold(e)
+
+            tracked = sdk_track(functools.wraps(func)(guard))
+
+            @functools.wraps(func)
+            async def outer(*args: Any, **kwargs: Any) -> Any:
+                with _caught() as slot:
+                    result = await tracked(*args, **kwargs)
+                if slot:
+                    raise slot[0]
+                return result
+
+            return outer
+
+        def sync_guard(*args: Any, **kwargs: Any) -> Any:
+            try:
+                return func(*args, **kwargs)
+            except Exception as e:
+                return _hold(e)
+
+        sync_tracked = sdk_track(functools.wraps(func)(sync_guard))
+
+        @functools.wraps(func)
+        def sync_outer(*args: Any, **kwargs: Any) -> Any:
+            with _caught() as slot:
+                result = sync_tracked(*args, **kwargs)
+            if slot:
+                raise slot[0]
+            return result
+
+        return sync_outer
+
+    return decorate
 
 
 def update_current_span(**fields: Any) -> None:

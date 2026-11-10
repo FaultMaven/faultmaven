@@ -982,9 +982,9 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
     ) -> None:
         """Tag the current trace and span with their owner, before anything fails.
 
-        Every exit from ``route()`` is then tagged, the failures included: the SDK
-        records ``str(exception)`` as ``error_info``, and a provider's exception
-        can embed its response body (#2102). A failure here never breaks the call.
+        Every exit from ``route()`` is then tagged, the failures included: a
+        failed call's span carries its error class (``opik_sdk.track``, #2669).
+        A failure here never breaks the call.
         """
         if not opik_sdk.tracing_is_effective():
             return
@@ -1008,8 +1008,9 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
     ) -> None:
         """Update the current Opik span with LLM call data.
 
-        Uses ``opik_sdk.update_current_span()`` to attach prompt, response,
-        model, provider, and token usage to whichever span is currently active.
+        Uses ``opik_sdk.update_current_span()`` to attach model, provider and
+        token usage, and the prompt and response only where the record captures
+        content (#2616 K0), to whichever span is currently active.
         This works whether the span was created by @opik.track on this function
         or by a parent caller.
 
@@ -1025,20 +1026,27 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             return
 
         try:
-            # A prompt carrying the #613 cache boundary is recorded from the
-            # boundary on: its head is static instruction text, identical on
-            # every call, and would fill the whole truncated payload.
-            prompt_view, messages_view, prefix_elided = _span_prompt_views(
-                sanitized_prompt, sanitized_messages
-            )
-            input_data = {}
-            if prompt_view:
-                input_data["prompt"] = prompt_view
-            if messages_view:
-                input_data["messages"] = messages_view
-            output_data = {}
-            if response.content:
-                output_data["response"] = response.content[:TELEMETRY_PAYLOAD_MAX_CHARS]
+            # Content goes only where the deployment captures it (#2616 K0).
+            # The #613 view below is kept for when a retention bound allows it.
+            content: Dict[str, Any] = {}
+            if opik_sdk.backend().capture_content:
+                # A prompt carrying the #613 cache boundary is recorded from the
+                # boundary on: its head is static instruction text, identical on
+                # every call, and would fill the whole truncated payload.
+                prompt_view, messages_view, prefix_elided = _span_prompt_views(
+                    sanitized_prompt, sanitized_messages
+                )
+                input_data = {}
+                if prompt_view:
+                    input_data["prompt"] = prompt_view
+                if messages_view:
+                    input_data["messages"] = messages_view
+                output_data = {}
+                if response.content:
+                    output_data["response"] = response.content[
+                        :TELEMETRY_PAYLOAD_MAX_CHARS
+                    ]
+                content = {"input": input_data, "output": output_data}
 
             owner = _opik_owner(case_id, conversion_id)
             metadata = {
@@ -1050,8 +1058,9 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 "confidence": response.confidence,
                 "cache_read_tokens": getattr(response, "cache_read_tokens", 0),
                 "cache_write_tokens": getattr(response, "cache_write_tokens", 0),
-                "prompt_prefix_elided": prefix_elided,
             }
+            if content:
+                metadata["prompt_prefix_elided"] = prefix_elided
 
             usage = None
             if response.tokens_used:
@@ -1068,8 +1077,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 metadata=owner, **({"thread_id": case_id} if case_id else {})
             )
             opik_sdk.update_current_span(
-                input=input_data,
-                output=output_data,
+                **content,
                 metadata=metadata,
                 model=response.model,
                 provider=response.provider,

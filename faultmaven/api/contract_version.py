@@ -151,6 +151,23 @@ def validate_contract_changes(changes: tuple[ContractChange, ...]) -> None:
 
 CONTRACT_CHANGES: tuple[ContractChange, ...] = (
     ContractChange(
+        version="14.21.0",
+        level="MINOR",
+        title=(
+            "`GET /admin/config/status` reports whether LLM trace spans carry "
+            "content as `trace_backend.capture_content` (#2669, #2616 K0)."
+        ),
+        body=r"""`TraceBackendStatus` gains `capture_content` (bool, required): whether
+spans carry prompts and responses (`OPIK_CAPTURE_CONTENT`). It is false in
+every process this release starts, because `OPIK_CAPTURE_CONTENT=true` stops
+the process at startup until a retention bound for the trace store is
+verified (#2616 K3). A failed call's span carries the exception's class as
+`metadata.error_class`, never its message or traceback.
+
+MINOR because every client survives it: a new field on an operator-only
+response, which a client that does not read it ignores.""",
+    ),
+    ContractChange(
         version="14.20.0",
         level="MINOR",
         title=(

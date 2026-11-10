@@ -306,7 +306,8 @@ class APMIntegration:
     ) -> None:
         """No-op: APM HTTP metrics are not exported to Opik.
 
-        Opik is used for LLM observability (prompts, responses, model metadata).
+        Opik is used for LLM observability (model metadata and usage; no
+        prompt or response unless content capture is on, #2616 K0).
         LLM tracing is handled by @opik.track on the LLM router, not here.
         APM metrics (HTTP request/response timings) go to Prometheus instead.
         """

@@ -6,7 +6,9 @@ case. The span input is truncated to ``TELEMETRY_PAYLOAD_MAX_CHARS``; cut from
 the start it would record only the static head on every call, and never the
 case id, the state, the evidence or the user's message. So an input holding the
 boundary is recorded from the boundary on and flagged ``prompt_prefix_elided``;
-anything else is recorded as before.
+anything else is recorded as before. The input is recorded only where the
+record captures content, which no configure allows today (#2616 K0): those
+tests patch the record, keeping the view for K3.
 
 Driven through ``LLMRouter.route`` with a real Anthropic provider and only the
 HTTP layer mocked, because the span is written there, from the SANITIZED prompt
@@ -95,10 +97,14 @@ def _registry() -> ProviderRegistry:
     return reg
 
 
-async def _routed(*calls: dict, tracing: bool = True, opik_context=None) -> MagicMock:
+async def _routed(
+    *calls: dict, tracing: bool = True, opik_context=None, capture: bool = False
+) -> MagicMock:
     """Route ``calls`` through one router; return the patched ``opik_context``."""
     opik_context = opik_context or MagicMock()
+    record = opik_sdk.TraceBackend(capture_content=capture)
     with (
+        patch.object(opik_sdk, "_record", record),
         patch(
             "faultmaven.infrastructure.llm.router.get_registry",
             return_value=_registry(),
@@ -124,7 +130,7 @@ async def _routed(*calls: dict, tracing: bool = True, opik_context=None) -> Magi
 
 async def _span_update(**route_kwargs) -> dict:
     """Route one call and return the kwargs the span was updated with."""
-    opik_context = await _routed(route_kwargs)
+    opik_context = await _routed(route_kwargs, capture=True)
     # The tag at entry, then this update (#2102).
     assert opik_context.update_current_span.call_count == 2
     return opik_context.update_current_span.call_args.kwargs
@@ -229,7 +235,7 @@ class TestTheTraceIsTaggedWithItsCase:
             metadata={"enterprise_id": "ent-2102"}
         )
 
-    async def test_a_cached_answer_records_content_so_it_is_tagged_too(self):
+    async def test_a_cached_answer_is_tagged_too(self):
         set_current_enterprise_id("ent-2102")
         answer = LLMResponse(
             content="from the cache",
@@ -245,6 +251,7 @@ class TestTheTraceIsTaggedWithItsCase:
 
         span = opik_context.update_current_span.call_args.kwargs
         assert span["metadata"]["cached"] is True  # the cached path did run
+        assert "input" not in span and "output" not in span  # #2616 K0
         assert self.OWNER.items() <= span["metadata"].items()
         opik_context.update_current_trace.assert_called_with(
             metadata=self.OWNER, thread_id="case_2102"

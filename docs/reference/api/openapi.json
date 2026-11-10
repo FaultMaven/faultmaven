@@ -3127,7 +3127,7 @@
           },
           "trace_backend": {
             "$ref": "#/components/schemas/TraceBackendStatus",
-            "description": "The LLM trace SDK's process policy (crash reporting, project, ping interval) and the serving worker's trace client: whether its last send reached the backend, and how many traces it holds unsent."
+            "description": "The LLM trace SDK's process policy (crash reporting, content capture, project, ping interval) and the serving worker's trace client: whether its last send reached the backend, and how many traces it holds unsent."
           },
           "turn_timing": {
             "$ref": "#/components/schemas/TurnTimingStatus",
@@ -7127,8 +7127,13 @@
         "type": "object"
       },
       "TraceBackendStatus": {
-        "description": "The LLM trace SDK's process policy, and its client's state (#2616 part c).\n\nThe first three are the record the process wrote when it configured the\nSDK at startup. The last two are the serving worker's own: read from a\nclient that worker process has already built, never building one. Another\nworker or replica holds its own client and buffer. An SDK whose internals\nmoved reads ``unknown`` and null, never ``disconnected`` or 0.",
+        "description": "The LLM trace SDK's process policy, and its client's state (#2616 part c).\n\nThe first four are the record the process wrote when it configured the\nSDK at startup. The last two are the serving worker's own: read from a\nclient that worker process has already built, never building one. Another\nworker or replica holds its own client and buffer. An SDK whose internals\nmoved reads ``unknown`` and null, never ``disconnected`` or 0.",
         "properties": {
+          "capture_content": {
+            "description": "Whether spans carry prompts and responses (OPIK_CAPTURE_CONTENT). False in every process this release starts: true is refused at startup until a retention bound for the trace store is verified (#2616 K0). An exception's message and traceback are not recorded either way, only its class.",
+            "title": "Capture Content",
+            "type": "boolean"
+          },
           "parked_messages": {
             "anyOf": [
               {
@@ -7184,6 +7189,7 @@
         },
         "required": [
           "sentry_reporting",
+          "capture_content",
           "project",
           "ping_interval_s",
           "server_connection",
@@ -7928,7 +7934,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "14.20.0"
+    "version": "14.21.0"
   },
   "openapi": "3.1.0",
   "paths": {

@@ -2348,6 +2348,10 @@ class ObservabilitySettings(BaseSettings):
     # COMMUNITY DEFAULT: Disabled (enterprise feature)
     opik_api_key: Optional[SecretStr] = Field(default=None)
     opik_enabled: bool = Field(default=False)
+    # Spans carry prompts and responses. Off in every profile; opik_sdk.configure
+    # refuses True until a retention bound is verified, stopping the process
+    # (#2616 K0).
+    opik_capture_content: bool = Field(default=False)
     # OPIK_TRACK_DISABLE is deliberately NOT a field here. The Opik SDK owns it:
     # OpikConfig reads it straight from os.environ (env_prefix="opik_") and
     # derives is_tracing_active() from it, and opik_sdk's load_settings_dotenv()

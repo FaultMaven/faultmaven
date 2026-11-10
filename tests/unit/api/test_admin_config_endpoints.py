@@ -3424,8 +3424,26 @@ class TestTheTraceBackendIsReported:
 
         assert status == {
             "sentry_reporting": True,
+            "capture_content": False,
             "project": "fm-project",
             "ping_interval_s": 999999,
             "server_connection": connection,
             "parked_messages": parked,
         }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("capture", [False, True])
+    async def test_content_capture_is_read_from_the_record(
+        self, mock_admin_user, mock_settings, rate_limited_app, monkeypatch, capture
+    ):
+        """#2669's pin 3: false from the record ``configure`` writes, the only
+        value it writes today (#2616 K0); true only to show it is the record's."""
+        from faultmaven.infrastructure.observability import opik_sdk
+
+        monkeypatch.setattr(
+            opik_sdk, "_record", opik_sdk.TraceBackend(capture_content=capture)
+        )
+
+        status = await self._status(mock_admin_user, mock_settings, rate_limited_app)
+
+        assert status["capture_content"] is capture

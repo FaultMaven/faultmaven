@@ -123,7 +123,7 @@ Structured output handling: [Structured Output Capability System](core-architect
 - **Vector (ChromaDB)** — knowledge base + per-case evidence collections. BGE-M3 embeddings (1024 dims). See [vector-retrieval-architecture.md](knowledge-and-ai/vector-retrieval-architecture.md).
 - **Sessions / cache (Redis or FakeRedis)** — FakeRedis is the default local-mode backend (full API parity, no external server).
 - **File storage (local filesystem or S3)** — pluggable backend via `IFileStorageBackend`.
-- **Trace store (Opik)** — the prompts and responses of model calls, where `OPIK_ENABLED`. Customer content, with the case-data obligations.
+- **Trace store (Opik)** — model calls' metadata (model, usage, timing, owner tags, a failed call's error class), where `OPIK_ENABLED`. Prompts and responses only with `OPIK_CAPTURE_CONTENT`, which startup refuses until a retention bound is verified (#2616 K0); traces written before that hold customer content, with the case-data obligations.
 
 Every store, with its owners, writer, end of life and retention bound, is in the [Store Registry](data-and-storage/store-registry.md).
 

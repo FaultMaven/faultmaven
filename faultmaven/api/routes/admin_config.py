@@ -1087,7 +1087,10 @@ async def get_env_config_status(
                     "Needs the SDK (pip install 'faultmaven[cloud]'), "
                     "OPIK_ENABLED=true, and a backend: OPIK_USE_LOCAL=true or "
                     "OPIK_URL_OVERRIDE. Enabling without a backend traces "
-                    "nothing. OPIK_TRACK_DISABLE=true also suppresses spans"
+                    "nothing. OPIK_TRACK_DISABLE=true also suppresses spans. "
+                    "Spans carry no prompt, response or exception text: "
+                    "OPIK_CAPTURE_CONTENT=true is refused at startup until a "
+                    "retention bound for the trace store exists"
                 ),
             ),
             # Reported HERE, and this is the answer — deliberately not a
