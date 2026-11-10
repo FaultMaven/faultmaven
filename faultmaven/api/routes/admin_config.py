@@ -56,7 +56,7 @@ PROVIDER_DISPLAY_NAMES = {
     "huggingface": "HuggingFace",
     "cohere": "Cohere",
     "openrouter": "OpenRouter",
-    "azure_openai": "Azure OpenAI",
+    "azure": "Azure AI Foundry",
     "local": "Local (Ollama/vLLM)",
 }
 
@@ -114,7 +114,7 @@ async def get_llm_config(
             is_in_chain = name in fallback_chain
 
             # Derive provider lifecycle state. A keyed provider that needs
-            # more than its key (Azure OpenAI's endpoint) is not configured
+            # more than its key (Azure's resource endpoint) is not configured
             # until it has all of it: the registry will not build it.
             if not has_api_key or (
                 name != "local" and missing_required_vars(settings.llm, name)
@@ -285,7 +285,7 @@ async def update_llm_config(
                 )
             # The settings field the provider's key lives in, from the
             # registry — the same resolution the override applier and the
-            # startup gate use (AZURE_OPENAI_KEY -> azure_openai_api_key).
+            # startup gate use (AZURE_API_KEY -> azure_api_key).
             from faultmaven.config.llm_validation import api_key_field
 
             mapping = api_key_field(request.provider_name)

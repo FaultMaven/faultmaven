@@ -101,7 +101,7 @@ def _check_llm_configuration(llm_provider, settings=None) -> None:
     provider_name = None
 
     # Every keyed provider the registry knows, judged by the variables the
-    # registry says it needs (Azure OpenAI: its key AND its endpoint), so this
+    # registry says it needs (Azure: its key AND its resource endpoint), so this
     # check cannot drift from the registry or call a half-configured provider
     # configured.
     from faultmaven.config.llm_validation import api_key_field, missing_required_vars

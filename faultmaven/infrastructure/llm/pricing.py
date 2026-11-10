@@ -186,11 +186,13 @@ DEFAULT_RATES: dict[str, dict[str, TokenRates]] = {
         "claude-opus-4-6": TokenRates(5.0, 25.0, 0.50, 6.25),
         "claude-opus-5": TokenRates(5.0, 25.0, 0.50, 6.25),
     },
-    "azure_openai": {
+    "azure": {
         # Keyed by the model a deployment is named after (the default
-        # AZURE_OPENAI_MODEL). Mirrors the openai row: Azure's Global Standard
+        # AZURE_MODEL). Mirrors the openai row: Azure's Global Standard
         # deployments bill OpenAI's list rate. Regional / Data Zone
-        # deployments bill a premium — override via LLM_PRICING_OVERRIDES.
+        # deployments bill a premium, and a non-OpenAI Foundry model has no
+        # row here (it reports unpriced) — set either via
+        # LLM_PRICING_OVERRIDES.
         "gpt-5.6-luna": TokenRates(0.20, 1.20, 0.02, 0.25),
     },
 }

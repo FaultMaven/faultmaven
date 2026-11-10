@@ -46,8 +46,8 @@ def missing_required_vars(llm_settings, provider: str) -> list[str]:
     """The registry-required variables of ``provider`` that ``llm_settings`` lacks.
 
     Empty when the provider has everything it needs. Read from
-    ``required_env_vars`` so a provider needing more than its key (Azure
-    OpenAI's endpoint) is judged the same way by every reader: this gate, the
+    ``required_env_vars`` so a provider needing more than its key (Azure's
+    resource endpoint) is judged the same way by every reader: this gate, the
     admin status and connection test, and the startup banner. The registry
     applies the same ``unset_llm_variables`` to the same list.
     """
@@ -114,7 +114,7 @@ def validate_llm_provider_credentials(settings: "Settings") -> None:
             "credential is — one must always be configured. See .env.example "
             "section 1."
         )
-    # A provider the registry says needs more than its key (azure_openai: its
+    # A provider the registry says needs more than its key (azure: its
     # resource endpoint) is refused here too, rather than skipped at first use.
     missing = missing_required_vars(settings.llm, provider)
     if missing:

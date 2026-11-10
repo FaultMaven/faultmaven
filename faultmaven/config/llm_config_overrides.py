@@ -50,7 +50,7 @@ _ALLOWED_OVERRIDES = {
     "huggingface_api_key": "huggingface_api_key",
     "cohere_api_key": "cohere_api_key",
     "openrouter_api_key": "openrouter_api_key",
-    "azure_openai_api_key": "azure_openai_api_key",
+    "azure_api_key": "azure_api_key",
     # Model overrides per provider
     "anthropic_model": "anthropic_model",
     "openai_model": "openai_model",
@@ -60,7 +60,7 @@ _ALLOWED_OVERRIDES = {
     "huggingface_model": "huggingface_model",
     "cohere_model": "cohere_model",
     "openrouter_model": "openrouter_model",
-    "azure_openai_model": "azure_openai_model",
+    "azure_model": "azure_model",
     "local_model": "local_model",
 }
 
@@ -73,7 +73,7 @@ _API_KEY_FIELDS = {
     "huggingface_api_key",
     "cohere_api_key",
     "openrouter_api_key",
-    "azure_openai_api_key",
+    "azure_api_key",
 }
 
 

@@ -57,7 +57,7 @@ SECRET = "alice@example.com 10.9.8.7 SECRET-CONTENT-1998"
 #: Every concrete adapter the package ships, by class name.
 ADAPTERS = {
     "AnthropicProvider",
-    "AzureOpenAIProvider",
+    "AzureProvider",
     "CohereProvider",
     "FireworksProvider",
     "GeminiProvider",

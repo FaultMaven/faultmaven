@@ -73,11 +73,11 @@ def test_every_keyed_provider_requires_its_api_key_and_local_requires_url_and_mo
     for name in PROVIDERS:
         if name == "local":
             assert set(required_env_vars(name)) == {"LOCAL_LLM_URL", "LOCAL_LLM_MODEL"}
-        elif name == "azure_openai":
+        elif name == "azure":
             # Each Azure resource has its own host: the key alone is not enough.
             assert set(required_env_vars(name)) == {
-                "AZURE_OPENAI_KEY",
-                "AZURE_OPENAI_ENDPOINT",
+                "AZURE_API_KEY",
+                "AZURE_API_BASE",
             }
         else:
             assert required_env_vars(name) == (PROVIDER_SCHEMA[name]["api_key_var"],)

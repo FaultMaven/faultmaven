@@ -65,7 +65,7 @@ class LLMProvider(str, Enum):
     OPENROUTER = "openrouter"
     LOCAL = "local"
     GROQ = "groq"
-    AZURE_OPENAI = "azure_openai"
+    AZURE = "azure"
     NOT_SET = "NOT_SET"
 
 
@@ -305,12 +305,9 @@ class LLMSettings(BaseSettings):
     groq_api_key: Optional[SecretStr] = Field(
         default=None, validation_alias="GROQ_API_KEY"
     )
-    # Azure OpenAI names its resource key AZURE_OPENAI_KEY (Azure's own
-    # spelling); the field keeps the {provider}_api_key name every reader of
-    # a provider's key (llm_validation.api_key_field, the admin override
-    # route) resolves it by.
-    azure_openai_api_key: Optional[SecretStr] = Field(
-        default=None, validation_alias="AZURE_OPENAI_KEY"
+    # The resource key of the Azure AI Foundry resource AZURE_API_BASE names.
+    azure_api_key: Optional[SecretStr] = Field(
+        default=None, validation_alias="AZURE_API_KEY"
     )
 
     # Flexible model configuration per provider and task
@@ -451,14 +448,14 @@ class LLMSettings(BaseSettings):
     groq_da_model: Optional[str] = Field(default=None)
     groq_knowledge_model: Optional[str] = Field(default=None)
 
-    # Azure OpenAI (each value is a DEPLOYMENT name on the resource)
-    azure_openai_chat_model: Optional[str] = Field(default=None)
-    azure_openai_multimodal_model: Optional[str] = Field(default=None)
-    azure_openai_synthesis_model: Optional[str] = Field(default=None)
-    azure_openai_classifier_model: Optional[str] = Field(default=None)
-    azure_openai_code_model: Optional[str] = Field(default=None)
-    azure_openai_da_model: Optional[str] = Field(default=None)
-    azure_openai_knowledge_model: Optional[str] = Field(default=None)
+    # Azure (each value is a DEPLOYMENT name on the Foundry resource)
+    azure_chat_model: Optional[str] = Field(default=None)
+    azure_multimodal_model: Optional[str] = Field(default=None)
+    azure_synthesis_model: Optional[str] = Field(default=None)
+    azure_classifier_model: Optional[str] = Field(default=None)
+    azure_code_model: Optional[str] = Field(default=None)
+    azure_da_model: Optional[str] = Field(default=None)
+    azure_knowledge_model: Optional[str] = Field(default=None)
 
     # Default chat model per provider (the effective default when the user does
     # not pin a model). Canonical set = .claude/rules/llm-providers.md
@@ -487,9 +484,9 @@ class LLMSettings(BaseSettings):
     huggingface_model: str = Field(default="mistralai/Mistral-Large-Instruct-2411")
     openrouter_model: str = Field(default="anthropic/claude-sonnet-4-6")
     # The DEPLOYMENT name on the Azure resource. The default assumes the
-    # deployment is named after the model, the convention the inherited
-    # OpenAI capability rules key on (AzureOpenAIProvider).
-    azure_openai_model: str = Field(default="gpt-5.6-luna")
+    # deployment is named after its model; the inherited OpenAI capability
+    # rules key on that name (AzureProvider).
+    azure_model: str = Field(default="gpt-5.6-luna")
 
     # Local provider configuration
     local_url: Optional[str] = Field(default=None, validation_alias="LOCAL_LLM_URL")
@@ -549,11 +546,11 @@ class LLMSettings(BaseSettings):
     groq_base_url: str = Field(
         default="https://api.groq.com/openai/v1", validation_alias="GROQ_API_BASE"
     )
-    # Per-resource, so there is no default: the resource URL the Azure portal
-    # shows (https://<resource>.openai.azure.com/) or its v1 endpoint
-    # (…/openai/v1); azure_openai_provider.v1_base_url normalizes either.
-    azure_openai_endpoint: Optional[str] = Field(
-        default=None, validation_alias="AZURE_OPENAI_ENDPOINT"
+    # Per-resource, so there is no default: the Foundry resource URL
+    # (https://<resource>.services.ai.azure.com/), its /openai/v1 route or its
+    # /models URL; azure_provider.v1_base_url turns each into the v1 route.
+    azure_base_url: Optional[str] = Field(
+        default=None, validation_alias="AZURE_API_BASE"
     )
 
     # Request configuration
@@ -825,7 +822,7 @@ class LLMSettings(BaseSettings):
             LLMProvider.HUGGINGFACE: self.huggingface_model,
             LLMProvider.OPENROUTER: self.openrouter_model,
             LLMProvider.GROQ: self.groq_model,
-            LLMProvider.AZURE_OPENAI: self.azure_openai_model,
+            LLMProvider.AZURE: self.azure_model,
         }
 
         base = base_models.get(provider, "")
@@ -878,7 +875,7 @@ def llm_setting_field(env_name: str) -> str:
     """The ``LLMSettings`` field the environment variable ``env_name`` populates.
 
     A field reaches its variable either by an explicit ``validation_alias``
-    (``azure_openai_api_key`` <- ``AZURE_OPENAI_KEY``, ``local_url`` <-
+    (``azure_api_key`` <- ``AZURE_API_KEY``, ``local_url`` <-
     ``LOCAL_LLM_URL``) or by its own name (``openai_api_key`` <-
     ``OPENAI_API_KEY``); the alias is checked first.
     """

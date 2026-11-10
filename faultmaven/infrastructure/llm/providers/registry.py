@@ -29,7 +29,7 @@ from faultmaven.infrastructure.llm.metering import record_provider_call
 from faultmaven.infrastructure.security.model_content import non_case_text
 
 from .anthropic import AnthropicProvider
-from .azure_openai_provider import AzureOpenAIProvider, v1_base_url
+from .azure_provider import AzureProvider, v1_base_url
 from .base import BaseLLMProvider, LLMResponse, ProviderConfig
 from .cohere_provider import CohereProvider
 from .fireworks_provider import FireworksProvider
@@ -273,21 +273,21 @@ PROVIDER_SCHEMA = {
         "provider_class": CohereProvider,
         "confidence_score": 0.82,
     },
-    "azure_openai": {
-        "api_key_var": "AZURE_OPENAI_KEY",
-        "model_var": "AZURE_OPENAI_MODEL",
+    "azure": {
+        "api_key_var": "AZURE_API_KEY",
+        "model_var": "AZURE_MODEL",
         # The endpoint is per-resource, so a key alone configures nothing: the
         # operator must also name the resource's v1 endpoint.
-        "required_vars": ("AZURE_OPENAI_KEY", "AZURE_OPENAI_ENDPOINT"),
+        "required_vars": ("AZURE_API_KEY", "AZURE_API_BASE"),
         # No usable default: every Azure resource has its own host.
         "default_base_url": None,
         "default_model": "gpt-5.6-luna",
         # Deployments are named by the operator on their own resource, so
         # there is no catalogue to enumerate (same as openrouter / local).
         "available_models": [],
-        # OpenAI wire protocol with an ``api-key`` header; the model id is a
-        # deployment name. See AzureOpenAIProvider.
-        "provider_class": AzureOpenAIProvider,
+        # Azure AI Foundry over the resource's OpenAI v1 route; the model id
+        # is a deployment name. See AzureProvider.
+        "provider_class": AzureProvider,
         "confidence_score": 0.85,
     },
 }
@@ -500,14 +500,14 @@ class ProviderRegistry:
             )
             model = llm_settings.cohere_model or schema["default_model"]
             base_url = llm_settings.cohere_base_url or schema["default_base_url"]
-        elif provider_name == "azure_openai":
+        elif provider_name == "azure":
             api_key = (
-                llm_settings.azure_openai_api_key.get_secret_value()
-                if llm_settings.azure_openai_api_key
+                llm_settings.azure_api_key.get_secret_value()
+                if llm_settings.azure_api_key
                 else None
             )
-            model = llm_settings.azure_openai_model or schema["default_model"]
-            base_url = v1_base_url(llm_settings.azure_openai_endpoint)
+            model = llm_settings.azure_model or schema["default_model"]
+            base_url = v1_base_url(llm_settings.azure_base_url)
 
         if schema.get("api_key_var") and not api_key and provider_name != "local":
             self.logger.warning(

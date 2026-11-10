@@ -18,7 +18,7 @@ from faultmaven.infrastructure.llm.providers.registry import PROVIDER_SCHEMA
 
 # Providers whose catalog is fetched dynamically rather than enumerated here;
 # their ``available_models`` is intentionally empty and the invariant is N/A.
-_DYNAMIC_CATALOG_PROVIDERS = {"local", "openrouter", "azure_openai"}
+_DYNAMIC_CATALOG_PROVIDERS = {"local", "openrouter", "azure"}
 
 
 @pytest.mark.unit

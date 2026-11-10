@@ -493,7 +493,7 @@ def test_the_exempt_files_are_the_adapters_and_the_dispatch():
     assert set(adapters) - set(defining) <= {
         _PROVIDERS + "__init__.py",
         _PROVIDERS + "openrouter_provider.py",
-        _PROVIDERS + "azure_openai_provider.py",
+        _PROVIDERS + "azure_provider.py",
     }
 
 

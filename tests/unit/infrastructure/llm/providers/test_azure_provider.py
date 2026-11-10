@@ -1,9 +1,10 @@
-"""Azure OpenAI: the OpenAI wire protocol on the operator's own resource.
+"""Azure: Foundry deployments over the resource's OpenAI v1 route.
 
-What differs from :class:`OpenAIProvider` is pinned here: the credential
-travels in an ``api-key`` header (never as a bearer token), the request goes to
-the configured resource endpoint, the model id is the deployment name, and the
-provider is configured only when both its key and its endpoint are set.
+What is Azure's own is pinned here: the request goes to the configured
+resource's ``/openai/v1`` route (whatever spelling of the resource URL the
+operator gave), the model id is the deployment name, and the provider is
+configured only when both its key and its endpoint are set. Everything else is
+:class:`OpenAIProvider`'s, the bearer-token authentication included.
 """
 
 from types import SimpleNamespace as NS
@@ -14,8 +15,8 @@ import pytest
 from faultmaven.config.llm_validation import validate_llm_provider_credentials
 from faultmaven.config.settings import LLMSettings
 from faultmaven.infrastructure.llm.dispatch import send_to_model
-from faultmaven.infrastructure.llm.providers.azure_openai_provider import (
-    AzureOpenAIProvider,
+from faultmaven.infrastructure.llm.providers.azure_provider import (
+    AzureProvider,
     v1_base_url,
 )
 from faultmaven.infrastructure.llm.providers.base import ProviderConfig
@@ -29,20 +30,21 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
 )
 from tests.model_content import vetted
 
-ENDPOINT = "https://example-resource.openai.azure.com/openai/v1"
+RESOURCE = "https://example-resource.services.ai.azure.com"
+ENDPOINT = RESOURCE + "/openai/v1"
 _OK = {
     "choices": [
         {"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}
     ],
     "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4},
 }
-_AZURE_ENV = ("AZURE_OPENAI_KEY", "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_MODEL")
+_AZURE_ENV = ("AZURE_API_KEY", "AZURE_API_BASE", "AZURE_MODEL")
 
 
-def _provider(model: str = "gpt-5.6-luna") -> AzureOpenAIProvider:
-    return AzureOpenAIProvider(
+def _provider(model: str = "gpt-5.6-luna") -> AzureProvider:
+    return AzureProvider(
         ProviderConfig(
-            name="azure_openai",
+            name="azure",
             api_key="azure-test-key",
             base_url=ENDPOINT,
             models=[model],
@@ -56,7 +58,7 @@ def _provider(model: str = "gpt-5.6-luna") -> AzureOpenAIProvider:
 @pytest.mark.unit
 @pytest.mark.llm
 class TestTheRequestOnTheWire:
-    async def test_key_travels_as_api_key_header_to_the_resource(
+    async def test_the_request_reaches_the_resource_v1_route(
         self, mock_aiohttp_session
     ):
         session = mock_aiohttp_session(_OK)
@@ -67,23 +69,13 @@ class TestTheRequestOnTheWire:
 
         call = session.post.call_args
         assert call.args[0] == f"{ENDPOINT}/chat/completions"
-        headers = call.kwargs["headers"]
-        assert headers["api-key"] == "azure-test-key"
-        assert "Authorization" not in headers, "Azure keys are not bearer tokens"
+        # The v1 route takes the resource key as a bearer token, and needs
+        # no api-version (implicit versioning).
+        assert call.kwargs["headers"]["Authorization"] == "Bearer azure-test-key"
+        assert "params" not in call.kwargs or not call.kwargs["params"]
         assert call.kwargs["json"]["model"] == "gpt-5.6-luna"
         assert response.content == "ok"
-        assert response.provider == "azure_openai"
-
-    def test_openai_still_sends_a_bearer_token(self):
-        """The header hook did not change the parent's authentication."""
-        from faultmaven.infrastructure.llm.providers.openai_provider import (
-            OpenAIProvider,
-        )
-
-        provider = OpenAIProvider(_provider().config)
-        headers = provider._request_headers()
-        assert headers["Authorization"] == "Bearer azure-test-key"
-        assert "api-key" not in headers
+        assert response.provider == "azure"
 
     def test_a_deployment_named_after_its_model_inherits_its_capability(self):
         assert (
@@ -107,15 +99,22 @@ class TestConfiguration:
         [
             ENDPOINT,
             ENDPOINT + "/",
-            "https://example-resource.openai.azure.com",
-            "https://example-resource.openai.azure.com/",
-            "https://example-resource.openai.azure.com/openai/",
-            "  https://example-resource.openai.azure.com/  ",
+            RESOURCE,
+            RESOURCE + "/",
+            RESOURCE + "/openai/",
+            # The Model Inference route, which the v1 route replaces.
+            RESOURCE + "/models",
+            RESOURCE + "/model",
+            "  " + RESOURCE + "/  ",
         ],
     )
-    def test_the_portal_url_and_the_v1_url_reach_the_same_base(self, endpoint):
-        """The portal shows the bare resource URL under the same name."""
+    def test_every_spelling_of_the_resource_reaches_its_v1_route(self, endpoint):
         assert v1_base_url(endpoint) == ENDPOINT
+
+    def test_the_azure_openai_host_is_handled_the_same_way(self):
+        assert v1_base_url("https://example-resource.openai.azure.com/") == (
+            "https://example-resource.openai.azure.com/openai/v1"
+        )
 
     def test_an_explicit_other_path_is_kept_and_unset_is_empty(self):
         assert v1_base_url("https://proxy.example/azure/v1/") == (
@@ -126,57 +125,50 @@ class TestConfiguration:
     def test_key_endpoint_and_deployment_build_the_provider(self, monkeypatch):
         registry = self._registry(
             monkeypatch,
-            AZURE_OPENAI_KEY="k",
-            AZURE_OPENAI_ENDPOINT=ENDPOINT + "/",
-            AZURE_OPENAI_MODEL="my-deployment",
+            AZURE_API_KEY="k",
+            AZURE_API_BASE=ENDPOINT + "/",
+            AZURE_MODEL="my-deployment",
         )
-        config = registry._create_provider_config(
-            "azure_openai", PROVIDER_SCHEMA["azure_openai"]
-        )
+        config = registry._create_provider_config("azure", PROVIDER_SCHEMA["azure"])
         assert config is not None
         assert config.api_key == "k"
         assert config.base_url == ENDPOINT, "trailing slash stripped"
         assert config.models[0] == "my-deployment"
 
     def test_a_key_without_an_endpoint_configures_nothing(self, monkeypatch):
-        registry = self._registry(monkeypatch, AZURE_OPENAI_KEY="k")
+        registry = self._registry(monkeypatch, AZURE_API_KEY="k")
         assert (
-            registry._create_provider_config(
-                "azure_openai", PROVIDER_SCHEMA["azure_openai"]
-            )
-            is None
+            registry._create_provider_config("azure", PROVIDER_SCHEMA["azure"]) is None
         )
 
     def test_the_registry_names_both_required_variables(self):
-        assert set(required_env_vars("azure_openai")) == {
-            "AZURE_OPENAI_KEY",
-            "AZURE_OPENAI_ENDPOINT",
+        assert set(required_env_vars("azure")) == {
+            "AZURE_API_KEY",
+            "AZURE_API_BASE",
         }
 
 
 def _gate_settings(**llm):
-    return NS(llm=NS(provider=NS(value="azure_openai"), local_url=None, **llm))
+    return NS(llm=NS(provider=NS(value="azure"), local_url=None, **llm))
 
 
 @pytest.mark.unit
 class TestStartupGate:
     def test_key_and_endpoint_pass(self):
         validate_llm_provider_credentials(
-            _gate_settings(azure_openai_api_key="k", azure_openai_endpoint=ENDPOINT)
+            _gate_settings(azure_api_key="k", azure_base_url=ENDPOINT)
         )
 
     def test_missing_key_is_refused(self):
-        with pytest.raises(ValueError, match="AZURE_OPENAI_KEY"):
+        with pytest.raises(ValueError, match="AZURE_API_KEY"):
             validate_llm_provider_credentials(
-                _gate_settings(
-                    azure_openai_api_key=None, azure_openai_endpoint=ENDPOINT
-                )
+                _gate_settings(azure_api_key=None, azure_base_url=ENDPOINT)
             )
 
     def test_missing_endpoint_is_refused(self):
-        with pytest.raises(ValueError, match="AZURE_OPENAI_ENDPOINT"):
+        with pytest.raises(ValueError, match="AZURE_API_BASE"):
             validate_llm_provider_credentials(
-                _gate_settings(azure_openai_api_key="k", azure_openai_endpoint="  ")
+                _gate_settings(azure_api_key="k", azure_base_url="  ")
             )
 
 
@@ -191,8 +183,8 @@ class TestDashboardOverride:
         )
         from faultmaven.config.llm_validation import api_key_field
 
-        field, env_name = api_key_field("azure_openai")
-        assert (field, env_name) == ("azure_openai_api_key", "AZURE_OPENAI_KEY")
+        field, env_name = api_key_field("azure")
+        assert (field, env_name) == ("azure_api_key", "AZURE_API_KEY")
         assert field in _ALLOWED_OVERRIDES and field in _API_KEY_FIELDS
 
     async def test_a_stored_key_override_lands_on_the_settings(self, monkeypatch):
@@ -200,7 +192,7 @@ class TestDashboardOverride:
         from faultmaven.infrastructure.persistence import llm_config_repository
 
         async def stored():
-            return {"azure_openai_api_key": "from-dashboard"}
+            return {"azure_api_key": "from-dashboard"}
 
         monkeypatch.setattr(llm_config_repository, "get_all_overrides", stored)
         for var in _AZURE_ENV:
@@ -209,9 +201,7 @@ class TestDashboardOverride:
 
         await llm_config_overrides.apply_overrides_to_settings(settings)
 
-        assert settings.llm.azure_openai_api_key.get_secret_value() == (
-            "from-dashboard"
-        )
+        assert settings.llm.azure_api_key.get_secret_value() == ("from-dashboard")
 
 
 @pytest.mark.unit
@@ -223,9 +213,7 @@ class TestEveryReaderNeedsTheEndpoint:
 
         for var in _AZURE_ENV:
             monkeypatch.delenv(var, raising=False)
-        monkeypatch.setenv("AZURE_OPENAI_KEY", "k")
-        assert missing_required_vars(LLMSettings(), "azure_openai") == [
-            "AZURE_OPENAI_ENDPOINT"
-        ]
-        monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", ENDPOINT)
-        assert missing_required_vars(LLMSettings(), "azure_openai") == []
+        monkeypatch.setenv("AZURE_API_KEY", "k")
+        assert missing_required_vars(LLMSettings(), "azure") == ["AZURE_API_BASE"]
+        monkeypatch.setenv("AZURE_API_BASE", ENDPOINT)
+        assert missing_required_vars(LLMSettings(), "azure") == []

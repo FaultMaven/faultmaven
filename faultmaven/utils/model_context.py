@@ -144,7 +144,7 @@ _REGISTRY: Dict[str, ModelWindow] = {
 # Provider → registry-prefix hint, used ONLY when the model id is blank/new but
 # the provider is known, to map to that provider's large flagship. Providers
 # whose served model/window genuinely varies (local, groq, huggingface, and
-# azure_openai, whose model id is an operator-chosen deployment name) are
+# azure, whose model id is an operator-chosen deployment name) are
 # deliberately ABSENT → unknown model → trust the operator's target.
 _PROVIDER_FALLBACK_KEY: Dict[str, str] = {
     "anthropic": "claude",
