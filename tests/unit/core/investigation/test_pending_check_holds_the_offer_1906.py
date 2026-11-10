@@ -30,6 +30,11 @@ from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngin
 from faultmaven.core.investigation.milestone_engine.transitions import (
     declined_resolution_reask,
 )
+from faultmaven.core.investigation.narration.notices import (
+    RESOLVE_DECLINED_ACTIONS,
+    RESOLVE_DECLINED_CLOSE_ACTION,
+    RESOLVE_DECLINED_REOPEN_ACTION,
+)
 from faultmaven.core.investigation.offer_projection import (
     DECLINED_RESOLVE_CARD_LABEL,
     DECLINED_RESOLVE_CLOSE_LABEL,
@@ -47,9 +52,6 @@ from faultmaven.core.investigation.schemas import (
     SuggestedFollowUp,
 )
 from faultmaven.core.investigation.terminal_transitions import (
-    RESOLVE_DECLINED_ACTIONS,
-    RESOLVE_DECLINED_CLOSE_ACTION,
-    RESOLVE_DECLINED_REOPEN_ACTION,
     ClosureReadiness,
     ResolutionReadiness,
     assess_resolution_readiness,

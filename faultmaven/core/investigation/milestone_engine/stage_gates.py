@@ -18,6 +18,11 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     pending_action_superseded_stale_total,
     solution_offer_superseded_total,
 )
+from faultmaven.core.investigation.narration.notices import (
+    NO_PENDING_SOLUTION_NOTICE,
+    license_notice,
+)
+from faultmaven.core.investigation.narration.offers import mitigation_sentence
 from faultmaven.core.investigation.offers import (
     awaiting_request_recheck,
     open_terminal_offer,
@@ -1178,32 +1183,6 @@ class _FixEntry(NamedTuple):
     is_fix: bool
 
 
-_NO_PENDING_SOLUTION_NOTICE = (
-    "SYSTEM: 'solution_accepted' was not registered — no "
-    "SOLUTION proposal is currently pending (it may have been "
-    "downgraded, withdrawn or superseded since it was made). If "
-    "the user has already carried out the fix and the root cause "
-    "stands established, register it in ONE response: re-propose "
-    "it as a SolutionToAdd and set solution_accepted with "
-    "accepted_action_ref new_index_N naming it, justified by "
-    "their report; do not ask them to accept it again. If the root "
-    "cause is not established, re-ground it with evidence first. If "
-    "the problem is already resolved, record the confirming "
-    "evidence instead: causal_absence for the cause gone and "
-    "symptom_absence for the reported problem gone."
-)
-
-
-def _license_notice(subject: str) -> str:
-    """The M5 refusal: a permanent fix registers only on an established cause."""
-    return (
-        f"SYSTEM: 'solution_accepted' was not registered: {subject} targets a "
-        "root cause that is no longer established, and a permanent fix needs "
-        "one (M5). Re-ground the root cause with evidence first, or propose a "
-        "temporary mitigation (WORKAROUND)."
-    )
-
-
 def _withdrawn_notice(action_id: str) -> str:
     """The ruled refusal of a fix withdrawn ``license_lost`` once the license
     holds again: the name does not register it, a re-proposal does."""
@@ -1239,7 +1218,7 @@ def _withdrawn_before(bearer: Any, held_since_turn: int) -> bool:
 
 
 def _refuse_withdrawn(metadata: dict[str, Any], action_id: str, licensed: bool) -> None:
-    notice = _withdrawn_notice if licensed else _license_notice
+    notice = _withdrawn_notice if licensed else license_notice
     _add_system_feedback(metadata, notice(action_id))
 
 
@@ -1428,7 +1407,7 @@ def _resolve_fix_identity(
             f"Rejected stage-gate milestone 'solution_accepted' for case "
             f"{case.case_id}: no pending SOLUTION ProposedAction exists"
         )
-        _add_system_feedback(metadata, _NO_PENDING_SOLUTION_NOTICE)
+        _add_system_feedback(metadata, NO_PENDING_SOLUTION_NOTICE)
         return None
     if ref.startswith("new_index_"):
         try:
@@ -1497,7 +1476,7 @@ def _bearer_registers(
     carried decision; a live turn passes nothing (its downgrade proves the
     license down) and reads it here only for a superseded bearer."""
     if bearer.action_type != InvestigationActionType.SOLUTION:
-        notice = _downgraded_notice if licensed else _license_notice
+        notice = _downgraded_notice if licensed else license_notice
         _add_system_feedback(metadata, notice(bearer.action_id))
         return False
     if bearer.state == "pending":
@@ -1674,9 +1653,7 @@ def _register_carried_fix(
     if bearer is None:
         _add_system_feedback(
             metadata,
-            _license_notice(
-                f"the fix the user reported running at turn {carried.turn}"
-            ),
+            license_notice(f"the fix the user reported running at turn {carried.turn}"),
         )
         return None
     if bearer.action_type == InvestigationActionType.SOLUTION and _withdrawn_before(
@@ -1938,7 +1915,6 @@ def _apply_stage_gate_side_effects(
             ClosureReadiness,
             closure_verdict,
             mitigation_closure_line,
-            mitigation_sentence,
         )
 
         # Don't clobber an in-flight disposition handshake, and never on a

@@ -1,13 +1,13 @@
 from typing import Mapping
 
 from faultmaven.core.investigation.cause_assurance import runbook_conversion_ready
+from faultmaven.core.investigation.narration.offers import mitigation_sentence
 from faultmaven.core.investigation.prompts.templates.terminal import (
     TerminalAffordances,
 )
 from faultmaven.core.investigation.terminal_transitions import (
     cause_identification_leg,
     mitigation_closure_line,
-    mitigation_sentence,
     resolution_record_lines,
 )
 from faultmaven.modules.case.contracts import (

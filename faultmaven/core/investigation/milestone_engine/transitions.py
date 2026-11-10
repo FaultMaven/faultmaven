@@ -3,6 +3,12 @@
 import logging
 from typing import Any
 
+from faultmaven.core.investigation.cause_assurance import pending_symptom_check
+from faultmaven.core.investigation.narration.notices import (
+    RESOLVE_DECLINED_RULE,
+    pending_check_feedback,
+    resolve_declined_actions,
+)
 from faultmaven.core.investigation.offer_projection import project_offers
 from faultmaven.core.investigation.offers import (
     OfferRefusal,
@@ -14,18 +20,16 @@ from faultmaven.core.investigation.problem_status import (
     record_confirmed_statement,
 )
 from faultmaven.core.investigation.terminal_transitions import (
-    RESOLVE_DECLINED_RULE,
     declined_resolve_entry,
     disposition_refusal,
     open_disposition_offer,
-    pending_check_feedback,
-    resolve_declined_actions,
 )
 from faultmaven.modules.case.contracts import (
     Case,
     CaseAction,
     CaseState,
     InvestigationProgress,
+    NeedState,
     OfferBasis,
     OfferKind,
     ProblemVerification,
@@ -142,7 +146,7 @@ def declined_resolution_reask(case: Case) -> str | None:
         return DECLINED_RESOLVE_FEEDBACK
     return (
         f"{DECLINED_RESOLVE_FEEDBACK} {_DECLINED_RESOLVE_CHIPS_FEEDBACK} "
-        f"{resolve_declined_actions(case)}"
+        f"{resolve_declined_actions(pending_symptom_check(case) is not None)}"
     )
 
 
@@ -578,7 +582,14 @@ class TransitionManager:
                     )
                 else:
                     _add_system_feedback(
-                        metadata, pending_check_feedback(case, check, proposed=True)
+                        metadata,
+                        pending_check_feedback(
+                            check.need_id,
+                            check.request_text,
+                            fulfilled=check.state == NeedState.FULFILLED,
+                            proposed=True,
+                            declined_stands=declined_resolve_entry(case) is not None,
+                        ),
                     )
                     metadata["resolution_pending_check"] = check.need_id
                 metadata["resolution_needs_info_first_pass"] = True

@@ -4,16 +4,16 @@ import dataclasses
 import logging
 from typing import Any, Dict, List, Optional, Sequence
 
+from faultmaven.core.investigation.narration.notices import (
+    RESOLVE_DECLINED_RULE,
+    resolve_declined_actions,
+)
 from faultmaven.core.investigation.problem_status import false_alarm_close_declined_at
 from faultmaven.core.investigation.prompts.context_builder.assembly import (
     build_investigation_context,
 )
 from faultmaven.core.investigation.prompts.context_builder.entity_highlights import (
     EntityHighlightGroup,
-)
-from faultmaven.core.investigation.terminal_transitions import (
-    RESOLVE_DECLINED_RULE,
-    resolve_declined_actions,
 )
 from faultmaven.modules.case.contracts import (
     Case,
@@ -151,6 +151,7 @@ def _resolve_declined_emphasis(case) -> str:
     on hold), a disqualification that ends the resolve decline's entry (the
     closure verdict leaves SUGGEST_RESOLVE), and a false-alarm finding (the
     problem goes on hold)."""
+    from faultmaven.core.investigation.cause_assurance import pending_symptom_check
     from faultmaven.core.investigation.offer_projection import project_offers
     from faultmaven.core.investigation.terminal_transitions import (
         declined_resolve_entry,
@@ -161,7 +162,8 @@ def _resolve_declined_emphasis(case) -> str:
         return ""
     line = RESOLVE_DECLINED_LINE
     if project_offers(case).reopen_chip is not None:
-        line = f"{line} {resolve_declined_actions(case)}"
+        held = pending_symptom_check(case) is not None
+        line = f"{line} {resolve_declined_actions(held)}"
     if entry.at_turn == case.current_turn:
         return f"\n{line}\n{RESOLVE_DECLINED_THIS_TURN_LINE}\n"
     return f"\n{line}\n"

@@ -60,6 +60,11 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     close_pivoted_to_resolve_total,
     resolution_cause_leg_total,
 )
+from faultmaven.core.investigation.narration.offers import (
+    close_summary_message,
+    readiness_message,
+    suggest_resolve_message,
+)
 from faultmaven.core.investigation.offers import (
     OfferRefusal,
     answer_offer,
@@ -621,11 +626,6 @@ def mitigation_closure_line(case: "Case") -> Optional[str]:
     return "; ".join(clauses)
 
 
-def mitigation_sentence(line: str) -> str:
-    """``mitigation_closure_line``'s line standing as a sentence of its own."""
-    return f"{line[:1].upper()}{line[1:]}."
-
-
 def _fix_documented_not_applied(case: "Case") -> bool:
     """Whether a fix is on record but was never applied.
 
@@ -910,102 +910,6 @@ def close_pivots_to_resolve(case: Case, verdict: str) -> bool:
     if verdict != ClosureReadiness.SUGGEST_RESOLVE:
         return False
     return declined_resolve_entry(case, verdict) is None
-
-
-#: What binds the model while a resolve decline stands (#1895): the ONE rule the
-#: step-2 refusal's feedback and the prompt line both state, whenever the
-#: decline stands. The model never proposes on a request. A new solution lapses
-#: the decline too (``offers.decline_stands``, ruling 3 of #2379), but it earns
-#: READY only with a verification of its own, so the rule names the
-#: verification alone.
-RESOLVE_DECLINED_RULE = (
-    "Do not propose resolved on the evidence already on record. If the user "
-    "reports a NEW verification that the fix held, record it (the cause gone "
-    "as causal_absence_evidence, the problem gone as symptom_absence_evidence) "
-    "and propose resolved in the same turn. A request is not a verification: "
-    "never record a confirmation row from a request."
-)
-
-#: Where the rule points a user who changes their mind or wants to close: the
-#: engine's two chips (#2472). Stated only when the reply carries them
-#: (``offer_projection.project_offers(case).reopen_chip``): a hold or an open
-#: offer leaves both off.
-RESOLVE_DECLINED_REOPEN_ACTION = (
-    "A user who changes their mind without a new verification uses the "
-    "engine's 'Mark it resolved' action: point them to it."
-)
-RESOLVE_DECLINED_CLOSE_ACTION = (
-    "A user who wants to close the case instead uses the engine's 'Close "
-    "without resolving' action: point them to it."
-)
-RESOLVE_DECLINED_ACTIONS = (
-    f"{RESOLVE_DECLINED_REOPEN_ACTION} {RESOLVE_DECLINED_CLOSE_ACTION}"
-)
-
-
-def resolve_declined_actions(case: Case) -> str:
-    """``RESOLVE_DECLINED_ACTIONS`` for ``case``, for a caller that already
-    knows the chips are built: the close action alone while a check the model
-    asked for after the fix holds the case (``pending_symptom_check``, #1906
-    D5.2), since "Mark it resolved" then answers with that check, not an
-    offer."""
-    if pending_symptom_check(case) is not None:
-        return RESOLVE_DECLINED_CLOSE_ACTION
-    return RESOLVE_DECLINED_ACTIONS
-
-
-#: What follows an answer showing the problem gone while the user's decline of
-#: the resolution stands: it lapses only when the confirmation rows gain one
-#: (``offers.decline_stands``), so a need marked FULFILLED on any other row
-#: leaves it binding. Scoped to that answer: the clause promises nothing on an
-#: answer showing the problem present (a problem-bound one fails the fix's
-#: window, leaving nothing to re-open).
-PENDING_CHECK_DECLINE_CLAUSE = (
-    "The user declined the resolution. Once an answer showing the problem gone "
-    "is on record, a new problem-bound row showing it lapses that decline; if "
-    "that answer is on any other row, the decline still binds, and the user "
-    "re-opens the resolution with 'Mark it resolved'."
-)
-
-
-def pending_check_feedback(case: Case, check: EvidenceNeed, *, proposed: bool) -> str:
-    """What the model is told while its own check holds the resolution
-    (#1906 D5.2), naming both ways out: the answer on record, or the need
-    superseded. ``proposed``: its ``resolved`` was refused (ruling 3); else
-    the backstop held the offer. A held FULFILLED need cites only rows from
-    turns before the ask (``pending_symptom_check``), and the feedback says
-    so, with a decline or without. While a resolve decline stands
-    (``declined_resolve_entry``), the answer does not by itself bring the
-    resolution back, so the feedback promises no offer or proposal and says
-    what does (``PENDING_CHECK_DECLINE_CLAUSE``). What it promises is scoped to
-    an answer showing the problem gone."""
-    named = f"[{check.need_id}] {check.request_text}"
-    if check.state == NeedState.FULFILLED:
-        status = (
-            f"the check you asked for ({named}) is marked FULFILLED, but the "
-            "rows you cited predate the ask"
-        )
-    else:
-        status = f"the check you asked for is still pending ({named})"
-    lead = "RESOLVED NOT PROPOSED" if proposed else "RESOLUTION HELD"
-    exits = (
-        "mark the need FULFILLED citing it. If the user cannot run the check, "
-        "SUPERSEDE the need with the reason."
-    )
-    if declined_resolve_entry(case) is not None:
-        return (
-            f"{lead}: {status}. Record its answer as a row and {exits} "
-            f"{PENDING_CHECK_DECLINE_CLAUSE}"
-        )
-    # Scoped like the clause: it promises nothing on an answer showing the
-    # problem still present (a problem-bound one fails the fix's window).
-    then = (
-        "Propose resolved once an answer showing the problem gone is on record"
-        if proposed
-        else "The resolution is offered once an answer showing the problem gone "
-        "is on record"
-    )
-    return f"{lead}: {status}. {then}: record the row and {exits}"
 
 
 def _outcome():
@@ -1420,16 +1324,18 @@ class ResolutionReadiness:
     def __init__(
         self,
         verdict: str,
-        message: str,
         missing: list[str],
         *,
+        reason: ResolutionReason,
         pending_check: EvidenceNeed | None = None,
-        reason: ResolutionReason | None = None,
         confirmation_gaps: list[ConfirmationGap] | None = None,
+        **params: Any,
     ):
         self.verdict = verdict
-        self.message = message
         self.missing = missing
+        # What the message names beyond the reason, the missing items and
+        # the gaps (#2636): the composer is ``narration.offers``.
+        self.params = params
         # NEEDS_INFO on a confirmed case: the check the model asked for after
         # the fix, still unanswered (``pending_symptom_check``, #1906 D5.2).
         # The readers branch on it, never on the message.
@@ -1439,17 +1345,15 @@ class ResolutionReadiness:
         self.reason = reason
         self.confirmation_gaps = list(confirmation_gaps or [])
 
-
-#: The NEEDS_INFO frame's opening line and its data sentence, shared by the
-#: documentation-gap ask and the held check (#1906 D5.2).
-_NEEDS_INFO_INTRO = (
-    "To mark this **resolved** and write up the resolution summary, I just need "
-    "a few essentials:\n\n"
-)
-_SUBMIT_AS_DATA = (
-    "Submit check output as data (pasted or attached, not typed into your "
-    "message): what you write is your account, and the output is what shows it."
-)
+    @property
+    def message(self) -> str:
+        """The user-facing message (``narration.offers.readiness_message``)."""
+        return readiness_message(
+            self.reason,
+            missing=self.missing,
+            gaps=self.confirmation_gaps,
+            **self.params,
+        )
 
 
 #: What a model-authored name can carry: a record id, or the ref the model writes.
@@ -1459,14 +1363,14 @@ _RECORD_ID = re.compile(
 )
 
 
-def _cause_recheck_ask(case: "Case", window) -> str:
-    """The readiness ask for the cause leg after a dated fix (#1927, #2557):
-    the problem is shown gone, and the cause the fix addressed is to be seen
-    removed — named by the root's statement and the fix, so the user shows
-    what the fix changed at the cause (what its cited basis shows, D6), not
-    the relief. Several roots or fixes are listed; with nothing to name (an
-    out-of-band fix, window 0), or a name carrying a record id, the generic
-    line."""
+def _cause_recheck_names(case: "Case", window) -> dict:
+    """What the readiness ask for the cause leg after a dated fix names
+    (#1927, #2557): the problem is shown gone, and the cause the fix addressed
+    is to be seen removed — named by the root's statement and the fix, so the
+    user shows what the fix changed at the cause (what its cited basis shows,
+    D6), not the relief. Several roots or fixes are listed; with nothing to
+    name (an out-of-band fix, window 0), or a name carrying a record id, none,
+    and the ask is the generic line (``narration.offers``)."""
     nodes = getattr(case, "causal_nodes", None) or {}
     subjects = subject_index(case)
     roots = subjects.pool_roots
@@ -1487,21 +1391,11 @@ def _cause_recheck_ask(case: "Case", window) -> str:
         and fixes
         and not any(_RECORD_ID.search(name) for name in (*statements, *fixes))
     ):
-        cause = "; ".join(_clip(name) for name in statements)
-        fix = "; ".join(_clip(name) for name in fixes)
-        return (
-            "- **The cause re-checked after the fix** — what you reported is "
-            f'shown gone; the cause the fix addressed, "{cause}", needs to be '
-            f'seen removed too: the output of a check showing what "{fix}" '
-            "changed at it."
-        )
-    return (
-        "- **The cause re-checked after the fix** — what you reported "
-        "is shown gone; the cause the fix addressed needs to be seen "
-        "removed too: the output of a check showing it (e.g. the setting "
-        "now reads the new value, or the corrected process is the one "
-        "running)."
-    )
+        return {
+            "recheck_cause": "; ".join(_clip(name) for name in statements),
+            "recheck_fix": "; ".join(_clip(name) for name in fixes),
+        }
+    return {}
 
 
 def _relief_without_cause_recheck(
@@ -1570,11 +1464,6 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
     if case.progress.problem_status == ProblemStatus.INVALIDATED:
         return ResolutionReadiness(
             verdict=ResolutionReadiness.SUGGEST_CLOSE,
-            message=(
-                "The evidence showed the reported problem was never present, so "
-                "there is nothing to resolve. You can **close** the case instead; "
-                "it will be recorded as a false alarm."
-            ),
             missing=[],
             reason=ResolutionReason.FALSE_ALARM,
         )
@@ -1597,19 +1486,13 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
         if check is not None:
             return ResolutionReadiness(
                 verdict=ResolutionReadiness.NEEDS_INFO,
-                message=(
-                    _NEEDS_INFO_INTRO
-                    + f"- **The check I asked for** — {check.request_text}"
-                    + "\n\n"
-                    + _SUBMIT_AS_DATA
-                ),
                 missing=["the check you asked for"],
                 pending_check=check,
                 reason=ResolutionReason.PENDING_CHECK,
+                request_text=check.request_text,
             )
         return ResolutionReadiness(
             verdict=ResolutionReadiness.READY,
-            message="",
             missing=[],
             reason=ResolutionReason.CONFIRMED,
         )
@@ -1631,15 +1514,6 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
     if not (has_cause or has_solution or has_evidence):
         return ResolutionReadiness(
             verdict=ResolutionReadiness.SUGGEST_CLOSE,
-            message=(
-                "This case has nothing investigated yet, so there's nothing to "
-                "document as a resolution.\n\n"
-                "If it's no longer relevant you can **close** it. If it was "
-                "actually fixed, tell me what the problem was, what caused it, "
-                "and how it was fixed, and submit the output of a check that "
-                "shows it gone as data (pasted or attached, not typed into "
-                "your message); I'll document the resolution."
-            ),
             missing=missing,
             reason=ResolutionReason.NOTHING_ON_RECORD,
         )
@@ -1657,74 +1531,33 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
     if off_cause is not None:
         return ResolutionReadiness(
             verdict=ResolutionReadiness.NEEDS_INFO,
-            message=(
-                f"The last fix (turn {off_cause}) did not act on the root cause "
-                "now identified, so no check after it can show that cause gone. "
-                "To mark this **resolved** I need a **fix of the root cause** — "
-                "tell me what you changed (or plan to change) there, and once "
-                "it's applied, submit the output of checks showing the cause "
-                "gone and the original problem gone with it, as data (pasted or "
-                "attached, not typed into your message).\n\n"
-                "If the problem is only quiet for now, or the root's fix is "
-                "**deferred**, you can **close** the case instead — that keeps "
-                "the investigation on record without claiming the cause was "
-                "fixed."
-            ),
             missing=["a fix of the root cause", *missing],
             reason=ResolutionReason.FIX_OFF_CAUSE,
+            off_cause_turn=off_cause,
         )
     if window.state == FIX_FAILED:
         return ResolutionReadiness(
             verdict=ResolutionReadiness.NEEDS_INFO,
-            message=(
-                "The last fix didn't hold: the cause was shown removed, but the "
-                "problem was seen again afterwards. To mark this **resolved** I "
-                "need a **new fix** — tell me what you changed (or what you plan "
-                "to change), and once it's applied, submit the output of checks "
-                "showing the cause gone and the original problem gone with it, "
-                "as data (pasted or attached, not typed into your message).\n\n"
-                "If the problem is only quiet for now (a restart, a failover or "
-                "another workaround), or the real fix is **deferred**, you can "
-                "**close** the case instead — that keeps the investigation on "
-                "record without claiming the fix worked."
-            ),
             missing=["a new fix after the one that did not hold", *missing],
             reason=ResolutionReason.FIX_FAILED,
         )
 
     # Otherwise: ask the user to fill the documentation gaps. The problem may
     # have been resolved out of band — invite the missing essentials rather than
-    # rejecting the request.
-    asks = []
+    # rejecting the request (the asks: ``narration.offers.readiness_message``).
     gaps: list[ConfirmationGap] = []
-    if "root cause" in missing:
-        asks.append("- **Root cause** — what caused the problem?")
-    if "solution" in missing:
-        asks.append("- **What fixed it** — the action that resolved it.")
-    if "confirmation the problem is now resolved" in missing:
-        if _relief_without_cause_recheck(case, window):
-            # The latest fix's window shows the problem gone but no cause
-            # re-check (#1927): a relief alone may be a workaround's, so the fix
-            # is unconfirmed. Ask for the leg that is missing, not the one the
-            # user just gave.
-            asks.append(_cause_recheck_ask(case, window))
-            gaps.append(ConfirmationGap.RELIEF_WITHOUT_CAUSE_RECHECK)
-        elif cause_elimination_rows(case):
-            # The cause leg stands; only the problem the user reported is
-            # unchecked (#1906). Say so, rather than re-asking for the fix.
-            asks.append(
-                "- **Confirmation the original problem is gone** — the cause is "
-                "shown removed; what you first reported needs to be seen gone "
-                "too: the output of the failing check or of the place the error "
-                "appeared, now clean."
-            )
-            gaps.append(ConfirmationGap.PROBLEM_UNRECHECKED)
-        else:
-            asks.append(
-                "- **Confirmation it's resolved** — the output of a check "
-                "showing the original problem is now gone (e.g. the latest "
-                "output, with the error no longer in it)."
-            )
+    names: dict = {}
+    if _relief_without_cause_recheck(case, window):
+        # The latest fix's window shows the problem gone but no cause re-check
+        # (#1927): a relief alone may be a workaround's, so the fix is
+        # unconfirmed. Ask for the leg that is missing, not the one the user
+        # just gave.
+        gaps.append(ConfirmationGap.RELIEF_WITHOUT_CAUSE_RECHECK)
+        names = _cause_recheck_names(case, window)
+    elif cause_elimination_rows(case):
+        # The cause leg stands; only the problem the user reported is
+        # unchecked (#1906). Say so, rather than re-asking for the fix.
+        gaps.append(ConfirmationGap.PROBLEM_UNRECHECKED)
     pv = case.problem_verification
     if (
         case.progress.problem_status == ProblemStatus.VERIFIED
@@ -1739,31 +1572,13 @@ def assess_resolution_readiness(case: "Case") -> ResolutionReadiness:
         # re-check can bind to it until the original failing output is cited.
         # With a symptom row on record the model cites that row instead
         # (the prompt says so), so the user is not asked to paste it again.
-        asks.append(
-            "- **The check that showed the problem** — the original failing "
-            "output isn't on record as what showed the problem; submit it as "
-            "data (pasted or attached) so the fix can be confirmed against it."
-        )
         gaps.append(ConfirmationGap.NO_SYMPTOM_ROW)
     return ResolutionReadiness(
         verdict=ResolutionReadiness.NEEDS_INFO,
-        message=(
-            _NEEDS_INFO_INTRO
-            + "\n".join(asks)
-            + "\n\n"
-            + _SUBMIT_AS_DATA
-            + " If the problem was already fixed outside this "
-            "session, the same applies, and I'll document it.\n\n"
-            "If it was only **stabilized** (a workaround/failover while the root "
-            "cause is still pending) or the real fix is **deferred** (a change "
-            "window, hardware RMA, another team), you can **close** the case "
-            "instead — that keeps the investigation and the documented (or "
-            "deferred) solution on record without claiming it's permanently "
-            "fixed."
-        ),
         missing=missing,
         reason=ResolutionReason.DOCUMENTATION_GAPS,
         confirmation_gaps=gaps,
+        **names,
     )
 
 
@@ -1988,29 +1803,18 @@ def resolution_record_lines(case) -> str:
 
 
 def _suggest_resolve_message(case: "Case", has_solutions: bool) -> str:
-    """The closure→resolve pivot's prompt: the rows it rests on, cited (#1906
-    D5.1), and only the root cause and fix the record holds."""
+    """The closure→resolve pivot's prompt (``narration.offers``): the rows it
+    rests on, cited (#1906 D5.1), and only the root cause and fix the record
+    holds."""
     # Named only when a cause-identification leg stands on it, as the record
     # lines decide.
     rc = getattr(case.root_cause_conclusion, "root_cause", None)
     if cause_identification_leg(case) is None:
         rc = None
-    detail = f"- **Root cause**: {rc}\n" if rc else ""
-    if has_solutions:
-        detail += (
-            "- **Solution**: "
-            + ", ".join(_solution_display_titles(case.solutions))
-            + "\n"
-        )
-    kept = "; the confirmed fix stays on record." if has_solutions else "."
-    return (
-        "This case qualifies for **resolved** status rather than closed. "
-        f"Closing would close it without marking it resolved{kept}\n\n"
-        "The record shows:\n\n"
-        + resolution_record_lines(case)
-        + "\n"
-        + detail
-        + "\nWould you like to mark it **resolved** instead?"
+    return suggest_resolve_message(
+        rc,
+        _solution_display_titles(case.solutions) if has_solutions else [],
+        resolution_record_lines(case),
     )
 
 
@@ -2026,46 +1830,32 @@ def assess_close_summary(case: "Case") -> ClosureReadiness:
     evidence_count = len(case.evidence) if case.evidence else 0
     hypothesis_count = len(case.hypotheses) if case.hypotheses else 0
     milestones_completed = len(shown_milestones(case))
-    has_root_cause = _cause_identified(case)
-    has_solutions = bool(case.solutions and len(case.solutions) > 0)
-
-    # Build summary parts
-    parts = []
-    if evidence_count > 0:
-        parts.append(
-            f"- **Evidence collected**: {evidence_count} item{'s' if evidence_count != 1 else ''}"
-        )
-    if hypothesis_count > 0:
-        parts.append(f"- **Hypotheses explored**: {hypothesis_count}")
-    if milestones_completed > 0:
-        parts.append(f"- **Milestones completed**: {milestones_completed}")
-    if has_root_cause:
-        rc = (
+    root_cause = None
+    if _cause_identified(case):
+        root_cause = (
             getattr(case.root_cause_conclusion, "root_cause", None)
             or "the identified root cause"
         )
-        parts.append(f"- **Root cause identified**: {rc}")
-    if has_solutions:
-        sol_titles = _solution_display_titles(case.solutions)
-        parts.append(f"- **Solutions on record**: {', '.join(sol_titles)}")
-
-    if not parts:
-        return ClosureReadiness(
-            verdict=ClosureReadiness.TRIVIAL,
-            message=(
-                "This case has minimal investigation data. "
-                "Are you sure you want to close it?"
-            ),
-        )
-
-    summary = "Here's what was accomplished during this investigation:\n\n" + "\n".join(
-        parts
+    has_solutions = bool(case.solutions and len(case.solutions) > 0)
+    titles = _solution_display_titles(case.solutions) if has_solutions else []
+    trivial = not (
+        evidence_count
+        or hypothesis_count
+        or milestones_completed
+        or root_cause is not None
+        or titles
     )
-    summary += "\n\nAre you sure you want to close this case without resolution?"
-
     return ClosureReadiness(
-        verdict=ClosureReadiness.HAS_SUBSTANCE,
-        message=summary,
+        verdict=(
+            ClosureReadiness.TRIVIAL if trivial else ClosureReadiness.HAS_SUBSTANCE
+        ),
+        message=close_summary_message(
+            evidence_count=evidence_count,
+            hypothesis_count=hypothesis_count,
+            milestones_completed=milestones_completed,
+            root_cause=root_cause,
+            solution_titles=titles,
+        ),
     )
 
 
