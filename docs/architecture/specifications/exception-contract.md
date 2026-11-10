@@ -188,7 +188,7 @@ provider condition presented to the user as a FaultMaven bug.
 | provider status 4xx (other, e.g. Gemini 400) | 502 | `LLM_PROVIDER_ERROR` | — |
 | no status, DECLARED `retryable` (any class, incl. `ExternalCallTimeout`) | 503 | `LLM_PROVIDER_UNAVAILABLE` | 30 |
 | no status, DECLARED terminal | 502 | `LLM_PROVIDER_ERROR` | — |
-| engine `RETRY_EXHAUSTED` / `PROVIDER_CIRCUIT_OPEN` / `TOKEN_LIMIT` / `UNKNOWN_ERROR` | 503 | `LLM_PROVIDER_UNAVAILABLE` | 30 |
+| engine `RETRY_EXHAUSTED` / `PROVIDER_CIRCUIT_OPEN` / `TOKEN_LIMIT` / `PROVIDER_REFUSED` / `UNKNOWN_ERROR` | 503 | `LLM_PROVIDER_UNAVAILABLE` | 30 |
 | engine `MODEL_NOT_FOUND` / `AUTH_FAILED` / `LLM_CONFIG_ERROR` | 502 | `LLM_PROVIDER_ERROR` | — |
 | the open LLM breaker (`is_llm_breaker`), latch transient: none, or not in `PERMANENT_BREAKER_LATCHES` | 503 | `LLM_PROVIDER_UNAVAILABLE` | 30 |
 | the open LLM breaker, latch permanent (`PROVIDER_AUTH_FAILED`; billing and `LLM_CONFIG_ERROR` are answered above); `LLMProviderError` | 502 | `LLM_PROVIDER_ERROR` | — |

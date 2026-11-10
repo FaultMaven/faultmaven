@@ -29,6 +29,7 @@ from faultmaven.exceptions import (
     LLM_CONFIG_ERROR,
     PROVIDER_AUTH_FAILED,
     PROVIDER_CIRCUIT_OPEN,
+    PROVIDER_REFUSED,
     QUOTA_EXHAUSTED,
     TOKEN_LIMIT,
     TURN_BUDGET_EXHAUSTED,
@@ -96,6 +97,17 @@ class OutputTruncationError(Exception):
         # re-raise that carries it to the degrade path is deliberately NOT
         # chained.
         self.category = LLMErrorCategory.OUTPUT_TRUNCATION
+
+
+class ProviderRefusalError(Exception):
+    """The provider refused a structured call, and no reduced re-issue is left
+    (#1770): a response normalized to ``StopReason.CONTENT_FILTER``.
+
+    Raised by the engine's structured-output loop, the only caller that knows
+    whether the one re-issue without ``evidence_trail`` was spent. A refusal is
+    not transient, so it FAILs with ``PROVIDER_REFUSED``: never a retry at the
+    same size, a raised cap or the minimal-prompt degrade.
+    """
 
 
 def is_output_truncation_error(error: BaseException) -> bool:
@@ -527,6 +539,15 @@ class LLMErrorHandler:
         # Track error for pattern detection
         error_type = type(error).__name__
         self._error_counts[error_type] = self._error_counts.get(error_type, 0) + 1
+
+        # A refusal (#1770) is the engine's own typed signal too, and final.
+        if isinstance(error, ProviderRefusalError):
+            return ErrorResult(
+                action=ErrorAction.FAIL,
+                message="The AI provider refused to answer this request.",
+                error_code=PROVIDER_REFUSED,
+                retry_count=retry_count,
+            )
 
         # Output truncation is a typed signal the engine raised about its OWN
         # generation cap, so it is dispatched first — before any of the

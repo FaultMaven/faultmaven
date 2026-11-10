@@ -9,7 +9,7 @@ Design Reference: docs/architecture/RESPONSE_FORMAT_INTEGRATION_SPEC.md
 import copy
 import inspect
 import logging
-from typing import Any, Dict, Type, get_args, get_origin
+from typing import Any, Dict, Iterable, Iterator, Type, get_args, get_origin
 
 from pydantic import BaseModel
 
@@ -410,6 +410,55 @@ def pydantic_to_strict_openai_tools(
         return tools
     function["strict"] = True
     return tools
+
+
+def omit_schema_properties(
+    schema: Dict[str, Any], names: Iterable[str]
+) -> Dict[str, Any]:
+    """A copy of *schema* without the top-level properties *names* (#1770).
+
+    The names leave ``properties`` and ``required``, and every ``$defs`` entry
+    no longer referenced, transitively, from what remains is pruned, so no
+    trace of the dropped fields is sent. A tool dict (``{"function":
+    {"parameters": ...}}``) is reduced through its ``function.parameters``;
+    one without parameters has nothing to omit. *names* is never a ``str``.
+    """
+    if isinstance(names, str):
+        raise TypeError("names must be an iterable of property names, not a str")
+    names = frozenset(names)
+    out = copy.deepcopy(schema)
+    function = out.get("function")
+    target = function.get("parameters") if isinstance(function, dict) else out
+    if not isinstance(target, dict):
+        return out
+    for name in names:
+        target.get("properties", {}).pop(name, None)
+    if isinstance(target.get("required"), list):
+        target["required"] = [r for r in target["required"] if r not in names]
+    defs = target.get("$defs")
+    if not isinstance(defs, dict):
+        return out
+
+    def refs(node: Any) -> Iterator[str]:
+        if isinstance(node, dict):
+            ref = node.get("$ref")
+            if isinstance(ref, str) and ref.startswith("#/$defs/"):
+                yield ref[len("#/$defs/") :]
+            for value in node.values():
+                yield from refs(value)
+        elif isinstance(node, list):
+            for value in node:
+                yield from refs(value)
+
+    live: set[str] = set()
+    pending = list(refs({k: v for k, v in target.items() if k != "$defs"}))
+    while pending:
+        key = pending.pop()
+        if key not in live and key in defs:
+            live.add(key)
+            pending.extend(refs(defs[key]))
+    target["$defs"] = {key: value for key, value in defs.items() if key in live}
+    return out
 
 
 def create_json_mode_format() -> Dict[str, str]:

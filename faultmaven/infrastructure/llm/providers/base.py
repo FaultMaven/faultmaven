@@ -38,6 +38,7 @@ ROUTER_CONSUMED_KWARGS: FrozenSet[str] = frozenset(
         "case_id",
         "conversion_id",
         "bypass_cache",
+        "store_in_cache",
         "provider_override",
         "data_type",
     }

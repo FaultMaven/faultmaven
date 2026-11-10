@@ -255,6 +255,16 @@ QUOTA_EXHAUSTED = "QUOTA_EXHAUSTED"
 TOKEN_LIMIT = "TOKEN_LIMIT"
 
 
+# Stable error_code for a structured call the provider REFUSED (a response
+# normalized to ``StopReason.CONTENT_FILTER``) and that still stood after the
+# one reduced re-issue without ``evidence_trail`` (#1770). Three participants:
+# the engine raises it (``milestone_engine/generation.py``), the error handler
+# dispatches its typed signal to it (``ProviderRefusalError``), and the API
+# boundary maps it. It is deliberately not ``TOKEN_LIMIT``: a refusal is never
+# answered by a raised cap or the #662 minimal-prompt degrade.
+PROVIDER_REFUSED = "PROVIDER_REFUSED"
+
+
 # Stable error_code for a rejected provider CREDENTIAL — revoked/invalid API key,
 # or a key without access to the requested resource (HTTP 401/403). Like
 # QUOTA_EXHAUSTED this is permanent and account-scoped: every request fails the

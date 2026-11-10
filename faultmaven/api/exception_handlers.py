@@ -60,6 +60,7 @@ from faultmaven.exceptions import (
     LLM_BREAKER_SERVICE,
     LLM_CONFIG_ERROR,
     PROVIDER_CIRCUIT_OPEN,
+    PROVIDER_REFUSED,
     QUOTA_EXHAUSTED,
     TOKEN_LIMIT,
     TURN_BUDGET_EXHAUSTED,
@@ -290,6 +291,9 @@ _RETRYABLE_ENGINE_CODES = frozenset(
         TURN_BUDGET_EXHAUSTED,
         PROVIDER_CIRCUIT_OPEN,
         TOKEN_LIMIT,
+        # A refusal that stood (#1770) keeps the 503 a refusal always got;
+        # whether it should be a 502 is an open owner question.
+        PROVIDER_REFUSED,
         "UNKNOWN_ERROR",
     }
 )
@@ -366,7 +370,8 @@ def llm_service_error_http_exception(exc: BaseException) -> HTTPException:
         no status, DECLARED terminal           → 502  LLM_PROVIDER_ERROR        (no retry)
         engine RETRY_EXHAUSTED/TOKEN_LIMIT/    → 503  LLM_PROVIDER_UNAVAILABLE  (retry 30)
           TURN_BUDGET_EXHAUSTED/
-          PROVIDER_CIRCUIT_OPEN/UNKNOWN_ERROR
+          PROVIDER_CIRCUIT_OPEN/PROVIDER_REFUSED/
+          UNKNOWN_ERROR
         engine MODEL_NOT_FOUND/AUTH_FAILED/    → 502  LLM_PROVIDER_ERROR        (no retry)
           LLM_CONFIG_ERROR
         open LLM breaker, latch transient      → 503  LLM_PROVIDER_UNAVAILABLE  (retry 30)
