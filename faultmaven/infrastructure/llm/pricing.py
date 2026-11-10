@@ -141,6 +141,9 @@ DEFAULT_RATES: dict[str, dict[str, TokenRates]] = {
         # across the boundary keeps the load-time rate until restart or
         # reload_rates().)
         "gemini-3.7-flash": TokenRates(0.75, 3.75, 0.075, 0.0),
+        # gemini-3.8-flash (GA 2026-09-02): the same introductory rate and the
+        # same 2027-01-01 switch, per Google's pricing page (read 2026-11-10).
+        "gemini-3.8-flash": TokenRates(0.75, 3.75, 0.075, 0.0),
         "gemini-3.5-flash-lite": TokenRates(0.30, 2.50, 0.03, 0.0),
         "gemini-3.5-flash": TokenRates(1.50, 9.0, 0.15, 0.0),
         "gemini-3.1-flash-lite": TokenRates(0.25, 1.50, 0.025, 0.0),
@@ -210,6 +213,8 @@ _SCHEDULED_RATE_CHANGES: tuple = (
     # gemini-3.7-flash introductory pricing ends 2026-12-31; standard rate
     # from 2027-01-01 ($1.50 in / $7.50 out / $0.15 cache read per 1M).
     ("gemini", "gemini-3.7-flash", date(2027, 1, 1), TokenRates(1.50, 7.50, 0.15, 0.0)),
+    # gemini-3.8-flash: the same introductory window and standard rate.
+    ("gemini", "gemini-3.8-flash", date(2027, 1, 1), TokenRates(1.50, 7.50, 0.15, 0.0)),
 )
 
 # Providers with no per-token cost (self-hosted). These are KNOWN to be free, so
