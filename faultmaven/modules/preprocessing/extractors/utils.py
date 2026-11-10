@@ -80,34 +80,56 @@ other would have ``case_entities`` carry a PID the profile dropped.
 
 
 def is_port(value: str) -> bool:
-    """True when ``value`` is a legal TCP/UDP port number."""
-    return value.isdigit() and 0 < int(value) <= 65535
+    """True when ``value`` is a legal TCP/UDP port number in ASCII digits.
+
+    The command-output, config and PID patterns use ``\\d``, which takes any
+    Unicode digit (``٥٤٣٢``); this test and ``is_pid`` refuse them (fm#2677).
+    """
+    return value.isascii() and value.isdigit() and 0 < int(value) <= 65535
 
 
 def is_pid(value: str) -> bool:
-    """True when ``value`` is inside the kernel's pid range."""
-    return value.isdigit() and 0 < int(value) <= PID_MAX
+    """True when ``value`` is inside the kernel's pid range, in ASCII digits."""
+    return value.isascii() and value.isdigit() and 0 < int(value) <= PID_MAX
 
 
-PORT_KEYWORD_RE = re.compile(r"\bport[= :]+(\d{1,5})\b", re.IGNORECASE)
+PORT_KEYWORD_RE = re.compile(r"\bport[= :]+([0-9]{1,5})\b", re.IGNORECASE)
 """A port after the word ``port``, as in ``port 22`` or ``port=8080``.
 
 Read in logs evidence by both entity paths, and by the registry in command
-output, where it is paired with an IP-and-port pattern instead. ``\\d`` takes
-any Unicode digit (``port ٣٣``), as in ``HOST_PORT_RE`` (fm#2677).
+output, where it is paired with an IP-and-port pattern instead. The port is
+ASCII digits (``port ٣٣`` is not one), as in ``HOST_PORT_RE`` (fm#2677).
 """
 
-HOST_PORT_RE = re.compile(r"(?<![\w.-])(?=[\w.-]*?[A-Za-z.])[\w.-]++:(\d{1,5})\b")
+HOST_PORT_RE = re.compile(
+    r"(?<![\w.-])(?=[\w.-]*?[A-Za-z.])[\w.-]++"
+    r"(?<!\d{4}-\d\d-\d\d[Tt]\d\d)(?<!\d{4}-\d{3}[Tt]\d\d)(?<!\d{8}[Tt]\d\d)"
+    r":([0-9]{1,5})(?!\w|\.[0-9])"
+)
 """A port after a colon that follows a ``[\\w.-]`` run with an ASCII letter or dot.
 
 ``db.local:5432`` and ``10.0.0.5:22`` match. A digits-only run (``04:47`` in
-a syslog time) does not. Any run with a letter does, so an ISO-8601 time
-(``T06:55:45Z`` gives ``55``), a ``file:line`` reference (``app.py:118``) and
-a version tag (``nginx:1.25`` gives ``1``) read as ports too, and ``\\d`` takes
-any Unicode digit (``h:٣٣``) (fm#2677).
+a syslog time) does not. Excluded (fm#2677): a run ending in an ISO-8601 date's
+``T`` and hour, the date whole (extended ``2024-01-15T06``, ordinal
+``2024-015T06``, compact ``20240115T06``); a number followed by ``.`` and a
+digit, so a dotted version tag (``nginx:1.25``, ``python:3.11-slim``); and
+non-ASCII digits. A rejected reading can leave the real port behind it:
+``ipv4:10.0.0.5:51234`` gives ``51234``.
 
-The cost is linear because of the lookbehind and the lookahead together. The
-lookbehind lets a match start only at the beginning of a run, and the lazy
+Still read as ports, because each rule found for them also reads a real host
+or drops a real port (``127.0.0.1:5432:5432``, ``zk1:2888:3888``,
+``web-01:80``, ``docs.rs:443``): a ``line:col`` tail (``index.js:10:5`` gives
+``10``); an undated time (``T06:55:45Z``); a UTC offset (``…45.123-03:30``
+gives ``30``); a slash, dot or underscore date (``2024/01/15T06:55``); an
+undotted image tag (``postgres:16``, ``postgres:16-alpine``, ``redis:7``); a
+``key:value`` label (``status:200``); auditd's ``audit(…:N)``; logback's
+``%logger:%line``; MAC address pairs after one with a letter
+(``00:0c:29:…`` gives ``29``); sshd ``SHA256:`` fingerprints; and a bare
+``name.ext:line`` (``app.py:118``). A bracketed IPv6 port (``[::1]:8080``) is
+not read (fm#1573).
+
+The cost is linear because of the first lookbehind and the lookahead together.
+The lookbehind lets a match start only at the beginning of a run, and the lazy
 lookahead scans that run once. The possessive ``++`` adds nothing: a plain
 ``+`` measures the same. The old ``[\\w-]*[A-Za-z.][\\w.-]*`` tried every
 split of a long run without a colon: 23 s on a 64 KB hex run (fm#2641).
