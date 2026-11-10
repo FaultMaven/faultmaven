@@ -3,13 +3,15 @@
 Two callers run :func:`validate_configuration`:
 
 * the web lifespan, first thing, before composition;
-* ``run_server``, when uvicorn is to run several workers, before it forks.
-  Refused only in each worker's lifespan, a configuration the launcher could
-  have refused starts the workers anyway, and uvicorn's supervisor restarts a
-  worker that exits during startup forever. With one process the launcher
-  leaves it to that process, whose refusal stops uvicorn: the lifespan's (exit
-  status 3), or, for a wildcard CORS origin, ``setup_middleware``'s as the app
-  is imported (a traceback and exit status 1, as before #2281).
+* ``run_server``, before uvicorn starts, whenever it supervises children:
+  several workers, or the reloader (``RELOAD``). Refused only in a child's
+  lifespan, a configuration the launcher could have refused starts the
+  children anyway: uvicorn's supervisor restarts a worker that exits during
+  startup forever, and its reloader outlives the child it started (#2669).
+  With one process and no reloader the launcher leaves it to that process,
+  whose refusal stops uvicorn: the lifespan's (exit status 3), or, for a
+  wildcard CORS origin, ``setup_middleware``'s as the app is imported (a
+  traceback and exit status 1, as before #2281).
 
 What only a built client or a live server can tell (a Redis that does not
 answer, an unreachable database) is refused later, in composition; with several
