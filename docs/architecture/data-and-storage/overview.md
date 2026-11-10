@@ -133,7 +133,7 @@ Each store's end of life per owner kind and its retention bound are in the [stor
 
 **Encryption**:
 - **At Rest**: AES-256 for S3, PostgreSQL, Redis
-- **In Transit**: TLS 1.3 for all network communication
+- **In Transit**: TLS 1.3 for all network communication. [Principle 13.4](../core-architecture/architectural-design-principles.md#13-one-owner-per-fact) requires every TLS client to verify the peer against one root set; that is pending #2692
 - **Secrets**: Environment variables, HashiCorp Vault
 
 ### Access Control
