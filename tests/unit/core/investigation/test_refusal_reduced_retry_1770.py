@@ -575,4 +575,42 @@ async def test_the_reissues_own_failure_is_named_and_logged(tools, caplog):
     assert raised.value.error_code == PROVIDER_REFUSED
     assert raised.value.__cause__ is None  # the 503 depends on it
     assert "LLMException" in str(raised.value) and "SENTINEL-1770" in str(raised.value)
-    assert any("SENTINEL-1770" in r.getMessage() for r in caplog.records)
+    assert any(
+        r.name == generation.__name__
+        and r.levelname == "WARNING"
+        and "re-issue failed" in r.getMessage()
+        and "SENTINEL-1770" in r.getMessage()
+        for r in caplog.records
+    )
+
+
+async def test_a_da_reissue_that_never_returns_is_bounded_to_its_timeout():
+    """The DA path's re-issue is cut at its provider's timeout, clamped to the
+    turn; the outer ``wait_for`` only stops an unbounded call from hanging."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from faultmaven.core.investigation import turn_budget
+
+    never = asyncio.Event()
+    replies = iter([REFUSED])
+
+    async def _send(**kwargs):
+        reply = next(replies, None)
+        if reply is None:
+            await never.wait()
+        return reply
+
+    engine = _engine()
+    engine.deps.da_provider.config = SimpleNamespace(timeout=0.2)
+    engine.deps.da_provider._generate = AsyncMock(side_effect=_send)
+    reserves = turn_budget.TURN_BUDGET_RESERVE_SECONDS + (
+        turn_budget.TURN_COMMIT_RESERVE_SECONDS
+    )
+    with (
+        turn_budget.bind_turn_deadline(reserves + 30.0),
+        pytest.raises(MilestoneEngineError) as raised,
+    ):
+        await asyncio.wait_for(_turn(engine), 5.0)
+
+    assert raised.value.error_code == PROVIDER_REFUSED
