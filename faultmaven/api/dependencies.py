@@ -125,6 +125,7 @@ def trace_backend_status() -> TraceBackendStatus:
     server_connection, parked_messages = opik_sdk.connection_state()
     return TraceBackendStatus(
         sentry_reporting=record.sentry_reporting,
+        capture_content=record.capture_content,
         project=record.project,
         ping_interval_s=record.ping_interval_s,
         server_connection=server_connection,

@@ -79,10 +79,13 @@ def sdk(monkeypatch):
 
 @pytest.mark.parametrize("configured", [True, False], ids=["configured", "not"])
 async def test_flipping_the_record_flips_every_reader(sdk, monkeypatch, configured):
+    # Content capture on in both arms, so only ``configured`` flips the
+    # middleware; without it the middleware stays off (#2616 K0, the next test).
     record = opik_sdk.TraceBackend(
         sdk_available=True,
         enabled=True,
         configured=configured,
+        capture_content=True,
         project="fm-project" if configured else None,
         reason=None if configured else "no backend URL is set",
     )
@@ -110,3 +113,31 @@ async def test_flipping_the_record_flips_every_reader(sdk, monkeypatch, configur
     else:
         assert isinstance(eraser, UnavailableTraceEraser)
         assert eraser.reason == "no backend URL is set"
+
+
+@pytest.mark.parametrize(
+    "configured, capture",
+    [(True, False), (False, True)],
+    ids=["configured-capture-off", "capture-on-not-configured"],
+)
+async def test_the_middleware_needs_both_a_backend_and_content_capture(
+    sdk, monkeypatch, configured, capture
+):
+    """#2616 K0: an SDK middleware could record request data, so it mounts only
+    with a configured backend and content capture on, each on its own."""
+    record = opik_sdk.TraceBackend(
+        sdk_available=True,
+        enabled=True,
+        configured=configured,
+        capture_content=capture,
+        reason=None if configured else "no backend URL is set",
+    )
+    monkeypatch.setattr(opik_sdk, "_record", record)
+
+    with patch(
+        "faultmaven.bootstrap.middleware._is_test_environment", return_value=False
+    ):
+        app = rebuild_app_under({"SKIP_SERVICE_CHECKS": "false"})
+
+    assert _llm_tracing_is_effective() is configured
+    assert _OpikMiddleware not in [m.cls for m in app.user_middleware]

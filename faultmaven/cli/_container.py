@@ -29,7 +29,7 @@ is resolved when the shutdown runs, as the command resolved it.
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Coroutine, TypeVar
+from typing import Any, Callable, Coroutine, TypeVar
 
 from faultmaven.infrastructure.concurrency.teardown import (
     ContainerRelease,
@@ -40,8 +40,26 @@ from faultmaven.infrastructure.concurrency.teardown import (
 T = TypeVar("T")
 
 
+def _first_or_close(main: Coroutine[Any, Any, T], step: Callable[[], Any]) -> None:
+    """Run ``step`` before ``main``; if it raises, close ``main`` unstarted, so a
+    refused command leaves no never-awaited coroutine."""
+    try:
+        step()
+    except BaseException:
+        main.close()
+        raise
+
+
 def run_command(main: Coroutine[Any, Any, T]) -> T:
-    """``asyncio.run(main)``, disposing the database engine before the loop ends."""
+    """``asyncio.run(main)``, disposing the database engine before the loop ends.
+
+    ``OPIK_CAPTURE_CONTENT=true`` stops it first, as it stops every process,
+    though it configures no tracing (#2616 K0).
+    """
+    from faultmaven.config.settings import get_settings
+    from faultmaven.infrastructure.observability import opik_sdk
+
+    _first_or_close(main, lambda: opik_sdk.refuse_content_capture(get_settings()))
     return asyncio.run(_run_then_tear_down(main, composed=False, container=None))
 
 
@@ -54,7 +72,7 @@ def run_with_container(main: Coroutine[Any, Any, T], container: Any = None) -> T
     from faultmaven.config.settings import get_settings
     from faultmaven.infrastructure.observability import opik_sdk
 
-    opik_sdk.configure(get_settings())
+    _first_or_close(main, lambda: opik_sdk.configure(get_settings()))
     return asyncio.run(_run_then_tear_down(main, composed=True, container=container))
 
 

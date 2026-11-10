@@ -92,7 +92,7 @@ is in the [store registry](../architecture/data-and-storage/store-registry.md):
 | ChromaDB | KB + per-case embeddings | searches return chunks whose SQL rows are gone |
 | Object storage (S3/MinIO or `data/evidence/`) | uploaded file bytes | orphaned files, and the storage bill |
 | Redis | sessions, revocation watermarks, idempotency, SSO state | a stale session or watermark shadows the new tenant |
-| Trace store (Opik), where `OPIK_ENABLED` | the prompts and responses of model calls, tagged with their case or conversion and enterprise | the old deployment's case and document text stays in the trace backend. `fm-wipe-deployment` does not reach it, and no wipe step exists yet (#2616) |
+| Trace store (Opik), where `OPIK_ENABLED` | model calls' metadata, tagged with their case or conversion and enterprise; the prompts and responses of calls traced before content capture went off (#2616 K0) | the old deployment's case and document text, where traced before then, stays in the trace backend. `fm-wipe-deployment` does not reach it, and no wipe step exists yet (#2616) |
 | Slack agent PVC — **two** SQLite stores | `credentials.db`: the agent's OAuth refresh credential. `cases.db` (`CASE_STORE_PATH`): the Slack thread → case-id map | a leftover `credentials.db` shadows the new credential seed and the agent authenticates as a user that no longer exists; a leftover `cases.db` resolves every pre-wipe thread to a case id that is gone |
 
 `fm-wipe-deployment` covers ChromaDB, object storage and Redis, and **verifies

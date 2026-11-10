@@ -160,8 +160,9 @@ class OpikTracer(BaseExternalClient, ITracer):
         Context manager for general (non-LLM) operation scoping.
 
         Yields a _NoOpSpan. LLM-specific Opik tracing is handled separately
-        by @opik.track on the LLM router, which uses the native Opik SDK to
-        create properly nested traces and spans with prompt/response data.
+        by ``opik_sdk.track`` on the LLM router, which creates nested traces
+        and spans carrying metadata, and content only where it is captured
+        (#2616 K0).
 
         This context manager is used by knowledge service, case data ingestion,
         and other general operations that need timing/scoping but not LLM spans.
@@ -280,8 +281,9 @@ def trace(name: str, settings=None):
     Decorator for local performance metrics (Prometheus counters/histograms).
 
     This decorator does NOT create Opik traces. LLM-specific Opik tracing is
-    handled by @opik.track on the LLM router, which uses the native Opik SDK
-    to create properly nested traces and spans with prompt/response data.
+    handled by ``opik_sdk.track`` on the LLM router, which creates nested
+    traces and spans carrying metadata, and content only where it is captured
+    (#2616 K0).
 
     Args:
         name: Name for the metric label

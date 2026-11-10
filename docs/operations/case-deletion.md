@@ -25,6 +25,16 @@ Then the row goes, in one transaction with its team shares and a
 
 ### LLM traces
 
+Spans hold no content (#2616 K0): no prompt, no response, and no exception
+message or traceback; a failed call shows only its class, as
+`metadata.error_class`. `OPIK_CAPTURE_CONTENT=true` stops the process at
+startup until a retention bound for the trace store is verified (#2616 K3),
+and `GET /admin/config/status` reports `trace_backend.capture_content`.
+Traces written before this release keep their prompts, responses and
+exception text, with no retention bound today (#2604, #2616 K3); an operator
+who wants them gone deletes the Opik project, or its traces, in Opik. The
+eraser below still runs for them.
+
 Each trace and span of a model call for a case is tagged with the case and its
 enterprise, and the delete finds them by those tags. The traces clear first, so
 a trace backend failure leaves the case untouched. The delete sends what this
@@ -148,8 +158,15 @@ read reports it.
 - **Document traces recorded before #2575.** They carry no conversion tag, so
   a draft or document delete does not find them.
 - **A conversion that left no draft (#2604).** A conversion refused or failed
-  before it wrote a draft, or one whose receipt was lost, sent the document's
-  text and left no row whose delete would purge it.
+  before it wrote a draft, or one whose receipt was lost, left no row whose
+  delete would purge its traces. Those written since content capture went off
+  hold no document text; older ones do, as above.
+- **The SDK's own log (#2616 K0).** When the Opik SDK fails to create a span,
+  it logs the call's arguments, the prompt among them, at ERROR in the process
+  log, and when it fails to finish one, the call's return value, whatever
+  capture is set to. Nothing is sent to the trace store, but with
+  `OPIK_SENTRY_ENABLE=true` the SDK also reports these log records to Comet's
+  Sentry.
 - **A runbook quoted into a case.** Knowledge base text that a case's prompt
   carried is that case's trace: the case delete purges it, a document delete
   does not.

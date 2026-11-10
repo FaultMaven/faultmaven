@@ -12,6 +12,7 @@ call puts on the wire.
 
 import asyncio
 import atexit
+import dataclasses
 import gzip
 import json
 import threading
@@ -19,6 +20,7 @@ import typing
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -36,9 +38,11 @@ from opik.rest_api.traces.types.trace_search_stream_request_public_exclude_item 
     TraceSearchStreamRequestPublicExcludeItem,
 )
 
+from faultmaven.config.settings import ObservabilitySettings  # noqa: E402
 from faultmaven.config.tenant_context import set_current_enterprise_id  # noqa: E402
 from faultmaven.exceptions import ServiceException  # noqa: E402
 from faultmaven.infrastructure.llm import router as router_module  # noqa: E402
+from faultmaven.infrastructure.llm.cache import LLMResponseCache  # noqa: E402
 from faultmaven.infrastructure.llm.providers.base import LLMResponse  # noqa: E402
 from faultmaven.infrastructure.observability import (  # noqa: E402
     opik_sdk,
@@ -80,6 +84,8 @@ class _Backend:
         self.projects = None
         self.project_reads: list = []
         self.deleted: list = []
+        #: Every request body the SDK sent, decoded, PATCH and PUT included.
+        self.bodies: list = []
         self.traces: list = []
         self.spans: list = []
         self.stored = {"traces": {}, "spans": {}}
@@ -116,6 +122,8 @@ class _Backend:
                 raw = self.rfile.read(int(self.headers.get("content-length") or 0))
                 if self.headers.get("content-encoding") == "gzip":
                     raw = gzip.decompress(raw)
+                with backend._lock:
+                    backend.bodies.append(raw.decode())
                 body = json.loads(raw or b"{}")
                 if self.path.endswith("/traces/delete"):
                     backend.delete(body["ids"])
@@ -221,10 +229,15 @@ def client(backend, monkeypatch):
     started: no test leaves one behind."""
     monkeypatch.setenv("OPIK_CONNECTION_MONITOR_PING_INTERVAL", "999999")
     monkeypatch.delenv("OPIK_TRACK_DISABLE", raising=False)
+    # Content on, a record no configure writes today (#2616 K0): the eraser
+    # tests find what they delete by its content, and with capture off every
+    # "nothing remains" assertion would hold vacuously.
     monkeypatch.setattr(
         opik_sdk,
         "_record",
-        opik_sdk.TraceBackend(sdk_available=True, configured=True, project=PROJECT),
+        opik_sdk.TraceBackend(
+            sdk_available=True, configured=True, project=PROJECT, capture_content=True
+        ),
     )
     real_tick = OpikConnectionMonitor.tick
 
@@ -610,6 +623,24 @@ class TestWhatThisPodHolds:
         assert isinstance(refused.value.__cause__, httpx.ConnectError)
 
 
+def _failed_rows(backend, owner):
+    """The failed call's trace and span: tagged with ``owner``, and the span with
+    the error's class. ``opik_sdk.track`` keeps the SDK's ``error_info`` (the
+    message and traceback) off the wire, so neither carries it (#2669)."""
+    traces = [
+        t for t in backend.traces if owner.items() <= (t.get("metadata") or {}).items()
+    ]
+    (span,) = [
+        s
+        for s in backend.spans
+        if (s.get("metadata") or {}).get("error_class") == "RuntimeError"
+    ]
+    assert owner.items() <= span["metadata"].items()
+    assert traces and all(not row.get("error_info") for row in [*traces, span])
+    assert not any(BODY in body for body in backend.bodies)
+    return traces, span
+
+
 class TestTheTag:
     async def test_a_failed_call_has_both_tags_on_the_wire_beside_its_error(
         self, backend, client
@@ -618,13 +649,10 @@ class TestTheTag:
             await _route(fails=True)
         client.flush(timeout=20)
 
-        owner = {"case_id": CASE, "enterprise_id": ENTERPRISE}
-        (trace,) = [t for t in backend.traces if t.get("error_info")]
-        (span,) = [s for s in backend.spans if s.get("error_info")]
-        for recorded in (trace, span):
-            assert recorded["error_info"]["message"] == BODY
-            assert recorded["metadata"] == owner
-        assert trace["thread_id"] == CASE
+        traces, _ = _failed_rows(
+            backend, {"case_id": CASE, "enterprise_id": ENTERPRISE}
+        )
+        assert {t["thread_id"] for t in traces} == {CASE}
 
 
 CONVERSION = "conv_aabb20262575"
@@ -667,9 +695,148 @@ class TestAConversion:
             await _route(case_id=None, conversion_id=CONVERSION, fails=True)
         client.flush(timeout=20)
 
-        owner = {"conversion_id": CONVERSION, "enterprise_id": ENTERPRISE}
-        (trace,) = [t for t in backend.traces if t.get("error_info")]
-        (span,) = [s for s in backend.spans if s.get("error_info")]
-        for recorded in (trace, span):
-            assert recorded["error_info"]["message"] == BODY
-            assert recorded["metadata"] == owner
+        _failed_rows(
+            backend, {"conversion_id": CONVERSION, "enterprise_id": ENTERPRISE}
+        )
+
+
+PROMPT_MARK = "prompt-mark-2669"
+ANSWER_MARK = "answer-mark-2669"
+ERROR_MARK = "error-mark-2669: the provider quoted the case"
+
+
+@pytest.fixture
+def configured(backend, client, monkeypatch):
+    """The record ``opik_sdk.configure`` writes from default settings and the
+    stub's URL (#2669), its environment and session config put back after."""
+    import opik.config
+
+    for name in (
+        "OPIK_URL_OVERRIDE",
+        "OPIK_PROJECT_NAME",
+        "OPIK_WORKSPACE",
+        "OPIK_API_KEY",
+        "OPIK_CONNECTION_MONITOR_PING_INTERVAL",
+    ):
+        monkeypatch.setenv(name, "")
+    monkeypatch.setattr(opik.config, "_SESSION_CACHE_DICT", {})
+    monkeypatch.setattr(
+        opik_sdk, "_track_disable_prior_value", opik_sdk._TRACK_DISABLE_UNRECORDED
+    )
+    settings = SimpleNamespace(
+        observability=ObservabilitySettings(
+            opik_enabled=True, opik_url_override=backend.url, opik_project_name=PROJECT
+        )
+    )
+    record = opik_sdk.configure(settings)
+    assert (record.configured, record.capture_content) == (True, False)
+    return record
+
+
+async def _marked_route(*, fails=None, cached=False):
+    """``_route`` with a marker in the prompt and in the response."""
+    answer = LLMResponse(
+        content=f"the {ANSWER_MARK}",
+        confidence=0.9,
+        provider="p",
+        model="m",
+        tokens_used=7,
+        response_time_ms=1,
+    )
+    registry = MagicMock()
+    registry.get_available_providers.return_value = ["p"]
+    registry.get_fallback_chain.return_value = ["p"]
+    registry.route_request = AsyncMock(side_effect=fails, return_value=answer)
+    set_current_enterprise_id(ENTERPRISE)
+    with (
+        patch.object(router_module, "get_registry", return_value=registry),
+        patch.object(
+            LLMResponseCache, "check", return_value=answer if cached else None
+        ),
+    ):
+        return await router_module.LLMRouter().route(
+            prompt=vetted(f"the {PROMPT_MARK} of {CASE}"), model="m", case_id=CASE
+        )
+
+
+def _one_of_each(backend):
+    """The one span and the one trace stored, merged across their batches."""
+    with backend._lock:
+        (span,) = backend.stored["spans"].values()
+        (trace,) = backend.stored["traces"].values()
+    return span, trace
+
+
+class TestNoContentByDefault:
+    """#2669's pin 1: with the default configuration the backend receives
+    spans and traces with no input, no output and no exception text."""
+
+    OWNER = {"case_id": CASE, "enterprise_id": ENTERPRISE}
+
+    @pytest.mark.parametrize("cached", [False, True], ids=["routed", "cached"])
+    async def test_a_call_that_succeeds(self, backend, client, configured, cached):
+        response = await _marked_route(cached=cached)
+        assert ANSWER_MARK in response.content
+        assert client.flush(timeout=20) is True
+
+        span, trace = _one_of_each(backend)
+        assert (span["model"], span["provider"]) == ("m", "p")
+        assert span["usage"]["total_tokens"] == 7
+        assert span["metadata"]["cached"] is cached
+        assert "prompt_prefix_elided" not in span["metadata"]
+        for row in (span, trace):
+            assert self.OWNER.items() <= row["metadata"].items()
+            assert not row.get("input") and not row.get("output")
+        assert backend.bodies
+        for mark in (PROMPT_MARK, ANSWER_MARK):
+            assert not any(mark in body for body in backend.bodies)
+
+    async def test_a_call_that_raises(self, backend, client, configured):
+        error = RuntimeError(ERROR_MARK)
+
+        with pytest.raises(RuntimeError) as raised:
+            await _marked_route(fails=error)
+        assert client.flush(timeout=20) is True
+
+        assert raised.value is error
+        span, trace = _one_of_each(backend)
+        assert span["metadata"]["error_class"] == "RuntimeError"
+        for row in (span, trace):
+            assert self.OWNER.items() <= row["metadata"].items()
+            assert not row.get("error_info") and not row.get("input")
+        assert not any(ERROR_MARK in body for body in backend.bodies)
+        assert not any(PROMPT_MARK in body for body in backend.bodies)
+
+    async def test_the_positive_control_capture_on(
+        self, backend, client, configured, monkeypatch
+    ):
+        """The same call, the record's capture on: content reaches the wire, so
+        the absences above are the switch, not a stub that drops fields."""
+        monkeypatch.setattr(
+            opik_sdk, "_record", dataclasses.replace(configured, capture_content=True)
+        )
+
+        await _marked_route()
+        assert client.flush(timeout=20) is True
+
+        span, _ = _one_of_each(backend)
+        assert PROMPT_MARK in span["input"]["prompt"]
+        assert ANSWER_MARK in span["output"]["response"]
+
+    async def test_a_function_tracked_with_the_sdk_defaults(
+        self, backend, client, configured
+    ):
+        """The SDK's defaults record a call's arguments and return value, so
+        ``opik_sdk.track`` turns them off while content is not captured."""
+
+        def probe(prompt):
+            return f"the {ANSWER_MARK}"
+
+        opik_sdk.track(name="probe")(probe)(f"the {PROMPT_MARK}")
+        assert client.flush(timeout=20) is True
+
+        span, trace = _one_of_each(backend)
+        for row in (span, trace):
+            assert not row.get("input") and not row.get("output")
+        for mark in (PROMPT_MARK, ANSWER_MARK):
+            assert not any(mark in body for body in backend.bodies)

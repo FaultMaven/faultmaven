@@ -562,6 +562,16 @@ reported under `knowledge_indexing` on `GET /api/v1/admin/config/status`.
 |----------|------|---------|-------------|
 | `INDEX_REQUEST_WINDOW_SECONDS` | int (0, or 60–3600) | 0 | Seconds a KB write may spend indexing its document. `0` refuses nothing up front; the embedding guard (180 s for a model load plus twice the estimate) still bounds the embed. Set it below the fronting proxy's read timeout, less the rest of the request: for example 600 under an ingress `proxy-read-timeout` of 660 s |
 
+## LLM Trace Content
+
+`ObservabilitySettings.opik_capture_content` (`settings.observability`). Spans
+carry model, provider, usage, timing, their owner tags and a failed call's
+error class, and no prompt, response or exception text (#2616 K0).
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `OPIK_CAPTURE_CONTENT` | bool | false | Spans carry prompts and responses. `true` stops the API, every `fm-*` command and every job at startup until a retention bound for the trace store is verified (#2616 K3). `GET /admin/config/status` reports it as `trace_backend.capture_content` |
+
 ## LLM Trace SDK (Opik)
 
 The Opik SDK reads these straight from the environment, so they are not

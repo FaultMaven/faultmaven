@@ -737,7 +737,7 @@ class KnowledgeIndexingStatus(BaseModel):
 class TraceBackendStatus(BaseModel):
     """The LLM trace SDK's process policy, and its client's state (#2616 part c).
 
-    The first three are the record the process wrote when it configured the
+    The first four are the record the process wrote when it configured the
     SDK at startup. The last two are the serving worker's own: read from a
     client that worker process has already built, never building one. Another
     worker or replica holds its own client and buffer. An SDK whose internals
@@ -749,6 +749,15 @@ class TraceBackendStatus(BaseModel):
             "Whether the trace SDK's crash reporting (Comet's Sentry) is active "
             "in this process. Off unless OPIK_SENTRY_ENABLE=true is set in the "
             "environment or .env."
+        )
+    )
+    capture_content: bool = Field(
+        description=(
+            "Whether spans carry prompts and responses (OPIK_CAPTURE_CONTENT). "
+            "False in every process this release starts: true is refused at "
+            "startup until a retention bound for the trace store is verified "
+            "(#2616 K0). An exception's message and traceback are not recorded "
+            "either way, only its class."
         )
     )
     project: Optional[str] = Field(
@@ -870,8 +879,9 @@ class EnvConfigStatusResponse(BaseModel):
     )
     trace_backend: TraceBackendStatus = Field(
         description=(
-            "The LLM trace SDK's process policy (crash reporting, project, "
-            "ping interval) and the serving worker's trace client: whether its "
+            "The LLM trace SDK's process policy (crash reporting, content "
+            "capture, project, ping interval) and the serving worker's trace "
+            "client: whether its "
             "last send reached the backend, and how many traces it holds unsent."
         )
     )

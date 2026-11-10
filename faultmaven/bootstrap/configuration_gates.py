@@ -3,13 +3,15 @@
 Two callers run :func:`validate_configuration`:
 
 * the web lifespan, first thing, before composition;
-* ``run_server``, when uvicorn is to run several workers, before it forks.
-  Refused only in each worker's lifespan, a configuration the launcher could
-  have refused starts the workers anyway, and uvicorn's supervisor restarts a
-  worker that exits during startup forever. With one process the launcher
-  leaves it to that process, whose refusal stops uvicorn: the lifespan's (exit
-  status 3), or, for a wildcard CORS origin, ``setup_middleware``'s as the app
-  is imported (a traceback and exit status 1, as before #2281).
+* ``run_server``, before uvicorn starts, whenever it supervises children:
+  several workers, or the reloader (``RELOAD``). Refused only in a child's
+  lifespan, a configuration the launcher could have refused starts the
+  children anyway: uvicorn's supervisor restarts a worker that exits during
+  startup forever, and its reloader outlives the child it started (#2669).
+  With one process and no reloader the launcher leaves it to that process,
+  whose refusal stops uvicorn: the lifespan's (exit status 3), or, for a
+  wildcard CORS origin, ``setup_middleware``'s as the app is imported (a
+  traceback and exit status 1, as before #2281).
 
 What only a built client or a live server can tell (a Redis that does not
 answer, an unreachable database) is refused later, in composition; with several
@@ -39,9 +41,17 @@ def validate_configuration(settings: Any, *, advisories: bool = True) -> None:
     from faultmaven.config.persistent_database import require_persistent_database
     from faultmaven.config.protection import refuse_wildcard_cors_on_a_deployed_box
     from faultmaven.config.worker_stores import refuse_configured_per_process_stores
+    from faultmaven.infrastructure.observability.opik_sdk import (
+        refuse_content_capture,
+    )
     from faultmaven.infrastructure.security.pseudonym_key import (
         resolve_pseudonym_key,
     )
+
+    # No trace content capture without a verified retention bound (#2616 K0).
+    # opik_sdk.configure refuses it too, but only in each worker, which uvicorn
+    # would restart forever.
+    refuse_content_capture(settings)
 
     # The running config must match DEPLOYMENT_MODE (ADR-004): a cloud
     # deployment must present cloud identity, never silently run as standalone.

@@ -274,6 +274,12 @@ export LOG_INCLUDE_CALLER_INFO=true
 | `OPIK_TRACK_DISABLE` | `false` | Suppress all `@opik.track` decorator spans |
 | `OPIK_SENTRY_ENABLE` | `false` | The Opik SDK's own crash reporting to Comet's Sentry. Read by the SDK at import; FaultMaven sets `false` unless the environment or `.env` sets it (#2585) |
 
+Spans carry model, provider, usage, timing and their owner tags. They carry no
+prompt, response or exception text: a failed call shows only its class, as
+`metadata.error_class`. `OPIK_CAPTURE_CONTENT=true` stops the process at
+startup until a retention bound for the trace store is verified (#2616 K0),
+and `GET /admin/config/status` reports `trace_backend.capture_content`.
+
 Tracing is all-or-nothing. The two variables act at different layers:
 
 - `OPIK_ENABLED` is FaultMaven's own switch, and it is sufficient on its own.

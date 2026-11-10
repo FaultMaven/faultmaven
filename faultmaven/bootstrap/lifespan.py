@@ -108,8 +108,9 @@ async def lifespan(app: FastAPI):
         # with DEPLOYMENT_MODE, a persistent database, the stores several
         # workers need, no wildcard CORS origin on a deployed box, a pseudonym
         # key, and (outside test environments) the LLM provider's credential and
-        # capabilities. run_server runs the same
-        # gates before uvicorn forks several workers. What only the built
+        # capabilities. run_server runs the same gates before uvicorn starts
+        # whenever it supervises children (several workers, or the reloader);
+        # otherwise this lifespan is where they run. What only the built
         # clients can tell is refused inside composition.
         from faultmaven.bootstrap.configuration_gates import validate_configuration
 
