@@ -966,9 +966,31 @@ Ruled on 2026-11-08 ([transcription on #2614](https://github.com/FaultMaven/faul
 - **13.1 Stores.** Every store whose contents outlive a request or cross a process has a row in one store registry: what it holds (customer content, derived data, or operational metadata), its owner kinds (case, conversion, document, user, enterprise, process), its tenant stamp (on the row itself, or derived through the owning row, in which case the retirement path names that join), its writer, where its write sits relative to the turn's commit (inside it, gated on it, or outside it with the reason), its end of life for each owner kind (delete, tenant retirement, wipe), and its retention bound. Principle 3's table rule is the registry's relational rows. A store is written only by the module its row names as its writer.
 - **13.2 Derived facts.** A fact that more than one surface states is held in one form only. Either it is a recorded verdict: final, written once by the decider that made it, with the rows and the problem statement it was read under, and later derivations take it as input and never recompute it. Or it is a recomputation: never stored, or stored only as a cache that no surface states; if the two differ, the cache is wrong. Every surface renders the record.
 - **13.3 Statements.** The model proposes through structured fields. The engine takes no outcome from prose. Text that states a case outcome is composed by the engine from the record.
-- **13.4 Resources, SDK policy and work in flight.** A composition owns what it opens, sets each third-party SDK's process-wide policy once before the SDK is imported, and drains what it started. Resources and work in flight are already built to this (#2503, #2505), and so is SDK policy (#2620, #2616's part (c)).
+- **13.4 Resources, SDK policy and work in flight.** A composition owns what it opens, sets each third-party SDK's process-wide policy once before the SDK is imported, and drains what it started. Resources and work in flight are already built to this (#2503, #2505), and so is SDK policy (#2620, #2616's part (c)). The root set a TLS client verifies the peer against is such a policy:
+
+  > Every TLS client in the process verifies against one named root set, set in the composition before any client is imported; an operator extends it in one place; a client that cannot read it is listed as an exception with its reason.
+
+  The set is the operating system's CA bundle, and an operator adds a private CA through one documented setting that every client reads ([ruling on #2685](https://github.com/FaultMaven/faultmaven/issues/2685#issuecomment-6754909029)). Because the composition sets it, the rule covers the local process (`scripts/faultmaven-dev.sh`) as well as the images. The setting's name and mechanism are #2692's, and the rule is not built until it lands; the census below gives each client's root source today.
 
 The registry is [Store Registry](../data-and-storage/store-registry.md).
+
+**The TLS client census (13.4).** Every TLS client the [design check on #2685](https://github.com/FaultMaven/faultmaven/issues/2685) names: the root source it reads today, and the variable or API through which it reads the set, or why it is an exception. Versions are the lockfile's (`requirements/cloud.txt`; slack-sdk's is the Slack agent's `requirements.txt`). Each root source was read in that version's source, or for curl and git in the binaries of the published core image, and is cited on the stage's PR (#2691).
+
+| Client, and where FaultMaven uses it | Root source today | How it reads the set, or why it is an exception |
+|---|---|---|
+| aiohttp 3.14.5: the 15 `aiohttp.ClientSession(` sites (the LLM providers, the local model manager, alerting, APM) | OpenSSL's default paths, through one `ssl.create_default_context()` aiohttp builds when it is imported | OpenSSL's `SSL_CERT_FILE` / `SSL_CERT_DIR`, set before aiohttp is imported |
+| slack-sdk 3.46.0: the Slack agent's `WebClient` | OpenSSL's default paths, through urllib's default context (the agent passes no `ssl`) | `SSL_CERT_FILE` / `SSL_CERT_DIR` |
+| curl: the core image's health probe and `scripts/faultmaven-dev.sh`, plain HTTP to localhost only | The OS bundle, libcurl's compiled default | `CURL_CA_BUNDLE`, `SSL_CERT_FILE` or `SSL_CERT_DIR` |
+| git: installed in the core image; nothing in the image build or `faultmaven/` runs it | The OS bundle, the compiled default of the GnuTLS libcurl its HTTPS helper links | Its default is the set; it is extended only through `GIT_SSL_CAINFO` / `GIT_SSL_CAPATH` or `http.sslCAInfo` (its binaries name no `SSL_CERT_FILE`) |
+| httpx 0.28.1: `web_search` (the Tavily SDK's client and the Google CSE call) | certifi | `SSL_CERT_FILE` or `SSL_CERT_DIR` replaces certifi when a client is built with the default `verify` and `trust_env` |
+| The ChromaDB client 1.5.8 (`chromadb.HttpClient`, with `CHROMADB_URL` set) | certifi, through httpx; FaultMaven sets no `chroma_server_ssl_verify` | As httpx |
+| `huggingface_hub` 1.11.0: the BGE-M3 download, at image build and on first load in the local process (the image runs with `HF_HUB_OFFLINE=1`) | certifi, through httpx | As httpx |
+| requests 2.33.1: tiktoken's encoding download (at image build; on first use in the local process), the Presidio anonymizer session, the local Opik health probe | certifi | `REQUESTS_CA_BUNDLE` or `CURL_CA_BUNDLE` replaces certifi; it does not read `SSL_CERT_FILE` |
+| botocore 1.43.119: the S3 storage backend | certifi (its own `cacert.pem` only when certifi is not installed) | `AWS_CA_BUNDLE` or the `ca_bundle` config replaces it |
+| opik 1.11.14: the trace SDK's REST client | certifi, through httpx | `SSL_CERT_FILE` becomes its `verify`; otherwise as httpx |
+| gRPC (grpcio 1.80.0, installed for chromadb and the OTLP gRPC exporter): FaultMaven opens no TLS channel at this commit | Its packaged `roots.pem`, which holds both roots `scripts/check_image_trust_store.py` bans | `GRPC_DEFAULT_SSL_ROOTS_FILE_PATH` replaces `roots.pem` |
+| pip: image builds; the core image's base ships pip 24.0 | Its vendored certifi, which holds both banned roots; the core `Dockerfile` sets `PIP_CERT` to the OS bundle, which replaces it | pip < 24.2: `PIP_CERT`. **Exception**, pip ≥ 24.2: it loads its vendored bundle beside the OS store and `PIP_CERT`, so no setting removes the bundle, and the image check must read it (#2692) |
+| The ensurepip wheel (pip 24.0's, in the core image's `ensurepip/_bundled/`) | The vendored certifi inside the wheel | **Exception**: a file the image ships, not a client in the process. A venv's pip installed from it reads `PIP_CERT` as above, and the image check must read its bundle (#2692) |
 
 ### Enforcement
 
@@ -980,6 +1002,7 @@ One check per clause. This table's Status column is the principle's only status 
 | 13.2 Derived facts | #2615's pins: a narration package that may not import the derivations; a purity test over a case whose every other attribute raises; a census of derivation calls per function. | `tests/unit/architecture/test_message_rows_have_one_constructor.py` | Pending: #2615 |
 | 13.3 Statements | A turn-order test driven through `process_turn`: outcome text is written only by the renderer, after the record. | `tests/unit/architecture/test_turn_commits_once_1882.py` | Pending: #2615 |
 | 13.4 Resources, SDK policy and work in flight | Resources: compose, shut down, and the process's file descriptors and threads return to their baseline. Work in flight: the drain waits for work within its bound, cancels the cancellable work past it, awaits a settlement to its end, and the last release drains before the stores close. SDK policy: the trace SDK is imported in one module only, and a subprocess probe shows no crash reporter active. | Resources: `tests/integration/container/test_a_composition_closes_what_it_opened.py`. Work in flight: `tests/unit/infrastructure/test_inflight_record_2096.py`, `tests/unit/container/test_container_shutdown.py` (`test_the_last_release_drains_then_resets_then_closes_then_stops_the_process`). SDK policy: `tests/unit/architecture/test_opik_imported_in_one_module_2620.py`, and `tests/unit/infrastructure/observability/test_opik_fail_closed.py` (`TestCrashReporting`) | Resources: built (#2503). Work in flight: built (#2505). SDK policy: built (#2620) |
+| 13.4 TLS root set | #2692's pins: a client built with defaults (aiohttp, httpx, requests, botocore, gRPC) loads the named set, measured from its own SSL context, not the environment; the operator's one setting adds a private CA that each of those clients accepts, in the image and in the local process; on a pip ≥ 24.2 base, the image check fails while pip's bundle, the ensurepip wheel or a venv's pip holds a banned root. | `scripts/check_image_trust_store.py` and `tests/unit/scripts/test_check_image_trust_store.py` | Pending: #2692 |
 
 ---
 
@@ -1052,6 +1075,7 @@ The mechanism is one shared worker, `faultmaven/infrastructure/worker_process.py
 | 2.4 | 2026-11-08 | P9: the 70% coverage floor is enforced by CI, which gates on `COVERAGE_FAIL_UNDER` in `ci-cd.yml` ([#2619](https://github.com/FaultMaven/faultmaven/issues/2619)). The Two Testing Dimensions row points to Quality Gates, the per-layer figures are marked targets with no gate, and Quality Gates no longer claims the pipeline enforces all rules. |
 | 2.5 | 2026-11-08 | P14 applied to document preparation ([#2622](https://github.com/FaultMaven/faultmaven/issues/2622)): its responsiveness test and the thread offload census built. |
 | 2.6 | 2026-11-09 | P14 applied to Evidence Tier 1 ([#2637](https://github.com/FaultMaven/faultmaven/issues/2637)): the shared worker named as the mechanism of both applications, phased bounds for Tier 1, its responsiveness test built, and its census row removed. |
+| 2.7 | 2026-11-10 | P13.4 names the TLS root set as an SDK policy ([ruling on #2685](https://github.com/FaultMaven/faultmaven/issues/2685#issuecomment-6754909029)): one set, the OS bundle, for every TLS client and run mode, extended in one place. Its enforcement row (pending [#2692](https://github.com/FaultMaven/faultmaven/issues/2692)) and the TLS client census added ([#2691](https://github.com/FaultMaven/faultmaven/issues/2691)). |
 
 ### Key Changes Across Versions
 
@@ -1072,4 +1096,4 @@ The mechanism is one shared worker, `faultmaven/infrastructure/worker_process.py
 
 **Document Owner**: Engineering Leadership
 **Status**: Active
-**Last Updated**: 2026-11-09
+**Last Updated**: 2026-11-10
