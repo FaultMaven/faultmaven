@@ -7,7 +7,7 @@ This module implements the OpenAI LLM provider for GPT models.
 import asyncio
 import json
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 import aiohttp
 
@@ -38,6 +38,15 @@ class OpenAIProvider(BaseLLMProvider):
         # and never persisted — a fact about a live endpoint, re-learned in
         # one round trip by a fresh process.
         self._token_param_learned: Dict[str, str] = {}
+        # Effective model ids this endpoint has REFUSED a non-default
+        # ``temperature`` for, learned the same way: written only by a re-send
+        # without the parameter that then succeeded. The family table below
+        # (``_DEFAULT_REASONING_MODEL_FAMILIES``) is the opening guess; this is
+        # the endpoint's answer, and the same model can differ between
+        # endpoints (gpt-5.4-mini takes 0.2 from OpenAI, and Azure AI Foundry's
+        # deployment of it refuses anything but the default, measured
+        # 2026-11-10).
+        self._temperature_refused: Set[str] = set()
 
     #: This provider's label: what ``provider_name`` returns, what
     #: ``llm_requests_total`` and ``llm_provider_calls_total`` carry, and what
@@ -227,6 +236,24 @@ class OpenAIProvider(BaseLLMProvider):
             return False
         return sent_param in str(error).lower()
 
+    #: The OpenAI error schema names the refused parameter in ``param``.
+    _TEMPERATURE_PARAM_RE = re.compile(r'"param"\s*:\s*"temperature"')
+
+    @classmethod
+    def _is_temperature_rejection(cls, error: LLMException) -> bool:
+        """Whether *error* is the endpoint refusing the ``temperature`` we sent.
+
+        The same two conditions as ``_is_token_param_rejection``: a permanent
+        :attr:`LLMErrorCategory.REQUEST_REJECTED` (``unsupported_value``,
+        ``unsupported_parameter``), and a rejection that NAMES the parameter —
+        here through the error body's ``param`` field, so a refusal of some
+        other parameter whose message merely mentions temperature never
+        buys a re-send.
+        """
+        if error.category is not LLMErrorCategory.REQUEST_REJECTED:
+            return False
+        return bool(cls._TEMPERATURE_PARAM_RE.search(str(error)))
+
     # o1 variants that DON'T accept ``reasoning_effort`` (o1-preview / o1-mini
     # shipped before the param existed and 400 on it), even though they DO
     # require ``max_completion_tokens`` — so the two axes diverge here and the
@@ -252,7 +279,9 @@ class OpenAIProvider(BaseLLMProvider):
     # they reject non-default ``temperature`` (only 1 accepted) and reject
     # function tools unless ``reasoning_effort`` is explicitly ``"none"``
     # ("use /v1/responses" otherwise). Earlier reasoning families don't share
-    # either constraint — gpt-5.4-mini accepts ``temperature: 0.2`` and tool
+    # either constraint — on OpenAI's endpoint gpt-5.4-mini accepts
+    # ``temperature: 0.2`` (Azure AI Foundry's deployment does not; that case
+    # is learned per model, see ``_temperature_refused``) and tool
     # calls without an effort param — so this family needs its own axis rather
     # than reusing the completion-tokens regex. The tuple lists EXACTLY the
     # verified families (probed 2026-08-03): if a later release (gpt-5.7, …)
@@ -653,8 +682,9 @@ class OpenAIProvider(BaseLLMProvider):
             token_limit_param: max_tokens,
         }
         # The gpt-5.6 family accepts only the default temperature and 400s on
-        # any other value; omission means default.
-        if not defaults_reasoning:
+        # any other value; omission means default. So does any model this
+        # endpoint has already refused one for (learned, see below).
+        if not defaults_reasoning and effective_model not in self._temperature_refused:
             payload["temperature"] = temperature
 
         # Add function calling support
@@ -739,6 +769,16 @@ class OpenAIProvider(BaseLLMProvider):
         try:
             return await self._post_chat_completion(headers, payload, effective_model)
         except LLMException as rejected:
+            # Same rule for ``temperature``: a refusal naming it means this
+            # endpoint serves the model at its default only.
+            if "temperature" in payload and self._is_temperature_rejection(rejected):
+                return await self._omit_temperature_and_retry(
+                    headers,
+                    payload,
+                    effective_model,
+                    token_limit_param=token_limit_param,
+                    rejected=rejected,
+                )
             if not self._is_token_param_rejection(rejected, token_limit_param):
                 raise
             return await self._correct_token_param_and_retry(
@@ -748,6 +788,56 @@ class OpenAIProvider(BaseLLMProvider):
                 sent_param=token_limit_param,
                 rejected=rejected,
             )
+
+    async def _omit_temperature_and_retry(
+        self,
+        headers: Dict[str, str],
+        payload: Dict[str, Any],
+        effective_model: str,
+        *,
+        token_limit_param: str,
+        rejected: LLMException,
+    ) -> LLMResponse:
+        """Re-send *payload* once without ``temperature``, then remember.
+
+        The ``temperature`` counterpart of ``_correct_token_param_and_retry``,
+        under the same rules: one in-line re-send of an otherwise identical
+        payload, on a permanent rejection naming the parameter, outside the
+        retry ladder; the model is remembered only once a re-send succeeded.
+        Omission is the model's default, the only value such a model takes.
+
+        If the re-send is then refused for the token-cap SPELLING, that
+        correction runs too (its own single re-send), so a model that needs
+        both is served on its first call rather than failing it. Any other
+        second failure is raised, chained from the first.
+        """
+        self.logger.warning(
+            f"{self.provider_name} refused 'temperature' on {effective_model} "
+            f"({rejected}) — re-sending once with the model's default."
+        )
+        del payload["temperature"]
+        try:
+            response = await self._post_chat_completion(
+                headers, payload, effective_model
+            )
+        except LLMException as still_failing:
+            if not self._is_token_param_rejection(still_failing, token_limit_param):
+                raise still_failing from rejected
+            response = await self._correct_token_param_and_retry(
+                headers,
+                payload,
+                effective_model,
+                sent_param=token_limit_param,
+                rejected=still_failing,
+            )
+
+        self._temperature_refused.add(effective_model)
+        self.logger.warning(
+            f"{self.provider_name} model {effective_model} takes only the "
+            f"default temperature — learned for the life of this provider "
+            f"instance."
+        )
+        return response
 
     async def _correct_token_param_and_retry(
         self,

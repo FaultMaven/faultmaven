@@ -15,7 +15,7 @@ Provider capability matrix for FaultMaven's LLM routing system. These capabiliti
 | HuggingFace | No | BEST_EFFORT | No DA tool use, degraded investigation |
 | Local (Ollama/vLLM) | Transport-dependent | Model-dependent | Assumed on the OpenAI-compatible path; never on Ollama's native `/api/chat` transport |
 | OpenRouter | Inherited | Inherited | Depends on underlying model |
-| Azure (AI Foundry) | Yes | Inherited from OpenAI | Requests use the resource's OpenAI v1 route. `AZURE_MODEL` is a deployment name; capability is read from it, so name the deployment after its model. `AZURE_API_BASE` takes the resource URL, its `/openai/v1` route or its `/models` URL |
+| Azure (AI Foundry) | Yes | Inherited from OpenAI | Requests use the resource's OpenAI v1 route. `AZURE_MODEL` is a deployment name; capability is read from it, so name the deployment after its model. `AZURE_API_BASE` takes the resource URL, its `/openai/v1` route or its `/models` URL. The gpt-5.4-mini deployment takes only the default `temperature` (OpenAI's endpoint takes 0.2; measured 2026-11-10): the adapter learns that from the first refusal and omits it from then on |
 
 ## Role Routing
 
