@@ -516,15 +516,19 @@ class ProviderRegistry:
             )
             return None
 
-        # A keyed provider the registry says needs more than its key (Azure
-        # OpenAI: its resource endpoint, which has no default) is skipped by
-        # the same rule the startup gate refuses it by.
+        # A keyed provider whose schema declares more than its key (Azure: its
+        # resource endpoint, which has no default) is skipped by the same rule
+        # the startup gate refuses it by. The key itself was checked above, so
+        # only the declared extras are left to check here.
         if provider_name != "local":
             from faultmaven.config.settings import unset_llm_variables
 
-            missing = unset_llm_variables(
-                llm_settings, required_env_vars(provider_name)
-            )
+            extras = [
+                var
+                for var in schema.get("required_vars") or ()
+                if var != schema.get("api_key_var")
+            ]
+            missing = unset_llm_variables(llm_settings, extras)
             if missing:
                 self.logger.warning(
                     f"⚠️ Skipping provider '{provider_name}': "
