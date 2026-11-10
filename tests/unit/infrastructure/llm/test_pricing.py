@@ -112,13 +112,14 @@ class TestEstimateCostUsd:
         # 0.25 (input) + 1.50 (output) + 0.025 (cache_read)
         assert cost == pytest.approx(1.775)
 
-    def test_gemini_3_7_flash_priced_at_introductory_rate(self):
+    @pytest.mark.parametrize("model", ["gemini-3.7-flash", "gemini-3.8-flash"])
+    def test_gemini_3_7_flash_priced_at_introductory_rate(self, model):
         # Google's introductory rate ($0.75 in / $3.75 out / $0.075 cache read
-        # per 1M) runs through 2026-12-31; the table entry documents the
-        # 2027-01-01 standard rate it must be bumped to.
+        # per 1M) runs through 2026-12-31 for both 3.7 and 3.8; the table
+        # entry documents the 2027-01-01 standard rate it must be bumped to.
         cost, priced = estimate_cost_usd(
             "gemini",
-            "gemini-3.7-flash",
+            model,
             input_tokens=1_000_000,
             output_tokens=1_000_000,
             cache_read_tokens=1_000_000,
@@ -156,7 +157,8 @@ class TestEstimateCostUsd:
             monkeypatch.delenv(pricing._OVERRIDES_ENV)
             reload_rates()
 
-    def test_gemini_3_7_flash_standard_rate_applies_from_2027(self):
+    @pytest.mark.parametrize("model", ["gemini-3.7-flash", "gemini-3.8-flash"])
+    def test_gemini_3_7_flash_standard_rate_applies_from_2027(self, model):
         # The introductory→standard switch is mechanized: _build_rates
         # resolves _SCHEDULED_RATE_CHANGES against today's date, so a process
         # started in January 2027 prices at $1.50/$7.50 with no code edit —
@@ -165,9 +167,9 @@ class TestEstimateCostUsd:
         from datetime import date
 
         before = pricing._build_rates(date(2026, 12, 31))
-        assert before["gemini"]["gemini-3.7-flash"].input == 0.75
+        assert before["gemini"][model].input == 0.75
         after = pricing._build_rates(date(2027, 1, 1))
-        entry = after["gemini"]["gemini-3.7-flash"]
+        entry = after["gemini"][model]
         assert entry.input == 1.50 and entry.output == 7.50
         assert entry.cache_read == 0.15
 

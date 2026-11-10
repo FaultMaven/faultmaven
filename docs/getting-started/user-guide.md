@@ -269,11 +269,11 @@ OPIK_URL=http://localhost:5555
 ### Supported LLM Providers
 
 FaultMaven supports 9 LLM providers. The **default is Google Gemini on
-`gemini-3.7-flash`** — set `GEMINI_API_KEY` and nothing else is required.
+`gemini-3.8-flash`** — set `GEMINI_API_KEY` and nothing else is required.
 Models below are each provider's default first; the full picker list lives in
 [adding-llm-providers.md](../guides/adding-llm-providers.md).
 
-- **Google Gemini** (default): `gemini-3.7-flash`, `gemini-3.5-flash`, `gemini-3.5-flash-lite`
+- **Google Gemini** (default): `gemini-3.8-flash`, `gemini-3.7-flash`, `gemini-3.5-flash`, `gemini-3.5-flash-lite`
 - **OpenAI**: `gpt-5.6-luna`, `gpt-5.4-mini`
 - **Anthropic**: `claude-sonnet-4-6`, `claude-opus-4-6`, `claude-haiku-4-5-20251001`
 - **Fireworks AI**: `deepseek-v4-flash`, `deepseek-v3`

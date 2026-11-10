@@ -150,7 +150,7 @@ CHAT_PROVIDER="anthropic"
 ```bash
 # Environment Configuration
 GEMINI_API_KEY="your_google_ai_key"
-GEMINI_MODEL="gemini-3.7-flash"
+GEMINI_MODEL="gemini-3.8-flash"
 CHAT_PROVIDER="gemini"
 ```
 
@@ -158,9 +158,10 @@ CHAT_PROVIDER="gemini"
 is what runs when a deployment sets only `GEMINI_API_KEY`.
 
 **Available Models**:
-- `gemini-3.7-flash` (Default; native vision, tool calling, STRICT structured
-  output. Runs the reduced 3.7 API surface — the adapter applies it
+- `gemini-3.8-flash` (Default; native vision, tool calling, STRICT structured
+  output. Runs the reduced 3.7+ API surface — the adapter applies it
   automatically by model version)
+- `gemini-3.7-flash`
 - `gemini-3.5-flash`
 - `gemini-3.5-flash-lite` (cheapest; the shipped classifier/synthesis model)
 
@@ -398,7 +399,7 @@ Provider Health Status:
 ✅ fireworks    | Models: deepseek-v4-flash, deepseek-v3        | Confidence: 0.9  | ⚡
 ✅ openai       | Models: gpt-5.6-luna, gpt-5.4-mini             | Confidence: 0.85 | ⚡
 ✅ anthropic    | Models: claude-sonnet-4-6, claude-opus-4-6     | Confidence: 0.85 | ⚡
-✅ gemini       | Models: gemini-3.7-flash, gemini-3.5-flash     | Confidence: 0.8  | ⚡
+✅ gemini       | Models: gemini-3.8-flash, gemini-3.7-flash     | Confidence: 0.8  | ⚡
 ✅ local        | Models: Phi-3-mini-128k-instruct-onnx           | Confidence: 0.6  | ⚡
 
 Fallback Chain: anthropic → fireworks → openai → local
@@ -1059,7 +1060,7 @@ Each provider has specific model naming conventions:
 FIREWORKS_MODEL="accounts/fireworks/models/deepseek-v4-flash"      # Full path required
 OPENAI_MODEL="gpt-5.6-luna"                                        # Simple name
 ANTHROPIC_MODEL="claude-sonnet-4-6"                                # Version-specific
-GEMINI_MODEL="gemini-3.7-flash"                                    # Product-version
+GEMINI_MODEL="gemini-3.8-flash"                                    # Product-version
 HUGGINGFACE_MODEL="tiiuae/falcon-7b-instruct"                    # org/model format
 OPENROUTER_MODEL="anthropic/claude-3-sonnet"                      # provider/model
 LOCAL_LLM_MODEL="Phi-3-mini-128k-instruct-onnx"                  # Server-dependent
