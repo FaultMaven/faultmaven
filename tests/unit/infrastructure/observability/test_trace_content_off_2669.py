@@ -7,9 +7,11 @@ wire is ``test_trace_erasure_loopback_2102.py::TestNoContentByDefault``.
 """
 
 import asyncio
+import gc
 import inspect
 import sys
 import types
+import weakref
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -29,8 +31,13 @@ def sdk(monkeypatch):
     and its span writer records each write."""
     seen: list = []
     spans: list = []
+    options: list = []
+    #: Set to an exception the wrapper raises after the call, as a broken SDK.
+    broken = SimpleNamespace(error=None)
 
-    def track(**_options):
+    def track(**given):
+        options.append(given)
+
         def decorate(func):
             if asyncio.iscoroutinefunction(func):
 
@@ -41,6 +48,8 @@ def sdk(monkeypatch):
                         seen.append(("raised", e))
                         raise
                     seen.append(("returned", result))
+                    if broken.error:
+                        raise broken.error
                     return result
 
             else:
@@ -64,7 +73,9 @@ def sdk(monkeypatch):
         update_current_span=lambda **fields: spans.append(fields)
     )
     monkeypatch.setitem(sys.modules, "opik", fake)
-    return SimpleNamespace(seen=seen, spans=spans, module=fake)
+    return SimpleNamespace(
+        seen=seen, spans=spans, options=options, broken=broken, module=fake
+    )
 
 
 def _sync_failing(error):
@@ -142,6 +153,59 @@ class TestTheGuard:
         for func in (generator, async_generator):
             with pytest.raises(TypeError, match="does not trace generators"):
                 opik_sdk.track(name="probe")(func)
+
+    def test_content_options_are_forced_off_and_trace_shapes_refused(self, sdk):
+        """The SDK's defaults record a call's arguments and return value."""
+        opik_sdk.track(name="probe", capture_input=True)(lambda: None)
+
+        assert sdk.options == [
+            {"name": "probe", "capture_input": False, "capture_output": False}
+        ]
+        for option in ({"create_duplicate_root_span": False}, {"entrypoint": True}):
+            with pytest.raises(TypeError, match="not traced while content"):
+                opik_sdk.track(name="probe", **option)
+
+    @pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+    async def test_a_failed_call_is_freed_without_the_cyclic_collector(
+        self, sdk, is_async
+    ):
+        """The held exception must not form a cycle with the frame holding the
+        call's arguments (a prompt), or they wait for the cyclic GC."""
+
+        class Prompt:
+            pass
+
+        def call(prompt):
+            raise ValueError(SECRET)
+
+        async def async_call(prompt):
+            raise ValueError(SECRET)
+
+        tracked = opik_sdk.track(name="probe")(async_call if is_async else call)
+        prompt = Prompt()
+        freed = weakref.ref(prompt)
+        gc.disable()
+        try:
+            try:
+                result = tracked(prompt)
+                if is_async:
+                    await result
+            except ValueError:
+                pass
+            del prompt
+            assert freed() is None
+        finally:
+            gc.enable()
+
+    async def test_an_sdk_failure_after_the_call_keeps_the_original(self, sdk):
+        sdk.broken.error = RuntimeError("the SDK's own failure")
+        error = ValueError(SECRET)
+
+        with pytest.raises(ValueError) as raised:
+            await opik_sdk.track(name="probe")(_async_failing(error))()
+
+        assert raised.value is error
+        assert raised.value.__context__ is sdk.broken.error
 
     async def test_concurrent_calls_each_get_their_own(self, sdk):
         """The slot is per call: interleaved failures do not cross."""
@@ -232,25 +296,25 @@ class TestEveryEntrypointStops:
 
         composed.assert_not_awaited()
 
-    def test_an_fm_command(self):
-        from faultmaven.cli._container import run_with_container
+    @pytest.mark.parametrize("runner", ["run_with_container", "run_command"])
+    def test_an_fm_command(self, runner):
+        """Both runners, and the command closed unstarted: no never-awaited
+        warning."""
+        from faultmaven.cli import _container
 
         async def command():
             return 0
 
         main = command()
-        try:
-            with (
-                patch(
-                    "faultmaven.config.settings.get_settings",
-                    return_value=_refused_settings(),
-                ),
-                pytest.raises(opik_sdk.TraceContentCaptureRefused, match="retention"),
-            ):
-                run_with_container(main)
-            assert inspect.getcoroutinestate(main) == inspect.CORO_CREATED
-        finally:
-            main.close()
+        with (
+            patch(
+                "faultmaven.config.settings.get_settings",
+                return_value=_refused_settings(),
+            ),
+            pytest.raises(opik_sdk.TraceContentCaptureRefused, match="retention"),
+        ):
+            getattr(_container, runner)(main)
+        assert inspect.getcoroutinestate(main) == inspect.CORO_CLOSED
 
     async def test_a_job(self, monkeypatch):
         from faultmaven.jobs.run import run_job

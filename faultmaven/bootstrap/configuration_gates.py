@@ -39,9 +39,17 @@ def validate_configuration(settings: Any, *, advisories: bool = True) -> None:
     from faultmaven.config.persistent_database import require_persistent_database
     from faultmaven.config.protection import refuse_wildcard_cors_on_a_deployed_box
     from faultmaven.config.worker_stores import refuse_configured_per_process_stores
+    from faultmaven.infrastructure.observability.opik_sdk import (
+        refuse_content_capture,
+    )
     from faultmaven.infrastructure.security.pseudonym_key import (
         resolve_pseudonym_key,
     )
+
+    # No trace content capture without a verified retention bound (#2616 K0).
+    # opik_sdk.configure refuses it too, but only in each worker, which uvicorn
+    # would restart forever.
+    refuse_content_capture(settings)
 
     # The running config must match DEPLOYMENT_MODE (ADR-004): a cloud
     # deployment must present cloud identity, never silently run as standalone.

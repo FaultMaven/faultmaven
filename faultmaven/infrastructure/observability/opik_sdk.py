@@ -198,6 +198,15 @@ def content_capture_refusal(obs: Any) -> Optional[str]:
     )
 
 
+def refuse_content_capture(settings: Any) -> None:
+    """Raise :class:`TraceContentCaptureRefused` when ``settings`` ask for
+    content capture: here, the pre-fork gate and the commands that configure
+    no tracing (#2616 K0)."""
+    refusal = content_capture_refusal(getattr(settings, "observability", None))
+    if refusal is not None:
+        raise TraceContentCaptureRefused(refusal)
+
+
 def configure(settings: Any) -> TraceBackend:
     """Point the SDK at the configured backend, or switch it off, and record the
     outcome. Once per process, before composition. Raises only
@@ -210,9 +219,7 @@ def configure(settings: Any) -> TraceBackend:
     ``~/.opik.config``. ``@opik.track`` builds its client lazily from them.
     """
     global _record
-    refusal = content_capture_refusal(getattr(settings, "observability", None))
-    if refusal is not None:
-        raise TraceContentCaptureRefused(refusal)
+    refuse_content_capture(settings)
     resolved: dict = {
         "sdk_available": OPIK_AVAILABLE,
         "sentry_reporting": _sentry_reporting(),
@@ -367,6 +374,14 @@ def _hold(exc: Exception) -> None:
         )
 
 
+def _raise_held(slot: list) -> None:
+    """Re-raise the held exception, emptying the slot first: a slot still
+    holding it would make a cycle through the traceback with the frame holding
+    the call's arguments, freed only by the cyclic collector."""
+    if slot:
+        raise slot.pop()
+
+
 def _sdk_reads_as_async(func: Callable) -> bool:
     """Whether the SDK wraps ``func`` as a coroutine function, by its own test,
     so the guard is built the same way. An SDK that moved the test: the
@@ -390,9 +405,23 @@ def track(**options: Any) -> Callable:
     while content capture is refused; K3 decides whether text returns with
     capture on (#2616). Generators are refused: the SDK records their errors on
     a path the guard does not cover. Decoration builds no client.
+
+    While the record captures no content (read at decoration), the SDK's own
+    capture of arguments and return value is forced off, and the options that
+    record them on the root trace are refused.
     """
     import opik as _opik
 
+    if not _record.capture_content:
+        if options.get("create_duplicate_root_span") is False or options.get(
+            "entrypoint"
+        ):
+            raise TypeError(
+                "create_duplicate_root_span=False and entrypoint=True are not "
+                "traced while content is not captured: the SDK records the "
+                "call's arguments and return value through them (#2616 K0)"
+            )
+        options = {**options, "capture_input": False, "capture_output": False}
     sdk_track = _opik.track(**options)
 
     def decorate(func: Callable) -> Callable:
@@ -413,9 +442,13 @@ def track(**options: Any) -> Callable:
             @functools.wraps(func)
             async def outer(*args: Any, **kwargs: Any) -> Any:
                 with _caught() as slot:
-                    result = await tracked(*args, **kwargs)
-                if slot:
-                    raise slot[0]
+                    try:
+                        result = await tracked(*args, **kwargs)
+                    except Exception:
+                        # The SDK's own failure becomes the original's context.
+                        _raise_held(slot)
+                        raise
+                _raise_held(slot)
                 return result
 
             return outer
@@ -431,9 +464,12 @@ def track(**options: Any) -> Callable:
         @functools.wraps(func)
         def sync_outer(*args: Any, **kwargs: Any) -> Any:
             with _caught() as slot:
-                result = sync_tracked(*args, **kwargs)
-            if slot:
-                raise slot[0]
+                try:
+                    result = sync_tracked(*args, **kwargs)
+                except Exception:
+                    _raise_held(slot)
+                    raise
+            _raise_held(slot)
             return result
 
         return sync_outer

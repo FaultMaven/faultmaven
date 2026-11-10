@@ -164,7 +164,9 @@ read reports it.
 - **The SDK's own log (#2616 K0).** When the Opik SDK fails to create a span,
   it logs the call's arguments, the prompt among them, at ERROR in the process
   log, and when it fails to finish one, the call's return value, whatever
-  capture is set to. Nothing is sent to the trace store.
+  capture is set to. Nothing is sent to the trace store, but with
+  `OPIK_SENTRY_ENABLE=true` the SDK also reports these log records to Comet's
+  Sentry.
 - **A runbook quoted into a case.** Knowledge base text that a case's prompt
   carried is that case's trace: the case delete purges it, a document delete
   does not.

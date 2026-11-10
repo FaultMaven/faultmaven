@@ -202,8 +202,9 @@ class TestTheTraceIsTaggedWithItsCase:
         )
 
     async def test_a_failed_call_is_tagged_at_entry(self):
-        """The SDK records ``str(exception)`` as ``error_info``, and a provider's
-        exception can embed its response body."""
+        """Tagged before the call, so a failed call's span carries its owner
+        beside its ``error_class`` (``opik_sdk.track`` keeps the exception's
+        text out, #2669)."""
         set_current_enterprise_id("ent-2102")
         opik_context = MagicMock()
 

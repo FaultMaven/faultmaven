@@ -30,6 +30,9 @@ from faultmaven.config.deployment_coherence import DeploymentCoherenceError
 from faultmaven.config.persistent_database import NonPersistentDatabaseError
 from faultmaven.config.settings import ServerSettings
 from faultmaven.config.worker_stores import PerProcessStoresError
+from faultmaven.infrastructure.observability.opik_sdk import (
+    TraceContentCaptureRefused,
+)
 from faultmaven.infrastructure.security.pseudonym_key import (
     PseudonymKeyUnavailableError,
 )
@@ -151,6 +154,12 @@ def test_web_concurrency_cannot_change_the_worker_count(monkeypatch):
             {"ENVIRONMENT": "production"},
             RuntimeError,
             "Wildcard CORS origins are not allowed",
+        ),
+        # Trace content capture with no verified retention bound (#2616 K0).
+        (
+            {"OPIK_CAPTURE_CONTENT": "true"},
+            TraceContentCaptureRefused,
+            "retention bound",
         ),
         # A pseudonym key too short to use.
         (

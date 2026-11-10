@@ -822,3 +822,21 @@ class TestNoContentByDefault:
         span, _ = _one_of_each(backend)
         assert PROMPT_MARK in span["input"]["prompt"]
         assert ANSWER_MARK in span["output"]["response"]
+
+    async def test_a_function_tracked_with_the_sdk_defaults(
+        self, backend, client, configured
+    ):
+        """The SDK's defaults record a call's arguments and return value, so
+        ``opik_sdk.track`` turns them off while content is not captured."""
+
+        def probe(prompt):
+            return f"the {ANSWER_MARK}"
+
+        opik_sdk.track(name="probe")(probe)(f"the {PROMPT_MARK}")
+        assert client.flush(timeout=20) is True
+
+        span, trace = _one_of_each(backend)
+        for row in (span, trace):
+            assert not row.get("input") and not row.get("output")
+        for mark in (PROMPT_MARK, ANSWER_MARK):
+            assert not any(mark in body for body in backend.bodies)
