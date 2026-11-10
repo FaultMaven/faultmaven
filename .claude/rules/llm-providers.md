@@ -35,6 +35,7 @@ code, and the quoted `TOOLLESS_INFERENCE_OUTPUT_FLOOR` value matches
 | HuggingFace | `HUGGINGFACE_API_KEY` | Mistral-Large-Instruct-2411 | BEST_EFFORT | Open models — NOT recommended (no tool calling) |
 | Cohere | `COHERE_API_KEY` | command-r-plus | BEST_EFFORT | Enterprise RAG (json_object only; not schema-enforced) |
 | OpenRouter | `OPENROUTER_API_KEY` | anthropic/claude-sonnet-4-6 | depends on routed model | Multi-model gateway (STRICT for `openai/*`, else FUNCTION_CALLING) |
+| Azure (AI Foundry) | `AZURE_API_KEY` + `AZURE_API_BASE` | gpt-5.6-luna (a deployment name) | as OpenAI, read from the deployment name | The resource's OpenAI v1 route (`https://<resource>.services.ai.azure.com/openai/v1`), which Microsoft directs every Foundry deployment to, non-OpenAI models included, in place of the Model Inference `/models` endpoint: OpenAI's wire protocol inherited whole, bearer key, no `api-version`. `AZURE_API_BASE` takes the resource URL, its `/openai/v1` route or its `/models` URL (`v1_base_url` maps each to the v1 route). No default endpoint: every reader judges the provider by its `required_env_vars` through `config/settings.unset_llm_variables` (the gate, admin status and banner via `llm_validation.missing_required_vars`), so a key alone configures nothing — startup refuses it, the registry skips it, the admin status reads `not_configured`. Name the deployment after its model, or capability detection falls back to FUNCTION_CALLING. `OPENAI_REASONING_EFFORT` does not apply; the output floor uses the byte bound (the v1 surface also serves non-OpenAI models) |
 | Local (Ollama/vLLM) | `LOCAL_LLM_URL` | llama3.2, etc. | FUNCTION_CALLING (functionary/hermes on OpenAI-compatible transport only), else BEST_EFFORT | Private & offline. **The URL path picks the protocol** — bare host or `/v1` = OpenAI-compatible, `/api` = Ollama native — and one predicate (`resolve_local_transport`) decides both that dispatch and the capability answer, so they cannot disagree. Tool calling follows: assumed on the OpenAI-compatible path, unavailable on the `/api` (`/api/chat`) transport for any model. A call carrying `messages` is sent as a conversation on every local transport or refused before any request: Ollama native posts `/api/chat`; the raw llama.cpp `/completion` fallback takes one prompt, so it refuses a conversation with `CallShapeUnsupported` (non-retryable, naming `/v1/chat/completions`); the registry records no provider failure for it and tries the next provider (#2016). Never keyed on the hostname (#1356), so `http://ollama:11434/v1` is capable. `LOCAL_LLM_TOOL_CALLING=false` declares a stack built without tool support |
 
 The default chat model per provider is declared three times — `config/settings.py`,
@@ -220,7 +221,7 @@ mode, a starvation guard or the forced-tool refusal. `disabled` is withheld
 
 **Every response carries a normalised stop reason.** `LLMResponse.stop_reason`
 (`STOP | MAX_TOKENS | CONTENT_FILTER | TOOL_CALLS | UNKNOWN`, with a derived
-`is_truncated`) is populated by all nine providers from whatever their API
+`is_truncated`) is populated by every provider from whatever its API
 calls it — `finish_reason: "length"`, `stop_reason: "max_tokens"`,
 `finishReason: "MAX_TOKENS"`, `done_reason`, llama.cpp's `stopped_limit`. Map
 new providers with `normalize_stop_reason()`; never match the raw strings, and
@@ -417,11 +418,11 @@ The knobs themselves:
   to at least the floor; post-call a `MAX_TOKENS` stop measuring below it raises
   `LLMOutputFloorError` rather than returning a body the caller pre-declared
   unusable. Visible output is measured with the provider's real tokenizer when
-  the provider has one (`utils/token_estimation.estimate_tokens` covers openai,
+  the provider has one (the router's `_TOKENIZER_BACKED_PROVIDERS`: openai,
   openrouter, anthropic and fireworks) **and** the body is at or under
   `_TOKENIZER_EXACT_MAX_CHARS` (4000 — tiktoken is super-linear on the degenerate
   looped-output shape, 1.3 s of blocking CPU at 32k chars). Everything else —
-  the five providers it cannot tokenize, and any longer body — is **deliberately
+  every other provider, and any longer body — is **deliberately
   bounded above by its UTF-8 byte count**. The governing invariant is that the
   estimate must never UNDER-state: under-stating fires the guard on a body that
   met its floor and kills an otherwise-usable turn, while over-stating only wastes

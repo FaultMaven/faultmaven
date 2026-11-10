@@ -100,38 +100,25 @@ def _check_llm_configuration(llm_provider, settings=None) -> None:
     has_provider = False
     provider_name = None
 
-    # Check common API key environment variables from settings (deployment-agnostic)
-    llm_settings = settings.llm
-    llm_keys = {
-        "OpenAI": (
-            llm_settings.openai_api_key.get_secret_value()
-            if llm_settings.openai_api_key
-            else ""
-        ),
-        "Anthropic": (
-            llm_settings.anthropic_api_key.get_secret_value()
-            if llm_settings.anthropic_api_key
-            else ""
-        ),
-        "Fireworks": (
-            llm_settings.fireworks_api_key.get_secret_value()
-            if llm_settings.fireworks_api_key
-            else ""
-        ),
-        "Groq": (
-            llm_settings.groq_api_key.get_secret_value()
-            if llm_settings.groq_api_key
-            else ""
-        ),
-        "Gemini": (
-            llm_settings.gemini_api_key.get_secret_value()
-            if llm_settings.gemini_api_key
-            else ""
-        ),
-    }
+    # Every keyed provider the registry knows, judged by the variables the
+    # registry says it needs (Azure: its key AND its resource endpoint), so this
+    # check cannot drift from the registry or call a half-configured provider
+    # configured.
+    from faultmaven.config.llm_validation import api_key_field, missing_required_vars
+    from faultmaven.infrastructure.llm.providers.registry import PROVIDER_SCHEMA
 
-    for name, key in llm_keys.items():
-        if key and not key.startswith("your_") and key != "":
+    llm_settings = settings.llm
+    for name in PROVIDER_SCHEMA:
+        mapping = api_key_field(name)
+        if mapping is None:
+            continue  # local is judged below, by CHAT_PROVIDER
+        secret = getattr(llm_settings, mapping[0], None)
+        key = secret.get_secret_value() if secret else ""
+        if (
+            key
+            and not key.startswith("your_")
+            and not missing_required_vars(llm_settings, name)
+        ):
             has_provider = True
             provider_name = name
             break

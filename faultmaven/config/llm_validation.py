@@ -33,14 +33,28 @@ def api_key_field(provider: str) -> tuple[str, str] | None:
     """(settings field, env var name) of a keyed provider's API key, from the registry.
 
     ``None`` for a provider the registry does not know and for one with no API
-    key (``local`` is handled separately: it needs a URL, not a key). The
-    settings field is the env var name lower-cased, which
-    ``test_every_env_var_key_names_a_variable_settings_consumes`` pins.
+    key (``local`` is handled separately: it needs a URL, not a key).
     """
+    from faultmaven.config.settings import llm_setting_field
     from faultmaven.infrastructure.llm.providers.registry import PROVIDER_SCHEMA
 
     env_name = (PROVIDER_SCHEMA.get(provider) or {}).get("api_key_var")
-    return (env_name.lower(), env_name) if env_name else None
+    return (llm_setting_field(env_name), env_name) if env_name else None
+
+
+def missing_required_vars(llm_settings, provider: str) -> list[str]:
+    """The registry-required variables of ``provider`` that ``llm_settings`` lacks.
+
+    Empty when the provider has everything it needs. Read from
+    ``required_env_vars`` so a provider needing more than its key (Azure's
+    resource endpoint) is judged the same way by every reader: this gate, the
+    admin status and connection test, and the startup banner. The registry
+    applies the same ``unset_llm_variables`` to the same list.
+    """
+    from faultmaven.config.settings import unset_llm_variables
+    from faultmaven.infrastructure.llm.providers.registry import required_env_vars
+
+    return unset_llm_variables(llm_settings, required_env_vars(provider))
 
 
 def _supported() -> list[str]:
@@ -99,5 +113,13 @@ def validate_llm_provider_credentials(settings: "Settings") -> None:
             "for 'local'). A provider is shipped as the default, but no "
             "credential is — one must always be configured. See .env.example "
             "section 1."
+        )
+    # A provider the registry says needs more than its key (azure: its
+    # resource endpoint) is refused here too, rather than skipped at first use.
+    missing = missing_required_vars(settings.llm, provider)
+    if missing:
+        raise ValueError(
+            f"CHAT_PROVIDER={provider!r} requires {', '.join(missing)}, which "
+            "is missing or empty. See .env.example section 1."
         )
     logger.info("✅ LLM provider '%s' configured (%s set)", provider, env_name)

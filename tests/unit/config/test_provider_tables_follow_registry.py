@@ -58,6 +58,7 @@ def test_the_test_isolation_list_clears_every_provider_variable():
         for key in ("api_key_var", "endpoint_var", "model_var"):
             if schema.get(key):
                 needed.add(schema[key])
+        needed.update(schema.get("required_vars") or ())
 
     assert needed - set(ENV_VARS_TO_CLEAR) == set()
 
@@ -72,6 +73,12 @@ def test_every_keyed_provider_requires_its_api_key_and_local_requires_url_and_mo
     for name in PROVIDERS:
         if name == "local":
             assert set(required_env_vars(name)) == {"LOCAL_LLM_URL", "LOCAL_LLM_MODEL"}
+        elif name == "azure":
+            # Each Azure resource has its own host: the key alone is not enough.
+            assert set(required_env_vars(name)) == {
+                "AZURE_API_KEY",
+                "AZURE_API_BASE",
+            }
         else:
             assert required_env_vars(name) == (PROVIDER_SCHEMA[name]["api_key_var"],)
 
@@ -96,11 +103,8 @@ def test_a_production_preset_names_exactly_the_providers_required_variables(
 
     # Expected from the schema's own key fields, not through the accessor
     # under test.
-    expected = (
-        ["LOCAL_LLM_MODEL", "LOCAL_LLM_URL"]
-        if provider == "local"
-        else [PROVIDER_SCHEMA[provider]["api_key_var"]]
-    )
+    schema = PROVIDER_SCHEMA[provider]
+    expected = sorted(schema.get("required_vars") or [schema["api_key_var"]])
     assert sorted(re.findall(r"'([A-Z_]+)' for provider", " ".join(errors))) == expected
 
 
@@ -123,8 +127,12 @@ def test_the_override_allow_lists_name_every_providers_key_and_model_field():
         _ALLOWED_OVERRIDES,
         _API_KEY_FIELDS,
     )
+    from faultmaven.config.llm_validation import api_key_field
 
     keyed = {n for n, sc in PROVIDER_SCHEMA.items() if sc.get("api_key_var")}
-    assert _API_KEY_FIELDS == {PROVIDER_SCHEMA[n]["api_key_var"].lower() for n in keyed}
+    # The field each key lands in, resolved the way the admin route resolves
+    # it when it stores an override — so the two cannot name different fields.
+    assert _API_KEY_FIELDS == {api_key_field(n)[0] for n in keyed}
+    assert {f"{n}_api_key" for n in keyed} == _API_KEY_FIELDS
     assert {f"{n}_model" for n in PROVIDER_SCHEMA} <= set(_ALLOWED_OVERRIDES)
     assert _API_KEY_FIELDS <= set(_ALLOWED_OVERRIDES)
