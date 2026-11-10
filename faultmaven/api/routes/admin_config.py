@@ -35,6 +35,7 @@ from faultmaven.api.models import (
     TurnTimingStatus,
 )
 from faultmaven.api.v1.dependencies import get_llm_provider
+from faultmaven.config.llm_validation import missing_required_vars
 from faultmaven.exceptions import RawModelContentRefused
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 
@@ -112,8 +113,12 @@ async def get_llm_config(
             has_api_key = _check_has_api_key(settings, name)
             is_in_chain = name in fallback_chain
 
-            # Derive provider lifecycle state
-            if not has_api_key:
+            # Derive provider lifecycle state. A keyed provider that needs
+            # more than its key (Azure OpenAI's endpoint) is not configured
+            # until it has all of it: the registry will not build it.
+            if not has_api_key or (
+                name != "local" and missing_required_vars(settings.llm, name)
+            ):
                 state = "not_configured"
             elif is_in_chain:
                 state = "active"
@@ -278,7 +283,13 @@ async def update_llm_config(
                     status_code=422,
                     detail=f"Unknown provider: '{request.provider_name}'",
                 )
-            key_field = f"{request.provider_name}_api_key"
+            # The settings field the provider's key lives in, from the
+            # registry — the same resolution the override applier and the
+            # startup gate use (AZURE_OPENAI_KEY -> azure_openai_api_key).
+            from faultmaven.config.llm_validation import api_key_field
+
+            mapping = api_key_field(request.provider_name)
+            key_field = mapping[0] if mapping else f"{request.provider_name}_api_key"
             overrides[key_field] = request.api_key
 
         if request.model is not None and request.provider_name is not None:
@@ -417,11 +428,21 @@ async def check_llm_connection(
 
         if provider is None:
             display = PROVIDER_DISPLAY_NAMES.get(provider_name, provider_name)
+            from faultmaven.config.settings import get_settings
+
+            missing = (
+                missing_required_vars(get_settings().llm, provider_name)
+                if provider_name != "local"
+                else []
+            )
             return LLMConnectionTestResponse(
                 provider=provider_name,
                 connected=False,
                 error_message=(
-                    f"No API key configured for {display}. "
+                    f"{display} is not configured: set {', '.join(missing)}, "
+                    "then test the connection."
+                    if missing
+                    else f"No API key configured for {display}. "
                     "Add an API key first, then test the connection."
                 ),
                 timestamp=datetime.now(timezone.utc),

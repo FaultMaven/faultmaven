@@ -306,9 +306,10 @@ class LLMSettings(BaseSettings):
         default=None, validation_alias="GROQ_API_KEY"
     )
     # Azure OpenAI names its resource key AZURE_OPENAI_KEY (Azure's own
-    # spelling); the field is the variable lower-cased, the rule
-    # llm_validation.api_key_field reads it by.
-    azure_openai_key: Optional[SecretStr] = Field(
+    # spelling); the field keeps the {provider}_api_key name every reader of
+    # a provider's key (llm_validation.api_key_field, the admin override
+    # route) resolves it by.
+    azure_openai_api_key: Optional[SecretStr] = Field(
         default=None, validation_alias="AZURE_OPENAI_KEY"
     )
 
@@ -548,8 +549,9 @@ class LLMSettings(BaseSettings):
     groq_base_url: str = Field(
         default="https://api.groq.com/openai/v1", validation_alias="GROQ_API_BASE"
     )
-    # Per-resource, so there is no default: the v1 endpoint of the operator's
-    # own resource, https://<resource>.openai.azure.com/openai/v1.
+    # Per-resource, so there is no default: the resource URL the Azure portal
+    # shows (https://<resource>.openai.azure.com/) or its v1 endpoint
+    # (…/openai/v1); azure_openai_provider.v1_base_url normalizes either.
     azure_openai_endpoint: Optional[str] = Field(
         default=None, validation_alias="AZURE_OPENAI_ENDPOINT"
     )
@@ -858,7 +860,6 @@ class LLMSettings(BaseSettings):
             LLMProvider.HUGGINGFACE: self.huggingface_base_url,
             LLMProvider.OPENROUTER: self.openrouter_base_url,
             LLMProvider.GROQ: self.groq_base_url,
-            LLMProvider.AZURE_OPENAI: self.azure_openai_endpoint or "",
             LLMProvider.LOCAL: self.local_url,
         }
         return url_map.get(provider, "")
@@ -871,6 +872,39 @@ class LLMSettings(BaseSettings):
         "env_prefix": "",
         "extra": "ignore",
     }
+
+
+def llm_setting_field(env_name: str) -> str:
+    """The ``LLMSettings`` field the environment variable ``env_name`` populates.
+
+    A field reaches its variable either by an explicit ``validation_alias``
+    (``azure_openai_api_key`` <- ``AZURE_OPENAI_KEY``, ``local_url`` <-
+    ``LOCAL_LLM_URL``) or by its own name (``openai_api_key`` <-
+    ``OPENAI_API_KEY``); the alias is checked first.
+    """
+    wanted = env_name.lower()
+    for name, field in LLMSettings.model_fields.items():
+        alias = field.validation_alias
+        if isinstance(alias, str) and alias.lower() == wanted:
+            return name
+    return wanted
+
+
+def unset_llm_variables(llm_settings: Any, env_names: Any) -> List[str]:
+    """The variables in ``env_names`` whose ``LLMSettings`` field is unset or blank."""
+
+    def is_set(value: Any) -> bool:
+        if value is None:
+            return False
+        getter = getattr(value, "get_secret_value", None)
+        raw = getter() if callable(getter) else value
+        return bool(raw and str(raw).strip())
+
+    return [
+        var
+        for var in env_names
+        if not is_set(getattr(llm_settings, llm_setting_field(var), None))
+    ]
 
 
 def _parse_database_url(database_url: Optional[str]) -> Any:

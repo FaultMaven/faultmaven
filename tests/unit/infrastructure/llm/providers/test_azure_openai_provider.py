@@ -16,6 +16,7 @@ from faultmaven.config.settings import LLMSettings
 from faultmaven.infrastructure.llm.dispatch import send_to_model
 from faultmaven.infrastructure.llm.providers.azure_openai_provider import (
     AzureOpenAIProvider,
+    v1_base_url,
 )
 from faultmaven.infrastructure.llm.providers.base import ProviderConfig
 from faultmaven.infrastructure.llm.providers.registry import (
@@ -101,6 +102,27 @@ class TestConfiguration:
             monkeypatch.setenv(var, value)
         return ProviderRegistry(settings=NS(llm=LLMSettings()))
 
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            ENDPOINT,
+            ENDPOINT + "/",
+            "https://example-resource.openai.azure.com",
+            "https://example-resource.openai.azure.com/",
+            "https://example-resource.openai.azure.com/openai/",
+            "  https://example-resource.openai.azure.com/  ",
+        ],
+    )
+    def test_the_portal_url_and_the_v1_url_reach_the_same_base(self, endpoint):
+        """The portal shows the bare resource URL under the same name."""
+        assert v1_base_url(endpoint) == ENDPOINT
+
+    def test_an_explicit_other_path_is_kept_and_unset_is_empty(self):
+        assert v1_base_url("https://proxy.example/azure/v1/") == (
+            "https://proxy.example/azure/v1"
+        )
+        assert v1_base_url(None) == "" and v1_base_url("  ") == ""
+
     def test_key_endpoint_and_deployment_build_the_provider(self, monkeypatch):
         registry = self._registry(
             monkeypatch,
@@ -140,17 +162,70 @@ def _gate_settings(**llm):
 class TestStartupGate:
     def test_key_and_endpoint_pass(self):
         validate_llm_provider_credentials(
-            _gate_settings(azure_openai_key="k", azure_openai_endpoint=ENDPOINT)
+            _gate_settings(azure_openai_api_key="k", azure_openai_endpoint=ENDPOINT)
         )
 
     def test_missing_key_is_refused(self):
         with pytest.raises(ValueError, match="AZURE_OPENAI_KEY"):
             validate_llm_provider_credentials(
-                _gate_settings(azure_openai_key=None, azure_openai_endpoint=ENDPOINT)
+                _gate_settings(
+                    azure_openai_api_key=None, azure_openai_endpoint=ENDPOINT
+                )
             )
 
     def test_missing_endpoint_is_refused(self):
         with pytest.raises(ValueError, match="AZURE_OPENAI_ENDPOINT"):
             validate_llm_provider_credentials(
-                _gate_settings(azure_openai_key="k", azure_openai_endpoint="  ")
+                _gate_settings(azure_openai_api_key="k", azure_openai_endpoint="  ")
             )
+
+
+@pytest.mark.unit
+class TestDashboardOverride:
+    """The key an admin sets from the dashboard reaches the provider (review F1)."""
+
+    def test_the_route_field_is_one_the_applier_accepts(self):
+        from faultmaven.config.llm_config_overrides import (
+            _ALLOWED_OVERRIDES,
+            _API_KEY_FIELDS,
+        )
+        from faultmaven.config.llm_validation import api_key_field
+
+        field, env_name = api_key_field("azure_openai")
+        assert (field, env_name) == ("azure_openai_api_key", "AZURE_OPENAI_KEY")
+        assert field in _ALLOWED_OVERRIDES and field in _API_KEY_FIELDS
+
+    async def test_a_stored_key_override_lands_on_the_settings(self, monkeypatch):
+        from faultmaven.config import llm_config_overrides
+        from faultmaven.infrastructure.persistence import llm_config_repository
+
+        async def stored():
+            return {"azure_openai_api_key": "from-dashboard"}
+
+        monkeypatch.setattr(llm_config_repository, "get_all_overrides", stored)
+        for var in _AZURE_ENV:
+            monkeypatch.delenv(var, raising=False)
+        settings = NS(llm=LLMSettings())
+
+        await llm_config_overrides.apply_overrides_to_settings(settings)
+
+        assert settings.llm.azure_openai_api_key.get_secret_value() == (
+            "from-dashboard"
+        )
+
+
+@pytest.mark.unit
+class TestEveryReaderNeedsTheEndpoint:
+    """A key without an endpoint is not "configured" anywhere (review F5/F9)."""
+
+    def test_missing_required_vars_names_the_endpoint(self, monkeypatch):
+        from faultmaven.config.llm_validation import missing_required_vars
+
+        for var in _AZURE_ENV:
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv("AZURE_OPENAI_KEY", "k")
+        assert missing_required_vars(LLMSettings(), "azure_openai") == [
+            "AZURE_OPENAI_ENDPOINT"
+        ]
+        monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", ENDPOINT)
+        assert missing_required_vars(LLMSettings(), "azure_openai") == []

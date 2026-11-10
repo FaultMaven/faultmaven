@@ -108,8 +108,11 @@ def _span_prompt_views(
 # in that module; kept here rather than changing the shared helper, because its
 # fallback is load-bearing for other callers (prompt budgeting) that want a
 # middle-of-the-road estimate rather than this one's deliberate bias.
+# ``azure_openai`` is tokenized there but deliberately ABSENT here: its model
+# id is an operator-chosen deployment name, and the same v1 surface serves
+# non-OpenAI models, so cl100k could under-count a floor-starved body.
 _TOKENIZER_BACKED_PROVIDERS = frozenset(
-    {"openai", "openrouter", "azure_openai", "anthropic", "fireworks"}
+    {"openai", "openrouter", "anthropic", "fireworks"}
 )
 
 # Longest body handed to a real tokenizer. Above this we do not sample it —

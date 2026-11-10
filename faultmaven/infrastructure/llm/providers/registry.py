@@ -29,7 +29,7 @@ from faultmaven.infrastructure.llm.metering import record_provider_call
 from faultmaven.infrastructure.security.model_content import non_case_text
 
 from .anthropic import AnthropicProvider
-from .azure_openai_provider import AzureOpenAIProvider
+from .azure_openai_provider import AzureOpenAIProvider, v1_base_url
 from .base import BaseLLMProvider, LLMResponse, ProviderConfig
 from .cohere_provider import CohereProvider
 from .fireworks_provider import FireworksProvider
@@ -502,13 +502,12 @@ class ProviderRegistry:
             base_url = llm_settings.cohere_base_url or schema["default_base_url"]
         elif provider_name == "azure_openai":
             api_key = (
-                llm_settings.azure_openai_key.get_secret_value()
-                if llm_settings.azure_openai_key
+                llm_settings.azure_openai_api_key.get_secret_value()
+                if llm_settings.azure_openai_api_key
                 else None
             )
             model = llm_settings.azure_openai_model or schema["default_model"]
-            # Trailing slash dropped: the provider appends "/chat/completions".
-            base_url = (llm_settings.azure_openai_endpoint or "").strip().rstrip("/")
+            base_url = v1_base_url(llm_settings.azure_openai_endpoint)
 
         if schema.get("api_key_var") and not api_key and provider_name != "local":
             self.logger.warning(
@@ -517,13 +516,21 @@ class ProviderRegistry:
             )
             return None
 
-        # Azure has no default endpoint: each resource has its own host.
-        if provider_name == "azure_openai" and not base_url:
-            self.logger.warning(
-                "⚠️ Skipping provider 'azure_openai': AZURE_OPENAI_ENDPOINT is "
-                "not set (https://<resource>.openai.azure.com/openai/v1)"
+        # A keyed provider the registry says needs more than its key (Azure
+        # OpenAI: its resource endpoint, which has no default) is skipped by
+        # the same rule the startup gate refuses it by.
+        if provider_name != "local":
+            from faultmaven.config.settings import unset_llm_variables
+
+            missing = unset_llm_variables(
+                llm_settings, required_env_vars(provider_name)
             )
-            return None
+            if missing:
+                self.logger.warning(
+                    f"⚠️ Skipping provider '{provider_name}': "
+                    f"{', '.join(missing)} not set in settings"
+                )
+                return None
 
         # For local provider, require model and base_url from settings
         if provider_name == "local":

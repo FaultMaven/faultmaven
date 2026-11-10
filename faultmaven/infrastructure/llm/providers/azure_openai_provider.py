@@ -4,10 +4,10 @@ Azure OpenAI provider implementation.
 Azure OpenAI's v1 API (``https://<resource>.openai.azure.com/openai/v1``) is
 the OpenAI wire protocol: the same ``/chat/completions`` request and response
 shapes, tool calling and ``response_format``. So the request body, the
-token-cap spelling, the reasoning-effort rules and structured-output detection
-are all inherited from :class:`OpenAIProvider` unchanged.
+token-cap spelling, the shape-based reasoning-effort rules and
+structured-output detection are all inherited from :class:`OpenAIProvider`.
 
-Two things differ, and only these are overridden here:
+Two things differ, and only these are handled here:
 
 - **Authentication.** Azure takes the resource key in an ``api-key`` header
   rather than ``Authorization: Bearer``.
@@ -18,11 +18,41 @@ Two things differ, and only these are overridden here:
   common convention; a deployment named otherwise is classified as an unknown
   OpenAI model (FUNCTION_CALLING, legacy ``max_tokens`` as the opening guess,
   corrected by the endpoint's own 400 as on direct OpenAI).
+
+The OPERATOR reasoning default is not shared: ``OPENAI_REASONING_EFFORT`` is
+the OpenAI provider's knob and is not applied to Azure deployments, which run
+the shape-based defaults.
+
+The endpoint is accepted in either spelling Azure documents — the resource URL
+the portal shows, or its v1 endpoint — and normalized by :func:`v1_base_url`.
 """
 
-from typing import Dict
+from typing import Dict, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 from .openai_provider import OpenAIProvider
+
+#: The path of Azure OpenAI's v1 API under a resource URL.
+V1_PATH = "/openai/v1"
+
+
+def v1_base_url(endpoint: Optional[str]) -> str:
+    """The v1 API base URL for ``endpoint``, or ``""`` when it is unset.
+
+    ``AZURE_OPENAI_ENDPOINT`` is, in Azure's portal and SDKs, the bare
+    resource URL (``https://<resource>.openai.azure.com/``); FaultMaven
+    posts to ``<base>/chat/completions`` under the v1 API. A bare resource
+    URL (or one ending ``/openai``) gets the v1 path appended; a URL with any
+    other path is taken as the operator wrote it.
+    """
+    value = (endpoint or "").strip()
+    if not value:
+        return ""
+    parts = urlsplit(value)
+    path = parts.path.rstrip("/")
+    if path in ("", "/openai"):
+        path = V1_PATH
+    return urlunsplit((parts.scheme, parts.netloc, path, "", ""))
 
 
 class AzureOpenAIProvider(OpenAIProvider):

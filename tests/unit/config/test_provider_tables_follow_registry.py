@@ -127,8 +127,12 @@ def test_the_override_allow_lists_name_every_providers_key_and_model_field():
         _ALLOWED_OVERRIDES,
         _API_KEY_FIELDS,
     )
+    from faultmaven.config.llm_validation import api_key_field
 
     keyed = {n for n, sc in PROVIDER_SCHEMA.items() if sc.get("api_key_var")}
-    assert _API_KEY_FIELDS == {PROVIDER_SCHEMA[n]["api_key_var"].lower() for n in keyed}
+    # The field each key lands in, resolved the way the admin route resolves
+    # it when it stores an override — so the two cannot name different fields.
+    assert _API_KEY_FIELDS == {api_key_field(n)[0] for n in keyed}
+    assert {f"{n}_api_key" for n in keyed} == _API_KEY_FIELDS
     assert {f"{n}_model" for n in PROVIDER_SCHEMA} <= set(_ALLOWED_OVERRIDES)
     assert _API_KEY_FIELDS <= set(_ALLOWED_OVERRIDES)

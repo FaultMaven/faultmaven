@@ -143,7 +143,8 @@ _REGISTRY: Dict[str, ModelWindow] = {
 
 # Provider → registry-prefix hint, used ONLY when the model id is blank/new but
 # the provider is known, to map to that provider's large flagship. Providers
-# whose served model/window genuinely varies (local, groq, huggingface) are
+# whose served model/window genuinely varies (local, groq, huggingface, and
+# azure_openai, whose model id is an operator-chosen deployment name) are
 # deliberately ABSENT → unknown model → trust the operator's target.
 _PROVIDER_FALLBACK_KEY: Dict[str, str] = {
     "anthropic": "claude",
@@ -153,7 +154,6 @@ _PROVIDER_FALLBACK_KEY: Dict[str, str] = {
     # (128K) while shipping a 922K model, and openrouter pointed at gpt-4o
     # while defaulting to anthropic/claude-sonnet-4-6.
     "openai": "gpt-5.6",
-    "azure_openai": "gpt-5.6",
     "openrouter": "claude",
     "google": "gemini",
     "gemini": "gemini",
