@@ -1,10 +1,10 @@
 """The shapes the host-and-port rule no longer reads as a port (fm#2677).
 
-Negatives first: a date-time's hour, a ``line:col`` tail, a dotted version
-tag, a MAC address and non-ASCII digits, through the pattern, the entity
-registry and the logs profile. Then what must not change (``main``'s reading),
-the readings a resumed scan now finds, and the false ports that remain for the
-owner's ruling on bare ``name.ext:line`` references.
+Negatives first: an ISO-8601 date-time's hour, a dotted version tag and
+non-ASCII digits, through the pattern, the entity registry and the logs
+profile. Then what must not change (the earlier reading), the readings a
+resumed scan now finds, and the false ports that remain for the owner's
+ruling: every rule found for them also reads a real host or drops a real port.
 """
 
 from __future__ import annotations
@@ -24,36 +24,48 @@ from faultmaven.modules.preprocessing.extractors.logs_extractor import (
 )
 from faultmaven.modules.preprocessing.extractors.utils import HOST_PORT_RE
 
-#: The pattern on ``main`` before this change (002adf000).
-MAIN_HOST_PORT_RE = re.compile(r"(?<![\w.-])(?=[\w.-]*?[A-Za-z.])[\w.-]++:(\d{1,5})\b")
+#: The pattern before this change (``main`` at 002adf000).
+PRE_2677_HOST_PORT_RE = re.compile(
+    r"(?<![\w.-])(?=[\w.-]*?[A-Za-z.])[\w.-]++:(\d{1,5})\b"
+)
 
-DATE_TIMES = ["2024-01-15T06:55:45Z ERROR", '{"time":"2026-11-09T01:07:33Z"}']
-DATE_TIMES += ["2024-01-15T06:55+02:00", "20240115T06:55:45", "2024/01/15T06:55:45"]
-DATE_TIMES += ["2024-01-15t06:55:45.123z", "T06:55:45Z", "2024.01.15-06:55:45"]
-LINE_COL_TAILS = ["at /app/index.js:10:5", "src/lib.rs:88:9", "config.yaml:12:3"]
-LINE_COL_TAILS += ["(node:internal/modules/cjs/loader:1105:14)"]
+#: Each date lookbehind has a line only it rejects: extended, ordinal, compact.
+DATE_TIMES = ["2024-01-15T06:55 x", "2024-015T06:55 x", "20240115T06:55 x"]
+DATE_TIMES += ["2024-01-15T06:55:45Z ERROR", '{"time":"2026-11-09T01:07:33Z"}']
+DATE_TIMES += ["2024-01-15T06:55+02:00", "20240115T06:55:45"]
+DATE_TIMES += ["2024-01-15t06:55:45.123z"]
 VERSION_TAGS = ["image nginx:1.25 pulled", "python:3.11-slim"]
 VERSION_TAGS += ["registry.k8s.io/pause:3.9"]
-NOT_PORTS = DATE_TIMES + LINE_COL_TAILS + VERSION_TAGS + ["aa:bb:cc:11:22:33"]
+NOT_PORTS = DATE_TIMES + VERSION_TAGS
 NON_ASCII = ["db.local:５４３２", "db.local:٥٤٣٢", "port ٣٣", "pid=٣"]
 
 UNCHANGED = ["db.local:5432", "10.0.0.5:22", "api.example.com:443/v1"]
 UNCHANGED += ["http://host:8080/path", "127.0.0.1:5432->127.0.0.1:51234"]
 UNCHANGED += ["redis:6379 refused", "db.local:5432.", "db:5432.Connection reset"]
 UNCHANGED += ["dial tcp db:5432: connect: refused", "x.y-z:65535 b:1"]
-UNCHANGED += ["host=web-1:8080;", "redis:7", "[db.local:5432]", "T1:80"]
+UNCHANGED += ["host=web-1:8080;", "[db.local:5432]", "T1:80", "web-01:80"]
 UNCHANGED += ["kafka-0.kafka:9092,kafka-1.kafka:9092"]
 UNCHANGED += ["web1t01:8080", "rack3t05:22", "web-7d9f8b6c5d-x4t56:8080"]
 UNCHANGED += ["0.0.0.0:8000-8010->8000-8010/tcp", "listen web:8080-8090"]
 UNCHANGED += ["lb:443-tls", "api.allegro.pl:443", "docs.rs:443", "get.helm.sh:443"]
-UNCHANGED += ["api.go:8080"]
+UNCHANGED += ["api.go:8080", "docker run -d -p 127.0.0.1:5432:5432 postgres:16"]
+UNCHANGED += ['"127.0.0.1:5432:5432"', "server.1=zk1:2888:3888"]
+UNCHANGED += ["ssh -L 127.0.0.1:15432:10.0.0.5:5432", "-p 127.0.0.1:8080:80"]
+UNCHANGED += ["dial tcp backup-28374650-24t56:8080: refused", "srv1234t01:22"]
+UNCHANGED += ["node-12-34t56:8080", "db.2024t01:5432", "http://web/12/34t56:8080"]
 
 #: A rejected reading no longer hides the real port behind it.
 NEW_READINGS = {"peer=ipv4:10.0.0.5:51234": ["51234"], "tcp:10.0.0.5:22": ["22"]}
 NEW_READINGS |= {"nginx:1.25.internal:80": ["80"]}
 #: Documented false ports, pinned so the owner's ruling changes a test.
 REMAINING = {"ERROR app.py:118": ["118"], "postgres:16-alpine": ["16"]}
-REMAINING |= {"status:200": ["200"]}
+REMAINING |= {"status:200": ["200"], "redis:7": ["7"]}
+REMAINING |= {"at /app/index.js:10:5": ["10"], "src/lib.rs:88:9": ["88"]}
+REMAINING |= {"config.yaml:12:3": ["12"], "00:0c:29:ab:cd:01": ["29", "01"]}
+REMAINING |= {"(node:internal/modules/cjs/loader:1105:14)": ["1105"]}
+REMAINING |= {"T06:55:45Z": ["55"], "2024.01.15-06:55:45": ["55"]}
+REMAINING |= {"2024/01/15T06:55:45": ["55"], "2024_01_15T06:55": ["55"]}
+REMAINING |= {"ts=2024-01-15T06:55:45.123-03:30": ["30"]}
 
 
 def _registry(line: str, entity_type: EntityType) -> list[str]:
@@ -80,7 +92,9 @@ def _readings(line: str) -> list[list[str]]:
 class TestNotAPort:
     @pytest.mark.parametrize("line", NOT_PORTS)
     def test_no_path_reads_a_port(self, line):
-        assert MAIN_HOST_PORT_RE.findall(line), "main read a port here"
+        assert PRE_2677_HOST_PORT_RE.findall(
+            line
+        ), "the pattern before fm#2677 read a port here"
         assert _readings(line) == [[], [], []]
 
     @pytest.mark.parametrize("line", NON_ASCII)
@@ -114,16 +128,16 @@ class TestNotAPort:
 @pytest.mark.unit
 class TestWhatStillReads:
     @pytest.mark.parametrize("line", UNCHANGED)
-    def test_mains_reading_is_kept(self, line):
-        before = MAIN_HOST_PORT_RE.findall(line)
+    def test_the_earlier_reading_is_kept(self, line):
+        before = PRE_2677_HOST_PORT_RE.findall(line)
         assert before
         assert _readings(line) == [before, sorted(set(before)), sorted(set(before))]
 
     @pytest.mark.parametrize("line, ports", NEW_READINGS.items())
     def test_a_resumed_scan_finds_the_real_port(self, line, ports):
-        assert MAIN_HOST_PORT_RE.findall(line) != ports
+        assert PRE_2677_HOST_PORT_RE.findall(line) != ports
         assert _readings(line) == [ports, ports, ports]
 
     @pytest.mark.parametrize("line, ports", REMAINING.items())
     def test_the_remaining_false_ports(self, line, ports):
-        assert _readings(line) == [ports, ports, ports]
+        assert _readings(line) == [ports, sorted(ports), sorted(ports)]

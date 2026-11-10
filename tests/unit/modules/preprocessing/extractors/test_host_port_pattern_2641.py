@@ -68,28 +68,33 @@ def _is_word(char: str) -> bool:
     return char.isalnum() or char == "_"
 
 
-def _ends_in_a_date_hour(run: str) -> bool:
-    """``…15T06`` or ``2024T06``: two date digits and a separator, or four."""
+#: The whole dates the lookbehinds name, ``d`` a decimal digit in any script.
+DATE_HOUR_SHAPES = {"extended": "dddd-dd-ddTdd", "ordinal": "dddd-dddTdd"}
+DATE_HOUR_SHAPES |= {"compact": "ddddddddTdd"}
 
-    def digits(text: str) -> bool:
-        return all(char.isdecimal() for char in text)
 
-    tail, short = run[-8:], run[-7:]
-    if len(tail) == 8 and tail[2] in "-/." and tail[5] in "Tt":
-        if digits(tail[:2] + tail[3:5] + tail[6:]):
-            return True
-    return len(short) == 7 and short[4] in "Tt" and digits(short[:4] + short[5:])
+def _date_hour(run: str) -> str | None:
+    """The ISO-8601 date form whose ``T`` and hour ``run`` ends in, if any."""
+    for form, shape in DATE_HOUR_SHAPES.items():
+        tail = run[-len(shape) :]
+        if len(tail) == len(shape) and all(
+            char.isdecimal() if want == "d" else char in want.replace("T", "Tt")
+            for char, want in zip(tail, shape)
+        ):
+            return form
+    return None
 
 
 def _reference(line: str, fired: Counter | None = None) -> list:
     """``HOST_PORT_RE``'s matches, scanning maximal runs without a regex.
 
     A run with an ASCII letter or dot, ``:`` and one to five ASCII digits is a
-    port, unless the run ends in a date's hour or the digits run on into a word
-    character, or into ``.`` or ``:`` and an ASCII digit. A rejected run lets
-    the scan go on to the next run, inside text a match would have consumed; a
-    match skips the rest of the run its port is in. ``fired`` counts each
-    rule's rejections.
+    port, unless the run ends in a whole date's ``T`` and hour, or the digits
+    run on into a word character, or into ``.`` and an ASCII digit. Every rule
+    reads only the run and the text after the colon, so a run-local check is
+    exact. A rejected run lets the scan go on to the next run, inside text a
+    match would have consumed; a match skips the rest of the run its port is
+    in. ``fired`` counts each rule's rejections.
     """
     fired = Counter() if fired is None else fired
     found, i, n = [], 0, len(line)
@@ -110,14 +115,14 @@ def _reference(line: str, fired: Counter | None = None) -> list:
         port, after = line[i + 1 : j], line[j : j + 2]
         if not port:
             fired["non-ascii"] += line[i + 1 : i + 2].isdecimal()
-        elif _ends_in_a_date_hour(run):
-            fired["date-hour"] += 1
+        elif form := _date_hour(run):
+            fired[form] += 1
         elif len(port) > 5:
             pass
         elif after[:1] and _is_word(after[0]):
             fired["non-ascii"] += after[0].isdecimal()
-        elif len(after) == 2 and after[0] in ".:" and after[1] in "0123456789":
-            fired["dot-colon-digit"] += 1
+        elif len(after) == 2 and after[0] == "." and after[1] in "0123456789":
+            fired["dot-digit"] += 1
         else:
             found.append(((start, j), (port,)))
             i = j
@@ -130,7 +135,8 @@ def _corpus(count: int) -> list[str]:
     """Random lines; the ``port`` tokens reach the keyword pattern too."""
     rng = random.Random(2641)
     tokens = [*"aZ9_-.:é 1/x\t٣５=", "port", "PORT", "ports"]
-    tokens += ["T", "t", "06", "2024", "T06", "-15", ":3", ".4"]
+    tokens += ["T", "t", "06", "T06", ":3", ".4", "2024-01-15", "2024-015"]
+    tokens += ["20240115"]
     return [
         "".join(rng.choice(tokens) for _ in range(rng.randint(0, 24)))
         for _ in range(count)
@@ -182,8 +188,8 @@ class TestSameMatchesAsTheOracles:
             assert _matches(PORT_KEYWORD_RE, text) == _ascii_keyword_matches(text)
         assert sum(bool(HOST_PORT_RE.search(text)) for text in corpus) > 1_000
         assert sum(bool(PORT_KEYWORD_RE.search(text)) for text in corpus) > 100
-        assert fired["non-ascii"] > 1_000 and fired["dot-colon-digit"] > 500
-        assert fired["date-hour"] > 25
+        assert fired["non-ascii"] > 1_000 and fired["dot-digit"] > 300
+        assert all(fired[form] > 15 for form in DATE_HOUR_SHAPES), fired
 
     def test_the_entity_registry_counts_the_same_ports(self):
         lines = _corpus(5_000)
@@ -207,9 +213,9 @@ class TestSameMatchesAsTheOracles:
         assert {port: int(count) for port, count in counts} == expected
 
 
-#: fm#2677's rules on repeated units: a ``line:col`` tail, a dotted version and
-#: a ``T`` between digits; the small size is about the hex run's bytes.
-RULE_SHAPES = {"a.py:1:": 18, "a:1.a ": 21, "1T11:1 ": 18}
+#: fm#2677's rules on repeated units, each unit a rejected reading: a dotted
+#: version, a date's hour and a non-ASCII digit; about the hex run's bytes.
+RULE_SHAPES = {"a:1.1 ": 21, "2024-01-15T06:1 ": 8, "x:٣ ": 32}
 
 
 @pytest.mark.unit
@@ -234,6 +240,8 @@ def test_the_pattern_is_linear_on_a_hex_run():
 @pytest.mark.performance
 @pytest.mark.parametrize("unit, small", RULE_SHAPES.items())
 def test_the_pattern_is_linear_on_the_rule_shapes(unit, small):
+    fired = Counter()
+    assert _reference(unit, fired) == [] and sum(fired.values()) == 1
     assert_linear_growth(
         HOST_PORT_RE.findall,
         lambda repetitions: unit * repetitions,
