@@ -197,11 +197,12 @@ PROVIDER_SCHEMA = {
         "api_key_var": "GEMINI_API_KEY",
         "model_var": "GEMINI_MODEL",
         "default_base_url": "https://generativelanguage.googleapis.com/v1beta",
-        "default_model": "gemini-3.7-flash",
+        "default_model": "gemini-3.8-flash",
         "available_models": [
             "gemini-3.5-flash",
             "gemini-3.5-flash-lite",
             "gemini-3.7-flash",
+            "gemini-3.8-flash",
         ],
         "provider_class": GeminiProvider,
         "confidence_score": 0.8,

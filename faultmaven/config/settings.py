@@ -480,7 +480,7 @@ class LLMSettings(BaseSettings):
     # it is half the price at the same capability.
     groq_model: str = Field(default="openai/gpt-oss-20b")
     cohere_model: str = Field(default="command-r-plus")
-    gemini_model: str = Field(default="gemini-3.7-flash")
+    gemini_model: str = Field(default="gemini-3.8-flash")
     huggingface_model: str = Field(default="mistralai/Mistral-Large-Instruct-2411")
     openrouter_model: str = Field(default="anthropic/claude-sonnet-4-6")
     # The DEPLOYMENT name on the Azure resource. The default assumes the

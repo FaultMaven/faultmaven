@@ -89,7 +89,7 @@ class TestEveryRoleIsReported:
         assert {r.provider for r in rows.values()} == {"gemini"}
         assert rows["classifier"].model == "gemini-3.5-flash-lite"
         assert rows["synthesis"].model == "gemini-3.5-flash-lite"
-        assert rows["chat"].model == "gemini-3.7-flash"
+        assert rows["chat"].model == "gemini-3.8-flash"
 
     def test_flipping_the_anchor_leaves_the_pins_put(self, clean_env):
         """The bug as reported: primary_provider says openai, three roles do not."""

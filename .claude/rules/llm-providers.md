@@ -29,7 +29,7 @@ code, and the quoted `TOOLLESS_INFERENCE_OUTPUT_FLOOR` value matches
 |----------|---------------------|--------|-------------------|-------|
 | Anthropic | `ANTHROPIC_API_KEY` | claude-sonnet-4-6 | **FUNCTION_CALLING** | Schema tool forced where the model accepts forcing, otherwise `auto` plus an instruction naming it (per-model rule: `docs/reference/llm-model-capabilities.md` §"Anthropic request shape"); recommended for logic |
 | OpenAI | `OPENAI_API_KEY` | gpt-5.6-luna | **STRICT** (gpt-4o+) | Reasons by default: plain calls send `reasoning_effort: "none"` and tool calls force it (hard model constraint), while structured calls keep the `low` starvation floor — so `OPENAI_REASONING_EFFORT=none` is a no-op here (and warns per structured call) — leave it unset. A HIGHER value is NOT inert: it replaces the `"none"` shape default on plain calls. `gpt-5.4-mini` remains supported |
-| Google Gemini | `GEMINI_API_KEY` | gemini-3.7-flash | **STRICT** (1.5+) | **Shipped default provider + model.** Fast multimodal. The adapter version-gates the reduced 3.6/3.7 API surfaces (no sampling params, `thinkingLevel`-only, user-role function responses carrying the call id); `gemini-3.5-flash*` remain supported on the classic surface |
+| Google Gemini | `GEMINI_API_KEY` | gemini-3.8-flash | **STRICT** (1.5+) | **Shipped default provider + model.** Fast multimodal. The adapter version-gates the reduced 3.6/3.7 API surfaces (3.8 runs the 3.7 surface) (no sampling params, `thinkingLevel`-only, user-role function responses carrying the call id); `gemini-3.5-flash*` remain supported on the classic surface |
 | Fireworks AI | `FIREWORKS_API_KEY` | accounts/fireworks/models/deepseek-v4-flash | BEST_EFFORT | Strong open weights, but schema not enforced — see note |
 | Groq | `GROQ_API_KEY` | openai/gpt-oss-20b | **STRICT** (gpt-oss only; BEST_EFFORT otherwise) | Ultra-fast inference. Groq serves no Llama chat model any more — `llama-3.3-70b-versatile` 404s. Per-org TPM limits are low on the free tier (8k on `on_demand`), so a full-document call can 413 where a classifier-sized one succeeds |
 | HuggingFace | `HUGGINGFACE_API_KEY` | Mistral-Large-Instruct-2411 | BEST_EFFORT | Open models — NOT recommended (no tool calling) |
@@ -47,7 +47,7 @@ models live in `infrastructure/llm/pricing.py`. Measured per-model behaviour is 
 ## Capability roles
 
 The shipped defaults are Gemini-anchored: `CHAT_PROVIDER=gemini` with
-`GEMINI_MODEL=gemini-3.7-flash`, and `classifier`/`synthesis`/`multimodal`
+`GEMINI_MODEL=gemini-3.8-flash`, and `classifier`/`synthesis`/`multimodal`
 pinned to gemini (the two small-output roles on `gemini-3.5-flash-lite`).
 `da`/`knowledge`/`structured_output` ship unset, so they follow
 `CHAT_PROVIDER` — flipping the anchor moves them and leaves the pins put,
