@@ -1104,6 +1104,28 @@ class TestLLMServiceErrorHttpException:
         exc = self._by_engine_code("TOKEN_LIMIT")
         assert exc.status_code == 503
 
+    def test_engine_provider_refused_keeps_the_503(self):
+        """#1770: a refusal that stood after the reduced re-issue keeps the
+        wire answer a refusal always got; 503 vs 502 is an owner question.
+        It is in exactly one engine-code set."""
+        from faultmaven.api import exception_handlers as handlers
+        from faultmaven.core.investigation.milestone_engine.errors import (
+            MilestoneEngineError,
+        )
+        from faultmaven.exceptions import PROVIDER_REFUSED, ServiceException
+
+        try:
+            raise ServiceException("Turn processing failed") from (
+                MilestoneEngineError("refused", error_code=PROVIDER_REFUSED)
+            )
+        except ServiceException as wrapped:
+            exc = handlers.llm_service_error_http_exception(wrapped)
+        assert exc.status_code == 503
+        assert exc.headers["x-error-code"] == "LLM_PROVIDER_UNAVAILABLE"
+        assert exc.headers["Retry-After"] == "30"
+        sets = (handlers._RETRYABLE_ENGINE_CODES, handlers._TERMINAL_ENGINE_CODES)
+        assert [PROVIDER_REFUSED in codes for codes in sets] == [True, False]
+
     def test_engine_circuit_open_maps_to_503(self):
         """fm#1287 — an open LLM breaker is transient and must answer 503 with a
         Retry-After, the same as RETRY_EXHAUSTED.
