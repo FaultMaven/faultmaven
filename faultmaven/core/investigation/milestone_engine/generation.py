@@ -56,6 +56,7 @@ from faultmaven.core.investigation.tool_loop_metrics import (
 )
 from faultmaven.core.investigation.turn_budget import (
     can_afford_next_attempt,
+    clamp_to_turn_budget,
     spendable_turn_budget,
 )
 from faultmaven.exceptions import PROVIDER_REFUSED, RawModelContentRefused
@@ -141,16 +142,44 @@ def _is_refusal(response: Any, schema_model: Any) -> bool:
     )
 
 
-def _affords_reissue() -> bool:
-    """Whether the turn budget fits one more attempt at the ladder's
-    per-attempt estimate ``T`` (``resolve_request_timeout``), not at the
-    refused call's own (early) duration."""
-    from faultmaven.config.settings import get_settings
-    from faultmaven.infrastructure.llm.router import resolve_request_timeout
+def _reissue_budget(da_provider: Any) -> Optional[float]:
+    """The receiving provider's request timeout ``T`` when the turn budget fits
+    one attempt of it, else ``None``: the DA provider's own (``config.timeout``),
+    else the router's (``resolve_request_timeout``). Never the refused call's
+    own duration, which a refusal makes short."""
+    seconds = getattr(getattr(da_provider, "config", None), "timeout", None)
+    if not isinstance(seconds, (int, float)):
+        from faultmaven.config.settings import get_settings
+        from faultmaven.infrastructure.llm.router import resolve_request_timeout
 
-    return can_afford_next_attempt(
-        spendable_turn_budget(), 0.0, resolve_request_timeout(get_settings())
+        seconds = resolve_request_timeout(get_settings())
+    affords = can_afford_next_attempt(spendable_turn_budget(), 0.0, float(seconds))
+    return float(seconds) if affords else None
+
+
+def _crosses_turn_ceiling() -> bool:
+    """Whether the active turn's metered spend is over the per-turn token
+    ceiling (#611); logged when it is."""
+    tracker = active_token_tracker.get()
+    if tracker is None:
+        return False
+    try:
+        from faultmaven.config.settings import get_settings
+
+        ceiling = get_settings().prompt_budget.turn_token_ceiling
+    except RawModelContentRefused:
+        # A refusal is a programming error, never a fallback (#1998).
+        raise
+    except Exception:
+        ceiling = 150000
+    if tracker.spend_weighted_tokens <= ceiling:
+        return False
+    logger.warning(
+        f"Turn spend ({tracker.spend_weighted_tokens} "
+        f"cost-weighted tokens) exceeded ceiling ({ceiling}). "
+        f"Forcing the tool loop to wrap up."
     )
+    return True
 
 
 def _refused(where: str) -> MilestoneEngineError:
@@ -833,6 +862,7 @@ class StructuredOutputGenerator:
                 first. Counting only the winner would make DA-turn spend
                 under-report exactly on the turns that cost the most.
                 """
+                generate_kwargs["max_tokens"] = cap  # a refusal's re-issue cap
                 call_kwargs = dict(generate_kwargs, max_tokens=cap)
                 if cap != max_tokens and tool_loop_budget.window is not None:
                     # A truncation retry asks for a bigger completion: bound the
@@ -897,32 +927,12 @@ class StructuredOutputGenerator:
                 # or the registry chokepoint for the router), so its running total
                 # reflects this call — force the loop to wrap up if it is over.
                 # A net, not the primary bound: see MAX_TOOL_ITERATIONS (#611).
-                _turn_tracker = active_token_tracker.get()
-                if _turn_tracker is not None:
-                    try:
-                        from faultmaven.config.settings import get_settings
-
-                        _turn_ceiling = get_settings().prompt_budget.turn_token_ceiling
-                    except RawModelContentRefused:
-                        # A refusal is a programming error, never a fallback (#1998).
-                        raise
-                    except Exception:
-                        _turn_ceiling = 150000
-                    if (
-                        _turn_tracker.spend_weighted_tokens > _turn_ceiling
-                        and not is_final
-                        and not ceiling_reached
-                    ):
-                        logger.warning(
-                            f"Turn spend ({_turn_tracker.spend_weighted_tokens} "
-                            f"cost-weighted tokens) exceeded ceiling ({_turn_ceiling}). "
-                            f"Forcing the tool loop to wrap up."
-                        )
-                        # Sticky (never reset) so the next iteration forces the
-                        # schema even though the current response's tool calls will
-                        # clear force_schema_next below. We already spent this
-                        # generation; the ceiling stops the NEXT round of tools.
-                        ceiling_reached = True
+                if not is_final and not ceiling_reached and _crosses_turn_ceiling():
+                    # Sticky (never reset) so the next iteration forces the
+                    # schema even though the current response's tool calls will
+                    # clear force_schema_next below. We already spent this
+                    # generation; the ceiling stops the NEXT round of tools.
+                    ceiling_reached = True
             except RawModelContentRefused:
                 # A refusal is a programming error, never a fallback (#1998).
                 raise
@@ -965,24 +975,37 @@ class StructuredOutputGenerator:
             # that parses keeps #1442's path). Re-issued once, inline: the
             # refused request (its messages, and its tools and tool_choice
             # from before metering) without the omitted fields, on this
-            # provider, at one cap. Anything but an answer to it is final.
+            # provider, at the refused call's own cap, bounded to the turn
+            # budget, metered and held to the turn ceiling like any other call.
+            # Anything but an answer to it is final.
             while _is_refusal(response, schema_model):
                 answer = _schema_answer(response, schema_tool_name, schema_model)
                 if answer is not None:
                     return _synthesize_agent_response(answer, StopReason.CONTENT_FILTER)
-                if refusal.seen or not _affords_reissue():
+                seconds = _reissue_budget(self.deps.da_provider)
+                if refusal.seen or seconds is None:
                     raise _refused(f"tool-loop iteration {iteration}")
                 refusal.seen = True
                 schema_tools = _omitted(schema_tools)
                 all_tools = investigation_tools + schema_tools
                 tools_for_call = generate_kwargs["tools"] = _omitted(tools_for_call)
                 logger.warning("Tool loop: refused; re-issuing it reduced (#1770)")
+                call = _tool_loop_call(generate_kwargs["max_tokens"])
                 try:
-                    response = await _tool_loop_call(max_tokens)
+                    # The router clamps its own calls; a DA provider's is not.
+                    response = await (
+                        asyncio.wait_for(call, clamp_to_turn_budget(seconds))
+                        if direct_provider
+                        else call
+                    )
                 except RawModelContentRefused:
                     raise
-                except Exception:
-                    raise _refused(f"re-issue at iteration {iteration}") from None
+                except Exception as exc:
+                    failure = f"{type(exc).__name__}: {exc}"
+                    logger.warning("Tool loop: the re-issue failed: %s", failure)
+                    raise _refused(f"re-issue failed: {failure}") from None
+                if not is_final and not ceiling_reached and _crosses_turn_ceiling():
+                    ceiling_reached = True
                 if getattr(response, "is_truncated", False):
                     raise _refused(f"re-issue cut at iteration {iteration}")
 
@@ -2202,9 +2225,12 @@ class StructuredOutputGenerator:
                 # re-issue returns but an answer is final: no cap raise, no
                 # re-ask, no ladder retry.
                 if reissue:
-                    raise ProviderRefusalError("the reduced re-issue failed") from None
+                    raise ProviderRefusalError(
+                        f"the re-issue was not answered: "
+                        f"{type(validation_error).__name__}: {validation_error}"
+                    ) from None
                 if _is_refusal(response, schema_model):
-                    if not _affords_reissue():
+                    if _reissue_budget(None) is None:
                         raise ProviderRefusalError("unaffordable re-issue") from None
                     refusal.seen = True
                     logger.warning("Structured output: refused; re-issuing reduced")
@@ -2212,10 +2238,16 @@ class StructuredOutputGenerator:
                         return await llm_operation(reask_of, reissue=True)
                     except RawModelContentRefused:
                         raise
-                    except ProviderRefusalError:
-                        raise
-                    except Exception:
-                        raise ProviderRefusalError("the re-issue failed") from None
+                    except Exception as exc:
+                        failure = f"{type(exc).__name__}: {exc}"
+                        logger.warning(
+                            "Structured output: re-issue failed: %s", failure
+                        )
+                        if isinstance(exc, ProviderRefusalError):
+                            raise
+                        raise ProviderRefusalError(
+                            f"re-issue failed: {failure}"
+                        ) from None
                 should_reask = (
                     not reask_state["used"]
                     and strategy.mode == StructuredOutputMode.FUNCTION_CALLING

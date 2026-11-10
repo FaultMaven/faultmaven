@@ -497,3 +497,82 @@ async def test_a_reduced_response_is_not_stored():
         await router.route(prompt=vetted("p"), model="m")
 
     assert registry.route_request.await_count == 2
+
+
+# --- Delta review of 1ed549e6f ---------------------------------------------------
+
+
+async def test_the_budget_is_the_receiving_providers_timeout():
+    """A DA provider slower than the chat provider: the budget fits the chat
+    ``T`` but not the DA provider's own, so no re-issue is sent."""
+    from types import SimpleNamespace
+
+    from faultmaven.config.settings import get_settings
+    from faultmaven.core.investigation import turn_budget
+    from faultmaven.infrastructure.llm.router import resolve_request_timeout
+
+    chat_t = resolve_request_timeout(get_settings())
+    engine = _engine()
+    engine.deps.da_provider.config = SimpleNamespace(timeout=chat_t * 4)
+    engine.deps.da_provider._generate, sent = _queue([REFUSED, _answer()])
+    reserves = turn_budget.TURN_BUDGET_RESERVE_SECONDS + (
+        turn_budget.TURN_COMMIT_RESERVE_SECONDS
+    )
+    with (
+        turn_budget.bind_turn_deadline(reserves + chat_t * 2),
+        pytest.raises(MilestoneEngineError) as raised,
+    ):
+        await _turn(engine)
+
+    assert raised.value.error_code == PROVIDER_REFUSED
+    assert len(sent) == 1
+
+
+async def test_the_reissue_is_held_to_the_turn_token_ceiling(monkeypatch):
+    from faultmaven.config.settings import get_settings
+    from faultmaven.infrastructure.llm.metering import (
+        TurnTokenTracker,
+        active_token_tracker,
+    )
+
+    monkeypatch.setattr(get_settings().prompt_budget, "turn_token_ceiling", 500)
+    searched = _reply(tool="search_file", stop=StopReason.TOOL_CALLS)
+    searched.input_tokens = 100000  # the re-issue crosses the ceiling
+    engine = _engine()
+    engine.deps.da_provider._generate, sent = _queue([REFUSED, searched, _answer()])
+    token = active_token_tracker.set(TurnTokenTracker())
+    try:
+        assert (await _turn(engine)).agent_response == "disk"
+    finally:
+        active_token_tracker.reset(token)
+
+    assert _names(sent[2]) == ["InvestigationResponse_Diagnosis"]
+
+
+async def test_the_reissue_runs_at_the_refused_calls_own_cap():
+    engine = _engine()
+    engine.deps.da_provider._generate, sent = _queue([CUT, REFUSED, _answer()])
+
+    assert (await _turn(engine)).agent_response == "disk"
+    assert [call["max_tokens"] for call in sent] == [8000, 16000, 16000]
+
+
+@pytest.mark.parametrize("tools", [True, False], ids=["tool_loop", "single_shot"])
+async def test_the_reissues_own_failure_is_named_and_logged(tools, caplog):
+    from faultmaven.exceptions import LLMException
+
+    failure = LLMException("upstream SENTINEL-1770 rejected the call")
+    engine = _engine()
+    send, _ = _raising_queue([REFUSED, failure])
+    if tools:
+        engine.deps.da_provider._generate = send
+    else:
+        engine.deps.llm_provider.route = send
+
+    with caplog.at_level("WARNING"), pytest.raises(MilestoneEngineError) as raised:
+        await _turn(engine, tools=tools)
+
+    assert raised.value.error_code == PROVIDER_REFUSED
+    assert raised.value.__cause__ is None  # the 503 depends on it
+    assert "LLMException" in str(raised.value) and "SENTINEL-1770" in str(raised.value)
+    assert any("SENTINEL-1770" in r.getMessage() for r in caplog.records)
