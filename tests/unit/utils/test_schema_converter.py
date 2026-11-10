@@ -10,6 +10,7 @@ import pytest
 from pydantic import BaseModel, Field
 
 from faultmaven.utils.schema_converter import (
+    omit_schema_properties,
     pydantic_to_openai_function,
     pydantic_to_openai_tools,
 )
@@ -400,3 +401,39 @@ class TestFunctionNaming:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class _Leaf(BaseModel):
+    note: str
+
+
+class _Dropped(BaseModel):
+    leaf: _Leaf
+
+
+class _Kept(BaseModel):
+    leaf: _Leaf
+
+
+class _Reducible(BaseModel):
+    answer: str
+    trail: Optional[_Dropped] = None
+    kept: _Kept
+
+
+@pytest.mark.unit
+def test_omit_schema_properties_prunes_only_the_orphaned_defs():
+    """#1770: the property and its ``required`` entry go, and so do the
+    ``$defs`` only it reached; a def still reached (transitively) stays."""
+    schema = _Reducible.model_json_schema()
+    schema["required"].append("trail")
+    reduced = omit_schema_properties(schema, ["trail"])
+    assert set(reduced["properties"]) == {"answer", "kept"}
+    assert reduced["required"] == ["answer", "kept"]
+    assert set(reduced["$defs"]) == {"_Kept", "_Leaf"}
+    assert "trail" in schema["properties"], "the input is not mutated"
+
+    [tool] = pydantic_to_openai_tools(_Reducible)
+    params = omit_schema_properties(tool, {"trail"})["function"]["parameters"]
+    assert set(params["properties"]) == {"answer", "kept"}
+    assert "trail" in tool["function"]["parameters"]["properties"]

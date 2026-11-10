@@ -64,10 +64,13 @@ SITES: dict[tuple[str, str], tuple[int, str]] = {
         "the single-shot re-ask's nudge naming the schema tool "
         "(_schema_tool_nudge, #1755)",
     ),
-    (_GENERATION, "StructuredOutputGenerator._generate_structured_output_inner"): (
+    (
+        _GENERATION,
+        "StructuredOutputGenerator._generate_structured_output_inner._request_shape",
+    ): (
         1,
         "the schema instruction (_schema_prompt_instruction), built from the "
-        "response model's JSON schema",
+        "response model's JSON schema, full or reduced after a refusal (#1770)",
     ),
     (_TEXT_BUDGET, "fixed_text_like"): (
         1,

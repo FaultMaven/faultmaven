@@ -86,6 +86,10 @@ refused, gets one re-ask per structured call on the single-shot
 FUNCTION_CALLING path (#662's minimal-prompt degrade is a call of its own;
 other single-shot strategies are unchanged), or is nudged with every tool on a DA
 iteration whose next iteration is not the final one, on every provider (#1755).
+A refused reply (`CONTENT_FILTER`) is none of those: on a schema declaring
+`evidence_trail` it is re-issued once, where it was refused, on the same
+provider, without that field and never from cache, and a second refusal fails
+the turn with `PROVIDER_REFUSED` (503); other schemas keep the path above (#1770).
 BEST_EFFORT providers (Fireworks incl.
 `deepseek-v3`/minimax, Groq, HuggingFace, Local) are fine for cheap
 `CLASSIFIER_PROVIDER`/`SYNTHESIS_PROVIDER` overrides but degrade primary CHAT.

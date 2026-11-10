@@ -774,12 +774,17 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             # ``bypass_cache`` the only thing stopping the retry being answered
             # from that entry. Conversely the truncation helper never retries on
             # UNKNOWN, so it can never reach that half.
+            #
+            # A refusal (``CONTENT_FILTER``) is not stored either (#1770): the
+            # engine re-issues a refused structured call once, and a stored
+            # refusal is what that re-issue would be served.
             if (
                 model
                 and not messages
                 and prompt_text
                 and response.confidence >= self.confidence_threshold
                 and not response.is_truncated
+                and response.stop_reason is not StopReason.CONTENT_FILTER
             ):
                 self.cache.store(
                     prompt_text,

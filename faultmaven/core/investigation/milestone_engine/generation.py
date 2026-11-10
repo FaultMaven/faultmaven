@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import time
 from typing import Any, Callable, Optional
 
 from faultmaven.core.investigation.lifecycle_metrics import (
@@ -10,6 +11,7 @@ from faultmaven.core.investigation.lifecycle_metrics import (
 )
 from faultmaven.core.investigation.llm_error_handler import (
     OutputTruncationError,
+    ProviderRefusalError,
     classify_token_limit_reason,
     is_output_truncation_error,
     is_truncated_json_error,
@@ -52,7 +54,11 @@ from faultmaven.core.investigation.tool_loop_metrics import (
     tool_result_relayed_total,
     tool_result_truncated_total,
 )
-from faultmaven.exceptions import RawModelContentRefused
+from faultmaven.core.investigation.turn_budget import (
+    can_afford_next_attempt,
+    spendable_turn_budget,
+)
+from faultmaven.exceptions import PROVIDER_REFUSED, RawModelContentRefused
 from faultmaven.infrastructure.llm.dispatch import (
     route_model_call,
     send_to_model,
@@ -75,6 +81,7 @@ from faultmaven.infrastructure.security.model_content import (
     model_output,
     non_case_text,
 )
+from faultmaven.utils.schema_converter import omit_schema_properties
 
 from .affordances import (
     _schema_prompt_instruction,
@@ -110,6 +117,19 @@ STRUCTURED_OUTPUT_MAX_TOKENS = 8000
 
 
 STRUCTURED_OUTPUT_MAX_TOKENS_CEILING = 16000
+
+
+# What a refused structured call is re-issued without, once (#1770 ruling): the
+# optional field the reasoning-first gate already handles the absence of.
+REFUSAL_OMITTED_FIELDS = frozenset({"evidence_trail"})
+
+
+def _reissues_on_refusal(schema_model: Any) -> bool:
+    """Whether a refusal of *schema_model* gets the one reduced re-issue: only
+    a schema that declares a field to omit; any other would be refused again."""
+    return not REFUSAL_OMITTED_FIELDS.isdisjoint(
+        getattr(schema_model, "model_fields", {})
+    )
 
 
 # Visible-output floor declared with ``ReasoningIntent.INFERENCE`` on the
@@ -659,8 +679,13 @@ class StructuredOutputGenerator:
         # calls, which would immediately reset force_schema_next).
         ceiling_reached = False
         prose_nudged = False  # keep_tools spent (#1755); reset on a tool call
+        reduced = False  # the one re-issue after a refusal is spent (#1770)
 
-        for iteration in range(self.MAX_TOOL_ITERATIONS + 1):
+        # A while, not a for: a refused call is re-issued at the SAME
+        # iteration (#1770), so a refusal on the final or a forced one is too.
+        iteration = -1
+        while iteration < self.MAX_TOOL_ITERATIONS:
+            iteration += 1
             is_final = iteration == self.MAX_TOOL_ITERATIONS
 
             # Tool availability per iteration:
@@ -798,6 +823,7 @@ class StructuredOutputGenerator:
                     )
                 return result
 
+            attempt_started = time.monotonic()
             try:
                 # Same ladder the non-tool structured path has had since #513:
                 # a cut body means the response is unusable, and the first
@@ -821,6 +847,7 @@ class StructuredOutputGenerator:
                     ceiling=STRUCTURED_OUTPUT_MAX_TOKENS_CEILING,
                     label=f"tool loop iteration {iteration}",
                 )
+                attempt_seconds = time.monotonic() - attempt_started
                 # Per-turn ceiling: the call is now metered into the active turn
                 # tracker (record_provider_call above for a dedicated DA provider,
                 # or the registry chokepoint for the router), so its running total
@@ -891,6 +918,36 @@ class StructuredOutputGenerator:
 
             # Check for tool calls in response
             if not hasattr(response, "tool_calls") or not response.tool_calls:
+                # A refusal first (#1770): never a nudge, a parse or the
+                # no-tools fallback. Re-issued once, at this iteration, on this
+                # provider, with these messages, without the omitted fields.
+                if normalize_stop_reason(
+                    getattr(response, "stop_reason", None)
+                ) is StopReason.CONTENT_FILTER and _reissues_on_refusal(schema_model):
+                    if reduced or not can_afford_next_attempt(
+                        spendable_turn_budget(), 0.0, attempt_seconds
+                    ):
+                        raise MilestoneEngineError(
+                            f"Provider {provider_name} refused the structured "
+                            f"call at tool-loop iteration {iteration}.",
+                            error_code=PROVIDER_REFUSED,
+                        )
+                    reduced = True
+                    schema_tools = [
+                        omit_schema_properties(tool, REFUSAL_OMITTED_FIELDS)
+                        for tool in schema_tools
+                    ]
+                    all_tools = investigation_tools + schema_tools
+                    logger.warning(
+                        "Tool loop: provider %s refused iteration %d; re-issuing "
+                        "it once without %s (#1770)",
+                        provider_name,
+                        iteration,
+                        sorted(REFUSAL_OMITTED_FIELDS),
+                    )
+                    iteration -= 1
+                    continue
+
                 # No tool calls. Two scenarios:
                 # 1. Recoverable (force_schema_next=False): the LLM emitted text
                 #    instead of calling a tool. Append the text plus a user-role
@@ -1777,21 +1834,38 @@ class StructuredOutputGenerator:
                                 rebuild_exc,
                             )
 
-        # Get provider-specific structured output strategy
         schema = schema_model.model_json_schema()
-        strategy = self.deps.llm_provider.get_structured_output_strategy(schema)
 
-        # Conditionally include schema in prompt based on provider capability
-        if strategy.include_schema_in_prompt:
+        def _request_shape(reduced: bool) -> tuple[Any, Any]:
+            """The strategy and prompt for the full schema, or for the schema
+            reduced after a refusal (#1770): reduced BEFORE the strategy and
+            the prompt-schema instruction read it, so neither carries it."""
+            shape_schema = (
+                omit_schema_properties(schema, REFUSAL_OMITTED_FIELDS)
+                if reduced
+                else schema
+            )
+            # Get provider-specific structured output strategy
+            strategy = self.deps.llm_provider.get_structured_output_strategy(
+                shape_schema
+            )
+            if not strategy.include_schema_in_prompt:
+                # Provider supports strict json_schema - no schema in prompt
+                return strategy, prompt
             # Provider requires schema in prompt text (json_object or prompt_only
             # modes). SCHEMA_INSTRUCTIONS is gated on the schema's shape inside
             # the helper — see _schema_prompt_instruction. The case prompt,
             # minted above, plus the schema instruction, fixed text built from
             # the response schema (#1998).
-            final_prompt = prompt + non_case_text(_schema_prompt_instruction(schema))
-        else:
-            # Provider supports strict json_schema - no need for schema in prompt
-            final_prompt = prompt
+            return strategy, prompt + non_case_text(
+                _schema_prompt_instruction(shape_schema)
+            )
+
+        # The reduced shape is built only when a reduced attempt runs.
+        shapes = {False: _request_shape(False)}
+        # One re-issue without REFUSAL_OMITTED_FIELDS after a refusal (#1770),
+        # kept by every later attempt of this call.
+        refusal_state = {"reduced": False, "call_seconds": 0.0}
 
         # Track the generation cap across retries. ``bumped`` is what tells the
         # next attempt it must not be answered from cache: the cache is keyed on
@@ -1845,6 +1919,10 @@ class StructuredOutputGenerator:
 
         # Define the LLM operation for retry; ``reask_of``: a re-ask (#1755).
         async def llm_operation(reask_of: Any = None):
+            reduced = refusal_state["reduced"]
+            if reduced not in shapes:
+                shapes[reduced] = _request_shape(reduced)
+            strategy, final_prompt = shapes[reduced]
             # Build generate parameters based on strategy mode
             current_max_tokens = max_tokens_state["value"]
             generate_params = {
@@ -1852,7 +1930,8 @@ class StructuredOutputGenerator:
                 "max_tokens": current_max_tokens,
                 "temperature": 0.2,  # Lower temperature for structured output
                 "case_id": case.case_id if case is not None else None,
-                "bypass_cache": max_tokens_state["bumped"],
+                # Never answered from cache after a refusal (#1770) either.
+                "bypass_cache": max_tokens_state["bumped"] or reduced,
             }
             # fm#1116: the tool-less diagnostic call declares its reasoning
             # intent and output floor (#1117/#1118). Only ever set on the
@@ -1899,7 +1978,14 @@ class StructuredOutputGenerator:
                 # Use tools/function calling for structured output (Anthropic, etc.)
                 from faultmaven.utils.schema_converter import pydantic_to_openai_tools
 
-                generate_params["tools"] = pydantic_to_openai_tools(schema_model)
+                generate_params["tools"] = [
+                    (
+                        omit_schema_properties(tool, REFUSAL_OMITTED_FIELDS)
+                        if reduced
+                        else tool
+                    )
+                    for tool in pydantic_to_openai_tools(schema_model)
+                ]
                 generate_params["tool_choice"] = "required"  # Force tool use
                 # Don't include response_format for function calling
             else:
@@ -1934,10 +2020,12 @@ class StructuredOutputGenerator:
                     else [{"role": "user", "content": final_prompt + nudge}]
                 )
 
+            call_started = time.monotonic()
             try:
                 response = await route_model_call(
                     self.deps.llm_provider, **generate_params
                 )
+                refusal_state["call_seconds"] = time.monotonic() - call_started
             except RawModelContentRefused:
                 # A refusal is a programming error, never a fallback (#1998).
                 raise
@@ -2059,6 +2147,26 @@ class StructuredOutputGenerator:
                 # re-ask, before the truncation checks; with no stop reason, a
                 # body that reads as cut is left to them.
                 stop = normalize_stop_reason(getattr(response, "stop_reason", None))
+                # A refusal (#1770), before the re-ask and the truncation
+                # checks: never a raised cap. Re-issued once without the
+                # omitted fields when the budget affords it, else final.
+                if stop is StopReason.CONTENT_FILTER and _reissues_on_refusal(
+                    schema_model
+                ):
+                    if refusal_state["reduced"] or not can_afford_next_attempt(
+                        spendable_turn_budget(), 0.0, refusal_state["call_seconds"]
+                    ):
+                        raise ProviderRefusalError(
+                            f"provider {getattr(response, 'provider', '?')} "
+                            f"refused the structured call"
+                        ) from None
+                    refusal_state["reduced"] = True
+                    logger.warning(
+                        "Structured output: the provider refused; re-issuing "
+                        "once without %s (#1770)",
+                        sorted(REFUSAL_OMITTED_FIELDS),
+                    )
+                    return await llm_operation()
                 should_reask = (
                     not reask_state["used"]
                     and strategy.mode == StructuredOutputMode.FUNCTION_CALLING
