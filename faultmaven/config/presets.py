@@ -151,8 +151,8 @@ PRESETS: Dict[str, PresetDefinition] = {
             "RELOAD": "false",
             "WORKERS": "4",
             "SKIP_SERVICE_CHECKS": "false",
-            # Deployment mode
-            "DEPLOYMENT_MODE": "multi-tenant",
+            # Deployment mode: the startup coherence gate names what cloud requires.
+            "DEPLOYMENT_MODE": "cloud",
             # Storage - full external services (Redis via REDIS_HOST)
             "VECTOR_STORAGE_TYPE": "chromadb",
             # LLM - OpenAI as enterprise default
