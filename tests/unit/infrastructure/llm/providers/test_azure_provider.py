@@ -77,6 +77,18 @@ class TestTheRequestOnTheWire:
         assert response.content == "ok"
         assert response.provider == "azure"
 
+    @pytest.mark.parametrize(
+        "deployment, model",
+        [("gpt-5.6-luna", "gpt-5.6-luna"), ("gpt-5.4-mini-1", "gpt-5.4-mini")],
+    )
+    def test_a_model_named_deployment_is_priced_at_the_openai_rate(
+        self, deployment, model
+    ):
+        """Global Standard bills OpenAI's list rate; a suffixed name still matches."""
+        from faultmaven.infrastructure.llm.pricing import lookup_rates
+
+        assert lookup_rates("azure", deployment) == lookup_rates("openai", model)
+
     def test_a_deployment_named_after_its_model_inherits_its_capability(self):
         assert (
             _provider("gpt-5.6-luna").get_structured_output_capability()

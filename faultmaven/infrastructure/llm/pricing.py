@@ -192,8 +192,10 @@ DEFAULT_RATES: dict[str, dict[str, TokenRates]] = {
         # deployments bill OpenAI's list rate. Regional / Data Zone
         # deployments bill a premium, and a non-OpenAI Foundry model has no
         # row here (it reports unpriced) — set either via
-        # LLM_PRICING_OVERRIDES.
+        # LLM_PRICING_OVERRIDES. Keys match by substring, so a deployment
+        # named "gpt-5.4-mini-1" takes the gpt-5.4-mini row.
         "gpt-5.6-luna": TokenRates(0.20, 1.20, 0.02, 0.25),
+        "gpt-5.4-mini": TokenRates(0.75, 4.50, 0.075, 0.0),
     },
 }
 
