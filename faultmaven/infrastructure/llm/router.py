@@ -472,6 +472,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         provider_override: Optional[str] = None,
         cache_prompt: bool = False,
         bypass_cache: bool = False,
+        store_in_cache: bool = True,
         reasoning_intent: Optional[ReasoningIntent] = None,
         min_output_tokens: Optional[int] = None,
     ) -> LLMResponse:
@@ -489,6 +490,11 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             truncated structured-output body, #513): it needs the provider to be
             reached, and it needs the good response to replace the bad entry,
             because nothing else ever will.
+
+        store_in_cache: when False, never store this call's response: an
+            answer to a request the key does not describe (the engine's
+            reduced re-issue after a refusal, #1770) must not be served to
+            the full request.
 
         reasoning_intent: what this call needs from hidden reasoning (#1118),
             declared per call site — ``ReasoningIntent.EXTRACTION`` for
@@ -785,6 +791,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 and response.confidence >= self.confidence_threshold
                 and not response.is_truncated
                 and response.stop_reason is not StopReason.CONTENT_FILTER
+                and store_in_cache
             ):
                 self.cache.store(
                     prompt_text,

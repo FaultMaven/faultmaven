@@ -270,6 +270,7 @@ async def test_a_single_shot_refusal_is_reissued_once_past_the_cache(content):
     assert result.agent_response == "disk" and result.evidence_trail is None
     first, second = sent
     assert (first["bypass_cache"], second["bypass_cache"]) == (False, True)
+    assert "store_in_cache" not in first and second["store_in_cache"] is False
     assert second["max_tokens"] == first["max_tokens"]
     assert second["prompt"] == first["prompt"] and "messages" not in second
     assert second["reasoning_intent"] is ReasoningIntent.INFERENCE
@@ -298,11 +299,15 @@ async def test_the_reduced_request_carries_no_trace_of_the_field(capability, sch
 
 
 @pytest.mark.parametrize("tools", [True, False], ids=["tool_loop", "single_shot"])
-async def test_a_refusal_with_the_budget_spent_is_final(tools, monkeypatch):
-    # ``raising=False``: on a tree without the name the test fails on the count.
-    monkeypatch.setattr(
-        generation, "spendable_turn_budget", lambda: -1.0, raising=False
-    )
+async def test_a_reissue_the_budget_cannot_afford_is_not_made(tools):
+    """A positive budget under the ladder's per-attempt estimate (``T``): the
+    refused call's own duration (~0 s) would have approved the re-issue."""
+    from faultmaven.config.settings import get_settings
+    from faultmaven.core.investigation import turn_budget
+    from faultmaven.infrastructure.llm.router import resolve_request_timeout
+
+    spendable = resolve_request_timeout(get_settings()) / 2
+    assert spendable > 1.0
     engine = _engine()
     send, sent = _queue([REFUSED, _answer()])
     if tools:
@@ -310,7 +315,13 @@ async def test_a_refusal_with_the_budget_spent_is_final(tools, monkeypatch):
     else:
         engine.deps.llm_provider.route = send
 
-    with pytest.raises(MilestoneEngineError) as raised:
+    reserves = turn_budget.TURN_BUDGET_RESERVE_SECONDS + (
+        turn_budget.TURN_COMMIT_RESERVE_SECONDS
+    )
+    with (
+        turn_budget.bind_turn_deadline(reserves + spendable),
+        pytest.raises(MilestoneEngineError) as raised,
+    ):
         await _turn(engine, tools=tools)
 
     assert raised.value.error_code == PROVIDER_REFUSED
@@ -340,5 +351,149 @@ async def test_a_refusal_is_not_stored_so_its_reissue_reaches_the_provider():
         router.cache = LLMResponseCache()
         for _ in range(2):
             await router.route(prompt=vetted("p"), model="claude-opus-5-5")
+
+    assert registry.route_request.await_count == 2
+
+
+# --- After a refusal, the engine call never leaves its path (#1770 review) ----
+
+
+class _Timeout(TimeoutError):
+    pass
+
+
+def _raising_queue(replies):
+    """``_queue`` whose exception entries are raised; ends after *replies*."""
+    sent = []
+
+    async def _send(**kwargs):
+        sent.append(kwargs)
+        reply = replies[len(sent) - 1]
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+    return AsyncMock(side_effect=_send), sent
+
+
+CUT = _reply('{"agent_response": "the kub', stop=StopReason.MAX_TOKENS)
+PROSE = _reply("The kubelet is out of disk.")
+
+
+@pytest.mark.parametrize(
+    "outcome", [PROSE, CUT, _Timeout("deadline"), RuntimeError("503")]
+)
+async def test_a_single_shot_reissue_that_fails_is_final(outcome):
+    engine = _engine()
+    engine.deps.llm_provider.route, sent = _raising_queue([REFUSED, outcome])
+    degrade = MagicMock()
+    with (
+        patch.object(generation, "prompt_context_recovery_total", degrade),
+        pytest.raises(MilestoneEngineError) as raised,
+    ):
+        await _turn(engine, tools=False)
+
+    assert raised.value.error_code == PROVIDER_REFUSED
+    assert len(sent) == 2  # no ladder retry, re-ask or cap raise
+    degrade.labels.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "refused_at,reissue", [(0, RuntimeError("503")), (LAST, PROSE)]
+)
+async def test_a_tool_loop_reissue_that_fails_never_takes_the_fallback(
+    refused_at, reissue
+):
+    engine = _engine()
+    replies = [SEARCHED] * refused_at + [REFUSED, reissue]
+    engine.deps.da_provider._generate, sent = _raising_queue(replies)
+    engine.deps.llm_provider.route = AsyncMock()
+    degrade = MagicMock()
+    with (
+        patch.object(generation, "prompt_context_recovery_total", degrade),
+        pytest.raises(MilestoneEngineError) as raised,
+    ):
+        await _turn(engine)
+
+    assert raised.value.error_code == PROVIDER_REFUSED
+    assert len(sent) == refused_at + 2
+    engine.deps.llm_provider.route.assert_not_called()  # no no-tools fallback
+    degrade.labels.assert_not_called()
+
+
+async def test_a_refusal_carrying_an_investigation_tool_call_runs_no_tool():
+    refused = _reply(tool="search_file", stop=StopReason.CONTENT_FILTER)
+    engine = _engine()
+    engine.deps.da_provider._generate, sent = _queue([refused, _answer()])
+
+    assert (await _turn(engine)).agent_response == "disk"
+    engine.deps.investigation_tools.execute_tool.assert_not_awaited()
+    first, second = sent
+    assert second["messages"] == first["messages"]
+    assert not _carries_the_field(second)
+
+
+async def test_the_reissue_is_the_refused_request_even_over_the_token_ceiling(
+    monkeypatch,
+):
+    from faultmaven.config.settings import get_settings
+    from faultmaven.infrastructure.llm.metering import (
+        TurnTokenTracker,
+        active_token_tracker,
+    )
+
+    monkeypatch.setattr(get_settings().prompt_budget, "turn_token_ceiling", 0)
+    metered = _reply("", stop=StopReason.CONTENT_FILTER)
+    metered.input_tokens = 10  # the refused call alone crosses the ceiling
+    engine = _engine()
+    engine.deps.da_provider._generate, sent = _queue([metered, _answer()])
+    token = active_token_tracker.set(TurnTokenTracker())
+    try:
+        assert (await _turn(engine)).agent_response == "disk"
+    finally:
+        active_token_tracker.reset(token)
+
+    first, second = sent
+    assert (
+        _names(second)
+        == _names(first)
+        == [
+            "search_file",
+            "InvestigationResponse_Diagnosis",
+        ]
+    )
+    assert second["tool_choice"] == first["tool_choice"]
+
+
+async def test_a_refused_reask_is_reissued_as_the_reask():
+    engine = _engine()
+    engine.deps.llm_provider.route, sent = _queue([PROSE, REFUSED, _answer()])
+
+    assert (await _turn(engine, tools=False)).agent_response == "disk"
+    _, reask, reissue = sent
+    assert "messages" in reask and reissue["messages"] == reask["messages"]
+    assert not _carries_the_field(reissue)
+
+
+async def test_a_reduced_response_is_not_stored():
+    """Through a real ``LLMRouter`` and cache: ``store_in_cache=False`` keeps
+    the reduced answer from being served to a later full-schema call."""
+    from faultmaven.infrastructure.llm.cache import LLMResponseCache
+
+    registry = MagicMock()
+    registry.get_available_providers.return_value = ["anthropic"]
+    registry.get_fallback_chain.return_value = ["anthropic"]
+    registry.route_request = AsyncMock(side_effect=[_answer(), _answer()])
+    with patch(
+        "faultmaven.infrastructure.llm.router.get_registry", return_value=registry
+    ):
+        from faultmaven.infrastructure.llm.router import LLMRouter
+
+        router = LLMRouter()
+        router.cache = LLMResponseCache()
+        await router.route(
+            prompt=vetted("p"), model="m", bypass_cache=True, store_in_cache=False
+        )
+        await router.route(prompt=vetted("p"), model="m")
 
     assert registry.route_request.await_count == 2

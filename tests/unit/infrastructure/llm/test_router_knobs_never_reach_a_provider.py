@@ -1,10 +1,10 @@
 """No router-level knob, and no unset value, reaches a provider's request (#2002).
 
 ``LLMRouter.route`` takes keywords that are not provider API fields:
-``case_id``, ``bypass_cache``, ``provider_override`` and ``data_type`` (used by
-the router layer, never forwarded on a routed call) and ``cache_prompt``,
-``reasoning_intent`` and ``min_output_tokens`` (forwarded to the provider,
-which translates or pops them). The router is not the only caller:
+``case_id``, ``bypass_cache``, ``store_in_cache``, ``provider_override`` and
+``data_type`` (used by the router layer, never forwarded on a routed call) and
+``cache_prompt``, ``reasoning_intent`` and ``min_output_tokens`` (forwarded to
+the provider, which translates or pops them). The router is not the only caller:
 ``milestone_engine`` binds a concrete provider when ``DA_PROVIDER`` is set and
 sends to it directly (``dispatch.send_to_model``), which REFUSES a router
 keyword before any request (#1998 P3: it is outside the closed set).
@@ -203,6 +203,7 @@ _CONSUMED_BY_THE_ROUTER = {
     "case_id": "case-SENTINEL-2002",
     "conversion_id": "conv-SENTINEL-2575",
     "bypass_cache": "bypass-SENTINEL-2002",
+    "store_in_cache": "store-SENTINEL-1770",
     "provider_override": "provider-SENTINEL-2002",
     "data_type": DataType.TRACE_DATA,
 }

@@ -399,10 +399,6 @@ class TestFunctionNaming:
         assert result["name"] != "MyCustomModel"
 
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
-
-
 class _Leaf(BaseModel):
     note: str
 
@@ -437,3 +433,17 @@ def test_omit_schema_properties_prunes_only_the_orphaned_defs():
     params = omit_schema_properties(tool, {"trail"})["function"]["parameters"]
     assert set(params["properties"]) == {"answer", "kept"}
     assert "trail" in tool["function"]["parameters"]["properties"]
+
+
+@pytest.mark.unit
+def test_omit_schema_properties_refuses_a_str_and_keeps_a_parameterless_tool():
+    """#1770: a ``str`` is not a set of names (it would omit its letters), and
+    a tool with no parameters comes back whole, not reduced detached."""
+    with pytest.raises(TypeError):
+        omit_schema_properties({"properties": {"trail": {}}}, "trail")
+    tool = {"type": "function", "function": {"name": "t"}}
+    assert omit_schema_properties(tool, {"trail"}) == tool
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

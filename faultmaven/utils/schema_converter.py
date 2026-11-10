@@ -420,12 +420,17 @@ def omit_schema_properties(
     The names leave ``properties`` and ``required``, and every ``$defs`` entry
     no longer referenced, transitively, from what remains is pruned, so no
     trace of the dropped fields is sent. A tool dict (``{"function":
-    {"parameters": ...}}``) is reduced through its ``function.parameters``.
+    {"parameters": ...}}``) is reduced through its ``function.parameters``;
+    one without parameters has nothing to omit. *names* is never a ``str``.
     """
+    if isinstance(names, str):
+        raise TypeError("names must be an iterable of property names, not a str")
     names = frozenset(names)
     out = copy.deepcopy(schema)
     function = out.get("function")
-    target = function.get("parameters", {}) if isinstance(function, dict) else out
+    target = function.get("parameters") if isinstance(function, dict) else out
+    if not isinstance(target, dict):
+        return out
     for name in names:
         target.get("properties", {}).pop(name, None)
     if isinstance(target.get("required"), list):
