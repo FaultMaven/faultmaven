@@ -30,15 +30,14 @@ from faultmaven.modules.preprocessing.entities.line_tally import (
     tally_entity_lines,
 )
 from faultmaven.modules.preprocessing.entities.protocol import EntityObservation
-from faultmaven.modules.preprocessing.extractors.utils import (
-    HOST_PORT_RE,
-    PORT_KEYWORD_RE,
-)
+from faultmaven.modules.preprocessing.extractors.utils import PORT_KEYWORD_RE
 from faultmaven.modules.preprocessing.log_usernames import extract_usernames
+from faultmaven.utils.host_port import HOST_PORT_RE
 
 # The IP, PID and HTTP-path regexes below are copies of ``logs_extractor.py``'s.
 # The port patterns are not copied: both modules import ``PORT_KEYWORD_RE``
-# and ``HOST_PORT_RE`` from ``extractors.utils`` (fm#2641).
+# from ``extractors.utils`` and ``HOST_PORT_RE`` from ``utils.host_port``
+# (fm#2641, #2723).
 #
 # ‼ The copies are NOT identical, and the difference decides which values
 # exist at all, which decides every count derived from them: the two

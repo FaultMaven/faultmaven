@@ -10,10 +10,8 @@ from faultmaven.modules.preprocessing.extractors.logs_extractor import (
     LogsAndErrorsExtractor,
     _normalize_template,
 )
-from faultmaven.modules.preprocessing.extractors.utils import (
-    HOST_PORT_RE,
-    PORT_KEYWORD_RE,
-)
+from faultmaven.modules.preprocessing.extractors.utils import PORT_KEYWORD_RE
+from faultmaven.utils.host_port import HOST_PORT_RE
 
 
 def _fe(result) -> str:

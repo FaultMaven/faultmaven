@@ -22,7 +22,7 @@ from faultmaven.modules.preprocessing.entities.logs import LogsEntityExtractor
 from faultmaven.modules.preprocessing.extractors.logs_extractor import (
     LogsAndErrorsExtractor,
 )
-from faultmaven.modules.preprocessing.extractors.utils import HOST_PORT_RE
+from faultmaven.utils.host_port import HOST_PORT_RE
 
 #: The pattern before this change (``main`` at 002adf000).
 PRE_2677_HOST_PORT_RE = re.compile(
