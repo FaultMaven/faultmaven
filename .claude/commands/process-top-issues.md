@@ -5,12 +5,11 @@ description: Run one round of issue processing — settle the last round, propos
 # /process-top-issues
 
 **Purpose:** make the system healthier and more robust round after round by resolving what matters most at its root,
-not by treating its symptoms alone (only an owner ruling leaves a root unfixed: 4.1's mitigation, a waived finding, a
-merge as is), so that the backlog shrinks over rounds instead of growing; keep `main` green, and keep each fix no
-larger than the defect needs. Nothing is hidden or closed to lower the count. The owner merges on your
-`## Merge-ready` comment without reading the diff, so every PR you hand over must have been through the full review
-chain in step 4. When a rule here works against that purpose, say so under *Needs your call*; a change the owner rules
-goes through *Changing this file*.
+not by treating its symptoms alone (only an owner ruling leaves a root unfixed), so that the backlog shrinks over
+rounds instead of growing; keep `main` green, and keep each fix no larger than the defect needs. Nothing is hidden or
+closed to lower the count. The owner merges on your `## Merge-ready` comment without reading the diff, so every PR you
+hand over must have been through the full review chain in step 4. When a rule here works against that purpose, say so
+under *Needs your call*; a change the owner rules goes through *Changing this file*.
 
 This file defines the rules for processing backlog issues, and is self-contained. Memory notes point here and never
 restate it; where they disagree, this file wins.
