@@ -1,9 +1,9 @@
-"""The one host-and-port grammar: a port after a colon that ends a host run.
+"""The host-and-port pattern the logs evidence paths and ``search_file`` read.
 
-Read by the logs extractor's profile and the entity registry in logs evidence
-(``modules/preprocessing``), and by ``search_file``'s vocabulary scan
-(``modules/agent/tools/search_file_tool.py``), which runs it inline over the
-first 102,400 characters of an evidence file (#2723).
+The logs extractor's profile and the entity registry read it in logs evidence
+(``modules/preprocessing``), and ``search_file``'s vocabulary scan
+(``modules/agent/tools/search_file_tool.py``) reads it inline over the first
+``SearchFileTool._VOCAB_SCAN_CHARS`` characters of an evidence file (#2723).
 """
 
 import re
@@ -41,8 +41,9 @@ lookahead scans that run once. The possessive ``++`` adds nothing: a plain
 ``+`` measures the same. The old ``[\\w-]*[A-Za-z.][\\w.-]*`` tried every
 split of a long run without a colon: 23 s on a 64 KB hex run (fm#2641).
 
-In logs evidence, ``PORT_KEYWORD_RE`` (in ``modules/preprocessing/extractors/
-utils.py``) and this pattern are the one port rule of the logs extractor's
-profile and the entity registry. Command output pairs ``PORT_KEYWORD_RE`` with
-an IP-and-port pattern of its own, and config evidence has its own port pattern.
+In logs evidence, ``PORT_KEYWORD_RE`` and this pattern are the one port rule
+of the logs extractor's profile and the entity registry. Command output pairs
+``PORT_KEYWORD_RE`` with an IP-and-port pattern of its own, and config evidence
+has its own port pattern. ``PORT_KEYWORD_RE`` is in
+``modules/preprocessing/extractors/utils.py``.
 """

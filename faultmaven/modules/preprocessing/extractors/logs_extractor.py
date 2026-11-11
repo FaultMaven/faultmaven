@@ -630,9 +630,8 @@ class LogsAndErrorsExtractor:
 
     # Port matchers: `PORT_KEYWORD_RE` in `extractors.utils` and `HOST_PORT_RE`
     # in `utils.host_port`, whose docstrings state the rule and which paths
-    # share it. The principle: a
-    # port needs *structural* context on the left, because a bare `:\d+` would
-    # match every `MM:SS` fragment in a timestamp.
+    # share it. The principle: a port needs *structural* context on the left,
+    # because a bare `:\d+` would match every `MM:SS` fragment in a timestamp.
     #
     # PID matchers. Same principle: a PID needs structural context.
     # `[\d+]` alone (with a closing bracket) is the classic syslog form;

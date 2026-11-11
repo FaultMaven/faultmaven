@@ -796,6 +796,9 @@ class SearchFileTool(AgentTool):
 
     # --- Vocabulary extraction (for zero-result recovery) ---
 
+    # The scan reads at most this many characters from the start of the file.
+    _VOCAB_SCAN_CHARS = 102_400
+
     # Compiled once at class level
     _VOCAB_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         ("http_errors", re.compile(r"\b[45]\d{2}\b")),
@@ -898,14 +901,15 @@ class SearchFileTool(AgentTool):
         2. Frequent tokens (statistical)
         3. Structural hints (from preprocessed content if available)
         """
-        # Budget: first 100KB
-        sample = content[:102400]
+        sample = content[: self._VOCAB_SCAN_CHARS]
 
         result: dict[str, list[str]] = {"patterns": [], "frequent_tokens": []}
 
-        # Pass 1: Known patterns
+        # Pass 1: Known patterns, at most 30; once full, no later pattern runs
         seen: set[str] = set()
         for _label, pattern in self._VOCAB_PATTERNS:
+            if len(result["patterns"]) >= 30:
+                break
             for match in pattern.finditer(sample):
                 val = match.group(0)
                 if val not in seen:
