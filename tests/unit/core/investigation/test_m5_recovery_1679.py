@@ -56,6 +56,7 @@ from faultmaven.modules.case.domain.models.solution import (
     SolutionType,
 )
 from tests.case_builders import investigating_case
+from tests.unit.core.investigation.narrated import narrated
 
 _FILE_ID = "file_0123456789ab"
 
@@ -432,9 +433,7 @@ class TestAppliedFixRecovery:
         (solution,) = _actions(case, InvestigationActionType.SOLUTION)
         assert diagnostic.state == "superseded"
         assert solution.state == "accepted"
-        assert "was not registered" not in "\n".join(
-            metadata.get("system_notices") or []
-        )
+        assert "was not registered" not in "\n".join(narrated(case, metadata))
 
     async def test_the_downgrade_note_names_that_path(self):
         case = _case(leading_likelihood=0.4)

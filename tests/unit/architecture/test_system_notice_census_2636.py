@@ -13,7 +13,9 @@ engine's offer standing, which converts in B1d.
 
 A new call, a moved one or a changed count fails until it is declared here,
 and a converted function (one listed in ``DECISIONS`` and not in ``TEXT``)
-that calls ``_add_system_feedback`` fails. Sites are keyed by
+that calls ``_add_system_feedback`` fails. A ``record_decision`` call's code
+is its second positional argument or its ``code`` keyword; a call that hides
+it (``*args``, or the code inside ``**kwargs``) fails. Sites are keyed by
 ``(module, qualname)``.
 """
 
@@ -65,7 +67,9 @@ TEXT: dict[tuple[str, str], tuple[int, str]] = {
     (_RA, "ResponseApplier.process_response_structured"): (2, _ORDER),
     (_RA, "ResponseApplier._apply_verification_updates"): (
         2,
-        "a withdrawal with no basis, and a revision beside a false alarm: " + _ORDER,
+        "a false-alarm withdrawal refused because no finding stands or it says "
+        "nothing the user disputed (" + _EMISSION + "), and a revision beside "
+        "a false alarm (" + _ORDER + ")",
     ),
     (_RA, "ResponseApplier._apply_investigation_updates"): (
         6,
@@ -82,7 +86,15 @@ TEXT: dict[tuple[str, str], tuple[int, str]] = {
     ),
     (_SG, "_carry_fix"): (1, "a fix acceptance held for a revision"),
     (_SG, "decide_fix_acceptance"): (1, "a ref without solution_accepted: " + _ORDER),
-    (_SG, "_apply_stage_gate_signals"): (3, "milestone order errors: " + _ORDER),
+    (_SG, "_apply_stage_gate_signals"): (
+        3,
+        "mitigation_accepted refused because the mitigation record already "
+        "holds its acceptance (INV-24) or no MITIGATION proposal is pending ("
+        + _EMISSION
+        + "), and mitigation_verified before mitigation_accepted ("
+        + _ORDER
+        + ")",
+    ),
     (_TR, "TransitionManager._apply_model_proposal"): (
         5,
         "a revision pending, an invalid edge, a non-disposition and the turn "
@@ -190,13 +202,43 @@ def test_every_text_notice_is_declared_with_its_reason():
     assert all(reason for _calls, reason in TEXT.values())
 
 
+def _code_of(call: ast.Call) -> str:
+    """The code a ``record_decision`` call records: its second positional
+    argument or its ``code`` keyword. A call that hides it (``*args``, or the
+    code inside ``**kwargs``) fails the census."""
+    assert not any(
+        isinstance(arg, ast.Starred) for arg in call.args
+    ), f"*args hides the code: {ast.unparse(call)}"
+    if len(call.args) >= 2:
+        return ast.unparse(call.args[1])
+    named = [kw.value for kw in call.keywords if kw.arg == "code"]
+    assert named, f"no code named: {ast.unparse(call)}"
+    return ast.unparse(named[0])
+
+
 def test_every_decision_is_declared():
     found: dict[tuple[str, str], Counter] = {}
     for rel, qual, call in _scan("record_decision"):
-        if len(call.args) < 2:
-            continue  # a call naming its code by keyword is not one here
-        found.setdefault((rel, qual), Counter())[ast.unparse(call.args[1])] += 1
+        found.setdefault((rel, qual), Counter())[_code_of(call)] += 1
     assert found == {site: Counter(codes) for site, codes in DECISIONS.items()}
+
+
+@pytest.mark.parametrize(
+    ("source", "code"),
+    [
+        ("record_decision(m, NoticeCode.X, a=1)", "NoticeCode.X"),
+        ("record_decision(m, code=NoticeCode.X, **params)", "NoticeCode.X"),
+        ("record_decision(*args)", None),
+        ("record_decision(m, **params)", None),
+    ],
+)
+def test_the_census_reads_the_code_however_it_is_passed(source, code):
+    call = ast.parse(source).body[0].value
+    if code is None:
+        with pytest.raises(AssertionError):
+            _code_of(call)
+    else:
+        assert _code_of(call) == code
 
 
 def test_a_converted_function_writes_no_text():

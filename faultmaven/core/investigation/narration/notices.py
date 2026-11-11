@@ -181,6 +181,17 @@ def license_notice(subject: str) -> str:
 Renderer = Callable[[dict, Optional[CaseOutcome], list], list[str]]
 _RENDERERS: dict[str, Renderer] = {}
 
+#: The codes whose renderers read the cycle's record (B1b's). Every other
+#: renderer reads only its params and the log, so a cycle whose log holds none
+#: of these is narrated with no outcome computed (#2636).
+READS_THE_RECORD = frozenset(
+    {
+        NoticeCode.SOLUTION_OFFER_WITHDRAWN,
+        NoticeCode.MITIGATION_VERIFY_REFUSED,
+        NoticeCode.MITIGATION_DISPOSITION_REFUSED,
+    }
+)
+
 
 def _renders(code: NoticeCode):
     def register(fn: Renderer) -> Renderer:

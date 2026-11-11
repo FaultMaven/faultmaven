@@ -447,5 +447,25 @@
   ],
   "cycle:declined_close_reask_on_the_deferred_close": [
     "TRANSITION NOT PROPOSED: the user declined closing this case with the solution documented (the deferred-implementation close), and no new solution or confirmation has been recorded since. Propose that close only if the user directs it; the engine then attaches the Close action to your reply. Do not propose it unprompted."
+  ],
+  "cycle:declined_resolution_reask_at_step_0_and_step_2": [
+    "TRANSITION NOT PROPOSED: the user declined marking this case resolved, and no new confirmation that the fix held has been recorded since. Do not propose resolved on the evidence already on record. If the user reports a NEW verification that the fix held, record it (the cause gone as causal_absence_evidence, the problem gone as symptom_absence_evidence) and propose resolved in the same turn. A request is not a verification: never record a confirmation row from a request. The engine has attached its 'Mark it resolved' and 'Close without resolving' actions to this reply. A user who changes their mind without a new verification uses the engine's 'Mark it resolved' action: point them to it. A user who wants to close the case instead uses the engine's 'Close without resolving' action: point them to it.",
+    "TRANSITION NOT PROPOSED: the user declined marking this case resolved, and no new confirmation that the fix held has been recorded since. Do not propose resolved on the evidence already on record. If the user reports a NEW verification that the fix held, record it (the cause gone as causal_absence_evidence, the problem gone as symptom_absence_evidence) and propose resolved in the same turn. A request is not a verification: never record a confirmation row from a request. The engine has attached its 'Mark it resolved' and 'Close without resolving' actions to this reply. A user who changes their mind without a new verification uses the engine's 'Mark it resolved' action: point them to it. A user who wants to close the case instead uses the engine's 'Close without resolving' action: point them to it.",
+    "No progress for 4 consecutive turns. If the user keeps asking about a conclusion or an exclusion you have already answered, restating the answer will not settle it: ask what would settle it for them, and offer the check that would discriminate (WHEN THE USER QUESTIONS A CONCLUSION OR AN EXCLUSION)."
+  ],
+  "cycle:turn_stage_gates_fix_report_without_an_acceptance": [
+    "SYSTEM: accepted_fix_reported_in previous_message was ignored: it is read only with solution_accepted."
+  ],
+  "cycle:turn_response_application_false_alarm_refused": [
+    "FALSE-ALARM FINDING NOT ACCEPTED: it cites no symptom_absence evidence showing the reported symptom was not present where and when it was reported."
+  ],
+  "cycle:turn_chain_emission_root_terminal_refused": [
+    "Root <cn:0> was NOT marked terminal: root_is_terminal true must cite, in terminal_basis_evidence_ids, a causal_evidence row recorded since this root was posited (turn 4) showing that nothing controllable produces its state (how it was issued or set, its lifetime, that nothing renews it). None cited. Its why stays open."
+  ],
+  "cycle:turn_transitions_declined_close_reask": [
+    "TRANSITION NOT PROPOSED: the user declined closing this case with the solution documented (the deferred-implementation close), and no new solution or confirmation has been recorded since. Propose that close only if the user directs it; the engine then attaches the Close action to your reply. Do not propose it unprompted."
+  ],
+  "cycle:turn_terminal_proposals_pending_check": [
+    "RESOLUTION HELD: the check you asked for is still pending ([eneed_00000000c0c0] Prometheus targets page showing job=billing UP). The resolution is offered once an answer showing the problem gone is on record: record the row and mark the need FULFILLED citing it. If the user cannot run the check, SUPERSEDE the need with the reason."
   ]
 }

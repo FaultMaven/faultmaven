@@ -18,8 +18,9 @@ holding this module::
         golden_cases_2636 as g; g.capture_main()"
 
 ``capture_main`` refuses any other tree: one whose ``faultmaven`` is not its
-own, or one holding ``narration/codes.py``, where the golden would compare
-the code with itself. ``test_golden_composers_2636.py`` runs them on this
+own, a commit other than ``MAIN_AT_B1C``, a modified ``faultmaven/``, or one
+whose ``NoticeCode`` holds B1c's members, where the golden would compare the
+code with itself. ``test_golden_composers_2636.py`` runs them on this
 tree and compares.
 
 B1b (#2636) adds ``CYCLE_SCENARIOS``: each runs a decider whose notice B1b
@@ -45,16 +46,19 @@ fix, the signals on an invalidated problem, the false-alarm and revision
 refusals, the root-terminal refusals, the pending check and the declined
 re-asks), each returning ``(case, metadata)``. ``capture_main`` adds their
 texts, as ``main`` tells them to the model (after its narration step), to the
-same file, from a scratch worktree of ``main`` (``8a619ae76``) holding this
-module, as above. It keeps every B1a and B1b entry as stored.
+same file, from a scratch worktree of ``main`` (``8a619ae76``, the pinned
+``MAIN_AT_B1C``, its ``faultmaven/`` unmodified) holding this module, as
+above. It keeps every B1a and B1b entry as stored. The ``turn_*`` scenarios
+and the step-0/step-2 re-ask run a whole turn through ``process_turn``.
 """
 
 import asyncio
 import json
 import re
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 from faultmaven.core.investigation.milestone_engine import stage_gates
 from faultmaven.core.investigation.milestone_engine.cause_state import (
@@ -78,6 +82,7 @@ from faultmaven.core.investigation.prompts.templates.assembly import (
 )
 from faultmaven.core.investigation.schemas import (
     HypothesisUpdate,
+    InvestigationResponse_Diagnosis,
     MilestoneUpdates,
     ProblemVerificationUpdate,
 )
@@ -112,6 +117,9 @@ from faultmaven.modules.case.contracts import (
 )
 from tests.case_builders import investigating_case, with_declined_offer
 from tests.unit.core.investigation import fix_turns_2039 as fix_turns
+from tests.unit.core.investigation import (
+    test_declined_resolution_binds_the_model_1895 as declined,
+)
 from tests.unit.core.investigation import (
     test_fix_registration_lag_2427 as fix_report,
 )
@@ -1210,6 +1218,91 @@ def declined_close_reask_on_the_deferred_close():
     return _declined_close(_bare_case(), "deferred")
 
 
+def _through_a_turn(case, state_updates, message: str = "ok"):
+    """One turn through ``process_turn`` on the model's ``state_updates``: the
+    case, and the turn record's notices (narrated, on this tree, by the turn
+    itself)."""
+    engine = MilestoneEngine(MagicMock(), _make_repo(), investigation_tools=MagicMock())
+    engine.generator.generate_structured_output = AsyncMock(
+        return_value=InvestigationResponse_Diagnosis(
+            agent_response="Noted.", state_updates=state_updates
+        )
+    )
+    case.current_turn += 1
+    asyncio.run(
+        engine.process_turn(case=case, user_message=message, redaction_ctx=None)
+    )
+    return case, {"system_notices": list(case.turn_history[-1].system_notices)}
+
+
+def turn_stage_gates_fix_report_without_an_acceptance():
+    _eng, case, _hyp = fix_report._identified()
+    return _through_a_turn(
+        case,
+        _DSU(milestones=MilestoneUpdates(accepted_fix_reported_in=_PREVIOUS)),
+    )
+
+
+def turn_response_application_false_alarm_refused():
+    return _through_a_turn(
+        revision._case(ProblemStatus.VERIFIED),
+        _DSU(
+            verification_updates=ProblemVerificationUpdate(
+                problem_invalidated=True,
+                invalidation_basis="the user says it was never broken",
+            )
+        ),
+    )
+
+
+def turn_chain_emission_root_terminal_refused():
+    case, _root, hyp = _d6_case()
+    case.current_turn -= 1
+    return _through_a_turn(
+        case,
+        _DSU(
+            hypotheses_to_update=[
+                HypothesisUpdate(
+                    hypothesis_id=hyp.hypothesis_id,
+                    root_is_terminal=True,
+                    terminal_basis_evidence_ids=[],
+                )
+            ]
+        ),
+    )
+
+
+def turn_transitions_declined_close_reask():
+    case = _bare_case()
+    with_declined_offer(case, kind="close", basis="deferred")
+    return _through_a_turn(
+        case, _DSU(proposed_transition={"to_state": "closed"}), "close it"
+    )
+
+
+def turn_terminal_proposals_pending_check():
+    return _through_a_turn(_held(), _DSU())
+
+
+def declined_resolution_reask_at_step_0_and_step_2():
+    """A resolution request (step 0) re-checked READY on rows the user
+    declined, and the model's ``resolved`` (step 2), in one turn: each decides
+    the same re-ask (A9)."""
+
+    async def _run():
+        engine, case, _ = await declined._offered_then_declined()
+        node_id = declined._refute(case, declined._qualifying(case))
+        await declined._turn(engine, case, "can we resolve it", propose="resolved")
+        del case.causal_nodes[node_id]
+        result = await declined._turn(
+            engine, case, "it is resolved now", propose="resolved"
+        )
+        return case, result["case_updated"].turn_history[-1].system_notices
+
+    case, notices = asyncio.run(_run())
+    return case, {"system_notices": list(notices)}
+
+
 #: B1c's (#2636): ``main`` composed each of these as text in its decider.
 B1C_SCENARIOS = {
     fn.__name__: fn
@@ -1256,14 +1349,24 @@ B1C_SCENARIOS = {
         declined_resolution_reask_without_chips,
         declined_close_reask_on_a_false_alarm,
         declined_close_reask_on_the_deferred_close,
+        declined_resolution_reask_at_step_0_and_step_2,
+        turn_stage_gates_fix_report_without_an_acceptance,
+        turn_response_application_false_alarm_refused,
+        turn_chain_emission_root_terminal_refused,
+        turn_transitions_declined_close_reask,
+        turn_terminal_proposals_pending_check,
     )
 }
+
+#: The commit ``capture_main`` captured B1c's entries at: ``main`` with B1b.
+MAIN_AT_B1C = "8a619ae76f361e84e77f38061f4334d2048b7716"
 
 
 def capture_main() -> None:  # pragma: no cover - run once, on main
     """Add ``B1C_SCENARIOS``' texts to the golden, as ``main`` tells them to
     the model: its deciders compose them, and its narration step renders
-    B1b's codes beside them. Additions only: B1a's scenarios must re-run to
+    B1b's codes beside them. Refused on any tree but ``MAIN_AT_B1C`` with an
+    unmodified ``faultmaven/``. Additions only: B1a's scenarios must re-run to
     their stored entries, and B1b's (captured at ``b1969f821``, before their
     deciders recorded codes) are kept as stored."""
     import faultmaven
@@ -1273,8 +1376,19 @@ def capture_main() -> None:  # pragma: no cover - run once, on main
     assert (
         Path(faultmaven.__file__).resolve().is_relative_to(root)
     ), f"faultmaven imported from {faultmaven.__file__}, not {root}"
-    # Only a tree whose deciders compose B1c's texts is main's: on this branch
-    # the golden would compare the renderers with themselves.
+
+    # Only the pinned main commit, unmodified, is main's: on this branch the
+    # golden would compare the renderers with themselves, and a peer branch or
+    # a dirty checkout is not main.
+    def _git(*args: str) -> str:
+        return subprocess.run(
+            ["git", *args], cwd=root, check=True, capture_output=True, text=True
+        ).stdout.strip()
+
+    head = _git("rev-parse", "HEAD")
+    assert head == MAIN_AT_B1C, f"HEAD is {head}, not {MAIN_AT_B1C}"
+    dirty = _git("status", "--porcelain", "--", "faultmaven/")
+    assert not dirty, f"faultmaven/ is modified:\n{dirty}"
     members = {m.value for m in NoticeCode}
     assert "absence_in_failed_window" not in members, "capture on main only"
     print(f"faultmaven: {faultmaven.__file__}")

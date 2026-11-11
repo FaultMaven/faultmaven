@@ -7,37 +7,39 @@ an invalidated problem, the false-alarm and revision refusals, the
 root-terminal refusals, the pending check and the declined re-asks. The
 narration step renders each from the facts its decider read (decide-time,
 A4), so every text is ``main``'s, captured by running ``main``
-(``golden_cases_2636.B1C_SCENARIOS``, ``golden_main_2636.json``), except one
-declared under the ruled A9: two equal decisions in one cycle render one
-line. No live LLM: the generator is stubbed.
+(``golden_cases_2636.B1C_SCENARIOS``, ``golden_main_2636.json``), except two
+cases declared under the ruled A9 (one line for two equal decisions in one
+cycle): the absence decided twice in one cycle, and the declined re-ask
+decided at step 0 and at step 2 of one turn. No live LLM: the generator is
+stubbed.
 """
 
 import json
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from faultmaven.core.investigation import outcome as outcome_module
-from faultmaven.core.investigation.milestone_engine import turn_completion
-from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine import (
+    turn_completion,
+    turn_narration,
+)
+from faultmaven.core.investigation.milestone_engine.stage_gates import (
+    merge_decisions,
+    merge_system_notices,
+    record_decision,
+)
 from faultmaven.core.investigation.narration.codes import (
+    CONTEXT_ONLY,
     DECISIONS_KEY,
     NoticeCode,
     is_token,
 )
-from faultmaven.core.investigation.narration.notices import render_notice
-from faultmaven.core.investigation.schemas import (
-    HypothesisUpdate,
-    InvestigationResponse_Diagnosis,
-    MilestoneUpdates,
-    ProblemVerificationUpdate,
+from faultmaven.core.investigation.narration.notices import (
+    READS_THE_RECORD,
+    render_notice,
 )
-from faultmaven.modules.case.contracts import ProblemStatus
-from tests.case_builders import with_declined_offer
 from tests.unit.core.investigation import golden_cases_2636 as golden
 from tests.unit.core.investigation.narrated import narrated
-from tests.unit.core.investigation.test_refutation_needs_data_1911 import _DSU
-from tests.unit.core.investigation.test_resolution_backstop_turn import _make_repo
 
 pytestmark = pytest.mark.unit
 
@@ -59,8 +61,11 @@ def rendered(name: str) -> list[str]:
     return golden.cycle_text(narrated(case, metadata))
 
 
-#: The declared difference (A9, ruled 2026-11-11), asserted below.
-DECLARED = {"absence_decided_twice_in_one_cycle"}
+#: The declared differences (A9, ruled 2026-11-11), asserted below.
+DECLARED = {
+    "absence_decided_twice_in_one_cycle",
+    "declined_resolution_reask_at_step_0_and_step_2",
+}
 
 
 @pytest.mark.parametrize("name", sorted(set(golden.B1C_SCENARIOS) - DECLARED))
@@ -73,14 +78,17 @@ def test_every_scenario_was_captured_on_main():
 
 
 @pytest.mark.parametrize("name", sorted(golden.B1C_SCENARIOS))
-def test_a_decided_notice_never_renders_nothing(name):
-    """Critique 1 and 2: whatever the record says, a decision renders its
-    text, with no outcome as with one."""
-    _case, metadata = golden.B1C_SCENARIOS[name]()
-    log = metadata.get(DECISIONS_KEY) or []
+def test_a_decided_notice_is_rendered_where_it_stands(name):
+    """Critique 1 and 2, through the narration step (``_replace_token``
+    included): every B1c decision renders at least one line, and each of its
+    lines is in the turn's notices."""
+    case, metadata = golden.B1C_SCENARIOS[name]()
+    log = list(metadata.get(DECISIONS_KEY) or [])
+    notices = narrated(case, metadata)
     for entry in log:
         if entry["code"] in B1C_CODES:
-            assert render_notice(entry["code"], entry["params"], None, log)
+            texts = render_notice(entry["code"], entry["params"], None, log)
+            assert texts and all(text in notices for text in texts)
 
 
 # ---------------------------------------------------------------------------
@@ -129,10 +137,12 @@ def test_the_unbound_notice_states_the_pool_its_decider_read():
 # ---------------------------------------------------------------------------
 
 
-def test_a9_two_equal_decisions_in_one_cycle_render_one_line():
-    first, second = oracle("absence_decided_twice_in_one_cycle")
-    assert first == second, "premise: main wrote the same line twice"
-    assert rendered("absence_decided_twice_in_one_cycle") == [first]
+@pytest.mark.parametrize("name", sorted(DECLARED))
+def test_a9_two_equal_decisions_in_one_cycle_render_one_line(name):
+    """``main`` wrote the line twice; each line is rendered once, in place."""
+    lines = oracle(name)
+    assert len(set(lines)) < len(lines), "premise: main repeated a line"
+    assert rendered(name) == list(dict.fromkeys(lines))
 
 
 def test_a_bundle_and_the_live_apply_deciding_one_notice_render_one_line():
@@ -142,34 +152,114 @@ def test_a_bundle_and_the_live_apply_deciding_one_notice_render_one_line():
     assert rendered("absence_decided_by_a_bundle_and_the_live_apply") == [line]
 
 
+def _disconfirmed_at(metadata: dict, failure_turn: int) -> None:
+    record_decision(
+        metadata,
+        NoticeCode.ABSENCE_IN_FAILED_WINDOW,
+        prepend=True,
+        disconfirmed=True,
+        relief_turn=None,
+        failure_turn=failure_turn,
+        fix_turn=8,
+    )
+
+
+@pytest.mark.parametrize("merged", [True, False], ids=["bundle-and-live", "one-apply"])
+def test_two_decisions_with_other_params_and_one_text_render_one_line(merged):
+    """Two keys, one text: a disconfirmed window's line does not name its
+    failure turn, so decisions that differ only there render one line (A9),
+    a replayed bundle's beside the live apply's or two in one apply."""
+    case, _metadata = golden.absence_after_a_persistence()
+    first: dict = {}
+    _disconfirmed_at(first, failure_turn=9)
+    second = {} if merged else first
+    _disconfirmed_at(second, failure_turn=10)
+    if merged:
+        merge_system_notices(first, second)
+        merge_decisions(first, second)
+    assert len(first[DECISIONS_KEY]) == 2, "premise: two keys"
+    assert golden.cycle_text(narrated(case, first)) == oracle(
+        "absence_after_a_persistence"
+    )
+
+
 # ---------------------------------------------------------------------------
-# The failed write
+# What the renderers read
 # ---------------------------------------------------------------------------
 
 
-def _no_outcome(monkeypatch) -> None:
-    """A derivation the write and the in-memory pass share raises."""
+class _Untouchable:
+    """An outcome no renderer outside ``READS_THE_RECORD`` may read."""
+
+    def __getattr__(self, name):
+        raise AssertionError(f"read outcome.{name}")
+
+
+def _logged():
+    """Every logged decision of the B1b and B1c scenarios, with its log."""
+    for build in (*golden.CYCLE_SCENARIOS.values(), *golden.B1C_SCENARIOS.values()):
+        _case, metadata = build()
+        log = list(metadata.get(DECISIONS_KEY) or [])
+        for entry in log:
+            yield entry, log
+
+
+def test_only_the_record_reading_codes_read_the_outcome():
+    """A renderer outside ``READS_THE_RECORD`` renders the same with any
+    outcome as with none, so the narration step may compute none for it."""
+    covered = set()
+    for entry, log in _logged():
+        code = entry["code"]
+        if code in READS_THE_RECORD or code in CONTEXT_ONLY:
+            continue
+        covered.add(code)
+        params = entry["params"]
+        assert render_notice(code, params, _Untouchable(), log) == render_notice(
+            code, params, None, log
+        )
+    assert covered == set(NoticeCode) - READS_THE_RECORD - CONTEXT_ONLY
+
+
+def _failing_write(monkeypatch) -> list:
+    """A derivation the write and the in-memory pass share raises; returns
+    the narration step's in-memory computations."""
 
     def _boom(*_a, **_k):
         raise RuntimeError("no outcome")
 
     monkeypatch.setattr(outcome_module, "shown_milestones", _boom)
+    computed: list = []
+    real = turn_narration.compute_case_outcome
+
+    def _counted(*args, **kwargs):
+        computed.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(turn_narration, "compute_case_outcome", _counted)
+    return computed
 
 
-@pytest.mark.parametrize(
-    "name",
-    sorted(
-        n
-        for n in golden.B1C_SCENARIOS
-        if n.startswith(("absence_", "unbound_"))
-        and n not in DECLARED | {"absence_after_a_relapse_later_disconfirmed"}  # stored
-    ),
-)
-def test_with_no_outcome_the_notices_are_the_stored_record_texts(monkeypatch, name):
-    case, metadata = golden.B1C_SCENARIOS[name]()
-    _no_outcome(monkeypatch)
-    assert golden.cycle_text(narrated(case, metadata)) == oracle(name)
-    assert case.progress.outcome is None
+def test_a_failed_write_computes_no_outcome_for_codes_that_read_none(
+    monkeypatch, caplog
+):
+    """Item 9: with only codes rendered from their params, a failed write
+    leads to no in-memory outcome and no "no outcome" log line; the text is
+    ``main``'s."""
+    case, metadata = golden.absence_after_a_persistence()
+    computed = _failing_write(monkeypatch)
+    assert golden.cycle_text(narrated(case, metadata)) == oracle(
+        "absence_after_a_persistence"
+    )
+    assert computed == [] and case.progress.outcome is None
+    assert "no outcome to narrate from" not in caplog.text
+
+
+def test_a_failed_write_computes_the_outcome_for_a_code_that_reads_it(monkeypatch):
+    """The control: a code whose renderer reads the record still gets one."""
+    case, metadata = golden.mitigation_no_bound_relief_seen_present()
+    computed = _failing_write(monkeypatch)
+    narrated(case, metadata)
+    assert computed == [1]
 
 
 # ---------------------------------------------------------------------------
@@ -177,9 +267,25 @@ def test_with_no_outcome_the_notices_are_the_stored_record_texts(monkeypatch, na
 # ---------------------------------------------------------------------------
 
 
-async def _turn(monkeypatch, case, state_updates, message="ok") -> tuple:
-    """One turn through ``process_turn``: the notices and codes the narration
-    step found, then the turn record's notices."""
+@pytest.mark.parametrize(
+    ("name", "code"),
+    [
+        (
+            "turn_stage_gates_fix_report_without_an_acceptance",
+            NoticeCode.FIX_REPORT_IGNORED,
+        ),
+        (
+            "turn_response_application_false_alarm_refused",
+            NoticeCode.FALSE_ALARM_REFUSED,
+        ),
+        ("turn_chain_emission_root_terminal_refused", NoticeCode.ROOT_TERMINAL_REFUSED),
+        ("turn_transitions_declined_close_reask", NoticeCode.DECLINED_CLOSE_REASK),
+        ("turn_terminal_proposals_pending_check", NoticeCode.PENDING_CHECK),
+    ],
+)
+def test_each_decider_family_through_a_turn(monkeypatch, name, code):
+    """The narration step finds the code holding its place with a token; the
+    turn record holds ``main``'s whole notice list, in order, and no token."""
     seen: dict = {}
     real = turn_completion.narrate_turn
 
@@ -189,103 +295,9 @@ async def _turn(monkeypatch, case, state_updates, message="ok") -> tuple:
         real(case, metadata)
 
     monkeypatch.setattr(turn_completion, "narrate_turn", _spy)
-    engine = MilestoneEngine(MagicMock(), _make_repo(), investigation_tools=MagicMock())
-    engine.generator.generate_structured_output = AsyncMock(
-        return_value=InvestigationResponse_Diagnosis(
-            agent_response="Noted.", state_updates=state_updates
-        )
-    )
-    case.current_turn += 1
-    await engine.process_turn(case=case, user_message=message, redaction_ctx=None)
-    return seen, case.turn_history[-1].system_notices
-
-
-def _assert_rendered_after(seen, notices, code, lines) -> None:
+    _case, metadata = golden.B1C_SCENARIOS[name]()
+    notices = metadata["system_notices"]
     assert code in seen["codes"]
     assert any(is_token(n) for n in seen["notices"]), "a token before narration"
     assert not any(is_token(n) for n in notices), "none in the turn record"
-    for line in lines:
-        assert line in golden.cycle_text(notices)
-
-
-async def test_stage_gates_through_a_turn(monkeypatch):
-    _eng, case, _hyp = golden.fix_report._identified()
-    seen, notices = await _turn(
-        monkeypatch,
-        case,
-        _DSU(milestones=MilestoneUpdates(accepted_fix_reported_in="previous_message")),
-    )
-    _assert_rendered_after(
-        seen,
-        notices,
-        NoticeCode.FIX_REPORT_IGNORED,
-        oracle("fix_report_without_an_acceptance"),
-    )
-
-
-async def test_response_application_through_a_turn(monkeypatch):
-    case = golden.revision._case(ProblemStatus.VERIFIED)
-    seen, notices = await _turn(
-        monkeypatch,
-        case,
-        _DSU(
-            verification_updates=ProblemVerificationUpdate(
-                problem_invalidated=True,
-                invalidation_basis="the user says it was never broken",
-            )
-        ),
-    )
-    _assert_rendered_after(
-        seen, notices, NoticeCode.FALSE_ALARM_REFUSED, oracle("false_alarm_refused")
-    )
-
-
-async def test_chain_emission_through_a_turn(monkeypatch):
-    case, _root, hyp = golden._d6_case()
-    case.current_turn -= 1
-    seen, notices = await _turn(
-        monkeypatch,
-        case,
-        _DSU(
-            hypotheses_to_update=[
-                HypothesisUpdate(
-                    hypothesis_id=hyp.hypothesis_id,
-                    root_is_terminal=True,
-                    terminal_basis_evidence_ids=[],
-                )
-            ]
-        ),
-    )
-    _assert_rendered_after(
-        seen,
-        notices,
-        NoticeCode.ROOT_TERMINAL_REFUSED,
-        oracle("root_terminal_refused_with_none_cited"),
-    )
-
-
-async def test_transitions_through_a_turn(monkeypatch):
-    case = golden._bare_case()
-    with_declined_offer(case, kind="close", basis="deferred")
-    seen, notices = await _turn(
-        monkeypatch,
-        case,
-        _DSU(proposed_transition={"to_state": "closed"}),
-        message="close it",
-    )
-    _assert_rendered_after(
-        seen,
-        notices,
-        NoticeCode.DECLINED_CLOSE_REASK,
-        oracle("declined_close_reask_on_the_deferred_close"),
-    )
-
-
-async def test_terminal_proposals_through_a_turn(monkeypatch):
-    seen, notices = await _turn(monkeypatch, golden._held(), _DSU())
-    _assert_rendered_after(
-        seen,
-        notices,
-        NoticeCode.PENDING_CHECK,
-        ORACLE["pending_check_backstop"]["notices"],
-    )
+    assert golden.cycle_text(notices) == oracle(name)

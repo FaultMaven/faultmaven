@@ -26,10 +26,7 @@ from faultmaven.core.investigation.narration.codes import (
     decision_key,
     decision_token,
 )
-from faultmaven.core.investigation.narration.notices import (
-    NO_PENDING_SOLUTION_NOTICE,
-    fix_report_reason,
-)
+from faultmaven.core.investigation.narration.notices import NO_PENDING_SOLUTION_NOTICE
 from faultmaven.core.investigation.narration.offers import mitigation_sentence
 from faultmaven.core.investigation.offers import (
     awaiting_request_recheck,
@@ -1634,14 +1631,17 @@ def _ignore_fix_report(
     case: Case, metadata: dict[str, Any], reason: str, **turns: Any
 ) -> None:
     """``accepted_fix_reported_in`` previous_message was not applied (#2427):
-    logged, and one line so the model does not go on reading the fix as dated
-    to the previous message, as for an ignored ``accepted_action_ref``.
+    logged with the decider's code and turns, and one line, rendered after the
+    cycle's record, so the model does not go on reading the fix as dated to
+    the previous message, as for an ignored ``accepted_action_ref``.
     ``reason`` is the decider's code, ``turns`` the turns its line names."""
     logger.info(
-        "Case %s: accepted_fix_reported_in=previous_message ignored at turn %s: %s",
+        "Case %s: accepted_fix_reported_in=previous_message ignored at turn %s: "
+        "%s %s",
         case.case_id,
         case.current_turn,
-        fix_report_reason({"reason": reason, **turns}),
+        reason,
+        turns,
     )
     record_decision(metadata, NoticeCode.FIX_REPORT_IGNORED, reason=reason, **turns)
 
