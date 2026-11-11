@@ -1,7 +1,7 @@
 # FaultMaven Architectural Design Principles
 
-**Version**: 2.7
-**Date**: 2026-11-10
+**Version**: 2.8
+**Date**: 2026-11-11
 **Status**: Active
 **Related Documents**:
 
@@ -1015,6 +1015,8 @@ One check per clause. This table's Status column is the principle's only status 
 > A thread keeps neither the event loop free nor a deadline: native code that holds the interpreter lock stalls the loop, and cancelling a thread's future does not stop the thread. A thread is the place for I/O, and for native code that releases the lock and has no deadline to keep.
 >
 > Work over input a user controls, and any work the design gives a deadline, runs where that deadline can stop it: a process the deadline kills, under declared time, memory and output limits.
+>
+> Work stays in the API process only under a declared input limit and a growth test over that limit; a pattern the system did not write never runs there.
 
 The mechanism is one shared worker, `faultmaven/infrastructure/worker_process.py`: a job runs in a spawned process of its own (`python -m` its worker module, which imports what the job needs and little else), killed and reaped at its deadline, a cancellation and any other end included, before its slot frees. The worker bounds itself before it touches the input: it dies with its parent, volunteers for the OOM killer, and sets its CPU-time and address-space limits, and the parent reads its output under a limit. A phased job gives each step a bound of its own (the start, the request, the work, the result), so the work's deadline counts the work alone. Each application declares its deadlines and limits. Built for **document preparation** (#2622): Stages 0-5 of a conversion, one worker per job under two slots, killed at the 120 s deadline (`document_preprocessor.py`, `preparation_worker.py`). Built for **Evidence Tier 1** (#2637): one phased worker per extraction under `max(2, int(index_cores()))` slots, killed when `extract` runs past its 2 s deadline; the wait for a slot, the start and each transfer have declared bounds of their own (`preprocessing_service.py`, `extraction_worker.py`). The runbook validator gate is next ([ruling on #2596](https://github.com/FaultMaven/faultmaven/issues/2596#issuecomment-6716225975)).
 
@@ -1024,8 +1026,24 @@ The mechanism is one shared worker, `faultmaven/infrastructure/worker_process.py
 |---|---|
 | A responsiveness test with a stage that holds the interpreter lock in C (for example a large `re.sub`); it fails on a thread-only design. | Built for document preparation (#2622): `test_a_stage_holding_the_lock_in_c_leaves_the_event_loop_free` in `tests/unit/modules/knowledge/test_document_extraction_off_the_loop_2153.py`. Its stage holds the lock in a C loop without a regex, so the test adds no ReDoS pattern. Built for Evidence Tier 1 (#2637): `test_an_extraction_past_its_deadline_stops_at_it` in `tests/unit/modules/preprocessing/test_tier1_runs_in_a_killable_worker_2637.py`, with an extractor that holds the lock in C (a cubic `re.sub` over a constant) and one that loops in Python: while it runs the loop turns three times with its worker alive, and once the preview is given no thread of the API process is inside the extractor and its worker was killed. |
 | A census of thread offloads over user-sized input, each naming the mechanism that keeps its deadline. | Built (#2622): the table below, kept equal to the files by `tests/unit/architecture/test_thread_offload_census_2622.py`. The test checks the set of files, not each one's mechanism: a file that starts or stops offloading fails it until its row is added or removed. |
+| Each in-process path over user input names its input limit and its growth test, or it moves to a worker. | Listed: the in-process table below. The growth tests it marks *none yet* are built by the in-process stage of #2596 (its pin 3); the paths it marks *moving* move there or in #2644. A growth test is a `tests.wallclock.assert_linear_growth` check (`tests/wallclock/growth.py`). |
 
-**The thread offload census.** Every module in `faultmaven/` that calls `asyncio.to_thread`, `run_in_executor` or an executor's `submit`, with what it hands to the thread and what keeps the rule: I/O, native code that releases the interpreter lock and has no deadline to keep, redaction (ruled to keep its thread on #2596, measured inside its bound), or a #2596 stage still to come.
+**In-process work over user input.** Work that runs inline in the API process, on the event loop, never enters the census below, which lists thread offloads only. Under the sentence above each such path names the pattern's author, its input limit and its growth test, or it moves to a worker. Paths are `faultmaven/` relative.
+
+| Path | Input, and who writes the pattern | Input limit | Growth test | Disposition |
+|---|---|---|---|---|
+| `search_file`, the model's regex (`modules/agent/tools/search_file_tool.py:567`, `:770`) | The model's pattern over an evidence file | The file, by `MAX_UPLOAD_SIZE_MB`; the pattern, by nothing | none | **Moving** to a Principle 14 worker per search: the in-process stage (#2686), since the system did not write the pattern |
+| `search_file`'s vocabulary scan (`modules/agent/tools/search_file_tool.py:892-901`) | The system's patterns over the first 102,400 characters | 102,400 characters | none yet | Stays |
+| The Tier 0 classifier (`modules/preprocessing/classifier.py:413`, `:617`) | The system's patterns over the first 5,000 characters | 5,000 characters | none yet | Stays |
+| The coverage scan, `extract_time_range_ts` (`modules/preprocessing/extractors/utils.py:479`; called at `modules/preprocessing/preprocessing_service.py:973` in the parent, and at `core/investigation/milestone_engine/milestone_inference.py:131`) | The system's timestamp patterns over the first 10 lines and at most the last 100 (`_HEAD_SCAN_LINES`, `_TAIL_SCAN_LINES`, `utils.py:43-44`) | Lines bounded at 110; line length unbounded, the file to `MAX_UPLOAD_SIZE_MB` | none yet (over line length) | Stays |
+| Phase 4 entity extraction | The system's patterns over the evidence | none declared here | none yet | **Moving**: its own stage, #2644 |
+| Frontmatter (`utils/frontmatter.py:90`, `:119`) | YAML whose aliases the author writes, over the frontmatter block | none declared | none yet | **Moving**, or refused or expanded under a declared limit off the loop: the in-process stage (#2674) |
+| The query classifier (`modules/agent/domain/services/query_classifier.py:515`) | The system's patterns over the user's message | `MAX_UPLOAD_SIZE_MB` (`modules/case/api/routes/conversation.py:664`) | none yet | Stays |
+| The KB query patterns (`infrastructure/knowledge/knowledge_vector_store.py:96-103`, used at `:1095`, `:1167`; the tokenizer split `_TOKEN_SEPARATORS.split(query)` at `:1071`) | The system's patterns over the query | none declared on the `hybrid_search` callers (`modules/knowledge/domain/services/knowledge_service.py:532`, `modules/agent/tools/document_qa_tool.py:509`) | none yet | Stays |
+
+`core/processing/log_analyzer.py` is not yet traced.
+
+**The thread offload census.** Every module in `faultmaven/` that calls `asyncio.to_thread`, `run_in_executor` or an executor's `submit`, with what it hands to the thread and what keeps the rule: I/O, native code that releases the interpreter lock and has no deadline to keep, redaction (ruled to keep its thread on #2596, measured inside its bound: its patterns are the system's, its input is limited by `MAX_UPLOAD_SIZE_MB`, and its growth tests are `test_a_hostile_shape_costs_linear_time` and `test_a_chain_of_rounds_is_cut_and_fails_closed` in `tests/unit/infrastructure/security/test_secret_patterns_1980.py` and `test_a_long_near_miss_line_does_not_blow_up` and `test_a_line_of_many_scheme_separators_does_not_blow_up` in `tests/unit/infrastructure/logging/test_url_query_redaction.py`; Presidio's calls have no growth test here: none yet), or a #2596 stage still to come.
 
 | Module | What runs in the thread | Kind |
 |---|---|---|
@@ -1076,6 +1094,7 @@ The mechanism is one shared worker, `faultmaven/infrastructure/worker_process.py
 | 2.5 | 2026-11-08 | P14 applied to document preparation ([#2622](https://github.com/FaultMaven/faultmaven/issues/2622)): its responsiveness test and the thread offload census built. |
 | 2.6 | 2026-11-09 | P14 applied to Evidence Tier 1 ([#2637](https://github.com/FaultMaven/faultmaven/issues/2637)): the shared worker named as the mechanism of both applications, phased bounds for Tier 1, its responsiveness test built, and its census row removed. |
 | 2.7 | 2026-11-10 | P13.4 names the TLS root set as an SDK policy ([ruling on #2685](https://github.com/FaultMaven/faultmaven/issues/2685#issuecomment-6754909029)): one set, the OS bundle, for every TLS client and run mode, extended in one place. Its enforcement row and the TLS client census added ([#2691](https://github.com/FaultMaven/faultmaven/issues/2691)). 13.4's build status is stated in its Status column only. |
+| 2.8 | 2026-11-11 | P14 states when work may stay in the API process ([ruling on #2596](https://github.com/FaultMaven/faultmaven/issues/2596#issuecomment-6754909397)), with its enforcement row and the in-process table ([#2693](https://github.com/FaultMaven/faultmaven/issues/2693)). |
 
 ### Key Changes Across Versions
 
