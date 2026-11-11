@@ -63,10 +63,11 @@ the planted quadratic from the window where ``C`` swamps ``t(8n) - t(n)``
 
 An undecided window moves up by ``step`` — the work grows, ``C`` does not —
 at most ``MAX_ESCALATIONS`` times, and a call still undecided is REFUSED as
-miscalibrated. It is never passed. A caller whose window may not move up (its
-top size is the input's bound) may instead have an undecided window measured
-again, ``undecided_repeats`` times at most, before any move; a decided window,
-super-linear included, is never measured again.
+miscalibrated. It is never passed. A caller may also have an undecided window
+measured again at the same sizes, ``undecided_repeats`` times at most, before
+it moves up; that is the one retry for a window that may not move up (its top
+size is the input's bound). A decided window, super-linear included, is never
+measured again.
 
 The invariant
 -------------

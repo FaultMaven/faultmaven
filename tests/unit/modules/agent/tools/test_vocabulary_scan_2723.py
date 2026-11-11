@@ -77,9 +77,16 @@ def test_the_scan_stops_at_thirty_patterns():
 
 
 @pytest.mark.unit
-def test_the_scan_reads_nothing_past_its_bound():
-    content = " " * SearchFileTool._VOCAB_SCAN_CHARS + " db.local:5432"
-    assert SearchFileTool()._extract_file_vocabulary(content)["patterns"] == []
+def test_the_scan_reads_up_to_its_bound_and_no_further():
+    """A match ending at the bound's last character is read; one past it is not."""
+    host_port = "db.local:5432"
+
+    def readings(end: int) -> list[str]:
+        content = " " * (end - len(host_port)) + host_port
+        return SearchFileTool()._extract_file_vocabulary(content)["patterns"]
+
+    assert host_port in readings(SearchFileTool._VOCAB_SCAN_CHARS)
+    assert host_port not in readings(SearchFileTool._VOCAB_SCAN_CHARS + 1)
 
 
 @pytest.mark.unit

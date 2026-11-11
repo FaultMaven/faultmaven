@@ -4311,6 +4311,29 @@ class TestTheUndecidedRepeat:
         self._judge(max_escalations=1, undecided_repeats=1)
         assert windows == [2, 2, 16]
 
+    def test_both_entry_points_measure_each_window_once_by_default(self, monkeypatch):
+        """``measure_growth``'s own default, not only the one the judge passes."""
+        from tests.wallclock import measure_growth
+        from tests.wallclock.growth import LINEAR
+
+        readings = ("undecided", "linear") * 2
+        windows = self._replayed(monkeypatch, *readings)
+        growth = measure_growth(_untimed, lambda size: size, small=2)
+        assert windows == [2, 16]
+        assert growth.verdict == LINEAR
+        self._judge()
+        assert windows == [2, 16, 2, 16]
+
+    def test_a_negative_repeat_count_is_refused(self, monkeypatch):
+        from tests.wallclock import measure_growth
+
+        windows = self._replayed(monkeypatch, "linear")
+        with pytest.raises(ValueError, match="undecided_repeats"):
+            measure_growth(_untimed, lambda size: size, small=2, undecided_repeats=-1)
+        with pytest.raises(ValueError, match="undecided_repeats"):
+            self._judge(undecided_repeats=-1)
+        assert windows == []
+
 
 # ------------------------------------------------------------ the workflow
 #
