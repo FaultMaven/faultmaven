@@ -365,7 +365,8 @@ def _apply_pending_refutations(
     its chain, or on a recorded failed fix of it (the one disproof with no row
     of its own to link). The backing rows are passed to ``refute_hypothesis``.
     Otherwise it is refused: the hypothesis stays open, the refusal is counted,
-    and ``system_feedback`` tells the model what would back it. The stated
+    and it is recorded as ``REFUTATION_REFUSED``, whose notice, rendered after
+    the cycle's record (#2636), tells the model what would back it. The stated
     reason alone is an argument, and an argument that does not exclude the
     competitor reads exactly like one that does.
     """
@@ -395,8 +396,9 @@ def _apply_pending_refutations(
             case.case_id,
             h_id,
         )
-        # What the link pass did is the decision's; a later step's retirement
-        # of the same hypothesis is the log's (A19).
+        # What the link pass did is the decision's; that the cycle ends with
+        # the same hypothesis no longer open (retired, refuted or validated)
+        # is the log's (A19).
         record_decision(
             metadata,
             NoticeCode.REFUTATION_REFUSED,

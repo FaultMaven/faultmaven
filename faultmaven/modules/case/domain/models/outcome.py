@@ -141,9 +141,12 @@ class CauseOutcome(BaseModel):
     identification_held_open: bool = Field(
         default=False,
         description=(
-            "Identification is held open: a standing hypothesis's root has its "
-            "why open and no root is identified, as the cause recompute wrote "
-            "it (``progress.cause_identification_held_open``, #2036)"
+            "Identification is held open, as the cause recompute wrote it this "
+            "cycle (``progress.cause_identification_held_open``, #2036), like "
+            "``pool_empty_reason``. ``held_open_root_ids`` is derived fresh at "
+            "the write, so after a later step retires the holding hypothesis "
+            "they can disagree until the final recompute (B1e) re-derives all "
+            "three together"
         ),
     )
 
