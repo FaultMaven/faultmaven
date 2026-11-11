@@ -4,12 +4,13 @@ description: Run one round of issue processing — settle the last round, propos
 
 # /process-top-issues
 
-**Purpose:** make the system healthier and more robust round after round by resolving what matters most at its root
-instead of its symptom (4.1 holds the one exception, the owner's), so that the backlog shrinks over rounds instead of
-growing; keep `main` green, and keep each fix no larger than the defect needs. Nothing is hidden or closed to lower
-the count. The owner merges on your `## Merge-ready` comment without reading the diff, so every PR you hand over must
-have been through the full review chain in step 4. When a rule here works against that goal, say so under *Needs your
-call* and propose its change (*Changing this file*).
+**Purpose:** make the system healthier and more robust round after round by resolving what matters most at its root,
+not by treating its symptoms alone (only an owner ruling leaves a root unfixed: 4.1's mitigation, a waived finding, a
+merge as is), so that the backlog shrinks over rounds instead of growing; keep `main` green, and keep each fix no
+larger than the defect needs. Nothing is hidden or closed to lower the count. The owner merges on your
+`## Merge-ready` comment without reading the diff, so every PR you hand over must have been through the full review
+chain in step 4. When a rule here works against that purpose, say so under *Needs your call*; a change the owner rules
+goes through *Changing this file*.
 
 This file defines the rules for processing backlog issues, and is self-contained. Memory notes point here and never
 restate it; where they disagree, this file wins.
@@ -38,9 +39,9 @@ Reviewers are independent agents: they never wrote or planned what they review.
 - **Every open issue outside `tracking` carries one priority label.** It is re-set by these definitions whenever the
   item moves between piles, unless the owner set it or a ruling states it:
   - `P1`: a security, tenancy or data-loss exposure (latent included), or a defect a user or operator hits in
-    normal use (a wrong result, a 5xx, lost work), or a `main red` (as 4.6 and step 2's alert sweep file one, in any
-    FaultMaven repo) while that `main` is red on it. A `P0` label, if the owner uses one, is read as `P1`, ranked
-    first;
+    normal use (a wrong result, a 5xx, lost work), or an open issue holding a `main red` (4.6 files one; step 2's
+    alert sweep files one or adds it to the open issue covering it). A `P0` label, if the owner uses one, is read as
+    `P1`, ranked first;
   - `P2`: any other defect reachable today;
   - `P3`: everything else: latent shapes, cleanup, docs, test infrastructure, enhancements. The owner may raise
     any item, and a ruled feature takes the priority its ruling states (ask if it states none).
@@ -285,12 +286,11 @@ echo "since the last proposal: merged $(jq length <<<"$mp") · PRs opened $(gh p
        find*), except in a round whose number is divisible by 3: the slot then takes one chore batch, the seam with
        the most ready `class:chore` issues, oldest on a tie, within the round's size limits below, planned and
        reviewed as one item and counted as one. Its seam is the component the chores' fixes touch, named in the plan.
-       In the batch's round the slot does not take an open `P1`: it waits that one round. The wait binds the slot
-       alone, and only when it takes the batch: a design lane no stage can take, and the **Next** items, follow the
-       ordinary order, an open `P1` first. In a migration round, or when no chore seam is free (none ready, or each on
-       an open PR's seam), the slot is the ordinary one, and the proposal says so in one line under *Health*. The
-       `slot` line lists the next ones for when the first sits on an open PR's seam; in a batch round it reads
-       `chore batch (round <N>); ordinary:` before them, for the fallback;
+       In the batch's round the slot does not take an open `P1`, and only the slot waits: the **Next** items follow
+       the ordinary order, as a design lane no stage can take does. In a migration round, or when no chore seam is
+       free (none ready, or each on an open PR's seam), the slot is the ordinary one, and the proposal says so in one
+       line under *Health*. The `slot` line lists the next ones for when the first sits on an open PR's seam; in a
+       batch round it reads `chore batch (round <N>); ordinary:` before them, for the fallback;
      - **the ordinary order:** `P1`, `P2`, `P3`, oldest first within each, a chore after the defects of its priority.
 
      Skip an item that an open PR from an earlier round still carries (its PR, *Where an item stands*), and any item
@@ -330,9 +330,9 @@ echo "since the last proposal: merged $(jq length <<<"$mp") · PRs opened $(gh p
    open <n> (P1 <a> · P2 <b> · P3 <c> · blocked <d>) · alerts: <the sweep's `queue:` line>, filed <f> · last round: merged <m> per <l> lanes, closed <x> (sweep <k>), filed <y> (design evidence <g>, defects <h>, chores <j>)
    ```
 
-   The health lines carry the rest of the scorecard. The 14-day ratio and the count of open issues are indicators of
-   the purpose, read over rounds, never a round's target: a round picks by *Pick*'s order whatever they read. They
-   trigger only the backlog-health question above and the batching in *Filing what you find*.
+   The health lines carry the rest of the scorecard. The 14-day ratio and the scorecard's `open` count are indicators
+   of the purpose, read over rounds, never a round's target. They trigger only the backlog-health question above, the
+   batching in *Filing what you find*, and the result's diagnosis when Open rose (step 5).
 
 ## 3. Take the answers
 
