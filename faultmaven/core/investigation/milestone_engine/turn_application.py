@@ -1,6 +1,7 @@
 """Applying a generated response to the case: structured updates, automatic transitions, progress scoring and validation."""
 
 import logging
+from typing import Any, NamedTuple, Optional
 
 from faultmaven.core.investigation.evidence_need_linking import (
     link_evidence_suggestions_to_needs,
@@ -16,6 +17,12 @@ from faultmaven.core.investigation.milestone_engine.turn_records import (
     _perform_hypothesis_housekeeping,
     _resolve_id_ref,
 )
+from faultmaven.core.investigation.narration import codes as narration_codes
+from faultmaven.core.investigation.narration.codes import (
+    DECISIONS_KEY,
+    NoticeCode,
+    is_token,
+)
 from faultmaven.core.investigation.offers import lapse_offers
 from faultmaven.core.investigation.outcome import record_case_outcome
 from faultmaven.core.investigation.problem_status import problem_on_hold
@@ -23,7 +30,7 @@ from faultmaven.core.investigation.state_validator import ValidationSeverity
 from faultmaven.core.investigation.working_conclusion_generator import (
     calculate_progress_metrics,
 )
-from faultmaven.modules.case.contracts import TurnOutcome
+from faultmaven.modules.case.contracts import HypothesisState, TurnOutcome
 
 from .affordances import engine_owned_affordances
 from .progress import restatement_stall_notice, score_progress
@@ -34,15 +41,101 @@ from .stage_gates import (
     _add_system_feedback,
     _refresh_working_conclusion,
     fix_cause,
+    merge_decisions,
     merge_system_notices,
+    record_decision,
 )
 from .statement_revision import merge_statement_commit
 from .terminal_proposals import (
     _maybe_propose_confirmed_resolution,
     _sweep_needs_for_terminal_hypotheses,
 )
+from .turn_narration import OUTCOME_WRITTEN_KEY
 
 logger = logging.getLogger(__name__)
+
+
+class TurnRecordInputs(NamedTuple):
+    """What the turn record takes from the decision cycle; it is created in
+    ``_finalize_turn``, after the narration step (#2636)."""
+
+    progress_metrics: Any
+    stagnation_str: Optional[str]
+    validation_repairs: list
+    cause_at_start: Any
+
+
+def record_turn(
+    case, metadata: dict, inputs: TurnRecordInputs, *, user_message, response_obj
+) -> None:
+    """Step 6: the turn record, after the narration step rendered the
+    notices it copies (#2636). A decision's token left unrendered is a defect:
+    it is logged and stripped, never recorded or shown to the model."""
+    notices = metadata.get("system_notices") or []
+    leftover = [n for n in notices if is_token(n)]
+    if leftover and narration_codes.TOKENS_FAIL:
+        raise AssertionError(
+            f"{len(leftover)} decision token(s) left unrendered at the turn "
+            "record (#2636)"
+        )
+    if leftover:
+        logger.error(
+            "Case %s turn %s: %d decision token(s) left unrendered (#2636)",
+            case.case_id,
+            case.current_turn,
+            len(leftover),
+        )
+        metadata["system_notices"] = [n for n in notices if not is_token(n)]
+    case.turn_history.append(
+        _create_turn_record(
+            turn_number=case.current_turn,
+            cause_at_start=inputs.cause_at_start,
+            milestones_completed=metadata.get("milestones_completed", []),
+            evidence_added=metadata.get("evidence_added", []),
+            hypotheses_generated=metadata.get("hypotheses_generated", []),
+            hypotheses_validated=metadata.get("hypotheses_validated", []),
+            solutions_proposed=metadata.get("solutions_proposed", []),
+            progress_made=metadata.get("progress_made", False),
+            outcome=metadata.get("outcome", TurnOutcome.CONVERSATION),
+            user_message=user_message,
+            agent_response=response_obj.agent_response,
+            agent_response_synthesized=(
+                is_agent_response_synthesized(response_obj)
+                or not response_obj.agent_response.strip()
+            ),
+            system_notices=metadata.get("system_notices"),
+            momentum=inputs.progress_metrics.investigation_momentum,
+            blocked_reasons=inputs.progress_metrics.blocked_reasons,
+            next_steps=inputs.progress_metrics.next_steps,
+            repair_pattern=inputs.stagnation_str,
+            # The state validator's repairs, then everything the turn's apply
+            # steps recorded on ``metadata["validation_repairs"]`` — the
+            # schema's confidence repairs (fm#1502) and the apply-time
+            # rejections. The #1142 telemetry count stays the state
+            # validator's alone, which is what that stream documents.
+            validation_repairs=[
+                *inputs.validation_repairs,
+                *metadata.get("validation_repairs", []),
+            ],
+        )
+    )
+
+
+def _record_later_retirements(case, metadata: dict) -> None:
+    """A hypothesis whose refutation this cycle refused, retired by a later
+    step of it (housekeeping, the monitor's repair): a code its refusal's line
+    reads (A19)."""
+    for entry in list(metadata.get(DECISIONS_KEY) or []):
+        params = entry["params"]
+        if entry["code"] != NoticeCode.REFUTATION_REFUSED or params["retired"]:
+            continue
+        hypothesis = (case.hypotheses or {}).get(params["hypothesis_id"])
+        if hypothesis is not None and hypothesis.state == HypothesisState.RETIRED:
+            record_decision(
+                metadata,
+                NoticeCode.HYPOTHESIS_RETIRED,
+                hypothesis_id=params["hypothesis_id"],
+            )
 
 
 async def _apply_turn_response(
@@ -69,19 +162,23 @@ async def _apply_turn_response(
         attachments,
         upload_report,
     )
-    # Merge response metadata with early metadata. The two accumulators written before the
-    # LLM call — a declined revision's note, a refused hypothesis action, a
-    # replay's refusals and repairs — are merged with the response's own, never
-    # replaced by them: the turn record is the only way the next turn learns
-    # of them.
+    # Merge response metadata with early metadata. The accumulators written
+    # before the LLM call — a declined revision's note, a refused hypothesis
+    # action, a replay's refusals, repairs and decision codes — are merged with
+    # the response's own, never replaced by them: the turn record is the only
+    # way the next turn learns of them.
     early = {key: metadata[key] for key in SYSTEM_NOTICE_KEYS if key in metadata}
     early_repairs = list(metadata.get("validation_repairs") or [])
+    early_decisions = list(metadata.get(DECISIONS_KEY) or [])
     metadata.update(response_metadata)
     if early.get("system_notices"):
         for key in SYSTEM_NOTICE_KEYS:
             metadata.pop(key, None)
         metadata.update(early)
         merge_system_notices(metadata, response_metadata)
+    if early_decisions:
+        metadata[DECISIONS_KEY] = early_decisions
+        merge_decisions(metadata, response_metadata)
     if early_repairs:
         live_repairs = list(metadata.get("validation_repairs") or [])
         metadata["validation_repairs"] = early_repairs + [
@@ -276,46 +373,20 @@ async def _apply_turn_response(
             log_msg += f", repair: {progress_result.repair_type.value}"
         logger.info(log_msg)
 
-    # Step 6: Record turn progress. The cause a fix run in this turn acts on
-    # is the one the live investigation apply took when it started (#2036
-    # D2.3); an inquiry or terminal turn runs none, and records it now.
+    # Step 6: what the turn record takes, read here; the record itself is
+    # created in ``_finalize_turn``, after the narration step (#2636). The
+    # cause a fix run in this turn acts on is the one the live investigation
+    # apply took when it started (#2036 D2.3); an inquiry or terminal turn runs
+    # none, and records it now.
     cause_at_start = metadata.get(FIX_CAUSE_AT_START_KEY)
-    turn_record = _create_turn_record(
-        turn_number=case_updated.current_turn,
+    record_inputs = TurnRecordInputs(
+        progress_metrics=progress_metrics,
+        stagnation_str=stagnation_str,
+        validation_repairs=validation_repairs,
         cause_at_start=(
             cause_at_start if cause_at_start is not None else fix_cause(case_updated)
         ),
-        milestones_completed=metadata.get("milestones_completed", []),
-        evidence_added=metadata.get("evidence_added", []),
-        hypotheses_generated=metadata.get("hypotheses_generated", []),
-        hypotheses_validated=metadata.get("hypotheses_validated", []),
-        solutions_proposed=metadata.get("solutions_proposed", []),
-        progress_made=metadata.get("progress_made", False),
-        outcome=metadata.get("outcome", TurnOutcome.CONVERSATION),
-        user_message=user_message,
-        agent_response=response_obj.agent_response,
-        agent_response_synthesized=(
-            is_agent_response_synthesized(response_obj)
-            or not response_obj.agent_response.strip()
-        ),
-        system_notices=metadata.get("system_notices"),
-        momentum=progress_metrics.investigation_momentum,
-        blocked_reasons=progress_metrics.blocked_reasons,
-        next_steps=progress_metrics.next_steps,
-        repair_pattern=stagnation_str,
-        # The state validator's repairs, then everything the turn's
-        # apply steps recorded on ``metadata["validation_repairs"]`` —
-        # the schema's confidence repairs (fm#1502) and the apply-time
-        # rejections. The latter were appended to that key and read by
-        # nothing, so no turn record carried them; this is where the
-        # channel lands. The #1142 telemetry count below stays the state
-        # validator's alone, which is what that stream documents.
-        validation_repairs=[
-            *validation_repairs,
-            *metadata.get("validation_repairs", []),
-        ],
     )
-    case_updated.turn_history.append(turn_record)
 
     # Evidence-needs Phase 3: run the supersession rule for
     # causal-purpose needs anchored to any TERMINAL hypothesis. Covers
@@ -411,9 +482,14 @@ async def _apply_turn_response(
             except Exception:
                 pass
 
+    # A refutation refused in step 1 (or a replayed bundle) whose hypothesis a
+    # later step retired (housekeeping, the monitor's repair): A19.
+    _record_later_retirements(case_updated, metadata)
+
     # The case outcome record (#2615 stage S1), folded over the prior one
     # after every decider of the cycle, the progress monitor's repair, the
-    # needs sweeps and the need linking included, and before the save.
-    # Nothing reads it in this stage.
-    record_case_outcome(case_updated, at="cycle")
-    return case_updated, stagnation_str, validation_repairs
+    # needs sweeps and the need linking included, and before the save. The
+    # narration step reads it (``_finalize_turn``), and only then is the turn
+    # recorded (#2636).
+    metadata[OUTCOME_WRITTEN_KEY] = record_case_outcome(case_updated, at="cycle")
+    return case_updated, record_inputs

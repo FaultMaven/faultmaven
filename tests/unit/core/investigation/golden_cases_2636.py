@@ -18,17 +18,40 @@ holding this module::
         golden_cases_2636 as g; g.capture_main()"
 
 ``capture_main`` refuses any other tree: one whose ``faultmaven`` is not its
-own, or one holding ``narration/offers.py``, where the golden would compare
+own, or one holding ``narration/codes.py``, where the golden would compare
 the code with itself. ``test_golden_composers_2636.py`` runs them on this
 tree and compares.
+
+B1b (#2636) adds ``CYCLE_SCENARIOS``: each runs a decider whose notice B1b
+renders after the cycle's record (the withdrawal, the mitigation verify and
+disposition refusals, the refutation refusal) and returns ``(case,
+metadata)``. On ``main`` the decider composed the text into
+``system_notices``; on this tree the narration step renders it
+(``test_turn_reorder_2636.py``). Ids are normalised (``cycle_text``). They
+were captured on ``main`` (``b1969f821``) the same way, into the same file::
+
+    git worktree add --detach <scratch> b1969f821
+    cp tests/unit/core/investigation/golden_cases_2636.py \\
+        <scratch>/tests/unit/core/investigation/
+    cd <scratch> && python -c "from tests.unit.core.investigation import \\
+        golden_cases_2636 as g; g.capture_main()"
+
+Re-capturing leaves every B1a scenario's entry unchanged.
 """
 
 import asyncio
 import json
+import re
 from pathlib import Path
 from unittest.mock import MagicMock
 
+from faultmaven.core.investigation.milestone_engine.cause_state import (
+    _recompute_assessment_state,
+)
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.stage_gates import (
+    _apply_stage_gate_signals,
+)
 from faultmaven.core.investigation.milestone_engine.terminal_proposals import (
     _maybe_propose_confirmed_resolution,
 )
@@ -38,23 +61,38 @@ from faultmaven.core.investigation.milestone_engine.transitions import (
 from faultmaven.core.investigation.prompts.templates.assembly import (
     _resolve_declined_emphasis,
 )
+from faultmaven.core.investigation.schemas import MilestoneUpdates
 from faultmaven.core.investigation.terminal_transitions import (
     assess_close_summary,
     assess_closure_readiness,
     assess_resolution_readiness,
 )
 from faultmaven.modules.case.contracts import (
+    CausalEdge,
+    CausalNode,
     CauseState,
     ConfidenceLevel,
     EvidenceCategory,
+    EvidenceStance,
+    Hypothesis,
+    HypothesisCategory,
+    HypothesisGenerationMode,
+    HypothesisState,
+    InvestigationActionType,
+    MitigationRecord,
     NeedState,
+    NodeEvidenceLink,
+    NodeState,
+    NodeType,
     ProblemStatus,
+    ProposedAction,
     RootCauseConclusion,
     Solution,
     SolutionType,
+    ValidationMethod,
 )
 from tests.case_builders import investigating_case, with_declined_offer
-from tests.unit.core.investigation.bound_rows import _row
+from tests.unit.core.investigation.bound_rows import _row, bound_row
 from tests.unit.core.investigation.test_case_outcome_fold_2636 import (
     _bare_case,
     _cause_leg_only,
@@ -69,8 +107,32 @@ from tests.unit.core.investigation.test_case_outcome_fold_2636 import (
 from tests.unit.core.investigation.test_m6_cause_gone_problem_persists_1927 import (
     _ROOT_ID,
 )
+from tests.unit.core.investigation.test_m6_cause_gone_problem_persists_1927 import (
+    _identified_case as _m6_identified_case,
+)
+from tests.unit.core.investigation.test_m6_cause_gone_problem_persists_1927 import (
+    _row as _m6_row,
+)
+from tests.unit.core.investigation.test_mitigation_record_2100 import (
+    _pending as _mitigation_pending,
+)
 from tests.unit.core.investigation.test_pending_check_holds_the_offer_1906 import (
     _held_case,
+)
+from tests.unit.core.investigation.test_refutation_needs_data_1911 import (
+    _DSU,
+    _link,
+    _meta,
+    _on_record,
+    _refute,
+    _Response,
+    _standing,
+)
+from tests.unit.core.investigation.test_refutation_needs_data_1911 import (
+    _case as _refutation_case,
+)
+from tests.unit.core.investigation.test_refutation_needs_data_1911 import (
+    _engine as _apply_engine,
 )
 from tests.unit.core.investigation.test_resolution_backstop_turn import (
     _confirmed_case,
@@ -305,6 +367,262 @@ for _who, _feedback in (("backstop", _backstop), ("step2", _models_resolved)):
             )
 
 
+# ---------------------------------------------------------------------------
+# B1b: the deciders whose notices are rendered after the cycle's record
+# ---------------------------------------------------------------------------
+
+_ID = re.compile(r"\b(ev|hyp|act|cn)_[0-9a-f]{12}\b")
+
+
+def cycle_text(notices) -> list[str]:
+    """The notices with each id replaced by its kind and the order it first
+    appears in, so a random id compares equal across trees."""
+    seen: dict[str, str] = {}
+
+    def _name(match) -> str:
+        return seen.setdefault(match.group(0), f"<{match.group(1)}:{len(seen)}>")
+
+    return [_ID.sub(_name, n) for n in notices]
+
+
+def _pending_fix(case, turn=5):
+    case.proposed_actions.append(
+        ProposedAction(
+            action_id="act_00000000f1f1",
+            case_id=case.case_id,
+            action_type=InvestigationActionType.SOLUTION,
+            description="raise max_connections to 100",
+            proposed_in_turn=turn,
+        )
+    )
+
+
+def _second_validated_root(case):
+    """A second hypothesis whose root two causal supports validate, its why
+    open (no terminal verdict)."""
+    supports = [
+        _m6_row(label, EvidenceCategory.CAUSAL_EVIDENCE, turn, summary)
+        for label, turn, summary in (
+            ("pgb_log", 3, "pgbouncer log: pool checkout is full, clients wait"),
+            ("pgb_metric", 4, "pgbouncer SHOW POOLS: cl_waiting 40 for checkout"),
+        )
+    ]
+    case.evidence += supports
+    root = CausalNode(
+        node_id="cn_00000000b0b0",
+        statement="pgbouncer's pool for checkout is sized at 20",
+        node_type=NodeType.ROOT,
+        node_state=NodeState.CANDIDATE,
+        validation_method=ValidationMethod.NONE,
+        belief=0.5,
+        actionable=True,
+        evidence_links=[
+            NodeEvidenceLink(
+                evidence_id=row.evidence_id,
+                stance=EvidenceStance.SUPPORTS,
+                reasoning="bears on the root",
+                linked_at_turn=4,
+            )
+            for row in supports
+        ],
+        generated_at_turn=1,
+    )
+    case.causal_nodes[root.node_id] = root
+    problem = next(e.effect_node_id for e in case.causal_edges)
+    case.causal_edges.append(
+        CausalEdge(cause_node_id=root.node_id, effect_node_id=problem)
+    )
+    case.hypotheses["hyp_00000000b0b0"] = Hypothesis(
+        hypothesis_id="hyp_00000000b0b0",
+        statement="the pgbouncer pool starves checkout",
+        category=HypothesisCategory.DATABASE,
+        state=HypothesisState.ACTIVE,
+        generation_mode=HypothesisGenerationMode.OPPORTUNISTIC,
+        rationale="initial",
+        root_node_id=root.node_id,
+        generated_at_turn=1,
+    )
+
+
+def withdrawn_held_open_beside_a_retired_validated_root():
+    """The identified root's hypothesis is retired, its root stays VALIDATED;
+    another standing root validates with its why open. The pending fix is
+    withdrawn: its variant is the held-open one."""
+    case, _root, hyp = _m6_identified_case()
+    _second_validated_root(case)
+    hyp.state = HypothesisState.RETIRED
+    _pending_fix(case)
+    metadata: dict = {"milestones_completed": []}
+    _recompute_assessment_state(case, metadata=metadata)
+    return case, metadata
+
+
+def withdrawn_once_the_cause_fell():
+    case, _root, hyp = _m6_identified_case()
+    _pending_fix(case)
+    hyp.state = HypothesisState.REFUTED
+    metadata: dict = {"milestones_completed": []}
+    _recompute_assessment_state(case, metadata=metadata)
+    return case, metadata
+
+
+def _signals(case, turn: int, metadata: dict | None = None, **milestones):
+    """The stage gates' mitigation step on ``milestones`` at ``turn``."""
+    case.current_turn = turn
+    metadata = {"milestones_completed": []} if metadata is None else metadata
+    _apply_stage_gate_signals(case, MilestoneUpdates(**milestones), "", metadata)
+    return case, metadata
+
+
+def _accepted_mitigation():
+    """A verified problem, a workaround proposed at 5 and accepted at 6, the
+    row that showed the problem on record."""
+    case, shown = _mitigation_pending()
+    _signals(case, 6, mitigation_accepted=True)
+    return case, shown
+
+
+def mitigation_proceeded():
+    case, _shown = _accepted_mitigation()
+    _signals(case, 7, mitigation_disposition="proceed_unmitigated")
+    return _signals(case, 8, mitigation_verified=True)
+
+
+def mitigation_no_bound_relief():
+    """A relief naming nothing it re-checks: no bound relief, settle named."""
+    case, _shown = _accepted_mitigation()
+    _row(
+        case,
+        EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+        turn=8,
+        evidence_id="ev_00000000a808",
+        summary="orders answer in 200ms",
+    )
+    return _signals(case, 8, mitigation_verified=True)
+
+
+def mitigation_no_bound_relief_seen_present():
+    """Relieved at 7, seen present again at 8: the line names the turn."""
+    case, shown = _accepted_mitigation()
+    bound_row(case, EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE, turn=7, rechecks=shown)
+    bound_row(case, EvidenceCategory.SYMPTOM_EVIDENCE, turn=8, rechecks=shown)
+    return _signals(case, 8, mitigation_verified=True)
+
+
+def mitigation_no_bound_relief_declared_stable():
+    """The same response declares it stable: the line names no settle."""
+    case, _shown = _accepted_mitigation()
+    return _signals(
+        case, 7, mitigation_verified=True, mitigation_disposition="declared_stable"
+    )
+
+
+def mitigation_no_bound_relief_beside_a_proceed():
+    """#2603: the same response proceeds; ``main`` still asks for a re-check."""
+    case, _shown = _accepted_mitigation()
+    return _signals(
+        case,
+        7,
+        mitigation_verified=True,
+        mitigation_disposition="proceed_unmitigated",
+    )
+
+
+def mitigation_refused_twice_in_one_cycle():
+    """Two applications in one cycle (a replayed bundle's, then the live
+    response's) refuse the verify; the first records declared_stable (A9)."""
+    case, _shown = _accepted_mitigation()
+    case, metadata = _signals(
+        case, 7, mitigation_verified=True, mitigation_disposition="declared_stable"
+    )
+    return _signals(case, 7, metadata, mitigation_verified=True)
+
+
+def mitigation_undated():
+    case, _shown = _accepted_mitigation()
+    (attempt,) = [a for a in case.proposed_actions if a.state == "accepted"]
+    attempt.accepted_in_turn = None
+    return _signals(case, 8, mitigation_verified=True)
+
+
+def mitigation_revision_pending():
+    case, _shown = _accepted_mitigation()
+    case.progress.problem_status = ProblemStatus.REVISION_PENDING
+    return _signals(case, 8, mitigation_verified=True)
+
+
+def mitigation_problem_unverified():
+    case, _shown = _accepted_mitigation()
+    case.progress.problem_status = ProblemStatus.UNVERIFIED
+    return _signals(case, 8, mitigation_verified=True)
+
+
+def disposition_not_accepted():
+    case, _shown = _mitigation_pending()
+    return _signals(case, 6, mitigation_disposition="declared_stable")
+
+
+def disposition_carries():
+    case, _shown = _accepted_mitigation()
+    _signals(case, 7, mitigation_disposition="declared_stable")
+    return _signals(case, 8, mitigation_disposition="proceed_unmitigated")
+
+
+def disposition_verified():
+    case, _shown = _accepted_mitigation()
+    case.progress.mitigation = MitigationRecord(
+        **{**case.progress.mitigation.model_dump(), "verified": True}
+    )
+    return _signals(case, 8, mitigation_disposition="proceed_unmitigated")
+
+
+def _refuted(likelihood=0.4, confidence=None):
+    """The model refutes a competitor on a reason, with or without a REFUTES
+    link it hedges at ``confidence``."""
+    case = _refutation_case()
+    h_id = _standing(case, likelihood=likelihood)
+    links = []
+    if confidence is not None:
+        row = _on_record(case, "gateway rejects with token is not valid yet")
+        links = [_link(h_id, row, confidence=confidence)]
+    metadata = _meta()
+    asyncio.run(
+        _apply_engine().responses._apply_investigation_updates(
+            case,
+            _DSU(hypothesis_evidence_links=links, hypotheses_to_update=[_refute(h_id)]),
+            metadata,
+            _Response(),
+        )
+    )
+    return case, metadata
+
+
+CYCLE_SCENARIOS = {
+    fn.__name__: fn
+    for fn in (
+        withdrawn_held_open_beside_a_retired_validated_root,
+        withdrawn_once_the_cause_fell,
+        mitigation_proceeded,
+        mitigation_no_bound_relief,
+        mitigation_no_bound_relief_seen_present,
+        mitigation_no_bound_relief_declared_stable,
+        mitigation_no_bound_relief_beside_a_proceed,
+        mitigation_refused_twice_in_one_cycle,
+        mitigation_undated,
+        mitigation_revision_pending,
+        mitigation_problem_unverified,
+        disposition_not_accepted,
+        disposition_carries,
+        disposition_verified,
+    )
+}
+CYCLE_SCENARIOS["refutation_refused_open"] = lambda: _refuted()
+CYCLE_SCENARIOS["refutation_refused_self_hedged"] = lambda: _refuted(confidence=0.4)
+CYCLE_SCENARIOS["refutation_refused_retired_by_the_link_pass"] = lambda: _refuted(
+    likelihood=0.2, confidence=0.4
+)
+
+
 def capture_main() -> None:  # pragma: no cover - run once, on main
     import faultmaven
 
@@ -312,17 +630,14 @@ def capture_main() -> None:  # pragma: no cover - run once, on main
     assert (
         Path(faultmaven.__file__).resolve().is_relative_to(root)
     ), f"faultmaven imported from {faultmaven.__file__}, not {root}"
-    # Only a pre-extraction tree is main's: on this branch the golden would
-    # compare the code with itself.
-    extracted = root / "faultmaven/core/investigation/narration/offers.py"
+    # Only a tree without the decision log is main's: on this branch the
+    # golden would compare the code with itself.
+    extracted = root / "faultmaven/core/investigation/narration/codes.py"
     assert not extracted.exists(), f"{extracted} exists: capture on main only"
     print(f"faultmaven: {faultmaven.__file__}")
-    GOLDEN.write_text(
-        json.dumps(
-            {name: build() for name, build in SCENARIOS.items()},
-            indent=2,
-            ensure_ascii=False,
-        )
-        + "\n"
-    )
-    print(f"captured {len(SCENARIOS)} scenarios into {GOLDEN}")
+    captured = {name: build() for name, build in SCENARIOS.items()}
+    for name, build in CYCLE_SCENARIOS.items():
+        _case, metadata = build()
+        captured[f"cycle:{name}"] = cycle_text(metadata.get("system_notices") or [])
+    GOLDEN.write_text(json.dumps(captured, indent=2, ensure_ascii=False) + "\n")
+    print(f"captured {len(SCENARIOS)} + {len(CYCLE_SCENARIOS)} scenarios into {GOLDEN}")

@@ -18,6 +18,13 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     pending_action_superseded_stale_total,
     solution_offer_superseded_total,
 )
+from faultmaven.core.investigation.narration.codes import (
+    CONTEXT_ONLY,
+    DECISIONS_KEY,
+    NoticeCode,
+    decision_key,
+    decision_token,
+)
 from faultmaven.core.investigation.narration.notices import (
     NO_PENDING_SOLUTION_NOTICE,
     license_notice,
@@ -725,7 +732,8 @@ def _withdraw_unlicensed_solution_offers(
     derivation — rather than kept standing as "awaiting execution" for a
     cause the engine no longer asserts (#656 DF-3: the frame latch).
 
-    The withdrawal is surfaced to the LLM via ``system_feedback`` so the next
+    The withdrawal is surfaced to the LLM as a code (``SOLUTION_OFFER_WITHDRAWN``,
+    rendered from the cycle's record after its last decider, #2636) so the next
     turn re-grounds the cause (or proposes a WORKAROUND mitigation) instead of
     referencing a proposal the user can no longer see as pending. The notice
     is PREPENDED: the turn record truncates feedback head-first, and on messy
@@ -786,32 +794,15 @@ def _withdraw_unlicensed_solution_offers(
         },
     )
     if metadata is not None:
-        _add_system_feedback(
+        # The variant (the why open, or the cause fallen) is the record's
+        # (#2636); ``held_open`` is the one decided, rendered only when no
+        # outcome can be read. Prepend: notices are dropped whole from the
+        # tail, so this goes last.
+        record_decision(
             metadata,
-            (
-                (
-                    # #2036: the cause holds but its why is open, so the fix acts on
-                    # a state something re-creates.
-                    "SYSTEM: Your pending SOLUTION proposal was withdrawn: the cause "
-                    "it targets validated, but its why is open (ROOT-CAUSE TEST, "
-                    "clause b), so the fix would only intercept a state that comes "
-                    "back. Ask for what produced that state; then re-root onto that "
-                    "cause or mark the root terminal (root_is_terminal true, "
-                    "citing the causal_evidence row in "
-                    "terminal_basis_evidence_ids) and re-propose. To restore "
-                    "service now, propose it as a temporary mitigation "
-                    "(WORKAROUND)."
-                )
-                if case.progress.cause_identification_held_open
-                else (
-                    "SYSTEM: Your pending SOLUTION proposal was withdrawn because "
-                    "the root cause it targeted is no longer established. Re-ground "
-                    "the root cause with evidence before re-proposing a permanent "
-                    "fix, or propose a temporary mitigation (WORKAROUND) instead."
-                )
-            ),
-            # Prepend: notices are dropped whole from the tail, so this goes last.
+            NoticeCode.SOLUTION_OFFER_WITHDRAWN,
             prepend=True,
+            held_open=case.progress.cause_identification_held_open,
         )
     return count
 
@@ -1034,6 +1025,40 @@ def _add_system_feedback(
         metadata[_NOTICES_HEAD_KEY] = metadata.get(_NOTICES_HEAD_KEY, 0) + 1
     else:
         notices.append(message)
+
+
+def record_decision(
+    metadata: dict[str, Any], code: str, *, prepend: bool = False, **params: Any
+) -> None:
+    """Record a decision as a code (#2636): the narration step renders it after
+    the cycle's record is written. ``params`` carry identities, the model's own
+    emission, what the engine did, and the facts a renderer falls back on when
+    no outcome can be read; never a verdict the record holds.
+
+    Deduplicated by code and params (by code alone for an ``AGGREGATED``
+    code). A notice code holds its place in ``system_notices`` with a token
+    the narration step replaces (A10), so order and ``prepend`` are as the
+    text's were; a context-only code writes none."""
+    key = decision_key(code, params)
+    log = metadata.setdefault(DECISIONS_KEY, [])
+    if any(entry["key"] == key for entry in log):
+        return
+    token = None
+    if isinstance(code, NoticeCode) and code not in CONTEXT_ONLY:
+        token = decision_token(key)
+        _add_system_feedback(metadata, token, prepend=prepend)
+    log.append({"code": str(code), "params": params, "key": key, "token": token})
+
+
+def merge_decisions(metadata: dict[str, Any], incoming: dict[str, Any]) -> None:
+    """Fold another accumulator's decision log into ``metadata``'s (A1), beside
+    ``merge_system_notices``, which carries the tokens."""
+    log = metadata.setdefault(DECISIONS_KEY, [])
+    known = {entry["key"] for entry in log}
+    for entry in incoming.get(DECISIONS_KEY) or []:
+        if entry["key"] not in known:
+            log.append({**entry, "params": dict(entry["params"])})
+            known.add(entry["key"])
 
 
 def _drop_system_notice(metadata: dict[str, Any], notice: str) -> None:
@@ -2135,7 +2160,7 @@ def _apply_stage_gate_signals(
         )
 
     # --- mitigation_verified: derived, never the model's label (#2100) --
-    refusal: Optional[tuple[str, str]] = None
+    refusal: Optional[dict[str, Any]] = None
     settled: set[str] = set()
     if stab_verified_signal:
         # Ordering guard: verification presupposes acceptance. If accept
@@ -2165,11 +2190,7 @@ def _apply_stage_gate_signals(
             )
         elif p.mitigation.disposition == PROCEED_UNMITIGATED:
             # The record's validator: a proceeded mitigation is never verified.
-            _add_system_feedback(
-                metadata,
-                "SYSTEM: mitigation_verified was not recorded — the mitigation "
-                "is recorded as proceed_unmitigated, which is written once.",
-            )
+            record_decision(metadata, NoticeCode.MITIGATION_VERIFY_PROCEEDED)
         elif not p.mitigation.verified:
             refusal = _mitigation_verify_refusal(case)
             if refusal is None:
@@ -2186,11 +2207,10 @@ def _apply_stage_gate_signals(
     if disposition is not None and _register_disposition(case, disposition, metadata):
         settled.add("mitigation_disposed")
     if refusal is not None:
-        line, settle = refusal
-        # The way to settle it, only while the record carries no disposition.
-        _add_system_feedback(
-            metadata, line + (settle if p.mitigation.disposition is None else "") + "."
-        )
+        # Worded from the record, after the disposition above (#2603): the way
+        # to settle it only while the record carries no disposition, and no
+        # re-check asked once it carries proceed_unmitigated.
+        record_decision(metadata, NoticeCode.MITIGATION_VERIFY_REFUSED, **refusal)
     settled |= {"mitigation_verified"} & set(metadata["milestones_completed"])
     if settled:
         # 3B only on the turn that settles it: never a second close offer.
@@ -2205,14 +2225,16 @@ def _apply_stage_gate_signals(
         )
 
 
-def _mitigation_verify_refusal(case: Case) -> Optional[tuple[str, str]]:
-    """Why ``mitigation_verified`` does not register, or None, worded for the
-    model (``mitigation_refusal_reason`` decides which). An attempt with no
-    turn can never be re-checked, so its line names the disposition alone.
-    Without a verified problem nothing binds, so the line asks for the
-    verification first (ruling (iii)); under a pending revision, for its
-    confirmation. Returns ``(line, how to settle it)``: the caller appends
-    the second while the record carries no disposition."""
+def _mitigation_verify_refusal(case: Case) -> Optional[dict[str, Any]]:
+    """Why ``mitigation_verified`` does not register, as the params of its code,
+    or None (``mitigation_refusal_reason`` decides which; the line is rendered
+    after the cycle's record, ``narration.notices``). An attempt with no turn
+    can never be re-checked; without a verified problem nothing binds; under a
+    pending revision the statement awaits its confirmation. With no bound
+    relief the line names the rows that showed the problem, which a re-check
+    could name, and the attempt's turn and the turn the problem was seen
+    present, read from the record (these, as read here, when no outcome can
+    be)."""
     from faultmaven.core.investigation.cause_assurance import (
         mitigation_attempt_turn,
         mitigation_refusal_reason,
@@ -2223,47 +2245,20 @@ def _mitigation_verify_refusal(case: Case) -> Optional[tuple[str, str]]:
     reason = mitigation_refusal_reason(case)
     if reason is None:
         return None
-    head = "SYSTEM: mitigation_verified was not recorded — "
-    declare = (
-        "; or, if the user says it holds, set mitigation_disposition declared_stable"
-    )
-    if reason == MitigationRefusalReason.ATTEMPT_UNDATED:
-        return (
-            head + "the mitigation's execution is not dated, so no re-check can "
-            "verify it",
-            "; settle it with mitigation_disposition: declared_stable if the "
-            "user says it holds, proceed_unmitigated to go on without one",
-        )
-    if reason == MitigationRefusalReason.REVISION_PENDING:
-        return (
-            head + "the revised problem statement awaits the user's "
-            "confirmation: re-check the problem once it is confirmed",
-            declare,
-        )
-    if reason == MitigationRefusalReason.PROBLEM_UNVERIFIED:
-        return (
-            head + "the problem is not verified: verify the problem first, "
-            "citing symptom_verification_evidence_ids, then re-check it",
-            declare,
-        )
-    turn = mitigation_attempt_turn(case)
-    subjects = subject_index(case)
-    _relief, present = mitigation_relief(case, subjects)
-    problem, _cause = subjects.bindable_rows()
-    ids = ", ".join(e.evidence_id for e in problem[:5])
-    seen = f" (it was seen present at turn {present})" if present is not None else ""
-    return (
-        head + "no re-check bound to the problem shows it relieved after the "
-        f"mitigation (turn {turn}){seen}: record the post-mitigation "
-        "symptom_absence_evidence with rechecks "
-        + (
-            f"naming one of {ids}"
-            if ids
-            else "naming a row that showed the problem (none is on record: "
-            "cite them in symptom_verification_evidence_ids)"
-        ),
-        declare,
-    )
+    rows: list[str] = []
+    turn = present = None
+    if reason == MitigationRefusalReason.NO_BOUND_RELIEF:
+        turn = mitigation_attempt_turn(case)
+        subjects = subject_index(case)
+        _relief, present = mitigation_relief(case, subjects)
+        problem, _cause = subjects.bindable_rows()
+        rows = [e.evidence_id for e in problem[:5]]
+    return {
+        "reason": reason,
+        "problem_row_ids": rows,
+        "attempt_turn": turn,
+        "present_turn": present,
+    }
 
 
 def _register_disposition(case: Case, value: str, metadata: dict[str, Any]) -> bool:
@@ -2281,22 +2276,27 @@ def _register_disposition(case: Case, value: str, metadata: dict[str, Any]) -> b
     record = case.progress.mitigation
     refused = None
     if record is None or not record.accepted:
-        refused = "no mitigation is accepted"
+        refused = "not_accepted"
     elif record.disposition is not None:
         if record.disposition == value:
             return False
-        refused = f"the mitigation already carries {record.disposition}, written once"
+        refused = "carries"
     elif value == PROCEED_UNMITIGATED and record.verified:
-        refused = "a problem-bound re-check already showed the mitigation holding"
+        refused = "verified"
     if refused is not None:
-        _add_system_feedback(
+        record_decision(
             metadata,
-            f"SYSTEM: mitigation_disposition {value} was not recorded — {refused}.",
+            NoticeCode.MITIGATION_DISPOSITION_REFUSED,
+            value=value,
+            why=refused,
+            carried=record.disposition if record is not None else None,
         )
         return False
     turn = emission_turn(case, metadata)
     settles = not record.verified
     record.disposition, record.disposition_at_turn = value, turn
+    # Read by the verify refusal's line when no outcome can be (#2636).
+    record_decision(metadata, NoticeCode.MITIGATION_DISPOSED, value=value)
     if value == DECLARED_STABLE and record.completed_at_turn is None:
         record.completed_at_turn = turn
     if settles:

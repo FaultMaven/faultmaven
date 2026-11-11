@@ -1295,20 +1295,18 @@ class MilestoneEngine:
             )
 
             # 4. Apply state from the final accepted response (exactly once)
-            case_updated, stagnation_str, validation_repairs = (
-                await _apply_turn_response(
-                    self.deps.hypothesis_manager,
-                    self.deps.progress_monitor,
-                    self.deps.state_validator,
-                    self.responses,
-                    self.transitions,
-                    attachments=attachments,
-                    case=case,
-                    metadata=metadata,
-                    response_obj=response_obj,
-                    upload_report=upload_report,
-                    user_message=user_message,
-                )
+            case_updated, record_inputs = await _apply_turn_response(
+                self.deps.hypothesis_manager,
+                self.deps.progress_monitor,
+                self.deps.state_validator,
+                self.responses,
+                self.transitions,
+                attachments=attachments,
+                case=case,
+                metadata=metadata,
+                response_obj=response_obj,
+                upload_report=upload_report,
+                user_message=user_message,
             )
 
             # System output the user typed into this message, offered back for
@@ -1337,6 +1335,8 @@ class MilestoneEngine:
                 plan=plan,
                 redaction_ctx=redaction_ctx,
                 response_obj=response_obj,
+                record_inputs=record_inputs,
+                user_message=user_message,
             )
 
             # A synthesized placeholder (#1442) is not the model's reply, so
@@ -1355,10 +1355,10 @@ class MilestoneEngine:
                 plan=plan,
                 redaction_ctx=redaction_ctx,
                 response_obj=response_obj,
-                stagnation_str=stagnation_str,
+                stagnation_str=record_inputs.stagnation_str,
                 summary_failed=summary_failed,
                 summary_payload=summary_payload,
-                validation_repairs=validation_repairs,
+                validation_repairs=record_inputs.validation_repairs,
             )
 
         except Exception as e:

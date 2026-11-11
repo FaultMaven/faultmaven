@@ -2208,3 +2208,13 @@ def pytest_sessionfinish(session, exitstatus):
     if session.exitstatus == pytest.ExitCode.OK:
         session.exitstatus = pytest.ExitCode.TESTS_FAILED
     return result
+
+
+@pytest.fixture(autouse=True)
+def _narration_tokens_fail(monkeypatch):
+    """A decision token left unrendered when the turn is recorded fails the
+    test (#2636); production logs and strips it
+    (``turn_application.record_turn``)."""
+    monkeypatch.setattr(
+        "faultmaven.core.investigation.narration.codes.TOKENS_FAIL", True
+    )

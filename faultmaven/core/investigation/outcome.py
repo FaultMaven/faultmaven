@@ -23,7 +23,8 @@ disagree; stage S3 switches them.
 Where it is written (``record_case_outcome``): at the end of each decision
 cycle (``_apply_turn_response``, after every decider, before the save), after
 each bundle of a statement-revision replay, and at both terminal transitions.
-Nothing reads it in this stage. ``closure_outcome`` computes the closure
+The narration step reads the cycle's record (#2636 B1b): the withdrawal and
+the mitigation notices state its verdicts. ``closure_outcome`` computes the closure
 section on demand at the four closure entries, and the two that close hand it
 to ``_execute_closed_transition``, whose record persists it.
 
@@ -39,7 +40,10 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Optional
 
-from faultmaven.core.investigation.causal_graph.projection import held_open_root_ids
+from faultmaven.core.investigation.causal_graph.projection import (
+    held_open_root_ids,
+    identified_root_ids,
+)
 from faultmaven.core.investigation.cause_assurance import (
     FIX_FAILED,
     SUBJECT_PROBLEM,
@@ -123,22 +127,25 @@ def closure_outcome(case: "Case") -> ClosureOutcome:
 
 def record_case_outcome(
     case: "Case", *, at: str, closure: Optional[ClosureOutcome] = None
-) -> None:
+) -> bool:
     """Fold the case's outcome over ``progress.outcome`` and store it there.
 
     ``at`` names the write point: ``cycle``, ``replay``, ``resolved`` or
     ``closed``. ``closure``: at a terminal transition, the closure its entry
     computed (``closure_outcome``); with none (a resolve, or a close offer
     accepted on its stored reason), the one the case now stands on.
-    Nothing reads the record in this stage, so a write that raises fails
-    neither the turn nor the transition: it is logged with its traceback and
-    counted on ``case_outcome_write_failures_total{at}``."""
+    A write that raises fails neither the turn nor the transition: it is
+    logged with its traceback and counted on
+    ``case_outcome_write_failures_total{at}``, and returns False, so the
+    narration step renders from no record this write did not store (#2636).
+    Returns whether the record was written."""
     try:
         if case.is_terminal and closure is None:
             closure = _closure_of(case, case.closure_reason)
         case.progress.outcome = compute_case_outcome(
             case.progress.outcome, case, closure=closure
         )
+        return True
     except Exception:  # noqa: BLE001 — the record is written in shadow (S1)
         logger.exception(
             "Case %s: the case outcome record was not written at %s (#2615)",
@@ -146,17 +153,25 @@ def record_case_outcome(
             at,
         )
         case_outcome_write_failures_total.labels(at=at).inc()
+        return False
 
 
 class _Disagreements:
     """The disagreements one computation reads, keyed by field and entry: the
     record keeps the turn each was first read, and each is counted and logged
-    once, when it first appears."""
+    once, when it first appears; or, given ``unreported``, collected there
+    uncounted."""
 
-    def __init__(self, case: "Case", prior: Optional[CaseOutcome]) -> None:
+    def __init__(
+        self,
+        case: "Case",
+        prior: Optional[CaseOutcome],
+        unreported: Optional[list] = None,
+    ) -> None:
         self.case = case
         self.known = dict(prior.disagreements) if prior is not None else {}
         self.read: dict[str, int] = {}
+        self.unreported = unreported
 
     def add(self, field: str, entry: Optional[str], carried, fresh) -> None:
         key = f"{field}:{entry}" if entry else field
@@ -164,6 +179,9 @@ class _Disagreements:
             self.read[key] = self.known[key]
             return
         self.read[key] = self.case.current_turn
+        if self.unreported is not None:
+            self.unreported.append((field, key, carried, fresh))
+            return
         logger.warning(
             "Case %s: the outcome record's carried %s (%s) disagrees with a "
             "fresh derivation (%s); the carried verdict stands (#2615)",
@@ -180,14 +198,18 @@ def compute_case_outcome(
     case: "Case",
     *,
     closure: Optional[ClosureOutcome] = None,
+    unreported: Optional[list] = None,
 ) -> CaseOutcome:
     """The case's outcome, folded over ``prior`` (None: computed once from
     the case as it stands). ``closure``: the closure a terminal transition
-    persists (``record_case_outcome``)."""
+    persists (``record_case_outcome``). ``unreported``: the disagreements the
+    fold first reads are collected there and never counted, for an outcome
+    computed in memory and never stored (the narration's, when the cycle's
+    write failed, #2636); without it they are counted here."""
     subjects = subject_index(case)
     windows = fix_windows(case, subjects)
     statement = current_statement(case)
-    seen = _Disagreements(case, prior)
+    seen = _Disagreements(case, prior, unreported)
     unbound = _unbound_rechecks(prior, case, subjects, windows)
     return CaseOutcome(
         folded_under=case.state,
@@ -223,6 +245,11 @@ def _cause(case: "Case", subjects: "SubjectIndex") -> CauseOutcome:
             if rows
         },
         pool_empty_reason=cause_pool_empty_reason(case),
+        # The predicate the cause recompute writes to
+        # ``progress.cause_identification_held_open``, over the standing
+        # hypotheses: the withdrawal notice's variant (#2636).
+        identification_held_open=bool(held_open_root_ids(case))
+        and not identified_root_ids(case),
     )
 
 

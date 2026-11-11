@@ -62,6 +62,7 @@ from faultmaven.modules.case.contracts import (
     UploadedFile,
 )
 from tests.case_builders import investigating_case
+from tests.unit.core.investigation.narrated import narrated
 from tests.unit.core.investigation.test_m6_cause_gone_problem_persists_1927 import (
     _failed_fix,
     _identified_case,
@@ -138,6 +139,8 @@ async def _apply(eng, case, dsu, response=None) -> dict:
     await eng.responses._apply_investigation_updates(
         case, dsu, meta, response or _Response()
     )
+    # The apply step records codes; the narration step renders them (#2636).
+    narrated(case, meta)
     return meta
 
 

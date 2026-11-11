@@ -1031,23 +1031,35 @@ def test_two_close_offers_on_one_case_each_read_the_case_as_it_stands():
 
 
 async def test_a_turn_writes_the_record_last_in_its_cycle(monkeypatch):
-    from faultmaven.core.investigation.milestone_engine import turn_application
+    """The needs sweeps, then the record; the narration step then renders the
+    cycle's notices from it, and only then is the turn recorded (#2636 B1b)."""
+    from faultmaven.core.investigation.milestone_engine import (
+        turn_application,
+        turn_completion,
+    )
 
     order = []
+
+    def spy(module, name):
+        real = getattr(module, name)
+
+        def _call(*a, **k):
+            order.append(name)
+            return real(*a, **k)
+
+        monkeypatch.setattr(module, name, _call)
+
     for name in ("_sweep_needs_for_terminal_hypotheses", "sweep_silent_inferred_needs"):
-        real = getattr(turn_application, name)
-        monkeypatch.setattr(
-            turn_application,
-            name,
-            lambda *a, _n=name, _r=real, **k: (order.append(_n), _r(*a, **k))[1],
-        )
+        spy(turn_application, name)
     real_record = turn_application.record_case_outcome
 
     def _record(case, *, at):
         order.append(at)
-        real_record(case, at=at)
+        return real_record(case, at=at)
 
     monkeypatch.setattr(turn_application, "record_case_outcome", _record)
+    spy(turn_completion, "narrate_turn")
+    spy(turn_completion, "record_turn")
     case = _confirmed_case()
     engine = _turn_engine()
     await _turn(engine, case, "errors gone")
@@ -1055,36 +1067,16 @@ async def test_a_turn_writes_the_record_last_in_its_cycle(monkeypatch):
         "_sweep_needs_for_terminal_hypotheses",
         "sweep_silent_inferred_needs",
         "cycle",
+        "narrate_turn",
+        "record_turn",
     ]
     assert case.progress.outcome.resolution.reason == ResolutionReason.CONFIRMED
     assert case.progress.outcome.folded_under == CaseState.INVESTIGATING
 
 
-async def test_writing_the_record_changes_no_text_and_no_decision(monkeypatch):
-    """The same turn with and without the write: one reply, one set of
-    notices, one offer."""
-
-    async def _run():
-        case = _confirmed_case()
-        case.case_id = "case_00000000c0de"
-        engine = _turn_engine()
-        result = await _turn(engine, case, "errors gone")
-        offer = case.offer_record.open
-        return (
-            result["agent_response"],
-            [f["label"] for f in result["suggested_follow_ups"]],
-            case.turn_history[-1].system_notices,
-            (offer.kind, offer.basis, offer.summary),
-        ), case
-
-    written, with_record = await _run()
-    monkeypatch.setattr(
-        outcome_module, "compute_case_outcome", lambda prior, case, **_: prior
-    )
-    unwritten, without = await _run()
-    assert with_record.progress.outcome is not None
-    assert without.progress.outcome is None
-    assert written == unwritten
+# ``test_writing_the_record_changes_no_text_and_no_decision`` was replaced by
+# #2636 B1b: the record now decides the outcome notices' text, which pin 4
+# (``test_turn_reorder_2636.py``) drives through ``process_turn``.
 
 
 async def test_both_terminal_transitions_write_the_record():

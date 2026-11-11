@@ -8,8 +8,9 @@ under, and carried: a FAILED fix window, an attempt's ``accepted_in_turn``, and
 the confirmed rows at RESOLVED. A conflict between a carried verdict and a fresh
 derivation is logged and counted, and the carried verdict stands.
 
-Nothing reads the record yet: the narrators (S2), the deciders (S3) and the
-report and API (S4) switch to it stage by stage.
+The narration step reads it (#2636 B1b): the withdrawal and mitigation notices
+state its verdicts. The other narrators (S2), the deciders (S3) and the report
+and API (S4) switch to it stage by stage.
 
 Every enum here is APPEND-ONLY. A stored case names its members by value, so a
 member renamed or removed would fail every load of that case. The members are
@@ -136,6 +137,13 @@ class CauseOutcome(BaseModel):
     )
     pool_empty_reason: Optional[PoolEmptyReason] = Field(
         default=None, description="Why the confirmation pool is empty"
+    )
+    identification_held_open: bool = Field(
+        default=False,
+        description=(
+            "A standing hypothesis's root has its why open and no root is "
+            "identified (``cause_identification_held_open``, #2036)"
+        ),
     )
 
     @model_validator(mode="after")
