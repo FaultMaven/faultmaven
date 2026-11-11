@@ -17,8 +17,11 @@ from faultmaven.modules.agent.tools.search_file_tool import SearchFileTool
 from tests.wallclock import assert_linear_growth
 
 #: Growth windows are ``small``, ``8*small`` and ``64*small``, with no
-#: escalation, so the one window measured tops out at the scan's bound.
+#: escalation, so the one window measured tops out at the scan's bound. An
+#: undecided reading of it is measured again, twice at most; a super-linear
+#: one is not.
 STEP = 8
+UNDECIDED_REPEATS = 2
 
 #: The hostile shapes probed, as (prefix, repeated unit), ``"a-"`` first: a
 #: long colon-less ``[\\w-]`` run, quadratic under the old pattern. The prefix
@@ -74,6 +77,12 @@ def test_the_scan_stops_at_thirty_patterns():
 
 
 @pytest.mark.unit
+def test_the_scan_reads_nothing_past_its_bound():
+    content = " " * SearchFileTool._VOCAB_SCAN_CHARS + " db.local:5432"
+    assert SearchFileTool()._extract_file_vocabulary(content)["patterns"] == []
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("prefix, unit", SHAPES)
 def test_the_window_tops_out_at_the_bound(prefix, unit):
     top = _small(unit) * STEP**2
@@ -89,5 +98,6 @@ def test_the_scan_is_linear_up_to_its_bound(prefix, unit):
         small=_small(unit),
         step=STEP,
         max_escalations=0,
+        undecided_repeats=UNDECIDED_REPEATS,
         label=f"the vocabulary scan on {prefix!r} + {unit!r} * n",
     )

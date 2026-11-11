@@ -4250,6 +4250,68 @@ class TestTheAllocatorSettle:
         )
 
 
+class TestTheUndecidedRepeat:
+    """``undecided_repeats``: an undecided window is measured again (#2723).
+
+    For a call whose window may not move up, its top size being the input's
+    bound. The window is replayed, so nothing is timed.
+    """
+
+    #: Per-call seconds at the three sizes, by the verdict they read as.
+    READINGS = {
+        "undecided": (1.0, 1.0, 1.0),  # all fixed cost
+        "linear": (1.0, 8.0, 64.0),
+        "super-linear": (1.0, 64.0, 4096.0),
+    }
+
+    @classmethod
+    def _replayed(cls, monkeypatch, *readings: str) -> List[int]:
+        """Replace the window with ``readings`` in order; record each window."""
+        from tests.wallclock import growth as growth_module
+
+        windows: List[int] = []
+        queue = list(readings)
+
+        def window(fn, payload_at, small, step, repetitions):
+            windows.append(small)
+            seconds = cls.READINGS[queue.pop(0)]
+            sizes = (small, small * step, small * step * step)
+            return growth_module.Growth(sizes=sizes, seconds=seconds, step=step)
+
+        monkeypatch.setattr(growth_module, "_measure_window", window)
+        return windows
+
+    @staticmethod
+    def _judge(**kwargs):
+        from tests.wallclock import assert_linear_growth
+
+        return assert_linear_growth(
+            _untimed, lambda size: size, small=2, label="repeat", **kwargs
+        )
+
+    def test_the_default_measures_each_window_once(self, monkeypatch):
+        windows = self._replayed(monkeypatch, "undecided", "linear")
+        with pytest.raises(AssertionError, match="could not decide"):
+            self._judge(max_escalations=0)
+        assert windows == [2]
+
+    def test_an_undecided_window_then_a_linear_one_passes(self, monkeypatch):
+        windows = self._replayed(monkeypatch, "undecided", "linear")
+        self._judge(max_escalations=0, undecided_repeats=2)
+        assert windows == [2, 2]
+
+    def test_a_super_linear_window_fails_with_no_repeat(self, monkeypatch):
+        windows = self._replayed(monkeypatch, "super-linear", "linear")
+        with pytest.raises(AssertionError, match="usual cause"):
+            self._judge(max_escalations=0, undecided_repeats=2)
+        assert windows == [2]
+
+    def test_repeats_come_before_the_window_moves_up(self, monkeypatch):
+        windows = self._replayed(monkeypatch, "undecided", "undecided", "linear")
+        self._judge(max_escalations=1, undecided_repeats=1)
+        assert windows == [2, 2, 16]
+
+
 # ------------------------------------------------------------ the workflow
 #
 # ‼ These conditions must be EVALUATED, never matched as substrings. The
