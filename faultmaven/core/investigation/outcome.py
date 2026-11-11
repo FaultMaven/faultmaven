@@ -234,7 +234,8 @@ def _cause(case: "Case", subjects: "SubjectIndex") -> CauseOutcome:
         identified_root_ids=sorted(identified),
         held_root_ids=sorted(held),
         fallen_root_ids=sorted(fallen),
-        # Derived fresh at the write, unlike the two fields below.
+        # Derived fresh at the write, unlike ``pool_empty_reason``'s HELD_OPEN
+        # verdict and ``identification_held_open`` below.
         held_open_root_ids=sorted(held_open_root_ids(case)),
         confirmation_root_ids=sorted(subjects.pool_roots),
         cited_basis={
@@ -242,14 +243,14 @@ def _cause(case: "Case", subjects: "SubjectIndex") -> CauseOutcome:
             for node_id, rows in subjects.citations.items()
             if rows
         },
-        # ``pool_empty_reason`` (through ``cause_pool_empty_reason``) and
-        # ``identification_held_open`` carry the values the cause recompute
-        # wrote this cycle (``progress.cause_identification_held_open``), which
-        # the next prompt's readers also read; the latter is the withdrawal
-        # notice's variant (#2636). ``held_open_root_ids`` above is derived
-        # fresh, so after a later step retires the holding hypothesis the
-        # three can disagree until the final recompute (B1e) re-derives them
-        # together.
+        # ``cause_pool_empty_reason`` is computed at the write; only its
+        # HELD_OPEN and IDENTIFICATION_CONTESTED verdicts read flags the cause
+        # recompute wrote (``cause_identification_held_open``,
+        # ``cause_identification_contested``). ``identification_held_open``
+        # carries ``progress.cause_identification_held_open``, the withdrawal
+        # notice's variant (#2636), which the next prompt's readers also read.
+        # After a later step retires the holding hypothesis, these and
+        # ``held_open_root_ids`` can disagree until B1e's final recompute.
         pool_empty_reason=cause_pool_empty_reason(case),
         identification_held_open=bool(case.progress.cause_identification_held_open),
     )
