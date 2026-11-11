@@ -38,9 +38,8 @@ Reviewers are independent agents: they never wrote or planned what they review.
 - **Every open issue outside `tracking` carries one priority label.** It is re-set by these definitions whenever the
   item moves between piles, unless the owner set it or a ruling states it:
   - `P1`: a security, tenancy or data-loss exposure (latent included), or a defect a user or operator hits in
-    normal use (a wrong result, a 5xx, lost work), or an open issue holding a `main red` (4.6 files one; step 2's
-    alert sweep files one or adds it to the open issue covering it). A `P0` label, if the owner uses one, is read as
-    `P1`, ranked first;
+    normal use (a wrong result, a 5xx, lost work), or an issue filed as a `main red` (by 4.6 or step 2's alert sweep).
+    A `P0` label, if the owner uses one, is read as `P1`, ranked first;
   - `P2`: any other defect reachable today;
   - `P3`: everything else: latent shapes, cleanup, docs, test infrastructure, enhancements. The owner may raise
     any item, and a ruled feature takes the priority its ruling states (ask if it states none).
