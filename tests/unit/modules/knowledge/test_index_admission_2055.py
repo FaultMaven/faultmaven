@@ -169,12 +169,16 @@ def busy():
 
 @pytest.fixture
 def cold_model(monkeypatch):
-    """A cold model whose load, on the KB slot, waits for ``release``; with
-    ``fails``, it then records an error, as a failed load does."""
-    state = SimpleNamespace(loads=0, fails=False, release=threading.Event())
+    """A cold model whose load, on the KB slot, sets ``started`` and waits
+    for ``release``; with ``fails``, it then records an error, as a failed
+    load does."""
+    state = SimpleNamespace(
+        loads=0, fails=False, started=threading.Event(), release=threading.Event()
+    )
 
     def _load(triggered_by):
         state.loads += 1
+        state.started.set()
         state.release.wait(30)
         if state.fails:
             model_cache._load_info[BGE_M3_MODEL_ID] = ModelLoadInfo(
@@ -406,6 +410,8 @@ class TestUpload:
         assert response.json()["detail"] == (
             index_slot.refusal("loading", wait=180).message
         )
+        # The route answers without waiting for the load to begin (#2539).
+        assert cold_model.started.wait(30)
         assert cold_model.loads == 1
 
     def test_the_route_answers_a_stuck_encode_with_a_fixed_wait(
