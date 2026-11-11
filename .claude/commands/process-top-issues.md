@@ -94,7 +94,7 @@ gh search prs --owner FaultMaven --match body "FaultMaven/faultmaven#<n>" --limi
 | 3 | the item in `pile:blocked` | it waits on its blocker |
 | 4 | its PR open, its newest `## Review` or `## Delta` clean or its findings waived by a live ruling, and a required check red because `main` is (a `main red` issue, step 4.6) or a service it needs is down; or a stage's PR with an `evidence` finding questioning the stage's own design and no live ruling since | waiting: leave it until that issue closes or the check passes when re-run (`gh run rerun <run-id> --failed`); then merge `main` in and go on at row 6 or 9. On the design finding: waiting on an owner ruling on its design, asked under *Needs your call*; never merge-ready until a live ruling sends it on (row 8 or 9) or rebuilds it (row 13) |
 | 5 | its PR in the merge queue at a merge-ready's `H`, with none of row 6's triggers (`gh api graphql -f query='{repository(owner:"FaultMaven",name:"faultmaven"){pullRequest(number:<p>){isInMergeQueue timelineItems(last:5,itemTypes:[REMOVED_FROM_MERGE_QUEUE_EVENT]){nodes{... on RemovedFromMergeQueueEvent{createdAt reason}}}}}}'`) | leave it |
-| 6 | its PR open after a merge-ready, and code after the merge-ready's head (the vouched-head check), an owner comment after the merge-ready, a conflict with `main`, a queue removal dated after it with the PR not back in the queue (row 5's query; quote its `reason`), or a red required check | refresh: merge `main` in, the change made (by the lane, by you for a conflict), a delta of what changed (step 4.5), CI, merge-ready again; a refresh with a `## Delta` after the merge-ready goes on at row 8 or 9, unless an owner comment, a conflict or a red check is newer than that delta. A `fixed` finding in that delta gets one fix commit and one delta; a `fixed` finding in that one pulls the item. A red check the merge base also has makes it row 4, never a pull |
+| 6 | its PR open after a merge-ready, and code after the merge-ready's head (the vouched-head check), an owner comment after the merge-ready, a conflict with `main`, a queue removal dated after it with the PR not back in the queue (row 5's query; quote its `reason`), or a red required check | refresh: merge `main` in, the change made (by the lane, by you for a conflict), a delta of what changed (step 4.5), CI, merge-ready again; a refresh with a `## Delta` after the merge-ready goes on at row 8 or 9, unless an owner comment, a conflict or a red check is newer than that delta. A `fixed` finding in that delta gets one fix commit and one delta; a `fixed` finding in that one pulls the item. A red check the merge base also has makes it row 4, never a pull. A queue removal is not a code change when every failed test in the merge-group run is the test an open flake issue names, with the same assertion; that issue records an occurrence on a run without this PR's commits; and the same required check is green on `H`. Then post merge-ready again at the same head, quoting the run and the removal's `reason`; the owner re-queues, or you do under a merge authority transcribed that session (*Rules*). Once per PR: a second such removal waits on the flake's fix, as row 4 waits on `main`. Anything else is this row's refresh |
 | 7 | its PR open after a merge-ready at `H` | merge-ready: carried under *Yours to run*; while an item it closes is in `pile:blocked` (other than one a stage's PR closes whose line is `**Blocked on:** #<root>` for that stage's root), it is not merge-ready and waits on that item's blocker |
 | 8 | its PR open; its newest `## Review` or `## Delta` has a `fixed` finding neither landed nor waived by a live ruling | a pull trigger met since its newest live ruling, or ever when it has none, pulls it: the cap or size (step 4.5), or a `fixed` finding in a re-entry delta (row 12) or in a refresh's second delta (row 6), or a stage's PR not converging (step 4). Else the fix commit, then a delta of the commits since `R` (row 12's, when its live ruling grants a re-entry) |
 | 9 | its PR open; its newest `## Review` or `## Delta` is clean, or its findings are waived by a live ruling | the vouched-head check from `R` (step 4.6); code after `R` gets a delta first; then merge-ready, or row 7's wait while an item it closes is in `pile:blocked` |
@@ -168,10 +168,13 @@ jq -r --argjson prs "$prs" --arg lanes "$lanes" --argjson lim "$([ "$na" -gt 5 ]
   | [$a[] | select(.n | tostring | IN($lanes | scan("[0-9]+")))] as $p | (if $lim then 0 else [($a | map(.r) | unique | length), 2] | min end) as $k
   | "design lanes: picked \($p | length) of \($k) offered, one per root: \(if ($p | map(.r) | unique | length) == ($p | length) then "yes" else "no" end)"
   + " (actionable: \($a | map("#\(.n) of #\(.r)") | join(", ") | if . == "" then "none" end))"' <<<"$open"
+# the round this proposal opens: one past the newest result; every third round's slot is a chore batch (Pick)
+rn=$(jq '[.[] | select(.p | not) | .b | capture("^## Round (?<n>[0-9]+)").n | tonumber] | (max // 0) + 1' <<<"$qc")
+if [ $((rn % 3)) -eq 0 ]; then echo "slot: chore batch (round $rn)"; else
 jq -r --argjson prs "$prs" --arg cut "$(ago 30)" "$cls"'[.[] | select(free and ready and (refs(.number) | not)
   and (has(["class:chore", "class:design", "design-stage"]) | not))] | [.[] | select(has(["P0", "P1"]))] as $p1
   | ($p1 | sort_by((has(["P0"]) | not), .createdAt)) + ([.[] | select(has(["P2"]) and .createdAt < $cut)] | sort_by(.createdAt))
-  | map("#\(.number)") | "slot: \(first // "none, the ordinary order")\(if length > 1 then " (then \(.[1:3] | join(" ")))" else "" end)"' <<<"$open"
+  | map("#\(.number)") | "slot: \(first // "none, the ordinary order")\(if length > 1 then " (then \(.[1:3] | join(" ")))" else "" end)"' <<<"$open"; fi
 roots=$(jq "$cls"'[.[] | select(has(["root-issue", "root-candidate"])) | {n: .number, b: [.body | scan("(?m)^\\*\\*Blocks:\\*\\*.*") | gsub("\\([^)]*\\)"; "") | scan("#([0-9]+)")[0] | tonumber]}]' <<<"$open")
 off=$(gh issue list -R $R --state all --search "created:>=$since \"Found while working on\" in:body" --limit 300 --json number,body \
   --jq '.[] | "\(.number) \(.body | [scan("Found while working on #([0-9]+)")[0]] | first // "")"' | while read -r f m; do
@@ -179,7 +182,7 @@ off=$(gh issue list -R $R --state all --search "created:>=$since \"Found while w
   for r in $(jq -r --argjson f "$f" --argjson m "$m" --argjson up "[$up]" '.[] | select(.n == $m or (.b | index($m)) or (.n | IN($up[])))
     | select(.b | index($f) | not) | .n' <<<"$roots"); do
     { jq -r --argjson r "$r" '.[] | select(.number == $r) | .body' <<<"$open"; gh api "repos/$R/issues/$r/comments" --paginate --jq '.[].body'; } \
-      | grep -q "filed as #$f\b" || printf '#%s (root #%s) ' "$f" "$r"
+      | grep -qi "filed as #$f\b" || printf '#%s (root #%s) ' "$f" "$r"
   done; done); echo "findings on an open root's seam it neither lists nor names: ${off:-none}"
 o=$(gh issue list -R $R --state all --search "created:>=$(ago 14 | cut -c1-10)" --limit 1000 --json labels)
 c=$(gh issue list -R $R --state closed --search "closed:>=$(ago 14 | cut -c1-10)" --limit 1000 --json labels)
@@ -265,7 +268,10 @@ echo "since the last proposal: merged $(jq length <<<"$mp") · PRs opened $(gh p
        at most one per root; a design lane no stage can take goes to the ordinary order;
      - **the third lane, the slot:** the oldest `P1` (*State*: a wrong result or a 5xx in normal use included), else
        the oldest `P2` waiting over 30 days, else the ordinary order; never a chore or a batch (*Filing what you
-       find*). The line lists the next ones for when the first sits on an open PR's seam;
+       find*), except in a round whose number is divisible by 3: the slot then takes one chore batch, the seam with
+       the most ready `class:chore` issues, oldest on a tie, within the round's size limits below, planned and
+       reviewed as one item, and an open `P1` waits that one round. A migration round takes no batch. The line lists
+       the next ones for when the first sits on an open PR's seam, and reads `chore batch (round <N>)` in a batch round;
      - **the ordinary order:** `P1`, `P2`, `P3`, oldest first within each, a chore after the defects of its priority.
 
      Skip an item that an open PR from an earlier round still carries (its PR, *Where an item stands*), and any item
@@ -288,10 +294,14 @@ echo "since the last proposal: merged $(jq length <<<"$mp") · PRs opened $(gh p
    | # | P | class | root (one line) | done when (observable behaviour) | size (product / test lines, est.) |
    ### Next (same columns; each starts when a lane's PR is merge-ready or pulled, or its item closes)
    ### Needs your call
-   At most five, ranked: question · options · recommendation · what it unblocks. A backlog-health question (what to
-   stop filing, what to batch or close by ruling, what to defer) is first when this and the last proposal's ratio are
+   At most five, ranked: question · options · recommendation · what it unblocks. A backlog-health question (its
+   diagnosis, what to batch or close by ruling, what to defer) is first when this and the last proposal's ratio are
    both above 1.2; then any unanswered for two rounds; then, while the `pulled` count is past its limit, the oldest
    pulls, as many as bring it down to the limit; then design rulings due. Other items awaiting a ruling: numbers.
+   The diagnosis, read from the look rows' chains and the `14 days` line, names the source of the rise: same-root
+   findings filed apart (consolidate them, as evidence or one issue); a component the findings cluster in (a systemic
+   fix); new exposure the reviews found (they stay filed). A true, distinct finding is never left unfiled to lower
+   the count.
    Every condition you could not check: what checking it needs; you run it, re-rule, or close the item.
    ### Open across two results (each PR with its blocker; a private repo's by count only)
    ### Priorities I set (change any)
@@ -334,14 +344,17 @@ re-plan into smaller sub-stages (4.1) recommended, never given more fix rounds.
    - **the consumers,** for a value whose meaning moves (the search that found them);
    - **the invariant:** one or two sentences that must hold after the merge;
    - **the tests:** a regression test that reproduces each defect and asserts the behaviour, and for each behaviour
-     on `main` the change must not alter, the test that pins it (existing or new). No wall-clock or performance
-     thresholds. A repo-scanning guard, census or lint only when you can name an incident where the
-     same class came back after an earlier fix. Such a guard is exercised through the path that runs it, and
-     reverting the fix makes it fail;
+     on `main` the change must not alter, the test that pins it (existing or new). For a change that must not alter
+     behaviour, the oracle is captured by running `main`, at the named commit, on the same inputs, never typed by
+     hand. No wall-clock or performance thresholds. A repo-scanning guard, census or lint only when you can name an
+     incident where the same class came back after an earlier fix. Such a guard is exercised through the path that
+     runs it, and reverting the fix makes it fail;
    - **the size budget:** estimated product and test lines. A product budget past twice the newest estimate (the
      proposal's, or a later one an owner ruling set) and 50 lines over it pulls the item before a lane, as 4.5 does.
      A stage over about 600 product lines is sub-staged here: the plan lists sub-stages that together deliver the
-     ruled change and builds the first, its PR saying `Refs #<stage>`, and step 1 edits the stage down;
+     ruled change and builds the first, its PR saying `Refs #<stage>`, and step 1 edits the stage down. No sub-stage
+     leaves `main` with a known defect that a later sub-stage or stage must repair; where avoiding one needs a change
+     to the ruled stage order, that is a *Needs your call* question;
    - **the pins,** for a stage: its ruling's, quoted;
    - **a probe,** when the plan chooses a mechanism (a classifier rule, a predicate, a library behaviour): the
      realistic inputs you ran it against before sending a lane, negatives first, and what each returned;
@@ -358,8 +371,9 @@ re-plan into smaller sub-stages (4.1) recommended, never given more fix rounds.
    For a **verification** item, run the reproduction yourself. If the defect is dead, close the issue with a `## Closed`
    comment citing what fixed it and the evidence. If it is alive, plan it as above.
 2. **Lane.** Send a fresh agent on your model. Use `sonnet` only for a docs-only change outside `.claude/` and
-   `CLAUDE.md`. Its prompt holds the issue, its rulings, your plan, the done-when, the branch, directory and base the
-   plan names (new, or on an existing branch: rows 2, 6, 8, 10, 11, 12), and *Lane rules* below, verbatim.
+   `CLAUDE.md`. Its prompt is literal text, with no shell expansion and with absolute paths. It holds the issue, its
+   rulings, your plan, the done-when, the branch, directory and base the plan names (new, or on an existing branch:
+   rows 2, 6, 8, 10, 11, 12), and *Lane rules* below, pasted in verbatim.
    Run lanes in the background. Meanwhile, plan the next item; and once a round, check the 5 oldest ready `P3`s
    outside the round with no `## Evidence — premise` in 30 days. One is dead only when a reproduction showing its
    defect at the commit it cites no longer shows it on `origin/main` (never a latent one or one without such a
@@ -399,11 +413,13 @@ re-plan into smaller sub-stages (4.1) recommended, never given more fix rounds.
    Post the verdict on the PR as `## Review — <head>`, with the fix list, the `evidence` findings and the issues
    filed. A review or delta is
    **clean** when no `fixed` landing is outstanding and unwaived.
-5. **Fix and delta.** The fix list goes to the same lane (`SendMessage`) as one commit. If the fix redesigns a
-   mechanism, probe the new design first, as in the plan.
+5. **Fix and delta.** The fix list goes to the same lane (`SendMessage`) as one commit. It tells the lane to find,
+   in the files the PR touches, the other statements of each fact a fix changes. If the fix redesigns a mechanism,
+   probe the new design first, as in the plan.
    - **The delta.** An independent reviewer always runs it; the author of the commits never does. It reviews what
-     changed since the reviewed head against the fix list and the invariant. Brief it with that diff, which leaves
-     out `main`'s commits, never the PR number, which would re-review the whole PR:
+     changed since the reviewed head against the fix list and the invariant, and checks those other statements,
+     nothing wider. Brief it with that diff, which leaves out `main`'s commits, never the PR number, which would
+     re-review the whole PR:
 
      ```bash
      git fetch -q origin main "pull/<n>/head"
@@ -442,7 +458,11 @@ re-plan into smaller sub-stages (4.1) recommended, never given more fix rounds.
                   | "\($r)=\($hit.c // "MISSING")") | join("  ")'
    ```
 
-   - **A flake:** re-run it once. A running check reads `PENDING` (its `completedAt` is `0001-01-01T00:00:00Z`).
+   - **A flake:** re-run it once, and add the run to its issue under `## Evidence`. A running check reads `PENDING`
+     (its `completedAt` is `0001-01-01T00:00:00Z`). Having re-run past it, its root fix is this round's work: in the
+     item's PR when it sits on that seam, else in its own small PR in the next free lane this round, under step 4 in
+     full, as approved work, like a `main red` repair asked for in session. Never a re-run plus an issue (4.1,
+     *Filing what you find*).
    - **An outside-service outage:** wait it out; if it outlasts the round, report the PR as `waiting on <service>`.
    - **A failure the merge base also has:** it is `main`'s. File it as a ready `P1` issue,
      `main red: <check> at <sha>` (search first), and post a `## Note — main red` on the Queue. The PRs it blocks are
@@ -518,7 +538,7 @@ To **pull** an item:
 - **While the 14-day opened count exceeds the closed** (the health block), a PR's out-of-scope chore findings go into
   one `class:chore` issue per PR, and its latent `P3` defect findings into one `class:defect` issue per PR, each a
   checklist with `Found while working on #<n>`, closed when its list is done, and planned one item per seam, never in
-  the slot. Reachable and `P1`/`P2` defects are still filed one each.
+  the slot outside a chore-batch round (*Pick*). Reachable and `P1`/`P2` defects are still filed one each.
 - **Fix the item's own root, a symptom of it, or a part of it in its PR;** file it only when a ruling waived it.
 
 ## 5. Report on the Queue
@@ -527,6 +547,7 @@ To **pull** an item:
 ## Round <N> — result
 | # | outcome (merged · merge-ready · carried · closed by verification or sweep · pulled · waiting on main or <service>) | PR | product +/− | tests +/− |
 Closed <x> · Filed <y> · Net lines: product <p>, tests <t> · Open <before> → <after>
+When Open rose: the trend (the `14 days` ratio and the open count at the last four proposals) and its diagnosis, as the backlog-health question names it
 Filed: #<n> (P<k>) — <what, found while working on #<m>> — one line each
 Waiting on you: queue each PR at its vouched head: gh pr merge <n> --match-head-commit <sha>
 ```
