@@ -127,7 +127,10 @@ After starting the services, run the health check script to verify everything is
 ./scripts/faultmaven-dev.sh health
 ```
 
-This will check the API only (it does not check the Dashboard dev server):
+It checks an API this script started (`./scripts/faultmaven-dev.sh start`, which
+writes its PID file); an API started any other way, such as
+`python -m faultmaven.server`, is reported as "Running but unmanaged" and the
+check exits 1. It checks the API only, not the Dashboard dev server:
 
 - API process is running and listening on its port (`PORT` in `.env`, default 8090)
 - API HTTP endpoints are responding (`/health`, `/docs`, `/openapi.json`)
@@ -140,7 +143,8 @@ This will check the API only (it does not check the Dashboard dev server):
 |-----------|-----|-------|
 | API | http://localhost:8090 | Backend server |
 | API Docs | http://localhost:8090/docs | OpenAPI documentation |
-| Dashboard | http://localhost:3333 | Development server (Vite with hot-reload) or Docker |
+| Dashboard | http://localhost:3333 | Docker |
+| Dashboard | http://localhost:3333 | Development server (Vite with hot-reload); if 3333 is taken (the Docker dashboard is up), Vite takes the next free port and prints it |
 
 ---
 

@@ -45,8 +45,6 @@ if TYPE_CHECKING:
 # Investigation models from Agent module (shared for investigation coordination)
 
 
-# Case-owned Agent Execution models (Case module owns agent audit data per module-organization-design.md)
-
 # Case-owned Evidence DTOs (Case module owns evidence table per module-organization-design.md)
 from faultmaven.modules.case.domain.owned_models.evidence import (
     EvidenceArtifactType,
@@ -865,7 +863,6 @@ __all__ = [
     "TurnReceipt",
     "TurnReceiptExistsError",
     "TurnReceiptKey",
-    # Case-owned Agent Execution models (per module-organization-design.md)
     # Investigation models from Agent module (shared for investigation coordination)
     # Case domain models
     "Case",

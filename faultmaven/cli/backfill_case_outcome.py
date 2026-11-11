@@ -54,8 +54,9 @@ idle there.
 
 A case needs a record when it has none, or when it is terminal and no terminal
 write folded the record it has (``needs_record``). Only such a case is written
-and every other case is left alone, so the command is idempotent: a second run
-writes nothing.
+and every other case is left alone, so the command is idempotent: a run straight
+after a writing run (not ``--dry-run``) that exited 0 writes nothing. A run that
+skipped or failed cases leaves them for the next.
 
 Under ``TENANT_PROVIDER=multi`` RLS scopes every case read to the enterprise
 bound in the tenant context, so ``--enterprise-id`` is required and the command
@@ -87,8 +88,9 @@ from faultmaven.cli._database_gate import require_persistent_database_or_exit
 #: argparse's ``description``. A literal, not derived from ``__doc__``: ``python
 #: -OO`` strips docstrings.
 _SUMMARY = (
-    "Compute the case outcome record once for every stored case that has "
-    "none, from the case as stored (#2615)."
+    "Compute the case outcome record once for every stored case that needs "
+    "one, from the case as stored (#2615): a case without a record, or a "
+    "terminal case whose record no terminal write folded."
 )
 
 #: The exit status of a run that skipped a case for work in flight.
@@ -238,7 +240,8 @@ def main() -> None:
             "Runs after the release that writes the record and before any "
             "release that switches a reader onto it. Idempotent: only a case "
             "that needs a record (none, or a terminal case's record no terminal "
-            "write folded) is written, so a second run writes nothing. Exit 1 "
+            "write folded) is written, so a run straight after a writing run "
+            "that exited 0 writes nothing. Exit 1 "
             "when any case failed, else 3 when any was skipped: a failure "
             "outranks a skip."
         ),
@@ -267,7 +270,9 @@ def main() -> None:
     require_confirmation(
         parser,
         args,
-        "This writes a case outcome record onto every stored case without one.",
+        "This writes a case outcome record onto every stored case that needs "
+        "one: a case without a record, or a terminal case whose record no "
+        "terminal write folded.",
     )
 
     require_persistent_database_or_exit()

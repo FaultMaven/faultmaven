@@ -1378,7 +1378,7 @@ modules/knowledge/domain/services/indexing_service.py  # Business logic
 | Module | v1.0 Classification | v2.0 Classification | Reason |
 |--------|---------------------|---------------------|--------|
 | Evidence | ✅ Vertical | ❌ Domain Service | Evidence table has FK to cases - part of Case module's schema |
-| Agent | ✅ Vertical | ❌ Domain Service | No agent_* tables; all persistent state flows through the Case module |
+| Agent | ✅ Vertical | ❌ Domain Service | No agent_* tables; agent_tool_calls is case audit data, not agent state |
 | Report | ✅ Vertical | ❌ Domain Service | Reports table has FK to cases - part of Case module's schema (TD-001 complete) |
 | Case | ✅ Vertical | ✅ Vertical | Owns case-domain tables including evidence and reports (schema verified, TD-001 complete) |
 | Auth | ✅ Vertical | ✅ Vertical | Owns users and organizations tables (schema verified) |

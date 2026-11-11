@@ -13,9 +13,6 @@ Public API:
     From tools.base:
         - AgentTool, AgentToolRegistry, ToolContext
 
-Usage:
-    from faultmaven.modules.case.contracts import AgentType
-
 Note: This module does NOT eagerly import components to avoid circular dependencies.
 Import components directly from their submodules as shown above.
 """

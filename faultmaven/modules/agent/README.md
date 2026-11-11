@@ -127,7 +127,7 @@ and so given, only under their feature flags.
 |--------------|-------|
 | `core/investigation/` | Milestone engine, hypothesis manager, intent resolver |
 | `infrastructure/llm/` | LLM provider abstractions and routing |
-| `modules/case/contracts` | `Case`, `ICaseRepository`, and the Case-owned execution models |
+| `modules/case/contracts` | `Case`, `ICaseRepository`, and the case types a turn reads and writes (`CaseState`, `TurnReceipt`, `ChatDataOffer`, the message-row helpers) |
 | `modules/evidence/` | `FileStorageService`, which the orphan-file sweep (`jobs/storage_cleanup.py`) builds |
 | `modules/knowledge/contracts` | `describe_troubleshooting_domains` / `describe_troubleshooting_scope`, for the orientation and out-of-band prompts |
 
