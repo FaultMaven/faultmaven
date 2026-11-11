@@ -17,6 +17,7 @@ from faultmaven.core.investigation.cause_assurance import ENGINE_EVIDENCE_AUTHOR
 from faultmaven.core.investigation.lifecycle_metrics import (
     hypothesis_root_adoption_refused_total,
 )
+from faultmaven.core.investigation.narration.codes import NoticeCode
 from faultmaven.core.investigation.problem_status import (
     cause_work_accepted,
     cause_work_staged,
@@ -30,6 +31,7 @@ from faultmaven.modules.case.contracts import (
 from .cause_work import refuse_cause_work
 from .stage_gates import (
     _add_system_feedback,
+    record_decision,
 )
 from .statement_revision import emission_turn
 from .turn_records import _resolve_id_ref
@@ -356,23 +358,20 @@ def _record_verdict_on_root(
         if added or not standing:
             node.record_root_terminal(True, standing + added, case.current_turn)
         if refused and not kept:
-            _add_system_feedback(
+            record_decision(
                 metadata,
-                f"Root {node.node_id}: not qualifying: {'; '.join(refused)} "
-                "(the root's verdict stands on its cited rows).",
+                NoticeCode.ROOT_TERMINAL_NOT_QUALIFYING,
+                node_id=node.node_id,
+                refused=refused,
             )
         return
     node.metadata["root_terminal_refused_turn"] = case.current_turn
-    _add_system_feedback(
+    record_decision(
         metadata,
-        f"Root {node.node_id} was NOT marked terminal: root_is_terminal true "
-        "must cite, in terminal_basis_evidence_ids, a causal_evidence row "
-        f"recorded since this root was posited (turn "
-        f"{node.root_first_attached_turn}) showing that nothing controllable "
-        "produces its state (how it was issued or set, its lifetime, that "
-        "nothing renews it). "
-        + (f"Not qualifying: {'; '.join(refused)}. " if refused else "None cited. ")
-        + "Its why stays open.",
+        NoticeCode.ROOT_TERMINAL_REFUSED,
+        node_id=node.node_id,
+        posited_turn=node.root_first_attached_turn,
+        refused=refused,
     )
 
 

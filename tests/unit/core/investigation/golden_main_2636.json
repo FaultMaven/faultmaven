@@ -320,5 +320,132 @@
   ],
   "cycle:refutation_refused_retired_by_the_link_pass": [
     "Hypothesis <hyp:0> was NOT refuted: nothing on record refutes it. Its REFUTES links are self-hedged (stance_confidence below 0.6), which is not a disproof. A refutation stands only on an evidence row from submitted data linked with stance REFUTES to the hypothesis (hypothesis_evidence_links) or to a node of its chain (node_evidence_links), this turn or earlier, or on a recorded failed fix of it. Its links lowered its likelihood enough to set it aside (RETIRED), which is not a disproof. Do not tell the user it is ruled out: ask for the check that would settle it, or set state=RETIRED if you are setting it aside without a disproof."
+  ],
+  "cycle:absence_with_no_row_this_turn": [],
+  "cycle:absence_after_a_persistence": [
+    "SYSTEM: The fix executed at turn 8 did not hold: the cause was shown removed, then the problem was seen again. Absence evidence recorded after that cannot confirm a resolution. If the user has applied (or will apply) a new fix, record it: propose it as a SolutionToAdd and, once the user says it ran, set solution_accepted with accepted_action_ref naming it (new_index_N, or its ACTION_ID once proposed) — re-assert the cause with a root_cause_conclusion on a new hypothesis if the same cause was addressed again — then record the cause gone and the problem gone after it. If the problem is only quiet after a workaround, offer to close instead."
+  ],
+  "cycle:absence_after_a_relapse": [
+    "SYSTEM: The fix executed at turn 6 did not hold: the problem was seen gone at turn 7, then seen again. Absence evidence recorded after that cannot confirm a resolution. If the user has applied (or will apply) a new fix, record it: propose it as a SolutionToAdd and, once the user says it ran, set solution_accepted with accepted_action_ref naming it (new_index_N, or its ACTION_ID once proposed) — a problem that went away after the fix and came back does not by itself disprove the cause the fix addressed: if that cause still stands, no new hypothesis is needed; if it no longer stands, re-assert it with a root_cause_conclusion on a new hypothesis — then record the cause gone and the problem gone after it. If the problem is only quiet after a workaround, offer to close instead."
+  ],
+  "cycle:absence_after_window_zero_relapsed": [
+    "SYSTEM: The fix done outside the case did not hold: the problem was seen gone at turn 7, then seen again at turn 8. Absence evidence recorded after that cannot confirm a resolution. If the user has applied (or will apply) a new fix, record it: propose it as a SolutionToAdd and, once the user says it ran, set solution_accepted with accepted_action_ref naming it (new_index_N, or its ACTION_ID once proposed) — a problem that went away after the fix and came back does not by itself disprove the cause the fix addressed: if that cause still stands, no new hypothesis is needed; if it no longer stands, re-assert it with a root_cause_conclusion on a new hypothesis — then record the cause gone and the problem gone after it. If the problem is only quiet after a workaround, offer to close instead."
+  ],
+  "cycle:absence_after_a_relapse_later_disconfirmed": [
+    "SYSTEM: The fix executed at turn 6 did not hold: the cause was shown removed, then the problem was seen again. Absence evidence recorded after that cannot confirm a resolution. If the user has applied (or will apply) a new fix, record it: propose it as a SolutionToAdd and, once the user says it ran, set solution_accepted with accepted_action_ref naming it (new_index_N, or its ACTION_ID once proposed) — re-assert the cause with a root_cause_conclusion on a new hypothesis if the same cause was addressed again — then record the cause gone and the problem gone after it. If the problem is only quiet after a workaround, offer to close instead."
+  ],
+  "cycle:absence_decided_twice_in_one_cycle": [
+    "SYSTEM: The fix executed at turn 8 did not hold: the cause was shown removed, then the problem was seen again. Absence evidence recorded after that cannot confirm a resolution. If the user has applied (or will apply) a new fix, record it: propose it as a SolutionToAdd and, once the user says it ran, set solution_accepted with accepted_action_ref naming it (new_index_N, or its ACTION_ID once proposed) — re-assert the cause with a root_cause_conclusion on a new hypothesis if the same cause was addressed again — then record the cause gone and the problem gone after it. If the problem is only quiet after a workaround, offer to close instead.",
+    "SYSTEM: The fix executed at turn 8 did not hold: the cause was shown removed, then the problem was seen again. Absence evidence recorded after that cannot confirm a resolution. If the user has applied (or will apply) a new fix, record it: propose it as a SolutionToAdd and, once the user says it ran, set solution_accepted with accepted_action_ref naming it (new_index_N, or its ACTION_ID once proposed) — re-assert the cause with a root_cause_conclusion on a new hypothesis if the same cause was addressed again — then record the cause gone and the problem gone after it. If the problem is only quiet after a workaround, offer to close instead."
+  ],
+  "cycle:absence_decided_by_a_bundle_and_the_live_apply": [
+    "SYSTEM: The fix executed at turn 8 did not hold: the cause was shown removed, then the problem was seen again. Absence evidence recorded after that cannot confirm a resolution. If the user has applied (or will apply) a new fix, record it: propose it as a SolutionToAdd and, once the user says it ran, set solution_accepted with accepted_action_ref naming it (new_index_N, or its ACTION_ID once proposed) — re-assert the cause with a root_cause_conclusion on a new hypothesis if the same cause was addressed again — then record the cause gone and the problem gone after it. If the problem is only quiet after a workaround, offer to close instead."
+  ],
+  "cycle:unbound_none_on_the_cited_basis": [],
+  "cycle:unbound_uncited_after_a_fix": [
+    "SYSTEM: Post-fix row(s) <ev:0> confirm nothing: it re-checks a row the root's verdict does not cite; name one of <ev:1> (the cited basis)."
+  ],
+  "cycle:unbound_unnamed_after_a_fix": [
+    "SYSTEM: Post-fix row(s) <ev:0> name nothing they re-check that binds, so they confirm and disconfirm nothing. Set rechecks — symptom rows: one of <ev:1>; causal_absence rows: one of <ev:2> (the cited basis of the root cause)."
+  ],
+  "cycle:unbound_uncited_and_unnamed": [
+    "SYSTEM: Post-fix row(s) <ev:0> confirm nothing: it re-checks a row the root's verdict does not cite; name one of <ev:1> (the cited basis).",
+    "SYSTEM: Post-fix row(s) <ev:2> name nothing they re-check that binds, so they confirm and disconfirm nothing. Set rechecks — symptom rows: one of <ev:3>; causal_absence rows: one of <ev:1> (the cited basis of the root cause)."
+  ],
+  "cycle:unbound_uncited_with_no_dated_fix": [
+    "SYSTEM: Row(s) <ev:0> confirm nothing: it re-checks a row the root's verdict does not cite; name one of <ev:1> (the cited basis)."
+  ],
+  "cycle:unbound_on_an_uncited_pool_root": [
+    "SYSTEM: Post-fix row(s) <ev:0> confirm nothing: the root cause's terminal verdict cites no row yet; re-send root_is_terminal true citing the causal_evidence rows that show why it arose (RE-ROOT if a deeper cause produced it), then re-check one of them."
+  ],
+  "cycle:unbound_with_no_pool": [
+    "SYSTEM: Post-fix row(s) <ev:0> name nothing they re-check that binds, so they confirm and disconfirm nothing. Set rechecks — symptom rows: one of <ev:1>; causal_absence rows: none supports the root cause alone yet."
+  ],
+  "cycle:unbound_after_a_mitigation": [
+    "SYSTEM: Post-mitigation row(s) <ev:0> name nothing they re-check that binds, so they confirm and disconfirm nothing. Set rechecks — symptom rows: one of <ev:1>; causal_absence rows: none supports the root cause alone yet."
+  ],
+  "cycle:unbound_before_housekeeping_retires_a_competitor": [
+    "SYSTEM: Post-fix row(s) <ev:0> name nothing they re-check that binds, so they confirm and disconfirm nothing. Set rechecks — symptom rows: one of <ev:1>; causal_absence rows: none supports the root cause alone yet."
+  ],
+  "cycle:failed_fix_named_again": [
+    "SYSTEM: 'solution_accepted' was not registered again: SOLUTION <act:0> is registered, and its fix window failed or a later fix followed it. If the user re-applied it, re-propose it as a SolutionToAdd and set accepted_action_ref new_index_N naming it."
+  ],
+  "cycle:licence_withdrawn_once_it_holds": [
+    "SYSTEM: 'solution_accepted' was not registered: <act:0> was withdrawn while its root cause was not established, and a withdrawn fix does not register by its ACTION_ID. If the user carried it out, re-propose it as a SolutionToAdd and set solution_accepted with accepted_action_ref new_index_N naming it."
+  ],
+  "cycle:licence_withdrawn_while_it_is_down": [
+    "SYSTEM: 'solution_accepted' was not registered: <act:0> targets a root cause that is no longer established, and a permanent fix needs one (M5). Re-ground the root cause with evidence first, or propose a temporary mitigation (WORKAROUND)."
+  ],
+  "cycle:licence_downgraded_once_it_holds": [
+    "SYSTEM: 'solution_accepted' was not registered: <act:0> was downgraded to a DIAGNOSTIC when it was proposed, because its root cause was not established then. The cause is established now: if the user carried out the fix, re-propose it as a SolutionToAdd and set solution_accepted with accepted_action_ref new_index_N naming it."
+  ],
+  "cycle:licence_downgraded_while_it_is_down": [
+    "SYSTEM: 'solution_accepted' was not registered: <act:0> targets a root cause that is no longer established, and a permanent fix needs one (M5). Re-ground the root cause with evidence first, or propose a temporary mitigation (WORKAROUND)."
+  ],
+  "cycle:licence_carried_with_no_bearer": [
+    "SYSTEM: 'solution_accepted' was not registered: the fix the user reported running at turn 6 targets a root cause that is no longer established, and a permanent fix needs one (M5). Re-ground the root cause with evidence first, or propose a temporary mitigation (WORKAROUND)."
+  ],
+  "cycle:fix_report_on_the_first_turn": [
+    "SYSTEM: accepted_fix_reported_in previous_message was ignored: there is no message before turn 1; the fix is dated to turn 1."
+  ],
+  "cycle:fix_report_without_an_acceptance": [
+    "SYSTEM: accepted_fix_reported_in previous_message was ignored: it is read only with solution_accepted."
+  ],
+  "cycle:fix_report_on_a_hold_turn": [
+    "solution_accepted is held until the user confirms the revised problem statement: the fix it names then registers as carried out at this turn, under the same gates as any fix (a permanent fix still needs an established cause). Do not set it again.",
+    "SYSTEM: accepted_fix_reported_in previous_message was ignored: a fix carried through a revision hold is dated to its hold turn, 6."
+  ],
+  "cycle:fix_report_after_a_fix_not_seen_failing": [
+    "SYSTEM: accepted_fix_reported_in previous_message was ignored: the fix executed at turn 10 was not seen failing before turn 10, so turn 10's observations stay with it; the fix is dated to turn 11."
+  ],
+  "cycle:fix_report_moving_a_disconfirmation": [
+    "SYSTEM: accepted_fix_reported_in previous_message was ignored: turn 10's observations decide whether the fix executed at turn 6 was disconfirmed, so they stay with it; the fix is dated to turn 11.",
+    "SYSTEM: fix <act:0> is recorded without a target: the root-cause conclusion names its cause in words only. Set names_root_node_id on root_cause_conclusion to the cause's cn_... node, and node_ref on each fix to the node it changes."
+  ],
+  "cycle:fix_report_after_a_held_turn": [
+    "SYSTEM: accepted_fix_reported_in previous_message was ignored: turn 5 was held for the revised statement confirmed now, so its record lacks the cause work replayed since; the fix is dated to turn 6."
+  ],
+  "cycle:signals_on_an_invalidated_problem": [
+    "SYSTEM: Your pending SOLUTION proposal was withdrawn because the root cause it targeted is no longer established. Re-ground the root cause with evidence before re-proposing a permanent fix, or propose a temporary mitigation (WORKAROUND) instead.",
+    "solution_accepted NOT ACCEPTED: the evidence showed the reported symptom was never present, so there is nothing to mitigate or fix. If the user disputes the finding, record it (invalidation_withdrawn)."
+  ],
+  "cycle:fix_untargeted": [
+    "SYSTEM: fix <act:0> is recorded without a target: the root-cause conclusion names its cause in words only. Set names_root_node_id on root_cause_conclusion to the cause's cn_... node, and node_ref on each fix to the node it changes."
+  ],
+  "cycle:false_alarm_refused": [
+    "FALSE-ALARM FINDING NOT ACCEPTED: it cites no symptom_absence evidence showing the reported symptom was not present where and when it was reported."
+  ],
+  "cycle:revision_refused": [
+    "STATEMENT REVISION NOT ACCEPTED: it cites no symptom evidence showing the problem as revised."
+  ],
+  "cycle:root_terminal_refused_with_none_cited": [
+    "Root <cn:0> was NOT marked terminal: root_is_terminal true must cite, in terminal_basis_evidence_ids, a causal_evidence row recorded since this root was posited (turn 4) showing that nothing controllable produces its state (how it was issued or set, its lifetime, that nothing renews it). None cited. Its why stays open."
+  ],
+  "cycle:root_terminal_refused_on_a_row_before_the_root": [
+    "Root <cn:0> was NOT marked terminal: root_is_terminal true must cite, in terminal_basis_evidence_ids, a causal_evidence row recorded since this root was posited (turn 4) showing that nothing controllable produces its state (how it was issued or set, its lifetime, that nothing renews it). Not qualifying: <ev:1> (recorded at turn 3, before the root was posited). Its why stays open."
+  ],
+  "cycle:root_terminal_not_qualifying_beside_its_verdict": [
+    "Root <cn:0>: not qualifying: <ev:1> (recorded at turn 3, before the root was posited) (the root's verdict stands on its cited rows)."
+  ],
+  "cycle:pending_check_backstop_declined": [
+    "RESOLUTION HELD: the check you asked for is still pending ([eneed_00000000c0c0] Prometheus targets page showing job=billing UP). Record its answer as a row and mark the need FULFILLED citing it. If the user cannot run the check, SUPERSEDE the need with the reason. The user declined the resolution. Once an answer showing the problem gone is on record, a new problem-bound row showing it lapses that decline; if that answer is on any other row, the decline still binds, and the user re-opens the resolution with 'Mark it resolved'."
+  ],
+  "cycle:pending_check_step2_declined": [
+    "RESOLVED NOT PROPOSED: the check you asked for is still pending ([eneed_00000000c0c0] Prometheus targets page showing job=billing UP). Record its answer as a row and mark the need FULFILLED citing it. If the user cannot run the check, SUPERSEDE the need with the reason. The user declined the resolution. Once an answer showing the problem gone is on record, a new problem-bound row showing it lapses that decline; if that answer is on any other row, the decline still binds, and the user re-opens the resolution with 'Mark it resolved'."
+  ],
+  "cycle:declined_resolution_reask_with_chips": [
+    "TRANSITION NOT PROPOSED: the user declined marking this case resolved, and no new confirmation that the fix held has been recorded since. Do not propose resolved on the evidence already on record. If the user reports a NEW verification that the fix held, record it (the cause gone as causal_absence_evidence, the problem gone as symptom_absence_evidence) and propose resolved in the same turn. A request is not a verification: never record a confirmation row from a request. The engine has attached its 'Mark it resolved' and 'Close without resolving' actions to this reply. A user who changes their mind without a new verification uses the engine's 'Mark it resolved' action: point them to it. A user who wants to close the case instead uses the engine's 'Close without resolving' action: point them to it."
+  ],
+  "cycle:declined_resolution_reask_held_by_a_check": [
+    "TRANSITION NOT PROPOSED: the user declined marking this case resolved, and no new confirmation that the fix held has been recorded since. Do not propose resolved on the evidence already on record. If the user reports a NEW verification that the fix held, record it (the cause gone as causal_absence_evidence, the problem gone as symptom_absence_evidence) and propose resolved in the same turn. A request is not a verification: never record a confirmation row from a request. The engine has attached its 'Mark it resolved' and 'Close without resolving' actions to this reply. A user who wants to close the case instead uses the engine's 'Close without resolving' action: point them to it."
+  ],
+  "cycle:declined_resolution_reask_without_chips": [
+    "TRANSITION NOT PROPOSED: the user declined marking this case resolved, and no new confirmation that the fix held has been recorded since. Do not propose resolved on the evidence already on record. If the user reports a NEW verification that the fix held, record it (the cause gone as causal_absence_evidence, the problem gone as symptom_absence_evidence) and propose resolved in the same turn. A request is not a verification: never record a confirmation row from a request."
+  ],
+  "cycle:declined_close_reask_on_a_false_alarm": [
+    "TRANSITION NOT PROPOSED: resolution is not eligible on a false alarm, and the user declined closing on this finding at turn 4. Propose a close only if the user directs it; the engine then attaches the Close action to your reply. Do not propose it unprompted."
+  ],
+  "cycle:declined_close_reask_on_the_deferred_close": [
+    "TRANSITION NOT PROPOSED: the user declined closing this case with the solution documented (the deferred-implementation close), and no new solution or confirmation has been recorded since. Propose that close only if the user directs it; the engine then attaches the Close action to your reply. Do not propose it unprompted."
   ]
 }

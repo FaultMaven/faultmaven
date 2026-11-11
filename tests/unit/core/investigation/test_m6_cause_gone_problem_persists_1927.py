@@ -1066,6 +1066,7 @@ def test_an_absence_row_inside_a_failed_window_tells_the_model_to_record_a_fix()
     from faultmaven.core.investigation.milestone_engine.stage_gates import (
         _flag_absence_inside_a_failed_fix_window,
     )
+    from tests.unit.core.investigation.narrated import narrated
 
     case, root, hyp = _identified_case()
     _failed_fix(case)
@@ -1078,7 +1079,7 @@ def test_an_absence_row_inside_a_failed_window_tells_the_model_to_record_a_fix()
     case.evidence.append(_problem_gone(10, label="fine_now"))
     metadata = {}
     assert _flag_absence_inside_a_failed_fix_window(case, metadata) is True
-    feedback = "\n".join(metadata["system_notices"])
+    feedback = "\n".join(narrated(case, metadata))
     assert "did not hold" in feedback
     assert "SolutionToAdd" in feedback and "solution_accepted" in feedback
 

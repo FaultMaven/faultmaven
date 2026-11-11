@@ -108,6 +108,7 @@ from tests.unit.core.investigation.fix_turns_2039 import (
     _turn,
 )
 from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
+from tests.unit.core.investigation.narrated import narrated
 from tests.unit.core.investigation.test_m6_cause_gone_problem_persists_1927 import (
     _FILE_ID,
     _identified_case,
@@ -213,6 +214,7 @@ async def _process(eng, case, turn, *, justified, **updates) -> dict:
     _case_out, meta = await eng.responses.process_response_structured(
         case, "I ran it", response
     )
+    narrated(case, meta)
     return meta
 
 
@@ -231,6 +233,7 @@ async def _confirm(eng, case, turn) -> dict:
     case.current_turn = turn
     meta: dict = {}
     await confirm_revision(eng.responses, case, meta, via=AnswerVia.CLICK)
+    narrated(case, meta)
     return meta
 
 
@@ -1658,7 +1661,7 @@ async def test_a_carried_re_run_of_a_failed_fix_gets_the_re_propose_line():
 
     assert registers is False
     assert f"SOLUTION {first.action_id} is registered, and its fix window failed" in (
-        "\n".join(meta["system_notices"])
+        "\n".join(narrated(case, meta))
     )
 
 

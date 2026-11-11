@@ -5,8 +5,9 @@ A decider records what it decided as a code with its params
 the codes after the decision cycle's record is written
 (``milestone_engine/turn_narration.py``). Params carry identities, the model's
 own emission, what the engine did this turn, and the facts a renderer falls
-back on when no record can be read; every verdict a text states is read from
-the record at render time.
+back on when no record can be read. B1b's codes read the verdicts their texts
+state from the record at render time; B1c's carry them as their decider read
+them (decide-time facts, A4), so each text is the one the decider composed.
 
 The log is turn-local metadata and never stored (a turn record holds rendered
 text), so member order has no runtime meaning. ``NoticeCode`` is APPEND-ONLY
@@ -42,6 +43,22 @@ class NoticeCode(StrEnum):
     # validated) after a refusal of its refutation.
     HYPOTHESIS_RETIRED = "hypothesis_retired"
     MITIGATION_DISPOSED = "mitigation_disposed"
+    # B1c: each rendered from its params alone, the facts its decider read
+    # (decide-time, A4) until the record agrees with them (B1e).
+    ABSENCE_IN_FAILED_WINDOW = "absence_in_failed_window"
+    UNBOUND_RECHECKS = "unbound_rechecks"
+    FAILED_FIX_NOT_REREGISTERED = "failed_fix_not_reregistered"
+    PENDING_CHECK = "pending_check"
+    DECLINED_RESOLUTION_REASK = "declined_resolution_reask"
+    FIX_UNTARGETED = "fix_untargeted"
+    SIGNALS_ON_INVALIDATED_PROBLEM = "signals_on_invalidated_problem"
+    DECLINED_CLOSE_REASK = "declined_close_reask"
+    ROOT_TERMINAL_NOT_QUALIFYING = "root_terminal_not_qualifying"
+    ROOT_TERMINAL_REFUSED = "root_terminal_refused"
+    FALSE_ALARM_REFUSED = "false_alarm_refused"
+    REVISION_REFUSED = "revision_refused"
+    FIX_LICENCE_REFUSED = "fix_licence_refused"
+    FIX_REPORT_IGNORED = "fix_report_ignored"
 
 
 #: Codes that write no notice: other renderers read them.

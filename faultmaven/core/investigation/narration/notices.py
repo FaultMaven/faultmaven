@@ -3,16 +3,16 @@ stage R).
 
 Composers keyed on what a decider decided, never on the case: the rule that
 binds the model while a resolve decline stands and the actions it points at,
-the feedback while the model's own check holds the resolution, and two of the
-``solution_accepted`` refusals (no pending SOLUTION, and the M5 licence). The
-withdrawn and downgraded refusals stay in ``milestone_engine.stage_gates``
-until a later sub-stage moves them. The deciders derive the params; these
-compose.
+the feedback while the model's own check holds the resolution, and the
+``solution_accepted`` refusals (no pending SOLUTION, the M5 licence). The
+deciders derive the params; these compose.
 
 Below them, the renderers of the decision log's notice codes (#2636 B1b): each
 reads the code's params and the cycle's record (``CaseOutcome``), never the
 case, after the cycle's last decider ran (``render_notice``). With no outcome
 at all (``None``), a renderer falls back on the facts its decider recorded.
+B1c's renderers read no record: their params carry the facts their deciders
+read (decide-time, A4), so each renders the text its decider composed.
 """
 
 from typing import Callable, Optional
@@ -136,6 +136,31 @@ NO_PENDING_SOLUTION_NOTICE = (
     "the problem is already resolved, record the confirming "
     "evidence instead: causal_absence for the cause gone and "
     "symptom_absence for the reported problem gone."
+)
+
+
+#: How a refused re-proposal tells the model what binds it. Conditional, never
+#: a flat ban: a model that obeys a ban never proposes, so a user who later
+#: types "ok, close it" (on Slack, with no status menu) gets no refusal and no
+#: card, and no way to close at all.
+_DIRECTED_ONLY = (
+    "Propose {what} only if the user directs it; the engine then attaches the "
+    "Close action to your reply. Do not propose it unprompted."
+)
+
+#: The feedback when step 2 refuses a resolution the user declined (#1895),
+#: the part that holds on every case: ``RESOLVE_DECLINED_RULE``, the binding
+#: half the prompt line states too.
+DECLINED_RESOLVE_FEEDBACK = (
+    "TRANSITION NOT PROPOSED: the user declined marking this case resolved, "
+    "and no new confirmation that the fix held has been recorded since. "
+    + RESOLVE_DECLINED_RULE
+)
+
+#: Added to it only when the reply carries the engine's two chips (#2472).
+_DECLINED_RESOLVE_CHIPS_FEEDBACK = (
+    "The engine has attached its 'Mark it resolved' and 'Close without "
+    "resolving' actions to this reply."
 )
 
 
@@ -338,4 +363,267 @@ def _refutation_refused(params: dict, outcome, log) -> list:
         f"failed fix of it.{where} Do not tell the user it is ruled out: "
         f"ask for the check that would settle it, or set state=RETIRED if "
         f"you are setting it aside without a disproof."
+    ]
+
+
+# ---------------------------------------------------------------------------
+# B1c: rendered from the facts their deciders read (decide-time, A4)
+# ---------------------------------------------------------------------------
+
+
+@_renders(NoticeCode.ABSENCE_IN_FAILED_WINDOW)
+def _absence_in_failed(params: dict, outcome, log) -> list:
+    """The FAILED window as ``latest_fix_window`` read it at the decision:
+    whether it disconfirmed the cause, and its turns. The record's window can
+    differ within the cycle (a FAILED window is carried whole), so it is not
+    read here."""
+    if params["disconfirmed"]:
+        shape = "the cause was shown removed, then the problem was seen again"
+        cause = (
+            " — re-assert the cause with a root_cause_conclusion on a new "
+            "hypothesis if the same cause was addressed again — then"
+        )
+    else:
+        shape = (
+            f"the problem was seen gone at turn {params['relief_turn']}, then "
+            "seen again"
+        )
+        if params["fix_turn"] is None:
+            shape += f" at turn {params['failure_turn']}"
+        cause = (
+            " — a problem that went away after the fix and came back does not "
+            "by itself disprove the cause the fix addressed: if that cause still "
+            "stands, no new hypothesis is needed; if it no longer stands, "
+            "re-assert it with a root_cause_conclusion on a new hypothesis — then"
+        )
+    # Window 0 (#2501): a fix done outside the case carries no execution turn.
+    which = (
+        "The fix done outside the case"
+        if params["fix_turn"] is None
+        else f"The fix executed at turn {params['fix_turn']}"
+    )
+    return [
+        f"SYSTEM: {which} did not hold: {shape}. Absence evidence recorded "
+        "after that cannot confirm a resolution. If the user has applied (or "
+        "will apply) a new fix, record it: propose it as a SolutionToAdd and, "
+        "once the user says it ran, set solution_accepted with "
+        "accepted_action_ref naming it (new_index_N, or its ACTION_ID once "
+        f"proposed){cause} record the "
+        "cause gone and the problem gone after it. If the problem is only "
+        "quiet after a workaround, offer to close instead."
+    ]
+
+
+@_renders(NoticeCode.UNBOUND_RECHECKS)
+def _unbound(params: dict, outcome, log) -> list:
+    """``main``'s row selection, until B2: the rows this turn recorded that
+    bind to nothing, as ``_flag_unbound_post_fix_rows`` selected them, and the
+    ids that WOULD bind (``SubjectIndex.bindable_rows``), its ``why`` and
+    whether the confirmation pool has roots, as it read them. One line for
+    the rows its window binds but the verdict does not cite, then one for the
+    rows that name nothing that binds; five ids each."""
+    uncited, unnamed = params["uncited"], params["unnamed"]
+    problem_ids = ", ".join(params["problem_row_ids"][:5])
+    cause_ids = ", ".join(params["cause_row_ids"][:5])
+    why = params["why"]
+    if cause_ids:
+        cause_text = f"one of {cause_ids} (the cited basis of the root cause)."
+    elif params["pool_roots"]:
+        cause_text = (
+            f"{why}; re-send root_is_terminal true citing the causal_evidence "
+            "rows that show why it arose (RE-ROOT if a deeper cause produced "
+            "it), then re-check one of them."
+        )
+    else:
+        cause_text = "none supports the root cause alone yet."
+    lines = []
+    if uncited:
+        lines.append(
+            f"SYSTEM: {'Post-fix row(s)' if params['fix_dated'] else 'Row(s)'} "
+            f"{', '.join(uncited[:5])} confirm nothing: "
+            + (f"{why}." if cause_ids else cause_text)
+        )
+    if unnamed:
+        by_mitigation = set(params["after_mitigation"])
+        after = (
+            "Post-mitigation" if by_mitigation.issuperset(unnamed[:5]) else "Post-fix"
+        )
+        lines.append(
+            f"SYSTEM: {after} row(s) {', '.join(unnamed[:5])} name nothing they "
+            "re-check that binds, so they confirm and disconfirm nothing. Set "
+            "rechecks — symptom rows: "
+            + (
+                f"one of {problem_ids}"
+                if problem_ids
+                else "none is on record as having shown the problem; cite those "
+                "rows in symptom_verification_evidence_ids"
+            )
+            + "; causal_absence rows: "
+            + cause_text
+        )
+    return lines
+
+
+@_renders(NoticeCode.FAILED_FIX_NOT_REREGISTERED)
+def _failed_fix(params: dict, outcome, log) -> list:
+    return [
+        f"SYSTEM: 'solution_accepted' was not registered again: SOLUTION "
+        f"{params['action_id']} is registered, and its fix window failed or a "
+        "later fix followed it. If the user re-applied it, re-propose it as a "
+        "SolutionToAdd and set accepted_action_ref new_index_N naming it."
+    ]
+
+
+@_renders(NoticeCode.PENDING_CHECK)
+def _pending_check(params: dict, outcome, log) -> list:
+    """Whether a resolve decline stands is the decider's (A4)."""
+    return [
+        pending_check_feedback(
+            params["need_id"],
+            params["request_text"],
+            fulfilled=params["fulfilled"],
+            proposed=params["proposed"],
+            declined_stands=params["declined_stands"],
+        )
+    ]
+
+
+@_renders(NoticeCode.DECLINED_RESOLUTION_REASK)
+def _declined_resolution(params: dict, outcome, log) -> list:
+    if not params["chips"]:
+        return [DECLINED_RESOLVE_FEEDBACK]
+    return [
+        f"{DECLINED_RESOLVE_FEEDBACK} {_DECLINED_RESOLVE_CHIPS_FEEDBACK} "
+        f"{resolve_declined_actions(params['pending_check_holds'])}"
+    ]
+
+
+@_renders(NoticeCode.FIX_UNTARGETED)
+def _untargeted(params: dict, outcome, log) -> list:
+    return [
+        f"SYSTEM: fix {params['action_id']} is recorded without a target: the "
+        "root-cause conclusion names its cause in words only. Set "
+        "names_root_node_id on root_cause_conclusion to the cause's "
+        "cn_... node, and node_ref on each fix to the node it changes."
+    ]
+
+
+@_renders(NoticeCode.SIGNALS_ON_INVALIDATED_PROBLEM)
+def _signals_on_invalidated(params: dict, outcome, log) -> list:
+    return [
+        f"{', '.join(params['signals'])} NOT ACCEPTED: the evidence "
+        "showed the reported symptom was never present, so there is "
+        "nothing to mitigate or fix. If the user disputes the "
+        "finding, record it (invalidation_withdrawn)."
+    ]
+
+
+@_renders(NoticeCode.DECLINED_CLOSE_REASK)
+def _declined_close(params: dict, outcome, log) -> list:
+    if params["side"] == "false_alarm":
+        return [
+            "TRANSITION NOT PROPOSED: resolution is not eligible on a false "
+            "alarm, and the user declined closing on this finding at turn "
+            f"{params['declined_at']}. " + _DIRECTED_ONLY.format(what="a close")
+        ]
+    return [
+        "TRANSITION NOT PROPOSED: the user declined closing this case with "
+        "the solution documented (the deferred-implementation close), and "
+        "no new solution or confirmation has been recorded since. "
+        + _DIRECTED_ONLY.format(what="that close")
+    ]
+
+
+@_renders(NoticeCode.ROOT_TERMINAL_NOT_QUALIFYING)
+def _root_not_qualifying(params: dict, outcome, log) -> list:
+    return [
+        f"Root {params['node_id']}: not qualifying: {'; '.join(params['refused'])} "
+        "(the root's verdict stands on its cited rows)."
+    ]
+
+
+@_renders(NoticeCode.ROOT_TERMINAL_REFUSED)
+def _root_refused(params: dict, outcome, log) -> list:
+    refused = params["refused"]
+    return [
+        f"Root {params['node_id']} was NOT marked terminal: root_is_terminal true "
+        "must cite, in terminal_basis_evidence_ids, a causal_evidence row "
+        f"recorded since this root was posited (turn "
+        f"{params['posited_turn']}) showing that nothing controllable "
+        "produces its state (how it was issued or set, its lifetime, that "
+        "nothing renews it). "
+        + (f"Not qualifying: {'; '.join(refused)}. " if refused else "None cited. ")
+        + "Its why stays open."
+    ]
+
+
+@_renders(NoticeCode.FALSE_ALARM_REFUSED)
+def _false_alarm_refused(params: dict, outcome, log) -> list:
+    return [f"FALSE-ALARM FINDING NOT ACCEPTED: {params['reason']}."]
+
+
+@_renders(NoticeCode.REVISION_REFUSED)
+def _revision_refused(params: dict, outcome, log) -> list:
+    return [f"STATEMENT REVISION NOT ACCEPTED: {params['reason']}."]
+
+
+@_renders(NoticeCode.FIX_LICENCE_REFUSED)
+def _licence_refused(params: dict, outcome, log) -> list:
+    """A fix not registered for its licence: withdrawn ``license_lost`` once
+    the license holds again (the name does not register it, a re-proposal
+    does), its only bearer an M5-downgraded copy once it holds (the copy
+    cannot register, a re-proposal can), or the license down."""
+    subject = params["subject"]
+    if params["variant"] == "withdrawn":
+        return [
+            f"SYSTEM: 'solution_accepted' was not registered: {subject} was "
+            "withdrawn while its root cause was not established, and a withdrawn "
+            "fix does not register by its ACTION_ID. If the user carried it out, "
+            "re-propose it as a SolutionToAdd and set solution_accepted with "
+            "accepted_action_ref new_index_N naming it."
+        ]
+    if params["variant"] == "downgraded":
+        return [
+            f"SYSTEM: 'solution_accepted' was not registered: {subject} was "
+            "downgraded to a DIAGNOSTIC when it was proposed, because its root "
+            "cause was not established then. The cause is established now: if the "
+            "user carried out the fix, re-propose it as a SolutionToAdd and set "
+            "solution_accepted with accepted_action_ref new_index_N naming it."
+        ]
+    return [license_notice(subject)]
+
+
+def fix_report_reason(params: dict) -> str:
+    """Why ``accepted_fix_reported_in`` was ignored, by its decider's code."""
+    turn, previous = params.get("turn"), params.get("previous")
+    dated_here = f"the fix is dated to turn {turn}"
+    return {
+        "unaccepted": lambda: "it is read only with solution_accepted",
+        "carried": lambda: (
+            "a fix carried through a revision hold is dated to its hold "
+            f"turn, {turn}"
+        ),
+        "no_previous": lambda: f"there is no message before turn {turn}; {dated_here}",
+        "window_not_failed": lambda: (
+            f"the fix executed at turn {params['fix_turn']} was not seen failing "
+            f"before turn {previous}, so turn {previous}'s observations stay "
+            f"with it; {dated_here}"
+        ),
+        "decides_disconfirmation": lambda: (
+            f"turn {previous}'s observations decide whether the fix executed at "
+            f"turn {params['fix_turn']} was disconfirmed, so they stay with it; "
+            f"{dated_here}"
+        ),
+        "previous_held": lambda: (
+            f"turn {previous} was held for the revised statement confirmed now, "
+            f"so its record lacks the cause work replayed since; {dated_here}"
+        ),
+    }[params["reason"]]()
+
+
+@_renders(NoticeCode.FIX_REPORT_IGNORED)
+def _fix_report_ignored(params: dict, outcome, log) -> list:
+    return [
+        "SYSTEM: accepted_fix_reported_in previous_message was ignored: "
+        f"{fix_report_reason(params)}."
     ]

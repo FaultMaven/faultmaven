@@ -120,6 +120,8 @@ def _apply(case, **fields) -> dict:
             case, _Updates(**fields), meta
         )
     )
+    # The apply step records codes; the narration step renders them (#2636).
+    narrated(case, meta)
     return meta
 
 

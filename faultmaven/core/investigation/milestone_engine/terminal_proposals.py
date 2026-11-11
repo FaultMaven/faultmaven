@@ -9,6 +9,7 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     engine_proposed_resolution_total,
     evidence_need_status_changed_total,
 )
+from faultmaven.core.investigation.narration.codes import NoticeCode
 from faultmaven.core.investigation.offers import awaiting_request_recheck
 from faultmaven.core.investigation.problem_status import problem_on_hold
 from faultmaven.core.investigation.terminal_transitions import (
@@ -26,7 +27,7 @@ from faultmaven.modules.case.contracts import (
     SolutionFeasible,
 )
 
-from .stage_gates import _add_system_feedback, _solution_cause_validated
+from .stage_gates import _solution_cause_validated, record_decision
 
 logger = logging.getLogger(__name__)
 
@@ -253,7 +254,7 @@ def _maybe_propose_confirmed_resolution(case: "Case", metadata: dict) -> None:
         ResolutionReadiness,
         assess_resolution_readiness,
         cause_identification_leg,
-        held_check_feedback,
+        pending_check_params,
     )
 
     if not getattr(case, "progress", None):
@@ -267,8 +268,10 @@ def _maybe_propose_confirmed_resolution(case: "Case", metadata: dict) -> None:
             # the model is told, on every stage (the ``<fix_verification>``
             # block renders only after DIAGNOSIS), unless step 2 already
             # answered its ``resolved`` with the same need.
-            _add_system_feedback(
-                metadata, held_check_feedback(case, check, proposed=False)
+            record_decision(
+                metadata,
+                NoticeCode.PENDING_CHECK,
+                **pending_check_params(case, check, proposed=False),
             )
             metadata["resolution_pending_check"] = check.need_id
         return
