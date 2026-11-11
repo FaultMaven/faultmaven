@@ -63,7 +63,11 @@ the planted quadratic from the window where ``C`` swamps ``t(8n) - t(n)``
 
 An undecided window moves up by ``step`` — the work grows, ``C`` does not —
 at most ``MAX_ESCALATIONS`` times, and a call still undecided is REFUSED as
-miscalibrated. It is never passed.
+miscalibrated. It is never passed. A caller may also have an undecided window
+measured again at the same sizes, ``undecided_repeats`` times at most, before
+it moves up; that is the one retry for a window that may not move up (its top
+size is the input's bound). A decided window, super-linear included, is never
+measured again.
 
 The invariant
 -------------
@@ -539,6 +543,7 @@ def measure_growth(
     repetitions: int = DEFAULT_REPETITIONS,
     max_escalations: int = MAX_ESCALATIONS,
     settle_bytes: Optional[Callable[[int], int]] = None,
+    undecided_repeats: int = 0,
 ) -> Growth:
     """The first window from ``small`` upwards that decides.
 
@@ -546,6 +551,12 @@ def measure_growth(
     ``step ** k`` for the smallest ``k <= max_escalations`` whose
     ``verdict`` is not ``UNDECIDED``. If none decides, the last window is
     returned and ``assert_linear_growth`` refuses it.
+
+    An ``UNDECIDED`` window is measured again at the same sizes, up to
+    ``undecided_repeats`` times, before the window moves up. A decided
+    reading, ``SUPER_LINEAR`` or ``LINEAR``, is returned at once and never
+    measured again, so a repeat can turn only an undecided reading into a
+    verdict. The default, 0, measures each window once.
 
     ``settle_bytes`` maps a window's top size to the bytes of allocator to
     settle before that window (``MAX_SETTLE_BYTES`` at most; ValueError
@@ -562,6 +573,8 @@ def measure_growth(
         )
     if small < 1 or max_escalations < 0:
         raise ValueError("small must be positive and max_escalations not negative")
+    if undecided_repeats < 0:
+        raise ValueError(f"undecided_repeats must not be negative: {undecided_repeats}")
     plan = (
         None
         if settle_bytes is None
@@ -573,11 +586,12 @@ def measure_growth(
         if plan is not None and plan[escalation] > settled:
             settled = plan[escalation]
             _settle_allocator(settled)
-        growth = _measure_window(
-            fn, payload_at, small * step**escalation, step, repetitions
-        )
-        if growth.verdict != UNDECIDED:
-            break
+        for _ in range(undecided_repeats + 1):
+            growth = _measure_window(
+                fn, payload_at, small * step**escalation, step, repetitions
+            )
+            if growth.verdict != UNDECIDED:
+                return growth
     return growth
 
 
@@ -591,6 +605,7 @@ def assert_linear_growth(
     repetitions: int = DEFAULT_REPETITIONS,
     max_escalations: int = MAX_ESCALATIONS,
     settle_bytes: Optional[Callable[[int], int]] = None,
+    undecided_repeats: int = 0,
 ) -> Growth:
     """Fail unless ``fn``'s cost is shown to grow linearly in its input.
 
@@ -618,6 +633,10 @@ def assert_linear_growth(
             Default ``None``: nothing is settled and the call measures exactly
             as before. At most ``MAX_SETTLE_BYTES``, else ValueError. See "A
             first-touch page fault is not growth" in the module docstring.
+        undecided_repeats: How many more times an undecided window is measured
+            at the same sizes before it moves up; a decided one never is.
+            Default 0: each window once, as before. For a call whose window
+            may not move up (``max_escalations=0`` at an input's bound).
 
     Returns:
         The measurement, so a caller can print it.
@@ -630,6 +649,7 @@ def assert_linear_growth(
         repetitions=repetitions,
         max_escalations=max_escalations,
         settle_bytes=settle_bytes,
+        undecided_repeats=undecided_repeats,
     )
     bound = growth_bound(step)
     reading = (

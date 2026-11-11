@@ -13,7 +13,6 @@ from faultmaven.modules.preprocessing.extractors.protocol import ExtractResult
 from faultmaven.modules.preprocessing.extractors.sshd_auth import read_sshd_auth_line
 from faultmaven.modules.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
-    HOST_PORT_RE,
     PID_MAX,
     PORT_KEYWORD_RE,
     distinct_on_line,
@@ -30,6 +29,7 @@ from faultmaven.modules.preprocessing.log_usernames import (
     extract_usernames,
     is_plain_username,
 )
+from faultmaven.utils.host_port import HOST_PORT_RE
 
 # ---------------------------------------------------------------------------
 # Log-template normalisation — strips per-line variable parts so that
@@ -628,10 +628,10 @@ class LogsAndErrorsExtractor:
     # rendered JSON-quoted, so its extent is unambiguous; every other name
     # renders exactly as before.
 
-    # Port matchers: `PORT_KEYWORD_RE` and `HOST_PORT_RE` in `extractors.utils`,
-    # whose docstrings state the rule and which paths share it. The principle: a
-    # port needs *structural* context on the left, because a bare `:\d+` would
-    # match every `MM:SS` fragment in a timestamp.
+    # Port matchers: `PORT_KEYWORD_RE` in `extractors.utils` and `HOST_PORT_RE`
+    # in `utils.host_port`, whose docstrings state the rule and which paths
+    # share it. The principle: a port needs *structural* context on the left,
+    # because a bare `:\d+` would match every `MM:SS` fragment in a timestamp.
     #
     # PID matchers. Same principle: a PID needs structural context.
     # `[\d+]` alone (with a closing bracket) is the classic syslog form;
