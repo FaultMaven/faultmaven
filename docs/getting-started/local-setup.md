@@ -68,7 +68,7 @@ cp .env.example .env
 pnpm dev
 ```
 
-The Dashboard will be available at http://localhost:5173
+The Dashboard will be available at http://localhost:3333
 
 ### 3. Copilot Browser Extension (Optional)
 
@@ -127,11 +127,10 @@ After starting the services, run the health check script to verify everything is
 ./scripts/faultmaven-dev.sh health
 ```
 
-This will check:
+This will check the API only (it does not check the Dashboard dev server):
 
-- API process is running on port 8000
-- Dashboard dev server is running on port 5173
-- All HTTP endpoints are responding correctly
+- API process is running and listening on its port (`PORT` in `.env`, default 8090)
+- API HTTP endpoints are responding (`/health`, `/docs`, `/openapi.json`)
 
 ---
 
@@ -141,8 +140,7 @@ This will check:
 |-----------|-----|-------|
 | API | http://localhost:8090 | Backend server |
 | API Docs | http://localhost:8090/docs | OpenAPI documentation |
-| Dashboard | http://localhost:5173 | Development server (Vite with hot-reload) |
-| Dashboard | http://localhost:3333 | Docker/production |
+| Dashboard | http://localhost:3333 | Development server (Vite with hot-reload) or Docker |
 
 ---
 
@@ -158,7 +156,7 @@ This will check:
 ### Dashboard can't connect to API
 
 1. Verify API is running: `curl http://localhost:8090/health`
-2. Check CORS settings in `.env`: `CORS_ALLOW_ORIGINS` should include `http://localhost:5173`
+2. Check CORS settings in `.env`: `CORS_ALLOW_ORIGINS` should include `http://localhost:3333`
 3. Verify `VITE_API_URL` in dashboard `.env`
 
 ### Extension not working

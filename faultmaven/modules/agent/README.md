@@ -61,9 +61,10 @@ faultmaven/modules/agent/
 ```
 
 There is no `infrastructure/`: as a Domain Service the module owns no tables, so
-it has no repositories. Execution audit data (`agent_executions`,
-`agent_tool_calls`) is **Case-owned** and reached through
-`modules/case/contracts.py`.
+it has no repositories. There is no execution audit data either: the
+`agent_executions` / `agent_tool_calls` tables, with their ORM models and
+`ICaseRepository` methods, were dropped (#1001). Investigation activity is
+recorded by the Case module, in `case_messages` and `case_actions`.
 
 ---
 
@@ -169,14 +170,6 @@ the case repository, the KB and case vector stores, the deep-analysis service).
 ## Usage
 
 ```python
-# Execution audit models — Case-owned, imported from Case contracts
-from faultmaven.modules.case.contracts import (
-    AgentExecution,
-    AgentToolCall,
-    AgentType,
-    ExecutionStatus,
-)
-
 # Tools
 from faultmaven.modules.agent.tools.base import AgentTool, Tool, ToolContext
 ```

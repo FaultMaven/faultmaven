@@ -64,14 +64,17 @@ the release that first switches a reader onto it.
 - It skips a case that needs a record while work on it is in flight: a turn,
   or a task one spawned, holds the case's lease on some replica (the lease a
   case delete reads). A case whose lease cannot be read is skipped too. Both
-  are listed, the exit status is 3, and a re-run picks them up. A case that has
-  its record is left alone, and its lease is not read. Under standalone the
-  lease store lives in the API's own process, which the command cannot see:
-  run it with the API idle.
-- It is idempotent: a case that has a record is left alone.
+  are listed, the exit status is 3 when no case failed, and a re-run picks
+  them up. A case that does not need a record is left alone, and its lease is
+  not read. Under standalone the lease store lives in the API's own process,
+  which the command cannot see: run it with the API idle.
+- It is idempotent. A case needs a record when it has none, or when it is
+  terminal and no terminal write folded the record it has; only such a case
+  is written, and every other case is left alone, so a second run writes
+  nothing.
 - A case whose outcome cannot be computed, or whose write fails three times,
   is counted and listed, and the run goes on. The exit status is 1 when any
-  case failed.
+  case failed, whether or not others were skipped: a failure outranks a skip.
 
 ```bash
 fm-backfill-case-outcome --dry-run          # what would be written

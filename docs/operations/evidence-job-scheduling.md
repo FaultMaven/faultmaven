@@ -416,10 +416,12 @@ the Docker setup, run it in the API's image with the same `./data` mount:
 **Multi-tenant (`TENANT_PROVIDER=multi`):** add `--cross-tenant-maintenance`
 and run it as the maintenance role, as a one-off Job (see
 [One-off operator run](#one-off-operator-run)). That Job's pod needs ChromaDB
-reach, which the cluster's network policy grants only to named workloads, and
-this job has none yet: admitting it (its own pod label, from a tracked Job
-manifest, as `kb_seed` has) is a deployment change that must land before the
-Cloud run. Do not borrow another workload's label.
+reach, which the cluster's network policy grants only to named workloads: set
+`app.kubernetes.io/name: faultmaven-kb-vector-backfill` on its pod template,
+the identity `allow-chromadb-auth-proxy-ingress` admits for this job (infra#509;
+see the ChromaDB note under
+[Sourcing the maintenance DSN](#sourcing-the-maintenance-dsn)). Do not borrow
+another workload's label.
 
 A row read that is not proven unfiltered writes nothing and fails the run.
 
@@ -608,19 +610,20 @@ Job consumes `MIGRATION_DATABASE_URL`. In a Job or CronJob spec:
                 optional: true
 ```
 
-> **⛔ A `kb_seed` Job cannot reach ChromaDB today.** `allow-chromadb-ingress`
-> (`kubernetes/platform/network-policies/faultmaven.yaml`) admits exactly two
-> pod identities on :8000 — `app.kubernetes.io/name: faultmaven-api` and
-> `app.kubernetes.io/name: faultmaven-case-cleanup` — and the name-scoping is
-> deliberate (GHSA-f4j7-r4q5-qw2c blast-radius minimisation, infra#138). A Job
-> created from the fragment above carries neither label and is firewalled from
-> the vector store it exists to write. Under `TENANT_PROVIDER=multi` the
-> web-startup KB bootstrap is skipped, so this is the *only* global-KB seeding
-> path — and it has no admitted identity. **The NetworkPolicy must be amended
-> first**: infra#150 tracks it and proposes a third `podSelector` for
-> `app.kubernetes.io/name: faultmaven-kb-seed`, which the Job would then set.
-> Do not borrow `faultmaven-case-cleanup`'s name label to get through — that
-> label means a different workload, and the deliberate narrowness is the point.
+> **A Job reaches ChromaDB by its pod's name label.** ChromaDB is reached
+> through the auth proxy: `allow-chromadb-ingress` admits port 8000 only from
+> the auth-proxy pods, and `allow-chromadb-auth-proxy-ingress` admits the proxy
+> only from five first-party workloads, by `app.kubernetes.io/name` —
+> `faultmaven-api`, `faultmaven-case-cleanup`, `faultmaven-kb-seed` (infra#150),
+> `faultmaven-storage-cleanup` (infra#212) and `faultmaven-kb-vector-backfill`
+> (infra#509). The name-scoping is deliberate (GHSA-f4j7-r4q5-qw2c blast-radius
+> minimisation, infra#138; [vulnerability-exceptions.md](security/vulnerability-exceptions.md)
+> states the containment). Under `TENANT_PROVIDER=multi` the web-startup KB
+> bootstrap is skipped, so a `kb_seed` Job is the *only* global-KB seeding path:
+> set `app.kubernetes.io/name: faultmaven-kb-seed` on its pod template, and it
+> reaches ChromaDB through the proxy under that policy. Do not borrow
+> `faultmaven-case-cleanup`'s name label instead — that label means a different
+> workload, and the deliberate narrowness is the point.
 
 #### One-off operator run
 
@@ -642,10 +645,10 @@ be refused by the runner's role probe. Create the Job explicitly instead.
 **Read this before you run it — two labels, two different jobs.** `part-of:
 faultmaven` is what `allow-postgresql-primary-ingress` and
 `allow-minio-ingress` admit, so it *is* load-bearing for the database and object
-store. It is **not** what admits anything to ChromaDB:
-`allow-chromadb-ingress` is name-scoped to `app.kubernetes.io/name:
-faultmaven-api` or `faultmaven-case-cleanup` and nothing else, on purpose
-(GHSA-f4j7-r4q5-qw2c, infra#138). This matters because `case_cleanup` diffs the
+store. It is **not** what admits anything to ChromaDB: the vector store is
+reached through the auth proxy, and `allow-chromadb-auth-proxy-ingress` is
+name-scoped to the five `app.kubernetes.io/name` values in the ChromaDB note
+above and nothing else, on purpose (GHSA-f4j7-r4q5-qw2c, infra#138). This matters because `case_cleanup` diffs the
 DB case-id set against ChromaDB collections and `kb_seed` writes chunks there —
 a Job that cannot reach the vector store cannot do either job.
 
@@ -655,10 +658,9 @@ a Job that cannot reach the vector store cannot do either job.
   operations as the scheduled CronJob — so net exposure is unchanged. Without
   it the sweep reads Postgres fine and is firewalled from the collections it is
   supposed to reconcile: a half-completed cross-tenant sweep.
-- **`kb_seed`:** there is **no** admitted identity, and borrowing case-cleanup's
-  name label would misrepresent a different workload. The NetworkPolicy has to
-  be amended first — infra#150 tracks it and proposes a dedicated
-  `app.kubernetes.io/name: faultmaven-kb-seed` source.
+- **`kb_seed`:** set `app.kubernetes.io/name: faultmaven-kb-seed` on the pod
+  template, its own admitted identity (infra#150). Borrowing case-cleanup's
+  name label would misrepresent a different workload.
 
 ```bash
 kubectl -n faultmaven create -f - <<'EOF'
@@ -679,10 +681,11 @@ spec:
         # part-of=faultmaven is what allow-postgresql-primary-ingress and
         # allow-minio-ingress admit.
         app.kubernetes.io/part-of: faultmaven
-        # name=faultmaven-case-cleanup is what allow-chromadb-ingress admits.
-        # part-of does NOT reach ChromaDB — that policy is name-scoped. Drop
-        # this label and the sweep silently cannot see the collections it
-        # diffs against. Correct ONLY for case_cleanup; see the note above.
+        # name=faultmaven-case-cleanup is what allow-chromadb-auth-proxy-ingress
+        # admits. part-of does NOT reach ChromaDB — that policy is name-scoped.
+        # Drop this label and the sweep silently cannot see the collections it
+        # diffs against. Correct ONLY for case_cleanup (kb_seed sets
+        # faultmaven-kb-seed); see the note above.
         app.kubernetes.io/name: faultmaven-case-cleanup
         app.kubernetes.io/component: maintenance
     spec:
@@ -737,9 +740,9 @@ EOF
 
 To seed or refresh the platform KB pack instead (the multi-tenant replacement
 for the single-tenant web-startup KB bootstrap, which is skipped under multi),
-swap `case_cleanup` for `kb_seed` — but read the ChromaDB note above first: that
-variant is blocked by `allow-chromadb-ingress` until infra#150 lands. Follow the
-run with:
+swap `case_cleanup` for `kb_seed`, and the pod's `app.kubernetes.io/name` label
+for `faultmaven-kb-seed`: that is the identity `allow-chromadb-auth-proxy-ingress`
+admits for it (the ChromaDB note above). Follow the run with:
 
 ```bash
 kubectl -n faultmaven get jobs -l app.kubernetes.io/component=maintenance
@@ -880,8 +883,8 @@ spec:
             app.kubernetes.io/component: cronjob
             # part-of=faultmaven is load-bearing, not decorative: it is what
             # allow-minio-ingress and allow-postgresql-primary-ingress admit.
-            # It does NOT reach ChromaDB — that policy is name-scoped — but
-            # this sweep has no ChromaDB dependency, so that is fine here.
+            # It does NOT admit the pod to ChromaDB — that policy is
+            # name-scoped, and admits this pod by the name label above (infra#212).
             app.kubernetes.io/part-of: faultmaven
         spec:
           restartPolicy: OnFailure

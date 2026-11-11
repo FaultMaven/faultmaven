@@ -261,7 +261,7 @@ structured = llm.extract_structured_data(prompt)
 
 ## References
 
-- [Data Preprocessing Architecture](./data-preprocessing-design-specification.md) — Four-tier model including Tier 3 pluggable backends
+- [Data Preprocessing Architecture](./data-preprocessing-design-specification.md) — Four-tier model; Tier 3 is the LLM-backed `deep_analysis` service
 - [Evidence Model](../investigation-engine/evidence-driven-investigation-framework.md#5-evidence-model) — Categories, source-type, and `evidence_source_invariant`
 - [Data Classification Strategy](./data-classification-strategy.md) — Tier 0 data type classification
 

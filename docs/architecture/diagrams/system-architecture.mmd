@@ -128,7 +128,7 @@ flowchart TB
             SessionStore -.-> Redis
             SessionStore -.-> FakeRedis
         end
-        subgraph BLOB["Artifacts · IStorageBackend"]
+        subgraph BLOB["Artifacts · IFileStorageBackend"]
             direction TB
             LocalFS[(Local FS<br/>data/evidence/)]
             S3Back[(S3)]

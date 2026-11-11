@@ -35,7 +35,7 @@ A module is **VERTICAL** (business domain) if and only if it meets **ALL THREE**
 | **Auth** | Owns the 10 user-domain tables (`users`, `organizations`, `organization_members`, `roles`, `permissions`, `role_permissions`, `teams`, `team_members`, `user_audit_log`, `oauth_authorization_codes`) | ✅ **VERTICAL** |
 | **Knowledge** | Owns the `knowledge_items`, `conversion_jobs` and `conversion_drafts` PostgreSQL tables + the unified `faultmaven_kb` ChromaDB collection | ✅ **VERTICAL** |
 | **Evidence** | Evidence table has FK to `cases` → part of Case module's schema | ❌ **DOMAIN SERVICE** |
-| **Agent** | No agent_* tables; `agent_tool_calls` is case audit data | ❌ **DOMAIN SERVICE** |
+| **Agent** | No agent_* tables, and no execution audit tables: `agent_executions` / `agent_tool_calls` were dropped (#1001) | ❌ **DOMAIN SERVICE** |
 | **Preprocessing** | No tables; data classification, extraction (11 extractors), and chunking that operate on Evidence data | ❌ **DOMAIN SERVICE** |
 | **Report** | Reports stored in Case module's `reports` table (FK to cases) - TD-001 complete | ❌ **DOMAIN SERVICE** |
 
@@ -210,7 +210,7 @@ A component is **horizontal** (infrastructure) if it fails **ANY** of the three 
 
 **Criterion 1: Domain Data Ownership** ❌
 - **No `agent_*` tables** in the schema
-- Any `agent_tool_calls` table (if exists) stores case audit data, not agent state
+- No execution audit tables either: `agent_executions` / `agent_tool_calls` were dropped (#1001)
 - Schema verification: `../data-and-storage/schemas/case-schema.md` Section 4.1 lists only case-owned tables; none are agent-owned
 - Agent's orchestration state is ephemeral/in-memory
 - **Result**: FAIL
@@ -909,7 +909,7 @@ These modules implement **business logic** but **operate on data owned by other 
 #### 2. **`modules/agent/`** ❌ **DOMAIN SERVICE** (Schema-Verified)
 - **Business Logic**: AI agent orchestration, investigation workflows, milestone-based orchestration
 - **Data Ownership**: ❌ **NO** - No `agent_*` tables in schema
-- **Schema Verification**: `agent_tool_calls` table (if exists) stores case audit data, not agent state
+- **Schema Verification**: no agent-owned tables; the `agent_executions` / `agent_tool_calls` audit tables were dropped (#1001)
 - **Reference**: See `../data-and-storage/schemas/case-schema.md` Section 4.1 (no agent-owned tables appear in the case schema)
 - **Rationale**: Agent orchestrates investigations but all persistent state flows through Case module
 - **Structure**: Keep as domain service (milestone-based orchestration, operates on Case data)
@@ -1378,7 +1378,7 @@ modules/knowledge/domain/services/indexing_service.py  # Business logic
 | Module | v1.0 Classification | v2.0 Classification | Reason |
 |--------|---------------------|---------------------|--------|
 | Evidence | ✅ Vertical | ❌ Domain Service | Evidence table has FK to cases - part of Case module's schema |
-| Agent | ✅ Vertical | ❌ Domain Service | No agent_* tables; agent_tool_calls is case audit data, not agent state |
+| Agent | ✅ Vertical | ❌ Domain Service | No agent_* tables; all persistent state flows through the Case module |
 | Report | ✅ Vertical | ❌ Domain Service | Reports table has FK to cases - part of Case module's schema (TD-001 complete) |
 | Case | ✅ Vertical | ✅ Vertical | Owns case-domain tables including evidence and reports (schema verified, TD-001 complete) |
 | Auth | ✅ Vertical | ✅ Vertical | Owns users and organizations tables (schema verified) |

@@ -115,7 +115,7 @@ FaultMaven Core must remain **agnostic to where it runs** (local dev, Docker, Ku
 │  Business logic uses interfaces only (no deployment branching)   │
 │  • CaseService calls ICaseRepository                             │
 │  • KnowledgeService calls IKnowledgeVectorStore                  │
-│  • EvidenceService calls IStorageBackend                         │
+│  • FileStorageService calls IFileStorageBackend                  │
 └─────────────────────────────────────────────────────────────────┘
                               ▲
                               │ depends on interfaces
