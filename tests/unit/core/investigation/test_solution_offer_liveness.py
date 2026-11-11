@@ -85,6 +85,7 @@ from faultmaven.modules.case.domain.models.solution import (
 )
 from tests.case_builders import investigating_case
 from tests.unit.core.investigation.bound_rows import mitigated
+from tests.unit.core.investigation.narrated import narrated
 
 _FILE_ID = "file_0123456789ab"
 
@@ -315,7 +316,7 @@ class TestLicenseLostWithdrawal:
         assert withdrawn[0].superseded_in_turn == 7
         assert case.progress.solution_proposed is False
         assert case.progress.solution_state == SolutionState.UNKNOWN
-        assert "withdrawn" in "\n".join(metadata.get("system_notices") or [])
+        assert "withdrawn" in "\n".join(narrated(case, metadata))
 
     async def test_withdrawal_logs_warning_event(self, caplog):
         import logging
@@ -509,7 +510,7 @@ class TestSameTurnCreateThenWithdraw:
         assert len(withdrawn) == 1
         assert withdrawn[0].superseded_reason == "license_lost"
         assert case.progress.solution_proposed is False
-        assert "withdrawn" in "\n".join(metadata.get("system_notices") or [])
+        assert "withdrawn" in "\n".join(narrated(case, metadata))
 
 
 # ---------------------------------------------------------------------------
@@ -600,7 +601,7 @@ class TestWorkingConclusionLicense:
         case.progress.cause_identification_contested = True
         metadata = {"system_notices": ["EARLIER ACCUMULATED FEEDBACK"]}
         assert _withdraw_unlicensed_solution_offers(case, metadata=metadata) == 1
-        fb = "\n".join(metadata["system_notices"])
+        fb = "\n".join(narrated(case, metadata))
         assert fb.startswith("SYSTEM: Your pending SOLUTION proposal was withdrawn")
         assert "EARLIER ACCUMULATED FEEDBACK" in fb
 

@@ -268,5 +268,57 @@
       "RESOLVED NOT PROPOSED: the check you asked for ([eneed_00000000c0c0] Prometheus targets page showing job=billing UP) is marked FULFILLED, but the rows you cited predate the ask. Record its answer as a row and mark the need FULFILLED citing it. If the user cannot run the check, SUPERSEDE the need with the reason. The user declined the resolution. Once an answer showing the problem gone is on record, a new problem-bound row showing it lapses that decline; if that answer is on any other row, the decline still binds, and the user re-opens the resolution with 'Mark it resolved'."
     ],
     "needs_info": "To mark this **resolved** and write up the resolution summary, I just need a few essentials:\n\n- **The check I asked for** — Prometheus targets page showing job=billing UP\n\nSubmit check output as data (pasted or attached, not typed into your message): what you write is your account, and the output is what shows it."
-  }
+  },
+  "cycle:withdrawn_held_open_beside_a_retired_validated_root": [
+    "SYSTEM: Your pending SOLUTION proposal was withdrawn: the cause it targets validated, but its why is open (ROOT-CAUSE TEST, clause b), so the fix would only intercept a state that comes back. Ask for what produced that state; then re-root onto that cause or mark the root terminal (root_is_terminal true, citing the causal_evidence row in terminal_basis_evidence_ids) and re-propose. To restore service now, propose it as a temporary mitigation (WORKAROUND)."
+  ],
+  "cycle:withdrawn_once_the_cause_fell": [
+    "SYSTEM: Your pending SOLUTION proposal was withdrawn because the root cause it targeted is no longer established. Re-ground the root cause with evidence before re-proposing a permanent fix, or propose a temporary mitigation (WORKAROUND) instead."
+  ],
+  "cycle:mitigation_proceeded": [
+    "SYSTEM: mitigation_verified was not recorded — the mitigation is recorded as proceed_unmitigated, which is written once."
+  ],
+  "cycle:mitigation_no_bound_relief": [
+    "SYSTEM: mitigation_verified was not recorded — no re-check bound to the problem shows it relieved after the mitigation (turn 6): record the post-mitigation symptom_absence_evidence with rechecks naming one of <ev:0>; or, if the user says it holds, set mitigation_disposition declared_stable."
+  ],
+  "cycle:mitigation_no_bound_relief_seen_present": [
+    "SYSTEM: mitigation_verified was not recorded — no re-check bound to the problem shows it relieved after the mitigation (turn 6) (it was seen present at turn 8): record the post-mitigation symptom_absence_evidence with rechecks naming one of <ev:0>; or, if the user says it holds, set mitigation_disposition declared_stable."
+  ],
+  "cycle:mitigation_no_bound_relief_declared_stable": [
+    "SYSTEM: mitigation_verified was not recorded — no re-check bound to the problem shows it relieved after the mitigation (turn 6): record the post-mitigation symptom_absence_evidence with rechecks naming one of <ev:0>."
+  ],
+  "cycle:mitigation_no_bound_relief_beside_a_proceed": [
+    "SYSTEM: mitigation_verified was not recorded — no re-check bound to the problem shows it relieved after the mitigation (turn 6): record the post-mitigation symptom_absence_evidence with rechecks naming one of <ev:0>."
+  ],
+  "cycle:mitigation_refused_twice_in_one_cycle": [
+    "SYSTEM: mitigation_verified was not recorded — no re-check bound to the problem shows it relieved after the mitigation (turn 6): record the post-mitigation symptom_absence_evidence with rechecks naming one of <ev:0>.",
+    "SYSTEM: mitigation_verified was not recorded — no re-check bound to the problem shows it relieved after the mitigation (turn 6): record the post-mitigation symptom_absence_evidence with rechecks naming one of <ev:0>."
+  ],
+  "cycle:mitigation_undated": [
+    "SYSTEM: mitigation_verified was not recorded — the mitigation's execution is not dated, so no re-check can verify it; settle it with mitigation_disposition: declared_stable if the user says it holds, proceed_unmitigated to go on without one."
+  ],
+  "cycle:mitigation_revision_pending": [
+    "SYSTEM: mitigation_verified was not recorded — the revised problem statement awaits the user's confirmation: re-check the problem once it is confirmed; or, if the user says it holds, set mitigation_disposition declared_stable."
+  ],
+  "cycle:mitigation_problem_unverified": [
+    "SYSTEM: mitigation_verified was not recorded — the problem is not verified: verify the problem first, citing symptom_verification_evidence_ids, then re-check it; or, if the user says it holds, set mitigation_disposition declared_stable."
+  ],
+  "cycle:disposition_not_accepted": [
+    "SYSTEM: mitigation_disposition declared_stable was not recorded — no mitigation is accepted."
+  ],
+  "cycle:disposition_carries": [
+    "SYSTEM: mitigation_disposition proceed_unmitigated was not recorded — the mitigation already carries declared_stable, written once."
+  ],
+  "cycle:disposition_verified": [
+    "SYSTEM: mitigation_disposition proceed_unmitigated was not recorded — a problem-bound re-check already showed the mitigation holding."
+  ],
+  "cycle:refutation_refused_open": [
+    "Hypothesis <hyp:0> was NOT refuted: nothing on record refutes it. A refutation stands only on an evidence row from submitted data linked with stance REFUTES to the hypothesis (hypothesis_evidence_links) or to a node of its chain (node_evidence_links), this turn or earlier, or on a recorded failed fix of it. It stays open. Do not tell the user it is ruled out: ask for the check that would settle it, or set state=RETIRED if you are setting it aside without a disproof."
+  ],
+  "cycle:refutation_refused_self_hedged": [
+    "Hypothesis <hyp:0> was NOT refuted: nothing on record refutes it. Its REFUTES links are self-hedged (stance_confidence below 0.6), which is not a disproof. A refutation stands only on an evidence row from submitted data linked with stance REFUTES to the hypothesis (hypothesis_evidence_links) or to a node of its chain (node_evidence_links), this turn or earlier, or on a recorded failed fix of it. Its links lowered its likelihood enough to set it aside (RETIRED), which is not a disproof. Do not tell the user it is ruled out: ask for the check that would settle it, or set state=RETIRED if you are setting it aside without a disproof."
+  ],
+  "cycle:refutation_refused_retired_by_the_link_pass": [
+    "Hypothesis <hyp:0> was NOT refuted: nothing on record refutes it. Its REFUTES links are self-hedged (stance_confidence below 0.6), which is not a disproof. A refutation stands only on an evidence row from submitted data linked with stance REFUTES to the hypothesis (hypothesis_evidence_links) or to a node of its chain (node_evidence_links), this turn or earlier, or on a recorded failed fix of it. Its links lowered its likelihood enough to set it aside (RETIRED), which is not a disproof. Do not tell the user it is ruled out: ask for the check that would settle it, or set state=RETIRED if you are setting it aside without a disproof."
+  ]
 }

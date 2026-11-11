@@ -32,7 +32,9 @@ def test_each_decider_composes_the_text_main_composed(name):
 
 def test_every_scenario_was_captured_on_main():
     captured = json.loads(golden_cases.GOLDEN.read_text())
-    assert sorted(captured) == sorted(golden_cases.SCENARIOS)
+    # B1b's ``cycle:`` scenarios are compared in ``test_turn_reorder_2636.py``.
+    b1a = [name for name in captured if not name.startswith("cycle:")]
+    assert sorted(b1a) == sorted(golden_cases.SCENARIOS)
 
 
 def test_the_declined_actions_name_both_chips_unless_a_check_holds():

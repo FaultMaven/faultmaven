@@ -315,6 +315,9 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     # The record's write points (#2636): the end of a decision cycle and each
     # bundle of a statement-revision replay; the transitions are above.
     (_ME + "turn_application.py", "_apply_turn_response"): {"record_case_outcome": 1},
+    # The outcome computed in memory for the narration alone when the cycle's
+    # record write failed, never stored and counting nothing (#2636 B1b).
+    (_ME + "turn_narration.py", "_outcome"): {"compute_case_outcome": 1},
     (_ME + "statement_revision.py", "confirm_revision"): {"record_case_outcome": 1},
     (_TRANSITIONS, "TransitionManager._apply_model_proposal"): {
         "assess_closure_readiness": 1,

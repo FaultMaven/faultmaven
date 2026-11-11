@@ -2153,8 +2153,8 @@ def mitigation_refusal_reason(case: "Case") -> MitigationRefusalReason | None:
     (``cause_assurance.mitigation_holds``). An attempt with no turn can never
     be re-checked; without a verified problem nothing binds; under a pending
     revision the statement awaits its confirmation. The one copy of the
-    branches ``_mitigation_verify_refusal`` words and the case outcome
-    records (#2615)."""
+    branches ``_mitigation_verify_refusal`` decides (its notice is rendered
+    in ``narration.notices``, #2636) and the case outcome records (#2615)."""
     if mitigation_attempt_turn(case) is None:
         return MitigationRefusalReason.ATTEMPT_UNDATED
     status = case.progress.problem_status

@@ -40,6 +40,7 @@ from .stage_gates import (
     CARRIED_FIX_KEY,
     REPLAY_HELD_SINCE_KEY,
     _add_system_feedback,
+    merge_decisions,
     merge_system_notices,
 )
 from .transition_consent import (
@@ -220,6 +221,9 @@ async def confirm_revision(
         for key in REPLAYED_KEYS:
             replayed[key].extend(bundle_metadata.get(key, []))
         merge_system_notices(metadata, bundle_metadata)
+        # Its decision codes join the turn's beside their tokens, narrated once,
+        # after the live cycle's record (#2636).
+        merge_decisions(metadata, bundle_metadata)
 
     metadata["statement_commit"] = {
         "statement": pending.text,

@@ -117,6 +117,7 @@ from faultmaven.modules.report.domain.services.report_generation_service import 
 )
 from tests.case_builders import investigating_case, with_open_offer
 from tests.unit.core.investigation.bound_rows import bound_row, ensure_subjects, upload
+from tests.unit.core.investigation.narrated import narrated
 
 _FILE_ID = "file_0123456789ab"
 
@@ -264,6 +265,8 @@ async def _apply(engine, case, dsu, response=None) -> dict:
     await engine.responses._apply_investigation_updates(
         case, dsu, meta, response or _Response()
     )
+    # The apply step records codes; the narration step renders them (#2636).
+    narrated(case, meta)
     return meta
 
 

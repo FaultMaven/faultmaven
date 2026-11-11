@@ -41,6 +41,7 @@ from faultmaven.modules.case.contracts import (
     RootCauseConclusion,
 )
 from tests.case_builders import investigating_case
+from tests.unit.core.investigation.narrated import narrated
 from tests.utils import bridge_flat_hypotheses_to_graph
 
 pytestmark = pytest.mark.unit
@@ -176,7 +177,8 @@ def test_refuted_on_a_reason_alone_is_refused_with_feedback():
     assert h.refutation_reason is None
     assert h.likelihood == 0.7
     assert meta["hypotheses_updated"] == []
-    feedback = "\n".join(meta["system_notices"])
+    # The decider records a code; the narration step renders it (#2636).
+    feedback = "\n".join(narrated(case, meta))
     assert f"Hypothesis {h.hypothesis_id} was NOT refuted" in feedback
     assert "ask for the check that would settle it" in feedback
     counter.labels.assert_called_once_with(source="model")
@@ -194,7 +196,7 @@ def test_a_self_hedged_refutes_link_does_not_back_a_refutation():
     _refute(eng, case, h, meta)
 
     assert h.state == HypothesisState.ACTIVE
-    assert "self-hedged" in "\n".join(meta["system_notices"])
+    assert "self-hedged" in "\n".join(narrated(case, meta))
 
 
 def test_a_refutes_link_on_the_chain_root_backs_the_refutation():

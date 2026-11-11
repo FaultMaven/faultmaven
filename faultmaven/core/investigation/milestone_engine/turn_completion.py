@@ -61,6 +61,8 @@ from .terminal_replies import (
     _build_resolution_confirmation,
     _select_ack_follow_ups,
 )
+from .turn_application import record_turn
+from .turn_narration import narrate_turn
 
 logger = logging.getLogger(__name__)
 
@@ -133,9 +135,20 @@ def _narration_overclaim_notice(
 
 
 async def _finalize_turn(
-    terminal, *, case_updated, metadata, plan, redaction_ctx, response_obj
+    terminal,
+    *,
+    case_updated,
+    metadata,
+    plan,
+    redaction_ctx,
+    response_obj,
+    record_inputs,
 ):
-    """Stamp the turn's activity clock, render the terminal summary if the case just went terminal, flatten the follow-ups and save the redaction registry.
+    """Narrate the decision cycle and record the turn, stamp the turn's activity clock, render the terminal summary if the case just went terminal, flatten the follow-ups and save the redaction registry.
+
+    The narration step renders the cycle's outcome notices from its record
+    (#2636): none is composed before the record is written, and the turn
+    record copies the notices it rendered.
 
     Persists nothing of the case (#1882). It used to save the case here (the
     engine's "Step 7"), before the reply was composed and before the service's
@@ -143,6 +156,8 @@ async def _finalize_turn(
     commits once, at the service; the summary row this renders goes into
     ``plan`` and commits with the terminal state.
     """
+    narrate_turn(case_updated, metadata)
+    record_turn(case_updated, metadata, record_inputs)
     case_updated.updated_at = datetime.now(UTC)
     case_updated.last_activity_at = datetime.now(UTC)
 

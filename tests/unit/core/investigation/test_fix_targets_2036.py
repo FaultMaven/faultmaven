@@ -65,6 +65,7 @@ from faultmaven.modules.case.contracts import (
 )
 from tests.unit.core.investigation.bound_rows import VERIFYING_ID
 from tests.unit.core.investigation.fix_turns_2039 import _engine_rows
+from tests.unit.core.investigation.narrated import narrated
 from tests.unit.core.investigation.recorded_turns import _record
 from tests.unit.core.investigation.test_fix_verification_subjects_1906 import (
     _CAUSAL,
@@ -379,7 +380,7 @@ async def test_the_settle_runs_inside_the_one_recompute_and_keeps_the_withdrawal
         )
     assert len(calls) == 1
     assert case.proposed_actions[-1].state == "superseded"
-    assert "withdrawn" in "\n".join(meta["system_notices"])
+    assert "withdrawn" in "\n".join(narrated(case, meta))
 
 
 # ---------------------------------------------------------------------------
