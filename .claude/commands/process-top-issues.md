@@ -94,7 +94,7 @@ gh search prs --owner FaultMaven --match body "FaultMaven/faultmaven#<n>" --limi
 | 3 | the item in `pile:blocked` | it waits on its blocker |
 | 4 | its PR open, its newest `## Review` or `## Delta` clean or its findings waived by a live ruling, and a required check red because `main` is (a `main red` issue, step 4.6) or a service it needs is down; or a stage's PR with an `evidence` finding questioning the stage's own design and no live ruling since | waiting: leave it until that issue closes or the check passes when re-run (`gh run rerun <run-id> --failed`); then merge `main` in and go on at row 6 or 9. On the design finding: waiting on an owner ruling on its design, asked under *Needs your call*; never merge-ready until a live ruling sends it on (row 8 or 9) or rebuilds it (row 13) |
 | 5 | its PR in the merge queue at a merge-ready's `H`, with none of row 6's triggers (`gh api graphql -f query='{repository(owner:"FaultMaven",name:"faultmaven"){pullRequest(number:<p>){isInMergeQueue timelineItems(last:5,itemTypes:[REMOVED_FROM_MERGE_QUEUE_EVENT]){nodes{... on RemovedFromMergeQueueEvent{createdAt reason}}}}}}'`) | leave it |
-| 6 | its PR open after a merge-ready, and code after the merge-ready's head (the vouched-head check), an owner comment after the merge-ready, a conflict with `main`, a queue removal dated after it with the PR not back in the queue (row 5's query; quote its `reason`), or a red required check | refresh: merge `main` in, the change made (by the lane, by you for a conflict), a delta of what changed (step 4.5), CI, merge-ready again; a refresh with a `## Delta` after the merge-ready goes on at row 8 or 9, unless an owner comment, a conflict or a red check is newer than that delta. A `fixed` finding in that delta gets one fix commit and one delta; a `fixed` finding in that one pulls the item. A red check the merge base also has makes it row 4, never a pull. A queue removal is not a code change when its `reason` is `failed_checks`; every failed test in the merge-group run is the test an open flake issue names, with the same assertion; that issue records an occurrence on a run without this PR's commits; and a re-run of that required check on `H` after the removal is green. Re-queuing past it is re-running past the flake, so 4.6's flake rule applies; met while settling (step 1), the flake's fix is the first row of the next proposal's *Building*, outside its items. Then post merge-ready again at the same head, quoting the run and the `reason`; the owner re-queues, or you do under a merge authority transcribed that session (*Rules*). Once per PR: a second such removal waits until the flake fix's PR merges. Anything else is this row's refresh |
+| 6 | its PR open after a merge-ready, and code after the merge-ready's head (the vouched-head check), an owner comment after the merge-ready, a conflict with `main`, a queue removal dated after it with the PR not back in the queue (row 5's query; quote its `reason`), or a red required check | refresh: merge `main` in, the change made (by the lane, by you for a conflict), a delta of what changed (step 4.5), CI, merge-ready again; a refresh with a `## Delta` after the merge-ready goes on at row 8 or 9, unless an owner comment, a conflict or a red check is newer than that delta. A `fixed` finding in that delta gets one fix commit and one delta; a `fixed` finding in that one pulls the item. A red check the merge base also has makes it row 4, never a pull. A queue removal is not a code change when its `reason` is `failed_checks`; every failed test in the merge-group run is the test an open flake issue names, with the same assertion; that issue records an occurrence on a run without this PR's commits; and a re-run of that required check on `H` after the removal is green. Re-queuing past it is re-running past the flake, so 4.6's flake rule applies. When the flake's code is on this PR's seam, its fix in this PR is this row's refresh, not a re-queue. Otherwise, met while settling (step 1), the flake's fix is the first row of the next proposal's *Building*, outside its items. Then post merge-ready again at the same head, quoting the run and the `reason`; the owner re-queues, or you do under a merge authority transcribed that session (*Rules*). Once per PR: a second such removal waits until the flake fix's PR merges. Anything else is this row's refresh |
 | 7 | its PR open after a merge-ready at `H` | merge-ready: carried under *Yours to run*; while an item it closes is in `pile:blocked` (other than one a stage's PR closes whose line is `**Blocked on:** #<root>` for that stage's root), it is not merge-ready and waits on that item's blocker |
 | 8 | its PR open; its newest `## Review` or `## Delta` has a `fixed` finding neither landed nor waived by a live ruling | a pull trigger met since its newest live ruling, or ever when it has none, pulls it: the cap or size (step 4.5), or a `fixed` finding in a re-entry delta (row 12) or in a refresh's second delta (row 6), or a stage's PR not converging (step 4). Else the fix commit, then a delta of the commits since `R` (row 12's, when its live ruling grants a re-entry) |
 | 9 | its PR open; its newest `## Review` or `## Delta` is clean, or its findings are waived by a live ruling | the vouched-head check from `R` (step 4.6); code after `R` gets a delta first; then merge-ready, or row 7's wait while an item it closes is in `pile:blocked` |
@@ -140,9 +140,11 @@ repo:
 ```bash
 R=FaultMaven/faultmaven; lanes="<the lead issue of each lane you pick>"; now=$(date -u +%s)
 ago() { date -u -d "@$((now - $1 * 86400))" +%FT%TZ; }; lines() { gh api "repos/$R/issues/$1/comments" --paginate --jq '.[] | "\(.created_at) \(.body | split("\n")[0])"'; }
-q=$(gh issue list -R $R --label tracking --search 'Queue in:title' --json number,title --jq '.[] | select(.title == "Queue") | .number')
-qc=$(gh api "repos/$R/issues/$q/comments" --paginate --jq '[.[] | select(.body | test("^## Round [0-9]+ — (proposal|result)"))
-  | {t: .created_at, p: (.body | test("^## Round [0-9]+ — proposal")), b: .body}]' | jq -s add)
+# the newest two Queues, oldest first, so a rotated Queue still reads the round, the last proposal and the trend
+q=$(gh issue list -R $R --label tracking --state all --search 'Queue in:title' --limit 100 --json number,title \
+  --jq '[.[] | select(.title == "Queue") | .number] | sort | .[-2:][]')
+qc=$(for n in $q; do gh api "repos/$R/issues/$n/comments" --paginate --jq '[.[] | select(.body | test("^## Round [0-9]+ — (proposal|result)"))
+  | {t: .created_at, p: (.body | test("^## Round [0-9]+ — proposal")), b: .body}]'; done | jq -s add)
 since=$(jq -r 'map(select(.p)) | last.t' <<<"$qc"); r2=$(jq -r 'map(select(.p | not)) | .[-2].t // "none"' <<<"$qc")
 open=$(gh issue list -R $R --state open --limit 1000 --json number,labels,body,createdAt)
 pub=$(gh repo list FaultMaven --visibility public --limit 200 --json name --jq 'map(.name)')
@@ -163,7 +165,7 @@ due=; ran=0; for n in $(jq -r "$cls"'.[] | select(has(["root-candidate"])) | .nu
   [ "$(cut -d' ' -f1 <<<"$c" | sort | tail -1)" \> "$since" ] && ran=$((ran + 1)); done
 echo "design checks due, not run: ${due:-none} · run since the last proposal: $ran"
 u=$(for n in $(jq -r "$cls"'.[] | select(has(["pile:blocked"]) and (.body | test("\\*\\*Blocked on:\\*\\* an owner ruling"))) | .number' <<<"$open"); do
-  lines "$n" | grep -q ' ## Pulled' && printf '#%s ' "$n"; done); np=$(wc -w <<<"$u"); na=$(jq length <<<"$prs")
+  l=$(lines "$n"); grep -q ' ## Pulled' <<<"$l" && printf '#%s ' "$n"; done); np=$(wc -w <<<"$u"); na=$(jq length <<<"$prs")
 jq -r --argjson prs "$prs" --arg lanes "$lanes" --argjson lim "$([ "$na" -gt 5 ] || [ "$np" -gt 3 ] && echo true || echo false)" "$cls"'
   [.[] | select(has(["design-stage"]) and ready) | {n: .number, r: stage} | select((refs(.n) or (.r != "?" and refs(.r))) | not)] as $a
   | [$a[] | select(.n | tostring | IN($lanes | scan("[0-9]+")))] as $p | (if $lim then 0 else [($a | map(.r) | unique | length), 2] | min end) as $k
@@ -272,11 +274,10 @@ echo "since the last proposal: merged $(jq length <<<"$mp") · PRs opened $(gh p
        find*), except in a round whose number is divisible by 3: the slot then takes one chore batch, the seam with
        the most ready `class:chore` issues, oldest on a tie, within the round's size limits below, planned and
        reviewed as one item and counted as one. Its seam is the component the chores' fixes touch, named in the plan.
-       In the batch's round the slot does not take an open `P1`, except a `main red` one (4.6), which takes it, and
-       the batch moves to the next round's slot. In a migration round, or when no chore seam is free (none ready, or
-       each on an open PR's seam), the slot is the ordinary one. Whenever the slot is not what the health block's
-       `slot` line prints, the proposal says so in one line under *Health*. The `slot` line lists the next ones for
-       when the first sits on an open PR's seam, and reads `chore batch (round <N>)` in every third round;
+       In the batch's round the slot does not take an open `P1`: it waits that one round. In a migration round, or
+       when no chore seam is free (none ready, or each on an open PR's seam), the slot is the ordinary one, and the
+       proposal says so in one line under *Health*. The `slot` line lists the next ones for when the first sits on an
+       open PR's seam, and reads `chore batch (round <N>)` in a batch round;
      - **the ordinary order:** `P1`, `P2`, `P3`, oldest first within each, a chore after the defects of its priority.
 
      Skip an item that an open PR from an earlier round still carries (its PR, *Where an item stands*), and any item
@@ -565,8 +566,9 @@ Filed: #<n> (P<k>) — <what, found while working on #<m>> — one line each
 Waiting on you: queue each PR at its vouched head: gh pr merge <n> --match-head-commit <sha>
 ```
 
-Post it when every dispatched item is merged, merge-ready, closed, pulled or waiting, with a row per item and its PR,
-and one per flake's fix (4.6); the PR column names a PR only in a public repo, and reads `private` otherwise.
+Post it when every dispatched item and flake's fix is merged, merge-ready, closed, pulled or waiting, with a row per
+item and its PR, and one per flake's fix (4.6); the PR column names a PR only in a public repo, and reads `private`
+otherwise.
 Every report states those four numbers and lists every issue filed. It carries forward a row for every PR still open
 from an earlier round, until that PR merges or closes; a carried row adds nothing to the four numbers, which count
 each PR in the round that first reports it. Then stop.
