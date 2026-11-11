@@ -26,8 +26,9 @@ MARKER = "extracted_by_stub"
 #: The record a stub that runs on logs once it has entered ``extract``.
 ENTERED = "the test extractor has entered extract"
 
-#: Set by the deadline regression once it has asserted: the regression's stubs
-#: work until it is set or their worker is killed. In a worker nothing sets it,
+#: Set by the deadline regression in a ``finally`` once its call returns,
+#: whether or not its assertions pass or the call raises: the regression's
+#: stubs work until it is set or their worker is killed. In a worker nothing sets it,
 #: so only the deadline ends them, at any runner speed (#2696); on a thread,
 #: where nothing can stop them, the test still releases them.
 RELEASED = threading.Event()
