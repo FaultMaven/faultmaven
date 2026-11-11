@@ -68,7 +68,7 @@ cp .env.example .env
 pnpm dev
 ```
 
-The Dashboard will be available at http://localhost:3333
+The Dashboard will be available at http://localhost:3333 (or the next free port Vite prints, when 3333 is taken)
 
 ### 3. Copilot Browser Extension (Optional)
 
@@ -128,9 +128,11 @@ After starting the services, run the health check script to verify everything is
 ```
 
 It checks an API this script started (`./scripts/faultmaven-dev.sh start`, which
-writes its PID file); an API started any other way, such as
-`python -m faultmaven.server`, is reported as "Running but unmanaged" and the
-check exits 1. It checks the API only, not the Dashboard dev server:
+writes its PID file). For an API started any other way the check exits 1: one
+started as your user, such as `python -m faultmaven.server`, is reported as
+"Running but unmanaged"; one whose port holder `ss` cannot attribute to a PID,
+such as the Docker-started API, is reported as "Not running". It checks the API
+only, not the Dashboard dev server:
 
 - API process is running and listening on its port (`PORT` in `.env`, default 8090)
 - API HTTP endpoints are responding (`/health`, `/docs`, `/openapi.json`)

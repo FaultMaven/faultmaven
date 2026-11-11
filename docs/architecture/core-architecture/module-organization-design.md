@@ -647,20 +647,16 @@ modules/report/            # Domain Service (NOT vertical, TD-001 complete)
 #### Evidence Service Pattern
 
 ```python
-# modules/evidence/domain/evidence_service.py
-from faultmaven.modules.case.contracts import ICaseRepository
+# modules/evidence/domain/services/file_storage_service.py
+class FileStorageService(BaseService):
+    def __init__(self, backend: Optional["IFileStorageBackend"] = None, ...):
+        # Byte I/O goes through the infrastructure port; the evidence domain
+        # owns no table and no vendor client.
+        if backend is None:
+            from faultmaven.infrastructure.storage.factory import get_storage_backend
 
-class EvidenceService:
-    def __init__(self, case_repo: ICaseRepository):
-        self.case_repo = case_repo  # Uses Case contract
-
-    async def collect_evidence(self, case_id: str, evidence_data: Evidence):
-        # Business logic: validation, preprocessing
-        validated = self.validate(evidence_data)
-        processed = await self.preprocess(validated)
-
-        # Delegate persistence to Case module (Case owns the table)
-        await self.case_repo.add_evidence(case_id, processed)
+            backend = get_storage_backend()
+        self.backend = backend
 ```
 
 #### Agent Service Pattern
@@ -765,7 +761,9 @@ forbidden_imports:
 from faultmaven.modules.case.contracts import ICaseRepository
 
 # ✅ CORRECT: Composition root imports Domain Service
-from faultmaven.modules.evidence.domain import EvidenceService
+from faultmaven.modules.evidence.domain.services.file_storage_service import (
+    FileStorageService,
+)
 
 # ❌ WRONG: Vertical Module imports Domain Service internals
 from faultmaven.modules.evidence.domain.validators import validate_evidence

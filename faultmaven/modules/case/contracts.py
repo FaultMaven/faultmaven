@@ -6,7 +6,7 @@ Other modules should import from here, not from infrastructure or domain directl
 Following the design in module-organization-design.md:
 - Vertical modules expose contracts through contracts.py
 - Domain services use these contracts for cross-module communication
-- Case module owns evidence, reports, and agent execution data (via FK relationships)
+- Case module owns evidence and reports (via FK relationships)
 
 Per module-organization-design.md (lines 592-605, 757-770):
 - Domain Services (Evidence, Agent, Report) should import from Case contracts
@@ -41,9 +41,6 @@ if TYPE_CHECKING:
 # ============================================================
 # Import and Re-export Case-owned models
 # ============================================================
-
-# Investigation models from Agent module (shared for investigation coordination)
-
 
 # Case-owned Evidence DTOs (Case module owns evidence table per module-organization-design.md)
 from faultmaven.modules.case.domain.owned_models.evidence import (
@@ -863,7 +860,6 @@ __all__ = [
     "TurnReceipt",
     "TurnReceiptExistsError",
     "TurnReceiptKey",
-    # Investigation models from Agent module (shared for investigation coordination)
     # Case domain models
     "Case",
     "CaseAction",

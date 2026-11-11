@@ -1,4 +1,5 @@
-"""Give every stored case its first case outcome record (#2615 stage S1).
+"""Give every stored case that needs one its case outcome record (#2615 stage S1):
+a case without one, or a terminal case whose record no terminal write folded.
 
 ``progress.outcome`` is written at the end of each decision cycle and at both
 terminal transitions (``core/investigation/outcome.py``), so a case stored
