@@ -406,6 +406,9 @@ class TestUpload:
         assert response.json()["detail"] == (
             index_slot.refusal("loading", wait=180).message
         )
+        # The route answers before the load runs: let it finish, then count (#2539).
+        cold_model.release.set()
+        index_slot._KB_EXECUTOR.submit(lambda: None).result(30)
         assert cold_model.loads == 1
 
     def test_the_route_answers_a_stuck_encode_with_a_fixed_wait(
