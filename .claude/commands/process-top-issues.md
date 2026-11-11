@@ -226,12 +226,14 @@ echo "since the last proposal: merged $(jq length <<<"$mp") · PRs opened $(gh p
      starting `**Alerts:**` in the open core issue covering it, or file one per root opening `**Repo: FaultMaven/<r>.**`
      then that line, verified by the alert page and manifest. Anything written about a private repo's alert names only
      its URL, kind and count. Raise secret-scanning alerts with the owner in session, never in writing. Report the
-     non-secret `unknown`/`unavailable` lines in the proposal. For a `scheduled audit:` line showing a `failure`, read
-     the run's log: an advisory against `main`'s unchanged lockfile is that repo's `main red`, filed as 4.6 files one
-     (another repo's is titled `main red: <repo> <workflow> at <sha>` and opens `**Repo: FaultMaven/<r>.**`), or its
-     run is added to the open issue covering it. Report every other failing audit line (an audit that could not run,
-     `stale`, a disabled state, `not on main`, `unavailable`, `not known public`) in the proposal with what it needs.
-     Dismiss nothing without the owner's ruling on the issue.
+     non-secret `unknown`/`unavailable` lines in the proposal. For a `scheduled audit:` line with a `failure`
+     conclusion, read the newest `schedule` run's log (`gh run list -R FaultMaven/<r> --workflow scheduled-audit.yml
+     --event schedule --status completed --limit 1`): an advisory against `main`'s lockfile is that repo's `main red`,
+     filed as 4.6 files one, with the repo in its check, the run's head as its sha, and outside core a body opening
+     `**Repo: FaultMaven/<r>.**`; when an open issue covers it, the run's URL goes on that issue's `**Alerts:**` line
+     instead. Report in the proposal, with what each needs, a `failure` whose log shows the audit could not run, any
+     other conclusion (`timed_out`, `cancelled`, `startup_failure`) and every flag on any line (`stale`, a non-`active`
+     state, `not on main`, `unavailable`, `not known public`). Dismiss nothing without the owner's ruling on the issue.
 2. **Pick.**
    - **The design pass** gives one row per open `root-issue` and `root-candidate`: its design statement, level,
      principle, design change, open count (its `**Blocks:**` issues and stages) and state (check due, ruling due,
@@ -569,12 +571,11 @@ To **pull** an item:
 Closed <x> · Filed <y> · Net lines: product <p>, tests <t> · Open <before> → <after>
 Trend: 14-day ratio <r> · open at the last four <a> → <b> → <c> → <d> · when Open rose, its diagnosis (step 2's diagnosis rules)
 Filed: #<n> (P<k>) — <what, found while working on #<m>> — one line each
-Waiting on you: queue each PR at its vouched head: gh pr merge <n> -R FaultMaven/<repo> --match-head-commit <sha>
+Waiting on you: queue each PR at its vouched head: gh pr merge <n> -R FaultMaven/<repo> --match-head-commit <sha> (plus --squash outside core)
 ```
 
 Post it when every dispatched item and flake's fix is merged, merge-ready, closed, pulled or waiting, with a row per
-item and its PR, and one per flake's fix (4.6); the PR column and the merge line name a PR only in a public repo: the
-column reads `private` otherwise, and that PR's merge command goes to the owner in session.
+item and its PR, and one per flake's fix (4.6); the PR column reads `private` for a private repo's PR (*Rules*).
 Every report states those four numbers and lists every issue filed. It carries forward a row for every PR still open
 from an earlier round, until that PR merges or closes; a carried row adds nothing to the four numbers, which count
 each PR in the round that first reports it. Then stop.
@@ -588,9 +589,9 @@ each PR in the round that first reports it. Then stop.
   adding it with `git worktree add /home/swhouse/product/faultmaven/.claude/worktrees/<dir> <branch>` if only the
   branch exists, or as a new lane if neither does. Never work in the main checkout, and never delete its `./data`.
 - **Before pushing,** run `black --check faultmaven/ tests/`, `ruff check faultmaven/ tests/`, `lint-imports`, the
-  tests that cover the change, and on every change `pytest tests/unit/ci tests/unit/architecture -n 4` (the tree-wide
-  scans, which also read `docs/`, `.github/` and `CLAUDE.md`), plus `python scripts/check_contract_version.py` if
-  `docs/reference/api/` moved. Not the rest of the suite: CI runs it.
+  tests that cover the change or pin text it edits, and on every change
+  `CI=true pytest tests/unit/ci tests/unit/architecture -n 4 --dist loadfile`, plus
+  `python scripts/check_contract_version.py` if `docs/reference/api/` moved. Not the rest of the suite: CI runs it.
 - **Tests** reproduce the defect and assert behaviour. No wall-clock thresholds, and no repo-scanning guard unless
   the plan names one. Keep within the plan's size budget, and say so if you cannot.
 - **Closing keywords go in the PR body only**, never in the title or a commit message, one issue per line. The body
@@ -606,6 +607,7 @@ each PR in the round that first reports it. Then stop.
   session only, in as many words, and the authorization never carries over.
 - **Write to issues and PRs only what these steps call for.** Every comment carries its heading (*State*). Close an
   issue only for a reason *State* allows.
+- **Nothing written to the Queue names a private repo's PR or its merge command;** the owner gets them in session.
 - **Never ask mid-build:** pull the item instead. Never build an item with an open question.
 - **Never stack PRs.** Never hand over a PR that is not merge-ready.
 - **Never quote a closing keyword followed by an issue number** in a PR body or comment, not even in a code span:
