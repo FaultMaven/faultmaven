@@ -143,7 +143,6 @@ async def _finalize_turn(
     redaction_ctx,
     response_obj,
     record_inputs,
-    user_message,
 ):
     """Narrate the decision cycle and record the turn, stamp the turn's activity clock, render the terminal summary if the case just went terminal, flatten the follow-ups and save the redaction registry.
 
@@ -158,13 +157,7 @@ async def _finalize_turn(
     ``plan`` and commits with the terminal state.
     """
     narrate_turn(case_updated, metadata)
-    record_turn(
-        case_updated,
-        metadata,
-        record_inputs,
-        user_message=user_message,
-        response_obj=response_obj,
-    )
+    record_turn(case_updated, metadata, record_inputs)
     case_updated.updated_at = datetime.now(UTC)
     case_updated.last_activity_at = datetime.now(UTC)
 

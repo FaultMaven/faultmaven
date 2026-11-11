@@ -19,6 +19,7 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     solution_offer_superseded_total,
 )
 from faultmaven.core.investigation.narration.codes import (
+    AGGREGATED,
     CONTEXT_ONLY,
     DECISIONS_KEY,
     NoticeCode,
@@ -1036,13 +1037,17 @@ def record_decision(
     no outcome can be read; never a verdict the record holds.
 
     Deduplicated by code and params (by code alone for an ``AGGREGATED``
-    code). A notice code holds its place in ``system_notices`` with a token
-    the narration step replaces (A10), so order and ``prepend`` are as the
-    text's were; a context-only code writes none."""
+    code, whose later decision's params replace the earlier's, its token
+    keeping its place). A notice code holds its place in ``system_notices``
+    with a token the narration step replaces (A10), so order and ``prepend``
+    are as the text's were; a context-only code writes none."""
     key = decision_key(code, params)
     log = metadata.setdefault(DECISIONS_KEY, [])
-    if any(entry["key"] == key for entry in log):
-        return
+    for entry in log:
+        if entry["key"] == key:
+            if code in AGGREGATED:
+                entry["params"] = params
+            return
     token = None
     if isinstance(code, NoticeCode) and code not in CONTEXT_ONLY:
         token = decision_token(key)
@@ -1052,13 +1057,18 @@ def record_decision(
 
 def merge_decisions(metadata: dict[str, Any], incoming: dict[str, Any]) -> None:
     """Fold another accumulator's decision log into ``metadata``'s (A1), beside
-    ``merge_system_notices``, which carries the tokens."""
+    ``merge_system_notices``, which carries the tokens. ``incoming`` is the
+    later writer: an ``AGGREGATED`` decision both hold takes its params."""
     log = metadata.setdefault(DECISIONS_KEY, [])
-    known = {entry["key"] for entry in log}
+    known = {entry["key"]: entry for entry in log}
     for entry in incoming.get(DECISIONS_KEY) or []:
-        if entry["key"] not in known:
-            log.append({**entry, "params": dict(entry["params"])})
-            known.add(entry["key"])
+        if entry["key"] in known:
+            if entry["code"] in AGGREGATED:
+                known[entry["key"]]["params"] = dict(entry["params"])
+            continue
+        copied = {**entry, "params": dict(entry["params"])}
+        log.append(copied)
+        known[entry["key"]] = copied
 
 
 def _drop_system_notice(metadata: dict[str, Any], notice: str) -> None:

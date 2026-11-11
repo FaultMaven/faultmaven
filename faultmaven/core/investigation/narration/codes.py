@@ -38,6 +38,8 @@ class NoticeCode(StrEnum):
     # A decision on this response's emission.
     REFUTATION_REFUSED = "refutation_refused"
     # Context only: read by other renderers, never rendered itself.
+    # A hypothesis the cycle ends with no longer open (retired, refuted or
+    # validated) after a refusal of its refutation.
     HYPOTHESIS_RETIRED = "hypothesis_retired"
     MITIGATION_DISPOSED = "mitigation_disposed"
 
@@ -48,7 +50,7 @@ CONTEXT_ONLY = frozenset(
 )
 
 #: Deduplicated by code alone (A9): two withdrawals in one turn render one
-#: notice.
+#: notice, the later decision's params replacing the earlier's.
 AGGREGATED = frozenset({NoticeCode.SOLUTION_OFFER_WITHDRAWN})
 
 
@@ -65,8 +67,8 @@ def decision_token(key: str) -> str:
     ``system_notices`` until the narration step replaces it (A10). The same
     decision always yields the same token, so a merge deduplicates it."""
     digest = hashlib.sha1(key.encode(), usedforsecurity=False).hexdigest()[:16]
-    return f"⁣notice:{digest}⁣"
+    return f"\u2063notice:{digest}\u2063"
 
 
 def is_token(notice: str) -> bool:
-    return notice.startswith("⁣notice:")
+    return notice.startswith("\u2063notice:")

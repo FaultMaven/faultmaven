@@ -141,8 +141,9 @@ class CauseOutcome(BaseModel):
     identification_held_open: bool = Field(
         default=False,
         description=(
-            "A standing hypothesis's root has its why open and no root is "
-            "identified (``cause_identification_held_open``, #2036)"
+            "Identification is held open: a standing hypothesis's root has its "
+            "why open and no root is identified, as the cause recompute wrote "
+            "it (``progress.cause_identification_held_open``, #2036)"
         ),
     )
 

@@ -317,13 +317,7 @@ async def test_9_the_live_prepend_heads_the_record_over_an_early_one():
     )
     # The narration step, then the turn record (#2636, ``_finalize_turn``).
     narrate_turn(case_updated, metadata)
-    record_turn(
-        case_updated,
-        metadata,
-        inputs,
-        user_message="the workaround is in",
-        response_obj=_unjustified_mitigation(),
-    )
+    record_turn(case_updated, metadata, inputs)
 
     notices = case_updated.turn_history[-1].system_notices
     assert notices[0].startswith(

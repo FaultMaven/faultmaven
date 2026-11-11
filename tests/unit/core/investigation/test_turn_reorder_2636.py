@@ -19,11 +19,16 @@ import pytest
 
 from faultmaven.core.investigation import outcome as outcome_module
 from faultmaven.core.investigation.milestone_engine import turn_application
+from faultmaven.core.investigation.milestone_engine.cause_state import (
+    _recompute_assessment_state,
+)
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.milestone_engine.stage_gates import (
+    merge_decisions,
+    merge_system_notices,
     record_decision,
 )
-from faultmaven.core.investigation.narration.codes import NoticeCode
+from faultmaven.core.investigation.narration.codes import DECISIONS_KEY, NoticeCode
 from faultmaven.core.investigation.narration.notices import render_notice
 from faultmaven.core.investigation.outcome import compute_case_outcome
 from faultmaven.core.investigation.progress_monitor import (
@@ -37,8 +42,15 @@ from faultmaven.core.investigation.schemas import (
     MilestoneJustifications,
     MilestoneUpdates,
 )
-from faultmaven.modules.case.contracts import HypothesisState, ProblemStatus
+from faultmaven.modules.case.contracts import (
+    EvidenceCategory,
+    HypothesisState,
+    PoolEmptyReason,
+    ProblemStatus,
+    TurnOutcome,
+)
 from tests.unit.core.investigation import golden_cases_2636 as golden
+from tests.unit.core.investigation.bound_rows import bound_row
 from tests.unit.core.investigation.narrated import narrated
 from tests.unit.core.investigation.test_mitigation_record_2100 import (
     _accepted,
@@ -156,7 +168,40 @@ async def test_pin_4_a_turn_that_refuses_then_retires_renders_one_text(monkeypat
     refused = [golden.cycle_text([n])[0] for n in notices if " was NOT refuted" in n]
     (open_line,) = oracle("refutation_refused_open")
     assert refused == [open_line.replace(" It stays open.", "")]
-    assert not any("⁣" in n for n in notices), "every token was rendered"
+    assert not any("\u2063" in n for n in notices), "every token was rendered"
+
+
+async def test_the_turn_record_reads_what_main_read_at_step_6(monkeypatch):
+    """Review item 7: the record is created after the narration, but every
+    field but its notices is what step 6 read. A step after it changing the
+    metadata changes no field of the record."""
+    case, _shown = _pending()
+    case.current_turn = 6
+    seen: dict = {}
+    real = turn_application._record_hypotheses_closed_later
+
+    def _then_change(case, metadata):
+        real(case, metadata)
+        metadata.setdefault("milestones_completed", []).append("after_step_6")
+        metadata.setdefault("validation_repairs", []).append("after_step_6")
+        metadata["progress_made"] = not metadata.get("progress_made", False)
+        seen.update(metadata)
+
+    monkeypatch.setattr(
+        turn_application, "_record_hypotheses_closed_later", _then_change
+    )
+    engine = MilestoneEngine(MagicMock(), _make_repo(), investigation_tools=MagicMock())
+    engine.generator.generate_structured_output = AsyncMock(
+        return_value=InvestigationResponse_Diagnosis(
+            agent_response="Noted.", state_updates={}
+        )
+    )
+    await engine.process_turn(case=case, user_message="ok", redaction_ctx=None)
+    record = case.turn_history[-1]
+    assert "after_step_6" in seen["milestones_completed"], "premise: it ran"
+    assert "after_step_6" not in record.milestones_completed
+    assert "after_step_6" not in record.validation_repairs
+    assert record.progress_made != seen["progress_made"]
 
 
 # ---------------------------------------------------------------------------
@@ -220,14 +265,58 @@ def test_a_refusal_and_a_proceed_rendering_one_text_render_it_once():
 
 
 def test_the_withdrawal_variant_is_read_at_the_record():
-    """A later step retires the hypothesis whose root held identification
-    open, so the record, written after it, reads the cause fallen."""
+    """A later recompute of the cycle (a later replayed bundle's, or the live
+    response's) finds the holding hypothesis retired, so the record, written
+    after it, reads the cause fallen."""
     case, metadata = golden.withdrawn_held_open_beside_a_retired_validated_root()
     assert case.progress.cause_identification_held_open, "held open at decision"
     case.hypotheses["hyp_00000000b0b0"].state = HypothesisState.RETIRED
+    _recompute_assessment_state(case, metadata={"milestones_completed": []})
     notices = narrated(case, metadata)
     assert not case.progress.outcome.cause.identification_held_open
     assert notices == oracle("withdrawn_once_the_cause_fell")
+
+
+def test_the_record_agrees_with_the_flag_its_readers_read():
+    """Review item 1: a held-open cause whose hypothesis a later step of the
+    cycle retires. No recompute has read the retirement, so the record's flag,
+    the pool's empty reason and the progress flag the next prompt reads agree,
+    and the withdrawal is the held-open variant."""
+    from faultmaven.core.investigation.milestone_engine.stage_gates import (
+        _withdraw_unlicensed_solution_offers,
+    )
+    from faultmaven.modules.case.contracts import (
+        InvestigationActionType,
+        ProposedAction,
+        WorkingConclusion,
+    )
+    from tests.unit.core.investigation.test_terminal_root_identification_2036 import (
+        _open_chain_case,
+        _recompute_cause_state_from_chain,
+    )
+
+    case, _root, hyp = _open_chain_case()
+    _recompute_cause_state_from_chain(case)
+    case.working_conclusion = WorkingConclusion(
+        statement=hyp.statement, reasoning="r", likelihood=0.9
+    )
+    case.proposed_actions.append(
+        ProposedAction(
+            case_id=case.case_id,
+            action_type=InvestigationActionType.SOLUTION,
+            description="generate a fresh secret_id",
+            proposed_in_turn=case.current_turn,
+        )
+    )
+    metadata: dict = {}
+    assert _withdraw_unlicensed_solution_offers(case, metadata=metadata) == 1
+    hyp.state = HypothesisState.RETIRED
+    notices = narrated(case, metadata)
+    cause = case.progress.outcome.cause
+    assert case.progress.cause_identification_held_open is True
+    assert cause.pool_empty_reason == PoolEmptyReason.HELD_OPEN
+    assert cause.identification_held_open is True
+    assert notices == oracle("withdrawn_held_open_beside_a_retired_validated_root")
 
 
 def test_a19_a_refusal_whose_hypothesis_a_later_step_retired():
@@ -236,11 +325,32 @@ def test_a19_a_refusal_whose_hypothesis_a_later_step_retired():
     case, metadata = golden.CYCLE_SCENARIOS["refutation_refused_open"]()
     (h_id,) = case.hypotheses
     case.hypotheses[h_id].state = HypothesisState.RETIRED
-    turn_application._record_later_retirements(case, metadata)
+    turn_application._record_hypotheses_closed_later(case, metadata)
     (open_line,) = oracle("refutation_refused_open")
     assert golden.cycle_text(narrated(case, metadata)) == [
         open_line.replace(" It stays open.", "")
     ]
+
+
+@pytest.mark.parametrize(
+    ("state", "stays_open"),
+    [
+        (HypothesisState.REFUTED, False),
+        (HypothesisState.VALIDATED, False),
+        (HypothesisState.INCONCLUSIVE, True),
+    ],
+)
+def test_a19_a_refusal_whose_hypothesis_the_cycle_ends_not_open(state, stays_open):
+    """Review item 6: refuted or validated later in the cycle (the M6
+    demotion, a later bundle, the live response) is not open either;
+    INCONCLUSIVE stays open, as on ``main``."""
+    case, metadata = golden.CYCLE_SCENARIOS["refutation_refused_open"]()
+    (h_id,) = case.hypotheses
+    case.hypotheses[h_id].state = state
+    turn_application._record_hypotheses_closed_later(case, metadata)
+    (open_line,) = oracle("refutation_refused_open")
+    expected = open_line if stays_open else open_line.replace(" It stays open.", "")
+    assert golden.cycle_text(narrated(case, metadata)) == [expected]
 
 
 def test_the_refusal_renders_the_branch_decided():
@@ -251,6 +361,62 @@ def test_the_refusal_renders_the_branch_decided():
     assert golden.cycle_text(narrated(case, metadata)) == oracle(
         "mitigation_problem_unverified"
     )
+
+
+def test_the_verify_refusal_reads_its_turns_from_the_record():
+    """Review item 2: the problem is seen present after the refusal was
+    decided, later in the cycle. The record holds that turn, the decider's
+    params do not, and the line follows the record."""
+    case, metadata = golden.mitigation_no_bound_relief()
+    (entry,) = metadata[DECISIONS_KEY]
+    assert entry["params"]["present_turn"] is None, "premise: decided before"
+    bound_row(case, EvidenceCategory.SYMPTOM_EVIDENCE, turn=8)
+    (line,) = narrated(case, metadata)
+    assert case.progress.outcome.mitigation.present_turn == 8
+    assert "(turn 6) (it was seen present at turn 8): record" in line
+
+
+def test_the_disposition_refusal_reads_the_disposition_from_the_record():
+    """Review item 2: the record's disposition, not the one decided."""
+    case, metadata = golden.disposition_carries()
+    (entry,) = [e for e in metadata[DECISIONS_KEY] if e["params"].get("why")]
+    assert entry["params"]["carried"] == "declared_stable"
+    case.progress.mitigation.disposition = "proceed_unmitigated"
+    (line,) = narrated(case, metadata)
+    assert "already carries proceed_unmitigated, written once" in line
+
+
+def test_an_aggregated_decision_takes_the_later_params(monkeypatch):
+    """Review item 5: a replayed bundle withdrew while identification was held
+    open, the live response after the cause fell. With no outcome, the line
+    is the later decision's, merged or recorded in one accumulator."""
+    case, _metadata = golden.withdrawn_once_the_cause_fell()
+    bundle: dict = {}
+    record_decision(
+        bundle, NoticeCode.SOLUTION_OFFER_WITHDRAWN, prepend=True, held_open=True
+    )
+    live: dict = {}
+    record_decision(
+        live, NoticeCode.SOLUTION_OFFER_WITHDRAWN, prepend=True, held_open=False
+    )
+    turn = {**bundle, DECISIONS_KEY: list(bundle[DECISIONS_KEY])}
+    merge_system_notices(turn, live)
+    merge_decisions(turn, live)
+    _no_outcome(monkeypatch)
+    assert narrated(case, turn) == oracle("withdrawn_once_the_cause_fell")
+    same: dict = {}
+    for held_open in (True, False):
+        record_decision(same, NoticeCode.SOLUTION_OFFER_WITHDRAWN, held_open=held_open)
+    assert narrated(case, same) == oracle("withdrawn_once_the_cause_fell")
+
+
+def _no_outcome(monkeypatch) -> None:
+    """A derivation the write and the in-memory pass share raises."""
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("no outcome")
+
+    monkeypatch.setattr(outcome_module, "shown_milestones", _boom)
 
 
 # ---------------------------------------------------------------------------
@@ -282,11 +448,7 @@ def test_with_no_outcome_the_notices_are_mains(monkeypatch, name):
     yields an outcome: each notice falls back on what its decider recorded
     (the held-open variant, the turn clauses) and is ``main``'s text."""
     case, metadata = golden.CYCLE_SCENARIOS[name]()
-
-    def _boom(*_a, **_k):
-        raise RuntimeError("no outcome")
-
-    monkeypatch.setattr(outcome_module, "shown_milestones", _boom)
+    _no_outcome(monkeypatch)
     assert golden.cycle_text(narrated(case, metadata)) == oracle(name)
     assert case.progress.outcome is None
 
@@ -368,20 +530,22 @@ def _record_with_a_token():
     metadata = {"system_notices": ["KEPT"]}
     record_decision(metadata, NoticeCode.MITIGATION_VERIFY_PROCEEDED)
     inputs = turn_application.TurnRecordInputs(
-        progress_metrics=SimpleNamespace(
-            investigation_momentum="moderate", blocked_reasons=[], next_steps=[]
+        fields=dict(
+            turn_number=case.current_turn,
+            milestones_completed=[],
+            evidence_added=[],
+            hypotheses_generated=[],
+            hypotheses_validated=[],
+            solutions_proposed=[],
+            progress_made=False,
+            outcome=TurnOutcome.CONVERSATION,
+            user_message="m",
+            agent_response="Noted.",
         ),
         stagnation_str=None,
         validation_repairs=[],
-        cause_at_start=None,
     )
-    turn_application.record_turn(
-        case,
-        metadata,
-        inputs,
-        user_message="m",
-        response_obj=SimpleNamespace(agent_response="Noted."),
-    )
+    turn_application.record_turn(case, metadata, inputs)
     return case
 
 

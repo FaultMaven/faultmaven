@@ -308,7 +308,8 @@ def _disposition_refused(params: dict, outcome: Optional[CaseOutcome], log) -> l
 @_renders(NoticeCode.REFUTATION_REFUSED)
 def _refutation_refused(params: dict, outcome, log) -> list:
     """What the link pass did, as decided. "It stays open." is not said of a
-    hypothesis a later step of the cycle retired (A19)."""
+    hypothesis the cycle ends with no longer open (``HYPOTHESIS_RETIRED``,
+    A19)."""
     h_id = params["hypothesis_id"]
     hedged = (
         " Its REFUTES links are self-hedged (stance_confidence below 0.6), "

@@ -40,10 +40,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Optional
 
-from faultmaven.core.investigation.causal_graph.projection import (
-    held_open_root_ids,
-    identified_root_ids,
-)
+from faultmaven.core.investigation.causal_graph.projection import held_open_root_ids
 from faultmaven.core.investigation.cause_assurance import (
     FIX_FAILED,
     SUBJECT_PROBLEM,
@@ -245,11 +242,11 @@ def _cause(case: "Case", subjects: "SubjectIndex") -> CauseOutcome:
             if rows
         },
         pool_empty_reason=cause_pool_empty_reason(case),
-        # The predicate the cause recompute writes to
-        # ``progress.cause_identification_held_open``, over the standing
-        # hypotheses: the withdrawal notice's variant (#2636).
-        identification_held_open=bool(held_open_root_ids(case))
-        and not identified_root_ids(case),
+        # The flag the cause recompute wrote this cycle, which
+        # ``pool_empty_reason`` and the next prompt's readers also read: the
+        # withdrawal notice's variant (#2636). A fresh re-derivation of all of
+        # them together is the final recompute's (B1e).
+        identification_held_open=bool(case.progress.cause_identification_held_open),
     )
 
 

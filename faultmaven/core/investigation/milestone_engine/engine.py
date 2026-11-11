@@ -1336,7 +1336,6 @@ class MilestoneEngine:
                 redaction_ctx=redaction_ctx,
                 response_obj=response_obj,
                 record_inputs=record_inputs,
-                user_message=user_message,
             )
 
             # A synthesized placeholder (#1442) is not the model's reply, so

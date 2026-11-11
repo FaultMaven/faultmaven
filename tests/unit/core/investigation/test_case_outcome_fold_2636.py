@@ -1074,9 +1074,31 @@ async def test_a_turn_writes_the_record_last_in_its_cycle(monkeypatch):
     assert case.progress.outcome.folded_under == CaseState.INVESTIGATING
 
 
-# ``test_writing_the_record_changes_no_text_and_no_decision`` was replaced by
-# #2636 B1b: the record now decides the outcome notices' text, which pin 4
-# (``test_turn_reorder_2636.py``) drives through ``process_turn``.
+async def test_writing_the_record_changes_no_text_and_no_decision(monkeypatch):
+    """The same turn with and without the write: one reply, one set of
+    notices, one offer."""
+
+    async def _run():
+        case = _confirmed_case()
+        case.case_id = "case_00000000c0de"
+        engine = _turn_engine()
+        result = await _turn(engine, case, "errors gone")
+        offer = case.offer_record.open
+        return (
+            result["agent_response"],
+            [f["label"] for f in result["suggested_follow_ups"]],
+            case.turn_history[-1].system_notices,
+            (offer.kind, offer.basis, offer.summary),
+        ), case
+
+    written, with_record = await _run()
+    monkeypatch.setattr(
+        outcome_module, "compute_case_outcome", lambda prior, case, **_: prior
+    )
+    unwritten, without = await _run()
+    assert with_record.progress.outcome is not None
+    assert without.progress.outcome is None
+    assert written == unwritten
 
 
 async def test_both_terminal_transitions_write_the_record():
