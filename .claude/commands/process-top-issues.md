@@ -106,8 +106,9 @@ gh search prs --owner FaultMaven --match body "FaultMaven/faultmaven#<n>" --limi
 
 ## 0. Locate the round
 
-Find the newest proposal or result on the Queue, the issue this prints:
-`gh issue list -R FaultMaven/faultmaven --label tracking --search 'Queue in:title' --json number,title --jq '.[] | select(.title == "Queue") | .number'`
+Find the newest proposal or result across the two newest `Queue` issues, which this prints oldest first, so a rotation
+loses no round; the last it prints, the open one, is the Queue you post to:
+`gh issue list -R FaultMaven/faultmaven --label tracking --state all --search 'Queue in:title' --limit 100 --json number,title --jq '[.[] | select(.title == "Queue") | .number] | sort | .[-2:][]'`
 
 | newest | then |
 |---|---|
@@ -144,7 +145,7 @@ ago() { date -u -d "@$((now - $1 * 86400))" +%FT%TZ; }; lines() { gh api "repos/
 q=$(gh issue list -R $R --label tracking --state all --search 'Queue in:title' --limit 100 --json number,title \
   --jq '[.[] | select(.title == "Queue") | .number] | sort | .[-2:][]')
 qc=$(for n in $q; do gh api "repos/$R/issues/$n/comments" --paginate --jq '[.[] | select(.body | test("^## Round [0-9]+ — (proposal|result)"))
-  | {t: .created_at, p: (.body | test("^## Round [0-9]+ — proposal")), b: .body}]'; done | jq -s add)
+  | {t: .created_at, p: (.body | test("^## Round [0-9]+ — proposal")), b: .body}]' || echo false; done | jq -s add)
 since=$(jq -r 'map(select(.p)) | last.t' <<<"$qc"); r2=$(jq -r 'map(select(.p | not)) | .[-2].t // "none"' <<<"$qc")
 open=$(gh issue list -R $R --state open --limit 1000 --json number,labels,body,createdAt)
 pub=$(gh repo list FaultMaven --visibility public --limit 200 --json name --jq 'map(.name)')
@@ -173,11 +174,11 @@ jq -r --argjson prs "$prs" --arg lanes "$lanes" --argjson lim "$([ "$na" -gt 5 ]
   + " (actionable: \($a | map("#\(.n) of #\(.r)") | join(", ") | if . == "" then "none" end))"' <<<"$open"
 # the round this proposal opens: one past the newest result, else unknown (a stop); every third is a chore batch (Pick)
 rn=$(jq '[.[]? | select(.p | not) | .b | capture("^## Round (?<n>[0-9]+)").n | tonumber] | max // empty | . + 1' <<<"$qc" 2>/dev/null)
-if [ -z "$rn" ]; then echo "slot: round unknown"; elif [ $((rn % 3)) -eq 0 ]; then echo "slot: chore batch (round $rn)"; else
-jq -r --argjson prs "$prs" --arg cut "$(ago 30)" "$cls"'[.[] | select(free and ready and (refs(.number) | not)
+if [ -z "$rn" ]; then echo "slot: round unknown"; else b=; [ $((rn % 3)) -eq 0 ] && b="chore batch (round $rn); ordinary: "
+jq -r --arg b "$b" --argjson prs "$prs" --arg cut "$(ago 30)" "$cls"'[.[] | select(free and ready and (refs(.number) | not)
   and (has(["class:chore", "class:design", "design-stage"]) | not))] | [.[] | select(has(["P0", "P1"]))] as $p1
   | ($p1 | sort_by((has(["P0"]) | not), .createdAt)) + ([.[] | select(has(["P2"]) and .createdAt < $cut)] | sort_by(.createdAt))
-  | map("#\(.number)") | "slot: \(first // "none, the ordinary order")\(if length > 1 then " (then \(.[1:3] | join(" ")))" else "" end)"' <<<"$open"; fi
+  | map("#\(.number)") | "slot: \($b)\(first // "none, the ordinary order")\(if length > 1 then " (then \(.[1:3] | join(" ")))" else "" end)"' <<<"$open"; fi
 roots=$(jq "$cls"'[.[] | select(has(["root-issue", "root-candidate"])) | {n: .number, b: [.body | scan("(?m)^\\*\\*Blocks:\\*\\*.*") | gsub("\\([^)]*\\)"; "") | scan("#([0-9]+)")[0] | tonumber]}]' <<<"$open")
 off=$(gh issue list -R $R --state all --search "created:>=$since \"Found while working on\" in:body" --limit 300 --json number,body \
   --jq '.[] | "\(.number) \(.body | [scan("Found while working on #([0-9]+)")[0]] | first // "")"' | while read -r f m; do
@@ -277,7 +278,7 @@ echo "since the last proposal: merged $(jq length <<<"$mp") · PRs opened $(gh p
        In the batch's round the slot does not take an open `P1`: it waits that one round. In a migration round, or
        when no chore seam is free (none ready, or each on an open PR's seam), the slot is the ordinary one, and the
        proposal says so in one line under *Health*. The `slot` line lists the next ones for when the first sits on an
-       open PR's seam, and reads `chore batch (round <N>)` in a batch round;
+       open PR's seam; in a batch round it reads `chore batch (round <N>); ordinary:` before them, for the fallback;
      - **the ordinary order:** `P1`, `P2`, `P3`, oldest first within each, a chore after the defects of its priority.
 
      Skip an item that an open PR from an earlier round still carries (its PR, *Where an item stands*), and any item
