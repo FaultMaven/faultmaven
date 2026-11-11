@@ -7,12 +7,10 @@ cycle's record (``milestone_engine/turn_narration.py``). The rest stay text,
 declared here with the reason (#2636: "The rest (ordering errors, schema
 repairs) stay as text, declared in a census"). Most report an ordering or
 schema error in the response; the problem-status sites stay text because
-``problem.status`` has one writer, ``problem_status.py``, which runs only in
-step 1 and in step 0b's replay. Two outcome-bearing sites are still text: the
-engine's offer standing, which converts in B1d, and the false-alarm
-withdrawal's "no false-alarm finding stands", which states the problem's
-status (one the same response can change) and converts in a later B1
-sub-stage.
+``problem.status`` has one writer, ``problem_status.py``, which runs in step 1,
+step 2c and step 0b's replay. Two outcome-bearing sites are still text: the
+engine's offer standing (B1d) and the false-alarm withdrawal's refusal, which
+states or presumes the problem's status and converts in a later B1 sub-stage.
 
 A new call, a moved one or a changed count fails until it is declared here,
 and a converted function (one listed in ``DECISIONS`` and not in ``TEXT``)
@@ -46,7 +44,7 @@ _TA = _ME + "turn_application.py"
 
 _ORDER = "an ordering or schema error in the response"
 _STATUS = (
-    "a problem-status site: problem.status has one writer, run only in step 1 "
+    "a problem-status site: problem.status has one writer, run in step 1, step 2c "
     "and step 0b's replay"
 )
 _EMISSION = "a refusal of this response's emission that states no outcome"
@@ -70,11 +68,10 @@ TEXT: dict[tuple[str, str], tuple[int, str]] = {
     (_RA, "ResponseApplier.process_response_structured"): (2, _ORDER),
     (_RA, "ResponseApplier._apply_verification_updates"): (
         2,
-        "a false-alarm withdrawal refused: where it says no false-alarm finding "
-        "stands, outcome-bearing (it states the problem's status, which this "
-        "response can change), converts in a later B1 sub-stage; where it asks "
-        "what the user disputed, " + _EMISSION + "; and a revision beside a "
-        "false alarm (" + _ORDER + ")",
+        "a false-alarm withdrawal refused, outcome-bearing (it states or presumes "
+        "the problem's status, which this response can change in step 2c): "
+        "converts in a later B1 sub-stage; and a revision beside a false alarm "
+        "(" + _ORDER + ")",
     ),
     (_RA, "ResponseApplier._apply_investigation_updates"): (
         6,
