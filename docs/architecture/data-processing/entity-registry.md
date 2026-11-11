@@ -288,7 +288,7 @@ All pass without Prometheus installed (the `_NoOpMetric` fallback in `evidence_m
 Per the Phase 4 plan — revisit monthly for the first quarter after default-on:
 
 1. **Overflow hit rate.** If any `entity_type` hits overflow on >20% of evidence, tune the cap or split the type. Read from `faultmaven_case_entities_overflow_total / writes_for_type`.
-2. **Agent adoption.** `find_entity` invoked ≥ 1×/investigation on cases with ≥ 2 evidence items. Check via `agent_tool_calls` rows where `tool_name = 'find_entity'`.
+2. **Agent adoption.** `find_entity` invoked ≥ 1×/investigation on cases with ≥ 2 evidence items. No store records tool calls per case yet (the `agent_tool_calls` table was dropped in #1001), so this per-investigation rate cannot be read today. What does exist is the process-wide counter `faultmaven_tool_call_attempts_total{tool="find_entity"}` (`faultmaven/core/investigation/reliability_metrics.py:124`, incremented at `faultmaven/core/investigation/milestone_engine/generation.py:1273`), which counts invocations without a case or investigation label.
 3. **Context-builder usefulness.** Auto-injection observed in at least one real case with ≥ 5 evidence items. Manually sample prompts captured by Opik to confirm.
 
 Failing any of the three isn't a rollback signal — it's a tuning signal.

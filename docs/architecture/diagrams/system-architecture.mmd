@@ -46,7 +46,7 @@ flowchart TB
         subgraph DOMSVC["Domain services (business logic only, no data ownership)"]
             direction LR
             AgentMod["<b>agent/</b><br/>InvestigationService<br/>AgentToolRegistry"]
-            EvidenceMod["<b>evidence/</b><br/>EvidenceService<br/>FileStorageService"]
+            EvidenceMod["<b>evidence/</b><br/>FileStorageService"]
             PreprocessMod["<b>preprocessing/</b><br/>DataClassifier<br/>11 extractors · ChunkingService"]
             ReportMod["<b>report/</b><br/>ReportGenerationService<br/>ReportRecommendationService"]
         end
@@ -128,7 +128,7 @@ flowchart TB
             SessionStore -.-> Redis
             SessionStore -.-> FakeRedis
         end
-        subgraph BLOB["Artifacts · IStorageBackend"]
+        subgraph BLOB["Artifacts · IFileStorageBackend"]
             direction TB
             LocalFS[(Local FS<br/>data/evidence/)]
             S3Back[(S3)]

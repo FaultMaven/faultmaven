@@ -154,7 +154,6 @@ Each store's end of life per owner kind and its retention bound are in the [stor
 **Immutable Logs**:
 
 - `case_actions`: All case-level actions and status changes (ORM model `CaseActionModel`)
-- `agent_tool_calls` / `agent_tool_calls_v2`: All agent actions
 - `user_audit_log`: User authentication and administrative events
 
 **Compliance**:

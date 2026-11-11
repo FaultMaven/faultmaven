@@ -193,8 +193,8 @@ or absent with the marker accounting for it.
 > lived in `AgentOrchestrationService`. The engine's version is token-based,
 > model-aware, and drops at group granularity, which is why there is no longer a
 > high-signal keyword list. Note the audit consequence: the old net preserved
-> uncompressed content in the `AgentToolCall` record, and nothing writes those
-> records now (see the dormancy note on `ICaseRepository`).
+> uncompressed content in the `AgentToolCall` record, and the `agent_tool_calls`
+> table that held those records was dropped (#1001).
 
 ### 5.4 Tool-Augmented Generation (v5.0 → v6.0)
 
