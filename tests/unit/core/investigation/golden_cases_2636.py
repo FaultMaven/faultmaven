@@ -18,10 +18,10 @@ holding this module::
         golden_cases_2636 as g; g.capture_main()"
 
 ``capture_main`` refuses any other tree: one whose ``faultmaven`` is not its
-own, a commit other than ``MAIN_AT_B1C``, a modified ``faultmaven/``, or one
-whose ``NoticeCode`` holds B1c's members, where the golden would compare the
-code with itself. ``test_golden_composers_2636.py`` runs them on this
-tree and compares.
+own, one that is not a checkout's top level, a commit other than
+``MAIN_AT_B1C``, a modified ``faultmaven/``, or one whose ``NoticeCode`` holds
+B1c's members, where the golden would compare the code with itself.
+``test_golden_composers_2636.py`` runs them on this tree and compares.
 
 B1b (#2636) adds ``CYCLE_SCENARIOS``: each runs a decider whose notice B1b
 renders after the cycle's record (the withdrawal, the mitigation verify and
@@ -46,8 +46,9 @@ fix, the signals on an invalidated problem, the false-alarm and revision
 refusals, the root-terminal refusals, the pending check and the declined
 re-asks), each returning ``(case, metadata)``. ``capture_main`` adds their
 texts, as ``main`` tells them to the model (after its narration step), to the
-same file, from a scratch worktree of ``main`` (``8a619ae76``, the pinned
-``MAIN_AT_B1C``, its ``faultmaven/`` unmodified) holding this module, as
+same file, from the top level of a scratch worktree of ``main``
+(``8a619ae76``, the pinned ``MAIN_AT_B1C``, its ``faultmaven/`` unmodified)
+holding this module, as
 above. It keeps every B1a and B1b entry as stored. The ``turn_*`` scenarios
 and the step-0/step-2 re-ask run a whole turn through ``process_turn``.
 """
@@ -1365,8 +1366,9 @@ MAIN_AT_B1C = "8a619ae76f361e84e77f38061f4334d2048b7716"
 def capture_main() -> None:  # pragma: no cover - run once, on main
     """Add ``B1C_SCENARIOS``' texts to the golden, as ``main`` tells them to
     the model: its deciders compose them, and its narration step renders
-    B1b's codes beside them. Refused on any tree but ``MAIN_AT_B1C`` with an
-    unmodified ``faultmaven/``. Additions only: B1a's scenarios must re-run to
+    B1b's codes beside them. Refused on any tree but the top level of a
+    checkout at ``MAIN_AT_B1C`` with an unmodified ``faultmaven/``. Additions
+    only: B1a's scenarios must re-run to
     their stored entries, and B1b's (captured at ``b1969f821``, before their
     deciders recorded codes) are kept as stored."""
     import faultmaven
@@ -1378,13 +1380,15 @@ def capture_main() -> None:  # pragma: no cover - run once, on main
     ), f"faultmaven imported from {faultmaven.__file__}, not {root}"
 
     # Only the pinned main commit, unmodified, is main's: on this branch the
-    # golden would compare the renderers with themselves, and a peer branch or
-    # a dirty checkout is not main.
+    # golden would compare the renderers with themselves, and a peer branch, a
+    # dirty checkout or a copy of the tree inside another checkout is not main.
     def _git(*args: str) -> str:
         return subprocess.run(
             ["git", *args], cwd=root, check=True, capture_output=True, text=True
         ).stdout.strip()
 
+    top = Path(_git("rev-parse", "--show-toplevel")).resolve()
+    assert top == root, f"{root} is not a checkout's top level (git sees {top})"
     head = _git("rev-parse", "HEAD")
     assert head == MAIN_AT_B1C, f"HEAD is {head}, not {MAIN_AT_B1C}"
     dirty = _git("status", "--porcelain", "--", "faultmaven/")

@@ -8,8 +8,11 @@ declared here with the reason (#2636: "The rest (ordering errors, schema
 repairs) stay as text, declared in a census"). Most report an ordering or
 schema error in the response; the problem-status sites stay text because
 ``problem.status`` has one writer, ``problem_status.py``, which runs only in
-step 1 and in step 0b's replay. One outcome-bearing site is still text, the
-engine's offer standing, which converts in B1d.
+step 1 and in step 0b's replay. Two outcome-bearing sites are still text: the
+engine's offer standing, which converts in B1d, and the false-alarm
+withdrawal's "no false-alarm finding stands", which states the problem's
+status (one the same response can change) and converts in a later B1
+sub-stage.
 
 A new call, a moved one or a changed count fails until it is declared here,
 and a converted function (one listed in ``DECISIONS`` and not in ``TEXT``)
@@ -67,9 +70,11 @@ TEXT: dict[tuple[str, str], tuple[int, str]] = {
     (_RA, "ResponseApplier.process_response_structured"): (2, _ORDER),
     (_RA, "ResponseApplier._apply_verification_updates"): (
         2,
-        "a false-alarm withdrawal refused because no finding stands or it says "
-        "nothing the user disputed (" + _EMISSION + "), and a revision beside "
-        "a false alarm (" + _ORDER + ")",
+        "a false-alarm withdrawal refused: where it says no false-alarm finding "
+        "stands, outcome-bearing (it states the problem's status, which this "
+        "response can change), converts in a later B1 sub-stage; where it asks "
+        "what the user disputed, " + _EMISSION + "; and a revision beside a "
+        "false alarm (" + _ORDER + ")",
     ),
     (_RA, "ResponseApplier._apply_investigation_updates"): (
         6,
