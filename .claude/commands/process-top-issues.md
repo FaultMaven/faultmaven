@@ -227,9 +227,10 @@ echo "since the last proposal: merged $(jq length <<<"$mp") · PRs opened $(gh p
      then that line, verified by the alert page and manifest. Anything written about a private repo's alert names only
      its URL, kind and count. Raise secret-scanning alerts with the owner in session, never in writing. Report the
      non-secret `unknown`/`unavailable` lines in the proposal. A failing `scheduled audit:` line is placed as well:
-     read its newest scheduled run. An advisory against `main` is that repo's `main red`, filed as 4.6 files one, or
-     added to the `**Alerts:**` line of the open issue covering it. Any other failure, and a stopped or missing
-     schedule, is reported in the proposal with what it needs. Dismiss nothing without the owner's ruling on the issue.
+     read its newest scheduled run. An advisory against `main` is that repo's `main red`: added to the `**Alerts:**`
+     line of the open issue covering it, else filed as 4.6 files one, opening `**Repo: FaultMaven/<r>.**` outside
+     core. Any other failing line, and a stopped or missing schedule, is reported in the proposal with what it needs.
+     Dismiss nothing without the owner's ruling on the issue.
 2. **Pick.**
    - **The design pass** gives one row per open `root-issue` and `root-candidate`: its design statement, level,
      principle, design change, open count (its `**Blocks:**` issues and stages) and state (check due, ruling due,
@@ -586,8 +587,8 @@ each PR in the round that first reports it. Then stop.
   branch exists, or as a new lane if neither does. Never work in the main checkout, and never delete its `./data`.
 - **Before pushing,** run `black --check faultmaven/ tests/`, `ruff check faultmaven/ tests/`, `lint-imports`, the
   tests that cover the change or pin text it edits, and the repo-wide guard suites (`tests/unit/ci`,
-  `tests/unit/architecture`), run as CI runs them, plus `python scripts/check_contract_version.py` if
-  `docs/reference/api/` moved. Not the rest of the suite: CI runs it.
+  `tests/unit/architecture`) in CI's environment, at most four workers, plus
+  `python scripts/check_contract_version.py` if `docs/reference/api/` moved. Not the rest of the suite: CI runs it.
 - **Tests** reproduce the defect and assert behaviour. No wall-clock thresholds, and no repo-scanning guard unless
   the plan names one. Keep within the plan's size budget, and say so if you cannot.
 - **Closing keywords go in the PR body only**, never in the title or a commit message, one issue per line. The body
