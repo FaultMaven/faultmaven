@@ -1946,8 +1946,6 @@ See [Evidence Model](./evidence-driven-investigation-framework.md#5-evidence-mod
 | `SYMPTOM_ABSENCE_EVIDENCE` | Confirmation the symptom is gone — after a workaround (cause may persist), or after the fix, where it is the problem leg of a resolution | MITIGATION, TREATMENT |
 | `CAUSAL_ABSENCE_EVIDENCE` | Confirmation the root cause is eliminated after the fix (the cause leg; RESOLVED also needs the symptom row at or after it) | TREATMENT |
 
-```text
-
 ### 3.2 Turn Recording and Progress Detection
 
 ```python

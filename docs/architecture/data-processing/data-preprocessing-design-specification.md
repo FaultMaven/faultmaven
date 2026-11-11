@@ -1284,7 +1284,7 @@ for what this means when writing a tool.
 > `TOOL_RESULT_BUDGET` and compressed individual results by keeping the first few lines
 > plus any lines matching a 15-term high-signal keyword list. It lived in
 > `AgentOrchestrationService` and went with it, along with the `AgentToolCall` audit row
-> that held the uncompressed original — `agent_tool_calls` has had no writer since.
+> that held the uncompressed original — the `agent_tool_calls` table was dropped (#1001).
 
 ---
 
@@ -1343,8 +1343,8 @@ When the agent creates evidence from mechanical search results:
 | `primary_purpose` | LLM-generated | Why this finding matters |
 
 > Tool-method metadata (search mode, deep_analysis backend) is no longer
-> persisted on Evidence; agent tool calls are recorded on
-> `agent_tool_calls` rows linked to the execution, not on the Evidence row.
+> persisted on Evidence, and no table records agent tool calls: the
+> `agent_tool_calls` table that once held them was dropped (#1001).
 
 ### 7.3 Provenance Chain
 

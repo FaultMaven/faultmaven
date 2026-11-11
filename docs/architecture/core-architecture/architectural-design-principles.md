@@ -115,7 +115,7 @@ FaultMaven Core must remain **agnostic to where it runs** (local dev, Docker, Ku
 │  Business logic uses interfaces only (no deployment branching)   │
 │  • CaseService calls ICaseRepository                             │
 │  • KnowledgeService calls IKnowledgeVectorStore                  │
-│  • EvidenceService calls IStorageBackend                         │
+│  • FileStorageService calls IFileStorageBackend                  │
 └─────────────────────────────────────────────────────────────────┘
                               ▲
                               │ depends on interfaces
@@ -327,7 +327,7 @@ oauth_authorization_codes
 -- Note: auth sessions live in Redis (FakeRedis local, real Redis cloud)
 -- via RedisSessionStore — there is no SQL `sessions` table.
 
--- Case module (case domain — owns evidence, reports, agent audit data)
+-- Case module (case domain — owns evidence, reports)
 cases, case_messages, case_actions, case_tags,
 evidence, hypotheses, solutions, uploaded_files,
 reports

@@ -1,4 +1,5 @@
-"""Give every stored case its first case outcome record (#2615 stage S1).
+"""Give every stored case that needs one its case outcome record (#2615 stage S1):
+a case without one, or a terminal case whose record no terminal write folded.
 
 ``progress.outcome`` is written at the end of each decision cycle and at both
 terminal transitions (``core/investigation/outcome.py``), so a case stored
@@ -47,13 +48,16 @@ that loses the version race is tried again from a fresh load
 A case that needs a record while work on it is in flight (a turn, or a task
 one spawned, holds its lease on some replica: ``CaseDeleteGate.work_in_flight``,
 the lease a delete reads) is skipped and listed, and so is one whose lease
-cannot be read; a re-run picks them up. A case that has its record is left
-alone, and its lease is not read. Under standalone the lease store lives in
-the API's own process, which this command cannot see: run it with the API
+cannot be read; a re-run picks them up. A case that does not need a record is
+left alone, and its lease is not read. Under standalone the lease store lives
+in the API's own process, which this command cannot see: run it with the API
 idle there.
 
-A case that has a record is left alone, so the command is idempotent: a second
-run writes nothing.
+A case needs a record when it has none, or when it is terminal and no terminal
+write folded the record it has (``needs_record``). Only such a case is written
+and every other case is left alone, so the command is idempotent: a run straight
+after a writing run (not ``--dry-run``) that exited 0 writes nothing. A run that
+skipped or failed cases leaves them for the next.
 
 Under ``TENANT_PROVIDER=multi`` RLS scopes every case read to the enterprise
 bound in the tenant context, so ``--enterprise-id`` is required and the command
@@ -67,7 +71,9 @@ Exit codes
 | 0 | every case that needs a record has one, or a dry run that found nothing else |
 | 1 | refused (nothing written), or one or more cases failed (the rest written) |
 | 2 | argparse usage error (a bad flag), reserved by argparse |
-| 3 | one or more cases were skipped for work in flight (the rest written): re-run |
+| 3 | one or more cases were skipped for work in flight and none failed (the rest written): re-run |
+
+A failure outranks a skip: a run that both skipped and failed cases exits 1.
 """
 
 from __future__ import annotations
@@ -83,8 +89,9 @@ from faultmaven.cli._database_gate import require_persistent_database_or_exit
 #: argparse's ``description``. A literal, not derived from ``__doc__``: ``python
 #: -OO`` strips docstrings.
 _SUMMARY = (
-    "Compute the case outcome record once for every stored case that has "
-    "none, from the case as stored (#2615)."
+    "Compute the case outcome record once for every stored case that needs "
+    "one, from the case as stored (#2615): a case without a record, or a "
+    "terminal case whose record no terminal write folded."
 )
 
 #: The exit status of a run that skipped a case for work in flight.
@@ -232,8 +239,12 @@ def main() -> None:
         description=_SUMMARY,
         epilog=(
             "Runs after the release that writes the record and before any "
-            "release that switches a reader onto it. Idempotent: a case that "
-            "has a record is left alone."
+            "release that switches a reader onto it. Idempotent: only a case "
+            "that needs a record (none, or a terminal case's record no terminal "
+            "write folded) is written, so a run straight after a writing run "
+            "that exited 0 writes nothing. Exit 1 "
+            "when any case failed, else 3 when any was skipped: a failure "
+            "outranks a skip."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -260,7 +271,9 @@ def main() -> None:
     require_confirmation(
         parser,
         args,
-        "This writes a case outcome record onto every stored case without one.",
+        "This writes a case outcome record onto every stored case that needs "
+        "one: a case without a record, or a terminal case whose record no "
+        "terminal write folded.",
     )
 
     require_persistent_database_or_exit()

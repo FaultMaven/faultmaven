@@ -61,9 +61,10 @@ faultmaven/modules/agent/
 ```
 
 There is no `infrastructure/`: as a Domain Service the module owns no tables, so
-it has no repositories. Execution audit data (`agent_executions`,
-`agent_tool_calls`) is **Case-owned** and reached through
-`modules/case/contracts.py`.
+it has no repositories. There is no execution audit data either: the
+`agent_executions` / `agent_tool_calls` tables, with their ORM models and
+`ICaseRepository` methods, were dropped (#1001). Investigation activity is
+recorded by the Case module, in `case_messages` and `case_actions`.
 
 ---
 
@@ -126,7 +127,7 @@ and so given, only under their feature flags.
 |--------------|-------|
 | `core/investigation/` | Milestone engine, hypothesis manager, intent resolver |
 | `infrastructure/llm/` | LLM provider abstractions and routing |
-| `modules/case/contracts` | `Case`, `ICaseRepository`, and the Case-owned execution models |
+| `modules/case/contracts` | `Case`, `ICaseRepository`, and the case types a turn reads and writes (e.g. `CaseState`, `TurnReceipt`, `ChatDataOffer`, the message-row helpers) |
 | `modules/evidence/` | `FileStorageService`, which the orphan-file sweep (`jobs/storage_cleanup.py`) builds |
 | `modules/knowledge/contracts` | `describe_troubleshooting_domains` / `describe_troubleshooting_scope`, for the orientation and out-of-band prompts |
 
@@ -169,14 +170,6 @@ the case repository, the KB and case vector stores, the deep-analysis service).
 ## Usage
 
 ```python
-# Execution audit models — Case-owned, imported from Case contracts
-from faultmaven.modules.case.contracts import (
-    AgentExecution,
-    AgentToolCall,
-    AgentType,
-    ExecutionStatus,
-)
-
 # Tools
 from faultmaven.modules.agent.tools.base import AgentTool, Tool, ToolContext
 ```

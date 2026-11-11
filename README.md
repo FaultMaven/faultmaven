@@ -228,7 +228,7 @@ npm run dev
 # Or: pnpm dev
 ```
 
-The dashboard will be available at `http://localhost:5173` (Vite dev server) and will connect to the API at `http://localhost:8090`.
+The dashboard will be available at `http://localhost:3333` (Vite dev server) and will connect to the API at `http://localhost:8090`.
 
 > **Note:** Make sure the API backend is running before starting the dashboard. The dashboard requires the API to be available at `http://localhost:8090`.
 

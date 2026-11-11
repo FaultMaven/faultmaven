@@ -58,7 +58,7 @@ faultmaven/
 │   └── processing/         # Log analyzer, pattern learner
 ├── infrastructure/         # Shared adapters: llm/ (providers/, router.py, cache.py, truncation.py, pricing.py),
 │                           # persistence/ (models.py = every ORM table), knowledge/ (ChromaDB), auth/, security/ (Presidio),
-│                           # protection/, storage/ (local, S3, Azure), logging/, observability/, health/, jobs/, tasks/, caching/, shims/, concurrency/
+│                           # protection/, storage/ (local, S3), logging/, observability/, health/, jobs/, tasks/, caching/, shims/, concurrency/
 ├── bootstrap/              # Startup: startup.py, data_init.py (bootstrap admin), kb_init.py + kb_pack.py (KB pack ingestion),
 │                           # composition.py (DI wiring + fail-fast gates), lifespan.py (app lifespan), middleware.py (middleware stack)
 ├── cli/                    # Operator console entrypoints (fm-*, `[project.scripts]`)
@@ -152,7 +152,7 @@ Pydantic settings (`faultmaven/config/settings.py`) read `.env`; environment var
 | Protection | `PROTECTION_PROFILE` (`hardened` default / `development`) selects the rate-limit preset in `faultmaven/config/protection.py`. There is **no** rate-limit env knob and no variable switches limiting off (`SKIP_SERVICE_CHECKS` no longer does, fm#990); `ENVIRONMENT` can only *veto* a development profile, never select one, so no deployment that configures nothing arms the `X-Dev-Bypass` / `X-Test-Bypass` headers (fm#985). `GET /admin/config/status` reports `features.request_protection_hardened`. `docs/operations/security/client-protection.md` |
 | Limits / CORS | `MAX_UPLOAD_SIZE_MB`, `CORS_ALLOW_ORIGINS`, `CORS_ALLOW_CREDENTIALS` |
 
-Standalone (default): SQLite, FakeRedis, local filesystem, `.env` as the sole source of settings. Cloud: PostgreSQL, Redis, S3/Azure blob storage, Presidio, Opik, and `config_overrides` (dashboard-managed settings hot-reloaded via `faultmaven/config/llm_config_overrides.py`).
+Standalone (default): SQLite, FakeRedis, local filesystem, `.env` as the sole source of settings. Cloud: PostgreSQL, Redis, S3 blob storage, Presidio, Opik, and `config_overrides` (dashboard-managed settings hot-reloaded via `faultmaven/config/llm_config_overrides.py`).
 
 ## Database
 

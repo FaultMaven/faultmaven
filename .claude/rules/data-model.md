@@ -92,7 +92,7 @@ infrastructure/persistence/
 └── case_vector_store.py                  # Vector storage for cases
 ```
 
-The removed `agent_executions` / `agent_tool_calls` tables (#1350) and the
+The removed `agent_executions` / `agent_tool_calls` tables (#1001) and the
 retired case-nested session table (#1935): `docs/reference/database/README.md`
 §Tables by domain.
 
