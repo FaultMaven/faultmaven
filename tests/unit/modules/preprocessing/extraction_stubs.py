@@ -13,6 +13,7 @@ asserted a mock's calls reads which stub's result it got instead.
 
 import logging
 import re
+import threading
 import time
 
 from faultmaven.modules.preprocessing.extractors.protocol import ExtractResult
@@ -25,10 +26,12 @@ MARKER = "extracted_by_stub"
 #: The record a stub that runs on logs once it has entered ``extract``.
 ENTERED = "the test extractor has entered extract"
 
-#: How often the regression's stubs repeat their work, about 3-5 s here: on a
-#: thread, where nothing can stop them, the test process still ends. A worker
-#: is killed long before.
-REPEATS = 100
+#: Set by the deadline regression in a ``finally`` once its call returns,
+#: whether or not its assertions pass or the call raises: the regression's
+#: stubs work until it is set or their worker is killed. In a worker nothing sets it,
+#: so only the deadline ends them, at any runner speed (#2696); on a thread,
+#: where nothing can stop them, the test still releases them.
+RELEASED = threading.Event()
 
 #: Cubic backtracking: one ``sub`` over 500 characters is one C call of about
 #: 50 ms that never drops the interpreter lock. Polynomial, not exponential,
@@ -111,7 +114,7 @@ class UnknownSource(_Answers):
 class HoldsTheLockInC(_Answers):
     def extract(self, content: str) -> ExtractResult:
         logger.warning(ENTERED)
-        for _ in range(REPEATS):
+        while not RELEASED.is_set():
             _BACKTRACKING.sub("", "a" * 500)
         return super().extract(content)
 
@@ -119,7 +122,7 @@ class HoldsTheLockInC(_Answers):
 class LoopsInPython(_Answers):
     def extract(self, content: str) -> ExtractResult:
         logger.warning(ENTERED)
-        for _ in range(REPEATS):
+        while not RELEASED.is_set():
             for _ in range(400_000):
                 pass
         return super().extract(content)

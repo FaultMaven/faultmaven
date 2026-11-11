@@ -111,14 +111,18 @@ async def test_an_extraction_past_its_deadline_stops_at_it(
             lambda: tasks.append(loop.create_task(three_turns()))
         )
     )
-    result = await _service()._extract_with_timeout(stub(), _CONTENT, "hostile.log")
-    await asyncio.gather(*tasks)
+    stubs.RELEASED.clear()
+    try:
+        result = await _service()._extract_with_timeout(stub(), _CONTENT, "hostile.log")
+        await asyncio.gather(*tasks)
 
-    assert result.metadata == {"timeout_fallback": True}
-    assert (result.method, result.content) == ("structure_extraction", _CONTENT)
-    assert not _running(stub.extract), "the extraction runs on in this process"
-    assert alive_after_three_turns == [[True]], "the loop did not run beside it"
-    assert spawned[0].returncode == -signal.SIGKILL
+        assert result.metadata == {"timeout_fallback": True}
+        assert (result.method, result.content) == ("structure_extraction", _CONTENT)
+        assert not _running(stub.extract), "the extraction runs on in this process"
+        assert alive_after_three_turns == [[True]], "the loop did not run beside it"
+        assert spawned[0].returncode == -signal.SIGKILL
+    finally:
+        stubs.RELEASED.set()
 
 
 # ---------------------------------------------------------------------------
