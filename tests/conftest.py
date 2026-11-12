@@ -733,24 +733,27 @@ def _reset_observability_singletons():
 
 
 @pytest.fixture(autouse=True)
-def _no_inherited_tls_root_set():
+def _no_inherited_tls_root_set(monkeypatch):
     """Each test starts with no TLS root variable set, and leaves none (#2692).
 
     ``apply_root_set`` (every launcher and ``fm-*`` ``main()``) writes the
     variables into ``os.environ``. Cleared before in every letter case (the
     setting binds in any), so an inherited one never refuses a test's launch;
     restored after, so no test leaks a root set.
+
+    Through ``monkeypatch``, the instance the test shares, because its undo runs
+    last in, first out: this fixture's records are undone after the test's own.
+    Restored by hand, a test that applied the set and then patched an owned
+    variable had monkeypatch put the APPLIED value back after this restore, and
+    it reached later module fixtures and subprocesses. Each name is set before
+    it is deleted: ``delenv`` records nothing for an absent name.
     """
     from faultmaven.config.tls_root_set import EXTRA_CA_FILE_SETTING, OWNED_VARIABLES
 
-    names = {name.upper() for name in (*OWNED_VARIABLES, EXTRA_CA_FILE_SETTING)}
-    saved = {
-        key: os.environ.pop(key) for key in list(os.environ) if key.upper() in names
-    }
-    yield
-    for key in [key for key in os.environ if key.upper() in names]:
-        del os.environ[key]
-    os.environ.update(saved)
+    owned = {name.upper() for name in (*OWNED_VARIABLES, EXTRA_CA_FILE_SETTING)}
+    for name in owned | {key for key in os.environ if key.upper() in owned}:
+        monkeypatch.setenv(name, "x")
+        monkeypatch.delenv(name)
 
 
 @pytest.fixture(autouse=True)
