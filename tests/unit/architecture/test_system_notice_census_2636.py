@@ -6,11 +6,13 @@ A decider records an outcome-bearing notice as a code
 cycle's record (``milestone_engine/turn_narration.py``). The rest stay text,
 declared here with the reason (#2636: "The rest (ordering errors, schema
 repairs) stay as text, declared in a census"). Most report an ordering or
-schema error in the response; the problem-status sites stay text because
-``problem.status`` has one writer, ``problem_status.py``, which runs in step 1,
-step 2c and step 0b's replay. Two outcome-bearing sites are still text: the
-engine's offer standing (B1d) and the false-alarm withdrawal's refusal, which
-states or presumes the problem's status and converts in a later B1 sub-stage.
+schema error in the response; the problem-status sites stay text because they
+run after step 2c, the response's last write to ``problem.status`` (whose one
+writer is ``problem_status.py``), so the status they state is the one the turn
+ends with. Three outcome-bearing sites are still text: the engine's offer
+standing (B1d); the false-alarm withdrawal's refusal, which states or presumes
+the problem's status; and the hypothesis-action refusal under a false alarm,
+which runs before the model call. The last two convert in a later B1 sub-stage.
 
 A new call, a moved one or a changed count fails until it is declared here,
 and a converted function (one listed in ``DECISIONS`` and not in ``TEXT``)
@@ -44,8 +46,8 @@ _TA = _ME + "turn_application.py"
 
 _ORDER = "an ordering or schema error in the response"
 _STATUS = (
-    "a problem-status site: problem.status has one writer, run in step 1, step 2c "
-    "and step 0b's replay"
+    "a problem-status site: it runs after step 2c, the response's last write to "
+    "problem.status, so the status it states is the one the turn ends with"
 )
 _EMISSION = "a refusal of this response's emission that states no outcome"
 
@@ -56,8 +58,12 @@ TEXT: dict[tuple[str, str], tuple[int, str]] = {
     (_CE, "_nudge_ambiguous_orphan_chains"): (1, _ORDER),
     (_ME + "engine.py", "MilestoneEngine._process_turn_impl"): (
         2,
-        "the user's decline of a revision (step 0b) and a problem-status "
-        "refusal: " + _STATUS,
+        "the user's decline of a revision (step 0b): it reports the user's own "
+        "answer, which no later step of the turn reverses; and the user's "
+        "hypothesis action refused under a false alarm, outcome-bearing (it runs "
+        "before the model call, so this response can withdraw the false-alarm "
+        "finding in step 2c or propose a revision): converts in a later B1 "
+        "sub-stage",
     ),
     (_HU, "_apply_hypothesis_action_intent"): (3, _EMISSION),
     (_HU, "_apply_hypothesis_updates"): (1, _EMISSION),
@@ -75,8 +81,8 @@ TEXT: dict[tuple[str, str], tuple[int, str]] = {
     ),
     (_RA, "ResponseApplier._apply_investigation_updates"): (
         6,
-        "a data blocker, a duplicate hypothesis, the cause work held for a "
-        "revision, and three problem-status refusals: " + _STATUS,
+        "a data blocker, a duplicate hypothesis and the cause work held for a "
+        "revision; and three problem-status refusals, each " + _STATUS,
     ),
     (_SG, "record_decision"): (1, "the token a notice code holds its place with"),
     (_SG, "add_evidence_validation_feedback"): (1, "the reasoning-first strip"),
