@@ -37,6 +37,12 @@ COPY requirements/cloud.txt requirements.txt
 RUN --mount=type=bind,source=scripts/install-lockfile.sh,target=/tmp/install-lockfile.sh \
     PIP_NO_CACHE_DIR=1 sh /tmp/install-lockfile.sh requirements.txt
 
+# gRPC's default roots, its packaged roots.pem, hold both banned roots: link it to the OS
+# bundle, so a gRPC channel verifies against it in a process apply_root_set did not start.
+# As above: no ENV names GRPC_DEFAULT_SSL_ROOTS_FILE_PATH or another owned variable.
+RUN ln -sf /etc/ssl/certs/ca-certificates.crt "$(python -c 'import grpc, pathlib; \
+    print(pathlib.Path(grpc.__file__).parent / "_cython/_credentials/roots.pem")')"
+
 # Create the non-root user early so the HuggingFace cache it owns is written
 # once and never re-copied by a later `chown -R /app` (copy-up would otherwise
 # double the ~2GB model layer in the image).
@@ -101,9 +107,10 @@ RUN chown faultmaven:faultmaven /app
 
 # Fail the build if "emSign ECC Root CA - G3" (GHSA-6q48-6c7w-9gw2: compromised
 # intermediate keys) or "AAA Certificate Services" is in OpenSSL's default cafile or
-# capath, which aiohttp reads, or certifi, which httpx and requests read. pip reads
-# the cafile through PIP_CERT. gRPC's and litellm's own stores are #2574. TLS handshakes
-# under the fixed store: #2576. The last root step, to see the stores the image ships.
+# capath, certifi, any grpcio roots.pem (each must be the cafile), or the bundle a pip
+# >= 24.2, absent legacy-certs, adds to PIP_CERT, in any site-packages or pip wheel;
+# pip 24.0 replaces its bundle with PIP_CERT (#2665). CI runs the handshake check in
+# the built image (#2692). The last root step, to see the stores the image ships.
 RUN --mount=type=bind,source=scripts/check_image_trust_store.py,target=/tmp/check_image_trust_store.py \
     python /tmp/check_image_trust_store.py
 USER faultmaven

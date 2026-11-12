@@ -7,6 +7,8 @@ Tests:
 - GET  /api/v1/admin/config/status   — Environment status
 """
 
+import os
+from pathlib import Path
 from types import MethodType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -2111,6 +2113,11 @@ def _pure_settings_answer(feature: str, settings) -> bool:
         return str(getattr(settings.database, "database_url", "")).startswith(
             ("sqlite", "postgresql")
         )
+    if feature == "tls_root_set":
+        # The obvious version: "the operator named a private CA, so clients
+        # trust it". It reports True on a process started without a launcher
+        # that applies the set, whose clients never read that file.
+        return bool(os.environ.get("TLS_EXTRA_CA_FILE"))
     raise AssertionError(f"no settings-only stand-in defined for {feature}")
 
 
@@ -2854,6 +2861,35 @@ def _scenario_llm_usage_metering(settings, app, monkeypatch, reality):
     monkeypatch.setattr(usage_ledger, "_installed_ledger", None)
 
 
+def _scenario_tls_root_set(settings, app, monkeypatch, reality):
+    """The runtime fact withheld here is the set the launcher exported (#2692).
+
+    ``TLS_EXTRA_CA_FILE`` is set in BOTH arms, which is what a
+    configuration-only implementation would read. What decides it is whether
+    ``apply_root_set`` named the set in this process's environment. Only the
+    ON arm writes files, in a directory its release removes.
+    """
+    import shutil
+    import tempfile
+
+    from faultmaven.config.tls_root_set import apply_root_set
+
+    monkeypatch.setenv("FAULTMAVEN_SKIP_DOTENV", "1")
+    if not reality:
+        monkeypatch.setenv("TLS_EXTRA_CA_FILE", "/nonexistent/fm-tls/extra-ca.pem")
+        return None
+    scratch = Path(tempfile.mkdtemp(prefix="fm-tls-scenario-"))
+    (scratch / "extra-ca.pem").write_bytes(_ca_pem())
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+    monkeypatch.setenv("TLS_EXTRA_CA_FILE", str(scratch / "extra-ca.pem"))
+    apply_root_set()
+
+    async def release() -> None:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+    return release
+
+
 FEATURE_SCENARIOS = {
     "debug_endpoints": _scenario_debug_endpoints,
     "kb_prefetch": _scenario_kb_prefetch,
@@ -2864,6 +2900,7 @@ FEATURE_SCENARIOS = {
     "request_protection_hardened": _scenario_request_protection_hardened,
     "request_protection_fails_open": _scenario_request_protection_fails_open,
     "llm_usage_metering": _scenario_llm_usage_metering,
+    "tls_root_set": _scenario_tls_root_set,
 }
 
 
@@ -3447,3 +3484,61 @@ class TestTheTraceBackendIsReported:
         status = await self._status(mock_admin_user, mock_settings, rate_limited_app)
 
         assert status["capture_content"] is capture
+
+
+# ============================================================
+# features.tls_root_set (#2692)
+# ============================================================
+
+
+def _ca_pem() -> bytes:
+    from tests.unit.config.test_tls_root_set_2692 import _ca_pem as build
+
+    return build("status private CA")
+
+
+@pytest.mark.unit
+class TestTheTlsRootSetIsReported:
+    """The FeatureStatus shape; the verdict's legs are
+    ``tests/unit/config/test_tls_root_set_status_2692.py``."""
+
+    @pytest.mark.asyncio
+    async def test_the_set_in_force_names_its_file_and_count(
+        self, mock_admin_user, mock_settings, rate_limited_app, monkeypatch
+    ):
+        from faultmaven.config.tls_root_set import FILE_VARIABLES
+
+        release = _scenario_tls_root_set(
+            mock_settings, rate_limited_app, monkeypatch, True
+        )
+        path = os.environ[FILE_VARIABLES[0]]
+        try:
+            status = await _feature(
+                mock_admin_user, mock_settings, rate_limited_app, "tls_root_set"
+            )
+        finally:
+            await release()
+
+        count = int(status.config_hint.split(": ")[1].split(".")[0])
+        assert status.enabled is True
+        assert count > 1
+        assert status.description == (
+            f"TLS clients verify against {path}: {count} certificates, "
+            f"TLS_EXTRA_CA_FILE {os.environ['TLS_EXTRA_CA_FILE']}."
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_process_not_launched_through_the_set_says_why(
+        self, mock_admin_user, mock_settings, rate_limited_app
+    ):
+        status = await _feature(
+            mock_admin_user, mock_settings, rate_limited_app, "tls_root_set"
+        )
+
+        assert status.enabled is False
+        assert status.description == (
+            "The TLS root set is not in force: "
+            "the TLS root variables do not name one file."
+        )
+        assert status.config_hint.startswith("Certificates in the set: unknown. ")
+        assert "not started through a launcher" in status.config_hint

@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 14.21.0
+**Version:** 14.22.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 

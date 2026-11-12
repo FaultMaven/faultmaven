@@ -1295,6 +1295,26 @@ async def get_env_config_status(
 
         features["llm_usage_metering"] = await llm_usage_metering_status()
 
+        # The TLS root set this worker's clients verify against (#2692), read
+        # from its environment and the files it names, off the event loop.
+        from faultmaven.config.tls_root_set import root_set_status
+
+        root_set = await asyncio.to_thread(root_set_status)
+        count = root_set.certificates
+        features["tls_root_set"] = FeatureStatus(
+            enabled=root_set.in_force,
+            description=root_set.description,
+            config_hint=(
+                f"Certificates in the set: {'unknown' if count is None else count}. "
+                "True when every TLS root variable names one file that holds "
+                "exactly the OS CA bundle, plus TLS_EXTRA_CA_FILE when set, and "
+                "SSL_CERT_DIR names no certificate. False means the process was "
+                "not started through a launcher that applies the set (python -m "
+                "faultmaven.server, an fm-* command), or the set or its sources "
+                "changed since it started: restart."
+            ),
+        )
+
         # The three settings that bound self-service sign-up, at the values
         # this process is running with (fm#1320, fm#1324).
         #

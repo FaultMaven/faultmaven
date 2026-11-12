@@ -17,6 +17,7 @@ import os
 import ssl
 import subprocess
 import sys
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -177,9 +178,12 @@ def bundle(roots: list[Root]) -> bytes:
 
 
 class Image:
-    """The three stores and PIP_CERT, clean until a test changes one."""
+    """The stores and PIP_CERT, clean until a test changes one. ``fs`` stands in
+    for the image's root, searched for pips and grpcio, absent until a test adds one."""
 
     def __init__(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.fs = tmp_path / "fs"
+        self.fs.mkdir()
         self.cafile = tmp_path / "ca-certificates.crt"
         self.capath = tmp_path / "certs"
         self.certifi = tmp_path / "cacert.pem"
@@ -192,12 +196,14 @@ class Image:
         monkeypatch.setenv("SSL_CERT_DIR", str(self.capath))
         monkeypatch.setenv("PIP_CERT", str(self.cafile))
         monkeypatch.setattr(check.certifi, "where", lambda: str(self.certifi))
+        monkeypatch.delenv("PIP_USE_DEPRECATED", raising=False)
 
     def run(self, **overrides: object) -> None:
         arguments = {
             "banned": BANNED,
             "known_root": KNOWN.sha256,
             "min_roots": MIN_ROOTS,
+            "root": str(self.fs),
         }
         check.main(**{**arguments, **overrides})
 
@@ -390,12 +396,12 @@ def test_the_default_floor_is_100_roots(image, capsys):
     _empty_capath(image)
     for store in (image.cafile, image.certifi, image.capath / "all.pem"):
         store.write_bytes(bundle(roots))
-    check.main(banned=BANNED, known_root=KNOWN.sha256)
+    check.main(banned=BANNED, known_root=KNOWN.sha256, root=str(image.fs))
     assert "cafile 100, capath 100, certifi 100" in capsys.readouterr().out
 
     image.cafile.write_bytes(bundle(roots[:-1]))
     with pytest.raises(SystemExit) as exit_info:
-        check.main(banned=BANNED, known_root=KNOWN.sha256)
+        check.main(banned=BANNED, known_root=KNOWN.sha256, root=str(image.fs))
     assert "cafile holds 99 certificates, under 100" in exit_info.value.code
 
 
@@ -501,7 +507,7 @@ def test_the_scripts_defaults_ban_the_real_roots_and_know_the_real_root(tmp_path
     }
 
     result = subprocess.run(
-        [sys.executable, str(SCRIPT)],
+        [sys.executable, str(SCRIPT), str(tmp_path)],
         env=env,
         capture_output=True,
         text=True,
@@ -509,11 +515,58 @@ def test_the_scripts_defaults_ban_the_real_roots_and_know_the_real_root(tmp_path
     )
 
     assert result.returncode == 1
+    assert _problems(result) == [
+        "cafile trusts emSign ECC Root CA - G3",
+        "cafile trusts AAA Certificate Services",
+        f"cafile lacks the known root {ISRG_ROOT_X1}",
+        "capath holds 1 certificates, under 100",
+    ]
     assert "cafile trusts emSign ECC Root CA - G3" in result.stderr
     assert "cafile trusts AAA Certificate Services" in result.stderr
     assert f"cafile lacks the known root {ISRG_ROOT_X1}" in result.stderr
     assert "capath lacks the known root" not in result.stderr
     assert "cafile holds" not in result.stderr
+
+
+def _problems(result: subprocess.CompletedProcess) -> list[str]:
+    """The problem lines a script run failed with."""
+    return result.stderr.split("trust store check failed:\n", 1)[1].splitlines()
+
+
+def test_the_script_passes_a_clean_image_end_to_end(tmp_path):
+    """Exit 0 over clean stores, a new pip linked to the OS bundle and grpcio's
+    roots.pem linked to the cafile: the stores the image ships."""
+    cafile = tmp_path / "ca.crt"
+    cafile.write_bytes(b"".join(make_root(f"Filler {i}").pem for i in range(99)))
+    cafile.write_bytes(cafile.read_bytes() + REAL_ISRG)
+    capath = tmp_path / "certs"
+    capath.mkdir()
+    (capath / "all.pem").symlink_to(cafile)
+    site = tmp_path / "fs" / "usr/lib/python3.12/site-packages"
+    (site / "pip/_vendor/certifi").mkdir(parents=True)
+    (site / "pip/__init__.py").write_text('__version__ = "25.0.1"\n')
+    (site / "pip/_vendor/certifi/cacert.pem").symlink_to(cafile)
+    (site / "grpc/_cython/_credentials").mkdir(parents=True)
+    (site / "grpc/_cython/_credentials/roots.pem").symlink_to(cafile)
+    env = {
+        **os.environ,
+        "SSL_CERT_FILE": str(cafile),
+        "SSL_CERT_DIR": str(capath),
+        "PIP_CERT": str(cafile),
+    }
+
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), str(tmp_path / "fs")],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines()[-1].startswith(
+        "trust store OK: cafile 100, capath 100, certifi "
+    )
 
 
 # ---- The build-time failure itself ----------------------------------------
@@ -535,7 +588,7 @@ def test_the_script_exits_non_zero_with_its_message(tmp_path, optimize):
     }
 
     result = subprocess.run(
-        [sys.executable, str(SCRIPT)],
+        [sys.executable, str(SCRIPT), str(tmp_path)],
         env=env,
         capture_output=True,
         text=True,
@@ -545,4 +598,170 @@ def test_the_script_exits_non_zero_with_its_message(tmp_path, optimize):
     assert result.returncode == 1
     assert "trust store check failed:" in result.stderr
     assert "cafile holds 0 certificates" in result.stderr
+    assert all(line.startswith(("cafile", "capath")) for line in _problems(result))
     assert "trust store OK" not in result.stdout
+
+
+# ---- grpcio's roots.pem and each pip's bundle (#2665, #2692) ----------------
+
+
+def vendored_pip(image: Image, version: str, roots: list[Root], prefix: str) -> Path:
+    """A pip under ``prefix`` in the image: its version as pip writes it, and its
+    vendored certifi bundle. Returns the bundle."""
+    pip = image.fs / prefix / "pip"
+    (pip / "_vendor" / "certifi").mkdir(parents=True)
+    (pip / "__init__.py").write_text(f'__version__ = "{version}"\n')
+    bundle_file = pip / "_vendor" / "certifi" / "cacert.pem"
+    bundle_file.write_bytes(bundle(roots))
+    return bundle_file
+
+
+def pip_wheel(image: Image, version: str, roots: list[Root], prefix: str) -> Path:
+    directory = image.fs / prefix
+    directory.mkdir(parents=True)
+    wheel = directory / f"pip-{version}-py3-none-any.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr("pip/__init__.py", f'__version__ = "{version}"\n')
+        archive.writestr("pip/_vendor/certifi/cacert.pem", bundle(roots))
+    return wheel
+
+
+def grpc_roots(image: Image, prefix: str) -> Path:
+    directory = image.fs / prefix / "grpc" / "_cython" / "_credentials"
+    directory.mkdir(parents=True)
+    return directory / "roots.pem"
+
+
+ENSUREPIP = "usr/local/lib/python3.12/ensurepip/_bundled"
+SITE = "usr/local/lib/python3.12/site-packages"
+
+
+def test_a_pip_from_24_2_whose_bundle_holds_a_banned_root_fails(image):
+    """pip ≥ 24.2 loads its vendored bundle beside PIP_CERT: the build trusts it."""
+    found = vendored_pip(image, "24.2", [*CLEAN, BAD], SITE)
+
+    assert failure(image) == [
+        f"pip 24.2 {found} trusts Banned Root: link it to the OS bundle"
+    ]
+
+
+def test_a_venv_pip_anywhere_in_the_image_is_read(image):
+    found = vendored_pip(
+        image, "25.0.1", [BAD], "srv/app/.venv/lib/python3.12/site-packages"
+    )
+
+    assert failure(image) == [
+        f"pip 25.0.1 {found} trusts Banned Root: link it to the OS bundle"
+    ]
+
+
+def test_a_pip_24_0_bundle_is_reported_not_judged(image, capsys):
+    """Below 24.2 PIP_CERT replaces the bundle: core's base (#2665)."""
+    found = vendored_pip(image, "24.0", [*CLEAN, BAD], SITE)
+
+    image.run()
+
+    assert capsys.readouterr().out.splitlines() == [
+        f"pip 24.0 {found}: 5 certificates, not judged (below 24.2, PIP_CERT replaces it)",
+        "trust store OK: cafile 4, capath 4, certifi 4 certificates",
+    ]
+
+
+def test_legacy_certs_takes_a_new_pips_bundle_out_of_its_trust(image, monkeypatch):
+    vendored_pip(image, "25.0", [BAD], SITE)
+    monkeypatch.setenv("PIP_USE_DEPRECATED", "legacy-certs")
+
+    image.run()
+
+
+def test_a_pip_whose_version_cannot_be_read_is_judged(image):
+    found = vendored_pip(image, "24.2", [BAD], SITE)
+    (found.parents[2] / "__init__.py").write_text("")
+
+    assert failure(image) == [
+        f"pip (version unread) {found} trusts Banned Root: link it to the OS bundle"
+    ]
+
+
+def test_a_new_pips_bundle_linked_to_the_os_bundle_passes(image, capsys):
+    """The remedy the failure names."""
+    found = vendored_pip(image, "25.0.1", [], SITE)
+    found.unlink()
+    found.symlink_to(image.cafile)
+
+    image.run()
+
+    assert f"pip 25.0.1 {found}: 4 certificates" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("prefix", [ENSUREPIP, "root/.cache/wheels"])
+def test_a_pip_wheel_from_24_2_holding_a_banned_root_fails(image, prefix):
+    """A venv made from it installs that pip, bundle and all: an ensurepip
+    wheel, or one anywhere else pip can be installed from."""
+    wheel = pip_wheel(image, "25.0", [*CLEAN, BAD], prefix)
+
+    assert failure(image) == [
+        f"pip wheel 25.0 {wheel} trusts Banned Root: "
+        "remove it or repack it with the OS bundle"
+    ]
+
+
+def test_a_pip_wheel_24_0_is_reported_not_judged(image, capsys):
+    wheel = pip_wheel(image, "24.0", [BAD], ENSUREPIP)
+
+    image.run()
+
+    assert (
+        f"pip wheel 24.0 {wheel}: 1 certificates, not judged" in capsys.readouterr().out
+    )
+
+
+def test_a_grpc_roots_pem_that_is_not_the_cafile_fails(image):
+    roots = grpc_roots(image, SITE)
+    roots.write_bytes(bundle(OTHERS))
+
+    assert failure(image) == [
+        f"grpcio's {roots} is not the cafile: link it to the OS bundle"
+    ]
+
+
+def test_every_grpc_roots_pem_is_read_not_only_the_importable_one(image):
+    linked = grpc_roots(image, SITE)
+    linked.symlink_to(image.cafile)
+    other = grpc_roots(image, "opt/venv/lib/python3.12/site-packages")
+    other.write_bytes(bundle([*CLEAN, BAD]))
+
+    assert failure(image) == [
+        f"grpcio's {other} trusts Banned Root",
+        f"grpcio's {other} is not the cafile: link it to the OS bundle",
+    ]
+
+
+def test_a_grpc_roots_pem_linked_to_the_cafile_passes(image, capsys):
+    roots = grpc_roots(image, SITE)
+    roots.symlink_to(image.cafile)
+
+    image.run()
+
+    assert capsys.readouterr().out.splitlines() == [
+        f"grpcio {roots}: 4 certificates",
+        "trust store OK: cafile 4, capath 4, certifi 4 certificates",
+    ]
+
+
+def test_without_certifi_the_other_stores_are_still_judged(image, monkeypatch, capsys):
+    """A bare base has no certifi: the pip legs must still run (the control)."""
+    monkeypatch.setattr(check, "certifi", None)
+    found = vendored_pip(image, "25.0.1", [BAD], SITE)
+
+    assert failure(image) == [
+        f"pip 25.0.1 {found} trusts Banned Root: link it to the OS bundle"
+    ]
+    assert capsys.readouterr().out.splitlines()[0] == "certifi not installed"
+
+
+def test_the_search_skips_proc_sys_and_dev(image):
+    for skipped in ("proc", "sys", "dev"):
+        vendored_pip(image, "25.0.1", [BAD], f"{skipped}/site-packages")
+
+    image.run()

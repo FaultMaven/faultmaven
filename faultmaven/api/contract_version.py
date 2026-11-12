@@ -151,6 +151,26 @@ def validate_contract_changes(changes: tuple[ContractChange, ...]) -> None:
 
 CONTRACT_CHANGES: tuple[ContractChange, ...] = (
     ContractChange(
+        version="14.22.0",
+        level="MINOR",
+        title=(
+            "`GET /admin/config/status` reports the TLS root set the serving "
+            "worker verifies against as `features.tls_root_set` (#2692)."
+        ),
+        body=r"""One more key in the existing `Dict[str, FeatureStatus]`. `enabled` is true
+when every TLS root variable the process exported names one file, that file
+loads and holds exactly the OS CA bundle plus `TLS_EXTRA_CA_FILE` when set, as
+they read now, and `SSL_CERT_DIR` names a directory with no certificate.
+`description` names the file, its certificate count and the
+`TLS_EXTRA_CA_FILE` path (never its contents), or why it is not in force, or
+that the set cannot be verified because its sources changed since the start;
+`config_hint` carries the count, or "unknown". Read from the worker's
+environment on each request; nothing is written.
+
+MINOR because every client survives it: a new key on an operator-only
+response, which a client that does not read it ignores.""",
+    ),
+    ContractChange(
         version="14.21.0",
         level="MINOR",
         title=(
