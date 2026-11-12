@@ -6,31 +6,18 @@ security-related events like PKCE violations and replay attacks.
 
 Metrics follow FaultMaven's bounded cardinality principles:
 - NO user_id, session_id, or other high-cardinality labels
-- Only bounded labels: client_id, error_code, grant_type, status
-- Safe for production monitoring without cardinality explosion
+- A ``client_id`` / ``attempted_client_id`` label is a configured OAuth client
+  or ``unknown``, never the raw request value (#2735)
 
-Usage:
-    from faultmaven.modules.auth.infrastructure.metrics.oauth_metrics import (
-        oauth_metrics,
-        oauth_authorization_requests,
-        oauth_token_issued,
-    )
+Usage: record through an ``OAuthMetricsRecorder`` built with the configured
+clients; its methods fold every client id through ``client_label``.
 
-    # Record authorization code generation
-    oauth_authorization_requests.labels(
-        client_id="faultmaven-copilot",
-        status="success"
-    ).inc()
-
-    # Record token issuance
-    oauth_token_issued.labels(
-        grant_type="authorization_code",
-        client_id="faultmaven-copilot"
-    ).inc()
+    recorder = OAuthMetricsRecorder(allowed_clients=settings.oauth_allowed_clients)
+    recorder.record_authorization_request(client_id=request.client_id, success=True)
 """
 
 import logging
-from typing import Optional
+from typing import Iterable, Optional
 
 from faultmaven.infrastructure.shims.metrics import create_children, declare_lazy
 
@@ -76,6 +63,15 @@ except ImportError:
             pass
 
 
+#: The label of every client id that is not a configured OAuth client.
+_UNKNOWN_CLIENT = "unknown"
+
+#: Why the ``client_id`` counters create no children up front: the configured
+#: clients are known only when a recorder is built from the settings.
+_CLIENT_LABEL_REASON = (
+    "client_id is a configured OAuth client or 'unknown', folded by client_label."
+)
+
 # ============================================================
 # OAuth Authorization Metrics
 # ============================================================
@@ -85,19 +81,14 @@ oauth_authorization_requests = Counter(
     "Total number of OAuth authorization code requests",
     ["client_id", "status"],
 )
-declare_lazy(
-    oauth_authorization_requests,
-    "client_id is the requesting client's id, an open set.",
-)
+declare_lazy(oauth_authorization_requests, _CLIENT_LABEL_REASON)
 
 oauth_authorization_errors = Counter(
     "oauth_authorization_errors_total",
     "Total number of OAuth authorization errors",
     ["client_id", "error_code"],
 )
-declare_lazy(
-    oauth_authorization_errors, "client_id is the requesting client's id, an open set."
-)
+declare_lazy(oauth_authorization_errors, _CLIENT_LABEL_REASON)
 
 # ============================================================
 # Token Issuance Metrics
@@ -153,18 +144,14 @@ oauth_tokens_refreshed = Counter(
     "Total number of OAuth token refresh operations",
     ["client_id", "status"],
 )
-declare_lazy(
-    oauth_tokens_refreshed, "client_id is the requesting client's id, an open set."
-)
+declare_lazy(oauth_tokens_refreshed, _CLIENT_LABEL_REASON)
 
 oauth_refresh_errors = Counter(
     "oauth_refresh_errors_total",
     "Total number of OAuth token refresh errors",
     ["client_id", "error_code"],
 )
-declare_lazy(
-    oauth_refresh_errors, "client_id is the requesting client's id, an open set."
-)
+declare_lazy(oauth_refresh_errors, _CLIENT_LABEL_REASON)
 
 # ============================================================
 # Token Revocation Metrics
@@ -200,9 +187,8 @@ oauth_invalid_client_attempts = Counter(
     "Total number of requests with invalid client_id",
     ["attempted_client_id"],
 )
-declare_lazy(
-    oauth_invalid_client_attempts,
-    "attempted_client_id is whatever id the request presented.",
+create_children(
+    oauth_invalid_client_attempts, {"attempted_client_id": (_UNKNOWN_CLIENT,)}
 )
 
 oauth_redirect_uri_mismatches = Counter(
@@ -210,10 +196,7 @@ oauth_redirect_uri_mismatches = Counter(
     "Total number of redirect URI mismatch errors",
     ["client_id"],
 )
-declare_lazy(
-    oauth_redirect_uri_mismatches,
-    "client_id is the id the request presented, an open set.",
-)
+declare_lazy(oauth_redirect_uri_mismatches, _CLIENT_LABEL_REASON)
 
 # ============================================================
 # Code Lifecycle Metrics
@@ -224,9 +207,7 @@ oauth_codes_generated = Counter(
     "Total number of authorization codes generated",
     ["client_id"],
 )
-declare_lazy(
-    oauth_codes_generated, "client_id is the requesting client's id, an open set."
-)
+declare_lazy(oauth_codes_generated, _CLIENT_LABEL_REASON)
 
 oauth_codes_expired = Counter(
     "oauth_codes_expired_total",
@@ -244,15 +225,27 @@ create_children(oauth_codes_expired, {"client_id": _CALLER_CLIENT_IDS})
 class OAuthMetricsRecorder:
     """Helper class for recording OAuth metrics with consistent patterns.
 
-    This class provides convenience methods for recording OAuth metrics
-    with proper error handling and logging.
+    Every client id it labels passes through ``client_label``, so the series
+    count is bounded by the configured clients, never by request input (#2735).
     """
 
-    def __init__(self):
-        """Initialize metrics recorder."""
+    def __init__(self, allowed_clients: Iterable[str] = ()):
+        """Initialize metrics recorder.
+
+        Args:
+            allowed_clients: The configured OAuth client ids, the only values a
+                client label keeps.
+        """
+        self._allowed_clients = frozenset(allowed_clients)
         self.enabled = _PROMETHEUS_AVAILABLE
         if not self.enabled:
             logger.debug("OAuth metrics recorder initialized in no-op mode")
+
+    def client_label(self, client_id: object) -> str:
+        """*client_id* when it is a configured client, else ``unknown``. Never raises."""
+        if isinstance(client_id, str) and client_id in self._allowed_clients:
+            return client_id
+        return _UNKNOWN_CLIENT
 
     def record_authorization_request(
         self, client_id: str, success: bool, error_code: Optional[str] = None
@@ -268,6 +261,7 @@ class OAuthMetricsRecorder:
             return
 
         try:
+            client_id = self.client_label(client_id)
             status = "success" if success else "error"
             oauth_authorization_requests.labels(
                 client_id=client_id, status=status
@@ -315,7 +309,7 @@ class OAuthMetricsRecorder:
             if success:
                 # Record successful token issuance
                 oauth_tokens_issued.labels(
-                    grant_type=grant_type, client_id=client_id
+                    grant_type=grant_type, client_id=self.client_label(client_id)
                 ).inc()
             else:
                 # Record error
@@ -341,6 +335,7 @@ class OAuthMetricsRecorder:
             return
 
         try:
+            client_id = self.client_label(client_id)
             status = "success" if success else "error"
             oauth_tokens_refreshed.labels(client_id=client_id, status=status).inc()
 
@@ -376,7 +371,9 @@ class OAuthMetricsRecorder:
             return
 
         try:
-            oauth_pkce_verification_failures.labels(client_id=client_id).inc()
+            oauth_pkce_verification_failures.labels(
+                client_id=self.client_label(client_id)
+            ).inc()
         except Exception as e:
             logger.error(f"Failed to record PKCE failure metric: {e}")
 
@@ -390,26 +387,24 @@ class OAuthMetricsRecorder:
             return
 
         try:
-            oauth_code_replay_attempts.labels(client_id=client_id).inc()
+            oauth_code_replay_attempts.labels(
+                client_id=self.client_label(client_id)
+            ).inc()
         except Exception as e:
             logger.error(f"Failed to record code replay attempt metric: {e}")
 
-    def record_invalid_client(self, attempted_client_id: str) -> None:
-        """Record invalid client_id attempt.
+    def record_invalid_client(self) -> None:
+        """Record a request whose client_id is not a configured client.
 
-        Args:
-            attempted_client_id: The invalid client_id that was attempted
+        The attempted id is never a label: it is request input, so each distinct
+        value would be a new series (#2735). The series is ``unknown``.
         """
         if not self.enabled:
             return
 
         try:
-            # Truncate to prevent unbounded cardinality
-            safe_client_id = (
-                attempted_client_id[:50] if attempted_client_id else "unknown"
-            )
             oauth_invalid_client_attempts.labels(
-                attempted_client_id=safe_client_id
+                attempted_client_id=_UNKNOWN_CLIENT
             ).inc()
         except Exception as e:
             logger.error(f"Failed to record invalid client metric: {e}")
@@ -424,7 +419,9 @@ class OAuthMetricsRecorder:
             return
 
         try:
-            oauth_redirect_uri_mismatches.labels(client_id=client_id).inc()
+            oauth_redirect_uri_mismatches.labels(
+                client_id=self.client_label(client_id)
+            ).inc()
         except Exception as e:
             logger.error(f"Failed to record redirect URI mismatch metric: {e}")
 
@@ -438,10 +435,6 @@ class OAuthMetricsRecorder:
             return
 
         try:
-            oauth_codes_expired.labels(client_id=client_id).inc()
+            oauth_codes_expired.labels(client_id=self.client_label(client_id)).inc()
         except Exception as e:
             logger.error(f"Failed to record code expired metric: {e}")
-
-
-# Global metrics recorder instance
-oauth_metrics = OAuthMetricsRecorder()

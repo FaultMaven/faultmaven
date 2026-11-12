@@ -128,6 +128,10 @@ Standalone sentinel, which there is the correct answer.
     -d client_id=faultmaven-slack-agent
   ```
 
+  The OAuth metrics label a `client_id` only when it is in
+  `OAUTH_ALLOWED_CLIENTS`; until `faultmaven-slack-agent` is listed there, these
+  refreshes count under `client_id="unknown"`.
+
   A refusal comes back as an RFC 6749 §5.2 object — `{"error": "invalid_grant",
   "error_description": "..."}` — so the code, not the prose, is what to branch
   on.
