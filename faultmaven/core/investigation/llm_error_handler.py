@@ -173,10 +173,11 @@ RECOVERY_REASON_OUTPUT_TRUNCATION = "output_truncation"
 RECOVERY_REASON_UNCLASSIFIED = "unclassified"
 
 # The message on every stop that reports a truncation's ``TOKEN_LIMIT`` once
-# its retries stop, on the attempt ceiling or the turn budget (#1821). It names
-# the truncation, not the provider: the message tracks the code.
+# the attempt ceiling or the turn budget stops its retries (#1821). It names the
+# truncation and those two stops, not the provider: the message tracks the code.
 TRUNCATION_STOP_MESSAGE = (
-    "Response truncated, and no attempt or turn budget is left to finish it."
+    "Response truncated; the attempt ceiling or the turn budget stopped the "
+    "retries to finish it."
 )
 
 
