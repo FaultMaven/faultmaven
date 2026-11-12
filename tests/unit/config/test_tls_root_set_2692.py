@@ -374,3 +374,84 @@ def test_a_relative_extra_file_is_exported_absolute_and_a_child_elsewhere_reappl
     assert child.returncode == 0, child.stderr
     assert child.stdout.strip() == parent.path
     assert set(OWNED_VARIABLES) <= set(os.environ)
+
+
+# --- the delta on bd3855ca9 --------------------------------------------------
+
+
+@pytest.mark.parametrize("damage", ["deleted", "corrupted"])
+def test_a_missing_or_altered_set_file_is_rewritten_and_the_start_goes_ahead(
+    os_bundle, extra_file, damage
+):
+    """A host that ages /tmp can remove it under an idle process (self-heal)."""
+    first = apply_root_set()
+    if damage == "deleted":
+        os.remove(first.path)
+    else:
+        Path(first.path).write_bytes(b"garbage")
+    assert apply_root_set().path == first.path
+    assert _loaded(first.path) == {_digest(pem) for pem in (*ROOTS, EXTRA)}
+
+
+def test_an_inherited_file_with_a_malformed_certificate_block_refuses(
+    os_bundle, tmp_path, monkeypatch
+):
+    """Its good blocks match the set, but OpenSSL refuses the file whole."""
+    broken = tmp_path / "broken.pem"
+    bad = b"-----BEGIN CERTIFICATE-----\nMIIBabc\n-----END CERTIFICATE-----\n"
+    broken.write_bytes(b"".join(ROOTS) + bad)
+    monkeypatch.setenv("REQUESTS_CA_BUNDLE", str(broken))
+    with pytest.raises(SystemExit, match="REQUESTS_CA_BUNDLE="):
+        apply_root_set()
+
+
+@pytest.mark.parametrize("rogue", [True, False])
+def test_an_inherited_capath_list_is_read_element_by_element(
+    os_bundle, tmp_path, monkeypatch, rogue
+):
+    empty, second = tmp_path / "empty", tmp_path / "second"
+    empty.mkdir()
+    second.mkdir()
+    if rogue:
+        (second / "0badc0de.0").write_bytes(_ca_pem("rogue capath CA"))
+    monkeypatch.setenv("SSL_CERT_DIR", f"{empty}{os.pathsep}{second}")
+    if rogue:
+        with pytest.raises(SystemExit, match="SSL_CERT_DIR="):
+            apply_root_set()
+    else:
+        apply_root_set()
+        assert os.environ["SSL_CERT_DIR"] == EMPTY_CAPATH
+
+
+def test_no_usable_temporary_directory_refuses_naming_tmpdir(
+    os_bundle, extra_file, monkeypatch
+):
+    def none_usable():
+        raise FileNotFoundError("No usable temporary directory found")
+
+    monkeypatch.setattr(tempfile, "gettempdir", none_usable)
+    with pytest.raises(SystemExit, match="TMPDIR must name a writable directory"):
+        apply_root_set()
+
+
+def test_on_windows_the_os_bundle_is_the_certificate_stores_server_roots(
+    tmp_path, monkeypatch
+):
+    """Read as CPython's load_default_certs reads it; no OS file to name."""
+    valid, client_only = _ca_pem("windows root"), _ca_pem("client-auth only")
+    der = ssl.PEM_cert_to_DER_cert
+    stores = {
+        "ROOT": [
+            (der(valid.decode()), "x509_asn", True),
+            (b"\x30\x00", "pkcs_7_asn", True),
+            (der(client_only.decode()), "x509_asn", {"1.3.6.1.5.5.7.3.2"}),
+        ],
+        "CA": [],
+    }
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(ssl, "enum_certificates", stores.__getitem__, raising=False)
+    monkeypatch.delattr(os, "getuid")
+    applied = apply_root_set()
+    assert tls_root_set.pem_digests(Path(applied.path).read_bytes()) == {_digest(valid)}
+    assert _loaded(applied.path) == {_digest(valid)}
+    assert Path(applied.path).parent.name.startswith("faultmaven-tls-")

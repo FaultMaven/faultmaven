@@ -10,28 +10,34 @@ is the first statement of ``run_server``, each ``fm-*`` ``main()``, the jobs
 runner, ``alembic/env.py`` and the demo seeder. Children inherit the variables.
 
 A certificate is a PEM block labelled ``CERTIFICATE``. When a set file is
-written (``TLS_EXTRA_CA_FILE`` set, or an OS bundle built from the capath) it is
-the OS bundle, a newline, then the setting's certificates re-encoded (never its
-keys or other blocks), at ``<tmp>/faultmaven-tls-<uid>/<sha256>.pem``: one file
-per content, reused by every start that computes it, never deleted. The set is
-read once per start, so a change takes effect at the next start.
+written (``TLS_EXTRA_CA_FILE`` set, an OS bundle built from the capath, or on
+Windows, whose bundle is its certificate store) it is the OS bundle, a newline,
+then the setting's certificates re-encoded (never its keys or other blocks), at
+``<tmp>/faultmaven-tls-<uid>/<sha256>.pem``: one file per content, reused by
+every start that computes it, never deleted, and re-written by the next apply
+when it is missing or altered (a host that ages ``/tmp`` can remove it). The set
+is read once per start, so a change takes effect at the next start.
 
 An inherited owned variable is the set when it names the file this process would
-name, holds the bytes it would write, or holds only plain certificates with
-exactly the set's digests (an inherited ``SSL_CERT_DIR``: no hashed entry, or
-hashed entries with exactly those digests). Anything else refuses the start
+name, or holds the bytes it would write, or holds only plain certificates with
+exactly the set's digests, and it loads. An inherited ``SSL_CERT_DIR``, read as
+an ``os.pathsep`` list, is the set when its hashed entries hold no certificate,
+or only plain ones with exactly those digests. Anything else refuses the start
 (ruling 1 on #2692), as do an OS bundle that does not load, a setting with no
-certificate or a non-plain one, and a set file that cannot be written safely or
-does not load whole (``SystemExit``, Fail-Fast Configuration). Imports no client.
+certificate or a non-plain one, no usable temporary directory, and a set file
+that cannot be written safely or does not load whole (``SystemExit``,
+Fail-Fast Configuration). Imports no client.
 """
 
 from __future__ import annotations
 
+import getpass
 import hashlib
 import os
 import re
 import ssl
 import stat
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -85,6 +91,7 @@ _PEM_CERTIFICATE = re.compile(
 )
 #: OpenSSL loads these as roots too, but their content cannot be compared.
 _NON_PLAIN = re.compile(rb"-----BEGIN (?:X509|TRUSTED) CERTIFICATE-----")
+_SERVER_AUTH = "1.3.6.1.5.5.7.3.1"
 #: OpenSSL's hashed-directory entry for a certificate (``.r0`` is a CRL).
 _HASHED_ENTRY = re.compile(r"[0-9a-f]{8}\.\d+")
 
@@ -113,7 +120,7 @@ def apply_root_set() -> RootSet:
     digests = pem_digests(pem)
     named = extra is None and os_file
     ours = os_source if named else os.path.join(_set_directory(), _name(pem))
-    path = _inherited(ours, pem, digests, extra)
+    path = _inherited(ours, pem, digests, extra, named)
     if path is None:
         path = ours if named else _write_set(ours, pem, digests)
     for name in FILE_VARIABLES:
@@ -161,8 +168,38 @@ def _hashed_entries(directory: str) -> list[str]:
     return sorted(name for name in names if _HASHED_ENTRY.fullmatch(name))
 
 
+def _directory_name() -> str:
+    user = str(os.getuid()) if hasattr(os, "getuid") else getpass.getuser()
+    return "faultmaven-tls-" + re.sub(r"[^A-Za-z0-9_.-]", "_", user)
+
+
 def _set_directory() -> str:
-    return os.path.join(tempfile.gettempdir(), f"faultmaven-tls-{os.getuid()}")
+    try:
+        return os.path.join(tempfile.gettempdir(), _directory_name())
+    except OSError as error:  # no usable temporary directory
+        raise _tmpdir_refusal(error) from error
+
+
+def _tmpdir_refusal(error: OSError) -> SystemExit:
+    return SystemExit(
+        f"TLS root set: cannot write the set's file ({error}); "
+        "TMPDIR must name a writable directory."
+    )
+
+
+def _windows_store() -> bytes:
+    """The CA and ROOT stores' server-auth roots, read as CPython's
+    ``SSLContext.load_default_certs`` reads them (``Lib/ssl.py``)."""
+    ders = []
+    for store in ("CA", "ROOT"):
+        try:
+            entries = ssl.enum_certificates(store)
+        except PermissionError:
+            continue
+        for der, encoding, trust in entries:
+            if encoding == "x509_asn" and (trust is True or _SERVER_AUTH in trust):
+                ders.append(der)
+    return "".join(ssl.DER_cert_to_PEM_cert(der) for der in ders).encode()
 
 
 def _name(pem: bytes) -> str:
@@ -173,8 +210,11 @@ def _resolve_os_bundle() -> tuple[str, bytes, bool]:
     """(where the OS bundle came from, its PEM, whether that is a file to name).
 
     OpenSSL's default file if it loads, else the first distribution bundle that
-    does, else the certificates in OpenSSL's default directory, joined.
+    does, else the certificates in OpenSSL's default directory, joined. On
+    Windows, the certificate store: there is no OS file to name.
     """
+    if sys.platform == "win32" and pem_digests(store := _windows_store()):
+        return "the Windows certificate store", store, False
     paths = ssl.get_default_verify_paths()
     tried: list[str] = []
     for candidate in (paths.openssl_cafile, *DISTRIBUTION_BUNDLES):
@@ -222,7 +262,9 @@ def _extra_certificates(path: str) -> bytes:
     return "".join(ssl.DER_cert_to_PEM_cert(der) for der in ders).encode()
 
 
-def _inherited(ours: str, pem: bytes, digests: frozenset[str], extra: str | None):
+def _inherited(
+    ours: str, pem: bytes, digests: frozenset[str], extra: str | None, named: bool
+) -> str | None:
     """The real path of an inherited file that is the set, if any; refuse any
     owned variable that is not."""
     found = None
@@ -231,29 +273,41 @@ def _inherited(ours: str, pem: bytes, digests: frozenset[str], extra: str | None
         if not value:
             continue
         real, held = os.path.realpath(value), _read(value)
-        plain = not _NON_PLAIN.search(held) and pem_digests(held) == digests
-        if not (real == os.path.realpath(ours) or held == pem or plain):
+        if real == os.path.realpath(ours):
+            if not named:  # re-write it if missing or altered (self-heal)
+                _write_set(ours, pem, digests)
+        elif not (
+            (held == pem or not _NON_PLAIN.search(held))
+            and pem_digests(held) == digests
+            and _loads(value)
+        ):
             _refuse(name, value, extra)
         found = found or real
-    directory = os.environ.get(DIRECTORY_VARIABLE)
-    if directory:
-        entries = _hashed_entries(directory)
-        held = b"\n".join(_read(os.path.join(directory, n)) for n in entries)
-        if entries and (_NON_PLAIN.search(held) or pem_digests(held) != digests):
-            _refuse(DIRECTORY_VARIABLE, directory, extra)
+    # OpenSSL reads SSL_CERT_DIR as a list; an element it cannot list holds none.
+    directories = os.environ.get(DIRECTORY_VARIABLE, "")
+    held = b"\n".join(
+        _read(os.path.join(element, entry))
+        for element in directories.split(os.pathsep)
+        for entry in (_hashed_entries(element) if element else ())
+    )
+    found_digests = pem_digests(held)
+    if _NON_PLAIN.search(held) or (found_digests and found_digests != digests):
+        _refuse(DIRECTORY_VARIABLE, directories, extra)
     return found
 
 
 def _refuse(name: str, value: str, extra: str | None) -> NoReturn:
-    if os.path.realpath(value).startswith(os.path.realpath(_set_directory()) + "/"):
+    parent = os.path.dirname(os.path.realpath(value))
+    if os.path.basename(parent) == _directory_name():
         raise SystemExit(
             f"TLS root set: {name}={value!r} names a set an earlier FaultMaven start "
             "wrote, and the CA files have changed since: restart that process."
         )
     the_set = "the OS CA bundle" + (f" plus {EXTRA_CA_FILE_SETTING}" if extra else "")
     raise SystemExit(
-        f"TLS root set: {name}={value!r} is set and does not hold the set's "
-        f"certificates ({the_set}). FaultMaven names the set in {name} itself: "
+        f"TLS root set: {name}={value!r} is set and is not the set ({the_set}): "
+        "it holds other certificates, or does not load. FaultMaven names the set "
+        f"in {name} itself: "
         f"remove {name}, or put its CA certificates in {EXTRA_CA_FILE_SETTING}."
     )
 
@@ -264,10 +318,13 @@ def _write_set(path: str, pem: bytes, digests: frozenset[str]) -> str:
     try:
         os.makedirs(directory, mode=0o700, exist_ok=True)
         status = os.lstat(directory)
-        if not stat.S_ISDIR(status.st_mode) or status.st_uid != os.getuid():
-            raise OSError(f"{directory} is not a directory this user owns")
-        if status.st_mode & 0o022:
-            raise OSError(f"{directory} is writable by others")
+        if not stat.S_ISDIR(status.st_mode):
+            raise OSError(f"{directory} is not a directory")
+        # Owner and mode bits say nothing of Windows ACLs; checked elsewhere only.
+        if sys.platform != "win32" and (
+            status.st_uid != os.getuid() or status.st_mode & 0o022
+        ):
+            raise OSError(f"{directory} is not this user's alone")
         if _read(path) != pem:
             handle, temporary = tempfile.mkstemp(dir=directory, suffix=".tmp")
             with os.fdopen(handle, "wb") as file:
@@ -275,10 +332,7 @@ def _write_set(path: str, pem: bytes, digests: frozenset[str]) -> str:
             os.chmod(temporary, 0o644)
             os.replace(temporary, path)
     except OSError as error:
-        raise SystemExit(
-            f"TLS root set: cannot write the set's file ({error}); "
-            "TMPDIR must name a writable directory."
-        ) from error
+        raise _tmpdir_refusal(error) from error
     if not _loads(path) or pem_digests(_read(path)) != digests:
         raise SystemExit(
             f"TLS root set: the set written to {path} does not load all "

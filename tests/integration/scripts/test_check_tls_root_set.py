@@ -29,8 +29,8 @@ BUDGET_SECONDS = 600
 
 
 def _check(tmp_path: Path, *, no_op: bool) -> tuple[int, list[str]]:
-    owned = {*OWNED_VARIABLES, EXTRA_CA_FILE_SETTING}
-    environment = {k: v for k, v in os.environ.items() if k not in owned}
+    owned = {name.upper() for name in (*OWNED_VARIABLES, EXTRA_CA_FILE_SETTING)}
+    environment = {k: v for k, v in os.environ.items() if k.upper() not in owned}
     environment.update(FAULTMAVEN_SKIP_DOTENV="1", TMPDIR=str(tmp_path))
     if no_op:  # every process the check starts imports this first
         (tmp_path / "sitecustomize.py").write_text(

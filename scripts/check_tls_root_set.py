@@ -9,9 +9,9 @@ handshake; **bare** (as before #2692) passes when it fails with none.
 ``sslmode=require`` verified nothing before, so its row also meets a CA outside
 the set: applied refuses it, bare accepts it. A client not installed fails only
 under ``--require-all``. Every row connects to ``127.0.0.1``, never a name. Each
-client process runs without ``PG*`` or proxy variables, and refuses a
-Python-level connect or lookup off loopback; gRPC's and libpq's C sockets are
-not patched.
+client process runs without ``PG*`` or ``*_proxy`` variables (any case, so
+``grpc_proxy`` and ``no_proxy`` too), and refuses a Python-level connect or
+lookup off loopback; gRPC's and libpq's C sockets are not patched.
 """
 
 from __future__ import annotations
@@ -49,7 +49,6 @@ _CHILD_ENV = {
     "AWS_EC2_METADATA_DISABLED": "true",
     "HF_HUB_OFFLINE": "1",
 }
-_PROXY_VARIABLES = {"http_proxy", "https_proxy", "all_proxy", "no_proxy"}
 
 
 def _url(ports: dict, path: str = "/probe") -> str:
@@ -421,7 +420,7 @@ def main(argv: list[str] | None = None) -> int:
             name: value
             for name, value in os.environ.items()
             if name not in OWNED_VARIABLES
-            and name.lower() not in _PROXY_VARIABLES
+            and not name.lower().endswith("_proxy")  # grpc_proxy, HTTPS_PROXY, no_proxy
             and not name.startswith("PG")
         }
         env.update(_CHILD_ENV, TLS_EXTRA_CA_FILE=str(ca_file), TMPDIR=scratch)

@@ -45,8 +45,8 @@ atexit.register(lambda: print("CALLS " + json.dumps(calls)))
 
 
 def _environment(**extra: str) -> dict:
-    owned = {*OWNED_VARIABLES, EXTRA_CA_FILE_SETTING}
-    environment = {k: v for k, v in os.environ.items() if k not in owned}
+    owned = {name.upper() for name in (*OWNED_VARIABLES, EXTRA_CA_FILE_SETTING)}
+    environment = {k: v for k, v in os.environ.items() if k.upper() not in owned}
     environment.update(FAULTMAVEN_SKIP_DOTENV="1", PYTHONPATH=str(ROOT), **extra)
     return environment
 

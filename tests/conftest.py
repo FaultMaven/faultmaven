@@ -737,18 +737,20 @@ def _no_inherited_tls_root_set():
     """Each test starts with no TLS root variable set, and leaves none (#2692).
 
     ``apply_root_set`` (every launcher and ``fm-*`` ``main()``) writes the
-    variables into ``os.environ``. Cleared before, so an inherited one never
-    refuses a test's launch; restored after, so no test leaks a root set.
+    variables into ``os.environ``. Cleared before in every letter case (the
+    setting binds in any), so an inherited one never refuses a test's launch;
+    restored after, so no test leaks a root set.
     """
     from faultmaven.config.tls_root_set import EXTRA_CA_FILE_SETTING, OWNED_VARIABLES
 
-    names = (*OWNED_VARIABLES, EXTRA_CA_FILE_SETTING)
-    saved = {name: os.environ.pop(name, None) for name in names}
+    names = {name.upper() for name in (*OWNED_VARIABLES, EXTRA_CA_FILE_SETTING)}
+    saved = {
+        key: os.environ.pop(key) for key in list(os.environ) if key.upper() in names
+    }
     yield
-    for name, value in saved.items():
-        os.environ.pop(name, None)
-        if value is not None:
-            os.environ[name] = value
+    for key in [key for key in os.environ if key.upper() in names]:
+        del os.environ[key]
+    os.environ.update(saved)
 
 
 @pytest.fixture(autouse=True)

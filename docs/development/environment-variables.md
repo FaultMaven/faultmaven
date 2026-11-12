@@ -597,14 +597,26 @@ and the demo seeder, so a change takes effect at the next start.
 |----------|------|---------|-------------|
 | `TLS_EXTRA_CA_FILE` | path | unset | A PEM file of CA certificates added to the OS bundle, for a private CA (a Postgres or S3 endpoint, an LLM gateway). Only its `CERTIFICATE` blocks are used; a file with none, or with an `X509` or `TRUSTED CERTIFICATE` block, refuses the start. A relative path is read from the working directory; `data/extra-ca.pem` works in both run modes |
 
-With it set, the set is written to `<tmp>/faultmaven-tls-<uid>/<sha256>.pem`
-(`TMPDIR`, in a directory only that user can write): one file per content,
-never deleted. FaultMaven sets `SSL_CERT_FILE`, `SSL_CERT_DIR`,
-`REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `AWS_CA_BUNDLE`,
-`GRPC_DEFAULT_SSL_ROOTS_FILE_PATH` and `PGSSLROOTCERT` itself. One already set
-is accepted when it names that file, or holds only `CERTIFICATE` blocks with
-exactly the set's certificates; anything else refuses the start: remove it, or
+FaultMaven sets `SSL_CERT_FILE`, `SSL_CERT_DIR`, `REQUESTS_CA_BUNDLE`,
+`CURL_CA_BUNDLE`, `AWS_CA_BUNDLE`, `GRPC_DEFAULT_SSL_ROOTS_FILE_PATH` and
+`PGSSLROOTCERT` itself. Unset, the file variables name the OS bundle file. Set,
+they name `<tmp>/faultmaven-tls-<uid>/<sha256>.pem` (under `TMPDIR`, in a
+directory only that user can write): the OS bundle, then the setting's
+certificates; one file per content, never deleted. On native Windows the OS
+bundle is the certificate store's server-auth roots, so the file is always
+written. A variable already set is accepted, in either case, when it names the
+file FaultMaven would name, or holds the bytes it would write, or holds only
+`CERTIFICATE` blocks with exactly the set's certificates, and it loads. An
+already-set `SSL_CERT_DIR`, read as a `:`-separated list (`;` on Windows), is
+accepted when its hashed entries hold no certificate, or only `CERTIFICATE`
+blocks with exactly the set's. Anything else refuses the start: remove it, or
 put its CA in `TLS_EXTRA_CA_FILE`.
+
+A host that ages `/tmp` (systemd-tmpfiles' 10-day rule, for example) can remove
+the written file under a long-idle process. The next start, command or child
+that applies the set re-writes it. To avoid the gap, set `TMPDIR` to a directory
+that is not aged, or restart the process. With no usable temporary directory,
+the start is refused naming `TMPDIR`.
 
 With `PGSSLROOTCERT` set, Postgres `sslmode=require` (SQLAlchemy's
 `?ssl=require`) verifies the server's chain. Under libpq's default
