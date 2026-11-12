@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-import httpx
+import httpx2
 import pytest
 from fastapi.testclient import TestClient
 
@@ -101,17 +101,17 @@ _BODY = {"detail": "Internal server error"}
 
 def test_shape_ignores_only_the_slow_response_header():
     plain = {"X-Correlation-ID": "c", "X-Response-Time": "1ms"}
-    answer = httpx.Response(500, headers=plain, json=_BODY)
-    slow = httpx.Response(
+    answer = httpx2.Response(500, headers=plain, json=_BODY)
+    slow = httpx2.Response(
         500, headers={**plain, "X-Performance-Warning": "slow_response"}, json=_BODY
     )
     assert _shape(slow) == _shape(answer)
 
-    handled = httpx.Response(
+    handled = httpx2.Response(
         500, headers={**plain, "X-Processing-Time": "0.001s"}, json=_BODY
     )
-    uncorrelated = httpx.Response(500, headers={"X-Response-Time": "1ms"}, json=_BODY)
-    unavailable = httpx.Response(503, headers=plain, json=_BODY)
+    uncorrelated = httpx2.Response(500, headers={"X-Response-Time": "1ms"}, json=_BODY)
+    unavailable = httpx2.Response(503, headers=plain, json=_BODY)
     assert _shape(handled) != _shape(answer)
     assert _shape(uncorrelated) != _shape(answer)
     assert _shape(unavailable) != _shape(answer)
