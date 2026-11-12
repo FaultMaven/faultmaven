@@ -2,7 +2,7 @@
   "contractVersion": "14.22.0",
   "entries": [
     {
-      "body": "One more key in the existing `Dict[str, FeatureStatus]`. `enabled` is true\nwhen every TLS root variable the process exported names the set\n`apply_root_set` computes for its environment (the OS CA bundle, plus\n`TLS_EXTRA_CA_FILE` when set), that file loads, and `SSL_CERT_DIR` names a\ndirectory with no certificate. `description` names the file, its certificate\ncount and the `TLS_EXTRA_CA_FILE` path (never its contents); `config_hint`\ncarries the count. Read from the worker's environment on each request.\n\nMINOR because every client survives it: a new key on an operator-only\nresponse, which a client that does not read it ignores.",
+      "body": "One more key in the existing `Dict[str, FeatureStatus]`. `enabled` is true\nwhen every TLS root variable the process exported names one file, that file\nloads and holds exactly the OS CA bundle plus `TLS_EXTRA_CA_FILE` when set, as\nthey read now, and `SSL_CERT_DIR` names a directory with no certificate.\n`description` names the file, its certificate count and the\n`TLS_EXTRA_CA_FILE` path (never its contents), or why it is not in force, or\nthat the set cannot be verified because its sources changed since the start;\n`config_hint` carries the count, or \"unknown\". Read from the worker's\nenvironment on each request; nothing is written.\n\nMINOR because every client survives it: a new key on an operator-only\nresponse, which a client that does not read it ignores.",
       "level": "MINOR",
       "title": "`GET /admin/config/status` reports the TLS root set the serving worker verifies against as `features.tls_root_set` (#2692).",
       "version": "14.22.0"

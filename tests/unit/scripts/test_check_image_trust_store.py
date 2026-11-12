@@ -179,7 +179,7 @@ def bundle(roots: list[Root]) -> bytes:
 
 class Image:
     """The stores and PIP_CERT, clean until a test changes one. ``fs`` stands in
-    for the image's root, searched for pips; grpcio is absent until a test adds it."""
+    for the image's root, searched for pips and grpcio, absent until a test adds one."""
 
     def __init__(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         self.fs = tmp_path / "fs"
@@ -196,7 +196,6 @@ class Image:
         monkeypatch.setenv("SSL_CERT_DIR", str(self.capath))
         monkeypatch.setenv("PIP_CERT", str(self.cafile))
         monkeypatch.setattr(check.certifi, "where", lambda: str(self.certifi))
-        monkeypatch.setattr(check, "grpc_roots", lambda: None)
         monkeypatch.delenv("PIP_USE_DEPRECATED", raising=False)
 
     def run(self, **overrides: object) -> None:
@@ -516,11 +515,58 @@ def test_the_scripts_defaults_ban_the_real_roots_and_know_the_real_root(tmp_path
     )
 
     assert result.returncode == 1
+    assert _problems(result) == [
+        "cafile trusts emSign ECC Root CA - G3",
+        "cafile trusts AAA Certificate Services",
+        f"cafile lacks the known root {ISRG_ROOT_X1}",
+        "capath holds 1 certificates, under 100",
+    ]
     assert "cafile trusts emSign ECC Root CA - G3" in result.stderr
     assert "cafile trusts AAA Certificate Services" in result.stderr
     assert f"cafile lacks the known root {ISRG_ROOT_X1}" in result.stderr
     assert "capath lacks the known root" not in result.stderr
     assert "cafile holds" not in result.stderr
+
+
+def _problems(result: subprocess.CompletedProcess) -> list[str]:
+    """The problem lines a script run failed with."""
+    return result.stderr.split("trust store check failed:\n", 1)[1].splitlines()
+
+
+def test_the_script_passes_a_clean_image_end_to_end(tmp_path):
+    """Exit 0 over clean stores, a new pip linked to the OS bundle and grpcio's
+    roots.pem linked to the cafile: the stores the image ships."""
+    cafile = tmp_path / "ca.crt"
+    cafile.write_bytes(b"".join(make_root(f"Filler {i}").pem for i in range(99)))
+    cafile.write_bytes(cafile.read_bytes() + REAL_ISRG)
+    capath = tmp_path / "certs"
+    capath.mkdir()
+    (capath / "all.pem").symlink_to(cafile)
+    site = tmp_path / "fs" / "usr/lib/python3.12/site-packages"
+    (site / "pip/_vendor/certifi").mkdir(parents=True)
+    (site / "pip/__init__.py").write_text('__version__ = "25.0.1"\n')
+    (site / "pip/_vendor/certifi/cacert.pem").symlink_to(cafile)
+    (site / "grpc/_cython/_credentials").mkdir(parents=True)
+    (site / "grpc/_cython/_credentials/roots.pem").symlink_to(cafile)
+    env = {
+        **os.environ,
+        "SSL_CERT_FILE": str(cafile),
+        "SSL_CERT_DIR": str(capath),
+        "PIP_CERT": str(cafile),
+    }
+
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), str(tmp_path / "fs")],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines()[-1].startswith(
+        "trust store OK: cafile 100, capath 100, certifi "
+    )
 
 
 # ---- The build-time failure itself ----------------------------------------
@@ -552,6 +598,7 @@ def test_the_script_exits_non_zero_with_its_message(tmp_path, optimize):
     assert result.returncode == 1
     assert "trust store check failed:" in result.stderr
     assert "cafile holds 0 certificates" in result.stderr
+    assert all(line.startswith(("cafile", "capath")) for line in _problems(result))
     assert "trust store OK" not in result.stdout
 
 
@@ -569,16 +616,23 @@ def vendored_pip(image: Image, version: str, roots: list[Root], prefix: str) -> 
     return bundle_file
 
 
-def ensurepip_wheel(image: Image, version: str, roots: list[Root]) -> Path:
-    bundled = image.fs / "usr/local/lib/python3.12/ensurepip/_bundled"
-    bundled.mkdir(parents=True)
-    wheel = bundled / f"pip-{version}-py3-none-any.whl"
+def pip_wheel(image: Image, version: str, roots: list[Root], prefix: str) -> Path:
+    directory = image.fs / prefix
+    directory.mkdir(parents=True)
+    wheel = directory / f"pip-{version}-py3-none-any.whl"
     with zipfile.ZipFile(wheel, "w") as archive:
         archive.writestr("pip/__init__.py", f'__version__ = "{version}"\n')
         archive.writestr("pip/_vendor/certifi/cacert.pem", bundle(roots))
     return wheel
 
 
+def grpc_roots(image: Image, prefix: str) -> Path:
+    directory = image.fs / prefix / "grpc" / "_cython" / "_credentials"
+    directory.mkdir(parents=True)
+    return directory / "roots.pem"
+
+
+ENSUREPIP = "usr/local/lib/python3.12/ensurepip/_bundled"
 SITE = "usr/local/lib/python3.12/site-packages"
 
 
@@ -640,58 +694,59 @@ def test_a_new_pips_bundle_linked_to_the_os_bundle_passes(image, capsys):
     assert f"pip 25.0.1 {found}: 4 certificates" in capsys.readouterr().out
 
 
-def test_an_ensurepip_wheel_from_24_2_holding_a_banned_root_fails(image):
-    """A venv made from it installs that pip, bundle and all."""
-    wheel = ensurepip_wheel(image, "25.0", [*CLEAN, BAD])
+@pytest.mark.parametrize("prefix", [ENSUREPIP, "root/.cache/wheels"])
+def test_a_pip_wheel_from_24_2_holding_a_banned_root_fails(image, prefix):
+    """A venv made from it installs that pip, bundle and all: an ensurepip
+    wheel, or one anywhere else pip can be installed from."""
+    wheel = pip_wheel(image, "25.0", [*CLEAN, BAD], prefix)
 
     assert failure(image) == [
-        f"ensurepip wheel 25.0 {wheel} trusts Banned Root: "
+        f"pip wheel 25.0 {wheel} trusts Banned Root: "
         "remove it or repack it with the OS bundle"
     ]
 
 
-def test_an_ensurepip_wheel_24_0_is_reported_not_judged(image, capsys):
-    wheel = ensurepip_wheel(image, "24.0", [BAD])
+def test_a_pip_wheel_24_0_is_reported_not_judged(image, capsys):
+    wheel = pip_wheel(image, "24.0", [BAD], ENSUREPIP)
 
     image.run()
 
     assert (
-        f"ensurepip wheel 24.0 {wheel}: 1 certificates, not judged"
-        in capsys.readouterr().out
+        f"pip wheel 24.0 {wheel}: 1 certificates, not judged" in capsys.readouterr().out
     )
 
 
-def test_a_grpc_roots_pem_that_is_not_the_cafile_fails(image, monkeypatch, tmp_path):
-    roots = tmp_path / "roots.pem"
+def test_a_grpc_roots_pem_that_is_not_the_cafile_fails(image):
+    roots = grpc_roots(image, SITE)
     roots.write_bytes(bundle(OTHERS))
-    monkeypatch.setattr(check, "grpc_roots", lambda: str(roots))
 
     assert failure(image) == [
         f"grpcio's {roots} is not the cafile: link it to the OS bundle"
     ]
 
 
-def test_a_grpc_roots_pem_holding_a_banned_root_says_so(image, monkeypatch, tmp_path):
-    roots = tmp_path / "roots.pem"
-    roots.write_bytes(bundle([*CLEAN, BAD]))
-    monkeypatch.setattr(check, "grpc_roots", lambda: str(roots))
+def test_every_grpc_roots_pem_is_read_not_only_the_importable_one(image):
+    linked = grpc_roots(image, SITE)
+    linked.symlink_to(image.cafile)
+    other = grpc_roots(image, "opt/venv/lib/python3.12/site-packages")
+    other.write_bytes(bundle([*CLEAN, BAD]))
 
     assert failure(image) == [
-        "grpcio's roots.pem trusts Banned Root",
-        f"grpcio's {roots} is not the cafile: link it to the OS bundle",
+        f"grpcio's {other} trusts Banned Root",
+        f"grpcio's {other} is not the cafile: link it to the OS bundle",
     ]
 
 
-def test_a_grpc_roots_pem_linked_to_the_cafile_passes(image, monkeypatch, capsys):
-    roots = image.fs / "roots.pem"
+def test_a_grpc_roots_pem_linked_to_the_cafile_passes(image, capsys):
+    roots = grpc_roots(image, SITE)
     roots.symlink_to(image.cafile)
-    monkeypatch.setattr(check, "grpc_roots", lambda: str(roots))
 
     image.run()
 
-    assert capsys.readouterr().out.strip() == (
-        "trust store OK: cafile 4, capath 4, certifi 4, roots.pem 4 certificates"
-    )
+    assert capsys.readouterr().out.splitlines() == [
+        f"grpcio {roots}: 4 certificates",
+        "trust store OK: cafile 4, capath 4, certifi 4 certificates",
+    ]
 
 
 def test_without_certifi_the_other_stores_are_still_judged(image, monkeypatch, capsys):

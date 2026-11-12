@@ -2864,22 +2864,25 @@ def _scenario_llm_usage_metering(settings, app, monkeypatch, reality):
 def _scenario_tls_root_set(settings, app, monkeypatch, reality):
     """The runtime fact withheld here is the set the launcher exported (#2692).
 
-    ``TLS_EXTRA_CA_FILE`` names a private CA in BOTH arms, which is what a
+    ``TLS_EXTRA_CA_FILE`` is set in BOTH arms, which is what a
     configuration-only implementation would read. What decides it is whether
-    ``apply_root_set`` named the set in this process's environment.
+    ``apply_root_set`` named the set in this process's environment. Only the
+    ON arm writes files, in a directory its release removes.
     """
     import shutil
     import tempfile
 
     from faultmaven.config.tls_root_set import apply_root_set
 
+    monkeypatch.setenv("FAULTMAVEN_SKIP_DOTENV", "1")
+    if not reality:
+        monkeypatch.setenv("TLS_EXTRA_CA_FILE", "/nonexistent/fm-tls/extra-ca.pem")
+        return None
     scratch = Path(tempfile.mkdtemp(prefix="fm-tls-scenario-"))
     (scratch / "extra-ca.pem").write_bytes(_ca_pem())
     monkeypatch.setattr(tempfile, "tempdir", str(scratch))
-    monkeypatch.setenv("FAULTMAVEN_SKIP_DOTENV", "1")
     monkeypatch.setenv("TLS_EXTRA_CA_FILE", str(scratch / "extra-ca.pem"))
-    if reality:
-        apply_root_set()
+    apply_root_set()
 
     async def release() -> None:
         shutil.rmtree(scratch, ignore_errors=True)
@@ -3535,6 +3538,7 @@ class TestTheTlsRootSetIsReported:
         assert status.enabled is False
         assert status.description == (
             "The TLS root set is not in force: "
-            "SSL_CERT_FILE does not name the set's file."
+            "the TLS root variables do not name one file."
         )
+        assert status.config_hint.startswith("Certificates in the set: unknown. ")
         assert "not started through a launcher" in status.config_hint

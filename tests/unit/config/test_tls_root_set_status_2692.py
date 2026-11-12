@@ -5,6 +5,8 @@ The first two cases launch through ``run_server`` (``uvicorn.run`` patched) and
 read the status in a ``spawn`` child, as a uvicorn worker is started. The rest
 apply the set in this process, with its written file under the test's
 ``tmp_path``; ``tests/conftest.py`` restores the owned variables after each.
+In force means the one file the variables name holds exactly the set its
+sources give now; a source that cannot be read leaves it unverifiable.
 """
 
 from __future__ import annotations
@@ -41,8 +43,8 @@ def serve(app, **options):
     for name in sys.argv[1:]:
         del os.environ[name]
     with multiprocessing.get_context("spawn").Pool(1) as pool:
-        root_set, problem = pool.apply(root_set_status)
-    print("STATUS " + json.dumps([problem, root_set.certificates, root_set.extra_ca_file]))
+        status = pool.apply(root_set_status)
+    print("STATUS " + json.dumps([status.in_force, status.certificates, status.description]))
 
 
 if __name__ == "__main__":
@@ -77,18 +79,25 @@ def _host_set_count() -> int:
 
 
 def test_a_worker_of_a_launched_process_reports_the_set_with_its_count(tmp_path):
-    problem, count, extra = _launched(tmp_path)
+    in_force, count, description = _launched(tmp_path)
 
-    assert problem is None
+    assert in_force is True
     assert count == _host_set_count()
-    assert extra == os.path.realpath(tmp_path / "extra-ca.pem")
+    assert description.endswith(
+        f": {count} certificates, TLS_EXTRA_CA_FILE "
+        f"{os.path.realpath(tmp_path / 'extra-ca.pem')}."
+    )
 
 
 def test_a_worker_missing_an_owned_variable_reports_it(tmp_path):
-    problem, count, _ = _launched(tmp_path, "AWS_CA_BUNDLE")
+    in_force, count, description = _launched(tmp_path, "AWS_CA_BUNDLE")
 
-    assert problem == "AWS_CA_BUNDLE does not name the set's file"
-    assert count == _host_set_count()
+    assert in_force is False
+    assert count is None
+    assert description == (
+        "The TLS root set is not in force: "
+        "the TLS root variables do not name one file."
+    )
 
 
 @pytest.fixture
@@ -99,11 +108,16 @@ def applied(tmp_path, monkeypatch):
     (tmp_path / "extra-ca.pem").write_bytes(EXTRA)
     monkeypatch.setenv("TLS_EXTRA_CA_FILE", str(tmp_path / "extra-ca.pem"))
     path = apply_root_set().path
-    assert root_set_status()[1] is None
+    assert root_set_status().in_force is True
     return path
 
 
-def test_a_variable_naming_another_file_with_the_same_bytes_is_not_the_set(
+def _reason(status) -> str:
+    assert status.in_force is False
+    return status.description.removeprefix("The TLS root set is not in force: ")
+
+
+def test_a_variable_naming_another_file_with_the_same_bytes_is_not_one_file(
     applied, tmp_path, monkeypatch
 ):
     """``apply_root_set`` would accept a byte copy and re-export its own path:
@@ -112,51 +126,101 @@ def test_a_variable_naming_another_file_with_the_same_bytes_is_not_the_set(
     copy.write_bytes(Path(applied).read_bytes())
     monkeypatch.setenv("REQUESTS_CA_BUNDLE", str(copy))
 
-    assert root_set_status()[1] == "REQUESTS_CA_BUNDLE does not name the set's file"
+    assert _reason(root_set_status()) == "the TLS root variables do not name one file."
+
+
+def test_an_altered_set_file_is_not_in_force(applied):
+    """One CA written over the set: it loads, at the path every variable names."""
+    from tests.unit.config.test_tls_root_set_2692 import _ca_pem
+
+    Path(applied).write_bytes(_ca_pem("attacker CA"))
+
+    status = root_set_status()
+
+    assert _reason(status) == (
+        f"{applied} is not the OS CA bundle plus TLS_EXTRA_CA_FILE now."
+    )
+    assert status.certificates == 1
 
 
 def test_a_set_file_removed_under_the_process_does_not_load(applied):
     os.remove(applied)
 
-    assert root_set_status()[1] == f"the set's file {applied} does not load"
+    status = root_set_status()
+
+    assert _reason(status) == f"the file they name, {applied}, does not load."
+    assert status.certificates is None
 
 
-def test_a_certificate_directory_with_a_hashed_entry_is_not_the_set(
+def test_a_certificate_directory_with_a_hashed_entry_is_not_in_force(
     applied, tmp_path, monkeypatch
 ):
     (tmp_path / "certs").mkdir()
     (tmp_path / "certs" / "1a2b3c4d.0").write_bytes(EXTRA)
     monkeypatch.setenv(DIRECTORY_VARIABLE, str(tmp_path / "certs"))
 
-    assert root_set_status()[1] == (
-        f"{DIRECTORY_VARIABLE} is not a directory free of certificates"
+    assert _reason(root_set_status()) == (
+        f"{DIRECTORY_VARIABLE} is not a directory free of certificates."
     )
 
 
-def test_a_changed_extra_file_since_the_start_is_not_the_set(applied, tmp_path):
+def test_a_changed_extra_file_since_the_start_is_not_in_force(applied, tmp_path):
     """The set is read once per start: a new CA takes effect at the next."""
     from tests.unit.config.test_tls_root_set_2692 import _ca_pem
 
     (tmp_path / "extra-ca.pem").write_bytes(EXTRA + _ca_pem("added later"))
 
-    assert root_set_status()[1] == "SSL_CERT_FILE does not name the set's file"
+    assert _reason(root_set_status()) == (
+        f"{applied} is not the OS CA bundle plus TLS_EXTRA_CA_FILE now."
+    )
 
 
-def test_a_set_that_cannot_be_computed_reports_the_refusal(applied, tmp_path):
-    (tmp_path / "extra-ca.pem").write_bytes(b"not a certificate\n")
+def test_a_removed_extra_ca_source_cannot_be_verified(applied, tmp_path):
+    """A rotated Secret removes the setting's resolved file while the set file
+    the process started with is intact and still in use."""
+    os.remove(tmp_path / "extra-ca.pem")
 
-    root_set, problem = root_set_status()
+    status = root_set_status()
 
-    assert root_set is None
-    assert problem.startswith("TLS root set: TLS_EXTRA_CA_FILE=")
+    count = _host_set_count()
+    assert status.in_force is False
+    assert status.certificates == count
+    assert status.description == (
+        "The TLS root set cannot be verified because its sources changed since "
+        f"this process started: it keeps the file it started with, {applied} "
+        f"({count} certificates), and a restart re-reads them."
+    )
 
 
-def test_the_reader_writes_nothing(applied):
-    """``apply_root_set`` re-writes a missing set; the reader must not."""
-    os.remove(applied)
+def _symlink(tmp_path, monkeypatch) -> None:
+    (tmp_path / "link.pem").symlink_to(tmp_path / "extra-ca.pem")
+    monkeypatch.setenv("TLS_EXTRA_CA_FILE", str(tmp_path / "link.pem"))
+
+
+def _relative(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("TLS_EXTRA_CA_FILE", "extra-ca.pem")
+
+
+def _lowercase(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("TLS_EXTRA_CA_FILE")
+    monkeypatch.setenv("tls_extra_ca_file", str(tmp_path / "extra-ca.pem"))
+
+
+@pytest.mark.parametrize("spelling", [_symlink, _relative, _lowercase])
+def test_the_reader_writes_nothing(applied, tmp_path, monkeypatch, spelling):
+    """``apply_root_set`` writes the setting back as one real path, and finds
+    its temporary directory by writing a probe; the reader does neither. Each
+    spelling names the same file, so the set is still in force."""
+    spelling(tmp_path, monkeypatch)
     environment = dict(os.environ)
+    entries = sorted(os.listdir(tmp_path))
 
-    root_set_status()
+    def probe():
+        raise AssertionError("the reader looked up a temporary directory")
 
-    assert not os.path.exists(applied)
+    monkeypatch.setattr(tempfile, "gettempdir", probe)
+
+    assert root_set_status().in_force is True
     assert dict(os.environ) == environment
+    assert sorted(os.listdir(tmp_path)) == entries

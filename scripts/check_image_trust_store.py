@@ -1,12 +1,12 @@
 """Fail the image build if a root store its TLS clients read trusts a banned root,
 matched by SHA-256 over what OpenSSL parses: OpenSSL's default cafile and capath,
-certifi, grpcio's roots.pem, and the bundle of every pip the image holds (#2665).
+certifi, every grpcio roots.pem, and the bundle of every pip and pip wheel the
+image holds (#2665).
 Root counts and a known root keep an empty store from passing.
 
 Takes one optional argument, the directory searched for pips (default ``/``)."""
 
 import hashlib
-import importlib.util
 import os
 import re
 import ssl
@@ -57,17 +57,10 @@ def store_problems(store, digests, banned, min_roots, known_root=None) -> list[s
     return problems
 
 
-def grpc_roots() -> str | None:
-    """grpcio's packaged roots.pem, found without importing grpc; None if absent."""
-    spec = importlib.util.find_spec("grpc")
-    if spec is None or not spec.origin:
-        return None
-    return str(Path(spec.origin).parent / "_cython" / "_credentials" / "roots.pem")
-
-
-def pips(root: str) -> list[tuple[str, str, Path]]:
-    """(kind, version, file) for each pip's vendored bundle and each ensurepip
-    wheel under ``root``. Versions are read as text: no pip is imported."""
+def stores(root: str) -> list[tuple[str, str, Path]]:
+    """(kind, version, file) for each pip's vendored bundle, each pip wheel and
+    each grpcio ``roots.pem`` under ``root``. Versions are read as text: no pip
+    is imported."""
     skipped = {os.path.join(root, name) for name in _NOT_SEARCHED}
     skipped.add(os.environ.get("HF_HOME", ""))  # the model cache: large, no pip
     found = []
@@ -85,10 +78,14 @@ def pips(root: str) -> list[tuple[str, str, Path]]:
                 text = ""
             version = re.search(r"__version__ = [\"']([^\"']+)", text)
             found.append(("pip", version[1] if version else "", here / "cacert.pem"))
-        if here.parts[-2:] == ("ensurepip", "_bundled"):
-            for name in sorted(names):
-                if wheel := re.fullmatch(r"pip-([^-]+)-.+\.whl", name):
-                    found.append(("ensurepip wheel", wheel[1], here / name))
+        if (
+            here.parts[-3:] == ("grpc", "_cython", "_credentials")
+            and "roots.pem" in names
+        ):
+            found.append(("grpcio", "", here / "roots.pem"))
+        for name in sorted(names):
+            if wheel := re.fullmatch(r"pip-([^-]+)-.+\.whl", name):
+                found.append(("pip wheel", wheel[1], here / name))
     return found
 
 
@@ -101,13 +98,25 @@ def wheel_digests(wheel: Path) -> set[str]:
         return loaded_digests([bundle])
 
 
-def pip_problems(root, banned) -> tuple[list[str], list[str]]:
-    """(problems, report lines) for every pip: one that adds its bundle is judged."""
+def found_problems(root, banned, cafile) -> tuple[list[str], list[str]]:
+    """(problems, report lines) for every store the walk finds. Each grpcio
+    ``roots.pem`` is gRPC's default in a process apply_root_set did not start:
+    the image links it to the OS bundle, so it holds exactly the cafile's roots.
+    A pip that adds its bundle to PIP_CERT is judged; one that does not is
+    reported."""
     legacy = "legacy-certs" in os.environ.get("PIP_USE_DEPRECATED", "").split()
     problems, reports = [], []
-    for kind, version, file in pips(root):
-        wheel = kind == "ensurepip wheel"
+    for kind, version, file in stores(root):
+        wheel = kind == "pip wheel"
         digests = wheel_digests(file) if wheel else loaded_digests([file])
+        if kind == "grpcio":
+            problems += store_problems(f"grpcio's {file}", digests, banned, 0)
+            if digests != cafile:
+                problems.append(
+                    f"grpcio's {file} is not the cafile: link it to the OS bundle"
+                )
+            reports.append(f"grpcio {file}: {len(digests)} certificates")
+            continue
         parsed = tuple(int(part) for part in re.findall(r"\d+", version)[:3])
         store = f"{kind} {version or '(version unread)'} {file}"
         if legacy or (parsed and parsed < PIP_ADDS_ITS_BUNDLE):
@@ -141,20 +150,10 @@ def main(banned=BANNED, known_root=ISRG_ROOT_X1, min_roots=MIN_ROOTS, root="/") 
         bundle = loaded_digests([certifi.where()])
         problems += store_problems("certifi", bundle, banned, min_roots)
         counts.append(f"certifi {len(bundle)}")
-    # gRPC's default in a process apply_root_set did not start: the image links
-    # it to the OS bundle, so it must hold exactly the cafile's roots.
-    if roots := grpc_roots():
-        grpc = loaded_digests([roots])
-        problems += store_problems("grpcio's roots.pem", grpc, banned, 0)
-        if grpc != cafile:
-            problems.append(
-                f"grpcio's {roots} is not the cafile: link it to the OS bundle"
-            )
-        counts.append(f"roots.pem {len(grpc)}")
     pip_cert = os.environ.get("PIP_CERT", "unset")
     if not paths.cafile or os.path.realpath(paths.cafile) != os.path.realpath(pip_cert):
         problems.append(f"OpenSSL's cafile {paths.cafile} is not PIP_CERT {pip_cert}")
-    found, reports = pip_problems(root, banned)
+    found, reports = found_problems(root, banned, cafile)
     problems += found
     if notes := ["certifi not installed"] * (certifi is None) + reports:
         print("\n".join(notes))

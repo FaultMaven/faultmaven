@@ -107,10 +107,10 @@ RUN chown faultmaven:faultmaven /app
 
 # Fail the build if "emSign ECC Root CA - G3" (GHSA-6q48-6c7w-9gw2: compromised
 # intermediate keys) or "AAA Certificate Services" is in OpenSSL's default cafile or
-# capath, certifi, grpcio's roots.pem (which must be the cafile), or the bundle a pip
-# >= 24.2 adds to PIP_CERT, in any site-packages or ensurepip wheel; pip 24.0 replaces
-# its bundle with PIP_CERT (#2665). CI runs the handshake check in the built image
-# (#2692). The last root step, to see the stores the image ships.
+# capath, certifi, any grpcio roots.pem (each must be the cafile), or the bundle a pip
+# >= 24.2, absent legacy-certs, adds to PIP_CERT, in any site-packages or pip wheel;
+# pip 24.0 replaces its bundle with PIP_CERT (#2665). CI runs the handshake check in
+# the built image (#2692). The last root step, to see the stores the image ships.
 RUN --mount=type=bind,source=scripts/check_image_trust_store.py,target=/tmp/check_image_trust_store.py \
     python /tmp/check_image_trust_store.py
 USER faultmaven

@@ -29,9 +29,10 @@ conda shell's ``SSL_CERT_FILE``: unset it, or put its CA in
 ``TLS_EXTRA_CA_FILE``), as do an OS bundle that does not load, a setting with no
 certificate or a non-plain one, no usable temporary directory, and a set file
 that cannot be written safely or does not load (``SystemExit``, Fail-Fast
-Configuration). ``root_set_status`` recomputes the set without writing and
-reports whether this process's environment names it (``GET
-/admin/config/status``, ``features.tls_root_set``). Imports no client.
+Configuration). ``root_set_status`` (``features.tls_root_set`` on ``GET
+/admin/config/status``) re-reads the set's sources, writing nothing, and
+compares them with the bytes of the file the environment names. Imports no
+client.
 """
 
 from __future__ import annotations
@@ -114,54 +115,79 @@ class RootSet:
 def apply_root_set() -> RootSet:
     """Name the one root set in every owned variable, or refuse the start."""
     load_settings_dotenv()
-    root_set, pem, named = _expected_set()
-    if root_set.extra_ca_file is not None:  # a child elsewhere reads the same file
-        set_env_var(os.environ, EXTRA_CA_FILE_SETTING, root_set.extra_ca_file)
-    _check_inherited(root_set.path, pem, root_set.extra_ca_file)
+    os_source, os_file, extra, pem = _set_sources()
+    if extra is not None:  # a child in another working directory reads the same file
+        set_env_var(os.environ, EXTRA_CA_FILE_SETTING, extra)
+    named = extra is None and os_file
+    path = os_source if named else os.path.join(_set_directory(), _name(pem))
+    _check_inherited(path, pem, extra)
     if not named:  # written, or re-written if missing or altered (self-heal)
-        _write_set(root_set.path, pem)
+        _write_set(path, pem)
     for name in FILE_VARIABLES:
-        os.environ[name] = root_set.path
+        os.environ[name] = path
     os.environ[DIRECTORY_VARIABLE] = EMPTY_CAPATH
-    return root_set
+    sources = (os_source,) + ((extra,) if extra else ())
+    return RootSet(path, sources, extra, len(pem_digests(pem)))
 
 
-def _expected_set() -> tuple[RootSet, bytes, bool]:
-    """The set ``apply_root_set`` names for this environment, its PEM, and
-    whether its file is the OS bundle's own. Writes nothing."""
-    os_source, os_pem, os_file = _resolve_os_bundle()
+def _set_sources() -> tuple[str, bool, str | None, bytes]:
+    """(where the OS bundle came from, whether that is a file to name, the
+    setting's real path, the set's PEM), read from the sources alone."""
+    os_source, pem, os_file = _resolve_os_bundle()
     extra = _extra_ca_file()
-    pem, sources = os_pem, (os_source,)
     if extra is not None:
         # The newline: a bundle without a trailing one would merge its last
         # END line with the first BEGIN, and that set does not load.
         pem += b"\n" + _extra_certificates(extra)
-        sources += (extra,)
-    named = extra is None and os_file
-    path = os_source if named else os.path.join(_set_directory(), _name(pem))
-    return RootSet(path, sources, extra, len(pem_digests(pem))), pem, named
+    return os_source, os_file, extra, pem
 
 
-def root_set_status() -> tuple[RootSet | None, str | None]:
-    """The set this environment names and why this process is not on it (None
-    when it is): every owned file variable names the recomputed set's file, by
-    real path, that file loads, and ``SSL_CERT_DIR`` names a directory with no
-    hashed entry. Read from the environment, never module state, so every
-    worker answers for itself; the set is ``None`` when it cannot be computed."""
-    try:
-        root_set = _expected_set()[0]
-    except SystemExit as refusal:
-        return None, str(refusal.code)
-    expected = os.path.realpath(root_set.path)
-    for name in FILE_VARIABLES:
-        if os.path.realpath(os.environ.get(name) or "/") != expected:
-            return root_set, f"{name} does not name the set's file"
-    if not _loads(root_set.path):
-        return root_set, f"the set's file {root_set.path} does not load"
+@dataclass(frozen=True)
+class RootSetStatus:
+    """``features.tls_root_set``: whether this process verifies against the set."""
+
+    in_force: bool
+    certificates: int | None
+    description: str
+
+
+def root_set_status() -> RootSetStatus:
+    """Read from the environment, never module state, so each worker answers
+    for itself, and writes nothing. In force when every owned file variable
+    names one file, that file loads, ``SSL_CERT_DIR`` names a directory with no
+    hashed entry, and the file's bytes are the set its sources give now."""
+    values = {os.environ.get(name) for name in FILE_VARIABLES}
+    paths = {os.path.realpath(value) for value in values if value}
+    if None in values or "" in values or len(paths) != 1:
+        return _not_in_force(None, "the TLS root variables do not name one file")
+    path = paths.pop()
+    if not (os.path.isfile(path) and _loads(path)):
+        return _not_in_force(None, f"the file they name, {path}, does not load")
+    content = _read(path)
+    count = len(pem_digests(content))
     directory = os.environ.get(DIRECTORY_VARIABLE, "")
     if not os.path.isdir(directory) or _hashed_entries(directory):
-        return root_set, f"{DIRECTORY_VARIABLE} is not a directory free of certificates"
-    return root_set, None
+        reason = f"{DIRECTORY_VARIABLE} is not a directory free of certificates"
+        return _not_in_force(count, reason)
+    try:
+        extra, pem = _set_sources()[2:]
+    except SystemExit:  # a source cannot be read now (a rotated Secret)
+        return RootSetStatus(False, count, (
+            "The TLS root set cannot be verified because its sources changed "
+            f"since this process started: it keeps the file it started with, "
+            f"{path} ({count} certificates), and a restart re-reads them."
+        ))  # fmt: skip
+    if content != pem:
+        reason = f"{path} is not the OS CA bundle plus {EXTRA_CA_FILE_SETTING} now"
+        return _not_in_force(count, reason)
+    return RootSetStatus(True, count, (
+        f"TLS clients verify against {path}: {count} certificates, "
+        f"{EXTRA_CA_FILE_SETTING} {extra or 'unset'}."
+    ))  # fmt: skip
+
+
+def _not_in_force(count: int | None, reason: str) -> RootSetStatus:
+    return RootSetStatus(False, count, f"The TLS root set is not in force: {reason}.")
 
 
 def _ders(pem: bytes) -> list[bytes]:
