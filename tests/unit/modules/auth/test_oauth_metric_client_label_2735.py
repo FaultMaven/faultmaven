@@ -231,11 +231,17 @@ class TestRefreshSeries:
     async def test_distinct_ids_on_a_successful_refresh_add_no_series(self):
         pytest.importorskip("prometheus_client")
         service = _refresh_service()
+        # Each token is bound to the id it is presented under (#2750).
+        service.token_generator.validate_refresh_token.side_effect = lambda token: {
+            "sub": "user_1",
+            "type": "refresh",
+            "client_id": token,
+        }
         raw_ids = _ids()
 
         before = _oauth_series()
         for i, client_id in enumerate(raw_ids):
-            await service.refresh_access_token("valid", client_id=client_id)
+            await service.refresh_access_token(client_id, client_id=client_id)
             if i == 0:
                 after_first = _oauth_series()
 

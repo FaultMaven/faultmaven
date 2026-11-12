@@ -852,12 +852,9 @@ async def refresh_tokens(
         #
         # The OAuth client the token is bound to rides the new refresh token
         # (#2750): carried, never dropped, so the OAuth grant can still compare
-        # it. Passed only when the token names one.
-        bound = claims.get("client_id")
+        # it.
         new_access_token, new_refresh_token = await jwt_generator.generate_token_pair(
-            user,
-            state_read_at=state_read_at,
-            **({"client_id": bound} if bound is not None else {}),
+            user, state_read_at=state_read_at, client_id=claims.get("client_id")
         )
 
         # 4. Rotation: revoke the old refresh token so a leaked/replayed token

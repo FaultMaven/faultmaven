@@ -1090,9 +1090,12 @@ Content-Type: application/json
 **Client binding (#2750).** A refresh token carries the `client_id` claim of the
 client it was issued to. This grant compares it: under any other `client_id` the
 token answers `invalid_grant` and is neither rotated nor revoked. A token that
-names no client (minted before the binding, or by a mint that names none) is bound
-at its first refresh here: the rotated pair names the presenting client. A
-presented `client_id` longer than 255 characters is refused.
+names no client (minted before the binding, or by a sign-in or mint that names
+none) is bound at its first refresh here, but only to a known client: one in
+`OAUTH_ALLOWED_CLIENTS`, or the service client `faultmaven-slack-agent`. The
+rotated refresh token names the presenting client. Under any other `client_id`,
+or one longer than 255 characters, the token is refused with `invalid_grant`
+before anything is minted or revoked.
 
 #### Mode-Agnostic Refresh: `POST /api/v1/auth/refresh`
 
@@ -1118,8 +1121,9 @@ The response shape matches the OAuth refresh response above. This endpoint takes
 no `client_id` and so compares none, but it carries a token's `client_id` claim
 into the rotated token, never dropping it, so the OAuth grant still enforces the
 binding. During a rolling deploy an older process rotates a bound token without
-the claim, and the next OAuth refresh binds it again; a newer process refuses a
-code an older one stored without a client, and the holder restarts the sign-in.
+the claim, and the next OAuth refresh binds it again when its client is a known
+one; a newer process refuses a code an older one stored without a client, and the
+holder restarts the sign-in.
 
 ## Hosted SSO (ADR-015 / WorkOS)
 
@@ -1870,7 +1874,7 @@ class IOAuthService(ABC):
 
     @abstractmethod
     async def exchange_code_for_token(
-        self, code: str, code_verifier: str, redirect_uri: str
+        self, code: str, code_verifier: str, redirect_uri: str, client_id: str
     ) -> OAuthTokenDTO:
         """Exchange authorization code for access token."""
         ...
@@ -2140,7 +2144,7 @@ is no client registry to reject a caller against.
 | Error Code | HTTP Status | Endpoint | Description |
 |------------|-------------|----------|-------------|
 | `invalid_request` | 400 | both | Missing, repeated, empty or unparseable parameters |
-| `invalid_grant` | 400 | `/token` | Code expired, replayed, PKCE failed, or refresh token revoked |
+| `invalid_grant` | 400 | `/token` | Code expired, replayed, PKCE failed, or refresh token revoked; or the code or refresh token was issued to another client (or names none and the client is not a known one) |
 | `unsupported_grant_type` | 400 | `/token` | `grant_type` is neither `authorization_code` nor `refresh_token` |
 | `unsupported_token_type` | 400 | `/revoke` | `token_type_hint` is not a hint this server knows (RFC 7009 §2.2.1) |
 | `invalid_request` | 415 | both | Body is neither form-encoded nor JSON |

@@ -680,7 +680,9 @@ async def test_oauth_refresh_grant_capture_covers_its_own_reads():
     user = _user()
 
     old_refresh = await generator.generate_refresh_token(
-        user, state_read_at=datetime.now(timezone.utc) - STRADDLE_READ_AGE
+        user,
+        state_read_at=datetime.now(timezone.utc) - STRADDLE_READ_AGE,
+        client_id="faultmaven-copilot",
     )
 
     class _StraddlingUsers:

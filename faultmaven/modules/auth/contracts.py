@@ -332,7 +332,7 @@ class IOAuthService(ABC):
         Args:
             refresh_token: Valid refresh token
             client_id: OAuth client ID. Must match the client the token names;
-                a token naming none is bound to it (#2750)
+                a token naming none is bound to it if it is a known client (#2750)
 
         Returns:
             New access token and rotated refresh token

@@ -47,15 +47,13 @@ from faultmaven.config.tls_root_set import apply_root_set
 from faultmaven.container import container
 from faultmaven.modules.auth.domain.services.service_account_provisioning import (
     SERVICE_ACCOUNT_KIND,
+    SERVICE_CLIENT_ID,
     SLACK_SERVICE_CHANNEL,
     VALID_ACCOUNT_KINDS,
     VALID_SERVICE_CHANNELS,
     ServiceAccountProvisioningError,
     provision_service_account_credential,
 )
-
-#: The Slack agent's ``FAULTMAVEN_OAUTH_CLIENT_ID`` default (#2750).
-DEFAULT_SERVICE_CLIENT_ID = "faultmaven-slack-agent"
 
 
 async def provision(
@@ -64,7 +62,7 @@ async def provision(
     service_channel: str | None,
     token_only: bool,
     enterprise_id: str | None = None,
-    client_id: str | None = None,
+    client_id: str = SERVICE_CLIENT_ID,
 ) -> bool:
     """Provision the account and print its credential."""
 
@@ -133,7 +131,7 @@ async def provision(
             f"   Corrected account_kind → '{account_kind}', "
             f"service_channel → {service_channel!r}"
         )
-    status(f"   Bound to OAuth client: {client_id or 'none (bound at first refresh)'}")
+    status(f"   Bound to OAuth client: {client_id}")
 
     if token_only:
         emit_token(credential.refresh_token)
@@ -212,10 +210,10 @@ def main():
     )
     parser.add_argument(
         "--client-id",
-        default=DEFAULT_SERVICE_CLIENT_ID,
+        default=SERVICE_CLIENT_ID,
         help=(
             "OAuth client the credential is bound to; the agent must refresh "
-            f"under it (default: {DEFAULT_SERVICE_CLIENT_ID})"
+            f"under it (default: {SERVICE_CLIENT_ID})"
         ),
     )
     parser.add_argument(

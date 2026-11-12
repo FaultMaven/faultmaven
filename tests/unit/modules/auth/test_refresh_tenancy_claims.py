@@ -232,7 +232,10 @@ async def test_the_client_claim_is_written_only_when_given(build_generator):
     generator, verify_args = build_generator()
     user, now = _user(enterprise_id=REAL_ENTERPRISE), datetime.now(timezone.utc)
 
-    unbound = await generator.generate_refresh_token(user, state_read_at=now)
+    # /auth/refresh passes the presented claim plainly: absent is None.
+    unbound = await generator.generate_refresh_token(
+        user, state_read_at=now, client_id=None
+    )
     _, paired_unbound = await generator.generate_token_pair(user, state_read_at=now)
     bound = await generator.generate_refresh_token(
         user, state_read_at=now, client_id="faultmaven-copilot"

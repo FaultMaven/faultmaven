@@ -4,7 +4,8 @@ Driven through ``POST /auth/oauth/token`` with the real OAuth service and the
 real token generators, on both signing algorithms. A code stores its client and
 the exchange refuses any other before spending it; a refresh token names its
 client, the grant refuses it under any other without revoking it, and a token
-naming none is bound to the client of its first OAuth refresh (owner ruling).
+naming none is bound at its first OAuth refresh, but only to a known client
+(owner ruling).
 ``POST /auth/refresh`` takes no client but carries the binding forward.
 """
 
@@ -39,6 +40,7 @@ pytestmark = [
 
 COPILOT = "faultmaven-copilot"
 OTHER = "another-client"
+SERVICE = "faultmaven-slack-agent"
 REDIRECT = "https://abcdefghijklmnopabcdefghijklmnop.chromiumapp.org/"
 TOKEN = "/api/v1/auth/oauth/token"
 CODE_REFUSED = "[CLIENT_MISMATCH] Authorization code is not valid for this client"
@@ -81,15 +83,37 @@ def _generator(algorithm, revocation_store):
 
 
 class _Users:
-    """One account, served to the OAuth service (``get``) and /auth/refresh."""
+    """Accounts served to the OAuth service, /auth/refresh and the CLI's mint."""
 
     def __init__(self, user):
-        self.user = user
+        self.users = {user.user_id: user}
 
     async def get(self, user_id):
-        return self.user if user_id == self.user.user_id else None
+        return self.users.get(user_id)
 
     get_user = get
+
+    async def get_user_by_username(self, username):
+        return next((u for u in self.users.values() if u.username == username), None)
+
+    async def create_user(self, username, *_, account_kind, service_channel, **kw):
+        from faultmaven.modules.auth.domain.models.auth import DevUser
+
+        user = DevUser(
+            user_id=f"user-{username}",
+            username=username,
+            email=f"{username}@faultmaven.example",
+            display_name=kw.get("display_name") or username,
+            created_at=datetime.now(timezone.utc),
+            account_kind=account_kind,
+            service_channel=service_channel,
+            enterprise_id=kw["enterprise_id"],
+        )
+        return await self.update_user(user)
+
+    async def update_user(self, user):
+        self.users[user.user_id] = user
+        return user
 
 
 @pytest.fixture(params=["HS256", "RS256"])
@@ -144,6 +168,8 @@ async def env(request, monkeypatch):
             yield SimpleNamespace(
                 client=client,
                 generator=generator,
+                service=service,
+                users=users,
                 user=user,
                 algorithm=request.param,
                 signing_key=signing_key,
@@ -256,16 +282,24 @@ async def test_a_refresh_token_is_refused_under_another_client(env):
     assert _client_claim(response.json()["refresh_token"]) == COPILOT
 
 
-async def test_a_token_naming_no_client_is_bound_on_first_use(env):
+@pytest.mark.parametrize("known, other", [(COPILOT, SERVICE), (SERVICE, COPILOT)])
+async def test_a_token_naming_no_client_is_bound_to_a_known_client(env, known, other):
     token = await _unbound_refresh_token(env)
     assert _client_claim(token) is None
 
-    response = await _refresh(env.client, token, OTHER)
+    response = await _refresh(env.client, token, known)
     assert response.status_code == 200, response.text
     rotated = response.json()["refresh_token"]
-    assert _client_claim(rotated) == OTHER
+    assert _client_claim(rotated) == known
 
-    _assert_refused(await _refresh(env.client, rotated, COPILOT), REFRESH_REFUSED)
+    _assert_refused(await _refresh(env.client, rotated, other), REFRESH_REFUSED)
+
+
+async def test_a_token_naming_no_client_is_refused_under_an_unknown_client(env):
+    token = await _unbound_refresh_token(env)
+
+    _assert_refused(await _refresh(env.client, token, OTHER), REFRESH_REFUSED)
+    assert await env.generator.validate_refresh_token(token) is not None
 
 
 async def test_auth_refresh_carries_the_binding_to_the_oauth_grant(env):
@@ -294,8 +328,39 @@ async def test_a_claim_that_is_not_a_string_is_a_mismatch(env):
     _assert_refused(await _refresh(env.client, forged, COPILOT), REFRESH_REFUSED)
 
 
-async def test_an_overlong_client_is_never_bound(env):
+async def test_an_overlong_client_is_never_bound(env, monkeypatch):
+    # Even a configured one: the cap is checked on its own.
+    allowed = [COPILOT, "c" * 256]
+    monkeypatch.setattr(env.service.settings, "oauth_allowed_clients", allowed)
     token = await _unbound_refresh_token(env)
 
     _assert_refused(await _refresh(env.client, token, "c" * 256), REFRESH_REFUSED)
     assert await env.generator.validate_refresh_token(token) is not None
+
+
+async def test_a_cli_minted_credential_refreshes_under_the_service_client(
+    env, monkeypatch, capsys
+):
+    """The done-when: the CLI's own mint, with its default ``--client-id``."""
+    from faultmaven.cli import provision_service_account as cli
+    from faultmaven.config.settings import AuthMode
+
+    class _Container:
+        jwt_token_generator = env.generator
+
+        async def initialize(self):
+            pass
+
+        def get_user_store(self):
+            return env.users
+
+    oauth_mode = SimpleNamespace(auth=SimpleNamespace(auth_mode=AuthMode.OAUTH))
+    monkeypatch.setattr(cli, "container", _Container())
+    monkeypatch.setattr(cli, "get_settings", lambda: oauth_mode)
+
+    assert await cli.provision("slack-agent", "service", "slack", token_only=True)
+    out = capsys.readouterr().out.split()
+    credential = next(line for line in out if line.startswith("eyJ"))
+
+    _assert_refused(await _refresh(env.client, credential, COPILOT), REFRESH_REFUSED)
+    assert (await _refresh(env.client, credential, SERVICE)).status_code == 200

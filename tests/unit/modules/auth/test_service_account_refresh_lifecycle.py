@@ -327,7 +327,9 @@ class TestCredentialClientBinding:
         )
         assert "client_id" not in claims
 
-    @pytest.mark.parametrize("client_id", ["", "   ", "c" * 256])
+    @pytest.mark.parametrize(
+        "client_id", ["", "   ", f" {SLACK_AGENT}", f"{SLACK_AGENT}\n", "c" * 256]
+    )
     async def test_an_unusable_client_is_refused_before_anything_is_written(
         self, user_store, token_generator, client_id
     ):

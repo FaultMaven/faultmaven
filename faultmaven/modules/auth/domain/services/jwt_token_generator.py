@@ -650,7 +650,7 @@ class IJWTTokenGenerator(ABC):
             user: User to mint the pair for.
             state_read_at: See ``generate_access_token`` (#831).
             client_id: The OAuth client the refresh half is bound to, written
-                as its ``client_id`` claim; omitted when ``None`` (#2750).
+                as its ``client_id`` claim only when it is a ``str`` (#2750).
 
         Returns:
             ``(access_token, refresh_token)``.
@@ -1067,7 +1067,7 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
             "type": "refresh",
             **tenancy,
         }
-        if client_id is not None:
+        if isinstance(client_id, str):
             # The client this token was issued to (#2750), compared at the
             # OAuth refresh grant and carried by every rotation.
             payload["client_id"] = client_id
@@ -1765,7 +1765,7 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
             "type": "refresh",  # Token type
             **tenancy,
         }
-        if client_id is not None:
+        if isinstance(client_id, str):
             payload["client_id"] = client_id  # the issuing client (#2750)
 
         token = jwt.encode(

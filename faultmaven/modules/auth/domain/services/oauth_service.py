@@ -23,6 +23,10 @@ from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     account_may_hold_credentials,
     capture_state_read_at,
 )
+from faultmaven.modules.auth.domain.services.service_account_provisioning import (
+    MAX_CLIENT_ID_LENGTH,
+    SERVICE_CLIENT_ID,
+)
 from faultmaven.modules.auth.infrastructure.metrics.oauth_metrics import (
     OAuthMetricsRecorder,
 )
@@ -588,7 +592,7 @@ class OAuthServiceImpl(IOAuthService):
         duration_seconds = time.time() - start_time
         self._metrics.record_token_exchange(
             grant_type="authorization_code",
-            client_id="unknown",  # Could extract from settings if needed
+            client_id="unknown",  # one label for every exchange: see oauth_metrics
             duration_seconds=duration_seconds,
             success=True,
         )
@@ -614,7 +618,7 @@ class OAuthServiceImpl(IOAuthService):
         Args:
             refresh_token: Valid refresh token
             client_id: OAuth client ID. Must match the client the token names;
-                a token naming none is bound to it (#2750)
+                a token naming none is bound to it if it is a known client (#2750)
 
         Returns:
             New access token and rotated refresh token
@@ -667,13 +671,17 @@ class OAuthServiceImpl(IOAuthService):
         # Client binding (#2750), before anything is loaded, minted or revoked.
         # A token naming a client is redeemed only by it; a claim that is not a
         # string is a mismatch, never "no client". A token naming none is bound
-        # to the presenting client (bind on first use), whose length is capped
-        # so no arbitrary string enters a signed token.
-        bound_client = payload.get("client_id")
-        if len(client_id) > 255 or (
-            "client_id" in payload
-            and (not isinstance(bound_client, str) or bound_client != client_id)
-        ):
+        # to the presenting client only when that client is known: configured
+        # in OAUTH_ALLOWED_CLIENTS, or the service client (owner ruling).
+        if "client_id" in payload:
+            bound_client = payload["client_id"]
+            refused = not isinstance(bound_client, str) or bound_client != client_id
+        else:
+            refused = (
+                client_id not in self.settings.oauth_allowed_clients
+                and client_id != SERVICE_CLIENT_ID
+            )
+        if refused or len(client_id) > MAX_CLIENT_ID_LENGTH:
             logger.warning(
                 "OAuth token refresh failed: client mismatch",
                 extra={"user_id": user_id, "error": "CLIENT_MISMATCH"},
