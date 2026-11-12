@@ -4,7 +4,8 @@ certifi, every grpcio roots.pem, and the bundle of every pip and pip wheel the
 image holds (#2665).
 Root counts and a known root keep an empty store from passing.
 
-Takes one optional argument, the directory searched for pips (default ``/``)."""
+Takes one optional argument, the root searched for pips, pip wheels and grpcio
+roots.pem files (default ``/``)."""
 
 import hashlib
 import os
