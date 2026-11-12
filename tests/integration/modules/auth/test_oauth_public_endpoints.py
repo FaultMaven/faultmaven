@@ -139,6 +139,7 @@ class TestTokenEndpoint:
             code="valid_authorization_code",
             code_verifier="valid_pkce_verifier",
             redirect_uri="chrome-extension://test123/callback",
+            client_id="faultmaven-copilot",
         )
 
     @pytest.mark.asyncio
