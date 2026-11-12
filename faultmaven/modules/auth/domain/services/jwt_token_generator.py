@@ -7,7 +7,8 @@ Design:
 - Access tokens: Short-lived (15 minutes), stateless JWT tokens
 - Refresh tokens: Long-lived (7 days), tracked for revocation
 - Token rotation: One-time use refresh tokens (security best practice)
-- Revocation tracking: Redis for cloud, in-memory for local
+- Revocation tracking: one deployment-wide store, Redis in cloud and the
+  ``token_revocations`` table in standalone (#828)
 """
 
 import enum
@@ -53,6 +54,31 @@ def max_revocation_entry_ttl() -> int:
     from faultmaven.config.settings import MAX_TOKEN_LIFETIME_DAYS
 
     return MAX_TOKEN_LIFETIME_DAYS * 86400
+
+
+#: How long a per-jti entry outlives the token it names (#2764). It covers
+#: redis-py's retry and socket-timeout budget, which can land a claim after the
+#: token's own ``exp``, and clock skew between pods: an entry that lapsed at
+#: ``exp`` on one clock leaves the token valid on a lagging one.
+REVOCATION_ENTRY_MARGIN_SECONDS = 300
+
+
+def revocation_entry_ttl(claims: Dict) -> int:
+    """Seconds a per-jti entry for these claims is held: the one rule.
+
+    The token's remaining life, rounded up, plus
+    ``REVOCATION_ENTRY_MARGIN_SECONDS``, and at least a second. Capped at
+    ``max_revocation_entry_ttl()`` so a crafted exp cannot buy multi-year
+    storage (#830). A token with no exp never expires on its own, so it gets
+    the ceiling, the longest the store holds anything.
+    """
+    max_ttl = max_revocation_entry_ttl()
+    exp = claims.get("exp")
+    if not exp:
+        return max_ttl
+    expires_at = datetime.fromtimestamp(exp, tz=timezone.utc)
+    remaining = (expires_at - datetime.now(timezone.utc)).total_seconds()
+    return min(max(1, math.ceil(remaining) + REVOCATION_ENTRY_MARGIN_SECONDS), max_ttl)
 
 
 #: Emitted for a user whose enterprise cannot be resolved under multi-tenant.
@@ -817,13 +843,14 @@ class IJWTTokenGenerator(ABC):
         ...
 
     @abstractmethod
-    async def claim_refresh_token(self, token: str) -> "RefreshClaim":
+    async def claim_refresh_token(self, claims: Dict) -> "RefreshClaim":
         """Redeem a refresh token once: revoke it only if nobody has (#2764).
 
         The rotation step of both refresh paths, after the new pair is minted.
-        Only the caller answered ``RefreshClaim.CLAIMED`` may deliver its
-        pair. Fails closed: a token with no ``jti``, an expired one, or one
-        this deployment did not sign is never claimed.
+        ``claims`` is what ``validate_refresh_token`` returned: the claim
+        neither decodes nor checks expiry again, so a token that validated is
+        claimable. Only the caller answered ``RefreshClaim.CLAIMED`` may
+        deliver its pair; claims with no ``jti`` are never claimed.
 
         Raises:
             Exception: Store write failures propagate, as on the revoke path.
@@ -1386,13 +1413,9 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
             decode_verified=self._decode_for_revocation,
         )
 
-    async def claim_refresh_token(self, token: str) -> "RefreshClaim":
+    async def claim_refresh_token(self, claims: Dict) -> "RefreshClaim":
         """See ``IJWTTokenGenerator.claim_refresh_token``."""
-        return await _claim_token_by_jti(
-            self.revocation_store,
-            token,
-            decode_verified=self._decode_for_revocation,
-        )
+        return await _claim_token_by_jti(self.revocation_store, claims)
 
 
 async def _revoke_token_by_jti(
@@ -1442,9 +1465,8 @@ async def _revoke_token_by_jti(
             )
             return
 
-        ttl = _revocation_entry_ttl(payload, rounding=int)
-        if ttl <= 0:
-            return  # Already expired; nothing left to revoke
+        # The decode refused an expired token, so something is left to revoke.
+        ttl = revocation_entry_ttl(payload)
     except jwt.ExpiredSignatureError:
         # Nothing left to revoke; the token is already unusable.
         logger.info(
@@ -1470,81 +1492,40 @@ async def _revoke_token_by_jti(
     )
 
 
-def _revocation_entry_ttl(payload: Dict, *, rounding: Callable[[float], int]) -> int:
-    """Seconds a per-jti entry for these claims is held: the token's own life.
-
-    ``rounding`` turns the remaining seconds into an int; a result ``<= 0``
-    means nothing is left. The entry is capped at ``max_revocation_entry_ttl()``
-    so a crafted exp cannot buy multi-year storage (#830), without ever cutting
-    it below the token's own life. A signed token with no exp never expires on
-    its own, so it gets the ceiling, the longest this store holds anything.
-    """
-    max_ttl = max_revocation_entry_ttl()
-    exp = payload.get("exp")
-    if not exp:
-        return max_ttl
-    expires_at = datetime.fromtimestamp(exp, tz=timezone.utc)
-    remaining = (expires_at - datetime.now(timezone.utc)).total_seconds()
-    return min(rounding(remaining), max_ttl)
-
-
-def _at_least_one_second(remaining: float) -> int:
-    """The claim's rounding: a token that verified is held at least a second.
-
-    Truncating would give a token validated in its last second no entry at
-    all, and the claim would refuse it for that alone (#2764).
-    """
-    return max(1, math.ceil(remaining))
-
-
 class RefreshClaim(str, enum.Enum):
-    """What ``claim_refresh_token`` found. Only ``CLAIMED`` delivers a pair."""
+    """What a claim found. Only ``CLAIMED`` delivers a pair."""
 
     CLAIMED = "claimed"
-    #: Another redemption of the same token claimed it first.
+    #: Another claim of the same token holds the entry.
     ALREADY_REDEEMED = "already_redeemed"
+    #: A revocation (logout, ``/revoke``) holds the entry.
+    REVOKED = "revoked"
     NO_JTI = "no_jti"
-    EXPIRED = "expired"
-    UNVERIFIABLE = "unverifiable"
 
 
-async def _claim_token_by_jti(
-    revocation_store,
-    token: str,
-    *,
-    decode_verified: Callable[[str], Dict],
-) -> RefreshClaim:
-    """Write a token's revocation entry only if none exists (#2764).
+async def _claim_token_by_jti(revocation_store, claims: Dict) -> RefreshClaim:
+    """Write the entry for validated refresh claims only if none exists (#2764).
 
     The single-use step of refresh rotation, shared by both generators. Unlike
-    ``_revoke_token_by_jti`` it fails CLOSED: a token it cannot claim is never
+    ``_revoke_token_by_jti`` it fails CLOSED: claims it cannot claim are never
     "nothing to do", because the caller delivers a pair only on ``CLAIMED``.
     Store write failures propagate.
     """
-    try:
-        payload = decode_verified(token)
-        jti = payload.get("jti")
-        if not jti:
-            logger.warning("JWT claim refused: refresh token missing jti")
-            return RefreshClaim.NO_JTI
-        ttl = _revocation_entry_ttl(payload, rounding=_at_least_one_second)
-    except jwt.ExpiredSignatureError:
-        logger.info("JWT claim refused: refresh token expired")
-        return RefreshClaim.EXPIRED
-    except Exception as e:
+    jti = claims.get("jti")
+    if not jti:
         logger.warning(
-            "JWT claim refused: refresh token could not be verified",
-            extra={"error": str(e)},
+            "JWT claim refused: refresh token missing jti",
+            extra={"user_id": claims.get("sub")},
         )
-        return RefreshClaim.UNVERIFIABLE
-
-    if not await revocation_store.claim_token(jti, ttl):
-        return RefreshClaim.ALREADY_REDEEMED
-    logger.info(
-        "JWT refresh token claimed",
-        extra={"jti": jti, "user_id": payload.get("sub"), "ttl_seconds": ttl},
-    )
-    return RefreshClaim.CLAIMED
+        return RefreshClaim.NO_JTI
+    ttl = revocation_entry_ttl(claims)
+    outcome = await revocation_store.claim_token(jti, ttl)
+    if outcome is RefreshClaim.CLAIMED:
+        logger.info(
+            "JWT refresh token claimed",
+            extra={"jti": jti, "user_id": claims.get("sub"), "ttl_seconds": ttl},
+        )
+    return outcome
 
 
 async def revocation_reason(revocation_store, payload: Dict) -> Optional[str]:
@@ -2151,13 +2132,9 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
             decode_verified=self._decode_for_revocation,
         )
 
-    async def claim_refresh_token(self, token: str) -> "RefreshClaim":
+    async def claim_refresh_token(self, claims: Dict) -> "RefreshClaim":
         """See ``IJWTTokenGenerator.claim_refresh_token``."""
-        return await _claim_token_by_jti(
-            self.revocation_store,
-            token,
-            decode_verified=self._decode_for_revocation,
-        )
+        return await _claim_token_by_jti(self.revocation_store, claims)
 
 
 def _auth_mode_name(settings) -> str:
@@ -2380,7 +2357,8 @@ class ITokenRevocationStore(ABC):
 
     - **Per token** (``add_revoked_token``/``is_revoked``): a single JTI, used
       by logout and OAuth ``/revoke``. Refresh rotation writes the same entry
-      through ``claim_token``, which writes only if no live entry exists.
+      through ``claim_token``, which writes only if no live entry exists. No
+      write shortens a live entry.
     - **Per user** (``revoke_user_tokens_before``/``is_user_revoked``): a
       timestamp watermark, used by the admin revoke-tokens endpoint and the
       deactivate/delete/role-change flows (#769). Enumerating a user's
@@ -2401,9 +2379,10 @@ class ITokenRevocationStore(ABC):
     Every entry is written with a TTL and stops revoking when it runs out. The
     two granularities are held for different lifetimes:
 
-    - a per-jti entry for the revoked token's remaining life, which
-      ``_revoke_token_by_jti`` also caps at ``max_revocation_entry_ttl()`` and
-      gives in full to a token with no ``exp``;
+    - a per-jti entry for the token's remaining life plus
+      ``REVOCATION_ENTRY_MARGIN_SECONDS``, capped at
+      ``max_revocation_entry_ttl()`` and given in full to a token with no
+      ``exp`` (``revocation_entry_ttl``, the one rule for every writer);
     - a watermark for that ceiling plus ``MAX_MINT_BASIS_CARRY_SECONDS``,
       whatever lifetime the user's tokens were minted with
       (``AuthService._watermark_ttl_seconds``). Each new watermark for the user
@@ -2414,9 +2393,13 @@ class ITokenRevocationStore(ABC):
     async def add_revoked_token(self, jti: str, ttl: int) -> None:
         """Add token JTI to revocation list.
 
+        Never shortens a live entry for the JTI, and leaves a claim's entry a
+        claim's (#2764): an unauthenticated ``/revoke`` must not cut short the
+        entry that makes a redeemed refresh token single-use.
+
         Args:
             jti: JWT ID to revoke
-            ttl: Time to live in seconds (matches token expiration)
+            ttl: Time to live in seconds (``revocation_entry_ttl``)
         """
         ...
 
@@ -2433,20 +2416,21 @@ class ITokenRevocationStore(ABC):
         ...
 
     @abstractmethod
-    async def claim_token(self, jti: str, ttl: int) -> bool:
+    async def claim_token(self, jti: str, ttl: int) -> "RefreshClaim":
         """Revoke a JTI only if no live entry has it: the single-use claim (#2764).
 
         Writing the entry and learning that nobody had written it are one
-        step. Of any number of concurrent claims of one JTI, exactly one
-        returns True. A claim after ``add_revoked_token`` returns False, and
-        after any claim ``is_revoked`` is True.
+        step. While the entry stands, at most one claim of the JTI answers
+        ``CLAIMED``; a claim whose write is lost answers none. After any claim
+        ``is_revoked`` is True.
 
         Args:
             jti: JWT ID to claim
-            ttl: Time to live in seconds (matches token expiration)
+            ttl: Time to live in seconds (``revocation_entry_ttl``)
 
         Returns:
-            True only for the caller whose write created the entry.
+            ``CLAIMED`` for the caller whose write created the entry, else who
+            holds it: ``ALREADY_REDEEMED`` (a claim) or ``REVOKED``.
         """
         ...
 

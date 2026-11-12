@@ -17,7 +17,7 @@ import asyncio
 import base64
 import hashlib
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import jwt
@@ -499,7 +499,7 @@ async def test_a_refresh_token_with_no_jti_is_refused(env, path):
     jti_less = jwt.encode(claims, env.signing_key, algorithm=env.algorithm)
 
     assert await env.generator.validate_refresh_token(jti_less) is None
-    assert await env.generator.claim_refresh_token(jti_less) is RefreshClaim.NO_JTI
+    assert await env.generator.claim_refresh_token(claims) is RefreshClaim.NO_JTI
     response = await _redeem(env, path, jti_less)
     assert response.status_code == (400 if path == "oauth" else 401), response.text
 
@@ -516,3 +516,39 @@ async def test_a_claim_the_store_cannot_write_delivers_nothing(env, monkeypatch,
     response = await _redeem(env, path, token)
     assert response.status_code == 500, response.text
     assert "access_token" not in response.text
+
+
+@pytest.mark.parametrize("path", ["oauth", "auth"])
+async def test_a_token_that_expires_during_the_mint_still_gets_its_pair(
+    env, monkeypatch, path
+):
+    """It validated, so it is claimable: the claim never checks expiry (#2764).
+
+    The clock is moved past the token's 7-day ``exp`` once the mint returns,
+    for this module and PyJWT alike, so a claim that decoded the token again
+    would refuse it.
+    """
+    import jwt.api_jwt
+
+    from faultmaven.modules.auth.domain.services import jwt_token_generator
+
+    token = await _bound_refresh_token(env.client)
+    cls = type(env.generator)
+    mint = cls.generate_token_pair
+
+    class _PastExp(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime.now(tz) + timedelta(days=8)
+
+    async def mint_then_expire(self, *args, **kwargs):
+        pair = await mint(self, *args, **kwargs)
+        monkeypatch.setattr(jwt_token_generator, "datetime", _PastExp)
+        monkeypatch.setattr(jwt.api_jwt, "datetime", _PastExp)
+        return pair
+
+    monkeypatch.setattr(cls, "generate_token_pair", mint_then_expire)
+
+    response = await _redeem(env, path, token)
+    assert response.status_code == 200, response.text
+    assert await env.revocations.is_revoked(_claims(token)["jti"])

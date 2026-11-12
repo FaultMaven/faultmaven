@@ -1396,8 +1396,9 @@ class TokenRevocationModel(Base):
     #: The revoked token's ``jti``, or the revoked user's id.
     subject = Column(String(255), primary_key=True)
     #: Watermark instant as a Unix timestamp, at full precision. Meaningful
-    #: only for ``scope='user'``; ``0`` on a ``jti`` row, which revokes
-    #: unconditionally. Float rather than an integer because
+    #: only for ``scope='user'``; a ``jti`` row revokes unconditionally and
+    #: carries its writer's mark instead: ``0`` a revocation, ``-1`` a
+    #: refresh-token claim (#2764). Float rather than an integer because
     #: ``clear_user_revocation_if_before`` orders a login's pre-read capture
     #: against it and cannot do that at second granularity (#831).
     revoked_at = Column(Float, nullable=False, server_default="0")

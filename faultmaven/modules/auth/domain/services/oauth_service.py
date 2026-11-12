@@ -779,29 +779,30 @@ class OAuthServiceImpl(IOAuthService):
         #
         # Mint BEFORE claiming, as /auth/refresh does. Claiming first would mean
         # a failure to mint leaves the caller holding a revoked credential and
-        # no replacement — a lockout only an operator can undo. This order costs
-        # nothing: if the claim fails the caller simply retries with a token
-        # that is still valid.
+        # no replacement — a lockout only an operator can undo. A failed mint
+        # claims nothing, so the caller retries with a token that is still
+        # valid; a refused claim means another refresh or a revocation got
+        # there first, or the token carries no jti.
         new_access_token, new_refresh_token = (
             await self.token_generator.generate_token_pair(
                 user, state_read_at=state_read_at, client_id=client_id
             )
         )
         # The claim revokes the presented token only if no other redemption
-        # has, so of concurrent refreshes exactly one delivers a pair and a
-        # token never forks into two client chains (#2764). A loser's pair is
+        # or revocation has, so of concurrent refreshes at most one delivers a
+        # pair while the entry stands, and a token never forks into two client
+        # chains (#2764). A loser's pair is
         # discarded unsent. Its wire answer is a revoked token's, byte for byte.
-        claim = await self.token_generator.claim_refresh_token(refresh_token)
+        claim = await self.token_generator.claim_refresh_token(payload)
         if claim is not RefreshClaim.CLAIMED:
+            # Only a claim lost to another claim is a reuse; one lost to a
+            # revocation is metered as the revoked token it is.
             reused = claim is RefreshClaim.ALREADY_REDEEMED
             error_code = "REFRESH_TOKEN_REUSED" if reused else "INVALID_REFRESH_TOKEN"
             logger.warning(
-                (
-                    "OAuth token refresh failed: refresh token already redeemed; "
-                    "a minted pair was discarded"
-                    if reused
-                    else "OAuth token refresh failed: refresh token not claimable"
-                ),
+                "OAuth token refresh failed: refresh token not claimed (%s); "
+                "a minted pair was discarded",
+                claim.value,
                 extra={"user_id": user_id, "claim": claim.value, "error": error_code},
             )
             self._metrics.record_token_refresh(

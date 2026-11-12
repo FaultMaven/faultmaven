@@ -1260,8 +1260,9 @@ The short-lived access token cannot be extended (it is a stateless JWT),
 so an active client must mint a new one before expiry rather than being
 forced to re-login. Refresh tokens rotate: the presented token is revoked
 and a fresh one is returned alongside the new access token. A token is
-redeemed once: of concurrent refreshes of one token, one succeeds and
-the others get 401 `invalid_refresh_token`.
+redeemed at most once while its revocation entry stands: of concurrent
+refreshes of one token, at most one succeeds and the others get 401
+`invalid_refresh_token`.
 
 Mode-aware (ADR-015 D6): local mode validates and mints with the HS256
 generator; oauth/cloud mode uses the RS256 generator that issued the

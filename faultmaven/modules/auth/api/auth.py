@@ -750,8 +750,9 @@ async def refresh_tokens(
     so an active client must mint a new one before expiry rather than being
     forced to re-login. Refresh tokens rotate: the presented token is revoked
     and a fresh one is returned alongside the new access token. A token is
-    redeemed once: of concurrent refreshes of one token, one succeeds and
-    the others get 401 `invalid_refresh_token`.
+    redeemed at most once while its revocation entry stands: of concurrent
+    refreshes of one token, at most one succeeds and the others get 401
+    `invalid_refresh_token`.
 
     Mode-aware (ADR-015 D6): local mode validates and mints with the HS256
     generator; oauth/cloud mode uses the RS256 generator that issued the
@@ -867,18 +868,16 @@ async def refresh_tokens(
 
         # 4. Rotation: claim the old refresh token, so a leaked/replayed token
         #    cannot be reused after a successful refresh. The claim revokes it
-        #    only if no concurrent refresh has: exactly one caller receives a
-        #    pair, and a loser's minted pair is discarded unsent (#2764). The
-        #    mint stays first, so a failed mint leaves the token redeemable.
-        claim = await jwt_generator.claim_refresh_token(request_body.refresh_token)
+        #    only if no concurrent refresh or revocation has: at most one caller
+        #    receives a pair, and a loser's minted pair is discarded unsent
+        #    (#2764). The mint stays first, so a failed mint leaves the token
+        #    redeemable. The claim reads the validated claims, never expiry.
+        claim = await jwt_generator.claim_refresh_token(claims)
         if claim is not RefreshClaim.CLAIMED:
             logger.warning(
-                (
-                    "Token refresh refused: refresh token already redeemed; "
-                    "a minted pair was discarded"
-                    if claim is RefreshClaim.ALREADY_REDEEMED
-                    else "Token refresh refused: refresh token not claimable"
-                ),
+                "Token refresh refused: refresh token not claimed (%s); "
+                "a minted pair was discarded",
+                claim.value,
                 extra={"user_id": user.user_id, "claim": claim.value},
             )
             raise _invalid_refresh_token()

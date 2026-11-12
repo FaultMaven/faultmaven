@@ -27,6 +27,7 @@ from fastapi import Request, Response
 from faultmaven.config.settings import MAX_TOKEN_LIFETIME_DAYS
 from faultmaven.modules.auth.api.oauth import revoke
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
+    REVOCATION_ENTRY_MARGIN_SECONDS,
     HS256JWTTokenGenerator,
     RS256JWTTokenGenerator,
 )
@@ -48,6 +49,7 @@ DEFAULT_HINT = "access_token"
 #: read from the same constant rather than restated, so this suite fails if the
 #: bound and the ceiling ever drift apart.
 MAX_ENTRY_TTL = MAX_TOKEN_LIFETIME_DAYS * 86400
+MARGIN = REVOCATION_ENTRY_MARGIN_SECONDS
 
 
 def _keypair():
@@ -382,7 +384,8 @@ class TestEntryLifetimeIsBounded:
         await _call_revoke(_oauth_service(generator), short, "access_token")
 
         ttl = await redis.ttl("revoked:token:jti:short-jti")
-        assert 290 <= ttl <= 300
+        # Its own remaining life plus the margin every jti entry gets (#2764).
+        assert 290 + MARGIN <= ttl <= 300 + MARGIN
 
 
 class TestEntryNeverExpiresBeforeTheTokenItRevokes:
@@ -411,7 +414,9 @@ class TestEntryNeverExpiresBeforeTheTokenItRevokes:
         ttl = await redis.ttl(f"revoked:token:jti:{jti}")
         # Covers the token's remaining life, not the 1h access lifetime.
         assert ttl > ACCESS_MINUTES * 60
-        assert REFRESH_DAYS * 86400 - 60 <= ttl <= REFRESH_DAYS * 86400
+        assert (
+            REFRESH_DAYS * 86400 - 60 + MARGIN <= ttl <= REFRESH_DAYS * 86400 + MARGIN
+        )
 
     @pytest.mark.parametrize("hint", ALL_HINTS)
     async def test_access_token_is_not_extended_by_a_refresh_hint(self, hint):
@@ -426,7 +431,7 @@ class TestEntryNeverExpiresBeforeTheTokenItRevokes:
         await _call_revoke(_oauth_service(generator), access, hint)
 
         ttl = await redis.ttl(f"revoked:token:jti:{jti}")
-        assert 0 < ttl <= ACCESS_MINUTES * 60
+        assert 0 < ttl <= ACCESS_MINUTES * 60 + MARGIN
 
     async def test_local_logout_refresh_entry_covers_the_token(self):
         """The HS256 path routes by method name only — same ceiling rule."""
@@ -472,7 +477,7 @@ class TestEntryNeverExpiresBeforeTheTokenItRevokes:
         await _call_revoke(_oauth_service(generator), reset_token, hint)
 
         ttl = await redis.ttl("revoked:token:jti:reset-jti")
-        assert 3540 <= ttl <= 3600
+        assert 3540 + MARGIN <= ttl <= 3600 + MARGIN
 
     async def test_token_minted_before_the_expiry_was_lowered_stays_revoked(self):
         """An operator lowering the setting must not resurrect live tokens.

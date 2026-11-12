@@ -522,7 +522,10 @@ class TestRefreshToken:
         )
 
         assert token_dto.refresh_token == "rotated_refresh_token"
-        mock_token_generator.claim_refresh_token.assert_awaited_once_with(presented)
+        # The claim reads the validated claims; it never decodes again (#2764).
+        mock_token_generator.claim_refresh_token.assert_awaited_once_with(
+            mock_token_generator.validate_refresh_token.return_value
+        )
         mock_token_generator.revoke_refresh_token.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -530,9 +533,8 @@ class TestRefreshToken:
         "claim, metric_code",
         [
             (RefreshClaim.ALREADY_REDEEMED, "REFRESH_TOKEN_REUSED"),
+            (RefreshClaim.REVOKED, "INVALID_REFRESH_TOKEN"),
             (RefreshClaim.NO_JTI, "INVALID_REFRESH_TOKEN"),
-            (RefreshClaim.EXPIRED, "INVALID_REFRESH_TOKEN"),
-            (RefreshClaim.UNVERIFIABLE, "INVALID_REFRESH_TOKEN"),
         ],
     )
     async def test_a_refresh_whose_claim_is_refused_delivers_nothing(
@@ -542,10 +544,12 @@ class TestRefreshToken:
         mock_user_repository,
         claim,
         metric_code,
+        caplog,
     ):
         """The minted pair is discarded; the answer is a revoked token's (#2764).
 
-        Only the metric tells a lost claim apart from any other refusal.
+        Only a claim lost to another claim is metered as a reuse. One lost to a
+        revocation is logged and metered as the revoked token it is.
         """
         mock_token_generator.claim_refresh_token.return_value = claim
         mock_user_repository.get.return_value = Mock(user_id="user_123")
@@ -563,6 +567,8 @@ class TestRefreshToken:
         oauth_service._metrics.record_token_refresh.assert_called_once_with(
             client_id="faultmaven-copilot", success=False, error_code=metric_code
         )
+        (record,) = [r for r in caplog.records if getattr(r, "claim", None)]
+        assert (record.claim, record.error) == (claim.value, metric_code)
 
     @pytest.mark.asyncio
     async def test_refresh_access_token_invalid_token(

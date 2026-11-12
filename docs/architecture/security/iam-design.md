@@ -179,7 +179,7 @@ Both `HS256JWTTokenGenerator` (local mode) and `RS256JWTTokenGenerator` (cloud/O
 
 Neither value may be blank. Both are refused at startup, because with no hardcoded fallback left a blank one fails every authentication in the deployment. The two are not symmetric at runtime — PyJWT treats a falsy `aud` in a payload as *absent* and rejects it, while a blank `iss` compares equal to itself and is silently functional — but both are refused, since a blank issuer is unintended in every case.
 
-**Changing the pair invalidates tokens already in circulation.** Both access and refresh tokens minted under the previous values are rejected immediately by the next request that presents them — they are not merely left to expire. Clients treat that rejection as definitive and re-authenticate, so the effect is a forced re-login for every active session, and a rolling deploy widens it: while both generations are running they reject each other's refresh tokens, and refresh rotation mints the replacement pair and then claims the presented token in one atomic write, so only the caller whose claim succeeds receives the pair (#2764).
+**Changing the pair invalidates tokens already in circulation.** Both access and refresh tokens minted under the previous values are rejected immediately by the next request that presents them — they are not merely left to expire. Clients treat that rejection as definitive and re-authenticate, so the effect is a forced re-login for every active session, and a rolling deploy widens it: while both generations are running they reject each other's refresh tokens, and refresh rotation mints the replacement pair first and then claims the presented token with one atomic store write; only the caller whose claim succeeds receives the pair (#2764).
 
 The defaults are `iss="faultmaven"` / `aud="faultmaven-api"` because `aud` names the token's intended **recipient** — for an access token, the API — rather than the client bearing it (RFC 7519 §4.1.3). They previously read `iss="faultmaven-api"` / `aud="faultmaven-app"`, which had both roles backwards; #938 corrected them while unifying the pair.
 
@@ -230,8 +230,15 @@ writes to the same deployment-wide store the check above reads. Rotation writes
 through the store's one conditional write, `claim_token`, which records the
 token's jti only if no live entry has it and answers which caller wrote it
 (Redis `SET NX` with a per-call value read back; SQL `INSERT … ON CONFLICT DO
-NOTHING … RETURNING`), so a refresh token is redeemed once even under
-concurrency (#2764). The store is
+NOTHING … RETURNING`), so a refresh token is redeemed at most once while its
+entry stands, even under concurrency (#2764). Every jti entry is held for the
+token's remaining life plus `REVOCATION_ENTRY_MARGIN_SECONDS` (300 s: redis-py's
+retry and socket-timeout budget, and clock skew between pods), capped at the
+schema ceiling, and no write shortens a live entry, so a `/revoke` of an
+already-rotated token cannot reopen it. During a rolling deploy from a build
+without the claim, an older process still revokes unconditionally, so a token
+redeemed concurrently on an old and a new process can deliver two pairs until
+the rollout completes. The store is
 created once in the DI container for both auth modes and shared by instance.
 Which implementation is a durability question (#828), not a second namespace:
 cloud gets `RedisTokenRevocationStore`, keyed `{token_revocation_prefix}jti:{jti}`
@@ -294,13 +301,13 @@ is likewise not recorded: there is nothing left to revoke. Audience, issuer and
 `type` are deliberately not checked on this path — `token_type_hint` is a hint,
 and any token this deployment signed is revocable whatever it was minted for.
 
-The entry's TTL is `min(exp - now, configured maximum lifetime for that token
-type)`. A signed token cannot carry an arbitrary `exp`, so the cap is defence in
-depth on the generator revoke path — the one an unauthenticated caller can
-reach: it keeps store memory bounded by configuration rather than by a claim any
-caller supplies. `AuthService.revoke_token`, which logout uses, takes its `exp`
-from claims the authenticated request path has already verified and is left
-uncapped.
+The entry's TTL is one rule for every jti writer (`revocation_entry_ttl`,
+#2764): `min(ceil(exp - now) + REVOCATION_ENTRY_MARGIN_SECONDS, schema ceiling
+on token lifetime)`. A signed token cannot carry an arbitrary `exp`, so the cap
+is defence in depth on the generator revoke path — the one an unauthenticated
+caller can reach: it keeps store memory bounded rather than set by a claim any
+caller supplies. `AuthService.revoke_token`, which logout uses, applies the same
+rule to the `exp` the authenticated request path has already verified.
 
 Which ceiling applies is decided by the token's **own verified `type`**, never by
 which revoke method the request routed to. `token_type_hint` is optional in RFC

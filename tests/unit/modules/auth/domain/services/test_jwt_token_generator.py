@@ -19,9 +19,14 @@ from jwt.utils import base64url_decode, base64url_encode
 
 from faultmaven.models.exceptions import InvalidGrantError
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
+    REVOCATION_ENTRY_MARGIN_SECONDS,
+    RefreshClaim,
     RS256JWTTokenGenerator,
     SequentialRevocationState,
 )
+from tests.utils import InMemoryRevocationStore
+
+MARGIN = REVOCATION_ENTRY_MARGIN_SECONDS
 
 #: The configured pair, as production wires it (JWT_ISSUER/JWT_AUDIENCE
 #: defaults). Deliberately not the literals the HS256 paths once hardcoded:
@@ -464,8 +469,8 @@ class TestTokenRevocation:
         )
         assert jti == payload["jti"]
 
-        # Verify TTL is approximately 1 hour
-        assert 3590 <= ttl <= 3610
+        # Verify TTL is approximately 1 hour, plus the entry margin (#2764)
+        assert 3590 + MARGIN <= ttl <= 3610 + MARGIN
 
     @pytest.mark.asyncio
     async def test_revoke_refresh_token(
@@ -490,8 +495,8 @@ class TestTokenRevocation:
         )
         assert jti == payload["jti"]
 
-        # Verify TTL is approximately 7 days
-        expected_seconds = 7 * 24 * 60 * 60
+        # Verify TTL is approximately 7 days, plus the entry margin (#2764)
+        expected_seconds = 7 * 24 * 60 * 60 + MARGIN
         assert expected_seconds - 10 <= ttl <= expected_seconds + 10
 
     @pytest.mark.asyncio
@@ -519,15 +524,36 @@ class TestTokenRevocation:
         mock_revocation_store.add_revoked_token.assert_not_called()
 
 
-def test_a_claim_in_a_tokens_last_second_still_writes_an_entry():
-    """A token that verified is never refused because under a second was left
-    (#2764). The revoke path keeps its rule: nothing left, nothing written."""
-    from faultmaven.modules.auth.domain.services.jwt_token_generator import (
-        _at_least_one_second,
-        _revocation_entry_ttl,
+async def test_a_claim_in_a_tokens_last_second_outlives_it_by_the_margin(
+    monkeypatch,
+):
+    """Through the claim path: a token that validated is claimed whatever is
+    left of it, and its entry outlives ``exp`` by the margin (#2764). The
+    claim's clock is fixed, so half a second is left exactly."""
+    from faultmaven.modules.auth.domain.services import jwt_token_generator
+
+    instant = datetime(2030, 1, 1, tzinfo=timezone.utc)
+
+    class _Fixed(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return instant
+
+    monkeypatch.setattr(jwt_token_generator, "datetime", _Fixed)
+    store = InMemoryRevocationStore()
+    generator = RS256JWTTokenGenerator(
+        private_key=TEST_PRIVATE_KEY,
+        public_key=TEST_PUBLIC_KEY,
+        revocation_store=store,
+        access_token_expire_minutes=ACCESS_MINUTES,
+        refresh_token_expire_days=REFRESH_DAYS,
+        issuer=ISSUER,
+        audience=AUDIENCE,
     )
+    exp = instant.timestamp() + 0.5
 
-    last_second = {"exp": time.time() + 0.5}
+    claim = await generator.claim_refresh_token({"jti": "last-second", "exp": exp})
 
-    assert _revocation_entry_ttl(last_second, rounding=_at_least_one_second) == 1
-    assert _revocation_entry_ttl(last_second, rounding=int) <= 0
+    assert claim is RefreshClaim.CLAIMED
+    # Half a second, rounded up, plus the margin: the entry outlives exp.
+    assert store.revoked["last-second"] == 1 + MARGIN
