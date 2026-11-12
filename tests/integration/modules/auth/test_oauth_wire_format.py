@@ -148,6 +148,7 @@ class TestFormEncodingIsAccepted:
             code="auth-code-1",
             code_verifier="verifier-1",
             redirect_uri="https://abc.chromiumapp.org/",
+            client_id="faultmaven-copilot",
         )
 
     @pytest.mark.asyncio

@@ -209,6 +209,11 @@ named = {
     "unleased_no_store": REGISTRY.get_sample_value(
         "case_unleased_turns_total", {"reason": "no_store"}
     ),
+    # The exchange's client mismatch (#2750).
+    "client_mismatch": REGISTRY.get_sample_value(
+        "oauth_token_exchange_errors_total",
+        {"grant_type": "authorization_code", "error_code": "CLIENT_MISMATCH"},
+    ),
 }
 
 from faultmaven.infrastructure.shims.metrics import DECLARED_CHILDREN, LAZY_DECLARED
@@ -275,6 +280,7 @@ def test_every_bounded_series_is_exported_at_zero_from_import(tmp_path):
         "driver_release": 0.0,
         "chat_data_saved": 0.0,
         "unleased_no_store": 0.0,
+        "client_mismatch": 0.0,
     }
     assert len(result["declared"]) == len(set(result["declared"]))
     assert result["undeclared"] == []

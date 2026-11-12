@@ -799,6 +799,7 @@ async def token(
                 code=token_request.code,
                 code_verifier=token_request.code_verifier,
                 redirect_uri=token_request.redirect_uri,
+                client_id=token_request.client_id,
             )
 
             logger.info(

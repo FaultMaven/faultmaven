@@ -229,6 +229,7 @@ class OAuthServiceImpl(IOAuthService):
             used=False,
             organization_id=organization_id,
             state_read_at=state_read_at.timestamp(),
+            client_id=request.client_id,
         )
 
         await self.code_repository.save_code(code_data)
@@ -255,6 +256,7 @@ class OAuthServiceImpl(IOAuthService):
         code: str,
         code_verifier: str,
         redirect_uri: str,
+        client_id: str,
     ) -> OAuthTokenDTO:
         """Exchange authorization code for access token.
 
@@ -262,6 +264,7 @@ class OAuthServiceImpl(IOAuthService):
             code: Authorization code from authorization endpoint
             code_verifier: PKCE code verifier (proves client owns code_challenge)
             redirect_uri: Must match original redirect_uri
+            client_id: Must match the client the code was issued to (#2750)
 
         Returns:
             Access token and refresh token with user information
@@ -410,6 +413,26 @@ class OAuthServiceImpl(IOAuthService):
                 error_code="REDIRECT_URI_MISMATCH",
             )
 
+        # The code is redeemed only by the client it was issued to (#2750); a
+        # code carrying no client is refused. Before the claim, so a wrong
+        # client cannot burn it. The description echoes neither id.
+        if code_data.client_id is None or code_data.client_id != client_id:
+            logger.warning(
+                "OAuth token exchange failed: client mismatch",
+                extra={"user_id": code_data.user_id, "error": "CLIENT_MISMATCH"},
+            )
+            self._metrics.record_token_exchange(
+                grant_type="authorization_code",
+                client_id="unknown",
+                duration_seconds=time.time() - start_time,
+                success=False,
+                error_code="CLIENT_MISMATCH",
+            )
+            raise InvalidGrantError(
+                "Authorization code is not valid for this client",
+                error_code="CLIENT_MISMATCH",
+            )
+
         # Verify PKCE code_verifier
         if not self._verify_pkce(code_verifier, code_data.code_challenge):
             logger.warning(
@@ -546,7 +569,7 @@ class OAuthServiceImpl(IOAuthService):
         # or a transient failure between them splits the pair
         # irrecoverably — the refresh token is its only carrier.
         access_token, refresh_token = await self.token_generator.generate_token_pair(
-            user, state_read_at=state_read_at
+            user, state_read_at=state_read_at, client_id=code_data.client_id
         )
 
         logger.info(
@@ -590,13 +613,15 @@ class OAuthServiceImpl(IOAuthService):
 
         Args:
             refresh_token: Valid refresh token
-            client_id: OAuth client ID
+            client_id: OAuth client ID. Must match the client the token names;
+                a token naming none is bound to it (#2750)
 
         Returns:
             New access token and rotated refresh token
 
         Raises:
-            InvalidGrantError: If refresh token invalid, expired, or revoked
+            InvalidGrantError: If refresh token invalid, expired, or revoked,
+                or issued to another client
         """
         # #831: before the presented token's validation and the user load, as
         # POST /auth/refresh does. No leg-1 instant to merge here: the
@@ -637,6 +662,28 @@ class OAuthServiceImpl(IOAuthService):
             raise InvalidGrantError(
                 "Invalid refresh token payload",
                 error_code="INVALID_TOKEN_PAYLOAD",
+            )
+
+        # Client binding (#2750), before anything is loaded, minted or revoked.
+        # A token naming a client is redeemed only by it; a claim that is not a
+        # string is a mismatch, never "no client". A token naming none is bound
+        # to the presenting client (bind on first use), whose length is capped
+        # so no arbitrary string enters a signed token.
+        bound_client = payload.get("client_id")
+        if len(client_id) > 255 or (
+            "client_id" in payload
+            and (not isinstance(bound_client, str) or bound_client != client_id)
+        ):
+            logger.warning(
+                "OAuth token refresh failed: client mismatch",
+                extra={"user_id": user_id, "error": "CLIENT_MISMATCH"},
+            )
+            self._metrics.record_token_refresh(
+                client_id=client_id, success=False, error_code="CLIENT_MISMATCH"
+            )
+            raise InvalidGrantError(
+                "Refresh token is not valid for this client",
+                error_code="CLIENT_MISMATCH",
             )
 
         # Get user data
@@ -728,7 +775,7 @@ class OAuthServiceImpl(IOAuthService):
         # that is still valid.
         new_access_token, new_refresh_token = (
             await self.token_generator.generate_token_pair(
-                user, state_read_at=state_read_at
+                user, state_read_at=state_read_at, client_id=client_id
             )
         )
         await self.token_generator.revoke_refresh_token(refresh_token)

@@ -30,6 +30,7 @@ from faultmaven.modules.auth.domain.services.jwt_token_generator import (
 )
 from faultmaven.modules.auth.domain.services.oauth_service import OAuthServiceImpl
 from faultmaven.modules.auth.domain.services.service_account_provisioning import (
+    ServiceAccountProvisioningError,
     provision_service_account_credential,
 )
 from faultmaven.providers.tenancy import factory as tenancy_factory
@@ -285,6 +286,73 @@ class TestServiceAccountRefreshLifecycle:
         )
 
         assert order == ["mint", "revoke"]
+
+
+SLACK_AGENT = "faultmaven-slack-agent"
+
+
+class TestCredentialClientBinding:
+    """The mint stamps the agent's client; the grant then holds it (#2750)."""
+
+    async def test_a_stamped_credential_refreshes_only_under_its_client(
+        self, user_store, token_generator, oauth_service
+    ):
+        credential = await provision_service_account_credential(
+            username="slack-agent",
+            user_store=user_store,
+            token_generator=token_generator,
+            client_id=SLACK_AGENT,
+        )
+        claims = jwt.decode(
+            credential.refresh_token, options={"verify_signature": False}
+        )
+        assert claims["client_id"] == SLACK_AGENT
+
+        with pytest.raises(InvalidGrantError) as refusal:
+            await oauth_service.refresh_access_token(
+                credential.refresh_token, client_id=CLIENT_ID
+            )
+        assert refusal.value.error_code == "CLIENT_MISMATCH"
+
+        # The agent's documented refresh keeps working, and stays bound.
+        tokens = await oauth_service.refresh_access_token(
+            credential.refresh_token, client_id=SLACK_AGENT
+        )
+        rotated = jwt.decode(tokens.refresh_token, options={"verify_signature": False})
+        assert rotated["client_id"] == SLACK_AGENT
+
+    async def test_the_function_stamps_no_client_unless_given_one(self, credential):
+        claims = jwt.decode(
+            credential.refresh_token, options={"verify_signature": False}
+        )
+        assert "client_id" not in claims
+
+    @pytest.mark.parametrize("client_id", ["", "   ", "c" * 256])
+    async def test_an_unusable_client_is_refused_before_anything_is_written(
+        self, user_store, token_generator, client_id
+    ):
+        with pytest.raises(ServiceAccountProvisioningError):
+            await provision_service_account_credential(
+                username="slack-agent",
+                user_store=user_store,
+                token_generator=token_generator,
+                client_id=client_id,
+            )
+        assert user_store.users == {}
+
+    async def test_the_cli_stamps_the_slack_agents_client_by_default(self, monkeypatch):
+        from faultmaven.cli import provision_service_account as cli
+
+        calls = []
+        monkeypatch.setattr(cli, "apply_root_set", lambda: None)
+        monkeypatch.setattr(cli, "require_persistent_database_or_exit", lambda: None)
+        monkeypatch.setattr(cli, "provision", lambda *args: calls.append(args))
+        monkeypatch.setattr(cli, "run_with_container", lambda *_, **__: True)
+        for argv, expected in (([], SLACK_AGENT), (["--client-id", "x"], "x")):
+            monkeypatch.setattr("sys.argv", ["fm", "-u", "slack-agent", *argv])
+            with pytest.raises(SystemExit):
+                cli.main()
+            assert calls.pop()[-1] == expected
 
 
 class TestMultiTenantCredentialChain:

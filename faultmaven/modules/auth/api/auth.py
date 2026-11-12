@@ -849,8 +849,15 @@ async def refresh_tokens(
         # resolve the billing organization twice, and a membership write
         # or a transient failure between them splits the pair
         # irrecoverably — the refresh token is its only carrier.
+        #
+        # The OAuth client the token is bound to rides the new refresh token
+        # (#2750): carried, never dropped, so the OAuth grant can still compare
+        # it. Passed only when the token names one.
+        bound = claims.get("client_id")
         new_access_token, new_refresh_token = await jwt_generator.generate_token_pair(
-            user, state_read_at=state_read_at
+            user,
+            state_read_at=state_read_at,
+            **({"client_id": bound} if bound is not None else {}),
         )
 
         # 4. Rotation: revoke the old refresh token so a leaked/replayed token

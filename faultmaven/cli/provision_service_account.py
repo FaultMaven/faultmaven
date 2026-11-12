@@ -25,6 +25,10 @@ Usage (``fm-provision-service-account``, installed with the package):
     fm-provision-service-account -u slack-agent \
         --enterprise-id <enterprise uuid>
 
+    # Bind it to the OAuth client the agent refreshes under (default:
+    # faultmaven-slack-agent, the Slack agent's FAULTMAVEN_OAUTH_CLIENT_ID)
+    fm-provision-service-account -u slack-agent --client-id faultmaven-slack-agent
+
     # Capture straight into a file without it reaching the terminal/scrollback
     fm-provision-service-account -u slack-agent --token-only > token.txt
 
@@ -50,6 +54,9 @@ from faultmaven.modules.auth.domain.services.service_account_provisioning import
     provision_service_account_credential,
 )
 
+#: The Slack agent's ``FAULTMAVEN_OAUTH_CLIENT_ID`` default (#2750).
+DEFAULT_SERVICE_CLIENT_ID = "faultmaven-slack-agent"
+
 
 async def provision(
     username: str,
@@ -57,6 +64,7 @@ async def provision(
     service_channel: str | None,
     token_only: bool,
     enterprise_id: str | None = None,
+    client_id: str | None = None,
 ) -> bool:
     """Provision the account and print its credential."""
 
@@ -106,6 +114,7 @@ async def provision(
             account_kind=account_kind,
             service_channel=service_channel,
             enterprise_id=enterprise_id,
+            client_id=client_id,
         )
     except ServiceAccountProvisioningError as e:
         status(f"❌ {e}")
@@ -124,6 +133,7 @@ async def provision(
             f"   Corrected account_kind → '{account_kind}', "
             f"service_channel → {service_channel!r}"
         )
+    status(f"   Bound to OAuth client: {client_id or 'none (bound at first refresh)'}")
 
     if token_only:
         emit_token(credential.refresh_token)
@@ -201,6 +211,14 @@ def main():
         ),
     )
     parser.add_argument(
+        "--client-id",
+        default=DEFAULT_SERVICE_CLIENT_ID,
+        help=(
+            "OAuth client the credential is bound to; the agent must refresh "
+            f"under it (default: {DEFAULT_SERVICE_CLIENT_ID})"
+        ),
+    )
+    parser.add_argument(
         "--token-only",
         action="store_true",
         help="Print only the token on stdout (progress goes to stderr)",
@@ -216,6 +234,7 @@ def main():
             args.service_channel,
             args.token_only,
             args.enterprise_id,
+            args.client_id,
         ),
         container=container,
     )

@@ -171,7 +171,10 @@ async def test_concurrent_redemption_mints_exactly_one_token_pair(attempts):
         results = await asyncio.gather(
             *[
                 service.exchange_code_for_token(
-                    code=code, code_verifier=verifier, redirect_uri=REDIRECT
+                    code=code,
+                    code_verifier=verifier,
+                    redirect_uri=REDIRECT,
+                    client_id="faultmaven-copilot",
                 )
                 for _ in range(attempts)
             ],
@@ -255,14 +258,20 @@ async def test_a_transient_user_store_failure_leaves_the_code_redeemable():
         service.user_repository.get = AsyncMock(return_value=None)
         with pytest.raises(InvalidGrantError) as blip:
             await service.exchange_code_for_token(
-                code=code, code_verifier=verifier, redirect_uri=REDIRECT
+                code=code,
+                code_verifier=verifier,
+                redirect_uri=REDIRECT,
+                client_id="faultmaven-copilot",
             )
         assert blip.value.error_code == "USER_NOT_FOUND", name
 
         # It recovers, and the holder's code is still good.
         service.user_repository.get = AsyncMock(return_value=_user())
         tokens = await service.exchange_code_for_token(
-            code=code, code_verifier=verifier, redirect_uri=REDIRECT
+            code=code,
+            code_verifier=verifier,
+            redirect_uri=REDIRECT,
+            client_id="faultmaven-copilot",
         )
         assert tokens.access_token, name
 
@@ -286,13 +295,19 @@ async def test_a_stolen_code_without_the_verifier_still_cannot_be_burned():
         wrong_verifier, _ = _pkce()
         with pytest.raises(InvalidGrantError) as attack:
             await service.exchange_code_for_token(
-                code=code, code_verifier=wrong_verifier, redirect_uri=REDIRECT
+                code=code,
+                code_verifier=wrong_verifier,
+                redirect_uri=REDIRECT,
+                client_id="faultmaven-copilot",
             )
         assert attack.value.error_code == "PKCE_VERIFICATION_FAILED", name
 
         # The real holder is unaffected.
         tokens = await service.exchange_code_for_token(
-            code=code, code_verifier=verifier, redirect_uri=REDIRECT
+            code=code,
+            code_verifier=verifier,
+            redirect_uri=REDIRECT,
+            client_id="faultmaven-copilot",
         )
         assert tokens.access_token, name
 
@@ -447,7 +462,10 @@ async def test_the_oauth_exchange_still_reports_its_own_protocol_error():
 
     with pytest.raises(InvalidGrantError) as refusal:
         await service.exchange_code_for_token(
-            code=code, code_verifier=verifier, redirect_uri=REDIRECT
+            code=code,
+            code_verifier=verifier,
+            redirect_uri=REDIRECT,
+            client_id="faultmaven-copilot",
         )
     assert refusal.value.error_code == "USER_INACTIVE"
 
@@ -577,7 +595,10 @@ async def test_losing_a_claim_is_recorded_as_a_failed_exchange():
 
     # First redemption wins normally.
     assert await service.exchange_code_for_token(
-        code=code, code_verifier=verifier, redirect_uri=REDIRECT
+        code=code,
+        code_verifier=verifier,
+        redirect_uri=REDIRECT,
+        client_id="faultmaven-copilot",
     )
 
     # Now replay the state a loser sees: the fast-path check still says
@@ -590,7 +611,10 @@ async def test_losing_a_claim_is_recorded_as_a_failed_exchange():
     with patch.object(service, "_metrics") as metrics:
         with pytest.raises(InvalidGrantError) as loss:
             await service.exchange_code_for_token(
-                code=code, code_verifier=verifier, redirect_uri=REDIRECT
+                code=code,
+                code_verifier=verifier,
+                redirect_uri=REDIRECT,
+                client_id="faultmaven-copilot",
             )
 
     assert loss.value.error_code == "CODE_ALREADY_USED"

@@ -135,6 +135,14 @@ Standalone sentinel, which there is the correct answer.
   allowlist, so listing the id also admits it on
   `GET /api/v1/auth/oauth/authorize`. A change takes effect at restart.
 
+  The credential is bound to one client (#2750). `fm-provision-service-account`
+  stamps `--client-id` (default `faultmaven-slack-agent`) into the token and
+  prints it; the grant refuses the token with `invalid_grant` under any other
+  `client_id`, and every rotation keeps the binding. Set `--client-id` to the
+  agent's `FAULTMAVEN_OAUTH_CLIENT_ID`. A credential that a tool refreshes under
+  another client must be re-minted with `--client-id <that client>`. A
+  credential minted with no client is bound to the client of its first refresh.
+
   A refusal comes back as an RFC 6749 §5.2 object — `{"error": "invalid_grant",
   "error_description": "..."}` — so the code, not the prose, is what to branch
   on.

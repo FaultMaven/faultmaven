@@ -131,6 +131,7 @@ create_children(
             "CODE_EXPIRED",
             "REDIRECT_URI_MISMATCH",
             "PKCE_VERIFICATION_FAILED",
+            "CLIENT_MISMATCH",
         ),
     },
 )

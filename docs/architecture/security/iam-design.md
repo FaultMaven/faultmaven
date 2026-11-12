@@ -1087,6 +1087,13 @@ Content-Type: application/json
 }
 ```
 
+**Client binding (#2750).** A refresh token carries the `client_id` claim of the
+client it was issued to. This grant compares it: under any other `client_id` the
+token answers `invalid_grant` and is neither rotated nor revoked. A token that
+names no client (minted before the binding, or by a mint that names none) is bound
+at its first refresh here: the rotated pair names the presenting client. A
+presented `client_id` longer than 255 characters is refused.
+
 #### Mode-Agnostic Refresh: `POST /api/v1/auth/refresh`
 
 In addition to the OAuth `grant_type=refresh_token` flow above, a mode-agnostic
@@ -1107,7 +1114,12 @@ The access token is a stateless JWT and cannot be extended, so an active client
 mints a new one before expiry rather than re-logging-in. **Refresh tokens
 rotate:** the presented refresh token is revoked (in the shared revocation
 store) and a fresh refresh token is returned alongside the new access token.
-The response shape matches the OAuth refresh response above.
+The response shape matches the OAuth refresh response above. This endpoint takes
+no `client_id` and so compares none, but it carries a token's `client_id` claim
+into the rotated token, never dropping it, so the OAuth grant still enforces the
+binding. During a rolling deploy an older process rotates a bound token without
+the claim, and the next OAuth refresh binds it again; a newer process refuses a
+code an older one stored without a client, and the holder restarts the sign-in.
 
 ## Hosted SSO (ADR-015 / WorkOS)
 
@@ -1198,7 +1210,7 @@ fatal.
 |----------|-------|---------|
 | **Single-Use** | Code deleted after exchange | Prevents replay attacks |
 | **Short-Lived** | 10 minute TTL | Limits exposure window |
-| **Client-Bound** | Validates client_id and redirect_uri | Prevents code injection |
+| **Client-Bound** | The code stores the `client_id` it was issued to; the exchange refuses any other (or a code with none) before spending it, and checks `redirect_uri` | Prevents code injection |
 | **PKCE Protected** | Requires correct code_verifier | Proves client identity |
 
 ### 3. Redirect URI Validation

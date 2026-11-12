@@ -84,6 +84,7 @@ async def provision_service_account_credential(
     account_kind: str = SERVICE_ACCOUNT_KIND,
     service_channel: Optional[str] = SLACK_SERVICE_CHANNEL,
     enterprise_id: Optional[str] = None,
+    client_id: Optional[str] = None,
 ) -> ProvisionedCredential:
     """Ensure a service account exists and mint it an initial refresh token.
 
@@ -119,6 +120,9 @@ async def provision_service_account_credential(
             Required under ``TENANT_PROVIDER=multi``, refused under
             single-tenant (which has exactly one tenant), and never the
             Standalone sentinel.
+        client_id: The OAuth client the credential is bound to (#2750): the
+            one the agent refreshes under. ``None`` mints an unbound token,
+            which its first OAuth refresh binds to the presenting client.
 
     Returns:
         ProvisionedCredential carrying the once-only refresh token.
@@ -138,6 +142,10 @@ async def provision_service_account_credential(
     # user store is touched, so a refusal creates nothing.
     enterprise_id = (enterprise_id or "").strip() or None
     _validate_enterprise(enterprise_id)
+    if client_id is not None and (not client_id.strip() or len(client_id) > 255):
+        raise ServiceAccountProvisioningError(
+            "client_id must be a non-blank OAuth client id of at most 255 characters"
+        )
 
     # Case derivation matches the channel exactly, so an unvalidated typo
     # ('Slack') would be persisted, reported as a successful correction, and
@@ -237,7 +245,9 @@ async def provision_service_account_credential(
     setattr(user, "enterprise_id", anchor_enterprise_id)
 
     refresh_token = await token_generator.generate_refresh_token(
-        user, state_read_at=state_read_at
+        user,
+        state_read_at=state_read_at,
+        **({"client_id": client_id} if client_id is not None else {}),
     )
     if not refresh_token:
         raise ServiceAccountProvisioningError(

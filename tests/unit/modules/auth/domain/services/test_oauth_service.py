@@ -261,6 +261,7 @@ class TestCodeExchange:
             code_challenge=code_challenge,
             expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
             used=False,
+            client_id="faultmaven-copilot",
         )
         mock_code_repository.get_code.return_value = code_data
 
@@ -275,6 +276,7 @@ class TestCodeExchange:
             code=authorization_code,
             code_verifier=code_verifier,
             redirect_uri="chrome-extension://abc123/callback.html",
+            client_id="faultmaven-copilot",
         )
 
         # Verify token response
@@ -289,7 +291,7 @@ class TestCodeExchange:
         # Verify the pair was minted ONCE, from one tenancy resolution, with
         # the user object the repository returned.
         mock_token_generator.generate_token_pair.assert_called_once_with(
-            user_obj, state_read_at=ANY
+            user_obj, state_read_at=ANY, client_id="faultmaven-copilot"
         )
 
     @pytest.mark.asyncio
@@ -307,6 +309,7 @@ class TestCodeExchange:
                 code="invalid_code",
                 code_verifier=code_verifier,
                 redirect_uri="chrome-extension://abc123/callback.html",
+                client_id="faultmaven-copilot",
             )
 
     @pytest.mark.asyncio
@@ -331,6 +334,7 @@ class TestCodeExchange:
                 code="expired_code",
                 code_verifier=code_verifier,
                 redirect_uri="chrome-extension://abc123/callback.html",
+                client_id="faultmaven-copilot",
             )
 
     @pytest.mark.asyncio
@@ -357,6 +361,7 @@ class TestCodeExchange:
                 code="used_code",
                 code_verifier=code_verifier,
                 redirect_uri="chrome-extension://abc123/callback.html",
+                client_id="faultmaven-copilot",
             )
 
     @pytest.mark.asyncio
@@ -373,6 +378,7 @@ class TestCodeExchange:
             code_challenge=code_challenge,
             expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
             used=False,
+            client_id="faultmaven-copilot",
         )
         mock_code_repository.get_code.return_value = code_data
 
@@ -384,6 +390,7 @@ class TestCodeExchange:
                 code="auth_code_123",
                 code_verifier=wrong_verifier,
                 redirect_uri="chrome-extension://abc123/callback.html",
+                client_id="faultmaven-copilot",
             )
 
     @pytest.mark.asyncio
@@ -400,6 +407,7 @@ class TestCodeExchange:
             code_challenge=code_challenge,
             expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
             used=False,
+            client_id="faultmaven-copilot",
         )
         mock_code_repository.get_code.return_value = code_data
 
@@ -408,7 +416,33 @@ class TestCodeExchange:
                 code="auth_code_123",
                 code_verifier=code_verifier,
                 redirect_uri="chrome-extension://different/callback.html",  # Different URI
+                client_id="faultmaven-copilot",
             )
+
+    @pytest.mark.asyncio
+    async def test_a_code_naming_no_client_is_refused_before_it_is_spent(
+        self, oauth_service, mock_code_repository, pkce_pair
+    ):
+        """A code stored without its client is refused (#2750), not claimed."""
+        code_verifier, code_challenge = pkce_pair
+        mock_code_repository.get_code.return_value = OAuthCodeDTO(
+            code="clientless",
+            user_id="user_123",
+            redirect_uri="chrome-extension://abc123/callback.html",
+            code_challenge=code_challenge,
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
+        )
+
+        with pytest.raises(InvalidGrantError) as refusal:
+            await oauth_service.exchange_code_for_token(
+                code="clientless",
+                code_verifier=code_verifier,
+                redirect_uri="chrome-extension://abc123/callback.html",
+                client_id="faultmaven-copilot",
+            )
+
+        assert refusal.value.error_code == "CLIENT_MISMATCH"
+        mock_code_repository.claim_code.assert_not_called()
 
 
 class TestRefreshToken:
