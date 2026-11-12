@@ -220,7 +220,9 @@ def test_only_the_record_reading_codes_read_the_outcome():
         assert render_notice(code, params, _Untouchable(), log) == render_notice(
             code, params, None, log
         )
-    # B1d's ENGINE_OFFER_STANDS is covered there, through a whole turn.
+    # B1d's ENGINE_OFFER_STANDS is logged by a whole turn only: checked in
+    # ``test_offer_codes_b1d_2636.py``
+    # (``test_the_engine_offer_standing_renders_the_same_with_any_outcome``).
     assert covered == set(NoticeCode) - READS_THE_RECORD - CONTEXT_ONLY - {
         NoticeCode.ENGINE_OFFER_STANDS
     }

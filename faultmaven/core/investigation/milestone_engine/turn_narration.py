@@ -20,6 +20,8 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     case_outcome_conflicts_total,
 )
 from faultmaven.core.investigation.narration.codes import (
+    DECIDED_FROM,
+    DECIDED_PARAMS,
     DECISIONS_KEY,
     PROSE_KEYS,
     NoticeCode,
@@ -32,7 +34,7 @@ from faultmaven.core.investigation.narration.notices import (
 from faultmaven.core.investigation.narration.offers import render_offer
 from faultmaven.core.investigation.offers import summarize_offer
 from faultmaven.core.investigation.outcome import compute_case_outcome
-from faultmaven.modules.case.contracts import CaseOutcome, ResolutionReason
+from faultmaven.modules.case.contracts import CaseOutcome
 
 from .stage_gates import _NOTICES_HEAD_KEY
 
@@ -89,35 +91,37 @@ def _disposition_before(case: Any, log: list) -> Optional[str]:
 
 _OFFER_CODES = frozenset(OfferCode)
 
-#: The codes whose params carry the resolution reason their decider read.
-_READINESS_CODES = frozenset(
-    {
-        OfferCode.NEEDS_INFO_UNMET_CLOSE,
-        OfferCode.RESOLUTION_NEEDS_INFO,
-        OfferCode.MODEL_PROPOSAL,
-    }
-)
+
+def _recorded(outcome: CaseOutcome, field: str) -> Any:
+    section, name = field.split(".")
+    return getattr(getattr(outcome, section), name)
 
 
-def _conflict(code: str, params: dict, outcome: CaseOutcome) -> None:
-    """Count where a decision and the stored record disagree on what it was
-    decided from: the resolution's reason, the closure verdict, or whether a
-    cause is identified. The decision's text is rendered either way (A4);
-    stage S3 switches the deciders to the record."""
-    if code == NoticeCode.PENDING_CHECK:
-        decided, recorded = ResolutionReason.PENDING_CHECK, outcome.resolution.reason
-    elif code in _READINESS_CODES and "reason" in params:
-        decided, recorded = params["reason"], outcome.resolution.reason
-    elif code == OfferCode.MODEL_PROPOSAL and "verdict" in params:
-        decided, recorded = params["verdict"], outcome.closure.eligibility
-        # The leg as each states it: one identified and the other not.
-        leg = outcome.cause.identification_leg
-        if (params["identification_leg"] is None) != (leg is None):
-            _count(code, "identified cause", params["identification_leg"], leg)
-    else:
-        return
-    if recorded != decided:
-        _count(code, "decision", decided, recorded)
+def _agrees(field: str, decided: Any, recorded: Any) -> bool:
+    # A leg is compared as each states it: identified or not.
+    if field == "cause.identification_leg":
+        return (decided is None) == (recorded is None)
+    return decided == recorded
+
+
+def _conflicts(log: list, outcome: CaseOutcome) -> None:
+    """Count each field a decision was decided from (``DECIDED_FROM``) that
+    the stored record does not state as decided: the resolution's reason, the
+    closure verdict, the problem's status, or whether a cause is identified.
+    One decision logged under two codes (step 2's pending check and its
+    needs-info request) is counted once. The decision's text is rendered
+    either way (A4); stage S3 switches the deciders to the record."""
+    counted = set()
+    for entry in log:
+        params = entry["params"]
+        fields = DECIDED_FROM.get((entry["code"], params.get("composer")), ())
+        for field in fields:
+            decided = params[DECIDED_PARAMS[field]]
+            recorded = _recorded(outcome, field)
+            if _agrees(field, decided, recorded) or (field, decided) in counted:
+                continue
+            counted.add((field, decided))
+            _count(entry["code"], field, decided, recorded)
 
 
 def _count(code: str, what: str, decided: Any, recorded: Any) -> None:
@@ -152,11 +156,10 @@ def narrate_turn(case: Any, metadata: dict) -> None:
     only on a record the cycle stored (counting (i))."""
     log = metadata.get(DECISIONS_KEY) or []
     outcome = _outcome(case, metadata, log)
-    stored = bool(metadata.get(OUTCOME_WRITTEN_KEY))
+    if metadata.get(OUTCOME_WRITTEN_KEY) and outcome is not None:
+        _conflicts(log, outcome)
     for entry in log:
         code, params = entry["code"], entry["params"]
-        if stored:
-            _conflict(code, params, outcome)
         if code in _OFFER_CODES:
             _narrate_offer(case, metadata, code, params)
             continue

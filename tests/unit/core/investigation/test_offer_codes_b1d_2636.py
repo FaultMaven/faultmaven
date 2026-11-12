@@ -29,6 +29,8 @@ from faultmaven.core.investigation.milestone_engine.turn_narration import (
 )
 from faultmaven.core.investigation.narration.codes import (
     CONTEXT_ONLY,
+    DECIDED_FROM,
+    DECIDED_PARAMS,
     DECISIONS_KEY,
     PROSE_KEYS,
     NoticeCode,
@@ -40,12 +42,18 @@ from faultmaven.core.investigation.narration.notices import (
 )
 from faultmaven.core.investigation.narration.offers import render_offer
 from faultmaven.core.investigation.offers import answer_offer
+from faultmaven.core.investigation.outcome import record_case_outcome
 from faultmaven.core.investigation.terminal_transitions import (
     assess_close_summary,
     assess_closure_readiness,
     assess_resolution_readiness,
 )
-from faultmaven.modules.case.contracts import AnswerKind, AnswerVia, ClosureEligibility
+from faultmaven.modules.case.contracts import (
+    AnswerKind,
+    AnswerVia,
+    ClosureEligibility,
+    ResolutionReason,
+)
 from tests.unit.core.investigation import golden_cases_2636 as golden
 from tests.unit.core.investigation import narrated as narrated_module
 from tests.unit.core.investigation.narrated import narrated
@@ -256,7 +264,7 @@ def test_a_stored_record_that_differs_from_the_decision_counts_one_conflict(
     assert params["verdict"] == ClosureEligibility.HAS_SUBSTANCE
     params["verdict"] = ClosureEligibility.TRIVIAL
     narrated(case, metadata)
-    assert counts == [(OfferCode.MODEL_PROPOSAL, "decision")]
+    assert counts == [(OfferCode.MODEL_PROPOSAL, "closure.eligibility")]
 
 
 def test_an_in_memory_pass_counts_no_conflict(monkeypatch):
@@ -287,16 +295,94 @@ def test_an_identified_cause_the_record_no_longer_states_is_counted(monkeypatch)
     case, metadata = _model_close(golden._chain_without_conclusion())
     _decision(metadata, OfferCode.MODEL_PROPOSAL)["identification_leg"] = None
     narrated(case, metadata)
-    assert counts == [(OfferCode.MODEL_PROPOSAL, "identified cause")]
+    assert counts == [(OfferCode.MODEL_PROPOSAL, "cause.identification_leg")]
+
+
+@pytest.mark.parametrize(
+    ("scenario", "code"),
+    [
+        ("turn_request_ready_on_a_decaying_leg", OfferCode.REQUEST_READY),
+        (
+            "turn_model_proposal_confirmation_on_a_decaying_leg",
+            OfferCode.MODEL_PROPOSAL,
+        ),
+        ("turn_backstop_on_a_decaying_leg", OfferCode.BACKSTOP_RESOLVE),
+        ("turn_model_proposal_closure_on_a_decaying_leg", OfferCode.MODEL_PROPOSAL),
+    ],
+)
+def test_a_cause_identified_when_decided_and_aged_out_by_the_record_is_counted(
+    monkeypatch, scenario, code
+):
+    """Critique 1's drift, counted: the decider read the working-conclusion
+    leg; housekeeping aged it under the bar before the cycle's stored record,
+    which identifies no cause. Counted on that stored record, the text still
+    ``main``'s."""
+    counts = _counted(monkeypatch)
+    stored: list = []
+    real = turn_narration._conflicts
+
+    def _on_stored(log, outcome):
+        stored.append(outcome.cause.identification_leg)
+        return real(log, outcome)
+
+    monkeypatch.setattr(turn_narration, "_conflicts", _on_stored)
+    assert golden.B1D_SCENARIOS[scenario]() == oracle(scenario)
+    assert stored == [None]
+    assert (code, "cause.identification_leg") in counts
+
+
+def test_a_held_check_at_step_2_is_counted_once(monkeypatch):
+    """Step 2's pending check is one decision logged under two codes
+    (``PENDING_CHECK`` and its needs-info request, both of reason
+    ``pending_check``): a stored record stating another reason counts it
+    once."""
+    counts = _counted(monkeypatch)
+    case, metadata = golden._models_proposal(golden._held(), "resolved")
+    codes = [e["code"] for e in metadata[DECISIONS_KEY]]
+    assert {NoticeCode.PENDING_CHECK, OfferCode.RESOLUTION_NEEDS_INFO} <= set(codes)
+    metadata[OUTCOME_WRITTEN_KEY] = record_case_outcome(case, at="cycle")
+    case.progress.outcome.resolution.reason = ResolutionReason.CONFIRMED
+    narrate_turn(case, metadata)
+    assert counts == [(NoticeCode.PENDING_CHECK, "resolution.reason")]
 
 
 def test_every_counted_code_is_a_declared_label():
     labels = set(lifecycle_metrics._OUTCOME_RECORD_FIELDS)
-    counted = {
-        NoticeCode.PENDING_CHECK,
-        *turn_narration._READINESS_CODES,
-    }
-    assert {f"narration.{code}" for code in counted} <= labels
+    assert {f"narration.{code}" for code, _composer in DECIDED_FROM} <= labels
+
+
+def test_every_offer_code_names_what_it_was_decided_from():
+    """Each offer code (each composer of the model's proposal) and the pending
+    check compare at least one field, each one ``DECIDED_PARAMS`` names."""
+    keys = {code for code, _composer in DECIDED_FROM}
+    assert set(OfferCode) | {NoticeCode.PENDING_CHECK} == keys
+    for fields in DECIDED_FROM.values():
+        assert fields and set(fields) <= set(DECIDED_PARAMS)
+
+
+def test_the_engine_offer_standing_renders_the_same_with_any_outcome(monkeypatch):
+    """Its renderer reads only its params, so the narration step may compute
+    no outcome for it (B1c's check, for B1d's notice code)."""
+    from tests.unit.core.investigation.test_notice_codes_b1c_2636 import (
+        _Untouchable,
+    )
+
+    logs: list = []
+    real = turn_narration.narrate_turn
+
+    def _seen(case, metadata):
+        logs.append(list(metadata.get(DECISIONS_KEY) or []))
+        return real(case, metadata)
+
+    monkeypatch.setattr(turn_completion, "narrate_turn", _seen)
+    golden.turn_model_proposal_beside_the_deferred_close()
+    ((log,),) = [
+        [e for e in log if e["code"] == NoticeCode.ENGINE_OFFER_STANDS] for log in logs
+    ]
+    params = log["params"]
+    assert render_notice(
+        NoticeCode.ENGINE_OFFER_STANDS, params, _Untouchable(), [log]
+    ) == render_notice(NoticeCode.ENGINE_OFFER_STANDS, params, None, [log])
 
 
 # ---------------------------------------------------------------------------

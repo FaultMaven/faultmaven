@@ -35,6 +35,7 @@ from faultmaven.core.investigation.llm_error_handler import (
     RECOVERY_REASON_OUTPUT_TRUNCATION,
     RECOVERY_REASON_UNCLASSIFIED,
 )
+from faultmaven.core.investigation.narration.codes import DECIDED_FROM
 from faultmaven.infrastructure.shims.metrics import Counter
 from faultmaven.modules.case.contracts import (
     CaseState,
@@ -1013,13 +1014,11 @@ _OUTCOME_RECORD_FIELDS = (
     "attempts.accepted_in_turn",
     "resolution.confirmed_row_ids",
     "closure",
-    # The narration step (#2636): a decision whose reason, closure verdict or
-    # identified cause the stored record does not state, counted per code on
-    # every narration of it (``turn_narration._conflict``).
-    "narration.pending_check",
-    "narration.needs_info_unmet_close",
-    "narration.resolution_needs_info",
-    "narration.model_proposal",
+    # The narration step (#2636): a decision whose resolution reason, closure
+    # verdict, problem status or identified cause the stored record does not
+    # state, counted on each narration of it, by code (``DECIDED_FROM``,
+    # ``turn_narration._conflicts``).
+    *sorted({f"narration.{code}" for code, _composer in DECIDED_FROM}),
 )
 
 case_outcome_conflicts_total = Counter(
@@ -1029,9 +1028,8 @@ case_outcome_conflicts_total = Counter(
     "appears; or a decision narrated after the cycle's stored record "
     "disagreed with it (#2636). Labelled by the record field "
     "(attempts.window|attempts.accepted_in_turn|resolution.confirmed_row_ids|"
-    "closure) or the narrated code (narration.pending_check|"
-    "narration.needs_info_unmet_close|narration.resolution_needs_info|"
-    "narration.model_proposal).",
+    "closure) or the narrated code (narration.<code>, each code a decision "
+    "is compared to the record by).",
     labelnames=["field"],
     label_values={"field": _OUTCOME_RECORD_FIELDS},
 )

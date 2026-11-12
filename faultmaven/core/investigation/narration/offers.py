@@ -302,6 +302,13 @@ _CONFIRMATION_PARAMS = (
     "no_commands",
 )
 
+
+def confirmation_message(params: dict) -> str:
+    """The resolve confirmation, from ``terminal_replies.
+    resolution_confirmation_params``."""
+    return resolution_confirmation(**{k: params[k] for k in _CONFIRMATION_PARAMS})
+
+
 #: The step-0 close when a remembered resolution request is still unmet.
 _REQUEST_UNMET_CLOSE = (
     "I understand. Without confirmation that the root cause "
@@ -358,7 +365,7 @@ def render_offer(code: str, params: dict) -> str:
     if code == OfferCode.BACKSTOP_RESOLVE:
         # READY is a confirmed ELIMINATION, not a confirmed CAUSE: the
         # attribution is named only with a cause on record (#1906 D5.1).
-        if params["cause_on_record"]:
+        if params["identification_leg"] is not None:
             still_open = (
                 "The case is still open until you confirm: marking it resolved "
                 "records the attribution and writes up the resolution summary."
@@ -391,5 +398,5 @@ def render_offer(code: str, params: dict) -> str:
     if code == OfferCode.REQUEST_READY or (
         code == OfferCode.MODEL_PROPOSAL and params["composer"] == "confirmation"
     ):
-        return resolution_confirmation(**{k: params[k] for k in _CONFIRMATION_PARAMS})
+        return confirmation_message(params)
     raise KeyError(code)

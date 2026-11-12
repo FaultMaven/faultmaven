@@ -344,6 +344,7 @@ class TransitionManager:
                 metadata,
                 OfferCode.REQUEST_READY,
                 proposal_id=record.open.proposal_id,
+                reason=readiness.reason,
                 **confirmation,
             )
             metadata["resolution_ready_for_confirmation"] = True
@@ -560,6 +561,7 @@ class TransitionManager:
             else:
                 composer = {
                     "composer": "confirmation",
+                    "reason": readiness.reason,
                     **resolution_confirmation_params(case),
                 }
         else:

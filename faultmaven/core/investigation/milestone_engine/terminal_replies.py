@@ -2,8 +2,8 @@ from typing import Mapping
 
 from faultmaven.core.investigation.cause_assurance import runbook_conversion_ready
 from faultmaven.core.investigation.narration.offers import (
+    confirmation_message,
     mitigation_sentence,
-    resolution_confirmation,
 )
 from faultmaven.core.investigation.prompts.templates.terminal import (
     TerminalAffordances,
@@ -39,10 +39,9 @@ def resolution_confirmation_params(case) -> dict:
     """
     # One source for the cause on every line (#1906 D5.1): with no
     # cause-identification leg, no conclusion is named as the root cause.
+    leg = cause_identification_leg(case)
     root = (
-        _get_root_cause_summary(case)
-        if cause_identification_leg(case) is not None
-        else "no root cause on record"
+        _get_root_cause_summary(case) if leg is not None else "no root cause on record"
     )
     has_commands = any(
         getattr(s, "commands", None) or getattr(s, "implementation_steps", None)
@@ -55,13 +54,15 @@ def resolution_confirmation_params(case) -> dict:
         # Enrichment that improves the docs but does not block resolution.
         "no_evidence": not case.evidence,
         "no_commands": not has_commands,
+        # The identification decided on, for the narration's conflict count.
+        "identification_leg": leg,
     }
 
 
 def _build_resolution_confirmation(case) -> str:
     """The resolution confirmation prompt, with its optional enrichment
     hints, from the case as it stands."""
-    return resolution_confirmation(**resolution_confirmation_params(case))
+    return confirmation_message(resolution_confirmation_params(case))
 
 
 #: The status line a confirmed close opens its reply with, one per reason, so

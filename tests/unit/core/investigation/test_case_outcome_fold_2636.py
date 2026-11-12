@@ -1194,11 +1194,15 @@ def test_both_counters_expose_every_series_at_zero_from_import():
     line = next(x for x in proc.stdout.splitlines() if x.startswith("@@RESULT@@"))
     result = json.loads(line[len("@@RESULT@@") :])
     assert result["file"].startswith(str(repo_root))
+    from faultmaven.core.investigation.narration.codes import DECIDED_FROM
+
     fields = (
         "attempts.window",
         "attempts.accepted_in_turn",
         "resolution.confirmed_row_ids",
         "closure",
+        # The narration step's, one per code compared to the record (#2636).
+        *{f"narration.{code}" for code, _composer in DECIDED_FROM},
     )
     assert result["series"] == {
         **{f"faultmaven_case_outcome_conflicts|{f}": 0.0 for f in fields},

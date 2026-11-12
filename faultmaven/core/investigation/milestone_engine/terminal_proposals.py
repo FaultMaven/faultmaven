@@ -100,6 +100,7 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
 
     from faultmaven.core.investigation.terminal_transitions import (
         assess_closure_readiness,
+        cause_identification_leg,
     )
 
     # Resolve preservation (INV-37), the SAME choice the other two disposition
@@ -155,6 +156,7 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
         # this function is being fixed to stop producing.
         # The record's rows, not a claim stronger than them (#1906 D5.1).
         record_lines = resolution_record_lines(case)
+        leg = cause_identification_leg(case)
     else:
         kind = OfferKind.CLOSE
 
@@ -170,10 +172,15 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
             OfferCode.DEFERRED_RESOLVE,
             proposal_id=record.open.proposal_id,
             record_lines=record_lines,
+            verdict=closure.verdict,
+            identification_leg=leg,
         )
     else:
         record_decision(
-            metadata, OfferCode.DEFERRED_CLOSE, proposal_id=record.open.proposal_id
+            metadata,
+            OfferCode.DEFERRED_CLOSE,
+            proposal_id=record.open.proposal_id,
+            verdict=closure.verdict,
         )
     logger.info(
         f"Proposed {kind.value.upper()} offer for case {case.case_id} "
@@ -291,7 +298,7 @@ def _maybe_propose_confirmed_resolution(case: "Case", metadata: dict) -> None:
     # opener with no model involvement, so the claim would be entirely
     # engine-authored. Either way the offer states only what its rows show
     # (#1906 D5.1).
-    cause_on_record = cause_identification_leg(case) is not None
+    leg = cause_identification_leg(case)
     record_lines = resolution_record_lines(case)
     record = open_disposition_offer(
         case, kind=OfferKind.RESOLVE, basis=OfferBasis.BACKSTOP
@@ -307,8 +314,9 @@ def _maybe_propose_confirmed_resolution(case: "Case", metadata: dict) -> None:
         metadata,
         OfferCode.BACKSTOP_RESOLVE,
         proposal_id=record.open.proposal_id,
-        cause_on_record=cause_on_record,
         record_lines=record_lines,
+        reason=readiness.reason,
+        identification_leg=leg,
     )
     # The turn's ``transition_compliance`` line reports the verdict only when
     # something proposed; recording it here keeps an engine-opened handshake
@@ -355,6 +363,7 @@ def _maybe_propose_false_alarm_close(case: "Case", metadata: dict) -> None:
         OfferCode.FALSE_ALARM_CLOSE,
         proposal_id=record.open.proposal_id,
         rationale=invalidation.rationale,
+        problem_status=case.progress.problem_status,
     )
     logger.info(
         "Proposed CLOSED (false alarm) for case %s at turn %s",

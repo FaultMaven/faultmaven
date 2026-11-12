@@ -895,9 +895,11 @@ def pending_check_params(case: Case, check: EvidenceNeed, *, proposed: bool) -> 
     """The params of a ``PENDING_CHECK`` code while the model's own check holds
     the resolution (#1906 D5.2), for the backstop's hold and step 2's refusal:
     the check's state and whether a resolve decline stands
-    (``declined_resolve_entry``), as decided here (#2636, A4). Rendered by
+    (``declined_resolve_entry``), as decided here (#2636, A4), and the
+    resolution reason it holds. Rendered by
     ``narration.notices.pending_check_feedback``."""
     return {
+        "reason": ResolutionReason.PENDING_CHECK,
         "need_id": check.need_id,
         "request_text": check.request_text,
         "fulfilled": check.state == NeedState.FULFILLED,
@@ -1642,6 +1644,7 @@ class ClosureReadiness:
     def __init__(self, verdict: str, params: "dict | Callable[[], dict]"):
         self.verdict = verdict
         self._params = params
+        self._message: Optional[str] = None
 
     def offer_params(self) -> dict:
         """What the prompt names (``narration.offers.closure_message``), read
@@ -1653,8 +1656,11 @@ class ClosureReadiness:
 
     @property
     def message(self) -> str:
-        """The prompt (``narration.offers.closure_message``)."""
-        return closure_message(self.offer_params())
+        """The prompt (``narration.offers.closure_message``), composed on
+        first read."""
+        if self._message is None:
+            self._message = closure_message(self.offer_params())
+        return self._message
 
 
 def _solution_display_titles(solutions: list) -> list[str]:

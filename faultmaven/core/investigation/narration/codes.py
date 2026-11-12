@@ -20,6 +20,7 @@ from here, and ``OfferCode`` too, each pinned member for member by
 import hashlib
 import json
 from enum import StrEnum
+from typing import Optional
 
 #: Set by the test suite (``tests/conftest.py``): a decision token left
 #: unrendered at the turn record raises there instead of being logged and
@@ -92,6 +93,48 @@ PROSE_KEYS = {
     OfferCode.RESOLUTION_NEEDS_INFO: "resolution_needs_info_message",
 }
 
+
+#: The record fields a decision was decided from, by ``(code, composer)``
+#: (``composer``: the model proposal's, else None), each carried in the
+#: decision's params under ``DECIDED_PARAMS[field]``. After a stored record,
+#: ``turn_narration`` counts each field the record does not state as decided.
+DECIDED_FROM: dict[tuple[str, Optional[str]], tuple[str, ...]] = {
+    (NoticeCode.PENDING_CHECK, None): ("resolution.reason",),
+    (OfferCode.RCA_INFEASIBLE_CLOSE, None): ("closure.eligibility",),
+    (OfferCode.DEFERRED_RESOLVE, None): (
+        "closure.eligibility",
+        "cause.identification_leg",
+    ),
+    (OfferCode.DEFERRED_CLOSE, None): ("closure.eligibility",),
+    (OfferCode.BACKSTOP_RESOLVE, None): (
+        "resolution.reason",
+        "cause.identification_leg",
+    ),
+    (OfferCode.FALSE_ALARM_CLOSE, None): ("problem.status",),
+    (OfferCode.NEEDS_INFO_UNMET_CLOSE, None): ("resolution.reason",),
+    (OfferCode.RESOLUTION_NEEDS_INFO, None): ("resolution.reason",),
+    (OfferCode.REQUEST_READY, None): (
+        "resolution.reason",
+        "cause.identification_leg",
+    ),
+    (OfferCode.MODEL_PROPOSAL, "readiness"): ("resolution.reason",),
+    (OfferCode.MODEL_PROPOSAL, "confirmation"): (
+        "resolution.reason",
+        "cause.identification_leg",
+    ),
+    (OfferCode.MODEL_PROPOSAL, "closure"): (
+        "closure.eligibility",
+        "cause.identification_leg",
+    ),
+}
+
+#: The param each compared record field is decided in.
+DECIDED_PARAMS = {
+    "resolution.reason": "reason",
+    "closure.eligibility": "verdict",
+    "cause.identification_leg": "identification_leg",
+    "problem.status": "problem_status",
+}
 
 #: Codes that write no notice: other renderers read them.
 CONTEXT_ONLY = frozenset(

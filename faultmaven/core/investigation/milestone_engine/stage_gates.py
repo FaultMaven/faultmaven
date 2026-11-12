@@ -1894,7 +1894,7 @@ def _apply_stage_gate_side_effects(
             and not awaiting_request_recheck(case)
             and not case.is_terminal
             and not problem_on_hold(case)
-            and closure_verdict(case) != ClosureReadiness.SUGGEST_RESOLVE
+            and (verdict := closure_verdict(case)) != ClosureReadiness.SUGGEST_RESOLVE
         ):
             # The generic fallback is fine for the user-facing sentence but is
             # NOT a rationale: derive_closure_reason's guard requires a real one
@@ -1927,6 +1927,7 @@ def _apply_stage_gate_side_effects(
                     proposal_id=record.open.proposal_id,
                     rationale=rationale,
                     closure_line=closure_line,
+                    verdict=verdict,
                 )
                 # The reason the open just derived, read rather than
                 # re-derived: an rca_infeasible declaration beside a standing
