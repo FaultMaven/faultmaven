@@ -67,6 +67,7 @@ from faultmaven.core.investigation.terminal_transitions import (
     _mitigation_declared_stable,
     _mitigation_verified,
     assess_resolution_readiness,
+    cause_identification_leg,
     closure_verdict,
     declined_resolve_entry,
     derive_closure_reason,
@@ -252,6 +253,7 @@ def _cause(case: "Case", subjects: "SubjectIndex") -> CauseOutcome:
         # After a later step retires the holding hypothesis, these and
         # ``held_open_root_ids`` can disagree until B1e's final recompute.
         pool_empty_reason=cause_pool_empty_reason(case),
+        identification_leg=cause_identification_leg(case),
         identification_held_open=bool(case.progress.cause_identification_held_open),
     )
 

@@ -1,7 +1,10 @@
 from typing import Mapping
 
 from faultmaven.core.investigation.cause_assurance import runbook_conversion_ready
-from faultmaven.core.investigation.narration.offers import mitigation_sentence
+from faultmaven.core.investigation.narration.offers import (
+    mitigation_sentence,
+    resolution_confirmation,
+)
 from faultmaven.core.investigation.prompts.templates.terminal import (
     TerminalAffordances,
 )
@@ -22,13 +25,13 @@ from .cause_state import (
 )
 
 
-def _build_resolution_confirmation(case) -> str:
-    """Build the resolution confirmation prompt with optional enrichment hints.
-
-    Shows what we have on record (root cause, solution, and the rows that
-    confirm the resolution, ``resolution_record_lines``) and suggests
-    additional details that would improve the resolution documentation and
-    any runbook generated from it. Makes clear these are optional.
+def resolution_confirmation_params(case) -> dict:
+    """The facts the resolve confirmation states (``narration.offers.
+    resolution_confirmation``), read from the case where the confirmation is
+    decided (#2636, A4): what is on record (root cause, solution, and the rows
+    that confirm the resolution, ``resolution_record_lines``), and which
+    optional details would improve the resolution documentation and any
+    runbook generated from it.
 
     It never asks how the fix was verified (#2428): the record lines show
     that, and ``Solution.verification_method`` is written by no investigation
@@ -41,45 +44,24 @@ def _build_resolution_confirmation(case) -> str:
         if cause_identification_leg(case) is not None
         else "no root cause on record"
     )
-    parts = [
-        "Here's what I have on record:\n",
-        f"- **Root cause**: {root}",
-        f"- **Solution**: {_get_solution_summary(case)}",
-    ]
-    record = resolution_record_lines(case)
-    if record:
-        parts.append(record)
+    has_commands = any(
+        getattr(s, "commands", None) or getattr(s, "implementation_steps", None)
+        for s in case.solutions or ()
+    )
+    return {
+        "root": root,
+        "solution": _get_solution_summary(case),
+        "record_lines": resolution_record_lines(case),
+        # Enrichment that improves the docs but does not block resolution.
+        "no_evidence": not case.evidence,
+        "no_commands": not has_commands,
+    }
 
-    # Check what enrichment data is missing — these improve docs but don't block resolution
-    enrichment_hints = []
 
-    evidence_count = len(case.evidence) if case.evidence else 0
-    if evidence_count == 0:
-        enrichment_hints.append("diagnostic evidence (logs, metrics, error messages)")
-
-    has_commands = False
-    if case.solutions:
-        has_commands = any(
-            getattr(s, "commands", None) or getattr(s, "implementation_steps", None)
-            for s in case.solutions
-        )
-    if not has_commands:
-        enrichment_hints.append("specific commands or steps you used")
-
-    if enrichment_hints:
-        parts.append(
-            "\nThis is enough to resolve. If you'd like to improve the documentation "
-            "(and any runbook generated from it), you can also share:"
-        )
-        for hint in enrichment_hints:
-            parts.append(f"- {hint}")
-        parts.append("\nConfirm to resolve now, or share more details first.")
-    else:
-        parts.append(
-            "\nIs this correct? Once you confirm, I'll mark the case as resolved."
-        )
-
-    return "\n".join(parts)
+def _build_resolution_confirmation(case) -> str:
+    """The resolution confirmation prompt, with its optional enrichment
+    hints, from the case as it stands."""
+    return resolution_confirmation(**resolution_confirmation_params(case))
 
 
 #: The status line a confirmed close opens its reply with, one per reason, so

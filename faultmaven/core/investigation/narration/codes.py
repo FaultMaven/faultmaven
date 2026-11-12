@@ -8,10 +8,12 @@ own emission, what the engine did this turn, and the facts a renderer falls
 back on when no record can be read. B1b's codes read the verdicts their texts
 state from the record at render time; B1c's carry them as their decider read
 them (decide-time facts, A4), so each text is the one the decider composed.
+B1d's ``OfferCode`` names an offer (or a request) a decider opened, its
+params the facts its prose states, as the decider read them (A4).
 
 The log is turn-local metadata and never stored (a turn record holds rendered
 text), so member order has no runtime meaning. ``NoticeCode`` is APPEND-ONLY
-from here, and pinned member for member by
+from here, and ``OfferCode`` too, each pinned member for member by
 ``tests/unit/core/investigation/test_turn_reorder_2636.py``.
 """
 
@@ -59,6 +61,36 @@ class NoticeCode(StrEnum):
     REVISION_REFUSED = "revision_refused"
     FIX_LICENCE_REFUSED = "fix_licence_refused"
     FIX_REPORT_IGNORED = "fix_report_ignored"
+    # B1d: the model's proposal dropped for the engine's offer (params).
+    ENGINE_OFFER_STANDS = "engine_offer_stands"
+
+
+class OfferCode(StrEnum):
+    """An offer's prose, or a request's: its ``summary`` and the metadata key
+    the reply composer reads (``PROSE_KEYS``)."""
+
+    RCA_INFEASIBLE_CLOSE = "rca_infeasible_close"
+    DEFERRED_RESOLVE = "deferred_resolve"
+    DEFERRED_CLOSE = "deferred_close"
+    BACKSTOP_RESOLVE = "backstop_resolve"
+    FALSE_ALARM_CLOSE = "false_alarm_close"
+    NEEDS_INFO_UNMET_CLOSE = "needs_info_unmet_close"
+    RESOLUTION_NEEDS_INFO = "resolution_needs_info"
+    # A summary only: the step-0 request turned READY, and the model's proposal.
+    REQUEST_READY = "request_ready"
+    MODEL_PROPOSAL = "model_proposal"
+
+
+#: The metadata key each offer code's prose is published under.
+PROSE_KEYS = {
+    OfferCode.RCA_INFEASIBLE_CLOSE: "rca_infeasible_closure_message",
+    OfferCode.DEFERRED_RESOLVE: "deferred_solution_gate_message",
+    OfferCode.DEFERRED_CLOSE: "deferred_solution_gate_message",
+    OfferCode.BACKSTOP_RESOLVE: "resolution_ready_gate_message",
+    OfferCode.FALSE_ALARM_CLOSE: "false_alarm_closure_message",
+    OfferCode.NEEDS_INFO_UNMET_CLOSE: "resolution_readiness_message",
+    OfferCode.RESOLUTION_NEEDS_INFO: "resolution_needs_info_message",
+}
 
 
 #: Codes that write no notice: other renderers read them.

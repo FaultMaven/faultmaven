@@ -115,6 +115,7 @@ PINNED: dict = {
     ],
     CaseState: ["inquiry", "investigating", "resolved", "closed"],
     "AttemptOutcome.kind": ["remediation", "interception"],
+    "CauseOutcome.identification_leg": ["chain", "rcc", "working_conclusion"],
 }
 
 

@@ -3,13 +3,25 @@
 Composers keyed on what a decider decided, a reason and its params, never on
 the case: the readiness message (``terminal_transitions``'
 ``assess_resolution_readiness``, through ``ResolutionReadiness.message``), the
-closure→resolve pivot (``assess_closure_readiness``) and the close summary
-(``assess_close_summary``). The deciders derive the params; these compose.
+closure→resolve pivot (``assess_closure_readiness``), the close summary
+(``assess_close_summary``) and the resolve confirmation
+(``terminal_replies._build_resolution_confirmation``). The deciders derive the
+params; these compose.
+
+``render_offer`` renders the prose of an offer (or a request) a decision cycle
+opened, from its ``OfferCode`` and the params its decider read (decide-time,
+A4), after the cycle's record is written (#2636 B1d).
 """
 
 from typing import Optional, Sequence
 
-from faultmaven.modules.case.contracts import ConfirmationGap, ResolutionReason
+from faultmaven.modules.case.contracts import (
+    ClosureEligibility,
+    ConfirmationGap,
+    ResolutionReason,
+)
+
+from .codes import OfferCode
 
 
 def mitigation_sentence(line: str) -> str:
@@ -222,3 +234,162 @@ def close_summary_message(
         + "\n".join(parts)
         + "\n\nAre you sure you want to close this case without resolution?"
     )
+
+
+#: ``close_summary_message``'s params, as ``ClosureReadiness.offer_params``
+#: carries them.
+_SUMMARY_PARAMS = (
+    "trivial",
+    "evidence_count",
+    "hypothesis_count",
+    "milestones_completed",
+    "root_cause",
+    "solution_titles",
+)
+
+
+def closure_message(params: dict) -> str:
+    """``ClosureReadiness.message``, from its ``offer_params``: the pivot on
+    SUGGEST_RESOLVE, else the close summary."""
+    if params["verdict"] == ClosureEligibility.SUGGEST_RESOLVE:
+        return suggest_resolve_message(
+            params["root_cause"], params["solution_titles"], params["record_lines"]
+        )
+    return close_summary_message(**{k: params[k] for k in _SUMMARY_PARAMS})
+
+
+def resolution_confirmation(
+    *,
+    root: str,
+    solution: str,
+    record_lines: str,
+    no_evidence: bool,
+    no_commands: bool,
+) -> str:
+    """The resolve confirmation (``terminal_replies``): what is on record, and
+    the optional details that would improve the documentation (#2428)."""
+    parts = [
+        "Here's what I have on record:\n",
+        f"- **Root cause**: {root}",
+        f"- **Solution**: {solution}",
+    ]
+    if record_lines:
+        parts.append(record_lines)
+    hints = []
+    if no_evidence:
+        hints.append("diagnostic evidence (logs, metrics, error messages)")
+    if no_commands:
+        hints.append("specific commands or steps you used")
+    if hints:
+        parts.append(
+            "\nThis is enough to resolve. If you'd like to improve the documentation "
+            "(and any runbook generated from it), you can also share:"
+        )
+        parts.extend(f"- {hint}" for hint in hints)
+        parts.append("\nConfirm to resolve now, or share more details first.")
+    else:
+        parts.append(
+            "\nIs this correct? Once you confirm, I'll mark the case as resolved."
+        )
+    return "\n".join(parts)
+
+
+_CONFIRMATION_PARAMS = (
+    "root",
+    "solution",
+    "record_lines",
+    "no_evidence",
+    "no_commands",
+)
+
+#: The step-0 close when a remembered resolution request is still unmet.
+_REQUEST_UNMET_CLOSE = (
+    "I understand. Without confirmation that the root cause "
+    "was **eliminated** (e.g. the original error is now "
+    "absent after the fix), I can't mark this as "
+    "**resolved** — a restored-but-stabilized or "
+    "deferred-fix case isn't a resolution.\n\n"
+    "You can **close** the case instead — this preserves "
+    "the root cause analysis and the documented (or "
+    "deferred) solution."
+)
+
+_DEFERRED_CLOSE = (
+    "The root cause and fix are documented, but the fix can't be applied "
+    "or verified during this session — it needs out-of-band implementation "
+    "(a change request, maintenance window, or another team). Shall I close "
+    "this case with the solution documented for your team to apply?"
+)
+
+_READINESS_PARAMS = ("request_text", "off_cause_turn", "recheck_cause", "recheck_fix")
+
+
+def _readiness(params: dict) -> str:
+    """The readiness message for the reason its decider decided, from
+    ``ResolutionReadiness.offer_params``."""
+    return readiness_message(
+        params["reason"],
+        missing=params["missing"],
+        gaps=params["gaps"],
+        **{k: params.get(k) for k in _READINESS_PARAMS},
+    )
+
+
+def render_offer(code: str, params: dict) -> str:
+    """The prose of an offer or request a decision cycle opened, rendered after
+    its record from the facts its decider read (A4): every text is the one the
+    decider composed before B1d. None reads the record yet (stage S3 switches
+    the deciders to it)."""
+    if code == OfferCode.RCA_INFEASIBLE_CLOSE:
+        # The mitigation's record (#2100, C1), never a verdict it does not hold.
+        lead = mitigation_sentence(params["closure_line"] or "a mitigation was applied")
+        return f"{lead} Since {params['rationale']}, shall we close this case?"
+    if code == OfferCode.DEFERRED_RESOLVE:
+        return (
+            "The record shows:\n\n"
+            + params["record_lines"]
+            + "\n\nThe implementation work you flagged as out-of-band (a change "
+            "request, maintenance window, or another team) is follow-up: it "
+            "stays documented on the resolved case and does not need the "
+            "incident held open. Shall I mark this case resolved?"
+        )
+    if code == OfferCode.DEFERRED_CLOSE:
+        return _DEFERRED_CLOSE
+    if code == OfferCode.BACKSTOP_RESOLVE:
+        # READY is a confirmed ELIMINATION, not a confirmed CAUSE: the
+        # attribution is named only with a cause on record (#1906 D5.1).
+        if params["cause_on_record"]:
+            still_open = (
+                "The case is still open until you confirm: marking it resolved "
+                "records the attribution and writes up the resolution summary."
+            )
+        else:
+            still_open = (
+                "The case is still open until you confirm: marking it resolved "
+                "writes up what happened."
+            )
+        return (
+            f"The record shows:\n\n{params['record_lines']}\n\n{still_open} "
+            "Shall I mark this case resolved?"
+        )
+    if code == OfferCode.FALSE_ALARM_CLOSE:
+        return (
+            "The evidence shows the reported problem was not present where and "
+            f"when it was reported: {params['rationale']} There is nothing to "
+            "fix, so this case cannot be resolved. Shall we **close** it as a "
+            "false alarm? If you have information showing the problem is real, "
+            "say so and the investigation continues."
+        )
+    if code == OfferCode.NEEDS_INFO_UNMET_CLOSE:
+        return _readiness(params) if params["suggest_close"] else _REQUEST_UNMET_CLOSE
+    if code == OfferCode.RESOLUTION_NEEDS_INFO or (
+        code == OfferCode.MODEL_PROPOSAL and params["composer"] == "readiness"
+    ):
+        return _readiness(params)
+    if code == OfferCode.MODEL_PROPOSAL and params["composer"] == "closure":
+        return closure_message(params)
+    if code == OfferCode.REQUEST_READY or (
+        code == OfferCode.MODEL_PROPOSAL and params["composer"] == "confirmation"
+    ):
+        return resolution_confirmation(**{k: params[k] for k in _CONFIRMATION_PARAMS})
+    raise KeyError(code)

@@ -1013,15 +1013,25 @@ _OUTCOME_RECORD_FIELDS = (
     "attempts.accepted_in_turn",
     "resolution.confirmed_row_ids",
     "closure",
+    # The narration step (#2636): a decision whose reason, closure verdict or
+    # identified cause the stored record does not state, counted per code on
+    # every narration of it (``turn_narration._conflict``).
+    "narration.pending_check",
+    "narration.needs_info_unmet_close",
+    "narration.resolution_needs_info",
+    "narration.model_proposal",
 )
 
 case_outcome_conflicts_total = Counter(
     "faultmaven_case_outcome_conflicts_total",
     "A carried final verdict in the case outcome record disagreed with a "
     "fresh derivation (#2615), counted once when the disagreement first "
-    "appears. Labelled by the record field "
+    "appears; or a decision narrated after the cycle's stored record "
+    "disagreed with it (#2636). Labelled by the record field "
     "(attempts.window|attempts.accepted_in_turn|resolution.confirmed_row_ids|"
-    "closure).",
+    "closure) or the narrated code (narration.pending_check|"
+    "narration.needs_info_unmet_close|narration.resolution_needs_info|"
+    "narration.model_proposal).",
     labelnames=["field"],
     label_values={"field": _OUTCOME_RECORD_FIELDS},
 )

@@ -419,3 +419,9 @@ sum by (summary_type) (increase(faultmaven_terminal_summary_total{outcome="faile
   /
 sum by (summary_type) (increase(faultmaven_terminal_summary_total{outcome=~"generated|empty|failed"}[7d]))
 ```
+
+## Case outcome record conflicts (#2615, #2636)
+
+**Question:** how often does a decider decide on something the case outcome record (`progress.outcome`) does not state?
+
+**Counter:** `faultmaven_case_outcome_conflicts_total{field}`, every series at 0 from import. The record's own fold counts a carried final verdict a fresh derivation disagrees with, once, by record field (`attempts.window`, `attempts.accepted_in_turn`, `resolution.confirmed_row_ids`, `closure`). The narration step counts a decision whose resolution reason, closure verdict or identified cause the cycle's stored record does not state, on each narration of it, by code: `narration.pending_check`, `narration.needs_info_unmet_close`, `narration.resolution_needs_info`, `narration.model_proposal`. A cycle whose record write failed counts nothing. The text rendered is the decision's either way; stage S3 of #2615 switches the deciders to the record, after which a nonzero rate is a defect.
