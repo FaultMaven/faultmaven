@@ -1533,6 +1533,65 @@ class LocalJwtSecretFileError(RuntimeError):
     """
 
 
+class LocalJwtSecretError(RuntimeError):
+    """The local HS256 secret is one PyJWT will not sign or verify with (#1806).
+
+    Refused at startup: with it every login and every request would fail.
+    """
+
+
+#: Where a local secret came from, and what the operator does about a refused
+#: one; ``{path}`` is the resolved secret file.
+_JWT_SECRET_REFUSAL_ADVICE = {
+    "JWT_SECRET_KEY": (
+        "the JWT_SECRET_KEY setting",
+        "Replace JWT_SECRET_KEY with a random string, or unset it to use the "
+        "secret file {path}; an explicit JWT_SECRET_KEY always wins over the file.",
+    ),
+    "file": (
+        "the secret file {path}",
+        "Replace the file's contents with a random string, or delete the file to "
+        "have a new secret generated, which signs every user out.",
+    ),
+    "generated": (
+        "a secret generated for this process",
+        "Nothing was written. Set JWT_SECRET_KEY to a random string.",
+    ),
+}
+
+
+def require_signable_hs256_secret(value: str, source: str, path: Path) -> None:
+    """Refuse ``value`` unless PyJWT's HS256 algorithm signs and verifies with it.
+
+    The check is the signer's own key path: the steps ``jwt.encode`` and
+    ``jwt.decode`` take with the key (prepare, sign, verify), run on the HS256
+    algorithm object, because ``jwt.encode`` belongs to the token generator
+    alone (#959). The key-length check is left out: it only warns unless
+    ``enforce_minimum_key_length`` is set, which nothing sets (#1806).
+    ``source`` is a key of ``_JWT_SECRET_REFUSAL_ADVICE`` and ``path`` the
+    resolved secret file. Any failure refuses, raised outside the handler so no
+    exception holding the value is chained; the message never carries it.
+    """
+    import jwt
+
+    try:
+        hs256 = jwt.get_algorithm_by_name("HS256")
+        key = hs256.prepare_key(value)
+        if hs256.verify(b"startup-check", key, hs256.sign(b"startup-check", key)):
+            return
+    except Exception:  # every failure means the signer refuses the value
+        pass
+    where, advice = _JWT_SECRET_REFUSAL_ADVICE[source]
+    raise LocalJwtSecretError(
+        f"The local JWT secret from {where.format(path=path)} cannot sign tokens: "
+        "PyJWT refuses it as an HMAC secret (a value that looks like a PEM or SSH "
+        "key or a JWK, or is not UTF-8 text, is refused). "
+        f"{advice.format(path=path)} For a random string, run "
+        '`python -c "import secrets; print(secrets.token_urlsafe(48))"`, then '
+        "restart every process."
+    ) from None
+
+
 def _jwt_secret_from_bytes(raw: bytes, path: Path) -> str:
     """The secret a JWT secret file's bytes hold, stripped ("" if none).
 
@@ -1595,15 +1654,22 @@ def resolve_local_jwt_secret(settings: "FaultMavenSettings") -> None:
     the environment by name, so a refused boot or fm-* command left
     data/.jwt_secret behind.
 
-    Does nothing when:
+    In this order:
+      - ``settings.auth.auth_mode`` is not local (OAuth uses RS256 keys): it
+        returns, judging nothing.
       - ``settings.security.jwt_secret_key`` is set (an explicit value always
-        wins), or
-      - ``settings.auth.auth_mode`` is not local (OAuth uses RS256 keys).
-    Otherwise it reads the secret file (``JWT_SECRET_FILE``, else
-    data/.jwt_secret) or generates a secret, and publishes the file only when
-    the database is persistent. ``publish_secret_once`` publishes it whole, at
-    0600, from exactly one process; a process that loses that race signs with
-    the winner's value, so processes starting together agree (#1788). An empty
+        wins): it is judged, and the function returns.
+      - Otherwise it reads the secret file (``JWT_SECRET_FILE``, else
+        data/.jwt_secret) or generates a secret, and judges that value before
+        it is published, set or exported. The file is published only when the
+        database is persistent.
+
+    Judging is :func:`require_signable_hs256_secret`: a value PyJWT will not
+    sign with raises :class:`LocalJwtSecretError` (#1806), so a refused value is
+    never written, set or exported. ``publish_secret_once`` publishes the
+    secret whole, at 0600, from exactly one process; a process that loses that
+    race signs with the winner's value, judged first, so processes starting
+    together agree (#1788). An empty
     or whitespace-only file holds no secret and is replaced, through a symlink
     onto its target. Before an existing file's secret is used, a file that group
     or others can read or write is tightened to 0600 with a WARNING, and one
@@ -1625,24 +1691,32 @@ def resolve_local_jwt_secret(settings: "FaultMavenSettings") -> None:
     secret — local auth then fails with a clear "JWT_SECRET_KEY not configured"
     message rather than the server crashing at startup.
     """
+    if settings.auth.auth_mode is not AuthMode.LOCAL:
+        return
+    secret_path = Path(os.environ.get("JWT_SECRET_FILE", DEFAULT_JWT_SECRET_FILE))
     # Truthy, not "not None": an empty secret is no secret to every consumer
     # (``if not secret`` in the token generator), so it is minted over.
     if settings.security.jwt_secret_key:
-        return
-    if settings.auth.auth_mode is not AuthMode.LOCAL:
+        require_signable_hs256_secret(
+            settings.security.jwt_secret_key.get_secret_value(),
+            "JWT_SECRET_KEY",
+            secret_path,
+        )
         return
 
     logger = logging.getLogger(__name__)
     persist = persistent_database_configured(settings.database.database_url)
-    secret_path = Path(os.environ.get("JWT_SECRET_FILE", DEFAULT_JWT_SECRET_FILE))
     try:
         value = (
             _read_local_jwt_secret_file(secret_path, logger)
             if secret_path.is_file()
             else ""
         )
-        if not value:
+        if value:
+            require_signable_hs256_secret(value, "file", secret_path)
+        else:
             value = secrets.token_urlsafe(48)
+            require_signable_hs256_secret(value, "generated", secret_path)
             if persist:
                 secret_path.parent.mkdir(parents=True, exist_ok=True)
                 if not publish_secret_once(
@@ -1654,6 +1728,7 @@ def resolve_local_jwt_secret(settings: "FaultMavenSettings") -> None:
                     value = _read_local_jwt_secret_file(secret_path, logger)
                     if not value:  # blank after all: never export an empty one
                         raise OSError("the published secret file holds no secret")
+                    require_signable_hs256_secret(value, "file", secret_path)
     except OSError as exc:
         if persist:
             logger.warning(
@@ -1666,6 +1741,7 @@ def resolve_local_jwt_secret(settings: "FaultMavenSettings") -> None:
         # Nothing is written without a persistent database; an unreadable file
         # leaves this process a per-process secret.
         value = secrets.token_urlsafe(48)
+        require_signable_hs256_secret(value, "generated", secret_path)
 
     settings.security.jwt_secret_key = SecretStr(value)
     set_env_var(os.environ, "JWT_SECRET_KEY", value)
