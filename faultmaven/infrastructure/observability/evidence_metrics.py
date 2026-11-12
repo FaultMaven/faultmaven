@@ -18,6 +18,9 @@ for the canonical alert definitions.
 
 import logging
 
+from faultmaven.infrastructure.shims.metrics import create_children, declare_lazy
+from faultmaven.modules.case.contracts import EntityType, EvidenceSourceType
+
 try:
     from prometheus_client import Counter, Histogram
 
@@ -87,6 +90,10 @@ if PROMETHEUS_AVAILABLE:
         "counters are not.",
         labelnames=["outcome"],
     )
+    create_children(
+        EVIDENCE_MARK_LINKED_FAILURES_TOTAL,
+        {"outcome": ("returned_false", "raised", "timed_out")},
+    )
 
     EVIDENCE_TURN_ASYNC_RETRY_ENQUEUED_TOTAL = Counter(
         "faultmaven_evidence_turn_async_retry_enqueued_total",
@@ -95,6 +102,13 @@ if PROMETHEUS_AVAILABLE:
         "PLAN-async-turn-retry implementation.",
         labelnames=["reason"],
     )
+    declare_lazy(
+        EVIDENCE_TURN_ASYNC_RETRY_ENQUEUED_TOTAL,
+        "nothing emits it: the async-turn-retry path it was scaffolded for was "
+        "designed and discarded (PLAN-async-turn-retry.md, deleted 2026-04-19; "
+        "evidence-failure-modes.md), so its documented reason values are bound "
+        "to no code.",
+    )
 
     EVIDENCE_TURN_ASYNC_RETRY_OUTCOME_TOTAL = Counter(
         "faultmaven_evidence_turn_async_retry_outcome_total",
@@ -102,6 +116,13 @@ if PROMETHEUS_AVAILABLE:
         "(success | failure | timeout | superseded | cancelled). Emitted by "
         "the PLAN-async-turn-retry implementation.",
         labelnames=["outcome"],
+    )
+    declare_lazy(
+        EVIDENCE_TURN_ASYNC_RETRY_OUTCOME_TOTAL,
+        "nothing emits it: the async-turn-retry path it was scaffolded for was "
+        "designed and discarded (PLAN-async-turn-retry.md, deleted 2026-04-19; "
+        "evidence-failure-modes.md), so its documented outcome values are bound "
+        "to no code.",
     )
 
     EVIDENCE_TURN_ASYNC_RETRY_LATENCY_SECONDS = Histogram(
@@ -122,6 +143,11 @@ if PROMETHEUS_AVAILABLE:
         "/cases/{id}/evidence/{eid}/classification endpoint and by the "
         "reclassify_evidence agent tool.",
         labelnames=["from_type", "to_type", "trigger"],
+    )
+    declare_lazy(
+        EVIDENCE_RECLASSIFICATION_TOTAL,
+        "from_type x to_type x trigger is over 100 combinations, and from_type "
+        "is a stored value that may be 'unknown' or retired.",
     )
 
     # Phase 2c — extraction-quality feedback signals.
@@ -162,6 +188,14 @@ if PROMETHEUS_AVAILABLE:
         "index insufficient for that type.",
         labelnames=["data_type", "tool"],
     )
+    # The labels ``record_triage_escalation_if_same_turn`` writes.
+    create_children(
+        AGENT_TRIAGE_ESCALATION_TOTAL,
+        {
+            "data_type": (*(t.value for t in EvidenceSourceType), "unknown"),
+            "tool": ("search_file", "deep_analysis"),
+        },
+    )
 
     # Phase 4 — case-level entity registry overflow. Labeled by
     # ``entity_type`` so the dashboard surfaces which vocabulary
@@ -177,6 +211,9 @@ if PROMETHEUS_AVAILABLE:
         "Phase 4 per-(evidence, type) hard cap and had entity rows "
         "truncated. Labelled by entity_type.",
         labelnames=["entity_type"],
+    )
+    create_children(
+        CASE_ENTITIES_OVERFLOW_TOTAL, {"entity_type": [t.value for t in EntityType]}
     )
 
     # 2026-05-01 review fix: page_capture passthrough shape validation.
@@ -204,6 +241,7 @@ if PROMETHEUS_AVAILABLE:
         "of the case.",
         ["reason"],
     )
+    create_children(EVIDENCE_ROW_REFUSED_TOTAL, {"reason": ("unresolved_file",)})
 
     # #1930: system output the user typed into a chat message, offered back
     # for the user to declare. event=offered: an offer of output blocks was
@@ -216,6 +254,10 @@ if PROMETHEUS_AVAILABLE:
         "Chat-data offer lifecycle events: offered, state_requested, "
         "block_unmatched, saved.",
         ["event"],
+    )
+    create_children(
+        CHAT_DATA_OFFER_EVENTS_TOTAL,
+        {"event": ("offered", "state_requested", "block_unmatched", "saved")},
     )
 else:
     EVIDENCE_DEDUP_HITS_TOTAL = _NoOpMetric()

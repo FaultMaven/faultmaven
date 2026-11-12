@@ -43,8 +43,5 @@ session_anonymous_mints_total = Counter(
     "origin: the extension's scheme (chrome-extension, moz-extension, "
     "safari-web-extension), web, or none (no, blank or null Origin).",
     ["bearer", "origin"],
+    label_values={"bearer": BEARER_KINDS, "origin": ORIGIN_KINDS},
 )
-
-for _bearer in BEARER_KINDS:
-    for _origin in ORIGIN_KINDS:
-        session_anonymous_mints_total.labels(bearer=_bearer, origin=_origin)

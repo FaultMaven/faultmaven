@@ -356,7 +356,7 @@ Every confirmation card names the offer it presents: its intent carries `proposa
 
 **Counter:**
 
-- `faultmaven_confirmation_click_refused_total{gate, reason}` — one increment per refused click. `gate` is what was standing: `terminal` (a pending RESOLVED or CLOSED), `gate1` (the problem-statement confirmation) or `none`. `reason` is `stale` (the click named another offer) or `untargeted` (it named none). Every series exists from import, at 0.
+- `faultmaven_confirmation_click_refused_total{gate, reason}` — one increment per refused click. `gate` is what was standing: `terminal` (a pending RESOLVED or CLOSED), `gate1` (the problem-statement confirmation), `revision` (a pending statement revision) or `none`. `reason` is `stale` (the click named another offer) or `untargeted` (it named none). Every series exists from import, at 0.
 
 An `untargeted` click gets the same "earlier offer" line as a stale one: from the user's side both are a button for an offer that is not the one open now. It comes from a card rendered before the keys shipped, or from a client that builds a confirmation intent by hand instead of forwarding a suggestion's intent verbatim (Copilot's marker-rendered buttons, faultmaven-copilot#291).
 

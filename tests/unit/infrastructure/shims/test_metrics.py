@@ -298,7 +298,12 @@ class TestNoOpMetricEdgeCases:
         with patch.dict(os.environ, {"ENABLE_METRICS": "false"}):
             from faultmaven.infrastructure.shims.metrics import Counter
 
-            counter = Counter("chain_test", "Test", labelnames=["method", "endpoint"])
+            counter = Counter(
+                "chain_test",
+                "Test",
+                labelnames=["method", "endpoint"],
+                lazy_labels="endpoint is open-ended",
+            )
 
             # Should support chaining
             result = counter.labels(method="GET", endpoint="/api").labels(

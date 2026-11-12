@@ -73,6 +73,11 @@ Interpretation and PromQL:
 
 from faultmaven.infrastructure.shims.metrics import Counter, Histogram
 
+# ``tool`` is a registered tool's name, which the deployment's config decides;
+# both counters move on every relayed result, so a lost first event is noise
+# (#1787).
+_LAZY_TOOL = "tool is a registered tool's name, which the deployment's config decides"
+
 # Denominator. Every tool result the loop hands back to the model, counted at
 # the same point the cap is applied -- after redaction, after per-tool
 # formatting -- so it counts the string that actually enters the context rather
@@ -84,6 +89,7 @@ tool_result_relayed_total = Counter(
     "Tool results relayed into the model's context by the investigation tool "
     "loop, labeled by ``tool``. The denominator for the truncation clip rate.",
     ["tool"],
+    lazy_labels=_LAZY_TOOL,
 )
 
 # Numerator. One increment per relayed result that exceeded
@@ -95,6 +101,7 @@ tool_result_truncated_total = Counter(
     "truncated before entering the model's context, labeled by ``tool``. "
     "Divide by faultmaven_tool_result_relayed_total for the per-tool clip rate.",
     ["tool"],
+    lazy_labels=_LAZY_TOOL,
 )
 
 # The distribution the clip rate sits in, observed PRE-truncation so the tail

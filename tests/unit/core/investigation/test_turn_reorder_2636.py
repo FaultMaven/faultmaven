@@ -564,7 +564,7 @@ def test_a_token_left_unrendered_is_stripped_in_production(caplog, monkeypatch):
 
 
 def test_the_codes_are_append_only():
-    """B1c and B1d append theirs after these."""
+    """B1c appended its fourteen after B1b's seven; B1d appends after these."""
     assert [m.value for m in NoticeCode] == [
         "solution_offer_withdrawn",
         "mitigation_verify_proceeded",
@@ -573,4 +573,19 @@ def test_the_codes_are_append_only():
         "refutation_refused",
         "hypothesis_retired",
         "mitigation_disposed",
+        # B1c's
+        "absence_in_failed_window",
+        "unbound_rechecks",
+        "failed_fix_not_reregistered",
+        "pending_check",
+        "declined_resolution_reask",
+        "fix_untargeted",
+        "signals_on_invalidated_problem",
+        "declined_close_reask",
+        "root_terminal_not_qualifying",
+        "root_terminal_refused",
+        "false_alarm_refused",
+        "revision_refused",
+        "fix_licence_refused",
+        "fix_report_ignored",
     ]

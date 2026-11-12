@@ -529,7 +529,8 @@ async def test_a_declaration_on_the_first_turn_is_ignored_with_a_line(caplog):
     assert _stamps(case) == [(1, None)]
     reason = "there is no message before turn 1; the fix is dated to turn 1"
     assert f"{_IGNORED}: {reason}." in "\n".join(meta["system_notices"])
-    assert f"ignored at turn 1: {reason}" in caplog.text
+    # The log names the decider's code and turns; the line is the renderer's.
+    assert "ignored at turn 1: no_previous {'turn': 1}" in caplog.text
 
 
 async def test_a_declaration_without_an_acceptance_is_ignored_with_a_line():
