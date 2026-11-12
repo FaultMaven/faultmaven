@@ -1593,6 +1593,7 @@ def _whole_turn(case, state_updates, message: str = "it works now") -> dict:
     offer = case.offer_record.open
     return {
         "reply": cycle_text([result["agent_response"]])[0],
+        "notices": cycle_text(case.turn_history[-1].system_notices),
         "summary": None if offer is None else cycle_text([offer.summary])[0],
         "basis": None if offer is None else str(offer.basis),
     }
@@ -1622,6 +1623,81 @@ def turn_model_proposal_closure_on_a_decaying_leg():
         _DSU(proposed_transition={"to_state": "closed"}),
         "close it",
     )
+
+
+def turn_model_proposal_beside_the_deferred_close():
+    """The apply step's deferred proposer opens its close; the model's own
+    ``closed`` in the same turn is dropped for it (``ENGINE_OFFER_STANDS``)."""
+    from faultmaven.modules.case.contracts import SolutionFeasible
+    from tests.unit.core.investigation.test_resolution_backstop_turn import (
+        _case as _backstop_case,
+    )
+
+    case = _backstop_case(absence=None, problem_gone=False)
+    case.progress.solution_feasible = SolutionFeasible.DEFERRED
+    case.progress.solution_proposed = True
+    case.current_turn += 1
+    return _whole_turn(
+        case, _DSU(proposed_transition={"to_state": "closed"}), "close it"
+    )
+
+
+def turn_replayed_rca_infeasible_close():
+    """A hold turn stages a mitigation verified on an rca-infeasible problem;
+    the user's "yes" to the revision replays it, and the stage-gate side
+    effect opens the close inside the replay. The live turn publishes it
+    (``test_a_yes_never_executes_an_rca_close_the_replay_made``'s shape)."""
+    from faultmaven.core.investigation.schemas import SolutionToAdd
+    from tests.unit.core.investigation.bound_rows import upload
+
+    async def _run():
+        engine, case = revision._engine(), revision._case()
+        case.problem_verification.rca_infeasible = True
+        case.problem_verification.rca_infeasible_rationale = "black-box vendor API"
+        relief = revision._row(
+            EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE, "g1"
+        ).model_copy(
+            update={
+                "source_file_id": upload(case, case.current_turn),
+                "rechecks": "new_index_0",
+            }
+        )
+        await revision._apply(
+            engine,
+            case,
+            _DSU(
+                evidence_to_add=[
+                    revision._row(EvidenceCategory.SYMPTOM_EVIDENCE, "s1"),
+                    relief,
+                ],
+                verification_updates=revision._revision_update("new_index_0"),
+                solutions_to_add=[
+                    SolutionToAdd(
+                        solution_type="workaround",
+                        description="route checkout through the backup region",
+                        estimated_impact="restores checkout",
+                        risks="higher latency",
+                    )
+                ],
+                milestones=MilestoneUpdates(
+                    mitigation_accepted=True, mitigation_verified=True
+                ),
+            ),
+        )
+        case.current_turn += 1
+        result = await engine.process_turn(
+            case=case, user_message="yes", redaction_ctx=None
+        )
+        return case, result
+
+    case, result = asyncio.run(_run())
+    offer = case.offer_record.open
+    return {
+        "reply": cycle_text([result["agent_response"]])[0],
+        "notices": cycle_text(case.turn_history[-1].system_notices),
+        "summary": None if offer is None else cycle_text([offer.summary])[0],
+        "basis": None if offer is None else str(offer.basis),
+    }
 
 
 #: B1d's (#2636): ``main``'s deciders composed each offer's prose and summary.
@@ -1683,6 +1759,10 @@ B1D_SCENARIOS = {
     "turn_model_proposal_closure_on_a_decaying_leg": (
         turn_model_proposal_closure_on_a_decaying_leg
     ),
+    "turn_model_proposal_beside_the_deferred_close": (
+        turn_model_proposal_beside_the_deferred_close
+    ),
+    "turn_replayed_rca_infeasible_close": turn_replayed_rca_infeasible_close,
 }
 
 
