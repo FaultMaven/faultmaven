@@ -32,6 +32,8 @@ Usage:
 import logging
 from typing import Optional
 
+from faultmaven.infrastructure.shims.metrics import create_children
+
 logger = logging.getLogger(__name__)
 
 # Flag to track if prometheus_client is available
@@ -78,12 +80,14 @@ except ImportError:
 # OAuth Authorization Metrics
 # ============================================================
 
+# lazy: client_id is the requesting client's id, an open set.
 oauth_authorization_requests = Counter(
     "oauth_authorization_requests_total",
     "Total number of OAuth authorization code requests",
     ["client_id", "status"],
 )
 
+# lazy: client_id is the requesting client's id, an open set.
 oauth_authorization_errors = Counter(
     "oauth_authorization_errors_total",
     "Total number of OAuth authorization errors",
@@ -94,6 +98,7 @@ oauth_authorization_errors = Counter(
 # Token Issuance Metrics
 # ============================================================
 
+# lazy: client_id is the requesting client's id, an open set.
 oauth_tokens_issued = Counter(
     "oauth_tokens_issued_total",
     "Total number of OAuth tokens issued (access + refresh)",
@@ -112,17 +117,33 @@ oauth_token_exchange_errors = Counter(
     "Total number of OAuth token exchange errors",
     ["grant_type", "error_code"],
 )
+# The fixed literals ``OAuthService`` passes to ``record_token_exchange``.
+create_children(
+    oauth_token_exchange_errors,
+    {
+        "grant_type": ("authorization_code",),
+        "error_code": (
+            "INVALID_AUTHORIZATION_CODE",
+            "CODE_ALREADY_USED",
+            "CODE_EXPIRED",
+            "REDIRECT_URI_MISMATCH",
+            "PKCE_VERIFICATION_FAILED",
+        ),
+    },
+)
 
 # ============================================================
 # Token Refresh Metrics
 # ============================================================
 
+# lazy: client_id is the requesting client's id, an open set.
 oauth_tokens_refreshed = Counter(
     "oauth_tokens_refreshed_total",
     "Total number of OAuth token refresh operations",
     ["client_id", "status"],
 )
 
+# lazy: client_id is the requesting client's id, an open set.
 oauth_refresh_errors = Counter(
     "oauth_refresh_errors_total",
     "Total number of OAuth token refresh errors",
@@ -138,29 +159,38 @@ oauth_tokens_revoked = Counter(
     "Total number of OAuth tokens revoked",
     ["token_type"],
 )
+create_children(oauth_tokens_revoked, {"token_type": ("access_token", "refresh_token")})
 
 # ============================================================
 # Security Metrics
 # ============================================================
+
+#: What every ``OAuthService`` caller of the PKCE, replay and expiry recorders
+#: passes: the code's client is not known on those paths.
+_CALLER_CLIENT_IDS = ("unknown",)
 
 oauth_pkce_verification_failures = Counter(
     "oauth_pkce_verification_failures_total",
     "Total number of PKCE verification failures (potential attacks)",
     ["client_id"],
 )
+create_children(oauth_pkce_verification_failures, {"client_id": _CALLER_CLIENT_IDS})
 
 oauth_code_replay_attempts = Counter(
     "oauth_code_replay_attempts_total",
     "Total number of authorization code replay attempts detected",
     ["client_id"],
 )
+create_children(oauth_code_replay_attempts, {"client_id": _CALLER_CLIENT_IDS})
 
+# lazy: attempted_client_id is whatever id the request presented.
 oauth_invalid_client_attempts = Counter(
     "oauth_invalid_client_attempts_total",
     "Total number of requests with invalid client_id",
     ["attempted_client_id"],
 )
 
+# lazy: client_id is the id the request presented, an open set.
 oauth_redirect_uri_mismatches = Counter(
     "oauth_redirect_uri_mismatches_total",
     "Total number of redirect URI mismatch errors",
@@ -171,6 +201,7 @@ oauth_redirect_uri_mismatches = Counter(
 # Code Lifecycle Metrics
 # ============================================================
 
+# lazy: client_id is the requesting client's id, an open set.
 oauth_codes_generated = Counter(
     "oauth_codes_generated_total",
     "Total number of authorization codes generated",
@@ -182,6 +213,7 @@ oauth_codes_expired = Counter(
     "Total number of expired authorization code exchanges",
     ["client_id"],
 )
+create_children(oauth_codes_expired, {"client_id": _CALLER_CLIENT_IDS})
 
 
 # ============================================================

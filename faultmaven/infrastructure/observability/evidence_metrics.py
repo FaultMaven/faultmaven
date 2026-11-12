@@ -18,6 +18,9 @@ for the canonical alert definitions.
 
 import logging
 
+from faultmaven.infrastructure.shims.metrics import create_children
+from faultmaven.modules.case.contracts import EntityType, EvidenceSourceType
+
 try:
     from prometheus_client import Counter, Histogram
 
@@ -87,7 +90,12 @@ if PROMETHEUS_AVAILABLE:
         "counters are not.",
         labelnames=["outcome"],
     )
+    create_children(
+        EVIDENCE_MARK_LINKED_FAILURES_TOTAL,
+        {"outcome": ("returned_false", "raised", "timed_out")},
+    )
 
+    # lazy: no emit site exists yet, so there is no reason vocabulary to declare.
     EVIDENCE_TURN_ASYNC_RETRY_ENQUEUED_TOTAL = Counter(
         "faultmaven_evidence_turn_async_retry_enqueued_total",
         "Number of turns whose LLM call hit a transient failure and were "
@@ -103,6 +111,10 @@ if PROMETHEUS_AVAILABLE:
         "the PLAN-async-turn-retry implementation.",
         labelnames=["outcome"],
     )
+    create_children(
+        EVIDENCE_TURN_ASYNC_RETRY_OUTCOME_TOTAL,
+        {"outcome": ("success", "failure", "timeout", "superseded", "cancelled")},
+    )
 
     EVIDENCE_TURN_ASYNC_RETRY_LATENCY_SECONDS = Histogram(
         "faultmaven_evidence_turn_async_retry_latency_seconds",
@@ -115,6 +127,8 @@ if PROMETHEUS_AVAILABLE:
     # (from_type, to_type, trigger) so a classifier-bias dashboard can
     # spot systematic (from_type, to_type) pairs. trigger values:
     # ``api`` (direct PATCH), ``agent_tool`` (reclassify_evidence tool).
+    # lazy: from_type x to_type x trigger is over 100 combinations, and
+    # from_type is a stored value that may be "unknown" or retired.
     EVIDENCE_RECLASSIFICATION_TOTAL = Counter(
         "faultmaven_evidence_reclassification_total",
         "Number of evidence rows whose data_type was changed by a user "
@@ -162,6 +176,14 @@ if PROMETHEUS_AVAILABLE:
         "index insufficient for that type.",
         labelnames=["data_type", "tool"],
     )
+    # The labels ``record_triage_escalation_if_same_turn`` writes.
+    create_children(
+        AGENT_TRIAGE_ESCALATION_TOTAL,
+        {
+            "data_type": (*(t.value for t in EvidenceSourceType), "unknown"),
+            "tool": ("search_file", "deep_analysis"),
+        },
+    )
 
     # Phase 4 — case-level entity registry overflow. Labeled by
     # ``entity_type`` so the dashboard surfaces which vocabulary
@@ -177,6 +199,9 @@ if PROMETHEUS_AVAILABLE:
         "Phase 4 per-(evidence, type) hard cap and had entity rows "
         "truncated. Labelled by entity_type.",
         labelnames=["entity_type"],
+    )
+    create_children(
+        CASE_ENTITIES_OVERFLOW_TOTAL, {"entity_type": [t.value for t in EntityType]}
     )
 
     # 2026-05-01 review fix: page_capture passthrough shape validation.
@@ -204,6 +229,7 @@ if PROMETHEUS_AVAILABLE:
         "of the case.",
         ["reason"],
     )
+    create_children(EVIDENCE_ROW_REFUSED_TOTAL, {"reason": ("unresolved_file",)})
 
     # #1930: system output the user typed into a chat message, offered back
     # for the user to declare. event=offered: an offer of output blocks was
@@ -216,6 +242,10 @@ if PROMETHEUS_AVAILABLE:
         "Chat-data offer lifecycle events: offered, state_requested, "
         "block_unmatched, saved.",
         ["event"],
+    )
+    create_children(
+        CHAT_DATA_OFFER_EVENTS_TOTAL,
+        {"event": ("offered", "state_requested", "block_unmatched", "saved")},
     )
 else:
     EVIDENCE_DEDUP_HITS_TOTAL = _NoOpMetric()

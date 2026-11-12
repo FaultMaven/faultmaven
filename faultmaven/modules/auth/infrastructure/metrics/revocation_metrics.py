@@ -50,6 +50,9 @@ revocation_state_unknown_total = Counter(
     "so whether the presented credential was revoked is unknown. Labelled by "
     "the failing exception's class name.",
     ["kind"],
+    lazy_labels="kind is the failing exception's class name, and a subclass of a "
+    "caught family arrives under its own; read as any non-zero sample, which a "
+    "series born at 1 already shows",
 )
 
 #: Live per-user revocation watermarks in the deployment's store.

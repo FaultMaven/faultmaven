@@ -48,6 +48,7 @@ except ImportError:
 # Prometheus metrics
 if PROMETHEUS_AVAILABLE:
     # Request counters
+    # lazy: endpoint is the traced function's name, an open set; per-request.
     REQUEST_COUNTER = Counter(
         "faultmaven_requests_total",
         "Total number of requests",
@@ -65,6 +66,7 @@ if PROMETHEUS_AVAILABLE:
     ACTIVE_SESSIONS = Gauge("faultmaven_active_sessions", "Number of active sessions")
 
     # LLM request metrics
+    # lazy: provider and model are parsed from the traced function's name.
     LLM_REQUEST_COUNTER = Counter(
         "faultmaven_llm_requests_total",
         "Total number of LLM requests",

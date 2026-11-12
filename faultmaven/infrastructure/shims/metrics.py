@@ -21,9 +21,10 @@ Usage:
     active_connections.dec()
 """
 
+import itertools
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +106,96 @@ class NoOpContextManager:
         pass
 
 
+# A labelled counter creates a series on its first ``.labels()`` call, so a
+# series born by an increment is born AT 1 and ``increase()``/``rate()`` never
+# see that first event (#1787). Every labelled counter therefore declares its
+# children: ``label_values`` (closed value sets, every combination created at 0)
+# or ``lazy_labels`` (why a label is open-ended and how the series is read).
+
+#: Most children one ``label_values`` declaration may create. A counter whose
+#: combinations would exceed it declares ``lazy_labels`` instead.
+MAX_DECLARED_CHILDREN = 100
+
+#: Each bounded declaration made on a real counter: (metric name, label names,
+#: combinations created). Read by the exposition test.
+DECLARED_CHILDREN: List[Tuple[str, Tuple[str, ...], Tuple[Tuple[str, ...], ...]]] = []
+
+
+def _combinations(
+    name: str,
+    labelnames: Iterable[str],
+    label_values: Mapping[str, Iterable[str]],
+) -> Tuple[Tuple[str, ...], ...]:
+    """Every child *label_values* declares, in *labelnames* order; ValueError
+    naming *name* when the declaration does not cover exactly those labels with
+    non-empty value sets, or would create more than ``MAX_DECLARED_CHILDREN``."""
+    names = tuple(labelnames)
+    if set(label_values) != set(names):
+        raise ValueError(
+            f"Counter {name!r}: label_values keys {sorted(label_values)} are not "
+            f"its labelnames {sorted(names)} (#1787)"
+        )
+    value_sets = [tuple(label_values[label]) for label in names]
+    for label, values in zip(names, value_sets):
+        if not values or isinstance(label_values[label], str):
+            raise ValueError(
+                f"Counter {name!r}: label_values[{label!r}] is empty or a bare "
+                "string, not a set of values (#1787)"
+            )
+    combos = tuple(itertools.product(*value_sets))
+    if len(combos) > MAX_DECLARED_CHILDREN:
+        raise ValueError(
+            f"Counter {name!r}: label_values would create {len(combos)} children, "
+            f"more than {MAX_DECLARED_CHILDREN}; declare lazy_labels instead (#1787)"
+        )
+    return combos
+
+
+def _check_declaration(
+    name: str,
+    labelnames: List[str],
+    label_values: Optional[Mapping[str, Iterable[str]]],
+    lazy_labels: Optional[str],
+) -> None:
+    """Refuse a counter whose children are not declared (#1787)."""
+    if not labelnames:
+        if label_values is not None or lazy_labels is not None:
+            raise ValueError(
+                f"Counter {name!r} has no labels, so it declares neither "
+                "label_values nor lazy_labels (#1787)"
+            )
+        return
+    if (label_values is None) == (lazy_labels is None):
+        raise ValueError(
+            f"Counter {name!r} is labelled, so it declares exactly one of "
+            "label_values (closed value sets, created at 0) or lazy_labels "
+            "(why a label is open-ended) (#1787)"
+        )
+    if lazy_labels is not None:
+        if not lazy_labels.strip():
+            raise ValueError(
+                f"Counter {name!r}: lazy_labels is an empty reason (#1787)"
+            )
+        return
+    _combinations(name, labelnames, label_values)
+
+
+def create_children(metric: Any, label_values: Mapping[str, Iterable[str]]) -> None:
+    """Create every child *label_values* declares on *metric*, at 0, and record it.
+
+    A no-op on a ``NoOpMetric`` or without ``prometheus_client``. The shim's
+    ``Counter`` calls it; a module that builds its counters straight from
+    ``prometheus_client`` calls it after the definition.
+    """
+    if isinstance(metric, NoOpMetric) or not PROMETHEUS_AVAILABLE:
+        return
+    labelnames = tuple(metric._labelnames)
+    combos = _combinations(metric._name, labelnames, label_values)
+    for combo in combos:
+        metric.labels(*combo)
+    DECLARED_CHILDREN.append((metric._name, labelnames, combos))
+
+
 def Counter(
     name: str,
     documentation: str,
@@ -113,12 +204,19 @@ def Counter(
     subsystem: str = "",
     unit: str = "",
     registry: Any = None,
+    *,
+    label_values: Optional[Mapping[str, Iterable[str]]] = None,
+    lazy_labels: Optional[str] = None,
 ) -> Any:
     """
     Create a Counter metric with graceful degradation.
 
     If Prometheus is available and ENABLE_METRICS=true, creates a real Counter.
     Otherwise, returns a no-op metric that does nothing.
+
+    A labelled counter declares exactly one of ``label_values`` or
+    ``lazy_labels``, or this raises ValueError whether metrics are on or off
+    (#1787).
 
     Args:
         name: Metric name
@@ -128,6 +226,9 @@ def Counter(
         subsystem: Optional metric subsystem
         unit: Optional metric unit
         registry: Optional Prometheus registry
+        label_values: Each label name's closed set of values; every
+            combination is created at 0 (``create_children``)
+        lazy_labels: Which label is open-ended and how its series is read
 
     Returns:
         Prometheus Counter or NoOpMetric
@@ -136,15 +237,17 @@ def Counter(
         request_counter = Counter(
             'http_requests_total',
             'Total HTTP requests',
-            labelnames=['method', 'endpoint']
+            labelnames=['method', 'endpoint'],
+            lazy_labels='endpoint is the request path',
         )
         request_counter.labels(method='GET', endpoint='/api/cases').inc()
     """
+    _check_declaration(name, labelnames or [], label_values, lazy_labels)
     metrics_enabled = _is_metrics_enabled()
 
     if PROMETHEUS_AVAILABLE and metrics_enabled:
         logger.debug(f"Creating Prometheus Counter: {name}")
-        return PrometheusCounter(
+        counter = PrometheusCounter(
             name=name,
             documentation=documentation,
             labelnames=labelnames or [],
@@ -156,6 +259,9 @@ def Counter(
             # and therefore invisible to /metrics.
             **({"registry": registry} if registry is not None else {}),
         )
+        if label_values is not None:
+            create_children(counter, label_values)
+        return counter
     else:
         logger.debug(
             f"Creating NoOp Counter: {name} "
@@ -433,6 +539,8 @@ request_counter = Counter(
     "http_requests_total",
     "Total HTTP requests",
     labelnames=["method", "endpoint", "status_code"],
+    lazy_labels="endpoint is the request path, an open set; the series is "
+    "per-request traffic, frequent enough that the first event is noise",
 )
 
 # Buckets spanning what this API actually serves, which prometheus_client's
@@ -508,19 +616,29 @@ active_sessions = Gauge(
 )
 
 case_operations = Counter(
-    "case_operations_total", "Total case operations", labelnames=["operation", "status"]
+    "case_operations_total",
+    "Total case operations",
+    labelnames=["operation", "status"],
+    lazy_labels="no call site writes it, so no value vocabulary exists to declare",
 )
 
 knowledge_queries = Counter(
     "knowledge_queries_total",
     "Total knowledge base queries",
     labelnames=["query_type", "status"],
+    lazy_labels="no call site writes it, so no value vocabulary exists to declare",
 )
+
+# The LLM counters below carry ``model``: the configured model id, an open set.
+# They count every routed call, so a lost first event is noise against a rate
+# read per provider and model (#1787).
+_LAZY_MODEL = "model is the configured model id, an open set; per-call series"
 
 llm_requests = Counter(
     "llm_requests_total",
     "Total LLM requests",
     labelnames=["provider", "model", "status"],
+    lazy_labels=_LAZY_MODEL,
 )
 
 llm_latency = Histogram(
@@ -534,6 +652,7 @@ llm_tokens = Counter(
     "llm_tokens_total",
     "Total LLM tokens consumed (provider-reported total per request)",
     labelnames=["provider", "model"],
+    lazy_labels=_LAZY_MODEL,
 )
 
 # Why each response stopped, normalised (faultmaven...providers.StopReason).
@@ -549,6 +668,7 @@ llm_stop_reasons = Counter(
     "LLM responses by normalised stop reason "
     "(stop|max_tokens|content_filter|tool_calls|unknown)",
     labelnames=["provider", "model", "stop_reason"],
+    lazy_labels=_LAZY_MODEL,
 )
 
 # --- Fine-grained LLM spend metrics ---------------------------------------
@@ -566,6 +686,7 @@ llm_call_tokens = Counter(
         "model",
         "token_type",
     ],  # input|output|cache_read|cache_write
+    lazy_labels=_LAZY_MODEL,
 )
 
 llm_cost_usd = Counter(
@@ -574,6 +695,7 @@ llm_cost_usd = Counter(
     "maintained price table). Excludes unpriced models — see "
     "llm_unpriced_calls_total.",
     labelnames=["provider", "model"],
+    lazy_labels=_LAZY_MODEL,
 )
 
 llm_provider_calls = Counter(
@@ -582,6 +704,7 @@ llm_provider_calls = Counter(
     "outcome=kept: returned to caller; low_confidence: billed then discarded "
     "by the fallback chain (pure waste).",
     labelnames=["provider", "model", "outcome"],  # kept|low_confidence
+    lazy_labels=_LAZY_MODEL,
 )
 
 llm_unpriced_calls = Counter(
@@ -590,6 +713,8 @@ llm_unpriced_calls = Counter(
     "spend is NOT included in llm_cost_usd_total. Non-zero => cost is under-"
     "reported; add the model to the price table or LLM_PRICING_OVERRIDES.",
     labelnames=["provider", "model"],
+    lazy_labels="model is the configured model id, an open set; read as any "
+    "non-zero sample, which a series born at 1 already shows",
 )
 
 # Model calls REFUSED at the model boundary (#1998): content the redaction
@@ -605,11 +730,22 @@ llm_model_content_violations = Counter(
     "and kind (raw|forged|not_text|bad_shape|bad_id|bad_role|unknown_key|"
     "not_model_output|unknown_kwarg).",
     labelnames=["target", "argument", "kind"],
+    lazy_labels="target x argument x kind is over 100 combinations; read as any "
+    "non-zero sample (zero is healthy), which a series born at 1 already shows",
 )
 
 # The gap between llm_provider_calls_total and the calls the LLM usage ledger
 # persisted (#640). The ledger's writes fail OPEN — a failed write never fails a
 # call — so this counter is what keeps the gap observable instead of silent.
+#: ``usage_ledger.REASON_*``, which imports this module.
+_UNPERSISTED_REASONS = (
+    "store_error",
+    "no_tenant",
+    "attribution_error",
+    "no_loop",
+    "not_composed",
+)
+
 llm_usage_unpersisted_calls = Counter(
     "llm_usage_unpersisted_calls_total",
     "Billed LLM calls the usage ledger did not persist, by reason. "
@@ -618,6 +754,7 @@ llm_usage_unpersisted_calls = Counter(
     "raised; no_loop: metered with no running event loop; not_composed: no "
     "ledger installed (the composition root did not run).",
     labelnames=["reason"],
+    label_values={"reason": _UNPERSISTED_REASONS},
 )
 
 # Turns that ran with no per-case in-flight lease (#2096): a delete of their
@@ -628,6 +765,7 @@ case_unleased_turns = Counter(
     "not see them, by reason. no_store: no Redis client; store_error: the lease "
     "or tombstone command failed.",
     labelnames=["reason"],
+    label_values={"reason": ("no_store", "store_error")},
 )
 
 # SLA gauges — exported from the SLA tracker at /metrics scrape time so the
