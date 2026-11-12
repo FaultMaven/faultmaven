@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -95,20 +96,22 @@ def test_each_answers_as_an_unmapped_exception(client, name):
     assert "Circuit breaker" not in response.text
 
 
-class _Answer:
-    def __init__(self, status_code=500, **headers):
-        self.status_code = status_code
-        self.headers = {"x-correlation-id": "c", "x-response-time": "1ms", **headers}
-
-    def json(self):
-        return {"detail": "Internal server error"}
+_BODY = {"detail": "Internal server error"}
 
 
 def test_shape_ignores_only_the_slow_response_header():
-    slow = _Answer(**{"x-performance-warning": "slow_response"})
-    assert _shape(slow) == _shape(_Answer())
+    plain = {"X-Correlation-ID": "c", "X-Response-Time": "1ms"}
+    answer = httpx.Response(500, headers=plain, json=_BODY)
+    slow = httpx.Response(
+        500, headers={**plain, "X-Performance-Warning": "slow_response"}, json=_BODY
+    )
+    assert _shape(slow) == _shape(answer)
 
-    uncorrelated = _Answer()
-    del uncorrelated.headers["x-correlation-id"]
-    assert _shape(uncorrelated) != _shape(_Answer())
-    assert _shape(_Answer(status_code=503)) != _shape(_Answer())
+    handled = httpx.Response(
+        500, headers={**plain, "X-Processing-Time": "0.001s"}, json=_BODY
+    )
+    uncorrelated = httpx.Response(500, headers={"X-Response-Time": "1ms"}, json=_BODY)
+    unavailable = httpx.Response(503, headers=plain, json=_BODY)
+    assert _shape(handled) != _shape(answer)
+    assert _shape(uncorrelated) != _shape(answer)
+    assert _shape(unavailable) != _shape(answer)
