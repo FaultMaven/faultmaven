@@ -1403,6 +1403,16 @@ jobs:
           # builds that ran the runner out of disk.
           cache-from: type=gha
 
+      # #2692's pins 1 and 2 in the built image, every client installed: each
+      # TLS client verifies against the root set, and TLS_EXTRA_CA_FILE adds a
+      # CA each accepts. Its servers are loopback, so no network; the one
+      # script is mounted, so nothing else in scripts/ lands on sys.path.
+      - name: TLS root set handshakes in the image
+        run: >-
+          docker run --rm --network none
+          -v "$PWD/scripts/check_tls_root_set.py:/opt/check/check_tls_root_set.py:ro"
+          faultmaven:ci python /opt/check/check_tls_root_set.py --require-all
+
       # Free space when the build ended, pass or fail: a disk failure's log
       # shows what was left, and a cleanup that freed nothing shows here too.
       - name: Disk space after the build

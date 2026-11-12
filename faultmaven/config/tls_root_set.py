@@ -29,7 +29,9 @@ conda shell's ``SSL_CERT_FILE``: unset it, or put its CA in
 ``TLS_EXTRA_CA_FILE``), as do an OS bundle that does not load, a setting with no
 certificate or a non-plain one, no usable temporary directory, and a set file
 that cannot be written safely or does not load (``SystemExit``, Fail-Fast
-Configuration). Imports no client.
+Configuration). ``root_set_status`` recomputes the set without writing and
+reports whether this process's environment names it (``GET
+/admin/config/status``, ``features.tls_root_set``). Imports no client.
 """
 
 from __future__ import annotations
@@ -112,6 +114,21 @@ class RootSet:
 def apply_root_set() -> RootSet:
     """Name the one root set in every owned variable, or refuse the start."""
     load_settings_dotenv()
+    root_set, pem, named = _expected_set()
+    if root_set.extra_ca_file is not None:  # a child elsewhere reads the same file
+        set_env_var(os.environ, EXTRA_CA_FILE_SETTING, root_set.extra_ca_file)
+    _check_inherited(root_set.path, pem, root_set.extra_ca_file)
+    if not named:  # written, or re-written if missing or altered (self-heal)
+        _write_set(root_set.path, pem)
+    for name in FILE_VARIABLES:
+        os.environ[name] = root_set.path
+    os.environ[DIRECTORY_VARIABLE] = EMPTY_CAPATH
+    return root_set
+
+
+def _expected_set() -> tuple[RootSet, bytes, bool]:
+    """The set ``apply_root_set`` names for this environment, its PEM, and
+    whether its file is the OS bundle's own. Writes nothing."""
     os_source, os_pem, os_file = _resolve_os_bundle()
     extra = _extra_ca_file()
     pem, sources = os_pem, (os_source,)
@@ -122,13 +139,29 @@ def apply_root_set() -> RootSet:
         sources += (extra,)
     named = extra is None and os_file
     path = os_source if named else os.path.join(_set_directory(), _name(pem))
-    _check_inherited(path, pem, extra)
-    if not named:  # written, or re-written if missing or altered (self-heal)
-        _write_set(path, pem)
+    return RootSet(path, sources, extra, len(pem_digests(pem))), pem, named
+
+
+def root_set_status() -> tuple[RootSet | None, str | None]:
+    """The set this environment names and why this process is not on it (None
+    when it is): every owned file variable names the recomputed set's file, by
+    real path, that file loads, and ``SSL_CERT_DIR`` names a directory with no
+    hashed entry. Read from the environment, never module state, so every
+    worker answers for itself; the set is ``None`` when it cannot be computed."""
+    try:
+        root_set = _expected_set()[0]
+    except SystemExit as refusal:
+        return None, str(refusal.code)
+    expected = os.path.realpath(root_set.path)
     for name in FILE_VARIABLES:
-        os.environ[name] = path
-    os.environ[DIRECTORY_VARIABLE] = EMPTY_CAPATH
-    return RootSet(path, sources, extra, len(pem_digests(pem)))
+        if os.path.realpath(os.environ.get(name) or "/") != expected:
+            return root_set, f"{name} does not name the set's file"
+    if not _loads(root_set.path):
+        return root_set, f"the set's file {root_set.path} does not load"
+    directory = os.environ.get(DIRECTORY_VARIABLE, "")
+    if not os.path.isdir(directory) or _hashed_entries(directory):
+        return root_set, f"{DIRECTORY_VARIABLE} is not a directory free of certificates"
+    return root_set, None
 
 
 def _ders(pem: bytes) -> list[bytes]:
@@ -264,15 +297,10 @@ def _resolve_os_bundle() -> tuple[str, bytes, bool]:
 
 
 def _extra_ca_file() -> str | None:
-    """The setting, in any letter case, as an absolute real path, written back
-    so a child in another working directory reads the same file."""
+    """The setting, in any letter case, as an absolute real path."""
     spellings = env_var_spellings(os.environ, EXTRA_CA_FILE_SETTING)
     value = os.environ[spellings[-1]].strip() if spellings else ""
-    if not value:
-        return None
-    path = os.path.realpath(value)
-    set_env_var(os.environ, EXTRA_CA_FILE_SETTING, path)
-    return path
+    return os.path.realpath(value) if value else None
 
 
 def _extra_certificates(path: str) -> bytes:

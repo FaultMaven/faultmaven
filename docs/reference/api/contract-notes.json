@@ -1,6 +1,12 @@
 {
-  "contractVersion": "14.21.0",
+  "contractVersion": "14.22.0",
   "entries": [
+    {
+      "body": "One more key in the existing `Dict[str, FeatureStatus]`. `enabled` is true\nwhen every TLS root variable the process exported names the set\n`apply_root_set` computes for its environment (the OS CA bundle, plus\n`TLS_EXTRA_CA_FILE` when set), that file loads, and `SSL_CERT_DIR` names a\ndirectory with no certificate. `description` names the file, its certificate\ncount and the `TLS_EXTRA_CA_FILE` path (never its contents); `config_hint`\ncarries the count. Read from the worker's environment on each request.\n\nMINOR because every client survives it: a new key on an operator-only\nresponse, which a client that does not read it ignores.",
+      "level": "MINOR",
+      "title": "`GET /admin/config/status` reports the TLS root set the serving worker verifies against as `features.tls_root_set` (#2692).",
+      "version": "14.22.0"
+    },
     {
       "body": "`TraceBackendStatus` gains `capture_content` (bool, required): whether\nspans carry prompts and responses (`OPIK_CAPTURE_CONTENT`). It is false in\nevery process this release starts, because `OPIK_CAPTURE_CONTENT=true` stops\nthe process at startup until a retention bound for the trace store is\nverified (#2616 K3). A failed call's span carries the exception's class as\n`metadata.error_class`, never its message or traceback.\n\nMINOR because every client survives it: a new field on an operator-only\nresponse, which a client that does not read it ignores.",
       "level": "MINOR",
