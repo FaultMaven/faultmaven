@@ -60,7 +60,6 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     close_pivoted_to_resolve_total,
     resolution_cause_leg_total,
 )
-from faultmaven.core.investigation.narration.notices import pending_check_feedback
 from faultmaven.core.investigation.narration.offers import (
     close_summary_message,
     readiness_message,
@@ -893,18 +892,19 @@ def declined_resolve_entry(
     return standing_resolve_decline(case)
 
 
-def held_check_feedback(case: Case, check: EvidenceNeed, *, proposed: bool) -> str:
-    """The feedback while the model's own check holds the resolution (#1906
-    D5.2), for the backstop's hold and step 2's refusal: what the check's
-    state and a standing resolve decline (``declined_resolve_entry``) decide,
-    composed by ``narration.notices.pending_check_feedback``."""
-    return pending_check_feedback(
-        check.need_id,
-        check.request_text,
-        fulfilled=check.state == NeedState.FULFILLED,
-        proposed=proposed,
-        declined_stands=declined_resolve_entry(case) is not None,
-    )
+def pending_check_params(case: Case, check: EvidenceNeed, *, proposed: bool) -> dict:
+    """The params of a ``PENDING_CHECK`` code while the model's own check holds
+    the resolution (#1906 D5.2), for the backstop's hold and step 2's refusal:
+    the check's state and whether a resolve decline stands
+    (``declined_resolve_entry``), as decided here (#2636, A4). Rendered by
+    ``narration.notices.pending_check_feedback``."""
+    return {
+        "need_id": check.need_id,
+        "request_text": check.request_text,
+        "fulfilled": check.state == NeedState.FULFILLED,
+        "proposed": proposed,
+        "declined_stands": declined_resolve_entry(case) is not None,
+    }
 
 
 def close_pivots_to_resolve(case: Case, verdict: str) -> bool:

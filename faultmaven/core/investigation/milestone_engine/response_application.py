@@ -47,6 +47,7 @@ from faultmaven.core.investigation.milestone_engine.turn_records import (
     _report_turn_uploads,
     _resolve_id_ref,
 )
+from faultmaven.core.investigation.narration.codes import NoticeCode
 from faultmaven.core.investigation.offers import answer_offer, open_terminal_offer
 from faultmaven.core.investigation.problem_status import (
     cause_work_accepted,
@@ -135,6 +136,7 @@ from .stage_gates import (
     licence_leg_ids,
     licence_subject,
     llm_claimable_milestones,
+    record_decision,
     solution_licence_leg,
     standing_fix_action,
 )
@@ -420,12 +422,8 @@ def _settle_fix_attempts(case: Case, metadata: dict[str, Any]) -> None:
             if target is None:
                 continue
             if not target and (cause.in_words or action.licence_in_words):
-                _add_system_feedback(
-                    metadata,
-                    f"SYSTEM: fix {action_id} is recorded without a target: the "
-                    "root-cause conclusion names its cause in words only. Set "
-                    "names_root_node_id on root_cause_conclusion to the cause's "
-                    "cn_... node, and node_ref on each fix to the node it changes.",
+                record_decision(
+                    metadata, NoticeCode.FIX_UNTARGETED, action_id=action_id
                 )
                 continue
             action.target_ids = target
@@ -984,8 +982,8 @@ class ResponseApplier:
                 )
             )
             if refusal:
-                _add_system_feedback(
-                    metadata, f"FALSE-ALARM FINDING NOT ACCEPTED: {refusal}."
+                record_decision(
+                    metadata, NoticeCode.FALSE_ALARM_REFUSED, reason=refusal
                 )
                 return
             invalidate_problem(
@@ -1018,9 +1016,7 @@ class ResponseApplier:
                 )
             )
             if refusal:
-                _add_system_feedback(
-                    metadata, f"STATEMENT REVISION NOT ACCEPTED: {refusal}."
-                )
+                record_decision(metadata, NoticeCode.REVISION_REFUSED, reason=refusal)
                 return
             if pending:
                 self._withdraw_false_alarm_close(case, metadata)
@@ -1883,12 +1879,10 @@ class ResponseApplier:
                     update={name: None for name in refused_signals}
                     | {"accepted_action_ref": None, "accepted_fix_reported_in": None}
                 )
-                _add_system_feedback(
+                record_decision(
                     metadata,
-                    f"{', '.join(refused_signals)} NOT ACCEPTED: the evidence "
-                    "showed the reported symptom was never present, so there is "
-                    "nothing to mitigate or fix. If the user disputes the "
-                    "finding, record it (invalidation_withdrawn).",
+                    NoticeCode.SIGNALS_ON_INVALIDATED_PROBLEM,
+                    signals=refused_signals,
                 )
             _apply_stage_gate_signals(
                 case,

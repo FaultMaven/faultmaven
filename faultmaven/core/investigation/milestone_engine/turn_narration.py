@@ -3,8 +3,9 @@ codes, rendered after its record is written.
 
 The deciders record codes (``stage_gates.record_decision``); a notice code
 holds its place in ``system_notices`` with a token. ``narrate_turn`` replaces
-each token with what the code renders from the cycle's record
-(``narration.notices``). It runs once per turn, in ``_finalize_turn``, before
+each token with what the code renders (``narration.notices``): from the
+cycle's record for a code in ``READS_THE_RECORD``, from its params for every
+other. It runs once per turn, in ``_finalize_turn``, before
 the turn record copies the notices.
 """
 
@@ -12,7 +13,10 @@ import logging
 from typing import Any, Optional
 
 from faultmaven.core.investigation.narration.codes import DECISIONS_KEY, NoticeCode
-from faultmaven.core.investigation.narration.notices import render_notice
+from faultmaven.core.investigation.narration.notices import (
+    READS_THE_RECORD,
+    render_notice,
+)
 from faultmaven.core.investigation.outcome import compute_case_outcome
 from faultmaven.modules.case.contracts import CaseOutcome
 
@@ -28,11 +32,13 @@ OUTCOME_WRITTEN_KEY = "outcome_written"
 def _outcome(case: Any, metadata: dict, log: list) -> Optional[CaseOutcome]:
     """The record the cycle wrote; when its write failed, the outcome computed
     in memory for the narration alone, never stored, its fold counting no
-    disagreement (#2636). None only when that fails too: the renderers then
-    fall back on the facts their deciders recorded."""
+    disagreement (#2636), and only when a code in the log has a renderer that
+    reads the record (``READS_THE_RECORD``). None when no such code is logged,
+    or when that computation fails too: the renderers then fall back on the
+    facts their deciders recorded."""
     if metadata.get(OUTCOME_WRITTEN_KEY):
         return case.progress.outcome
-    if not log:
+    if not any(entry["code"] in READS_THE_RECORD for entry in log):
         return None
     try:
         return compute_case_outcome(case.progress.outcome, case, unreported=[])
