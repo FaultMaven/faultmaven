@@ -563,8 +563,10 @@ context-starved answer from a normal one. Two things make it visible.
 `prompt_context_error_recovered` log line which carries the case id. Read the
 metric as a *rate*: an occasional degrade is the guarantee working; a sustained
 rate means turns are routinely over the window, which points at prompt sizing
-rather than at this recovery. A rising `output_truncation` share is the signal to
-reach for the `max_tokens` escalation instead.
+rather than at this recovery. A rising `output_truncation` share means the
+`max_tokens` ceiling is too low for the schemas in play, or that a truncation's
+retries are stopped first — other failures spend the attempts, or the turn budget
+runs out (#1821) — not that prompts are too large.
 
 **To the user** — the recovery appends `DEGRADED_NO_TOOLS_NOTICE` to the fallback
 body, instructing the agent to say in one sentence that it could not inspect the

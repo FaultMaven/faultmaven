@@ -166,15 +166,18 @@ def is_truncated_json_error(error: BaseException, content: Any) -> bool:
 # (#1821). Raising the cap is the targeted fix, and shrinking the prompt is the
 # fallback when the cap could not buy enough room. So a rising
 # OUTPUT_TRUNCATION share means the ceiling is too low for the schemas in play,
-# or other failures are spending the attempts — not that prompts are too large.
+# or that a truncation's retries are stopped first — other failures spend the
+# attempts, or the turn budget runs out — not that prompts are too large.
 RECOVERY_REASON_INPUT_OVERFLOW = "input_overflow"
 RECOVERY_REASON_OUTPUT_TRUNCATION = "output_truncation"
 RECOVERY_REASON_UNCLASSIFIED = "unclassified"
 
-# The message on every stop that reports a truncation's ``TOKEN_LIMIT`` after
-# its retries are spent (#1821). It names the truncation, not the provider: the
-# message tracks the code.
-TRUNCATION_STOP_MESSAGE = "Response truncated, and the attempts to finish it are spent."
+# The message on every stop that reports a truncation's ``TOKEN_LIMIT`` once
+# its retries stop, on the attempt ceiling or the turn budget (#1821). It names
+# the truncation, not the provider: the message tracks the code.
+TRUNCATION_STOP_MESSAGE = (
+    "Response truncated, and no attempt or turn budget is left to finish it."
+)
 
 
 def classify_token_limit_reason(error: BaseException) -> str:

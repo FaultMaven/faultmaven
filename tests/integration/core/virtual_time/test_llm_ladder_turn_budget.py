@@ -722,6 +722,10 @@ class TestATruncationRetryKeepsItsRecoveryCode:
         )
 
         assert result.error_code == TOKEN_LIMIT
+        # The message tracks the code: it names the truncation (#1821).
+        assert result.message == (
+            "Response truncated, and no attempt or turn budget is left to finish it."
+        )
 
     async def test_without_the_override_it_reports_the_budget(self, monkeypatch):
         """The control: the same refusal on the ordinary retryable branch."""
