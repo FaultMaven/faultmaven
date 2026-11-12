@@ -819,9 +819,7 @@ class TestSameTurnGateBundles:
         assert len(sol_actions) == 1
         assert sol_actions[0].state == "accepted"
         assert case.action_attempts[-1].action_id == sol_actions[0].action_id
-        assert "was not registered" not in "\n".join(
-            metadata.get("system_notices") or []
-        )
+        assert "was not registered" not in "\n".join(narrated(case, metadata))
         assert case.progress.solution_proposed is True
 
     async def test_same_turn_workaround_and_mitigation_accept_registers(self):

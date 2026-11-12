@@ -108,6 +108,7 @@ from tests.unit.core.investigation.fix_turns_2039 import (
     _turn,
 )
 from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
+from tests.unit.core.investigation.narrated import narrated
 from tests.unit.core.investigation.test_m6_cause_gone_problem_persists_1927 import (
     _FILE_ID,
     _identified_case,
@@ -232,6 +233,13 @@ async def _confirm(eng, case, turn) -> dict:
     meta: dict = {}
     await confirm_revision(eng.responses, case, meta, via=AnswerVia.CLICK)
     return meta
+
+
+def _said(case, meta: dict) -> str:
+    """``meta``'s notices as the cycle's narration step renders them (#2636):
+    read once that cycle's last step has run, so the record is written where
+    a turn writes it."""
+    return "\n".join(narrated(case, meta))
 
 
 def _refutation(case) -> dict:
@@ -456,15 +464,15 @@ async def test_an_unjustified_second_registration_is_refused_like_the_first(
 
     if justified:
         assert (second.state, second.accepted_in_turn) == ("accepted", 15)
-        assert "EVIDENCE VALIDATION" not in "\n".join(meta.get("system_notices") or [])
+        assert "EVIDENCE VALIDATION" not in _said(case, meta)
     else:
         assert (second.state, second.accepted_in_turn) == ("pending", None)
         assert (
             "EVIDENCE VALIDATION: Milestones ['solution_accepted'] were NOT recorded"
-            in "\n".join(meta["system_notices"])
+            in _said(case, meta)
         )
         # Judged by the gate, so the pre-apply strip left it alone.
-        assert "accepted_action_ref" not in "\n".join(meta["system_notices"])
+        assert "accepted_action_ref" not in _said(case, meta)
 
 
 async def test_an_unjustified_reassertion_is_absorbed_with_no_line():
@@ -476,7 +484,7 @@ async def test_an_unjustified_reassertion_is_absorbed_with_no_line():
         eng, case, 14, justified=False, milestones=_accepted(first.action_id)
     )
 
-    assert "solution_accepted" not in "\n".join(meta.get("system_notices") or [])
+    assert "solution_accepted" not in _said(case, meta)
     assert len(case.action_attempts) == 1
 
 
@@ -496,7 +504,7 @@ async def test_a_restated_latest_fix_named_by_new_index_is_absorbed():
         milestones=_accepted("new_index_0"),
     )
 
-    assert "NOT recorded" not in "\n".join(meta.get("system_notices") or [])
+    assert "NOT recorded" not in _said(case, meta)
     assert len(_solutions(case)) == 1
     assert len(case.action_attempts) == 1
 
@@ -519,9 +527,7 @@ async def test_a_superseded_fix_named_after_a_first_fix_must_be_justified(named)
 
     assert target.accepted_in_turn is None
     assert (x.state, y.state) == ("superseded", "pending")
-    assert "Milestones ['solution_accepted'] were NOT recorded" in (
-        "\n".join(meta["system_notices"])
-    )
+    assert "Milestones ['solution_accepted'] were NOT recorded" in (_said(case, meta))
 
 
 async def test_the_strip_and_the_gate_share_one_evidence_validation_prefix():
@@ -541,7 +547,7 @@ async def test_the_strip_and_the_gate_share_one_evidence_validation_prefix():
         ),
     )
 
-    feedback = "\n".join(meta["system_notices"])
+    feedback = _said(case, meta)
     assert feedback.count("EVIDENCE VALIDATION") == 1
     assert (
         "EVIDENCE VALIDATION: Milestones ['mitigation_accepted', "
@@ -1110,7 +1116,7 @@ async def test_a_held_registration_whose_fix_the_replay_downgrades_registers_not
         InvestigationActionType.DIAGNOSTIC
     ]
     diagnostic = case.proposed_actions[0]
-    assert f"{diagnostic.action_id} {_LICENSE}" in "\n".join(meta["system_notices"])
+    assert f"{diagnostic.action_id} {_LICENSE}" in _said(case, meta)
 
 
 async def test_a_bundle_that_no_longer_validates_drops_its_carried_registration():
@@ -1338,9 +1344,7 @@ async def test_the_skip_is_read_when_the_gate_decides():
 
     assert case.offer_record.open is None
     assert len(case.action_attempts) == 1
-    assert "Milestones ['solution_accepted'] were NOT recorded" in (
-        "\n".join(meta["system_notices"])
-    )
+    assert "Milestones ['solution_accepted'] were NOT recorded" in (_said(case, meta))
 
 
 @pytest.mark.parametrize("justified", [False, True])
@@ -1356,9 +1360,9 @@ async def test_a_hold_turn_naming_a_failed_fix_settles_it_now(justified):
     meta = await _process(
         eng, case, 14, justified=justified, milestones=_accepted(first.action_id)
     )
+    feedback = _said(case, meta)
     await _confirm(eng, case, 15)
 
-    feedback = "\n".join(meta["system_notices"])
     assert "held until the user confirms" not in feedback
     assert "NOT recorded" not in feedback
     assert f"SOLUTION {first.action_id} is registered, and its fix window " in feedback
@@ -1449,7 +1453,7 @@ async def test_a_failed_fix_re_sent_and_downgraded_gets_the_license_line(at):
             solutions_to_add=[_fix(_FIRST)],
             milestones=_accepted("new_index_0"),
         )
-        meta = await _confirm(eng, case, 16)
+        feedback = _said(case, await _confirm(eng, case, 16))
     else:
         meta = await _turn(
             eng,
@@ -1458,10 +1462,11 @@ async def test_a_failed_fix_re_sent_and_downgraded_gets_the_license_line(at):
             solutions_to_add=[_fix(_FIRST)],
             milestones=_accepted(first.action_id),
         )
+        feedback = "\n".join(meta["system_notices"])
 
     assert case.proposed_actions[-1].action_type == InvestigationActionType.DIAGNOSTIC
-    assert _LICENSE in "\n".join(meta["system_notices"])
-    assert "re-propose it as a SolutionToAdd" not in "\n".join(meta["system_notices"])
+    assert _LICENSE in feedback
+    assert "re-propose it as a SolutionToAdd" not in feedback
     assert len(case.action_attempts) == 1
 
 
@@ -1658,7 +1663,7 @@ async def test_a_carried_re_run_of_a_failed_fix_gets_the_re_propose_line():
 
     assert registers is False
     assert f"SOLUTION {first.action_id} is registered, and its fix window failed" in (
-        "\n".join(meta["system_notices"])
+        "\n".join(narrated(case, meta))
     )
 
 
@@ -1697,7 +1702,7 @@ async def test_a_carried_fix_registers_once_the_license_returns_between_bundles(
     assert (x.state, x.accepted_in_turn) == ("accepted", 7)
     assert _accepted_turns(case) == [7]
     assert len(case.action_attempts) == 1
-    assert _LICENSE not in "\n".join(meta.get("system_notices") or [])
+    assert _LICENSE not in _said(case, meta)
     # The copy is retired with the registration: no pending action is left to
     # render as the current ask.
     assert (copy.state, copy.superseded_reason) == ("superseded", "stale_pending")
@@ -1715,7 +1720,7 @@ async def test_a_carried_fix_stays_refused_while_the_license_is_down():
 
     diagnostic = case.proposed_actions[-1]
     assert diagnostic.action_type == InvestigationActionType.DIAGNOSTIC
-    assert f"{diagnostic.action_id} {_LICENSE}" in "\n".join(meta["system_notices"])
+    assert f"{diagnostic.action_id} {_LICENSE}" in _said(case, meta)
     assert (x.state, x.accepted_in_turn) == ("superseded", None)
     assert case.action_attempts == []
 
@@ -1755,9 +1760,7 @@ async def test_a_carried_fix_withdrawn_before_the_hold_stays_refused_at_the_repl
     assert case.proposed_actions[-1].action_type == InvestigationActionType.DIAGNOSTIC
     assert (x.state, x.accepted_in_turn) == ("superseded", None)
     assert case.action_attempts == []
-    assert f"{x.action_id} was withdrawn while its root cause" in (
-        "\n".join(meta["system_notices"])
-    )
+    assert f"{x.action_id} was withdrawn while its root cause" in (_said(case, meta))
 
 
 async def test_a_carried_fix_with_only_a_downgraded_copy_gets_the_downgraded_line():
@@ -1783,9 +1786,9 @@ async def test_a_carried_fix_with_only_a_downgraded_copy_gets_the_downgraded_lin
     assert copy.action_type == InvestigationActionType.DIAGNOSTIC
     assert case.action_attempts == []
     assert f"{copy.action_id} was downgraded to a DIAGNOSTIC when it was proposed" in (
-        "\n".join(meta["system_notices"])
+        _said(case, meta)
     )
-    assert _LICENSE not in "\n".join(meta["system_notices"])
+    assert _LICENSE not in _said(case, meta)
 
 
 async def test_a_fix_carried_in_this_revision_is_neither_named_nor_carried_again():

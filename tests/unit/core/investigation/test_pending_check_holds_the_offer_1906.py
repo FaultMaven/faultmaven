@@ -27,9 +27,6 @@ from faultmaven.core.investigation.cause_assurance import (
     pending_symptom_check,
 )
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
-from faultmaven.core.investigation.milestone_engine.transitions import (
-    declined_resolution_reask,
-)
 from faultmaven.core.investigation.narration.notices import (
     RESOLVE_DECLINED_ACTIONS,
     RESOLVE_DECLINED_CLOSE_ACTION,
@@ -77,6 +74,7 @@ from tests.unit.core.investigation.bound_rows import (
     upload,
 )
 from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
+from tests.unit.core.investigation.narrated import reask_feedback
 from tests.unit.core.investigation.test_deferred_disposition_turn import (
     _case as _deferred_case,
 )
@@ -583,7 +581,7 @@ def test_6_while_held_the_decline_points_only_at_close(held):
     with_declined_offer(case, kind="resolve", basis="backstop")
     assert project_offers(case).reopen_chip is not None, "premise: chips built"
     prompt = get_prompt_for_case(case, "what now?", given_tools=DEFAULT_GIVEN)
-    feedback = declined_resolution_reask(case)
+    feedback = reask_feedback(case)
     for text in (prompt, feedback):
         assert RESOLVE_DECLINED_CLOSE_ACTION in text
         assert (RESOLVE_DECLINED_REOPEN_ACTION in text) is not held
