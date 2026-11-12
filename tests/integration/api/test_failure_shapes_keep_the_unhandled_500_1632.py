@@ -63,12 +63,22 @@ def _get(client, name):
     return client.get(f"/fault-1632/{name}", headers={"X-Request-ID": "rid-1632"})
 
 
+# Set only when a response took longer than its threshold
+# (``faultmaven/api/middleware/performance.py``), so it follows the runner's
+# speed, not how the failure was answered (#2654).
+_TIMING_HEADERS = frozenset({"x-performance-warning"})
+
+
 def _shape(response) -> tuple:
     body = response.json()
     return (
         response.status_code,
         {key: value for key, value in body.items() if key != "correlation_id"},
-        sorted(name for name in response.headers if name.startswith("x-")),
+        sorted(
+            name
+            for name in response.headers
+            if name.startswith("x-") and name not in _TIMING_HEADERS
+        ),
     )
 
 
@@ -83,3 +93,22 @@ def test_each_answers_as_an_unmapped_exception(client, name):
     # exception that reached it carries.
     assert response.json()["correlation_id"] == response.headers["x-correlation-id"]
     assert "Circuit breaker" not in response.text
+
+
+class _Answer:
+    def __init__(self, status_code=500, **headers):
+        self.status_code = status_code
+        self.headers = {"x-correlation-id": "c", "x-response-time": "1ms", **headers}
+
+    def json(self):
+        return {"detail": "Internal server error"}
+
+
+def test_shape_ignores_only_the_slow_response_header():
+    slow = _Answer(**{"x-performance-warning": "slow_response"})
+    assert _shape(slow) == _shape(_Answer())
+
+    uncorrelated = _Answer()
+    del uncorrelated.headers["x-correlation-id"]
+    assert _shape(uncorrelated) != _shape(_Answer())
+    assert _shape(_Answer(status_code=503)) != _shape(_Answer())
