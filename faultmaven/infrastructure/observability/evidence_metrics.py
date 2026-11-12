@@ -104,7 +104,10 @@ if PROMETHEUS_AVAILABLE:
     )
     declare_lazy(
         EVIDENCE_TURN_ASYNC_RETRY_ENQUEUED_TOTAL,
-        "no emit site exists yet, so there is no reason vocabulary to declare.",
+        "nothing emits it: the async-turn-retry path it was scaffolded for was "
+        "designed and discarded (PLAN-async-turn-retry.md, deleted 2026-04-19; "
+        "evidence-failure-modes.md), so its documented reason values are bound "
+        "to no code.",
     )
 
     EVIDENCE_TURN_ASYNC_RETRY_OUTCOME_TOTAL = Counter(
@@ -116,7 +119,10 @@ if PROMETHEUS_AVAILABLE:
     )
     declare_lazy(
         EVIDENCE_TURN_ASYNC_RETRY_OUTCOME_TOTAL,
-        "no emit site exists yet, so there is no outcome vocabulary to declare.",
+        "nothing emits it: the async-turn-retry path it was scaffolded for was "
+        "designed and discarded (PLAN-async-turn-retry.md, deleted 2026-04-19; "
+        "evidence-failure-modes.md), so its documented outcome values are bound "
+        "to no code.",
     )
 
     EVIDENCE_TURN_ASYNC_RETRY_LATENCY_SECONDS = Histogram(
