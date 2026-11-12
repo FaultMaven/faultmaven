@@ -733,6 +733,25 @@ def _reset_observability_singletons():
 
 
 @pytest.fixture(autouse=True)
+def _no_inherited_tls_root_set():
+    """Each test starts with no TLS root variable set, and leaves none (#2692).
+
+    ``apply_root_set`` (every launcher and ``fm-*`` ``main()``) writes the
+    variables into ``os.environ``. Cleared before, so an inherited one never
+    refuses a test's launch; restored after, so no test leaks a root set.
+    """
+    from faultmaven.config.tls_root_set import EXTRA_CA_FILE_SETTING, OWNED_VARIABLES
+
+    names = (*OWNED_VARIABLES, EXTRA_CA_FILE_SETTING)
+    saved = {name: os.environ.pop(name, None) for name in names}
+    yield
+    for name, value in saved.items():
+        os.environ.pop(name, None)
+        if value is not None:
+            os.environ[name] = value
+
+
+@pytest.fixture(autouse=True)
 def _close_the_chroma_clients_the_test_opened(request):
     """Close each ChromaDB client the test registered with ``closed_at_teardown``,
     then fail the test if it left one open under its own ``tmp_path``.

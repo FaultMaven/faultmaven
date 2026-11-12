@@ -1,25 +1,14 @@
 #!/usr/bin/env python3
 """Every TLS client in §13.4's census verifies against the one root set (#2692).
 
-A throwaway CA signs a ``localhost``/``127.0.0.1`` leaf and is written as
-``TLS_EXTRA_CA_FILE``. Loopback servers present the leaf and count completed
-handshakes (gRPC's counts completed calls): HTTPS and Redis on one port, and a
-PostgreSQL ``SSLRequest`` responder. A second responder presents a leaf from a
-CA outside the set.
-
-Each client runs twice, in a fresh process with no owned variable inherited.
-**applied** calls ``apply_root_set()`` first, and passes when the client
-succeeds and its server completed a handshake. **bare** does not (the
-behaviour before #2692), and passes when the client fails with no handshake;
-``sslmode=require`` verified nothing then, so its bare run passes when it fails
-at all (it accepts the peer outside the set). Each client goes through its own
-SDK client or pool, retries off. One more row, applied only, shows httpx's
-context holds exactly the stdlib's roots, so certifi's extra roots are gone
-(#2574); certifi may equal the OS bundle on a given host, so it has no bare run.
-
-A client not installed is reported, and fails the run only under
-``--require-all``. Exit 1 on any failure. A client process refuses any connect
-or name lookup off loopback.
+A throwaway CA, written as ``TLS_EXTRA_CA_FILE``, signs a loopback leaf. Loopback
+servers count completed handshakes (gRPC's, completed calls). Each client runs
+in a fresh process, through its own SDK client or pool, retries off, twice:
+**applied** (``apply_root_set()`` first) passes when it succeeds after a
+handshake; **bare** (as before #2692) passes when it fails with none.
+``sslmode=require`` verified nothing before, so its row also meets a CA outside
+the set: applied refuses it, bare accepts it. A client not installed fails only
+under ``--require-all``. Each client process refuses any traffic off loopback.
 """
 
 from __future__ import annotations
@@ -27,6 +16,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import datetime
+import importlib
 import importlib.util
 import ipaddress
 import json
@@ -46,8 +36,7 @@ if (ROOT / "faultmaven").is_dir():
 
 HOST = "127.0.0.1"
 MARKER = "tls-root-set-probe reached"
-NOT_INSTALLED = 3
-CHILD_TIMEOUT = 90
+NOT_INSTALLED, CHILD_TIMEOUT = 3, 90
 # The client processes': no proxy, no SDK telemetry, download or cloud lookup.
 _CHILD_ENV = {
     "FAULTMAVEN_SKIP_DOTENV": "1",
@@ -60,19 +49,22 @@ _CHILD_ENV = {
 _PROXY_VARIABLES = {"http_proxy", "https_proxy", "all_proxy", "no_proxy"}
 
 
-def _url(ports: dict) -> str:
-    return f"https://{HOST}:{ports['https']}/probe"
+def _url(ports: dict, path: str = "/probe") -> str:
+    return f"https://{HOST}:{ports['https']}{path}"
 
 
-def _stdlib(ports: dict) -> None:
-    import urllib.request
+def _reached(connect) -> None:
+    """The Postgres responder's post-handshake error came back: TLS completed."""
+    try:
+        connect()
+    except Exception as error:
+        if MARKER in str(error):
+            return
+        raise
+    raise RuntimeError("the responder never answered")
 
-    urllib.request.urlopen(_url(ports), timeout=10).read()
 
-
-def _aiohttp(ports: dict) -> None:
-    import aiohttp
-
+def _aiohttp(aiohttp, ports: dict) -> None:
     async def get() -> None:
         async with aiohttp.ClientSession() as session:
             async with session.get(_url(ports)) as response:
@@ -81,26 +73,13 @@ def _aiohttp(ports: dict) -> None:
     asyncio.run(get())
 
 
-def _httpx(ports: dict) -> None:
-    import httpx
-
-    httpx.get(_url(ports), timeout=10)
-
-
-def _requests(ports: dict) -> None:
-    import requests
-
-    requests.get(_url(ports), timeout=10)
-
-
-def _botocore(ports: dict) -> None:
-    import botocore.session
+def _botocore(session, ports: dict) -> None:
     from botocore.config import Config
 
     config = Config(retries={"total_max_attempts": 1}, s3={"addressing_style": "path"})
-    botocore.session.get_session().create_client(
+    session.get_session().create_client(
         "s3",
-        endpoint_url=f"https://{HOST}:{ports['https']}",
+        endpoint_url=_url(ports, ""),
         region_name="us-east-1",
         aws_access_key_id="probe",
         aws_secret_access_key="probe",
@@ -108,50 +87,16 @@ def _botocore(ports: dict) -> None:
     ).head_bucket(Bucket="probe")
 
 
-def _redis(ports: dict) -> None:
-    import redis
-    from redis.backoff import NoBackoff
-    from redis.retry import Retry
-
-    retry = Retry(NoBackoff(), 0)
-    redis.Redis(HOST, ports["https"], ssl=True, socket_timeout=10, retry=retry).ping()
-
-
-def _grpc(ports: dict) -> None:
-    import grpc
-
+def _grpc(grpc, ports: dict) -> None:
     credentials, options = grpc.ssl_channel_credentials(), [("grpc.enable_retries", 0)]
-    with grpc.secure_channel(
-        f"{HOST}:{ports['grpc']}", credentials, options
-    ) as channel:
-        channel.unary_unary("/probe.Probe/Call")(b"", timeout=10)
+    with grpc.secure_channel(f"{HOST}:{ports['grpc']}", credentials, options) as c:
+        c.unary_unary("/probe.Probe/Call")(b"", timeout=10)
 
 
-def _reached(connect) -> None:
-    """The responder's post-handshake error came back: TLS completed."""
-    try:
-        connect()
-    except Exception as error:
-        if MARKER not in str(error):
-            raise
-        return
-    raise RuntimeError("the responder never answered")
-
-
-def _asyncpg_verify_full(ports: dict) -> None:
-    import asyncpg
-
-    dsn = f"postgresql://probe@{HOST}:{ports['pg']}/probe?sslmode=verify-full"
-    _reached(lambda: asyncio.run(asyncpg.connect(dsn, timeout=10)))
-
-
-def _sqlalchemy_asyncpg_require(ports: dict) -> None:
-    import asyncpg  # noqa: F401  (not installed without it)
-    from sqlalchemy.ext.asyncio import create_async_engine
-
+def _sqlalchemy_require(asyncio_engine, ports: dict) -> None:
     async def connect(port: int) -> None:
         url = f"postgresql+asyncpg://probe@{HOST}:{port}/probe?ssl=require"
-        engine = create_async_engine(url, connect_args={"timeout": 10})
+        engine = asyncio_engine.create_async_engine(url, connect_args={"timeout": 10})
         try:
             async with engine.connect():
                 pass
@@ -160,30 +105,16 @@ def _sqlalchemy_asyncpg_require(ports: dict) -> None:
 
     _reached(lambda: asyncio.run(connect(ports["pg"])))
     try:
-        _reached(lambda: asyncio.run(connect(ports["stranger"])))
+        _reached(lambda: asyncio.run(connect(ports["outside"])))
     except Exception:
         return
     raise RuntimeError("accepted a peer outside the set: require did not verify")
 
 
-def _psycopg2(ports: dict) -> None:
-    import psycopg2
-
-    dsn = f"host={HOST} port={ports['pg']} user=probe dbname=probe gssencmode=disable"
-    _reached(lambda: psycopg2.connect(dsn, sslmode="verify-full", connect_timeout=10))
-
-
-def _litellm(ports: dict) -> None:
-    from litellm.llms.custom_httpx.http_handler import HTTPHandler
-
-    HTTPHandler(timeout=10).get(_url(ports))
-
-
-def _sentry(ports: dict) -> None:
-    import sentry_sdk
-
-    dsn = f"https://probe@{HOST}:{ports['https']}/1"
-    sentry_sdk.init(dsn=dsn, default_integrations=False)
+def _sentry(sentry_sdk, ports: dict) -> None:
+    sentry_sdk.init(
+        dsn=f"https://p@{HOST}:{ports['https']}/1", default_integrations=False
+    )
     client = sentry_sdk.get_client()
     try:
         client.transport._pool.request("GET", _url(ports), retries=False)
@@ -191,50 +122,82 @@ def _sentry(ports: dict) -> None:
         client.close(timeout=0)
 
 
-def _workos(ports: dict) -> None:
-    from workos import WorkOSClient
-
-    base_url = f"https://{HOST}:{ports['https']}"
-    client = WorkOSClient(api_key="p", client_id="p", base_url=base_url, max_retries=0)
-    client.request("GET", ["probe"])
-
-
-def _opik(ports: dict) -> None:
-    from opik import httpx_client
-
-    httpx_client.get(None, None, True, False).get(_url(ports))
-
-
-def _httpx_roots(ports: dict) -> None:
-    import httpx
-
-    httpx_roots = set(httpx.create_ssl_context().get_ca_certs(True))
-    stdlib_roots = set(ssl.create_default_context().get_ca_certs(True))
-    if httpx_roots != stdlib_roots:
+def _httpx_roots(httpx, ports: dict) -> None:
+    ours = set(httpx.create_ssl_context().get_ca_certs(True))
+    stdlib = set(ssl.create_default_context().get_ca_certs(True))
+    if ours != stdlib:
         raise RuntimeError(
-            f"httpx holds {len(httpx_roots - stdlib_roots)} roots the stdlib "
-            f"context does not, and lacks {len(stdlib_roots - httpx_roots)}"
+            f"httpx holds {len(ours - stdlib)} roots the stdlib context does not, "
+            f"and lacks {len(stdlib - ours)}"
         )
 
 
-# name: (client, the module it needs, its server, bare is refused pre-handshake)
+def _verify_full(port: int) -> str:
+    return f"postgresql://probe@{HOST}:{port}/probe?sslmode=verify-full"
+
+
+# name: (module the client is given, its server, client(module, ports)).
+# The equality row has no server and no bare run: certifi can hold exactly the
+# OS bundle's roots on a host (it does on the one #2692 was built on), so a bare
+# run is not guaranteed to differ.
 ROWS = {
-    "stdlib": (_stdlib, "ssl", "https", True),
-    "aiohttp": (_aiohttp, "aiohttp", "https", True),
-    "httpx": (_httpx, "httpx", "https", True),
-    "requests": (_requests, "requests", "https", True),
-    "botocore": (_botocore, "botocore", "https", True),
-    "redis": (_redis, "redis", "https", True),
-    "grpc": (_grpc, "grpc", "grpc", True),
-    "asyncpg verify-full": (_asyncpg_verify_full, "asyncpg", "pg", True),
-    "sqlalchemy asyncpg require": (_sqlalchemy_asyncpg_require, "asyncpg", "pg", False),
-    "psycopg2 verify-full": (_psycopg2, "psycopg2", "pg", True),
-    "litellm": (_litellm, "litellm", "https", True),
-    "sentry-sdk": (_sentry, "sentry_sdk", "https", True),
-    "workos": (_workos, "workos", "https", True),
-    "opik": (_opik, "opik", "https", True),
-    "httpx roots = stdlib roots": (_httpx_roots, "httpx", None, True),
+    "stdlib": (
+        "urllib.request",
+        "https",
+        lambda m, p: m.urlopen(_url(p), timeout=10).read(),
+    ),
+    "aiohttp": ("aiohttp", "https", _aiohttp),
+    "httpx": ("httpx", "https", lambda m, p: m.get(_url(p), timeout=10)),
+    "requests": ("requests", "https", lambda m, p: m.get(_url(p), timeout=10)),
+    "botocore": ("botocore.session", "https", _botocore),
+    "redis": (
+        "redis",
+        "https",
+        lambda m, p: m.Redis(
+            HOST, p["https"], ssl=True, socket_timeout=10,
+            retry=m.retry.Retry(m.backoff.NoBackoff(), 0),
+        ).ping(),
+    ),  # fmt: skip
+    "grpc": ("grpc", "grpc", _grpc),
+    "asyncpg verify-full": (
+        "asyncpg",
+        "pg",
+        lambda m, p: _reached(
+            lambda: asyncio.run(m.connect(_verify_full(p["pg"]), timeout=10))
+        ),
+    ),
+    "sqlalchemy asyncpg require": ("sqlalchemy.ext.asyncio", "pg", _sqlalchemy_require),
+    "psycopg2 verify-full": (
+        "psycopg2",
+        "pg",
+        lambda m, p: _reached(
+            lambda: m.connect(
+                _verify_full(p["pg"]), gssencmode="disable", connect_timeout=10
+            )
+        ),
+    ),
+    "litellm": (
+        "litellm.llms.custom_httpx.http_handler",
+        "https",
+        lambda m, p: m.HTTPHandler(timeout=10).get(_url(p)),
+    ),
+    "sentry-sdk": ("sentry_sdk", "https", _sentry),
+    "workos": (
+        "workos",
+        "https",
+        lambda m, p: m.WorkOSClient(
+            api_key="p", client_id="p", base_url=_url(p, ""), max_retries=0
+        ).request("GET", ["probe"]),
+    ),
+    "opik": (
+        "opik.httpx_client",
+        "https",
+        lambda m, p: m.get(None, None, True, False).get(_url(p)),
+    ),
+    "httpx roots = stdlib roots": ("httpx", None, _httpx_roots),
 }
+# A row needs these installed besides its module's top-level package.
+_ALSO_NEEDS = {"sqlalchemy asyncpg require": "asyncpg"}
 
 
 def _loopback_only() -> None:
@@ -258,16 +221,18 @@ def _loopback_only() -> None:
 
 
 def _child(name: str, applied: bool, ports: dict) -> int:
-    client, module, _, _ = ROWS[name]
-    if importlib.util.find_spec(module) is None:
-        return NOT_INSTALLED
+    module, _, client = ROWS[name]
+    # Top-level names only: find_spec of a dotted name imports its parents.
+    for needed in (module.split(".")[0], _ALSO_NEEDS.get(name)):
+        if needed and importlib.util.find_spec(needed) is None:
+            return NOT_INSTALLED
     _loopback_only()
     if applied:
         from faultmaven.config.tls_root_set import apply_root_set
 
         apply_root_set()
     try:
-        client(ports)
+        client(importlib.import_module(module), ports)
     except BaseException as error:
         print(f"refused: {type(error).__name__}: {error}"[:300])
         return 1
@@ -275,42 +240,41 @@ def _child(name: str, applied: bool, ports: dict) -> int:
 
 
 def _serve_tls(context: ssl.SSLContext, postgres: bool) -> tuple[socket.socket, list]:
-    """A listener answering HTTP, Redis or PostgreSQL; the list grows by one per
-    completed handshake."""
+    """A listener answering HTTP and Redis, or PostgreSQL; the list grows by one
+    per completed handshake."""
     listener, handshakes = socket.create_server((HOST, 0)), []
 
     def answer(connection: socket.socket) -> None:
-        with connection:
-            connection.settimeout(30)
-            while postgres:  # SSLRequest gets "S"; GSSENCRequest "N"
-                code = struct.unpack("!ii", connection.recv(8, socket.MSG_WAITALL))[1]
-                connection.sendall(b"S" if code == 80877103 else b"N")
-                if code != 80877104:
-                    break
-            tls = context.wrap_socket(connection, server_side=True)
-            handshakes.append(1)
+        connection.settimeout(30)
+        while postgres:  # SSLRequest gets "S"; GSSENCRequest "N"
+            code = struct.unpack("!ii", connection.recv(8, socket.MSG_WAITALL))[1]
+            connection.sendall(b"S" if code == 80877103 else b"N")
+            if code != 80877104:
+                break
+        tls = context.wrap_socket(connection, server_side=True)
+        handshakes.append(1)
+        data = tls.recv(65536)
+        if postgres:  # an ErrorResponse to the StartupMessage
+            fields = b"SFATAL\0VFATAL\0C28000\0M" + MARKER.encode() + b"\0\0"
+            tls.sendall(b"E" + struct.pack("!i", len(fields) + 4) + fields)
+            return
+        while data.startswith(b"*"):  # Redis: CLIENT SETINFO, then PING
+            commands = data.split(b"\r\n*")
+            tls.sendall(
+                b"".join(b"+PONG\r\n" if b"PING" in c else b"+OK\r\n" for c in commands)
+            )
             data = tls.recv(65536)
-            if postgres:  # an ErrorResponse to the StartupMessage
-                fields = b"SFATAL\0VFATAL\0C28000\0M" + MARKER.encode() + b"\0\0"
-                tls.sendall(b"E" + struct.pack("!i", len(fields) + 4) + fields)
-                return
-            while data.startswith(b"*"):  # Redis: CLIENT SETINFO, then PING
-                replies = [
-                    b"+PONG\r\n" if b"PING" in c else b"+OK\r\n"
-                    for c in data.split(b"\r\n*")
-                ]
-                tls.sendall(b"".join(replies))
-                data = tls.recv(65536)
-            while data and b"\r\n\r\n" not in data:
-                data += tls.recv(65536)
-            head = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n"
-            tls.sendall(head + (b"" if data.startswith(b"HEAD") else b"{}"))
+        while data and b"\r\n\r\n" not in data:
+            data += tls.recv(65536)
+        head = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n"
+        tls.sendall(head + (b"" if data.startswith(b"HEAD") else b"{}"))
 
     def serve(connection: socket.socket) -> None:
-        try:
-            answer(connection)
-        except (OSError, ssl.SSLError, struct.error):
-            pass
+        with connection:
+            try:
+                answer(connection)
+            except (OSError, ssl.SSLError, struct.error):
+                pass
 
     def accept() -> None:
         while True:
@@ -325,15 +289,12 @@ def _serve_tls(context: ssl.SSLContext, postgres: bool) -> tuple[socket.socket, 
 
 
 def _serve_grpc(chain: bytes, key: bytes):
-    """A gRPC TLS server, its port, and the list of completed calls."""
     from concurrent import futures
 
     import grpc
 
     calls: list = []
-    method = grpc.unary_unary_rpc_method_handler(
-        lambda request, _: calls.append(1) or b""
-    )
+    method = grpc.unary_unary_rpc_method_handler(lambda _, __: calls.append(1) or b"")
     handler = grpc.method_handlers_generic_handler("probe.Probe", {"Call": method})
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=2), handlers=[handler])
     port = server.add_secure_port(
@@ -343,8 +304,9 @@ def _serve_grpc(chain: bytes, key: bytes):
     return server, port, calls
 
 
-def _certificates(directory: Path, name: str) -> tuple[Path, bytes, bytes]:
-    """A CA written to ``<name>-ca.pem``, and the PEM chain and key of a leaf it signs."""
+def _certificates(directory: Path, name: str):
+    """A CA (written to ``<name>-ca.pem``) and a leaf it signs: the CA file, a
+    server context presenting the leaf, and the leaf's PEM chain and key."""
     from cryptography import x509
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import ec
@@ -386,31 +348,23 @@ def _certificates(directory: Path, name: str) -> tuple[Path, bytes, bytes]:
         x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()),
     )
     pem = serialization.Encoding.PEM
-    ca_file = directory / f"{name}-ca.pem"
-    ca_file.write_bytes(ca.public_bytes(pem))
+    files = [directory / f"{name}-{part}.pem" for part in ("ca", "chain", "key")]
+    chain = leaf.public_bytes(pem) + ca.public_bytes(pem)
     key = leaf_key.private_bytes(
         pem, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
     )
-    return ca_file, leaf.public_bytes(pem) + ca.public_bytes(pem), key
-
-
-def _server_context(
-    directory: Path, name: str, chain: bytes, key: bytes
-) -> ssl.SSLContext:
-    (directory / f"{name}-chain.pem").write_bytes(chain)
-    (directory / f"{name}-key.pem").write_bytes(key)
+    for file, content in zip(files, (ca.public_bytes(pem), chain, key)):
+        file.write_bytes(content)
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    context.load_cert_chain(
-        directory / f"{name}-chain.pem", directory / f"{name}-key.pem"
-    )
-    return context
+    context.load_cert_chain(files[1], files[2])
+    return files[0], context, chain, key
 
 
 def _run(
     name: str, applied: bool, ports: dict, counts: dict, env: dict
 ) -> tuple[str, str]:
     """(verdict, detail) for one client in one mode."""
-    server, refused_bare = ROWS[name][2:]
+    server = ROWS[name][1]
     before = len(counts[server]) if server else 0
     command = [sys.executable, __file__, "--child", name, "--ports", json.dumps(ports)]
     try:
@@ -430,41 +384,34 @@ def _run(
     delta = len(counts[server]) - before
     if applied:
         ok = code == 0 and delta >= 1
-    else:
-        ok = code != 0 and (delta == 0 or not refused_bare)
+    else:  # the require row's bare run completes a handshake with the outside CA
+        ok = code != 0 and (delta == 0 or "require" in name)
     return ("PASS" if ok else "FAIL"), f"{delta} handshake(s); {said}"
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        description="TLS clients verify against the root set."
-    )
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
         "--require-all", action="store_true", help="fail on a client not installed"
     )
-    parser.add_argument("--child", help=argparse.SUPPRESS)
-    parser.add_argument("--ports", help=argparse.SUPPRESS)
+    for hidden in ("--child", "--ports"):
+        parser.add_argument(hidden, help=argparse.SUPPRESS)
     parser.add_argument("--bare", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if args.child:
         return _child(args.child, not args.bare, json.loads(args.ports))
     from faultmaven.config.tls_root_set import OWNED_VARIABLES
 
-    failed, ports, counts, listeners = False, {}, {}, []
+    failed, ports, counts, listeners, grpc_server = False, {}, {}, [], None
     with tempfile.TemporaryDirectory(prefix="check-tls-root-set-") as scratch:
-        directory = Path(scratch)
-        ca_file, chain, key = _certificates(directory, "set")
-        context = _server_context(directory, "set", chain, key)
-        stranger = _server_context(
-            directory, "stranger", *_certificates(directory, "stranger")[1:]
-        )
+        ca_file, context, chain, key = _certificates(Path(scratch), "set")
+        outside = _certificates(Path(scratch), "outside")[1]
         for server, server_context, postgres in (
-            ("https", context, False), ("pg", context, True), ("stranger", stranger, True)
+            ("https", context, False), ("pg", context, True), ("outside", outside, True)
         ):  # fmt: skip
             listener, counts[server] = _serve_tls(server_context, postgres)
             ports[server] = listener.getsockname()[1]
             listeners.append(listener)
-        grpc_server = None
         if importlib.util.find_spec("grpc") is not None:
             grpc_server, ports["grpc"], counts["grpc"] = _serve_grpc(chain, key)
         env = {
@@ -474,7 +421,7 @@ def main(argv: list[str] | None = None) -> int:
         }
         env.update(_CHILD_ENV, TLS_EXTRA_CA_FILE=str(ca_file))
         for name in ROWS:
-            for applied in (True, False) if ROWS[name][2] else (True,):
+            for applied in (True, False) if ROWS[name][1] else (True,):
                 verdict, detail = _run(name, applied, ports, counts, env)
                 failed |= verdict == "FAIL" or (verdict != "PASS" and args.require_all)
                 mode = "applied" if applied else "bare"

@@ -1,28 +1,22 @@
 """tls_root_set.py
 
-Purpose: the one writer of the process's TLS root set (§13.4, #2692).
+Purpose: the one writer of the process's TLS root set (§13.4, #2692): the OS CA
+bundle, plus the CA certificates in ``TLS_EXTRA_CA_FILE`` when set.
 
-Every TLS client in the process verifies the peer against one set: the
-operating system's CA bundle, plus the CA certificates in ``TLS_EXTRA_CA_FILE``
-when that setting is set. Each client reads its roots from a place of its own
-(OpenSSL's default paths, certifi, gRPC's packaged ``roots.pem``, libpq's root
-file), so ``apply_root_set`` names the set in every variable a client reads
-(``OWNED_VARIABLES``) before any client is imported. It is the first statement
-of every launcher and entrypoint: ``run_server``, each ``fm-*`` ``main()``, the
-jobs runner and ``alembic/env.py``. Spawned children inherit the variables, and
-a child that applies the set again reuses its parent's file.
+Clients read roots from places of their own (OpenSSL's default paths, certifi,
+gRPC's ``roots.pem``, libpq's root file), so ``apply_root_set`` names the set in
+every variable one reads (``OWNED_VARIABLES``) before any client is imported: it
+is the first statement of ``run_server``, each ``fm-*`` ``main()``, the jobs
+runner and ``alembic/env.py``. Children inherit the variables; one that applies
+the set again reuses its parent's file. The set is read once per start: with
+``TLS_EXTRA_CA_FILE`` set it is written to a new file in a fresh temporary
+directory, kept for the life of the process and its children and never deleted,
+so a change to the setting or the OS bundle takes effect at the next start.
 
-The set is read once per start. With ``TLS_EXTRA_CA_FILE`` set, it is written to
-a new file in a fresh temporary directory, which lives as long as the process
-and its children and is never deleted by the process; a change to the setting
-or to the OS bundle takes effect at the next start.
-
-The start is refused (``SystemExit``, Fail-Fast Configuration) when no OS bundle
-loads, when ``TLS_EXTRA_CA_FILE`` does not load, when the set's file cannot be
-written or does not load whole, and when an owned variable is already set to
-something other than the set (ruling 1 on #2692).
-
-Imports only the standard library and the settings' dotenv loader, never a client.
+``SystemExit`` refuses the start (Fail-Fast Configuration) when no OS bundle
+loads, ``TLS_EXTRA_CA_FILE`` does not load, the set's file cannot be written or
+does not load whole, or an owned variable is already set to anything that does
+not hold the set's certificates (ruling 1 on #2692). Imports no client.
 """
 
 from __future__ import annotations
