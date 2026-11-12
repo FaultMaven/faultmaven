@@ -13,6 +13,7 @@ everywhere.
 """
 
 import uuid
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -112,6 +113,12 @@ def _value(name, labels):
     return REGISTRY.get_sample_value(name, labels) or 0.0
 
 
+class _UnhashableStr(str):
+    """A ``str`` whose hashing raises: ``in`` on a set would raise TypeError."""
+
+    __hash__ = None
+
+
 class TestClientLabel:
     """The fold itself, without ``prometheus_client``."""
 
@@ -119,13 +126,64 @@ class TestClientLabel:
         assert OAuthMetricsRecorder([COPILOT]).client_label(COPILOT) == COPILOT
 
     @pytest.mark.parametrize(
-        "value", ["someone-else", "", None, 42, [COPILOT], {"x": 1}, b"bytes"]
+        "value",
+        [
+            "someone-else",
+            "",
+            None,
+            42,
+            [COPILOT],
+            {"x": 1},
+            b"bytes",
+            pytest.param(_UnhashableStr(COPILOT), id="unhashable-str-subclass"),
+        ],
     )
     def test_anything_else_is_unknown(self, value):
         assert OAuthMetricsRecorder([COPILOT]).client_label(value) == "unknown"
 
     def test_no_configured_clients_folds_everything(self):
         assert OAuthMetricsRecorder().client_label(COPILOT) == "unknown"
+
+    def test_a_bare_str_of_clients_is_refused(self):
+        with pytest.raises(TypeError):
+            OAuthMetricsRecorder(COPILOT)
+
+
+#: Each recorder method that writes a client label, called on every branch that
+#: writes one.
+_RECORDS = {
+    "record_authorization_request": lambda r, cid: (
+        r.record_authorization_request(cid, False, error_code="INVALID_CLIENT"),
+        r.record_authorization_request(cid, True),
+    ),
+    "record_token_exchange": lambda r, cid: r.record_token_exchange(
+        "authorization_code", cid, 0.01, True
+    ),
+    "record_token_refresh": lambda r, cid: (
+        r.record_token_refresh(cid, False, error_code="INVALID_REFRESH_TOKEN"),
+        r.record_token_refresh(cid, True),
+    ),
+    "record_pkce_failure": lambda r, cid: r.record_pkce_failure(cid),
+    "record_code_replay_attempt": lambda r, cid: r.record_code_replay_attempt(cid),
+    "record_redirect_uri_mismatch": lambda r, cid: r.record_redirect_uri_mismatch(cid),
+    "record_code_expired": lambda r, cid: r.record_code_expired(cid),
+}
+
+
+@pytest.mark.parametrize("method", sorted(_RECORDS))
+def test_no_recorder_method_labels_a_raw_id(method):
+    """Every writer folds, not only the ones the service reaches with raw ids."""
+    pytest.importorskip("prometheus_client")
+    recorder = OAuthMetricsRecorder([COPILOT])
+    raw_ids = _ids()
+
+    before = _oauth_series()
+    for i, client_id in enumerate(raw_ids):
+        _RECORDS[method](recorder, client_id)
+        if i == 0:
+            after_first = _oauth_series()
+
+    _assert_bounded(before, after_first, _oauth_series(), set(raw_ids))
 
 
 class TestAuthorizeSeries:
@@ -196,31 +254,96 @@ class TestRefreshSeries:
         assert _value("oauth_tokens_refreshed_total", labels) == before + 1
 
 
-def test_the_token_route_labels_an_unknown_client_unknown():
-    """``POST /token`` is unauthenticated: the id arrives straight off the wire."""
-    pytest.importorskip("prometheus_client")
+def _scratch_app(service, *overrides):
+    """The OAuth router on a scratch app, with *overrides* answering nothing."""
     from fastapi import FastAPI
-    from fastapi.testclient import TestClient
 
     from faultmaven.api.exception_handlers import oauth_protocol_error_handler
     from faultmaven.models.exceptions import OAuthProtocolError
     from faultmaven.modules.auth.api.oauth import get_oauth_service, router
-    from faultmaven.modules.auth.api.rate_limiting import (
-        require_oauth_rate_limit_token,
-    )
 
-    service = _refresh_service(valid=False)
     app = FastAPI()
     app.include_router(router)
     app.add_exception_handler(OAuthProtocolError, oauth_protocol_error_handler)
     app.dependency_overrides[get_oauth_service] = lambda: service
-    app.dependency_overrides[require_oauth_rate_limit_token] = lambda: None
-    raw_ids = _ids()[:3]
+    for dependency, answer in overrides:
+        app.dependency_overrides[dependency] = answer
+    return app
+
+
+def _drive(client, send, raw_ids):
+    """Send each id; return the series before, after the first, and after all."""
+    before = _oauth_series()
+    for i, client_id in enumerate(raw_ids):
+        send(client, client_id)
+        if i == 0:
+            after_first = _oauth_series()
+    return before, after_first, _oauth_series()
+
+
+def test_the_authorize_route_adds_no_series_for_unknown_clients():
+    pytest.importorskip("prometheus_client")
+    from fastapi.testclient import TestClient
+
+    from faultmaven.api.v1.auth_dependencies import require_authentication
+    from faultmaven.modules.auth.api.rate_limiting import (
+        require_oauth_rate_limit_authorize,
+    )
+    from faultmaven.modules.auth.domain.models.auth import DevUser
+
+    user = DevUser(
+        user_id="user_1",
+        username="u",
+        email="u@example.com",
+        display_name="U",
+        created_at=datetime.now(timezone.utc),
+    )
+    app = _scratch_app(
+        _service(),
+        (require_authentication, lambda: user),
+        (require_oauth_rate_limit_authorize, lambda: None),
+    )
+    raw_ids = _ids()
+    refused = {"attempted_client_id": "unknown"}
+    before_refused = _value("oauth_invalid_client_attempts_total", refused)
+
+    def send(client, client_id):
+        response = client.get(
+            "/auth/oauth/authorize",
+            params={
+                "response_type": "code",
+                "client_id": client_id,
+                "redirect_uri": REDIRECT,
+                "state": "state",
+                "code_challenge": "c" * 43,
+            },
+        )
+        assert response.status_code == 400
+
+    client = TestClient(app)  # a scratch app: no lifespan to run
+    _assert_bounded(*_drive(client, send, raw_ids), set(raw_ids))
+    assert _value("oauth_invalid_client_attempts_total", refused) == (
+        before_refused + N
+    )
+
+
+def test_the_token_route_labels_an_unknown_client_unknown():
+    """``POST /token`` is unauthenticated: the id arrives straight off the wire."""
+    pytest.importorskip("prometheus_client")
+    from fastapi.testclient import TestClient
+
+    from faultmaven.modules.auth.api.rate_limiting import (
+        require_oauth_rate_limit_token,
+    )
+
+    app = _scratch_app(
+        _refresh_service(valid=False), (require_oauth_rate_limit_token, lambda: None)
+    )
+    raw_ids = _ids()
     unknown = {"client_id": "unknown", "error_code": "INVALID_REFRESH_TOKEN"}
     before_unknown = _value("oauth_refresh_errors_total", unknown)
 
-    client = TestClient(app)  # a scratch app: no lifespan to run
-    for client_id in raw_ids:
+    def send(client, client_id):
         response = client.post(
             "/auth/oauth/token",
             data={
@@ -232,11 +355,6 @@ def test_the_token_route_labels_an_unknown_client_unknown():
         assert response.status_code == 400
         assert response.json()["error"] == "invalid_grant"
 
-    assert _value("oauth_refresh_errors_total", unknown) == before_unknown + 3
-    leaked = {
-        value
-        for _, labels in _oauth_series()
-        for _, value in labels
-        if value in raw_ids
-    }
-    assert leaked == set()
+    client = TestClient(app)  # a scratch app: no lifespan to run
+    _assert_bounded(*_drive(client, send, raw_ids), set(raw_ids))
+    assert _value("oauth_refresh_errors_total", unknown) == before_unknown + N

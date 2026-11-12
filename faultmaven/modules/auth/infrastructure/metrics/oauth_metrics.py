@@ -6,8 +6,8 @@ security-related events like PKCE violations and replay attacks.
 
 Metrics follow FaultMaven's bounded cardinality principles:
 - NO user_id, session_id, or other high-cardinality labels
-- A ``client_id`` / ``attempted_client_id`` label is a configured OAuth client
-  or ``unknown``, never the raw request value (#2735)
+- A ``client_id`` label is a configured OAuth client or ``unknown``, and
+  ``attempted_client_id`` is always ``unknown``: never the raw request value (#2735)
 
 Usage: record through an ``OAuthMetricsRecorder`` built with the configured
 clients; its methods fold every client id through ``client_label``.
@@ -96,7 +96,7 @@ declare_lazy(oauth_authorization_errors, _CLIENT_LABEL_REASON)
 
 #: What every ``OAuthService`` caller of the token-exchange, PKCE, replay and
 #: expiry recorders passes: the code's client is not known on those paths.
-_CALLER_CLIENT_IDS = ("unknown",)
+_CALLER_CLIENT_IDS = (_UNKNOWN_CLIENT,)
 
 oauth_tokens_issued = Counter(
     "oauth_tokens_issued_total",
@@ -235,15 +235,24 @@ class OAuthMetricsRecorder:
         Args:
             allowed_clients: The configured OAuth client ids, the only values a
                 client label keeps.
+
+        Raises:
+            TypeError: *allowed_clients* is a bare ``str``, which would be read
+                as its characters.
         """
+        if isinstance(allowed_clients, str):
+            raise TypeError("allowed_clients must be a collection of ids, not a str")
         self._allowed_clients = frozenset(allowed_clients)
         self.enabled = _PROMETHEUS_AVAILABLE
         if not self.enabled:
             logger.debug("OAuth metrics recorder initialized in no-op mode")
 
     def client_label(self, client_id: object) -> str:
-        """*client_id* when it is a configured client, else ``unknown``. Never raises."""
-        if isinstance(client_id, str) and client_id in self._allowed_clients:
+        """*client_id* when it is a configured client, else ``unknown``. Never raises.
+
+        An exact ``str`` only: a subclass can make hashing raise.
+        """
+        if type(client_id) is str and client_id in self._allowed_clients:
             return client_id
         return _UNKNOWN_CLIENT
 

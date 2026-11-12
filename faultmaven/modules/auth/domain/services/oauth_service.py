@@ -60,8 +60,8 @@ class OAuthServiceImpl(IOAuthService):
         self.user_repository = user_repository
         self.token_generator = token_generator
         self.settings = settings
-        # Labels only the clients this service accepts (#2735). Auth settings are
-        # not hot-reloaded, so the snapshot taken here stays exact.
+        # Labels only the CONFIGURED clients; any other id is "unknown" (#2735).
+        # Auth settings are not hot-reloaded, so the snapshot stays exact.
         self._metrics = OAuthMetricsRecorder(
             allowed_clients=settings.oauth_allowed_clients
         )
