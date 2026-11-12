@@ -572,11 +572,14 @@ async def _compose_turn_reply(
     # pivoted (#1885): the two are separate fields so the pivot rate keeps
     # meaning "the engine re-read the model's request".
     _transition_superseded = bool(metadata.get("transition_superseded_by_engine"))
+    # Dropped for an engine offer that then lapsed (#2636 B3): not pivoted.
+    _dropped_for_lapsed = bool(metadata.get("transition_dropped_for_lapsed_offer"))
     _transition_pivoted = bool(
         _llm_proposed_to_status
         and _engine_to_status
         and _llm_proposed_to_status != _engine_to_status
         and not _transition_superseded
+        and not _dropped_for_lapsed
     )
     logger.info(
         "transition_compliance",
@@ -591,6 +594,7 @@ async def _compose_turn_reply(
             "engine_effective_to_status": _engine_to_status,
             "transition_pivoted": _transition_pivoted,
             "transition_superseded_by_engine": _transition_superseded,
+            "transition_dropped_for_lapsed_offer": _dropped_for_lapsed,
             # The model's proposal re-asked a disposition the user declined
             # and was refused: ``false_alarm`` or ``deferred`` (#1889),
             # ``resolve`` (#1895), else None.

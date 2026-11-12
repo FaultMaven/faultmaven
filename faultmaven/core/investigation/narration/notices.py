@@ -646,8 +646,19 @@ def _fix_report_ignored(params: dict, outcome, log) -> list:
 
 @_renders(NoticeCode.ENGINE_OFFER_STANDS)
 def _engine_offer_stands(params: dict, outcome, log) -> list:
-    """The model's proposal was dropped: the engine's offer opened earlier in
-    the cycle is what the user will answer."""
+    """The model's proposal was dropped for the engine's offer opened earlier
+    in the cycle: that offer is what the user will answer, or, when it lapsed
+    later in the cycle (``stands`` false, #2636 B3), the model's proposal was
+    not opened and the offer lapsed unseen."""
+    if params.get("stands") is False:
+        return [
+            "TRANSITION NOT PROPOSED: your "
+            f"{params['proposed_to_state']!r} proposal was not opened, because "
+            "the engine had already opened its own offer this turn. That offer "
+            "then lapsed before the user saw it, because what it rested on no "
+            "longer holds. Propose a transition again on a later turn if one is "
+            "still earned."
+        ]
     return [
         "TRANSITION NOT PROPOSED: the engine already offered the "
         f"user a {params['to_state']!r} transition this turn, "

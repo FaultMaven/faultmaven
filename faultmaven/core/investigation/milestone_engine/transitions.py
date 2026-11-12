@@ -498,13 +498,15 @@ class TransitionManager:
                 f"model's proposed_transition={proposed.to_state!r}."
             )
             # Read by the turn's ``transition_compliance`` line: the model's
-            # proposal was dropped, not pivoted.
+            # proposal was dropped, not pivoted. The narration step clears it
+            # when the engine's offer lapsed later in the cycle (#2636 B3).
             metadata["transition_superseded_by_engine"] = True
             record_decision(
                 metadata,
                 NoticeCode.ENGINE_OFFER_STANDS,
                 proposal_id=engine_offer.proposal_id,
                 to_state=engine_offer.kind.to_state,
+                proposed_to_state=proposed.to_state,
             )
             return
 
