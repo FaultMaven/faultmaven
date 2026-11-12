@@ -9,10 +9,12 @@ repairs) stay as text, declared in a census"). Most report an ordering or
 schema error in the response; the problem-status sites stay text because they
 run after step 2c, the response's last write to ``problem.status`` (whose one
 writer is ``problem_status.py``), so the status they state is the one the turn
-ends with. Three outcome-bearing sites are still text: the engine's offer
-standing (B1d); the false-alarm withdrawal's refusal, which states or presumes
-the problem's status; and the hypothesis-action refusal under a false alarm,
-which runs before the model call. The last two convert in a later B1 sub-stage.
+ends with. Two outcome-bearing sites are still text: the false-alarm
+withdrawal's refusal, which states or presumes the problem's status; and the
+hypothesis-action refusal under a false alarm, which runs before the model
+call. Both convert in a later B1 sub-stage. B1d converted the engine's offer
+standing (``ENGINE_OFFER_STANDS``) and every offer's prose: the six writers and
+the step-0 and model offers' summaries record an ``OfferCode``.
 
 A new call, a moved one or a changed count fails until it is declared here,
 and a converted function (one listed in ``DECISIONS`` and not in ``TEXT``)
@@ -104,10 +106,9 @@ TEXT: dict[tuple[str, str], tuple[int, str]] = {
         + ")",
     ),
     (_TR, "TransitionManager._apply_model_proposal"): (
-        5,
+        4,
         "a revision pending, an invalid edge, a non-disposition and the turn "
-        "quiet (TRANSITION_QUIET_FEEDBACK): " + _EMISSION + "; and the engine's "
-        "offer standing (ENGINE_OFFER_STANDS), outcome-bearing, converts in B1d",
+        "quiet (TRANSITION_QUIET_FEEDBACK): " + _EMISSION,
     ),
     (_TA, "_apply_turn_response"): (
         2,
@@ -155,15 +156,31 @@ DECISIONS: dict[tuple[str, str], dict[str, int]] = {
     (_RA, "ResponseApplier._apply_investigation_updates"): {
         "NoticeCode.SIGNALS_ON_INVALIDATED_PROBLEM": 1
     },
-    (_TP, "_maybe_propose_confirmed_resolution"): {"NoticeCode.PENDING_CHECK": 1},
+    (_TP, "_maybe_propose_confirmed_resolution"): {
+        "NoticeCode.PENDING_CHECK": 1,
+        "OfferCode.BACKSTOP_RESOLVE": 1,
+    },
     (_TR, "_refuse_declined_reask"): {"NoticeCode.DECLINED_CLOSE_REASK": 1},
     (_TR, "TransitionManager._recheck_resolve_request"): {
-        "NoticeCode.DECLINED_RESOLUTION_REASK": 1
+        "NoticeCode.DECLINED_RESOLUTION_REASK": 1,
+        "OfferCode.REQUEST_READY": 1,
+        "OfferCode.NEEDS_INFO_UNMET_CLOSE": 1,
     },
     (_TR, "TransitionManager._apply_model_proposal"): {
+        "NoticeCode.ENGINE_OFFER_STANDS": 1,
         "NoticeCode.PENDING_CHECK": 1,
         "NoticeCode.DECLINED_RESOLUTION_REASK": 1,
+        "OfferCode.RESOLUTION_NEEDS_INFO": 1,
+        "OfferCode.MODEL_PROPOSAL": 1,
     },
+    # B1d: each offer's prose, as an ``OfferCode`` (the deferred proposer's
+    # two branches are two literal calls, so the census reads each code).
+    (_SG, "_apply_stage_gate_side_effects"): {"OfferCode.RCA_INFEASIBLE_CLOSE": 1},
+    (_TP, "_maybe_propose_deferred_close"): {
+        "OfferCode.DEFERRED_RESOLVE": 1,
+        "OfferCode.DEFERRED_CLOSE": 1,
+    },
+    (_TP, "_maybe_propose_false_alarm_close"): {"OfferCode.FALSE_ALARM_CLOSE": 1},
     (_TA, "_record_hypotheses_closed_later"): {"NoticeCode.HYPOTHESIS_RETIRED": 1},
 }
 
@@ -255,8 +272,11 @@ def test_a_converted_function_writes_no_text():
 
 
 def test_the_census_names_every_notice_code():
-    """Each code a site records exists, and every code is recorded somewhere."""
-    from faultmaven.core.investigation.narration.codes import NoticeCode
+    """Each code a site records exists, and every notice and offer code is
+    recorded somewhere."""
+    from faultmaven.core.investigation.narration.codes import NoticeCode, OfferCode
 
-    named = {code.split(".", 1)[1] for codes in DECISIONS.values() for code in codes}
-    assert named == {m.name for m in NoticeCode}
+    named = {code for codes in DECISIONS.values() for code in codes}
+    assert named == {
+        f"{type(m).__name__}.{m.name}" for m in set(NoticeCode) | set(OfferCode)
+    }

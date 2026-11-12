@@ -4,7 +4,7 @@ import logging
 from typing import Any
 
 from faultmaven.core.investigation.cause_assurance import pending_symptom_check
-from faultmaven.core.investigation.narration.codes import NoticeCode
+from faultmaven.core.investigation.narration.codes import NoticeCode, OfferCode
 from faultmaven.core.investigation.offer_projection import project_offers
 from faultmaven.core.investigation.offers import (
     OfferRefusal,
@@ -35,7 +35,7 @@ from faultmaven.modules.case.contracts import (
 
 from .stage_gates import _add_system_feedback, record_decision
 from .statement_revision import revision_pending
-from .terminal_replies import _build_resolution_confirmation
+from .terminal_replies import resolution_confirmation_params
 
 logger = logging.getLogger(__name__)
 
@@ -320,11 +320,11 @@ class TransitionManager:
         metadata["resolution_readiness_verdict"] = readiness.verdict
         metadata["resolution_readiness_missing"] = readiness.missing
         if readiness.verdict == readiness.READY:
+            # Its summary is the confirmation, rendered after the cycle's record
+            # from what it states as read here (#2636).
+            confirmation = resolution_confirmation_params(case)
             record = open_disposition_offer(
-                case,
-                kind=OfferKind.RESOLVE,
-                basis=OfferBasis.MODEL,
-                summary=_build_resolution_confirmation(case),
+                case, kind=OfferKind.RESOLVE, basis=OfferBasis.MODEL
             )
             if record is None:
                 # A resolve decline binds it: the request turned READY on the
@@ -340,6 +340,13 @@ class TransitionManager:
                     metadata["declined_resolve_card"] = True
                 return
             case.offer_record = record
+            record_decision(
+                metadata,
+                OfferCode.REQUEST_READY,
+                proposal_id=record.open.proposal_id,
+                reason=readiness.reason,
+                **confirmation,
+            )
             metadata["resolution_ready_for_confirmation"] = True
             logger.info(
                 f"Case {case.case_id}: the resolution request is met — "
@@ -357,31 +364,23 @@ class TransitionManager:
                 f"check ({readiness.pending_check.need_id}); no close offered"
             )
             return
-        if readiness.verdict == readiness.SUGGEST_CLOSE:
-            summary = readiness.message
-        else:
-            summary = (
-                "I understand. Without confirmation that the root cause "
-                "was **eliminated** (e.g. the original error is now "
-                "absent after the fix), I can't mark this as "
-                "**resolved** — a restored-but-stabilized or "
-                "deferred-fix case isn't a resolution.\n\n"
-                "You can **close** the case instead — this preserves "
-                "the root cause analysis and the documented (or "
-                "deferred) solution."
-            )
         record = open_disposition_offer(
-            case,
-            kind=OfferKind.CLOSE,
-            basis=OfferBasis.NEEDS_INFO_UNMET,
-            summary=summary,
+            case, kind=OfferKind.CLOSE, basis=OfferBasis.NEEDS_INFO_UNMET
         )
         if record is None:
             # A decline binds it (the quiet cannot meet step 0, as above).
             return
         case.offer_record = record
         metadata["resolution_suggest_close"] = True
-        metadata["resolution_readiness_message"] = summary
+        # The readiness message on SUGGEST_CLOSE, else the unmet request's
+        # close, rendered after the cycle's record (#2636).
+        record_decision(
+            metadata,
+            OfferCode.NEEDS_INFO_UNMET_CLOSE,
+            proposal_id=record.open.proposal_id,
+            suggest_close=readiness.verdict == readiness.SUGGEST_CLOSE,
+            **readiness.offer_params(),
+        )
         logger.info(
             f"Case {case.case_id}: the resolution request was not met, "
             f"proposing Close (missing: {readiness.missing})"
@@ -501,12 +500,11 @@ class TransitionManager:
             # Read by the turn's ``transition_compliance`` line: the model's
             # proposal was dropped, not pivoted.
             metadata["transition_superseded_by_engine"] = True
-            _add_system_feedback(
+            record_decision(
                 metadata,
-                "TRANSITION NOT PROPOSED: the engine already offered the "
-                f"user a {engine_offer.kind.to_state!r} transition this turn, "
-                "and that offer is what they will answer. Do not re-propose a "
-                "transition until they have answered it.",
+                NoticeCode.ENGINE_OFFER_STANDS,
+                proposal_id=engine_offer.proposal_id,
+                to_state=engine_offer.kind.to_state,
             )
             return
 
@@ -524,7 +522,7 @@ class TransitionManager:
             metadata["resolution_readiness_missing"] = readiness.missing
             if readiness.verdict == readiness.SUGGEST_CLOSE:
                 kind = OfferKind.CLOSE
-                summary = readiness.message
+                composer = {"composer": "readiness", **readiness.offer_params()}
                 logger.info(
                     f"Agent proposed RESOLVED but case {case.case_id} "
                     f"verdict=SUGGEST_CLOSE (missing: {readiness.missing}); "
@@ -549,7 +547,11 @@ class TransitionManager:
                     )
                     metadata["resolution_pending_check"] = check.need_id
                 metadata["resolution_needs_info_first_pass"] = True
-                metadata["resolution_needs_info_message"] = readiness.message
+                record_decision(
+                    metadata,
+                    OfferCode.RESOLUTION_NEEDS_INFO,
+                    **readiness.offer_params(),
+                )
                 logger.info(
                     f"Agent proposed RESOLVED but case {case.case_id} "
                     f"verdict=NEEDS_INFO (missing: {readiness.missing}); "
@@ -557,11 +559,15 @@ class TransitionManager:
                 )
                 return
             else:
-                summary = _build_resolution_confirmation(case)
+                composer = {
+                    "composer": "confirmation",
+                    "reason": readiness.reason,
+                    **resolution_confirmation_params(case),
+                }
         else:
             closure = assess_closure_readiness(case)
             metadata["closure_readiness_verdict"] = closure.verdict
-            summary = closure.message
+            composer = {"composer": "closure", **closure.offer_params()}
             if closure.verdict == closure.SUGGEST_RESOLVE:
                 kind = OfferKind.RESOLVE
                 logger.info(
@@ -578,7 +584,6 @@ class TransitionManager:
             case,
             kind=kind,
             basis=OfferBasis.MODEL,
-            summary=summary,
             evidence_ids=getattr(proposed, "evidence_ids", None) or (),
             readiness_pivot=readiness_pivot,
         )
@@ -639,6 +644,13 @@ class TransitionManager:
             )
             return
         case.offer_record = record
+        # Its summary renders what was decided here, after the cycle's record.
+        record_decision(
+            metadata,
+            OfferCode.MODEL_PROPOSAL,
+            proposal_id=record.open.proposal_id,
+            **composer,
+        )
         logger.info(
             f"Agent proposed transition → {kind.to_state} (pending user confirmation)"
         )

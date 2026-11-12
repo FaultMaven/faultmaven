@@ -61,9 +61,8 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     resolution_cause_leg_total,
 )
 from faultmaven.core.investigation.narration.offers import (
-    close_summary_message,
+    closure_message,
     readiness_message,
-    suggest_resolve_message,
 )
 from faultmaven.core.investigation.offers import (
     OfferRefusal,
@@ -896,9 +895,11 @@ def pending_check_params(case: Case, check: EvidenceNeed, *, proposed: bool) -> 
     """The params of a ``PENDING_CHECK`` code while the model's own check holds
     the resolution (#1906 D5.2), for the backstop's hold and step 2's refusal:
     the check's state and whether a resolve decline stands
-    (``declined_resolve_entry``), as decided here (#2636, A4). Rendered by
+    (``declined_resolve_entry``), as decided here (#2636, A4), and the
+    resolution reason it holds. Rendered by
     ``narration.notices.pending_check_feedback``."""
     return {
+        "reason": ResolutionReason.PENDING_CHECK,
         "need_id": check.need_id,
         "request_text": check.request_text,
         "fulfilled": check.state == NeedState.FULFILLED,
@@ -1376,6 +1377,18 @@ class ResolutionReadiness:
         """The user-facing message (``narration.offers.readiness_message``)."""
         return self._message
 
+    def offer_params(self) -> dict:
+        """What an offer code carries to render this message after the cycle's
+        record (#2636, ``narration.offers.render_offer``): the reason, the
+        missing items, the gaps and the params, as decided here (A4)."""
+        return {
+            "reason": self.reason,
+            "missing": list(self.missing),
+            "gaps": list(self.confirmation_gaps),
+            "request_text": getattr(self.pending_check, "request_text", None),
+            **self.params,
+        }
+
 
 #: What a model-authored name can carry: a record id, or the ref the model writes.
 _RECORD_ID = re.compile(
@@ -1628,15 +1641,25 @@ class ClosureReadiness:
     TRIVIAL = "trivial"
     SUGGEST_RESOLVE = "suggest_resolve"
 
-    def __init__(self, verdict: str, message: "str | Callable[[], str]"):
+    def __init__(self, verdict: str, params: "dict | Callable[[], dict]"):
         self.verdict = verdict
-        self._message = message
+        self._params = params
+        self._message: Optional[str] = None
+
+    def offer_params(self) -> dict:
+        """What the prompt names (``narration.offers.closure_message``), read
+        on first use when given as a callable: what an offer code carries to
+        render it after the cycle's record (#2636, A4)."""
+        if callable(self._params):
+            self._params = self._params()
+        return {"verdict": self.verdict, **self._params}
 
     @property
     def message(self) -> str:
-        """The prompt, built on first read when given as a callable."""
-        if callable(self._message):
-            self._message = self._message()
+        """The prompt (``narration.offers.closure_message``), composed on
+        first read."""
+        if self._message is None:
+            self._message = closure_message(self.offer_params())
         return self._message
 
 
@@ -1725,7 +1748,7 @@ def assess_closure_readiness(case: "Case") -> ClosureReadiness:
         # disposition eligibility on every save) never compose it.
         return ClosureReadiness(
             verdict=ClosureReadiness.SUGGEST_RESOLVE,
-            message=lambda: _suggest_resolve_message(case, has_solutions),
+            params=lambda: _suggest_resolve_params(case, has_solutions),
         )
 
     return assess_close_summary(case)
@@ -1822,20 +1845,26 @@ def resolution_record_lines(case) -> str:
     return "\n".join(lines)
 
 
-def _suggest_resolve_message(case: "Case", has_solutions: bool) -> str:
-    """The closure→resolve pivot's prompt (``narration.offers``): the rows it
-    rests on, cited (#1906 D5.1), and only the root cause and fix the record
-    holds."""
+def _suggest_resolve_params(case: "Case", has_solutions: bool) -> dict:
+    """What the closure→resolve pivot's prompt names (``narration.offers``):
+    the rows it rests on, cited (#1906 D5.1), and only the root cause and fix
+    the record holds."""
     # Named only when a cause-identification leg stands on it, as the record
     # lines decide.
-    rc = getattr(case.root_cause_conclusion, "root_cause", None)
-    if cause_identification_leg(case) is None:
-        rc = None
-    return suggest_resolve_message(
-        rc,
-        _solution_display_titles(case.solutions) if has_solutions else [],
-        resolution_record_lines(case),
-    )
+    leg = cause_identification_leg(case)
+    return {
+        "root_cause": (
+            getattr(case.root_cause_conclusion, "root_cause", None)
+            if leg is not None
+            else None
+        ),
+        "solution_titles": (
+            _solution_display_titles(case.solutions) if has_solutions else []
+        ),
+        "record_lines": resolution_record_lines(case),
+        # The identification decided on, for the narration's conflict count.
+        "identification_leg": leg,
+    }
 
 
 def assess_close_summary(case: "Case") -> ClosureReadiness:
@@ -1869,14 +1898,15 @@ def assess_close_summary(case: "Case") -> ClosureReadiness:
         verdict=(
             ClosureReadiness.TRIVIAL if trivial else ClosureReadiness.HAS_SUBSTANCE
         ),
-        message=close_summary_message(
-            trivial=trivial,
-            evidence_count=evidence_count,
-            hypothesis_count=hypothesis_count,
-            milestones_completed=milestones_completed,
-            root_cause=root_cause,
-            solution_titles=titles,
-        ),
+        params={
+            "trivial": trivial,
+            "evidence_count": evidence_count,
+            "hypothesis_count": hypothesis_count,
+            "milestones_completed": milestones_completed,
+            "root_cause": root_cause,
+            "solution_titles": titles,
+            "identification_leg": cause_identification_leg(case),
+        },
     )
 
 

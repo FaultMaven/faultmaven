@@ -221,7 +221,7 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     (_CA, "problem_leg_anchor"): {"confirming_window": 1},
     (_CA, "subject_index"): {"_cause_pool": 1},
     (_TT, "_resolution_confirmed"): {"has_resolution_confirmation": 1},
-    (_TT, "_suggest_resolve_message"): {"resolution_record_lines": 1},
+    (_TT, "_suggest_resolve_params"): {"resolution_record_lines": 1},
     (_TT, "assess_close_summary"): {"shown_milestones": 1},
     (_TT, "assess_closure_readiness"): {
         "_resolution_confirmed": 1,
@@ -290,7 +290,7 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
         "assess_closure_readiness": 1,
         "resolution_record_lines": 1,
     },
-    (_ME + "terminal_replies.py", "_build_resolution_confirmation"): {
+    (_ME + "terminal_replies.py", "resolution_confirmation_params"): {
         "resolution_record_lines": 1
     },
     (_ME + "terminal_replies.py", "_closed_suggestions"): {

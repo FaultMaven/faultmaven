@@ -29,6 +29,7 @@ from faultmaven.modules.case.contracts import (
 )
 from tests.case_builders import with_open_offer
 from tests.unit.core.investigation.bound_rows import bound_row
+from tests.unit.core.investigation.narrated import narrated
 
 _FILE_ID = "file_0123456789ab"
 
@@ -2443,6 +2444,7 @@ class TestAnUnmetRequestOffersClose:
         await engine.transitions.check_automatic_transitions(
             case, metadata, user_message="ok"
         )
+        narrated(case, metadata)
 
         assert case.offer_record.open is not None
         assert case.offer_record.open.kind == "close"

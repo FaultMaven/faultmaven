@@ -23,11 +23,11 @@ from faultmaven.core.investigation.narration.codes import (
     CONTEXT_ONLY,
     DECISIONS_KEY,
     NoticeCode,
+    OfferCode,
     decision_key,
     decision_token,
 )
 from faultmaven.core.investigation.narration.notices import NO_PENDING_SOLUTION_NOTICE
-from faultmaven.core.investigation.narration.offers import mitigation_sentence
 from faultmaven.core.investigation.offers import (
     awaiting_request_recheck,
     open_terminal_offer,
@@ -1894,7 +1894,7 @@ def _apply_stage_gate_side_effects(
             and not awaiting_request_recheck(case)
             and not case.is_terminal
             and not problem_on_hold(case)
-            and closure_verdict(case) != ClosureReadiness.SUGGEST_RESOLVE
+            and (verdict := closure_verdict(case)) != ClosureReadiness.SUGGEST_RESOLVE
         ):
             # The generic fallback is fine for the user-facing sentence but is
             # NOT a rationale: derive_closure_reason's guard requires a real one
@@ -1910,23 +1910,25 @@ def _apply_stage_gate_side_effects(
             )
             # The lead is the mitigation's record (#2100, C1), never a verdict
             # the record does not hold.
-            lead = mitigation_sentence(
-                mitigation_closure_line(case) or "a mitigation was applied"
-            )
-            closure_message = f"{lead} Since {rationale}, shall we close this case?"
+            closure_line = mitigation_closure_line(case)
             # Its decline binds nothing (the record's rules,
             # ``core/investigation/offers.py``), so the open is refused only
             # under a standing false-alarm decline, which an infeasible-RCA
             # mitigation cannot sit beside.
             record = open_disposition_offer(
-                case,
-                kind=OfferKind.CLOSE,
-                basis=OfferBasis.RCA_INFEASIBLE,
-                summary=closure_message,
+                case, kind=OfferKind.CLOSE, basis=OfferBasis.RCA_INFEASIBLE
             )
             if record is not None:
                 case.offer_record = record
-                metadata["rca_infeasible_closure_message"] = closure_message
+                # Its prose is rendered after the cycle's record (#2636).
+                record_decision(
+                    metadata,
+                    OfferCode.RCA_INFEASIBLE_CLOSE,
+                    proposal_id=record.open.proposal_id,
+                    rationale=rationale,
+                    closure_line=closure_line,
+                    verdict=verdict,
+                )
                 # The reason the open just derived, read rather than
                 # re-derived: an rca_infeasible declaration beside a standing
                 # working conclusion and a solution record derives

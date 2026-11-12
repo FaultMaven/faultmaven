@@ -467,5 +467,180 @@
   ],
   "cycle:turn_terminal_proposals_pending_check": [
     "RESOLUTION HELD: the check you asked for is still pending ([eneed_00000000c0c0] Prometheus targets page showing job=billing UP). The resolution is offered once an answer showing the problem gone is on record: record the row and mark the need FULFILLED citing it. If the user cannot run the check, SUPERSEDE the need with the reason."
-  ]
+  ],
+  "cycle:offer:rca_infeasible_undated": {
+    "prose": {
+      "rca_infeasible_closure_message": "A mitigation was applied; its attempt is undated, so no re-check can be tied to it. Since third-party API outage, shall we close this case?"
+    },
+    "summary": "A mitigation was applied; its attempt is undated, so no re-check can be tied to it. Since third-party API outage, shall we close this case?",
+    "basis": "rca_infeasible"
+  },
+  "cycle:offer:rca_infeasible_relieved": {
+    "prose": {
+      "rca_infeasible_closure_message": "The problem was observed relieved after the mitigation (turn 7). Since the vendor API is opaque, shall we close this case?"
+    },
+    "summary": "The problem was observed relieved after the mitigation (turn 7). Since the vendor API is opaque, shall we close this case?",
+    "basis": "rca_infeasible"
+  },
+  "cycle:offer:deferred_resolve": {
+    "prose": {
+      "deferred_solution_gate_message": "The record shows:\n\n- **The cause** — max_connections is set to 20, below the worker pool size: After the provider client-ID correction the pods obtained credentials and the AssumeRole failures stopped (turn 1)\n- **The problem** — the reported problem, as first shown, re-checked: AssumeRoleWithWebIdentity succeeds for the data-processor pods (turn 1)\n\nThe implementation work you flagged as out-of-band (a change request, maintenance window, or another team) is follow-up: it stays documented on the resolved case and does not need the incident held open. Shall I mark this case resolved?"
+    },
+    "summary": "The record shows:\n\n- **The cause** — max_connections is set to 20, below the worker pool size: After the provider client-ID correction the pods obtained credentials and the AssumeRole failures stopped (turn 1)\n- **The problem** — the reported problem, as first shown, re-checked: AssumeRoleWithWebIdentity succeeds for the data-processor pods (turn 1)\n\nThe implementation work you flagged as out-of-band (a change request, maintenance window, or another team) is follow-up: it stays documented on the resolved case and does not need the incident held open. Shall I mark this case resolved?",
+    "basis": "deferred"
+  },
+  "cycle:offer:deferred_close": {
+    "prose": {
+      "deferred_solution_gate_message": "The root cause and fix are documented, but the fix can't be applied or verified during this session — it needs out-of-band implementation (a change request, maintenance window, or another team). Shall I close this case with the solution documented for your team to apply?"
+    },
+    "summary": "The root cause and fix are documented, but the fix can't be applied or verified during this session — it needs out-of-band implementation (a change request, maintenance window, or another team). Shall I close this case with the solution documented for your team to apply?",
+    "basis": "deferred"
+  },
+  "cycle:offer:backstop_cause_on_record": {
+    "prose": {
+      "resolution_ready_gate_message": "The record shows:\n\n- **The cause** — max_connections is set to 20, below the worker pool size: After the provider client-ID correction the pods obtained credentials and the AssumeRole failures stopped (turn 1)\n- **The problem** — the reported problem, as first shown, re-checked: AssumeRoleWithWebIdentity succeeds for the data-processor pods (turn 1)\n\nThe case is still open until you confirm: marking it resolved records the attribution and writes up the resolution summary. Shall I mark this case resolved?"
+    },
+    "summary": "The record shows:\n\n- **The cause** — max_connections is set to 20, below the worker pool size: After the provider client-ID correction the pods obtained credentials and the AssumeRole failures stopped (turn 1)\n- **The problem** — the reported problem, as first shown, re-checked: AssumeRoleWithWebIdentity succeeds for the data-processor pods (turn 1)\n\nThe case is still open until you confirm: marking it resolved records the attribution and writes up the resolution summary. Shall I mark this case resolved?",
+    "basis": "backstop"
+  },
+  "cycle:offer:backstop_no_cause_on_record": {
+    "prose": {
+      "resolution_ready_gate_message": "The record shows:\n\n- **The cause** — no root cause on record: the re-check after the fix (turn 7)\n- **The problem** — the reported problem, as first shown, re-checked: the re-check after the fix (turn 7)\n\nThe case is still open until you confirm: marking it resolved writes up what happened. Shall I mark this case resolved?"
+    },
+    "summary": "The record shows:\n\n- **The cause** — no root cause on record: the re-check after the fix (turn 7)\n- **The problem** — the reported problem, as first shown, re-checked: the re-check after the fix (turn 7)\n\nThe case is still open until you confirm: marking it resolved writes up what happened. Shall I mark this case resolved?",
+    "basis": "backstop"
+  },
+  "cycle:offer:false_alarm_close": {
+    "prose": {
+      "false_alarm_closure_message": "The evidence shows the reported problem was not present where and when it was reported: no 5xx in the gateway log for the window There is nothing to fix, so this case cannot be resolved. Shall we **close** it as a false alarm? If you have information showing the problem is real, say so and the investigation continues."
+    },
+    "summary": "The evidence shows the reported problem was not present where and when it was reported: no 5xx in the gateway log for the window There is nothing to fix, so this case cannot be resolved. Shall we **close** it as a false alarm? If you have information showing the problem is real, say so and the investigation continues.",
+    "basis": "false_alarm"
+  },
+  "cycle:offer:unmet_request_close": {
+    "prose": {
+      "resolution_readiness_message": "I understand. Without confirmation that the root cause was **eliminated** (e.g. the original error is now absent after the fix), I can't mark this as **resolved** — a restored-but-stabilized or deferred-fix case isn't a resolution.\n\nYou can **close** the case instead — this preserves the root cause analysis and the documented (or deferred) solution."
+    },
+    "summary": "I understand. Without confirmation that the root cause was **eliminated** (e.g. the original error is now absent after the fix), I can't mark this as **resolved** — a restored-but-stabilized or deferred-fix case isn't a resolution.\n\nYou can **close** the case instead — this preserves the root cause analysis and the documented (or deferred) solution.",
+    "basis": "needs_info_unmet"
+  },
+  "cycle:offer:unmet_request_readiness_close": {
+    "prose": {
+      "resolution_readiness_message": "This case has nothing investigated yet, so there's nothing to document as a resolution.\n\nIf it's no longer relevant you can **close** it. If it was actually fixed, tell me what the problem was, what caused it, and how it was fixed, and submit the output of a check that shows it gone as data (pasted or attached, not typed into your message); I'll document the resolution."
+    },
+    "summary": "This case has nothing investigated yet, so there's nothing to document as a resolution.\n\nIf it's no longer relevant you can **close** it. If it was actually fixed, tell me what the problem was, what caused it, and how it was fixed, and submit the output of a check that shows it gone as data (pasted or attached, not typed into your message); I'll document the resolution.",
+    "basis": "needs_info_unmet"
+  },
+  "cycle:offer:request_ready": {
+    "prose": {},
+    "summary": "Here's what I have on record:\n\n- **Root cause**: The IAM OIDC provider is registered with client ID sts.amazonaws.com.cn while the projected token audience is sts.amazonaws.com.\n- **Solution**: Correct the OIDC provider client ID\n- **The cause** — max_connections is set to 20, below the worker pool size: After the provider client-ID correction the pods obtained credentials and the AssumeRole failures stopped (turn 1)\n- **The problem** — the reported problem, as first shown, re-checked: AssumeRoleWithWebIdentity succeeds for the data-processor pods (turn 1)\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+    "basis": "model"
+  },
+  "cycle:offer:needs_info_gaps": {
+    "prose": {
+      "resolution_needs_info_message": "To mark this **resolved** and write up the resolution summary, I just need a few essentials:\n\n- **What fixed it** — the action that resolved it.\n- **Confirmation it's resolved** — the output of a check showing the original problem is now gone (e.g. the latest output, with the error no longer in it).\n\nSubmit check output as data (pasted or attached, not typed into your message): what you write is your account, and the output is what shows it. If the problem was already fixed outside this session, the same applies, and I'll document it.\n\nIf it was only **stabilized** (a workaround/failover while the root cause is still pending) or the real fix is **deferred** (a change window, hardware RMA, another team), you can **close** the case instead — that keeps the investigation and the documented (or deferred) solution on record without claiming it's permanently fixed."
+    },
+    "summary": null,
+    "basis": null
+  },
+  "cycle:offer:needs_info_off_cause": {
+    "prose": {
+      "resolution_needs_info_message": "The last fix (turn 6) did not act on the root cause now identified, so no check after it can show that cause gone. To mark this **resolved** I need a **fix of the root cause** — tell me what you changed (or plan to change) there, and once it's applied, submit the output of checks showing the cause gone and the original problem gone with it, as data (pasted or attached, not typed into your message).\n\nIf the problem is only quiet for now, or the root's fix is **deferred**, you can **close** the case instead — that keeps the investigation on record without claiming the cause was fixed."
+    },
+    "summary": null,
+    "basis": null
+  },
+  "cycle:offer:needs_info_relief_named": {
+    "prose": {
+      "resolution_needs_info_message": "To mark this **resolved** and write up the resolution summary, I just need a few essentials:\n\n- **What fixed it** — the action that resolved it.\n- **The cause re-checked after the fix** — what you reported is shown gone; the cause the fix addressed, \"max_connections is set to 20, below the checkout pool size\", needs to be seen removed too: the output of a check showing what \"raise max_connections to 100\" changed at it.\n\nSubmit check output as data (pasted or attached, not typed into your message): what you write is your account, and the output is what shows it. If the problem was already fixed outside this session, the same applies, and I'll document it.\n\nIf it was only **stabilized** (a workaround/failover while the root cause is still pending) or the real fix is **deferred** (a change window, hardware RMA, another team), you can **close** the case instead — that keeps the investigation and the documented (or deferred) solution on record without claiming it's permanently fixed."
+    },
+    "summary": null,
+    "basis": null
+  },
+  "cycle:offer:model_readiness": {
+    "prose": {},
+    "summary": "This case has nothing investigated yet, so there's nothing to document as a resolution.\n\nIf it's no longer relevant you can **close** it. If it was actually fixed, tell me what the problem was, what caused it, and how it was fixed, and submit the output of a check that shows it gone as data (pasted or attached, not typed into your message); I'll document the resolution.",
+    "basis": "model"
+  },
+  "cycle:offer:model_readiness_false_alarm": {
+    "prose": {},
+    "summary": "The evidence showed the reported problem was never present, so there is nothing to resolve. You can **close** the case instead; it will be recorded as a false alarm.",
+    "basis": "model"
+  },
+  "cycle:offer:model_confirmation": {
+    "prose": {},
+    "summary": "Here's what I have on record:\n\n- **Root cause**: The IAM OIDC provider is registered with client ID sts.amazonaws.com.cn while the projected token audience is sts.amazonaws.com.\n- **Solution**: Correct the OIDC provider client ID\n- **The cause** — max_connections is set to 20, below the worker pool size: After the provider client-ID correction the pods obtained credentials and the AssumeRole failures stopped (turn 1)\n- **The problem** — the reported problem, as first shown, re-checked: AssumeRoleWithWebIdentity succeeds for the data-processor pods (turn 1)\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+    "basis": "model"
+  },
+  "cycle:offer:model_confirmation_no_cause": {
+    "prose": {},
+    "summary": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Not yet documented\n- **The cause** — no root cause on record: the re-check after the fix (turn 7)\n- **The problem** — the reported problem, as first shown, re-checked: the re-check after the fix (turn 7)\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+    "basis": "model"
+  },
+  "cycle:offer:model_closure_summary": {
+    "prose": {},
+    "summary": "Here's what was accomplished during this investigation:\n\n- **Evidence collected**: 3 items\n- **Hypotheses explored**: 1\n- **Milestones completed**: 2\n- **Root cause identified**: max_connections is set to 20, below the checkout pool size\n\nAre you sure you want to close this case without resolution?",
+    "basis": "model"
+  },
+  "cycle:offer:model_closure_trivial": {
+    "prose": {},
+    "summary": "This case has minimal investigation data. Are you sure you want to close it?",
+    "basis": "model"
+  },
+  "cycle:offer:model_closure_pivot": {
+    "prose": {},
+    "summary": "This case qualifies for **resolved** status rather than closed. Closing would close it without marking it resolved; the confirmed fix stays on record.\n\nThe record shows:\n\n- **The cause** — max_connections is set to 20, below the worker pool size: After the provider client-ID correction the pods obtained credentials and the AssumeRole failures stopped (turn 1)\n- **The problem** — the reported problem, as first shown, re-checked: AssumeRoleWithWebIdentity succeeds for the data-processor pods (turn 1)\n- **Root cause**: The IAM OIDC provider is registered with client ID sts.amazonaws.com.cn while the projected token audience is sts.amazonaws.com.\n- **Solution**: Correct the OIDC provider client ID\n\nWould you like to mark it **resolved** instead?",
+    "basis": "model"
+  },
+  "cycle:offer:model_closure_pivot_named_with_solutions": {
+    "prose": {},
+    "summary": "This case qualifies for **resolved** status rather than closed. Closing would close it without marking it resolved; the confirmed fix stays on record.\n\nThe record shows:\n\n- **The cause** — max_connections is set to 20, below the worker pool size: After the provider client-ID correction the pods obtained credentials and the AssumeRole failures stopped (turn 1)\n- **The problem** — the reported problem, as first shown, re-checked: AssumeRoleWithWebIdentity succeeds for the data-processor pods (turn 1)\n- **Root cause**: max_connections is 20\n- **Solution**: Correct the OIDC provider client ID, raise the limit, Solution 3\n\nWould you like to mark it **resolved** instead?",
+    "basis": "model"
+  },
+  "cycle:offer:turn_model_proposal_confirmation_on_a_decaying_leg": {
+    "reply": "Noted.",
+    "notices": [
+      "No progress for 21 consecutive turns. If the user keeps asking about a conclusion or an exclusion you have already answered, restating the answer will not settle it: ask what would settle it for them, and offer the check that would discriminate (WHEN THE USER QUESTIONS A CONCLUSION OR AN EXCLUSION)."
+    ],
+    "summary": "Here's what I have on record:\n\n- **Root cause**: The OIDC provider registers the wrong client ID\n- **Solution**: Correct the OIDC provider client ID\n- **The cause** — max_connections is set to 20, below the worker pool size: After the provider client-ID correction the pods obtained credentials and the AssumeRole failures stopped (turn 1)\n- **The problem** — the reported problem, as first shown, re-checked: AssumeRoleWithWebIdentity succeeds for the data-processor pods (turn 1)\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+    "basis": "model"
+  },
+  "cycle:offer:turn_request_ready_on_a_decaying_leg": {
+    "reply": "Noted.\n\n---\n\nHere's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Correct the OIDC provider client ID\n- **The cause** — no root cause on record: After the provider client-ID correction the pods obtained credentials and the AssumeRole failures stopped (turn 1)\n- **The problem** — the reported problem, as first shown, re-checked: AssumeRoleWithWebIdentity succeeds for the data-processor pods (turn 1)\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+    "notices": [
+      "No progress for 21 consecutive turns. If the user keeps asking about a conclusion or an exclusion you have already answered, restating the answer will not settle it: ask what would settle it for them, and offer the check that would discriminate (WHEN THE USER QUESTIONS A CONCLUSION OR AN EXCLUSION)."
+    ],
+    "summary": "Here's what I have on record:\n\n- **Root cause**: The OIDC provider registers the wrong client ID\n- **Solution**: Correct the OIDC provider client ID\n- **The cause** — max_connections is set to 20, below the worker pool size: After the provider client-ID correction the pods obtained credentials and the AssumeRole failures stopped (turn 1)\n- **The problem** — the reported problem, as first shown, re-checked: AssumeRoleWithWebIdentity succeeds for the data-processor pods (turn 1)\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+    "basis": "model"
+  },
+  "cycle:offer:turn_backstop_on_a_decaying_leg": {
+    "reply": "Noted.\n\n---\n\nThe record shows:\n\n- **The cause** — max_connections is set to 20, below the worker pool size: After the provider client-ID correction the pods obtained credentials and the AssumeRole failures stopped (turn 1)\n- **The problem** — the reported problem, as first shown, re-checked: AssumeRoleWithWebIdentity succeeds for the data-processor pods (turn 1)\n\nThe case is still open until you confirm: marking it resolved records the attribution and writes up the resolution summary. Shall I mark this case resolved?",
+    "notices": [
+      "No progress for 21 consecutive turns. If the user keeps asking about a conclusion or an exclusion you have already answered, restating the answer will not settle it: ask what would settle it for them, and offer the check that would discriminate (WHEN THE USER QUESTIONS A CONCLUSION OR AN EXCLUSION)."
+    ],
+    "summary": "The record shows:\n\n- **The cause** — max_connections is set to 20, below the worker pool size: After the provider client-ID correction the pods obtained credentials and the AssumeRole failures stopped (turn 1)\n- **The problem** — the reported problem, as first shown, re-checked: AssumeRoleWithWebIdentity succeeds for the data-processor pods (turn 1)\n\nThe case is still open until you confirm: marking it resolved records the attribution and writes up the resolution summary. Shall I mark this case resolved?",
+    "basis": "backstop"
+  },
+  "cycle:offer:turn_model_proposal_closure_on_a_decaying_leg": {
+    "reply": "Noted.",
+    "notices": [
+      "No progress for 21 consecutive turns. If the user keeps asking about a conclusion or an exclusion you have already answered, restating the answer will not settle it: ask what would settle it for them, and offer the check that would discriminate (WHEN THE USER QUESTIONS A CONCLUSION OR AN EXCLUSION)."
+    ],
+    "summary": "Here's what was accomplished during this investigation:\n\n- **Hypotheses explored**: 1\n- **Milestones completed**: 1\n- **Root cause identified**: the identified root cause\n- **Solutions on record**: Correct the OIDC provider client ID\n\nAre you sure you want to close this case without resolution?",
+    "basis": "model"
+  },
+  "cycle:offer:turn_model_proposal_beside_the_deferred_close": {
+    "reply": "Noted.\n\n---\n\nThe root cause and fix are documented, but the fix can't be applied or verified during this session — it needs out-of-band implementation (a change request, maintenance window, or another team). Shall I close this case with the solution documented for your team to apply?",
+    "notices": [
+      "TRANSITION NOT PROPOSED: the engine already offered the user a 'closed' transition this turn, and that offer is what they will answer. Do not re-propose a transition until they have answered it."
+    ],
+    "summary": "The root cause and fix are documented, but the fix can't be applied or verified during this session — it needs out-of-band implementation (a change request, maintenance window, or another team). Shall I close this case with the solution documented for your team to apply?",
+    "basis": "deferred"
+  },
+  "cycle:offer:turn_replayed_rca_infeasible_close": {
+    "reply": "Noted.\n\n---\n\nThe problem was observed relieved after the mitigation (turn 4). Since black-box vendor API, shall we close this case?",
+    "notices": [],
+    "summary": "The problem was observed relieved after the mitigation (turn 4). Since black-box vendor API, shall we close this case?",
+    "basis": "rca_infeasible"
+  }
 }
