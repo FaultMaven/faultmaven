@@ -49,6 +49,7 @@ from faultmaven.modules.case.contracts import (
 )
 from tests.case_builders import with_open_offer
 from tests.unit.core.investigation.bound_rows import bound_row
+from tests.unit.core.investigation.narrated import narrated
 
 _FILE_ID = "file_0123456789ab"
 
@@ -417,6 +418,7 @@ class TestDeferredImplementationClose:
         case.solutions = [_solution()]
         meta = {}
         _maybe_propose_deferred_close(case, meta)
+        narrated(case, meta)
 
         message = meta.get("deferred_solution_gate_message")
         assert message, "the proposal must publish its rationale for rendering"
@@ -451,6 +453,7 @@ class TestDeferredImplementationClose:
 
         meta = {}
         _maybe_propose_deferred_close(case, meta)
+        narrated(case, meta)
         message = meta["deferred_solution_gate_message"]
 
         assert message != borrowed

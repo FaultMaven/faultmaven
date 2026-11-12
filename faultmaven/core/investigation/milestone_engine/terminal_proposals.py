@@ -9,7 +9,7 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     engine_proposed_resolution_total,
     evidence_need_status_changed_total,
 )
-from faultmaven.core.investigation.narration.codes import NoticeCode
+from faultmaven.core.investigation.narration.codes import NoticeCode, OfferCode
 from faultmaven.core.investigation.offers import awaiting_request_recheck
 from faultmaven.core.investigation.problem_status import problem_on_hold
 from faultmaven.core.investigation.terminal_transitions import (
@@ -60,10 +60,10 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
     not about whether the cause was found, so it must not cost a confirmed case
     its attribution.
 
-    The proposal's rationale is published on
-    ``metadata["deferred_solution_gate_message"]`` for the response composer to
-    render below the LLM's reply — an engine-proposed disposition has to say why
-    it is on the table.
+    The proposal's rationale is recorded as its code (``OfferCode.DEFERRED_*``)
+    and rendered after the cycle's record, for the response composer to show
+    below the LLM's reply — an engine-proposed disposition has to say why it is
+    on the table.
     """
     p = case.progress
     if problem_on_hold(case):
@@ -100,6 +100,7 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
 
     from faultmaven.core.investigation.terminal_transitions import (
         assess_closure_readiness,
+        cause_identification_leg,
     )
 
     # Resolve preservation (INV-37), the SAME choice the other two disposition
@@ -154,32 +155,33 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
         # deferred-implementation reason: the same prose/affordance incoherence
         # this function is being fixed to stop producing.
         # The record's rows, not a claim stronger than them (#1906 D5.1).
-        gate_message = (
-            "The record shows:\n\n"
-            + resolution_record_lines(case)
-            + "\n\nThe implementation work you flagged as out-of-band (a change "
-            "request, maintenance window, or another team) is follow-up: it "
-            "stays documented on the resolved case and does not need the "
-            "incident held open. Shall I mark this case resolved?"
-        )
+        record_lines = resolution_record_lines(case)
+        leg = cause_identification_leg(case)
     else:
         kind = OfferKind.CLOSE
-        gate_message = (
-            "The root cause and fix are documented, but the fix can't be applied "
-            "or verified during this session — it needs out-of-band implementation "
-            "(a change request, maintenance window, or another team). Shall I close "
-            "this case with the solution documented for your team to apply?"
-        )
 
-    record = open_disposition_offer(
-        case, kind=kind, basis=OfferBasis.DEFERRED, summary=gate_message
-    )
+    record = open_disposition_offer(case, kind=kind, basis=OfferBasis.DEFERRED)
     if record is None:
         return
     case.offer_record = record
-    # Rendered by the response composer below the model's reply: an
+    # Rendered below the model's reply, after the cycle's record (#2636): an
     # engine-proposed disposition has to say why it is on the table.
-    metadata["deferred_solution_gate_message"] = gate_message
+    if kind == OfferKind.RESOLVE:
+        record_decision(
+            metadata,
+            OfferCode.DEFERRED_RESOLVE,
+            proposal_id=record.open.proposal_id,
+            record_lines=record_lines,
+            verdict=closure.verdict,
+            identification_leg=leg,
+        )
+    else:
+        record_decision(
+            metadata,
+            OfferCode.DEFERRED_CLOSE,
+            proposal_id=record.open.proposal_id,
+            verdict=closure.verdict,
+        )
     logger.info(
         f"Proposed {kind.value.upper()} offer for case {case.case_id} "
         f"(solution_feasible=DEFERRED; closure_verdict={closure.verdict}; "
@@ -296,33 +298,26 @@ def _maybe_propose_confirmed_resolution(case: "Case", metadata: dict) -> None:
     # opener with no model involvement, so the claim would be entirely
     # engine-authored. Either way the offer states only what its rows show
     # (#1906 D5.1).
-    cause_on_record = cause_identification_leg(case) is not None
-    if cause_on_record:
-        still_open = (
-            "The case is still open until you confirm: marking it resolved "
-            "records the attribution and writes up the resolution summary."
-        )
-    else:
-        still_open = (
-            "The case is still open until you confirm: marking it resolved "
-            "writes up what happened."
-        )
-    record = resolution_record_lines(case)
-    gate_message = (
-        f"The record shows:\n\n{record}\n\n{still_open} "
-        "Shall I mark this case resolved?"
-    )
+    leg = cause_identification_leg(case)
+    record_lines = resolution_record_lines(case)
     record = open_disposition_offer(
-        case, kind=OfferKind.RESOLVE, basis=OfferBasis.BACKSTOP, summary=gate_message
+        case, kind=OfferKind.RESOLVE, basis=OfferBasis.BACKSTOP
     )
     if record is None:
         return
     case.offer_record = record
-    # Rendered by the response composer below the model's reply. An
+    # Rendered below the model's reply, after the cycle's record (#2636). An
     # engine-proposed disposition has to say why it is on the table — the
     # deferred sibling shipped a bare confirm/decline pair for exactly as long
-    # as this key had no reader (fm#1122).
-    metadata["resolution_ready_gate_message"] = gate_message
+    # as its prose had no reader (fm#1122).
+    record_decision(
+        metadata,
+        OfferCode.BACKSTOP_RESOLVE,
+        proposal_id=record.open.proposal_id,
+        record_lines=record_lines,
+        reason=readiness.reason,
+        identification_leg=leg,
+    )
     # The turn's ``transition_compliance`` line reports the verdict only when
     # something proposed; recording it here keeps an engine-opened handshake
     # as self-explaining in the logs as an LLM-opened one.
@@ -357,20 +352,19 @@ def _maybe_propose_false_alarm_close(case: "Case", metadata: dict) -> None:
     ):
         return
     invalidation = case.problem_verification.invalidation
-    message = (
-        "The evidence shows the reported problem was not present where and "
-        f"when it was reported: {invalidation.rationale} There is nothing to "
-        "fix, so this case cannot be resolved. Shall we **close** it as a "
-        "false alarm? If you have information showing the problem is real, "
-        "say so and the investigation continues."
-    )
     record = open_disposition_offer(
-        case, kind=OfferKind.CLOSE, basis=OfferBasis.FALSE_ALARM, summary=message
+        case, kind=OfferKind.CLOSE, basis=OfferBasis.FALSE_ALARM
     )
     if record is None:
         return
     case.offer_record = record
-    metadata["false_alarm_closure_message"] = message
+    record_decision(
+        metadata,
+        OfferCode.FALSE_ALARM_CLOSE,
+        proposal_id=record.open.proposal_id,
+        rationale=invalidation.rationale,
+        problem_status=case.progress.problem_status,
+    )
     logger.info(
         "Proposed CLOSED (false alarm) for case %s at turn %s",
         case.case_id,

@@ -208,6 +208,10 @@ def render_notice(
     return _RENDERERS[code](params, outcome, log)
 
 
+def has_renderer(code: str) -> bool:
+    return code in _RENDERERS
+
+
 @_renders(NoticeCode.SOLUTION_OFFER_WITHDRAWN)
 def _withdrawn(params: dict, outcome: Optional[CaseOutcome], log: list) -> list:
     """The variant is the record's; with no outcome, the one decided."""
@@ -637,4 +641,16 @@ def _fix_report_ignored(params: dict, outcome, log) -> list:
     return [
         "SYSTEM: accepted_fix_reported_in previous_message was ignored: "
         f"{fix_report_reason(params)}."
+    ]
+
+
+@_renders(NoticeCode.ENGINE_OFFER_STANDS)
+def _engine_offer_stands(params: dict, outcome, log) -> list:
+    """The model's proposal was dropped: the engine's offer opened earlier in
+    the cycle is what the user will answer."""
+    return [
+        "TRANSITION NOT PROPOSED: the engine already offered the "
+        f"user a {params['to_state']!r} transition this turn, "
+        "and that offer is what they will answer. Do not re-propose a "
+        "transition until they have answered it."
     ]

@@ -851,7 +851,6 @@ class TestAsksTheUserNeverSeesAreNotRecorded:
         [
             "resolution_ready_for_confirmation",
             "resolution_suggest_close",
-            "rca_infeasible_closure_message",
         ],
     )
     def test_each_resolution_branch_flag_is_treated_as_replaced(self, flag):
@@ -862,6 +861,30 @@ class TestAsksTheUserNeverSeesAreNotRecorded:
 
         assert suggestions_are_engine_replaced(
             self._case(CaseState.INVESTIGATING), {flag: True}, gate_pending=False
+        )
+
+    def test_a_logged_rca_infeasible_close_is_treated_as_replaced(self):
+        """Its prose is published by the narration step, after linking runs
+        (#2636 B1d): the decision log says it will be."""
+        from faultmaven.core.investigation.evidence_need_linking import (
+            suggestions_are_engine_replaced,
+        )
+        from faultmaven.core.investigation.milestone_engine.stage_gates import (
+            record_decision,
+        )
+        from faultmaven.core.investigation.narration.codes import OfferCode
+        from faultmaven.modules.case.contracts import CaseState
+
+        metadata: dict = {}
+        record_decision(
+            metadata,
+            OfferCode.RCA_INFEASIBLE_CLOSE,
+            proposal_id="p",
+            rationale="r",
+            closure_line=None,
+        )
+        assert suggestions_are_engine_replaced(
+            self._case(CaseState.INVESTIGATING), metadata, gate_pending=False
         )
 
     def test_an_ordinary_investigating_turn_is_not_replaced(self):
@@ -882,13 +905,16 @@ class TestAsksTheUserNeverSeesAreNotRecorded:
 
         from faultmaven.core.investigation.evidence_need_linking import (
             _REPLACEMENT_METADATA_FLAGS,
+            _REPLACEMENT_OFFER_CODES,
         )
         from faultmaven.core.investigation.milestone_engine.turn_completion import (
             _compose_turn_reply,
         )
+        from faultmaven.core.investigation.narration.codes import PROSE_KEYS
 
         src = inspect.getsource(_compose_turn_reply)
-        for flag in _REPLACEMENT_METADATA_FLAGS:
+        prose = [PROSE_KEYS[code] for code in _REPLACEMENT_OFFER_CODES]
+        for flag in (*_REPLACEMENT_METADATA_FLAGS, *prose):
             assert f'"{flag}"' in src, (
                 f"{flag} is no longer read in _compose_turn_reply — the "
                 "replacement guard is out of step with the branches it mirrors"

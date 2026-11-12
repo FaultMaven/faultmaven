@@ -20,9 +20,10 @@ open: the caller answers or lapses it first.
 **Three writers.** ``open_offer``, ``answer_offer`` and ``lapse_offers`` write
 the record, and return a new one that the caller assigns
 (``case.offer_record = ...``); the models are frozen, so nothing else can
-edit one in place. Two narrow helpers write one part each:
+edit one in place. Three narrow helpers write one part each:
 ``remember_resolve_request`` the request, ``restage_revision`` the open
-revision's staged cause work. The revision offer is opened and answered only
+revision's staged cause work, and ``summarize_offer`` the summary of an offer
+a decision cycle opened, after the cycle's record (#2636). The revision offer is opened and answered only
 by ``problem_status``, which stays the one writer of ``problem_status``;
 ``lapse_offers`` never touches it.
 
@@ -568,6 +569,19 @@ def open_offer(
         case.current_turn,
     )
     return record.model_copy(update={"open": offer, "resolve_request": None})
+
+
+def summarize_offer(case: "Case", proposal_id: str, summary: str) -> bool:
+    """Fill the summary of the offer ``proposal_id`` while it is the one open:
+    an offer a decision cycle opened is summarized after the cycle's record
+    (#2636). Returns whether it was."""
+    record = case.offer_record
+    if record.open is None or record.open.proposal_id != proposal_id:
+        return False
+    case.offer_record = record.model_copy(
+        update={"open": record.open.model_copy(update={"summary": summary})}
+    )
+    return True
 
 
 def answer_offer(

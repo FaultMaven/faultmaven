@@ -34,6 +34,7 @@ from faultmaven.modules.case.domain.models.problem import ProblemVerification
 from faultmaven.modules.case.domain.models.progress import InvestigationProgress
 from faultmaven.modules.case.domain.models.solution import Solution, SolutionType
 from tests.unit.core.investigation.bound_rows import bound_row
+from tests.unit.core.investigation.narrated import narrated
 
 
 def _make_repo():
@@ -555,6 +556,7 @@ async def test_llm_emit_resolved_needs_info_asks_and_offers_nothing():
         metadata=metadata,
         user_message="The fix worked.",
     )
+    narrated(case, metadata)
 
     assert case.offer_record.open is None
     assert case.offer_record.resolve_request is not None

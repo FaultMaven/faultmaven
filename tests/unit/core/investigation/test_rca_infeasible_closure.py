@@ -48,6 +48,7 @@ from faultmaven.modules.case.contracts import (
 )
 from tests.case_builders import investigating_case
 from tests.unit.core.investigation.bound_rows import bound_row, mitigated, upload
+from tests.unit.core.investigation.narrated import narrated
 
 _FILE_ID = "file_0123456789ab"
 
@@ -109,6 +110,7 @@ def test_rca_infeasible_creates_pending_closure():
     _apply_stage_gate_side_effects(
         case, {"mitigation_verified"}, "mitigation worked", metadata
     )
+    narrated(case, metadata)
 
     assert case.offer_record.open is not None
     assert case.offer_record.open.kind == "close"
@@ -140,6 +142,7 @@ def test_rca_infeasible_false_does_not_propose_closure():
     _apply_stage_gate_side_effects(
         case, {"mitigation_verified"}, "mitigation worked", metadata
     )
+    narrated(case, metadata)
 
     assert case.offer_record.open is None
     assert "rca_infeasible_closure_message" not in metadata
@@ -155,6 +158,7 @@ def test_no_problem_verification_does_not_propose_closure():
     _apply_stage_gate_side_effects(
         case, {"mitigation_verified"}, "mitigation worked", metadata
     )
+    narrated(case, metadata)
 
     assert case.offer_record.open is None
     assert "rca_infeasible_closure_message" not in metadata
@@ -207,6 +211,7 @@ def test_closure_message_uses_rationale_or_fallback(rationale, expected_phrase):
     _apply_stage_gate_side_effects(
         case, {"mitigation_verified"}, "mitigation worked", metadata
     )
+    narrated(case, metadata)
 
     assert expected_phrase in metadata["rca_infeasible_closure_message"]
 
