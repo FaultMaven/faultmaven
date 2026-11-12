@@ -103,6 +103,7 @@ from sqlalchemy import text
 
 from faultmaven.cli._container import run_command
 from faultmaven.cli._database_gate import require_persistent_database_or_exit
+from faultmaven.config.tls_root_set import apply_root_set
 
 #: argparse's ``description``. A literal, not derived from ``__doc__``: ``python
 #: -OO`` strips docstrings, and that expression would raise before argparse ran.
@@ -1313,6 +1314,7 @@ async def wipe_deployment(
 
 def main() -> None:
     """Console entrypoint (``fm-wipe-deployment``)."""
+    apply_root_set()
     parser = argparse.ArgumentParser(description=_SUMMARY)
     parser.add_argument(
         "--wipe",

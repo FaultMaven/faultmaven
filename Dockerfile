@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # The base's pip vendors an old CA bundle: every pip here verifies against the OS store.
+# Never ENV a TLS root variable the app owns (SSL_CERT_FILE, ...: tls_root_set.py, #2692); with TLS_EXTRA_CA_FILE set it refuses the start.
 ENV PIP_CERT=/etc/ssl/certs/ca-certificates.crt
 
 # Set work directory

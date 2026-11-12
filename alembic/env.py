@@ -38,12 +38,14 @@ project_root = Path(__file__).parent.parent
 # Add project root to path for model imports
 sys.path.insert(0, str(project_root))
 
-from faultmaven.config.settings import configured_database_url, load_settings_dotenv
+from faultmaven.config.settings import configured_database_url
+from faultmaven.config.tls_root_set import apply_root_set
 
 # Load .env as the app does, before anything below reads the environment: the
 # working directory's file only (run alembic from the repository root), and
-# none under FAULTMAVEN_SKIP_DOTENV (#2140).
-load_settings_dotenv()
+# none under FAULTMAVEN_SKIP_DOTENV (#2140). Then name the TLS root set before
+# psycopg2 is imported, so a TLS migration verifies against it (#2692).
+apply_root_set()
 
 # Alembic Config object
 config = context.config

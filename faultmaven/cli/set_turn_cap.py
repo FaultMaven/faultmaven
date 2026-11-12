@@ -85,6 +85,7 @@ import sys
 from faultmaven.cli._confirmation import require_confirmation
 from faultmaven.cli._container import run_command
 from faultmaven.cli._database_gate import require_persistent_database_or_exit
+from faultmaven.config.tls_root_set import apply_root_set
 from faultmaven.infrastructure.protection.tenant_turn_cap import (
     CAP_POLICY_SOURCES,
     SOURCE_COMPANY_UNCAPPED,
@@ -313,6 +314,7 @@ def _policy_for(new_value, current: "object") -> "object":
 
 def main() -> None:
     """Console entrypoint (``fm-set-turn-cap``)."""
+    apply_root_set()
     parser = argparse.ArgumentParser(
         prog="fm-set-turn-cap",
         description=_SUMMARY,

@@ -115,6 +115,7 @@ from faultmaven.cli._container import run_with_container
 from faultmaven.cli._database_gate import require_persistent_database_or_exit
 from faultmaven.config.deployment_coherence import DeploymentCoherenceError
 from faultmaven.config.tenant_context import usable_tenant_id
+from faultmaven.config.tls_root_set import apply_root_set
 from faultmaven.infrastructure.persistence import account_anchor, tenant_retirement
 from faultmaven.infrastructure.persistence.database import get_db_session
 from faultmaven.infrastructure.persistence.enterprise_liveness import (
@@ -956,6 +957,7 @@ def _add_apply_flags(parser: argparse.ArgumentParser) -> None:
 
 def main() -> None:
     """Console entrypoint (``fm-personal-tenant``)."""
+    apply_root_set()
     parser = argparse.ArgumentParser(
         prog="fm-personal-tenant",
         description=_SUMMARY,

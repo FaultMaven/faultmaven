@@ -38,6 +38,7 @@ from faultmaven.bootstrap.data_init import DEFAULT_ADMIN_USERNAME
 from faultmaven.cli._container import run_with_container
 from faultmaven.cli._database_gate import require_persistent_database_or_exit
 from faultmaven.cli._operator_role_audit import record_operator_role_change
+from faultmaven.config.tls_root_set import apply_root_set
 from faultmaven.container import container
 from faultmaven.exceptions import UserLookupFailed
 from faultmaven.models.interfaces_operator_audit import OperatorAction
@@ -243,6 +244,7 @@ async def demote_from_platform_admin(
 
 def main() -> None:
     """Console entrypoint (``fm-demote-platform-admin``)."""
+    apply_root_set()
     parser = argparse.ArgumentParser(
         prog="fm-demote-platform-admin",
         description=(

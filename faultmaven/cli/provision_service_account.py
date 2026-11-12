@@ -39,6 +39,7 @@ import sys
 from faultmaven.cli._container import run_with_container
 from faultmaven.cli._database_gate import require_persistent_database_or_exit
 from faultmaven.config.settings import AuthMode, get_settings
+from faultmaven.config.tls_root_set import apply_root_set
 from faultmaven.container import container
 from faultmaven.modules.auth.domain.services.service_account_provisioning import (
     SERVICE_ACCOUNT_KIND,
@@ -161,6 +162,7 @@ async def provision(
 
 
 def main():
+    apply_root_set()
     parser = argparse.ArgumentParser(
         description="Mint an OAuth refresh-token credential for a service account",
         formatter_class=argparse.RawDescriptionHelpFormatter,
