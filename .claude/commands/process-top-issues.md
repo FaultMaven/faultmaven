@@ -4,20 +4,19 @@ description: Run one round of issue processing — settle the last round, propos
 
 # /process-top-issues
 
-**Purpose:** make the system healthier and more robust round after round by resolving what matters most at its root,
-not by treating its symptoms alone (only an owner ruling leaves a root unfixed), so that the backlog shrinks over
-rounds instead of growing; keep `main` green, and keep each fix no larger than the defect needs. Nothing is hidden or
-closed to lower the count. The owner merges on your `## Merge-ready` comment without reading the diff, so every PR you
-hand over must have been through the full review chain in step 4. When a rule here works against that purpose, say so
-under *Needs your call*; a change the owner rules goes through *Changing this file*.
+**How every round works:** fix each item it takes on at its root, never its symptoms alone (only an owner ruling
+leaves a root unfixed); keep `main` green; keep each fix no larger than the defect needs; never hide or close an issue
+to lower the open count. The owner merges on your `## Merge-ready` comment without reading the diff, so every PR you
+hand over must have been through the full review chain in step 4. When another rule in this file conflicts with one
+of these, say so under *Needs your call*; a change the owner rules goes through *Changing this file*.
 
 This file defines the rules for processing backlog issues, and is self-contained. Memory notes point here and never
 restate it; where they disagree, this file wins.
-**Changing this file:** you propose the edit as a PR, it goes through step 4 at `xhigh` with a design critique, and the
-owner merges it; an edit replaces or tightens an existing rule where it can.
+**Changing this file:** you propose the edit as a PR, it goes through step 4 with a design critique, and the owner
+merges it; an edit replaces or tightens an existing rule where it can.
 
 **Roles.** The owner rules on questions, approves rounds, and merges. You (the owning agent) propose, plan, verify
-and report. Lanes (subagents) each implement one plan you wrote, in their own worktree; at most three run at once.
+and report. Lanes (subagents) each implement one plan you wrote, in their own worktree; at most four run at once.
 Reviewers are independent agents: they never wrote or planned what they review.
 
 `$ARGUMENTS`: empty = continue from wherever the round is; numbers = pin those issues into the next proposal;
@@ -135,10 +134,10 @@ loses no round; the last it prints, the open one, is the Queue you post to:
 ## 2. Propose
 
 **The health block** runs first, and again before posting with `lanes` set; the proposal opens with its output,
-verbatim. A stop, fixed before posting: `unclassified` not below `was` (until it is 0), or any `multi`; a design check
+verbatim. A stop, fixed before posting: any `unclassified` or `multi`; a design check
 due while fewer than two ran since the last proposal; when the round dispatches, fewer design lanes picked than offered
 (less any stage on an open PR's seam, or in a migration round), or two from one root; a finding its root neither lists
-nor names; `slot: round unknown`. While `in flight` is past either limit (five open PRs by this account in `faultmaven`,
+nor names; `slot: round unknown`. While `in flight` is past either limit (seven open PRs by this account in `faultmaven`,
 or naming a core issue; three pulled items awaiting a ruling), nothing new but a flake's fix (4.6) is dispatched: the
 round finishes, settles or asks instead. Labels not yet in use read as empty. The output names a PR only in a public
 repo:
@@ -146,7 +145,7 @@ repo:
 ```bash
 R=FaultMaven/faultmaven; lanes="<the lead issue of each lane you pick>"; now=$(date -u +%s)
 ago() { date -u -d "@$((now - $1 * 86400))" +%FT%TZ; }; lines() { gh api "repos/$R/issues/$1/comments" --paginate --jq '.[] | "\(.created_at) \(.body | split("\n")[0])"'; }
-# the newest two Queues, oldest first, so a rotated Queue still reads the round, the last proposal and the trend
+# the newest two Queues, oldest first, so a rotated Queue still reads the round, the last proposal and the earlier counts
 q=$(gh issue list -R $R --label tracking --state all --search 'Queue in:title' --limit 100 --json number,title \
   --jq '[.[] | select(.title == "Queue") | .number] | sort | .[-2:][]')
 qc=$(for n in $q; do gh api "repos/$R/issues/$n/comments" --paginate --jq '[.[] | select(.body | test("^## Round [0-9]+ — (proposal|result)"))
@@ -164,26 +163,30 @@ cls='def has($l): any(.labels[]; .name | IN($l[])); def free: has(["tracking", "
 # open PRs by this account in faultmaven, or naming a core issue (the PRs this procedure opened)
 prs=$(gh search prs --owner FaultMaven --state open --author @me --limit 200 --json repository,number,createdAt,body \
   | jq "$cls"'[.[] | . + {c: (.repository.name == "faultmaven")} | select(.c or (.body | test(kw + core(false) + "[0-9]")))]')
-was=$(jq -r 'map(select(.p) | .b | [scan("(?m)^open by class: [^\n]*")] | last | select(.) | ([scan("unclassified ([0-9]+)")[0]] | first // "0")) | last // "none"' <<<"$qc")
-jq -r --arg was "$was" "$cls"'[.[] | select(free)] | "open by class: \(by("unclassified")) (unclassified was \($was))"' <<<"$open"
+jq -r "$cls"'[.[] | select(free)] | "open by class: \(by("unclassified"))"' <<<"$open"
 due=; ran=0; for n in $(jq -r "$cls"'.[] | select(has(["root-candidate"])) | .number' <<<"$open"); do
   c=$(lines "$n" | grep ' ## Evidence — design check') || { due+="#$n "; continue; }
   [ "$(cut -d' ' -f1 <<<"$c" | sort | tail -1)" \> "$since" ] && ran=$((ran + 1)); done
 echo "design checks due, not run: ${due:-none} · run since the last proposal: $ran"
+# ready P0-P2 defects no open PR carries: while any exist, they and P1 roots' stages are picked first (Pick)
+hp=$(jq --argjson prs "$prs" "$cls"'[.[] | select(free and ready and has(["class:defect"]) and has(["P0", "P1", "P2"])
+  and (refs(.number) | not))] | length' <<<"$open")
 u=$(for n in $(jq -r "$cls"'.[] | select(has(["pile:blocked"]) and (.body | test("\\*\\*Blocked on:\\*\\* an owner ruling"))) | .number' <<<"$open"); do
   l=$(lines "$n"); grep -q ' ## Pulled' <<<"$l" && printf '#%s ' "$n"; done); np=$(wc -w <<<"$u"); na=$(jq length <<<"$prs")
-jq -r --argjson prs "$prs" --arg lanes "$lanes" --argjson lim "$([ "$na" -gt 5 ] || [ "$np" -gt 3 ] && echo true || echo false)" "$cls"'
-  [.[] | select(has(["design-stage"]) and ready) | {n: .number, r: stage} | select((refs(.n) or (.r != "?" and refs(.r))) | not)] as $a
+jq -r --argjson prs "$prs" --arg lanes "$lanes" --argjson hp "$hp" --argjson lim "$([ "$na" -gt 7 ] || [ "$np" -gt 3 ] && echo true || echo false)" "$cls"'
+  [.[] | select(has(["design-stage"]) and ready) | {n: .number, r: stage, p1: has(["P0", "P1"])}
+  | select((refs(.n) or (.r != "?" and refs(.r))) | not)] as $all | (if $hp > 0 then [$all[] | select(.p1)] else $all end) as $a
   | [$a[] | select(.n | tostring | IN($lanes | scan("[0-9]+")))] as $p | (if $lim then 0 else [($a | map(.r) | unique | length), 2] | min end) as $k
   | "design lanes: picked \($p | length) of \($k) offered, one per root: \(if ($p | map(.r) | unique | length) == ($p | length) then "yes" else "no" end)"
   + " (actionable: \($a | map("#\(.n) of #\(.r)") | join(", ") | if . == "" then "none" end))"' <<<"$open"
-# the round this proposal opens: one past the newest result, else unknown (a stop); every third is a chore batch (Pick)
+# the round this proposal opens: one past the newest result, else unknown (a stop); every third may be a chore batch (Pick)
 rn=$(jq '[.[]? | select(.p | not) | .b | capture("^## Round (?<n>[0-9]+)").n | tonumber] | max // empty | . + 1' <<<"$qc" 2>/dev/null)
-if [ -z "$rn" ]; then echo "slot: round unknown"; else b=; [ $((rn % 3)) -eq 0 ] && b="chore batch (round $rn); ordinary: "
-jq -r --arg b "$b" --argjson prs "$prs" --arg cut "$(ago 30)" "$cls"'[.[] | select(free and ready and (refs(.number) | not)
-  and (has(["class:chore", "class:design", "design-stage"]) | not))] | [.[] | select(has(["P0", "P1"]))] as $p1
-  | ($p1 | sort_by((has(["P0"]) | not), .createdAt)) + ([.[] | select(has(["P2"]) and .createdAt < $cut)] | sort_by(.createdAt))
-  | map("#\(.number)") | "slot: \($b)\(first // "none, the ordinary order")\(if length > 1 then " (then \(.[1:3] | join(" ")))" else "" end)"' <<<"$open"; fi
+if [ -z "$rn" ]; then echo "slot: round unknown"; else b=; [ "$hp" -eq 0 ] && [ $((rn % 3)) -eq 0 ] && b="chore batch (round $rn); ordinary: "
+jq -r --arg b "$b" --argjson prs "$prs" --argjson hp "$hp" "$cls"'[.[] | select(free and ready and (refs(.number) | not)
+  and (has(["class:chore", "class:design", "design-stage"]) | not))
+  | . + {k: ([.labels[].name | select(IN("P0", "P1", "P2", "P3"))] | first // "P3")}]
+  | [.[] | select($hp == 0 or (.k | IN("P0", "P1", "P2")))] | sort_by(.k, .createdAt) | map("#\(.number)")
+  | "slot: \($b)\(.[0:10] | join(" ") | if . == "" then "none, the ordinary order" else . end)\(if length > 10 then " (+\(length - 10) more)" else "" end)"' <<<"$open"; fi
 roots=$(jq "$cls"'[.[] | select(has(["root-issue", "root-candidate"])) | {n: .number, b: [.body | scan("(?m)^\\*\\*Blocks:\\*\\*.*") | gsub("\\([^)]*\\)"; "") | scan("#([0-9]+)")[0] | tonumber]}]' <<<"$open")
 off=$(gh issue list -R $R --state all --search "created:>=$since \"Found while working on\" in:body" --limit 300 --json number,body \
   --jq '.[] | "\(.number) \(.body | [scan("Found while working on #([0-9]+)")[0]] | first // "")"' | while read -r f m; do
@@ -197,14 +200,14 @@ o=$(gh issue list -R $R --state all --search "created:>=$(ago 14 | cut -c1-10)" 
 c=$(gh issue list -R $R --state closed --search "closed:>=$(ago 14 | cut -c1-10)" --limit 1000 --json labels)
 jq -rn --argjson o "$o" --argjson c "$c" "$cls"'"14 days: opened \($o | length) (\($o | by("unlabelled"))) · closed \($c | length) (\($c | by("unlabelled")))
   · ratio \(if ($c | length) > 0 then ($o | length) / ($c | length) * 100 | round / 100 else "n/a" end)"' | tr -s '\n ' ' '; echo
-jq -r 'map(select(.p) | .b) | "ratio at the last proposal: \([last | scan("ratio ([0-9.]+|n/a)")[0]] | last // "none") · open at the last four: \(
+jq -r 'map(select(.p) | .b) | "open at the last four: \(
   map([scan("(?m)^open ([0-9]+) \\(")[0]] | last) | map(select(.)) | .[-4:] | join(" → "))"' <<<"$qc"
 jq -r "$cls"'def med: sort | if length == 0 then "none" else .[length / 2 | floor] end; [.[] | select(free)
   | {p: ([.labels[].name | select(IN("P0", "P1", "P2"))] | first // "" | sub("P0"; "P1")), d: ((now - (.createdAt | fromdate)) / 86400 | floor)}]
   | "median age in days: P1 \(map(select(.p == "P1") | .d) | med) · P2 \(map(select(.p == "P2") | .d) | med)"' <<<"$open"
 jq -r --argjson prs "$prs" --arg due "$due" "$cls"'"roots: candidates \(map(select(has(["root-candidate"]))) | length) (check due \($due
   | [scan("[0-9]+")] | length)) · ruled \([.[] | select(has(["root-issue"])) | .number] | "\(length) (stage PR open \(map(select(refs(.))) | length))")"' <<<"$open"
-echo "in flight: open PRs by this account in faultmaven, or naming a core issue, $na of 5 · pulled, awaiting a ruling $np of 3 (${u:-none})"
+echo "in flight: open PRs by this account in faultmaven, or naming a core issue, $na of 7 · pulled, awaiting a ruling $np of 3 (${u:-none})"
 jq -r --arg t "$r2" --argjson pub "$pub" '[.[] | select($t != "none" and .createdAt < $t)] | (map(select(.repository.name | IN($pub[])) | "\(.repository.name)#\(.number)"))
   as $n | "open across two results: \($n | join(" ") | if . == "" then "none" end)\(if length > ($n | length) then " + \(length - ($n | length)) private" else "" end)"' <<<"$prs"
 mp=$(gh pr list -R $R --state merged --search "merged:>=$since" --limit 300 --json body)
@@ -214,15 +217,8 @@ echo "since the last proposal: merged $(jq length <<<"$mp") · PRs opened $(gh p
 ```
 
 1. **Sort.**
-   - Give every open issue that lacks a pile, priority or class label the missing one(s) (*State*), oldest first, so
-     the `unclassified` count falls each round. Skip `tracking`, `root-issue` and `root-candidate` for the class. The
+   - Give every open issue that lacks a pile, priority or class label the missing one(s) (*State*), oldest first. Skip `tracking`, `root-issue` and `root-candidate` for the class. The
      default is a label, not a verdict: a chore is relabelled when the item is next read.
-   - **The transition,** in the first round under this text: create the labels `class:defect`, `class:chore`,
-     `class:design`, `root-candidate` and `design-stage`; give each ruled root's `**Blocks:**` issues `class:design`,
-     and each of its open stages `design-stage`, `class:design`, the root's priority and a `**Stage of:** #<root>`
-     line; and give every other open issue outside `tracking`, `root-issue` and `root-candidate` its class
-     (`class:defect` where nothing says chore), so `unclassified` is 0 from the second round. A ruled root's existing
-     code stages are exempt from the docs stage coming first, and take their pins at their next ruling.
    - Move to ready any blocked item whose blocking issue has closed or whose condition holds (run each you can).
    - **The closable sweep:** close each issue the `closable` line lists whose PR delivered it all (else edit it down
      to the remainder), each duplicate, each dead premise (reproduced as in step 4.2), and each tracker whose tracked
@@ -240,7 +236,7 @@ echo "since the last proposal: merged $(jq length <<<"$mp") · PRs opened $(gh p
    - **The design pass** gives one row per open `root-issue` and `root-candidate`: its design statement, level,
      principle, design change, open count (its `**Blocks:**` issues and stages) and state (check due, ruling due,
      pins due, building, waiting). Plus a **look row** per seam worked since the last proposal (a merged or open PR in
-     that window) whose review filed a finding or whose open count rose: its **chain** (the defects fixed and still
+     that window) whose review, plan or triage filed a finding: its **chain** (the defects fixed and still
      open on it, by number) and open count say only where to look, and its only output is a design check, never a
      per-defect pick.
    - **A design check** quotes the design statement (*State*) that is silent or wrong on a decision the system needs
@@ -267,7 +263,8 @@ echo "since the last proposal: merged $(jq length <<<"$mp") · PRs opened $(gh p
      beyond the stages a ruling sets, and an open PR on one finishes by its row in *Where an item stands*. A ruling on
      the design change lists its stages, each filed as a `design-stage` issue with its budget, the issues it delivers
      and its pins. The first stage is the `docs/architecture/` amendment (the principle text and its enforcement row),
-     merged before any code stage. A stage ruled without pins is filed in `pile:blocked` with `**Blocked on:** an
+     merged before any code stage; a root ruled before 2026-11-09 keeps its existing code stages, which are exempt from
+     the docs stage coming first and take their pins at their next ruling. A stage ruled without pins is filed in `pile:blocked` with `**Blocked on:** an
      owner ruling on its pins`. The root issue then stays in `pile:blocked` with `**Blocked on:** condition — its last
      stage's PR has merged`. A stage's PR closes only the issues it delivers (another it delivers is a change to the
      list) and says `Refs #<root>`; when the last stage's PR merges, close the root issue under `## Closed`, citing
@@ -276,31 +273,40 @@ echo "since the last proposal: merged $(jq length <<<"$mp") · PRs opened $(gh p
      declines the design change, closes the root or candidate and lists where its issues go; its `## Closed` comment
      files each `## Evidence` finding on it as an issue, or declines it with the reason. Every change to a root issue's
      `**Blocks:**` line or a stage's list is a ruling, except a finding added under *Filing what you find*.
-   - From `pile:ready` only, in three lanes (the health block's `design lanes` and `slot` lines):
-     - **two design lanes:** the next stage, in the order the owner last approved, of each root with no stage PR open,
-       at most one per root; a design lane no stage can take goes to the ordinary order;
-     - **the third lane, the slot:** the oldest `P1` (*State*: a wrong result or a 5xx in normal use included), else
-       the oldest `P2` waiting over 30 days, else the ordinary order; never a chore or a batch (*Filing what you
-       find*), except in a round whose number is divisible by 3: the slot then takes one chore batch, the seam with
-       the most ready `class:chore` issues, oldest on a tie, within the round's size limits below, planned and
-       reviewed as one item and counted as one. Its seam is the component the chores' fixes touch, named in the plan.
-       In the batch's round the slot does not take an open `P1`, and only the slot waits: the **Next** items follow
-       the ordinary order, as a design lane no stage can take does. In a migration round, or when no chore seam is
-       free (none ready, or each on an open PR's seam), the slot is the ordinary one, and the proposal says so in one
-       line under *Health*. The `slot` line lists the next ones for when the first sits on an open PR's seam; in a
-       batch round it reads `chore batch (round <N>); ordinary:` before them, for the fallback;
-     - **the ordinary order:** `P1`, `P2`, `P3`, oldest first within each, a chore after the defects of its priority.
+   - From `pile:ready` only, in up to four lanes (the health block's `design lanes` and `slot` lines). A `main red`
+     (4.6) and a flake's fix go first, ahead of any lane below.
+     - **While any ready `P0`, `P1` or `P2` defect exists** (the health block counts them: `class:defect`, no open PR
+       carrying it), the lanes that are not design lanes take those a lane can take (not on an open PR's seam): `P0`,
+       then `P1`, then `P2`, oldest first within each, defects on one seam sharing a lane. Up to two design lanes take
+       the next stage of a root at `P1` with no stage PR open, at most one per root, in the order the owner last
+       approved. No `P3` item, chore or chore batch is picked, and
+       the **Next** items follow the same order.
+     - **Otherwise,** two design lanes take the next stage, in the order the owner last approved, of each root with no
+       stage PR open, at most one per root; a design lane no stage can take, and every other lane, follow the
+       ordinary order. In a round whose number is divisible by 3, one lane takes a chore batch instead: the seam with
+       the most ready chore work (each `class:chore` issue that is not a batch issue, and each unchecked line of a
+       `class:chore` batch issue, counted on the seam its fix touches; on a tie, the seam whose oldest counted issue is
+       oldest), within the round's size limits below, planned and reviewed as one item and counted as one. Its seam is
+       the component the chores' fixes touch, named in the plan. In a migration round, or when no chore seam is free
+       (none ready, or each on an open PR's seam), that lane follows the ordinary order, and the proposal says so in
+       one line under *Health*.
+     - **The ordinary order:** `P1`, `P2`, `P3`, oldest first within each, a chore after the defects of its priority.
 
+     The `slot` line lists the first ten picks for the lanes that are not design lanes: the ready `P0`–`P2` defects
+     while any exist, else the defects of the ordinary order (its chores are not listed: read them from the ready
+     query), after `chore batch (round <N>); ordinary:` in a chore-batch round.
      Skip an item that an open PR from an earlier round still carries (its PR, *Where an item stands*), and any item
      on that PR's seam until it merges.
    - Items on one seam share a lane and a PR.
-   - Size the round by review effort: at most 5 items and 3 lanes, plus up to 3 **Next** items the approval also covers,
-     none a migration; a flake's fix (4.6) takes a lane but is not an item. An item touching a security boundary or
-     storage takes its own lane and PR; a migration is alone in its round, with no Next items. The proposal states the
-     round's expected agent count (lanes, reviews, deltas, critiques), at most about 12; at most three reviews or
+   - Size the round by review effort: at most 10 items and 4 lanes, plus up to 3 **Next** items the approval also covers,
+     none a migration; a flake's fix (4.6) takes a lane but is not an item. An item touching a security boundary
+     (authentication, authorization, tenancy, secrets, TLS, or the validation of untrusted input) or storage (a schema,
+     a migration, or how persisted data is written or deleted) takes its own lane and PR; a migration is alone in its round, with no Next items. The proposal states the
+     round's expected agent count (lanes, reviews, deltas, critiques), at most about 16; at most four reviews or
      critiques run at once. A usage-limit stop is reported in the result, and the next round is sized down.
 3. **Check premises.** `git fetch origin main`, then confirm each picked item's code points still show the defect.
-   An item whose premise looks dead is built as a **verification** item (step 4).
+   An item whose premise looks dead is built as a **verification** item (step 4). This is a first look only; the full
+   triage is the plan's (4.1).
 4. **Post the proposal**, then stop. Build nothing that has an open question.
 
    ```
@@ -311,14 +317,9 @@ echo "since the last proposal: merged $(jq length <<<"$mp") · PRs opened $(gh p
    | # | P | class | root (one line) | done when (observable behaviour) | size (product / test lines, est.) |
    ### Next (same columns; each starts when a lane's PR is merge-ready or pulled, or its item closes, after any flake's fix)
    ### Needs your call
-   At most five, ranked: question · options · recommendation · what it unblocks. A backlog-health question (its
-   diagnosis, what to batch or close by ruling, what to defer) is first when this and the last proposal's ratio are
-   both above 1.2; then any unanswered for two rounds; then, while the `pulled` count is past its limit, the oldest
-   pulls, as many as bring it down to the limit; then design rulings due. Other items awaiting a ruling: numbers.
-   The diagnosis, read from the look rows' chains and the `14 days` line, names the source of the rise: in-scope
-   findings filed instead of fixed in the item's PR (fix them with their parent); same-root findings filed apart
-   (consolidate them, as evidence or one issue); a component the findings cluster in (a systemic fix); new exposure
-   the reviews found (they stay filed). A true, distinct finding is never left unfiled to lower the count.
+   At most five, ranked: question · options · recommendation · what it unblocks. First any unanswered for two rounds;
+   then, while the `pulled` count is past its limit, the oldest pulls, as many as bring it down to the limit; then
+   design rulings due. Other items awaiting a ruling: numbers.
    Every condition you could not check: what checking it needs; you run it, re-rule, or close the item.
    ### Open across two results (each PR with its blocker; a private repo's by count only)
    ### Priorities I set (change any)
@@ -328,9 +329,7 @@ echo "since the last proposal: merged $(jq length <<<"$mp") · PRs opened $(gh p
    open <n> (P1 <a> · P2 <b> · P3 <c> · blocked <d>) · alerts: <the sweep's `queue:` line>, filed <f> · last round: merged <m> per <l> lanes, closed <x> (sweep <k>), filed <y> (design evidence <g>, defects <h>, chores <j>)
    ```
 
-   The health lines carry the rest of the scorecard. The 14-day ratio and the scorecard's `open` count are indicators
-   of the purpose, read over rounds, never a round's target. They trigger only the backlog-health question above, the
-   batching in *Filing what you find*, and the result's diagnosis when Open rose (step 5).
+   The health lines carry the rest of the scorecard.
 
 ## 3. Take the answers
 
@@ -343,15 +342,23 @@ question; unanswered questions stay where they are.
 
 Dispatch only approved items that the ready query returns with a single pile label, and, when a lane's PR is merge-ready
 or pulled or its item closes, a flake's fix (4.6) first, then the first **Next** item not on any open PR's seam (a
-refresh waits for a free slot), and nothing new but a flake's fix while the health block's `in flight` line is past a
+refresh waits for a free lane), and nothing new but a flake's fix while the health block's `in flight` line is past a
 limit. Each starts at its row in
-*Where an item stands*; one whose plan (newer than any pull) says `Shares lane with #<lead>`, at its lead's. Each lane
-aims to end the round merged or merge-ready. A design stage's PR open at two consecutive results, neither merged nor
+*Where an item stands*; one whose plan (newer than any pull) says `Shares lane with #<lead>`, at its lead's. A design stage's PR open at two consecutive results, neither merged nor
 merge-ready at either and not waiting at row 4 at the second, has not converged: it is pulled with a re-plan into
 smaller sub-stages (4.1) recommended, never given more fix rounds.
 
 1. **Plan** it yourself on `origin/main`, posted on the issue as `## Plan — round <N>`. Items sharing a seam name
    their lead as `Shares lane with #<lead>`. The plan covers:
+   - **the triage,** done first. The issue is a report, not a spec: its description, code points, diagnosis, proposed
+     fix, done-when, priority and class may be inaccurate or obsolete, so none is taken as given. Reproduce the defect
+     on `origin/main` (or show it at `path:line`), check each claim the issue makes against the code, re-set its
+     priority and class by *State* (never one the owner set or a ruling states), and find its root (below) before
+     choosing a change. An owner ruling stays the item's spec: a ruling whose premise the triage contradicts pulls the
+     item with that question. A re-set priority or class does not unapprove the item: it is built this round, and its
+     result row states the change. The plan states which claims held and which did not; a claim that did not hold is
+     corrected on the issue under `## Evidence — triage`. A defect that does not reproduce is built as a verification
+     item (below);
    - **the root,** with its code points. The root is where the defect starts, however deep. When investigating shows
      the cause sits in a deeper layer than the issue names, that deeper cause is this item's root and this PR fixes
      it. Never fix a symptom and file its root. A root that needs a ruling, or a budget past the bound below, pulls
@@ -410,11 +417,8 @@ smaller sub-stages (4.1) recommended, never given more fix rounds.
    break the PR, not to approve it: the invariant, the pins (a stage's ruling's), the done-when, the defects the
    change could introduce, and what must not change. Your own diff read in *Verify* is quality control, not this
    review. Start the CI watch in the background at the same time.
-   - **Runtime PRs: `/code-review xhigh <pr>`.** These change what runs in a deployment, a pipeline or an agent:
-     `faultmaven/`, `alembic/`, `resources/`, `requirements/`, `pyproject.toml`, `Dockerfile`, `docker-compose*`,
-     `.github/workflows/`, `.github/scripts/`, `.importlinter`, `pytest.ini`, `scripts/` that CI or CD runs,
-     `.claude/` and any `CLAUDE.md`.
-   - **Every other PR: `/code-review high <pr>`.** A mixed PR takes the higher level.
+   - **Every PR: `/code-review high <pr>`,** except a PR that touches a security boundary or storage (the items that
+     take their own lane and PR, step 2): `/code-review xhigh <pr>`.
    - **A defeat pass** (a review briefed to get past the guard) only for a guard on a security or tenancy boundary
      that has live sites.
 
@@ -426,7 +430,8 @@ smaller sub-stages (4.1) recommended, never given more fix rounds.
    - **evidence:** it questions the design itself, with no defect in this PR's code: an `## Evidence` comment on the
      root (*Filing what you find*), outside the cap. One that questions a stage's own design holds its PR at row 4
      until the owner rules;
-   - **filed:** it is true, valid and not part of this item (*Filing what you find*, below);
+   - **filed:** it is true, valid and not part of this item (*Filing what you find*, below); the verdict gives it one
+     line: its root, and why that root is not this item's;
    - **declined:** one line in the PR body saying why. Either it is not true (not reproduced, and not shown at
      `path:line` on `origin/main` or the PR head), or it is not valid (as defined below), or an open issue already
      covers it (add the evidence there), or, on an exception delta (4.5), it is a mutation-survival or adversarial-edit
@@ -486,7 +491,7 @@ smaller sub-stages (4.1) recommended, never given more fix rounds.
      `completedAt` is `0001-01-01T00:00:00Z`). Having re-run past it, its root fix is this round's work: in the item's
      PR when the flake's code is on the item's seam, else in its own small PR, under step 4 in full, as approved work,
      like a `main red` repair asked for in session. That PR takes the next free lane ahead of any **Next** item,
-     counts toward the three lanes but not the round's five items, is not held back by the `in flight` limit, and is
+     counts toward the round's lanes but not its items, is not held back by the `in flight` limit, and is
      reported in the result. A re-run plus an issue is never the fix (4.1, *Filing what you find*).
    - **An outside-service outage:** wait it out; if it outlasts the round, report the PR as `waiting on <service>`.
    - **A failure the merge base also has:** it is `main`'s. File it as a ready `P1` issue,
@@ -549,8 +554,9 @@ To **pull** an item:
 - **File it** when it is **true** (reproduced, or shown at `path:line` on `origin/main`), **valid** (a real defect or
   gap, reachable today or latent; a style preference, or a simplification that changes no outcome, is not) and **not
   part of the item** (a different root). A latent one is a ready `P3` (`P1` if *State* makes it one) whose body says
-  what would make it reachable, if known. File it as you find it, with `Found while working on #<n>`, the evidence, a
-  pile, a priority and a class.
+  what would make it reachable, if known. File it as you find it (a batched one in its item's batch issue, below),
+  with `Found while working on #<n>`, the evidence, a pile, a priority and a class. A true, valid finding is never
+  left unrecorded: it is filed, a line in a batch issue, or an `## Evidence` comment, as these rules place it.
 - **Search open and closed issues first.** If an open issue already covers it, add the evidence there under
   `## Evidence`. If a closed issue matches, cite it in the new issue. Findings that share one root go in one issue.
 - **Classify it first** (*State*). A finding that shares a `root-issue`'s root is an `## Evidence` comment on it, not
@@ -560,11 +566,12 @@ To **pull** an item:
   place, when it is reachable or `P1`/`P2` (the evidence says `filed as #<f>`). A design flaw on a seam with no open
   root is a design check (*Pick*). Any other finding made while working on a root's issue is named in an
   `## Evidence` comment there: `different root, filed as #<f>`.
-- **While the 14-day opened count exceeds the closed** (the health block), a PR's out-of-scope chore findings go into
-  one `class:chore` issue per PR, and its latent `P3` defect findings into one `class:defect` issue per PR, each a
-  checklist with `Found while working on #<n>`, closed when its list is done, and planned one item per seam, never in
-  the slot, except the `class:chore` one in a chore-batch round (*Pick*). Reachable and `P1`/`P2` defects are still
-  filed one each.
+- **An item's out-of-scope `P3` chore and latent `P3` defect findings are batched:** its chore findings go into one
+  `class:chore` issue for the item, and its latent defect findings into one `class:defect` issue for the item, each a
+  checklist with `Found while working on #<n>`, opened by its first finding (before the PR, if found while planning),
+  closed when its list is done, and planned one item per seam: a `class:chore` one only in the chore-batch lane
+  (*Pick*), a `class:defect` one in the ordinary order.
+  A reachable defect finding, and a `P1`/`P2` finding of either class (a `main red`, a flake), is filed one each.
 - **Fix the item's own root, a symptom of it, or a part of it in its PR;** file it only when a ruling waived it.
 
 ## 5. Report on the Queue
@@ -573,14 +580,14 @@ To **pull** an item:
 ## Round <N> — result
 | # | outcome (merged · merge-ready · carried · closed by verification or sweep · pulled · waiting on main or <service>) | PR | product +/− | tests +/− |
 Closed <x> · Filed <y> · Net lines: product <p>, tests <t> · Open <before> → <after>
-Trend: 14-day ratio <r> · open at the last four <a> → <b> → <c> → <d> · when Open rose, its diagnosis (step 2's diagnosis rules)
-Filed: #<n> (P<k>) — <what, found while working on #<m>> — one line each
+Data: 14-day ratio <r> · open at the last four proposals <a> → <b> → <c> → <d>
+Filed: #<n> (P<k>) — <what, found while working on #<m>> — one line each, and each line added to an earlier round's batch issue
 Waiting on you: queue each PR at its vouched head: gh pr merge <n> -R FaultMaven/<repo> --match-head-commit <sha> (plus --squash outside core)
 ```
 
 Post it when every dispatched item and flake's fix is merged, merge-ready, closed, pulled or waiting, with a row per
 item and its PR, and one per flake's fix (4.6); the PR column reads `private` for a private repo's PR (*Rules*).
-Every report states those four numbers and lists every issue filed. It carries forward a row for every PR still open
+Every report states those four numbers, lists every issue filed and every line added to an earlier batch issue. It carries forward a row for every PR still open
 from an earlier round, until that PR merges or closes; a carried row adds nothing to the four numbers, which count
 each PR in the round that first reports it. Then stop.
 
