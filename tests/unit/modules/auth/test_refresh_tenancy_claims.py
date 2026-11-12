@@ -224,6 +224,35 @@ async def test_validate_refresh_token_returns_the_organization_claim(
     assert claims["enterprise_id"] == REAL_ENTERPRISE
 
 
+@pytest.mark.unit
+@pytest.mark.security
+@pytest.mark.parametrize("build_generator", GENERATORS)
+async def test_the_client_claim_is_written_only_when_given(build_generator):
+    """The issuing OAuth client rides the refresh half only (#2750)."""
+    generator, verify_args = build_generator()
+    user, now = _user(enterprise_id=REAL_ENTERPRISE), datetime.now(timezone.utc)
+
+    # /auth/refresh passes the presented claim plainly: absent is None.
+    unbound = await generator.generate_refresh_token(
+        user, state_read_at=now, client_id=None
+    )
+    _, paired_unbound = await generator.generate_token_pair(user, state_read_at=now)
+    bound = await generator.generate_refresh_token(
+        user, state_read_at=now, client_id="faultmaven-copilot"
+    )
+    access, paired = await generator.generate_token_pair(
+        user, state_read_at=now, client_id="faultmaven-copilot"
+    )
+
+    for token in (unbound, paired_unbound, access):
+        assert "client_id" not in _decode(token, verify_args)
+    for token in (bound, paired):
+        assert _decode(token, verify_args)["client_id"] == "faultmaven-copilot"
+    assert (await generator.validate_refresh_token(bound))[
+        "client_id"
+    ] == "faultmaven-copilot"
+
+
 # =============================================================================
 # /auth/refresh re-attaches it before minting
 # =============================================================================

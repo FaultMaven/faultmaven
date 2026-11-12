@@ -136,6 +136,9 @@ class OAuthCodeDTO:
     #: unaided. Optional for the same rolling-deploy reason as
     #: ``organization_id``; absent falls back to the exchange leg's capture.
     state_read_at: Optional[float] = None
+    #: The client the code was issued to (#2750). The exchange refuses any
+    #: other ``client_id``, and refuses a code carrying none.
+    client_id: Optional[str] = None
 
 
 @dataclass
@@ -291,7 +294,7 @@ class IOAuthService(ABC):
         ...
 
     async def exchange_code_for_token(
-        self, code: str, code_verifier: str, redirect_uri: str
+        self, code: str, code_verifier: str, redirect_uri: str, client_id: str
     ) -> OAuthTokenDTO:
         """Exchange authorization code for access token.
 
@@ -299,6 +302,7 @@ class IOAuthService(ABC):
             code: Authorization code from authorization endpoint
             code_verifier: PKCE code verifier (proves client owns code_challenge)
             redirect_uri: Must match original redirect_uri
+            client_id: Must match the client the code was issued to (#2750)
 
         Returns:
             Access token and user information
@@ -327,7 +331,8 @@ class IOAuthService(ABC):
 
         Args:
             refresh_token: Valid refresh token
-            client_id: OAuth client ID
+            client_id: OAuth client ID. Must match the client the token names;
+                a token naming none is bound to it if it is a known client (#2750)
 
         Returns:
             New access token and rotated refresh token

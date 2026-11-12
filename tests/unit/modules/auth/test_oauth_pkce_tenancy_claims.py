@@ -236,7 +236,10 @@ async def test_both_claims_survive_authorize_exchange_and_repeated_rotation(
             "user_123", _authorization_request(challenge), organization_id=BILLING_ORG
         )
         tokens = await oauth_service.exchange_code_for_token(
-            code=code, code_verifier=verifier, redirect_uri=REDIRECT
+            code=code,
+            code_verifier=verifier,
+            redirect_uri=REDIRECT,
+            client_id="faultmaven-copilot",
         )
 
         for token in (tokens.access_token, tokens.refresh_token):
@@ -276,7 +279,10 @@ async def test_a_code_carrying_no_organization_still_isolates(oauth_service, pkc
             "user_123", _authorization_request(challenge), organization_id=None
         )
         tokens = await oauth_service.exchange_code_for_token(
-            code=code, code_verifier=verifier, redirect_uri=REDIRECT
+            code=code,
+            code_verifier=verifier,
+            redirect_uri=REDIRECT,
+            client_id="faultmaven-copilot",
         )
 
         for token in (tokens.access_token, tokens.refresh_token):
@@ -325,7 +331,10 @@ async def test_an_unanchored_account_mints_an_unusable_isolation_claim_under_mul
             "user_123", _authorization_request(challenge), organization_id=BILLING_ORG
         )
         tokens = await service.exchange_code_for_token(
-            code=code, code_verifier=verifier, redirect_uri=REDIRECT
+            code=code,
+            code_verifier=verifier,
+            redirect_uri=REDIRECT,
+            client_id="faultmaven-copilot",
         )
 
         for token in (tokens.access_token, tokens.refresh_token):
@@ -367,7 +376,10 @@ async def test_single_tenant_exchange_claims_the_standalone_enterprise(
             "user_123", _authorization_request(challenge), organization_id=None
         )
         tokens = await service.exchange_code_for_token(
-            code=code, code_verifier=verifier, redirect_uri=REDIRECT
+            code=code,
+            code_verifier=verifier,
+            redirect_uri=REDIRECT,
+            client_id="faultmaven-copilot",
         )
 
     claims = _claims(tokens.access_token)
@@ -417,7 +429,10 @@ async def test_a_deactivated_account_cannot_redeem_a_code(
 
         with pytest.raises(InvalidGrantError) as refusal:
             await oauth_service.exchange_code_for_token(
-                code=code, code_verifier=verifier, redirect_uri=REDIRECT
+                code=code,
+                code_verifier=verifier,
+                redirect_uri=REDIRECT,
+                client_id="faultmaven-copilot",
             )
 
     assert refusal.value.error_code == "USER_INACTIVE"
@@ -458,7 +473,10 @@ async def test_exchange_ignores_any_organization_on_the_stored_user(
             organization_id=BILLING_ORG,
         )
         tokens = await oauth_service.exchange_code_for_token(
-            code=code, code_verifier=verifier, redirect_uri=REDIRECT
+            code=code,
+            code_verifier=verifier,
+            redirect_uri=REDIRECT,
+            client_id="faultmaven-copilot",
         )
 
     claims = _claims(tokens.access_token)
@@ -745,7 +763,10 @@ async def test_the_claims_attach_to_the_real_user_types_not_just_a_mock(pkce_pai
                 organization_id=BILLING_ORG,
             )
             tokens = await service.exchange_code_for_token(
-                code=code, code_verifier=verifier, redirect_uri=REDIRECT
+                code=code,
+                code_verifier=verifier,
+                redirect_uri=REDIRECT,
+                client_id="faultmaven-copilot",
             )
         for token in (tokens.access_token, tokens.refresh_token):
             assert claims_of(token)["organization_id"] == BILLING_ORG, algorithm
@@ -757,7 +778,10 @@ async def test_the_claims_attach_to_the_real_user_types_not_just_a_mock(pkce_pai
                 "user_123", _authorization_request(challenge), organization_id=None
             )
             tokens = await service.exchange_code_for_token(
-                code=code, code_verifier=verifier, redirect_uri=REDIRECT
+                code=code,
+                code_verifier=verifier,
+                redirect_uri=REDIRECT,
+                client_id="faultmaven-copilot",
             )
         claims = claims_of(tokens.access_token)
         assert claims["enterprise_id"] == STANDALONE_ENTERPRISE_ID, algorithm

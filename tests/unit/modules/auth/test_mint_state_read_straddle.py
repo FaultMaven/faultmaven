@@ -635,6 +635,7 @@ async def test_oauth_exchange_stamps_from_the_authorize_legs_stored_basis():
         expires_at=code_created + timedelta(seconds=expiry_seconds),
         used=False,
         state_read_at=code_created.timestamp(),
+        client_id="faultmaven-copilot",
     )
 
     watermark = datetime.now(timezone.utc) - STRADDLE_WATERMARK_AGE
@@ -663,6 +664,7 @@ async def test_oauth_exchange_stamps_from_the_authorize_legs_stored_basis():
         code="authz-code-831",
         code_verifier=code_verifier,
         redirect_uri="https://callback.example/cb",
+        client_id="faultmaven-copilot",
     )
 
     assert await generator.validate_access_token(dto.access_token) is None
@@ -678,7 +680,9 @@ async def test_oauth_refresh_grant_capture_covers_its_own_reads():
     user = _user()
 
     old_refresh = await generator.generate_refresh_token(
-        user, state_read_at=datetime.now(timezone.utc) - STRADDLE_READ_AGE
+        user,
+        state_read_at=datetime.now(timezone.utc) - STRADDLE_READ_AGE,
+        client_id="faultmaven-copilot",
     )
 
     class _StraddlingUsers:
@@ -776,6 +780,7 @@ async def test_old_code_redeems_with_full_lifetime_and_backdated_iat():
         expires_at=datetime.now(timezone.utc) + timedelta(seconds=250),
         used=False,
         state_read_at=basis.timestamp(),
+        client_id="faultmaven-copilot",
     )
 
     class _CodeRepo:
@@ -802,6 +807,7 @@ async def test_old_code_redeems_with_full_lifetime_and_backdated_iat():
         code="stale-code-831",
         code_verifier=code_verifier,
         redirect_uri="https://callback.example/cb",
+        client_id="faultmaven-copilot",
     )
 
     assert await generator.validate_access_token(dto.access_token) is not None
@@ -825,6 +831,7 @@ async def test_oauth_code_without_a_basis_falls_back_to_the_exchange_capture():
         code_challenge=_pkce(code_verifier),
         expires_at=datetime.now(timezone.utc) + timedelta(seconds=250),
         used=False,
+        client_id="faultmaven-copilot",
     )
     assert code_data.state_read_at is None
 
@@ -852,6 +859,7 @@ async def test_oauth_code_without_a_basis_falls_back_to_the_exchange_capture():
         code="fallback-code-831",
         code_verifier=code_verifier,
         redirect_uri="https://callback.example/cb",
+        client_id="faultmaven-copilot",
     )
 
     assert _claims(dto.access_token)["iat"] >= now_before
@@ -917,5 +925,6 @@ async def test_oauth_basis_rides_the_code_through_the_real_authorize_and_exchang
         code=code,
         code_verifier=code_verifier,
         redirect_uri="https://callback.example/cb",
+        client_id="faultmaven-copilot",
     )
     assert _claims(dto.access_token)["iat"] == int(stored)

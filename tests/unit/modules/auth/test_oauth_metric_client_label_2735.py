@@ -62,10 +62,12 @@ def _authorize(client_id):
     )
 
 
-def _refresh_service(allowed=(COPILOT,), valid=True):
+def _refresh_service(allowed=(COPILOT,), valid=True, claims=()):
     generator = AsyncMock()
     generator.validate_refresh_token = AsyncMock(
-        return_value={"sub": "user_1", "type": "refresh"} if valid else None
+        return_value=(
+            {"sub": "user_1", "type": "refresh", **dict(claims)} if valid else None
+        )
     )
     generator.generate_token_pair = AsyncMock(return_value=("access", "rotated"))
     users = AsyncMock()
@@ -229,15 +231,39 @@ class TestRefreshSeries:
     async def test_distinct_ids_on_a_successful_refresh_add_no_series(self):
         pytest.importorskip("prometheus_client")
         service = _refresh_service()
+        # Each token is bound to the id it is presented under (#2750).
+        service.token_generator.validate_refresh_token.side_effect = lambda token: {
+            "sub": "user_1",
+            "type": "refresh",
+            "client_id": token,
+        }
         raw_ids = _ids()
 
         before = _oauth_series()
         for i, client_id in enumerate(raw_ids):
-            await service.refresh_access_token("valid", client_id=client_id)
+            await service.refresh_access_token(client_id, client_id=client_id)
             if i == 0:
                 after_first = _oauth_series()
 
         _assert_bounded(before, after_first, _oauth_series(), set(raw_ids))
+
+    async def test_distinct_ids_refused_by_a_bound_token_add_no_series(self):
+        """A client mismatch (#2750) labels the presented id through the fold."""
+        pytest.importorskip("prometheus_client")
+        service = _refresh_service(claims={"client_id": COPILOT})
+        raw_ids = _ids()
+        labels = {"client_id": "unknown", "error_code": "CLIENT_MISMATCH"}
+        before_mismatch = _value("oauth_refresh_errors_total", labels)
+
+        before = _oauth_series()
+        for i, client_id in enumerate(raw_ids):
+            with pytest.raises(InvalidGrantError):
+                await service.refresh_access_token("bound", client_id=client_id)
+            if i == 0:
+                after_first = _oauth_series()
+
+        _assert_bounded(before, after_first, _oauth_series(), set(raw_ids))
+        assert _value("oauth_refresh_errors_total", labels) == before_mismatch + N
 
     @pytest.mark.parametrize(
         "allowed, client_id",

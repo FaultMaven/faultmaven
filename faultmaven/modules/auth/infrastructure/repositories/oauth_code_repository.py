@@ -222,7 +222,9 @@ class PostgresOAuthCodeRepository(IOAuthCodeRepository):
             # this repository is not wired by any composition path and its
             # table has no such column. If it is ever wired, codes it stores
             # fall back to the exchange leg's capture (bounded by the code
-            # TTL) until a column is added.
+            # TTL) until a column is added. ``client_id`` (#2750) is not
+            # persisted either, so every code it served would be refused at
+            # the exchange as client-less (#2760).
             model = OAuthAuthorizationCodeModel(
                 code=code_data.code,
                 user_id=code_data.user_id,

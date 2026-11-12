@@ -637,7 +637,7 @@ class IJWTTokenGenerator(ABC):
 
     @abstractmethod
     async def generate_token_pair(
-        self, user: User, *, state_read_at: datetime
+        self, user: User, *, state_read_at: datetime, client_id: Optional[str] = None
     ) -> Tuple[str, str]:
         """Mint an access + refresh token from ONE tenancy resolution.
 
@@ -649,6 +649,8 @@ class IJWTTokenGenerator(ABC):
         Args:
             user: User to mint the pair for.
             state_read_at: See ``generate_access_token`` (#831).
+            client_id: The OAuth client the refresh half is bound to, written
+                as its ``client_id`` claim only when it is a ``str`` (#2750).
 
         Returns:
             ``(access_token, refresh_token)``.
@@ -657,7 +659,7 @@ class IJWTTokenGenerator(ABC):
 
     @abstractmethod
     async def generate_refresh_token(
-        self, user: User, *, state_read_at: datetime
+        self, user: User, *, state_read_at: datetime, client_id: Optional[str] = None
     ) -> str:
         """Generate long-lived refresh token (7 days).
 
@@ -665,6 +667,7 @@ class IJWTTokenGenerator(ABC):
             user: User to generate token for
             state_read_at: See ``generate_access_token`` — same contract,
                 same reason (#831).
+            client_id: See ``generate_token_pair`` (#2750).
 
         Returns:
             JWT refresh token string
@@ -908,7 +911,7 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
         )
 
     async def generate_token_pair(
-        self, user: User, *, state_read_at: datetime
+        self, user: User, *, state_read_at: datetime, client_id: Optional[str] = None
     ) -> Tuple[str, str]:
         """Mint an access + refresh token from ONE tenancy resolution.
 
@@ -934,7 +937,7 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
         tenancy = await _tenancy_claims(user, self._resolve_organizations)
         return (
             self._sign_access_token(user, state_read_at, tenancy),
-            self._sign_refresh_token(user, state_read_at, tenancy),
+            self._sign_refresh_token(user, state_read_at, tenancy, client_id),
         )
 
     def _sign_access_token(
@@ -997,7 +1000,7 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
         return token
 
     async def generate_refresh_token(
-        self, user: User, *, state_read_at: datetime
+        self, user: User, *, state_read_at: datetime, client_id: Optional[str] = None
     ) -> str:
         """Generate RS256-signed refresh token.
 
@@ -1028,10 +1031,15 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
             user,
             state_read_at,
             await _tenancy_claims(user, self._resolve_organizations),
+            client_id,
         )
 
     def _sign_refresh_token(
-        self, user: User, state_read_at: datetime, tenancy: Dict[str, str]
+        self,
+        user: User,
+        state_read_at: datetime,
+        tenancy: Dict[str, str],
+        client_id: Optional[str] = None,
     ) -> str:
         """Sign one refresh token from ALREADY-RESOLVED tenancy claims.
 
@@ -1059,6 +1067,10 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
             "type": "refresh",
             **tenancy,
         }
+        if isinstance(client_id, str):
+            # The client this token was issued to (#2750), compared at the
+            # OAuth refresh grant and carried by every rotation.
+            payload["client_id"] = client_id
 
         token = jwt.encode(
             payload,
@@ -1594,7 +1606,7 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
         )
 
     async def generate_token_pair(
-        self, user: User, *, state_read_at: datetime
+        self, user: User, *, state_read_at: datetime, client_id: Optional[str] = None
     ) -> Tuple[str, str]:
         """Mint an access + refresh token from ONE tenancy resolution.
 
@@ -1620,7 +1632,7 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
         tenancy = await _tenancy_claims(user, self._resolve_organizations)
         return (
             self._sign_access_token(user, state_read_at, tenancy),
-            self._sign_refresh_token(user, state_read_at, tenancy),
+            self._sign_refresh_token(user, state_read_at, tenancy, client_id),
         )
 
     def _sign_access_token(
@@ -1687,7 +1699,7 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
         return token
 
     async def generate_refresh_token(
-        self, user: User, *, state_read_at: datetime
+        self, user: User, *, state_read_at: datetime, client_id: Optional[str] = None
     ) -> str:
         """Generate HS256-signed refresh token.
 
@@ -1717,10 +1729,15 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
             user,
             state_read_at,
             await _tenancy_claims(user, self._resolve_organizations),
+            client_id,
         )
 
     def _sign_refresh_token(
-        self, user: User, state_read_at: datetime, tenancy: Dict[str, str]
+        self,
+        user: User,
+        state_read_at: datetime,
+        tenancy: Dict[str, str],
+        client_id: Optional[str] = None,
     ) -> str:
         """Sign one refresh token from ALREADY-RESOLVED tenancy claims.
 
@@ -1748,6 +1765,8 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
             "type": "refresh",  # Token type
             **tenancy,
         }
+        if isinstance(client_id, str):
+            payload["client_id"] = client_id  # the issuing client (#2750)
 
         token = jwt.encode(
             payload,

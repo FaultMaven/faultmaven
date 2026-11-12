@@ -95,7 +95,9 @@ declare_lazy(oauth_authorization_errors, _CLIENT_LABEL_REASON)
 # ============================================================
 
 #: What every ``OAuthService`` caller of the token-exchange, PKCE, replay and
-#: expiry recorders passes: the code's client is not known on those paths.
+#: expiry recorders passes. A code that does not load names no client, so every
+#: exchange is labelled ``unknown`` and these children stay a closed set; the
+#: code's client is compared at the exchange (#2750), not labelled.
 _CALLER_CLIENT_IDS = (_UNKNOWN_CLIENT,)
 
 oauth_tokens_issued = Counter(
@@ -131,6 +133,7 @@ create_children(
             "CODE_EXPIRED",
             "REDIRECT_URI_MISMATCH",
             "PKCE_VERIFICATION_FAILED",
+            "CLIENT_MISMATCH",
         ),
     },
 )

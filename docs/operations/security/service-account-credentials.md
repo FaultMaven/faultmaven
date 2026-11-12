@@ -135,6 +135,16 @@ Standalone sentinel, which there is the correct answer.
   allowlist, so listing the id also admits it on
   `GET /api/v1/auth/oauth/authorize`. A change takes effect at restart.
 
+  The credential is bound to one client (#2750). `fm-provision-service-account`
+  stamps `--client-id` (default `faultmaven-slack-agent`) into the token and
+  prints it; the grant refuses the token with `invalid_grant` under any other
+  `client_id`, and every rotation keeps the binding. Set `--client-id` to the
+  agent's `FAULTMAVEN_OAUTH_CLIENT_ID`. A credential that a tool refreshes under
+  another client must be re-minted with `--client-id <that client>`. A
+  credential minted with no client is bound at its first refresh, but only to a
+  known client: one in `OAUTH_ALLOWED_CLIENTS`, or `faultmaven-slack-agent`;
+  under any other client it is refused.
+
   A refusal comes back as an RFC 6749 §5.2 object — `{"error": "invalid_grant",
   "error_description": "..."}` — so the code, not the prose, is what to branch
   on.
@@ -157,6 +167,7 @@ credentials, so it is safe to run against a still-healthy agent.
 | Concurrent refresh | Two refreshes with the same token: the first rotates it, the second presents a revoked token and fails. The agent single-flights refreshes to prevent this; running more than one replica against one credential reintroduces it. |
 | Outage longer than the refresh window | The stored refresh token expired. |
 | Account deactivated | A refresh reloads the user and rejects inactive accounts. Reactivate the account, then re-run. |
+| Client mismatch | The refresh is refused because the credential is bound to a client other than the one the agent sends. Re-run with `--client-id` equal to the agent's `FAULTMAVEN_OAUTH_CLIENT_ID`. |
 
 The agent reports an expired or revoked credential as a re-bootstrap error
 rather than retrying, so this shows up in its logs as a clear operator action.
