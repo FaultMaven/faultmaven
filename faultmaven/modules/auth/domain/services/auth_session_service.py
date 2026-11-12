@@ -24,7 +24,7 @@ import json
 import logging
 import math
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from pydantic import ValidationError
@@ -55,6 +55,49 @@ _FIELD_MESSAGES: Dict[str, str] = {
 #: large as the request body.
 _MAX_NAMED_REFUSALS = 5
 _MAX_REFUSED_NAME_CHARS = 64
+
+#: How deep client session metadata may nest, the metadata object itself being
+#: level 1. The store's serializer recurses once per level and fails from about
+#: 500 while the request parser accepts some 2000, so a deeper value answered
+#: 500 (#1853). No first-party client sends nested session metadata.
+MAX_CLIENT_SESSION_METADATA_DEPTH = 32
+
+
+def validate_client_session_metadata(value: Any) -> None:
+    """The one admission rule for client session metadata, on create and update.
+
+    Raises ``ValidationException`` for a value nested deeper than
+    ``MAX_CLIENT_SESSION_METADATA_DEPTH`` (counted without recursion) or one that
+    is not JSON-only: NaN, ±Infinity (``1e400`` parses as inf) and lone
+    surrogates pass ``Dict[str, Any]``, are saved, and then every read of the
+    session answers 500 because no response can render them.
+    """
+    stack = [(value, 1)]
+    while stack:
+        node, depth = stack.pop()
+        if isinstance(node, dict):
+            children = node.values()
+        elif isinstance(node, (list, tuple)):
+            children = node
+        else:
+            continue
+        if depth > MAX_CLIENT_SESSION_METADATA_DEPTH:
+            raise ValidationException(
+                "metadata must not nest deeper than "
+                f"{MAX_CLIENT_SESSION_METADATA_DEPTH} levels"
+            )
+        stack.extend((child, depth + 1) for child in children)
+    try:
+        json.dumps(value, allow_nan=False, ensure_ascii=False).encode("utf-8")
+    except (ValueError, TypeError, UnicodeEncodeError):
+        raise ValidationException("metadata must hold only JSON values") from None
+
+
+def _touched(session: SessionContext) -> SessionContext:
+    """``session`` marked active now: a heartbeat or a resume."""
+    session.last_activity = datetime.now(timezone.utc)
+    session.updated_at = session.last_activity
+    return session
 
 
 def _refusal_message(refused: List[str]) -> str:
@@ -91,10 +134,11 @@ class AuthSessionService:
     ):
         """Initialize Auth Session Service
 
-        A session's lifetime is the store's: every write through ``_persist``
-        gives it the store's TTL (``SESSION_TIMEOUT_MINUTES``) and stamps its
-        ``expires_at`` with the instant that lapses (#2301). This service holds
-        no clock of its own, so nothing here can disagree with the TTL.
+        A session's lifetime is the store's: every write (``_persist``,
+        ``_mutate``) gives it the store's TTL (``SESSION_TIMEOUT_MINUTES``) and
+        stamps its ``expires_at`` with the instant that lapses (#2301). This
+        service holds no clock of its own, so nothing here can disagree with
+        the TTL.
 
         Args:
             session_store: Session persistence store (ISessionStore interface)
@@ -155,16 +199,14 @@ class AuthSessionService:
 
         # Check for existing session for this (user_id, client_id) pair
         # Implements session resumption (spec lines 397-402)
-        if client_id:
-            existing_session = await self._find_session_by_user_and_client(
+        if client_id and self.session_store:
+            # The (user, client) index is the one lookup; ISessionStore requires it.
+            existing_id = await self.session_store.find_by_user_and_client(
                 user_id, client_id
             )
+            # Resuming is activity: the write re-arms the session's TTL.
+            existing_session = existing_id and await self._mutate(existing_id, _touched)
             if existing_session:
-                # Resuming is activity: the write re-arms the session's TTL.
-                now = datetime.now(timezone.utc)
-                existing_session.last_activity = now
-                existing_session.updated_at = now
-                await self._persist(existing_session)
                 existing_session.session_resumed = True
                 logger.info(
                     f"Session resumed for user {user_id}, client {client_id}: {existing_session.session_id}"
@@ -251,7 +293,7 @@ class AuthSessionService:
         self,
         session_id: str,
         updates: Dict[str, Any],
-    ) -> bool:
+    ) -> Optional[SessionContext]:
         """Update session metadata (authentication context only)
 
         Args:
@@ -259,12 +301,13 @@ class AuthSessionService:
             updates: Fields to set; only those in CLIENT_UPDATABLE_SESSION_FIELDS
 
         Returns:
-            True if update successful
+            The session as written, or None if there is no such session
 
         Raises:
             ValidationException: If updates name any other field, or a value
-                fails SessionContext validation or is not representable as
-                JSON. Nothing is applied either way.
+                fails SessionContext validation or
+                ``validate_client_session_metadata``. Nothing is applied
+                either way.
             ServiceException: If the stored record names a session id other
                 than the one it was read by. Nothing is written.
         """
@@ -280,51 +323,38 @@ class AuthSessionService:
         if refused:
             raise ValidationException(_refusal_message(refused))
 
-        # NaN, ±Infinity (``1e400`` parses as inf) and lone surrogates pass
-        # ``Dict[str, Any]``, are saved, and then every read of the session
-        # answers 500 because no response can render them. Refuse them here.
         if "metadata" in updates:
+            validate_client_session_metadata(updates["metadata"])
+
+        def apply(session: SessionContext) -> SessionContext:
+            # Re-validate the whole record so a wrong-typed value is refused,
+            # not stored. model_validate, never model_copy(update=...): a copy
+            # skips validation of the values it is handed. The message comes
+            # from _FIELD_MESSAGES by the failing field's name, so neither
+            # pydantic's text nor the submitted value reaches the caller.
             try:
-                json.dumps(
-                    updates["metadata"], allow_nan=False, ensure_ascii=False
-                ).encode("utf-8")
-            except (ValueError, TypeError, UnicodeEncodeError, RecursionError):
+                updated = SessionContext.model_validate(
+                    {**session.model_dump(), **updates}
+                )
+            except ValidationError as exc:
+                errors = exc.errors()
+                field = errors[0]["loc"][0] if errors and errors[0]["loc"] else None
                 raise ValidationException(
-                    "metadata must hold only JSON values"
+                    _FIELD_MESSAGES.get(field, "session update is invalid")
                 ) from None
 
-        session = await self.get_session(session_id)
-        if not session:
-            return False
+            # A stored record claiming another id must not be written as that
+            # session: the #1834 mechanism, reached from the stored side
+            # instead of the body.
+            if updated.session_id != session_id:
+                raise ServiceException(
+                    "Stored session record does not match the id it was read by; "
+                    "not updated"
+                )
+            updated.updated_at = datetime.now(timezone.utc)
+            return updated
 
-        # Re-validate the whole record so a wrong-typed value is refused, not
-        # stored. model_validate, never model_copy(update=...): a copy skips
-        # validation of the values it is handed. The message comes from
-        # _FIELD_MESSAGES by the failing field's name, so neither pydantic's
-        # text nor the submitted value reaches the caller.
-        try:
-            updated = SessionContext.model_validate({**session.model_dump(), **updates})
-        except ValidationError as exc:
-            errors = exc.errors()
-            field = errors[0]["loc"][0] if errors and errors[0]["loc"] else None
-            raise ValidationException(
-                _FIELD_MESSAGES.get(field, "session update is invalid")
-            ) from None
-
-        # save() keys its write on the record's own session_id. A stored record
-        # claiming another id would redirect this write onto that session: the
-        # #1834 mechanism, reached from the stored side instead of the body.
-        if updated.session_id != session_id:
-            raise ServiceException(
-                "Stored session record does not match the id it was read by; "
-                "not updated"
-            )
-
-        updated.updated_at = datetime.now(timezone.utc)
-
-        await self._persist(updated)
-
-        return True
+        return await self._mutate(session_id, apply)
 
     @trace("session_service_update_last_activity")
     async def update_last_activity(self, session_id: str) -> bool:
@@ -336,16 +366,7 @@ class AuthSessionService:
         Returns:
             True if updated successfully
         """
-        session = await self.get_session(session_id)
-        if not session:
-            return False
-
-        session.last_activity = datetime.now(timezone.utc)
-        session.updated_at = session.last_activity
-
-        await self._persist(session)
-
-        return True
+        return await self._mutate(session_id, _touched) is not None
 
     @trace("session_service_delete_session")
     async def delete_session(self, session_id: str) -> bool:
@@ -458,29 +479,6 @@ class AuthSessionService:
     # Private Helper Methods
     # =========================================================================
 
-    async def _find_session_by_user_and_client(
-        self, user_id: str, client_id: str
-    ) -> Optional[SessionContext]:
-        """Find existing session for (user, client) pair for resumption
-
-        Args:
-            user_id: User identifier
-            client_id: Client identifier
-
-        Returns:
-            Existing session if found and valid, None otherwise
-        """
-        if not self.session_store:
-            return None
-
-        # The (user, client) index is the one lookup; ISessionStore requires it.
-        session_id = await self.session_store.find_by_user_and_client(
-            user_id, client_id
-        )
-        if not session_id:
-            return None
-        return await self.get_session(session_id)
-
     async def _enforce_session_limit(self, user_id: str) -> None:
         """Make room for one more session within the per-user limit
 
@@ -541,6 +539,40 @@ class AuthSessionService:
         if not self.session_store:
             return
         await self.session_store.save(session)
+        await self._rearm_client_index(session)
+
+    async def _mutate(
+        self,
+        session_id: str,
+        change: Callable[[SessionContext], SessionContext],
+    ) -> Optional[SessionContext]:
+        """Apply ``change`` to the stored session in one compare-and-set write
+
+        Every writer of an existing session comes here, never through a
+        read and a whole-record ``save``: ``change`` sets only its own fields
+        on the record the store hands it, and the store re-applies it when a
+        concurrent write landed first, so a heartbeat and an update both land
+        (#1854). An expired session is not written. The write re-arms the TTL
+        and the client index, as ``_persist`` does.
+
+        Returns:
+            The session as written, or None if it is absent or expired
+        """
+        if not self.session_store:
+            raise ServiceException("Session store not configured")
+
+        def mutate(session: SessionContext) -> Optional[SessionContext]:
+            now = datetime.now(timezone.utc)
+            expired = session.expires_at and now > session.expires_at
+            return None if expired else change(session)
+
+        written = await self.session_store.mutate_session(session_id, mutate)
+        if written:
+            await self._rearm_client_index(written)
+        return written
+
+    async def _rearm_client_index(self, session: SessionContext) -> None:
+        """Re-arm the (user, client) index to the session's expiry"""
         if session.client_id and session.expires_at:
             remaining = session.expires_at - datetime.now(timezone.utc)
             await self.session_store.index_session_by_client(
@@ -581,11 +613,9 @@ class AuthSessionService:
         # Apply filters
         filtered = all_sessions
 
-        # Status filter
+        # Status filter: the server-owned field, never client metadata (#1854)
         if status:
-            filtered = [
-                s for s in filtered if s.metadata.get("status", "active") == status
-            ]
+            filtered = [s for s in filtered if s.status == status]
 
         # Text query filter (searches in metadata)
         if query:
@@ -616,17 +646,14 @@ class AuthSessionService:
         Returns:
             True if archived successfully, False if session not found
         """
-        session = await self.get_session(session_id)
-        if not session:
+
+        def archive(session: SessionContext) -> SessionContext:
+            session.status = "archived"
+            session.updated_at = datetime.now(timezone.utc)
+            return session
+
+        if not await self._mutate(session_id, archive):
             return False
-
-        # Update status in metadata
-        if not session.metadata:
-            session.metadata = {}
-        session.metadata["status"] = "archived"
-        session.updated_at = datetime.now(timezone.utc)
-
-        await self._persist(session)
 
         logger.info(f"Session {session_id} archived")
         return True

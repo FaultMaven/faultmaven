@@ -1,6 +1,12 @@
 {
-  "contractVersion": "14.22.0",
+  "contractVersion": "14.23.0",
   "entries": [
+    {
+      "body": "Client session metadata nested deeper than 32 levels, or holding a value that\nis not JSON, is refused 400 on `POST /api/v1/sessions` and on\n`PUT /api/v1/sessions/{session_id}`, and nothing is written. Both answered 500\nfrom about depth 500, and the mint stored NaN and lone surrogates unchecked.\n\nA session's status is now server-owned: `POST .../{session_id}/archive` sets\nit, and no client field does. `GET /api/v1/sessions/{session_id}` reports it,\nso its `status` reads `archived` for an archived session instead of always\n`active`. An archived session no longer carries `metadata.status`.\n\nMINOR because every client survives it: no first-party client calls the\narchive route or the session read, and the mint's new 400 answers only bodies\nit answered 500 before.",
+      "level": "MINOR",
+      "title": "`POST /api/v1/sessions` documents a 400 for client `metadata`, and `AuthSessionStatus` gains `archived` (#1853, #1854).",
+      "version": "14.23.0"
+    },
     {
       "body": "One more key in the existing `Dict[str, FeatureStatus]`. `enabled` is true\nwhen every TLS root variable the process exported names one file, that file\nloads and holds exactly the OS CA bundle plus `TLS_EXTRA_CA_FILE` when set, as\nthey read now, and `SSL_CERT_DIR` names a directory with no certificate.\n`description` names the file, its certificate count and the\n`TLS_EXTRA_CA_FILE` path (never its contents), or why it is not in force, or\nthat the set cannot be verified because its sources changed since the start;\n`config_hint` carries the count, or \"unknown\". Read from the worker's\nenvironment on each request; nothing is written.\n\nMINOR because every client survives it: a new key on an operator-only\nresponse, which a client that does not read it ignores.",
       "level": "MINOR",

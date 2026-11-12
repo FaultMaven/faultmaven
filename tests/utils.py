@@ -5,10 +5,12 @@ and other shared test infrastructure.
 """
 
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Dict, Iterable, Iterator, List, Optional
 from uuid import uuid4
 
+from faultmaven.models.common import SessionContext
+from faultmaven.models.interfaces import ISessionStore
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     ITokenRevocationStore,
     SequentialRevocationState,
@@ -1077,43 +1079,99 @@ def request_with_authorization(authorization: Optional[str] = None) -> "Request"
     )
 
 
-def minimal_session_service(settings=None):
-    """The session stand-in ``create_session_service`` returns given no store.
+class InMemorySessionStore(ISessionStore):
+    """A loop-free, dict-backed ``ISessionStore`` for the real
+    ``AuthSessionService``, where a Redis client cannot go (#1855).
 
-    ``settings`` is what the container would hold; the stand-in reads its
-    ``session`` section (the TTL and the per-user limit) and defaults without it.
-
-    Built through the production factory rather than copied, so a change to the
-    degraded fallback reaches whatever is measuring it instead of leaving it
-    measuring a replica of what the fallback used to be. That is the whole
-    reason the helper exists, which is why it lives HERE rather than being
-    spelled out per module: a copied accessor is a copy of the thing the
-    helper was meant to stop copying (#1447 review).
-
-    How many accessors of this private factory exist, and the scan that found
-    the number — ``grep -rn '_create_minimal_session_service' tests/``: four
-    before this, two of them added by #1447 and now replaced by this one. The
-    two that remain are out of this change's scope and are named so the next
-    caller converges here rather than adding a fifth:
-    ``tests/unit/container/test_minimal_session_service_validate.py`` and
-    ``tests/unit/architecture/test_contract_signature_conformance.py``
-    (whose ``minimal_session_service`` is the same thing under another roof).
-
-    ``object.__new__`` rather than ``DIContainer.__new__``: the latter returns
-    the process singleton, so calling it observes and mutates whatever the rest
-    of the suite has built. The factory itself is self-contained and needs no
-    initialised container.
-
-    Imported through the package facade: ``faultmaven._container_impl`` imports
-    ``faultmaven.container``, which imports it back, so reaching the
-    implementation module first raises ImportError on a partially initialised
-    module.
+    A FakeRedis client binds to the first event loop that touches it, so a
+    module-scoped app, or a test that calls ``asyncio.run`` per step, cannot
+    share one. Sessions are held as copies, as Redis holds bytes, and one past
+    its ``expires_at`` reads as gone, as Redis drops a key whose TTL lapsed.
+    ``mutate_session`` reads and writes with no ``await`` between, so it
+    compares and writes in one step. ``test_contract_signature_conformance.py``
+    holds every method to ``RedisSessionStore``'s signature. The plain keys
+    (``get``/``set``) are a namespace apart; what nothing here drives raises.
     """
-    from faultmaven.container import DIContainer
 
-    container = object.__new__(DIContainer)
-    container.settings = settings
-    return container._create_minimal_session_service()
+    def __init__(self, session_ttl_seconds: int = 1800):
+        self.session_ttl_seconds = session_ttl_seconds
+        self.sessions: Dict[str, SessionContext] = {}
+        self.values: Dict[str, Any] = {}
+        self.client_index: Dict[tuple, str] = {}
+
+    def _live(self, session_id: str) -> Optional[SessionContext]:
+        session = self.sessions.get(session_id)
+        expires_at = session and session.expires_at
+        if expires_at and datetime.now(timezone.utc) > expires_at:
+            del self.sessions[session_id]
+            return None
+        return session and session.model_copy(deep=True)
+
+    def _write(self, session_id: str, session: SessionContext) -> None:
+        session.expires_at = datetime.now(timezone.utc) + timedelta(
+            seconds=self.session_ttl_seconds
+        )
+        self.sessions[session_id] = session.model_copy(deep=True)
+
+    async def get_session(self, session_id, validate=True):
+        return self._live(session_id)
+
+    async def save(self, session):
+        self._write(session.session_id, session)
+
+    async def mutate_session(self, session_id, mutate):
+        current = self._live(session_id)
+        written = mutate(current) if current else None
+        if written:
+            self._write(session_id, written)
+        return written
+
+    async def delete_session(self, session_id):
+        return self.sessions.pop(session_id, None) is not None
+
+    async def list_sessions(self, user_id):
+        live = (self._live(session_id) for session_id in list(self.sessions))
+        mine = [s for s in live if s and s.user_id == user_id]
+        return sorted(mine, key=lambda s: s.created_at)
+
+    async def find_by_user_and_client(self, user_id, client_id):
+        return self.client_index.get((user_id, client_id))
+
+    async def index_session_by_client(self, user_id, client_id, session_id, ttl):
+        self.client_index[(user_id, client_id)] = session_id
+
+    async def remove_client_index(self, user_id, client_id):
+        self.client_index.pop((user_id, client_id), None)
+
+    async def get(self, key):
+        return self.values.get(key)
+
+    async def set(self, key, value, ttl=None):
+        self.values[key] = value
+
+    async def delete(self, key):
+        return self.values.pop(key, None) is not None
+
+    async def exists(self, key):
+        return key in self.values
+
+    async def extend_ttl(self, key, ttl=None):
+        raise NotImplementedError("InMemorySessionStore does not model TTLs")
+
+    async def increment_counter(self, key, ttl=None):
+        raise NotImplementedError("InMemorySessionStore does not model counters")
+
+    async def delete_keys_holding(self, match, value):
+        raise NotImplementedError("InMemorySessionStore does not model key scans")
+
+
+def in_memory_session_service(settings=None):
+    """The real ``AuthSessionService`` over an ``InMemorySessionStore``."""
+    from faultmaven.modules.auth.domain.services.auth_session_service import (
+        AuthSessionService,
+    )
+
+    return AuthSessionService(session_store=InMemorySessionStore(), settings=settings)
 
 
 def uncomposed_auth_service():

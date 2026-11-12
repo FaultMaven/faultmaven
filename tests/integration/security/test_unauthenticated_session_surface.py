@@ -7,12 +7,10 @@ was no parametrisation in which a caller presents no credential, so five session
 routes that took no auth dependency at all were found by a person reading rather
 than by CI.
 
-This module is that missing arm for the surface it was found on, and it is
-driven against the session service that made the finding LIVE rather than
-theoretical. ``RedisSessionStore.list_sessions()`` was then a stub returning
-``[]`` (#2297 indexed it), which is what made the enumeration look like a future
-hazard — but that store is one of **two** implementations. ``MinimalSessionService``
-(``_container_impl._create_minimal_session_service``) ships a working
+This module is that missing arm for the surface it was found on.
+``RedisSessionStore.list_sessions()`` was then a stub returning ``[]`` (#2297
+indexed it), which is what made the enumeration look like a future hazard — but
+an in-memory stand-in session service, deleted by #1855, shipped a working
 ``list_sessions`` with the ``user_id`` filter, and ``create_session_service``
 installed it whenever the real service could not be constructed, until #2103.
 Measured on that path with no ``Authorization`` header, before the fix:
@@ -23,7 +21,9 @@ Measured on that path with no ``Authorization`` header, before the fix:
     DELETE /api/v1/sessions/<victim's session>-> 204, and the session was gone
 
 So the service under test here is chosen, not convenient: a probe run against
-the stub would have passed on an empty list and proved nothing.
+the stub would have passed on an empty list and proved nothing. It is the real
+``AuthSessionService`` over a dict-backed store (``tests.utils``), whose listing
+works and which survives the per-step event loops below.
 
 Two batteries, because the routes have two properties and one does not imply the
 other. **Anonymous** — a caller with no credential is refused. **Foreign** — an
@@ -50,7 +50,7 @@ from faultmaven.api.v1.auth_dependencies import require_authentication
 from faultmaven.api.v1.dependencies import get_session_service
 from faultmaven.modules.auth.api.session import router as session_router
 from faultmaven.modules.auth.domain.models.auth import DevUser
-from tests.utils import minimal_session_service, uncomposed_auth_service
+from tests.utils import in_memory_session_service, uncomposed_auth_service
 
 pytestmark = [pytest.mark.integration, pytest.mark.security]
 
@@ -77,7 +77,7 @@ class _Surface:
     """A mounted session router, its service, and the two minted sessions."""
 
     def __init__(self, caller: DevUser | None):
-        self.service = minimal_session_service()
+        self.service = in_memory_session_service()
 
         app = FastAPI()
         # ``prefix="/api/v1"`` exactly as ``main.py`` mounts it — the router
@@ -107,7 +107,7 @@ class _Surface:
         self.other = asyncio.run(self.service.create_session(OTHER))[0]
 
     def alive(self, session_id: str) -> bool:
-        return session_id in self.service.sessions
+        return session_id in self.service.session_store.sessions
 
 
 @pytest.fixture
@@ -150,7 +150,7 @@ def test_the_probe_is_aimed_at_the_service_that_makes_the_listing_work(anonymous
     fails, the battery below has gone back to measuring an empty list and every
     401 it asserts would hold for a route that returns nothing to anyone.
     """
-    assert type(anonymous.service).__name__ == "MinimalSessionService"
+    assert type(anonymous.service).__name__ == "AuthSessionService"
     for user_id, session in ((VICTIM, anonymous.victim), (OTHER, anonymous.other)):
         listed = asyncio.run(anonymous.service.list_sessions(user_id=user_id))
         assert [s.session_id for s in listed] == [session.session_id]
@@ -297,31 +297,13 @@ def _assert_lists_only_a_named_user(service) -> None:
 
 
 def test_layer_three_a_supplied_blank_filter_matches_nothing(anonymous):
-    """The service, called directly. Both implementations, one shape.
+    """The service, called directly: the real one, since #1855.
 
     A listing names its user. A blank name names nobody and lists nothing, and
     there is no "no filter, all sessions" form: nothing in production read it
     (#2297).
     """
     _assert_lists_only_a_named_user(anonymous.service)
-
-
-def test_layer_three_holds_for_the_real_service_too(anonymous):
-    """``AuthSessionService`` shares the shape, so it gets the same assertion.
-
-    Driven against a stub store rather than Redis: the only thing under test is
-    the filter branch, and wiring a real store would test the store.
-    """
-    from faultmaven.modules.auth.domain.services.auth_session_service import (
-        AuthSessionService,
-    )
-
-    class _Store:
-        async def list_sessions(self, user_id):
-            sessions = anonymous.service.sessions.values()
-            return [s for s in sessions if s.user_id == user_id]
-
-    _assert_lists_only_a_named_user(AuthSessionService(session_store=_Store()))
 
 
 def test_layer_two_the_route_refuses_a_principal_with_no_subject(as_blank_principal):

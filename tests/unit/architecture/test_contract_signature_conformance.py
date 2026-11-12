@@ -386,23 +386,16 @@ def public_callables(obj: Any) -> Dict[str, Any]:
 # ============================================================
 
 
-def _bare_container():
-    """A DIContainer shell with no session state.
+def in_memory_session_store():
+    """The dict-backed store the session-route tests drive the real service on.
 
-    ``DIContainer.__new__`` returns SESSION STATE (the process singleton), so
-    calling it here would mutate/observe whatever the rest of the suite has
-    built. ``object.__new__`` gives an unowned shell that is enough to call
-    ``_create_minimal_session_service``, which is self-contained.
+    A test double, not a container stand-in: the container has none since
+    #1855. Held to ``RedisSessionStore`` all the same, so the tests that drive
+    ``AuthSessionService`` over it call the store the way production does.
     """
-    # Imported via the package facade: importing ``_container_impl`` directly
-    # trips a circular import (it re-enters ``faultmaven.container``).
-    from faultmaven.container import DIContainer
+    from tests.utils import InMemorySessionStore
 
-    return object.__new__(DIContainer)
-
-
-def minimal_session_service():
-    return _bare_container()._create_minimal_session_service()
+    return InMemorySessionStore()
 
 
 # ============================================================
@@ -460,6 +453,7 @@ def _build_registry() -> Dict[str, RegistryEntry]:
         IAgentToolRegistry,
         IKnowledgeVectorStore,
         ISanitizer,
+        ISessionStore,
     )
     from faultmaven.models.interfaces_case import ICaseService
     from faultmaven.modules.agent.tools.base import AgentToolRegistry
@@ -494,6 +488,9 @@ def _build_registry() -> Dict[str, RegistryEntry]:
     )
     from faultmaven.modules.auth.infrastructure.sso.workos_provider import (
         WorkOSIdentityProvider,
+    )
+    from faultmaven.modules.auth.infrastructure.stores.redis_session_store import (
+        RedisSessionStore,
     )
     from faultmaven.modules.case.contracts import (
         ICaseAccountReader,
@@ -543,10 +540,11 @@ def _build_registry() -> Dict[str, RegistryEntry]:
     )
 
     entries = (
+        RegistryEntry(interface=ISessionService, reals=(AuthSessionService,)),
         RegistryEntry(
-            interface=ISessionService,
-            reals=(AuthSessionService,),
-            standins=(("MinimalSessionService", minimal_session_service),),
+            interface=ISessionStore,
+            reals=(RedisSessionStore,),
+            standins=(("InMemorySessionStore", in_memory_session_store),),
         ),
         # No stand-in: a case service is never built without a repository
         # (#2548), so nothing duck-types this surface.

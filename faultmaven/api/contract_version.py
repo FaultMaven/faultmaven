@@ -151,6 +151,27 @@ def validate_contract_changes(changes: tuple[ContractChange, ...]) -> None:
 
 CONTRACT_CHANGES: tuple[ContractChange, ...] = (
     ContractChange(
+        version="14.23.0",
+        level="MINOR",
+        title=(
+            "`POST /api/v1/sessions` documents a 400 for client `metadata`, and "
+            "`AuthSessionStatus` gains `archived` (#1853, #1854)."
+        ),
+        body=r"""Client session metadata nested deeper than 32 levels, or holding a value that
+is not JSON, is refused 400 on `POST /api/v1/sessions` and on
+`PUT /api/v1/sessions/{session_id}`, and nothing is written. Both answered 500
+from about depth 500, and the mint stored NaN and lone surrogates unchecked.
+
+A session's status is now server-owned: `POST .../{session_id}/archive` sets
+it, and no client field does. `GET /api/v1/sessions/{session_id}` reports it,
+so its `status` reads `archived` for an archived session instead of always
+`active`. An archived session no longer carries `metadata.status`.
+
+MINOR because every client survives it: no first-party client calls the
+archive route or the session read, and the mint's new 400 answers only bodies
+it answered 500 before.""",
+    ),
+    ContractChange(
         version="14.22.0",
         level="MINOR",
         title=(

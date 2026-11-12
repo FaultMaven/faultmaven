@@ -325,9 +325,7 @@ async def test_a_session_lives_session_timeout_minutes_past_its_last_write(
     store = create_session_store(real_redis, settings)
     store.prefix = f"{namespace}session:"
     store.user_index_prefix = f"{namespace}sessions:user:"
-    service = create_session_service(
-        store, settings, lambda: pytest.fail("the real session service failed")
-    )
+    service = create_session_service(store, settings)
     timeout_ms = 7 * 60 * 1000
 
     session, _ = await service.create_session("user-a")

@@ -627,7 +627,8 @@
         "enum": [
           "active",
           "expired",
-          "terminated"
+          "terminated",
+          "archived"
         ],
         "title": "AuthSessionStatus",
         "type": "string"
@@ -7934,7 +7935,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "14.22.0"
+    "version": "14.23.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -14668,6 +14669,9 @@
             },
             "description": "Session created or resumed successfully"
           },
+          "400": {
+            "description": "`metadata` nests deeper than 32 levels or holds a value that is not JSON. Nothing is created."
+          },
           "404": {
             "content": {
               "application/json": {
@@ -14849,7 +14853,7 @@
         ]
       },
       "put": {
-        "description": "Update session metadata.\n\nImplements microservices parity with fm-session-service.\nUpdates authentication-related metadata only (not case data).\n\nArgs:\n    session_id: Session identifier\n    updates: Fields to update. Only `metadata` (a JSON object, which\n        replaces the stored one) may be updated.\n\nReturns:\n    Updated session information\n\nRaises:\n    404: Session not found\n    403: User not authorized to update this session\n    400: Any field other than `metadata`, or a `metadata` that is not a\n        JSON object. Nothing is updated.",
+        "description": "Update session metadata.\n\nImplements microservices parity with fm-session-service.\nUpdates authentication-related metadata only (not case data).\n\nArgs:\n    session_id: Session identifier\n    updates: Fields to update. Only `metadata` (a JSON object, which\n        replaces the stored one) may be updated.\n\nReturns:\n    Updated session information\n\nRaises:\n    404: Session not found\n    403: User not authorized to update this session\n    400: Any field other than `metadata`, or a `metadata` that is not a\n        JSON object, nests deeper than 32 levels or holds a value that is\n        not JSON. Nothing is updated.",
         "operationId": "update_session_api_v1_sessions__session_id__put",
         "parameters": [
           {

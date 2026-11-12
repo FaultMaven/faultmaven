@@ -50,6 +50,7 @@ from faultmaven.models.api import (
 from faultmaven.modules.auth.domain.models.auth import DevUser
 from faultmaven.modules.auth.domain.services.auth_session_service import (
     AuthSessionService,
+    validate_client_session_metadata,
 )
 from faultmaven.modules.auth.infrastructure.metrics import session_metrics
 from faultmaven.utils.serialization import to_json_compatible
@@ -235,6 +236,12 @@ def mint_caller(http_request: Request) -> MintCaller:
                 }
             },
         },
+        400: {
+            "description": (
+                "`metadata` nests deeper than 32 levels or holds a value that is "
+                "not JSON. Nothing is created."
+            )
+        },
         410: {
             "description": "Session gone (alternative to 404 for expired sessions)",
             "content": {
@@ -305,6 +312,8 @@ async def create_session(
             if request.session_type:
                 metadata["session_type"] = request.session_type
             if request.metadata:
+                # Before anything is written: the rule PUT applies (#1853).
+                validate_client_session_metadata(request.metadata)
                 metadata.update(request.metadata)
 
         # WHOSE identity this session is minted for is the SERVER's answer.
@@ -400,6 +409,8 @@ async def create_session(
             "timeout_minutes": timeout_minutes,
             "message": f"Session {action_verb} successfully",
         }
+    except ValidationException as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Failed to create session: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to create session")
@@ -509,7 +520,7 @@ async def get_session(
         return SessionResponse(
             session_id=session.session_id,
             user_id=session.user_id,
-            status=AuthSessionStatus.ACTIVE,
+            status=AuthSessionStatus(session.status),
             created_at=_safe_datetime_to_utc_string(session.created_at),
             # `last_activity` only. `data_uploads_count` and
             # `case_history_count` counted lists NOTHING EVER APPENDS TO, so
@@ -532,9 +543,9 @@ async def get_session(
 # route used to take no auth dependency at all AND a `user_id` query FILTER, so
 # an anonymous caller could name a user and read back their session ids — and,
 # unfiltered, every session id with the identity it is bound to (#1447 §1,
-# measured against MinimalSessionService, which ships a working list_sessions
-# and which create_session_service installed whenever the real service could not
-# be constructed, until #2103).
+# measured against a since-deleted in-memory stand-in that shipped a working
+# list_sessions and which create_session_service installed whenever the real
+# service could not be constructed, until #2103; #1855 deleted it).
 #
 # The filter is REMOVED rather than ignored, for the argument contract 6.0.0
 # made about the identical parameter on `POST /api/v1/sessions`: once the
@@ -877,7 +888,8 @@ async def update_session(
         404: Session not found
         403: User not authorized to update this session
         400: Any field other than `metadata`, or a `metadata` that is not a
-            JSON object. Nothing is updated.
+            JSON object, nests deeper than 32 levels or holds a value that is
+            not JSON. Nothing is updated.
     """
     try:
         # Get session to check ownership
@@ -891,13 +903,12 @@ async def update_session(
                 status_code=403, detail="Not authorized to update this session"
             )
 
-        # Update session
-        success = await session_service.update_session(session_id, updates)
-        if not success:
-            raise HTTPException(status_code=500, detail="Failed to update session")
-
-        # Get updated session
-        updated_session = await session_service.get_session(session_id)
+        # Answered from the record the update wrote, never a re-read: a write
+        # landing after it would be reported as this update's result. None
+        # means the session went between the ownership check and the write.
+        updated_session = await session_service.update_session(session_id, updates)
+        if not updated_session:
+            raise HTTPException(status_code=404, detail="Session not found")
 
         logger.info(f"Updated session {session_id} for user {current_user.user_id}")
 
@@ -975,7 +986,7 @@ async def search_sessions(
                     "last_activity": _safe_datetime_to_utc_string(
                         session.last_activity
                     ),
-                    "status": session.metadata.get("status", "active"),
+                    "status": session.status,
                     "metadata": session.metadata,
                 }
             )

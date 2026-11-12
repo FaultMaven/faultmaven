@@ -347,7 +347,7 @@ class CaseDataIngestionService:
 
         # Record operation in session if session service is available
         if self._session_service and session_id:
-            # Check if session service has the record method (not available in MinimalSessionService)
+            # Check if session service has the record method (AuthSessionService has none)
             if hasattr(self._session_service, "record_data_upload_operation"):
                 try:
                     # Build metadata including context for case/user association
@@ -372,9 +372,7 @@ class CaseDataIngestionService:
                         f"Failed to record data upload operation in session: {e}"
                     )
             else:
-                logger.debug(
-                    "Session service does not support data upload tracking (MinimalSessionService)"
-                )
+                logger.debug("Session service does not support data upload tracking")
 
         return uploaded_data
 
@@ -1616,11 +1614,9 @@ class CaseDataIngestionService:
 
     async def _record_enhanced_operation(self, result: EnhancedIngestionResult):
         """Record enhanced operation in session service"""
-        # Check if session service has the record method (not available in MinimalSessionService)
+        # Check if session service has the record method (AuthSessionService has none)
         if not hasattr(self._session_service, "record_data_upload_operation"):
-            logger.debug(
-                "Session service does not support data upload tracking (MinimalSessionService)"
-            )
+            logger.debug("Session service does not support data upload tracking")
             return
 
         try:
