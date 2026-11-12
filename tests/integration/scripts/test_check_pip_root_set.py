@@ -33,8 +33,9 @@ SCRIPT = Path(__file__).resolve().parents[3] / "scripts" / "check_pip_root_set.p
 OS_CAFILE = ssl.get_default_verify_paths().openssl_cafile
 #: A guard against a hung worker, not a speed assertion: two pip sessions.
 BUDGET_SECONDS = 120
-#: The first two would point pip at the OS cafile, the last two would move the
-#: reference off it: the script pops all four.
+#: The first two would point pip at the OS cafile, SSL_CERT_FILE would move the
+#: reference off it; SSL_CERT_DIR moves neither (get_ca_certs lists no capath
+#: certificate). The script pops all four.
 CA_VARIABLES = ("REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "SSL_CERT_FILE", "SSL_CERT_DIR")
 
 
