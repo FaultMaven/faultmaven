@@ -116,9 +116,13 @@ class NoOpContextManager:
 #: combinations would exceed it declares ``lazy_labels`` instead.
 MAX_DECLARED_CHILDREN = 100
 
-#: Each bounded declaration made on a real counter: (metric name, label names,
-#: combinations created). Read by the exposition test.
+#: Each bounded declaration made on a real counter: (exposed metric name, label
+#: names, combinations created). Read by the exposition test.
 DECLARED_CHILDREN: List[Tuple[str, Tuple[str, ...], Tuple[Tuple[str, ...], ...]]] = []
+
+#: Each lazy declaration made on a real counter: (exposed metric name, reason).
+#: Read by the exposition test.
+LAZY_DECLARED: List[Tuple[str, str]] = []
 
 
 def _combinations(
@@ -128,20 +132,25 @@ def _combinations(
 ) -> Tuple[Tuple[str, ...], ...]:
     """Every child *label_values* declares, in *labelnames* order; ValueError
     naming *name* when the declaration does not cover exactly those labels with
-    non-empty value sets, or would create more than ``MAX_DECLARED_CHILDREN``."""
+    non-empty value sets, or would create more than ``MAX_DECLARED_CHILDREN``.
+
+    Each value set is read once, so a generator works."""
     names = tuple(labelnames)
     if set(label_values) != set(names):
         raise ValueError(
             f"Counter {name!r}: label_values keys {sorted(label_values)} are not "
             f"its labelnames {sorted(names)} (#1787)"
         )
-    value_sets = [tuple(label_values[label]) for label in names]
-    for label, values in zip(names, value_sets):
-        if not values or isinstance(label_values[label], str):
+    value_sets = []
+    for label in names:
+        raw = label_values[label]
+        values = () if isinstance(raw, str) else tuple(raw)
+        if not values:
             raise ValueError(
                 f"Counter {name!r}: label_values[{label!r}] is empty or a bare "
                 "string, not a set of values (#1787)"
             )
+        value_sets.append(values)
     combos = tuple(itertools.product(*value_sets))
     if len(combos) > MAX_DECLARED_CHILDREN:
         raise ValueError(
@@ -151,49 +160,80 @@ def _combinations(
     return combos
 
 
+def _check_reason(name: str, reason: Optional[str]) -> None:
+    if reason is None or not reason.strip():
+        raise ValueError(f"Counter {name!r}: lazy_labels is an empty reason (#1787)")
+
+
 def _check_declaration(
     name: str,
     labelnames: List[str],
     label_values: Optional[Mapping[str, Iterable[str]]],
     lazy_labels: Optional[str],
-) -> None:
-    """Refuse a counter whose children are not declared (#1787)."""
+) -> Tuple[Tuple[str, ...], ...]:
+    """Refuse a counter whose children are not declared (#1787); return the
+    children a ``label_values`` declaration creates (none otherwise)."""
     if not labelnames:
         if label_values is not None or lazy_labels is not None:
             raise ValueError(
                 f"Counter {name!r} has no labels, so it declares neither "
                 "label_values nor lazy_labels (#1787)"
             )
-        return
+        return ()
     if (label_values is None) == (lazy_labels is None):
         raise ValueError(
             f"Counter {name!r} is labelled, so it declares exactly one of "
             "label_values (closed value sets, created at 0) or lazy_labels "
             "(why a label is open-ended) (#1787)"
         )
-    if lazy_labels is not None:
-        if not lazy_labels.strip():
-            raise ValueError(
-                f"Counter {name!r}: lazy_labels is an empty reason (#1787)"
-            )
-        return
-    _combinations(name, labelnames, label_values)
+    if label_values is None:
+        _check_reason(name, lazy_labels)
+        return ()
+    return _combinations(name, labelnames, label_values)
+
+
+def _exposed_name(name: str, namespace: str, subsystem: str, unit: str) -> str:
+    """The family name ``prometheus_client`` exposes a counter under."""
+    full = "_".join(part for part in (namespace, subsystem, name) if part)
+    if full.endswith("_total"):
+        full = full[: -len("_total")]
+    if unit and not full.endswith("_" + unit):
+        full += "_" + unit
+    return full
+
+
+def _create(metric: Any, exposed: str, labelnames, combos) -> None:
+    for combo in combos:
+        metric.labels(*combo)
+    DECLARED_CHILDREN.append((exposed, tuple(labelnames), combos))
 
 
 def create_children(metric: Any, label_values: Mapping[str, Iterable[str]]) -> None:
     """Create every child *label_values* declares on *metric*, at 0, and record it.
 
-    A no-op on a ``NoOpMetric`` or without ``prometheus_client``. The shim's
-    ``Counter`` calls it; a module that builds its counters straight from
-    ``prometheus_client`` calls it after the definition.
+    For a module that builds its counters straight from ``prometheus_client``,
+    called after the definition (the shim's ``Counter`` takes ``label_values``).
+    A no-op on a ``NoOpMetric``, without ``prometheus_client`` or with metrics
+    disabled; a declaration that does not fit the counter raises ValueError
+    whenever the counter is real.
     """
     if isinstance(metric, NoOpMetric) or not PROMETHEUS_AVAILABLE:
         return
-    labelnames = tuple(metric._labelnames)
-    combos = _combinations(metric._name, labelnames, label_values)
-    for combo in combos:
-        metric.labels(*combo)
-    DECLARED_CHILDREN.append((metric._name, labelnames, combos))
+    combos = _combinations(metric._name, metric._labelnames, label_values)
+    if _is_metrics_enabled():
+        _create(metric, metric._name, metric._labelnames, combos)
+
+
+def declare_lazy(metric: Any, reason: str) -> None:
+    """Record why *metric*'s labels are open-ended, for a module that builds its
+    counters straight from ``prometheus_client``. ValueError on an empty
+    *reason*; otherwise a no-op on a ``NoOpMetric``, without ``prometheus_client``
+    or with metrics disabled."""
+    _check_reason(getattr(metric, "_name", "?"), reason)
+    if isinstance(metric, NoOpMetric) or not PROMETHEUS_AVAILABLE:
+        return
+    if _is_metrics_enabled():
+        LAZY_DECLARED.append((metric._name, reason))
 
 
 def Counter(
@@ -226,8 +266,8 @@ def Counter(
         subsystem: Optional metric subsystem
         unit: Optional metric unit
         registry: Optional Prometheus registry
-        label_values: Each label name's closed set of values; every
-            combination is created at 0 (``create_children``)
+        label_values: Each label name's closed set of values, read once;
+            every combination is created at 0
         lazy_labels: Which label is open-ended and how its series is read
 
     Returns:
@@ -242,7 +282,7 @@ def Counter(
         )
         request_counter.labels(method='GET', endpoint='/api/cases').inc()
     """
-    _check_declaration(name, labelnames or [], label_values, lazy_labels)
+    children = _check_declaration(name, labelnames or [], label_values, lazy_labels)
     metrics_enabled = _is_metrics_enabled()
 
     if PROMETHEUS_AVAILABLE and metrics_enabled:
@@ -259,8 +299,11 @@ def Counter(
             # and therefore invisible to /metrics.
             **({"registry": registry} if registry is not None else {}),
         )
+        exposed = _exposed_name(name, namespace, subsystem, unit)
         if label_values is not None:
-            create_children(counter, label_values)
+            _create(counter, exposed, labelnames, children)
+        elif lazy_labels is not None:
+            LAZY_DECLARED.append((exposed, lazy_labels))
         return counter
     else:
         logger.debug(

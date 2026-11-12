@@ -18,7 +18,7 @@ for the canonical alert definitions.
 
 import logging
 
-from faultmaven.infrastructure.shims.metrics import create_children
+from faultmaven.infrastructure.shims.metrics import create_children, declare_lazy
 from faultmaven.modules.case.contracts import EntityType, EvidenceSourceType
 
 try:
@@ -95,13 +95,16 @@ if PROMETHEUS_AVAILABLE:
         {"outcome": ("returned_false", "raised", "timed_out")},
     )
 
-    # lazy: no emit site exists yet, so there is no reason vocabulary to declare.
     EVIDENCE_TURN_ASYNC_RETRY_ENQUEUED_TOTAL = Counter(
         "faultmaven_evidence_turn_async_retry_enqueued_total",
         "Number of turns whose LLM call hit a transient failure and were "
         "enqueued for async retry. Labeled by failure reason. Emitted by the "
         "PLAN-async-turn-retry implementation.",
         labelnames=["reason"],
+    )
+    declare_lazy(
+        EVIDENCE_TURN_ASYNC_RETRY_ENQUEUED_TOTAL,
+        "no emit site exists yet, so there is no reason vocabulary to declare.",
     )
 
     EVIDENCE_TURN_ASYNC_RETRY_OUTCOME_TOTAL = Counter(
@@ -111,9 +114,9 @@ if PROMETHEUS_AVAILABLE:
         "the PLAN-async-turn-retry implementation.",
         labelnames=["outcome"],
     )
-    create_children(
+    declare_lazy(
         EVIDENCE_TURN_ASYNC_RETRY_OUTCOME_TOTAL,
-        {"outcome": ("success", "failure", "timeout", "superseded", "cancelled")},
+        "no emit site exists yet, so there is no outcome vocabulary to declare.",
     )
 
     EVIDENCE_TURN_ASYNC_RETRY_LATENCY_SECONDS = Histogram(
@@ -127,8 +130,6 @@ if PROMETHEUS_AVAILABLE:
     # (from_type, to_type, trigger) so a classifier-bias dashboard can
     # spot systematic (from_type, to_type) pairs. trigger values:
     # ``api`` (direct PATCH), ``agent_tool`` (reclassify_evidence tool).
-    # lazy: from_type x to_type x trigger is over 100 combinations, and
-    # from_type is a stored value that may be "unknown" or retired.
     EVIDENCE_RECLASSIFICATION_TOTAL = Counter(
         "faultmaven_evidence_reclassification_total",
         "Number of evidence rows whose data_type was changed by a user "
@@ -136,6 +137,11 @@ if PROMETHEUS_AVAILABLE:
         "/cases/{id}/evidence/{eid}/classification endpoint and by the "
         "reclassify_evidence agent tool.",
         labelnames=["from_type", "to_type", "trigger"],
+    )
+    declare_lazy(
+        EVIDENCE_RECLASSIFICATION_TOTAL,
+        "from_type x to_type x trigger is over 100 combinations, and from_type "
+        "is a stored value that may be 'unknown' or retired.",
     )
 
     # Phase 2c — extraction-quality feedback signals.

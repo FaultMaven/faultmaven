@@ -29,6 +29,7 @@ Adding a metric here:
 
 from typing import get_args
 
+from faultmaven.config.settings import LLMProvider
 from faultmaven.core.investigation.llm_error_handler import (
     RECOVERY_REASON_INPUT_OVERFLOW,
     RECOVERY_REASON_OUTPUT_TRUNCATION,
@@ -43,10 +44,11 @@ from faultmaven.modules.case.contracts import (
     TerminalConfirmedVia,
 )
 
-# The CHAT provider label is the deployment's configured provider (or
-# "unknown"), so it is open-ended; these series are read per provider as
-# ratios over windows longer than a restart (#1787).
-_LAZY_PROVIDER = "provider is the configured CHAT provider; read as long-window ratios"
+# The CHAT provider label: an ``LLMProvider`` value (the configured provider,
+# or a raw provider's ``LABEL``), or "unknown" when neither resolves
+# (``cause_state._resolve_chat_provider_name``,
+# ``terminal_transitions._resolve_resolution_provider``).
+_PROVIDERS = (*(p.value for p in LLMProvider), "unknown")
 
 # INV-01 outcome telemetry. The ratio
 # ``gate1_statement_composed_total / engine_owned_affordance_served_total
@@ -813,7 +815,7 @@ work_gate_crossed_total = Counter(
     "turn's provider, not the original one. Bounded to one count per case and "
     "self-clearing; read the metric as a trend, not to the turn.)",
     ["provider"],
-    lazy_labels=_LAZY_PROVIDER,
+    label_values={"provider": _PROVIDERS},
 )
 
 
@@ -842,7 +844,7 @@ narration_overclaim_total = Counter(
     "guard is append-only — a nonzero rate means the model over-claims, not that "
     "a wrong disposition reached a terminal surface.",
     ["provider"],
-    lazy_labels=_LAZY_PROVIDER,
+    label_values={"provider": _PROVIDERS},
 )
 
 
@@ -877,7 +879,11 @@ resolution_cause_leg_total = Counter(
     "floor before the free-text conclusion can be retired. One increment per "
     "resolution.",
     ["provider", "leg"],
-    lazy_labels=_LAZY_PROVIDER,
+    label_values={
+        "provider": _PROVIDERS,
+        # ``cause_identification_leg(case) or "none"``
+        "leg": ("chain", "rcc", "working_conclusion", "none"),
+    },
 )
 
 
@@ -905,7 +911,7 @@ rcc_precedence_inversion_total = Counter(
     "outranks it (§7.7). One increment per replacement, labeled by the CHAT "
     "``provider``; mirror refreshes and first mints are not counted.",
     ["provider"],
-    lazy_labels=_LAZY_PROVIDER,
+    label_values={"provider": _PROVIDERS},
 )
 
 

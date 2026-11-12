@@ -32,7 +32,7 @@ Usage:
 import logging
 from typing import Optional
 
-from faultmaven.infrastructure.shims.metrics import create_children
+from faultmaven.infrastructure.shims.metrics import create_children, declare_lazy
 
 logger = logging.getLogger(__name__)
 
@@ -80,29 +80,41 @@ except ImportError:
 # OAuth Authorization Metrics
 # ============================================================
 
-# lazy: client_id is the requesting client's id, an open set.
 oauth_authorization_requests = Counter(
     "oauth_authorization_requests_total",
     "Total number of OAuth authorization code requests",
     ["client_id", "status"],
 )
+declare_lazy(
+    oauth_authorization_requests,
+    "client_id is the requesting client's id, an open set.",
+)
 
-# lazy: client_id is the requesting client's id, an open set.
 oauth_authorization_errors = Counter(
     "oauth_authorization_errors_total",
     "Total number of OAuth authorization errors",
     ["client_id", "error_code"],
+)
+declare_lazy(
+    oauth_authorization_errors, "client_id is the requesting client's id, an open set."
 )
 
 # ============================================================
 # Token Issuance Metrics
 # ============================================================
 
-# lazy: client_id is the requesting client's id, an open set.
+#: What every ``OAuthService`` caller of the token-exchange, PKCE, replay and
+#: expiry recorders passes: the code's client is not known on those paths.
+_CALLER_CLIENT_IDS = ("unknown",)
+
 oauth_tokens_issued = Counter(
     "oauth_tokens_issued_total",
     "Total number of OAuth tokens issued (access + refresh)",
     ["grant_type", "client_id"],
+)
+create_children(
+    oauth_tokens_issued,
+    {"grant_type": ("authorization_code",), "client_id": _CALLER_CLIENT_IDS},
 )
 
 oauth_token_exchange_duration = Histogram(
@@ -136,18 +148,22 @@ create_children(
 # Token Refresh Metrics
 # ============================================================
 
-# lazy: client_id is the requesting client's id, an open set.
 oauth_tokens_refreshed = Counter(
     "oauth_tokens_refreshed_total",
     "Total number of OAuth token refresh operations",
     ["client_id", "status"],
 )
+declare_lazy(
+    oauth_tokens_refreshed, "client_id is the requesting client's id, an open set."
+)
 
-# lazy: client_id is the requesting client's id, an open set.
 oauth_refresh_errors = Counter(
     "oauth_refresh_errors_total",
     "Total number of OAuth token refresh errors",
     ["client_id", "error_code"],
+)
+declare_lazy(
+    oauth_refresh_errors, "client_id is the requesting client's id, an open set."
 )
 
 # ============================================================
@@ -165,10 +181,6 @@ create_children(oauth_tokens_revoked, {"token_type": ("access_token", "refresh_t
 # Security Metrics
 # ============================================================
 
-#: What every ``OAuthService`` caller of the PKCE, replay and expiry recorders
-#: passes: the code's client is not known on those paths.
-_CALLER_CLIENT_IDS = ("unknown",)
-
 oauth_pkce_verification_failures = Counter(
     "oauth_pkce_verification_failures_total",
     "Total number of PKCE verification failures (potential attacks)",
@@ -183,29 +195,37 @@ oauth_code_replay_attempts = Counter(
 )
 create_children(oauth_code_replay_attempts, {"client_id": _CALLER_CLIENT_IDS})
 
-# lazy: attempted_client_id is whatever id the request presented.
 oauth_invalid_client_attempts = Counter(
     "oauth_invalid_client_attempts_total",
     "Total number of requests with invalid client_id",
     ["attempted_client_id"],
 )
+declare_lazy(
+    oauth_invalid_client_attempts,
+    "attempted_client_id is whatever id the request presented.",
+)
 
-# lazy: client_id is the id the request presented, an open set.
 oauth_redirect_uri_mismatches = Counter(
     "oauth_redirect_uri_mismatches_total",
     "Total number of redirect URI mismatch errors",
     ["client_id"],
+)
+declare_lazy(
+    oauth_redirect_uri_mismatches,
+    "client_id is the id the request presented, an open set.",
 )
 
 # ============================================================
 # Code Lifecycle Metrics
 # ============================================================
 
-# lazy: client_id is the requesting client's id, an open set.
 oauth_codes_generated = Counter(
     "oauth_codes_generated_total",
     "Total number of authorization codes generated",
     ["client_id"],
+)
+declare_lazy(
+    oauth_codes_generated, "client_id is the requesting client's id, an open set."
 )
 
 oauth_codes_expired = Counter(

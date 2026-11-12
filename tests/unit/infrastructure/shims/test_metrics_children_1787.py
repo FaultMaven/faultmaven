@@ -20,10 +20,12 @@ import pytest
 import faultmaven
 from faultmaven.infrastructure.shims.metrics import (
     DECLARED_CHILDREN,
+    LAZY_DECLARED,
     MAX_DECLARED_CHILDREN,
     Counter,
     NoOpMetric,
     create_children,
+    declare_lazy,
 )
 
 pytestmark = pytest.mark.unit
@@ -111,8 +113,52 @@ def test_every_declared_child_is_exposed_at_zero_before_any_event(monkeypatch):
     }
 
 
-def test_create_children_declares_a_counter_built_without_the_shim():
+@pytest.mark.parametrize("enabled", ["false", "true"])
+def test_a_generator_value_set_is_read_once(monkeypatch, enabled):
+    monkeypatch.setenv("ENABLE_METRICS", enabled)
+    if enabled == "false":
+        counter = Counter(
+            "fm1787_gen_off_total",
+            "d",
+            labelnames=["a"],
+            label_values={"a": (v for v in ("x", "y"))},
+        )
+        assert isinstance(counter, NoOpMetric)
+        return
     prometheus_client = pytest.importorskip("prometheus_client")
+    registry = prometheus_client.CollectorRegistry()
+    Counter(
+        "fm1787_gen_total",
+        "d",
+        labelnames=["a"],
+        registry=registry,
+        label_values={"a": (v for v in ("x", "y"))},
+    )
+    assert _samples(registry, "fm1787_gen") == {(("a", "x"),): 0.0, (("a", "y"),): 0.0}
+
+
+def test_declare_lazy_refuses_an_empty_reason():
+    with pytest.raises(ValueError, match="empty reason"):
+        declare_lazy(NoOpMetric(), " ")
+
+
+def test_a_direct_counter_gets_nothing_with_metrics_disabled(monkeypatch):
+    prometheus_client = pytest.importorskip("prometheus_client")
+    monkeypatch.setenv("ENABLE_METRICS", "false")
+    registry = prometheus_client.CollectorRegistry()
+    counter = prometheus_client.Counter(
+        "fm1787_disabled_total", "d", ["event"], registry=registry
+    )
+    declared, lazy = list(DECLARED_CHILDREN), list(LAZY_DECLARED)
+    create_children(counter, {"event": ("offered", "saved")})
+    declare_lazy(counter, "event is open")
+    assert _samples(registry, "fm1787_disabled") == {}
+    assert (DECLARED_CHILDREN, LAZY_DECLARED) == (declared, lazy)
+
+
+def test_create_children_declares_a_counter_built_without_the_shim(monkeypatch):
+    prometheus_client = pytest.importorskip("prometheus_client")
+    monkeypatch.setenv("ENABLE_METRICS", "true")
     registry = prometheus_client.CollectorRegistry()
     counter = prometheus_client.Counter(
         "fm1787_direct_total", "d", ["event"], registry=registry
@@ -125,6 +171,8 @@ def test_create_children_declares_a_counter_built_without_the_shim():
     }
     with pytest.raises(ValueError, match="'fm1787_direct'"):
         create_children(counter, {"other": ("x",)})
+    declare_lazy(counter, "event is open")
+    assert LAZY_DECLARED[-1] == ("fm1787_direct", "event is open")
 
 
 # Every module that defines a labelled counter. The child imports them with
@@ -146,10 +194,9 @@ _MARKER = "@@RESULT@@"
 
 _CHILD = r"""
 import importlib, json, sys
-from prometheus_client import REGISTRY
+from prometheus_client import REGISTRY, Counter
 
-for name in sys.argv[1:]:
-    importlib.import_module(name)
+modules = [importlib.import_module(name) for name in sys.argv[1:]]
 
 # Three rare counters added after #1776 fixed the class once (#1787's examples).
 named = {
@@ -164,7 +211,20 @@ named = {
     ),
 }
 
-from faultmaven.infrastructure.shims.metrics import DECLARED_CHILDREN
+from faultmaven.infrastructure.shims.metrics import DECLARED_CHILDREN, LAZY_DECLARED
+
+# Every labelled counter bound at module level in the metric modules, whether
+# built through the shim or straight from prometheus_client, is declared.
+recorded = {name for name, _, _ in DECLARED_CHILDREN} | {n for n, _ in LAZY_DECLARED}
+undeclared = sorted(
+    {
+        value._name
+        for module in modules
+        for value in vars(module).values()
+        if isinstance(value, Counter) and value._labelnames
+    }
+    - recorded
+)
 
 missing, nonzero = [], []
 for name, labelnames, combos in DECLARED_CHILDREN:
@@ -183,6 +243,7 @@ print("@@RESULT@@" + json.dumps({
     "file": importlib.import_module("faultmaven").__file__,
     "named": named,
     "declared": sorted(name for name, _, _ in DECLARED_CHILDREN),
+    "undeclared": undeclared,
     "missing": missing,
     "nonzero": nonzero,
 }))
@@ -216,5 +277,6 @@ def test_every_bounded_series_is_exported_at_zero_from_import(tmp_path):
         "unleased_no_store": 0.0,
     }
     assert len(result["declared"]) == len(set(result["declared"]))
+    assert result["undeclared"] == []
     assert result["missing"] == []
     assert result["nonzero"] == []
