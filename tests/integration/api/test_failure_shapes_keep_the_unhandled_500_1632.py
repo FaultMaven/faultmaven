@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import httpx2
 import pytest
 from fastapi.testclient import TestClient
 
@@ -63,12 +64,22 @@ def _get(client, name):
     return client.get(f"/fault-1632/{name}", headers={"X-Request-ID": "rid-1632"})
 
 
+# Set only when a response took longer than its threshold
+# (``faultmaven/api/middleware/performance.py``), so it follows the runner's
+# speed, not how the failure was answered (#2654).
+_TIMING_HEADERS = frozenset({"x-performance-warning"})
+
+
 def _shape(response) -> tuple:
     body = response.json()
     return (
         response.status_code,
         {key: value for key, value in body.items() if key != "correlation_id"},
-        sorted(name for name in response.headers if name.startswith("x-")),
+        sorted(
+            name
+            for name in response.headers
+            if name.startswith("x-") and name not in _TIMING_HEADERS
+        ),
     )
 
 
@@ -83,3 +94,24 @@ def test_each_answers_as_an_unmapped_exception(client, name):
     # exception that reached it carries.
     assert response.json()["correlation_id"] == response.headers["x-correlation-id"]
     assert "Circuit breaker" not in response.text
+
+
+_BODY = {"detail": "Internal server error"}
+
+
+def test_shape_ignores_only_the_slow_response_header():
+    plain = {"X-Correlation-ID": "c", "X-Response-Time": "1ms"}
+    answer = httpx2.Response(500, headers=plain, json=_BODY)
+    slow = httpx2.Response(
+        500, headers={**plain, "X-Performance-Warning": "slow_response"}, json=_BODY
+    )
+    assert _shape(slow) == _shape(answer)
+
+    handled = httpx2.Response(
+        500, headers={**plain, "X-Processing-Time": "0.001s"}, json=_BODY
+    )
+    uncorrelated = httpx2.Response(500, headers={"X-Response-Time": "1ms"}, json=_BODY)
+    unavailable = httpx2.Response(503, headers=plain, json=_BODY)
+    assert _shape(handled) != _shape(answer)
+    assert _shape(uncorrelated) != _shape(answer)
+    assert _shape(unavailable) != _shape(answer)
