@@ -572,13 +572,14 @@ class LLMErrorHandler:
                     retry_count=retry_count,
                 )
             # The cap was raised; the identical call now has room to finish.
-            # If the turn budget refuses that retry, report TOKEN_LIMIT rather
-            # than a budget/availability code: the engine selects its
-            # minimal-prompt degrade on that code, and swapping it out here
-            # would turn a recoverable overflow into a hard failure whose
-            # message blames the provider (#662's NO-COLLAPSE guarantee).
+            # If the attempt ceiling or the turn budget refuses that retry,
+            # report TOKEN_LIMIT rather than a retry/budget code (#1821): the
+            # engine selects its minimal-prompt degrade on that code, and
+            # swapping it out here would turn a recoverable overflow into a
+            # hard failure whose message blames the provider (#662's
+            # NO-COLLAPSE guarantee).
             return await self._retry_or_exhaust(
-                retry_count, next_attempt_seconds, no_budget_code=TOKEN_LIMIT
+                retry_count, next_attempt_seconds, stop_code=TOKEN_LIMIT
             )
 
         # Permanent billing / quota exhaustion (non-retryable). The provider
@@ -803,7 +804,7 @@ class LLMErrorHandler:
         self,
         retry_count: int,
         next_attempt_seconds: float = 0.0,
-        no_budget_code: Optional[str] = None,
+        stop_code: Optional[str] = None,
         *,
         deadline_shaped: bool = False,
         deadline_retries_spent: int = 0,
@@ -827,12 +828,13 @@ class LLMErrorHandler:
         ``deadline_retries_spent`` reaches ``max_deadline_retries``, with the
         same ``RETRY_EXHAUSTED`` a spent full ladder reports.
 
-        ``no_budget_code`` lets a caller name the code to report when the turn
-        budget is what stopped the ladder. Only the truncation branch passes
-        one: its recovery is the engine's minimal-prompt degrade, which is
-        selected by ``TOKEN_LIMIT`` on the raised error, and reporting a
-        budget/availability code there would silently disable the NO-COLLAPSE
-        recovery (#662) instead of degrading.
+        ``stop_code`` lets a caller name the code to report whenever this
+        ladder stops on a ceiling: the attempt ceiling (either cap) or the turn
+        budget. Only the truncation branch passes one: its recovery is the
+        engine's minimal-prompt degrade, which is selected by ``TOKEN_LIMIT`` on
+        the raised error, and reporting a retry/budget/availability code there
+        would silently disable the NO-COLLAPSE recovery (#662) instead of
+        degrading — whichever ceiling stopped it (#1821).
         """
         # The cap that governs this failure's class, for the check and the logs.
         if deadline_shaped:
@@ -843,7 +845,7 @@ class LLMErrorHandler:
             return ErrorResult(
                 action=ErrorAction.FAIL,
                 message="LLM service temporarily unavailable. Please try again in a few minutes.",
-                error_code="RETRY_EXHAUSTED",
+                error_code=stop_code if stop_code is not None else "RETRY_EXHAUSTED",
                 retry_count=retry_count,
             )
 
@@ -886,8 +888,8 @@ class LLMErrorHandler:
             # ``max_deadline_retries`` would read ``1 < 1`` there.
             lost_a_provider_attempt = retry_count + 1 < self.config.max_retries
             code = (
-                no_budget_code
-                if no_budget_code is not None
+                stop_code
+                if stop_code is not None
                 else (
                     TURN_BUDGET_EXHAUSTED
                     if lost_a_provider_attempt

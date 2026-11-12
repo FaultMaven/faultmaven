@@ -718,7 +718,7 @@ class TestATruncationRetryKeepsItsRecoveryCode:
         handler = LLMErrorHandler(RetryConfig(base_delay_seconds=0.0))
 
         result = await handler._retry_or_exhaust(
-            0, next_attempt_seconds=5.0, no_budget_code=TOKEN_LIMIT
+            0, next_attempt_seconds=5.0, stop_code=TOKEN_LIMIT
         )
 
         assert result.error_code == TOKEN_LIMIT
