@@ -175,7 +175,7 @@ def test_an_inherited_variable_holding_another_root_refuses(
         apply_root_set()
     message = str(refusal.value)
     assert f"{name}=" in message and "TLS_EXTRA_CA_FILE" in message
-    assert f"remove {name}" in message
+    assert f"unset {name}" in message and "byte-identical" in message
 
 
 def test_an_inherited_file_one_certificate_short_refuses(
@@ -307,24 +307,27 @@ def test_an_os_bundle_without_a_trailing_newline_still_loads_whole(
     assert len(_loaded(apply_root_set().path)) == len(ROOTS) + 1
 
 
-def test_an_inherited_equal_file_by_link_or_by_bytes_is_exported_by_real_path(
+def test_a_real_path_alias_or_a_byte_identical_copy_is_accepted_and_replaced(
     os_bundle, tmp_path, monkeypatch
 ):
+    """Accepted, and every variable then names this process's own file."""
     link = tmp_path / "link.pem"
     link.symlink_to(os_bundle)
     copy = tmp_path / "copy.pem"
     copy.write_bytes(os_bundle.read_bytes())
     monkeypatch.setenv("SSL_CERT_FILE", str(link))
     monkeypatch.setenv("AWS_CA_BUNDLE", str(copy))
-    assert apply_root_set().path == os.path.realpath(os_bundle)
-    assert os.environ["AWS_CA_BUNDLE"] == os.path.realpath(os_bundle)
+    assert apply_root_set().path == str(os_bundle)
+    assert {os.environ[name] for name in FILE_VARIABLES} == {str(os_bundle)}
 
 
-def test_an_inherited_relative_path_is_exported_absolute(os_bundle, monkeypatch):
+def test_an_inherited_relative_path_to_the_set_is_replaced_by_its_own_path(
+    os_bundle, monkeypatch
+):
     monkeypatch.chdir(os_bundle.parent)
     monkeypatch.setenv("SSL_CERT_FILE", os_bundle.name)
     apply_root_set()
-    assert os.environ["SSL_CERT_FILE"] == os.path.realpath(os_bundle)
+    assert os.environ["SSL_CERT_FILE"] == str(os_bundle)
 
 
 def test_an_extra_file_keeps_its_certificates_and_drops_everything_else(
@@ -343,13 +346,20 @@ def test_an_extra_file_keeps_its_certificates_and_drops_everything_else(
     }
 
 
-def test_an_inherited_file_with_the_same_roots_reordered_and_commented_is_accepted(
-    os_bundle, tmp_path, monkeypatch
+@pytest.mark.parametrize("other_bytes", ["reordered", "commented"])
+def test_an_inherited_file_with_the_same_roots_in_other_bytes_refuses(
+    os_bundle, tmp_path, monkeypatch, other_bytes
 ):
+    """Ruling 1, narrowed 2026-11-12: no inherited file's certificates are
+    compared, so a Nix or conda bundle with the same roots refuses."""
     nix = tmp_path / "nix-bundle.pem"
-    nix.write_bytes(b"# a comment\n" + b"\n# another\n".join(reversed(ROOTS)))
+    if other_bytes == "reordered":
+        nix.write_bytes(b"".join(reversed(ROOTS)))
+    else:
+        nix.write_bytes(b"# a comment\n" + b"".join(ROOTS))
     monkeypatch.setenv("SSL_CERT_FILE", str(nix))
-    assert apply_root_set().path == str(nix)
+    with pytest.raises(SystemExit, match="byte-identical"):
+        apply_root_set()
 
 
 def test_two_applies_name_one_file_and_write_nothing_else(
@@ -363,17 +373,27 @@ def test_two_applies_name_one_file_and_write_nothing_else(
     assert os.listdir(Path(first.path).parent) == [Path(first.path).name]
 
 
-@pytest.mark.parametrize("held", [(), ROOTS])
-def test_an_inherited_capath_empty_or_holding_exactly_the_set_is_accepted(
+@pytest.mark.parametrize(
+    "held", [(), ROOTS, (None,)], ids=["empty", "the-set", "dangling"]
+)
+def test_an_inherited_capath_with_any_hashed_entry_refuses_and_an_empty_one_is_accepted(
     os_bundle, tmp_path, monkeypatch, held
 ):
+    """Even exactly the set's roots, and even a dangling hashed link."""
     capath = tmp_path / "capath"
     capath.mkdir()
     for index, pem in enumerate(held):
-        (capath / f"abcdef0{index}.0").write_bytes(pem)
+        if pem is None:
+            (capath / f"abcdef0{index}.0").symlink_to(tmp_path / "gone.pem")
+        else:
+            (capath / f"abcdef0{index}.0").write_bytes(pem)
     monkeypatch.setenv("SSL_CERT_DIR", str(capath))
-    apply_root_set()
-    assert os.environ["SSL_CERT_DIR"] == EMPTY_CAPATH
+    if held:
+        with pytest.raises(SystemExit, match="SSL_CERT_DIR=.*hashed certificate entry"):
+            apply_root_set()
+    else:
+        apply_root_set()
+        assert os.environ["SSL_CERT_DIR"] == EMPTY_CAPATH
 
 
 @pytest.mark.parametrize("key", ["TLS_EXTRA_CA_FILE", "tls_extra_ca_file"])
@@ -527,8 +547,17 @@ def test_on_windows_a_symlinked_set_directory_refuses(tmp_path, monkeypatch):
         apply_root_set()
 
 
-def test_on_windows_an_empty_store_refuses_naming_it(tmp_path, monkeypatch):
-    _windows(monkeypatch, tmp_path, {"CA": [], "ROOT": []})
+@pytest.mark.parametrize("stores", ["empty", "denied"])
+def test_on_windows_an_empty_or_unreadable_store_refuses_naming_it(
+    tmp_path, monkeypatch, stores
+):
+    denied = PermissionError(5, "Access is denied")
+    held = (
+        {"CA": [], "ROOT": []}
+        if stores == "empty"
+        else dict.fromkeys(("CA", "ROOT"), denied)
+    )
+    _windows(monkeypatch, tmp_path, held)
     with pytest.raises(SystemExit) as refusal:
         apply_root_set()
     message = str(refusal.value)
@@ -536,5 +565,8 @@ def test_on_windows_an_empty_store_refuses_naming_it(tmp_path, monkeypatch):
         "TLS root set: no operating-system CA bundle loads; tried the Windows "
         'certificate store ("CA" and "ROOT")'
     )
-    assert "holds no server-auth root" in message
+    if stores == "empty":
+        assert "The Windows certificate store holds no server-auth root" in message
+    else:
+        assert "No server-auth root could be read from the Windows" in message
     assert "Install Certificates" not in message
