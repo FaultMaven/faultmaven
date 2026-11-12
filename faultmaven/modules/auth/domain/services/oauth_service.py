@@ -23,7 +23,9 @@ from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     account_may_hold_credentials,
     capture_state_read_at,
 )
-from faultmaven.modules.auth.infrastructure.metrics import oauth_metrics
+from faultmaven.modules.auth.infrastructure.metrics.oauth_metrics import (
+    OAuthMetricsRecorder,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +60,11 @@ class OAuthServiceImpl(IOAuthService):
         self.user_repository = user_repository
         self.token_generator = token_generator
         self.settings = settings
+        # Labels only the CONFIGURED clients; any other id is "unknown" (#2735).
+        # Auth settings are not hot-reloaded, so the snapshot stays exact.
+        self._metrics = OAuthMetricsRecorder(
+            allowed_clients=settings.oauth_allowed_clients
+        )
 
     async def validate_authorization_request(
         self,
@@ -99,10 +106,10 @@ class OAuthServiceImpl(IOAuthService):
                 },
             )
             # Record metrics
-            oauth_metrics.record_authorization_request(
+            self._metrics.record_authorization_request(
                 client_id=request.client_id, success=False, error_code="INVALID_CLIENT"
             )
-            oauth_metrics.record_invalid_client(request.client_id)
+            self._metrics.record_invalid_client()
             raise InvalidRequestError(
                 f"Unknown client_id: {request.client_id}",
                 error_code="INVALID_CLIENT",
@@ -120,12 +127,12 @@ class OAuthServiceImpl(IOAuthService):
                 },
             )
             # Record metrics
-            oauth_metrics.record_authorization_request(
+            self._metrics.record_authorization_request(
                 client_id=request.client_id,
                 success=False,
                 error_code="INVALID_REDIRECT_URI",
             )
-            oauth_metrics.record_redirect_uri_mismatch(request.client_id)
+            self._metrics.record_redirect_uri_mismatch(request.client_id)
             raise InvalidRequestError(
                 f"Invalid redirect_uri: {request.redirect_uri}",
                 error_code="INVALID_REDIRECT_URI",
@@ -143,7 +150,7 @@ class OAuthServiceImpl(IOAuthService):
                 },
             )
             # Record metrics
-            oauth_metrics.record_authorization_request(
+            self._metrics.record_authorization_request(
                 client_id=request.client_id,
                 success=False,
                 error_code="INVALID_CODE_CHALLENGE_METHOD",
@@ -237,7 +244,7 @@ class OAuthServiceImpl(IOAuthService):
         )
 
         # Record successful authorization metrics
-        oauth_metrics.record_authorization_request(
+        self._metrics.record_authorization_request(
             client_id=request.client_id, success=True
         )
 
@@ -289,7 +296,7 @@ class OAuthServiceImpl(IOAuthService):
             )
             # Record metric
             duration_seconds = time.time() - start_time
-            oauth_metrics.record_token_exchange(
+            self._metrics.record_token_exchange(
                 grant_type="authorization_code",
                 client_id="unknown",
                 duration_seconds=duration_seconds,
@@ -339,14 +346,14 @@ class OAuthServiceImpl(IOAuthService):
             )
             # Record metrics
             duration_seconds = time.time() - start_time
-            oauth_metrics.record_token_exchange(
+            self._metrics.record_token_exchange(
                 grant_type="authorization_code",
                 client_id="unknown",
                 duration_seconds=duration_seconds,
                 success=False,
                 error_code="CODE_ALREADY_USED",
             )
-            oauth_metrics.record_code_replay_attempt("unknown")
+            self._metrics.record_code_replay_attempt("unknown")
             raise InvalidGrantError(
                 "Authorization code has already been used",
                 error_code="CODE_ALREADY_USED",
@@ -365,14 +372,14 @@ class OAuthServiceImpl(IOAuthService):
             )
             # Record metrics
             duration_seconds = time.time() - start_time
-            oauth_metrics.record_token_exchange(
+            self._metrics.record_token_exchange(
                 grant_type="authorization_code",
                 client_id="unknown",
                 duration_seconds=duration_seconds,
                 success=False,
                 error_code="CODE_EXPIRED",
             )
-            oauth_metrics.record_code_expired("unknown")
+            self._metrics.record_code_expired("unknown")
             raise InvalidGrantError(
                 "Authorization code expired",
                 error_code="CODE_EXPIRED",
@@ -391,7 +398,7 @@ class OAuthServiceImpl(IOAuthService):
             )
             # Record metrics
             duration_seconds = time.time() - start_time
-            oauth_metrics.record_token_exchange(
+            self._metrics.record_token_exchange(
                 grant_type="authorization_code",
                 client_id="unknown",
                 duration_seconds=duration_seconds,
@@ -415,14 +422,14 @@ class OAuthServiceImpl(IOAuthService):
             )
             # Record metrics
             duration_seconds = time.time() - start_time
-            oauth_metrics.record_token_exchange(
+            self._metrics.record_token_exchange(
                 grant_type="authorization_code",
                 client_id="unknown",
                 duration_seconds=duration_seconds,
                 success=False,
                 error_code="PKCE_VERIFICATION_FAILED",
             )
-            oauth_metrics.record_pkce_failure("unknown")
+            self._metrics.record_pkce_failure("unknown")
             raise InvalidGrantError(
                 "PKCE verification failed",
                 error_code="PKCE_VERIFICATION_FAILED",
@@ -520,14 +527,14 @@ class OAuthServiceImpl(IOAuthService):
             # `record_token_exchange`, the failure rate and latency histogram
             # would omit precisely the attacks and races this method now
             # detects, and the metric would look healthiest under load.
-            oauth_metrics.record_token_exchange(
+            self._metrics.record_token_exchange(
                 grant_type="authorization_code",
                 client_id="unknown",
                 duration_seconds=time.time() - start_time,
                 success=False,
                 error_code="CODE_ALREADY_USED",
             )
-            oauth_metrics.record_code_replay_attempt("unknown")
+            self._metrics.record_code_replay_attempt("unknown")
             raise InvalidGrantError(
                 "Authorization code has already been used",
                 error_code="CODE_ALREADY_USED",
@@ -556,7 +563,7 @@ class OAuthServiceImpl(IOAuthService):
 
         # Record success metrics
         duration_seconds = time.time() - start_time
-        oauth_metrics.record_token_exchange(
+        self._metrics.record_token_exchange(
             grant_type="authorization_code",
             client_id="unknown",  # Could extract from settings if needed
             duration_seconds=duration_seconds,
@@ -613,7 +620,7 @@ class OAuthServiceImpl(IOAuthService):
                 extra={"client_id": client_id, "error": "INVALID_REFRESH_TOKEN"},
             )
             # Record metrics
-            oauth_metrics.record_token_refresh(
+            self._metrics.record_token_refresh(
                 client_id=client_id, success=False, error_code="INVALID_REFRESH_TOKEN"
             )
             raise InvalidGrantError(
@@ -744,7 +751,7 @@ class OAuthServiceImpl(IOAuthService):
         )
 
         # Record success metrics
-        oauth_metrics.record_token_refresh(client_id=client_id, success=True)
+        self._metrics.record_token_refresh(client_id=client_id, success=True)
 
         return OAuthTokenDTO(
             access_token=new_access_token,
@@ -788,7 +795,7 @@ class OAuthServiceImpl(IOAuthService):
             extra={"token_prefix": token[:16] if token else None},
         )
         # Record metrics
-        oauth_metrics.record_token_revocation("access_token")
+        self._metrics.record_token_revocation("access_token")
 
     async def revoke_refresh_token(self, refresh_token: str) -> None:
         """Revoke refresh token (prevents future token refresh).
@@ -806,7 +813,7 @@ class OAuthServiceImpl(IOAuthService):
             extra={"token_prefix": refresh_token[:16] if refresh_token else None},
         )
         # Record metrics
-        oauth_metrics.record_token_revocation("refresh_token")
+        self._metrics.record_token_revocation("refresh_token")
 
     # ============================================================
     # Private Helper Methods

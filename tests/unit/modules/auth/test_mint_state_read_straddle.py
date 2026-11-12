@@ -655,6 +655,7 @@ async def test_oauth_exchange_stamps_from_the_authorize_legs_stored_basis():
         oauth_code_expiry_seconds=expiry_seconds,
         jwt_access_token_expire_minutes=ACCESS_MINUTES,
         jwt_refresh_token_expire_days=REFRESH_DAYS,
+        oauth_allowed_clients=[],
     )
     service = OAuthServiceImpl(_CodeRepo(), _Users(), generator, settings)
 
@@ -689,6 +690,7 @@ async def test_oauth_refresh_grant_capture_covers_its_own_reads():
         oauth_code_expiry_seconds=600,
         jwt_access_token_expire_minutes=ACCESS_MINUTES,
         jwt_refresh_token_expire_days=REFRESH_DAYS,
+        oauth_allowed_clients=[],
     )
     service = OAuthServiceImpl(None, _StraddlingUsers(), generator, settings)
 
@@ -791,6 +793,7 @@ async def test_old_code_redeems_with_full_lifetime_and_backdated_iat():
         oauth_code_expiry_seconds=600,
         jwt_access_token_expire_minutes=5,
         jwt_refresh_token_expire_days=REFRESH_DAYS,
+        oauth_allowed_clients=[],
     )
     service = OAuthServiceImpl(_CodeRepo(), _Users(), generator, settings)
 
@@ -840,6 +843,7 @@ async def test_oauth_code_without_a_basis_falls_back_to_the_exchange_capture():
         oauth_code_expiry_seconds=600,
         jwt_access_token_expire_minutes=ACCESS_MINUTES,
         jwt_refresh_token_expire_days=REFRESH_DAYS,
+        oauth_allowed_clients=[],
     )
     service = OAuthServiceImpl(_CodeRepo(), _Users(), generator, settings)
 

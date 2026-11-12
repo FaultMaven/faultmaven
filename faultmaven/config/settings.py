@@ -904,8 +904,31 @@ def unset_llm_variables(llm_settings: Any, env_names: Any) -> List[str]:
     ]
 
 
+class DatabaseUrlWhitespaceError(RuntimeError):
+    """``DATABASE_URL`` has leading or trailing whitespace (#1789).
+
+    Refused, never stripped: the engine reads the value as given, so a trailing
+    newline names another database (``p.db\\n``). Not a ``ValueError``, so
+    pydantic does not wrap it into an error that echoes the value.
+    """
+
+
+def require_no_surrounding_whitespace(value: Any) -> Any:
+    """``value`` unchanged, unless it is text padded around non-blank content.
+
+    A blank value passes: every reader already treats it as no database.
+    """
+    if isinstance(value, str) and value.strip() and value != value.strip():
+        raise DatabaseUrlWhitespaceError(
+            "DATABASE_URL has leading or trailing whitespace (often a trailing "
+            "newline from a secret file): remove it. The value is not shown, "
+            "because it can hold a password."
+        )
+    return value
+
+
 def _parse_database_url(database_url: Optional[str]) -> Any:
-    """``make_url`` on the stripped value, or ``None`` when it does not parse.
+    """``make_url`` on the value as given, or ``None`` when it does not parse.
 
     ``make_url`` is the parser the engine itself uses, so a value it refuses is
     one no engine can open. It raises ``ArgumentError`` for a value that is not
@@ -914,7 +937,7 @@ def _parse_database_url(database_url: Optional[str]) -> Any:
     from sqlalchemy.engine import make_url
     from sqlalchemy.exc import ArgumentError
 
-    text = (database_url or "").strip()
+    text = database_url or ""
     if not text:
         return None
     try:
@@ -1050,8 +1073,14 @@ def configured_database_url() -> Optional[str]:
         The configured value, the empty string included, or ``None`` when the
         environment does not set it and the field default (the persistent
         SQLite file) applies.
+
+    Raises:
+        DatabaseUrlWhitespaceError: the value has surrounding whitespace, as
+            the settings field refuses it (#1789).
     """
-    return EnvSettingsSource(DatabaseSettings)().get("database_url")
+    return require_no_surrounding_whitespace(
+        EnvSettingsSource(DatabaseSettings)().get("database_url")
+    )
 
 
 def env_var_spellings(env: Mapping[str, str], name: str) -> list[str]:
@@ -1125,7 +1154,7 @@ def describe_database_url(database_url: Optional[str]) -> str:
     cannot be masked: a libpq ``password=...`` DSN has no ``@`` to find.
     """
     text = database_url or ""
-    if not text.strip() or text.strip() == ":memory:":
+    if not text.strip() or text == ":memory:":
         return repr(text)
     url = _parse_database_url(text)
     if url is None:
@@ -1158,6 +1187,11 @@ class DatabaseSettings(BaseSettings):
         description="Primary database URL (SQLite for dev, PostgreSQL for prod). "
         "Persistence selection is derived by persistent_database_configured().",
     )
+
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def _refuse_surrounding_whitespace(cls, value: Any) -> Any:
+        return require_no_surrounding_whitespace(value)
 
     database_echo: bool = Field(default=False, description="Echo SQL statements to log")
     database_pool_size: int = Field(default=5)

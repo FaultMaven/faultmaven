@@ -587,9 +587,7 @@ async def test_losing_a_claim_is_recorded_as_a_failed_exchange():
         return_value=dataclasses.replace(stored, used=False)
     )
 
-    with patch(
-        "faultmaven.modules.auth.domain.services.oauth_service.oauth_metrics"
-    ) as metrics:
+    with patch.object(service, "_metrics") as metrics:
         with pytest.raises(InvalidGrantError) as loss:
             await service.exchange_code_for_token(
                 code=code, code_verifier=verifier, redirect_uri=REDIRECT

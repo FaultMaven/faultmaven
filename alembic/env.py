@@ -18,8 +18,9 @@ Environment Variables:
         persistent database (empty, ``:memory:``, an in-memory SQLite URL, a
         value that does not parse), an online migration refuses and exits 1
         (#1704); offline (``--sql``) opens no database and only takes the
-        dialect from it. Only the URL is read: no other database setting is
-        validated here.
+        dialect from it. A value with leading or trailing whitespace is
+        refused in both modes, exit 1 (#1789). Only the URL is read: no other
+        database setting is validated here.
 
 Usage:
     alembic upgrade head
@@ -38,7 +39,10 @@ project_root = Path(__file__).parent.parent
 # Add project root to path for model imports
 sys.path.insert(0, str(project_root))
 
-from faultmaven.config.settings import configured_database_url
+from faultmaven.config.settings import (
+    DatabaseUrlWhitespaceError,
+    configured_database_url,
+)
 from faultmaven.config.tls_root_set import apply_root_set
 
 # Load .env as the app does, before anything below reads the environment: the
@@ -55,7 +59,10 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # Target metadata for autogenerate - import from models
-from faultmaven.cli._database_gate import require_persistent_database_url_or_exit
+from faultmaven.cli._database_gate import (
+    exit_refusing,
+    require_persistent_database_url_or_exit,
+)
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.infrastructure.persistence.value_free_errors import (
     install_value_free_errors,
@@ -80,18 +87,23 @@ def get_database_url(*, require_persistent: bool) -> str:
     (``database_url`` included). Only the URL is read; no other database field
     is validated, so a setting alembic never uses cannot refuse a migration.
 
-    Offline (``--sql``) opens no database: the URL only names the dialect, so it
-    is not refused, and an empty value falls back to the default file URL.
+    A value with leading or trailing whitespace is refused in both modes, exit
+    1, as the app refuses it (#1789). Otherwise offline (``--sql``) opens no
+    database: the URL only names the dialect, so it is not refused, and an
+    empty value falls back to the default file URL.
 
     Returns:
         str: Database connection URL
     """
-    url = configured_database_url()
+    try:
+        url = configured_database_url()
+    except DatabaseUrlWhitespaceError as exc:
+        exit_refusing(str(exc))
     if require_persistent and url is not None:
         # Set but EMPTY refuses too, rather than falling back to the default
         # file: the app's predicate refuses an empty URL, and the migration must
         # agree with the app on which database a value names (#1704). Judged on
-        # the raw value, before any driver conversion.
+        # the value as configured, before any driver conversion.
         require_persistent_database_url_or_exit(url)
     if url:
         return _convert_async_url(url)

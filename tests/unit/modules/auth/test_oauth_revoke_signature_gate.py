@@ -112,6 +112,7 @@ def _auth_settings_stub():
     return SimpleNamespace(
         jwt_access_token_expire_minutes=ACCESS_MINUTES,
         jwt_refresh_token_expire_days=REFRESH_DAYS,
+        oauth_allowed_clients=[],
     )
 
 
