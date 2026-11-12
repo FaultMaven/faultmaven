@@ -94,7 +94,8 @@ CENSUS_COMMAND = 'grep -rn "with TestClient(" tests/ --include=*.py'
 #: #1812 added one scratch site (the turns route mounted for its K13).
 #: The Starlette 1.9 upgrade added one scratch site (the trailing-slash middleware).
 #: #2622 added one scratch site (the conversion route under the global 500).
-EXPECTED_TOTAL_SITES = 58
+#: #1789 added one in a child-process string literal (the padded-URL boot).
+EXPECTED_TOTAL_SITES = 59
 
 #: The functions the resolver reads as entering the real application's
 #: lifespan: the EXPECTED entries marked ``"real"``, not the ``with`` statements
@@ -364,6 +365,9 @@ EXPECTED_SITES_IN_STRING_LITERALS = {
     # in-memory DATABASE_URL before anything is written, plus its positive
     # control on a file URL.
     "tests/integration/test_boot_refuses_nonpersistent_database.py": 1,
+    # #1789's child-process probe, same shape: a boot asserted to refuse a
+    # DATABASE_URL with surrounding whitespace before anything is written.
+    "tests/integration/test_database_url_whitespace_refused_1789.py": 1,
     # fm#1628's child-suite source for the runtime guard's controls: a
     # module-scoped fixture entering the real app, run under pytester in a
     # child session. Requested by a test, it is refused before the lifespan
