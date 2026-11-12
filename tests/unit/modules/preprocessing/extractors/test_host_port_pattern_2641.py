@@ -21,11 +21,11 @@ from faultmaven.modules.preprocessing.extractors.logs_extractor import (
     LogsAndErrorsExtractor,
 )
 from faultmaven.modules.preprocessing.extractors.utils import (
-    HOST_PORT_RE,
     PORT_KEYWORD_RE,
     distinct_values,
     is_port,
 )
+from faultmaven.utils.host_port import HOST_PORT_RE
 from tests.unit.modules.preprocessing.extractors.test_host_port_shapes_2677 import (
     NEW_READINGS,
     NON_ASCII,
