@@ -61,7 +61,7 @@ offer's stored ``summary`` (``offer_texts``). The ``turn_*`` ones run a whole
 turn through ``process_turn`` on a cause identified only on the
 working-conclusion leg, which housekeeping ages under the bar after every
 decider ran, and return the reply and the stored summary. ``capture_main_b1d``
-adds them under ``offer:<name>`` at ``MAIN_AT_B1D`` (``21921b408``), the same
+adds them under ``cycle:offer:<name>`` at ``MAIN_AT_B1D`` (``21921b408``), the same
 way, keeping every other entry as stored::
 
     cd <scratch> && python -c "from tests.unit.core.investigation import \\
@@ -1691,7 +1691,7 @@ MAIN_AT_B1D = "21921b408f12e9fe57baf7768c35e7d4cac06f27"
 
 
 def capture_main_b1d() -> None:  # pragma: no cover - run once, on main
-    """Add ``B1D_SCENARIOS``' offers to the golden under ``offer:<name>``, as
+    """Add ``B1D_SCENARIOS``' offers to the golden under ``cycle:offer:<name>``, as
     ``main``'s deciders composed them. Refused on any tree but the top level
     of a checkout at ``MAIN_AT_B1D`` with an unmodified ``faultmaven/``, and
     on one that has ``OfferCode``, where the golden would compare the
@@ -1707,7 +1707,7 @@ def capture_main_b1d() -> None:  # pragma: no cover - run once, on main
     added = 0
     for name, build in B1D_SCENARIOS.items():
         texts = build()
-        key = f"offer:{name}"
+        key = f"cycle:offer:{name}"
         assert golden.get(key, texts) == texts, f"{key} differs from its capture"
         added += key not in golden
         golden[key] = texts
