@@ -435,7 +435,8 @@ engine reads it, API boundary maps it) and a typo in any one would silently
 disable the degrade path rather than fail loudly.
 
 **Output truncation shares this path.** A response cut off at the generation cap
-likewise yields `TOKEN_LIMIT`, once the `max_tokens` ladder is spent — it travels
+likewise yields `TOKEN_LIMIT` once its retries stop, whether the `max_tokens`
+ladder, the attempt ceiling or the turn budget stopped them (#1821) — it travels
 as the engine's typed `OutputTruncationError` and is dispatched on type, never
 mistaken for an input overflow. Those turns therefore also get the minimal-prompt
 retry. That is a smaller *input* rather than a larger output cap, so it is not a

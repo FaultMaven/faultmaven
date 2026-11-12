@@ -5,8 +5,9 @@ Truncation means the prompt fit but the ANSWER did not. The remedies, in order:
 1. raise ``max_tokens`` and retry — the targeted fix, and the retry must reach
    the provider rather than be served the truncated body the first attempt
    left in the response cache;
-2. once the ceiling is reached, hand off to the ``#662`` minimal-prompt degrade
-   — the only remaining lever is shrinking the question so the answer has room.
+2. once the ceiling is reached, or the attempts or the turn budget run out
+   first (#1821), hand off to the ``#662`` minimal-prompt degrade — the only
+   remaining lever is shrinking the question so the answer has room.
 
 Every previous attempt at (1) was tested one level too high: at the classifier,
 asserting booleans about error strings. That is exactly where this bug hid.
@@ -29,6 +30,7 @@ from pydantic import BaseModel
 
 from faultmaven.core.investigation.llm_error_handler import (
     RECOVERY_REASON_OUTPUT_TRUNCATION,
+    TRUNCATION_STOP_MESSAGE,
     LLMErrorHandler,
     OutputTruncationError,
     RetryConfig,
@@ -467,6 +469,7 @@ async def test_a_truncation_retry_honours_the_shared_attempt_ceiling():
     exhausted = await handler.handle_error(err, retry_count=2)
     assert exhausted.action is ErrorAction.FAIL
     assert exhausted.error_code == TOKEN_LIMIT
+    assert exhausted.message == TRUNCATION_STOP_MESSAGE
 
 
 def _three_transients():
@@ -498,6 +501,38 @@ async def test_a_truncation_after_spent_retries_still_reports_token_limit():
     assert operation.await_count == 4
     assert error.action is ErrorAction.FAIL
     assert error.error_code == TOKEN_LIMIT
+
+
+@pytest.mark.asyncio
+async def test_a_truncation_retry_the_budget_then_stops_still_reports_token_limit(
+    monkeypatch,
+):
+    """The third stop. The retry is granted with budget to spare, and the
+    budget is spent before the next attempt starts: the stop at the top of the
+    ladder reports TOKEN_LIMIT too, not TURN_BUDGET_EXHAUSTED (#1821)."""
+    from faultmaven.core.investigation import llm_error_handler as module
+    from faultmaven.core.investigation.llm_error_handler import ErrorAction
+
+    readings = iter([10.0, 10.0, 0.0])
+    monkeypatch.setattr(module, "spendable_turn_budget", lambda: next(readings))
+    handler = LLMErrorHandler(
+        RetryConfig(max_retries=3, base_delay_seconds=0.0, max_delay_seconds=0.0)
+    )
+    operation = AsyncMock(
+        side_effect=OutputTruncationError("Response truncated at max_tokens=8000")
+    )
+
+    result, error = await handler.with_retry(operation)
+
+    assert result is None
+    assert operation.await_count == 1
+    assert error.action is ErrorAction.FAIL
+    assert error.error_code == TOKEN_LIMIT
+    assert error.message == TRUNCATION_STOP_MESSAGE
+    assert classify_token_limit_reason(error.original_exception) == (
+        RECOVERY_REASON_OUTPUT_TRUNCATION
+    )
+    assert error.category is LLMErrorCategory.OUTPUT_TRUNCATION
 
 
 @pytest.mark.asyncio
