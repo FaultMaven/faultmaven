@@ -302,7 +302,8 @@ echo "since the last proposal: merged $(jq length <<<"$mp") · PRs opened $(gh p
      round's expected agent count (lanes, reviews, deltas, critiques), at most about 16; at most four reviews or
      critiques run at once. A usage-limit stop is reported in the result, and the next round is sized down.
 3. **Check premises.** `git fetch origin main`, then confirm each picked item's code points still show the defect.
-   An item whose premise looks dead is built as a **verification** item (step 4).
+   An item whose premise looks dead is built as a **verification** item (step 4). This is a first look only; the full
+   triage is the plan's (4.1).
 4. **Post the proposal**, then stop. Build nothing that has an open question.
 
    ```
@@ -346,6 +347,12 @@ smaller sub-stages (4.1) recommended, never given more fix rounds.
 
 1. **Plan** it yourself on `origin/main`, posted on the issue as `## Plan — round <N>`. Items sharing a seam name
    their lead as `Shares lane with #<lead>`. The plan covers:
+   - **the triage,** done first. The issue is a report, not a spec: its description, code points, diagnosis, proposed
+     fix, done-when, priority and class may be inaccurate or obsolete, so none is taken as given. Reproduce the defect
+     on `origin/main` (or show it at `path:line`), check each claim the issue makes against the code, re-set its
+     priority and class by *State*, and find its root (below) before choosing a change. The plan states which claims
+     held and which did not; a claim that did not hold is corrected on the issue under `## Evidence — triage`. A
+     defect that does not reproduce is built as a verification item (below);
    - **the root,** with its code points. The root is where the defect starts, however deep. When investigating shows
      the cause sits in a deeper layer than the issue names, that deeper cause is this item's root and this PR fixes
      it. Never fix a symptom and file its root. A root that needs a ruling, or a budget past the bound below, pulls
