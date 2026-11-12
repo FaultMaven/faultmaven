@@ -599,18 +599,25 @@ and the demo seeder, so a change takes effect at the next start.
 
 FaultMaven sets `SSL_CERT_FILE`, `SSL_CERT_DIR`, `REQUESTS_CA_BUNDLE`,
 `CURL_CA_BUNDLE`, `AWS_CA_BUNDLE`, `GRPC_DEFAULT_SSL_ROOTS_FILE_PATH` and
-`PGSSLROOTCERT` itself. Unset, the file variables name the OS bundle file. Set,
-they name `<tmp>/faultmaven-tls-<uid>/<sha256>.pem` (under `TMPDIR`, in a
+`PGSSLROOTCERT` itself. Unset, the file variables name the OS bundle file; when
+no OS bundle file loads and the bundle is built from OpenSSL's certificate
+directory (or, on native Windows, from the certificate store), they name the
+written file below even with the setting unset. Set, they name `<tmp>/faultmaven-tls-<uid>/<sha256>.pem` (under `TMPDIR`, in a
 directory only that user can write): the OS bundle, then the setting's
 certificates; one file per content, never deleted. On native Windows the OS
 bundle is the certificate store's server-auth roots, so the file is always
 written. A variable already set is accepted, in either case, when it names the
 file FaultMaven would name, or holds the bytes it would write, or holds only
-`CERTIFICATE` blocks with exactly the set's certificates, and it loads. An
-already-set `SSL_CERT_DIR`, read as a `:`-separated list (`;` on Windows), is
-accepted when its hashed entries hold no certificate, or only `CERTIFICATE`
-blocks with exactly the set's. Anything else refuses the start: remove it, or
-put its CA in `TLS_EXTRA_CA_FILE`.
+`CERTIFICATE` blocks with exactly the set's certificates; except the OS bundle
+file itself, OpenSSL must then load exactly the set from it (as many
+certificates, each CA among the set's). An already-set `SSL_CERT_DIR`, read as a
+`:`-separated list (`;` on Windows), is accepted when its hashed entries hold no
+certificate, or only `CERTIFICATE` blocks with exactly the set's, each entry
+loading to exactly its own. Anything else refuses the start: remove it, or put
+its CA in `TLS_EXTRA_CA_FILE`. A refused file in a `faultmaven-tls-<uid>`
+directory is a set file from an earlier FaultMaven start that is missing,
+altered or not this start's set: restart that process, or unset the
+variable.
 
 A host that ages `/tmp` (systemd-tmpfiles' 10-day rule, for example) can remove
 the written file under a long-idle process. The next start, command or child

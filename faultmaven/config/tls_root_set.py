@@ -20,13 +20,15 @@ is read once per start, so a change takes effect at the next start.
 
 An inherited owned variable is the set when it names the file this process would
 name, or holds the bytes it would write, or holds only plain certificates with
-exactly the set's digests, and it loads. An inherited ``SSL_CERT_DIR``, read as
-an ``os.pathsep`` list, is the set when its hashed entries hold no certificate,
-or only plain ones with exactly those digests. Anything else refuses the start
-(ruling 1 on #2692), as do an OS bundle that does not load, a setting with no
-certificate or a non-plain one, no usable temporary directory, and a set file
-that cannot be written safely or does not load whole (``SystemExit``,
-Fail-Fast Configuration). Imports no client.
+exactly the set's digests. Except the OS bundle file itself, it must then load to
+exactly the set: OpenSSL's certificate count, and each CA it loaded among the
+set's digests. An inherited ``SSL_CERT_DIR``, read as an ``os.pathsep`` list, is
+the set when its hashed entries hold no certificate, or only plain ones with
+exactly those digests, each entry loading to exactly its own. Anything else
+refuses the start (ruling 1 on #2692), as do an OS bundle that does not load, a
+setting with no certificate or a non-plain one, no usable temporary directory,
+and a set file that cannot be written safely or does not load to exactly the set
+(``SystemExit``, Fail-Fast Configuration). Imports no client.
 """
 
 from __future__ import annotations
@@ -153,6 +155,18 @@ def _loads(path: str) -> bool:
     return True
 
 
+def _holds(path: str, digests: frozenset[str]) -> bool:
+    """OpenSSL loads ``path`` to ``digests``: as many certificates, each CA among
+    them (``get_ca_certs`` omits CA:FALSE ones, hence the count)."""
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    try:
+        context.load_verify_locations(cafile=path)
+    except (OSError, ssl.SSLError):
+        return False
+    cas = {hashlib.sha256(der).hexdigest() for der in context.get_ca_certs(True)}
+    return context.cert_store_stats()["x509"] == len(digests) and cas <= digests
+
+
 def _read(path: str) -> bytes:
     try:
         return Path(path).read_bytes()
@@ -213,10 +227,11 @@ def _resolve_os_bundle() -> tuple[str, bytes, bool]:
     does, else the certificates in OpenSSL's default directory, joined. On
     Windows, the certificate store: there is no OS file to name.
     """
-    if sys.platform == "win32" and pem_digests(store := _windows_store()):
+    windows = sys.platform == "win32"
+    if windows and pem_digests(store := _windows_store()):
         return "the Windows certificate store", store, False
     paths = ssl.get_default_verify_paths()
-    tried: list[str] = []
+    tried = ['the Windows certificate store ("CA" and "ROOT")'] if windows else []
     for candidate in (paths.openssl_cafile, *DISTRIBUTION_BUNDLES):
         if not candidate or candidate in tried:
             continue
@@ -229,11 +244,15 @@ def _resolve_os_bundle() -> tuple[str, bytes, bool]:
     if pem_digests(pem):
         return capath, pem, False
     tried.append(f"{capath} (directory)")
+    advice = {
+        "win32": "The Windows certificate store holds no server-auth root.",
+        "darwin": "Install the OS CA bundle (on a python.org build, run its "
+        "'Install Certificates' step).",
+    }.get(sys.platform, "Install the OS CA bundle.")
     raise SystemExit(
         "TLS root set: no operating-system CA bundle loads; tried "
         + ", ".join(tried)
-        + ". Install the OS CA bundle (on a python.org macOS build, run its "
-        f"'Install Certificates' step). {EXTRA_CA_FILE_SETTING} only adds to it."
+        + f". {advice} {EXTRA_CA_FILE_SETTING} only adds to it."
     )
 
 
@@ -279,19 +298,25 @@ def _inherited(
         elif not (
             (held == pem or not _NON_PLAIN.search(held))
             and pem_digests(held) == digests
-            and _loads(value)
+            and _holds(value, digests)
         ):
             _refuse(name, value, extra)
         found = found or real
     # OpenSSL reads SSL_CERT_DIR as a list; an element it cannot list holds none.
+    # Each hashed entry must load to exactly its own CERTIFICATE blocks.
     directories = os.environ.get(DIRECTORY_VARIABLE, "")
-    held = b"\n".join(
-        _read(os.path.join(element, entry))
+    entries = [
+        os.path.join(element, entry)
         for element in directories.split(os.pathsep)
         for entry in (_hashed_entries(element) if element else ())
-    )
+    ]
+    held = b"\n".join(_read(entry) for entry in entries)
     found_digests = pem_digests(held)
-    if _NON_PLAIN.search(held) or (found_digests and found_digests != digests):
+    if (
+        _NON_PLAIN.search(held)
+        or (found_digests and found_digests != digests)
+        or not all(_holds(entry, pem_digests(_read(entry))) for entry in entries)
+    ):
         _refuse(DIRECTORY_VARIABLE, directories, extra)
     return found
 
@@ -300,8 +325,9 @@ def _refuse(name: str, value: str, extra: str | None) -> NoReturn:
     parent = os.path.dirname(os.path.realpath(value))
     if os.path.basename(parent) == _directory_name():
         raise SystemExit(
-            f"TLS root set: {name}={value!r} names a set an earlier FaultMaven start "
-            "wrote, and the CA files have changed since: restart that process."
+            f"TLS root set: {name}={value!r} names a set file from an earlier "
+            "FaultMaven start that is missing, altered or not this start's set: "
+            f"restart that process, or unset {name}."
         )
     the_set = "the OS CA bundle" + (f" plus {EXTRA_CA_FILE_SETTING}" if extra else "")
     raise SystemExit(
@@ -333,7 +359,7 @@ def _write_set(path: str, pem: bytes, digests: frozenset[str]) -> str:
             os.replace(temporary, path)
     except OSError as error:
         raise _tmpdir_refusal(error) from error
-    if not _loads(path) or pem_digests(_read(path)) != digests:
+    if not _holds(path, digests) or pem_digests(_read(path)) != digests:
         raise SystemExit(
             f"TLS root set: the set written to {path} does not load all "
             f"{len(digests)} certificates; check {EXTRA_CA_FILE_SETTING} and "

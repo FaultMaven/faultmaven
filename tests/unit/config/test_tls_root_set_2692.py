@@ -10,6 +10,7 @@ clears the owned variables before each test and restores them after.
 from __future__ import annotations
 
 import datetime
+import getpass
 import hashlib
 import os
 import ssl
@@ -118,15 +119,49 @@ def test_an_unreadable_extra_file_refuses_naming_the_setting(
     assert "SSL_CERT_FILE" not in os.environ
 
 
-def test_no_loadable_os_bundle_refuses_naming_each_path_tried(tmp_path, monkeypatch):
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+def test_no_loadable_os_bundle_refuses_naming_each_path_tried(
+    tmp_path, monkeypatch, platform
+):
     empty_capath = tmp_path / "capath"
     empty_capath.mkdir()
     _os_paths(monkeypatch, str(tmp_path / "absent.pem"), str(empty_capath))
+    monkeypatch.setattr(sys, "platform", platform)
     with pytest.raises(SystemExit) as refusal:
         apply_root_set()
     message = str(refusal.value)
     assert str(tmp_path / "absent.pem") in message and str(empty_capath) in message
-    assert "Install Certificates" in message and "TLS_EXTRA_CA_FILE" in message
+    assert ("Install Certificates" in message) == (platform == "darwin")
+    assert "TLS_EXTRA_CA_FILE" in message
+
+
+def _non_ascii(pem: bytes) -> bytes:
+    """One non-ASCII byte on a base64 line: the digests skip the block, and
+    OpenSSL still loads it."""
+    lines = pem.split(b"\n")
+    lines[1] += b"\xc3\xa9"
+    return b"\n".join(lines)
+
+
+def test_an_inherited_file_hiding_a_root_openssl_loads_refuses(
+    os_bundle, tmp_path, monkeypatch
+):
+    tainted = tmp_path / "tainted.pem"
+    tainted.write_bytes(b"".join(ROOTS) + _non_ascii(_ca_pem("rogue")))
+    monkeypatch.setenv("SSL_CERT_FILE", str(tainted))
+    with pytest.raises(SystemExit, match="SSL_CERT_FILE="):
+        apply_root_set()
+
+
+def test_a_capath_entry_hiding_a_root_openssl_loads_refuses(
+    os_bundle, tmp_path, monkeypatch
+):
+    capath = tmp_path / "capath"
+    capath.mkdir()
+    (capath / "0badc0de.0").write_bytes(_non_ascii(_ca_pem("rogue")))
+    monkeypatch.setenv("SSL_CERT_DIR", str(capath))
+    with pytest.raises(SystemExit, match="SSL_CERT_DIR="):
+        apply_root_set()
 
 
 @pytest.mark.parametrize("name", FILE_VARIABLES)
@@ -434,24 +469,72 @@ def test_no_usable_temporary_directory_refuses_naming_tmpdir(
         apply_root_set()
 
 
-def test_on_windows_the_os_bundle_is_the_certificate_stores_server_roots(
-    tmp_path, monkeypatch
-):
-    """Read as CPython's load_default_certs reads it; no OS file to name."""
-    valid, client_only = _ca_pem("windows root"), _ca_pem("client-auth only")
-    der = ssl.PEM_cert_to_DER_cert
-    stores = {
-        "ROOT": [
-            (der(valid.decode()), "x509_asn", True),
-            (b"\x30\x00", "pkcs_7_asn", True),
-            (der(client_only.decode()), "x509_asn", {"1.3.6.1.5.5.7.3.2"}),
-        ],
-        "CA": [],
-    }
+WINDOWS = {name: _ca_pem(name) for name in ("ca store", "root store", "by oid")}
+SERVER_AUTH, CLIENT_AUTH = "1.3.6.1.5.5.7.3.1", "1.3.6.1.5.5.7.3.2"
+
+
+def _windows(monkeypatch, tmp_path, stores: dict) -> None:
+    """A Windows host: no OpenSSL default file, a stubbed store, no getuid."""
+
+    def enum_certificates(store):
+        if isinstance(stores[store], Exception):
+            raise stores[store]
+        return stores[store]
+
+    _os_paths(monkeypatch, str(tmp_path / "absent.pem"), str(tmp_path / "none"))
     monkeypatch.setattr(sys, "platform", "win32")
-    monkeypatch.setattr(ssl, "enum_certificates", stores.__getitem__, raising=False)
+    monkeypatch.setattr(ssl, "enum_certificates", enum_certificates, raising=False)
     monkeypatch.delattr(os, "getuid")
+    monkeypatch.setattr(getpass, "getuser", lambda: "DOMAIN\\some user")
+
+
+def _der(name: str) -> bytes:
+    return ssl.PEM_cert_to_DER_cert(WINDOWS[name].decode())
+
+
+def test_on_windows_the_os_bundle_is_both_stores_server_roots(tmp_path, monkeypatch):
+    """Read as CPython's load_default_certs reads it; no OS file to name."""
+    client_only = ssl.PEM_cert_to_DER_cert(_ca_pem("client-auth only").decode())
+    _windows(monkeypatch, tmp_path, {
+        "CA": [(_der("ca store"), "x509_asn", True)],
+        "ROOT": [
+            (_der("root store"), "x509_asn", True),
+            (_der("by oid"), "x509_asn", {SERVER_AUTH, CLIENT_AUTH}),
+            (b"\x30\x00", "pkcs_7_asn", True),
+            (client_only, "x509_asn", {CLIENT_AUTH}),
+        ],
+    })  # fmt: skip
     applied = apply_root_set()
-    assert tls_root_set.pem_digests(Path(applied.path).read_bytes()) == {_digest(valid)}
-    assert _loaded(applied.path) == {_digest(valid)}
-    assert Path(applied.path).parent.name.startswith("faultmaven-tls-")
+    expected = {_digest(pem) for pem in WINDOWS.values()}
+    assert tls_root_set.pem_digests(Path(applied.path).read_bytes()) == expected
+    assert _loaded(applied.path) == expected
+    assert Path(applied.path).parent.name == "faultmaven-tls-DOMAIN_some_user"
+
+
+def test_on_windows_a_store_it_may_not_read_is_skipped(tmp_path, monkeypatch):
+    denied = PermissionError(5, "Access is denied")
+    roots = [(_der("root store"), "x509_asn", True)]
+    _windows(monkeypatch, tmp_path, {"CA": denied, "ROOT": roots})
+    assert _loaded(apply_root_set().path) == {_digest(WINDOWS["root store"])}
+
+
+def test_on_windows_a_symlinked_set_directory_refuses(tmp_path, monkeypatch):
+    roots = [(_der("root store"), "x509_asn", True)]
+    _windows(monkeypatch, tmp_path, {"CA": [], "ROOT": roots})
+    (tmp_path / "elsewhere").mkdir()
+    (tmp_path / "faultmaven-tls-DOMAIN_some_user").symlink_to(tmp_path / "elsewhere")
+    with pytest.raises(SystemExit, match="TMPDIR"):
+        apply_root_set()
+
+
+def test_on_windows_an_empty_store_refuses_naming_it(tmp_path, monkeypatch):
+    _windows(monkeypatch, tmp_path, {"CA": [], "ROOT": []})
+    with pytest.raises(SystemExit) as refusal:
+        apply_root_set()
+    message = str(refusal.value)
+    assert message.startswith(
+        "TLS root set: no operating-system CA bundle loads; tried the Windows "
+        'certificate store ("CA" and "ROOT")'
+    )
+    assert "holds no server-auth root" in message
+    assert "Install Certificates" not in message
