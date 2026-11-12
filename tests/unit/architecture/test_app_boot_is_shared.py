@@ -365,8 +365,9 @@ EXPECTED_SITES_IN_STRING_LITERALS = {
     # in-memory DATABASE_URL before anything is written, plus its positive
     # control on a file URL.
     "tests/integration/test_boot_refuses_nonpersistent_database.py": 1,
-    # #1789's child-process probe, same shape: a boot asserted to refuse a
-    # DATABASE_URL with surrounding whitespace before anything is written.
+    # #1789's child-process probe: a boot asserted to refuse a DATABASE_URL with
+    # surrounding whitespace at ``from faultmaven.main import app``, before the
+    # lifespan starts and before anything is written.
     "tests/integration/test_database_url_whitespace_refused_1789.py": 1,
     # fm#1628's child-suite source for the runtime guard's controls: a
     # module-scoped fixture entering the real app, run under pytester in a

@@ -18,8 +18,9 @@ Environment Variables:
         persistent database (empty, ``:memory:``, an in-memory SQLite URL, a
         value that does not parse), an online migration refuses and exits 1
         (#1704); offline (``--sql``) opens no database and only takes the
-        dialect from it. Only the URL is read: no other database setting is
-        validated here.
+        dialect from it. A value with leading or trailing whitespace is
+        refused in both modes, exit 1 (#1789). Only the URL is read: no other
+        database setting is validated here.
 
 Usage:
     alembic upgrade head
@@ -85,11 +86,11 @@ def get_database_url(*, require_persistent: bool) -> str:
     — so the migration binds the variable in the flat spellings the app does
     (``database_url`` included). Only the URL is read; no other database field
     is validated, so a setting alembic never uses cannot refuse a migration.
-    A value with surrounding whitespace is refused in both modes, as the app
-    refuses it (#1789).
 
-    Offline (``--sql``) opens no database: the URL only names the dialect, so it
-    is not refused, and an empty value falls back to the default file URL.
+    A value with leading or trailing whitespace is refused in both modes, exit
+    1, as the app refuses it (#1789). Otherwise offline (``--sql``) opens no
+    database: the URL only names the dialect, so it is not refused, and an
+    empty value falls back to the default file URL.
 
     Returns:
         str: Database connection URL

@@ -1,7 +1,9 @@
 """A padded ``DATABASE_URL`` is refused before anything is written (#1789).
 
-The boot, an operator command and an online ``alembic upgrade head`` each run in
-a clean child from an empty directory. Each must refuse with the message naming
+The boot, an operator command and ``alembic upgrade head`` (online, and offline
+with ``--sql``) each run in a clean child from an empty directory. The boot
+refuses at ``from faultmaven.main import app``, whose import already builds the
+settings, so before the lifespan starts. Each must refuse with the message naming
 ``DATABASE_URL``, print neither the URL nor its password, and leave the
 directory empty: no ``data/``, no JWT secret, and no database file under the
 padded name or the stripped one. Unpadded URLs are the existing positive
@@ -22,6 +24,7 @@ from pathlib import Path
 import pytest
 
 import faultmaven
+from tests.integration.mock_servers import get_free_port
 
 pytestmark = pytest.mark.integration
 
@@ -29,7 +32,9 @@ TREE = Path(faultmaven.__file__).resolve().parent.parent
 MESSAGE = "DATABASE_URL has leading or trailing whitespace"
 NAME, PASSWORD = "p1789", "FakePw1789"
 SQLITE = f"sqlite+aiosqlite:///./{NAME}.db"
-POSTGRES = f"postgresql+asyncpg://fm_app:{PASSWORD}@127.0.0.1:1/{NAME}"
+#: ``{port}`` is filled per run with a port bound and closed first, so a regressed
+#: child that connects is refused by this machine's kernel.
+POSTGRES = f"postgresql+asyncpg://fm_app:{PASSWORD}@127.0.0.1:{{port}}/{NAME}"
 PADS = {
     "leading-space": " {}",
     "trailing-space": "{} ",
@@ -76,7 +81,7 @@ def _child(argv: list[str], database_url: str, prepare=None):
             "GEMINI_API_KEY": "dummy-key-for-boot-probe",
             "FAULTMAVEN_SKIP_DOTENV": "1",
             "PYTHONDONTWRITEBYTECODE": "1",
-            "DATABASE_URL": database_url,
+            "DATABASE_URL": database_url.format(port=get_free_port()),
         }
         completed = subprocess.run(
             [sys.executable, *argv],
@@ -122,6 +127,8 @@ def test_an_operator_command_refuses_a_padded_url(pad, url):
     detail = _assert_refused_unseen(completed, left)
     assert completed.returncode == 1, detail
     assert completed.stdout == "", detail
+    assert f"❌ Refusing to run: {MESSAGE}" in completed.stderr, detail
+    assert "Traceback" not in completed.stderr, detail
 
 
 def _alembic_copy(cwd: Path) -> list[str]:
@@ -135,9 +142,14 @@ def _alembic_copy(cwd: Path) -> list[str]:
     return [str(p.relative_to(cwd)) for p in cwd.rglob("*")]
 
 
-@pytest.mark.parametrize("pad, url", CASES, ids=IDS)
-def test_online_alembic_refuses_a_padded_url(pad, url):
+@pytest.mark.parametrize(
+    "pad, url, offline",
+    [(pad, url, False) for pad, url in CASES] + [(PADS["lf"], SQLITE, True)],
+    ids=IDS + ["lf-sqlite-offline-sql"],
+)
+def test_alembic_refuses_a_padded_url(pad, url, offline):
     argv = ["-m", "alembic", "-c", "alembic.ini", "upgrade", "head"]
+    argv += ["--sql"] if offline else []
     completed, left = _child(argv, pad.format(url), prepare=_alembic_copy)
     detail = _assert_refused_unseen(completed, left)
     assert completed.returncode == 1, detail

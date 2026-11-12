@@ -108,3 +108,34 @@ def test_the_predicate_judges_the_value_as_given():
     """A direct call no longer strips: a leading space does not parse."""
     assert persistent_database_configured("sqlite+aiosqlite:///./p.db") is True
     assert persistent_database_configured(" sqlite+aiosqlite:///./p.db") is False
+
+
+@pytest.mark.parametrize("wrapped", [False, True], ids=["direct", "as-context"])
+def test_the_operator_gate_refuses_only_the_whitespace_error(
+    monkeypatch, capsys, wrapped
+):
+    """Exit 1 with the refusal shape, raised directly or under get_settings()'s
+    ConfigurationError; any other ConfigurationError propagates as before."""
+    import faultmaven.config.settings as settings_module
+    from faultmaven.cli._database_gate import require_persistent_database_or_exit
+
+    def padded():
+        try:
+            raise DatabaseUrlWhitespaceError(MESSAGE)
+        except DatabaseUrlWhitespaceError as exc:
+            if not wrapped:
+                raise
+            raise ConfigurationError(f"Settings initialization failed: {exc}")
+
+    monkeypatch.setattr(settings_module, "get_settings", padded)
+    with pytest.raises(SystemExit) as refused:
+        require_persistent_database_or_exit()
+    assert refused.value.code == 1
+    assert capsys.readouterr().err == f"❌ Refusing to run: {MESSAGE}\n"
+
+    def unrelated():
+        raise ConfigurationError("Settings initialization failed: ENVIRONMENT")
+
+    monkeypatch.setattr(settings_module, "get_settings", unrelated)
+    with pytest.raises(ConfigurationError, match="ENVIRONMENT"):
+        require_persistent_database_or_exit()
