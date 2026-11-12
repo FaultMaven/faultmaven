@@ -1,11 +1,16 @@
-"""A local HS256 secret PyJWT refuses as an HMAC key stops startup (#1806).
+"""A local HS256 secret PyJWT will not sign with stops startup (#1806).
 
 Since PyJWT 2.14 the HMAC key preparation refuses a value that looks like a
 PEM or SSH key or a JWK. Such a ``JWT_SECRET_KEY`` (or secret file) booted
 cleanly, then failed every login (500) and every request (401). The secret is
-now judged where it is resolved, before it is set or exported, and the
-refusal never carries the value. OAuth mode is not judged; a short secret,
-which PyJWT only warns about, still starts.
+now judged by the signer's key path (prepare, sign, verify on the HS256
+algorithm) where it is resolved: an explicit value, a file value, a generated
+value before it is published, and a lost race's winner before it is used. A
+refused value is never written, set or exported, and no refusal (nor any
+exception it chains) carries any part of it. The parity table pins that check
+to a real ``jwt.encode`` / ``jwt.decode`` round trip. OAuth mode is not judged; a short secret, which PyJWT only warns about,
+still starts. The real boot and an ``fm-*`` command are driven in children
+by ``tests/integration/test_local_jwt_secret_refused_1806.py``.
 """
 
 from __future__ import annotations
@@ -13,18 +18,12 @@ from __future__ import annotations
 import json
 import os
 import secrets
-import shutil
-import subprocess
-import sys
-import tempfile
-import textwrap
+import traceback
 import warnings
-from pathlib import Path
 
 import jwt
 import pytest
 
-import faultmaven
 from faultmaven.config import settings as S
 from faultmaven.models.exceptions import ConfigurationError
 from tests.utils import (
@@ -35,8 +34,7 @@ from tests.utils import (
 
 pytestmark = pytest.mark.unit
 
-TREE = Path(faultmaven.__file__).resolve().parent.parent
-MESSAGE = "PyJWT refuses this value as an HMAC secret"
+MESSAGE = "PyJWT refuses it as an HMAC secret"
 
 #: The three shapes PyJWT 2.15 refuses, each carrying a marker body.
 REFUSED = {
@@ -44,11 +42,17 @@ REFUSED = {
     "pem": "-----BEGIN PUBLIC KEY-----\nMIIBIjAN1806PemBody\n-----END PUBLIC KEY-----",
     "ssh": "ssh-rsa AAAAB3NzaC1yc2E1806SshBody operator@host",
 }
+#: Raw bytes through an env var: not UTF-8, so the signer cannot encode it.
+NON_UTF8 = "fm1806-\udcff-raw"
 
 
 def _fragments(secret: str) -> set[str]:
-    """Every 8-character slice of ``secret``: none may appear in an output."""
-    return {secret[i : i + 8] for i in range(len(secret) - 7)}
+    """Every 8-character slice of ``secret``, and each non-ASCII character in
+    every spelling an error message gives it (a single byte leaks that way)."""
+    found = {secret[i : i + 8] for i in range(len(secret) - 7)}
+    for char in {c for c in secret if not c.isascii()}:
+        found |= {char, ascii(char).strip("'"), f"\\x{ord(char) & 0xFF:02x}"}
+    return found
 
 
 def _assert_unseen(secret: str, text: str) -> None:
@@ -88,44 +92,69 @@ def local_env(monkeypatch, tmp_path):
         os.environ.update(saved)
 
 
-def _assert_refused(refused: pytest.ExceptionInfo, secret: str, source: str):
-    text = str(refused.value)
-    assert MESSAGE in text and source in text, text
-    _assert_unseen(secret, text)
-    _assert_unseen(secret, repr(refused.value.context))
-
-
-@pytest.mark.parametrize("secret", REFUSED.values(), ids=REFUSED.keys())
-def test_an_explicit_secret_pyjwt_refuses_stops_startup(local_env, secret):
-    os.environ["JWT_SECRET_KEY"] = secret
-
+def _refused(secret: str, *phrases: str) -> None:
+    """``get_settings()`` refuses, saying ``phrases``, and nothing in the raised
+    chain (text, ``context``, args, formatted traceback) carries ``secret``."""
     with pytest.raises(ConfigurationError) as refused:
         get_live_settings()
-
-    _assert_refused(refused, secret, "JWT_SECRET_KEY")
-    assert os.environ["JWT_SECRET_KEY"] == secret
+    text = str(refused.value)
+    for phrase in (MESSAGE, *phrases):
+        assert phrase in text, text
+    seen = "".join(traceback.format_exception(refused.value))
+    exc: BaseException | None = refused.value
+    while exc is not None:
+        seen += repr(exc.args) + repr(getattr(exc, "context", None))
+        exc = exc.__cause__ or exc.__context__
+    _assert_unseen(secret, seen)
 
 
 @pytest.mark.parametrize(
-    "database_url",
-    [None, "sqlite+aiosqlite:///:memory:"],
-    ids=["persistent", "non-persistent"],
+    "secret", [*REFUSED.values(), NON_UTF8], ids=[*REFUSED, "non-utf8"]
 )
+def test_an_explicit_secret_the_signer_refuses_stops_startup(local_env, secret):
+    os.environ["JWT_SECRET_KEY"] = secret
+
+    _refused(secret, "the JWT_SECRET_KEY setting", "unset it")
+
+    assert os.environ["JWT_SECRET_KEY"] == secret
+
+
 @pytest.mark.parametrize("secret", REFUSED.values(), ids=REFUSED.keys())
-def test_a_secret_file_pyjwt_refuses_stops_startup_unexported(
-    local_env, secret, database_url
-):
+def test_a_secret_file_the_signer_refuses_stops_startup_unexported(local_env, secret):
     secret_file = local_env / ".jwt_secret"
     secret_file.write_text(secret)
-    if database_url is not None:
-        os.environ["DATABASE_URL"] = database_url
 
-    with pytest.raises(ConfigurationError) as refused:
-        get_live_settings()
+    _refused(secret, f"the secret file {secret_file}", "delete the file")
 
-    _assert_refused(refused, secret, str(secret_file))
     assert "JWT_SECRET_KEY" not in os.environ
     assert secret_file.read_text() == secret
+
+
+def test_a_generated_secret_the_signer_refuses_is_never_written(local_env, monkeypatch):
+    os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{local_env}/fm1806.db"
+    monkeypatch.setattr(S.secrets, "token_urlsafe", lambda *_: REFUSED["pem"])
+
+    _refused(REFUSED["pem"], "a secret generated for this process")
+
+    assert "JWT_SECRET_KEY" not in os.environ
+    assert list(local_env.iterdir()) == []
+
+
+def test_a_lost_race_to_a_refused_winner_is_refused_unexported(local_env, monkeypatch):
+    os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{local_env}/fm1806.db"
+    winner = REFUSED["jwk-set"]
+
+    def another_process_published_first(path, data, replace_if):
+        path.write_text(winner)
+        return False
+
+    monkeypatch.setattr(S, "publish_secret_once", another_process_published_first)
+    secret_file = local_env / ".jwt_secret"
+
+    _refused(winner, f"the secret file {secret_file}")
+
+    assert "JWT_SECRET_KEY" not in os.environ
+    assert secret_file.read_text() == winner
 
 
 @pytest.mark.parametrize(
@@ -133,7 +162,7 @@ def test_a_secret_file_pyjwt_refuses_stops_startup_unexported(
     ["plain-operator-secret-1806", "short", "héllo-ünïcode-1806"],
     ids=["plain", "short", "non-ascii"],
 )
-def test_an_explicit_secret_pyjwt_signs_with_starts(local_env, secret):
+def test_an_explicit_secret_the_signer_accepts_starts(local_env, secret):
     os.environ["JWT_SECRET_KEY"] = secret
 
     settings = get_live_settings()
@@ -163,6 +192,7 @@ def test_oauth_mode_does_not_judge_jwt_secret_key(local_env):
 
 PARITY = {
     **REFUSED,
+    "non-utf8": NON_UTF8,
     "certificate-line": "-----BEGIN CERTIFICATE-----",
     "json-without-kty": json.dumps({"a": 1}),
     "json-with-kty": json.dumps({"kty": "x"}),
@@ -173,104 +203,22 @@ PARITY = {
 
 
 @pytest.mark.parametrize("name", PARITY)
-def test_the_check_refuses_exactly_what_the_signer_refuses(name):
-    """Pinned to ``jwt.encode`` so a PyJWT bump cannot move them apart."""
+def test_the_check_refuses_exactly_what_the_signer_refuses(name, tmp_path):
+    """Pinned to an HS256 ``jwt.encode`` / ``jwt.decode`` round trip, so a
+    PyJWT bump cannot move the check and the signer apart."""
     value = PARITY[name]
     if value == "token_urlsafe-48":
         value = secrets.token_urlsafe(48)
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")  # a short key warns; it still signs
+    with warnings.catch_warnings(action="ignore"):  # a short key only warns
         try:
-            jwt.encode({"sub": "u"}, value, "HS256")
-            signs = True
-        except jwt.InvalidKeyError:
+            token = jwt.encode({"sub": "u"}, value, "HS256")
+            signs = jwt.decode(token, value, algorithms=["HS256"]) == {"sub": "u"}
+        except Exception:
             signs = False
     try:
-        S.require_signable_hs256_secret(value, "JWT_SECRET_KEY")
+        S.require_signable_hs256_secret(value, "file", tmp_path / ".jwt_secret")
         accepted = True
     except S.LocalJwtSecretError:
         accepted = False
 
     assert accepted is signs
-
-
-# -- the real entry points, each in a clean child ---------------------------
-
-_BOOT = textwrap.dedent("""
-    try:
-        from fastapi.testclient import TestClient
-        from faultmaven.main import app
-        with TestClient(app):
-            pass
-        print("BOOTED")
-    except BaseException as exc:
-        print("REFUSED " + type(exc).__name__ + ": " + str(exc))
-    """)
-
-_OPERATOR = (
-    "import sys\n"
-    "sys.argv = ['fm-promote-platform-admin', 'admin']\n"
-    "from faultmaven.cli.promote_platform_admin import main\n"
-    "main()\n"
-)
-
-
-def _child(code: str, secret: str) -> subprocess.CompletedProcess:
-    """Run ``code`` from an empty directory, local mode, ``secret`` set.
-
-    Follows the #1789 child pattern: a clean environment and no ``.env``.
-    """
-    root = Path(tempfile.mkdtemp(prefix="fm-jwt1806-"))
-    try:
-        cwd = root / "run"
-        cwd.mkdir()
-        env = {
-            "HOME": str(root),
-            "PATH": "/usr/bin:/bin",
-            "PYTHONPATH": str(TREE),
-            "DEPLOYMENT_MODE": "standalone",
-            "AUTH_MODE": "local",
-            "ENVIRONMENT": "development",
-            "CHAT_PROVIDER": "gemini",
-            "GEMINI_API_KEY": "dummy-key-for-boot-probe",
-            "FAULTMAVEN_SKIP_DOTENV": "1",
-            "PYTHONDONTWRITEBYTECODE": "1",
-            "DATABASE_URL": "sqlite+aiosqlite:///./fm1806.db",
-            "JWT_SECRET_KEY": secret,
-        }
-        return subprocess.run(
-            [sys.executable, "-c", code],
-            cwd=cwd,
-            env=env,
-            capture_output=True,
-            text=True,
-            stdin=subprocess.DEVNULL,
-            timeout=600,
-        )
-    finally:
-        shutil.rmtree(root, ignore_errors=True)
-
-
-def test_the_boot_refuses_a_secret_pyjwt_refuses():
-    secret = REFUSED["jwk-set"]
-
-    completed = _child(_BOOT, secret)
-
-    output = completed.stdout + completed.stderr
-    detail = f"exit {completed.returncode}\n{output[-3000:]}"
-    assert "BOOTED" not in completed.stdout, detail
-    assert "REFUSED ConfigurationError" in completed.stdout, detail
-    assert MESSAGE in completed.stdout, detail
-    _assert_unseen(secret, output)
-
-
-def test_an_operator_command_refuses_a_secret_pyjwt_refuses():
-    secret = REFUSED["pem"]
-
-    completed = _child(_OPERATOR, secret)
-
-    output = completed.stdout + completed.stderr
-    detail = f"exit {completed.returncode}\n{output[-3000:]}"
-    assert completed.returncode == 1, detail
-    assert MESSAGE in completed.stderr, detail
-    _assert_unseen(secret, output)

@@ -370,9 +370,10 @@ EXPECTED_SITES_IN_STRING_LITERALS = {
     # surrounding whitespace at ``from faultmaven.main import app``, before the
     # lifespan starts and before anything is written.
     "tests/integration/test_database_url_whitespace_refused_1789.py": 1,
-    # #1806's child-process probe: a boot asserted to refuse, in the lifespan,
-    # a local JWT_SECRET_KEY that PyJWT refuses as an HMAC secret.
-    "tests/unit/config/test_local_jwt_secret_signable_1806.py": 1,
+    # #1806's child-process probe: a boot asserted to refuse a local
+    # JWT_SECRET_KEY that PyJWT will not sign with, at
+    # ``from faultmaven.main import app``, before the lifespan starts.
+    "tests/integration/test_local_jwt_secret_refused_1806.py": 1,
     # fm#1628's child-suite source for the runtime guard's controls: a
     # module-scoped fixture entering the real app, run under pytester in a
     # child session. Requested by a test, it is refused before the lifespan
