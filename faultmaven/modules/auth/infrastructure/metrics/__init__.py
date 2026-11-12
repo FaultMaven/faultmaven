@@ -12,7 +12,6 @@ from faultmaven.modules.auth.infrastructure.metrics.oauth_metrics import (
     oauth_codes_expired,
     oauth_codes_generated,
     oauth_invalid_client_attempts,
-    oauth_metrics,
     oauth_pkce_verification_failures,
     oauth_redirect_uri_mismatches,
     oauth_refresh_errors,
@@ -27,7 +26,6 @@ from faultmaven.modules.auth.infrastructure.metrics.revocation_metrics import (
 )
 
 __all__ = [
-    "oauth_metrics",
     "OAuthMetricsRecorder",
     # Authorization metrics
     "oauth_authorization_requests",
