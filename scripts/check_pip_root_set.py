@@ -1,10 +1,12 @@
 """Fail the image build unless a pip that ignores PIP_CERT, run ``--isolated`` or
 with PIP_CERT unset, verifies against exactly the OS cafile's roots (#2756).
 
-Measured from pip's own session through requests' ``cert_verify``, so it imports
-pip's private API, which check_image_trust_store.py deliberately does not. The
-truststore context a pip >= 24.2 adapter holds also loads that bundle: it is
-reported, not measured."""
+Measured from pip's own session: the bundle requests' ``cert_verify`` names, or,
+when ``verify`` is True, requests' ``DEFAULT_CA_BUNDLE_PATH`` (``certifi.where()``),
+since requests 2.32.0-2.32.4 then name none. It imports pip's private API, which
+check_image_trust_store.py deliberately does not. Probed on pip 24.0, 24.1.2, 24.2,
+25.0.1, 25.2 and 25.3 (requests 2.31.0-2.32.5). The truststore context a pip >= 24.2
+adapter holds also loads that bundle: it is reported, not measured."""
 
 import os
 import ssl
@@ -16,26 +18,43 @@ for name in ("REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "SSL_CERT_FILE", "SSL_CERT_
 
 import pip  # noqa: E402
 from pip._internal.commands import create_command  # noqa: E402
+from pip._vendor import certifi  # noqa: E402
 
 URL = "https://pypi.org/simple/"
 
 
 def roots(cafile: str) -> set[bytes]:
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    context.load_verify_locations(cafile=cafile)
+    try:
+        context.load_verify_locations(cafile=cafile)
+    except ssl.SSLError as error:  # A refused block can follow a trusted one.
+        if error.reason != "NO_CERTIFICATE_OR_CRL_FOUND":
+            raise
     return set(context.get_ca_certs(binary_form=True))
 
 
 def leg(name: str, args: list[str], reference: set[bytes]) -> str | None:
-    command = create_command("download", isolated="--isolated" in args)
-    session = command._build_session(command.parse_args(args)[0])
-    verify = session.merge_environment_settings(URL, {}, None, None, None)["verify"]
-    adapter, conn = session.get_adapter(URL), types.SimpleNamespace()
-    adapter.cert_verify(conn, URL, verify, None)
-    if getattr(adapter, "_ssl_context", None) is not None:
-        print(f"{name}: the adapter's truststore context is present, not measured")
-    file = getattr(conn, "ca_certs", None)
-    if not file or roots(file) != reference:
+    file = certifi.where()  # requests 2.32.0-2.32.4 load it on import
+    try:
+        from pip._vendor.requests.utils import DEFAULT_CA_BUNDLE_PATH
+
+        command = create_command("download", isolated="--isolated" in args)
+        session = command._build_session(command.parse_args(args)[0])
+        merged = session.merge_environment_settings(URL, {}, None, None, None)
+        verify = merged["verify"]
+        adapter, conn = session.get_adapter(URL), types.SimpleNamespace()
+        adapter.cert_verify(conn, URL, verify, None)
+        if getattr(adapter, "_ssl_context", None) is not None:
+            print(f"{name}: the adapter's truststore context is present, not measured")
+        file = (
+            DEFAULT_CA_BUNDLE_PATH
+            if verify is True
+            else getattr(conn, "ca_certs", None)
+        )
+        loaded = roots(file)
+    except (OSError, TypeError) as error:  # SSLError is an OSError
+        return f"{name}: pip's bundle {file} does not load: {error}"
+    if loaded != reference:
         return (
             f"{name}: pip verifies against {file}, not the OS cafile's roots: "
             "link it to the OS bundle"

@@ -697,7 +697,10 @@ def test_a_pips_bundle_linked_to_the_os_bundle_passes(image, capsys, version):
 
     image.run()
 
-    assert f"pip {version} {found}: 4 certificates" in capsys.readouterr().out
+    assert capsys.readouterr().out.splitlines() == [
+        f"pip {version} {found}: 4 certificates",
+        "trust store OK: cafile 4, capath 4, certifi 4 certificates",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -709,17 +712,22 @@ def test_a_pip_wheel_holding_a_banned_root_fails_at_any_version(image, version, 
     wheel = pip_wheel(image, version, [*CLEAN, BAD], prefix)
 
     assert failure(image) == [
-        f"pip wheel {version} {wheel} trusts Banned Root: "
-        "remove it or repack it with the OS bundle"
+        f"pip wheel {version} {wheel} trusts Banned Root: remove it"
     ]
 
 
-def test_a_pip_wheel_without_a_bundle_cannot_be_judged_and_fails(image):
+def test_a_pip_wheel_without_a_bundle_member_passes_and_is_reported(image, capsys):
+    """It holds no banned root (§13.4: absent, or no banned root)."""
     wheel = pip_wheel(image, "24.0", [], ENSUREPIP)
     with zipfile.ZipFile(wheel, "w") as archive:
         archive.writestr("pip/__init__.py", '__version__ = "24.0"\n')
 
-    assert failure(image) == [f"pip wheel 24.0 {wheel}: bundle not found, cannot judge"]
+    image.run()
+
+    assert capsys.readouterr().out.splitlines() == [
+        f"pip wheel 24.0 {wheel}: no bundle member",
+        "trust store OK: cafile 4, capath 4, certifi 4 certificates",
+    ]
 
 
 def test_a_pip_wheel_without_a_banned_root_passes(image, capsys):
@@ -728,7 +736,10 @@ def test_a_pip_wheel_without_a_banned_root_passes(image, capsys):
 
     image.run()
 
-    assert f"pip wheel 24.0 {wheel}: 3 certificates" in capsys.readouterr().out
+    assert capsys.readouterr().out.splitlines() == [
+        f"pip wheel 24.0 {wheel}: 3 certificates",
+        "trust store OK: cafile 4, capath 4, certifi 4 certificates",
+    ]
 
 
 def test_a_grpc_roots_pem_that_is_not_the_cafile_fails(image):

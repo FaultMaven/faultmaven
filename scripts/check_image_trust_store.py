@@ -88,7 +88,7 @@ def stores(root: str) -> list[tuple[str, str, Path]]:
 
 
 def wheel_digests(wheel: Path) -> set[str] | None:
-    """None when the wheel has no bundle to judge."""
+    """None when the wheel has no bundle member: it holds no banned root."""
     with zipfile.ZipFile(wheel) as archive, tempfile.TemporaryDirectory() as scratch:
         if WHEEL_BUNDLE not in archive.namelist():
             return None
@@ -102,8 +102,9 @@ def found_problems(root, banned, cafile) -> tuple[list[str], list[str]]:
     ``roots.pem`` and each pip's vendored bundle is the default in a process
     apply_root_set did not start (a pip run ``--isolated`` or without PIP_CERT):
     the image links it to the OS bundle, so it holds exactly the cafile's roots.
-    A pip wheel, which a venv made from it installs, holds no banned root. Every
-    pip is judged, whatever its version or PIP_USE_DEPRECATED (#2756)."""
+    A pip wheel, which a venv made from it installs, has no bundle member or one
+    that holds no banned root. Every pip is judged, whatever its version or PIP_USE_DEPRECATED (#2756).
+    """
     problems, reports = [], []
     for kind, version, file in stores(root):
         wheel = kind == "pip wheel"
@@ -118,13 +119,9 @@ def found_problems(root, banned, cafile) -> tuple[list[str], list[str]]:
             continue
         store = f"{kind} {version or '(version unread)'} {file}"
         if digests is None:
-            problems.append(f"{store}: bundle not found, cannot judge")
+            reports.append(f"{store}: no bundle member")
             continue
-        remedy = (
-            "remove it or repack it with the OS bundle"
-            if wheel
-            else "link it to the OS bundle"
-        )
+        remedy = "remove it" if wheel else "link it to the OS bundle"
         lines = store_problems(store, digests, banned, 0)
         if not wheel and digests != cafile:
             lines.append(f"{store} is not the cafile")
