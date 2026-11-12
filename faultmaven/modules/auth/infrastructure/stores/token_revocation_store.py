@@ -2,7 +2,8 @@
 
 The single revocation store for the whole deployment (issue #767): every
 revoke path (OAuth /revoke, refresh rotation in both auth modes, logout,
-admin per-user revocation) writes here, and the request-path check
+admin per-user revocation) writes here, rotation through the conditional
+``claim_token`` (#2764), and the request-path check
 (``AuthService._is_revoked``) reads here.
 
 **Two implementations, chosen by DEPLOYMENT MODE** (#828).
@@ -74,6 +75,7 @@ in-process FakeRedis were never on disk to carry over.
 from __future__ import annotations
 
 import asyncio
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -183,6 +185,20 @@ class RedisTokenRevocationStore(SequentialRevocationState, ITokenRevocationStore
         key = self._make_key(jti)
         return await self.redis.exists(key) > 0
 
+    async def claim_token(self, jti: str, ttl: int) -> bool:
+        key = self._make_key(jti)
+        # A per-call nonce, read back on nil (#2764). redis-py retries a command
+        # whose reply was lost, so an applied SET NX can be resent and answer
+        # nil to the caller that wrote it. ``is_revoked`` reads EXISTS, so the
+        # value is free to identify the writer.
+        nonce = secrets.token_hex(16)
+        if await self.redis.set(key, nonce, nx=True, ex=ttl):
+            return True
+        stored = await self.redis.get(key)
+        if isinstance(stored, bytes):
+            stored = stored.decode()
+        return stored == nonce
+
     async def revoke_user_tokens_before(
         self, user_id: str, revoked_at: float, ttl: int
     ) -> None:
@@ -269,9 +285,10 @@ class SqlTokenRevocationStore(ITokenRevocationStore):
     ``expires_at``, so an elapsed entry stops revoking at its deadline whether
     or not anything has deleted it — the property Redis gets from TTL.
 
-    Rows are then reclaimed opportunistically, by **the two writes that ADD an
+    Rows are then reclaimed opportunistically, by **the writes that ADD an
     entry** (``add_revoked_token`` and ``revoke_user_tokens_before``, both
-    through ``_upsert``) and by the explicit ``cleanup_expired``. That bounds
+    through ``_upsert``, and ``claim_token``) and by the explicit
+    ``cleanup_expired``. That bounds
     the table without a scheduled job that could be forgotten at wiring time —
     and nothing calls ``cleanup_expired``, in this class or the Redis one, so
     the opportunistic path is the one that runs.
@@ -378,6 +395,29 @@ class SqlTokenRevocationStore(ITokenRevocationStore):
         # unconditionally — so it is stored as 0 rather than as a timestamp
         # somebody could later mistake for a watermark.
         await self._upsert(_JTI_SCOPE, jti, 0.0, ttl)
+
+    async def claim_token(self, jti: str, ttl: int) -> bool:
+        async with self._session_factory() as session:
+            # The sweep first, in the same transaction, so an elapsed entry for
+            # this jti cannot make the insert conflict. Then ONE insert that
+            # does nothing on conflict: the database's unique key decides the
+            # single winner, and RETURNING says whether this caller's row was
+            # written (#2764). ``rowcount`` is not consulted (see ``_sweep``).
+            await self._sweep(session)
+            statement = dialect_insert(session, TokenRevocationModel).values(
+                scope=_JTI_SCOPE,
+                subject=jti,
+                revoked_at=0.0,
+                expires_at=self._deadline(ttl),
+            )
+            result = await session.execute(
+                statement.on_conflict_do_nothing(
+                    index_elements=["scope", "subject"]
+                ).returning(TokenRevocationModel.subject)
+            )
+            claimed = result.first() is not None
+            await session.commit()
+            return claimed
 
     async def is_revoked(self, jti: str) -> bool:
         async with self._session_factory() as session:

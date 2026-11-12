@@ -22,6 +22,7 @@ import pytest
 from faultmaven.config.settings import AuthSettings
 from faultmaven.models.exceptions import InvalidGrantError, InvalidRequestError
 from faultmaven.modules.auth.contracts import OAuthAuthorizationDTO
+from faultmaven.modules.auth.domain.services.jwt_token_generator import RefreshClaim
 from faultmaven.modules.auth.domain.services.oauth_service import OAuthServiceImpl
 from faultmaven.modules.auth.infrastructure.metrics.oauth_metrics import (
     OAuthMetricsRecorder,
@@ -70,6 +71,7 @@ def _refresh_service(allowed=(COPILOT,), valid=True, claims=()):
         )
     )
     generator.generate_token_pair = AsyncMock(return_value=("access", "rotated"))
+    generator.claim_refresh_token = AsyncMock(return_value=RefreshClaim.CLAIMED)
     users = AsyncMock()
     users.get = AsyncMock(
         return_value=SimpleNamespace(

@@ -22,6 +22,8 @@ fixture.
 from __future__ import annotations
 
 import ast
+import asyncio
+import os
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -30,7 +32,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from faultmaven.infrastructure.persistence.models import Base
+from faultmaven.infrastructure.persistence.models import Base, TokenRevocationModel
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     ITokenRevocationStore,
     SequentialRevocationState,
@@ -40,6 +42,7 @@ from faultmaven.modules.auth.infrastructure.stores.token_revocation_store import
     RedisTokenRevocationStore,
     SqlTokenRevocationStore,
 )
+from tests.utils import InMemoryRevocationStore
 
 USER_ID = "user-828"
 JTI = "jti-828"
@@ -597,6 +600,141 @@ class TestTheSqlStoreOwnsItsUnitOfWork:
             await reader_engine.dispose()
 
 
+@pytest.fixture(
+    params=[
+        "redis",
+        "sqlite",
+        "memory",
+        pytest.param(
+            "postgresql",
+            marks=[
+                pytest.mark.postgres,
+                pytest.mark.skipif(
+                    not os.environ.get("DATABASE_URL", "").startswith("postgresql"),
+                    reason="PostgreSQL-only; set DATABASE_URL to a PG instance.",
+                ),
+            ],
+        ),
+    ]
+)
+async def claim_store(request, tmp_path):
+    """Every store that implements ``claim_token``, the test double included.
+
+    SQLite on a file with the production PRAGMAs, so concurrent claims are
+    concurrent connections, as in production.
+    """
+    if request.param == "redis":
+        yield _redis_store()
+    elif request.param == "memory":
+        yield InMemoryRevocationStore()
+    elif request.param == "sqlite":
+        from sqlalchemy import event
+
+        engine = _new_engine(f"sqlite+aiosqlite:///{tmp_path / 'claims.db'}")
+
+        @event.listens_for(engine.sync_engine, "connect")
+        def _pragmas(connection, _record):
+            cursor = connection.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA busy_timeout=5000")
+            cursor.close()
+
+        yield await _store_over_its_table(engine)
+    else:
+        from tests.integration.security.conftest import database_of_its_own
+
+        async with database_of_its_own(
+            os.environ["DATABASE_URL"], "fm_2764_claim"
+        ) as url:
+            engine = _new_engine(url)
+            yield await _store_over_its_table(engine)
+            # Before the database is dropped, which an open pool would refuse.
+            await engine.dispose()
+
+
+async def _store_over_its_table(engine):
+    """The SQL store over ``engine``, its table created before any claim runs."""
+    async with engine.begin() as conn:
+        await conn.run_sync(TokenRevocationModel.__table__.create)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    return SqlTokenRevocationStore(session_factory=sessions)
+
+
+class _ReplyLostOnce:
+    """A Redis client whose first SET is applied and its reply then lost.
+
+    redis-py retries a command that raised ``ConnectionError``, so the applied
+    SET NX is resent and answers nil to the very caller that wrote it. The
+    retry here is redis-py's own ``Retry``, with its default three attempts.
+    """
+
+    def __init__(self, redis):
+        self._redis = redis
+        self._lost = False
+
+    def __getattr__(self, name):
+        return getattr(self._redis, name)
+
+    async def set(self, *args, **kwargs):
+        from redis.asyncio.retry import Retry
+        from redis.backoff import NoBackoff
+        from redis.exceptions import ConnectionError
+
+        async def send():
+            reply = await self._redis.set(*args, **kwargs)
+            if not self._lost:
+                self._lost = True
+                raise ConnectionError("reply lost")
+            return reply
+
+        async def reconnect(_error):
+            pass
+
+        return await Retry(NoBackoff(), 3).call_with_retry(send, reconnect)
+
+
+class TestAClaimIsWonOnce:
+    """``claim_token``: the single-use step of refresh rotation (#2764)."""
+
+    async def test_the_first_claim_wins_and_the_second_loses(self, claim_store):
+        assert await claim_store.claim_token(JTI, ttl=60) is True
+        assert await claim_store.claim_token(JTI, ttl=60) is False
+
+    async def test_a_claimed_jti_reads_back_revoked(self, claim_store):
+        await claim_store.claim_token(JTI, ttl=60)
+
+        assert await claim_store.is_revoked(JTI) is True
+
+    async def test_a_revoked_jti_cannot_be_claimed(self, claim_store):
+        await claim_store.add_revoked_token(JTI, ttl=60)
+
+        assert await claim_store.claim_token(JTI, ttl=60) is False
+
+    async def test_of_concurrent_claims_exactly_one_wins(self, claim_store):
+        results = await asyncio.gather(
+            *(claim_store.claim_token(JTI, ttl=60) for _ in range(5))
+        )
+
+        assert sorted(results) == [False, False, False, False, True]
+
+    async def test_a_claim_whose_reply_was_lost_is_still_won(self):
+        store = _redis_store()
+        store.redis = _ReplyLostOnce(store.redis)
+
+        assert await store.claim_token(JTI, ttl=60) is True
+        assert await store.claim_token(JTI, ttl=60) is False
+
+    async def test_an_elapsed_row_does_not_block_a_claim(self):
+        """Only a LIVE entry has the jti. An elapsed SQL row is still in the
+        table until swept, and the claim sweeps before it inserts; Redis has no
+        such row, its key having expired."""
+        engine = _new_engine("sqlite+aiosqlite:///:memory:")
+        store = SqlTokenRevocationStore(session_factory=_factory_over(engine))
+        await store.add_revoked_token(JTI, ttl=-5)
+
+        assert await store.claim_token(JTI, ttl=60) is True
+
+
 class TestTheInterfaceDemandsTheMethodTheRequestPathCalls:
     """``revocation_state`` is abstract like every other method here.
 
@@ -640,6 +778,9 @@ class TestTheInterfaceDemandsTheMethodTheRequestPathCalls:
 
             async def is_revoked(self, jti):
                 return jti in self.revoked
+
+            async def claim_token(self, jti, ttl):
+                return False
 
             async def revoke_user_tokens_before(self, user_id, revoked_at, ttl): ...
 

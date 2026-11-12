@@ -157,6 +157,9 @@ class _RaisingStore(SequentialRevocationState, ITokenRevocationStore):
     async def is_revoked(self, jti):
         raise self._exc
 
+    async def claim_token(self, jti, ttl):  # pragma: no cover - unused
+        raise self._exc
+
     async def revoke_user_tokens_before(self, user_id, revoked_at, ttl):
         raise self._exc  # pragma: no cover - unused
 

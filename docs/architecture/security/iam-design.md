@@ -179,7 +179,7 @@ Both `HS256JWTTokenGenerator` (local mode) and `RS256JWTTokenGenerator` (cloud/O
 
 Neither value may be blank. Both are refused at startup, because with no hardcoded fallback left a blank one fails every authentication in the deployment. The two are not symmetric at runtime — PyJWT treats a falsy `aud` in a payload as *absent* and rejects it, while a blank `iss` compares equal to itself and is silently functional — but both are refused, since a blank issuer is unintended in every case.
 
-**Changing the pair invalidates tokens already in circulation.** Both access and refresh tokens minted under the previous values are rejected immediately by the next request that presents them — they are not merely left to expire. Clients treat that rejection as definitive and re-authenticate, so the effect is a forced re-login for every active session, and a rolling deploy widens it: while both generations are running they reject each other's refresh tokens, and refresh rotation revokes the presented token before minting its replacement.
+**Changing the pair invalidates tokens already in circulation.** Both access and refresh tokens minted under the previous values are rejected immediately by the next request that presents them — they are not merely left to expire. Clients treat that rejection as definitive and re-authenticate, so the effect is a forced re-login for every active session, and a rolling deploy widens it: while both generations are running they reject each other's refresh tokens, and refresh rotation mints the replacement pair and then claims the presented token in one atomic write, so only the caller whose claim succeeds receives the pair (#2764).
 
 The defaults are `iss="faultmaven"` / `aud="faultmaven-api"` because `aud` names the token's intended **recipient** — for an access token, the API — rather than the client bearing it (RFC 7519 §4.1.3). They previously read `iss="faultmaven-api"` / `aud="faultmaven-app"`, which had both roles backwards; #938 corrected them while unifying the pair.
 
@@ -226,7 +226,12 @@ erroring.
 
 **Single revocation store (#767).** Every per-token revocation writer — OAuth
 `POST /auth/oauth/revoke`, refresh-token rotation in both modes, and logout —
-writes to the same deployment-wide store the check above reads:
+writes to the same deployment-wide store the check above reads. Rotation writes
+through the store's one conditional write, `claim_token`, which records the
+token's jti only if no live entry has it and answers which caller wrote it
+(Redis `SET NX` with a per-call value read back; SQL `INSERT … ON CONFLICT DO
+NOTHING … RETURNING`), so a refresh token is redeemed once even under
+concurrency (#2764). The store is
 created once in the DI container for both auth modes and shared by instance.
 Which implementation is a durability question (#828), not a second namespace:
 cloud gets `RedisTokenRevocationStore`, keyed `{token_revocation_prefix}jti:{jti}`
@@ -1325,7 +1330,7 @@ class OAuthClientRegistry:
 | Token | Lifetime | Rotation | Revocation |
 |-------|----------|----------|------------|
 | Access Token | 15 minutes | N/A | Immediate on logout |
-| Refresh Token | 7 days | On each use | Immediate on logout |
+| Refresh Token | 7 days | On each use; single use, also under concurrency (#2764) | Immediate on logout |
 
 **Storage Security:**
 

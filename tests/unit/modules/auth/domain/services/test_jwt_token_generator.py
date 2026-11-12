@@ -517,3 +517,17 @@ class TestTokenRevocation:
 
         # Verify add_revoked_token NOT called (token already expired)
         mock_revocation_store.add_revoked_token.assert_not_called()
+
+
+def test_a_claim_in_a_tokens_last_second_still_writes_an_entry():
+    """A token that verified is never refused because under a second was left
+    (#2764). The revoke path keeps its rule: nothing left, nothing written."""
+    from faultmaven.modules.auth.domain.services.jwt_token_generator import (
+        _at_least_one_second,
+        _revocation_entry_ttl,
+    )
+
+    last_second = {"exp": time.time() + 0.5}
+
+    assert _revocation_entry_ttl(last_second, rounding=_at_least_one_second) == 1
+    assert _revocation_entry_ttl(last_second, rounding=int) <= 0

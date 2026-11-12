@@ -833,6 +833,13 @@ class InMemoryRevocationStore(SequentialRevocationState, ITokenRevocationStore):
     async def is_revoked(self, jti: str) -> bool:
         return jti in self.revoked
 
+    async def claim_token(self, jti: str, ttl: int) -> bool:
+        # No await between the read and the write: atomic on one event loop.
+        if jti in self.revoked:
+            return False
+        self.revoked[jti] = ttl
+        return True
+
     async def revoke_user_tokens_before(
         self, user_id: str, revoked_at: float, ttl: int
     ) -> None:

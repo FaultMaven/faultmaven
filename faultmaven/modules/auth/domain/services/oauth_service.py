@@ -20,6 +20,7 @@ from faultmaven.modules.auth.contracts import (
     OAuthTokenDTO,
 )
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
+    RefreshClaim,
     account_may_hold_credentials,
     capture_state_read_at,
 )
@@ -766,9 +767,9 @@ class OAuthServiceImpl(IOAuthService):
             )
 
         # Mint the new pair. Rotating the refresh token is the point: the
-        # presented one is single-use, matching POST /auth/refresh so both
-        # refresh paths carry the same contract and a client can persist the
-        # rotated token unconditionally.
+        # presented one is single-use, also under concurrency (#2764), matching
+        # POST /auth/refresh so both refresh paths carry the same contract and
+        # a client can persist the rotated token unconditionally.
         #
         # One resolution for both halves (#1517 review): sequential mints
         # resolve the billing organization twice, and a membership write or a
@@ -776,17 +777,40 @@ class OAuthServiceImpl(IOAuthService):
         # on THIS path is how the claim would be lost for good, since rotation
         # is the only thing that carries it forward.
         #
-        # Mint BEFORE revoking, as /auth/refresh does. Revoking first would mean
+        # Mint BEFORE claiming, as /auth/refresh does. Claiming first would mean
         # a failure to mint leaves the caller holding a revoked credential and
         # no replacement — a lockout only an operator can undo. This order costs
-        # nothing: if the revoke fails the caller simply retries with a token
+        # nothing: if the claim fails the caller simply retries with a token
         # that is still valid.
         new_access_token, new_refresh_token = (
             await self.token_generator.generate_token_pair(
                 user, state_read_at=state_read_at, client_id=client_id
             )
         )
-        await self.token_generator.revoke_refresh_token(refresh_token)
+        # The claim revokes the presented token only if no other redemption
+        # has, so of concurrent refreshes exactly one delivers a pair and a
+        # token never forks into two client chains (#2764). A loser's pair is
+        # discarded unsent. Its wire answer is a revoked token's, byte for byte.
+        claim = await self.token_generator.claim_refresh_token(refresh_token)
+        if claim is not RefreshClaim.CLAIMED:
+            reused = claim is RefreshClaim.ALREADY_REDEEMED
+            error_code = "REFRESH_TOKEN_REUSED" if reused else "INVALID_REFRESH_TOKEN"
+            logger.warning(
+                (
+                    "OAuth token refresh failed: refresh token already redeemed; "
+                    "a minted pair was discarded"
+                    if reused
+                    else "OAuth token refresh failed: refresh token not claimable"
+                ),
+                extra={"user_id": user_id, "claim": claim.value, "error": error_code},
+            )
+            self._metrics.record_token_refresh(
+                client_id=client_id, success=False, error_code=error_code
+            )
+            raise InvalidGrantError(
+                "Invalid or expired refresh token",
+                error_code="INVALID_REFRESH_TOKEN",
+            )
         logger.debug(
             "OAuth refresh token rotated",
             extra={
