@@ -163,12 +163,14 @@ def _engine_offer_stands(case: Any, metadata: dict, params: dict) -> dict:
     proposal_id = params["proposal_id"]
     if _offer_stands(case, proposal_id):
         return {**params, "stands": True}
-    lapsed = any(
-        a.proposal_id == proposal_id and a.answer == AnswerKind.LAPSED
-        for a in case.offer_record.answers
-    )
-    if not lapsed:
-        message = f"offer {proposal_id} closed after the drop, not lapsed (#2636)"
+    answers = [
+        str(a.answer) for a in case.offer_record.answers if a.proposal_id == proposal_id
+    ]
+    if AnswerKind.LAPSED not in answers:
+        message = (
+            f"offer {proposal_id} closed after the drop, not lapsed (answers "
+            f"recorded: {answers or 'none'}) (#2636)"
+        )
         if narration_codes.TOKENS_FAIL:
             raise AssertionError(message)
         logger.error("Case %s: %s", getattr(case, "case_id", None), message)
