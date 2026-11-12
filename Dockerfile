@@ -15,7 +15,7 @@ RUN apt-get update && apt-get install -y \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# The base's pip vendors an old CA bundle: every pip here verifies against the OS store.
+# The base's pip vendors an old CA bundle: PIP_CERT, and the link after the last install, make every pip verify against the OS store.
 # Never ENV a TLS root variable the app owns (tls_root_set.py, #2692): any value but the set's own file, a byte copy of it, or an SSL_CERT_DIR with no hashed entry refuses the start.
 ENV PIP_CERT=/etc/ssl/certs/ca-certificates.crt
 
@@ -99,6 +99,13 @@ COPY --chown=faultmaven:faultmaven resources/ ./resources/
 # Install the package itself (no deps — already installed from lockfile)
 RUN pip install --no-cache-dir --no-deps .
 
+# Link every pip's vendored bundle to the OS bundle, so a pip run --isolated or
+# without PIP_CERT verifies against it, and remove the ensurepip pip wheel, which
+# would install its old bundle into a new venv (#2756). After the last install.
+RUN find / -xdev \( -path '*/pip/_vendor/certifi/cacert.pem' \
+        -exec ln -sfv /etc/ssl/certs/ca-certificates.crt {} \; \) \
+    -o \( -path '*/ensurepip/_bundled/pip-*.whl' -print -delete \)
+
 # The runtime user must own the /app directory itself so it can create ./data
 # (SQLite DB, ChromaDB, evidence) at startup. Copied files are already owned via
 # COPY --chown above, so this sets only the directory node — not a recursive
@@ -107,12 +114,15 @@ RUN chown faultmaven:faultmaven /app
 
 # Fail the build if "emSign ECC Root CA - G3" (GHSA-6q48-6c7w-9gw2: compromised
 # intermediate keys) or "AAA Certificate Services" is in OpenSSL's default cafile or
-# capath, certifi, any grpcio roots.pem (each must be the cafile), or the bundle a pip
-# >= 24.2, absent legacy-certs, adds to PIP_CERT, in any site-packages or pip wheel;
-# pip 24.0 replaces its bundle with PIP_CERT (#2665). CI runs the handshake check in
-# the built image (#2692). The last root step, to see the stores the image ships.
+# capath, certifi or any pip wheel, or in any grpcio roots.pem or pip bundle, which
+# must also be the cafile, whatever the pip version (#2665, #2756). Then measure,
+# from pip's own session, that a pip run --isolated or without PIP_CERT verifies
+# against the cafile. CI runs the handshake check in the built image (#2692). The
+# last root steps, to see the stores the image ships.
 RUN --mount=type=bind,source=scripts/check_image_trust_store.py,target=/tmp/check_image_trust_store.py \
     python /tmp/check_image_trust_store.py
+RUN --mount=type=bind,source=scripts/check_pip_root_set.py,target=/tmp/check_pip_root_set.py \
+    python /tmp/check_pip_root_set.py
 USER faultmaven
 
 # Container runtime defaults. With no explicit config the app applies the

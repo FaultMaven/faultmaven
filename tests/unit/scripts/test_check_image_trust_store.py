@@ -636,12 +636,24 @@ ENSUREPIP = "usr/local/lib/python3.12/ensurepip/_bundled"
 SITE = "usr/local/lib/python3.12/site-packages"
 
 
-def test_a_pip_from_24_2_whose_bundle_holds_a_banned_root_fails(image):
-    """pip ≥ 24.2 loads its vendored bundle beside PIP_CERT: the build trusts it."""
-    found = vendored_pip(image, "24.2", [*CLEAN, BAD], SITE)
+@pytest.mark.parametrize("version", ["24.0", "24.2", "25.3"])
+def test_a_pip_whose_bundle_holds_a_banned_root_fails_at_any_version(image, version):
+    """``pip --isolated``, or a pip without PIP_CERT, verifies against its vendored
+    bundle on every version (#2756): the build trusts it."""
+    found = vendored_pip(image, version, [*CLEAN, BAD], SITE)
 
     assert failure(image) == [
-        f"pip 24.2 {found} trusts Banned Root: link it to the OS bundle"
+        f"pip {version} {found} trusts Banned Root: link it to the OS bundle",
+        f"pip {version} {found} is not the cafile: link it to the OS bundle",
+    ]
+
+
+def test_a_pip_24_0_bundle_that_is_not_the_cafile_fails(image):
+    """No banned root is not enough: the bundle must be the cafile, core's base too."""
+    found = vendored_pip(image, "24.0", OTHERS, SITE)
+
+    assert failure(image) == [
+        f"pip 24.0 {found} is not the cafile: link it to the OS bundle"
     ]
 
 
@@ -651,27 +663,19 @@ def test_a_venv_pip_anywhere_in_the_image_is_read(image):
     )
 
     assert failure(image) == [
-        f"pip 25.0.1 {found} trusts Banned Root: link it to the OS bundle"
+        f"pip 25.0.1 {found} trusts Banned Root: link it to the OS bundle",
+        f"pip 25.0.1 {found} is not the cafile: link it to the OS bundle",
     ]
 
 
-def test_a_pip_24_0_bundle_is_reported_not_judged(image, capsys):
-    """Below 24.2 PIP_CERT replaces the bundle: core's base (#2665)."""
-    found = vendored_pip(image, "24.0", [*CLEAN, BAD], SITE)
-
-    image.run()
-
-    assert capsys.readouterr().out.splitlines() == [
-        f"pip 24.0 {found}: 5 certificates, not judged (below 24.2, PIP_CERT replaces it)",
-        "trust store OK: cafile 4, capath 4, certifi 4 certificates",
-    ]
-
-
-def test_legacy_certs_takes_a_new_pips_bundle_out_of_its_trust(image, monkeypatch):
-    vendored_pip(image, "25.0", [BAD], SITE)
+def test_legacy_certs_is_no_exemption(image, monkeypatch):
+    found = vendored_pip(image, "25.0", [BAD], SITE)
     monkeypatch.setenv("PIP_USE_DEPRECATED", "legacy-certs")
 
-    image.run()
+    assert failure(image) == [
+        f"pip 25.0 {found} trusts Banned Root: link it to the OS bundle",
+        f"pip 25.0 {found} is not the cafile: link it to the OS bundle",
+    ]
 
 
 def test_a_pip_whose_version_cannot_be_read_is_judged(image):
@@ -679,41 +683,63 @@ def test_a_pip_whose_version_cannot_be_read_is_judged(image):
     (found.parents[2] / "__init__.py").write_text("")
 
     assert failure(image) == [
-        f"pip (version unread) {found} trusts Banned Root: link it to the OS bundle"
+        f"pip (version unread) {found} trusts Banned Root: link it to the OS bundle",
+        f"pip (version unread) {found} is not the cafile: link it to the OS bundle",
     ]
 
 
-def test_a_new_pips_bundle_linked_to_the_os_bundle_passes(image, capsys):
+@pytest.mark.parametrize("version", ["24.0", "25.0.1"])
+def test_a_pips_bundle_linked_to_the_os_bundle_passes(image, capsys, version):
     """The remedy the failure names."""
-    found = vendored_pip(image, "25.0.1", [], SITE)
+    found = vendored_pip(image, version, [], SITE)
     found.unlink()
     found.symlink_to(image.cafile)
 
     image.run()
 
-    assert f"pip 25.0.1 {found}: 4 certificates" in capsys.readouterr().out
-
-
-@pytest.mark.parametrize("prefix", [ENSUREPIP, "root/.cache/wheels"])
-def test_a_pip_wheel_from_24_2_holding_a_banned_root_fails(image, prefix):
-    """A venv made from it installs that pip, bundle and all: an ensurepip
-    wheel, or one anywhere else pip can be installed from."""
-    wheel = pip_wheel(image, "25.0", [*CLEAN, BAD], prefix)
-
-    assert failure(image) == [
-        f"pip wheel 25.0 {wheel} trusts Banned Root: "
-        "remove it or repack it with the OS bundle"
+    assert capsys.readouterr().out.splitlines() == [
+        f"pip {version} {found}: 4 certificates",
+        "trust store OK: cafile 4, capath 4, certifi 4 certificates",
     ]
 
 
-def test_a_pip_wheel_24_0_is_reported_not_judged(image, capsys):
-    wheel = pip_wheel(image, "24.0", [BAD], ENSUREPIP)
+@pytest.mark.parametrize(
+    ("version", "prefix"), [("24.0", ENSUREPIP), ("25.0", "root/.cache/wheels")]
+)
+def test_a_pip_wheel_holding_a_banned_root_fails_at_any_version(image, version, prefix):
+    """A venv made from it installs that pip, bundle and all: an ensurepip
+    wheel, or one anywhere else pip can be installed from."""
+    wheel = pip_wheel(image, version, [*CLEAN, BAD], prefix)
+
+    assert failure(image) == [
+        f"pip wheel {version} {wheel} trusts Banned Root: remove it"
+    ]
+
+
+def test_a_pip_wheel_without_a_bundle_member_passes_and_is_reported(image, capsys):
+    """It holds no banned root (§13.4: absent, or no banned root)."""
+    wheel = pip_wheel(image, "24.0", [], ENSUREPIP)
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr("pip/__init__.py", '__version__ = "24.0"\n')
 
     image.run()
 
-    assert (
-        f"pip wheel 24.0 {wheel}: 1 certificates, not judged" in capsys.readouterr().out
-    )
+    assert capsys.readouterr().out.splitlines() == [
+        f"pip wheel 24.0 {wheel}: no bundle member",
+        "trust store OK: cafile 4, capath 4, certifi 4 certificates",
+    ]
+
+
+def test_a_pip_wheel_without_a_banned_root_passes(image, capsys):
+    """A wheel is not a client: it is not held to the cafile."""
+    wheel = pip_wheel(image, "24.0", OTHERS, ENSUREPIP)
+
+    image.run()
+
+    assert capsys.readouterr().out.splitlines() == [
+        f"pip wheel 24.0 {wheel}: 3 certificates",
+        "trust store OK: cafile 4, capath 4, certifi 4 certificates",
+    ]
 
 
 def test_a_grpc_roots_pem_that_is_not_the_cafile_fails(image):
@@ -755,7 +781,8 @@ def test_without_certifi_the_other_stores_are_still_judged(image, monkeypatch, c
     found = vendored_pip(image, "25.0.1", [BAD], SITE)
 
     assert failure(image) == [
-        f"pip 25.0.1 {found} trusts Banned Root: link it to the OS bundle"
+        f"pip 25.0.1 {found} trusts Banned Root: link it to the OS bundle",
+        f"pip 25.0.1 {found} is not the cafile: link it to the OS bundle",
     ]
     assert capsys.readouterr().out.splitlines()[0] == "certifi not installed"
 
