@@ -1,7 +1,8 @@
 """Fail the image build if a root store its TLS clients read trusts a banned root,
 matched by SHA-256 over what OpenSSL parses: OpenSSL's default cafile and capath,
 certifi, every grpcio roots.pem, and the bundle of every pip and pip wheel the
-image holds (#2665).
+image holds (#2665). Each grpcio roots.pem and pip bundle must also be the cafile,
+and every pip is judged whatever its version or PIP_USE_DEPRECATED (#2756).
 Root counts and a known root keep an empty store from passing.
 
 Takes one optional argument, the root searched for pips, pip wheels and grpcio
@@ -26,10 +27,6 @@ AAA = "d7a7a0fb5d7e2731d771e9484ebcdef71d5f0c3e0a2948782bc83ee0ea699ef4"  # prag
 ISRG_ROOT_X1 = "96bcec06264976f37460779acf28c5a7cfe8a3c0aae11a8ffcee05c0bddf08c6"  # pragma: allowlist secret
 BANNED = {G3: "emSign ECC Root CA - G3", AAA: "AAA Certificate Services"}
 MIN_ROOTS = 100
-#: From this version pip's truststore context also loads its vendored bundle
-#: (``PIP_CERT`` only adds to it), unless ``PIP_USE_DEPRECATED`` holds
-#: ``legacy-certs``. Below it, ``PIP_CERT`` replaces the bundle.
-PIP_ADDS_ITS_BUNDLE = (24, 2)
 WHEEL_BUNDLE = "pip/_vendor/certifi/cacert.pem"
 _NOT_SEARCHED = ("proc", "sys", "dev")
 
@@ -90,10 +87,11 @@ def stores(root: str) -> list[tuple[str, str, Path]]:
     return found
 
 
-def wheel_digests(wheel: Path) -> set[str]:
+def wheel_digests(wheel: Path) -> set[str] | None:
+    """None when the wheel has no bundle to judge."""
     with zipfile.ZipFile(wheel) as archive, tempfile.TemporaryDirectory() as scratch:
         if WHEEL_BUNDLE not in archive.namelist():
-            return set()
+            return None
         bundle = Path(scratch, "cacert.pem")
         bundle.write_bytes(archive.read(WHEEL_BUNDLE))
         return loaded_digests([bundle])
@@ -101,11 +99,11 @@ def wheel_digests(wheel: Path) -> set[str]:
 
 def found_problems(root, banned, cafile) -> tuple[list[str], list[str]]:
     """(problems, report lines) for every store the walk finds. Each grpcio
-    ``roots.pem`` is gRPC's default in a process apply_root_set did not start:
+    ``roots.pem`` and each pip's vendored bundle is the default in a process
+    apply_root_set did not start (a pip run ``--isolated`` or without PIP_CERT):
     the image links it to the OS bundle, so it holds exactly the cafile's roots.
-    A pip that adds its bundle to PIP_CERT is judged; one that does not is
-    reported."""
-    legacy = "legacy-certs" in os.environ.get("PIP_USE_DEPRECATED", "").split()
+    A pip wheel, which a venv made from it installs, holds no banned root. Every
+    pip is judged, whatever its version or PIP_USE_DEPRECATED (#2756)."""
     problems, reports = [], []
     for kind, version, file in stores(root):
         wheel = kind == "pip wheel"
@@ -118,20 +116,19 @@ def found_problems(root, banned, cafile) -> tuple[list[str], list[str]]:
                 )
             reports.append(f"grpcio {file}: {len(digests)} certificates")
             continue
-        parsed = tuple(int(part) for part in re.findall(r"\d+", version)[:3])
         store = f"{kind} {version or '(version unread)'} {file}"
-        if legacy or (parsed and parsed < PIP_ADDS_ITS_BUNDLE):
-            why = "legacy-certs" if legacy else "below 24.2, PIP_CERT replaces it"
-            reports.append(f"{store}: {len(digests)} certificates, not judged ({why})")
+        if digests is None:
+            problems.append(f"{store}: bundle not found, cannot judge")
             continue
         remedy = (
             "remove it or repack it with the OS bundle"
             if wheel
             else "link it to the OS bundle"
         )
-        problems += [
-            f"{line}: {remedy}" for line in store_problems(store, digests, banned, 0)
-        ]
+        lines = store_problems(store, digests, banned, 0)
+        if not wheel and digests != cafile:
+            lines.append(f"{store} is not the cafile")
+        problems += [f"{line}: {remedy}" for line in lines]
         reports.append(f"{store}: {len(digests)} certificates")
     return problems, reports
 
