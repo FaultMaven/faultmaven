@@ -95,7 +95,8 @@ CENSUS_COMMAND = 'grep -rn "with TestClient(" tests/ --include=*.py'
 #: The Starlette 1.9 upgrade added one scratch site (the trailing-slash middleware).
 #: #2622 added one scratch site (the conversion route under the global 500).
 #: #1789 added one in a child-process string literal (the padded-URL boot).
-EXPECTED_TOTAL_SITES = 59
+#: #1806 added one in a child-process string literal (the refused-JWT-secret boot).
+EXPECTED_TOTAL_SITES = 60
 
 #: The functions the resolver reads as entering the real application's
 #: lifespan: the EXPECTED entries marked ``"real"``, not the ``with`` statements
@@ -369,6 +370,9 @@ EXPECTED_SITES_IN_STRING_LITERALS = {
     # surrounding whitespace at ``from faultmaven.main import app``, before the
     # lifespan starts and before anything is written.
     "tests/integration/test_database_url_whitespace_refused_1789.py": 1,
+    # #1806's child-process probe: a boot asserted to refuse, in the lifespan,
+    # a local JWT_SECRET_KEY that PyJWT refuses as an HMAC secret.
+    "tests/unit/config/test_local_jwt_secret_signable_1806.py": 1,
     # fm#1628's child-suite source for the runtime guard's controls: a
     # module-scoped fixture entering the real app, run under pytester in a
     # child session. Requested by a test, it is refused before the lifespan

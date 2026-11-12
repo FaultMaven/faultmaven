@@ -30,6 +30,7 @@ from typing import (
     Union,
 )
 
+import jwt
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, DotEnvSettingsSource, EnvSettingsSource
 
@@ -1533,6 +1534,33 @@ class LocalJwtSecretFileError(RuntimeError):
     """
 
 
+class LocalJwtSecretError(RuntimeError):
+    """The local HS256 secret is one PyJWT refuses as an HMAC key (#1806).
+
+    Refused at startup: with it every login and every request would fail.
+    """
+
+
+def require_signable_hs256_secret(value: str, source: str) -> None:
+    """Refuse ``value`` when PyJWT's HS256 key preparation refuses it (#1806).
+
+    The check is the signer's own: ``jwt.encode`` and ``jwt.decode`` run the
+    same preparation. ``source`` names ``JWT_SECRET_KEY`` or the secret file.
+    The message never carries the value.
+    """
+    try:
+        jwt.get_algorithm_by_name("HS256").prepare_key(value)
+    except jwt.InvalidKeyError:
+        secret_file = os.environ.get("JWT_SECRET_FILE", DEFAULT_JWT_SECRET_FILE)
+        raise LocalJwtSecretError(
+            f"The local JWT secret from {source} cannot sign tokens. PyJWT "
+            "refuses this value as an HMAC secret: it looks like a PEM or SSH "
+            f"key, or a JWK. Set JWT_SECRET_KEY (or the file {secret_file}) to "
+            'a random string, for example `python -c "import secrets; '
+            'print(secrets.token_urlsafe(48))"`.'
+        ) from None
+
+
 def _jwt_secret_from_bytes(raw: bytes, path: Path) -> str:
     """The secret a JWT secret file's bytes hold, stripped ("" if none).
 
@@ -1595,10 +1623,11 @@ def resolve_local_jwt_secret(settings: "FaultMavenSettings") -> None:
     the environment by name, so a refused boot or fm-* command left
     data/.jwt_secret behind.
 
-    Does nothing when:
-      - ``settings.security.jwt_secret_key`` is set (an explicit value always
-        wins), or
-      - ``settings.auth.auth_mode`` is not local (OAuth uses RS256 keys).
+    Does nothing when ``settings.auth.auth_mode`` is not local (OAuth uses
+    RS256 keys), and only judges ``settings.security.jwt_secret_key`` when it is
+    set (an explicit value always wins). A secret PyJWT refuses as an HMAC key,
+    explicit or read from the file, is refused before it is set or exported
+    (:class:`LocalJwtSecretError`, #1806).
     Otherwise it reads the secret file (``JWT_SECRET_FILE``, else
     data/.jwt_secret) or generates a secret, and publishes the file only when
     the database is persistent. ``publish_secret_once`` publishes it whole, at
@@ -1625,11 +1654,14 @@ def resolve_local_jwt_secret(settings: "FaultMavenSettings") -> None:
     secret — local auth then fails with a clear "JWT_SECRET_KEY not configured"
     message rather than the server crashing at startup.
     """
+    if settings.auth.auth_mode is not AuthMode.LOCAL:
+        return
     # Truthy, not "not None": an empty secret is no secret to every consumer
     # (``if not secret`` in the token generator), so it is minted over.
     if settings.security.jwt_secret_key:
-        return
-    if settings.auth.auth_mode is not AuthMode.LOCAL:
+        require_signable_hs256_secret(
+            settings.security.jwt_secret_key.get_secret_value(), "JWT_SECRET_KEY"
+        )
         return
 
     logger = logging.getLogger(__name__)
@@ -1667,6 +1699,7 @@ def resolve_local_jwt_secret(settings: "FaultMavenSettings") -> None:
         # leaves this process a per-process secret.
         value = secrets.token_urlsafe(48)
 
+    require_signable_hs256_secret(value, f"the file {secret_path}")
     settings.security.jwt_secret_key = SecretStr(value)
     set_env_var(os.environ, "JWT_SECRET_KEY", value)
 
