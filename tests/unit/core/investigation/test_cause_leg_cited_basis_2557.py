@@ -67,6 +67,7 @@ from faultmaven.modules.case.contracts import (
     ProposedAction,
     ValidationMethod,
 )
+from tests.unit.core.investigation.narrated import narrated
 from tests.unit.core.investigation.test_m6_cause_gone_problem_persists_1927 import (
     _ROOT_ID,
     _UNNAMED,
@@ -232,7 +233,7 @@ def _latest(case):
 def _feedback(case) -> str:
     meta: dict = {}
     _flag_unbound_post_fix_rows(case, meta)
-    return "\n".join(meta.get("system_notices") or [])
+    return "\n".join(narrated(case, meta))
 
 
 # ---------------------------------------------------------------------------

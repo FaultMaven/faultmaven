@@ -28,15 +28,12 @@ from faultmaven.core.investigation.cause_assurance import (
 )
 from faultmaven.core.investigation.intent_resolver import IntentResolver
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
-from faultmaven.core.investigation.milestone_engine.transitions import (
-    DECLINED_RESOLVE_FEEDBACK,
-    declined_resolution_reask,
-)
 from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommitPlan
 from faultmaven.core.investigation.milestone_engine.turn_completion import (
     _compose_turn_reply,
 )
 from faultmaven.core.investigation.narration.notices import (
+    DECLINED_RESOLVE_FEEDBACK,
     RESOLVE_DECLINED_ACTIONS,
     RESOLVE_DECLINED_RULE,
 )
@@ -94,6 +91,7 @@ from faultmaven.modules.case.domain.services.case_action_manager import (
 from tests.case_builders import with_declined_offer, with_open_offer
 from tests.model_content import disabled_redaction
 from tests.unit.core.investigation.bound_rows import SUPPORT_ID, VERIFYING_ID, upload
+from tests.unit.core.investigation.narrated import reask_feedback
 from tests.unit.core.investigation.test_deferred_disposition_turn import (
     _case as _deferred_case,
 )
@@ -1087,7 +1085,7 @@ class TestThePointersFollowTheChips:
 
     @pytest.mark.parametrize("on_hold", [False, True])
     def test_the_refusal_names_the_chips_only_when_they_project(self, on_hold):
-        feedback = declined_resolution_reask(self._declined(on_hold=on_hold))
+        feedback = reask_feedback(self._declined(on_hold=on_hold))
         assert feedback.startswith(DECLINED_RESOLVE_FEEDBACK)
         assert (RESOLVE_DECLINED_ACTIONS in feedback) is not on_hold
         assert ("attached its 'Mark it resolved'" in feedback) is not on_hold

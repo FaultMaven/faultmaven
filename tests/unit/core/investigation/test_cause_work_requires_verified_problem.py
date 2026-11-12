@@ -54,6 +54,7 @@ from faultmaven.modules.case.contracts import (
     ValidationMethod,
 )
 from tests.case_builders import investigating_case
+from tests.unit.core.investigation.narrated import narrated
 
 _FILE_ID = "file_0123456789ab"
 
@@ -403,7 +404,7 @@ async def test_one_turn_verifies_forms_grounds_and_identifies():
     (hyp,) = case.hypotheses.values()
     assert hyp.root_node_id is not None
     assert case.progress.cause_state == CauseState.IDENTIFIED
-    assert "NOT ACCEPTED" not in "\n".join(meta.get("system_notices") or [])
+    assert "NOT ACCEPTED" not in "\n".join(narrated(case, meta))
 
 
 # ---------------------------------------------------------------------------
