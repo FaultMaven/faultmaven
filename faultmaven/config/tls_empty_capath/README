@@ -1,0 +1,3 @@
+SSL_CERT_DIR names this directory (faultmaven/config/tls_root_set.py, #2692).
+It holds no certificate, so OpenSSL's default directory is never a second
+source of TLS roots. Keep it free of certificates.

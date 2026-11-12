@@ -324,6 +324,11 @@ where = ["."]
 include = ["faultmaven*"]
 exclude = ["tests*", "docs*", "scripts*", ".github*"]
 
+# The empty directory SSL_CERT_DIR names (faultmaven/config/tls_root_set.py):
+# a placeholder file so the wheel and the image carry the directory.
+[tool.setuptools.package-data]
+"faultmaven.config" = ["tls_empty_capath/README"]
+
 # ============================================================================
 # OPERATOR CONSOLE ENTRYPOINTS
 # ============================================================================

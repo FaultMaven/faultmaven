@@ -42,6 +42,9 @@ import faultmaven.config.settings as settings_module  # noqa: E402
 # via os.getenv by a dependency-free module).
 ALLOWLIST = {
     "FM_IMAGE_TAG",
+    # Read via os.environ in config/tls_root_set.py, which runs before any
+    # settings exist, in every launcher and entrypoint (#2692).
+    "TLS_EXTRA_CA_FILE",
     "FM_DASHBOARD_IMAGE_TAG",
     # Read via os.getenv in infrastructure/llm/pricing.py, which is kept free of
     # the settings import so it stays trivially unit-testable and hot-path-safe.

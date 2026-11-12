@@ -22,6 +22,7 @@ import sys
 from faultmaven.bootstrap.data_init import assign_operator_roles
 from faultmaven.cli._container import run_with_container
 from faultmaven.cli._database_gate import require_persistent_database_or_exit
+from faultmaven.config.tls_root_set import apply_root_set
 from faultmaven.container import container
 from faultmaven.exceptions import UserLookupFailed
 
@@ -128,6 +129,7 @@ async def promote_to_platform_admin(username: str) -> bool:
 
 def main() -> None:
     """Console entrypoint (``fm-promote-platform-admin``)."""
+    apply_root_set()
     parser = argparse.ArgumentParser(
         prog="fm-promote-platform-admin",
         description=(

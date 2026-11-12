@@ -63,6 +63,11 @@ def run_server(app: str = "faultmaven.main:app") -> None:
     Raises:
         ValueError: ``app`` is not a ``module:attr`` import string.
     """
+    # First, before uvicorn imports the app: aiohttp builds its verified
+    # context when it is imported (#2692).
+    from faultmaven.config.tls_root_set import apply_root_set
+
+    apply_root_set()
     if not isinstance(app, str) or not _APP_IMPORT_STRING_RE.fullmatch(app):
         raise ValueError(
             f"run_server() needs the app as a 'module:attr' import string "

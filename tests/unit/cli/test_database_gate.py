@@ -12,7 +12,9 @@ now applies the same rule to them, and this file pins two things:
    command's ``main()`` must call the shared gate as a top-level statement,
    and must call the shared function rather than a local one of the same name.
    Everything ``main()`` calls before the gate must be on
-   ``_ARGUMENT_ONLY_CALLS``, the calls that only parse and validate arguments.
+   ``_ARGUMENT_ONLY_CALLS``, the calls that only parse and validate arguments,
+   and ``apply_root_set``, the one exception: it loads ``.env`` and writes the
+   TLS variables (#2692), and opens no store.
    That makes the region before the gate fail closed. A branch that runs a
    helper, ``asyncio.run``, ``run_command``, ``run_with_container`` or
    ``run_until_complete`` before the gate fails here, whichever mode it hides
@@ -57,7 +59,8 @@ with (REPO_ROOT / "pyproject.toml").open("rb") as _handle:
 NEEDS_NO_DATABASE: dict[str, str] = {}
 
 #: What a command's ``main()`` may call BEFORE the gate: parsing and validating
-#: its own arguments, nothing that reads settings or the database. Measured on
+#: its own arguments, nothing that reads settings or the database; and the one
+#: exception, ``apply_root_set``, below. Measured on
 #: the ten commands shipped with #1659. A name added here must be one that
 #: cannot reach the database, and adding it is what a reviewer reads.
 _ARGUMENT_ONLY_CALLS = frozenset(
@@ -74,6 +77,9 @@ _ARGUMENT_ONLY_CALLS = frozenset(
         "set_defaults",
         # the shared --dry-run/--yes check (faultmaven/cli/_confirmation.py)
         "require_confirmation",
+        # The one exception, first in every entrypoint (#2692): it loads .env
+        # and writes the TLS variables into the environment; it opens no store.
+        "apply_root_set",
         # command-local argument helpers
         "_add_apply_flags",  # fm-personal-tenant: adds --dry-run/--apply
         "normalize_domain",  # fm-provision-sso-org: folds --domain
@@ -239,7 +245,8 @@ def test_every_declared_command_gates_before_it_runs_anything(command):
     ]
     assert not unknown, (
         f"{command}: {attr}() calls {unknown} before {GATE}() at line "
-        f"{first_gate}. Only argument parsing and validation may run first. "
+        f"{first_gate}. Only argument parsing and validation, and apply_root_set, "
+        "may run first. "
         "Move the gate above the call, or, if it truly cannot reach settings or "
         "the database, add it to _ARGUMENT_ONLY_CALLS with a reason."
     )
@@ -252,6 +259,13 @@ def test_every_declared_command_gates_before_it_runs_anything(command):
     )
 
 
+#: Scripts the scan matches that never open DATABASE_URL, each with its reason.
+_NOT_DATABASE_SCRIPTS = {
+    # Its SQLAlchemy engine connects only to its own loopback TLS responder (#2692).
+    "scripts/check_tls_root_set.py",
+}
+
+
 # ---------------------------------------------------------------------------
 # 2. The dev scripts that reach the database
 # ---------------------------------------------------------------------------
@@ -260,38 +274,55 @@ def test_every_declared_command_gates_before_it_runs_anything(command):
 def _database_scripts() -> dict[str, ast.Module]:
     found: dict[str, ast.Module] = {}
     for path in sorted((REPO_ROOT / "scripts").rglob("*.py")):
+        if str(path.relative_to(REPO_ROOT)) in _NOT_DATABASE_SCRIPTS:
+            continue
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         except SyntaxError:  # pragma: no cover - a broken script is not ours
             continue
-        for node in ast.walk(tree):
-            modules = []
-            if isinstance(node, ast.ImportFrom) and node.module:
-                modules = [node.module]
-            elif isinstance(node, ast.Import):
-                modules = [alias.name for alias in node.names]
-            if any(_reaches_the_database(m) for m in modules):
-                found[str(path.relative_to(REPO_ROOT))] = tree
-                break
-            if not isinstance(node, ast.Call):
-                continue
-            name = _call_name(node)
-            if name == "initialize":
-                # Only the container's initialize(): ``container.initialize()``.
-                func = node.func
-                if not (
-                    isinstance(func, ast.Attribute)
-                    and isinstance(func.value, ast.Name)
-                    and func.value.id == "container"
-                ):
-                    continue
-            if name in _DATABASE_REACHING_CALLS:
-                found[str(path.relative_to(REPO_ROOT))] = tree
-                break
+        if _reaches_database(tree):
+            found[str(path.relative_to(REPO_ROOT))] = tree
     return found
 
 
+def _reaches_database(tree: ast.Module) -> bool:
+    """The scan's pattern: an import or a call that reaches the database."""
+    for node in ast.walk(tree):
+        modules = []
+        if isinstance(node, ast.ImportFrom) and node.module:
+            modules = [node.module]
+        elif isinstance(node, ast.Import):
+            modules = [alias.name for alias in node.names]
+        if any(_reaches_the_database(m) for m in modules):
+            return True
+        if not isinstance(node, ast.Call):
+            continue
+        name = _call_name(node)
+        if name == "initialize":
+            # Only the container's initialize(): ``container.initialize()``.
+            func = node.func
+            if not (
+                isinstance(func, ast.Attribute)
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "container"
+            ):
+                continue
+        if name in _DATABASE_REACHING_CALLS:
+            return True
+    return False
+
+
 DATABASE_SCRIPTS = _database_scripts()
+
+
+@pytest.mark.parametrize("script", sorted(_NOT_DATABASE_SCRIPTS))
+def test_each_exempt_script_exists_and_still_matches_the_scan(script):
+    """A stale exemption fails: the file is gone, or no longer needs one."""
+    path = REPO_ROOT / script
+    assert path.is_file(), f"{script} is exempt but does not exist"
+    assert _reaches_database(
+        ast.parse(path.read_text(encoding="utf-8"))
+    ), f"{script} no longer matches the scan: drop it from _NOT_DATABASE_SCRIPTS"
 
 
 def test_the_script_scan_finds_the_known_database_scripts():

@@ -585,6 +585,57 @@ Each is read once, when the process starts.
 | `OPIK_SENTRY_ENABLE` | bool | false | The SDK's crash reporting to Comet's Sentry. The SDK's own default is on; FaultMaven sets `false` unless you set it (#2585). `GET /admin/config/status` reports the effect as `trace_backend.sentry_reporting` |
 | `OPIK_TRACK_DISABLE` | bool | false | Suppresses every span while a backend stays configured (`docs/operations/monitoring/configuration.md`) |
 
+## TLS Root Set
+
+Every TLS client verifies the peer against one set: the OS CA bundle, plus this
+setting's certificates ([Principle 13.4](../architecture/core-architecture/architectural-design-principles.md#13-one-owner-per-fact)).
+It is read from the environment or `.env`, in any letter case, once, at the
+start of the API, each `fm-*` command, the jobs runner, the migration process
+and the demo seeder, so a change takes effect at the next start.
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `TLS_EXTRA_CA_FILE` | path | unset | A PEM file of CA certificates added to the OS bundle, for a private CA (a Postgres or S3 endpoint, an LLM gateway). Only its `CERTIFICATE` blocks are used; a file with none, or with an `X509` or `TRUSTED CERTIFICATE` block, refuses the start. A relative path is read from the working directory; `data/extra-ca.pem` works in both run modes |
+
+FaultMaven sets `SSL_CERT_FILE`, `SSL_CERT_DIR`, `REQUESTS_CA_BUNDLE`,
+`CURL_CA_BUNDLE`, `AWS_CA_BUNDLE`, `GRPC_DEFAULT_SSL_ROOTS_FILE_PATH` and
+`PGSSLROOTCERT` itself. The OS bundle is, in order: on native Windows, the
+certificate store's server-auth roots when it yields any; else OpenSSL's default
+file or a distribution bundle file; else the certificates in OpenSSL's
+certificate directory. Unset, the file variables name the OS bundle file; when
+the bundle comes from the Windows store or OpenSSL's directory, they name the
+written file below even with the setting unset. Set, they name
+`<tmp>/faultmaven-tls-<uid>/<sha256>.pem` (under `TMPDIR`, in a directory only
+that user can write): the OS bundle, then the setting's certificates; one file
+per content, never deleted.
+
+A file variable already set is accepted, in either case, only when its real
+path is the file FaultMaven names, or its bytes are exactly the bytes FaultMaven
+would write; every file variable then names FaultMaven's own file. No inherited
+file's certificates are compared (ruled 2026-11-12): a Nix or conda bundle with
+the same roots in other bytes refuses the start, so unset its `SSL_CERT_FILE`, or
+put its CA in `TLS_EXTRA_CA_FILE`. An already-set `SSL_CERT_DIR`, read as a
+`:`-separated list (`;` on Windows), is accepted only when no element holds a
+hashed entry (`<8 hex>.<n>`, a dangling link included). Anything else refuses
+the start: unset it, or put its CA in `TLS_EXTRA_CA_FILE`. A refused file in a
+`faultmaven-tls-<uid>` directory is a set file from an earlier FaultMaven start
+that is missing, altered or not this start's set: restart that process, or
+unset the variable.
+
+A host that ages `/tmp` (systemd-tmpfiles' 10-day rule, for example) can remove
+the written file under a long-idle process. The next start, command or child
+that applies the set re-writes it. To avoid the gap, set `TMPDIR` to a directory
+that is not aged, or restart the process. With no usable temporary directory,
+the start is refused naming `TMPDIR`.
+
+With `PGSSLROOTCERT` set, Postgres `sslmode=require` (SQLAlchemy's
+`?ssl=require`) verifies the server's chain. Under libpq's default
+`sslmode=prefer` (the migration process), libpq verifies against the set and,
+when that fails, connects in plaintext: put the server's CA in
+`TLS_EXTRA_CA_FILE`, or set `sslmode=require` or `verify-full` in
+`DATABASE_URL` to fail closed. The API's asyncpg path under `prefer` is
+unaffected.
+
 ## Related Documentation
 
 - [Context Management Guide](./CONTEXT_MANAGEMENT.md)

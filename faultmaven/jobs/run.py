@@ -701,11 +701,11 @@ def main(args: Optional[List[str]] = None) -> int:
     Returns:
         Exit code (0 for success, 1 for failure)
     """
-    # Load .env at function level, not module level: the working directory's
-    # file only, and none under FAULTMAVEN_SKIP_DOTENV (#2140).
-    from faultmaven.config.settings import load_settings_dotenv
+    # Load .env (#2140) and name the TLS root set (#2692) at function level,
+    # not module level, before any client is imported.
+    from faultmaven.config.tls_root_set import apply_root_set
 
-    load_settings_dotenv()
+    apply_root_set()
 
     parser = build_parser()
     parsed_args = parser.parse_args(args)

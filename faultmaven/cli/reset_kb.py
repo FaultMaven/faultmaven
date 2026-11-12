@@ -127,6 +127,7 @@ from sqlalchemy import delete, func, select, true
 from faultmaven.bootstrap.data_init import resolve_kb_chroma_dir
 from faultmaven.cli._container import run_with_container
 from faultmaven.cli._database_gate import require_persistent_database_or_exit
+from faultmaven.config.tls_root_set import apply_root_set
 
 #: argparse's ``description``. A literal, not ``__doc__.splitlines()[0]``:
 #: ``python -OO`` strips docstrings, and that expression would raise
@@ -602,6 +603,7 @@ async def reset_kb(
 
 def main() -> None:
     """Console entrypoint (``fm-reset-kb``). Exits with ``reset_kb``'s status."""
+    apply_root_set()
     parser = argparse.ArgumentParser(description=_SUMMARY)
     parser.add_argument(
         "--yes",

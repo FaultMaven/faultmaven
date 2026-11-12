@@ -88,6 +88,7 @@ import sys
 from faultmaven.cli._confirmation import require_confirmation
 from faultmaven.cli._container import run_with_container
 from faultmaven.cli._database_gate import require_persistent_database_or_exit
+from faultmaven.config.tls_root_set import apply_root_set
 
 #: argparse's ``description``. A literal, not derived from ``__doc__``: ``python
 #: -OO`` strips docstrings, and that expression would raise before argparse ran.
@@ -465,6 +466,7 @@ async def remove_org_member(
 
 def main() -> None:
     """Console entrypoint (``fm-remove-org-member``)."""
+    apply_root_set()
     parser = argparse.ArgumentParser(
         prog="fm-remove-org-member",
         description=_SUMMARY,
