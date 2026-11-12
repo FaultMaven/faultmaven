@@ -362,12 +362,10 @@ def test_an_inherited_file_with_the_same_roots_in_other_bytes_refuses(
         apply_root_set()
 
 
-def test_two_applies_name_one_file_and_write_nothing_else(
-    os_bundle, extra_file, monkeypatch
-):
+def test_two_applies_name_one_file_and_write_nothing_else(os_bundle, extra_file):
     first = apply_root_set()
     for name in OWNED_VARIABLES:  # a second start, not a child
-        monkeypatch.delenv(name)
+        os.environ.pop(name)  # not monkeypatch: its undo would restore the set
     second = apply_root_set()
     assert second.path == first.path
     assert os.listdir(Path(first.path).parent) == [Path(first.path).name]
@@ -570,3 +568,56 @@ def test_on_windows_an_empty_or_unreadable_store_refuses_naming_it(
     else:
         assert "No server-auth root could be read from the Windows" in message
     assert "Install Certificates" not in message
+
+
+# --- the delta on f15818260 --------------------------------------------------
+
+
+def test_an_extra_block_that_decodes_but_is_not_a_certificate_refuses_at_the_load(
+    os_bundle, tmp_path, monkeypatch
+):
+    """Its base64 decodes, so it is written; OpenSSL cannot load the set."""
+    junk = tmp_path / "junk.pem"
+    junk.write_bytes(
+        b"-----BEGIN CERTIFICATE-----\nAAAAAAAA\n-----END CERTIFICATE-----\n"
+    )
+    monkeypatch.setenv("TLS_EXTRA_CA_FILE", str(junk))
+    with pytest.raises(SystemExit, match="the set written to .* does not load"):
+        apply_root_set()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="no /dev/zero, no FIFOs")
+@pytest.mark.parametrize("kind", ["device", "fifo"])
+def test_an_inherited_device_or_fifo_refuses_without_reading_it(tmp_path, kind):
+    """In a capped child with a timeout: reading /dev/zero never ends, and a
+    FIFO with no writer blocks, so a regression fails here, not the runner."""
+    import resource
+
+    target = "/dev/zero"
+    if kind == "fifo":
+        target = str(tmp_path / "fifo")
+        os.mkfifo(target)
+
+    def cap() -> None:
+        resource.setrlimit(resource.RLIMIT_AS, (2 << 30, 2 << 30))
+
+    child = subprocess.run(
+        [sys.executable, "-c", "from faultmaven.config.tls_root_set import "
+         "apply_root_set; apply_root_set()"],
+        capture_output=True, text=True, timeout=60, preexec_fn=cap,
+        env={**os.environ, "PYTHONPATH": str(ROOT), "TMPDIR": str(tmp_path),
+             "SSL_CERT_FILE": target},
+    )  # fmt: skip
+    assert child.returncode == 1, child.stderr[-500:]
+    assert f"SSL_CERT_FILE={target!r} is neither the set's file" in child.stderr
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="owner bits are Unix")
+def test_a_set_directory_another_user_owns_refuses(os_bundle, extra_file, monkeypatch):
+    """The directory is the real user's; this process claims another uid."""
+    other = os.getuid() + 1
+    directory = Path(tempfile.gettempdir()) / f"faultmaven-tls-{other}"
+    directory.mkdir(mode=0o700)
+    monkeypatch.setattr(os, "getuid", lambda: other)
+    with pytest.raises(SystemExit, match="not this user's alone.*TMPDIR"):
+        apply_root_set()

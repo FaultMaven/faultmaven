@@ -162,6 +162,16 @@ def _read(path: str) -> bytes:
         return b""
 
 
+def _is_bytes(path: str, pem: bytes) -> bool:
+    """Read only a regular file of ``pem``'s size: a FIFO or device is not read."""
+    try:
+        status = os.stat(path)
+    except OSError:
+        return False
+    size_matches = stat.S_ISREG(status.st_mode) and status.st_size == len(pem)
+    return size_matches and _read(path) == pem
+
+
 def _hashed_entries(directory: str) -> list[str]:
     try:
         names = os.listdir(directory)
@@ -287,7 +297,7 @@ def _check_inherited(path: str, pem: bytes, extra: str | None) -> None:
     for name in FILE_VARIABLES:
         value = os.environ.get(name)
         if value and os.path.realpath(value) != os.path.realpath(path):
-            if _read(value) != pem:
+            if not _is_bytes(value, pem):
                 _refuse(name, value, reason)
     # OpenSSL reads SSL_CERT_DIR as a list; an element it cannot list holds none,
     # and a dangling hashed link is an entry.
