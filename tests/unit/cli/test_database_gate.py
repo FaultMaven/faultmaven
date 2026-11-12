@@ -74,6 +74,9 @@ _ARGUMENT_ONLY_CALLS = frozenset(
         "set_defaults",
         # the shared --dry-run/--yes check (faultmaven/cli/_confirmation.py)
         "require_confirmation",
+        # the TLS root set, first in every entrypoint (#2692): it loads .env into
+        # the environment and names the set's file; it opens no store
+        "apply_root_set",
         # command-local argument helpers
         "_add_apply_flags",  # fm-personal-tenant: adds --dry-run/--apply
         "normalize_domain",  # fm-provision-sso-org: folds --domain
@@ -252,6 +255,13 @@ def test_every_declared_command_gates_before_it_runs_anything(command):
     )
 
 
+#: Scripts the scan matches that never open DATABASE_URL, each with its reason.
+_NOT_DATABASE_SCRIPTS = {
+    # Its SQLAlchemy engine connects only to its own loopback TLS responder (#2692).
+    "scripts/check_tls_root_set.py",
+}
+
+
 # ---------------------------------------------------------------------------
 # 2. The dev scripts that reach the database
 # ---------------------------------------------------------------------------
@@ -260,6 +270,8 @@ def test_every_declared_command_gates_before_it_runs_anything(command):
 def _database_scripts() -> dict[str, ast.Module]:
     found: dict[str, ast.Module] = {}
     for path in sorted((REPO_ROOT / "scripts").rglob("*.py")):
+        if str(path.relative_to(REPO_ROOT)) in _NOT_DATABASE_SCRIPTS:
+            continue
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         except SyntaxError:  # pragma: no cover - a broken script is not ours

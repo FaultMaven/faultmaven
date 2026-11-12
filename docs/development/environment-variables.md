@@ -585,6 +585,25 @@ Each is read once, when the process starts.
 | `OPIK_SENTRY_ENABLE` | bool | false | The SDK's crash reporting to Comet's Sentry. The SDK's own default is on; FaultMaven sets `false` unless you set it (#2585). `GET /admin/config/status` reports the effect as `trace_backend.sentry_reporting` |
 | `OPIK_TRACK_DISABLE` | bool | false | Suppresses every span while a backend stays configured (`docs/operations/monitoring/configuration.md`) |
 
+## TLS Root Set
+
+Every TLS client verifies the peer against one set: the OS CA bundle, plus this
+setting's certificates ([Principle 13.4](../architecture/core-architecture/architectural-design-principles.md#13-one-owner-per-fact)).
+It is read from the environment or `.env` once, at the start of the API, each
+`fm-*` command, the jobs runner and the migration process, so a change takes
+effect at the next start.
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `TLS_EXTRA_CA_FILE` | path | unset | A PEM file of CA certificates added to the OS bundle, for a private CA (a Postgres or S3 endpoint, an LLM gateway). A relative path is read from the working directory; `data/extra-ca.pem` works in both run modes. An unreadable file refuses the start |
+
+FaultMaven sets `SSL_CERT_FILE`, `SSL_CERT_DIR`, `REQUESTS_CA_BUNDLE`,
+`CURL_CA_BUNDLE`, `AWS_CA_BUNDLE`, `GRPC_DEFAULT_SSL_ROOTS_FILE_PATH` and
+`PGSSLROOTCERT` itself. One already set to anything that does not hold the
+set's certificates refuses the start: remove it, or put its CA in
+`TLS_EXTRA_CA_FILE`. With `PGSSLROOTCERT` set, Postgres `sslmode=require`
+(SQLAlchemy's `?ssl=require`) verifies the server's chain.
+
 ## Related Documentation
 
 - [Context Management Guide](./CONTEXT_MANAGEMENT.md)
