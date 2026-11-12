@@ -2,8 +2,9 @@
 with PIP_CERT unset, verifies against exactly the OS cafile's roots (#2756).
 
 Measured from pip's own session: the bundle requests' ``cert_verify`` names, or,
-when ``verify`` is True, requests' ``DEFAULT_CA_BUNDLE_PATH`` (``certifi.where()``),
-since requests 2.32.0-2.32.4 then name none. It imports pip's private API, which
+where it names none (requests 2.32.0-2.32.4 with ``verify`` True), requests'
+``DEFAULT_CA_BUNDLE_PATH`` (``certifi.where()``); a bundle named None (a trusted
+host's InsecureHTTPAdapter) fails. It imports pip's private API, which
 check_image_trust_store.py deliberately does not. Probed on pip 24.0, 24.1.2, 24.2,
 25.0.1, 25.2 and 25.3 (requests 2.31.0-2.32.5). The truststore context a pip >= 24.2
 adapter holds also loads that bundle: it is reported, not measured."""
@@ -46,11 +47,10 @@ def leg(name: str, args: list[str], reference: set[bytes]) -> str | None:
         adapter.cert_verify(conn, URL, verify, None)
         if getattr(adapter, "_ssl_context", None) is not None:
             print(f"{name}: the adapter's truststore context is present, not measured")
-        file = (
-            DEFAULT_CA_BUNDLE_PATH
-            if verify is True
-            else getattr(conn, "ca_certs", None)
-        )
+        # The default only where requests 2.32.0-2.32.4 set no ca_certs: an explicit
+        # None (InsecureHTTPAdapter, a trusted host) or a directory cert fails.
+        default = DEFAULT_CA_BUNDLE_PATH if verify is True else None
+        file = getattr(conn, "ca_certs", default)
         loaded = roots(file)
     except (OSError, TypeError) as error:  # SSLError is an OSError
         return f"{name}: pip's bundle {file} does not load: {error}"

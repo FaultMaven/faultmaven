@@ -103,8 +103,8 @@ def found_problems(root, banned, cafile) -> tuple[list[str], list[str]]:
     apply_root_set did not start (a pip run ``--isolated`` or without PIP_CERT):
     the image links it to the OS bundle, so it holds exactly the cafile's roots.
     A pip wheel, which a venv made from it installs, has no bundle member or one
-    that holds no banned root. Every pip is judged, whatever its version or PIP_USE_DEPRECATED (#2756).
-    """
+    that holds no banned root. Every pip is judged, whatever its version or
+    PIP_USE_DEPRECATED (#2756)."""
     problems, reports = [], []
     for kind, version, file in stores(root):
         wheel = kind == "pip wheel"
