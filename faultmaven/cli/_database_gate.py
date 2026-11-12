@@ -40,11 +40,29 @@ def require_persistent_database_or_exit() -> None:
 
     Reads ``DATABASE_URL`` through ``get_settings()``, the same settings every
     command reads afterwards, so the gate cannot judge a different URL from
-    the one the command would have used.
+    the one the command would have used. A ``DATABASE_URL`` with surrounding
+    whitespace is refused the same way (#1789): ``get_settings()`` raises it as
+    the cause or context of its ``ConfigurationError``. Every other settings
+    error propagates.
     """
-    from faultmaven.config.settings import get_settings
+    from faultmaven.config.settings import DatabaseUrlWhitespaceError, get_settings
+    from faultmaven.models.exceptions import ConfigurationError
 
-    require_persistent_database_url_or_exit(get_settings().database.database_url)
+    try:
+        settings = get_settings()
+    except (DatabaseUrlWhitespaceError, ConfigurationError) as exc:
+        refusal = next(
+            (
+                error
+                for error in (exc, exc.__cause__, exc.__context__)
+                if isinstance(error, DatabaseUrlWhitespaceError)
+            ),
+            None,
+        )
+        if refusal is None:
+            raise
+        exit_refusing(str(refusal))
+    require_persistent_database_url_or_exit(settings.database.database_url)
 
 
 def require_persistent_database_url_or_exit(database_url: Optional[str]) -> None:
@@ -70,8 +88,8 @@ def require_persistent_database_url_or_exit(database_url: Optional[str]) -> None
 def exit_refusing(reason: str) -> NoReturn:
     """Print ``❌ Refusing to run: <reason>`` on stderr, nothing on stdout, and exit 1.
 
-    The one copy of the refusal's shape, used by the persistence gate above,
-    which ``alembic/env.py`` also calls.
+    The one copy of the refusal's shape, used by the persistence gate and the
+    whitespace refusal above, and by ``alembic/env.py`` for both.
     """
     print(f"❌ Refusing to run: {reason}", file=sys.stderr, flush=True)
     sys.exit(1)
