@@ -58,7 +58,7 @@ TEXT: dict[tuple[str, str], tuple[int, str]] = {
     (_CE, "_nudge_ambiguous_orphan_chains"): (1, _ORDER),
     (_ME + "engine.py", "MilestoneEngine._process_turn_impl"): (
         2,
-        "the user's decline of a revision (step 0b): it reports the user's own "
+        "the user's decline of a revision (step 0b'): it reports the user's own "
         "answer, which no later step of the turn reverses; and the user's "
         "hypothesis action refused under a false alarm, outcome-bearing (it runs "
         "before the model call, so this response can withdraw the false-alarm "
