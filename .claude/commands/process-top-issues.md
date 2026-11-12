@@ -12,8 +12,8 @@ under *Needs your call*; a change the owner rules goes through *Changing this fi
 
 This file defines the rules for processing backlog issues, and is self-contained. Memory notes point here and never
 restate it; where they disagree, this file wins.
-**Changing this file:** you propose the edit as a PR, it goes through step 4 at `xhigh` with a design critique, and the
-owner merges it; an edit replaces or tightens an existing rule where it can.
+**Changing this file:** you propose the edit as a PR, it goes through step 4 with a design critique, and the owner
+merges it; an edit replaces or tightens an existing rule where it can.
 
 **Roles.** The owner rules on questions, approves rounds, and merges. You (the owning agent) propose, plan, verify
 and report. Lanes (subagents) each implement one plan you wrote, in their own worktree; at most three run at once.
@@ -394,11 +394,8 @@ smaller sub-stages (4.1) recommended, never given more fix rounds.
    break the PR, not to approve it: the invariant, the pins (a stage's ruling's), the done-when, the defects the
    change could introduce, and what must not change. Your own diff read in *Verify* is quality control, not this
    review. Start the CI watch in the background at the same time.
-   - **Runtime PRs: `/code-review xhigh <pr>`.** These change what runs in a deployment, a pipeline or an agent:
-     `faultmaven/`, `alembic/`, `resources/`, `requirements/`, `pyproject.toml`, `Dockerfile`, `docker-compose*`,
-     `.github/workflows/`, `.github/scripts/`, `.importlinter`, `pytest.ini`, `scripts/` that CI or CD runs,
-     `.claude/` and any `CLAUDE.md`.
-   - **Every other PR: `/code-review high <pr>`.** A mixed PR takes the higher level.
+   - **Every PR: `/code-review high <pr>`,** except a PR that touches a security boundary or storage (the items that
+     take their own lane and PR, step 2): `/code-review xhigh <pr>`.
    - **A defeat pass** (a review briefed to get past the guard) only for a guard on a security or tenancy boundary
      that has live sites.
 
