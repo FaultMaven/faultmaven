@@ -22,12 +22,33 @@ Adding a metric here:
 - Counters are no-ops unless ``ENABLE_METRICS=true`` and
   ``prometheus_client`` is installed — see ``shims/metrics.py`` for
   the graceful-degradation policy.
+- A labelled counter declares its children: ``label_values`` (every
+  child exists from import, at 0, so ``increase()`` sees the first
+  event) or ``lazy_labels`` (why a label is open-ended) (#1787).
 """
 
 from typing import get_args
 
+from faultmaven.config.settings import LLMProvider
+from faultmaven.core.investigation.llm_error_handler import (
+    RECOVERY_REASON_INPUT_OVERFLOW,
+    RECOVERY_REASON_OUTPUT_TRUNCATION,
+    RECOVERY_REASON_UNCLASSIFIED,
+)
 from faultmaven.infrastructure.shims.metrics import Counter
-from faultmaven.modules.case.contracts import CaseState, TerminalConfirmedVia
+from faultmaven.modules.case.contracts import (
+    CaseState,
+    EvidenceStance,
+    NeedPurpose,
+    NeedState,
+    TerminalConfirmedVia,
+)
+
+# The CHAT provider label: an ``LLMProvider`` value (the configured provider,
+# or a raw provider's ``LABEL``), or "unknown" when neither resolves
+# (``cause_state._resolve_chat_provider_name``,
+# ``terminal_transitions._resolve_resolution_provider``).
+_PROVIDERS = (*(p.value for p in LLMProvider), "unknown")
 
 # INV-01 outcome telemetry. The ratio
 # ``gate1_statement_composed_total / engine_owned_affordance_served_total
@@ -78,6 +99,7 @@ inquiry_handshake_deferred_total = Counter(
     "composes the statement into the next turn, so there is no separate "
     "recovery path and no recovery counter to divide by.",
     ["reason"],
+    label_values={"reason": ("same_turn", "not_bare")},
 )
 
 
@@ -87,17 +109,22 @@ inquiry_handshake_deferred_total = Counter(
 # withdraws nothing and records nothing; the reply says the button was for an
 # earlier offer and re-shows the standing one. ``gate`` is what was standing:
 # ``terminal`` (a pending RESOLVED/CLOSED), ``gate1`` (the problem-statement
-# confirmation) or ``none`` (nothing a click can answer). ``reason`` is
+# confirmation), ``revision`` (a pending statement revision) or ``none``
+# (nothing a click can answer). ``reason`` is
 # ``stale`` (the click named another offer) or ``untargeted`` (it named none:
 # a card rendered before the keys shipped, or a client that hand-builds the
 # intent). A sustained ``untargeted`` rate means a client is not forwarding a
 # suggestion's intent verbatim.
+#: ``transition_turns._refuse_offer_click``'s ``standing``, or ``none``.
+_CLICK_REFUSAL_GATES = ("terminal", "gate1", "revision", "none")
+
 confirmation_click_refused_total = Counter(
     "faultmaven_confirmation_click_refused_total",
     "Confirmation clicks refused because they did not name the offer standing "
-    "when they arrived, by gate (terminal|gate1|none) and reason "
+    "when they arrived, by gate (terminal|gate1|revision|none) and reason "
     "(stale|untargeted). Nothing executed, was withdrawn or was recorded.",
     ["gate", "reason"],
+    label_values={"gate": _CLICK_REFUSAL_GATES, "reason": ("stale", "untargeted")},
 )
 
 
@@ -118,6 +145,18 @@ confirmation_click_refused_total = Counter(
 # volume is non-zero indicates the consolidator or the Gate 1 predicate has
 # regressed silently. Pair this with the existing recovery-ratio query for
 # a complete INV-01 picture.
+#: Every gate name ``affordances.engine_owned_affordances`` returns.
+_ENGINE_OWNED_GATES = (
+    "disposition",
+    "gate1",
+    "statement_revision",
+    "insufficient_evidence",
+    "insufficient_evidence_restatement_held",
+    "restatement_held",
+    "not_yet_productive",
+    "treatment_blocked",
+)
+
 engine_owned_affordance_served_total = Counter(
     "faultmaven_engine_owned_affordance_served_total",
     "Engine-owned gate affordances served. Labels: gate "
@@ -128,6 +167,7 @@ engine_owned_affordance_served_total = Counter(
     "state-machine gate or mid-investigation reading, regardless of LLM "
     "compliance with the prompt's suggestion-emission directives.",
     ["gate"],
+    label_values={"gate": _ENGINE_OWNED_GATES},
 )
 
 
@@ -149,7 +189,10 @@ evidence_need_created_total = Counter(
     "(symptom_verification | causal_verification). Pairs with "
     "``evidence_need_status_changed_total`` to track full lifecycle.",
     ["purpose"],
+    label_values={"purpose": [p.value for p in NeedPurpose]},
 )
+
+_NEED_STATES = [s.value for s in NeedState]
 
 evidence_need_status_changed_total = Counter(
     "faultmaven_evidence_need_status_changed_total",
@@ -159,6 +202,7 @@ evidence_need_status_changed_total = Counter(
     "suggests the LLM is emitting needs but not matching uploads against "
     "them at file-processing time.",
     ["from_state", "to_state"],
+    label_values={"from_state": _NEED_STATES, "to_state": _NEED_STATES},
 )
 
 # NOTE: the former ``evidence_need_rejected_total`` counter was removed with
@@ -190,6 +234,7 @@ evidence_need_id_dropped_total = Counter(
     "A sustained nonzero rate means the LLM is emitting stale same-turn ID "
     "references on the suggestion side.",
     ["reason"],
+    label_values={"reason": ("out_of_range", "missing_metadata")},
 )
 
 
@@ -218,6 +263,7 @@ llm_decide_card_bare_payload_total = Counter(
     "label is bare too or would not stay a DECIDE payload, so no card a client "
     "renders sends a text the consent gate reads as a bare reply.",
     ["action"],
+    label_values={"action": ("label", "dropped")},
 )
 
 
@@ -251,6 +297,7 @@ evidence_suggestion_unlinked_total = Counter(
     "engine attached them to a need (created a new one, or matched an "
     "outstanding one).",
     ["resolution"],
+    label_values={"resolution": ("created", "matched", "error")},
 )
 
 
@@ -310,6 +357,7 @@ root_validation_blocked_support_count_total = Counter(
     "rows but mutual restatements), 'hedged_only' (causal links exist but "
     "all below the stance_confidence bar).",
     labelnames=["reason"],
+    label_values={"reason": ("count", "mirror_collapse", "hedged_only")},
 )
 
 hypothesis_likelihood_capped_no_evidence_total = Counter(
@@ -338,6 +386,9 @@ hypothesis_likelihood_capped_no_evidence_total = Counter(
 # SUCCESS-confirmation row REFUTES-linked to the very cause it confirms, which
 # the engine previously read as a failed-fix counterfactual disconfirmation and
 # used to refute the true root at belief 0.
+#: The stance as ``cause_assurance.absence_row_link_refused`` labels it.
+_REFUSED_STANCES = (*(s.value for s in EvidenceStance), "unset")
+
 absence_row_link_refused_total = Counter(
     "faultmaven_absence_row_link_refused_total",
     "An LLM-emitted evidence link on a causal_absence row was refused at "
@@ -345,6 +396,7 @@ absence_row_link_refused_total = Counter(
     "model-authored stance on either belief axis (#987). One increment per "
     "refused link.",
     ["axis", "stance"],
+    label_values={"axis": ("node", "hypothesis"), "stance": _REFUSED_STANCES},
 )
 
 hypothesis_support_mirrored_to_root_total = Counter(
@@ -426,12 +478,24 @@ cause_identification_held_mece_total = Counter(
 # ``resolution_confirmed`` rate is a defect signal, not an elicitation one.
 # ``undatable_acceptance`` should trend to zero; if it does not, acceptances are
 # being written somewhere that does not stamp the execution turn.
+#: Every reason ``disconfirmation._fix_failure_refusal`` returns.
+_M6_REFUSAL_REASONS = (
+    "no_fix_applied",
+    "undatable_acceptance",
+    "no_cause_removal",
+    "no_persistence",
+    "relapse",
+    "interception",
+    "resolution_confirmed",
+)
+
 m6_demotion_refused_total = Counter(
     "faultmaven_m6_demotion_refused_total",
     "An M6 counterfactual demotion was refused because its preconditions "
     "(recorded fix application + observed problem persistence) could not be "
     "established from the case record (#987). One increment per refusal.",
     ["reason"],
+    label_values={"reason": _M6_REFUSAL_REASONS},
 )
 
 # M6 demoted the identified cause because the latest fix window FAILED
@@ -458,6 +522,7 @@ hypothesis_refutation_refused_total = Counter(
     "A hypothesis refutation was refused because no evidence on record refutes "
     "it and no failed fix of it is recorded (#1911). One increment per refusal.",
     ["source"],
+    label_values={"source": ("model", "user")},
 )
 
 # #656 bearing check at the resolution confirm-stamp. One increment per
@@ -497,6 +562,7 @@ solution_offer_superseded_total = Counter(
     "offer) or 'license_lost' (the established-cause license that admitted "
     "it fell; the engine withdrew the offer).",
     labelnames=["reason"],
+    label_values={"reason": ("reproposal", "license_lost")},
 )
 
 
@@ -588,6 +654,7 @@ cause_work_refused_unverified_total = Counter(
     "Cause work (hypotheses, causal chains, root-cause conclusions) refused "
     "because the problem was not yet verified on the turn it arrived.",
     ["kind"],
+    label_values={"kind": ("hypothesis", "chain", "conclusion")},
 )
 
 # fm#1091 soundness telemetry. An LLM ``root_node_ref`` named a chain root that
@@ -672,6 +739,11 @@ close_pivoted_to_resolve_total = Counter(
 # the follow-up of a confirmation whose next turn was a click. Labels are
 # bounded enums (``TerminalConfirmedVia``, ``CaseState``), never user text. The
 # INV-37 pivot executes nothing and counts nothing.
+_TERMINAL_CHANNELS = {
+    "via": get_args(TerminalConfirmedVia),
+    "to_state": (CaseState.RESOLVED.value, CaseState.CLOSED.value),
+}
+
 terminal_confirmation_total = Counter(
     "faultmaven_terminal_confirmation_total",
     "Terminal transitions executed on a user confirmation, by how the user "
@@ -680,6 +752,7 @@ terminal_confirmation_total = Counter(
     "consent token, with only trailing punctuation and positive emoji, Slack "
     ":shortcode: emoji or emoticons around it.",
     ["via", "to_state"],
+    label_values=_TERMINAL_CHANNELS,
 )
 
 terminal_followup_total = Counter(
@@ -688,17 +761,8 @@ terminal_followup_total = Counter(
     "transition, by how that transition was confirmed (intent|explicit_token|"
     "weak_token) and the case's state (resolved|closed).",
     ["via", "to_state"],
+    label_values=_TERMINAL_CHANNELS,
 )
-
-# Every child of the pair exists from import, at 0. A labelled counter creates
-# a series on its first ``.labels()``, so a series born by an increment is born
-# AT 1 — and the documented ``increase()`` query cannot see that first
-# increment. #723's series are the rare ones, so they would lose the most.
-# Through the shim, so this is a no-op when metrics are disabled.
-for _via in get_args(TerminalConfirmedVia):
-    for _to_state in (CaseState.RESOLVED.value, CaseState.CLOSED.value):
-        terminal_confirmation_total.labels(via=_via, to_state=_to_state)
-        terminal_followup_total.labels(via=_via, to_state=_to_state)
 
 # INV-43 resolution-offer telemetry. The RESOLVED handshake had exactly three
 # openers — the LLM's ``proposed_transition``, the user's own request, and the
@@ -751,6 +815,7 @@ work_gate_crossed_total = Counter(
     "turn's provider, not the original one. Bounded to one count per case and "
     "self-clearing; read the metric as a trend, not to the turn.)",
     ["provider"],
+    label_values={"provider": _PROVIDERS},
 )
 
 
@@ -779,6 +844,7 @@ narration_overclaim_total = Counter(
     "guard is append-only — a nonzero rate means the model over-claims, not that "
     "a wrong disposition reached a terminal surface.",
     ["provider"],
+    label_values={"provider": _PROVIDERS},
 )
 
 
@@ -813,6 +879,11 @@ resolution_cause_leg_total = Counter(
     "floor before the free-text conclusion can be retired. One increment per "
     "resolution.",
     ["provider", "leg"],
+    label_values={
+        "provider": _PROVIDERS,
+        # ``cause_identification_leg(case) or "none"``
+        "leg": ("chain", "rcc", "working_conclusion", "none"),
+    },
 )
 
 
@@ -840,6 +911,7 @@ rcc_precedence_inversion_total = Counter(
     "outranks it (§7.7). One increment per replacement, labeled by the CHAT "
     "``provider``; mirror refreshes and first mints are not counted.",
     ["provider"],
+    label_values={"provider": _PROVIDERS},
 )
 
 
@@ -854,12 +926,19 @@ rcc_precedence_inversion_total = Counter(
 # A sustained rate means turns are routinely too large for the window, which
 # points at the prompt-sizing work (#610-#614), not at this recovery. Pairs with
 # the ``prompt_context_error_recovered`` log line, which carries the case id.
+_RECOVERY_REASONS = (
+    RECOVERY_REASON_INPUT_OVERFLOW,
+    RECOVERY_REASON_OUTPUT_TRUNCATION,
+    RECOVERY_REASON_UNCLASSIFIED,
+)
+
 prompt_context_recovery_total = Counter(
     "faultmaven_prompt_context_recovery_total",
     "Turns that degraded to the minimal fallback prompt (tools dropped) after a "
     "recoverable context/token failure rather than failing the turn, labeled by "
     "``reason`` (input_overflow | output_truncation | unclassified).",
     ["reason"],
+    label_values={"reason": _RECOVERY_REASONS},
 )
 
 
@@ -896,6 +975,7 @@ causal_and_group_regroup_refused_total = Counter(
     "was refused (#1096; the grouping merge is monotone), labeled by "
     "``attempt`` (regroup | ungroup).",
     ["attempt"],
+    label_values={"attempt": ("regroup", "ungroup")},
 )
 
 # Summary-generation reliability (#791). Every AUTOMATIC terminal-summary
@@ -914,20 +994,11 @@ terminal_summary_total = Counter(
     "(resolution_summary|closure_summary) and outcome "
     "(generated|empty|failed|skipped).",
     ["summary_type", "outcome"],
+    label_values={
+        "summary_type": ("resolution_summary", "closure_summary"),
+        "outcome": ("generated", "empty", "failed", "skipped"),
+    },
 )
-
-# Every child exists from import, at 0, so the first increment is visible to
-# ``increase()`` (see the terminal-confirmation pair above).
-for _summary_type in ("resolution_summary", "closure_summary"):
-    for _outcome in ("generated", "empty", "failed", "skipped"):
-        terminal_summary_total.labels(summary_type=_summary_type, outcome=_outcome)
-
-# The same for the two consent-refusal counters above (#1794, #1812).
-for _reason in ("same_turn", "not_bare"):
-    inquiry_handshake_deferred_total.labels(reason=_reason)
-for _gate in ("terminal", "gate1", "none"):
-    for _refusal in ("stale", "untargeted"):
-        confirmation_click_refused_total.labels(gate=_gate, reason=_refusal)
 
 # The case outcome record (#2615 stage S1). A verdict the rules call final is
 # carried in ``progress.outcome`` and never re-derived; a fresh derivation that
@@ -937,6 +1008,13 @@ for _gate in ("terminal", "gate1", "none"):
 # derivations, so a disagreement is a case where a decider and the record
 # disagree; stage S3 switches the deciders. Labelled by field only: never a
 # case, user or tenant.
+_OUTCOME_RECORD_FIELDS = (
+    "attempts.window",
+    "attempts.accepted_in_turn",
+    "resolution.confirmed_row_ids",
+    "closure",
+)
+
 case_outcome_conflicts_total = Counter(
     "faultmaven_case_outcome_conflicts_total",
     "A carried final verdict in the case outcome record disagreed with a "
@@ -945,6 +1023,7 @@ case_outcome_conflicts_total = Counter(
     "(attempts.window|attempts.accepted_in_turn|resolution.confirmed_row_ids|"
     "closure).",
     labelnames=["field"],
+    label_values={"field": _OUTCOME_RECORD_FIELDS},
 )
 
 # A write of the record that raised. Nothing reads the record in this stage,
@@ -956,16 +1035,5 @@ case_outcome_write_failures_total = Counter(
     "A case outcome record write raised and was skipped (#2615), by write "
     "point (cycle|replay|resolved|closed).",
     labelnames=["at"],
+    label_values={"at": ("cycle", "replay", "resolved", "closed")},
 )
-
-# Every child exists from import, at 0, so the first increment is visible to
-# ``increase()`` (see the terminal-confirmation pair above).
-for _field in (
-    "attempts.window",
-    "attempts.accepted_in_turn",
-    "resolution.confirmed_row_ids",
-    "closure",
-):
-    case_outcome_conflicts_total.labels(field=_field)
-for _at in ("cycle", "replay", "resolved", "closed"):
-    case_outcome_write_failures_total.labels(at=_at)

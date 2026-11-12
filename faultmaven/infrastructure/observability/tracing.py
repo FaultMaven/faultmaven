@@ -34,6 +34,7 @@ from contextlib import contextmanager
 from typing import Any, Callable, Dict
 
 from faultmaven.infrastructure.base_client import BaseExternalClient
+from faultmaven.infrastructure.shims.metrics import declare_lazy
 from faultmaven.models.interfaces import ITracer
 
 # Prometheus metrics
@@ -53,6 +54,10 @@ if PROMETHEUS_AVAILABLE:
         "Total number of requests",
         ["endpoint", "method", "status"],
     )
+    declare_lazy(
+        REQUEST_COUNTER,
+        "endpoint is the traced function's name, an open set; per-request.",
+    )
 
     # Request duration histogram
     REQUEST_DURATION = Histogram(
@@ -69,6 +74,10 @@ if PROMETHEUS_AVAILABLE:
         "faultmaven_llm_requests_total",
         "Total number of LLM requests",
         ["provider", "model", "status"],
+    )
+    declare_lazy(
+        LLM_REQUEST_COUNTER,
+        "provider and model are parsed from the traced function's name.",
     )
 
     LLM_REQUEST_DURATION = Histogram(

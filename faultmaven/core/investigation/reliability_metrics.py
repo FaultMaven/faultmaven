@@ -115,6 +115,11 @@ Read as rates, never the numerator alone:
 
 from faultmaven.infrastructure.shims.metrics import Counter
 
+# Open-ended labels (#1787). Every counter here moves on every structured body
+# or tool call, so a first event lost to a series born at 1 is noise.
+_LAZY_TOOL = "tool is a registered tool's name, which the deployment's config decides"
+_LAZY_SCHEMA = "schema is the validated model's class name; a per-body series"
+
 # Pinned by tests for the same reason as SCHEMA_VALIDATION_OUTCOMES below.
 # ``execution_error`` covers both a tool that returned success=False and a
 # tool whose dispatch RAISED — the attempt is recorded either way, so the
@@ -128,6 +133,7 @@ tool_call_attempts_total = Counter(
     "| unknown_tool). Well-formed-invocation rate = (ok + execution_error) / "
     "total.",
     ["tool", "outcome"],
+    lazy_labels=_LAZY_TOOL,
 )
 
 # The label vocabulary, pinned by tests: a call site that spells an outcome
@@ -155,6 +161,7 @@ schema_validation_total = Counter(
     '"string_dropped|non_object_dropped"}) / total: state lost before '
     "validation still validates clean.",
     ["schema", "outcome"],
+    lazy_labels=_LAZY_SCHEMA,
 )
 
 # Pinned by tests, for the same reason as the tuple above.
@@ -169,6 +176,7 @@ schema_field_repairs_total = Counter(
     "coerced | dropped | pruned | defaulted). Link confidences are counted at "
     "ingest.",
     ["schema", "field", "action"],
+    lazy_labels=_LAZY_SCHEMA,
 )
 
 # Pinned by tests, for the same reason as SCHEMA_VALIDATION_OUTCOMES.
@@ -186,4 +194,5 @@ schema_state_updates_repairs_total = Counter(
     "absent_defaulted). string_dropped and non_object_dropped are lost "
     "state: the body still validates clean.",
     ["schema", "repair"],
+    lazy_labels=_LAZY_SCHEMA,
 )

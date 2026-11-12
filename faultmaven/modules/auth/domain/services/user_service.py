@@ -148,6 +148,7 @@ case_driver_release_failed_total = Counter(
     "is deactivated anyway (the case store never blocks it); the cases it still "
     "drives refuse it at the driver gate until their creators reclaim them.",
     ["hook"],
+    label_values={"hook": ("deactivation",)},
 )
 
 
