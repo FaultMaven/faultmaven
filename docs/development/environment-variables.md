@@ -589,20 +589,30 @@ Each is read once, when the process starts.
 
 Every TLS client verifies the peer against one set: the OS CA bundle, plus this
 setting's certificates ([Principle 13.4](../architecture/core-architecture/architectural-design-principles.md#13-one-owner-per-fact)).
-It is read from the environment or `.env` once, at the start of the API, each
-`fm-*` command, the jobs runner and the migration process, so a change takes
-effect at the next start.
+It is read from the environment or `.env`, in any letter case, once, at the
+start of the API, each `fm-*` command, the jobs runner, the migration process
+and the demo seeder, so a change takes effect at the next start.
 
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
-| `TLS_EXTRA_CA_FILE` | path | unset | A PEM file of CA certificates added to the OS bundle, for a private CA (a Postgres or S3 endpoint, an LLM gateway). A relative path is read from the working directory; `data/extra-ca.pem` works in both run modes. An unreadable file refuses the start |
+| `TLS_EXTRA_CA_FILE` | path | unset | A PEM file of CA certificates added to the OS bundle, for a private CA (a Postgres or S3 endpoint, an LLM gateway). Only its `CERTIFICATE` blocks are used; a file with none, or with an `X509` or `TRUSTED CERTIFICATE` block, refuses the start. A relative path is read from the working directory; `data/extra-ca.pem` works in both run modes |
 
-FaultMaven sets `SSL_CERT_FILE`, `SSL_CERT_DIR`, `REQUESTS_CA_BUNDLE`,
-`CURL_CA_BUNDLE`, `AWS_CA_BUNDLE`, `GRPC_DEFAULT_SSL_ROOTS_FILE_PATH` and
-`PGSSLROOTCERT` itself. One already set to anything that does not hold the
-set's certificates refuses the start: remove it, or put its CA in
-`TLS_EXTRA_CA_FILE`. With `PGSSLROOTCERT` set, Postgres `sslmode=require`
-(SQLAlchemy's `?ssl=require`) verifies the server's chain.
+With it set, the set is written to `<tmp>/faultmaven-tls-<uid>/<sha256>.pem`
+(`TMPDIR`, in a directory only that user can write): one file per content,
+never deleted. FaultMaven sets `SSL_CERT_FILE`, `SSL_CERT_DIR`,
+`REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `AWS_CA_BUNDLE`,
+`GRPC_DEFAULT_SSL_ROOTS_FILE_PATH` and `PGSSLROOTCERT` itself. One already set
+is accepted when it names that file, or holds only `CERTIFICATE` blocks with
+exactly the set's certificates; anything else refuses the start: remove it, or
+put its CA in `TLS_EXTRA_CA_FILE`.
+
+With `PGSSLROOTCERT` set, Postgres `sslmode=require` (SQLAlchemy's
+`?ssl=require`) verifies the server's chain. Under libpq's default
+`sslmode=prefer` (the migration process), libpq verifies against the set and,
+when that fails, connects in plaintext: put the server's CA in
+`TLS_EXTRA_CA_FILE`, or set `sslmode=require` or `verify-full` in
+`DATABASE_URL` to fail closed. The API's asyncpg path under `prefer` is
+unaffected.
 
 ## Related Documentation
 

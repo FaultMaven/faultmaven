@@ -31,7 +31,7 @@ BUDGET_SECONDS = 600
 def _check(tmp_path: Path, *, no_op: bool) -> tuple[int, list[str]]:
     owned = {*OWNED_VARIABLES, EXTRA_CA_FILE_SETTING}
     environment = {k: v for k, v in os.environ.items() if k not in owned}
-    environment["FAULTMAVEN_SKIP_DOTENV"] = "1"
+    environment.update(FAULTMAVEN_SKIP_DOTENV="1", TMPDIR=str(tmp_path))
     if no_op:  # every process the check starts imports this first
         (tmp_path / "sitecustomize.py").write_text(
             "import faultmaven.config.tls_root_set as tls_root_set\n"

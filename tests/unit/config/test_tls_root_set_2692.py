@@ -39,7 +39,7 @@ pytestmark = pytest.mark.unit
 ROOT = Path(tls_root_set.__file__).resolve().parents[2]
 
 
-def _ca_pem(name: str) -> bytes:
+def _ca_pem(name: str, ca: bool = True) -> bytes:
     key = ec.generate_private_key(ec.SECP256R1())
     subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, name)])
     now = datetime.datetime.now(datetime.timezone.utc)
@@ -51,7 +51,7 @@ def _ca_pem(name: str) -> bytes:
         .serial_number(x509.random_serial_number())
         .not_valid_before(now - datetime.timedelta(hours=1))
         .not_valid_after(now + datetime.timedelta(days=1))
-        .add_extension(x509.BasicConstraints(ca=True, path_length=None), True)
+        .add_extension(x509.BasicConstraints(ca=ca, path_length=None), True)
         .sign(key, hashes.SHA256())
     )
     return certificate.public_bytes(serialization.Encoding.PEM)
@@ -113,7 +113,7 @@ def test_an_unreadable_extra_file_refuses_naming_the_setting(
     if content is not None:
         path.write_bytes(content)
     monkeypatch.setenv("TLS_EXTRA_CA_FILE", str(path))
-    with pytest.raises(SystemExit, match="TLS_EXTRA_CA_FILE=.*does not load"):
+    with pytest.raises(SystemExit, match="TLS_EXTRA_CA_FILE=.*must be a readable PEM"):
         apply_root_set()
     assert "SSL_CERT_FILE" not in os.environ
 
@@ -172,6 +172,52 @@ def test_an_inherited_capath_holding_a_hashed_certificate_refuses(
         apply_root_set()
 
 
+def _relabel(pem: bytes, label: bytes) -> bytes:
+    return pem.replace(b" CERTIFICATE-----", b" " + label + b"-----")
+
+
+@pytest.mark.parametrize("label", [b"X509 CERTIFICATE", b"TRUSTED CERTIFICATE"])
+def test_a_root_in_a_non_plain_block_refuses_inherited_or_extra(
+    os_bundle, tmp_path, monkeypatch, label
+):
+    """OpenSSL loads such a block as a root, but it cannot be compared."""
+    hidden = tmp_path / "hidden.pem"
+    hidden.write_bytes(b"".join(ROOTS) + _relabel(_ca_pem("rogue"), label))
+    monkeypatch.setenv("SSL_CERT_FILE", str(hidden))
+    with pytest.raises(SystemExit, match="SSL_CERT_FILE="):
+        apply_root_set()
+    monkeypatch.delenv("SSL_CERT_FILE")
+    monkeypatch.setenv("TLS_EXTRA_CA_FILE", str(hidden))
+    with pytest.raises(SystemExit, match="TLS_EXTRA_CA_FILE=.*CERTIFICATE"):
+        apply_root_set()
+
+
+def test_a_stale_set_an_earlier_start_wrote_says_restart(
+    os_bundle, extra_file, monkeypatch
+):
+    apply_root_set()
+    extra_file.write_bytes(_ca_pem("rotated private CA"))
+    with pytest.raises(SystemExit) as refusal:
+        apply_root_set()
+    assert "restart that process" in str(refusal.value)
+    assert "remove" not in str(refusal.value)
+
+
+@pytest.mark.parametrize("unsafe", ["group-writable", "symlink"])
+def test_a_set_directory_others_can_write_refuses_naming_tmpdir(
+    os_bundle, extra_file, tmp_path, unsafe
+):
+    directory = tmp_path / f"faultmaven-tls-{os.getuid()}"
+    if unsafe == "symlink":
+        (tmp_path / "elsewhere").mkdir()
+        directory.symlink_to(tmp_path / "elsewhere")
+    else:
+        directory.mkdir()
+        directory.chmod(0o770)
+    with pytest.raises(SystemExit, match="TMPDIR"):
+        apply_root_set()
+
+
 # --- the OS bundle's resolution ----------------------------------------------
 
 
@@ -226,7 +272,7 @@ def test_an_os_bundle_without_a_trailing_newline_still_loads_whole(
     assert len(_loaded(apply_root_set().path)) == len(ROOTS) + 1
 
 
-def test_an_inherited_equal_file_by_link_or_by_bytes_is_reused(
+def test_an_inherited_equal_file_by_link_or_by_bytes_is_exported_by_real_path(
     os_bundle, tmp_path, monkeypatch
 ):
     link = tmp_path / "link.pem"
@@ -235,7 +281,31 @@ def test_an_inherited_equal_file_by_link_or_by_bytes_is_reused(
     copy.write_bytes(os_bundle.read_bytes())
     monkeypatch.setenv("SSL_CERT_FILE", str(link))
     monkeypatch.setenv("AWS_CA_BUNDLE", str(copy))
-    assert apply_root_set().path == str(link)
+    assert apply_root_set().path == os.path.realpath(os_bundle)
+    assert os.environ["AWS_CA_BUNDLE"] == os.path.realpath(os_bundle)
+
+
+def test_an_inherited_relative_path_is_exported_absolute(os_bundle, monkeypatch):
+    monkeypatch.chdir(os_bundle.parent)
+    monkeypatch.setenv("SSL_CERT_FILE", os_bundle.name)
+    apply_root_set()
+    assert os.environ["SSL_CERT_FILE"] == os.path.realpath(os_bundle)
+
+
+def test_an_extra_file_keeps_its_certificates_and_drops_everything_else(
+    os_bundle, tmp_path, monkeypatch
+):
+    """A fullchain with its key: the non-CA leaf loads, the key is never copied."""
+    leaf = _ca_pem("a server leaf", ca=False)
+    key = b"-----BEGIN PRIVATE KEY-----\nTUlJ\n-----END PRIVATE KEY-----\n"
+    chain = tmp_path / "fullchain.pem"
+    chain.write_bytes(leaf + EXTRA + key)
+    monkeypatch.setenv("TLS_EXTRA_CA_FILE", str(chain))
+    written = Path(apply_root_set().path).read_bytes()
+    assert b"PRIVATE KEY" not in written
+    assert tls_root_set.pem_digests(written) == {
+        _digest(pem) for pem in (*ROOTS, leaf, EXTRA)
+    }
 
 
 def test_an_inherited_file_with_the_same_roots_reordered_and_commented_is_accepted(
@@ -247,24 +317,36 @@ def test_an_inherited_file_with_the_same_roots_reordered_and_commented_is_accept
     assert apply_root_set().path == str(nix)
 
 
-def test_a_second_apply_reuses_the_written_file(os_bundle, extra_file, tmp_path):
+def test_two_applies_name_one_file_and_write_nothing_else(
+    os_bundle, extra_file, monkeypatch
+):
     first = apply_root_set()
+    for name in OWNED_VARIABLES:  # a second start, not a child
+        monkeypatch.delenv(name)
     second = apply_root_set()
     assert second.path == first.path
-    assert len(list(tmp_path.glob("faultmaven-tls-*"))) == 1
+    assert os.listdir(Path(first.path).parent) == [Path(first.path).name]
 
 
-def test_an_empty_inherited_capath_is_accepted(os_bundle, tmp_path, monkeypatch):
-    capath = tmp_path / "empty"
+@pytest.mark.parametrize("held", [(), ROOTS])
+def test_an_inherited_capath_empty_or_holding_exactly_the_set_is_accepted(
+    os_bundle, tmp_path, monkeypatch, held
+):
+    capath = tmp_path / "capath"
     capath.mkdir()
+    for index, pem in enumerate(held):
+        (capath / f"abcdef0{index}.0").write_bytes(pem)
     monkeypatch.setenv("SSL_CERT_DIR", str(capath))
     apply_root_set()
     assert os.environ["SSL_CERT_DIR"] == EMPTY_CAPATH
 
 
-def test_a_dotenv_extra_ca_file_is_read(os_bundle, tmp_path, monkeypatch):
+@pytest.mark.parametrize("key", ["TLS_EXTRA_CA_FILE", "tls_extra_ca_file"])
+def test_a_dotenv_extra_ca_file_is_read_in_any_case(
+    os_bundle, tmp_path, monkeypatch, key
+):
     (tmp_path / "extra.pem").write_bytes(EXTRA)
-    (tmp_path / ".env").write_text("TLS_EXTRA_CA_FILE=extra.pem\n")
+    (tmp_path / ".env").write_text(f"{key}=extra.pem\n")
     monkeypatch.delenv("FAULTMAVEN_SKIP_DOTENV")
     monkeypatch.setattr(dotenv, "dotenv_values", dotenv.main.dotenv_values)
     monkeypatch.chdir(tmp_path)
@@ -287,7 +369,7 @@ def test_a_relative_extra_file_is_exported_absolute_and_a_child_elsewhere_reappl
         [sys.executable, "-c", "from faultmaven.config.tls_root_set import "
          "apply_root_set; print(apply_root_set().path)"],
         cwd=elsewhere, capture_output=True, text=True, timeout=120,
-        env={**os.environ, "PYTHONPATH": str(ROOT)},
+        env={**os.environ, "PYTHONPATH": str(ROOT), "TMPDIR": str(tmp_path)},
     )  # fmt: skip
     assert child.returncode == 0, child.stderr
     assert child.stdout.strip() == parent.path

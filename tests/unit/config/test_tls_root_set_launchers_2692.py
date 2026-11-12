@@ -86,6 +86,15 @@ def test_the_migration_process_applies_the_set_before_any_client_is_imported(
     assert _calls(code, DATABASE_URL=database) == [[]]
 
 
+def test_the_demo_seeder_applies_the_set_before_any_client_is_imported():
+    code = (
+        "import asyncio\nfrom demo.seed_demo_data import main\n"
+        "tls_root_set.apply_root_set = lambda: (record(), sys.exit(0))\n"
+        "asyncio.run(main())\n"
+    )
+    assert _calls(code) == [[]]
+
+
 def test_run_server_applies_the_set_before_aiohttp_builds_its_context(tmp_path):
     """aiohttp builds its verified context when it is imported, which uvicorn
     does when it imports the app: the extra CA must be in it."""
@@ -110,6 +119,7 @@ with mock.patch("uvicorn.run", serve):
         cwd=tmp_path, capture_output=True, text=True, timeout=300,
         env=_environment(
             TLS_EXTRA_CA_FILE=str(tmp_path / "extra-ca.pem"),
+            TMPDIR=str(tmp_path),
             RELOAD="false", WORKERS="1", CONFIG_PRESET="none",
             SKIP_SERVICE_CHECKS="true",
         ),

@@ -60,7 +60,7 @@ KNOWN_ENV_ACCESS = {
     # The TLS root set (#2692) is written into the environment, where every
     # client reads it, before settings or any client exist: it reads
     # TLS_EXTRA_CA_FILE and the inherited owned variables, and writes the set.
-    "faultmaven/config/tls_root_set.py": 6,
+    "faultmaven/config/tls_root_set.py": 5,
     "faultmaven/infrastructure/llm/pricing.py": 1,
     "faultmaven/infrastructure/llm/router.py": 3,
     # The Opik SDK reads its configuration from the environment (``OpikConfig``),

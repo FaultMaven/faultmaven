@@ -8,7 +8,10 @@ in a fresh process, through its own SDK client or pool, retries off, twice:
 handshake; **bare** (as before #2692) passes when it fails with none.
 ``sslmode=require`` verified nothing before, so its row also meets a CA outside
 the set: applied refuses it, bare accepts it. A client not installed fails only
-under ``--require-all``. Each client process refuses any traffic off loopback.
+under ``--require-all``. Every row connects to ``127.0.0.1``, never a name. Each
+client process runs without ``PG*`` or proxy variables, and refuses a
+Python-level connect or lookup off loopback; gRPC's and libpq's C sockets are
+not patched.
 """
 
 from __future__ import annotations
@@ -201,7 +204,7 @@ _ALSO_NEEDS = {"sqlalchemy asyncpg require": "asyncpg"}
 
 
 def _loopback_only() -> None:
-    allowed = {None, HOST, "::1", "localhost", HOST.encode(), b"localhost"}
+    allowed = {None, HOST, HOST.encode()}
     real_connect, real_lookup = socket.socket.connect, socket.getaddrinfo
 
     def connect(self, address):
@@ -417,9 +420,11 @@ def main(argv: list[str] | None = None) -> int:
         env = {
             name: value
             for name, value in os.environ.items()
-            if name not in OWNED_VARIABLES and name.lower() not in _PROXY_VARIABLES
+            if name not in OWNED_VARIABLES
+            and name.lower() not in _PROXY_VARIABLES
+            and not name.startswith("PG")
         }
-        env.update(_CHILD_ENV, TLS_EXTRA_CA_FILE=str(ca_file))
+        env.update(_CHILD_ENV, TLS_EXTRA_CA_FILE=str(ca_file), TMPDIR=scratch)
         for name in ROWS:
             for applied in (True, False) if ROWS[name][1] else (True,):
                 verdict, detail = _run(name, applied, ports, counts, env)
