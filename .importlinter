@@ -393,8 +393,10 @@ allow_indirect_imports = false
 # notices.py, the resolve-declined rule and actions, the pending-check
 # feedback and the solution_accepted refusals; #2636 B1b: codes.py, the
 # decision log's codes, and notices.py's renderers of them, which read the
-# cycle's record); terminal_transitions and its callers import them, never
-# the reverse. The contract forbids
+# cycle's record; #2636 B1d: codes.py's offer codes, and offers.py's
+# render_offer, the resolve confirmation and the closure prompt, each rendered
+# from its decider's params); terminal_transitions and its callers import
+# them, never the reverse. The contract forbids
 # imports of the three modules below, direct or through other modules, as
 # import-linter sees them: TYPE_CHECKING and function-local imports count. It
 # does not cover attribute access through a package object (`import

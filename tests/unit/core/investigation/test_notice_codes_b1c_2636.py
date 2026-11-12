@@ -32,6 +32,7 @@ from faultmaven.core.investigation.narration.codes import (
     CONTEXT_ONLY,
     DECISIONS_KEY,
     NoticeCode,
+    OfferCode,
     is_token,
 )
 from faultmaven.core.investigation.narration.notices import (
@@ -210,14 +211,21 @@ def test_only_the_record_reading_codes_read_the_outcome():
     covered = set()
     for entry, log in _logged():
         code = entry["code"]
-        if code in READS_THE_RECORD or code in CONTEXT_ONLY:
+        # B1d's offer codes are rendered by ``render_offer``, which takes no
+        # outcome (``test_offer_codes_b1d_2636.py``).
+        if code in READS_THE_RECORD or code in CONTEXT_ONLY or code in set(OfferCode):
             continue
         covered.add(code)
         params = entry["params"]
         assert render_notice(code, params, _Untouchable(), log) == render_notice(
             code, params, None, log
         )
-    assert covered == set(NoticeCode) - READS_THE_RECORD - CONTEXT_ONLY
+    # B1d's ENGINE_OFFER_STANDS is logged by a whole turn only: checked in
+    # ``test_offer_codes_b1d_2636.py``
+    # (``test_the_engine_offer_standing_renders_the_same_with_any_outcome``).
+    assert covered == set(NoticeCode) - READS_THE_RECORD - CONTEXT_ONLY - {
+        NoticeCode.ENGINE_OFFER_STANDS
+    }
 
 
 def _failing_write(monkeypatch) -> list:

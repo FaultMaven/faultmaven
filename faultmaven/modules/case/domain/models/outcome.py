@@ -138,6 +138,13 @@ class CauseOutcome(BaseModel):
     pool_empty_reason: Optional[PoolEmptyReason] = Field(
         default=None, description="Why the confirmation pool is empty"
     )
+    identification_leg: Optional[Literal["chain", "rcc", "working_conclusion"]] = Field(
+        default=None,
+        description=(
+            "The leg the root cause is identified on "
+            "(``cause_identification_leg``), or None"
+        ),
+    )
     identification_held_open: bool = Field(
         default=False,
         description=(

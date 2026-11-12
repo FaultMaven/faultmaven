@@ -28,7 +28,11 @@ from faultmaven.core.investigation.milestone_engine.stage_gates import (
     merge_system_notices,
     record_decision,
 )
-from faultmaven.core.investigation.narration.codes import DECISIONS_KEY, NoticeCode
+from faultmaven.core.investigation.narration.codes import (
+    DECISIONS_KEY,
+    NoticeCode,
+    OfferCode,
+)
 from faultmaven.core.investigation.narration.notices import render_notice
 from faultmaven.core.investigation.outcome import compute_case_outcome
 from faultmaven.core.investigation.progress_monitor import (
@@ -564,7 +568,8 @@ def test_a_token_left_unrendered_is_stripped_in_production(caplog, monkeypatch):
 
 
 def test_the_codes_are_append_only():
-    """B1c appended its fourteen after B1b's seven; B1d appends after these."""
+    """B1c appended its fourteen after B1b's seven, B1d its one after these;
+    ``OfferCode`` (B1d) is append-only from its nine."""
     assert [m.value for m in NoticeCode] == [
         "solution_offer_withdrawn",
         "mitigation_verify_proceeded",
@@ -588,4 +593,17 @@ def test_the_codes_are_append_only():
         "revision_refused",
         "fix_licence_refused",
         "fix_report_ignored",
+        # B1d's
+        "engine_offer_stands",
+    ]
+    assert [m.value for m in OfferCode] == [
+        "rca_infeasible_close",
+        "deferred_resolve",
+        "deferred_close",
+        "backstop_resolve",
+        "false_alarm_close",
+        "needs_info_unmet_close",
+        "resolution_needs_info",
+        "request_ready",
+        "model_proposal",
     ]

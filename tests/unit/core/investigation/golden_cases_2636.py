@@ -51,6 +51,21 @@ same file, from the top level of a scratch worktree of ``main``
 holding this module, as
 above. It keeps every B1a and B1b entry as stored. The ``turn_*`` scenarios
 and the step-0/step-2 re-ask run a whole turn through ``process_turn``.
+
+B1d (#2636) adds ``B1D_SCENARIOS``: each drives one of the offer writers
+``main``'s deciders composed (the rca-infeasible, deferred, backstop,
+false-alarm and needs-info-unmet closes and resolves, the needs-info request,
+the step-0 request turned READY and the model's proposal under each of its
+composers) and returns what the cycle published: each prose key and the open
+offer's stored ``summary`` (``offer_texts``). The ``turn_*`` ones run a whole
+turn through ``process_turn`` on a cause identified only on the
+working-conclusion leg, which housekeeping ages under the bar after every
+decider ran, and return the reply and the stored summary. ``capture_main_b1d``
+adds them under ``cycle:offer:<name>`` at ``MAIN_AT_B1D`` (``21921b408``), the same
+way, keeping every other entry as stored::
+
+    cd <scratch> && python -c "from tests.unit.core.investigation import \\
+        golden_cases_2636 as g; g.capture_main_b1d()"
 """
 
 import asyncio
@@ -1363,25 +1378,18 @@ B1C_SCENARIOS = {
 MAIN_AT_B1C = "8a619ae76f361e84e77f38061f4334d2048b7716"
 
 
-def capture_main() -> None:  # pragma: no cover - run once, on main
-    """Add ``B1C_SCENARIOS``' texts to the golden, as ``main`` tells them to
-    the model: its deciders compose them, and its narration step renders
-    B1b's codes beside them. Refused on any tree but the top level of a
-    checkout at ``MAIN_AT_B1C`` with an unmodified ``faultmaven/``. Additions
-    only: B1a's scenarios must re-run to
-    their stored entries, and B1b's (captured at ``b1969f821``, before their
-    deciders recorded codes) are kept as stored."""
+def _main_tree(commit: str) -> None:
+    """Refuse any tree but the top level of a checkout at ``commit`` with an
+    unmodified ``faultmaven/``, imported from that tree: on this branch the
+    golden would compare the renderers with themselves, and a peer branch, a
+    dirty checkout or a copy of the tree inside another checkout is not main."""
     import faultmaven
-    from faultmaven.core.investigation.narration.codes import NoticeCode, is_token
 
     root = Path(__file__).resolve().parents[4]
     assert (
         Path(faultmaven.__file__).resolve().is_relative_to(root)
     ), f"faultmaven imported from {faultmaven.__file__}, not {root}"
 
-    # Only the pinned main commit, unmodified, is main's: on this branch the
-    # golden would compare the renderers with themselves, and a peer branch, a
-    # dirty checkout or a copy of the tree inside another checkout is not main.
     def _git(*args: str) -> str:
         return subprocess.run(
             ["git", *args], cwd=root, check=True, capture_output=True, text=True
@@ -1390,12 +1398,25 @@ def capture_main() -> None:  # pragma: no cover - run once, on main
     top = Path(_git("rev-parse", "--show-toplevel")).resolve()
     assert top == root, f"{root} is not a checkout's top level (git sees {top})"
     head = _git("rev-parse", "HEAD")
-    assert head == MAIN_AT_B1C, f"HEAD is {head}, not {MAIN_AT_B1C}"
+    assert head == commit, f"HEAD is {head}, not {commit}"
     dirty = _git("status", "--porcelain", "--", "faultmaven/")
     assert not dirty, f"faultmaven/ is modified:\n{dirty}"
+    print(f"faultmaven: {faultmaven.__file__}")
+
+
+def capture_main() -> None:  # pragma: no cover - run once, on main
+    """Add ``B1C_SCENARIOS``' texts to the golden, as ``main`` tells them to
+    the model: its deciders compose them, and its narration step renders
+    B1b's codes beside them. Refused on any tree but the top level of a
+    checkout at ``MAIN_AT_B1C`` with an unmodified ``faultmaven/``. Additions
+    only: B1a's scenarios must re-run to
+    their stored entries, and B1b's (captured at ``b1969f821``, before their
+    deciders recorded codes) are kept as stored."""
+    from faultmaven.core.investigation.narration.codes import NoticeCode, is_token
+
+    _main_tree(MAIN_AT_B1C)
     members = {m.value for m in NoticeCode}
     assert "absence_in_failed_window" not in members, "capture on main only"
-    print(f"faultmaven: {faultmaven.__file__}")
     golden = json.loads(GOLDEN.read_text())
     changed = [n for n, build in SCENARIOS.items() if golden.get(n) != build()]
     assert not changed, f"B1a's entries no longer re-run to main's: {changed}"
@@ -1409,3 +1430,366 @@ def capture_main() -> None:  # pragma: no cover - run once, on main
         golden[key] = text
     GOLDEN.write_text(json.dumps(golden, indent=2, ensure_ascii=False) + "\n")
     print(f"added {added} of {len(B1C_SCENARIOS)} B1c scenarios to {GOLDEN}")
+
+
+# ---------------------------------------------------------------------------
+# B1d: the offers' prose and summaries, rendered after the cycle's record
+# ---------------------------------------------------------------------------
+
+#: The metadata keys an offer's (or a request's) prose is published under.
+PROSE_KEY_NAMES = (
+    "rca_infeasible_closure_message",
+    "deferred_solution_gate_message",
+    "resolution_ready_gate_message",
+    "false_alarm_closure_message",
+    "resolution_readiness_message",
+    "resolution_needs_info_message",
+)
+
+
+def offer_texts(case, metadata: dict) -> dict:
+    """What the cycle published for its offer: each prose key, and the open
+    offer's stored summary, after the cycle's record and narration step (on
+    ``main`` the deciders wrote both, and the narration step adds none)."""
+    narrated(case, metadata)
+    offer = case.offer_record.open
+    return {
+        "prose": {
+            key: cycle_text([metadata[key]])[0]
+            for key in PROSE_KEY_NAMES
+            if key in metadata
+        },
+        "summary": None if offer is None else cycle_text([offer.summary])[0],
+        "basis": None if offer is None else str(offer.basis),
+    }
+
+
+def _rca_infeasible_undated():
+    from tests.unit.core.investigation.test_rca_infeasible_closure import _make_case
+
+    case = _make_case(rca_infeasible=True, rationale="third-party API outage")
+    metadata: dict = {}
+    stage_gates._apply_stage_gate_side_effects(
+        case, {"mitigation_verified"}, "mitigation worked", metadata
+    )
+    return case, metadata
+
+
+def _rca_infeasible_relieved():
+    """#2100's shape: the mitigation accepted at 6, a bound relief at 7."""
+    from tests.unit.core.investigation.test_mitigation_record_2100 import (
+        _accepted,
+        _relief,
+    )
+    from tests.unit.core.investigation.test_mitigation_record_2100 import (
+        _turn as _mitigation_turn,
+    )
+
+    async def _run():
+        eng, case, shown = await _accepted()
+        case.problem_verification.rca_infeasible = True
+        case.problem_verification.rca_infeasible_rationale = "the vendor API is opaque"
+        relief = _relief(case, 7, shown)
+        meta = await _mitigation_turn(eng, case, 7, relief, mitigation_verified=True)
+        return case, meta
+
+    return asyncio.run(_run())
+
+
+def _deferred(*, confirmed: bool):
+    """A fix on record whose implementation is deferred out-of-band, its
+    cause identified; ``confirmed``: gone⇒gone is on record (the resolve
+    pivot)."""
+    from faultmaven.core.investigation.milestone_engine.terminal_proposals import (
+        _maybe_propose_deferred_close,
+    )
+    from faultmaven.modules.case.contracts import SolutionFeasible
+    from tests.unit.core.investigation.test_resolution_backstop_turn import (
+        _case as _backstop_case,
+    )
+
+    case = (
+        _confirmed_case()
+        if confirmed
+        else _backstop_case(absence=None, problem_gone=False)
+    )
+    case.progress.cause_state = CauseState.IDENTIFIED
+    case.progress.solution_feasible = SolutionFeasible.DEFERRED
+    case.progress.solution_proposed = True
+    metadata: dict = {}
+    _maybe_propose_deferred_close(case, metadata)
+    return case, metadata
+
+
+def _false_alarm_close():
+    async def _run():
+        engine, case = revision._engine(), revision._case(ProblemStatus.VERIFIED)
+        metadata = revision._meta()
+        await engine.responses._apply_investigation_updates(
+            case,
+            _DSU(
+                evidence_to_add=[
+                    revision._row(EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE, "a1")
+                ],
+                verification_updates=ProblemVerificationUpdate(
+                    problem_invalidated=True,
+                    invalidation_evidence_ids=["new_index_0"],
+                    invalidation_basis="no 5xx in the gateway log for the window",
+                ),
+            ),
+            metadata,
+            revision._Response(),
+        )
+        return case, metadata
+
+    return asyncio.run(_run())
+
+
+def _requested(case):
+    """Step 0 on a resolution request the previous turn remembered."""
+    from faultmaven.core.investigation.offers import remember_resolve_request
+
+    case.offer_record = remember_resolve_request(case, ["the check"])
+    engine = MilestoneEngine(MagicMock(), _make_repo(), investigation_tools=MagicMock())
+    metadata: dict = {"response_obj": None}
+    asyncio.run(engine.transitions.check_automatic_transitions(case, metadata, "done"))
+    return case, metadata
+
+
+def _wc_leg_case(*, confirmed: bool):
+    """A cause identified only on the working-conclusion leg: no conclusion,
+    no validated chain, a standing hypothesis at 0.68 that no turn has
+    touched since turn 3, on a stalled case. Housekeeping ages it this turn
+    (×0.85, under the 0.6 bar) and step 5.6 rebuilds the working conclusion
+    without it, after every decider ran (critique 1)."""
+    from tests.unit.core.investigation.test_resolution_backstop_turn import (
+        _case as _backstop_case,
+    )
+
+    case = (
+        _confirmed_case()
+        if confirmed
+        else _backstop_case(absence=None, problem_gone=False)
+    )
+    case.root_cause_conclusion = None
+    h_id = _standing(case, "The OIDC provider registers the wrong client ID", 0.5)
+    case.hypotheses[h_id].likelihood = 0.68
+    case.current_turn = 12
+    case.turns_without_progress = 20
+    return case
+
+
+def _whole_turn(case, state_updates, message: str = "it works now") -> dict:
+    """One turn through ``process_turn``: the reply, and the offer it left."""
+    engine = MilestoneEngine(MagicMock(), _make_repo(), investigation_tools=MagicMock())
+    engine.generator.generate_structured_output = AsyncMock(
+        return_value=InvestigationResponse_Diagnosis(
+            agent_response="Noted.", state_updates=state_updates
+        )
+    )
+    result = asyncio.run(
+        engine.process_turn(case=case, user_message=message, redaction_ctx=None)
+    )
+    offer = case.offer_record.open
+    return {
+        "reply": cycle_text([result["agent_response"]])[0],
+        "notices": cycle_text(case.turn_history[-1].system_notices),
+        "summary": None if offer is None else cycle_text([offer.summary])[0],
+        "basis": None if offer is None else str(offer.basis),
+    }
+
+
+def turn_model_proposal_confirmation_on_a_decaying_leg():
+    return _whole_turn(
+        _wc_leg_case(confirmed=True), _DSU(proposed_transition={"to_state": "resolved"})
+    )
+
+
+def turn_request_ready_on_a_decaying_leg():
+    from faultmaven.core.investigation.offers import remember_resolve_request
+
+    case = _wc_leg_case(confirmed=True)
+    case.offer_record = remember_resolve_request(case, ["the check"])
+    return _whole_turn(case, _DSU())
+
+
+def turn_backstop_on_a_decaying_leg():
+    return _whole_turn(_wc_leg_case(confirmed=True), _DSU())
+
+
+def turn_model_proposal_closure_on_a_decaying_leg():
+    return _whole_turn(
+        _wc_leg_case(confirmed=False),
+        _DSU(proposed_transition={"to_state": "closed"}),
+        "close it",
+    )
+
+
+def turn_model_proposal_beside_the_deferred_close():
+    """The apply step's deferred proposer opens its close; the model's own
+    ``closed`` in the same turn is dropped for it (``ENGINE_OFFER_STANDS``)."""
+    from faultmaven.modules.case.contracts import SolutionFeasible
+    from tests.unit.core.investigation.test_resolution_backstop_turn import (
+        _case as _backstop_case,
+    )
+
+    case = _backstop_case(absence=None, problem_gone=False)
+    case.progress.solution_feasible = SolutionFeasible.DEFERRED
+    case.progress.solution_proposed = True
+    case.current_turn += 1
+    return _whole_turn(
+        case, _DSU(proposed_transition={"to_state": "closed"}), "close it"
+    )
+
+
+def turn_replayed_rca_infeasible_close():
+    """A hold turn stages a mitigation verified on an rca-infeasible problem;
+    the user's "yes" to the revision replays it, and the stage-gate side
+    effect opens the close inside the replay. The live turn publishes it
+    (``test_a_yes_never_executes_an_rca_close_the_replay_made``'s shape)."""
+    from faultmaven.core.investigation.schemas import SolutionToAdd
+    from tests.unit.core.investigation.bound_rows import upload
+
+    async def _run():
+        engine, case = revision._engine(), revision._case()
+        case.problem_verification.rca_infeasible = True
+        case.problem_verification.rca_infeasible_rationale = "black-box vendor API"
+        relief = revision._row(
+            EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE, "g1"
+        ).model_copy(
+            update={
+                "source_file_id": upload(case, case.current_turn),
+                "rechecks": "new_index_0",
+            }
+        )
+        await revision._apply(
+            engine,
+            case,
+            _DSU(
+                evidence_to_add=[
+                    revision._row(EvidenceCategory.SYMPTOM_EVIDENCE, "s1"),
+                    relief,
+                ],
+                verification_updates=revision._revision_update("new_index_0"),
+                solutions_to_add=[
+                    SolutionToAdd(
+                        solution_type="workaround",
+                        description="route checkout through the backup region",
+                        estimated_impact="restores checkout",
+                        risks="higher latency",
+                    )
+                ],
+                milestones=MilestoneUpdates(
+                    mitigation_accepted=True, mitigation_verified=True
+                ),
+            ),
+        )
+        case.current_turn += 1
+        result = await engine.process_turn(
+            case=case, user_message="yes", redaction_ctx=None
+        )
+        return case, result
+
+    case, result = asyncio.run(_run())
+    offer = case.offer_record.open
+    return {
+        "reply": cycle_text([result["agent_response"]])[0],
+        "notices": cycle_text(case.turn_history[-1].system_notices),
+        "summary": None if offer is None else cycle_text([offer.summary])[0],
+        "basis": None if offer is None else str(offer.basis),
+    }
+
+
+#: B1d's (#2636): ``main``'s deciders composed each offer's prose and summary.
+B1D_SCENARIOS = {
+    "rca_infeasible_undated": lambda: offer_texts(*_rca_infeasible_undated()),
+    "rca_infeasible_relieved": lambda: offer_texts(*_rca_infeasible_relieved()),
+    "deferred_resolve": lambda: offer_texts(*_deferred(confirmed=True)),
+    "deferred_close": lambda: offer_texts(*_deferred(confirmed=False)),
+    "backstop_cause_on_record": lambda: offer_texts(
+        *_backstop_cycle(_confirmed_case())
+    ),
+    "backstop_no_cause_on_record": lambda: offer_texts(
+        *_backstop_cycle(_no_cause_leg_no_solutions())
+    ),
+    "false_alarm_close": lambda: offer_texts(*_false_alarm_close()),
+    "unmet_request_close": lambda: offer_texts(*_requested(_identified_case()[0])),
+    "unmet_request_readiness_close": lambda: offer_texts(*_requested(_bare_case())),
+    "request_ready": lambda: offer_texts(*_requested(_confirmed_case())),
+    "needs_info_gaps": lambda: offer_texts(
+        *_models_proposal(_identified_case()[0], "resolved")
+    ),
+    "needs_info_off_cause": lambda: offer_texts(
+        *_models_proposal(_interception_only(), "resolved")
+    ),
+    "needs_info_relief_named": lambda: offer_texts(
+        *_models_proposal(_relief_only(), "resolved")
+    ),
+    "model_readiness": lambda: offer_texts(*_models_proposal(_bare_case(), "resolved")),
+    "model_readiness_false_alarm": lambda: offer_texts(
+        *_models_proposal(_invalidated(), "resolved")
+    ),
+    "model_confirmation": lambda: offer_texts(
+        *_models_proposal(_confirmed_case(), "resolved")
+    ),
+    "model_confirmation_no_cause": lambda: offer_texts(
+        *_models_proposal(_no_cause_leg_no_solutions(), "resolved")
+    ),
+    "model_closure_summary": lambda: offer_texts(
+        *_models_proposal(_identified_case()[0], "closed", "close it")
+    ),
+    "model_closure_trivial": lambda: offer_texts(
+        *_models_proposal(investigating_case(), "closed", "close it")
+    ),
+    "model_closure_pivot": lambda: offer_texts(
+        *_models_proposal(_confirmed_case(), "closed", "close it")
+    ),
+    "model_closure_pivot_named_with_solutions": lambda: offer_texts(
+        *_models_proposal(
+            _with_solutions(_concluded(_confirmed_case()), "raise the limit", ""),
+            "closed",
+            "close it",
+        )
+    ),
+    "turn_model_proposal_confirmation_on_a_decaying_leg": (
+        turn_model_proposal_confirmation_on_a_decaying_leg
+    ),
+    "turn_request_ready_on_a_decaying_leg": turn_request_ready_on_a_decaying_leg,
+    "turn_backstop_on_a_decaying_leg": turn_backstop_on_a_decaying_leg,
+    "turn_model_proposal_closure_on_a_decaying_leg": (
+        turn_model_proposal_closure_on_a_decaying_leg
+    ),
+    "turn_model_proposal_beside_the_deferred_close": (
+        turn_model_proposal_beside_the_deferred_close
+    ),
+    "turn_replayed_rca_infeasible_close": turn_replayed_rca_infeasible_close,
+}
+
+
+#: The commit ``capture_main_b1d`` captured B1d's entries at: ``main`` with B1c.
+MAIN_AT_B1D = "21921b408f12e9fe57baf7768c35e7d4cac06f27"
+
+
+def capture_main_b1d() -> None:  # pragma: no cover - run once, on main
+    """Add ``B1D_SCENARIOS``' offers to the golden under ``cycle:offer:<name>``, as
+    ``main``'s deciders composed them. Refused on any tree but the top level
+    of a checkout at ``MAIN_AT_B1D`` with an unmodified ``faultmaven/``, and
+    on one that has ``OfferCode``, where the golden would compare the
+    renderers with themselves. Additions only: B1a's scenarios must re-run to
+    their stored entries, and every other entry is kept as stored."""
+    from faultmaven.core.investigation.narration import codes
+
+    _main_tree(MAIN_AT_B1D)
+    assert not hasattr(codes, "OfferCode"), "capture on main only"
+    golden = json.loads(GOLDEN.read_text())
+    changed = [n for n, build in SCENARIOS.items() if golden.get(n) != build()]
+    assert not changed, f"B1a's entries no longer re-run to main's: {changed}"
+    added = 0
+    for name, build in B1D_SCENARIOS.items():
+        texts = build()
+        key = f"cycle:offer:{name}"
+        assert golden.get(key, texts) == texts, f"{key} differs from its capture"
+        added += key not in golden
+        golden[key] = texts
+    GOLDEN.write_text(json.dumps(golden, indent=2, ensure_ascii=False) + "\n")
+    print(f"added {added} of {len(B1D_SCENARIOS)} B1d scenarios to {GOLDEN}")
