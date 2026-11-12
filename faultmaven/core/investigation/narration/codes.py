@@ -24,7 +24,8 @@ from typing import Optional
 
 #: Set by the test suite (``tests/conftest.py``): a decision token left
 #: unrendered at the turn record raises there instead of being logged and
-#: stripped (``turn_application.record_turn``).
+#: stripped (``turn_application.record_turn``), as does an engine offer that
+#: closed after a drop other than by lapsing (``turn_narration``).
 TOKENS_FAIL = False
 
 #: Where a turn's decisions accumulate, beside ``system_notices``.
@@ -62,7 +63,8 @@ class NoticeCode(StrEnum):
     REVISION_REFUSED = "revision_refused"
     FIX_LICENCE_REFUSED = "fix_licence_refused"
     FIX_REPORT_IGNORED = "fix_report_ignored"
-    # B1d: the model's proposal dropped for the engine's offer (params).
+    # B1d: the model's proposal dropped for the engine's offer (params); B3:
+    # its lapsed variant when that offer lapsed later in the cycle.
     ENGINE_OFFER_STANDS = "engine_offer_stands"
 
 

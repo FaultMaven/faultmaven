@@ -19,6 +19,7 @@ from typing import Any, Optional
 from faultmaven.core.investigation.lifecycle_metrics import (
     case_outcome_conflicts_total,
 )
+from faultmaven.core.investigation.narration import codes as narration_codes
 from faultmaven.core.investigation.narration.codes import (
     DECIDED_FROM,
     DECIDED_PARAMS,
@@ -34,7 +35,7 @@ from faultmaven.core.investigation.narration.notices import (
 from faultmaven.core.investigation.narration.offers import render_offer
 from faultmaven.core.investigation.offers import summarize_offer
 from faultmaven.core.investigation.outcome import compute_case_outcome
-from faultmaven.modules.case.contracts import CaseOutcome
+from faultmaven.modules.case.contracts import AnswerKind, CaseOutcome
 
 from .stage_gates import _NOTICES_HEAD_KEY
 
@@ -151,9 +152,38 @@ def _narrate_offer(case: Any, metadata: dict, code: str, params: dict) -> None:
         )
 
 
+def _offer_stands(case: Any, proposal_id: str) -> bool:
+    open_offer = case.offer_record.open
+    return open_offer is not None and open_offer.proposal_id == proposal_id
+
+
+def _engine_offer_stands(case: Any, metadata: dict, params: dict) -> dict:
+    """``params`` with whether the engine's offer still stands at narration,
+    and the compliance flags of an offer that lapsed after the drop (B3)."""
+    proposal_id = params["proposal_id"]
+    if _offer_stands(case, proposal_id):
+        return {**params, "stands": True}
+    lapsed = any(
+        a.proposal_id == proposal_id and a.answer == AnswerKind.LAPSED
+        for a in case.offer_record.answers
+    )
+    if not lapsed:
+        message = f"offer {proposal_id} closed after the drop, not lapsed (#2636)"
+        if narration_codes.TOKENS_FAIL:
+            raise AssertionError(message)
+        logger.error("Case %s: %s", getattr(case, "case_id", None), message)
+        return params
+    metadata["transition_superseded_by_engine"] = False
+    metadata["transition_dropped_for_lapsed_offer"] = True
+    return {**params, "stands": False}
+
+
 def narrate_turn(case: Any, metadata: dict) -> None:
     """Render the turn's decision log after its record. A conflict is counted
-    only on a record the cycle stored (counting (i))."""
+    only on a record the cycle stored (counting (i)). A model proposal dropped
+    for an engine offer that lapsed later in the cycle also sets the turn's
+    compliance flags ``transition_dropped_for_lapsed_offer`` and
+    ``transition_superseded_by_engine`` (false)."""
     log = metadata.get(DECISIONS_KEY) or []
     outcome = _outcome(case, metadata, log)
     if metadata.get(OUTCOME_WRITTEN_KEY) and outcome is not None:
@@ -167,5 +197,7 @@ def narrate_turn(case: Any, metadata: dict) -> None:
             continue
         if code == NoticeCode.MITIGATION_VERIFY_REFUSED:
             params = {**params, "stored_disposition": _disposition_before(case, log)}
+        if code == NoticeCode.ENGINE_OFFER_STANDS:
+            params = _engine_offer_stands(case, metadata, params)
         texts = render_notice(code, params, outcome, log)
         _replace_token(metadata, entry["token"], texts)
