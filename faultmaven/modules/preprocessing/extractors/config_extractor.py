@@ -12,6 +12,8 @@ import json
 import re
 from typing import Any
 
+import tomli
+
 from faultmaven.modules.preprocessing.extractors.protocol import ExtractResult
 from faultmaven.modules.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
@@ -182,11 +184,11 @@ class StructuredConfigExtractor:
         except (ImportError, Exception):
             pass
         try:
-            import tomli
-
             tomli.loads(content)
             return "toml"
-        except (ImportError, Exception):
+        except (ValueError, RecursionError):
+            # TOMLDecodeError subclasses ValueError, as does an integer past
+            # CPython's digit limit; RecursionError is tomli's nesting limit.
             pass
         return "ini/env"
 
@@ -221,12 +223,10 @@ class StructuredConfigExtractor:
         except (ImportError, yaml.YAMLError, AttributeError):
             pass
 
-        # Try TOML (if available)
+        # Try TOML: tomli, not the stdlib tomllib, which reads only TOML 1.0 on 3.11
         try:
-            import tomli
-
             return tomli.loads(content)
-        except (ImportError, Exception):
+        except (ValueError, RecursionError):  # see _detect_format
             pass
 
         return None

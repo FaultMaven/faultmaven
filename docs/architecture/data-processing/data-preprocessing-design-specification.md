@@ -396,7 +396,7 @@ For the full runtime-marker vocabulary (including `structure_extraction`, `none`
 
 **Key insight**: The 4 extractors under LOGS produce fundamentally different output. A distributed trace parsed by `trace_correlation` (service call chain, critical path) is nothing like a log file parsed by `crime_scene` (error clusters, timeline). The 12→6 unification is a lossy compression for the external API; internally, the system leverages all 11 extractors.
 
-**All 11 extractors use stdlib only** (re, ast, json). No external dependencies except optional `yaml`/`tomli` for config parsing. This means zero external risk, deterministic output, and fast execution.
+**All 11 extractors use stdlib only** (re, ast, json). No external dependencies except, for config parsing, `tomli` (declared: Python 3.11's stdlib `tomllib` reads only TOML 1.0, and `tomli` reads TOML 1.1) and an optional `yaml`. This means zero external risk, deterministic output, and fast execution.
 
 #### Coverage Metadata
 
