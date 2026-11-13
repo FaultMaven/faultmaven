@@ -116,6 +116,7 @@ from typing import TYPE_CHECKING, Iterable, Optional
 from faultmaven.core.investigation.cause_assurance import (
     resolution_confirmation_rows,
 )
+from faultmaven.core.investigation.cause_identification import cause_identification_leg
 from faultmaven.modules.case.contracts import (
     AnswerKind,
     AnswerVia,
@@ -652,11 +653,7 @@ def _premise_gone(case: "Case", offer: Offer) -> bool:
         return True
     if offer.basis == OfferBasis.DEFERRED and offer.kind == OfferKind.CLOSE:
         # M5's predicate (``stage_gates._solution_cause_validated``), read at
-        # its source: ``terminal_transitions`` imports this module.
-        from faultmaven.core.investigation.terminal_transitions import (
-            cause_identification_leg,
-        )
-
+        # its source.
         if cause_identification_leg(case) is None:
             return True
     if _is_false_alarm(offer.kind, offer.closure_reason):

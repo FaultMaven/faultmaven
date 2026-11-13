@@ -35,6 +35,9 @@ from faultmaven.core.investigation.cause_assurance import (
     cause_elimination_rows,
     confirm_root_from_resolution_absence,
 )
+from faultmaven.core.investigation.cause_identification import (
+    cause_identification_leg,
+)
 from faultmaven.core.investigation.milestone_engine.cause_state import (
     _recompute_cause_state_from_chain,
 )
@@ -55,7 +58,6 @@ from faultmaven.core.investigation.schemas import CausalNodeToAdd, HypothesisUpd
 from faultmaven.core.investigation.terminal_transitions import (
     ResolutionReadiness,
     assess_resolution_readiness,
-    cause_identification_leg,
 )
 from faultmaven.modules.case.contracts import (
     CausalEdge,

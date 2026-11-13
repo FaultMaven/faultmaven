@@ -6,12 +6,12 @@ LLM ``likelihood: 1.0`` especially — can arrive near-conclusion on creation.
 
 import pytest
 
+from faultmaven.core.investigation.cause_identification import (
+    CAUSE_IDENTIFIED_LIKELIHOOD,
+)
 from faultmaven.core.investigation.hypothesis_manager import (
     NEW_HYPOTHESIS_MAX_PRIOR,
     HypothesisManager,
-)
-from faultmaven.core.investigation.terminal_transitions import (
-    CAUSE_IDENTIFIED_LIKELIHOOD,
 )
 from faultmaven.modules.case.contracts import HypothesisCategory
 

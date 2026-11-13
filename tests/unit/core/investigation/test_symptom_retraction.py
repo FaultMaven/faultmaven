@@ -131,7 +131,7 @@ def test_retraction_withdraws_the_backstop_cause_legs():
     a verified symptom so a conclusion "left behind after a symptom claim is
     withdrawn" stops counting. That gate could never fire before."""
 
-    from faultmaven.core.investigation.terminal_transitions import (
+    from faultmaven.core.investigation.cause_identification import (
         cause_identification_leg,
     )
     from faultmaven.modules.case.contracts import ConfidenceLevel, RootCauseConclusion

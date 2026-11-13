@@ -296,7 +296,14 @@ def test_the_lapse_at_step_3b_is_recorded_and_shows_no_card():
 
 
 def test_the_lapse_and_the_deferred_opener_read_one_predicate():
-    """C6: the lapse reads ``cause_identification_leg``, M5's own source."""
+    """C6, C9: the lapse and M5 (the deferred opener's gate) read one
+    function, ``cause_identification.cause_identification_leg``, and agree."""
+    from faultmaven.core.investigation import cause_identification, offers
+    from faultmaven.core.investigation.milestone_engine import stage_gates
+
+    leg = cause_identification.cause_identification_leg
+    assert offers.cause_identification_leg is leg
+    assert stage_gates.cause_identification_leg is leg
     for licensed in (True, False):
         case = _deferred_case()
         if not licensed:

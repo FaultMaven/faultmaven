@@ -43,11 +43,11 @@ from faultmaven.core.investigation.cause_assurance import (
     CAUSAL_STANCE_CONFIDENCE_MIN,
     evidence_category_map,
 )
+from faultmaven.core.investigation.cause_identification import (
+    CAUSE_IDENTIFIED_LIKELIHOOD,
+)
 from faultmaven.core.investigation.lifecycle_metrics import (
     hypothesis_likelihood_capped_no_evidence_total,
-)
-from faultmaven.core.investigation.terminal_transitions import (
-    CAUSE_IDENTIFIED_LIKELIHOOD,
 )
 from faultmaven.modules.case.contracts import (
     EvidenceCategory,

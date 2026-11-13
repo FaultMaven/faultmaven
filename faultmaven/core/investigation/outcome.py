@@ -58,6 +58,7 @@ from faultmaven.core.investigation.cause_assurance import (
     unbound_post_fix_rows,
     uncited_recheck_why,
 )
+from faultmaven.core.investigation.cause_identification import cause_identification_leg
 from faultmaven.core.investigation.lifecycle_metrics import (
     case_outcome_conflicts_total,
     case_outcome_write_failures_total,
@@ -67,7 +68,6 @@ from faultmaven.core.investigation.terminal_transitions import (
     _mitigation_declared_stable,
     _mitigation_verified,
     assess_resolution_readiness,
-    cause_identification_leg,
     closure_verdict,
     declined_resolve_entry,
     derive_closure_reason,

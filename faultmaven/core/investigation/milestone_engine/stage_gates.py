@@ -13,6 +13,7 @@ from typing import (
 )
 
 from faultmaven.core.investigation.cause_assurance import mitigation_settled
+from faultmaven.core.investigation.cause_identification import cause_identification_leg
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
 from faultmaven.core.investigation.lifecycle_metrics import (
     pending_action_superseded_stale_total,
@@ -317,13 +318,8 @@ def solution_licence_leg(
 ) -> Optional[str]:
     """The leg M5 licenses a SOLUTION on (``cause_identification_leg``), or
     None: the one reading ``_solution_cause_validated`` and the fix's
-    recorded licence share (#2036 D2.3)."""
-    # Local import mirrors the module's other terminal_transitions uses (avoids
-    # an import cycle) and keeps M5 and the resolution gate on ONE predicate.
-    from faultmaven.core.investigation.terminal_transitions import (
-        cause_identification_leg,
-    )
-
+    recorded licence share (#2036 D2.3). M5 and the resolution gate read ONE
+    predicate."""
     return cause_identification_leg(case, working_conclusion=working_conclusion)
 
 

@@ -27,6 +27,9 @@ from faultmaven.core.investigation.cause_assurance import (
     cause_recheck_status,
     confirming_polarity_rows,
 )
+from faultmaven.core.investigation.cause_identification import (
+    cause_identification_leg,
+)
 from faultmaven.core.investigation.milestone_engine.cause_state import (
     _recompute_cause_state_from_chain,
 )
@@ -49,9 +52,6 @@ from faultmaven.core.investigation.schemas import (
     CausalNodeToAdd,
     EvidenceToAdd,
     HypothesisUpdate,
-)
-from faultmaven.core.investigation.terminal_transitions import (
-    cause_identification_leg,
 )
 from faultmaven.modules.case.contracts import (
     CausalEdge,
