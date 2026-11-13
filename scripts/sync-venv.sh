@@ -92,7 +92,7 @@ else
     # PYTHON_VERSION only binds at creation, so an environment made earlier on a
     # different interpreter would be synced from a lockfile compiled for 3.11 and
     # then stamped and reported "matches". The lockfiles are resolved with
-    # --python-version 3.11 --python-platform linux and carry no environment
+    # --python-version 3.11.5 --python-platform linux and carry no environment
     # markers, so nothing downstream would notice. Refuse rather than recreate:
     # deleting an environment someone may be running tests in is not this
     # script's call to make.

@@ -8,7 +8,8 @@
 
 set -euo pipefail
 
-PYTHON_VERSION="3.11"
+# pyproject.toml's requires-python floor: uv reads a bare "3.11" as 3.11.0.
+PYTHON_VERSION="3.11.5"
 cd "$(dirname "$0")/.."
 
 if ! command -v uv &> /dev/null; then
