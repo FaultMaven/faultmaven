@@ -144,7 +144,7 @@ round finishes, settles or asks instead. Labels not yet in use read as empty. Th
 repo:
 
 ```bash
-R=FaultMaven/faultmaven; lanes="<the lead issue of each lane you pick>"; now=$(date -u +%s)
+R=FaultMaven/faultmaven; lanes="<the lead issue of each lane and each **Next** item you pick>"; now=$(date -u +%s)
 ago() { date -u -d "@$((now - $1 * 86400))" +%FT%TZ; }; lines() { gh api "repos/$R/issues/$1/comments" --paginate --jq '.[] | "\(.created_at) \(.body | split("\n")[0])"'; }
 # the newest two Queues, oldest first, so a rotated Queue still reads the round, the last proposal and the earlier counts
 q=$(gh issue list -R $R --label tracking --state all --search 'Queue in:title' --limit 100 --json number,title \
