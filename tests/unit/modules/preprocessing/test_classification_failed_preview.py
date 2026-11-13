@@ -11,6 +11,11 @@ The preview is NOT a re-classification or an extraction — it's a thin orientin
 hint glued onto the existing placeholder text. The classifier's
 ``suggested_types`` and ``classification_failed`` flag are unchanged.
 
+The placeholder exists only for an upload of ``MIN_EXTRACTION_LINES`` lines or
+more (#2355): a shorter uncertain upload passes through raw, so every fixture
+here that must reach the placeholder is at least that long. The short path is
+pinned in ``test_short_uncertain_upload_passthrough_2355.py``.
+
 Run with:
     pytest tests/unit/modules/preprocessing/test_classification_failed_preview.py -v
 """
@@ -24,6 +29,7 @@ import pytest
 from faultmaven.models.api import DataType
 from faultmaven.modules.preprocessing.classifier import DataClassifier
 from faultmaven.modules.preprocessing.preprocessing_service import (
+    MIN_EXTRACTION_LINES,
     PreprocessingService,
 )
 from tests.unit.modules.preprocessing.extraction_stubs import CrimeScene
@@ -59,6 +65,15 @@ AMBIGUOUS_CSV = (
     "storage,/v1/delete,us-east-1,67,0,ok,platform\n"
 )
 
+# The same export at a length where the type picks the extractor, so the
+# uncertain verdict is put to the user as a placeholder (#2355). The header
+# and the first data rows are the short fixture's, which is what the preview
+# shows.
+_DATA_ROWS = AMBIGUOUS_CSV.splitlines()[1:]
+AMBIGUOUS_CSV_LONG = AMBIGUOUS_CSV + "".join(
+    _DATA_ROWS[i % len(_DATA_ROWS)] + "\n" for i in range(MIN_EXTRACTION_LINES)
+)
+
 
 class TestClassificationFailedContentPreviewCsv:
     """The benchmark scenario: an ambiguous service-metrics-or-config CSV."""
@@ -68,7 +83,9 @@ class TestClassificationFailedContentPreviewCsv:
         """The placeholder structural_index must surface the CSV column names
         so the agent can cite them when explaining the ambiguity."""
         result = await real_classifier_service.classify_and_extract(
-            content=AMBIGUOUS_CSV, filename="ambiguous-service-data.csv", principal="u1"
+            content=AMBIGUOUS_CSV_LONG,
+            filename="ambiguous-service-data.csv",
+            principal="u1",
         )
 
         assert result.extraction_method == "classification_failed"
@@ -94,7 +111,9 @@ class TestClassificationFailedContentPreviewCsv:
         """At least one concrete data row must appear so the agent can ground
         its answer with example values (e.g. 'latency 145, status degraded')."""
         result = await real_classifier_service.classify_and_extract(
-            content=AMBIGUOUS_CSV, filename="ambiguous-service-data.csv", principal="u1"
+            content=AMBIGUOUS_CSV_LONG,
+            filename="ambiguous-service-data.csv",
+            principal="u1",
         )
 
         idx = result.structural_index
@@ -115,7 +134,9 @@ class TestClassificationFailedContentPreviewCsv:
         suggested_types must still propagate so the cooperative-clarification
         UX still fires."""
         result = await real_classifier_service.classify_and_extract(
-            content=AMBIGUOUS_CSV, filename="ambiguous-service-data.csv", principal="u1"
+            content=AMBIGUOUS_CSV_LONG,
+            filename="ambiguous-service-data.csv",
+            principal="u1",
         )
 
         meta = result.extraction_metadata or {}
@@ -131,12 +152,14 @@ class TestClassificationFailedContentPreviewCsv:
         """Preview must be small — never echo the whole file. ~5-10 lines max
         keeps the agent context budget intact."""
         result = await real_classifier_service.classify_and_extract(
-            content=AMBIGUOUS_CSV, filename="ambiguous-service-data.csv", principal="u1"
+            content=AMBIGUOUS_CSV_LONG,
+            filename="ambiguous-service-data.csv",
+            principal="u1",
         )
 
         idx = result.structural_index
         # Heuristic upper bound — the placeholder + a 5-10 line preview should
-        # easily fit under 1500 chars. The full CSV is 621 bytes so anything
+        # easily fit under 1500 chars. The full CSV is several KB, so anything
         # over ~2000 chars indicates the cap was bypassed.
         assert (
             len(idx) < 2000
@@ -144,37 +167,32 @@ class TestClassificationFailedContentPreviewCsv:
 
 
 class TestClassificationFailedContentPreviewText:
-    """Generic short ambiguous text (ISS-023 path) also benefits from a
-    preview, though the columns concept doesn't apply."""
+    """Non-tabular uncertain text gets a preview too, though the columns
+    concept doesn't apply. The ISS-023 notice itself is always under
+    ``MIN_EXTRACTION_LINES`` and so never reaches the placeholder (#2355);
+    this drives the text arm with a long upload the classifier is forced to
+    be unsure about."""
 
     @pytest.mark.asyncio
-    async def test_short_text_preview_includes_first_lines(
-        self, real_classifier_service
-    ):
-        """For non-tabular ambiguous text, the first few lines surface verbatim
+    async def test_text_preview_includes_first_lines(self):
+        """For non-tabular uncertain text, the first few lines surface verbatim
         so the agent has something concrete to describe."""
-        # ISS-023 fixture shape — short maintenance notice with mixed signals.
-        ambiguous_text = (
-            "Scheduled maintenance window\n"
-            "When: 2026-04-30T02:00 UTC\n"
-            "Contact: ops@example.com\n"
-            "Runbook: https://wiki.example.com/maint\n"
-            "Tag: v2.3.8\n"
+        text = "Scheduled maintenance window\n" + "".join(
+            f"note {i}: see the runbook\n" for i in range(MIN_EXTRACTION_LINES)
         )
-        result = await real_classifier_service.classify_and_extract(
-            content=ambiguous_text, filename="notice.txt", principal="u1"
+        svc = (
+            TestClassificationFailedPlaceholderNaming._service_that_always_fails_classification()
+        )
+        result = await svc.classify_and_extract(
+            content=text, filename="notice.txt", principal="u1"
         )
 
-        if result.extraction_method != "classification_failed":
-            pytest.skip(
-                "Classifier did not route this fixture through "
-                "classification_failed; preview only applies on that path."
-            )
-
+        assert result.extraction_method == "classification_failed"
         idx = result.structural_index
-        # At least the leading distinctive line ("Scheduled maintenance window")
-        # should be visible in the preview so the agent can cite it.
-        assert "Scheduled maintenance" in idx or "maintenance" in idx.lower()
+        assert "Preview:" in idx
+        assert "Scheduled maintenance window" in idx
+        # The preview is the first lines, not the file.
+        assert f"note {MIN_EXTRACTION_LINES - 1}:" not in idx
 
 
 class TestClassificationFailedContentPreviewIsAdditive:
@@ -187,7 +205,9 @@ class TestClassificationFailedContentPreviewIsAdditive:
         """The original 'Classification uncertain' line must still appear so
         anything downstream that greps for it (logs, UI, tests) keeps working."""
         result = await real_classifier_service.classify_and_extract(
-            content=AMBIGUOUS_CSV, filename="ambiguous-service-data.csv", principal="u1"
+            content=AMBIGUOUS_CSV_LONG,
+            filename="ambiguous-service-data.csv",
+            principal="u1",
         )
 
         assert "Classification uncertain" in result.structural_index
@@ -213,7 +233,9 @@ class TestClassificationFailedContentPreviewIsAdditive:
         like 'Columns:' or 'Preview:' so the agent (and a human reading logs)
         can see where the orienting hint starts."""
         result = await real_classifier_service.classify_and_extract(
-            content=AMBIGUOUS_CSV, filename="ambiguous-service-data.csv", principal="u1"
+            content=AMBIGUOUS_CSV_LONG,
+            filename="ambiguous-service-data.csv",
+            principal="u1",
         )
 
         idx_lower = result.structural_index.lower()
@@ -266,7 +288,7 @@ class TestClassificationFailedPlaceholderNaming:
     async def test_paste_placeholder_does_not_name_the_minted_file(self):
         svc = self._service_that_always_fails_classification()
         result = await svc.classify_and_extract(
-            content=AMBIGUOUS_CSV, filename=self.MINTED_PASTE, principal="u1"
+            content=AMBIGUOUS_CSV_LONG, filename=self.MINTED_PASTE, principal="u1"
         )
         assert result.extraction_method == "classification_failed"
         assert self.MINTED_PASTE not in result.structural_index
@@ -277,7 +299,7 @@ class TestClassificationFailedPlaceholderNaming:
     async def test_capture_placeholder_does_not_name_the_minted_file(self):
         svc = self._service_that_always_fails_classification()
         result = await svc.classify_and_extract(
-            content=AMBIGUOUS_CSV, filename=self.MINTED_CAPTURE, principal="u1"
+            content=AMBIGUOUS_CSV_LONG, filename=self.MINTED_CAPTURE, principal="u1"
         )
         assert result.extraction_method == "classification_failed"
         assert self.MINTED_CAPTURE not in result.structural_index
@@ -287,7 +309,9 @@ class TestClassificationFailedPlaceholderNaming:
     async def test_a_real_filename_is_still_quoted(self, real_classifier_service):
         """Unforced — this one reaches the failed path on its own."""
         result = await real_classifier_service.classify_and_extract(
-            content=AMBIGUOUS_CSV, filename="ambiguous-service-data.csv", principal="u1"
+            content=AMBIGUOUS_CSV_LONG,
+            filename="ambiguous-service-data.csv",
+            principal="u1",
         )
         assert result.extraction_method == "classification_failed"
         assert "'ambiguous-service-data.csv'" in result.structural_index
@@ -297,7 +321,9 @@ class TestClassificationFailedPlaceholderNaming:
         """Rule 2 of the detection rule: the user named this one."""
         svc = self._service_that_always_fails_classification()
         result = await svc.classify_and_extract(
-            content=AMBIGUOUS_CSV, filename="pasted-content-notes.txt", principal="u1"
+            content=AMBIGUOUS_CSV_LONG,
+            filename="pasted-content-notes.txt",
+            principal="u1",
         )
         assert result.extraction_method == "classification_failed"
         assert "'pasted-content-notes.txt'" in result.structural_index

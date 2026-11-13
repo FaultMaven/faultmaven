@@ -756,7 +756,11 @@ class ClassificationResult(BaseModel):
     ] = Field(..., description="How the classification was determined")
     classification_failed: bool = Field(
         default=False,
-        description="True if confidence below threshold, triggers user fallback modal",
+        description=(
+            "True if confidence is below the clarification threshold. An upload "
+            "of MIN_EXTRACTION_LINES or more is then put to the user as type "
+            "choices; a shorter one passes through as unstructured_text"
+        ),
     )
     suggested_types: Optional[List[DataType]] = Field(
         None, description="Suggested data types for ambiguous cases (user fallback)"

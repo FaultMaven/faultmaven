@@ -1,0 +1,206 @@
+"""#2355: an uncertain upload is put to the user only where its type matters.
+
+Below ``MIN_EXTRACTION_LINES`` no extractor runs whatever the type: the
+small-file passthrough hands the raw content to the model. A clarification
+card there held the upload out of the turn (a three-line preview, no directed
+analysis) over a label that changes nothing the model reads. So a short
+uncertain upload passes through raw, typed ``UNSTRUCTURED_TEXT`` rather than
+the classifier's guess, with the verdict kept uncertain in its metadata. An
+upload of ``MIN_EXTRACTION_LINES`` lines or more, where the type picks the
+extractor, keeps the placeholder that raises the card.
+
+The agent side keys every card effect (the choices, the "not analyzed yet"
+note, the exclusion from directed analysis) on
+``extraction_method == "classification_failed"``, so the method is what these
+pin.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from faultmaven.core.preprocessing.models import to_unified_data_type
+from faultmaven.infrastructure.observability import evidence_metrics
+from faultmaven.models.api import DataType
+from faultmaven.modules.preprocessing.classifier import DataClassifier
+from faultmaven.modules.preprocessing.preprocessing_service import (
+    MIN_EXTRACTION_LINES,
+    PreprocessingService,
+)
+from tests.unit.modules.preprocessing.extraction_stubs import CrimeScene
+from tests.unit.modules.preprocessing.test_classification_failed_preview import (
+    AMBIGUOUS_CSV,
+)
+
+pytestmark = pytest.mark.unit
+
+MINTED_PASTE = "pasted-content-20261113T081500.txt"
+
+
+def _service(classifier: DataClassifier | None = None) -> PreprocessingService:
+    return PreprocessingService(
+        classifier=classifier or DataClassifier(),
+        logs_extractor=CrimeScene(),
+    )
+
+
+def _uncertain_classifier(guess: DataType | None = None) -> DataClassifier:
+    """The real classifier, forced below the threshold, optionally with a
+    given guess. Forced rather than coaxed so a test's outcome does not hang
+    on which content the rules happen to be unsure about."""
+    real = DataClassifier()
+
+    class _Uncertain(DataClassifier):
+        def classify(self, *args, **kwargs):
+            result = real.classify(*args, **kwargs)
+            result.classification_failed = True
+            result.confidence = 0.40
+            result.suggested_types = [
+                DataType.LOGS_AND_ERRORS,
+                DataType.UNSTRUCTURED_TEXT,
+            ]
+            if guess is not None:
+                result.data_type = guess
+            return result
+
+    return _Uncertain()
+
+
+def _lines(n: int) -> str:
+    """Content of exactly ``n`` lines by the count the service uses."""
+    return "\n".join(f"line {i} of mixed output" for i in range(n))
+
+
+def _classification_meta(result) -> dict:
+    return (result.extraction_metadata or {})["evidence_metadata"]["classification"]
+
+
+class TestShortUncertainUploadPassesThrough:
+    @pytest.mark.asyncio
+    async def test_the_real_classifier_s_uncertain_csv_reaches_the_model_raw(self):
+        """Unforced: the CSV structural gate is unsure about this export on
+        its own (0.55, metrics guess), and at 15 lines it passes through."""
+        result = await _service().classify_and_extract(
+            content=AMBIGUOUS_CSV, filename="ambiguous-service-data.csv", principal="u1"
+        )
+
+        assert result.extraction_method == "raw_passthrough"
+        assert result.structural_index == AMBIGUOUS_CSV
+        assert "Classification uncertain" not in result.structural_index
+        assert result.detailed_data_type == DataType.UNSTRUCTURED_TEXT
+        assert result.data_type == to_unified_data_type(DataType.UNSTRUCTURED_TEXT)
+
+    @pytest.mark.asyncio
+    async def test_the_verdict_stays_recorded_as_uncertain(self):
+        result = await _service().classify_and_extract(
+            content=AMBIGUOUS_CSV, filename="ambiguous-service-data.csv", principal="u1"
+        )
+
+        meta = _classification_meta(result)
+        assert meta["failed"] is True
+        assert meta["suggested_types"]
+
+    @pytest.mark.asyncio
+    async def test_the_guess_is_not_carried_onto_the_upload(self):
+        """A config guess would also switch bare-epoch parsing off; the type
+        the classifier could not stand behind is dropped, not passed on."""
+        result = await _service(
+            _uncertain_classifier(guess=DataType.STRUCTURED_CONFIG)
+        ).classify_and_extract(content=_lines(12), filename="notes.txt", principal="u1")
+
+        assert result.extraction_method == "raw_passthrough"
+        assert result.detailed_data_type == DataType.UNSTRUCTURED_TEXT
+        extractor = (result.extraction_metadata or {})["evidence_metadata"]["extractor"]
+        assert extractor["chosen_type"] == DataType.UNSTRUCTURED_TEXT.value
+
+    @pytest.mark.asyncio
+    async def test_a_short_paste_is_not_held_behind_a_placeholder(self):
+        content = _lines(30)
+        result = await _service(_uncertain_classifier()).classify_and_extract(
+            content=content, filename=MINTED_PASTE, principal="u1"
+        )
+
+        assert result.extraction_method == "raw_passthrough"
+        assert result.structural_index == content
+
+
+class TestTheCutoffIsTheExtractionCutoff:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("line_count", "method"),
+        [
+            (MIN_EXTRACTION_LINES - 1, "raw_passthrough"),
+            (MIN_EXTRACTION_LINES, "classification_failed"),
+        ],
+    )
+    async def test_the_card_starts_where_extraction_starts(self, line_count, method):
+        result = await _service(_uncertain_classifier()).classify_and_extract(
+            content=_lines(line_count), filename=MINTED_PASTE, principal="u1"
+        )
+
+        assert result.extraction_method == method
+
+    @pytest.mark.asyncio
+    async def test_a_long_uncertain_upload_keeps_its_guess_and_placeholder(self):
+        result = await _service(
+            _uncertain_classifier(guess=DataType.METRICS_AND_PERFORMANCE)
+        ).classify_and_extract(
+            content=_lines(MIN_EXTRACTION_LINES + 50),
+            filename="export.csv",
+            principal="u1",
+        )
+
+        assert result.extraction_method == "classification_failed"
+        assert "Classification uncertain" in result.structural_index
+        assert result.detailed_data_type == DataType.METRICS_AND_PERFORMANCE
+
+
+@pytest.mark.skipif(
+    not evidence_metrics.PROMETHEUS_AVAILABLE,
+    reason="prometheus_client not installed; the counter is a no-op",
+)
+class TestEveryUncertainVerdictIsCounted:
+    """Without the card, a short uncertain upload leaves no other trace."""
+
+    @staticmethod
+    def _count(outcome: str) -> float:
+        from prometheus_client import REGISTRY
+
+        value = REGISTRY.get_sample_value(
+            "faultmaven_preprocessing_uncertain_classification_total",
+            {"outcome": outcome},
+        )
+        # A child exists from import only under ENABLE_METRICS=true
+        # (``create_children``); otherwise from its first increment.
+        return 0.0 if value is None else value
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("line_count", "outcome", "other"),
+        [
+            (MIN_EXTRACTION_LINES - 1, "passthrough", "clarification"),
+            (MIN_EXTRACTION_LINES, "clarification", "passthrough"),
+        ],
+    )
+    async def test_each_outcome_counts_once(self, line_count, outcome, other):
+        before, before_other = self._count(outcome), self._count(other)
+
+        await _service(_uncertain_classifier()).classify_and_extract(
+            content=_lines(line_count), filename=MINTED_PASTE, principal="u1"
+        )
+
+        assert self._count(outcome) == before + 1
+        assert self._count(other) == before_other
+
+    @pytest.mark.asyncio
+    async def test_a_confident_upload_is_not_counted(self):
+        before = self._count("passthrough") + self._count("clarification")
+
+        await _service().classify_and_extract(
+            content=_lines(5),
+            filename="app.log",
+            principal="u1",
+            user_override=DataType.LOGS_AND_ERRORS,
+        )
+
+        assert self._count("passthrough") + self._count("clarification") == before

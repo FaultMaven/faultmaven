@@ -170,6 +170,24 @@ if PROMETHEUS_AVAILABLE:
         buckets=(0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0),
     )
 
+    # #2355: every classifier verdict below the clarification threshold, by
+    # what the pipeline did with it. outcome=clarification: an upload of
+    # MIN_EXTRACTION_LINES or more, put to the user as type choices;
+    # passthrough: a shorter upload, passed to the model raw as
+    # unstructured_text with no question. Without it a short uncertain
+    # upload leaves no trace, since it no longer raises a card.
+    PREPROCESSING_UNCERTAIN_CLASSIFICATION_TOTAL = Counter(
+        "faultmaven_preprocessing_uncertain_classification_total",
+        "Uploads whose data type the classifier could not decide, by "
+        "outcome: clarification (asked the user) or passthrough (short "
+        "upload passed raw as unstructured_text).",
+        ["outcome"],
+    )
+    create_children(
+        PREPROCESSING_UNCERTAIN_CLASSIFICATION_TOTAL,
+        {"outcome": ("clarification", "passthrough")},
+    )
+
     # Triage-to-escalation rate: counts when the agent received a
     # Triage-mode turn with a structural index AND immediately called
     # search_file or deep_analysis on the same evidence (within the
@@ -270,6 +288,7 @@ else:
     EVIDENCE_TURN_ASYNC_RETRY_LATENCY_SECONDS = _NoOpMetric()
     EVIDENCE_RECLASSIFICATION_TOTAL = _NoOpMetric()
     PREPROCESSING_EXTRACTION_YIELD_RATIO = _NoOpMetric()
+    PREPROCESSING_UNCERTAIN_CLASSIFICATION_TOTAL = _NoOpMetric()
     AGENT_TRIAGE_ESCALATION_TOTAL = _NoOpMetric()
     CASE_ENTITIES_OVERFLOW_TOTAL = _NoOpMetric()
     PAGE_CAPTURE_SHAPE_INVALID_TOTAL = _NoOpMetric()
@@ -288,6 +307,7 @@ __all__ = [
     "EVIDENCE_TURN_ASYNC_RETRY_LATENCY_SECONDS",
     "EVIDENCE_RECLASSIFICATION_TOTAL",
     "PREPROCESSING_EXTRACTION_YIELD_RATIO",
+    "PREPROCESSING_UNCERTAIN_CLASSIFICATION_TOTAL",
     "AGENT_TRIAGE_ESCALATION_TOTAL",
     "CASE_ENTITIES_OVERFLOW_TOTAL",
     "PAGE_CAPTURE_SHAPE_INVALID_TOTAL",

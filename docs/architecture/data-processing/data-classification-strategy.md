@@ -42,7 +42,7 @@ Submitted content can have overlapping characteristics (logs contain errors, met
 2. **Robustness** — graceful degradation on ambiguous cases.
 3. **Speed** — <100 ms, zero LLM calls in Tier 0.
 4. **Explainability** — every decision carries a `source` tag (user_override / agent_hint / source_url / browser_context / rule_based / rule_based_best_effort).
-5. **Cooperative-clarification fallback** — when confidence falls below 0.50 the classifier sets `classification_failed=True` and populates `suggested_types`. The agent still runs the turn best-effort on the raw file; after the turn, `InvestigationService` injects DECIDE suggestions — one set per failed attachment — that reclassify the file mechanically when clicked or typed.
+5. **Cooperative-clarification fallback, only where the type matters** — when confidence falls below 0.50 the classifier sets `classification_failed=True` and populates `suggested_types`. On an upload of `MIN_EXTRACTION_LINES` (200) lines or more, where the type picks the extractor, the turn offers the user type choices that reclassify the file mechanically when clicked or typed. A shorter upload is not put to the user: no extractor runs below that size whatever the type, so it passes to the model raw as `UNSTRUCTURED_TEXT` (#2355). See [§`classification_failed` Path](#classification_failed-path-cooperative-clarification).
 
 ### Architectural Position
 
@@ -328,7 +328,7 @@ A CSV/TSV file is classified as `METRICS_AND_PERFORMANCE` (at 0.55, `classificat
 2. **Data density**: ≥10 data rows in the sample (a real dataset, not a stub).
 3. **Numeric/metric evidence**: numeric-cell ratio ≥10% OR ≥1 metrics-vocabulary keyword matched.
 
-Otherwise the file falls back to `UNSTRUCTURED_TEXT` at 0.45, also with `classification_failed=True`. Both paths populate `suggested_types` and surface cooperative-clarification suggestions so the user can re-prompt with the correct type.
+Otherwise the file falls back to `UNSTRUCTURED_TEXT` at 0.45, also with `classification_failed=True`. Both paths populate `suggested_types`; what the pipeline then does depends on the file's length (see [§`classification_failed` Path](#classification_failed-path-cooperative-clarification)).
 
 ---
 
@@ -338,7 +338,7 @@ Named in `CONFIDENCE_THRESHOLDS` (classifier.py):
 
 ```python
 CONFIDENCE_THRESHOLDS = {
-    "classification_failed": 0.50,   # below → classification_failed=True → cooperative-clarification suggestions
+    "classification_failed": 0.50,   # below → classification_failed=True → clarification (200+ lines) or raw passthrough
     "auto_accept": 0.85,             # at/above → auto-accept in downstream UX
 }
 ```
@@ -363,7 +363,11 @@ The explicit zero is documented as a constant rather than left implicit because 
 
 ## `classification_failed` Path (Cooperative Clarification)
 
-When classification produces `confidence < 0.50`, or when the CSV/TSV structural gate yields low-confidence results, `classification_failed=True`. A third trigger — **short-text ambiguity** — also forces this path:
+When classification produces `confidence < 0.50`, or when the CSV/TSV structural gate yields low-confidence results, `classification_failed=True`.
+
+**Only an upload of `MIN_EXTRACTION_LINES` (200) lines or more is put to the user (#2355).** Below that size `PreprocessingService` runs no extractor whatever the type: the small-file passthrough hands the raw content to the model, and the type sets only labels (the `data_type` attribute, the "classified as …" wording of the implicit query on a paste sent without a message, the `deep_analysis` framing line) and whether bare epoch integers count as timestamps. Asking there held the upload out of the turn over a label that changes nothing the model reads: the prompt saw only a three-line preview, the upload was excluded from the forced directed analysis, and full analysis waited two more user turns (the choice, then "Analyze it now"). So a short uncertain upload takes the passthrough typed `UNSTRUCTURED_TEXT` — not the guess the classifier could not stand behind — with no card. The verdict stays uncertain in `evidence_metadata.classification` (`failed=True`, `suggested_types`), and `faultmaven_preprocessing_uncertain_classification_total{outcome}` counts both outcomes (`clarification`, `passthrough`). The line count is computed once, so the gate and the passthrough cannot disagree about which side of the boundary an upload falls on.
+
+A third trigger — **short-text ambiguity** — also sets the flag:
 
 | Constant | Value | Role |
 | --- | --- | --- |
@@ -371,17 +375,17 @@ When classification produces `confidence < 0.50`, or when the CSV/TSV structural
 | `_SHORT_TEXT_MAX_LINES` | 25 | Upper bound on line count for the guard to fire. |
 | `_AMBIGUITY_MIN_DISTINCT_CATEGORIES` | 3 | Min number of distinct rule-based categories whose patterns scored on the sample for the content to be flagged ambiguous. |
 
-When a `.txt`-extension paste lands inside both size bounds **and** triggers patterns in 3 or more distinct categories (e.g. a 20-line snippet that matches log, config, and code patterns simultaneously), `_assess_short_text_ambiguity()` forces `confidence = 0.40` and re-emits the result with `classification_failed=True` so the cooperative-clarification path runs. Without the guard, the rule-based scorer often returns one of the matched categories at 0.60+ on weak evidence and the user never sees the "this is ambiguous" affordance. ISS-023.
+When a `.txt`-extension paste lands inside both size bounds **and** triggers patterns in 3 or more distinct categories (e.g. a 20-line snippet that matches log, config, and code patterns simultaneously), `_assess_short_text_ambiguity()` forces `confidence = 0.40` and re-emits the result with `classification_failed=True`. Without the guard, the rule-based scorer often returns one of the matched categories at 0.60+ on weak evidence, a confident verdict the content does not support. Text inside these bounds is always under `MIN_EXTRACTION_LINES`, so since #2355 the guard never puts a card in front of the user: the upload passes to the model raw as `UNSTRUCTURED_TEXT`, recorded as uncertain. ISS-023.
 
 Inside the guard, the per-category pattern checks themselves have signal-strength bars: **log-line shape requires at least two line-start datetime matches** before LOGS_AND_ERRORS counts as a candidate (ISS-050). A single datetime inside prose — e.g. a maintenance-window header like "scheduled for 2026-05-14 14:00 UTC" — is too weak; counting it would mis-suggest LOGS for any short notice that mentions a date. URL, email, code-fence, JSON-shape, and key:value patterns each contribute a single category vote on first match.
 
-Every classification_failed path populates `ClassificationResult.suggested_types` with 2–3 candidate DataTypes from the scoring pass. The service short-circuits extraction and returns a placeholder `PreprocessingResult` with:
+Every classification_failed path populates `ClassificationResult.suggested_types` with 2–3 candidate DataTypes from the scoring pass. For an upload of 200 lines or more, the service short-circuits extraction and returns a placeholder `PreprocessingResult` with:
 
 - `extraction_method = "classification_failed"`
 - Content: a user-facing text like `[Classification uncertain for 'foo.csv' — requesting user input] Suggested types: metrics_and_performance, unstructured_text`
 - `extraction_metadata.suggested_types`: list of candidate DataType values (as strings)
 
-The agent still runs the turn using its file-reading tools (`search_file`, `deep_analysis`), producing a best-effort answer from the raw bytes. After the turn runs, `_build_classification_clarification` (`investigation_service/clarification.py`, called from `process_turn`'s `_absorb_engine_result` phase) injects **DECIDE suggestions** ahead of the engine's follow-ups in `TurnResponse.suggested_actions`.
+The turn still runs, but the prompt carries the placeholder and its preview (`_build_content_preview`), not the content. The upload does not force directed analysis (`_turn_delivers_evidence_bearing_attachment` excludes it, #708); the raw file stays stored and searchable, so the model may still open it with `search_file`. The reply says the upload has not been analyzed yet (`_clarification_note_for_failed`, #693). After the turn runs, `_build_classification_clarification` (`investigation_service/clarification.py`, called from `process_turn`'s `_absorb_engine_result` phase) injects **DECIDE suggestions** ahead of the engine's follow-ups in `TurnResponse.suggested_actions`.
 
 **One set of cards per failed attachment, not per turn.** The `files` cap is `maxItems: 1`, but `pasted_content` is a separate form field that legitimately rides alongside a file, and the paste arm reaches `classification_failed` on its own — so a turn carries up to **two** attachments and both can fail. Each failed attachment gets up to 3 type-specific cards plus a **"Something else"** fallback, so a paste+file turn where both fell below threshold emits up to **8** cards spanning two attachments (#1222). The emitter does not reason from any field's cap; it clarifies whatever failed.
 
@@ -410,7 +414,7 @@ Engine follow-ups (confirmation, status transition) are not clarifications and e
 
 When the user clicks a card, the next turn resolves the intent structurally. No re-classification at the classifier layer, no new LLM integration — deterministic post-turn injection using the existing DECIDE suggestion plumbing.
 
-A rejected alternative: an "LLM rescue" pass that would auto-classify ambiguous files via a cheap LLM call. Rejected because DECIDE suggestions are zero-cost, user-authoritative (ground truth), and have no telemetry prerequisite. See [data-preprocessing-design-specification.md](./data-preprocessing-design-specification.md) §2.5.
+A rejected alternative: an "LLM rescue" pass that would auto-classify ambiguous files via a cheap LLM call. Rejected because DECIDE suggestions are zero-cost, user-authoritative (ground truth), and have no telemetry prerequisite. #2355 re-examined a model tier (the `classifier` role, and a hosted decision model) for the short uploads that #2361 leaves uncertain, and declined it: below `MIN_EXTRACTION_LINES` a better guess changes nothing the model reads, so the passthrough above removes the cost a model tier would only have reduced.
 
 A parallel path exists for `UNANALYZABLE`:
 
@@ -432,6 +436,8 @@ Both placeholder paths produce real `PreprocessingResult` objects so the downstr
 - `classification_failed:<bool>`
 
 This lets us query classification distributions (e.g., "what fraction of turns hit `rule_based_best_effort` last week?") and detect pattern drift without touching logs. When Opik is not installed the decorator is not applied at all, and when tracing is disabled the wrapper re-checks the flag on every call and runs the undecorated function — so no Opik client is constructed either way.
+
+Independent of tracing, `PreprocessingService.classify_and_extract` counts every `classification_failed` verdict on the Prometheus counter `faultmaven_preprocessing_uncertain_classification_total{outcome}`: `clarification` for an upload of 200 lines or more put to the user, `passthrough` for a shorter one passed to the model raw (#2355). It is the only always-on record of how often the rules cannot decide, since a short uncertain upload no longer raises a card.
 
 ---
 

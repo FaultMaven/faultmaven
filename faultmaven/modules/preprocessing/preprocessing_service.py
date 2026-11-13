@@ -38,6 +38,7 @@ from faultmaven.infrastructure.index_slot import index_cores
 from faultmaven.infrastructure.observability.evidence_metrics import (
     CASE_ENTITIES_OVERFLOW_TOTAL,
     PREPROCESSING_EXTRACTION_YIELD_RATIO,
+    PREPROCESSING_UNCERTAIN_CLASSIFICATION_TOTAL,
 )
 from faultmaven.models.api import DataType, SourceMetadata
 from faultmaven.modules.case.contracts import minted_filename_phrase
@@ -422,9 +423,13 @@ class PreprocessingService:
           re-parsing with the UnstructuredTextExtractor.
         - **UNANALYZABLE**: user opted out (e.g., via VISUAL_EVIDENCE with
           vision disabled). Returns a reference-only placeholder.
-        - **classification_failed**: heuristics could not reach the
-          confidence threshold. Returns a placeholder carrying suggested
-          types; the frontend shows a modal and retries with user_override.
+        - **classification_failed** on an upload of ``MIN_EXTRACTION_LINES``
+          or more: heuristics could not reach the confidence threshold, and
+          the type would pick the extractor. Returns a placeholder carrying
+          suggested types; the turn offers them as clarification choices,
+          and a choice re-runs this under ``user_override``. A shorter
+          uncertain upload is not put to the user: it takes the small-file
+          passthrough typed UNSTRUCTURED_TEXT (#2355).
 
         Phase 1.5 — Reclassification path: the caller can pass
         ``user_override`` (typically from the ``PATCH /evidence/{id}/classification``
@@ -499,8 +504,40 @@ class PreprocessingService:
                 start_time=start_time,
             )
 
-        # Path 2: classification_failed (frontend will show modal, retry with user_override)
-        if classification.classification_failed:
+        # One count decides both the clarification gate below and the
+        # small-file passthrough (Path 4), so the two cannot disagree about
+        # which side of MIN_EXTRACTION_LINES an upload falls on.
+        line_count = content.count("\n") + 1
+
+        # Path 2: classification_failed. Ask the user only where the type
+        # decides what the model reads (#2355). Below MIN_EXTRACTION_LINES no
+        # extractor runs whatever the type: Path 4 hands the raw content to
+        # the model. A card there would hold the upload out of the turn (a
+        # three-line preview, no directed analysis) over a label that changes
+        # nothing the model reads, and analysis would wait two more user
+        # turns. So a short upload passes through, typed UNSTRUCTURED_TEXT
+        # rather than the guess the classifier could not stand behind, and
+        # ``evidence_metadata.classification`` keeps the verdict uncertain.
+        if classification.classification_failed and line_count < MIN_EXTRACTION_LINES:
+            PREPROCESSING_UNCERTAIN_CLASSIFICATION_TOTAL.labels(
+                outcome="passthrough"
+            ).inc()
+            logger.info(
+                "classify_and_extract: %s classification uncertain "
+                "(confidence=%.2f, guess=%s) with %d lines (< %d) — "
+                "raw passthrough as unstructured_text, no clarification",
+                filename,
+                classification.confidence,
+                detailed_data_type.value,
+                line_count,
+                MIN_EXTRACTION_LINES,
+            )
+            detailed_data_type = DataType.UNSTRUCTURED_TEXT
+            unified_data_type = to_unified_data_type(detailed_data_type)
+        elif classification.classification_failed:
+            PREPROCESSING_UNCERTAIN_CLASSIFICATION_TOTAL.labels(
+                outcome="clarification"
+            ).inc()
             logger.warning(
                 f"Classification failed for {filename} "
                 f"(confidence={classification.confidence:.2f}) — "
@@ -610,7 +647,6 @@ class PreprocessingService:
         # Path 4: small-file passthrough — raw content is a better file
         # extract than any compressed representation, and extraction adds
         # no value for files that fit in the LLM context window directly.
-        line_count = content.count("\n") + 1
         if line_count < MIN_EXTRACTION_LINES:
             logger.info(
                 "classify_and_extract: %s has %d lines (< %d threshold) — "

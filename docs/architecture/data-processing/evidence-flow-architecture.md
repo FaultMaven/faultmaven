@@ -48,8 +48,9 @@ This document describes the complete evidence flow architecture in FaultMaven. A
 │  │    (propagates source_type from source_metadata)                  │ │
 │  │ 2. Short-circuits:                                                 │ │
 │  │      - UNANALYZABLE → placeholder (extraction_method=none)        │ │
-│  │      - classification_failed → placeholder +                       │ │
-│  │        suggested_types for cooperative-clarification UX           │ │
+│  │      - classification_failed, 200+ lines → placeholder +           │ │
+│  │        suggested_types for cooperative-clarification UX            │ │
+│  │        (under 200 lines: retyped unstructured_text, no card)       │ │
 │  │      - source_type=page_capture → pass-through as structured MD   │ │
 │  │ 3. Tier 1: Type-specific mechanical extraction (structural index) │ │
 │  │    under 2s timeout; on timeout/error falls back to TEXT preview  │ │
@@ -353,68 +354,14 @@ User          API(/turns)    Investigation    Preprocessing    (loaded case)
 
 ---
 
-## Sequence Diagram: Classification Failed → Cooperative Clarification
+## Classification Failed → Cooperative Clarification
 
-Triggered when Tier 0 classification produces `confidence < 0.50` — the file cannot be routed to an extractor with enough certainty to auto-accept. The agent still attempts to answer the user's query using its file-reading tools. After the turn runs, `InvestigationService._build_classification_clarification` injects DECIDE suggestions (pre-composed click-to-send payloads) so the user can re-prompt the agent with the correct type using a single click. No frontend modal, no re-classification — just additional follow-up suggestions ahead of the engine's own follow-ups.
+> **Canonical source:** [Data Classification Strategy §`classification_failed` Path](./data-classification-strategy.md#classification_failed-path-cooperative-clarification). This section summarises it.
 
-```
-User          API(/turns)    Investigation    Preprocessing    Agent LLM
- │              │                │                │              │
- │─POST turn───>│                │                │              │
- │ {ambiguous.  │                │                │              │
- │  csv,        │                │                │              │
- │  query: "?"} │                │                │              │
- │              │─process_turn──>│                │              │
- │              │                │─classify_and──>│              │
- │              │                │  _extract      │              │
- │              │                │                │ conf=0.45    │
- │              │                │                │ failed=True  │
- │              │                │                │ suggested_   │
- │              │                │                │  types=      │
- │              │                │                │  [metrics,   │
- │              │                │                │   text]      │
- │              │                │<───────────────│              │
- │              │                │  PreprocessingResult          │
- │              │                │  extraction_method=           │
- │              │                │    "classification_failed"    │
- │              │                │  metadata.suggested_types=    │
- │              │                │    ["metrics_and_performance",│
- │              │                │     "unstructured_text"]      │
- │              │                │                               │
- │              │                │  (agent still runs — uses     │
- │              │                │   search_file/deep_analysis   │
- │              │                │   on raw bytes; produces      │
- │              │                │   best-effort answer)         │
- │              │                │─────────────────────────────> │
- │              │                │<──────────────────────────────│
- │              │                │                               │
- │              │                │ (post-turn injector builds    │
- │              │                │  DECIDE suggestions from      │
- │              │                │  suggested_types + "Something │
- │              │                │  else" fallback; prepends to  │
- │              │                │  suggested_actions)           │
- │              │<─TurnResponse──│                               │
- │              │  {                                              │
- │              │    suggested_actions: [                         │
- │              │      {type:"DECIDE",                            │
- │              │       label:"Metrics",                          │
- │              │       payload:"Treat file as metrics..."},      │
- │              │      {type:"DECIDE",                            │
- │              │       label:"Something else",                   │
- │              │       payload:"Treat as unstructured text..."}, │
- │              │      ...engine follow-ups                       │
- │              │    ]                                            │
- │              │  }                                              │
- │<─200 OK─────│                │                │               │
- │              │                                                 │
- │ (user clicks "Metrics" — frontend submits the suggestion's     │
- │  DECIDE payload as the next user turn)                         │
- │─POST turn───>│                                                 │
- │ {query:"Treat the previously uploaded file as metrics..."}    │
- │              │─process_turn──>│ (normal turn, agent uses the  │
- │              │                │  type hint while reading the  │
- │              │                │  raw file via search_file)    │
-```
+Triggered when Tier 0 classification produces `confidence < 0.50`. The outcome depends on the upload's length (#2355):
+
+- **Under `MIN_EXTRACTION_LINES` (200) lines:** nothing is asked. No extractor runs at that size whatever the type, so the upload is retyped `UNSTRUCTURED_TEXT` and takes `raw_passthrough`: the model reads the raw content in the same turn, and the upload forces directed analysis like any other evidence.
+- **200 lines or more:** `classify_and_extract` returns a placeholder (`extraction_method="classification_failed"`, `suggested_types` in metadata). The turn runs on the placeholder and a three-line preview; the upload does not force directed analysis, and the reply says it has not been analyzed yet. `_build_classification_clarification` then puts DECIDE choices ahead of the engine's follow-ups, each carrying a `file_reclassification` intent. A click (or a typed choice resolved by `IntentResolver`) is a mechanical turn with no LLM call that re-runs preprocessing under `user_override`; its reply offers "Analyze it now", which starts the analysis.
 
 ---
 
