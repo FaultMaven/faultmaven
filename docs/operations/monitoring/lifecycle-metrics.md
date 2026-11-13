@@ -2,7 +2,7 @@
 
 Counters defined in `faultmaven/core/investigation/lifecycle_metrics.py`. They measure **outcomes** — what the system actually achieved — not just rule fires. The distinction is load-bearing: a counter that only tracks "this rule fired" is a leading indicator at best. The class of regression these metrics exist to catch is *dynamic drift* (see [Investigation Lifecycle Logic §1.3.1](../../architecture/investigation-engine/investigation-lifecycle-logic.md#131-invariant-enforcement-matrix), "Dynamic drift" paragraph): behaviors that look locally correct (rule fires logged, code paths exercised) but where the system has silently stopped achieving its design goal.
 
-Metrics are exposed via Prometheus and gated on `ENABLE_METRICS=true` plus the `prometheus_client` library being installed (graceful no-op otherwise — see `faultmaven/infrastructure/shims/metrics.py`).
+Metrics are exposed via Prometheus and gated on `ENABLE_METRICS=true` plus the `prometheus_client` library being installed (graceful no-op otherwise — see `faultmaven/infrastructure/shims/metrics.py`). Exposure also needs `METRICS_EXPORTER=prometheus_http`.
 
 ## INV-01: Gate 1 ships its statement with its buttons
 

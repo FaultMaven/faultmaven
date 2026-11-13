@@ -5,9 +5,9 @@ Logging, observability, and metrics documentation.
 ## Prometheus metrics
 
 `/metrics` is mounted when `METRICS_EXPORTER=prometheus_http`. Collectors
-created through the metrics shim record only with `ENABLE_METRICS=true`; a few
-(tracing, OAuth, evidence) record whenever `prometheus_client` is installed,
-until #2748. Key first-party metric families:
+created through the metrics shim record only with `ENABLE_METRICS=true`; the collectors
+in three modules (`tracing.py`, `oauth_metrics.py`, `evidence_metrics.py`) record
+whenever `prometheus_client` is installed, until #2748. Key first-party metric families:
 
 - `http_requests_total` / `http_request_duration_seconds` — HTTP traffic
 - `llm_requests_total{provider,model,status}` (status: success/error/cached),
