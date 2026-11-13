@@ -155,6 +155,22 @@ level=debug
         assert "localhost" in result.file_extract
         assert "debug" in result.file_extract
 
+    def test_toml_sections_parsed_as_toml(self, extractor):
+        """Multi-section TOML parses structurally with the stdlib tomllib (#2773)."""
+        content = """
+[server]
+host = "0.0.0.0"
+port = 8080
+
+[database]
+url = "postgres://db"
+pool = { min = 1, max = 10 }
+"""
+        result = extractor.extract(content)
+        assert result.file_meta["format"] == "toml"
+        # server, host, port, database, url, pool, min, max
+        assert result.file_meta["total_keys"] == 8
+
     # --- False-positive prevention (tightened key patterns) ---
 
     def test_auth_type_not_redacted(self, extractor):

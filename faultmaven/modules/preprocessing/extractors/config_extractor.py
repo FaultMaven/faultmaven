@@ -182,9 +182,9 @@ class StructuredConfigExtractor:
         except (ImportError, Exception):
             pass
         try:
-            import tomli
+            import tomllib
 
-            tomli.loads(content)
+            tomllib.loads(content)
             return "toml"
         except (ImportError, Exception):
             pass
@@ -223,9 +223,9 @@ class StructuredConfigExtractor:
 
         # Try TOML (if available)
         try:
-            import tomli
+            import tomllib
 
-            return tomli.loads(content)
+            return tomllib.loads(content)
         except (ImportError, Exception):
             pass
 
