@@ -69,7 +69,7 @@ Tier 1: extractor.extract()                        zero LLM, <2 s
 Evidence created → Context Sliding Window → LLM Inference (Step 2)
 ```
 
-**Pasted text** is submitted via the `pasted_content` form field on `/turns`, wrapped into an attachment with a synthetic filename (`pasted-content-{ts}.txt` or `page-capture-{ts}.txt`), and goes through the same Tier 0+1 pipeline. Pasted content has no filename extension to use as a hint; the classifier falls back to content patterns.
+**Pasted text** is submitted via the `pasted_content` form field on `/turns`, wrapped into an attachment with a synthetic filename (`pasted-content-{ts}.txt` or `page-capture-{ts}.txt`), and goes through the same Tier 0+1 pipeline. A paste's minted extension is ignored, so it is typed by content alone (§"Pasted text", #2361). A page capture's minted name is still read like any file's, after its URL and browser context (Priorities 3 and 4).
 
 ---
 
@@ -231,14 +231,17 @@ A paste's filename is minted by the client (`pasted-content-<ts>.txt`), so for `
   |---|---|
   | `systemctl status`: a unit header, then its fields | `COMMAND_OUTPUT` |
   | A unified diff with a hunk | `SOURCE_CODE` |
-  | A JSON document | `STRUCTURED_CONFIG` |
-  | Timestamped log lines: ISO, syslog or logfmt, each with a level | `LOGS_AND_ERRORS` |
+  | A JSON document whose meaning is configuration: not a log event or array of events (time plus level or message keys), a metrics query result or a trace | `STRUCTURED_CONFIG` |
+  | JSON lines, each object stamped with a time | `LOGS_AND_ERRORS` |
+  | Timestamped log lines, each with a level: ISO or syslog stamp, or logfmt with a time and a level key in any order | `LOGS_AND_ERRORS` |
   | A column table: capitalised headers, rows as wide as their header (`kubectl get`, `ps`, `df`) | `COMMAND_OUTPUT` |
   | `curl -v`: `*`, `>` and `<` lines | `COMMAND_OUTPUT` |
   | A `KEY=value` block (not `Key=True <message>` status lines, not logfmt) | `STRUCTURED_CONFIG` |
-  | A YAML mapping a parser reads, without aligned `Key:   value` columns | `STRUCTURED_CONFIG` |
+  | A YAML mapping a parser reads whole: no aligned `Key:   value` columns, no repeated top-level key, and either nested or at least five lower-case keys (not a few `Name: value` header or message lines) | `STRUCTURED_CONFIG` |
 
-- **The regex config rule and the 0.72 `UNSTRUCTURED_TEXT` default do not apply to a paste.** A paste is config only where a config parser reads it. Prose matches no shape and stays uncertain; that costs nothing, because an uncertain paste passes to the model as `UNSTRUCTURED_TEXT` (§`classification_failed` Path).
+  Every rule reads at most the first 20,000 characters (`SAMPLE_CHARS`), parsers included: the classifier runs on the event loop, and a document larger than the sample does not parse and stays uncertain.
+
+- **The regex config rule and the 0.72 `UNSTRUCTURED_TEXT` default do not apply to a paste.** A paste is config only where a config parser reads it. A paste no rule claims, prose included, stays uncertain. Under 200 lines that costs nothing: the paste passes to the model as `UNSTRUCTURED_TEXT`. A paste of 200+ lines no rule claims is put to the user (§`classification_failed` Path), because there the type picks the extractor (owner, 2026-11-13).
 - **Everything else runs as for an extensionless upload.** That includes the command signatures, the log patterns at the "other" threshold, and the best-effort fallback.
 
 **The taxonomy the rules follow** (recorded on #2361, 2026-11-13). A shape gets the one type whose unified meaning is true of it and whose extractor parses it without dropping content.
@@ -413,7 +416,7 @@ A third trigger — **short-text ambiguity** — also sets the flag:
 | `_SHORT_TEXT_MAX_LINES` | 25 | Upper bound on line count for the guard to fire. |
 | `_AMBIGUITY_MIN_DISTINCT_CATEGORIES` | 3 | Min number of distinct rule-based categories whose patterns scored on the sample for the content to be flagged ambiguous. |
 
-When a `.txt`-extension paste lands inside both size bounds **and** triggers patterns in 3 or more distinct categories (e.g. a 20-line snippet that matches log, config, and code patterns simultaneously), `_assess_short_text_ambiguity()` forces `confidence = 0.40` and re-emits the result with `classification_failed=True`. Without the guard, the rule-based scorer often returns one of the matched categories at 0.60+ on weak evidence, a confident verdict the content does not support. Text inside these bounds is always under `MIN_EXTRACTION_LINES`, so since #2355 the guard never puts a card in front of the user: the upload passes to the model raw as `UNSTRUCTURED_TEXT`, recorded as uncertain. ISS-023.
+When a `.txt` file (not a paste, #2361) lands inside both size bounds **and** triggers patterns in 3 or more distinct categories (e.g. a 20-line snippet that matches log, config, and code patterns simultaneously), `_assess_short_text_ambiguity()` forces `confidence = 0.40` and re-emits the result with `classification_failed=True`. Without the guard, the rule-based scorer often returns one of the matched categories at 0.60+ on weak evidence, a confident verdict the content does not support. Text inside these bounds is always under `MIN_EXTRACTION_LINES`, so since #2355 the guard never puts a card in front of the user: the upload passes to the model raw as `UNSTRUCTURED_TEXT`, recorded as uncertain. ISS-023.
 
 Inside the guard, the per-category pattern checks themselves have signal-strength bars: **log-line shape requires at least two line-start datetime matches** before LOGS_AND_ERRORS counts as a candidate (ISS-050). A single datetime inside prose — e.g. a maintenance-window header like "scheduled for 2026-05-14 14:00 UTC" — is too weak; counting it would mis-suggest LOGS for any short notice that mentions a date. URL, email, code-fence, JSON-shape, and key:value patterns each contribute a single category vote on first match.
 

@@ -300,3 +300,137 @@ class TestAPasteIsTypedByContent:
 
         assert result.classification_failed is False
         assert result.data_type == DataType.STRUCTURED_CONFIG
+
+
+# ---------------------------------------------------------------------------
+# Review round: cost bounds, log shapes, JSON meaning, precedence
+# ---------------------------------------------------------------------------
+
+
+class TestEveryRuleIsBounded:
+    """The classifier runs on the event loop: no rule may cost more than its
+    sample allows, and no input may raise out of it."""
+
+    def test_deeply_nested_json_does_not_raise(self):
+        assert paste_shape("[" * 50_000 + "]" * 50_000) is None
+
+    def test_a_padded_log_line_does_not_backtrack(self):
+        import time
+
+        padded = ("2025-01-01 00:00:00" + " " * 19_000 + "x\n") * 2
+        started = time.monotonic()
+        paste_shape(padded)
+        # It took 13 s before the whitespace run was made possessive.
+        assert time.monotonic() - started < 2.0
+
+    def test_the_yaml_parser_reads_only_the_sample(self, monkeypatch):
+        import yaml
+
+        from faultmaven.modules.preprocessing import paste_shapes
+
+        seen = []
+        real_load = yaml.load
+
+        def recording_load(stream, Loader):
+            seen.append(len(stream))
+            return real_load(stream, Loader=Loader)
+
+        monkeypatch.setattr(yaml, "load", recording_load)
+        big = "root:\n" + "".join(f"  k{i}:\n    a: {i}\n" for i in range(100_000))
+
+        paste_shape(big)
+
+        assert seen and max(seen) <= paste_shapes.SAMPLE_CHARS
+
+
+LOGFMT_LEVEL_FIRST = (
+    'level=warn ts=2025-10-15T14:00:00.123Z caller=main.go:12 msg="scrape failed"\n'
+    'level=error ts=2025-10-15T14:00:01.123Z caller=main.go:40 msg="target down"\n'
+)
+LOGFMT_TS_FIRST = (
+    'ts=2025-10-15T14:00:00Z caller=x.go:1 level=error msg="a"\n'
+    'ts=2025-10-15T14:00:01Z caller=x.go:2 level=warn msg="b"\n'
+)
+JSON_LINES = (
+    '{"time":"2026-10-16T23:07:20Z","type":"request","path":"pki/issue/svc"}\n'
+    '{"time":"2026-10-16T23:07:21Z","type":"response","path":"pki/issue/svc"}\n'
+)
+# One JSON object per line with no time: records, not events.
+JSON_LINES_NO_TIME = '{"name":"a","replicas":2}\n{"name":"b","replicas":3}\n'
+
+
+@pytest.mark.parametrize(
+    "content",
+    [LOGFMT_LEVEL_FIRST, LOGFMT_TS_FIRST, JSON_LINES],
+    ids=["logfmt-level-first", "logfmt-ts-first", "json-lines"],
+)
+def test_log_shapes_engineers_paste_are_logs(content):
+    assert _type(content) == DataType.LOGS_AND_ERRORS
+
+
+def test_json_lines_without_a_time_are_not_logs():
+    assert _type(JSON_LINES_NO_TIME) != DataType.LOGS_AND_ERRORS
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        '{"timestamp":"2025-10-15T14:00:00Z","level":"error","message":"db timeout"}',
+        '[{"timestamp":"2025-10-15T14:00:00Z","level":"error","message":"db timeout"},'
+        '{"timestamp":"2025-10-15T14:00:01Z","level":"warn","message":"retry"}]',
+        '{"status":"success","data":{"resultType":"matrix","result":[]}}',
+        '{"resourceSpans":[{"scopeSpans":[]}]}',
+    ],
+    ids=["log-event", "array-of-events", "metrics-query-result", "otlp-trace"],
+)
+def test_json_whose_meaning_is_not_configuration_is_not_config(content):
+    """Owner, 2026-11-13: the taxonomy's first test, the type's meaning must
+    be true of the content."""
+    assert _type(content) != DataType.STRUCTURED_CONFIG
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "Content-Type: text/html\nDate: Mon, 15 Oct 2025 14:00:00 GMT\n"
+        "Server: nginx/1.25\nX-Request-Id: abc\n",
+        "error: failed to pull image\nreason: ImagePullBackOff\n"
+        "message: back-off pulling image nginx:latst\n",
+        "error: a failed\nerror: b failed\nwarning: c slow\nerror: d failed\n",
+        "- step one\n- step two\n  more detail\n@@ -1 +1 @@\n",
+    ],
+    ids=["http-headers", "error-summary", "repeated-error-lines", "bullets-and-a-hunk"],
+)
+def test_messages_shaped_like_a_document_claim_nothing(content):
+    assert paste_shape(content) is None
+
+
+class TestTheOlderChecksKeepTheirShapes:
+    def test_a_traceback_paste_stays_an_error_report(self):
+        traceback = (
+            "Traceback (most recent call last):\n"
+            '  File "app.py", line 3, in <module>\n'
+            "    main()\n"
+            "ValueError: bad\n"
+        )
+        result = DataClassifier().classify(MINTED, traceback, source_metadata=PASTE)
+
+        assert result.data_type == DataType.ERROR_REPORT
+
+    def test_a_trace_paste_stays_trace_data(self):
+        trace = (
+            '{"traceID":"4bf92f3577b34da6a3ce929d0e0e4736","spans":[{"spanID":'
+            '"00f067aa0ba902b7","operationName":"GET /v1/users","spans": [],'
+            '"process":{"serviceName":"api-gateway"}}]}'
+        )
+        result = DataClassifier().classify(MINTED, trace, source_metadata=PASTE)
+
+        assert result.data_type == DataType.TRACE_DATA
+
+    def test_a_long_paste_no_rule_claims_is_uncertain(self):
+        """Owner, 2026-11-13: at 200+ lines the type picks the extractor, so
+        an unclaimed paste is put to the user rather than guessed (#2355)."""
+        prose = "".join(f"Step {i}: we checked the pods again.\n" for i in range(250))
+        result = DataClassifier().classify(MINTED, prose, source_metadata=PASTE)
+
+        assert result.classification_failed is True

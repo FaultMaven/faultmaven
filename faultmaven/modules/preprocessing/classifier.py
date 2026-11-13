@@ -647,7 +647,7 @@ class DataClassifier:
             return trace_result
 
         # 2b. A paste's shape (#2361): the reports, tables, config documents,
-        #     log lines, expositions and diffs engineers paste, typed by the
+        #     log lines and diffs engineers paste, typed by the
         #     taxonomy recorded on #2361. Before the command and log checks,
         #     which read a ``systemctl status`` or a ``curl -v`` as logs.
         if is_paste:
@@ -946,8 +946,10 @@ class DataClassifier:
         # model raw as UNSTRUCTURED_TEXT and the user is not asked (#2355).
         # Not for a paste: the 0.72 default asserted a type no content signal
         # supports, and for a paste nothing else does either (#2361). A paste
-        # no rule claims ends uncertain and passes to the model as
-        # UNSTRUCTURED_TEXT anyway (#2355).
+        # no rule claims ends uncertain: under MIN_EXTRACTION_LINES it passes
+        # to the model as UNSTRUCTURED_TEXT (#2355); at or above it the user
+        # is asked, since there the type picks the extractor (owner,
+        # 2026-11-13).
         if not is_paste and (ext in text_exts or markdown_score >= 1):
             ambiguity = self._assess_short_text_ambiguity(content, sample)
             if ambiguity is not None:
