@@ -17,6 +17,7 @@ and the bare package, and ``asyncio`` only in the parent's functions.
 """
 
 import ctypes
+import itertools
 import json
 import logging
 import os
@@ -24,6 +25,7 @@ import resource
 import signal
 import sys
 import traceback
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO, Callable, Dict, Optional
@@ -82,13 +84,67 @@ class WorkerEnd:
     failure: Optional[str] = None
 
 
+class FairSlots:
+    """Slots under Principle 14's admission rule (#2645): a principal (the user)
+    holding none takes one while one is free, one holding some only while two
+    are free. Waiters are served fewest-held first, then earliest, as the rule
+    admits them. A waiter granted then cancelled releases its grant."""
+
+    def __init__(self, count: int) -> None:
+        self._free, self._held = count, Counter()
+        self._waiting: list = []  # [order, principal, future]
+        self._order = itertools.count()
+
+    def locked(self) -> bool:
+        """No slot free, or someone waits."""
+        return self._free == 0 or bool(self._waiting)
+
+    async def acquire(self, principal: str) -> None:
+        import asyncio
+
+        waiter = (
+            next(self._order),
+            principal,
+            asyncio.get_running_loop().create_future(),
+        )
+        self._waiting.append(waiter)
+        self._grant()
+        try:
+            await waiter[2]
+        except BaseException:
+            if waiter in self._waiting:
+                self._waiting.remove(waiter)
+            elif not waiter[2].cancelled():
+                self.release(principal)
+            raise
+
+    def release(self, principal: str) -> None:
+        self._held[principal] -= 1
+        self._held += Counter()  # drops a principal holding none
+        self._free += 1
+        self._grant()
+
+    def _grant(self) -> None:
+        while True:
+            live = [w for w in self._waiting if not w[2].done()]
+            for waiter in sorted(live, key=lambda w: (self._held[w[1]], w[0])):
+                if self._free >= (2 if self._held[waiter[1]] else 1):
+                    self._waiting.remove(waiter)
+                    self._free -= 1
+                    self._held[waiter[1]] += 1
+                    waiter[2].set_result(None)
+                    break
+            else:
+                return
+
+
 def loop_slots(held: Optional[tuple], count: int) -> tuple:
-    """``held`` if made on the running loop, else ``(loop, Semaphore(count))``."""
+    """``held`` if made on the running loop, else ``(loop, FairSlots(count))``."""
     import asyncio
 
     loop = asyncio.get_running_loop()
     if held is None or held[0] is not loop:
-        held = (loop, asyncio.Semaphore(count))
+        held = (loop, FairSlots(count))
     return held
 
 

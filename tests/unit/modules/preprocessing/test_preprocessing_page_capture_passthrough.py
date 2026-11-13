@@ -113,6 +113,7 @@ class TestPageCapturePassthrough:
             content=_page_capture_content(),
             filename="captured.html",
             source_metadata=_page_capture_metadata(),
+            principal="u1",
         )
 
         assert isinstance(result, PreprocessingResult)
@@ -138,6 +139,7 @@ class TestPageCapturePassthrough:
             content=content,
             filename="captured.html",
             source_metadata=_page_capture_metadata(),
+            principal="u1",
         )
 
         # structural_index falls back to extraction.content (no
@@ -153,6 +155,7 @@ class TestPageCapturePassthrough:
             content=_page_capture_content(),
             filename="captured.html",
             source_metadata=_page_capture_metadata(),
+            principal="u1",
         )
 
         meta = result.extraction_metadata or {}
@@ -169,6 +172,7 @@ class TestPageCapturePassthrough:
             content=_page_capture_content(),
             filename="captured.html",
             source_metadata=_page_capture_metadata(),
+            principal="u1",
         )
 
         assert spawned == [], "an extractor ran"
@@ -185,6 +189,7 @@ class TestPageCapturePassthrough:
             content=_page_capture_content(),
             filename="captured.html",
             source_metadata=_page_capture_metadata(),
+            principal="u1",
         )
 
         mock_classifier.classify.assert_called_once()
@@ -209,6 +214,7 @@ class TestPageCapturePassthrough:
                 source_type="page_capture",
                 source_url="https://grafana.example.com/d/abc",
             ),
+            principal="u1",
         )
 
         assert result.detailed_data_type == DataType.METRICS_AND_PERFORMANCE
@@ -233,6 +239,7 @@ class TestPageCapturePassthroughDoesNotFireForOtherSources:
             content=_page_capture_content(),
             filename="server.log",
             source_metadata=SourceMetadata(source_type="file_upload"),
+            principal="u1",
         )
 
         # Extractor was invoked and the result reflects its strategy_name.
@@ -255,6 +262,7 @@ class TestPageCapturePassthroughDoesNotFireForOtherSources:
             content=_page_capture_content(),
             filename="pasted.txt",
             source_metadata=SourceMetadata(source_type="text_paste"),
+            principal="u1",
         )
 
         assert marked(CrimeScene) in result.structural_index
@@ -272,8 +280,7 @@ class TestPageCapturePassthroughDoesNotFireForOtherSources:
         )
 
         result = await service.classify_and_extract(
-            content=_page_capture_content(),
-            filename="server.log",
+            content=_page_capture_content(), filename="server.log", principal="u1"
         )
 
         assert marked(CrimeScene) in result.structural_index

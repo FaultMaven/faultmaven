@@ -166,7 +166,7 @@ def _preprocessing():
 
     seen: list = []
 
-    async def _classify(content, filename=None, source_metadata=None):
+    async def _classify(content, filename=None, source_metadata=None, *, principal):
         seen.append((filename, content))
         result = make_preprocessing_result()
         result.content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()

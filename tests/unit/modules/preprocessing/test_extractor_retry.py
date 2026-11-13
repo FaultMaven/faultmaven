@@ -156,7 +156,9 @@ class TestFlagOffBehaviour:
             metrics_extractor=DegenerateMetrics(),
         )
         with _enable_retry(False):
-            result = await service.classify_and_extract(content=_LONG_CONTENT)
+            result = await service.classify_and_extract(
+                content=_LONG_CONTENT, principal="u1"
+            )
 
         attempts = result.extraction_metadata["evidence_metadata"]["extractor"][
             "attempts"
@@ -187,7 +189,9 @@ class TestFlagOnRetryPath:
             text_extractor=TextFindings(),
         )
         with _enable_retry(True):
-            result = await service.classify_and_extract(content=_LONG_CONTENT)
+            result = await service.classify_and_extract(
+                content=_LONG_CONTENT, principal="u1"
+            )
 
         attempts = result.extraction_metadata["evidence_metadata"]["extractor"][
             "attempts"
@@ -218,7 +222,9 @@ class TestFlagOnRetryPath:
             text_extractor=TextFindings(),
         )
         with _enable_retry(True):
-            result = await service.classify_and_extract(content=_LONG_CONTENT)
+            result = await service.classify_and_extract(
+                content=_LONG_CONTENT, principal="u1"
+            )
 
         attempts = result.extraction_metadata["evidence_metadata"]["extractor"][
             "attempts"
@@ -256,7 +262,9 @@ class TestFlagOnRetryPath:
             text_extractor=Empty(),
         )
         with _enable_retry(True):
-            result = await service.classify_and_extract(content=_LONG_CONTENT)
+            result = await service.classify_and_extract(
+                content=_LONG_CONTENT, principal="u1"
+            )
 
         attempts = result.extraction_metadata["evidence_metadata"]["extractor"][
             "attempts"
@@ -289,7 +297,9 @@ class TestFlagOnRetryPath:
             documentation_extractor=Empty(),
         )
         with _enable_retry(True):
-            result = await service.classify_and_extract(content=_LONG_CONTENT)
+            result = await service.classify_and_extract(
+                content=_LONG_CONTENT, principal="u1"
+            )
 
         extractor_meta = result.extraction_metadata["evidence_metadata"]["extractor"]
         assert extractor_meta["chosen_type"] == "direct_fallback"
@@ -317,7 +327,7 @@ class TestThinCaseNoRetry:
         )
         with _enable_retry(True):
             # content < 50 chars triggers the thin-case safeguard.
-            result = await service.classify_and_extract(content="short")
+            result = await service.classify_and_extract(content="short", principal="u1")
 
         attempts = result.extraction_metadata["evidence_metadata"]["extractor"][
             "attempts"

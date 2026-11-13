@@ -142,7 +142,7 @@ class TestPreprocessingServiceCoverage:
         service = PreprocessingService(
             classifier=classifier, logs_extractor=_make_extractor()
         )
-        result = await service.classify_and_extract(content=log_content)
+        result = await service.classify_and_extract(content=log_content, principal="u1")
 
         assert result.coverage_start_ts == datetime(
             2026, 4, 23, 14, 0, 0, tzinfo=timezone.utc
@@ -166,7 +166,9 @@ class TestPreprocessingServiceCoverage:
             logs_extractor=_make_extractor(),
             config_extractor=_make_extractor(),
         )
-        result = await service.classify_and_extract(content=config_content)
+        result = await service.classify_and_extract(
+            content=config_content, principal="u1"
+        )
         assert result.coverage_start_ts is None
         assert result.coverage_end_ts is None
 
@@ -188,7 +190,7 @@ class TestEvidenceMetadataCoverageBlock:
         service = PreprocessingService(
             classifier=classifier, logs_extractor=_make_extractor()
         )
-        result = await service.classify_and_extract(content=log_content)
+        result = await service.classify_and_extract(content=log_content, principal="u1")
 
         ev_meta = result.extraction_metadata["evidence_metadata"]
         assert "coverage" in ev_meta
@@ -208,7 +210,7 @@ class TestEvidenceMetadataCoverageBlock:
         service = PreprocessingService(
             classifier=classifier, logs_extractor=_make_extractor()
         )
-        result = await service.classify_and_extract(content=log_content)
+        result = await service.classify_and_extract(content=log_content, principal="u1")
 
         coverage = result.extraction_metadata["evidence_metadata"]["coverage"]
         assert coverage.get("source") == "iso8601_t"
@@ -224,7 +226,9 @@ class TestEvidenceMetadataCoverageBlock:
             logs_extractor=_make_extractor(),
             config_extractor=_make_extractor(),
         )
-        result = await service.classify_and_extract(content="server:\n  port: 8080\n")
+        result = await service.classify_and_extract(
+            content="server:\n  port: 8080\n", principal="u1"
+        )
 
         ev_meta = result.extraction_metadata["evidence_metadata"]
         assert "coverage" not in ev_meta

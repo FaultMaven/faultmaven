@@ -113,7 +113,9 @@ async def test_an_extraction_past_its_deadline_stops_at_it(
     )
     stubs.RELEASED.clear()
     try:
-        result = await _service()._extract_with_timeout(stub(), _CONTENT, "hostile.log")
+        result = await _service()._extract_with_timeout(
+            stub(), _CONTENT, "hostile.log", principal="u1"
+        )
         await asyncio.gather(*tasks)
 
         assert result.metadata == {"timeout_fallback": True}
@@ -203,7 +205,9 @@ async def test_the_worker_answers_as_the_extractor_does_in_process(monkeypatch, 
         monkeypatch.setattr(ps, bound, 60)
     extractor, content = create_extractors()[name], _SAMPLES[name]
 
-    result = await _service()._extract_with_timeout(extractor, content, "sample")
+    result = await _service()._extract_with_timeout(
+        extractor, content, "sample", principal="u1"
+    )
 
     in_process = type(extractor)().extract(content)
     assert result.metadata == {"extract_result_json": in_process.to_json()}
@@ -248,7 +252,7 @@ async def test_a_worker_past_its_memory_limit_is_the_error_preview(spawned):
     service = _service()
 
     result = await service._extract_with_timeout(
-        stubs.RunsOutOfMemory(), _CONTENT, "big.log"
+        stubs.RunsOutOfMemory(), _CONTENT, "big.log", principal="u1"
     )
 
     assert result.metadata == {
@@ -257,7 +261,9 @@ async def test_a_worker_past_its_memory_limit_is_the_error_preview(spawned):
     }
     assert result.content == _CONTENT
     # The next job runs, in a process of its own.
-    result = await service._extract_with_timeout(stubs.CrimeScene(), _CONTENT, "n.log")
+    result = await service._extract_with_timeout(
+        stubs.CrimeScene(), _CONTENT, "n.log", principal="u1"
+    )
     assert stubs.marked(stubs.CrimeScene) in result.metadata["extract_result_json"]
     assert spawned[1].pid != spawned[0].pid
 
@@ -269,7 +275,7 @@ async def test_a_worker_past_its_output_limit_is_reaped_and_the_error_preview(
     monkeypatch.setattr(ps, "tier1_limits", lambda mb: (*limits(mb)[:2], 64 * 1024))
 
     result = await _service()._extract_with_timeout(
-        stubs.AnswersTooMuch(), _CONTENT, "x.log"
+        stubs.AnswersTooMuch(), _CONTENT, "x.log", principal="u1"
     )
 
     assert result.metadata == {
@@ -290,13 +296,15 @@ async def test_a_slot_frees_after_more_kills_than_there_are_slots(monkeypatch, s
 
     for n in range(2):
         result = await service._extract_with_timeout(
-            stubs.NeverReturns(), _CONTENT, f"{n}.log"
+            stubs.NeverReturns(), _CONTENT, f"{n}.log", principal="u1"
         )
         assert result.metadata == {"timeout_fallback": True}
         assert spawned[n].returncode == -signal.SIGKILL
 
     monkeypatch.setattr(ps, "TIER1_TIMEOUT_SECONDS", 60)
-    result = await service._extract_with_timeout(stubs.CrimeScene(), _CONTENT, "ok.log")
+    result = await service._extract_with_timeout(
+        stubs.CrimeScene(), _CONTENT, "ok.log", principal="u1"
+    )
     assert stubs.marked(stubs.CrimeScene) in result.metadata["extract_result_json"]
     assert len(spawned) == 3
     assert not ps._tier1_slots().locked()
@@ -306,7 +314,7 @@ async def test_a_failure_in_the_worker_is_kept_as_the_error(spawned, caplog):
     """The extractor's own exception reaches the metadata and the log, as when
     it ran on a thread: ``str(e)[:200]``."""
     result = await _service()._extract_with_timeout(
-        stubs.AnswersAString(), _CONTENT, "x.log"
+        stubs.AnswersAString(), _CONTENT, "x.log", principal="u1"
     )
 
     error = "Extractor AnswersAString returned str, expected ExtractResult"
@@ -322,7 +330,7 @@ async def test_a_worker_that_never_reports_ready_is_killed_at_its_start_bound(
     monkeypatch.setattr(ps, "TIER1_START_SECONDS", 0.5)
 
     result = await _service()._extract_with_timeout(
-        stubs.CrimeScene(), _CONTENT, "x.log"
+        stubs.CrimeScene(), _CONTENT, "x.log", principal="u1"
     )
 
     assert result.metadata == {
@@ -345,11 +353,15 @@ async def test_no_slot_within_its_bound_is_the_busy_preview(
     loop, entered, service = asyncio.get_running_loop(), asyncio.Event(), _service()
     on_entered(lambda: loop.call_soon_threadsafe(entered.set))
     holder = asyncio.create_task(
-        service._extract_with_timeout(stubs.NeverReturns(), _CONTENT, "slow.log")
+        service._extract_with_timeout(
+            stubs.NeverReturns(), _CONTENT, "slow.log", principal="u1"
+        )
     )
     await asyncio.wait_for(entered.wait(), 60)
 
-    result = await service._extract_with_timeout(stubs.CrimeScene(), _CONTENT, "q.log")
+    result = await service._extract_with_timeout(
+        stubs.CrimeScene(), _CONTENT, "q.log", principal="u1"
+    )
 
     assert result.metadata == {"busy_fallback": True}
     assert result.content == _CONTENT
@@ -371,7 +383,9 @@ async def test_a_cancelled_extraction_kills_and_reaps_its_worker(
     on_entered(lambda: loop.call_soon_threadsafe(entered.set))
 
     extraction = asyncio.create_task(
-        _service()._extract_with_timeout(stubs.NeverReturns(), _CONTENT, "x.log")
+        _service()._extract_with_timeout(
+            stubs.NeverReturns(), _CONTENT, "x.log", principal="u1"
+        )
     )
     await asyncio.wait_for(entered.wait(), 60)
     extraction.cancel()
@@ -379,4 +393,70 @@ async def test_a_cancelled_extraction_kills_and_reaps_its_worker(
         await extraction
 
     assert spawned[0].returncode == -signal.SIGKILL
+    assert not ps._tier1_slots().locked()
+
+
+async def test_a_newcomer_gets_a_slot_beside_another_users_two_extractions(
+    monkeypatch, spawned, on_entered
+):
+    """#2645's shape on two slots: A's two slow extractions hold one slot and
+    queue the other, so B, arriving next, extracts instead of falling back to
+    the busy preview (on a plain semaphore A's two held both)."""
+    _slots(monkeypatch, 2)
+    monkeypatch.setattr(ps, "TIER1_START_SECONDS", 60)
+    monkeypatch.setattr(ps, "TIER1_TRANSFER_BASE_SECONDS", 60)
+    monkeypatch.setattr(ps, "TIER1_TIMEOUT_SECONDS", 60)
+    monkeypatch.setattr(ps, "TIER1_SLOT_WAIT_SECONDS", 30)
+    loop, entered, service = asyncio.get_running_loop(), asyncio.Event(), _service()
+    on_entered(lambda: loop.call_soon_threadsafe(entered.set))
+    a = [
+        asyncio.create_task(
+            service._extract_with_timeout(stubs.NeverReturns(), _CONTENT, n, "a")
+        )
+        for n in ("a1.log", "a2.log")
+    ]
+    await asyncio.wait_for(entered.wait(), 60)
+
+    result = await service._extract_with_timeout(
+        stubs.CrimeScene(), _CONTENT, "b.log", "b"
+    )
+
+    assert stubs.marked(stubs.CrimeScene) in result.metadata["extract_result_json"]
+    assert len(spawned) == 2, "A's second extraction started beside its first"
+    for task in a:
+        task.cancel()
+    await asyncio.gather(*a, return_exceptions=True)
+    assert not ps._tier1_slots().locked()
+
+
+async def test_a_newcomer_gets_a_slot_beside_another_users_two_extractions(
+    monkeypatch, spawned, on_entered
+):
+    """#2645's shape on two slots: A's two slow extractions hold one slot and
+    queue the other, so B, arriving next, extracts instead of falling back to
+    the busy preview (on a plain semaphore A's two held both)."""
+    _slots(monkeypatch, 2)
+    monkeypatch.setattr(ps, "TIER1_START_SECONDS", 60)
+    monkeypatch.setattr(ps, "TIER1_TRANSFER_BASE_SECONDS", 60)
+    monkeypatch.setattr(ps, "TIER1_TIMEOUT_SECONDS", 60)
+    monkeypatch.setattr(ps, "TIER1_SLOT_WAIT_SECONDS", 30)
+    loop, entered, service = asyncio.get_running_loop(), asyncio.Event(), _service()
+    on_entered(lambda: loop.call_soon_threadsafe(entered.set))
+    a = [
+        asyncio.create_task(
+            service._extract_with_timeout(stubs.NeverReturns(), _CONTENT, n, "a")
+        )
+        for n in ("a1.log", "a2.log")
+    ]
+    await asyncio.wait_for(entered.wait(), 60)
+
+    result = await service._extract_with_timeout(
+        stubs.CrimeScene(), _CONTENT, "b.log", "b"
+    )
+
+    assert stubs.marked(stubs.CrimeScene) in result.metadata["extract_result_json"]
+    assert len(spawned) == 2, "A's second extraction started beside its first"
+    for task in a:
+        task.cancel()
+    await asyncio.gather(*a, return_exceptions=True)
     assert not ps._tier1_slots().locked()

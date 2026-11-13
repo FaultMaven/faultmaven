@@ -760,8 +760,11 @@ class TestInvestigationServiceProcessTurn:
         assert len(response.attachments_processed) == 1
         assert response.attachments_processed[0].filename == "app.log"
         assert response.attachments_processed[0].processing_status == "completed"
-        # Verify preprocessing was called
+        # Verify preprocessing was called, with the turn's user as the
+        # principal its Tier 1 slot is admitted for (#2645)
         mock_preprocessing.classify_and_extract.assert_called_once()
+        call = mock_preprocessing.classify_and_extract.call_args
+        assert call.kwargs["principal"] == sample_user_id
 
     @pytest.mark.asyncio
     async def test_attachment_metadata_includes_required_fields(

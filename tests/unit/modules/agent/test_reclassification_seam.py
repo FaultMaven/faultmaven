@@ -215,6 +215,7 @@ async def _turn_seam(rig):
         case=rig.case,
         file_id=FILE_A,
         data_type_value=DataType.LOGS_AND_ERRORS.value,
+        user_id="u1",
     )
     return result["case_updated"]
 
@@ -1003,6 +1004,7 @@ class TestTheQuestionIsRetiredAtTheSeam:
             case=rig.case,
             file_id=FILE_A,
             data_type_value=DataType.LOGS_AND_ERRORS.value,
+            user_id="u1",
         )
         # Positive control: there was a question to retire.
         assert any(is_clarification_entry(e) for e in (rig.case.last_suggestions or []))
