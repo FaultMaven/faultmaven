@@ -78,10 +78,8 @@ _LOG_LINE = re.compile(
 _LOGFMT_TIME = {"time", "ts", "timestamp", "t"}
 _LOGFMT_LEVEL = {"level", "lvl", "severity"}
 _CURL_LINE = re.compile(r"^[*<>] |^[{}] \[\d+ bytes data\]")
-_DIFF_LINE = re.compile(
-    r"^(?:diff --git |index [0-9a-f]+\.\.|--- |\+\+\+ |@@ -\d|[+\- ])"
-)
-_DIFF_HEAD = re.compile(r"^diff --git |^--- \S.*\n\+\+\+ \S", re.M)
+# A diff line; `[+\- ]` covers the `--- ` and `+++ ` file headers too.
+_DIFF_LINE = re.compile(r"^(?:diff --git |index [0-9a-f]+\.\.|@@ -\d|[+\- ])")
 _HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@", re.M)
 _ALIGNED_FIELD = re.compile(r"^\s*[A-Z][\w ./()-]*:\s{2,}\S")
 _YAML_LINE = re.compile(r"^\s*(?:- )?[\w.\-/\"']+:(?: \S.*)?$|^\s*- \S")
@@ -156,10 +154,28 @@ def _systemd_status(sample: str, lines: List[str]) -> bool:
     )
 
 
+def _diff_head(sample: str) -> bool:
+    # `diff --git`, or a `--- <path>` line followed by a `+++ <path>` line.
+    # Plain string tests: a diff's file header is not a frontmatter delimiter,
+    # and that grammar's one definition is in faultmaven.utils.frontmatter.
+    rows = sample.split("\n")
+    for row, after in zip(rows, rows[1:] + [""]):
+        if row.startswith("diff --git "):
+            return True
+        if (
+            row.startswith("--- ")
+            and row[4:5].strip()
+            and after.startswith("+++ ")
+            and after[4:5].strip()
+        ):
+            return True
+    return False
+
+
 def _diff(sample: str, lines: List[str]) -> bool:
     # A unified diff: file headers, a hunk, and mostly diff lines.
     return (
-        bool(_DIFF_HEAD.search(sample))
+        _diff_head(sample)
         and bool(_HUNK.search(sample))
         and _share(lines, _DIFF_LINE.search) >= 0.5
     )

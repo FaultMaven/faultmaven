@@ -15,6 +15,7 @@ import pytest
 from faultmaven.models.api import DataType, SourceMetadata
 from faultmaven.modules.preprocessing.classifier import DataClassifier
 from faultmaven.modules.preprocessing.paste_shapes import paste_shape
+from tests.wallclock import assert_linear_growth
 
 pytestmark = pytest.mark.unit
 
@@ -314,14 +315,19 @@ class TestEveryRuleIsBounded:
     def test_deeply_nested_json_does_not_raise(self):
         assert paste_shape("[" * 50_000 + "]" * 50_000) is None
 
+    @pytest.mark.performance
     def test_a_padded_log_line_does_not_backtrack(self):
-        import time
+        # The log-line pattern itself, not paste_shape: paste_shape reads a
+        # bounded sample, so its cost cannot grow. Before the whitespace run
+        # was made possessive, a 19,000-space line took 13 s.
+        from faultmaven.modules.preprocessing.paste_shapes import _LOG_LINE
 
-        padded = ("2025-01-01 00:00:00" + " " * 19_000 + "x\n") * 2
-        started = time.monotonic()
-        paste_shape(padded)
-        # It took 13 s before the whitespace run was made possessive.
-        assert time.monotonic() - started < 2.0
+        assert_linear_growth(
+            _LOG_LINE.search,
+            lambda spaces: "2025-01-01 00:00:00" + " " * spaces + "x",
+            small=1024,
+            label="_LOG_LINE on a timestamp padded with spaces",
+        )
 
     def test_the_yaml_parser_reads_only_the_sample(self, monkeypatch):
         import yaml
