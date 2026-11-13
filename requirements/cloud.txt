@@ -765,6 +765,8 @@ tokenizers==0.23.1
     #   litellm
     #   sentence-transformers
     #   transformers
+tomli==2.5.0
+    # via faultmaven (pyproject.toml)
 torch==2.13.0
     # via
     #   faultmaven (pyproject.toml)

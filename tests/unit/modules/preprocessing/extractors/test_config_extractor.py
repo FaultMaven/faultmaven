@@ -156,7 +156,7 @@ level=debug
         assert "debug" in result.file_extract
 
     def test_toml_sections_parsed_as_toml(self, extractor):
-        """Multi-section TOML parses structurally with the stdlib tomllib (#2773)."""
+        """Multi-section TOML parses structurally (#2773)."""
         content = """
 [server]
 host = "0.0.0.0"
@@ -170,6 +170,24 @@ pool = { min = 1, max = 10 }
         assert result.file_meta["format"] == "toml"
         # server, host, port, database, url, pool, min, max
         assert result.file_meta["total_keys"] == 8
+
+    def test_toml_1_1_inline_table_parsed_and_redacted(self, extractor):
+        """TOML 1.1 (a multi-line inline table with a trailing comma) parses as
+        TOML and its secret is redacted (#2773). Python 3.11's tomllib reads
+        TOML 1.0 only; there the line fallback leaves the key in clear."""
+        secret = "sk-abcdefghijklmnopqrstuvwx1234567890"
+        content = f"""
+[provider]
+name = "openai"
+client = {{
+    kind = "api",
+    value = "{secret}",
+}}
+"""
+        result = extractor.extract(content)
+        assert result.file_meta["format"] == "toml"
+        assert secret not in result.file_extract
+        assert "[REDACTED]" in result.file_extract
 
     # --- False-positive prevention (tightened key patterns) ---
 

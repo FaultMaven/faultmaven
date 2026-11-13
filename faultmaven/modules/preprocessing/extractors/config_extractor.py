@@ -12,6 +12,8 @@ import json
 import re
 from typing import Any
 
+import tomli
+
 from faultmaven.modules.preprocessing.extractors.protocol import ExtractResult
 from faultmaven.modules.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
@@ -182,11 +184,9 @@ class StructuredConfigExtractor:
         except (ImportError, Exception):
             pass
         try:
-            import tomllib
-
-            tomllib.loads(content)
+            tomli.loads(content)
             return "toml"
-        except (ImportError, Exception):
+        except tomli.TOMLDecodeError:
             pass
         return "ini/env"
 
@@ -221,12 +221,10 @@ class StructuredConfigExtractor:
         except (ImportError, yaml.YAMLError, AttributeError):
             pass
 
-        # Try TOML (if available)
+        # Try TOML: tomli, not the stdlib tomllib, which reads only TOML 1.0 on 3.11
         try:
-            import tomllib
-
-            return tomllib.loads(content)
-        except (ImportError, Exception):
+            return tomli.loads(content)
+        except tomli.TOMLDecodeError:
             pass
 
         return None

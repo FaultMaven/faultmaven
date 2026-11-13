@@ -8,9 +8,15 @@
 
 set -euo pipefail
 
-# pyproject.toml's requires-python floor: uv reads a bare "3.11" as 3.11.0.
-PYTHON_VERSION="3.11.5"
 cd "$(dirname "$0")/.."
+
+# Lock for pyproject.toml's requires-python floor, read from it so there is one
+# copy: uv reads a bare "3.11" as 3.11.0, below the floor (#2773).
+PYTHON_VERSION="$(sed -n 's/^requires-python = ">=\([0-9][0-9.]*\)"$/\1/p' pyproject.toml)"
+if [ -z "$PYTHON_VERSION" ]; then
+    echo "ERROR: no requires-python = \">=X.Y.Z\" line in pyproject.toml to lock for"
+    exit 1
+fi
 
 if ! command -v uv &> /dev/null; then
     echo "ERROR: uv is required. Install with: pip install uv"
