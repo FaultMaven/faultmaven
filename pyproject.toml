@@ -97,8 +97,9 @@ dependencies = [
     "structlog>=24.1.0",
     "python-json-logger>=2.0.7",
     # Direct import (logging/config.py reads the current trace span);
-    # >=1.45.1: unbounded tracestate header parse GHSA fix (GHSA-xcq7-p3pf-p88h)
-    "opentelemetry-api>=1.45.1",
+    # >=1.45.1: unbounded tracestate header parse GHSA fix (GHSA-xcq7-p3pf-p88h);
+    # >=1.45.2: quadratic traceparent parse (CVE-2026-126360 / GHSA-mf5v-w3w3-f6cg)
+    "opentelemetry-api>=1.45.2",
 
     # Knowledge base and embeddings (ChromaDB + sentence transformers)
     # >=1.5.2: the first release with Client.close(), which the container's
