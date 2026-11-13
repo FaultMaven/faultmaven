@@ -79,9 +79,11 @@ def _clarification_subject(target: "_PreprocessedAttachment") -> str:
     transport, not anything the user recognizes — call it what they did.
     Real files keep their filename.
 
-    The capture arm is not hypothetical: classification_failed is decided
-    BEFORE the page_capture passthrough in ``classify_and_extract``, so a
-    capture the classifier is unsure about lands here, and without this it
+    The capture arm: a shape-valid capture never lands here, because no
+    extractor reads it and ``classify_and_extract`` passes an uncertain one
+    through (#2355). A capture whose shape fails validation is extracted
+    like any upload, so at ``MIN_EXTRACTION_LINES`` or more an uncertain
+    one is carded and lands here. Before this naming rule it
     read ``the file you shared ("page-capture-20260709T105531.txt")`` —
     #666 on the Copilot's own channel, with no LLM in the loop (#1198
     review).

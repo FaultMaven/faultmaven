@@ -51,7 +51,7 @@ ExtractionMethod = Literal[
     "page_capture_passthrough",  # page captures bypass extraction
     "structure_extraction",  # timeout/error fallback to TEXT preview
     "none",  # UNANALYZABLE short-circuit
-    "classification_failed",  # low-confidence short-circuit for user modal
+    "classification_failed",  # uncertain type where an extractor would run: placeholder + type choices
     "raw_passthrough",  # small-file short-circuit (< MIN_EXTRACTION_LINES)
 ]
 

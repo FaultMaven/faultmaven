@@ -631,7 +631,7 @@ class ClassificationMetadata(BaseModel):
     Read by context_builder to surface a confidence marker in the <evidence> tag."""
     confidence: float               # 0.0 – 1.0
     source: str                     # "user_override" | "agent_hint" | "source_url" | "browser_context" | "rule_based" | "rule_based_best_effort"
-    failed: bool                    # classification_failed short-circuit path hit
+    failed: bool                    # classifier could not decide the type (carded, or passed through as unstructured_text; #2355)
     suggested_types: list[str]      # non-empty only when failed=True
 
 class ExtractorAttempt(BaseModel):

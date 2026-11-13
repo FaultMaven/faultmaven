@@ -38,6 +38,7 @@ from faultmaven.infrastructure.index_slot import index_cores
 from faultmaven.infrastructure.observability.evidence_metrics import (
     CASE_ENTITIES_OVERFLOW_TOTAL,
     PREPROCESSING_EXTRACTION_YIELD_RATIO,
+    PREPROCESSING_UNCERTAIN_CLASSIFICATION_TOTAL,
 )
 from faultmaven.models.api import DataType, SourceMetadata
 from faultmaven.modules.case.contracts import minted_filename_phrase
@@ -296,6 +297,15 @@ _NO_BARE_EPOCH_TYPES = frozenset(
 )
 
 
+def _line_count(content: str) -> int:
+    """Lines as an editor counts them: a final newline ends the last line
+    rather than starting another. Decides the small-file passthrough, and
+    with it whether an uncertain upload is put to the user (#2355)."""
+    if not content:
+        return 0
+    return content.count("\n") + (0 if content.endswith("\n") else 1)
+
+
 class PreprocessingService:
     """Tier 0+1 pipeline orchestrator for data preprocessing."""
 
@@ -422,9 +432,14 @@ class PreprocessingService:
           re-parsing with the UnstructuredTextExtractor.
         - **UNANALYZABLE**: user opted out (e.g., via VISUAL_EVIDENCE with
           vision disabled). Returns a reference-only placeholder.
-        - **classification_failed**: heuristics could not reach the
-          confidence threshold. Returns a placeholder carrying suggested
-          types; the frontend shows a modal and retries with user_override.
+        - **classification_failed** where an extractor will run: the
+          classifier could not decide the type, and the type would pick the
+          extractor. Returns a placeholder carrying
+          suggested types; the turn offers them as clarification choices,
+          and a choice re-runs this under ``user_override``. An uncertain
+          upload no extractor would read (under ``MIN_EXTRACTION_LINES``, or
+          a shape-valid page capture) is not put to the user: it takes its
+          passthrough typed UNSTRUCTURED_TEXT (#2355).
 
         Phase 1.5 — Reclassification path: the caller can pass
         ``user_override`` (typically from the ``PATCH /evidence/{id}/classification``
@@ -499,8 +514,126 @@ class PreprocessingService:
                 start_time=start_time,
             )
 
-        # Path 2: classification_failed (frontend will show modal, retry with user_override)
+        # An uncertain verdict (classification_failed) is put to the user only
+        # where an extractor reads the upload, because only there does the
+        # type change what the model sees (#2355). The paths below decide
+        # that themselves: each passthrough (Path 3, Path 4) takes an
+        # uncertain upload as it is, retyped by ``_settle_uncertain``, and
+        # the clarification placeholder (Path 2) sits directly before the
+        # extractor dispatch, the one place the type is used. A card would
+        # otherwise hold the upload out of the turn (a three-line preview,
+        # no directed analysis) with analysis two more user turns away.
+        triggered_by = "user_override" if user_override is not None else "initial"
+
+        # Path 3: page capture — already structured, pass through with char cap.
+        # Validate the structural shape before bypassing the extractor so a
+        # mislabeled or maliciously-shaped paste cannot use the page_capture
+        # source_type to skip Tier-1 extraction. Real Copilot captures from
+        # htmlToStructuredText emit a `[captured_at: …]` preamble or `## `
+        # headings (typically both); a capture with neither falls through
+        # with a logged warning.
+        if classification.source_type == "page_capture":
+            has_captured_at = "[captured_at:" in content[:512]
+            # A `## ` heading at the start of the content or after a newline.
+            has_h2_heading = content.startswith("## ") or "\n## " in content
+
+            if has_captured_at or has_h2_heading:
+                logger.info(
+                    "classify_and_extract: page_capture detected, "
+                    "skipping extractor (content already structured)"
+                )
+                detailed_data_type, unified_data_type, epoch_policy_type = (
+                    self._settle_uncertain(
+                        classification, filename, content, detailed_data_type
+                    )
+                )
+                extraction = ExtractionResult(
+                    method="page_capture_passthrough",
+                    content=self._fallback_direct_extraction(content),
+                    metadata={
+                        "passthrough": True,
+                        "source_type": "page_capture",
+                        "shape_signals": {
+                            "captured_at_preamble": has_captured_at,
+                            "h2_heading": has_h2_heading,
+                        },
+                    },
+                )
+                return self._build_result(
+                    content=content,
+                    extraction=extraction,
+                    detailed_data_type=detailed_data_type,
+                    unified_data_type=unified_data_type,
+                    classification=classification,
+                    start_time=start_time,
+                    triggered_by=triggered_by,
+                    epoch_policy_type=epoch_policy_type,
+                )
+
+            # Shape invalid — log and fall through to standard dispatch.
+            # Counter for ops visibility: spikes here indicate either a
+            # producer-side change in htmlToStructuredText or a misuse of
+            # `input_type=page_capture` from a non-Copilot client.
+            logger.warning(
+                "classify_and_extract: page_capture shape invalid, "
+                "falling through to standard extractor dispatch",
+                extra={
+                    "attachment_filename": filename,
+                    "content_prefix": content[:120],
+                    "captured_at_preamble": has_captured_at,
+                    "h2_heading": has_h2_heading,
+                },
+            )
+            try:
+                from faultmaven.infrastructure.observability.evidence_metrics import (
+                    PAGE_CAPTURE_SHAPE_INVALID_TOTAL,
+                )
+
+                PAGE_CAPTURE_SHAPE_INVALID_TOTAL.inc()
+            except ImportError:
+                # Counter is optional; don't fail extraction on metrics absence.
+                pass
+
+        # Path 4: small-file passthrough — raw content is a better file
+        # extract than any compressed representation, and extraction adds
+        # no value for files that fit in the LLM context window directly.
+        line_count = _line_count(content)
+        if line_count < MIN_EXTRACTION_LINES:
+            logger.info(
+                "classify_and_extract: %s has %d lines (< %d threshold) — "
+                "raw passthrough, skipping extraction",
+                filename,
+                line_count,
+                MIN_EXTRACTION_LINES,
+            )
+            detailed_data_type, unified_data_type, epoch_policy_type = (
+                self._settle_uncertain(
+                    classification, filename, content, detailed_data_type
+                )
+            )
+            extraction = ExtractionResult(
+                method="raw_passthrough",
+                content=content,
+                metadata={"passthrough": True, "source_type": "small_file"},
+            )
+            return self._build_result(
+                content=content,
+                extraction=extraction,
+                detailed_data_type=detailed_data_type,
+                unified_data_type=unified_data_type,
+                classification=classification,
+                start_time=start_time,
+                triggered_by=triggered_by,
+                epoch_policy_type=epoch_policy_type,
+            )
+
+        # Path 2: classification_failed where an extractor would read the
+        # upload, so the type picks it: put the type to the user. A choice
+        # re-runs this method under ``user_override``.
         if classification.classification_failed:
+            PREPROCESSING_UNCERTAIN_CLASSIFICATION_TOTAL.labels(
+                outcome="clarification"
+            ).inc()
             logger.warning(
                 f"Classification failed for {filename} "
                 f"(confidence={classification.confidence:.2f}) — "
@@ -541,101 +674,6 @@ class PreprocessingService:
                 start_time=start_time,
             )
 
-        # Path 3: page capture — already structured, pass through with char cap.
-        # Validate the structural shape before bypassing the extractor so a
-        # mislabeled or maliciously-shaped paste cannot use the page_capture
-        # source_type to skip Tier-1 extraction. Real Copilot captures from
-        # htmlToStructuredText emit either a `[captured_at: …]` preamble or
-        # `## ` markdown headings (typically both); inputs lacking BOTH
-        # signals fall through to standard dispatch with a logged warning.
-        if classification.source_type == "page_capture":
-            has_captured_at = "[captured_at:" in content[:512]
-            # Match a `## ` heading either at the start of content or after a newline
-            has_h2_heading = content.startswith("## ") or "\n## " in content
-            shape_valid = has_captured_at or has_h2_heading
-
-            if shape_valid:
-                logger.info(
-                    "classify_and_extract: page_capture detected, "
-                    "skipping extractor (content already structured)"
-                )
-                extraction = ExtractionResult(
-                    method="page_capture_passthrough",
-                    content=self._fallback_direct_extraction(content),
-                    metadata={
-                        "passthrough": True,
-                        "source_type": "page_capture",
-                        "shape_signals": {
-                            "captured_at_preamble": has_captured_at,
-                            "h2_heading": has_h2_heading,
-                        },
-                    },
-                )
-                return self._build_result(
-                    content=content,
-                    extraction=extraction,
-                    detailed_data_type=detailed_data_type,
-                    unified_data_type=unified_data_type,
-                    classification=classification,
-                    start_time=start_time,
-                    triggered_by=(
-                        "user_override" if user_override is not None else "initial"
-                    ),
-                )
-
-            # Shape invalid — log and fall through to standard dispatch.
-            # Counter for ops visibility: spikes here indicate either a
-            # producer-side change in htmlToStructuredText or a misuse of
-            # `input_type=page_capture` from a non-Copilot client.
-            logger.warning(
-                "classify_and_extract: page_capture shape invalid, "
-                "falling through to standard extractor dispatch",
-                extra={
-                    "attachment_filename": filename,
-                    "content_prefix": content[:120],
-                    "captured_at_preamble": has_captured_at,
-                    "h2_heading": has_h2_heading,
-                },
-            )
-            try:
-                from faultmaven.infrastructure.observability.evidence_metrics import (
-                    PAGE_CAPTURE_SHAPE_INVALID_TOTAL,
-                )
-
-                PAGE_CAPTURE_SHAPE_INVALID_TOTAL.inc()
-            except ImportError:
-                # Counter is optional; don't fail extraction on metrics absence.
-                pass
-
-        # Path 4: small-file passthrough — raw content is a better file
-        # extract than any compressed representation, and extraction adds
-        # no value for files that fit in the LLM context window directly.
-        line_count = content.count("\n") + 1
-        if line_count < MIN_EXTRACTION_LINES:
-            logger.info(
-                "classify_and_extract: %s has %d lines (< %d threshold) — "
-                "raw passthrough, skipping extraction",
-                filename,
-                line_count,
-                MIN_EXTRACTION_LINES,
-            )
-            extraction = ExtractionResult(
-                method="raw_passthrough",
-                content=content,
-                metadata={"passthrough": True, "source_type": "small_file"},
-            )
-            return self._build_result(
-                content=content,
-                extraction=extraction,
-                detailed_data_type=detailed_data_type,
-                unified_data_type=unified_data_type,
-                classification=classification,
-                start_time=start_time,
-                triggered_by=(
-                    "user_override" if user_override is not None else "initial"
-                ),
-            )
-
         # Standard path: dispatch to type-specific extractor. When the
         # Phase 2 feature flag is on, the dispatch runs sanity checks
         # and retries alternatives on failure; otherwise it's a single-
@@ -646,10 +684,46 @@ class PreprocessingService:
             principal=principal,
             classification=classification,
             initial_data_type=detailed_data_type,
-            initial_triggered_by=(
-                "user_override" if user_override is not None else "initial"
-            ),
+            initial_triggered_by=triggered_by,
             start_time=start_time,
+        )
+
+    @staticmethod
+    def _settle_uncertain(
+        classification, filename: str, content: str, detailed_data_type
+    ):
+        """The type a passthrough records, and the type whose bare-epoch
+        timestamp policy applies to it.
+
+        A confident verdict keeps its type for both. An uncertain one (#2355)
+        is not put to the user, because no extractor reads a passthrough: it
+        is typed UNSTRUCTURED_TEXT rather than the guess the classifier
+        could not stand behind, while the epoch policy stays the guess's, as
+        it was under the clarification placeholder (an unconfirmed config
+        must not start reading ``maxBytes: 2147483647`` as 2038). The verdict
+        stays recorded as uncertain on the result's
+        ``evidence_metadata.classification``, which intake does not persist
+        (#1710); the counter is the lasting record."""
+        if not classification.classification_failed:
+            return (
+                detailed_data_type,
+                to_unified_data_type(detailed_data_type),
+                detailed_data_type,
+            )
+        PREPROCESSING_UNCERTAIN_CLASSIFICATION_TOTAL.labels(outcome="passthrough").inc()
+        logger.info(
+            "classify_and_extract: %s classification uncertain "
+            "(confidence=%.2f, guess=%s, %d lines) and no extractor runs — "
+            "passthrough as unstructured_text, no clarification",
+            filename,
+            classification.confidence,
+            detailed_data_type.value,
+            _line_count(content),
+        )
+        return (
+            DataType.UNSTRUCTURED_TEXT,
+            to_unified_data_type(DataType.UNSTRUCTURED_TEXT),
+            detailed_data_type,
         )
 
     async def _dispatch_with_optional_retry(
@@ -942,6 +1016,7 @@ class PreprocessingService:
         classification,
         start_time: float,
         triggered_by: str = "initial",
+        epoch_policy_type: Optional[DataType] = None,
     ) -> PreprocessingResult:
         """Assemble a PreprocessingResult from an ExtractionResult.
 
@@ -986,10 +1061,14 @@ class PreprocessingService:
         coverage_start_ts = None
         coverage_end_ts = None
         coverage_source: str | None = None
+        # ``epoch_policy_type`` is passed only by a passthrough of an
+        # uncertain verdict (``_settle_uncertain``, #2355); everywhere else
+        # the recorded type decides.
+        epoch_policy_type = epoch_policy_type or detailed_data_type
         try:
             coverage_start_ts, coverage_end_ts, coverage_source = extract_time_range_ts(
                 content,
-                allow_bare_epoch=detailed_data_type not in _NO_BARE_EPOCH_TYPES,
+                allow_bare_epoch=epoch_policy_type not in _NO_BARE_EPOCH_TYPES,
             )
         except Exception:
             # extract_time_range_ts already swallows per-line parse

@@ -6,6 +6,10 @@
 
 ## Change Summary
 
+### v5.7 → v5.8 (Clarification only where the type picks the extractor, #2355)
+
+An upload whose type the classifier cannot decide is put to the user only where an extractor would read it. An upload under `MIN_EXTRACTION_LINES` (200) lines, or a shape-valid page capture, takes its passthrough typed `UNSTRUCTURED_TEXT`, with no card; the rest keep the cooperative clarification (§2.4, §2.5). The small-file passthrough's line count no longer counts a final newline as a line. New counter `faultmaven_preprocessing_uncertain_classification_total{outcome}`. §2.5 now defers to the owning document instead of restating it.
+
 ### v5.6 → v5.7 (LogsAndErrorsExtractor — Multi-Format and Multi-Service Generalisation)
 
 Extends `LogsAndErrorsExtractor` to handle log formats and service topologies that were
@@ -561,7 +565,7 @@ investigation_service.process_turn(payload: TurnPayload)
 **Single entry point**: `PreprocessingService.classify_and_extract(content, filename, source_metadata, user_override)`. The service short-circuits extraction for **four** special paths (in evaluation order):
 
 - `data_type == UNANALYZABLE` → placeholder with `extraction_method="none"`.
-- `classification_failed=True` (confidence < 0.50) → placeholder with `extraction_method="classification_failed"` plus `suggested_types` in `extraction_metadata` for the cooperative-clarification UX (see §2.5 below).
+- `classification_failed=True` where an extractor would run → placeholder with `extraction_method="classification_failed"` plus `suggested_types` in `extraction_metadata` for the cooperative-clarification UX (see §2.5 below). An uncertain upload no extractor would read (a shape-valid page capture, or under `MIN_EXTRACTION_LINES`) is retyped `UNSTRUCTURED_TEXT` and continues to the paths below, ending in `page_capture_passthrough` or `raw_passthrough` (#2355).
 - `source_type == "page_capture"` → `page_capture_passthrough` (copilot already produced structured markdown).
 - `line_count < MIN_EXTRACTION_LINES` (200) → `raw_passthrough` (the raw content is itself a better orientation than any compressed structural index for files this small; extractors are skipped and the raw bytes are stored as `file_extract`).
 
@@ -580,14 +584,12 @@ The `extraction_metadata["evidence_metadata"]` slot carries a structured `Eviden
 
 ### 2.5 Cooperative Clarification on Low-Confidence Classification
 
-When the heuristic classifier returns `classification_failed=True`, every failure path populates `ClassificationResult.suggested_types` with up to 3 candidate types from its scoring pass. `PreprocessingService` forwards these via `extraction_metadata["suggested_types"]`.
+> **Canonical source:** [Data Classification Strategy §`classification_failed` Path](./data-classification-strategy.md#classification_failed-path-cooperative-clarification). This section summarises it.
 
-The agent still attempts the investigation in the same turn — classification uncertainty is not a hard block. After the turn runs, `InvestigationService` injects **DECIDE clarification suggestions** ahead of the engine's follow-ups in `TurnResponse.suggested_actions`:
+When the heuristic classifier returns `classification_failed=True`, it populates `ClassificationResult.suggested_types` with up to 3 candidate types, which `PreprocessingService` forwards via `extraction_metadata["suggested_types"]`. What happens next depends on the upload's length:
 
-- Up to 3 pre-composed click-to-send messages like *"Treat the previously uploaded file (`foo.txt`) as application logs and analyze it."* — one per suggested type.
-- Plus a **"Something else"** fallback that submits *"Treat the previously uploaded file as unstructured text and try to analyze it."*
-
-The user clicks a card; the next turn runs normally with the pre-composed message. The agent reads the raw file via its existing tools (`search_file`, `deep_analysis`) using the user-provided type hint. There is no re-classification at the classifier layer, no evidence mutation, no new LLM integration — just the existing DECIDE suggestion plumbing driving a deterministic post-turn injector in `InvestigationService`.
+- **An extractor would run** (200 lines or more, and not a shape-valid page capture; the type picks the extractor): the placeholder short-circuit of §2.4. The turn runs on the placeholder and its preview, and `InvestigationService` then injects DECIDE choices (one per suggested type plus "Something else"). A choice is resolved mechanically, with no LLM call: `_handle_file_reclassification` re-runs preprocessing under `user_override`, and an "Analyze it now" follow-up starts the analysis.
+- **No extractor would run** (under 200 lines, or a shape-valid page capture): no question. The upload passes to the model as `UNSTRUCTURED_TEXT` via its passthrough. The verdict is recorded as uncertain on the result's `evidence_metadata.classification`, which intake does not persist (#1710); `faultmaven_preprocessing_uncertain_classification_total` counts it (#2355).
 
 ### 2.6 Reclassification and Sanity-Retry
 
@@ -633,9 +635,9 @@ Best-effort throughout: extraction errors degrade to `None`; the field is Option
 
 Four behaviours that the §2.4 entry-point flow doesn't surface but are load-bearing in production. All have inline `ISS-…` rationale anchors in the source.
 
-**Page-capture shape validation (security gate).** Before dispatching `source_type=page_capture` content to its passthrough branch, `PreprocessingService` validates structural markers (`has_captured_at`, `has_h2_heading`) on the incoming markdown. A capture that fails the shape check is hard-rejected — it indicates either a misbehaving copilot build or a content-injection attempt. The `PAGE_CAPTURE_SHAPE_INVALID_TOTAL` Prometheus counter increments on each rejection so operators can alert on a sudden spike. Implementation: `preprocessing_service.py:444–499`.
+**Page-capture shape validation (security gate).** Before dispatching `source_type=page_capture` content to its passthrough branch, `PreprocessingService` validates structural markers (a `[captured_at:` preamble, a `## ` heading) on the incoming markdown. A capture that fails the shape check does not get the passthrough: it is logged and falls through to the paths any upload takes (the small-file passthrough under 200 lines; at 200 lines or more, its type's extractor, or the clarification placeholder of §2.5 when its type is uncertain), since it indicates either a misbehaving copilot build or a content-injection attempt. The `PAGE_CAPTURE_SHAPE_INVALID_TOTAL` Prometheus counter increments on each fall-through so operators can alert on a sudden spike. Implementation: `PreprocessingService.classify_and_extract`, Path 3.
 
-**Placeholder content preview.** When `classification_failed=True` short-circuits to a placeholder result, `_build_content_preview()` attaches a truncated preview of the original content to the placeholder so the agent has something concrete to reason about on the same turn (instead of just the literal "classification uncertain" string). ISS-030. Implementation: `preprocessing_service.py:152–212`.
+**Placeholder content preview.** When `classification_failed=True` short-circuits to a placeholder result (where an extractor would run, §2.4), `_build_content_preview()` attaches a truncated preview of the original content to the placeholder so the agent has something concrete to reason about on the same turn (instead of just the literal "classification uncertain" string). ISS-030. Implementation: `preprocessing_service.py:152–212`.
 
 **Extraction yield observability.** After Phase 2c (sanity-retry), `PREPROCESSING_EXTRACTION_YIELD_RATIO` Prometheus histogram records the ratio of bytes the extractor emitted vs bytes it received, tagged with `data_type` and `retry_triggered`. The signal lets us flag pathologies where, say, the logs extractor emits 200 bytes from a 5 MB file because all entity caps tripped — operators can correlate yield collapses with classifier-drift or extractor regressions. Implementation: `preprocessing_service.py:858–861`.
 
@@ -1442,7 +1444,7 @@ These items are out of scope for the initial v4.0 implementation but are documen
 | **Vectorization cost tracking** | Track per-case vectorization costs for billing | Enterprise feature |
 | **Deep analysis file size cap** | `DEEP_ANALYSIS_MAX_FILE_SIZE_MB` config to reject oversized files before sending to Tier 3 backend | When large file uploads are common |
 | ~~**Content-hash deduplication**~~ | **Done.** Per-case dedup via `ICaseRepository.find_by_content_hash()` short-circuits duplicate uploads. Turn response carries `duplicate_of` + `duplicate_turn`. See §2.4. | Done |
-| ~~**Classifier cooperative clarification**~~ | **Done.** On `classification_failed=True`, `_build_classification_clarification` in `InvestigationService` injects DECIDE choices built from the classifier's `suggested_types` + a "Something else" fallback. No LLM call. See §2.5. | Done |
+| ~~**Classifier cooperative clarification**~~ | **Done.** On `classification_failed=True` where an extractor would run (#2355), `_build_classification_clarification` in `InvestigationService` injects DECIDE choices built from the classifier's `suggested_types` + a "Something else" fallback. No LLM call. See §2.5. | Done |
 | **Evidence failure modes** | Orphan-file cleanup (M1) and monitoring scaffolding (M2) **done**. Scenario 2 (async LLM timeout recovery at turn processing) **deferred** — current error-path UX already provides specific error codes + `Retry-After` headers; revisit only if production telemetry shows user harm. See [evidence-failure-modes.md](./evidence-failure-modes.md). | Partial done / revisit on telemetry signal |
 | **DIFF_PATCH extractor** | Parse unified diffs / git patches — files changed, lines added/removed | When deployment-change investigations are common |
 | **THREAD_DUMP extractor** | JVM thread dump parsing — deadlock detection, lock contention | When Java-heavy user base emerges |
@@ -1552,7 +1554,7 @@ Runtime markers (set by `PreprocessingService`, not by any extractor):
 | `raw_passthrough` | `line_count < MIN_EXTRACTION_LINES` (200) — small file, raw content stored directly as `file_extract` (no compression value); extractor is skipped |
 | `structure_extraction` | Tier 1 timed out (its worker killed at the deadline), found no slot, or ended without a result — falls back to a truncated preview with `timeout_fallback=True`, `busy_fallback=True` or `error_fallback=True` in metadata |
 | `none` | `detailed_data_type == UNANALYZABLE` — placeholder returned, no extractor runs |
-| `classification_failed` | `confidence < 0.50` — placeholder returned with `suggested_types` in metadata; frontend shows modal |
+| `classification_failed` | The classifier could not decide the type and an extractor would run — placeholder returned with `suggested_types` in metadata; the turn offers type choices (§2.5). An uncertain upload no extractor would read ends in `page_capture_passthrough` or `raw_passthrough` instead |
 
 ### Output budget (uniform across extractors)
 

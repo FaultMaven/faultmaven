@@ -170,6 +170,28 @@ if PROMETHEUS_AVAILABLE:
         buckets=(0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0),
     )
 
+    # #2355: one per classification that ends uncertain
+    # (``classification_failed``), by what the pipeline did with it.
+    # outcome=clarification: an extractor would run, so the upload is put to
+    # the user as type choices; passthrough: none would (under
+    # MIN_EXTRACTION_LINES, or a shape-valid page capture), so it passes to
+    # the model as unstructured_text with no question. Counted at
+    # preprocessing, before per-case dedup: a re-sent duplicate counts again,
+    # and so does an upload whose turn later fails. It is the lasting record
+    # of how often the rules cannot decide; intake persists no verdict.
+    PREPROCESSING_UNCERTAIN_CLASSIFICATION_TOTAL = Counter(
+        "faultmaven_preprocessing_uncertain_classification_total",
+        "Classifications that ended uncertain, by outcome: clarification "
+        "(type choices offered; an extractor would run) or passthrough "
+        "(passed to the model as unstructured_text; no extractor runs). "
+        "Counted before per-case dedup.",
+        ["outcome"],
+    )
+    create_children(
+        PREPROCESSING_UNCERTAIN_CLASSIFICATION_TOTAL,
+        {"outcome": ("clarification", "passthrough")},
+    )
+
     # Triage-to-escalation rate: counts when the agent received a
     # Triage-mode turn with a structural index AND immediately called
     # search_file or deep_analysis on the same evidence (within the
@@ -270,6 +292,7 @@ else:
     EVIDENCE_TURN_ASYNC_RETRY_LATENCY_SECONDS = _NoOpMetric()
     EVIDENCE_RECLASSIFICATION_TOTAL = _NoOpMetric()
     PREPROCESSING_EXTRACTION_YIELD_RATIO = _NoOpMetric()
+    PREPROCESSING_UNCERTAIN_CLASSIFICATION_TOTAL = _NoOpMetric()
     AGENT_TRIAGE_ESCALATION_TOTAL = _NoOpMetric()
     CASE_ENTITIES_OVERFLOW_TOTAL = _NoOpMetric()
     PAGE_CAPTURE_SHAPE_INVALID_TOTAL = _NoOpMetric()
@@ -288,6 +311,7 @@ __all__ = [
     "EVIDENCE_TURN_ASYNC_RETRY_LATENCY_SECONDS",
     "EVIDENCE_RECLASSIFICATION_TOTAL",
     "PREPROCESSING_EXTRACTION_YIELD_RATIO",
+    "PREPROCESSING_UNCERTAIN_CLASSIFICATION_TOTAL",
     "AGENT_TRIAGE_ESCALATION_TOTAL",
     "CASE_ENTITIES_OVERFLOW_TOTAL",
     "PAGE_CAPTURE_SHAPE_INVALID_TOTAL",

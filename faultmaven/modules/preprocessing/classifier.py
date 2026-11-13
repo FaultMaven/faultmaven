@@ -94,11 +94,14 @@ def _opik_track_classifier(func: Callable) -> Callable:
 # =============================================================================
 # Confidence thresholds (load-bearing — drive the classification_failed flag
 # and downstream acceptance decisions). Adjusting these shifts the frontier
-# between auto-accept and user-modal.
+# between auto-accept and asking the user.
 # =============================================================================
 
 CONFIDENCE_THRESHOLDS = {
-    # Below this → classification_failed=True → frontend modal for user override.
+    # Below this → classification_failed=True. Where an extractor would run
+    # the upload is put to the user as type choices; where none would (under
+    # MIN_EXTRACTION_LINES, or a shape-valid page capture) it passes to the
+    # model as UNSTRUCTURED_TEXT (preprocessing_service, #2355).
     "classification_failed": 0.50,
     # At or above this → auto-accept without qualification in downstream UX.
     "auto_accept": 0.85,
@@ -356,9 +359,9 @@ class DataClassifier:
         # Empty-content short-circuit: 0-byte uploads (or whitespace-only
         # content) carry no analyzable signal. Routing them through the
         # rule-based fallback would land on a low-confidence
-        # UNSTRUCTURED_TEXT classification with classification_failed=True,
-        # which surfaces a "we couldn't classify your file" modal — wrong
-        # message for a confirmed-empty file. Instead, return UNANALYZABLE
+        # UNSTRUCTURED_TEXT classification with classification_failed=True —
+        # an "uncertain" verdict for a file that is confirmed empty. Instead,
+        # return UNANALYZABLE
         # so the preprocessing service emits a clear "file is empty" placeholder
         # and the rest of the investigation pipeline proceeds gracefully.
         if not content or not content.strip():
@@ -916,8 +919,10 @@ class DataClassifier:
         # carrying a datetime + URL + email + version tag) genuinely don't
         # have a single dominant type. Rather than asserting UNSTRUCTURED_TEXT
         # at confidence=0.72, detect the ambiguity and lower confidence below
-        # the classification_failed threshold so the cooperative-clarification
-        # UX surfaces candidate types and asks the user what the file is.
+        # the classification_failed threshold, so the verdict is recorded as
+        # uncertain instead of asserting one category on weak evidence. Text
+        # this short is always under MIN_EXTRACTION_LINES, so it passes to the
+        # model raw as UNSTRUCTURED_TEXT and the user is not asked (#2355).
         if ext in text_exts or markdown_score >= 1:
             ambiguity = self._assess_short_text_ambiguity(content, sample)
             if ambiguity is not None:
@@ -1068,9 +1073,10 @@ class DataClassifier:
         are. For a short maintenance notice that mixes a datetime, a URL,
         an email, and a version tag, none of those signals dominates and
         the file resembles UNSTRUCTURED_TEXT and DOCUMENTATION roughly
-        equally. Asserting one type at 0.72 prevents the
-        classification_failed gate from firing — the agent never sees
-        ambiguity and silently proceeds with whichever type was assigned.
+        equally. Asserting one type at 0.72 records a confident verdict the
+        content does not support. Flagged uncertain instead, a file this short
+        passes to the model raw as UNSTRUCTURED_TEXT (it is always under
+        ``MIN_EXTRACTION_LINES``, so the user is not asked; #2355).
 
         Returns:
             dict with `confidence` (sub-threshold) and `suggested_types`
