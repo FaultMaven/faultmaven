@@ -18,7 +18,6 @@ The same TTL-from-setting case runs against a real Redis in
 
 import asyncio
 from datetime import datetime, timedelta, timezone
-from types import SimpleNamespace
 
 import fakeredis
 import fakeredis.aioredis as fakeredis_aio
@@ -33,7 +32,6 @@ from faultmaven.modules.auth.domain.services.auth_session_service import (
     AuthSessionService,
 )
 from faultmaven.utils.datetime import parse_utc_timestamp
-from tests.utils import minimal_session_service
 
 pytestmark = [pytest.mark.unit, pytest.mark.session]
 
@@ -56,11 +54,7 @@ def _settings(monkeypatch, timeout_minutes=TIMEOUT_MINUTES, **env):
 def _composed(redis, settings):
     """The store and the service, built as composition builds them."""
     store = create_session_store(redis, settings)
-    service = create_session_service(
-        store,
-        settings,
-        lambda: pytest.fail("the real session service failed to build"),
-    )
+    service = create_session_service(store, settings)
     assert isinstance(service, AuthSessionService)
     return store, service
 
@@ -203,29 +197,9 @@ async def test_the_limit_counts_every_live_session_however_long_idle(
     ]
 
 
-async def test_the_degraded_stand_in_lives_on_the_same_clock():
-    """``MinimalSessionService`` has no Redis: each write re-arms ``expires_at``."""
-    service = minimal_session_service(
-        SimpleNamespace(
-            session=SimpleNamespace(
-                timeout_minutes=TIMEOUT_MINUTES, max_sessions_per_user=10
-            )
-        )
-    )
-    before = datetime.now(timezone.utc)
-    session, _ = await service.create_session("user-a")
-    timeout = timedelta(minutes=TIMEOUT_MINUTES)
-    assert before + timeout <= session.expires_at <= before + timeout * 1.01
-
-    session.expires_at = datetime.now(timezone.utc) + timedelta(seconds=3)
-    assert await service.update_last_activity(session.session_id) is True
-
-    assert session.expires_at >= datetime.now(timezone.utc) + timeout * 0.99
-
-
 async def test_an_expired_client_session_is_replaced_not_revived(monkeypatch, redis):
-    """Both services mint a new session for a (user, client) whose session
-    lapsed; the stand-in used to revive the expired one and re-arm it."""
+    """A (user, client) whose session lapsed gets a new session, not the old
+    one revived and re-armed."""
     store, real = _composed(redis, _settings(monkeypatch))
     lapsed, _ = await real.create_session("user-a", client_id="laptop")
     await redis.pexpire(f"{store.prefix}{lapsed.session_id}", 1)
@@ -233,25 +207,6 @@ async def test_an_expired_client_session_is_replaced_not_revived(monkeypatch, re
 
     fresh, resumed = await real.create_session("user-a", client_id="laptop")
     assert (resumed, fresh.session_id != lapsed.session_id) == (False, True)
-
-    stand_in = minimal_session_service(
-        SimpleNamespace(
-            session=SimpleNamespace(
-                timeout_minutes=TIMEOUT_MINUTES, max_sessions_per_user=10
-            )
-        )
-    )
-    old, _ = await stand_in.create_session("user-a", client_id="laptop")
-    old.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
-
-    new, resumed = await stand_in.create_session("user-a", client_id="laptop")
-
-    assert resumed is False
-    assert new.session_id != old.session_id
-    assert await stand_in.get_session(old.session_id, validate=False) is None
-    # The positive control: a live one is still resumed.
-    again, resumed = await stand_in.create_session("user-a", client_id="laptop")
-    assert (again.session_id, resumed) == (new.session_id, True)
 
 
 async def test_the_mint_reports_the_server_timeout_and_the_session_expiry(

@@ -231,6 +231,10 @@ class SessionCleanupException(SessionStoreException):
     pass
 
 
+class SessionWriteConflict(SessionException):
+    """Concurrent writes beat every attempt at a session write; retryable."""
+
+
 class KnowledgeBaseException(FaultMavenException):
     """Raised when knowledge base operations fail."""
 

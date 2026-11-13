@@ -48,10 +48,6 @@ def _boom(*_args, **_kwargs):
     raise BOOM
 
 
-def _no_stand_in():
-    pytest.fail("a configured service was replaced by its in-memory stand-in")
-
-
 @pytest.fixture
 def settings():
     return FaultMavenSettings(_env_file=None)
@@ -91,9 +87,7 @@ def test_a_case_service_that_cannot_be_built_is_refused(settings, monkeypatch):
 def test_a_session_service_that_cannot_be_built_is_refused(settings, monkeypatch):
     monkeypatch.setattr(AuthSessionService, "__init__", _boom)
     _refused(
-        lambda: services.create_session_service(
-            _session_store(), settings, _no_stand_in
-        ),
+        lambda: services.create_session_service(_session_store(), settings),
         "AuthSessionService",
     )
 
@@ -117,9 +111,13 @@ def test_an_auth_service_with_no_revocation_store_configured_is_built(settings):
     assert service._revocation_store is None
 
 
-def test_no_session_store_still_answers_with_the_stand_in(settings):
-    stand_in = object()
-    assert services.create_session_service(None, settings, lambda: stand_in) is stand_in
+def test_no_session_store_is_refused_not_stood_in_for(settings):
+    """No session service exists without a session store (#1855)."""
+    with pytest.raises(RequiredServiceConstructionError) as refused:
+        services.create_session_service(None, settings)
+    assert str(refused.value) == (
+        "AuthSessionService could not be constructed: no session store"
+    )
 
 
 def test_no_case_repository_is_refused_not_stood_in_for(settings):

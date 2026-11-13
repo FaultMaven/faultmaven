@@ -13,9 +13,7 @@ against a real Redis in ``tests/integration/test_real_redis_stores.py``.
 
 import asyncio
 import json
-import uuid
 from datetime import datetime, timedelta, timezone
-from types import SimpleNamespace
 
 import fakeredis
 import fakeredis.aioredis as fakeredis_aio
@@ -28,7 +26,6 @@ from faultmaven.modules.auth.domain.services.auth_session_service import (
 from faultmaven.modules.auth.infrastructure.stores.redis_session_store import (
     RedisSessionStore,
 )
-from tests.utils import minimal_session_service
 
 pytestmark = [pytest.mark.unit, pytest.mark.session]
 
@@ -123,29 +120,6 @@ async def test_an_unreadable_session_record_is_skipped_not_fatal(service, redis)
 
     again, _ = await service.create_session("user-a")
     assert await _ids(service, "user-a") == [good.session_id, again.session_id]
-
-
-async def test_the_degraded_stand_in_converges_to_the_same_limit():
-    """``MinimalSessionService`` mirrors ``AuthSessionService``, the limit too."""
-    service = minimal_session_service(
-        SimpleNamespace(session=SimpleNamespace(max_sessions_per_user=LIMIT))
-    )
-    first, _ = await service.create_session("user-a")
-    other, _ = await service.create_session("user-b")
-    # Over the limit already, as a lowered limit would leave the user.
-    for _ in range(LIMIT + 1):
-        extra = type(first)(str(uuid.uuid4()), "user-a")
-        service.sessions[extra.session_id] = extra
-
-    newest, _ = await service.create_session("user-a")
-
-    listed = [s.session_id for s in await service.list_sessions("user-a")]
-    assert len(listed) == LIMIT
-    assert listed[-1] == newest.session_id
-    assert first.session_id not in listed
-    assert [s.session_id for s in await service.list_sessions("user-b")] == [
-        other.session_id
-    ]
 
 
 async def test_the_listing_holds_only_that_users_live_sessions(service):

@@ -31,6 +31,7 @@ from faultmaven.infrastructure.llm.json_response import (
     loads_llm_json,
 )
 from faultmaven.infrastructure.llm.providers import StopReason
+from faultmaven.utils.serialization import depth_exceeds
 
 from .response_synthesis import (
     synthesized_agent_response,
@@ -811,27 +812,10 @@ def _normalize_state_updates(
 _MAX_DECODED_DEPTH = 64
 
 
-def _depth_exceeds(value: Any, limit: int) -> bool:
-    """Whether *value* nests dicts and lists more than *limit* deep.
-
-    Iterative, so measuring a value can never exceed the recursion limit the
-    bound exists to stay under.
-    """
-    stack = [(value, 1)]
-    while stack:
-        node, depth = stack.pop()
-        if isinstance(node, (dict, list)):
-            if depth > limit:
-                return True
-            children = node.values() if isinstance(node, dict) else node
-            stack.extend((child, depth + 1) for child in children)
-    return False
-
-
 def _bounded(decoded: Any) -> tuple[bool, Any]:
     """``(True, decoded)``, or ``(False, None)`` when *decoded* nests deeper
     than ``_MAX_DECODED_DEPTH``: every decode's result passes through here."""
-    if _depth_exceeds(decoded, _MAX_DECODED_DEPTH):
+    if depth_exceeds(decoded, _MAX_DECODED_DEPTH):
         return False, None
     return True, decoded
 

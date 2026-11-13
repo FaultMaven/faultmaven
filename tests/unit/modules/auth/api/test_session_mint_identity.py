@@ -88,6 +88,8 @@ async def _create_session_fake(
         # The real service's session carries the expiry its write set, and
         # the route answers it (#2301).
         expires_at=now,
+        # And its server-owned status, which the route reports (#1854).
+        status="active",
     )
     return session, RESUMED
 

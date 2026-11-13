@@ -98,6 +98,7 @@ class AuthSessionStatus(str, Enum):
     ACTIVE = "active"
     EXPIRED = "expired"
     TERMINATED = "terminated"
+    ARCHIVED = "archived"
 
 
 # --- Core Data Structures ---

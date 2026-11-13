@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 14.22.0
+**Version:** 14.23.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -3880,9 +3880,11 @@ Returns:
 **Responses:**
 
 - `201` — Session created or resumed successfully
+- `400` — `metadata` nests deeper than 32 levels or holds a value that is not JSON. Nothing is created.
 - `404` — Session expired or not found (when resuming with client_id)
 - `410` — Session gone (alternative to 404 for expired sessions)
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
+- `503` — The session kept changing under this write; nothing was written. Retry after `Retry-After`.
 
 ---
 
@@ -3979,7 +3981,8 @@ Raises:
     404: Session not found
     403: User not authorized to update this session
     400: Any field other than `metadata`, or a `metadata` that is not a
-        JSON object. Nothing is updated.
+        JSON object, nests deeper than 32 levels or holds a value that is
+        not JSON. Nothing is updated.
 
 **Tags:** `session_management`
 
@@ -3997,6 +4000,7 @@ Raises:
 
 - `200` — Successful Response
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
+- `503` — The session kept changing under this write; nothing was written. Retry after `Retry-After`.
 
 ---
 
@@ -4068,6 +4072,7 @@ Raises:
 
 - `200` — Successful Response
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
+- `503` — The session kept changing under this write; nothing was written. Retry after `Retry-After`.
 
 ---
 
@@ -4097,6 +4102,7 @@ Returns:
 
 - `200` — Successful Response
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
+- `503` — The session kept changing under this write; nothing was written. Or the session service or store is unavailable.
 
 ---
 
@@ -4773,7 +4779,7 @@ See: docs/architecture/case-and-session/case-and-session-concepts.md.
 
 Defines the status of authentication sessions.
 
-**Values:** `active`, `expired`, `terminated`
+**Values:** `active`, `expired`, `terminated`, `archived`
 
 ---
 

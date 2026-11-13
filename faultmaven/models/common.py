@@ -12,7 +12,7 @@ moved to faultmaven.utils.datetime to avoid circular dependencies.
 
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 from typing_extensions import TypedDict
@@ -68,6 +68,11 @@ class SessionContext(BaseModel):
     provider_session_id: Optional[str] = Field(
         None,
         description="The IdP session this session's SSO login opened; server-set",
+    )
+    # Server-set only, by ``archive_session``; in ``metadata`` a client could
+    # replace it (#1854). No route accepts it.
+    status: Literal["active", "archived"] = Field(
+        "active", description="Whether the session is archived; server-set"
     )
 
     # Timestamps

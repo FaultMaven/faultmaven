@@ -464,20 +464,19 @@ def create_investigation_service(
 def create_session_service(
     session_store: Any | None,
     settings: FaultMavenSettings,
-    minimal_factory: callable,
 ) -> Any:
     """Create session service for session management.
 
-    The in-memory ``minimal_factory`` service answers only when no session
-    store is configured. With one configured, a construction failure raises
+    No store, or a construction failure, raises
     ``RequiredServiceConstructionError``, which refuses startup in every
     environment (#2103). Never a stand-in: the in-memory one kept sessions in
-    one process, lost on restart and unseen by every other replica, so the
-    per-user limit counted per process.
+    one process, lost on restart and unseen by every other replica, and it
+    fell behind the real service (#1855).
     """
     if not session_store:
-        logger.info("Session store unavailable; using minimal session service")
-        return minimal_factory()
+        raise RequiredServiceConstructionError(
+            "AuthSessionService could not be constructed: no session store"
+        )
 
     try:
         from faultmaven.modules.auth.domain.services.auth_session_service import (
@@ -1784,11 +1783,7 @@ def register_services(container: BaseDIContainer) -> None:
         container._register_service("investigation_service", investigation_service)
 
     # Session Service
-    session_service = create_session_service(
-        session_store,
-        settings,
-        container._create_minimal_session_service,
-    )
+    session_service = create_session_service(session_store, settings)
     container._register_service("session_service", session_service)
 
     # SSO login orchestration (cloud WorkOS AuthKit; ADR-015). Registered after

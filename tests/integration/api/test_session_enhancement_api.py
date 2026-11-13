@@ -45,7 +45,6 @@ def sample_session():
         metadata={
             "session_type": "troubleshooting",
             "timeout_minutes": 180,
-            "status": "active",
         },
     )
 
@@ -107,21 +106,17 @@ def test_update_session_success(client, mock_session_service, sample_session):
     """Test successful session update."""
     # Setup
     mock_session_service.get_session.return_value = sample_session
-    mock_session_service.update_session.return_value = True
 
+    # The route answers from the record the update wrote, not from a re-read.
     updated_session = SessionContext(
         session_id=sample_session.session_id,
         user_id=sample_session.user_id,
         client_id=sample_session.client_id,
         created_at=sample_session.created_at,
         last_activity=datetime.now(timezone.utc),
-        metadata={
-            "session_type": "troubleshooting",
-            "timeout_minutes": 240,  # Updated
-            "status": "active",
-        },
+        metadata={"timeout_minutes": 240},
     )
-    mock_session_service.get_session.side_effect = [sample_session, updated_session]
+    mock_session_service.update_session.return_value = updated_session
 
     # Execute
     response = client.put(
@@ -135,6 +130,7 @@ def test_update_session_success(client, mock_session_service, sample_session):
     assert data["session_id"] == sample_session.session_id
     assert data["user_id"] == sample_session.user_id
     assert "updated_at" in data
+    assert data["metadata"] == {"timeout_minutes": 240}
     assert data["message"] == "Session updated successfully"
 
 
@@ -164,7 +160,7 @@ def test_update_session_unauthorized(
         client_id="client_xyz",
         created_at=datetime.now(timezone.utc),
         last_activity=datetime.now(timezone.utc),
-        metadata={"status": "active"},
+        metadata={},
     )
     mock_session_service.get_session.return_value = other_user_session
 
@@ -194,7 +190,7 @@ def test_search_sessions_success(client, mock_session_service, sample_session):
             client_id="client_abc",
             created_at=datetime.now(timezone.utc),
             last_activity=datetime.now(timezone.utc),
-            metadata={"status": "active", "session_type": "troubleshooting"},
+            metadata={"session_type": "troubleshooting"},
         ),
     ]
     mock_session_service.search_sessions.return_value = sessions
@@ -296,7 +292,7 @@ def test_archive_session_unauthorized(client, mock_session_service, mock_user):
         client_id="client_xyz",
         created_at=datetime.now(timezone.utc),
         last_activity=datetime.now(timezone.utc),
-        metadata={"status": "active"},
+        metadata={},
     )
     mock_session_service.get_session.return_value = other_user_session
 
@@ -308,7 +304,7 @@ def test_archive_session_unauthorized(client, mock_session_service, mock_user):
 
 
 def test_archive_session_failure(client, mock_session_service, sample_session):
-    """Test archive session when archiving fails."""
+    """A session gone between the ownership read and the archive is a 404."""
     # Setup
     mock_session_service.get_session.return_value = sample_session
     mock_session_service.archive_session.return_value = False
@@ -317,4 +313,4 @@ def test_archive_session_failure(client, mock_session_service, sample_session):
     response = client.post(f"/api/v1/sessions/{sample_session.session_id}/archive")
 
     # Assert
-    assert response.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR
+    assert response.status_code == status.HTTP_404_NOT_FOUND

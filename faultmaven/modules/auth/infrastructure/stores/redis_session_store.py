@@ -20,8 +20,9 @@ is the moment Redis drops it.
 import json
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 
+from faultmaven.exceptions import SessionWriteConflict
 from faultmaven.models.common import SessionContext
 from faultmaven.models.interfaces import ISessionStore
 from faultmaven.utils.datetime import parse_utc_timestamp
@@ -40,8 +41,12 @@ return 0
 #: Write a session and index it under its user, in one step. The index's TTL is
 #: raised to the session's and never lowered, so the index lapses with its
 #: longest-lived member: Redis tells nobody when a key's TTL lapses, and an index
-#: without a TTL would outlive every session it names.
+#: without a TTL would outlive every session it names. Given ARGV[4], it writes
+#: only while the key holds exactly those bytes (#1854).
 _SAVE_AND_INDEX = """
+if ARGV[4] and redis.call('GET', KEYS[1]) ~= ARGV[4] then
+    return 0
+end
 redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
 redis.call('SADD', KEYS[2], ARGV[3])
 if redis.call('TTL', KEYS[2]) < tonumber(ARGV[2]) then
@@ -66,6 +71,9 @@ for i, member in ipairs(ARGV) do
 end
 return live
 """
+
+#: How many read-and-write attempts ``mutate_session`` makes in all.
+_MUTATE_ATTEMPTS = 5
 
 
 class RedisSessionStore(ISessionStore):
@@ -230,19 +238,23 @@ class RedisSessionStore(ISessionStore):
         return deleted
 
     # High-level session management methods. Every session write goes through
-    # ``_write_session`` and every session delete through ``delete_session``,
-    # so the user index and the record's ``expires_at`` follow them. ``set``,
-    # ``extend_ttl`` and ``delete`` above are plain key operations and touch
-    # neither.
+    # ``_write_session`` and every session delete through ``delete_session`` or
+    # ``mutate_session``'s eviction, so the user index and the record's
+    # ``expires_at`` follow them. ``set``, ``extend_ttl`` and ``delete`` above
+    # are plain key operations and touch neither.
 
     async def _write_session(
-        self, session_id: str, session_data: Dict[str, Any]
-    ) -> datetime:
+        self,
+        session_id: str,
+        session_data: Dict[str, Any],
+        expected: Optional[str] = None,
+    ) -> Optional[datetime]:
         """Store a session for ``session_ttl_seconds``, indexed under its user
-        when it has one, and return the instant it lapses.
+        (one with no user is refused), and return the instant it lapses.
 
         The record's ``expires_at`` is set to that instant, so it never claims
-        a lifetime the key does not have.
+        a lifetime the key does not have. Given ``expected``: None if the key
+        no longer holds it, and nothing written.
         """
         expires_at = datetime.now(timezone.utc) + timedelta(
             seconds=self.session_ttl_seconds
@@ -250,11 +262,10 @@ class RedisSessionStore(ISessionStore):
         session_data["expires_at"] = to_json_compatible(expires_at)
         user_id = session_data.get("user_id")
         if not user_id:
-            await self.set(session_id, session_data)
-            return expires_at
+            raise ValueError(f"Session {session_id} names no user; not written")
 
         try:
-            await self.redis_client.eval(
+            written = await self.redis_client.eval(
                 _SAVE_AND_INDEX,
                 2,
                 f"{self.prefix}{session_id}",
@@ -262,11 +273,12 @@ class RedisSessionStore(ISessionStore):
                 self._serialize(session_data),
                 self.session_ttl_seconds,
                 session_id,
+                *(() if expected is None else (expected,)),
             )
         except Exception as e:
             logger.error(f"Redis session write failed for session {session_id}: {e}")
             raise ConnectionError(f"Redis operation failed: {e}")
-        return expires_at
+        return expires_at if int(written) else None
 
     @staticmethod
     def _to_session_context(session_data: Dict[str, Any]) -> SessionContext:
@@ -293,6 +305,7 @@ class RedisSessionStore(ISessionStore):
             updated_at=updated_at,
             expires_at=expires_at,
             metadata=session_data.get("metadata", {}),
+            status=session_data.get("status", "active"),
         )
 
     async def get_session(
@@ -310,7 +323,54 @@ class RedisSessionStore(ISessionStore):
         Sets ``session.expires_at`` to the instant the write lapses, so the
         caller holds the expiry it just bought, as the stored record does.
         """
-        session_data = {
+        session.expires_at = await self._write_session(
+            session.session_id, self._record(session)
+        )
+
+    async def mutate_session(
+        self,
+        session_id: str,
+        mutate: Callable[[SessionContext], Optional[SessionContext]],
+    ) -> Optional[SessionContext]:
+        """``ISessionStore.mutate_session``: retried from the read while a
+        concurrent write lands first, ``_MUTATE_ATTEMPTS`` attempts in all. An
+        expired record is deleted by compare-and-delete, never written."""
+        key = f"{self.prefix}{session_id}"
+        for _ in range(_MUTATE_ATTEMPTS):
+            try:
+                raw = await self.redis_client.get(key)
+            except Exception as e:
+                logger.error(f"Redis get operation failed for key {session_id}: {e}")
+                raise ConnectionError(f"Redis operation failed: {e}")
+            if raw is None:
+                return None
+            try:
+                stored = json.loads(raw)
+            except json.JSONDecodeError:
+                return None
+            session = self._to_session_context(stored)
+            if session.expires_at and datetime.now(timezone.utc) > session.expires_at:
+                if not await self.redis_client.eval(_DELETE_IF_HOLDS, 1, key, raw):
+                    continue  # rewritten since the read: apply to that
+                await self.redis_client.srem(
+                    self._user_index_key(session.user_id), session_id
+                )
+                return None
+            session = mutate(session)
+            if session is None:
+                return None
+            expires_at = await self._write_session(
+                session_id, self._record(session), expected=raw
+            )
+            if expires_at is not None:
+                session.expires_at = expires_at
+                return session
+        raise SessionWriteConflict(f"Session {session_id} kept changing; not written")
+
+    @staticmethod
+    def _record(session: SessionContext) -> Dict[str, Any]:
+        """``session`` as the store writes it, before its ``expires_at``."""
+        return {
             "session_id": session.session_id,
             "user_id": session.user_id,
             "client_id": session.client_id,
@@ -320,8 +380,8 @@ class RedisSessionStore(ISessionStore):
             "metadata": session.metadata or {},
             "session_resumed": session.session_resumed,
             "provider_session_id": session.provider_session_id,
+            "status": session.status,
         }
-        session.expires_at = await self._write_session(session.session_id, session_data)
 
     async def delete_session(self, session_id: str) -> bool:
         """Delete a session and its entry in its user's index."""

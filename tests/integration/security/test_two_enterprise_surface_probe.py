@@ -243,7 +243,7 @@ from tests.integration.security.conftest import (
     drop_limited_role,
     limited_url,
 )
-from tests.utils import minimal_session_service
+from tests.utils import in_memory_session_service
 
 pytestmark = [
     pytest.mark.integration,
@@ -1149,21 +1149,16 @@ def _wire_services(app, chroma) -> None:
     # real obstacle was this line. They are probed now, so the service is one
     # that works.
     #
-    # ``MinimalSessionService`` rather than a Redis-backed
-    # ``AuthSessionService``, and the reason is the fixture's scope rather than
-    # a preference. This app is module-scoped on purpose — "building the app is
+    # The real ``AuthSessionService``, over a dict-backed store rather than
+    # FakeRedis, and the reason is the fixture's scope rather than a
+    # preference. This app is module-scoped on purpose — "building the app is
     # loop-free" — while each test runs on its own event loop, and a FakeRedis
     # client binds its queues to the loop that first touches it, so the second
     # test to reach the store dies on ``bound to a different event loop``.
-    # (Measured: the mint 500s with exactly that.) The minimal service is a
-    # plain dict and is loop-free, so it survives module scope.
-    #
-    # It is not a test double. ``create_session_service`` returns it given no
-    # session store, and ``_create_minimal_container`` installs it; its
-    # contract is to answer as ``AuthSessionService`` does. It is also the
-    # implementation that made #1447 §1 live rather than theoretical, since it
-    # ships a working ``list_sessions``.
-    app.state.session_service = minimal_session_service()
+    # (Measured: the mint 500s with exactly that.) The dict-backed store is
+    # loop-free, so it survives module scope. It replaced a hand-written
+    # stand-in service that lacked the update and archive methods (#1855).
+    app.state.session_service = in_memory_session_service()
     app.state.investigation_service = _Tripwire("investigation_service")
     app.state.share_repository = share_repository
     app.state.knowledge_service = knowledge_service
@@ -3132,14 +3127,30 @@ async def _b_reaches_no_auth_session_of_a(world, a_session_id, session_id):
     assert session_id not in listing.text
     assert world.b.user_id not in listing.text
 
-    # --- the write, with the row checked afterwards -----------------------
+    # --- the updates, with the row checked afterwards ---------------------
     #
-    # DELETE only. ``PUT`` and ``POST /archive`` are NOT probed here and are
-    # exempted in the inventory with the reason: the wired stand-in implements
-    # neither method, so B's own call would 500 and A's 403 could not be
-    # attributed to the ownership check rather than to a broken route. An entry
-    # green against a route that never functions is the failure this module
-    # exists to avoid, so the claim is withdrawn rather than dressed up.
+    # A's update and archive are refused and change nothing; B's own, after
+    # them, are the positive controls that make the refusals attributable to
+    # the ownership check. Probed since #1855 wired the real session service.
+    put = await as_a(
+        world, "PUT", f"/api/v1/sessions/{session_id}", json={"metadata": {"by": "a"}}
+    )
+    assert_refused(put, "PUT /sessions/{id}")
+    archive = await as_a(world, "POST", f"/api/v1/sessions/{session_id}/archive")
+    assert_refused(archive, "POST /sessions/{id}/archive")
+    found = await as_b(world, "POST", "/api/v1/sessions/search", json={})
+    (row,) = found.json()["sessions"]
+    assert (
+        row["status"] == "active" and "by" not in row["metadata"]
+    ), f"a refused update or archive changed B's session anyway: {found.text[:300]}"
+    for method, path, body in (
+        ("PUT", f"/api/v1/sessions/{session_id}", {"metadata": {"by": "b"}}),
+        ("POST", f"/api/v1/sessions/{session_id}/archive", None),
+    ):
+        control = await as_b(world, method, path, json=body)
+        assert control.status_code == 200, f"control: {method}: {control.text[:300]}"
+
+    # --- the delete, with the row checked afterwards ----------------------
     refused = await as_a(world, "DELETE", f"/api/v1/sessions/{session_id}")
     assert_refused(refused, "DELETE /sessions/{id}")
 
@@ -5944,25 +5955,20 @@ SURFACE_INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
     # The exemption that used to sit here claimed the listing was unprobeable
     # because "with no store the listing answers the same empty page to every
     # caller, so no control exists". That was a property of `RedisSessionStore`,
-    # whose `list_sessions()` was a stub until #2297, and not of the route:
-    # `MinimalSessionService` ships a working one and `create_session_service`
-    # installed it in production whenever the real service could not be
-    # constructed, until #2103. Both routes ARE probed —
+    # whose `list_sessions()` was a stub until #2297, and not of the route: an
+    # in-memory stand-in service, deleted by #1855, shipped a working one. Both
+    # routes ARE probed —
     # `tests/integration/security/test_unauthenticated_session_surface.py`
-    # drives them against that service, anonymously and as a foreign
+    # drives them against the real service, anonymously and as a foreign
     # authenticated caller, which is the arm this module has never had.
     ("GET", "/api/v1/sessions/{session_id}"): (
         _PROBED,
         "auth-session battery: A reads B's session, B's own read is the control",
     ),
     ("PUT", "/api/v1/sessions/{session_id}"): (
-        _EXEMPT,
-        "the session service this module wires implements no `update_session` "
-        "(nor `archive_session`, `search_sessions`, `get_user_sessions`), so "
-        "B's own call — the positive control — would 500 and A's 403 cannot be "
-        "attributed to the ownership check rather than to a broken route. The "
-        "gap is in the degraded stand-in, not in the route; probing it needs "
-        "that stand-in completed first.",
+        _PROBED,
+        "auth-session battery, row-checked: A's refused update leaves B's "
+        "session unchanged, and B's own update is the control",
     ),
     ("DELETE", "/api/v1/sessions/{session_id}"): (
         _PROBED,
@@ -5970,10 +5976,9 @@ SURFACE_INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
         "session alive",
     ),
     ("POST", "/api/v1/sessions/{session_id}/archive"): (
-        _EXEMPT,
-        "no `archive_session` on the wired stand-in either — see the PUT entry "
-        "above for why a probe without a working positive control would be an "
-        "entry that stays green against a route that never functions.",
+        _PROBED,
+        "auth-session battery, row-checked: A's refused archive leaves B's "
+        "session active, and B's own archive is the control",
     ),
     ("POST", "/api/v1/sessions/{session_id}/heartbeat"): (
         _FINDING,

@@ -353,10 +353,10 @@ class TestArchitecturalCompliance:
             }
         }
 
-        # Should succeed
-        success = await session_service.update_session(session.session_id, valid_update)
+        # Should succeed, answering with the session it wrote
+        written = await session_service.update_session(session.session_id, valid_update)
         assert (
-            success is True
+            written.metadata == valid_update["metadata"]
         ), "Session updates should accept valid authentication metadata"
 
         # Verify update was applied

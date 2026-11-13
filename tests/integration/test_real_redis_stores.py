@@ -23,6 +23,7 @@ the client.
 
 import asyncio
 import importlib.util
+import json
 import time
 import uuid
 from pathlib import Path
@@ -39,6 +40,7 @@ from faultmaven.api.middleware.idempotency import (
     declare_replay_case_from_path,
 )
 from faultmaven.config.idempotency_key import IDEMPOTENCY_REPLAYED_HEADER
+from faultmaven.exceptions import SessionWriteConflict
 from faultmaven.infrastructure.protection.rate_limiter import RedisRateLimiter
 from faultmaven.models.common import SessionContext
 from faultmaven.models.protection import LimitType, RateLimitConfig, RateLimitSpec
@@ -325,9 +327,7 @@ async def test_a_session_lives_session_timeout_minutes_past_its_last_write(
     store = create_session_store(real_redis, settings)
     store.prefix = f"{namespace}session:"
     store.user_index_prefix = f"{namespace}sessions:user:"
-    service = create_session_service(
-        store, settings, lambda: pytest.fail("the real session service failed")
-    )
+    service = create_session_service(store, settings)
     timeout_ms = 7 * 60 * 1000
 
     session, _ = await service.create_session("user-a")
@@ -343,6 +343,74 @@ async def test_a_session_lives_session_timeout_minutes_past_its_last_write(
     assert timeout_ms - 5000 < await real_redis.pttl(key) <= timeout_ms
     stored = await service.get_session(session.session_id)
     assert stored.expires_at > session.expires_at
+
+
+def _beaten_on(monkeypatch, client, key, reads, delete=False):
+    """After each read of ``key`` numbered in ``reads``, before the store can
+    write on it, another writer changes the record (or deletes it)."""
+    real_get, seen = client.get, []
+
+    async def get(name, *args, **kwargs):
+        value = await real_get(name, *args, **kwargs)
+        if name == key:
+            seen.append(value)
+            if len(seen) in reads and delete:
+                await client.delete(key)
+            elif len(seen) in reads:
+                record = json.loads(value)
+                record["last_activity"] = f"2001-01-01T00:00:{len(seen):02d}Z"
+                await client.set(key, json.dumps(record), keepttl=True)
+        return value
+
+    monkeypatch.setattr(client, "get", get)
+
+
+async def _session_and_key(real_redis, namespace):
+    store = _namespaced_session_store(real_redis, namespace)
+    service = AuthSessionService(session_store=store)
+    session, _ = await service.create_session("user-a", metadata={"seed": 1})
+    return service, session.session_id, f"{store.prefix}{session.session_id}"
+
+
+async def test_a_session_write_beaten_once_retries_and_keeps_both_writes(
+    real_redis, namespace, monkeypatch
+):
+    """The compare-and-set script on the server (#1854): the beaten write is
+    re-applied to the record the other writer left."""
+    service, session_id, key = await _session_and_key(real_redis, namespace)
+    _beaten_on(monkeypatch, real_redis, key, {1})
+
+    written = await service.update_session(session_id, {"metadata": {"put": 1}})
+
+    stored = json.loads(await real_redis.get(key))
+    assert written.metadata == stored["metadata"] == {"put": 1}
+    assert stored["last_activity"] == "2001-01-01T00:00:01Z"
+
+
+async def test_a_session_write_beaten_on_every_attempt_writes_nothing(
+    real_redis, namespace, monkeypatch
+):
+    service, session_id, key = await _session_and_key(real_redis, namespace)
+    _beaten_on(monkeypatch, real_redis, key, {1, 2, 3, 4, 5})
+
+    with pytest.raises(SessionWriteConflict):
+        await service.update_session(session_id, {"metadata": {"put": 1}})
+
+    stored = json.loads(await real_redis.get(key))
+    assert (stored["metadata"], stored["last_activity"]) == (
+        {"seed": 1},
+        "2001-01-01T00:00:05Z",
+    )
+
+
+async def test_a_session_deleted_inside_a_write_is_not_written_back(
+    real_redis, namespace, monkeypatch
+):
+    service, session_id, key = await _session_and_key(real_redis, namespace)
+    _beaten_on(monkeypatch, real_redis, key, {1}, delete=True)
+
+    assert await service.update_session(session_id, {"metadata": {"put": 1}}) is None
+    assert await real_redis.exists(key) == 0
 
 
 async def test_the_session_limit_evicts_the_oldest_and_spares_other_users(
