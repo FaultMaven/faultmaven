@@ -90,16 +90,17 @@ if [ ! -x "$VENV/bin/python" ]; then
     uv venv "$VENV" --python ">=${PYTHON_FLOOR},<3.12" --quiet
 else
     # PYTHON_VERSION only binds at creation, so an environment made earlier on a
-    # different interpreter would be synced from a lockfile compiled for 3.11 and
-    # then stamped and reported "matches". The lockfiles are resolved with
-    # --python-version 3.11 --python-platform linux and carry no environment
+    # different interpreter would be synced from a lockfile compiled for the
+    # requires-python floor and then stamped and reported "matches". The
+    # lockfiles are resolved with --python-version at that floor (PYTHON_FLOOR)
+    # and --python-platform linux, and carry no environment
     # markers, so nothing downstream would notice. Refuse rather than recreate:
     # deleting an environment someone may be running tests in is not this
     # script's call to make.
     HAVE="$("$VENV/bin/python" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || echo unknown)"
     if [ "$HAVE" != "$PYTHON_VERSION" ]; then
         echo "✗ $VENV runs Python $HAVE, but $LOCKFILE is compiled for $PYTHON_VERSION." >&2
-        echo "  Syncing anyway would install 3.11-resolved pins under $HAVE and stamp it as" >&2
+        echo "  Syncing anyway would install pins resolved for ${PYTHON_FLOOR} under $HAVE and stamp it as" >&2
         echo "  matching, which is the silent divergence this tooling exists to prevent." >&2
         echo "" >&2
         echo "  Recreate it yourself when nothing is using it:" >&2

@@ -155,6 +155,56 @@ level=debug
         assert "localhost" in result.file_extract
         assert "debug" in result.file_extract
 
+    def test_toml_sections_parsed_as_toml(self, extractor):
+        """Multi-section TOML parses structurally (#2773)."""
+        content = """
+[server]
+host = "0.0.0.0"
+port = 8080
+
+[database]
+url = "postgres://db"
+pool = { min = 1, max = 10 }
+"""
+        result = extractor.extract(content)
+        assert result.file_meta["format"] == "toml"
+        # server, host, port, database, url, pool, min, max
+        assert result.file_meta["total_keys"] == 8
+
+    def test_toml_1_1_inline_table_parsed_and_redacted(self, extractor):
+        """TOML 1.1 (a multi-line inline table with a trailing comma) parses as
+        TOML and its secret is redacted (#2773). Python 3.11's tomllib reads
+        TOML 1.0 only; there the line fallback leaves the key in clear."""
+        secret = "sk-abcdefghijklmnopqrstuvwx1234567890"
+        content = f"""
+[provider]
+name = "openai"
+client = {{
+    kind = "api",
+    value = "{secret}",
+}}
+"""
+        result = extractor.extract(content)
+        assert result.file_meta["format"] == "toml"
+        assert secret not in result.file_extract
+        assert "[REDACTED]" in result.file_extract
+
+    def test_toml_integer_past_digit_limit_falls_back_redacted(self, extractor):
+        """tomli refuses an integer past CPython's 4300-digit limit with a
+        ValueError; the extractor falls back and still redacts (#2773)."""
+        content = '[db]\npassword = "hunter2hunter2"\nseed = ' + "1" * 4400 + "\n"
+        result = extractor.extract(content)
+        assert result.file_meta["format"] != "toml"
+        assert "hunter2hunter2" not in result.file_extract
+        assert "[REDACTED]" in result.file_extract
+
+    def test_toml_nesting_past_limit_falls_back(self, extractor):
+        """tomli refuses an inline array nested 500 deep with a RecursionError;
+        the extractor falls back instead of raising (#2773)."""
+        content = "deep = " + "[" * 500 + "]" * 500 + "\n"
+        result = extractor.extract(content)
+        assert result.file_meta["format"] != "toml"
+
     # --- False-positive prevention (tightened key patterns) ---
 
     def test_auth_type_not_redacted(self, extractor):
