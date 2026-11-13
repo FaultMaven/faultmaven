@@ -318,3 +318,110 @@ async def test_a_busy_rerun_on_recorded_cases_skips_nothing(repository, stored, 
     out = capsys.readouterr().out
     assert "Skipped" not in out
     assert "Have one:     2 (left alone)" in out
+
+
+# ---------------------------------------------------------------------------
+# #2689: counted once, after the save; a dry run counts nothing
+# ---------------------------------------------------------------------------
+
+
+def _counted(monkeypatch) -> list:
+    seen: list = []
+    monkeypatch.setattr(
+        outcome_module,
+        "case_outcome_conflicts_total",
+        SimpleNamespace(
+            labels=lambda field: SimpleNamespace(inc=lambda: seen.append(field))
+        ),
+    )
+    return seen
+
+
+async def _repair_with_a_disagreement(repository, monkeypatch):
+    """A case closed while its record write raised, whose stored record
+    carries an attempt accepted at 6 the case now dates to 5: the repair's
+    fold reads a real disagreement."""
+    from tests.unit.core.investigation.test_case_outcome_fold_2636 import _fix
+
+    case, _root, _hyp = _identified_case()
+    fix = _fix(case)
+    record_case_outcome(case, at="cycle")
+    fix.accepted_in_turn = 5
+    with monkeypatch.context() as patched:
+        patched.setattr(outcome_module, "compute_case_outcome", _boom)
+        execute_user_closure(case, case.user_id)
+    assert case.progress.outcome.folded_under == CaseState.INVESTIGATING, "premise"
+    await repository.save(case)
+    return case.case_id
+
+
+async def test_2689_a_dry_run_counts_nothing(repository, monkeypatch, capsys):
+    case_id = await _repair_with_a_disagreement(repository, monkeypatch)
+    counted = _counted(monkeypatch)
+    assert await _run(repository, dry_run=True) == 0
+    assert counted == []
+    assert "Disagreements counted: 0" in capsys.readouterr().out
+    assert await _run(repository) == 0
+    assert counted == ["attempts.accepted_in_turn"], "positive control: written"
+    # Printed per case: a CLI process's counter is never scraped.
+    out = capsys.readouterr().out
+    assert "Disagreements counted: 1" in out
+    assert f"  - {case_id}: attempts.accepted_in_turn:" in out
+
+
+async def test_2689_a_retried_write_counts_each_disagreement_once_after_the_save(
+    repository, monkeypatch
+):
+    case_id = await _repair_with_a_disagreement(repository, monkeypatch)
+    counted = _counted(monkeypatch)
+    real = repository.save_progress
+    before_each_write = []
+
+    async def _racing(case):
+        before_each_write.append(list(counted))
+        if len(before_each_write) == 1:
+            # A turn saves between the backfill's load and its write.
+            await repository.save(await repository.get(case.case_id))
+        return await real(case)
+
+    repository.save_progress = _racing
+    assert await _run(repository) == 0
+    assert before_each_write == [[], []], "nothing counted before a save"
+    assert counted == ["attempts.accepted_in_turn"]
+    after = await repository.get(case_id)
+    assert [k.split(":")[0] for k in after.progress.outcome.disagreements] == [
+        "attempts.accepted_in_turn"
+    ]
+
+
+async def test_2555_the_backfill_marks_nothing_and_the_next_turn_tells_once(
+    repository,
+):
+    """Mark nothing, tell once (ruled 2026-11-13): the backfill folds like any
+    caller, so its record marks no unbound row told; the next verified
+    narrated turn names each once, then never again."""
+    from faultmaven.core.investigation.milestone_engine.stage_gates import (
+        _flag_unbound_post_fix_rows,
+    )
+    from tests.unit.core.investigation.narrated import narrated
+    from tests.unit.core.investigation.test_turn_reorder_2636 import (
+        _decline,
+        _held_recheck,
+    )
+
+    _eng, case = _held_recheck()
+    _decline(case)
+    await repository.save(case)
+    assert await _run(repository) == 0
+    after = await repository.get(case.case_id)
+    (row,) = after.progress.outcome.unbound_rechecks
+    assert row.narrated_turn is None
+
+    def _turn() -> list[str]:
+        after.current_turn += 1
+        metadata: dict = {}
+        _flag_unbound_post_fix_rows(after, metadata)
+        return [n for n in narrated(after, metadata) if row.evidence_id in n]
+
+    assert len(_turn()) == 1
+    assert _turn() == [], "told once"

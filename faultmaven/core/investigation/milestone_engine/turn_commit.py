@@ -44,6 +44,9 @@ class TurnCommitPlan:
     """The keyed turn's receipt (#1888), set by
     ``InvestigationService.commit_turn`` once the response it records exists;
     ``None`` for an unkeyed turn and for every engine-only commit."""
+    narration_conflicts: List[str] = field(default_factory=list)
+    """The narration's conflicts (``narration.<code>``), counted once the turn
+    has committed (``turn_settlement.settle_turn``, #2689)."""
 
     def add_reports(self, reports: Iterable[CaseReport]) -> None:
         """Carry rendered ``reports`` to the commit, in render order."""

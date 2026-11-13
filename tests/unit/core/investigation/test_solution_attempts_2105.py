@@ -1644,7 +1644,11 @@ async def test_a_carry_whose_copy_an_earlier_bundle_staged_is_a_reassertion():
     assert stage_gates.standing_fix_action(case, _FIRST) is first
     assert (first.state, first.accepted_in_turn) == ("accepted", 6)
     assert len(case.action_attempts) == 1
-    assert not meta.get("system_notices")
+    # #2555: the only notice is the unbound line for the re-checks recorded
+    # before the hold, told once the revision commits; no licence line.
+    (line,) = narrated(case, meta)
+    assert "name nothing they re-check that binds" in line
+    assert "was not registered" not in line
 
 
 async def test_a_carried_re_run_of_a_failed_fix_gets_the_re_propose_line():

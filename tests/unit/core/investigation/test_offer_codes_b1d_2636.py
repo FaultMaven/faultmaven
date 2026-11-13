@@ -39,6 +39,7 @@ from faultmaven.core.investigation.narration.codes import (
 from faultmaven.core.investigation.narration.notices import (
     has_renderer,
     render_notice,
+    unbound_lines,
 )
 from faultmaven.core.investigation.narration.offers import render_offer
 from faultmaven.core.investigation.offers import answer_offer
@@ -429,6 +430,9 @@ def _logged_codes(monkeypatch) -> set:
         for entry in metadata.get(DECISIONS_KEY) or []:
             if entry["code"] in set(OfferCode):
                 assert render_offer(entry["code"], entry["params"])
+            elif entry["code"] == NoticeCode.UNBOUND_RECHECKS:
+                # #2555: told by ``narrate_turn`` alone, from the stored record.
+                assert unbound_lines(entry["params"], case.progress.outcome)
             elif entry["code"] not in CONTEXT_ONLY:
                 assert render_notice(entry["code"], entry["params"], None, [])
         return real(case, metadata)
@@ -451,7 +455,10 @@ def test_pin_6_every_code_has_a_renderer_or_a_composer_and_a_fixture(monkeypatch
     ``OfferCode`` a composer (``render_offer``), and each is logged by a
     scenario whose text is ``main``'s. #2615's pin 6 as written (a model
     renderer for every reason) stays S2's."""
-    for code in set(NoticeCode) - CONTEXT_ONLY:
+    # #2555: the unbound re-checks have no renderer: ``narrate_turn`` tells
+    # them from a stored record alone (``unbound_lines``).
+    assert not has_renderer(NoticeCode.UNBOUND_RECHECKS)
+    for code in set(NoticeCode) - CONTEXT_ONLY - {NoticeCode.UNBOUND_RECHECKS}:
         assert has_renderer(code), code
     logged = _logged_codes(monkeypatch)
     # A19's context code is logged by the step after the scenarios' cycles

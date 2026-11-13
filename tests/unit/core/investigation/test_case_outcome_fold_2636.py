@@ -220,13 +220,27 @@ def _window(record, action_id):
 
 @pytest.fixture
 def conflicts(monkeypatch):
-    """The conflict counter's increments, by field."""
+    """The conflict counter's increments, by field, each fold standing for a
+    saved record. #2689: the fold counts nothing, so each fold here is
+    reported as a commit reports its record (``report_saved_disagreements``,
+    against the record it folded over)."""
     counted = []
     counter = MagicMock()
     counter.labels.side_effect = lambda field: SimpleNamespace(
         inc=lambda: counted.append(field)
     )
     monkeypatch.setattr(outcome_module, "case_outcome_conflicts_total", counter)
+    real = outcome_module.compute_case_outcome
+
+    def _saved(prior, case, **kwargs):
+        record = real(prior, case, **kwargs)
+        outcome_module.report_saved_disagreements(
+            None, outcome_module.disagreement_keys(prior), record
+        )
+        return record
+
+    monkeypatch.setattr(outcome_module, "compute_case_outcome", _saved)
+    monkeypatch.setitem(globals(), "compute_case_outcome", _saved)
     return counted
 
 
@@ -568,7 +582,8 @@ def test_an_unkinded_window_with_nothing_seen_reads_unknown_and_an_interception_
 
 def test_the_unbound_rechecks_list_every_turn_and_carry_the_narrated_turn():
     """#2555: a re-check recorded during a hold, or on an earlier turn, is on
-    the record; the same-turn notice reads only this turn's rows."""
+    the record, and its ``narrated_turn`` is carried while it stays unbound;
+    the notice names the rows not yet narrated."""
     case, _root, _hyp = _identified_case()
     _fix(case)
     _row(

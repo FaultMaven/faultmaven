@@ -61,6 +61,13 @@ the release that first switches a reader onto it.
   is kept, so no user's case list re-sorts; no save-time derivation runs (no
   offer lapses). A write that loses the version race is tried again from a
   fresh load: tried up to three times in all.
+- Each disagreement a written record carries is counted once, after its save,
+  on the attempt that saved it, and printed per case under "Disagreements
+  counted". The process's `faultmaven_case_outcome_conflicts_total` is never
+  scraped, so the API's metric does not move. A `--dry-run` counts nothing
+  (#2689).
+- It marks no unbound re-check told (#2555): the next verified narrated turn
+  names each still-unbound row once, five per line, then marks it.
 - It skips a case that needs a record while work on it is in flight: a turn,
   or a task one spawned, holds the case's lease on some replica (the lease a
   case delete reads). A case whose lease cannot be read is skipped too. Both

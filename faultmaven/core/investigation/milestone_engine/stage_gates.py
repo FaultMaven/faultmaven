@@ -867,8 +867,8 @@ def _flag_absence_inside_a_failed_fix_window(
 def _flag_unbound_post_fix_rows(
     case: Case, metadata: dict[str, Any] | None, *, replace: bool = False
 ) -> bool:
-    """One same-turn line when this turn recorded a post-fix observation that
-    binds to nothing (#1906 D1.5), naming no ``rechecks`` or one that binds to
+    """The unbound re-check notice when a post-fix observation binds to
+    nothing (#1906 D1.5), naming no ``rechecks`` or one that binds to
     no subject (``cause_assurance.SubjectIndex.subject``: the window pool for
     a symptom row, the confirmation pool for a causal_absence row, #2557).
     Such a row confirms and disconfirms nothing, so the model is told which
@@ -891,9 +891,12 @@ def _flag_unbound_post_fix_rows(
     reads it) is post-attempt as well while the mitigation is unsettled,
     whether or not a fix is dated, and its line says "Post-mitigation" when
     only the mitigation makes it one (#2100).
-    Only on a verified problem: before it, nothing can bind. A code carrying
-    the rows and what they could name as read here, rendered after the
-    cycle's record (#2636). Returns whether the code was recorded."""
+    Only on a verified problem: before it, nothing can bind. Recorded while
+    any such row exists, whatever turn recorded it, as a code carrying what
+    the rows could name as read here; the rows are the record's, those not yet
+    narrated in their unbound stretch, so a re-check held through a revision
+    is told once the hold ends (#2555). Not recorded when the stored record
+    marks every such row told. Returns whether the code was recorded."""
     from faultmaven.core.investigation.cause_assurance import (
         fix_application_turn,
         fix_windows,
@@ -906,21 +909,22 @@ def _flag_unbound_post_fix_rows(
         return False
     fix_turn = fix_application_turn(case)
     subjects = subject_index(case)
-    found = [
-        u
-        for u in unbound_post_fix_rows(case, subjects, fix_windows(case, subjects))
-        if u.row.collected_at_turn == case.current_turn
-    ]
-    if not found:
+    found = unbound_post_fix_rows(case, subjects, fix_windows(case, subjects))
+    # Every row already told in its stretch on the stored record: nothing to
+    # say, so no pool is read (a row absent from the record is untold).
+    record = case.progress.outcome
+    told = {
+        u.evidence_id
+        for u in (record.unbound_rechecks if record is not None else [])
+        if u.narrated_turn is not None
+    }
+    if all(u.row.evidence_id in told for u in found):
         return False
     problem, cause = subjects.bindable_rows()
     record_decision(
         metadata,
         NoticeCode.UNBOUND_RECHECKS,
         replace=replace,
-        uncited=[u.row.evidence_id for u in found if u.uncited],
-        unnamed=[u.row.evidence_id for u in found if not u.uncited],
-        after_mitigation=[u.row.evidence_id for u in found if u.after_mitigation],
         fix_dated=fix_turn is not None,
         problem_row_ids=[e.evidence_id for e in problem],
         cause_row_ids=[e.evidence_id for e in cause],

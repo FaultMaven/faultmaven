@@ -24,6 +24,7 @@ from faultmaven.core.investigation.milestone_engine.cause_state import (
 )
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.milestone_engine.stage_gates import (
+    _flag_unbound_post_fix_rows,
     merge_decisions,
     merge_system_notices,
     record_decision,
@@ -479,8 +480,9 @@ def test_a_failed_write_narrates_from_an_outcome_never_stored(monkeypatch):
 
 
 def test_an_outcome_computed_in_memory_counts_no_disagreement(monkeypatch):
-    """With ``unreported`` the fold collects what it first reads and counts
-    nothing; without it, it counts as it always has."""
+    """#2689 (the default flipped): the fold counts nothing, in memory or not;
+    what it reads first is on the record's ``disagreements``, counted only
+    once a saved record carries it (``report_saved_disagreements``)."""
     from tests.unit.core.investigation.test_case_outcome_fold_2636 import (
         _deepen,
         _fix,
@@ -499,10 +501,12 @@ def test_an_outcome_computed_in_memory_counts_no_disagreement(monkeypatch):
     _recompute_at(case, 9)
     first = compute_case_outcome(None, case)
     _deepen(case, hyp, root)
-    found: list = []
-    compute_case_outcome(first, case, unreported=found)
-    assert counted == [] and [f[0] for f in found] == ["attempts.window"]
-    compute_case_outcome(first, case)
+    second = compute_case_outcome(first, case)
+    assert counted == []
+    assert [k.split(":")[0] for k in second.disagreements] == ["attempts.window"]
+    outcome_module.report_saved_disagreements(
+        case.case_id, outcome_module.disagreement_keys(first), second
+    )
     assert counted == ["attempts.window"]
 
 
@@ -609,3 +613,359 @@ def test_the_codes_are_append_only():
         "request_ready",
         "model_proposal",
     ]
+
+
+# ---------------------------------------------------------------------------
+# #2555 (B2): the unbound re-checks are told from the record, once per
+# continuous unbound stretch
+# ---------------------------------------------------------------------------
+
+
+def _held_recheck():
+    """A fix run at 6; a revision held at 7, on whose turn the user's re-check
+    of the problem lands naming nothing it re-checks."""
+    from faultmaven.core.investigation.problem_status import propose_revision
+    from tests.unit.core.investigation.bound_rows import _row
+    from tests.unit.core.investigation.test_case_outcome_fold_2636 import _fix
+    from tests.unit.core.investigation.test_m6_cause_gone_problem_persists_1927 import (
+        _eid,
+        _identified_case,
+    )
+    from tests.unit.core.investigation.test_refutation_needs_data_1911 import (
+        _engine,
+    )
+
+    eng = _engine()
+    case, _root, _hyp = _identified_case()
+    _fix(case)
+    case.current_turn = 7
+    propose_revision(
+        case,
+        text="checkout returns 503 only under peak load",
+        evidence_ids=[case.evidence[0].evidence_id],
+        basis="the 503s come back only at peak",
+        wording_key="revision:rev_2555",
+    )
+    assert case.progress.problem_status == ProblemStatus.REVISION_PENDING
+    _row(
+        case,
+        EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+        turn=7,
+        evidence_id=_eid("held"),
+        summary="checkout answers 200",
+    )
+    return eng, case
+
+
+def _eid(label: str) -> str:
+    from tests.unit.core.investigation.test_m6_cause_gone_problem_persists_1927 import (
+        _eid as eid,
+    )
+
+    return eid(label)
+
+
+def _decline(case) -> None:
+    from faultmaven.core.investigation.problem_status import decline_revision
+    from faultmaven.modules.case.contracts import AnswerVia
+
+    decline_revision(case, via=AnswerVia.CLICK)
+    assert case.progress.problem_status == ProblemStatus.VERIFIED
+
+
+async def _live(eng, case, turn: int) -> list[str]:
+    """One live turn through the apply step and the narration (#2636)."""
+    from tests.unit.core.investigation.test_refutation_needs_data_1911 import (
+        _DSU as DSU,
+    )
+    from tests.unit.core.investigation.test_refutation_needs_data_1911 import (
+        _apply,
+    )
+
+    case.current_turn = turn
+    return list((await _apply(eng, case, DSU())).get("system_notices") or [])
+
+
+def _naming(notices: list[str], label: str) -> list[str]:
+    return [n for n in notices if _eid(label) in n]
+
+
+def _late_row(case, label: str, *, written: int):
+    """A post-fix re-check naming nothing, written at ``written`` from data
+    uploaded at 8."""
+    from tests.unit.core.investigation.bound_rows import _row
+
+    row = _row(
+        case,
+        EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+        turn=8,
+        evidence_id=_eid(label),
+        summary=f"checkout answers 200 ({label})",
+    )
+    row.collected_at_turn = written
+    return row
+
+
+async def test_2555_a_recheck_held_through_a_revision_is_narrated_once_it_ends():
+    """#2555's done-when, through the apply path: a hold, then a decline, then
+    a live turn. The re-check recorded during the hold binds to nothing once
+    the hold ends; it is told on the live turn, with the rows it could name,
+    and never again while it stays unbound. A record with no disagreement
+    narrates all the same."""
+    eng, case = _held_recheck()
+    assert not _naming(await _live(eng, case, 7), "held"), "held: nothing binds"
+    case.current_turn = 8
+    _decline(case)
+    (line,) = _naming(await _live(eng, case, 8), "held")
+    assert "name nothing they re-check that binds" in line
+    assert "symptom rows: one of" in line
+    assert case.progress.outcome.disagreements == {}
+    assert not _naming(await _live(eng, case, 9), "held"), "told once"
+    (entry,) = case.progress.outcome.unbound_rechecks
+    assert entry.narrated_turn == 8
+
+
+def _stored_as_json(case, **extra) -> None:
+    """The record stored for ``case`` as its JSON loads back; ``extra`` keys a
+    record written by another release carried."""
+    from faultmaven.modules.case.contracts import CaseOutcome
+
+    dumped = compute_case_outcome(None, case).model_dump(mode="json")
+    dumped.pop("narration_since", None)  # as ``main`` stored it: no such key
+    case.progress.outcome = CaseOutcome.model_validate({**dumped, **extra})
+
+
+@pytest.mark.parametrize(
+    "extra", [{}, {"narration_since": 7}], ids=["pre-b2", "with-a-dropped-key"]
+)
+async def test_a_stored_records_untold_rows_are_named_once(extra):
+    """Mark nothing, tell once (ruled 2026-11-13): a stored record's unbound
+    rows no narration told, whatever release wrote it (a key it carried that
+    the model no longer has is ignored), are named on the next verified
+    narrated turn, then never again."""
+    eng, case = _held_recheck()
+    _decline(case)
+    _stored_as_json(case, **extra)
+    (line,) = _naming(await _live(eng, case, 9), "held")
+    assert "name nothing they re-check that binds" in line
+    assert not _naming(await _live(eng, case, 10), "held"), "told once"
+    (row,) = case.progress.outcome.unbound_rechecks
+    assert row.narrated_turn == 9
+    assert "narration_since" not in case.progress.outcome.model_dump()
+
+
+async def test_a_row_the_notice_did_not_name_is_narrated_on_a_later_turn():
+    """Five rows a line: only those are marked narrated, and the other three
+    are named on the next turn."""
+    from tests.unit.core.investigation.bound_rows import _row
+
+    eng, case = _held_recheck()
+    for n in range(7):
+        _row(
+            case,
+            EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+            turn=7,
+            evidence_id=_eid(f"more{n}"),
+            summary=f"checkout answers 200 ({n})",
+        )
+    await _live(eng, case, 7)
+    case.current_turn = 8
+    _decline(case)
+    first = "\n".join(await _live(eng, case, 8))
+    rows = case.progress.outcome.unbound_rechecks
+    named = {u.evidence_id for u in rows if u.narrated_turn == 8}
+    assert len(rows) == 8 and len(named) == 5
+    assert all(e in first for e in named)
+    second = "\n".join(await _live(eng, case, 9))
+    rest = {u.evidence_id for u in rows} - named
+    assert len(rest) == 3 and all(e in second for e in rest)
+    assert all(
+        u.narrated_turn is not None for u in case.progress.outcome.unbound_rechecks
+    )
+
+
+async def test_a_row_that_leaves_the_unbound_list_and_returns_is_told_again():
+    """The invariant's stretch: a row bound for a turn loses its mark, so its
+    return to the unbound list is told again."""
+    from tests.unit.core.investigation.bound_rows import VERIFYING_ID
+
+    eng, case = _held_recheck()
+    case.current_turn = 8
+    _decline(case)
+    assert _naming(await _live(eng, case, 8), "held")
+    (row,) = [e for e in case.evidence if e.evidence_id == _eid("held")]
+    row.record_rechecks(VERIFYING_ID, named=VERIFYING_ID)
+    await _live(eng, case, 9)
+    assert case.progress.outcome.unbound_rechecks == [], "premise: it binds"
+    row.metadata.pop("fix_verification")
+    assert _naming(await _live(eng, case, 10), "held"), "told again"
+
+
+def _flagged(case) -> dict:
+    """The unbound decider's code for ``case``, as a cycle logs it."""
+    metadata: dict = {"milestones_completed": []}
+    assert _flag_unbound_post_fix_rows(case, metadata)
+    return metadata
+
+
+def test_two_unbound_entries_render_the_rows_once():
+    """A replayed bundle's code and the live recompute's: the rows render
+    once, at the first entry's place (``main``'s), with the last entry's
+    pool; the other entry's token is removed."""
+    from faultmaven.core.investigation.milestone_engine.stage_gates import (
+        REPLAYED_DECISION,
+    )
+
+    _eng, case = _held_recheck()
+    _decline(case)
+    metadata = _flagged(case)
+    (bundle,) = metadata[DECISIONS_KEY]
+    bundle[REPLAYED_DECISION] = True
+    params = {**bundle["params"], "problem_row_ids": ["ev_last"]}
+    metadata["system_notices"].append("BETWEEN")
+    record_decision(metadata, NoticeCode.UNBOUND_RECHECKS, **params)
+    assert len(metadata[DECISIONS_KEY]) == 2, "premise: the params differ"
+    notices = narrated(case, metadata)
+    assert notices[1:] == ["BETWEEN"] and _naming(notices, "held")
+    assert "symptom rows: one of ev_last;" in notices[0]
+
+
+def test_a_failed_write_tells_no_unbound_row_and_marks_none(monkeypatch):
+    """The failed-write path: the narration's in-memory outcome renders no
+    unbound row and marks nothing, and the fold counts nothing; the next
+    stored write tells the row once."""
+    from faultmaven.core.investigation.milestone_engine import turn_narration
+    from faultmaven.core.investigation.milestone_engine.turn_narration import (
+        narrate_turn,
+    )
+
+    counted = _counted(monkeypatch)
+    _eng, case = _held_recheck()
+    _decline(case)
+    real = outcome_module._mitigation
+
+    def _boom(*_a):
+        raise RuntimeError("the cycle's write fails")
+
+    monkeypatch.setattr(outcome_module, "_mitigation", _boom)
+    metadata = {**_flagged(case), turn_narration.OUTCOME_WRITTEN_KEY: False}
+    assert not outcome_module.record_case_outcome(case, at="cycle")
+    monkeypatch.setattr(outcome_module, "_mitigation", real)
+    narrate_turn(case, metadata)
+    assert not _naming(metadata["system_notices"], "held")
+    assert case.progress.outcome is None, "nothing marked: nothing stored"
+
+    case.current_turn += 1
+    assert len(_naming(narrated(case, _flagged(case)), "held")) == 1
+    assert counted == []
+
+
+def test_with_no_stored_record_a_row_written_earlier_is_narrated():
+    """#2555, inverted from PR #2668: with no stored record the fold marks
+    nothing, so a row an earlier turn wrote, its record write failed, is told
+    (the backfill gives every stored case a record, so none is lost)."""
+    _eng, case = _held_recheck()
+    _decline(case)
+    assert case.progress.outcome is None
+    case.current_turn = 30
+    assert _naming(narrated(case, _flagged(case)), "held")
+
+
+def test_with_no_stored_record_a_row_written_this_turn_is_narrated():
+    _eng, case = _held_recheck()
+    _decline(case)
+    _late_row(case, "late", written=30)
+    case.current_turn = 30
+    notices = narrated(case, _flagged(case))
+    assert _naming(notices, "late") and _naming(notices, "held")
+
+
+def test_a_row_whose_line_the_notice_cap_cut_stays_unnarrated():
+    """The turn record keeps the first notices; a row named only on a line it
+    cut is narrated on a later turn."""
+    from faultmaven.modules.case.contracts import MAX_SYSTEM_NOTICES
+
+    _eng, case = _held_recheck()
+    _decline(case)
+    metadata = _flagged(case)
+    metadata["system_notices"] = [
+        *(f"NOTICE {n}" for n in range(MAX_SYSTEM_NOTICES)),
+        *metadata["system_notices"],
+    ]
+    assert _naming(narrated(case, metadata), "held")
+    (row,) = case.progress.outcome.unbound_rechecks
+    assert row.narrated_turn is None
+
+
+def test_2555_an_unbound_row_already_narrated_is_not_repeated():
+    """``main``'s text the first time the row is told; nothing the next turn,
+    though the decider logs the code again (the row is still unbound)."""
+    name = "unbound_unnamed_after_a_fix"
+    case, metadata = golden.B1C_SCENARIOS[name]()
+    assert golden.cycle_text(narrated(case, metadata)) == oracle(name)
+    case.current_turn += 1
+    # The decider reads no pool and logs nothing once every row is told.
+    later: dict = {}
+    assert not _flag_unbound_post_fix_rows(case, later)
+    assert narrated(case, later) == []
+
+
+async def test_the_rows_marked_are_those_the_turn_record_kept(monkeypatch):
+    """21 notices, one a leftover token the turn record strips: the record
+    keeps all 20 others, the unbound line (position 19) among them, and its
+    row is marked told. Marking reads the record ``record_turn`` created,
+    after the narration."""
+    from faultmaven.core.investigation.milestone_engine import turn_completion
+    from faultmaven.core.investigation.milestone_engine.turn_commit import (
+        TurnCommitPlan,
+    )
+    from faultmaven.core.investigation.milestone_engine.turn_narration import (
+        OUTCOME_WRITTEN_KEY,
+    )
+    from faultmaven.core.investigation.narration import codes
+    from faultmaven.modules.case.contracts import MAX_SYSTEM_NOTICES
+
+    monkeypatch.setattr(codes, "TOKENS_FAIL", False)
+    _eng, case = _held_recheck()
+    _decline(case)
+    metadata = _flagged(case)
+    stray: dict = {}
+    record_decision(stray, NoticeCode.MITIGATION_VERIFY_PROCEEDED)
+    plain = [f"NOTICE {n}" for n in range(MAX_SYSTEM_NOTICES - 1)]
+    metadata["system_notices"] = [
+        *plain[:-1],
+        *stray["system_notices"],
+        *metadata["system_notices"],
+        plain[-1],
+    ]
+    assert len(metadata["system_notices"]) == MAX_SYSTEM_NOTICES + 1
+    metadata[OUTCOME_WRITTEN_KEY] = outcome_module.record_case_outcome(case, at="cycle")
+    inputs = turn_application.TurnRecordInputs(
+        fields=dict(
+            turn_number=case.current_turn,
+            milestones_completed=[],
+            evidence_added=[],
+            hypotheses_generated=[],
+            hypotheses_validated=[],
+            solutions_proposed=[],
+            progress_made=False,
+            outcome=TurnOutcome.CONVERSATION,
+            user_message="m",
+            agent_response="Noted.",
+        ),
+        stagnation_str=None,
+        validation_repairs=[],
+    )
+    await turn_completion._finalize_turn(
+        MagicMock(),
+        case_updated=case,
+        metadata=metadata,
+        plan=TurnCommitPlan(),
+        redaction_ctx=SimpleNamespace(save=AsyncMock()),
+        response_obj=SimpleNamespace(suggested_follow_ups=None),
+        record_inputs=inputs,
+    )
+    kept = case.turn_history[-1].system_notices
+    assert len(kept) == MAX_SYSTEM_NOTICES and _naming(kept, "held")
+    (row,) = case.progress.outcome.unbound_rechecks
+    assert row.narrated_turn == case.current_turn

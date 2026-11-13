@@ -590,9 +590,21 @@ class Case(BaseModel):
         """True once a repository loaded this case or committed its save."""
         return self._persisted
 
-    def mark_persisted(self) -> None:
-        """Called by a repository's loader and after a committed save."""
+    def mark_persisted(self, *, by_receipt: bool = False) -> None:
+        """Called by a repository's loader and after a committed save.
+        ``by_receipt``: the save's own commit raised, and the turn's receipt
+        read back under its key is all that says it committed (#1888); it
+        may be another request's commit under the same key, so nothing that
+        counts a commit counts it (#2689)."""
         self._persisted = True
+        self._persisted_by_receipt = by_receipt
+
+    #: Set by ``mark_persisted(by_receipt=True)``. Never serialised.
+    _persisted_by_receipt: bool = PrivateAttr(default=False)
+
+    @property
+    def persisted_by_receipt(self) -> bool:
+        return self._persisted_by_receipt
 
     @property
     def effective_driver_id(self) -> Optional[str]:

@@ -255,7 +255,11 @@ class UnboundRecheck(BaseModel):
     )
     after_mitigation: bool = False
     narrated_turn: Optional[int] = Field(
-        default=None, description="The turn the row was last narrated"
+        default=None,
+        description=(
+            "The turn the row was narrated in this continuous unbound stretch "
+            "(#2555), or None while it is still to be told"
+        ),
     )
 
 
@@ -326,6 +330,6 @@ class CaseOutcome(BaseModel):
         description=(
             "Each carried verdict a fresh derivation disagrees with, by field "
             "and entry, and the turn the disagreement was first read: counted "
-            "once, when it first appears"
+            "once, when a saved record first carries it (#2689)"
         ),
     )

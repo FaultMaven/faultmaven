@@ -13,12 +13,19 @@ re-derived:
 
 A fresh derivation that disagrees with a carried verdict is a disagreement:
 the carried verdict stands, and the record keeps the turn the disagreement was
-first read (``CaseOutcome.disagreements``). It is logged and counted on
-``case_outcome_conflicts_total{field}`` once, when it first appears; a
-recompute that reads it again counts nothing, and one that reads it gone drops
-it, so its return counts again. In this stage the deciders still read fresh
-derivations, so a disagreement is a place where a decider and the record
-disagree; stage S3 switches them.
+first read (``CaseOutcome.disagreements``). The fold logs it when it first
+appears and counts nothing. It is counted on
+``case_outcome_conflicts_total{field}`` once, when a saved record first
+carries it (#2689, ruled 2026-11-13: "stored" means the save has committed):
+``report_saved_disagreements`` counts the saved record's (key, first-read
+turn) pairs the record loaded before the write did not hold, after the turn's
+commit (``turn_settlement.settle_turn``), the REST close's retry helper and
+the backfill's save. A dry run, a failed or cancelled commit, a retried
+attempt and a commit only the turn receipt vouches for count nothing. A fold
+that reads it gone drops it, so its return, read at a later turn, counts
+again, within one turn's folds too. In this stage the deciders still read
+fresh derivations, so a disagreement is a place where a decider and the
+record disagree; stage S3 switches them.
 
 Where it is written (``record_case_outcome``): at the end of each decision
 cycle (``_apply_turn_response``, after every decider, before the save), after
@@ -156,20 +163,14 @@ def record_case_outcome(
 
 class _Disagreements:
     """The disagreements one computation reads, keyed by field and entry: the
-    record keeps the turn each was first read, and each is counted and logged
-    once, when it first appears; or, given ``unreported``, collected there
-    uncounted."""
+    record keeps the turn each was first read, and each is logged when it
+    first appears. Nothing is counted here (#2689): a saved record's are
+    counted after its save (``report_saved_disagreements``)."""
 
-    def __init__(
-        self,
-        case: "Case",
-        prior: Optional[CaseOutcome],
-        unreported: Optional[list] = None,
-    ) -> None:
+    def __init__(self, case: "Case", prior: Optional[CaseOutcome]) -> None:
         self.case = case
         self.known = dict(prior.disagreements) if prior is not None else {}
         self.read: dict[str, int] = {}
-        self.unreported = unreported
 
     def add(self, field: str, entry: Optional[str], carried, fresh) -> None:
         key = f"{field}:{entry}" if entry else field
@@ -177,9 +178,6 @@ class _Disagreements:
             self.read[key] = self.known[key]
             return
         self.read[key] = self.case.current_turn
-        if self.unreported is not None:
-            self.unreported.append((field, key, carried, fresh))
-            return
         logger.warning(
             "Case %s: the outcome record's carried %s (%s) disagrees with a "
             "fresh derivation (%s); the carried verdict stands (#2615)",
@@ -188,7 +186,48 @@ class _Disagreements:
             carried,
             fresh,
         )
-        case_outcome_conflicts_total.labels(field=field).inc()
+
+
+def disagreement_keys(outcome: Optional[CaseOutcome]) -> frozenset[tuple[str, int]]:
+    """The disagreements ``outcome`` carries, as (key, first-read turn) pairs:
+    what a write site captures from the record it loaded, before its write. A
+    key dropped and read again at another turn is a new pair."""
+    if outcome is None:
+        return frozenset()
+    return frozenset(outcome.disagreements.items())
+
+
+def report_saved_disagreements(
+    case_id: Optional[str],
+    loaded: frozenset[tuple[str, int]],
+    saved: Optional[CaseOutcome],
+    narration: tuple[str, ...] = (),
+) -> list[str]:
+    """Count, once, each disagreement the saved record carries that the record
+    loaded before the write (``loaded``, ``disagreement_keys``) did not, and
+    each of the narration's conflicts (``narration.<code>``,
+    ``turn_narration``). Called only after the save has committed (#2689).
+    Each increment is guarded on its own and logged when it fails, so a
+    committed save is never failed by it. Returns the keys counted."""
+    found = sorted(key for key, _turn in disagreement_keys(saved) - loaded)
+    for field in [key.split(":", 1)[0] for key in found] + list(narration):
+        try:
+            case_outcome_conflicts_total.labels(field=field).inc()
+        except Exception:  # noqa: BLE001 — the rest are still counted
+            logger.exception(
+                "Case %s: the disagreement %s was not counted (#2689)",
+                case_id,
+                field,
+            )
+    if found or narration:
+        logger.info(
+            "Case %s: counted the saved record's disagreements %s and the "
+            "narration's conflicts %s (#2689)",
+            case_id,
+            found,
+            list(narration),
+        )
+    return found
 
 
 def compute_case_outcome(
@@ -196,18 +235,15 @@ def compute_case_outcome(
     case: "Case",
     *,
     closure: Optional[ClosureOutcome] = None,
-    unreported: Optional[list] = None,
 ) -> CaseOutcome:
     """The case's outcome, folded over ``prior`` (None: computed once from
     the case as it stands). ``closure``: the closure a terminal transition
-    persists (``record_case_outcome``). ``unreported``: the disagreements the
-    fold first reads are collected there and never counted, for an outcome
-    computed in memory and never stored (the narration's, when the cycle's
-    write failed, #2636); without it they are counted here."""
+    persists (``record_case_outcome``). Counts nothing: its disagreements are
+    counted once a saved record carries them (#2689)."""
     subjects = subject_index(case)
     windows = fix_windows(case, subjects)
     statement = current_statement(case)
-    seen = _Disagreements(case, prior, unreported)
+    seen = _Disagreements(case, prior)
     unbound = _unbound_rechecks(prior, case, subjects, windows)
     return CaseOutcome(
         folded_under=case.state,
@@ -426,8 +462,13 @@ def _unbound_rechecks(
     windows: list,
 ) -> list[UnboundRecheck]:
     """Every post-fix row bound to nothing, whatever turn recorded it and
-    whatever the problem's status. ``narrated_turn`` is carried: stage R's
-    renderer writes it."""
+    whatever the problem's status. ``narrated_turn`` is carried from the
+    prior's list while the row stays on it (one continuous unbound stretch):
+    the narration step writes it (#2555). Nothing is marked here (ruled
+    2026-11-13: mark nothing, tell once): a row no narration has told, in a
+    backfilled record or one stored before B2, is told once by the next
+    verified narrated turn. A row that leaves the list and returns is told
+    again."""
     found = unbound_post_fix_rows(case, subjects, windows)
     if not found:
         return []

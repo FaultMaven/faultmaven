@@ -29,6 +29,7 @@ from faultmaven.core.investigation.milestone_engine.transition_consent import (
 )
 from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommitPlan
 from faultmaven.core.investigation.offers import open_terminal_offer
+from faultmaven.core.investigation.outcome import disagreement_keys
 from faultmaven.core.investigation.schemas import TurnPayload
 from faultmaven.core.investigation.suggestion_liveness import (
     live_suggestions,
@@ -377,6 +378,12 @@ class InvestigationService:
         try:
             # 1. Retrieve case and verify access
             case = await self.repository.get(case_id)
+            # The record's disagreements as loaded, before any turn path (a
+            # step-0 confirmation's terminal write included) folds it: the
+            # committed record's others are counted after the commit (#2689).
+            loaded_disagreements = disagreement_keys(
+                case.progress.outcome if case is not None else None
+            )
             # A "save it as data" click becomes the turn's attachment here,
             # BEFORE the turn is charged and classified (#1930): a click naming
             # no offer is refused at no cost, and the classification below sees
@@ -586,6 +593,7 @@ class InvestigationService:
                 response=response,
                 payload=payload,
                 preprocess_results=preprocess_results,
+                loaded_disagreements=loaded_disagreements,
                 committed_turn_row={
                     "attachment_metadata": attachment_metadata,
                     # The intent ``_build_user_message`` settled on — the

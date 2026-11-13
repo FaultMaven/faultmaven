@@ -6,7 +6,11 @@ from faultmaven.core.investigation.milestone_engine.transitions import (
 )
 from faultmaven.core.investigation.milestone_engine.turn_narration import (
     OUTCOME_WRITTEN_KEY,
+    mark_told,
     narrate_turn,
+)
+from faultmaven.core.investigation.milestone_engine.turn_records import (
+    recorded_notices,
 )
 from faultmaven.core.investigation.narration.codes import NoticeCode
 from faultmaven.core.investigation.narration.notices import render_notice
@@ -15,9 +19,11 @@ from faultmaven.core.investigation.outcome import record_case_outcome
 
 def narrated(case, metadata: dict) -> list[str]:
     """Write the case's record, narrate ``metadata``'s decision log as the
-    turn's narration step does, and return its notices."""
+    turn's narration step does, mark the unbound rows told on the notices the
+    turn record would keep (#2555), and return its notices."""
     metadata[OUTCOME_WRITTEN_KEY] = record_case_outcome(case, at="cycle")
     narrate_turn(case, metadata)
+    mark_told(case, metadata, recorded_notices(metadata.get("system_notices") or []))
     metadata.pop(OUTCOME_WRITTEN_KEY)
     return metadata.get("system_notices") or []
 

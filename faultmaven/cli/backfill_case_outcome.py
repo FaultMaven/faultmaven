@@ -44,6 +44,10 @@ than writing the old progress back, and ``updated_at`` is kept, so no user's
 case list re-sorts. No save-time derivation runs (no offer lapses). A write
 that loses the version race is tried again from a fresh load
 (``update_case_with_retry``): tried up to three times in all.
+Each disagreement a written record carries is counted once, after its save,
+on the attempt that saved it, and printed per case (a CLI process's counter
+is never scraped); a dry run counts nothing (#2689). It marks no unbound
+re-check told: the next verified narrated turn tells each once (#2555).
 
 A case that needs a record while work on it is in flight (a turn, or a task
 one spawned, holds its lease on some replica: ``CaseDeleteGate.work_in_flight``,
@@ -131,7 +135,11 @@ async def backfill_case_outcome(
     flight; by default the container's, composed here (a test passes its own).
     """
     from faultmaven.cli._tenant import EnterpriseRefused, bind_and_load_enterprise
-    from faultmaven.core.investigation.outcome import compute_case_outcome
+    from faultmaven.core.investigation.outcome import (
+        compute_case_outcome,
+        disagreement_keys,
+        report_saved_disagreements,
+    )
     from faultmaven.modules.case.exceptions import CaseNotFoundError
     from faultmaven.modules.case.utils.retry import update_case_with_retry
     from faultmaven.providers.tenancy.factory import (
@@ -179,6 +187,7 @@ async def backfill_case_outcome(
             if busy:
                 raise _Leave("a turn or its task is in flight", skipped=True)
         repairing[case.case_id] = case.progress.outcome is not None
+        loaded[case.case_id] = disagreement_keys(case.progress.outcome)
         # Over the stored record: none for a case without one (ruled on
         # #2636), and for a repair the record the terminal write left, whose
         # final verdicts carry while its open closure does not.
@@ -191,12 +200,18 @@ async def backfill_case_outcome(
     already = 0
     written: list[str] = []
     repairing: dict[str, bool] = {}
+    loaded: dict[str, frozenset[tuple[str, int]]] = {}
+    counted: dict[str, list[str]] = {}
     skipped: list[tuple[str, str]] = []
     failed: list[tuple[str, str]] = []
     for case_id in case_ids:
         try:
-            await update_case_with_retry(
+            saved = await update_case_with_retry(
                 repository, case_id, _apply, save=repository.save_progress
+            )
+            # Counted once, after the save, on the attempt that saved (#2689).
+            counted[case_id] = report_saved_disagreements(
+                case_id, loaded[case_id], saved.progress.outcome
             )
             written.append(case_id)
         except _Leave as left:
@@ -218,6 +233,11 @@ async def backfill_case_outcome(
     print(f"Records {verb}: {len(written)} ({len(repaired)} repaired)")
     for case_id in repaired:
         print(f"  - {case_id}: a terminal record no terminal write folded")
+    # Printed: a CLI process's counter is never scraped.
+    found = {i: keys for i, keys in counted.items() if keys}
+    print(f"Disagreements counted: {sum(len(k) for k in found.values())}")
+    for case_id, keys in found.items():
+        print(f"  - {case_id}: {', '.join(keys)}")
     if skipped:
         print(f"Skipped:      {len(skipped)} (work in flight; re-run to write them)")
         for case_id, why in skipped:

@@ -1004,11 +1004,11 @@ terminal_summary_total = Counter(
 # The case outcome record (#2615 stage S1). A verdict the rules call final is
 # carried in ``progress.outcome`` and never re-derived; a fresh derivation that
 # disagrees with it is a disagreement, counted here by the record's field once,
-# when it first appears (the record keeps the turn it was first read), and the
-# carried verdict stands. In this stage the deciders still read fresh
-# derivations, so a disagreement is a case where a decider and the record
-# disagree; stage S3 switches the deciders. Labelled by field only: never a
-# case, user or tenant.
+# when a saved record first carries it (#2689: after the save commits; the
+# record keeps the turn it was first read), and the carried verdict stands.
+# In this stage the deciders still read fresh derivations, so a disagreement
+# is a case where a decider and the record disagree; stage S3 switches the
+# deciders. Labelled by field only: never a case, user or tenant.
 _OUTCOME_RECORD_FIELDS = (
     "attempts.window",
     "attempts.accepted_in_turn",
@@ -1016,17 +1016,18 @@ _OUTCOME_RECORD_FIELDS = (
     "closure",
     # The narration step (#2636): a decision whose resolution reason, closure
     # verdict, problem status or identified cause the stored record does not
-    # state, counted on each narration of it, by code (``DECIDED_FROM``,
-    # ``turn_narration._conflicts``).
+    # state, counted after the turn commits, on each narration of it, by code
+    # (``DECIDED_FROM``, ``turn_narration._conflicts``).
     *sorted({f"narration.{code}" for code, _composer in DECIDED_FROM}),
 )
 
 case_outcome_conflicts_total = Counter(
     "faultmaven_case_outcome_conflicts_total",
     "A carried final verdict in the case outcome record disagreed with a "
-    "fresh derivation (#2615), counted once when the disagreement first "
-    "appears; or a decision narrated after the cycle's stored record "
-    "disagreed with it (#2636). Labelled by the record field "
+    "fresh derivation (#2615), counted once when a saved record first "
+    "carries it (#2689); or a decision narrated after the cycle's stored "
+    "record disagreed with it (#2636), counted after the turn commits. "
+    "Labelled by the record field "
     "(attempts.window|attempts.accepted_in_turn|resolution.confirmed_row_ids|"
     "closure) or the narrated code (narration.<code>, each code a decision "
     "is compared to the record by).",
