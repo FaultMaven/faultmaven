@@ -33,6 +33,7 @@ from faultmaven.modules.preprocessing.preprocessing_service import (
     PreprocessingService,
 )
 from tests.unit.modules.preprocessing.extraction_stubs import CrimeScene
+from tests.unit.modules.preprocessing.uncertain_classifier import uncertain_classifier
 
 
 @pytest.fixture
@@ -270,18 +271,8 @@ class TestClassificationFailedPlaceholderNaming:
 
     @staticmethod
     def _service_that_always_fails_classification():
-        real = DataClassifier()
-
-        class _AlwaysUncertain(DataClassifier):
-            def classify(self, *args, **kwargs):
-                result = real.classify(*args, **kwargs)
-                result.classification_failed = True
-                result.confidence = 0.10
-                return result
-
         return PreprocessingService(
-            classifier=_AlwaysUncertain(),
-            logs_extractor=CrimeScene(),
+            classifier=uncertain_classifier(), logs_extractor=CrimeScene()
         )
 
     @pytest.mark.asyncio

@@ -306,29 +306,6 @@ def _line_count(content: str) -> int:
     return content.count("\n") + (0 if content.endswith("\n") else 1)
 
 
-@dataclasses.dataclass(frozen=True)
-class _CaptureShape:
-    """The structural signals a Copilot page capture carries. Real captures
-    from htmlToStructuredText emit a ``[captured_at: …]`` preamble or ``## ``
-    headings (typically both); a capture with neither is not trusted to skip
-    Tier-1 extraction."""
-
-    captured_at_preamble: bool
-    h2_heading: bool
-
-    @property
-    def valid(self) -> bool:
-        return self.captured_at_preamble or self.h2_heading
-
-
-def _page_capture_shape(content: str) -> _CaptureShape:
-    return _CaptureShape(
-        captured_at_preamble="[captured_at:" in content[:512],
-        # A `## ` heading at the start of the content or after a newline.
-        h2_heading=content.startswith("## ") or "\n## " in content,
-    )
-
-
 class PreprocessingService:
     """Tier 0+1 pipeline orchestrator for data preprocessing."""
 
@@ -546,24 +523,29 @@ class PreprocessingService:
         # extractor dispatch, the one place the type is used. A card would
         # otherwise hold the upload out of the turn (a three-line preview,
         # no directed analysis) with analysis two more user turns away.
-        line_count = _line_count(content)
         triggered_by = "user_override" if user_override is not None else "initial"
 
         # Path 3: page capture — already structured, pass through with char cap.
         # Validate the structural shape before bypassing the extractor so a
         # mislabeled or maliciously-shaped paste cannot use the page_capture
-        # source_type to skip Tier-1 extraction (see ``_CaptureShape``);
-        # a capture lacking both signals falls through with a logged warning.
+        # source_type to skip Tier-1 extraction. Real Copilot captures from
+        # htmlToStructuredText emit a `[captured_at: …]` preamble or `## `
+        # headings (typically both); a capture with neither falls through
+        # with a logged warning.
         if classification.source_type == "page_capture":
-            shape = _page_capture_shape(content)
+            has_captured_at = "[captured_at:" in content[:512]
+            # A `## ` heading at the start of the content or after a newline.
+            has_h2_heading = content.startswith("## ") or "\n## " in content
 
-            if shape.valid:
+            if has_captured_at or has_h2_heading:
                 logger.info(
                     "classify_and_extract: page_capture detected, "
                     "skipping extractor (content already structured)"
                 )
-                detailed_data_type, unified_data_type = self._settle_uncertain(
-                    classification, filename, line_count, detailed_data_type
+                detailed_data_type, unified_data_type, epoch_policy_type = (
+                    self._settle_uncertain(
+                        classification, filename, content, detailed_data_type
+                    )
                 )
                 extraction = ExtractionResult(
                     method="page_capture_passthrough",
@@ -572,8 +554,8 @@ class PreprocessingService:
                         "passthrough": True,
                         "source_type": "page_capture",
                         "shape_signals": {
-                            "captured_at_preamble": shape.captured_at_preamble,
-                            "h2_heading": shape.h2_heading,
+                            "captured_at_preamble": has_captured_at,
+                            "h2_heading": has_h2_heading,
                         },
                     },
                 )
@@ -585,6 +567,7 @@ class PreprocessingService:
                     classification=classification,
                     start_time=start_time,
                     triggered_by=triggered_by,
+                    epoch_policy_type=epoch_policy_type,
                 )
 
             # Shape invalid — log and fall through to standard dispatch.
@@ -597,8 +580,8 @@ class PreprocessingService:
                 extra={
                     "attachment_filename": filename,
                     "content_prefix": content[:120],
-                    "captured_at_preamble": shape.captured_at_preamble,
-                    "h2_heading": shape.h2_heading,
+                    "captured_at_preamble": has_captured_at,
+                    "h2_heading": has_h2_heading,
                 },
             )
             try:
@@ -614,6 +597,7 @@ class PreprocessingService:
         # Path 4: small-file passthrough — raw content is a better file
         # extract than any compressed representation, and extraction adds
         # no value for files that fit in the LLM context window directly.
+        line_count = _line_count(content)
         if line_count < MIN_EXTRACTION_LINES:
             logger.info(
                 "classify_and_extract: %s has %d lines (< %d threshold) — "
@@ -622,8 +606,10 @@ class PreprocessingService:
                 line_count,
                 MIN_EXTRACTION_LINES,
             )
-            detailed_data_type, unified_data_type = self._settle_uncertain(
-                classification, filename, line_count, detailed_data_type
+            detailed_data_type, unified_data_type, epoch_policy_type = (
+                self._settle_uncertain(
+                    classification, filename, content, detailed_data_type
+                )
             )
             extraction = ExtractionResult(
                 method="raw_passthrough",
@@ -638,6 +624,7 @@ class PreprocessingService:
                 classification=classification,
                 start_time=start_time,
                 triggered_by=triggered_by,
+                epoch_policy_type=epoch_policy_type,
             )
 
         # Path 2: classification_failed where an extractor would read the
@@ -703,17 +690,26 @@ class PreprocessingService:
 
     @staticmethod
     def _settle_uncertain(
-        classification, filename: str, line_count: int, detailed_data_type
+        classification, filename: str, content: str, detailed_data_type
     ):
-        """The type a passthrough records. A confident verdict keeps its type.
-        An uncertain one (#2355) is not put to the user, because no
-        extractor reads a passthrough: it is typed UNSTRUCTURED_TEXT rather
-        than the guess the classifier could not stand behind. The verdict
+        """The type a passthrough records, and the type whose bare-epoch
+        timestamp policy applies to it.
+
+        A confident verdict keeps its type for both. An uncertain one (#2355)
+        is not put to the user, because no extractor reads a passthrough: it
+        is typed UNSTRUCTURED_TEXT rather than the guess the classifier
+        could not stand behind, while the epoch policy stays the guess's, as
+        it was under the clarification placeholder (an unconfirmed config
+        must not start reading ``maxBytes: 2147483647`` as 2038). The verdict
         stays recorded as uncertain on the result's
         ``evidence_metadata.classification``, which intake does not persist
         (#1710); the counter is the lasting record."""
         if not classification.classification_failed:
-            return detailed_data_type, to_unified_data_type(detailed_data_type)
+            return (
+                detailed_data_type,
+                to_unified_data_type(detailed_data_type),
+                detailed_data_type,
+            )
         PREPROCESSING_UNCERTAIN_CLASSIFICATION_TOTAL.labels(outcome="passthrough").inc()
         logger.info(
             "classify_and_extract: %s classification uncertain "
@@ -722,10 +718,12 @@ class PreprocessingService:
             filename,
             classification.confidence,
             detailed_data_type.value,
-            line_count,
+            _line_count(content),
         )
-        return DataType.UNSTRUCTURED_TEXT, to_unified_data_type(
-            DataType.UNSTRUCTURED_TEXT
+        return (
+            DataType.UNSTRUCTURED_TEXT,
+            to_unified_data_type(DataType.UNSTRUCTURED_TEXT),
+            detailed_data_type,
         )
 
     async def _dispatch_with_optional_retry(
@@ -1018,6 +1016,7 @@ class PreprocessingService:
         classification,
         start_time: float,
         triggered_by: str = "initial",
+        epoch_policy_type: Optional[DataType] = None,
     ) -> PreprocessingResult:
         """Assemble a PreprocessingResult from an ExtractionResult.
 
@@ -1062,15 +1061,10 @@ class PreprocessingService:
         coverage_start_ts = None
         coverage_end_ts = None
         coverage_source: str | None = None
-        # An uncertain verdict passed through as UNSTRUCTURED_TEXT (#2355)
-        # keeps the epoch policy of the classifier's guess, as the
-        # clarification placeholder did: a config the rules could not
-        # confirm must not start reading ``maxBytes: 2147483647`` as 2038.
-        epoch_policy_type = (
-            classification.data_type
-            if classification.classification_failed
-            else detailed_data_type
-        )
+        # ``epoch_policy_type`` is passed only by a passthrough of an
+        # uncertain verdict (``_settle_uncertain``, #2355); everywhere else
+        # the recorded type decides.
+        epoch_policy_type = epoch_policy_type or detailed_data_type
         try:
             coverage_start_ts, coverage_end_ts, coverage_source = extract_time_range_ts(
                 content,
