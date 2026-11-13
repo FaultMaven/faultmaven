@@ -106,7 +106,7 @@ distro==1.9.0
     # via
     #   anthropic
     #   openai
-dnspython==2.9.0
+dnspython==2.9.2
     # via email-validator
 docstring-parser==0.18.0
     # via anthropic
@@ -331,7 +331,7 @@ onnxruntime==1.24.4
     # via chromadb
 openai==2.32.0
     # via faultmaven (pyproject.toml)
-opentelemetry-api==1.45.1
+opentelemetry-api==1.45.2
     # via
     #   faultmaven (pyproject.toml)
     #   chromadb
@@ -348,12 +348,12 @@ opentelemetry-proto==1.45.1
     # via
     #   opentelemetry-exporter-otlp-proto-common
     #   opentelemetry-exporter-otlp-proto-grpc
-opentelemetry-sdk==1.45.1
+opentelemetry-sdk==1.45.2
     # via
     #   chromadb
     #   opentelemetry-exporter-otlp-common
     #   opentelemetry-exporter-otlp-proto-grpc
-opentelemetry-semantic-conventions==0.66b1
+opentelemetry-semantic-conventions==0.66b2
     # via opentelemetry-sdk
 orjson==3.11.8
     # via chromadb
