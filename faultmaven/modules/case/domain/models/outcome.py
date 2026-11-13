@@ -325,14 +325,6 @@ class CaseOutcome(BaseModel):
     mitigation: Optional[MitigationOutcome] = None
     milestones_shown: List[str] = Field(default_factory=list)
     closure: ClosureOutcome
-    narration_since: Optional[int] = Field(
-        default=None,
-        description=(
-            "The turn the first record that narrates its unbound re-checks "
-            "was folded (#2555); None on a record stored before that, whose "
-            "rows the next fold marks narrated, unrendered"
-        ),
-    )
     disagreements: Dict[str, int] = Field(
         default_factory=dict,
         description=(

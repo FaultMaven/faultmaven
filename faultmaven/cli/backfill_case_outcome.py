@@ -46,10 +46,8 @@ that loses the version race is tried again from a fresh load
 (``update_case_with_retry``): tried up to three times in all.
 Each disagreement a written record carries is counted once, after its save,
 on the attempt that saved it, and printed per case (a CLI process's counter
-is never scraped); a dry run counts nothing (#2689). A record computed over
-no prior marks every unbound re-check told (#2555): run it before the release
-that narrates them from the record serves turns; a run after it marks them
-told all the same.
+is never scraped); a dry run counts nothing (#2689). It marks no unbound
+re-check told: the next verified narrated turn tells each once (#2555).
 
 A case that needs a record while work on it is in flight (a turn, or a task
 one spawned, holds its lease on some replica: ``CaseDeleteGate.work_in_flight``,
@@ -193,9 +191,7 @@ async def backfill_case_outcome(
         # Over the stored record: none for a case without one (ruled on
         # #2636), and for a repair the record the terminal write left, whose
         # final verdicts carry while its open closure does not.
-        # The watermark on (#2555): rows ``main`` told in their own turns are
-        # marked told, so the first turn after it names none of them again.
-        record = compute_case_outcome(case.progress.outcome, case, watermark=True)
+        record = compute_case_outcome(case.progress.outcome, case)
         if dry_run:
             raise _Leave("dry run", would_write=True)
         case.progress.outcome = record

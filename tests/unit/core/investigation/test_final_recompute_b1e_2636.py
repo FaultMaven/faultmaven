@@ -282,7 +282,8 @@ def test_a_flag_whose_pool_moved_renders_one_line_at_the_final_reading():
     """Step 1 flagged the unbound rows; housekeeping then retired a competing
     hypothesis, which moves the pool the line names. The final recompute's
     flag replaces step 1's, token kept. (#2555: appended, the rows would still
-    render once, at the last entry, from the record.)"""
+    render once, from the record, at the first entry's place with the last
+    entry's params.)"""
     case, metadata = golden.unbound_before_housekeeping_retires_a_competitor()
     (step_one,) = metadata[DECISIONS_KEY]
     token, params = step_one["token"], dict(step_one["params"])
@@ -309,7 +310,8 @@ def test_a_flag_the_final_reading_does_not_raise_keeps_step_ones():
 
 def test_a_replayed_bundles_flag_is_never_replaced():
     """A replayed bundle's entry is untouched: a replay-plus-live turn renders
-    as on ``main``. (#2555: an unbound pair renders once, at the last entry.)"""
+    as on ``main``. (#2555: an unbound pair renders once, at the first entry's
+    place with the last entry's params.)"""
     case, bundle = golden.absence_after_a_persistence()
     for entry in bundle[DECISIONS_KEY]:
         entry[REPLAYED_DECISION] = True

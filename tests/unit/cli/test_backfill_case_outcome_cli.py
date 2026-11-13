@@ -394,10 +394,12 @@ async def test_2689_a_retried_write_counts_each_disagreement_once_after_the_save
     ]
 
 
-async def test_2555_the_backfill_marks_old_unbound_rows_told(repository):
-    """A record the backfill computes over no prior marks every unbound
-    re-check told (``main`` told them in their own turns), so the next turn
-    names none of them."""
+async def test_2555_the_backfill_marks_nothing_and_the_next_turn_tells_once(
+    repository,
+):
+    """Mark nothing, tell once (ruled 2026-11-13): the backfill folds like any
+    caller, so its record marks no unbound row told; the next verified
+    narrated turn names each once, then never again."""
     from faultmaven.core.investigation.milestone_engine.stage_gates import (
         _flag_unbound_post_fix_rows,
     )
@@ -413,8 +415,13 @@ async def test_2555_the_backfill_marks_old_unbound_rows_told(repository):
     assert await _run(repository) == 0
     after = await repository.get(case.case_id)
     (row,) = after.progress.outcome.unbound_rechecks
-    assert row.narrated_turn == after.current_turn
-    after.current_turn += 1
-    metadata: dict = {}
-    _flag_unbound_post_fix_rows(after, metadata)
-    assert not [n for n in narrated(after, metadata) if row.evidence_id in n]
+    assert row.narrated_turn is None
+
+    def _turn() -> list[str]:
+        after.current_turn += 1
+        metadata: dict = {}
+        _flag_unbound_post_fix_rows(after, metadata)
+        return [n for n in narrated(after, metadata) if row.evidence_id in n]
+
+    assert len(_turn()) == 1
+    assert _turn() == [], "told once"

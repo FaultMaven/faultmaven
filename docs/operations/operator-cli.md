@@ -66,12 +66,8 @@ the release that first switches a reader onto it.
   counted". The process's `faultmaven_case_outcome_conflicts_total` is never
   scraped, so the API's metric does not move. A `--dry-run` counts nothing
   (#2689).
-- A record it computes marks every unbound re-check told (#2555): `main` told
-  them in their own turns. Run it before the release that narrates them from
-  the record (#2636 B2) serves turns; a run after it marks them told all the
-  same. Accepted: during that release's rolling deploy, a pod still on the
-  earlier release writes a record without `narration_since`, so a row the new
-  release had not yet told is marked told.
+- It marks no unbound re-check told (#2555): the next verified narrated turn
+  names each still-unbound row once, five per line, then marks it.
 - It skips a case that needs a record while work on it is in flight: a turn,
   or a task one spawned, holds the case's lease on some replica (the lease a
   case delete reads). A case whose lease cannot be read is skipped too. Both

@@ -1005,10 +1005,10 @@ terminal_summary_total = Counter(
 # carried in ``progress.outcome`` and never re-derived; a fresh derivation that
 # disagrees with it is a disagreement, counted here by the record's field once,
 # when a saved record first carries it (#2689: after the save commits; the
-# record keeps the turn it was first read), and the carried verdict stands. In this stage the deciders still read fresh
-# derivations, so a disagreement is a case where a decider and the record
-# disagree; stage S3 switches the deciders. Labelled by field only: never a
-# case, user or tenant.
+# record keeps the turn it was first read), and the carried verdict stands.
+# In this stage the deciders still read fresh derivations, so a disagreement
+# is a case where a decider and the record disagree; stage S3 switches the
+# deciders. Labelled by field only: never a case, user or tenant.
 _OUTCOME_RECORD_FIELDS = (
     "attempts.window",
     "attempts.accepted_in_turn",
@@ -1026,7 +1026,8 @@ case_outcome_conflicts_total = Counter(
     "A carried final verdict in the case outcome record disagreed with a "
     "fresh derivation (#2615), counted once when a saved record first "
     "carries it (#2689); or a decision narrated after the cycle's stored "
-    "record disagreed with it (#2636), counted after the turn commits. Labelled by the record field "
+    "record disagreed with it (#2636), counted after the turn commits. "
+    "Labelled by the record field "
     "(attempts.window|attempts.accepted_in_turn|resolution.confirmed_row_ids|"
     "closure) or the narrated code (narration.<code>, each code a decision "
     "is compared to the record by).",

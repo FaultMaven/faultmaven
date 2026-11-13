@@ -2,10 +2,11 @@
 the save has committed): each disagreement on the case outcome record is
 counted once, when a saved record first carries it.
 
-The turn counts the committed record's disagreement keys beyond those of the
-record it loaded, and the narration's conflicts, inside ``settle_turn`` right
-after the commit; the REST close after its retry helper returns. A failed or
-cancelled commit and a retried attempt count nothing extra. Driven through
+The turn counts the committed record's (key, first-read turn) pairs beyond
+those of the record it loaded, and the narration's conflicts, inside
+``settle_turn`` right after the commit; the REST close after its retry helper
+returns. A failed or cancelled commit and a retried attempt count nothing
+extra, and a commit only the turn receipt vouches for counts nothing. Driven through
 the REAL service and engine on a SQLite file database (``#1882``'s world), the
 LLM stubbed, with a real disagreement: an attempt's carried
 ``accepted_in_turn`` the case no longer reads.

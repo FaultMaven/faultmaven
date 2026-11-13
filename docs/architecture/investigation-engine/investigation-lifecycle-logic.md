@@ -1098,12 +1098,10 @@ named on a line it kept is marked narrated. The decider logs nothing once the
 stored record marks every unbound row told. The mark is
 carried while the row stays unbound, so a row is told once per continuous
 unbound stretch; a failed write or commit discards the marks with the record.
-A record stored before this rule (`narration_since` None) has its rows marked
-narrated, unrendered, by the next fold, and so does a record the backfill
-computes over none (the rows `main` told in their own turns). Accepted: a row
-held through a hold that straddles that deploy stays untold, and during a
-rolling deploy a pod still on the earlier release writes a record without
-`narration_since`, so a row B2 had not yet told is marked told.
+Nothing is marked any other way (ruled 2026-11-13: mark nothing, tell once):
+a still-unbound row with `narrated_turn` None, in a backfilled record or one
+stored before this rule, is named once on the next verified narrated turn
+(five per line, the cap applying), then marked.
 
 **Rationale**: Disposition actions happen last to ensure all state is consistent before case becomes immutable. Gate milestones are applied from the LLM's structured output alongside progress milestones; the new stage's prompt takes effect on the next turn.
 

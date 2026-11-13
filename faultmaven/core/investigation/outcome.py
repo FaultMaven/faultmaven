@@ -20,11 +20,12 @@ carries it (#2689, ruled 2026-11-13: "stored" means the save has committed):
 ``report_saved_disagreements`` counts the saved record's (key, first-read
 turn) pairs the record loaded before the write did not hold, after the turn's
 commit (``turn_settlement.settle_turn``), the REST close's retry helper and
-the backfill's save. A dry run, a failed or cancelled commit and a retried
-attempt count nothing. A fold that reads it gone drops it, so its return,
-read at a later turn, counts again, within one turn's folds too. In this stage the deciders still read fresh derivations, so a
-disagreement is a place where a decider and the record disagree; stage S3
-switches them.
+the backfill's save. A dry run, a failed or cancelled commit, a retried
+attempt and a commit only the turn receipt vouches for count nothing. A fold
+that reads it gone drops it, so its return, read at a later turn, counts
+again, within one turn's folds too. In this stage the deciders still read
+fresh derivations, so a disagreement is a place where a decider and the
+record disagree; stage S3 switches them.
 
 Where it is written (``record_case_outcome``): at the end of each decision
 cycle (``_apply_turn_response``, after every decider, before the save), after
@@ -234,19 +235,16 @@ def compute_case_outcome(
     case: "Case",
     *,
     closure: Optional[ClosureOutcome] = None,
-    watermark: bool = False,
 ) -> CaseOutcome:
     """The case's outcome, folded over ``prior`` (None: computed once from
     the case as it stands). ``closure``: the closure a terminal transition
-    persists (``record_case_outcome``). ``watermark``: with no prior, mark
-    every unbound re-check narrated, unrendered (the backfill, #2555: the
-    rows ``main`` told in their own turns). Counts nothing: its disagreements
-    are counted once a saved record carries them (#2689)."""
+    persists (``record_case_outcome``). Counts nothing: its disagreements are
+    counted once a saved record carries them (#2689)."""
     subjects = subject_index(case)
     windows = fix_windows(case, subjects)
     statement = current_statement(case)
     seen = _Disagreements(case, prior)
-    unbound = _unbound_rechecks(prior, case, subjects, windows, watermark)
+    unbound = _unbound_rechecks(prior, case, subjects, windows)
     return CaseOutcome(
         folded_under=case.state,
         problem=ProblemOutcome(
@@ -263,11 +261,6 @@ def compute_case_outcome(
         mitigation=_mitigation(case, subjects),
         milestones_shown=shown_milestones(case),
         closure=_closure(prior, case, closure, seen),
-        narration_since=(
-            prior.narration_since
-            if prior is not None and prior.narration_since is not None
-            else case.current_turn
-        ),
         disagreements=seen.read,
     )
 
@@ -467,27 +460,22 @@ def _unbound_rechecks(
     case: "Case",
     subjects: "SubjectIndex",
     windows: list,
-    watermark: bool,
 ) -> list[UnboundRecheck]:
     """Every post-fix row bound to nothing, whatever turn recorded it and
     whatever the problem's status. ``narrated_turn`` is carried from the
     prior's list while the row stays on it (one continuous unbound stretch):
-    the narration step writes it (#2555). A prior stored before B2
-    (``narration_since`` None) has its rows marked narrated here, unrendered:
-    the watermark; with no prior, every row when ``watermark`` (the backfill).
-    A row that leaves the list and returns is told again."""
+    the narration step writes it (#2555). Nothing is marked here (ruled
+    2026-11-13: mark nothing, tell once): a row no narration has told, in a
+    backfilled record or one stored before B2, is told once by the next
+    verified narrated turn. A row that leaves the list and returns is told
+    again."""
     found = unbound_post_fix_rows(case, subjects, windows)
     if not found:
         return []
-    held = prior.unbound_rechecks if prior is not None else []
-    mark = prior.narration_since is None if prior is not None else watermark
-    narrated = {u.evidence_id: u.narrated_turn for u in held}
-    if mark:
-        marked = [u.row.evidence_id for u in found] if prior is None else narrated
-        narrated = {
-            i: case.current_turn if narrated.get(i) is None else narrated[i]
-            for i in marked
-        }
+    narrated = {
+        u.evidence_id: u.narrated_turn
+        for u in (prior.unbound_rechecks if prior is not None else [])
+    }
     return [
         UnboundRecheck(
             evidence_id=u.row.evidence_id,

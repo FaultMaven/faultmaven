@@ -725,40 +725,33 @@ async def test_2555_a_recheck_held_through_a_revision_is_narrated_once_it_ends()
     assert entry.narrated_turn == 8
 
 
-def _stored_before_b2(case) -> None:
-    """The record ``main`` stored for ``case``: no ``narration_since`` key."""
+def _stored_as_json(case, **extra) -> None:
+    """The record stored for ``case`` as its JSON loads back; ``extra`` keys a
+    record written by another release carried."""
     from faultmaven.modules.case.contracts import CaseOutcome
 
     dumped = compute_case_outcome(None, case).model_dump(mode="json")
-    dumped.pop("narration_since")
-    case.progress.outcome = CaseOutcome.model_validate(dumped)
-    assert case.progress.outcome.narration_since is None
+    dumped.pop("narration_since", None)  # as ``main`` stored it: no such key
+    case.progress.outcome = CaseOutcome.model_validate({**dumped, **extra})
 
 
-async def test_a_record_stored_before_b2_is_watermarked_and_later_rows_are_told():
-    """The rows a record stored before B2 held are marked narrated by the next
-    fold, unrendered; a row that first appears after is told once, though
-    its data predates the watermark."""
+@pytest.mark.parametrize(
+    "extra", [{}, {"narration_since": 7}], ids=["pre-b2", "with-a-dropped-key"]
+)
+async def test_a_stored_records_untold_rows_are_named_once(extra):
+    """Mark nothing, tell once (ruled 2026-11-13): a stored record's unbound
+    rows no narration told, whatever release wrote it (a key it carried that
+    the model no longer has is ignored), are named on the next verified
+    narrated turn, then never again."""
     eng, case = _held_recheck()
     _decline(case)
-    _stored_before_b2(case)
-    assert not _naming(await _live(eng, case, 9), "held"), "watermarked, unrendered"
-    (stored,) = case.progress.outcome.unbound_rechecks
-    assert stored.narrated_turn == 9 and case.progress.outcome.narration_since == 9
-
-    _late_row(case, "late", written=10)
-    lines = _naming(await _live(eng, case, 10), "late")
-    assert len(lines) == 1 and _eid("held") not in lines[0]
-
-
-def test_a_pre_b2_record_folds_with_its_rows_marked_and_none_rendered():
-    _eng, case = _held_recheck()
-    _decline(case)
-    _stored_before_b2(case)
-    notices = narrated(case, _flagged(case))
-    assert not _naming(notices, "held")
+    _stored_as_json(case, **extra)
+    (line,) = _naming(await _live(eng, case, 9), "held")
+    assert "name nothing they re-check that binds" in line
+    assert not _naming(await _live(eng, case, 10), "held"), "told once"
     (row,) = case.progress.outcome.unbound_rechecks
-    assert row.narrated_turn == case.current_turn
+    assert row.narrated_turn == 9
+    assert "narration_since" not in case.progress.outcome.model_dump()
 
 
 async def test_a_row_the_notice_did_not_name_is_narrated_on_a_later_turn():
