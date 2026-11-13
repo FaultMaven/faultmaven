@@ -256,36 +256,37 @@ class TestServiceAccountRefreshLifecycle:
                 client_id=CLIENT_ID,
             )
 
-    async def test_the_replacement_is_minted_before_the_old_one_is_revoked(
+    async def test_the_replacement_is_minted_before_the_old_one_is_claimed(
         self, credential, oauth_service, token_generator
     ):
-        """Revoking first would leave a caller holding a revoked credential and
+        """Claiming first would leave a caller holding a revoked credential and
         no replacement if the mint failed — a lockout only an operator can undo.
+        The claim is the rotation's revocation (#2764).
         """
         order: list[str] = []
         # The rotation mints the PAIR in one call (#1517 review), so that is
         # what has to be observed — wrapping generate_refresh_token would
         # record nothing and the ordering assertion would pass vacuously.
         real_mint = token_generator.generate_token_pair
-        real_revoke = token_generator.revoke_refresh_token
+        real_claim = token_generator.claim_refresh_token
 
         async def mint(user, **kwargs):
             order.append("mint")
             return await real_mint(user, **kwargs)
 
-        async def revoke(token):
-            order.append("revoke")
-            return await real_revoke(token)
+        async def claim(token):
+            order.append("claim")
+            return await real_claim(token)
 
         token_generator.generate_token_pair = mint
-        token_generator.revoke_refresh_token = revoke
+        token_generator.claim_refresh_token = claim
 
         await oauth_service.refresh_access_token(
             refresh_token=credential.refresh_token,
             client_id=CLIENT_ID,
         )
 
-        assert order == ["mint", "revoke"]
+        assert order == ["mint", "claim"]
 
 
 SLACK_AGENT = "faultmaven-slack-agent"

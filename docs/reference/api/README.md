@@ -1259,7 +1259,10 @@ Exchange a refresh token for a new access token (both auth modes).
 The short-lived access token cannot be extended (it is a stateless JWT),
 so an active client must mint a new one before expiry rather than being
 forced to re-login. Refresh tokens rotate: the presented token is revoked
-and a fresh one is returned alongside the new access token.
+and a fresh one is returned alongside the new access token. A token is
+redeemed at most once while its revocation entry stands: of concurrent
+refreshes of one token, at most one succeeds and the others get 401
+`invalid_refresh_token`.
 
 Mode-aware (ADR-015 D6): local mode validates and mints with the HS256
 generator; oauth/cloud mode uses the RS256 generator that issued the
@@ -1270,7 +1273,7 @@ identical rotation and revocation semantics.
 1. Validate the refresh token (signature, expiry, type, revocation)
 2. Load the current user (rejects deactivated/deleted accounts)
 3. Mint a new access + refresh token pair
-4. Revoke the old refresh token (rotation)
+4. Claim the old refresh token: revoke it only if no other refresh has
 
 **Tags:** `authentication`
 

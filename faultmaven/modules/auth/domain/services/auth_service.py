@@ -41,6 +41,7 @@ from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     CorruptRevocationEntry,
     max_revocation_entry_ttl,
+    revocation_entry_ttl,
     revocation_reason,
 )
 from faultmaven.modules.auth.infrastructure.metrics.revocation_metrics import (
@@ -609,11 +610,12 @@ class AuthService:
     ) -> None:
         """Revoke a token by adding jti to the revocation store.
 
-        The TTL is computed here, as the seconds from now until
-        ``expiration``, with no ceiling applied, and passed to the store's
-        ``add_revoked_token``. An ``expiration`` that is not in the future
-        writes nothing: the token has nothing left to revoke. The entry stops
-        revoking when that TTL runs out. The Redis store then expires the key;
+        The TTL is ``revocation_entry_ttl``'s, the one rule for every jti
+        entry: the seconds until ``expiration`` plus
+        ``REVOCATION_ENTRY_MARGIN_SECONDS``, capped at the schema ceiling
+        (#2764). An ``expiration`` that is not in the future writes nothing:
+        the token has nothing left to revoke. The entry stops revoking when
+        that TTL runs out. The Redis store then expires the key;
         the SQL store's reads filter the row out, and a later revocation write
         sweeps it.
 
@@ -630,9 +632,8 @@ class AuthService:
         try:
             # Calculate TTL from expiration
             now = int(datetime.now(timezone.utc).timestamp())
-            ttl = max(expiration - now, 0)
-
-            if ttl > 0:
+            if expiration > now:
+                ttl = revocation_entry_ttl({"exp": expiration})
                 await self._revocation_store.add_revoked_token(token_jti, ttl)
                 logger.debug(f"Token revoked: {token_jti} (TTL: {ttl}s)")
         except Exception as e:

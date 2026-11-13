@@ -7,12 +7,17 @@ client, the grant refuses it under any other without revoking it, and a token
 naming none is bound at its first OAuth refresh, but only to a known client
 (owner ruling).
 ``POST /auth/refresh`` takes no client but carries the binding forward.
+
+A refresh token is redeemed once on both paths, also under concurrency (#2764):
+of two concurrent refreshes exactly one receives a pair, so a token never forks
+into two chains or two clients.
 """
 
+import asyncio
 import base64
 import hashlib
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import jwt
@@ -173,6 +178,7 @@ async def env(request, monkeypatch):
                 user=user,
                 algorithm=request.param,
                 signing_key=signing_key,
+                revocations=revocations,
             )
     finally:
         app.dependency_overrides.clear()
@@ -364,3 +370,185 @@ async def test_a_cli_minted_credential_refreshes_under_the_service_client(
 
     _assert_refused(await _refresh(env.client, credential, COPILOT), REFRESH_REFUSED)
     assert (await _refresh(env.client, credential, SERVICE)).status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# One redemption per refresh token, also under concurrency (#2764)
+# ---------------------------------------------------------------------------
+
+REVOKED = "[INVALID_REFRESH_TOKEN] Invalid or expired refresh token"
+REFRESH = "/api/v1/auth/refresh"
+
+
+def _hold_mints_until_two_arrive(monkeypatch, generator):
+    """Hold each refresh at its mint until two have passed validation.
+
+    Patched on the class: ``/auth/refresh`` builds its generator per request.
+    Bounded, so a refresh that never reaches the mint fails the test.
+    """
+    cls = type(generator)
+    mint = cls.generate_token_pair
+    arrived = []
+    both = asyncio.Event()
+
+    async def held(self, *args, **kwargs):
+        arrived.append(1)
+        if len(arrived) == 2:
+            both.set()
+        await asyncio.wait_for(both.wait(), timeout=10)
+        return await mint(self, *args, **kwargs)
+
+    monkeypatch.setattr(cls, "generate_token_pair", held)
+
+
+def _won_and_lost(responses, lost_status):
+    statuses = sorted(r.status_code for r in responses)
+    assert statuses == sorted([200, lost_status]), [r.text for r in responses]
+    won = next(r for r in responses if r.status_code == 200)
+    lost = next(r for r in responses if r.status_code != 200)
+    return won.json(), lost.json()
+
+
+async def test_concurrent_oauth_refreshes_deliver_one_pair(env, monkeypatch):
+    token = await _bound_refresh_token(env.client)
+    _hold_mints_until_two_arrive(monkeypatch, env.generator)
+
+    won, lost = _won_and_lost(
+        await asyncio.gather(*(_refresh(env.client, token, COPILOT) for _ in "ab")),
+        400,
+    )
+
+    assert await env.generator.validate_refresh_token(won["refresh_token"])
+    assert await env.generator.validate_refresh_token(token) is None
+    # The loser's answer is a revoked token's, byte for byte.
+    assert lost == {"error": "invalid_grant", "error_description": REVOKED}
+    assert (await _refresh(env.client, token, COPILOT)).json() == lost
+
+
+async def test_a_token_naming_no_client_binds_to_one_client_under_a_race(
+    env, monkeypatch
+):
+    """#2750's invariant: one client-less token is bound to at most one client."""
+    token = await _unbound_refresh_token(env)
+    _hold_mints_until_two_arrive(monkeypatch, env.generator)
+
+    responses = await asyncio.gather(
+        _refresh(env.client, token, COPILOT), _refresh(env.client, token, SERVICE)
+    )
+    won, lost = _won_and_lost(responses, 400)
+
+    winner = COPILOT if responses[0].status_code == 200 else SERVICE
+    assert _client_claim(won["refresh_token"]) == winner
+    assert lost == {"error": "invalid_grant", "error_description": REVOKED}
+    assert await env.generator.validate_refresh_token(token) is None
+
+
+async def test_concurrent_auth_refreshes_deliver_one_pair(env, monkeypatch):
+    token = await _bound_refresh_token(env.client)
+    _hold_mints_until_two_arrive(monkeypatch, env.generator)
+
+    won, lost = _won_and_lost(
+        await asyncio.gather(
+            *(env.client.post(REFRESH, json={"refresh_token": token}) for _ in "ab")
+        ),
+        401,
+    )
+
+    assert await env.generator.validate_refresh_token(won["refresh_token"])
+    assert await env.generator.validate_refresh_token(token) is None
+    # The 401 a revoked token gets, byte for byte.
+    revoked = await env.client.post(REFRESH, json={"refresh_token": token})
+    assert revoked.status_code == 401
+    assert lost == revoked.json()
+    assert "invalid, expired, or revoked" in str(lost)
+
+
+async def _redeem(env, path, token):
+    if path == "oauth":
+        return await _refresh(env.client, token, COPILOT)
+    return await env.client.post(REFRESH, json={"refresh_token": token})
+
+
+@pytest.mark.parametrize("path", ["oauth", "auth"])
+async def test_a_failed_mint_leaves_the_token_redeemable(env, monkeypatch, path):
+    token = await _bound_refresh_token(env.client)
+    cls = type(env.generator)
+    mint = cls.generate_token_pair
+    failures = []
+
+    async def fails_once(self, *args, **kwargs):
+        if not failures:
+            failures.append(1)
+            raise RuntimeError("mint failed")
+        return await mint(self, *args, **kwargs)
+
+    monkeypatch.setattr(cls, "generate_token_pair", fails_once)
+
+    assert (await _redeem(env, path, token)).status_code == 500
+    assert (await _redeem(env, path, token)).status_code == 200
+
+
+@pytest.mark.parametrize("path", ["oauth", "auth"])
+async def test_a_refresh_token_with_no_jti_is_refused(env, path):
+    from faultmaven.modules.auth.domain.services.jwt_token_generator import (
+        RefreshClaim,
+    )
+
+    claims = _claims(await _bound_refresh_token(env.client))
+    del claims["jti"]
+    jti_less = jwt.encode(claims, env.signing_key, algorithm=env.algorithm)
+
+    assert await env.generator.validate_refresh_token(jti_less) is None
+    assert await env.generator.claim_refresh_token(claims) is RefreshClaim.NO_JTI
+    response = await _redeem(env, path, jti_less)
+    assert response.status_code == (400 if path == "oauth" else 401), response.text
+
+
+@pytest.mark.parametrize("path", ["oauth", "auth"])
+async def test_a_claim_the_store_cannot_write_delivers_nothing(env, monkeypatch, path):
+    token = await _bound_refresh_token(env.client)
+
+    async def unwritable(jti, ttl):
+        raise ConnectionError("store unavailable")
+
+    monkeypatch.setattr(env.revocations, "claim_token", unwritable)
+
+    response = await _redeem(env, path, token)
+    assert response.status_code == 500, response.text
+    assert "access_token" not in response.text
+
+
+@pytest.mark.parametrize("path", ["oauth", "auth"])
+async def test_a_token_that_expires_during_the_mint_still_gets_its_pair(
+    env, monkeypatch, path
+):
+    """It validated, so it is claimable: the claim never checks expiry (#2764).
+
+    The clock is moved past the token's 7-day ``exp`` once the mint returns,
+    for this module and PyJWT alike, so a claim that decoded the token again
+    would refuse it.
+    """
+    import jwt.api_jwt
+
+    from faultmaven.modules.auth.domain.services import jwt_token_generator
+
+    token = await _bound_refresh_token(env.client)
+    cls = type(env.generator)
+    mint = cls.generate_token_pair
+
+    class _PastExp(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime.now(tz) + timedelta(days=8)
+
+    async def mint_then_expire(self, *args, **kwargs):
+        pair = await mint(self, *args, **kwargs)
+        monkeypatch.setattr(jwt_token_generator, "datetime", _PastExp)
+        monkeypatch.setattr(jwt.api_jwt, "datetime", _PastExp)
+        return pair
+
+    monkeypatch.setattr(cls, "generate_token_pair", mint_then_expire)
+
+    response = await _redeem(env, path, token)
+    assert response.status_code == 200, response.text
+    assert await env.revocations.is_revoked(_claims(token)["jti"])

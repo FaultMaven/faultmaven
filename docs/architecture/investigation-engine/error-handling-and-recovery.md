@@ -435,7 +435,8 @@ engine reads it, API boundary maps it) and a typo in any one would silently
 disable the degrade path rather than fail loudly.
 
 **Output truncation shares this path.** A response cut off at the generation cap
-likewise yields `TOKEN_LIMIT`, once the `max_tokens` ladder is spent — it travels
+likewise yields `TOKEN_LIMIT` once its retries stop, whether the `max_tokens`
+ladder, the attempt ceiling or the turn budget stopped them (#1821) — it travels
 as the engine's typed `OutputTruncationError` and is dispatched on type, never
 mistaken for an input overflow. Those turns therefore also get the minimal-prompt
 retry. That is a smaller *input* rather than a larger output cap, so it is not a
@@ -562,8 +563,10 @@ context-starved answer from a normal one. Two things make it visible.
 `prompt_context_error_recovered` log line which carries the case id. Read the
 metric as a *rate*: an occasional degrade is the guarantee working; a sustained
 rate means turns are routinely over the window, which points at prompt sizing
-rather than at this recovery. A rising `output_truncation` share is the signal to
-reach for the `max_tokens` escalation instead.
+rather than at this recovery. A rising `output_truncation` share means the
+`max_tokens` ceiling is too low for the schemas in play, or that a truncation's
+retries are stopped first — other failures spend the attempts, or the turn budget
+runs out (#1821) — not that prompts are too large.
 
 **To the user** — the recovery appends `DEGRADED_NO_TOOLS_NOTICE` to the fallback
 body, instructing the agent to say in one sentence that it could not inspect the

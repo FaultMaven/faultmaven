@@ -2,7 +2,8 @@
 
 The single revocation store for the whole deployment (issue #767): every
 revoke path (OAuth /revoke, refresh rotation in both auth modes, logout,
-admin per-user revocation) writes here, and the request-path check
+admin per-user revocation) writes here, rotation through the conditional
+``claim_token`` (#2764), and the request-path check
 (``AuthService._is_revoked``) reads here.
 
 **Two implementations, chosen by DEPLOYMENT MODE** (#828).
@@ -31,10 +32,11 @@ Two granularities (see ``ITokenRevocationStore``): individual tokens by JTI,
 and whole users by revocation watermark (#769). Both live in this one store,
 held for different lifetimes:
 
-- a per-jti entry (``add_revoked_token``) for the revoked token's remaining
-  life, which ``_revoke_token_by_jti`` also caps at
+- a per-jti entry (``add_revoked_token``, ``claim_token``) for the token's
+  remaining life plus ``REVOCATION_ENTRY_MARGIN_SECONDS``, capped at
   ``max_revocation_entry_ttl()`` (the schema ceiling on token lifetime) and
-  gives in full to a token with no ``exp``;
+  given in full to a token with no ``exp`` (``revocation_entry_ttl``); no
+  write shortens a live one (#2764);
 - a watermark (``revoke_user_tokens_before``) for that ceiling plus
   ``MAX_MINT_BASIS_CARRY_SECONDS``, whatever lifetime the user's tokens were
   minted with (``AuthService._watermark_ttl_seconds``).
@@ -74,6 +76,7 @@ in-process FakeRedis were never on disk to carry over.
 from __future__ import annotations
 
 import asyncio
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -85,6 +88,7 @@ from faultmaven.infrastructure.persistence.models import TokenRevocationModel
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     CorruptRevocationEntry,
     ITokenRevocationStore,
+    RefreshClaim,
     SequentialRevocationState,
 )
 
@@ -92,6 +96,11 @@ from faultmaven.modules.auth.domain.services.jwt_token_generator import (
 #: a column CHECK constraint names the same two strings.
 _JTI_SCOPE = "jti"
 _USER_SCOPE = "user"
+
+#: Who wrote a jti entry (#2764). The Redis value of a claim starts with
+#: ``claim:``; a SQL claim row has this ``revoked_at``, a revocation row ``0``.
+_CLAIM_PREFIX = "claim:"
+_CLAIM_MARK = -1.0
 
 
 def escape_glob(text: str) -> str:
@@ -174,14 +183,44 @@ class RedisTokenRevocationStore(SequentialRevocationState, ITokenRevocationStore
     def _make_user_key(self, user_id: str) -> str:
         return f"{self._user_key_prefix}{user_id}"
 
+    #: Write the entry if absent, else only lengthen it (#2764): a revocation
+    #: never shortens a live entry, and a claim's value stays a claim's. One
+    #: script, so the entry cannot lapse between the two steps. TTL, not
+    #: ``EXPIRE GT``, which needs Redis 7.
+    _REVOKE_NEVER_SHORTER = """
+    if redis.call('SET', KEYS[1], ARGV[1], 'NX', 'EX', ARGV[2]) then return 1 end
+    local left = redis.call('TTL', KEYS[1])
+    if left >= 0 and left < tonumber(ARGV[2]) then
+        redis.call('EXPIRE', KEYS[1], ARGV[2])
+    end
+    return 0
+    """
+
     async def add_revoked_token(self, jti: str, ttl: int) -> None:
         key = self._make_key(jti)
-        # SET EX, not SETEX: fakeredis floors a SETEX deadline to the second (#2400).
-        await self.redis.set(key, "revoked", ex=ttl)
+        await self.redis.eval(self._REVOKE_NEVER_SHORTER, 1, key, "revoked", ttl)
 
     async def is_revoked(self, jti: str) -> bool:
         key = self._make_key(jti)
         return await self.redis.exists(key) > 0
+
+    async def claim_token(self, jti: str, ttl: int) -> RefreshClaim:
+        key = self._make_key(jti)
+        # A per-call nonce, read back on nil (#2764). redis-py retries a command
+        # whose reply was lost, so an applied SET NX can be resent and answer
+        # nil to the caller that wrote it. ``is_revoked`` reads EXISTS, so the
+        # value is free to identify the writer.
+        nonce = _CLAIM_PREFIX + secrets.token_hex(16)
+        if await self.redis.set(key, nonce, nx=True, ex=ttl):
+            return RefreshClaim.CLAIMED
+        stored = await self.redis.get(key)
+        if isinstance(stored, bytes):
+            stored = stored.decode()
+        if stored == nonce:
+            return RefreshClaim.CLAIMED
+        if stored is not None and stored.startswith(_CLAIM_PREFIX):
+            return RefreshClaim.ALREADY_REDEEMED
+        return RefreshClaim.REVOKED
 
     async def revoke_user_tokens_before(
         self, user_id: str, revoked_at: float, ttl: int
@@ -269,9 +308,10 @@ class SqlTokenRevocationStore(ITokenRevocationStore):
     ``expires_at``, so an elapsed entry stops revoking at its deadline whether
     or not anything has deleted it — the property Redis gets from TTL.
 
-    Rows are then reclaimed opportunistically, by **the two writes that ADD an
+    Rows are then reclaimed opportunistically, by **the writes that ADD an
     entry** (``add_revoked_token`` and ``revoke_user_tokens_before``, both
-    through ``_upsert``) and by the explicit ``cleanup_expired``. That bounds
+    through ``_upsert``, and ``claim_token``) and by the explicit
+    ``cleanup_expired``. That bounds
     the table without a scheduled job that could be forgotten at wiring time —
     and nothing calls ``cleanup_expired``, in this class or the Redis one, so
     the opportunistic path is the one that runs.
@@ -343,22 +383,34 @@ class SqlTokenRevocationStore(ITokenRevocationStore):
             # PostgreSQL constructs cannot drift (they are NOT interchangeable
             # — see ``db_compat``).
             #
-            # A later revocation overwrites an earlier one unconditionally,
-            # matching ``SETEX`` and the interface's contract ("the caller has
-            # already decided to invalidate everything outstanding").
+            # A later watermark overwrites an earlier one unconditionally (the
+            # interface's contract: "the caller has already decided to
+            # invalidate everything outstanding"). A jti entry is only ever
+            # lengthened, and keeps its writer's mark, so a revocation can
+            # neither shorten nor relabel a claim (#2764).
             statement = dialect_insert(session, TokenRevocationModel).values(
                 scope=scope,
                 subject=subject,
                 revoked_at=revoked_at,
                 expires_at=self._deadline(ttl),
             )
+            current = TokenRevocationModel.expires_at
+            proposed = statement.excluded.expires_at
+            if scope == _JTI_SCOPE:
+                later = (
+                    func.greatest(current, proposed)
+                    if session.get_bind().dialect.name == "postgresql"
+                    else func.max(current, proposed)
+                )
+                set_ = {"expires_at": later}
+            else:
+                set_ = {
+                    "revoked_at": statement.excluded.revoked_at,
+                    "expires_at": proposed,
+                }
             await session.execute(
                 statement.on_conflict_do_update(
-                    index_elements=["scope", "subject"],
-                    set_={
-                        "revoked_at": statement.excluded.revoked_at,
-                        "expires_at": statement.excluded.expires_at,
-                    },
+                    index_elements=["scope", "subject"], set_=set_
                 )
             )
             # The store owns its unit of work. Leaving the commit to the
@@ -374,10 +426,48 @@ class SqlTokenRevocationStore(ITokenRevocationStore):
             await session.commit()
 
     async def add_revoked_token(self, jti: str, ttl: int) -> None:
-        # ``revoked_at`` is meaningless on this arm — a jti entry revokes
-        # unconditionally — so it is stored as 0 rather than as a timestamp
-        # somebody could later mistake for a watermark.
+        # A jti entry revokes unconditionally, so ``revoked_at`` is no
+        # watermark here: it marks the writer, 0 for a revocation and
+        # ``_CLAIM_MARK`` for a claim, never a timestamp somebody could mistake
+        # for a watermark.
         await self._upsert(_JTI_SCOPE, jti, 0.0, ttl)
+
+    async def claim_token(self, jti: str, ttl: int) -> RefreshClaim:
+        async with self._session_factory() as session:
+            # The sweep first, in the same transaction, so an elapsed entry for
+            # this jti cannot make the insert conflict. Then ONE insert that
+            # does nothing on conflict: the database's unique key decides the
+            # single winner, and RETURNING says whether this caller's row was
+            # written (#2764). ``rowcount`` is not consulted (see ``_sweep``).
+            # A loser reads the holder's mark to say who holds the entry.
+            await self._sweep(session)
+            statement = dialect_insert(session, TokenRevocationModel).values(
+                scope=_JTI_SCOPE,
+                subject=jti,
+                revoked_at=_CLAIM_MARK,
+                expires_at=self._deadline(ttl),
+            )
+            result = await session.execute(
+                statement.on_conflict_do_nothing(
+                    index_elements=["scope", "subject"]
+                ).returning(TokenRevocationModel.subject)
+            )
+            if result.first() is not None:
+                outcome = RefreshClaim.CLAIMED
+            else:
+                mark = await session.scalar(
+                    select(TokenRevocationModel.revoked_at).where(
+                        TokenRevocationModel.scope == _JTI_SCOPE,
+                        TokenRevocationModel.subject == jti,
+                    )
+                )
+                outcome = (
+                    RefreshClaim.ALREADY_REDEEMED
+                    if mark == _CLAIM_MARK
+                    else RefreshClaim.REVOKED
+                )
+            await session.commit()
+            return outcome
 
     async def is_revoked(self, jti: str) -> bool:
         async with self._session_factory() as session:

@@ -13,6 +13,7 @@ from faultmaven.models.common import SessionContext
 from faultmaven.models.interfaces import ISessionStore
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     ITokenRevocationStore,
+    RefreshClaim,
     SequentialRevocationState,
 )
 
@@ -827,13 +828,25 @@ class InMemoryRevocationStore(SequentialRevocationState, ITokenRevocationStore):
 
     def __init__(self) -> None:
         self.revoked: dict[str, int] = {}
+        self.claimed: set[str] = set()
         self.user_watermarks: dict[str, tuple[float, int]] = {}
 
     async def add_revoked_token(self, jti: str, ttl: int) -> None:
-        self.revoked[jti] = ttl
+        # Never shortens an entry (#2764), as the production stores.
+        self.revoked[jti] = max(ttl, self.revoked.get(jti, 0))
 
     async def is_revoked(self, jti: str) -> bool:
         return jti in self.revoked
+
+    async def claim_token(self, jti: str, ttl: int) -> RefreshClaim:
+        # No await between the read and the write: atomic on one event loop.
+        if jti in self.claimed:
+            return RefreshClaim.ALREADY_REDEEMED
+        if jti in self.revoked:
+            return RefreshClaim.REVOKED
+        self.revoked[jti] = ttl
+        self.claimed.add(jti)
+        return RefreshClaim.CLAIMED
 
     async def revoke_user_tokens_before(
         self, user_id: str, revoked_at: float, ttl: int

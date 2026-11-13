@@ -24,6 +24,7 @@ from faultmaven.modules.auth.contracts import (
     OAuthCodeDTO,
     OAuthTokenDTO,
 )
+from faultmaven.modules.auth.domain.services.jwt_token_generator import RefreshClaim
 from faultmaven.modules.auth.domain.services.oauth_service import OAuthServiceImpl
 
 
@@ -63,6 +64,9 @@ def mock_token_generator():
     )
     generator.revoke_access_token = AsyncMock()
     generator.revoke_refresh_token = AsyncMock()
+    # Explicit: a bare AsyncMock's answer is no RefreshClaim, so the rotation
+    # would refuse every refresh (#2764).
+    generator.claim_refresh_token = AsyncMock(return_value=RefreshClaim.CLAIMED)
     return generator
 
 
@@ -495,7 +499,7 @@ class TestRefreshToken:
     ):
         """The presented refresh token is single-use.
 
-        It is revoked and a *different* token is returned. Asserted with a
+        It is claimed (#2764) and a *different* token is returned. Asserted with a
         distinct mint value, because a generator that echoes the presented token
         cannot tell rotation apart from pass-through. Clients (notably the Slack
         service account, ADR-012 D10) persist the returned token write-before-use
@@ -518,7 +522,53 @@ class TestRefreshToken:
         )
 
         assert token_dto.refresh_token == "rotated_refresh_token"
-        mock_token_generator.revoke_refresh_token.assert_awaited_once_with(presented)
+        # The claim reads the validated claims; it never decodes again (#2764).
+        mock_token_generator.claim_refresh_token.assert_awaited_once_with(
+            mock_token_generator.validate_refresh_token.return_value
+        )
+        mock_token_generator.revoke_refresh_token.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "claim, metric_code",
+        [
+            (RefreshClaim.ALREADY_REDEEMED, "REFRESH_TOKEN_REUSED"),
+            (RefreshClaim.REVOKED, "INVALID_REFRESH_TOKEN"),
+            (RefreshClaim.NO_JTI, "INVALID_REFRESH_TOKEN"),
+        ],
+    )
+    async def test_a_refresh_whose_claim_is_refused_delivers_nothing(
+        self,
+        oauth_service,
+        mock_token_generator,
+        mock_user_repository,
+        claim,
+        metric_code,
+        caplog,
+    ):
+        """The minted pair is discarded; the answer is a revoked token's (#2764).
+
+        Only a claim lost to another claim is metered as a reuse. One lost to a
+        revocation is logged and metered as the revoked token it is.
+        """
+        mock_token_generator.claim_refresh_token.return_value = claim
+        mock_user_repository.get.return_value = Mock(user_id="user_123")
+        oauth_service._metrics = Mock()
+
+        with pytest.raises(InvalidGrantError) as refusal:
+            await oauth_service.refresh_access_token(
+                refresh_token="presented", client_id="faultmaven-copilot"
+            )
+
+        assert str(refusal.value) == (
+            "[INVALID_REFRESH_TOKEN] Invalid or expired refresh token"
+        )
+        mock_token_generator.generate_token_pair.assert_awaited_once()
+        oauth_service._metrics.record_token_refresh.assert_called_once_with(
+            client_id="faultmaven-copilot", success=False, error_code=metric_code
+        )
+        (record,) = [r for r in caplog.records if getattr(r, "claim", None)]
+        assert (record.claim, record.error) == (claim.value, metric_code)
 
     @pytest.mark.asyncio
     async def test_refresh_access_token_invalid_token(
