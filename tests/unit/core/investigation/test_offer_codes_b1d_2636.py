@@ -51,6 +51,7 @@ from faultmaven.core.investigation.terminal_transitions import (
 from faultmaven.modules.case.contracts import (
     AnswerKind,
     AnswerVia,
+    CauseState,
     ClosureEligibility,
     ResolutionReason,
 )
@@ -68,9 +69,27 @@ def oracle(name: str) -> dict:
     return ORACLE[f"cycle:offer:{name}"]
 
 
-@pytest.mark.parametrize("name", sorted(golden.B1D_SCENARIOS))
+#: The ruled differences (B1e, #2615 Q8 (a)), each asserted below.
+DECLARED = {"turn_backstop_on_a_decaying_leg"}
+
+
+@pytest.mark.parametrize("name", sorted(set(golden.B1D_SCENARIOS) - DECLARED))
 def test_each_offer_is_the_text_main_published_and_stored(name):
     assert golden.B1D_SCENARIOS[name]() == oracle(name)
+
+
+def test_the_backstop_reads_the_leg_housekeeping_left(monkeypatch):
+    """B1e: the backstop runs after housekeeping and the final recompute, so
+    on a leg decay took under the bar it offers with no cause leg, where
+    ``main`` offered on the decayed leg; the stored record agrees with it."""
+    counts = _counted(monkeypatch)
+    texts = golden.B1D_SCENARIOS["turn_backstop_on_a_decaying_leg"]()
+    old = oracle("turn_backstop_on_a_decaying_leg")
+    assert "records the attribution" in old["summary"], "premise: main's"
+    assert "no root cause on record" in texts["summary"]
+    assert "writes up what happened" in texts["summary"]
+    assert texts["basis"] == old["basis"] == "backstop"
+    assert counts == []
 
 
 def test_every_scenario_was_captured_on_main():
@@ -220,21 +239,31 @@ def test_a_replayed_close_is_rendered_by_the_live_turns_narration(monkeypatch):
     assert texts["summary"] in texts["reply"]
 
 
-def test_the_prose_is_published_when_the_offer_closed_in_its_cycle(caplog):
-    """``main`` published the prose when it opened the offer: an offer answered
-    later in the cycle keeps it, and no summary is written for it."""
+def _closed_in_its_cycle(answer: AnswerKind):
     case, metadata = golden._deferred(confirmed=False)
     offer = case.offer_record.open
     case.offer_record = answer_offer(
-        case,
-        proposal_id=offer.proposal_id,
-        answer=AnswerKind.LAPSED,
-        via=AnswerVia.ENGINE,
+        case, proposal_id=offer.proposal_id, answer=answer, via=AnswerVia.ENGINE
     )
     narrated(case, metadata)
+    assert case.offer_record.open is None
+    return metadata
+
+
+def test_an_offer_lapsed_in_its_cycle_shows_no_card():
+    """Ruled 2026-11-12 (R2), inverting B1d's pin that the prose was published
+    when the offer lapsed later in its cycle: no prose, so no confirmation
+    pair, and no summary."""
+    metadata = _closed_in_its_cycle(AnswerKind.LAPSED)
+    assert "deferred_solution_gate_message" not in metadata
+
+
+def test_an_offer_withdrawn_in_its_cycle_keeps_mains_prose(caplog):
+    """``main`` published the prose when it opened the offer: one withdrawn
+    later in the cycle keeps it, and no summary is written (#2770 asks)."""
+    metadata = _closed_in_its_cycle(AnswerKind.WITHDRAWN)
     expected = oracle("deferred_close")["prose"]["deferred_solution_gate_message"]
     assert metadata["deferred_solution_gate_message"] == expected
-    assert case.offer_record.open is None
     assert "no summary written" in caplog.text
 
 
@@ -306,7 +335,6 @@ def test_an_identified_cause_the_record_no_longer_states_is_counted(monkeypatch)
             "turn_model_proposal_confirmation_on_a_decaying_leg",
             OfferCode.MODEL_PROPOSAL,
         ),
-        ("turn_backstop_on_a_decaying_leg", OfferCode.BACKSTOP_RESOLVE),
         ("turn_model_proposal_closure_on_a_decaying_leg", OfferCode.MODEL_PROPOSAL),
     ],
 )
@@ -427,9 +455,17 @@ def test_pin_6_every_code_has_a_renderer_or_a_composer_and_a_fixture(monkeypatch
         assert has_renderer(code), code
     logged = _logged_codes(monkeypatch)
     # A19's context code is logged by the step after the scenarios' cycles
-    # (``_record_hypotheses_closed_later``), its fixture below.
-    retired = {NoticeCode.HYPOTHESIS_RETIRED}
-    assert (set(NoticeCode) | set(OfferCode)) - retired <= logged
+    # (``_record_hypotheses_closed_later``), and B1e's lapse by a lapse no
+    # turn on ``main`` made: their fixtures below.
+    later = {NoticeCode.HYPOTHESIS_RETIRED, NoticeCode.OFFER_LAPSED}
+    assert (set(NoticeCode) | set(OfferCode)) - later <= logged
+    case, metadata = golden._deferred(confirmed=False)
+    # The M5 licence falls: no leg identifies the cause.
+    case.progress.cause_state = CauseState.CANDIDATES
+    case.root_cause_conclusion = case.working_conclusion = None
+    turn_application._lapse_and_record(case, metadata)
+    assert NoticeCode.OFFER_LAPSED in {e["code"] for e in metadata[DECISIONS_KEY]}
+    assert narrated(case, metadata) == []
     case, metadata = golden.CYCLE_SCENARIOS["refutation_refused_open"]()
     (h_id,) = case.hypotheses
     case.hypotheses[h_id].state = "retired"

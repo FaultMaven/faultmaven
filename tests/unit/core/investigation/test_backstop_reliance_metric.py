@@ -18,10 +18,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from faultmaven.core.investigation.terminal_transitions import (
+from faultmaven.core.investigation.cause_identification import (
     CAUSE_IDENTIFIED_LIKELIHOOD,
-    _cause_identified,
     cause_identification_leg,
+)
+from faultmaven.core.investigation.terminal_transitions import (
+    _cause_identified,
     finalize_resolution_truth_surface,
 )
 from faultmaven.modules.case.contracts import (

@@ -527,10 +527,11 @@ ENTRY_CALLERS: dict[tuple[str, str], tuple[dict[str, int], str]] = {
         "opens the resolve offer on a ready recheck (basis model), or the close "
         "offer on an unmet request (basis needs_info_unmet)",
     ),
-    (_ME + "turn_application.py", "_apply_turn_response"): (
+    (_ME + "turn_application.py", "_lapse_and_record"): (
         {"lapse_offers": 1},
-        "lapses, before step 4, an open resolve or close offer whose premise "
-        "has gone, and each decline whose premise moved",
+        "lapses, before step 4 and after the final recompute, an open resolve "
+        "or close offer whose premise has gone (a deferred close whose M5 "
+        "licence fell included), and each decline whose premise moved",
     ),
     (_PROBLEM, "_answer_pending"): (
         {"answer_offer": 1},

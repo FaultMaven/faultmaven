@@ -80,6 +80,7 @@ from faultmaven.modules.case.contracts import (
     AnswerKind,
     AnswerVia,
     Case,
+    CauseState,
     ConfidenceLevel,
     Evidence,
     EvidenceCategory,
@@ -108,6 +109,7 @@ from .cause_state import (
     _kb_prefetch_query_on_identification,
     _recompute_assessment_state,
     _resolve_chat_provider_name,
+    is_identification_edge,
 )
 from .milestone_inference import (
     _apply_symptom_retraction,
@@ -294,6 +296,13 @@ FIX_NODE_REFS_KEY = "fix_node_refs"
 #: ``fix_cause`` at the start of this apply (#2036 D2.3): the turn record's
 #: ``cause_at_start`` on a live apply; a replayed bundle's own, not written back.
 FIX_CAUSE_AT_START_KEY = "fix_cause_at_start"
+#: Set where this apply ran the assessment recompute: the turn's final
+#: recompute runs only then (#2636, ``turn_application._final_recompute``).
+ASSESSMENT_RECOMPUTED_KEY = "assessment_recomputed"
+#: ``cause_state`` captured before step 1's recompute (on a revision-confirm
+#: turn, after the replay): the turn's identification edge is measured from it
+#: (``ResponseApplier.recompute_assessment``).
+CAUSE_STATE_AT_START_KEY = "cause_state_at_start"
 #: The SOLUTIONs this apply minted, as ``(action_id, leg, subject)``: the leg
 #: M5 licensed each on (``cause_identification_leg``) and what it read there
 #: (``licence_subject``), taken at the mint.
@@ -480,6 +489,68 @@ class ResponseApplier:
     def __init__(self, *, deps, kb_prefetcher) -> None:
         self.deps = deps
         self.kb_prefetcher = kb_prefetcher
+
+    async def recompute_assessment(
+        self, case: Case, metadata: dict[str, Any], *, final: bool = False
+    ) -> None:
+        """Recompute the engine-owned assessment and react to the identification
+        edge: step 1's call, and the turn's final recompute (``final``, #2636).
+
+        The edge is measured from the turn's start (``CAUSE_STATE_AT_START_KEY``),
+        so ``root_cause_identified`` records the net start-to-end
+        identification edge: a turn that dips at step 1 and recovers records
+        none. The final recompute removes the milestone only on a falling edge
+        across itself, so a replay's milestone, folded in by
+        ``merge_statement_commit``, is kept, as ``main`` keeps it. The
+        KB-remediation pre-fetch (INV-35; terminal recompute paths deliberately
+        do not warm KB) fires at most once per live cycle (step 1 plus the
+        final recompute), on the first of them that crosses to IDENTIFIED from
+        an unidentified start; step 1's can fire on a turn the final recompute
+        then un-identifies, and a replayed bundle's own recompute can fire too. The final
+        recompute also drops from ``hypotheses_validated`` what the cycle ends
+        not VALIDATED and re-derives the outcome when the milestones moved;
+        its flags replace step 1's, and it re-runs no per-evaluation counter or
+        trace. This turn's deductive survivors feed proof-by-exclusion. The
+        DF-6 provider (INV-39) is resolved off the engine's LLM provider, the
+        router in a real deployment ("unknown" when a fixture omits it)."""
+        start = metadata.setdefault(CAUSE_STATE_AT_START_KEY, case.progress.cause_state)
+        metadata[ASSESSMENT_RECOMPUTED_KEY] = True
+        milestones = metadata.setdefault("milestones_completed", [])
+        milestones_before = list(milestones)
+        before = _recompute_assessment_state(
+            case,
+            exclusion_survivors=metadata.get("deductive_survivor_ids", frozenset()),
+            rcc_authored_this_turn=(
+                not final and metadata.get("rcc_authored_this_turn", False)
+            ),
+            metadata=metadata,
+            provider_name=_resolve_chat_provider_name(self.deps.llm_provider),
+            final=final,
+            edge_from=start,
+        )
+        after = case.progress.cause_state
+        if final:
+            identified = CauseState.IDENTIFIED
+            if before == identified != after and "root_cause_identified" in milestones:
+                milestones.remove("root_cause_identified")
+            metadata["hypotheses_validated"] = [
+                h_id
+                for h_id in metadata.get("hypotheses_validated") or []
+                if getattr(case.hypotheses.get(h_id), "state", None)
+                == HypothesisState.VALIDATED
+            ]
+            if milestones != milestones_before:
+                # The reported outcome is not read (``_determine_turn_outcome``).
+                metadata["outcome"] = _determine_turn_outcome(
+                    case, metadata, TurnOutcome.CONVERSATION
+                )
+            if not is_identification_edge(start, after):
+                return
+        query = _kb_prefetch_query_on_identification(
+            before, after, case.root_cause_conclusion, case.working_conclusion
+        )
+        if query:
+            await self.kb_prefetcher.prefetch_kb_context(case, query, "root_cause")
 
     async def process_response_structured(
         self,
@@ -1949,35 +2020,9 @@ class ResponseApplier:
         )
 
         # Recompute engine-owned assessment vars (cause_state / solution_state)
-        # now that this turn's hypotheses and solutions are applied (redesign R1).
-        # Pass this turn's LLM-certified deductive survivors (resolved in
-        # _apply_chain_emission) so proof-by-exclusion can stamp them post-derive.
-        # Provider identity for the DF-6 provider-floor metric (INV-39), passed
-        # explicitly (not smuggled through the shared metadata dict). Resolved via
-        # the helper because self.llm_provider is the LLMRouter in the real
-        # deployment (no provider_name) — the helper reads the configured chat
-        # provider off it; a partially constructed engine (some fixtures omit
-        # llm_provider) degrades to "unknown" rather than raising.
-        prior_cause_state = _recompute_assessment_state(
-            case,
-            exclusion_survivors=metadata.get("deductive_survivor_ids", frozenset()),
-            rcc_authored_this_turn=metadata.get("rcc_authored_this_turn", False),
-            metadata=metadata,
-            provider_name=_resolve_chat_provider_name(self.deps.llm_provider),
-        )
-
-        # KB-remediation pre-fetch on the cause_state→IDENTIFIED edge (INV-35):
-        # cause_state is engine-derived above, so this warm-up fires the turn it
-        # newly crosses to IDENTIFIED (in-flight diagnosis — terminal recompute
-        # paths deliberately do not warm KB, the fix has already happened).
-        _kb_query = _kb_prefetch_query_on_identification(
-            prior_cause_state,
-            case.progress.cause_state,
-            case.root_cause_conclusion,
-            case.working_conclusion,
-        )
-        if _kb_query:
-            await self.kb_prefetcher.prefetch_kb_context(case, _kb_query, "root_cause")
+        # now that this turn's hypotheses and solutions are applied (redesign
+        # R1), and react to the identification edge.
+        await self.recompute_assessment(case, metadata)
 
         # Deferred-implementation disposition: if the fix is known but can't be
         # applied this session, propose CLOSE-with-documented-solution (§3.1 row 3).

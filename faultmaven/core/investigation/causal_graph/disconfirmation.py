@@ -319,7 +319,9 @@ def _has_undatable_solution_acceptance(case: Case) -> bool:
     )
 
 
-def m6_disconfirmation_basis(case: Case) -> tuple[int, str] | None:
+def m6_disconfirmation_basis(
+    case: Case, *, count: bool = True
+) -> tuple[int, str] | None:
     """M6's ESTABLISHED preconditions, or ``None`` (metered by refusal reason).
 
     Returns ``(fix_turn, provenance)`` when the latest fix window with a
@@ -374,7 +376,8 @@ def m6_disconfirmation_basis(case: Case) -> tuple[int, str] | None:
     window = latest_decided_fix_window(case)
     refusal = _fix_failure_refusal(case, window)
     if refusal is not None:
-        m6_demotion_refused_total.labels(reason=refusal).inc()
+        if count:  # once per turn: the final recompute passes False (#2636)
+            m6_demotion_refused_total.labels(reason=refusal).inc()
         return None
     return window.fix_turn, _failed_fix_provenance(window)
 
@@ -502,7 +505,7 @@ def _attach_engine_refutation(
     )
 
 
-def demote_disconfirmed_cause_via_evidence(case: Case) -> bool:
+def demote_disconfirmed_cause_via_evidence(case: Case, *, count: bool = True) -> bool:
     """M6 (Option c): on counterfactual disconfirmation of the grounded cause,
     refute the flat hypothesis AND attach a DURABLE engine refutation to its
     root, then retract the conclusion. Rather than imperatively flipping
@@ -555,7 +558,7 @@ def demote_disconfirmed_cause_via_evidence(case: Case) -> bool:
         provenance = _failed_fix_provenance(trigger.window)
         m6_record_disconfirmation_total.inc()
     else:
-        basis = m6_disconfirmation_basis(case)
+        basis = m6_disconfirmation_basis(case, count=count)
         if basis is None:
             return False
         provenance = basis[1]

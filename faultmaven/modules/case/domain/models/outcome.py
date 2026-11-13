@@ -151,9 +151,9 @@ class CauseOutcome(BaseModel):
             "Identification is held open, as the cause recompute wrote it this "
             "cycle (``progress.cause_identification_held_open``, #2036), like "
             "``pool_empty_reason``. ``held_open_root_ids`` is derived fresh at "
-            "the write, so after a later step retires the holding hypothesis "
-            "they can disagree until the final recompute (B1e) re-derives all "
-            "three together"
+            "the write; the turn's final recompute (#2636) re-derives the "
+            "flags after every decider, so the cycle's record reads the three "
+            "together"
         ),
     )
 

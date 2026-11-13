@@ -182,6 +182,8 @@ DECISIONS: dict[tuple[str, str], dict[str, int]] = {
     },
     (_TP, "_maybe_propose_false_alarm_close"): {"OfferCode.FALSE_ALARM_CLOSE": 1},
     (_TA, "_record_hypotheses_closed_later"): {"NoticeCode.HYPOTHESIS_RETIRED": 1},
+    # B1e: the cycle's lapse of the open offer (step 3b, the final recompute).
+    (_TA, "_lapse_and_record"): {"NoticeCode.OFFER_LAPSED": 1},
 }
 
 #: The functions whose every notice became a code: none may call

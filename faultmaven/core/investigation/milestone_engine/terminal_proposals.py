@@ -5,6 +5,7 @@ from datetime import (
 )
 
 from faultmaven.core.investigation.cause_assurance import pending_symptom_check
+from faultmaven.core.investigation.cause_identification import cause_identification_leg
 from faultmaven.core.investigation.lifecycle_metrics import (
     engine_proposed_resolution_total,
     evidence_need_status_changed_total,
@@ -100,7 +101,6 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
 
     from faultmaven.core.investigation.terminal_transitions import (
         assess_closure_readiness,
-        cause_identification_leg,
     )
 
     # Resolve preservation (INV-37), the SAME choice the other two disposition
@@ -255,7 +255,6 @@ def _maybe_propose_confirmed_resolution(case: "Case", metadata: dict) -> None:
     from faultmaven.core.investigation.terminal_transitions import (
         ResolutionReadiness,
         assess_resolution_readiness,
-        cause_identification_leg,
         pending_check_params,
     )
 

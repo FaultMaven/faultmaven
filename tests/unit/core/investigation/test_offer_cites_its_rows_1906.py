@@ -27,13 +27,15 @@ from faultmaven.core.investigation.cause_assurance import (
     resolution_confirmation_rows,
     subject_index,
 )
+from faultmaven.core.investigation.cause_identification import (
+    cause_identification_leg,
+)
 from faultmaven.core.investigation.offers import remember_resolve_request
 from faultmaven.core.investigation.schemas import InvestigationResponse_Diagnosis
 from faultmaven.core.investigation.terminal_transitions import (
     ResolutionReadiness,
     assess_closure_readiness,
     assess_resolution_readiness,
-    cause_identification_leg,
     closure_verdict,
 )
 from faultmaven.modules.case.contracts import EvidenceCategory

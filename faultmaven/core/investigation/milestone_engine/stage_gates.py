@@ -13,6 +13,7 @@ from typing import (
 )
 
 from faultmaven.core.investigation.cause_assurance import mitigation_settled
+from faultmaven.core.investigation.cause_identification import cause_identification_leg
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
 from faultmaven.core.investigation.lifecycle_metrics import (
     pending_action_superseded_stale_total,
@@ -317,13 +318,8 @@ def solution_licence_leg(
 ) -> Optional[str]:
     """The leg M5 licenses a SOLUTION on (``cause_identification_leg``), or
     None: the one reading ``_solution_cause_validated`` and the fix's
-    recorded licence share (#2036 D2.3)."""
-    # Local import mirrors the module's other terminal_transitions uses (avoids
-    # an import cycle) and keeps M5 and the resolution gate on ONE predicate.
-    from faultmaven.core.investigation.terminal_transitions import (
-        cause_identification_leg,
-    )
-
+    recorded licence share (#2036 D2.3). M5 and the resolution gate read ONE
+    predicate."""
     return cause_identification_leg(case, working_conclusion=working_conclusion)
 
 
@@ -481,8 +477,9 @@ def _refresh_working_conclusion(case: Case) -> None:
     resting on it survived a turn after this turn's updates or an M6 demotion
     took it away (fm#1679). ``_recompute_assessment_state`` now rebuilds it just
     before that re-check; Step 5.6 rebuilds it again because housekeeping decay
-    runs after the recompute. ``generate_working_conclusion`` is a pure function
-    of the case, so building it twice in a turn is safe.
+    runs after step 1's recompute, and the turn's final recompute once more
+    (#2636). ``generate_working_conclusion`` is a pure function of the case, so
+    building it more than once in a turn is safe.
     """
     if case.state == CaseState.INVESTIGATING:
         case.working_conclusion = generate_working_conclusion(
@@ -747,12 +744,10 @@ def _withdraw_unlicensed_solution_offers(
       re-check (``_refresh_working_conclusion`` in the recompute, after the
       cause recompute), so a license resting solely on it clears in the same
       turn when this turn's likelihood updates or an M6 demotion take the
-      leading hypothesis below the bar. Housekeeping decay runs AFTER the
-      recompute, so a license lost to decay clears on the FOLLOWING turn —
-      one-turn lag. The prompt frame still exits same-turn regardless: the
-      Zone-3-pending conjunction requires ``cause_state == IDENTIFIED``,
-      which the demotion drops in this same recompute. cause_state / RCC /
-      contest falls withdraw same-turn.
+      leading hypothesis below the bar. Housekeeping decay runs after step
+      1's recompute and before the turn's final one (#2636), so a license
+      lost to decay clears in the same turn, at the final recompute.
+      cause_state / RCC / contest falls withdraw same-turn.
     - The reverse composition — M5 admits on the truth as of the solutions
       step (the PRIOR turn's cause_state and contest flag; this turn's RCC;
       the working conclusion this turn's likelihood updates will leave), this
@@ -806,7 +801,7 @@ def _withdraw_unlicensed_solution_offers(
 
 
 def _flag_absence_inside_a_failed_fix_window(
-    case: Case, metadata: dict[str, Any] | None
+    case: Case, metadata: dict[str, Any] | None, *, replace: bool = False
 ) -> bool:
     """Tell the model when it records an absence row this turn inside a fix
     window that already FAILED (#1927, ``cause_assurance.fix_windows``).
@@ -860,6 +855,7 @@ def _flag_absence_inside_a_failed_fix_window(
         metadata,
         NoticeCode.ABSENCE_IN_FAILED_WINDOW,
         prepend=True,
+        replace=replace,
         disconfirmed=window.disconfirms_cause,
         relief_turn=window.relief_turn,
         failure_turn=window.failure_turn,
@@ -868,7 +864,9 @@ def _flag_absence_inside_a_failed_fix_window(
     return True
 
 
-def _flag_unbound_post_fix_rows(case: Case, metadata: dict[str, Any] | None) -> bool:
+def _flag_unbound_post_fix_rows(
+    case: Case, metadata: dict[str, Any] | None, *, replace: bool = False
+) -> bool:
     """One same-turn line when this turn recorded a post-fix observation that
     binds to nothing (#1906 D1.5), naming no ``rechecks`` or one that binds to
     no subject (``cause_assurance.SubjectIndex.subject``: the window pool for
@@ -919,6 +917,7 @@ def _flag_unbound_post_fix_rows(case: Case, metadata: dict[str, Any] | None) -> 
     record_decision(
         metadata,
         NoticeCode.UNBOUND_RECHECKS,
+        replace=replace,
         uncited=[u.row.evidence_id for u in found if u.uncited],
         unnamed=[u.row.evidence_id for u in found if not u.uncited],
         after_mitigation=[u.row.evidence_id for u in found if u.after_mitigation],
@@ -971,8 +970,18 @@ def _add_system_feedback(
         notices.append(message)
 
 
+#: Set on each decision a replayed bundle logged (``statement_revision``): a
+#: ``replace`` decision never replaces one.
+REPLAYED_DECISION = "replayed"
+
+
 def record_decision(
-    metadata: dict[str, Any], code: str, *, prepend: bool = False, **params: Any
+    metadata: dict[str, Any],
+    code: str,
+    *,
+    prepend: bool = False,
+    replace: bool = False,
+    **params: Any,
 ) -> None:
     """Record a decision as a code (#2636): the narration step renders it after
     the cycle's record is written. ``params`` carry identities, the model's own
@@ -984,9 +993,18 @@ def record_decision(
     code, whose later decision's params replace the earlier's, its token
     keeping its place). A notice code holds its place in ``system_notices``
     with a token the narration step replaces (A10), so order and ``prepend``
-    are as the text's were; a context-only code writes none."""
+    are as the text's were; a context-only code writes none.
+
+    ``replace`` (the final recompute's flags, #2636): the live cycle's
+    decision under ``code``, when there is one, takes these params in place
+    of its own, keeping its token; a replayed bundle's is never replaced."""
     key = decision_key(code, params)
     log = metadata.setdefault(DECISIONS_KEY, [])
+    if replace:
+        live = [e for e in log if e["code"] == code and not e.get(REPLAYED_DECISION)]
+        if live:
+            live[-1].update(params=params, key=key)
+            return
     for entry in log:
         if entry["key"] == key:
             if code in AGGREGATED:

@@ -48,7 +48,7 @@ class NoticeCode(StrEnum):
     HYPOTHESIS_RETIRED = "hypothesis_retired"
     MITIGATION_DISPOSED = "mitigation_disposed"
     # B1c: each rendered from its params alone, the facts its decider read
-    # (decide-time, A4) until the record agrees with them (B1e).
+    # (decide-time, A4); stage S3 switches the deciders to the record.
     ABSENCE_IN_FAILED_WINDOW = "absence_in_failed_window"
     UNBOUND_RECHECKS = "unbound_rechecks"
     FAILED_FIX_NOT_REREGISTERED = "failed_fix_not_reregistered"
@@ -66,6 +66,11 @@ class NoticeCode(StrEnum):
     # B1d: the model's proposal dropped for the engine's offer (params); B3:
     # its lapsed variant when that offer lapsed later in the cycle.
     ENGINE_OFFER_STANDS = "engine_offer_stands"
+    # B1e: the cycle lapsed the open offer (at step 3b or after the final
+    # recompute, ``turn_application._lapse_and_record``), its ``proposal_id``.
+    # Context only, written for the decision log: no renderer reads it yet
+    # (B3's reads the offer record).
+    OFFER_LAPSED = "offer_lapsed"
 
 
 class OfferCode(StrEnum):
@@ -140,7 +145,11 @@ DECIDED_PARAMS = {
 
 #: Codes that write no notice: other renderers read them.
 CONTEXT_ONLY = frozenset(
-    {NoticeCode.HYPOTHESIS_RETIRED, NoticeCode.MITIGATION_DISPOSED}
+    {
+        NoticeCode.HYPOTHESIS_RETIRED,
+        NoticeCode.MITIGATION_DISPOSED,
+        NoticeCode.OFFER_LAPSED,
+    }
 )
 
 #: Deduplicated by code alone (A9): two withdrawals in one turn render one

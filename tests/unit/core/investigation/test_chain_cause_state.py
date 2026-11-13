@@ -1897,9 +1897,11 @@ def test_inv41_metric_records_prestamp_leg_not_poststamp_chain():
     metric fires on the standard confirm path, not only the KB collapse."""
     from unittest.mock import MagicMock, patch
 
+    from faultmaven.core.investigation.cause_identification import (
+        cause_identification_leg,
+    )
     from faultmaven.core.investigation.terminal_transitions import (
         _execute_resolved_transition,
-        cause_identification_leg,
     )
 
     case, root, hyp = _count_held_case()

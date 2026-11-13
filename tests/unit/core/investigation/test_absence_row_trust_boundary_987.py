@@ -1096,7 +1096,7 @@ def test_rcc_mirror_does_not_satisfy_the_backstop_leg():
     which could never clear the backstop threshold; the mirror carries the RCC's
     likelihood, which can.
     """
-    from faultmaven.core.investigation.terminal_transitions import (
+    from faultmaven.core.investigation.cause_identification import (
         cause_identification_leg,
     )
     from faultmaven.core.investigation.working_conclusion_generator import (
