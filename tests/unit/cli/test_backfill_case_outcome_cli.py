@@ -355,13 +355,18 @@ async def _repair_with_a_disagreement(repository, monkeypatch):
     return case.case_id
 
 
-async def test_2689_a_dry_run_counts_nothing(repository, monkeypatch):
-    await _repair_with_a_disagreement(repository, monkeypatch)
+async def test_2689_a_dry_run_counts_nothing(repository, monkeypatch, capsys):
+    case_id = await _repair_with_a_disagreement(repository, monkeypatch)
     counted = _counted(monkeypatch)
     assert await _run(repository, dry_run=True) == 0
     assert counted == []
+    assert "Disagreements counted: 0" in capsys.readouterr().out
     assert await _run(repository) == 0
     assert counted == ["attempts.accepted_in_turn"], "positive control: written"
+    # Printed per case: a CLI process's counter is never scraped.
+    out = capsys.readouterr().out
+    assert "Disagreements counted: 1" in out
+    assert f"  - {case_id}: attempts.accepted_in_turn:" in out
 
 
 async def test_2689_a_retried_write_counts_each_disagreement_once_after_the_save(
@@ -387,3 +392,29 @@ async def test_2689_a_retried_write_counts_each_disagreement_once_after_the_save
     assert [k.split(":")[0] for k in after.progress.outcome.disagreements] == [
         "attempts.accepted_in_turn"
     ]
+
+
+async def test_2555_the_backfill_marks_old_unbound_rows_told(repository):
+    """A record the backfill computes over no prior marks every unbound
+    re-check told (``main`` told them in their own turns), so the next turn
+    names none of them."""
+    from faultmaven.core.investigation.milestone_engine.stage_gates import (
+        _flag_unbound_post_fix_rows,
+    )
+    from tests.unit.core.investigation.narrated import narrated
+    from tests.unit.core.investigation.test_turn_reorder_2636 import (
+        _decline,
+        _held_recheck,
+    )
+
+    _eng, case = _held_recheck()
+    _decline(case)
+    await repository.save(case)
+    assert await _run(repository) == 0
+    after = await repository.get(case.case_id)
+    (row,) = after.progress.outcome.unbound_rechecks
+    assert row.narrated_turn == after.current_turn
+    after.current_turn += 1
+    metadata: dict = {}
+    _flag_unbound_post_fix_rows(after, metadata)
+    assert not [n for n in narrated(after, metadata) if row.evidence_id in n]

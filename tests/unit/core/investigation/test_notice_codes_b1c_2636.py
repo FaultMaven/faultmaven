@@ -38,6 +38,7 @@ from faultmaven.core.investigation.narration.codes import (
 from faultmaven.core.investigation.narration.notices import (
     READS_THE_RECORD,
     render_notice,
+    unbound_lines,
 )
 from tests.unit.core.investigation import golden_cases_2636 as golden
 from tests.unit.core.investigation.narrated import narrated
@@ -86,14 +87,18 @@ def test_a_decided_notice_is_rendered_where_it_stands(name):
     case, metadata = golden.B1C_SCENARIOS[name]()
     log = list(metadata.get(DECISIONS_KEY) or [])
     notices = narrated(case, metadata)
-    # #2555: the unbound re-checks' rows are the record's, read before the
-    # narration marked them (the scenarios store no record before it).
+    # #2555: the unbound re-checks are told by ``narrate_turn`` alone, from
+    # the record's rows, read before the narration marked them (the
+    # scenarios store no record before it).
     record = outcome_module.compute_case_outcome(None, case)
     for entry in log:
-        if entry["code"] in B1C_CODES:
-            outcome = record if entry["code"] == NoticeCode.UNBOUND_RECHECKS else None
-            texts = render_notice(entry["code"], entry["params"], outcome, log)
-            assert texts and all(text in notices for text in texts)
+        if entry["code"] == NoticeCode.UNBOUND_RECHECKS:
+            texts = [line for line, _ids in unbound_lines(entry["params"], record)]
+        elif entry["code"] in B1C_CODES:
+            texts = render_notice(entry["code"], entry["params"], None, log)
+        else:
+            continue
+        assert texts and all(text in notices for text in texts)
 
 
 # ---------------------------------------------------------------------------
@@ -219,6 +224,12 @@ def test_only_the_record_reading_codes_read_the_outcome():
         # outcome (``test_offer_codes_b1d_2636.py``).
         if code in READS_THE_RECORD or code in CONTEXT_ONLY or code in set(OfferCode):
             continue
+        if code == NoticeCode.UNBOUND_RECHECKS:
+            # #2555: no renderer; ``narrate_turn`` tells it from a stored
+            # record alone (``unbound_lines``), and ``render_notice`` refuses.
+            with pytest.raises(ValueError):
+                render_notice(code, entry["params"], None, log)
+            continue
         covered.add(code)
         params = entry["params"]
         assert render_notice(code, params, _Untouchable(), log) == render_notice(
@@ -228,7 +239,8 @@ def test_only_the_record_reading_codes_read_the_outcome():
     # ``test_offer_codes_b1d_2636.py``
     # (``test_the_engine_offer_standing_renders_the_same_with_any_outcome``).
     assert covered == set(NoticeCode) - READS_THE_RECORD - CONTEXT_ONLY - {
-        NoticeCode.ENGINE_OFFER_STANDS
+        NoticeCode.ENGINE_OFFER_STANDS,
+        NoticeCode.UNBOUND_RECHECKS,
     }
 
 

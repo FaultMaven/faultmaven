@@ -895,8 +895,8 @@ def _flag_unbound_post_fix_rows(
     any such row exists, whatever turn recorded it, as a code carrying what
     the rows could name as read here; the rows are the record's, those not yet
     narrated in their unbound stretch, so a re-check held through a revision
-    is told once the hold ends (#2555). Returns whether the code was
-    recorded."""
+    is told once the hold ends (#2555). Not recorded when the stored record
+    marks every such row told. Returns whether the code was recorded."""
     from faultmaven.core.investigation.cause_assurance import (
         fix_application_turn,
         fix_windows,
@@ -909,7 +909,16 @@ def _flag_unbound_post_fix_rows(
         return False
     fix_turn = fix_application_turn(case)
     subjects = subject_index(case)
-    if not unbound_post_fix_rows(case, subjects, fix_windows(case, subjects)):
+    found = unbound_post_fix_rows(case, subjects, fix_windows(case, subjects))
+    # Every row already told in its stretch on the stored record: nothing to
+    # say, so no pool is read (a row absent from the record is untold).
+    record = case.progress.outcome
+    told = {
+        u.evidence_id
+        for u in (record.unbound_rechecks if record is not None else [])
+        if u.narrated_turn is not None
+    }
+    if all(u.row.evidence_id in told for u in found):
         return False
     problem, cause = subjects.bindable_rows()
     record_decision(

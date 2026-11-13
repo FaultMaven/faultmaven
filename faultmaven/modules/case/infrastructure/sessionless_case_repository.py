@@ -182,7 +182,7 @@ class SessionlessCaseRepository(CaseRepository):
                     exc,
                     receipt.turn_number,
                 )
-                case.mark_persisted()
+                case.mark_persisted(by_receipt=True)
                 return case
             raise
         return saved

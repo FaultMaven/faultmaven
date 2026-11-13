@@ -1113,7 +1113,7 @@ class CaseService(CaseDriverMixin, ICaseService):
         if case.state.is_terminal:
             raise _already_terminal(case.state)
 
-        loaded: list[frozenset[str]] = [frozenset()]
+        loaded: list[frozenset[tuple[str, int]]] = [frozenset()]
 
         async def apply(fresh: Case) -> None:
             if fresh.effective_driver_id != user_id:

@@ -195,7 +195,6 @@ READS_THE_RECORD = frozenset(
         NoticeCode.SOLUTION_OFFER_WITHDRAWN,
         NoticeCode.MITIGATION_VERIFY_REFUSED,
         NoticeCode.MITIGATION_DISPOSITION_REFUSED,
-        NoticeCode.UNBOUND_RECHECKS,
     }
 )
 
@@ -211,7 +210,14 @@ def _renders(code: NoticeCode):
 def render_notice(
     code: str, params: dict, outcome: Optional[CaseOutcome], log: list
 ) -> list[str]:
-    """The notices ``code`` renders to; ``log`` is the turn's decision log."""
+    """The notices ``code`` renders to; ``log`` is the turn's decision log.
+    The unbound re-checks have no renderer here: ``narrate_turn`` tells them
+    from a stored record alone (``unbound_lines``, #2555)."""
+    if code == NoticeCode.UNBOUND_RECHECKS:
+        raise ValueError(
+            "unbound_rechecks is rendered only by narrate_turn, from a stored "
+            "record (#2555)"
+        )
     return _RENDERERS[code](params, outcome, log)
 
 
@@ -495,11 +501,6 @@ def unbound_lines(
             )
         )
     return lines
-
-
-@_renders(NoticeCode.UNBOUND_RECHECKS)
-def _unbound(params: dict, outcome: Optional[CaseOutcome], log) -> list:
-    return [line for line, _ids in unbound_lines(params, outcome)]
 
 
 @_renders(NoticeCode.FAILED_FIX_NOT_REREGISTERED)

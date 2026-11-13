@@ -1059,7 +1059,8 @@ cycle is `turn_application._apply_turn_response`, #2615 Q8 (a), #2636):
     refusals whose hypothesis the cycle ended not open.
 13. **The outcome record** (`record_case_outcome`).
 14. **The narration** (`_finalize_turn` → `narrate_turn`).
-15. **The turn record** (`record_turn`).
+15. **The turn record** (`record_turn`), then the unbound re-checks named on a
+    line it kept marked told (`mark_told`).
 16. **The save**, once, at the service (`CaseRepository.prepare_for_save`
     repeats the lapse rule).
 17. **The disagreements counted** (`turn_settlement.settle_turn`, right after
@@ -1076,25 +1077,33 @@ recompute's; its `progress_made` stays step 4b's.
 
 **Counting rule (i)** (#2689, ruled 2026-11-13): each disagreement on the
 outcome record (`CaseOutcome.disagreements`) is counted once, when a saved
-record first carries it: the keys the committed record holds beyond those of
-the record the turn loaded, and the narration's `narration.<code>` conflicts,
-counted after the commit (`outcome.report_saved_disagreements`). The REST
-close and the backfill count the same diff after their retry helper returns,
-on the attempt that saved. A dry run, a failed or cancelled commit and a
-retried attempt count nothing. Accepted: the #2280 window (the commit lands,
-then the save raises on timeout) undercounts.
+record first carries it: the (key, first-read turn) pairs the committed record
+holds beyond those of the record the turn loaded, so a disagreement read gone
+and then read again at a later turn counts again, and the narration's
+`narration.<code>` conflicts, counted after the commit
+(`outcome.report_saved_disagreements`). The REST close and the backfill count
+the same diff after their retry helper returns, on the attempt that saved; the
+backfill also prints what it counted. A dry run, a failed or cancelled commit,
+a retried attempt and a commit only the turn receipt vouches for (it may be
+another request's under the same key, #1888) count nothing. Accepted: the
+#2280 window (the commit lands, then the save raises on timeout) undercounts.
 
 **The unbound re-checks** (#2555): the notice names the record's unbound
 re-checks not yet narrated (`narrated_turn` None) while the record's problem is
 VERIFIED, whatever turn recorded them, so a re-check recorded during a
 revision hold is told on the first narrated turn after the hold ends. It
-renders once per narration, from a stored record only, and marks narrated each
-row a line names that the turn record keeps (`recorded_notices`). The mark is
+renders once per narration, at the first entry's place with the last entry's
+pool, from a stored record only; once the turn record is created, each row
+named on a line it kept is marked narrated. The decider logs nothing once the
+stored record marks every unbound row told. The mark is
 carried while the row stays unbound, so a row is told once per continuous
 unbound stretch; a failed write or commit discards the marks with the record.
 A record stored before this rule (`narration_since` None) has its rows marked
-narrated, unrendered, by the next fold: accepted, a row held through a hold
-that straddles that deploy stays untold.
+narrated, unrendered, by the next fold, and so does a record the backfill
+computes over none (the rows `main` told in their own turns). Accepted: a row
+held through a hold that straddles that deploy stays untold, and during a
+rolling deploy a pod still on the earlier release writes a record without
+`narration_since`, so a row B2 had not yet told is marked told.
 
 **Rationale**: Disposition actions happen last to ensure all state is consistent before case becomes immutable. Gate milestones are applied from the LLM's structured output alongside progress milestones; the new stage's prompt takes effect on the next turn.
 

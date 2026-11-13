@@ -5,16 +5,17 @@ The deciders record codes (``stage_gates.record_decision``); a notice code
 holds its place in ``system_notices`` with a token. ``narrate_turn`` replaces
 each token with what the code renders (``narration.notices``): from the
 cycle's record for a code in ``READS_THE_RECORD``, from its params for every
-other. Each offer code's prose is rendered from its params
-(``narration.offers.render_offer``), published under its key
+other but the unbound re-checks (below). Each offer code's prose is rendered
+from its params (``narration.offers.render_offer``), published under its key
 (``PROSE_KEYS``) and written as the offer's summary (B1d). It runs once per
 turn, in ``_finalize_turn``, before the turn record copies the notices. A
 statement-revision replay's offers are narrated there too: a turn that
 replays never leaves at a step-0 exit, so it always reaches it.
 
 The unbound re-checks are told from the stored record (#2555): once per
-narration, and each row named on a line the turn record keeps is marked
-narrated on the record (``narrated_turn``). The narration's conflicts are
+narration, at the first entry's place with the last entry's params; once the
+turn record is created, each row named on a line it kept is marked narrated
+on the record (``mark_told``, ``narrated_turn``). The narration's conflicts are
 collected (``NARRATION_CONFLICTS_KEY``) and counted after the turn commits
 (#2689).
 """
@@ -42,7 +43,6 @@ from faultmaven.core.investigation.outcome import compute_case_outcome
 from faultmaven.modules.case.contracts import AnswerKind, CaseOutcome
 
 from .stage_gates import _NOTICES_HEAD_KEY
-from .turn_records import recorded_notices
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +53,10 @@ OUTCOME_WRITTEN_KEY = "outcome_written"
 #: The narration's conflicts (``narration.<code>``), handed to the turn's
 #: commit plan by ``_finalize_turn`` and counted after the commit (#2689).
 NARRATION_CONFLICTS_KEY = "narration_conflicts"
+
+#: The unbound re-check lines this narration told, as ``(line, ids)`` pairs,
+#: for ``mark_told`` once the turn record is created (#2555).
+UNBOUND_TOLD_KEY = "unbound_told"
 
 
 def _outcome(case: Any, metadata: dict, log: list) -> Optional[CaseOutcome]:
@@ -206,21 +210,18 @@ def _engine_offer_stands(case: Any, metadata: dict, params: dict) -> dict:
     return {**params, "stands": False}
 
 
-def _mark_told(case: Any, metadata: dict, told: list) -> None:
-    """Mark narrated, on the stored record, each unbound re-check a line names
-    that the turn record keeps (``recorded_notices``): a row named only on a
-    line its cap cut is told on a later turn (#2555)."""
-    notices = metadata.get("system_notices") or []
-    kept = len(recorded_notices(notices))
-    if kept < len(notices):
-        kept -= 1  # the last kept line says how many were dropped
+def mark_told(case: Any, metadata: dict, kept: list[str]) -> None:
+    """Mark narrated, on the stored record, each unbound re-check named on a
+    line this narration told (``UNBOUND_TOLD_KEY``) that the turn record kept
+    (``kept``, its ``system_notices``): a row named only on a line the record
+    cut or dropped is told on a later turn (#2555)."""
     named = {
         evidence_id
-        for line, ids in told
-        if line in notices[:kept]
+        for line, ids in metadata.pop(UNBOUND_TOLD_KEY, None) or []
+        if line in kept
         for evidence_id in ids
     }
-    for recheck in case.progress.outcome.unbound_rechecks:
+    for recheck in case.progress.outcome.unbound_rechecks if named else []:
         if recheck.evidence_id in named:
             recheck.narrated_turn = case.current_turn
 
@@ -232,7 +233,8 @@ def narrate_turn(case: Any, metadata: dict) -> None:
     that lapsed later in the cycle also sets the turn's compliance flags
     ``transition_dropped_for_lapsed_offer`` and
     ``transition_superseded_by_engine`` (false). The unbound re-checks render
-    once, at the last such entry's place, and only from a stored record."""
+    once, at the first such entry's place with the last one's params, and
+    only from a stored record; their lines go to ``UNBOUND_TOLD_KEY``."""
     log = metadata.get(DECISIONS_KEY) or []
     outcome = _outcome(case, metadata, log)
     stored = bool(metadata.get(OUTCOME_WRITTEN_KEY)) and outcome is not None
@@ -245,7 +247,9 @@ def narrate_turn(case: Any, metadata: dict) -> None:
             )
         )
     unbound = [e for e in log if e["code"] == NoticeCode.UNBOUND_RECHECKS]
-    told: list = []
+    told = unbound_lines(unbound[-1]["params"], outcome) if stored and unbound else []
+    if told:
+        metadata[UNBOUND_TOLD_KEY] = told
     for entry in log:
         code, params = entry["code"], entry["params"]
         if code in _OFFER_CODES:
@@ -258,11 +262,7 @@ def narrate_turn(case: Any, metadata: dict) -> None:
         if code == NoticeCode.ENGINE_OFFER_STANDS:
             params = _engine_offer_stands(case, metadata, params)
         if code == NoticeCode.UNBOUND_RECHECKS:
-            if stored and entry is unbound[-1]:
-                told = unbound_lines(params, outcome)
-            texts = [line for line, _ids in told] if entry is unbound[-1] else []
+            texts = [line for line, _ids in told] if entry is unbound[0] else []
         else:
             texts = render_notice(code, params, outcome, log)
         _replace_token(metadata, entry["token"], texts)
-    if told:
-        _mark_told(case, metadata, told)

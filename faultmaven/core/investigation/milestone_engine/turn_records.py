@@ -85,8 +85,7 @@ def _bounded_notice(notice: str) -> str:
 def recorded_notices(notices: list[str]) -> list[str]:
     """``notices`` as the turn record stores them (#2499): each bounded
     (``_bounded_notice``), and at most ``MAX_SYSTEM_NOTICES``, the last of them
-    saying how many more were dropped. The narration step reads it to mark
-    only the unbound re-checks a kept line names (#2555)."""
+    saying how many more were dropped."""
     kept = [_bounded_notice(n) for n in notices]
     if len(kept) <= MAX_SYSTEM_NOTICES:
         return kept

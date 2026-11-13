@@ -278,3 +278,114 @@ async def test_a_rest_close_retried_after_a_conflict_counts_once(counted):
     assert closed.state == CaseState.CLOSED
     assert _key(case) in closed.progress.outcome.disagreements
     assert counted == [_FIELD]
+
+
+# ---------------------------------------------------------------------------
+# The diff is over (key, first-read turn) pairs; each increment guarded
+# ---------------------------------------------------------------------------
+
+
+def test_a_disagreement_dropped_and_read_again_within_one_turn_counts_again(counted):
+    """Stored at turn 4; at turn 9 one fold reads it gone and a later fold of
+    the same turn reads it again: a return, counted once more."""
+    case = _investigating_case()
+    action = _fix(case, turn=3)
+    first = compute_case_outcome(None, case)
+    action.accepted_in_turn, case.current_turn = 2, 4
+    stored = compute_case_outcome(first, case)
+    assert list(stored.disagreements.values()) == [4], "premise: stored at 4"
+    loaded = outcome_module.disagreement_keys(stored)
+    case.current_turn = 9
+    action.accepted_in_turn = 3
+    gone = compute_case_outcome(stored, case)
+    assert gone.disagreements == {}, "premise: read gone"
+    action.accepted_in_turn = 2
+    back = compute_case_outcome(gone, case)
+    assert list(back.disagreements) == list(stored.disagreements)
+    outcome_module.report_saved_disagreements(case.case_id, loaded, back)
+    assert counted == [_FIELD]
+
+
+def test_a_field_that_cannot_be_counted_drops_none_of_the_rest(monkeypatch):
+    seen: list = []
+
+    def _labels(field):
+        if field not in {_FIELD, "narration.request_ready"}:
+            raise ValueError(f"undeclared label {field}")
+        return SimpleNamespace(inc=lambda: seen.append(field))
+
+    monkeypatch.setattr(
+        outcome_module,
+        "case_outcome_conflicts_total",
+        SimpleNamespace(labels=_labels),
+    )
+    case = _investigating_case()
+    saved = compute_case_outcome(None, case).model_copy(
+        update={"disagreements": {"aaa.unknown:x": 9, f"{_FIELD}:act": 9}}
+    )
+    outcome_module.report_saved_disagreements(
+        case.case_id, frozenset(), saved, ("narration.request_ready",)
+    )
+    assert seen == [_FIELD, "narration.request_ready"]
+
+
+# ---------------------------------------------------------------------------
+# Only this settlement's own commit counts
+# ---------------------------------------------------------------------------
+
+
+async def test_a_commit_only_the_receipt_probe_vouches_for_counts_nothing(
+    monkeypatch, counted
+):
+    """The duplicate-key path (#1888 A3): this settlement's own commit raised,
+    and the receipt read back under its key and turn may be another
+    request's commit. The turn answers as committed and counts nothing; the
+    same save that commits counts its disagreement (control)."""
+    import contextlib
+
+    from faultmaven.modules.case.domain.owned_models.turn_receipt import (
+        TurnReceipt,
+    )
+    from faultmaven.modules.case.infrastructure import (
+        sessionless_case_repository as sessionless,
+    )
+
+    class _Dialect:
+        raises = True
+
+        async def save(self, case, **rows):
+            if self.raises:
+                raise ConnectionError("lost mid-COMMIT")
+            return case
+
+    dialect = _Dialect()
+
+    @contextlib.asynccontextmanager
+    async def _session():
+        yield None
+
+    monkeypatch.setattr(sessionless, "get_db_session", _session)
+    monkeypatch.setattr(sessionless, "get_repository_for_session", lambda _s: dialect)
+    repository = sessionless.SessionlessCaseRepository()
+    monkeypatch.setattr(repository, "_receipt_committed", AsyncMock(return_value=True))
+
+    async def _settle():
+        case = _disagreeing(_investigating_case())
+        prepared = _prepared(case, ["narration.request_ready"])
+        prepared.plan.receipt = TurnReceipt(
+            case_id=case.case_id,
+            author_id=USER_ID,
+            idempotency_key="k" * 16,
+            request_fingerprint="f" * 64,
+            turn_number=case.current_turn,
+            response={},
+        )
+        compute = outcome_module.compute_case_outcome
+        case.progress.outcome = compute(case.progress.outcome, case)
+        await settle_turn(repository, None, prepared)
+
+    await _settle()
+    assert counted == [], "vouched for by the receipt alone"
+    dialect.raises = False
+    await _settle()
+    assert counted == [_FIELD, "narration.request_ready"], "control: its own commit"

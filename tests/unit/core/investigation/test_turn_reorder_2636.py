@@ -24,6 +24,7 @@ from faultmaven.core.investigation.milestone_engine.cause_state import (
 )
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.milestone_engine.stage_gates import (
+    _flag_unbound_post_fix_rows,
     merge_decisions,
     merge_system_notices,
     record_decision,
@@ -809,10 +810,6 @@ async def test_a_row_that_leaves_the_unbound_list_and_returns_is_told_again():
 
 def _flagged(case) -> dict:
     """The unbound decider's code for ``case``, as a cycle logs it."""
-    from faultmaven.core.investigation.milestone_engine.stage_gates import (
-        _flag_unbound_post_fix_rows,
-    )
-
     metadata: dict = {"milestones_completed": []}
     assert _flag_unbound_post_fix_rows(case, metadata)
     return metadata
@@ -820,7 +817,8 @@ def _flagged(case) -> dict:
 
 def test_two_unbound_entries_render_the_rows_once():
     """A replayed bundle's code and the live recompute's: the rows render
-    once, at the last entry, with the last entry's pool."""
+    once, at the first entry's place (``main``'s), with the last entry's
+    pool; the other entry's token is removed."""
     from faultmaven.core.investigation.milestone_engine.stage_gates import (
         REPLAYED_DECISION,
     )
@@ -830,10 +828,13 @@ def test_two_unbound_entries_render_the_rows_once():
     metadata = _flagged(case)
     (bundle,) = metadata[DECISIONS_KEY]
     bundle[REPLAYED_DECISION] = True
-    params = {**bundle["params"], "fix_dated": not bundle["params"]["fix_dated"]}
+    params = {**bundle["params"], "problem_row_ids": ["ev_last"]}
+    metadata["system_notices"].append("BETWEEN")
     record_decision(metadata, NoticeCode.UNBOUND_RECHECKS, **params)
     assert len(metadata[DECISIONS_KEY]) == 2, "premise: the params differ"
-    assert len(_naming(narrated(case, metadata), "held")) == 1
+    notices = narrated(case, metadata)
+    assert notices[1:] == ["BETWEEN"] and _naming(notices, "held")
+    assert "symptom rows: one of ev_last;" in notices[0]
 
 
 def test_a_failed_write_tells_no_unbound_row_and_marks_none(monkeypatch):
@@ -910,4 +911,68 @@ def test_2555_an_unbound_row_already_narrated_is_not_repeated():
     case, metadata = golden.B1C_SCENARIOS[name]()
     assert golden.cycle_text(narrated(case, metadata)) == oracle(name)
     case.current_turn += 1
-    assert narrated(case, _flagged(case)) == []
+    # The decider reads no pool and logs nothing once every row is told.
+    later: dict = {}
+    assert not _flag_unbound_post_fix_rows(case, later)
+    assert narrated(case, later) == []
+
+
+async def test_the_rows_marked_are_those_the_turn_record_kept(monkeypatch):
+    """21 notices, one a leftover token the turn record strips: the record
+    keeps all 20 others, the unbound line (position 19) among them, and its
+    row is marked told. Marking reads the record ``record_turn`` created,
+    after the narration."""
+    from faultmaven.core.investigation.milestone_engine import turn_completion
+    from faultmaven.core.investigation.milestone_engine.turn_commit import (
+        TurnCommitPlan,
+    )
+    from faultmaven.core.investigation.milestone_engine.turn_narration import (
+        OUTCOME_WRITTEN_KEY,
+    )
+    from faultmaven.core.investigation.narration import codes
+    from faultmaven.modules.case.contracts import MAX_SYSTEM_NOTICES
+
+    monkeypatch.setattr(codes, "TOKENS_FAIL", False)
+    _eng, case = _held_recheck()
+    _decline(case)
+    metadata = _flagged(case)
+    stray: dict = {}
+    record_decision(stray, NoticeCode.MITIGATION_VERIFY_PROCEEDED)
+    plain = [f"NOTICE {n}" for n in range(MAX_SYSTEM_NOTICES - 1)]
+    metadata["system_notices"] = [
+        *plain[:-1],
+        *stray["system_notices"],
+        *metadata["system_notices"],
+        plain[-1],
+    ]
+    assert len(metadata["system_notices"]) == MAX_SYSTEM_NOTICES + 1
+    metadata[OUTCOME_WRITTEN_KEY] = outcome_module.record_case_outcome(case, at="cycle")
+    inputs = turn_application.TurnRecordInputs(
+        fields=dict(
+            turn_number=case.current_turn,
+            milestones_completed=[],
+            evidence_added=[],
+            hypotheses_generated=[],
+            hypotheses_validated=[],
+            solutions_proposed=[],
+            progress_made=False,
+            outcome=TurnOutcome.CONVERSATION,
+            user_message="m",
+            agent_response="Noted.",
+        ),
+        stagnation_str=None,
+        validation_repairs=[],
+    )
+    await turn_completion._finalize_turn(
+        MagicMock(),
+        case_updated=case,
+        metadata=metadata,
+        plan=TurnCommitPlan(),
+        redaction_ctx=SimpleNamespace(save=AsyncMock()),
+        response_obj=SimpleNamespace(suggested_follow_ups=None),
+        record_inputs=inputs,
+    )
+    kept = case.turn_history[-1].system_notices
+    assert len(kept) == MAX_SYSTEM_NOTICES and _naming(kept, "held")
+    (row,) = case.progress.outcome.unbound_rechecks
+    assert row.narrated_turn == case.current_turn
