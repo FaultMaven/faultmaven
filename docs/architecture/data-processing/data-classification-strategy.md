@@ -221,17 +221,55 @@ The catch-all. Runs when no stronger signal is available. Uses a sample of the f
 
 A `_doc_exts_early` set (`.md`, `.rst`, `.adoc`, `.txt`) is checked at the top of `_classify_with_rules` and, when matched, the STRUCTURED_CONFIG content heuristics are skipped. Without the guard, `.md` files containing YAML-looking fenced blocks or frontmatter would score high on the config detector and outrank the documentation path. The guard is an upstream filter, not a content veto — VISUAL_EVIDENCE / TRACE / PROFILING / etc. still run normally on those extensions.
 
+### Pasted text: content only, by shape (#2361)
+
+A paste's filename is minted by the client (`pasted-content-<ts>.txt`), so for `source_type == "text_paste"` the extension is ignored and the paste is typed by content alone. Three things change for a paste, and nothing changes for a file:
+
+- **Shape rules first.** After the trace/profiling check, `paste_shapes.paste_shape` (`modules/preprocessing/paste_shapes.py`) names the paste by its shape, at 0.80. A rule speaks only when its shape accounts for at least 2/3 of the paste's non-empty lines, so a mixed paste stays uncertain.
+
+  | Shape | Type |
+  |---|---|
+  | `systemctl status`: a unit header, then its fields | `COMMAND_OUTPUT` |
+  | A unified diff with a hunk | `SOURCE_CODE` |
+  | A JSON document | `STRUCTURED_CONFIG` |
+  | Timestamped log lines: ISO, syslog or logfmt, each with a level | `LOGS_AND_ERRORS` |
+  | A column table: capitalised headers, rows as wide as their header (`kubectl get`, `ps`, `df`) | `COMMAND_OUTPUT` |
+  | `curl -v`: `*`, `>` and `<` lines | `COMMAND_OUTPUT` |
+  | A `KEY=value` block (not `Key=True <message>` status lines, not logfmt) | `STRUCTURED_CONFIG` |
+  | A YAML mapping a parser reads, without aligned `Key:   value` columns | `STRUCTURED_CONFIG` |
+
+- **The regex config rule and the 0.72 `UNSTRUCTURED_TEXT` default do not apply to a paste.** A paste is config only where a config parser reads it. Prose matches no shape and stays uncertain; that costs nothing, because an uncertain paste passes to the model as `UNSTRUCTURED_TEXT` (§`classification_failed` Path).
+- **Everything else runs as for an extensionless upload.** That includes the command signatures, the log patterns at the "other" threshold, and the best-effort fallback.
+
+**The taxonomy the rules follow** (recorded on #2361, 2026-11-13). A shape gets the one type whose unified meaning is true of it and whose extractor parses it without dropping content.
+- `STRUCTURED_CONFIG` means a document a config parser reads.
+- A report or table a tool prints for people is `COMMAND_OUTPUT`, even when it is key-value: `kubectl describe`, `vault read` and `openssl x509 -text` lose most of their content in the config extractor (#2791).
+- `lscpu` (§Command-Output Classification) is config because it is a flat YAML mapping, not because it is key-value.
+- A shape whose extractor cannot read it, such as a whitespace metrics table, gets no rule.
+
+**Measured** on a frozen, hand-labelled set of 274 simulated-user pastes, kept in the internal docs repository. Rules were written on a development half and gated on a held-out half (22 cases, 115 pastes), against bars stated in advance:
+
+| Gate (held-out half) | Before | After | Bar |
+|---|---:|---:|---|
+| Wrong and confident | 83% | 2% | ≤ 10% |
+| Logs, command output or metrics confidently typed config or code | 0 | 0 | 0 |
+| Right and confident, single-shape pastes | 20% | 44% | ≥ 50% (missed; shipped on the owner's ruling) |
+| A rule that adds a wrong-and-confident paste on either half ships | — | none does | none |
+
+Two rules failed the last gate and do not exist: a `vault read` `Key  Value` table and a Prometheus exposition. Each stays uncertain. Recall is the open side: a paste no rule claims reaches the model as text.
+
 ### Decision order within Priority 5
 
 1. **`VISUAL_EVIDENCE`** — image extension → 0.98+boost (max 0.99).
 2. **`TRACE_DATA` vs `PROFILING_DATA`** — see [disambiguation helpers](#disambiguation-helpers).
+2b. **A paste's shape** — pastes only, see above.
 3. **Command output** — see [command-output classification](#command-output-classification).
 4. **`ERROR_REPORT` vs `LOGS_AND_ERRORS`** — stack trace *without* timestamps → ERROR_REPORT; timestamps + log-level patterns → LOGS_AND_ERRORS. `.log` extension lowers the required pattern count (1), `.txt` needs more (2), others need strong patterns (≥3).
 5. **`METRICS_AND_PERFORMANCE`** — CSV/TSV with metric-keyword density, or JSON-array time-series shape.
-6. **`STRUCTURED_CONFIG`** — config extension (`.yaml/.yml/.json/.toml/.ini/.env/.config`) → 0.92+boost; or ≥2 config patterns → 0.75+boost.
+6. **`STRUCTURED_CONFIG`** — config extension (`.yaml/.yml/.json/.toml/.ini/.env/.config`) → 0.92+boost; or ≥2 config patterns → 0.75+boost (not for a paste).
 7. **`SOURCE_CODE`** — code extension → 0.95+boost; or ≥2 code patterns → 0.80+boost.
 8. **HTML → `DOCUMENTATION`** — `.html/.htm` extension or ≥3 HTML structural patterns → 0.88+boost. Detected *before* generic documentation/text so page-like content is not misclassified.
-9. **`DOCUMENTATION` vs `UNSTRUCTURED_TEXT`** — `.md/.rst/.adoc` or (≥2 markdown patterns + prose density > 0.1) → DOCUMENTATION. Otherwise `.txt` or ≥1 markdown pattern → UNSTRUCTURED_TEXT at 0.72.
+9. **`DOCUMENTATION` vs `UNSTRUCTURED_TEXT`** — `.md/.rst/.adoc` or (≥2 markdown patterns + prose density > 0.1) → DOCUMENTATION. Otherwise `.txt` or ≥1 markdown pattern → UNSTRUCTURED_TEXT at 0.72 (not for a paste).
 10. **CSV/TSV structural gate** — see [disambiguation helpers](#disambiguation-helpers).
 11. **Best-effort fallback** — if any content score ≥1, return the winning type with confidence 0.50 and `source="rule_based_best_effort"`, `classification_failed=True`.
 12. **True fallback** — nothing matched: `UNSTRUCTURED_TEXT` at 0.30, `classification_failed=True`.
@@ -259,7 +297,7 @@ Commands route to the detailed `DataType` whose extractor produces the best stru
 | `top`, `ps`, `vmstat`, `iostat`, `netstat`, `free`, `df`, `lsof` | `COMMAND_OUTPUT` | CommandOutputExtractor | Tabular resource-monitoring output; extractor parses process tables, IO stats, disk usage |
 | `dmesg`, `journalctl`, `strace`, `ltrace` | `LOGS_AND_ERRORS` | LogsAndErrorsExtractor | Time-ordered log-like output with severity/context |
 | `perf` | `PROFILING_DATA` | ProfilingExtractor | Performance counter / hotspot data |
-| `lscpu` | `STRUCTURED_CONFIG` | ConfigExtractor | Machine-inventory key-value output |
+| `lscpu` | `STRUCTURED_CONFIG` | ConfigExtractor | A flat `Key: value` mapping the YAML parser reads whole (a key-value report a parser cannot read is `COMMAND_OUTPUT`, #2361) |
 
 Pattern table (excerpts — see `COMMAND_OUTPUTS` in `classifier.py` for the authoritative set):
 
