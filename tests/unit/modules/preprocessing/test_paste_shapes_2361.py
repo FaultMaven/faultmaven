@@ -434,3 +434,47 @@ class TestTheOlderChecksKeepTheirShapes:
         result = DataClassifier().classify(MINTED, prose, source_metadata=PASTE)
 
         assert result.classification_failed is True
+
+
+# ---------------------------------------------------------------------------
+# Second review round
+# ---------------------------------------------------------------------------
+
+
+def test_a_large_json_config_is_parsed_whole():
+    """The JSON rule reads past the 20 KB sample: ``kubectl get -o json``
+    lists run to hundreds of KB."""
+    import json
+
+    items = [{"kind": "Deployment", "metadata": {"name": f"d{i}"}} for i in range(3000)]
+    doc = json.dumps({"apiVersion": "v1", "kind": "List", "items": items}, indent=2)
+    assert len(doc) > 100_000
+
+    assert _type(doc) == DataType.STRUCTURED_CONFIG
+
+
+def test_json_lines_of_metrics_are_not_logs():
+    dump = "".join(
+        f'{{"timestamp":"2025-01-01T00:0{i}:00Z","metric":"cpu_usage","value":0.{i}}}\n'
+        for i in range(5)
+    )
+    assert _type(dump) != DataType.LOGS_AND_ERRORS
+
+
+def test_a_flat_env_style_yaml_is_config():
+    env = "".join(f"DATABASE_{i}: value{i}\n" for i in range(10))
+    assert _type(env) == DataType.STRUCTURED_CONFIG
+
+
+def test_many_http_headers_are_still_not_config():
+    headers = (
+        "Content-Type: text/html\nContent-Length: 19\nDate: Mon, 15 Oct 2025 14:00:00 GMT\n"
+        "Server: nginx/1.25\nX-Request-Id: abc\nCache-Control: no-store\n"
+    )
+    assert paste_shape(headers) is None
+
+
+def test_prose_naming_logfmt_keys_is_not_a_log():
+    assert _type("we set time=5 level=3 there\nwe set time=6 level=4 here\n") != (
+        DataType.LOGS_AND_ERRORS
+    )

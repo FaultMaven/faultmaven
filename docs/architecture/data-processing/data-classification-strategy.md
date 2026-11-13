@@ -230,16 +230,16 @@ A paste's filename is minted by the client (`pasted-content-<ts>.txt`), so for `
   | Shape | Type |
   |---|---|
   | `systemctl status`: a unit header, then its fields | `COMMAND_OUTPUT` |
-  | A unified diff with a hunk | `SOURCE_CODE` |
+  | A unified diff: a file header (`diff --git`, or a `---`/`+++` pair) and a hunk; a bare hunk stays uncertain | `SOURCE_CODE` |
   | A JSON document whose meaning is configuration: not a log event or array of events (time plus level or message keys), a metrics query result or a trace | `STRUCTURED_CONFIG` |
-  | JSON lines, each object stamped with a time | `LOGS_AND_ERRORS` |
-  | Timestamped log lines, each with a level: ISO or syslog stamp, or logfmt with a time and a level key in any order | `LOGS_AND_ERRORS` |
-  | A column table: capitalised headers, rows as wide as their header (`kubectl get`, `ps`, `df`) | `COMMAND_OUTPUT` |
+  | JSON lines, each object with a time key and an event key (level, message, or an audit `type`); a metrics or record dump is not | `LOGS_AND_ERRORS` |
+  | Timestamped log lines, each with a level: ISO or syslog stamp, or logfmt (a line starting `key=value`, with a time and a level key in any order) | `LOGS_AND_ERRORS` |
+  | A column table: all-capitals headers, rows as wide as their header (`kubectl get`; `ps aux` and `df -h` headers are mixed-case and not claimed) | `COMMAND_OUTPUT` |
   | `curl -v`: `*`, `>` and `<` lines | `COMMAND_OUTPUT` |
   | A `KEY=value` block (not `Key=True <message>` status lines, not logfmt) | `STRUCTURED_CONFIG` |
-  | A YAML mapping a parser reads whole: no aligned `Key:   value` columns, no repeated top-level key, and either nested or at least five lower-case keys (not a few `Name: value` header or message lines) | `STRUCTURED_CONFIG` |
+  | A YAML mapping a parser reads whole: no aligned `Key:   value` columns, no repeated top-level key, and either nested or at least five keys, not HTTP-header-style (not a few `Name: value` message lines, not response headers) | `STRUCTURED_CONFIG` |
 
-  Every rule reads at most the first 20,000 characters (`SAMPLE_CHARS`), parsers included: the classifier runs on the event loop, and a document larger than the sample does not parse and stays uncertain.
+  Every rule reads at most the first 20,000 characters (`SAMPLE_CHARS`), the YAML loader included; the JSON rule alone parses up to 2,000,000 (`JSON_PARSE_CHARS`), since the C JSON parser is cheap. The classifier runs on the event loop. A JSON document over its limit does not parse and stays uncertain; a YAML document is judged on its first 20,000 characters.
 
 - **The regex config rule and the 0.72 `UNSTRUCTURED_TEXT` default do not apply to a paste.** A paste is config only where a config parser reads it. A paste no rule claims, prose included, stays uncertain. Under 200 lines that costs nothing: the paste passes to the model as `UNSTRUCTURED_TEXT`. A paste of 200+ lines no rule claims is put to the user (§`classification_failed` Path), because there the type picks the extractor (owner, 2026-11-13).
 - **Everything else runs as for an extensionless upload.** That includes the command signatures, the log patterns at the "other" threshold, and the best-effort fallback.
@@ -259,7 +259,7 @@ A paste's filename is minted by the client (`pasted-content-<ts>.txt`), so for `
 | Right and confident, single-shape pastes | 20% | 44% | ≥ 50% (missed; shipped on the owner's ruling) |
 | A rule that adds a wrong-and-confident paste on either half ships | — | none does | none |
 
-Two rules failed the last gate and do not exist: a `vault read` `Key  Value` table and a Prometheus exposition. Each stays uncertain. Recall is the open side: a paste no rule claims reaches the model as text.
+Two rules failed the last gate and do not exist: a `vault read` `Key  Value` table and a Prometheus exposition. Each stays uncertain. Recall is the open side: a paste no rule claims is uncertain, which under 200 lines means it reaches the model as text and at 200+ lines that the user is asked.
 
 ### Decision order within Priority 5
 

@@ -26,9 +26,11 @@ paste's non-empty lines (the same bar the evaluation labels use), and a
 paste no rule claims is left to the classifier's other checks. A shape whose
 extractor cannot read it (a whitespace metrics table, #2791) has no rule.
 
-Every rule reads one bounded sample (``SAMPLE_CHARS``): the classifier runs
-on the event loop, so no rule may cost more than that sample allows, and a
-document larger than the sample does not parse and is left uncertain.
+Every rule reads one bounded sample (``SAMPLE_CHARS``), the YAML loader
+included; the JSON rule alone reads up to ``JSON_PARSE_CHARS``, since the C
+JSON parser is cheap. The classifier runs on the event loop, so no rule may
+cost more than that. A JSON document larger than its limit does not parse
+and is left uncertain; a YAML document is judged on its first sample.
 """
 
 from __future__ import annotations
@@ -46,8 +48,13 @@ SHAPE_SHARE = 2 / 3
 #: below auto-accept (0.85) — a shape match, not a signature.
 SHAPE_CONFIDENCE = 0.80
 
-#: The most of a paste any rule reads, parsers included.
+#: The most of a paste any rule reads, the YAML parser included.
 SAMPLE_CHARS = 20_000
+
+#: The most of a paste the JSON rule parses. The C JSON parser is cheap
+#: (about 10 ms per MB), unlike the YAML loader, so a JSON document
+#: (``kubectl get -o json``) is read whole up to this size.
+JSON_PARSE_CHARS = 2_000_000
 
 _SYSTEMD_HEAD = re.compile(r"^[●×○*] \S+\.(service|socket|timer|mount|target) - ")
 _SYSTEMD_FIELD = re.compile(
@@ -83,6 +90,9 @@ _TOP_KEY = re.compile(r"^([\w.\-/\"']+):")
 # JSON whose keys mark it as something other than configuration (#2361).
 _TIME_KEYS = {"time", "timestamp", "ts", "@timestamp", "eventtime", "datetime"}
 _EVENT_KEYS = {"level", "severity", "lvl", "message", "msg", "log", "event"}
+# A JSON-lines event: an audit record's ``type`` (request / response) counts.
+_LINE_EVENT_KEYS = _EVENT_KEYS | {"type"}
+_HTTP_HEADER_KEY = re.compile(r"^(?:[A-Z][a-z0-9]*)(?:-[A-Z][A-Za-z0-9]*)+$|^X-")
 _NOT_CONFIG_KEYS = {
     "resulttype",
     "resourcespans",
@@ -104,10 +114,12 @@ def _share(lines: List[str], matches: Callable[[str], Any]) -> float:
 def _is_log_line(line: str) -> bool:
     if _LOG_LINE.search(line):
         return True
-    # logfmt, keys in any order: a time and a level among the first tokens.
-    keys = {
-        tok.split("=", 1)[0].lower() for tok in line.split(None, 5)[:5] if "=" in tok
-    }
+    # logfmt, keys in any order: the line starts with a ``key=value`` token,
+    # and a time and a level key are among its first tokens.
+    tokens = line.split(None, 5)[:5]
+    if not tokens or "=" not in tokens[0]:
+        return False
+    keys = {tok.split("=", 1)[0].lower() for tok in tokens if "=" in tok}
     return bool(keys & _LOGFMT_TIME) and bool(keys & _LOGFMT_LEVEL)
 
 
@@ -153,11 +165,11 @@ def _diff(sample: str, lines: List[str]) -> bool:
     )
 
 
-def _json_document(sample: str, lines: List[str]) -> bool:
+def _json_document(text: str) -> bool:
     # A JSON document is config only when its meaning is configuration: a log
     # event (or an array of them), a metrics query result or a trace is left
-    # to the log, metrics and trace checks.
-    text = sample.strip()
+    # to the log, metrics and trace checks. Read up to JSON_PARSE_CHARS.
+    text = text.strip()
     if not text or text[0] not in "{[":
         return False
     doc = _parse_json(text)
@@ -177,8 +189,10 @@ def _json_lines_log(sample: str, lines: List[str]) -> bool:
         line = line.strip()
         if not line.startswith("{"):
             return False
-        doc = _parse_json(line)
-        return isinstance(doc, dict) and bool(_keys(doc) & _TIME_KEYS)
+        keys = _keys(_parse_json(line))
+        # A time and an event key: a metrics or record dump with a timestamp
+        # (``{"timestamp", "metric", "value"}``) is not a log.
+        return bool(keys & _TIME_KEYS) and bool(keys & _LINE_EVENT_KEYS)
 
     return _share(lines, stamped) >= SHAPE_SHARE
 
@@ -228,9 +242,9 @@ def _yaml_mapping(sample: str, lines: List[str]) -> bool:
     #   (``kubectl describe``), not YAML.
     # - A repeated top-level key is not a mapping the parser keeps whole: it
     #   silently drops all but the last (``error: …`` lines).
-    # - A flat block of a few ``Name: value`` lines (HTTP headers, an error
-    #   summary) is a message, not a config document: config either nests
-    #   or carries several lower-case keys.
+    # - A flat block of a few ``Name: value`` lines (an error summary) or of
+    #   HTTP headers is a message, not a config document: flat config needs
+    #   at least five keys, and not header-style ones.
     if len(lines) < 3 or any(_ALIGNED_FIELD.search(line) for line in lines):
         return False
     if _share(lines, _YAML_LINE.search) < SHAPE_SHARE:
@@ -239,7 +253,8 @@ def _yaml_mapping(sample: str, lines: List[str]) -> bool:
     if len(top) != len(set(top)):
         return False
     nested = any(line.startswith((" ", "\t", "- ")) for line in lines)
-    if not nested and (len(top) < 5 or any(k[:1].isupper() for k in top)):
+    headers = sum(1 for k in top if _HTTP_HEADER_KEY.match(k))
+    if not nested and (len(top) < 5 or headers * 2 >= len(top)):
         return False
     try:
         import yaml
@@ -252,10 +267,11 @@ def _yaml_mapping(sample: str, lines: List[str]) -> bool:
 
 
 #: Checked in order; the first rule that claims the paste names it.
-_RULES: List[Tuple[str, DataType, Callable[[str, List[str]], bool]]] = [
+_RULES: List[Tuple[str, DataType, Optional[Callable[[str, List[str]], bool]]]] = [
     ("systemd_status", DataType.COMMAND_OUTPUT, _systemd_status),
     ("diff", DataType.SOURCE_CODE, _diff),
-    ("json_document", DataType.STRUCTURED_CONFIG, _json_document),
+    # The JSON rule reads its own, larger slice (see ``paste_shape``).
+    ("json_document", DataType.STRUCTURED_CONFIG, None),
     ("json_lines_log", DataType.LOGS_AND_ERRORS, _json_lines_log),
     ("log_lines", DataType.LOGS_AND_ERRORS, _log_lines),
     ("column_table", DataType.COMMAND_OUTPUT, _column_table),
@@ -273,6 +289,10 @@ def paste_shape(content: str) -> Optional[Tuple[DataType, str]]:
     if not lines:
         return None
     for name, data_type, matches in _RULES:
-        if matches(sample, lines):
+        if matches is None:
+            claimed = _json_document(content[:JSON_PARSE_CHARS])
+        else:
+            claimed = matches(sample, lines)
+        if claimed:
             return data_type, name
     return None
