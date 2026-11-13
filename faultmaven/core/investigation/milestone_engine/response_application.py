@@ -503,9 +503,10 @@ class ResponseApplier:
         across itself, so a replay's milestone, folded in by
         ``merge_statement_commit``, is kept, as ``main`` keeps it. The
         KB-remediation pre-fetch (INV-35; terminal recompute paths deliberately
-        do not warm KB) fires at most once per turn, on the first recompute
-        that crosses to IDENTIFIED from an unidentified start; step 1's can
-        fire on a turn the final recompute then un-identifies. The final
+        do not warm KB) fires at most once per live cycle (step 1 plus the
+        final recompute), on the first of them that crosses to IDENTIFIED from
+        an unidentified start; step 1's can fire on a turn the final recompute
+        then un-identifies, and a replayed bundle's own recompute can fire too. The final
         recompute also drops from ``hypotheses_validated`` what the cycle ends
         not VALIDATED and re-derives the outcome when the milestones moved;
         its flags replace step 1's, and it re-runs no per-evaluation counter or
