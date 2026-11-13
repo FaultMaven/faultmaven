@@ -112,10 +112,12 @@ vector_storage_type = "chromadb"
 opik_enabled = False
 prometheus_enabled = False
 tracing_enabled = False
-metrics_enabled = False
+# Metrics: off by default (see below)
 protection_enabled = False
 sanitize_pii = False
 ```
+
+`METRICS_EXPORTER=prometheus_http` serves `/metrics`. The environment variable `ENABLE_METRICS=true` makes the collectors created through the metrics shim record. The collectors in three modules (`tracing.py`, `oauth_metrics.py`, `evidence_metrics.py`) record whenever `prometheus_client` is installed, until #2748. Both variables are off by default.
 
 ### Running the Server
 
@@ -197,7 +199,6 @@ These settings exist in the codebase but are **not** part of the Standalone `.en
 | `OPIK_ENABLED` | `false` | Enable Opik LLM tracing |
 | `PROMETHEUS_ENABLED` | `false` | Enable Prometheus metrics |
 | `TRACING_ENABLED` | `false` | Enable distributed tracing |
-| `METRICS_ENABLED` | `false` | Enable metrics collection |
 | `PROTECTION_ENABLED` | `false` | Enable PII protection |
 | `SANITIZE_PII` | `false` | Enable PII sanitization |
 
