@@ -32,7 +32,7 @@ from pydantic import ValidationError
 from faultmaven.exceptions import ServiceException, ValidationException
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models import SessionContext
-from faultmaven.utils.serialization import to_json_compatible
+from faultmaven.utils.serialization import depth_exceeds, to_json_compatible
 
 logger = logging.getLogger(__name__)
 
@@ -56,45 +56,29 @@ _FIELD_MESSAGES: Dict[str, str] = {
 _MAX_NAMED_REFUSALS = 5
 _MAX_REFUSED_NAME_CHARS = 64
 
-#: How deep client session metadata may nest, the metadata object itself being
-#: level 1. The store's serializer recurses once per level and fails from about
-#: 500 while the request parser accepts some 2000, so a deeper value answered
-#: 500 (#1853). No first-party client sends nested session metadata.
+#: The metadata object is level 1. The store's serializer fails from about 500
+#: (#1853); no first-party client nests session metadata.
 MAX_CLIENT_SESSION_METADATA_DEPTH = 32
 
 
 def validate_client_session_metadata(value: Any) -> None:
-    """The one admission rule for client session metadata, on create and update.
+    """The one admission rule for client session metadata, create and update.
 
-    Raises ``ValidationException`` for a value nested deeper than
-    ``MAX_CLIENT_SESSION_METADATA_DEPTH`` (counted without recursion) or one that
-    is not JSON-only: NaN, ±Infinity (``1e400`` parses as inf) and lone
-    surrogates pass ``Dict[str, Any]``, are saved, and then every read of the
-    session answers 500 because no response can render them.
+    NaN, ±Infinity (``1e400``) and lone surrogates are refused: stored, they
+    make every read of the session 500.
     """
-    stack = [(value, 1)]
-    while stack:
-        node, depth = stack.pop()
-        if isinstance(node, dict):
-            children = node.values()
-        elif isinstance(node, (list, tuple)):
-            children = node
-        else:
-            continue
-        if depth > MAX_CLIENT_SESSION_METADATA_DEPTH:
-            raise ValidationException(
-                "metadata must not nest deeper than "
-                f"{MAX_CLIENT_SESSION_METADATA_DEPTH} levels"
-            )
-        stack.extend((child, depth + 1) for child in children)
+    if depth_exceeds(value, MAX_CLIENT_SESSION_METADATA_DEPTH):
+        raise ValidationException(
+            f"metadata must not nest deeper than {MAX_CLIENT_SESSION_METADATA_DEPTH} "
+            "levels"
+        )
     try:
         json.dumps(value, allow_nan=False, ensure_ascii=False).encode("utf-8")
-    except (ValueError, TypeError, UnicodeEncodeError):
+    except (ValueError, TypeError, UnicodeEncodeError, RecursionError):
         raise ValidationException("metadata must hold only JSON values") from None
 
 
 def _touched(session: SessionContext) -> SessionContext:
-    """``session`` marked active now: a heartbeat or a resume."""
     session.last_activity = datetime.now(timezone.utc)
     session.updated_at = session.last_activity
     return session
@@ -134,11 +118,10 @@ class AuthSessionService:
     ):
         """Initialize Auth Session Service
 
-        A session's lifetime is the store's: every write (``_persist``,
-        ``_mutate``) gives it the store's TTL (``SESSION_TIMEOUT_MINUTES``) and
-        stamps its ``expires_at`` with the instant that lapses (#2301). This
-        service holds no clock of its own, so nothing here can disagree with
-        the TTL.
+        A session's lifetime is the store's: every write of a session
+        gives it the store's TTL (``SESSION_TIMEOUT_MINUTES``) and stamps its
+        ``expires_at`` with the instant that lapses (#2301). This service holds
+        no clock of its own, so nothing here can disagree with the TTL.
 
         Args:
             session_store: Session persistence store (ISessionStore interface)
@@ -200,7 +183,6 @@ class AuthSessionService:
         # Check for existing session for this (user_id, client_id) pair
         # Implements session resumption (spec lines 397-402)
         if client_id and self.session_store:
-            # The (user, client) index is the one lookup; ISessionStore requires it.
             existing_id = await self.session_store.find_by_user_and_client(
                 user_id, client_id
             )
@@ -305,9 +287,8 @@ class AuthSessionService:
 
         Raises:
             ValidationException: If updates name any other field, or a value
-                fails SessionContext validation or
-                ``validate_client_session_metadata``. Nothing is applied
-                either way.
+                fails SessionContext validation or is not representable as
+                JSON within the depth bound. Nothing is applied either way.
             ServiceException: If the stored record names a session id other
                 than the one it was read by. Nothing is written.
         """
@@ -327,11 +308,8 @@ class AuthSessionService:
             validate_client_session_metadata(updates["metadata"])
 
         def apply(session: SessionContext) -> SessionContext:
-            # Re-validate the whole record so a wrong-typed value is refused,
-            # not stored. model_validate, never model_copy(update=...): a copy
-            # skips validation of the values it is handed. The message comes
-            # from _FIELD_MESSAGES by the failing field's name, so neither
-            # pydantic's text nor the submitted value reaches the caller.
+            # model_validate, never model_copy(update=...), which skips validation;
+            # the 400 is fixed per field (_FIELD_MESSAGES), never pydantic's text.
             try:
                 updated = SessionContext.model_validate(
                     {**session.model_dump(), **updates}
@@ -343,9 +321,7 @@ class AuthSessionService:
                     _FIELD_MESSAGES.get(field, "session update is invalid")
                 ) from None
 
-            # A stored record claiming another id must not be written as that
-            # session: the #1834 mechanism, reached from the stored side
-            # instead of the body.
+            # A stored record naming another id: #1834, from the stored side.
             if updated.session_id != session_id:
                 raise ServiceException(
                     "Stored session record does not match the id it was read by; "
@@ -546,33 +522,29 @@ class AuthSessionService:
         session_id: str,
         change: Callable[[SessionContext], SessionContext],
     ) -> Optional[SessionContext]:
-        """Apply ``change`` to the stored session in one compare-and-set write
-
-        Every writer of an existing session comes here, never through a
-        read and a whole-record ``save``: ``change`` sets only its own fields
-        on the record the store hands it, and the store re-applies it when a
-        concurrent write landed first, so a heartbeat and an update both land
-        (#1854). An expired session is not written. The write re-arms the TTL
-        and the client index, as ``_persist`` does.
-
-        Returns:
-            The session as written, or None if it is absent or expired
+        """Every write of an existing session: ``change`` sets its own fields on
+        the stored record by compare-and-set, so concurrent writers all land
+        (#1854). An expired session is deleted, not written. Returns the session
+        written, or None.
         """
         if not self.session_store:
             raise ServiceException("Session store not configured")
+        lapsed = []
 
         def mutate(session: SessionContext) -> Optional[SessionContext]:
-            now = datetime.now(timezone.utc)
-            expired = session.expires_at and now > session.expires_at
-            return None if expired else change(session)
+            if session.expires_at and datetime.now(timezone.utc) > session.expires_at:
+                lapsed.append(session)
+                return None
+            return change(session)
 
         written = await self.session_store.mutate_session(session_id, mutate)
+        if lapsed:
+            await self.delete_session(session_id)
         if written:
             await self._rearm_client_index(written)
         return written
 
     async def _rearm_client_index(self, session: SessionContext) -> None:
-        """Re-arm the (user, client) index to the session's expiry"""
         if session.client_id and session.expires_at:
             remaining = session.expires_at - datetime.now(timezone.utc)
             await self.session_store.index_session_by_client(
@@ -613,7 +585,7 @@ class AuthSessionService:
         # Apply filters
         filtered = all_sessions
 
-        # Status filter: the server-owned field, never client metadata (#1854)
+        # Status filter
         if status:
             filtered = [s for s in filtered if s.status == status]
 

@@ -1083,13 +1083,11 @@ class ISessionStore(ABC):
     async def mutate_session(
         self, session_id: str, mutate: Callable[[Any], Optional[Any]]
     ) -> Optional[Any]:
-        """Read the session, apply ``mutate``, and write its result only if the
-        record is still what was read; on a concurrent write, read again and
-        retry, so no writer's change is lost (#1854). ``mutate`` takes the
-        stored ``SessionContext`` and returns the one to write, or None to
-        write nothing. Returns the session written, or None when the session
-        is absent or ``mutate`` declined. The write re-arms the TTL as
-        ``save`` does; a session deleted meanwhile is not written back.
+        """Write ``mutate(stored session)`` only while the record is still what
+        was read, re-applying it after a concurrent write (#1854); raise
+        ``SessionWriteConflict`` when retries run out. None from ``mutate``, or
+        a session absent or deleted meanwhile, writes nothing and returns None.
+        The write re-arms the TTL as ``save`` does.
         """
         pass
 

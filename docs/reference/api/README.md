@@ -3881,6 +3881,7 @@ Returns:
 - `404` — Session expired or not found (when resuming with client_id)
 - `410` — Session gone (alternative to 404 for expired sessions)
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
+- `503` — The session kept changing under this write; nothing was written. Retry after `Retry-After`.
 
 ---
 
@@ -3996,6 +3997,7 @@ Raises:
 
 - `200` — Successful Response
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
+- `503` — The session kept changing under this write; nothing was written. Retry after `Retry-After`.
 
 ---
 
@@ -4067,6 +4069,7 @@ Raises:
 
 - `200` — Successful Response
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
+- `503` — The session kept changing under this write; nothing was written. Retry after `Retry-After`.
 
 ---
 
@@ -4096,6 +4099,7 @@ Returns:
 
 - `200` — Successful Response
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
+- `503` — The session kept changing under this write; nothing was written. Retry after `Retry-After`.
 
 ---
 

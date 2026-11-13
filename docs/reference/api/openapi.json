@@ -14711,6 +14711,9 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "description": "The session kept changing under this write; nothing was written. Retry after `Retry-After`."
           }
         },
         "summary": "Create Session",
@@ -14896,6 +14899,9 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "description": "The session kept changing under this write; nothing was written. Retry after `Retry-After`."
           }
         },
         "security": [
@@ -14942,6 +14948,9 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "description": "The session kept changing under this write; nothing was written. Retry after `Retry-After`."
           }
         },
         "security": [
@@ -14988,6 +14997,9 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "description": "The session kept changing under this write; nothing was written. Retry after `Retry-After`."
           }
         },
         "summary": "Session Heartbeat",

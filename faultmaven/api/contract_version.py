@@ -154,22 +154,23 @@ CONTRACT_CHANGES: tuple[ContractChange, ...] = (
         version="14.23.0",
         level="MINOR",
         title=(
-            "`POST /api/v1/sessions` documents a 400 for client `metadata`, and "
-            "`AuthSessionStatus` gains `archived` (#1853, #1854)."
+            "Session writes: client `metadata` refused 400, a write that keeps "
+            "losing to concurrent ones 503, and `AuthSessionStatus` gains "
+            "`archived` (#1853, #1854)."
         ),
-        body=r"""Client session metadata nested deeper than 32 levels, or holding a value that
-is not JSON, is refused 400 on `POST /api/v1/sessions` and on
-`PUT /api/v1/sessions/{session_id}`, and nothing is written. Both answered 500
-from about depth 500, and the mint stored NaN and lone surrogates unchecked.
+        body=r"""`POST /api/v1/sessions` and `PUT /api/v1/sessions/{session_id}` refuse 400,
+writing nothing, client `metadata` nested deeper than 32 levels or holding a
+value that is not JSON (NaN, ±Infinity, a lone surrogate). Those bodies were
+accepted before, or answered 500 from about depth 500. Those two, the
+heartbeat and the archive answer 503 with `Retry-After` when concurrent writes
+beat every attempt at the session's compare-and-set; nothing is written. A
+session's status is server-owned: only the archive sets it, and
+`GET .../{session_id}` reports it. Archived sessions no longer carry
+`metadata.status`.
 
-A session's status is now server-owned: `POST .../{session_id}/archive` sets
-it, and no client field does. `GET /api/v1/sessions/{session_id}` reports it,
-so its `status` reads `archived` for an archived session instead of always
-`active`. An archived session no longer carries `metadata.status`.
-
-MINOR because every client survives it: no first-party client calls the
-archive route or the session read, and the mint's new 400 answers only bodies
-it answered 500 before.""",
+MINOR because every existing client survives it: none sends nested or
+non-JSON session metadata, none calls the archive or the session read, and
+the 503 answers only a write that was silently lost before.""",
     ),
     ContractChange(
         version="14.22.0",

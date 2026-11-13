@@ -99,6 +99,23 @@ def decode_json_blob(value: Any, *, copy: bool = False) -> Optional[Dict[str, An
     return decoded if isinstance(decoded, dict) else None
 
 
+def depth_exceeds(value: Any, limit: int) -> bool:
+    """Whether *value* nests dicts and lists more than *limit* deep.
+
+    Iterative, so measuring a value can never exceed the recursion limit the
+    bound exists to stay under.
+    """
+    stack = [(value, 1)]
+    while stack:
+        node, depth = stack.pop()
+        if isinstance(node, (dict, list)):
+            if depth > limit:
+                return True
+            children = node.values() if isinstance(node, dict) else node
+            stack.extend((child, depth + 1) for child in children)
+    return False
+
+
 def to_json_compatible(obj: Any) -> Any:
     """Convert any object to JSON-compatible format.
 

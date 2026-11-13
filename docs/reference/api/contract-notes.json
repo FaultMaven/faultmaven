@@ -2,9 +2,9 @@
   "contractVersion": "14.23.0",
   "entries": [
     {
-      "body": "Client session metadata nested deeper than 32 levels, or holding a value that\nis not JSON, is refused 400 on `POST /api/v1/sessions` and on\n`PUT /api/v1/sessions/{session_id}`, and nothing is written. Both answered 500\nfrom about depth 500, and the mint stored NaN and lone surrogates unchecked.\n\nA session's status is now server-owned: `POST .../{session_id}/archive` sets\nit, and no client field does. `GET /api/v1/sessions/{session_id}` reports it,\nso its `status` reads `archived` for an archived session instead of always\n`active`. An archived session no longer carries `metadata.status`.\n\nMINOR because every client survives it: no first-party client calls the\narchive route or the session read, and the mint's new 400 answers only bodies\nit answered 500 before.",
+      "body": "`POST /api/v1/sessions` and `PUT /api/v1/sessions/{session_id}` refuse 400,\nwriting nothing, client `metadata` nested deeper than 32 levels or holding a\nvalue that is not JSON (NaN, \u00b1Infinity, a lone surrogate). Those bodies were\naccepted before, or answered 500 from about depth 500. Those two, the\nheartbeat and the archive answer 503 with `Retry-After` when concurrent writes\nbeat every attempt at the session's compare-and-set; nothing is written. A\nsession's status is server-owned: only the archive sets it, and\n`GET .../{session_id}` reports it. Archived sessions no longer carry\n`metadata.status`.\n\nMINOR because every existing client survives it: none sends nested or\nnon-JSON session metadata, none calls the archive or the session read, and\nthe 503 answers only a write that was silently lost before.",
       "level": "MINOR",
-      "title": "`POST /api/v1/sessions` documents a 400 for client `metadata`, and `AuthSessionStatus` gains `archived` (#1853, #1854).",
+      "title": "Session writes: client `metadata` refused 400, a write that keeps losing to concurrent ones 503, and `AuthSessionStatus` gains `archived` (#1853, #1854).",
       "version": "14.23.0"
     },
     {

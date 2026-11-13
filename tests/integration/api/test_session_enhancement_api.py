@@ -304,7 +304,7 @@ def test_archive_session_unauthorized(client, mock_session_service, mock_user):
 
 
 def test_archive_session_failure(client, mock_session_service, sample_session):
-    """Test archive session when archiving fails."""
+    """A session gone between the ownership read and the archive is a 404."""
     # Setup
     mock_session_service.get_session.return_value = sample_session
     mock_session_service.archive_session.return_value = False
@@ -313,4 +313,4 @@ def test_archive_session_failure(client, mock_session_service, sample_session):
     response = client.post(f"/api/v1/sessions/{sample_session.session_id}/archive")
 
     # Assert
-    assert response.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR
+    assert response.status_code == status.HTTP_404_NOT_FOUND

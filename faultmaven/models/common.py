@@ -69,10 +69,8 @@ class SessionContext(BaseModel):
         None,
         description="The IdP session this session's SSO login opened; server-set",
     )
-    # Server-set only, by ``archive_session``: it lived in ``metadata``, which a
-    # client replaces wholesale on update, so ``PUT {"metadata": {}}``
-    # un-archived a session and a client could plant a status (#1854). No route
-    # accepts it.
+    # Server-set only, by ``archive_session``; in ``metadata`` a client could
+    # replace it (#1854). No route accepts it.
     status: Literal["active", "archived"] = Field(
         "active", description="Whether the session is archived; server-set"
     )

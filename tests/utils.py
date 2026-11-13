@@ -1165,13 +1165,13 @@ class InMemorySessionStore(ISessionStore):
         raise NotImplementedError("InMemorySessionStore does not model key scans")
 
 
-def in_memory_session_service(settings=None):
+def in_memory_session_service():
     """The real ``AuthSessionService`` over an ``InMemorySessionStore``."""
     from faultmaven.modules.auth.domain.services.auth_session_service import (
         AuthSessionService,
     )
 
-    return AuthSessionService(session_store=InMemorySessionStore(), settings=settings)
+    return AuthSessionService(session_store=InMemorySessionStore())
 
 
 def uncomposed_auth_service():

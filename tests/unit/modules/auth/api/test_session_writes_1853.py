@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, get_args
 
 import fakeredis
 import fakeredis.aioredis as fakeredis_aio
@@ -43,7 +43,9 @@ from faultmaven.api.v1.auth_dependencies import (
     require_authentication,
 )
 from faultmaven.api.v1.dependencies import get_session_service
-from faultmaven.exceptions import ServiceException, ValidationException
+from faultmaven.exceptions import SessionWriteConflict, ValidationException
+from faultmaven.models.api import AuthSessionStatus
+from faultmaven.models.common import SessionContext
 from faultmaven.modules.auth.api.session import router as session_router
 from faultmaven.modules.auth.domain.models.auth import DevUser
 from faultmaven.modules.auth.domain.services.auth_session_service import (
@@ -78,6 +80,9 @@ async def world():
     store = RedisSessionStore(redis, session_ttl_seconds=1800)
     service = AuthSessionService(session_store=store)
     own, _ = await service.create_session(OWNER, client_id="laptop", metadata=SEED)
+    # Below the store's 1800 s, so a write that re-arms a key shows in _snapshot.
+    for key in await redis.keys("*"):
+        await redis.expire(key, 1000)
     owner = DevUser(
         user_id=OWNER,
         username="owner",
@@ -118,9 +123,18 @@ async def world():
 
 
 async def _snapshot(world) -> Dict[str, Any]:
-    """Every key and value in the store: a refusal must change none of them."""
+    """Every key, its value and its TTL: a refusal must change none of them."""
     keys = sorted(await world.redis.keys("*"))
-    return {key: await world.redis.dump(key) for key in keys}
+    return {k: (await world.redis.dump(k), await world.redis.ttl(k)) for k in keys}
+
+
+async def _assert_unchanged(world, before: Dict[str, Any]) -> None:
+    after = await _snapshot(world)
+    assert after.keys() == before.keys()
+    for key, (value, ttl) in before.items():
+        assert after[key][0] == value, key
+        # A TTL only ticks down; a re-armed one jumps back up to 1800.
+        assert ttl - 2 <= after[key][1] <= ttl, (key, ttl, after[key][1])
 
 
 async def _status(world) -> str:
@@ -156,7 +170,7 @@ async def test_put_refuses_metadata_nested_past_the_bound(world, depth, status):
             f"metadata must not nest deeper than {MAX_CLIENT_SESSION_METADATA_DEPTH} "
             "levels"
         )
-        assert await _snapshot(world) == before
+        await _assert_unchanged(world, before)
     else:
         assert response.json()["metadata"] == _nested(depth)
 
@@ -187,7 +201,7 @@ async def test_post_refuses_metadata_the_update_refuses_and_creates_nothing(worl
     )
 
     assert response.status_code == 400, response.text[:300]
-    assert await _snapshot(world) == before
+    await _assert_unchanged(world, before)
 
 
 async def test_post_accepts_metadata_at_the_bound(world):
@@ -272,8 +286,9 @@ def _record_edit(world, edit: Callable[[Dict[str, Any]], None]) -> Callable[[], 
     return write
 
 
-def _interleave(monkeypatch, world, nth_read: int, conflict: Callable[[], None]):
-    """Run ``conflict`` once, right after the ``nth_read`` of the session key.
+def _interleave(monkeypatch, world, nth_read: int, conflict, every: bool = False):
+    """Run ``conflict`` right after the ``nth_read`` of the session key (and,
+    with ``every``, each read after it).
 
     That read is the one the writer under test bases its write on: the route's
     ownership check is the read before it on ``PUT`` and ``archive``.
@@ -285,7 +300,7 @@ def _interleave(monkeypatch, world, nth_read: int, conflict: Callable[[], None])
         value = await real_get(key, *args, **kwargs)
         if key == world.key:
             reads["n"] += 1
-            if reads["n"] == nth_read:
+            if reads["n"] == nth_read or (every and reads["n"] > nth_read):
                 conflict()
         return value
 
@@ -375,18 +390,76 @@ async def test_a_write_inside_another_writers_window_is_not_lost(
         )
 
 
-async def test_a_put_on_a_session_deleted_inside_its_window_is_404_and_writes_nothing(
-    world, monkeypatch
+@pytest.mark.parametrize(
+    "path, body",
+    [
+        pytest.param("/api/v1/sessions/{id}", {"metadata": {"put": 1}}, id="put"),
+        pytest.param("/api/v1/sessions/{id}/archive", None, id="archive"),
+    ],
+)
+async def test_a_session_deleted_inside_a_write_is_404_and_not_written_back(
+    world, monkeypatch, path, body
 ):
     """B4: the compare-and-set does not write a deleted session back."""
     _interleave(monkeypatch, world, 2, lambda: world.sync.delete(world.key))
+    method = "PUT" if body else "POST"
 
-    response = await world.client.put(
-        f"/api/v1/sessions/{world.own_id}", json={"metadata": {"put": 1}}
+    response = await world.client.request(
+        method, path.format(id=world.own_id), json=body
     )
 
     assert response.status_code == 404, response.text
     assert world.sync.get(world.key) is None
+
+
+def _stamp(world):
+    """Another writer whose every write changes the record's bytes."""
+    count = {"n": 0}
+
+    def edit(record):
+        count["n"] += 1
+        moment = datetime(2001, 1, 1, tzinfo=timezone.utc)
+        record["last_activity"] = (moment + timedelta(seconds=count["n"])).isoformat()
+
+    return _record_edit(world, edit)
+
+
+@pytest.mark.parametrize(
+    "method, path, body, nth_read",
+    [
+        pytest.param("PUT", "/api/v1/sessions/{id}", {"metadata": {"p": 1}}, 2),
+        pytest.param("POST", "/api/v1/sessions/{id}/archive", None, 2),
+        pytest.param("POST", "/api/v1/sessions/{id}/heartbeat", None, 1),
+        pytest.param("POST", "/api/v1/sessions", {"client_id": "laptop"}, 1),
+    ],
+    ids=["put", "archive", "heartbeat", "resume"],
+)
+async def test_a_write_beaten_on_every_attempt_is_a_503_that_writes_nothing(
+    world, monkeypatch, method, path, body, nth_read
+):
+    """A retryable conflict, not a server fault: on 7b6794be9 each was a 500."""
+    _interleave(monkeypatch, world, nth_read, _stamp(world), every=True)
+
+    response = await world.client.request(
+        method, path.format(id=world.own_id), json=body
+    )
+
+    assert response.status_code == 503, response.text
+    assert response.headers["Retry-After"] == "1"
+    stored = json.loads(world.sync.get(world.key))
+    assert (stored["metadata"], stored["status"]) == (SEED, "active")
+
+
+async def test_the_mint_reports_the_status_of_the_session_it_resumes(world):
+    await world.client.post(f"/api/v1/sessions/{world.own_id}/archive")
+
+    resumed = await world.client.post("/api/v1/sessions", json={"client_id": "laptop"})
+
+    assert resumed.status_code == 201, resumed.text
+    assert (resumed.json()["session_id"], resumed.json()["status"]) == (
+        world.own_id,
+        "archived",
+    )
 
 
 async def test_the_put_answers_with_the_record_it_wrote(world, monkeypatch):
@@ -434,27 +507,18 @@ async def test_mutate_retries_after_a_conflicting_write_and_keeps_it(
 async def test_mutate_gives_up_after_five_conflicts_and_writes_nothing(
     world, monkeypatch
 ):
-    conflicts = {"n": 0}
-    real_get = world.redis.get
+    stamp, attempts = _stamp(world), {"n": 0}
 
-    def stamp(record):
-        moment = datetime(2001, 1, 1, tzinfo=timezone.utc)
-        record["last_activity"] = (
-            moment + timedelta(seconds=conflicts["n"])
-        ).isoformat()
+    def conflict():
+        attempts["n"] += 1
+        stamp()
 
-    async def always_conflicting(key, *args, **kwargs):
-        value = await real_get(key, *args, **kwargs)
-        conflicts["n"] += 1
-        _record_edit(world, stamp)()
-        return value
+    _interleave(monkeypatch, world, 1, conflict, every=True)
 
-    monkeypatch.setattr(world.redis, "get", always_conflicting)
-
-    with pytest.raises(ServiceException):
+    with pytest.raises(SessionWriteConflict):
         await world.store.mutate_session(world.own_id, _set_mutated)
 
-    assert conflicts["n"] == 5
+    assert attempts["n"] == 5
     assert json.loads(world.sync.get(world.key))["metadata"] == SEED
 
 
@@ -463,7 +527,7 @@ async def test_mutate_returning_none_writes_nothing(world):
 
     assert await world.store.mutate_session(world.own_id, lambda session: None) is None
 
-    assert await _snapshot(world) == before
+    await _assert_unchanged(world, before)
 
 
 async def test_mutate_on_a_missing_session_returns_none_and_creates_nothing(world):
@@ -471,7 +535,7 @@ async def test_mutate_on_a_missing_session_returns_none_and_creates_nothing(worl
 
     assert await world.store.mutate_session("no-such-session", _set_mutated) is None
 
-    assert await _snapshot(world) == before
+    await _assert_unchanged(world, before)
 
 
 # ---------------------------------------------------------------------------
@@ -485,15 +549,30 @@ async def test_a_blank_user_id_is_refused(world, blank):
         await world.service.create_session(blank)
 
 
-async def test_a_heartbeat_on_a_session_past_its_expiry_does_not_revive_it(world):
-    """The key outlives ``expires_at`` only by the moment between the two; a
-    heartbeat in it must not re-arm the session."""
+async def test_a_write_that_meets_an_expired_session_evicts_it(world):
+    """``main``'s rule: an expired session is deleted, with its index entry,
+    not written. The key outlives ``expires_at`` only by a moment."""
     lapsed = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
     _record_edit(world, lambda r: r.update(expires_at=lapsed))()
 
     assert await world.service.update_last_activity(world.own_id) is False
-    stored = world.sync.get(world.key)
-    assert stored is None or json.loads(stored)["expires_at"] == lapsed
+    assert world.sync.get(world.key) is None
+    assert world.own_id not in world.sync.smembers(f"sessions:user:{OWNER}")
+
+
+async def test_the_store_refuses_a_session_with_no_user(world):
+    """It would be indexed under ``sessions:user:``; nothing creates one."""
+    with pytest.raises(ValueError):
+        await world.store.save(SessionContext(session_id="blank", user_id=""))
+
+    assert world.sync.get("session:blank") is None
+
+
+def test_every_session_status_is_an_auth_session_status():
+    """``GET /sessions/{id}`` reports ``AuthSessionStatus(session.status)``."""
+    statuses = set(get_args(SessionContext.model_fields["status"].annotation))
+
+    assert statuses <= {status.value for status in AuthSessionStatus}
 
 
 def test_the_minimal_container_has_no_session_service():

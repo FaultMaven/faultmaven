@@ -22,7 +22,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional, Union
 
-from faultmaven.exceptions import ServiceException
+from faultmaven.exceptions import SessionWriteConflict
 from faultmaven.models.common import SessionContext
 from faultmaven.models.interfaces import ISessionStore
 from faultmaven.utils.datetime import parse_utc_timestamp
@@ -41,9 +41,8 @@ return 0
 #: Write a session and index it under its user, in one step. The index's TTL is
 #: raised to the session's and never lowered, so the index lapses with its
 #: longest-lived member: Redis tells nobody when a key's TTL lapses, and an index
-#: without a TTL would outlive every session it names. Given ARGV[4], the write
-#: is a compare-and-set: it happens only while the key holds exactly those bytes,
-#: and a key gone meanwhile is not written back (#1854).
+#: without a TTL would outlive every session it names. Given ARGV[4], it writes
+#: only while the key holds exactly those bytes (#1854).
 _SAVE_AND_INDEX = """
 if ARGV[4] and redis.call('GET', KEYS[1]) ~= ARGV[4] then
     return 0
@@ -73,7 +72,7 @@ end
 return live
 """
 
-#: How many times ``mutate_session`` reads again after a concurrent write.
+#: How many read-and-write attempts ``mutate_session`` makes in all.
 _MUTATE_ATTEMPTS = 5
 
 
@@ -251,20 +250,19 @@ class RedisSessionStore(ISessionStore):
         expected: Optional[str] = None,
     ) -> Optional[datetime]:
         """Store a session for ``session_ttl_seconds``, indexed under its user
-        when it has one, and return the instant it lapses.
+        (one with no user is refused), and return the instant it lapses.
 
         The record's ``expires_at`` is set to that instant, so it never claims
-        a lifetime the key does not have. Given ``expected``, write only while
-        the key still holds exactly that value, and return None when it does not.
+        a lifetime the key does not have. Given ``expected``: None if the key
+        no longer holds it, and nothing written.
         """
         expires_at = datetime.now(timezone.utc) + timedelta(
             seconds=self.session_ttl_seconds
         )
         session_data["expires_at"] = to_json_compatible(expires_at)
         user_id = session_data.get("user_id")
-        if not user_id and expected is None:
-            await self.set(session_id, session_data)
-            return expires_at
+        if not user_id:
+            raise ValueError(f"Session {session_id} names no user; not written")
 
         try:
             written = await self.redis_client.eval(
@@ -307,7 +305,6 @@ class RedisSessionStore(ISessionStore):
             updated_at=updated_at,
             expires_at=expires_at,
             metadata=session_data.get("metadata", {}),
-            # A record written before the field existed reads active.
             status=session_data.get("status", "active"),
         )
 
@@ -335,15 +332,8 @@ class RedisSessionStore(ISessionStore):
         session_id: str,
         mutate: Callable[[SessionContext], Optional[SessionContext]],
     ) -> Optional[SessionContext]:
-        """Apply ``mutate`` to the stored session by compare-and-set.
-
-        The write lands only while the key holds exactly the bytes ``mutate``
-        was given, so a concurrent writer's change is never overwritten: on a
-        mismatch the session is read again and ``mutate`` re-applied, at most
-        ``_MUTATE_ATTEMPTS`` times. Returns the session written, its
-        ``expires_at`` set as ``save`` sets it, or None when the session is gone
-        or ``mutate`` returned None, in which case nothing is written.
-        """
+        """``ISessionStore.mutate_session``: retried from the read while a
+        concurrent write lands first, ``_MUTATE_ATTEMPTS`` attempts in all."""
         key = f"{self.prefix}{session_id}"
         for _ in range(_MUTATE_ATTEMPTS):
             try:
@@ -366,10 +356,7 @@ class RedisSessionStore(ISessionStore):
             if expires_at is not None:
                 session.expires_at = expires_at
                 return session
-        raise ServiceException(
-            f"Session {session_id} changed under {_MUTATE_ATTEMPTS} consecutive "
-            "updates; not updated"
-        )
+        raise SessionWriteConflict(f"Session {session_id} kept changing; not written")
 
     @staticmethod
     def _record(session: SessionContext) -> Dict[str, Any]:

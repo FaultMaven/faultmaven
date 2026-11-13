@@ -39,7 +39,7 @@ from faultmaven.api.v1.auth_dependencies import (
     require_authentication,
 )
 from faultmaven.api.v1.dependencies import get_session_service
-from faultmaven.exceptions import ValidationException
+from faultmaven.exceptions import SessionWriteConflict, ValidationException
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models.api import (
     AuthSessionStatus,
@@ -59,6 +59,10 @@ router = APIRouter(prefix="/sessions", tags=["session_management"])
 
 # Use standard logger to avoid infrastructure imports
 logger = logging.getLogger(__name__)
+
+#: Concurrent writes beat every attempt (#1854); retryable.
+_CONFLICT = "The session kept changing under this write; nothing was written."
+_WRITE_CONFLICT = {503: {"description": _CONFLICT + " Retry after `Retry-After`."}}
 
 # Rate-limited logging for repeated session not found errors
 _session_not_found_log_tracker = {}
@@ -236,6 +240,7 @@ def mint_caller(http_request: Request) -> MintCaller:
                 }
             },
         },
+        **_WRITE_CONFLICT,
         400: {
             "description": (
                 "`metadata` nests deeper than 32 levels or holds a value that is "
@@ -312,7 +317,6 @@ async def create_session(
             if request.session_type:
                 metadata["session_type"] = request.session_type
             if request.metadata:
-                # Before anything is written: the rule PUT applies (#1853).
                 validate_client_session_metadata(request.metadata)
                 metadata.update(request.metadata)
 
@@ -403,7 +407,7 @@ async def create_session(
                 if session.expires_at
                 else None
             ),
-            "status": AuthSessionStatus.ACTIVE.value,
+            "status": session.status,
             "session_type": metadata.get("session_type", "troubleshooting"),
             "session_resumed": was_resumed,
             "timeout_minutes": timeout_minutes,
@@ -411,6 +415,8 @@ async def create_session(
         }
     except ValidationException as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except SessionWriteConflict:
+        raise HTTPException(503, _CONFLICT, {"Retry-After": "1"}) from None
     except Exception as e:
         logger.error(f"Failed to create session: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to create session")
@@ -543,9 +549,9 @@ async def get_session(
 # route used to take no auth dependency at all AND a `user_id` query FILTER, so
 # an anonymous caller could name a user and read back their session ids — and,
 # unfiltered, every session id with the identity it is bound to (#1447 §1,
-# measured against a since-deleted in-memory stand-in that shipped a working
-# list_sessions and which create_session_service installed whenever the real
-# service could not be constructed, until #2103; #1855 deleted it).
+# measured against a since-deleted stand-in, which shipped a working list_sessions
+# and which create_session_service installed whenever the real service could not
+# be constructed, until #2103).
 #
 # The filter is REMOVED rather than ignored, for the argument contract 6.0.0
 # made about the identical parameter on `POST /api/v1/sessions`: once the
@@ -760,7 +766,7 @@ async def delete_session(
 # (tests/integration/api/test_no_unauthenticated_operations.py) carrying #1460,
 # and that guard fails on a stale entry — so closing this route forces the entry
 # out rather than leaving a green test asserting nothing.
-@router.post("/{session_id}/heartbeat")
+@router.post("/{session_id}/heartbeat", responses=_WRITE_CONFLICT)
 async def session_heartbeat(
     session_id: str,
     session_service: AuthSessionService = Depends(get_session_service),
@@ -816,6 +822,8 @@ async def session_heartbeat(
                     f"Unexpected runtime error during heartbeat for {session_id}: {e}"
                 )
                 raise HTTPException(status_code=500, detail="Internal server error")
+        except SessionWriteConflict:
+            raise HTTPException(503, _CONFLICT, {"Retry-After": "1"}) from None
         except Exception as e:
             logger.error(f"Unexpected error during heartbeat for {session_id}: {e}")
             raise HTTPException(status_code=500, detail="Internal server error")
@@ -863,7 +871,11 @@ async def session_heartbeat(
 # =============================================================================
 
 
-@router.put("/{session_id}", dependencies=[Depends(require_authentication)])
+@router.put(
+    "/{session_id}",
+    dependencies=[Depends(require_authentication)],
+    responses=_WRITE_CONFLICT,
+)
 async def update_session(
     session_id: str,
     updates: dict = Body(...),
@@ -903,9 +915,7 @@ async def update_session(
                 status_code=403, detail="Not authorized to update this session"
             )
 
-        # Answered from the record the update wrote, never a re-read: a write
-        # landing after it would be reported as this update's result. None
-        # means the session went between the ownership check and the write.
+        # The record the update wrote, never a re-read; None: deleted meanwhile.
         updated_session = await session_service.update_session(session_id, updates)
         if not updated_session:
             raise HTTPException(status_code=404, detail="Session not found")
@@ -928,6 +938,8 @@ async def update_session(
         raise
     except ValidationException as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except SessionWriteConflict:
+        raise HTTPException(503, _CONFLICT, {"Retry-After": "1"}) from None
     except Exception as e:
         logger.error(f"Failed to update session {session_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to update session")
@@ -1006,6 +1018,7 @@ async def search_sessions(
 @router.post(
     "/{session_id}/archive",
     dependencies=[Depends(require_authentication)],
+    responses=_WRITE_CONFLICT,
 )
 async def archive_session(
     session_id: str,
@@ -1047,7 +1060,7 @@ async def archive_session(
         # Archive session
         success = await session_service.archive_session(session_id)
         if not success:
-            raise HTTPException(status_code=500, detail="Failed to archive session")
+            raise HTTPException(status_code=404, detail="Session not found")
 
         logger.info(f"Archived session {session_id} for user {current_user.user_id}")
 
@@ -1059,6 +1072,8 @@ async def archive_session(
 
     except HTTPException:
         raise
+    except SessionWriteConflict:
+        raise HTTPException(503, _CONFLICT, {"Retry-After": "1"}) from None
     except Exception as e:
         logger.error(f"Failed to archive session {session_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to archive session")
