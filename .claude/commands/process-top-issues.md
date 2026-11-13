@@ -135,9 +135,9 @@ loses no round; the last it prints, the open one, is the Queue you post to:
 
 **The health block** runs first, and again before posting with `lanes` set; the proposal opens with its output,
 verbatim. A stop, fixed before posting: any `unclassified` or `multi`; a design check
-due while fewer than two ran since the last proposal; when the round dispatches, fewer roots picked than offered
-(less any stage on an open PR's seam, a lane a `main red`, a flake's fix or the `P1` exposure lane took, a root the
-agent-count limit leaves waiting, or in a migration round); a finding its root neither lists nor names; `slot: round unknown`. While `in flight` is past either limit (seven open PRs by this account in `faultmaven`,
+due while fewer than two ran since the last proposal; when the round dispatches, fewer roots picked than offered, an
+offered root skipped (each less any stage on an open PR's seam, a lane a `main red`, a flake's fix or the `P1` exposure
+lane took, a root the agent-count limit leaves waiting, or a migration round), or more stages picked than the cap; a finding its root neither lists nor names; `slot: round unknown`. While `in flight` is past either limit (seven open PRs by this account in `faultmaven`,
 or naming a core issue; three pulled items awaiting a ruling), nothing new but a flake's fix (4.6) is dispatched: the
 round finishes, settles or asks instead. Labels not yet in use read as empty. The output names a PR only in a public
 repo:
@@ -173,19 +173,22 @@ hp=$(jq --argjson prs "$prs" "$cls"'[.[] | select(free and ready and has(["class
   and (refs(.number) | not))] | length' <<<"$open")
 u=$(for n in $(jq -r "$cls"'.[] | select(has(["pile:blocked"]) and (.body | test("\\*\\*Blocked on:\\*\\* an owner ruling"))) | .number' <<<"$open"); do
   l=$(lines "$n"); grep -q ' ## Pulled' <<<"$l" && printf '#%s ' "$n"; done); np=$(wc -w <<<"$u"); na=$(jq length <<<"$prs")
-jq -r --argjson prs "$prs" --arg lanes "$lanes" --argjson hp "$hp" --argjson lim "$([ "$na" -gt 7 ] || [ "$np" -gt 3 ] && echo true || echo false)" "$cls"'
-  (map({key: (.number | tostring), value: ([.labels[].name | select(IN("P0", "P1", "P2", "P3"))] | first // "P3" | sub("P0"; "P1"))})
-  | from_entries) as $rp
-  | [.[] | select(has(["design-stage"]) and ready) | {n: .number, r: stage} | . + {k: ($rp[.r] // "P3")}
-  | select((refs(.n) or (.r != "?" and refs(.r))) | not)] | sort_by(.k) as $a
-  | [$a[] | select(.n | tostring | IN($lanes | scan("[0-9]+")))] as $p
-  | (if $lim then 0 else [($a | map(.r) | unique | length), (if $hp > 0 then 3 else 4 end)] | min end) as $k
-  | "design lanes: roots picked \($p | map(.r) | unique | length) of \($k) offered, stages picked \($p | length), roots with two: \($p
+dl=$(jq -r --argjson prs "$prs" --arg lanes "$lanes" --argjson hp "$hp" --argjson lim "$([ "$na" -gt 7 ] || [ "$np" -gt 3 ] && echo true || echo false)" "$cls"'
+  [.[] | select(has(["design-stage"]) and ready) | {n: .number, r: stage, c: .createdAt,
+    k: ([.labels[].name | select(IN("P0", "P1", "P2", "P3"))] | sort | first // "P3")}
+  | select((refs(.n) or (.r != "?" and refs(.r))) | not)] | sort_by(.k, .c) as $a
+  | ($a | map(.r) | reduce .[] as $r ([]; if index([$r]) then . else . + [$r] end)) as $ranked
+  | [$a[] | select(.n | tostring | IN($lanes | scan("[0-9]+")))] as $p | ($p | map(.r) | unique) as $pr
+  | (if $lim then 0 else [($ranked | length), (if $hp > 0 then 3 else 4 end)] | min end) as $k
+  | [$ranked[:$k][] | select(IN($pr[]) | not)] as $skip
+  | "design lanes: roots picked \($pr | length) of \($k) offered, stages picked \($p | length) (cap \(if $hp > 0 then 3 else 4 end)),"
+  + " offered roots skipped: \($skip | map("#\(.)") | join(" ") | if . == "" then "none" end), roots with two: \($p
     | map(select(.r != "?")) | group_by(.r) | map(select(length > 1) | "#\(.[0].r)") | join(" ") | if . == "" then "none" end)"
-  + " (actionable, by root priority: \($a | map("#\(.n) of #\(.r) (\(.k))") | join(", ") | if . == "" then "none" end))"' <<<"$open"
+  + " (actionable, by priority: \($a | map("#\(.n) of #\(.r) (\(.k))") | join(", ") | if . == "" then "none" end))"' <<<"$open")
+echo "$dl"; dk=$(sed -n 's/^design lanes: roots picked [0-9]* of \([0-9]*\) offered.*/\1/p' <<<"$dl")
 # the round this proposal opens: one past the newest result, else unknown (a stop); every third may be a chore batch (Pick)
 rn=$(jq '[.[]? | select(.p | not) | .b | capture("^## Round (?<n>[0-9]+)").n | tonumber] | max // empty | . + 1' <<<"$qc" 2>/dev/null)
-if [ -z "$rn" ]; then echo "slot: round unknown"; else b=; [ "$hp" -eq 0 ] && [ $((rn % 3)) -eq 0 ] && b="chore batch (round $rn); ordinary: "
+if [ -z "$rn" ]; then echo "slot: round unknown"; else b=; [ "$hp" -eq 0 ] && [ $((rn % 3)) -eq 0 ] && [ "${dk:-0}" -lt 4 ] && b="chore batch (round $rn); ordinary: "
 jq -r --arg b "$b" --argjson prs "$prs" --argjson hp "$hp" "$cls"'[.[] | select(free and ready and (refs(.number) | not)
   and (has(["class:chore", "class:design", "design-stage"]) | not))
   | . + {k: ([.labels[].name | select(IN("P0", "P1", "P2", "P3"))] | first // "P3")}]
@@ -283,21 +286,25 @@ echo "since the last proposal: merged $(jq length <<<"$mp") · PRs opened $(gh p
      - **Design first** (owner ruling, 2026-11-13: "the specific fixes must placed under a sound design. design is like
        a container while the fixes live inside this container"). Design lanes take the next stage of each ruled root
        with no stage PR open, before any defect: roots by priority, `P1` first, and within a priority in the order the
-       owner last approved. While any ready `P0`–`P2` defect exists, design takes at most three lanes, so at least one
-       lane fixes defects; with none, it may take all four (owner ruling, 2026-11-13). The health block offers one lane
-       per root with a ready stage, up to that cap, ranked by root priority. Design lanes are offered down to the number
+       owner last approved. While any ready `P0`–`P2` defect exists, design takes at most three lanes (stages, counted
+       at dispatch too), so at least one lane fixes defects; with none, it may take all four (owner ruling, 2026-11-13).
+       When every ready `P0`–`P2` defect is on an open PR's seam or waits for a design check, no lane can take one, and
+       the fourth lane goes to design; the proposal says so under *Health*. The health block offers one lane per root
+       with a ready stage, up to the cap, ranked by the stages' priority (a stage carries its root's). Design lanes are offered down to the number
        the round's agent-count limit admits, highest-ranked roots first, and the proposal says which root waited.
-     - **A root's second stage** takes a lane only after every offered root has one, and only when the two stages are
-       independent: on different seams, neither's pins needing the other's merge, and neither the docs stage of a root
-       whose docs stage has not merged. The proposal's *Building* row says why.
+     - **A root's second stage** takes a lane only after every offered root has one, within the cap, and only when the
+       two stages are independent: on different seams, neither's pins needing the other's merge, and neither the docs
+       stage of a root whose docs stage has not merged. The block does not offer it (a root with a stage PR open offers
+       none); the proposal adds it by hand, and its *Building* row says why.
      - **Fixes wait for a questioned design** (owner ruling, 2026-11-13): a defect on an open `root-candidate`'s seam is
        not picked until its design check is ruled, a `P1` excepted. A ruled root already holds the issues on its
        **Blocks:** line.
      - **The lanes design leaves,** while any ready `P0`, `P1` or `P2` defect exists (the health block counts them:
        `class:defect`, no open PR carrying it), take those a lane can take (not on an open PR's seam): `P0`, then `P1`,
        then `P2`, oldest first within each, defects on one seam sharing a lane. No `P3` item, chore or chore batch is
-       picked. **Next** items take design stages first, then follow this order; a **Next** stage is another root's,
-       since a root with a stage PR open offers no stage.
+       picked.
+     - **Next** items follow the same order as the lanes: design stages first, within the cap counted at dispatch, then
+       the defects or the ordinary order.
      - **Otherwise,** the lanes design leaves follow the ordinary order. In a round whose number is divisible by 3, one
        of the lanes design leaves, if any, takes a chore batch instead (the proposal says under *Health* when none was
        left): the seam with
@@ -318,7 +325,7 @@ echo "since the last proposal: merged $(jq length <<<"$mp") · PRs opened $(gh p
    - Size the round by review effort: at most 10 items and 4 lanes, plus up to 3 **Next** items the approval also covers,
      none a migration; a flake's fix (4.6) takes a lane but is not an item. An item touching a security boundary
      (authentication, authorization, tenancy, secrets, TLS, or the validation of untrusted input) or storage (a schema,
-     a migration, or how persisted data is written or deleted) takes its own lane and PR; a migration is alone in its round, with no Next items; a migration that is not a design stage takes a round only when no stage is offered, or by ruling. The proposal states the
+     a migration, or how persisted data is written or deleted) takes its own lane and PR; a migration is alone in its round, with no Next items. The proposal states the
      round's expected agent count (lanes, reviews, deltas, critiques), at most about 16; at most four reviews or
      critiques run at once. A usage-limit stop is reported in the result, and the next round is sized down.
 3. **Check premises.** `git fetch origin main`, then confirm each picked item's code points still show the defect.
@@ -358,7 +365,7 @@ question; unanswered questions stay where they are.
 ## 4. Build
 
 Dispatch only approved items that the ready query returns with a single pile label, and, when a lane's PR is merge-ready
-or pulled or its item closes, a flake's fix (4.6) first, then the first **Next** item not on any open PR's seam (a
+or pulled or its item closes, a flake's fix (4.6) first, then the first **Next** item not on any open PR's seam, a design stage only within Pick's cap counted at dispatch (a
 refresh waits for a free lane), and nothing new but a flake's fix while the health block's `in flight` line is past a
 limit. Each starts at its row in
 *Where an item stands*; one whose plan (newer than any pull) says `Shares lane with #<lead>`, at its lead's. A design stage's PR open at two consecutive results, neither merged nor
