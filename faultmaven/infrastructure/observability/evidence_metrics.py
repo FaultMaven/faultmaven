@@ -170,17 +170,21 @@ if PROMETHEUS_AVAILABLE:
         buckets=(0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0),
     )
 
-    # #2355: every classifier verdict below the clarification threshold, by
-    # what the pipeline did with it. outcome=clarification: an upload of
-    # MIN_EXTRACTION_LINES or more, put to the user as type choices;
-    # passthrough: a shorter upload, passed to the model raw as
-    # unstructured_text with no question. Without it a short uncertain
-    # upload leaves no trace, since it no longer raises a card.
+    # #2355: one per classification that ends uncertain
+    # (``classification_failed``), by what the pipeline did with it.
+    # outcome=clarification: an extractor would run, so the upload is put to
+    # the user as type choices; passthrough: none would (under
+    # MIN_EXTRACTION_LINES, or a shape-valid page capture), so it passes to
+    # the model as unstructured_text with no question. Counted at
+    # preprocessing, before per-case dedup: a re-sent duplicate counts again,
+    # and so does an upload whose turn later fails. It is the lasting record
+    # of how often the rules cannot decide; intake persists no verdict.
     PREPROCESSING_UNCERTAIN_CLASSIFICATION_TOTAL = Counter(
         "faultmaven_preprocessing_uncertain_classification_total",
-        "Uploads whose data type the classifier could not decide, by "
-        "outcome: clarification (asked the user) or passthrough (short "
-        "upload passed raw as unstructured_text).",
+        "Classifications that ended uncertain, by outcome: clarification "
+        "(type choices offered; an extractor would run) or passthrough "
+        "(passed to the model as unstructured_text; no extractor runs). "
+        "Counted before per-case dedup.",
         ["outcome"],
     )
     create_children(

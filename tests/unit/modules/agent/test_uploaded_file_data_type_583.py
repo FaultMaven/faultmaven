@@ -872,6 +872,14 @@ _EXPECTED: dict[tuple[str, str, str, str], tuple[str, int]] = {
         "attr",
         "classification",
     ): ("other", 1),
+    # The classifier's guess on an uncertain verdict, read only to pick the
+    # bare-epoch timestamp policy (#2355); never written to a row.
+    (
+        "modules/preprocessing/preprocessing_service.py",
+        "PreprocessingService._build_result",
+        "attr",
+        "classification",
+    ): ("other", 1),
     (
         "modules/preprocessing/classifier.py",
         "_opik_track_classifier.wrapper",

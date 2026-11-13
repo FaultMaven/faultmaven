@@ -42,7 +42,7 @@ Submitted content can have overlapping characteristics (logs contain errors, met
 2. **Robustness** — graceful degradation on ambiguous cases.
 3. **Speed** — <100 ms, zero LLM calls in Tier 0.
 4. **Explainability** — every decision carries a `source` tag (user_override / agent_hint / source_url / browser_context / rule_based / rule_based_best_effort).
-5. **Cooperative-clarification fallback, only where the type matters** — when confidence falls below 0.50 the classifier sets `classification_failed=True` and populates `suggested_types`. On an upload of `MIN_EXTRACTION_LINES` (200) lines or more, where the type picks the extractor, the turn offers the user type choices that reclassify the file mechanically when clicked or typed. A shorter upload is not put to the user: no extractor runs below that size whatever the type, so it passes to the model raw as `UNSTRUCTURED_TEXT` (#2355). See [§`classification_failed` Path](#classification_failed-path-cooperative-clarification).
+5. **Cooperative-clarification fallback, only where the type matters** — when confidence falls below 0.50 the classifier sets `classification_failed=True` and populates `suggested_types`. Where an extractor will read the upload, so the type picks it, the turn offers the user type choices that reclassify the file mechanically when clicked or typed. Where none will (an upload under `MIN_EXTRACTION_LINES` (200) lines, or a shape-valid page capture at any length), the upload is not put to the user: it passes to the model as `UNSTRUCTURED_TEXT` (#2355). See [§`classification_failed` Path](#classification_failed-path-cooperative-clarification).
 
 ### Architectural Position
 
@@ -328,7 +328,7 @@ A CSV/TSV file is classified as `METRICS_AND_PERFORMANCE` (at 0.55, `classificat
 2. **Data density**: ≥10 data rows in the sample (a real dataset, not a stub).
 3. **Numeric/metric evidence**: numeric-cell ratio ≥10% OR ≥1 metrics-vocabulary keyword matched.
 
-Otherwise the file falls back to `UNSTRUCTURED_TEXT` at 0.45, also with `classification_failed=True`. Both paths populate `suggested_types`; what the pipeline then does depends on the file's length (see [§`classification_failed` Path](#classification_failed-path-cooperative-clarification)).
+Otherwise the file falls back to `UNSTRUCTURED_TEXT` at 0.45, also with `classification_failed=True`. Both paths populate `suggested_types`; what the pipeline then does depends on whether an extractor would read the file (see [§`classification_failed` Path](#classification_failed-path-cooperative-clarification)).
 
 ---
 
@@ -338,7 +338,7 @@ Named in `CONFIDENCE_THRESHOLDS` (classifier.py):
 
 ```python
 CONFIDENCE_THRESHOLDS = {
-    "classification_failed": 0.50,   # below → classification_failed=True → clarification (200+ lines) or raw passthrough
+    "classification_failed": 0.50,   # below → classification_failed=True → clarification (an extractor would run) or passthrough
     "auto_accept": 0.85,             # at/above → auto-accept in downstream UX
 }
 ```
@@ -365,7 +365,7 @@ The explicit zero is documented as a constant rather than left implicit because 
 
 When classification produces `confidence < 0.50`, or when the CSV/TSV structural gate yields low-confidence results, `classification_failed=True`.
 
-**Only an upload of `MIN_EXTRACTION_LINES` (200) lines or more is put to the user (#2355).** Below that size `PreprocessingService` runs no extractor whatever the type: the small-file passthrough hands the raw content to the model, and the type sets only labels (the `data_type` attribute, the "classified as …" wording of the implicit query on a paste sent without a message, the `deep_analysis` framing line) and whether bare epoch integers count as timestamps. Asking there held the upload out of the turn over a label that changes nothing the model reads: the prompt saw only a three-line preview, the upload was excluded from the forced directed analysis, and full analysis waited two more user turns (the choice, then "Analyze it now"). So a short uncertain upload takes the passthrough typed `UNSTRUCTURED_TEXT` — not the guess the classifier could not stand behind — with no card. The verdict stays uncertain in `evidence_metadata.classification` (`failed=True`, `suggested_types`), and `faultmaven_preprocessing_uncertain_classification_total{outcome}` counts both outcomes (`clarification`, `passthrough`). The line count is computed once, so the gate and the passthrough cannot disagree about which side of the boundary an upload falls on.
+**Only an upload an extractor will read is put to the user (#2355).** `PreprocessingService` runs no extractor, whatever the type, on an upload under `MIN_EXTRACTION_LINES` (200) lines (the small-file passthrough hands the raw content to the model) or on a shape-valid page capture at any length (the page-capture passthrough). There the type sets only labels (the `data_type` attribute, the "classified as …" wording of the implicit query on a paste sent without a message, the `deep_analysis` framing line) and whether bare epoch integers count as timestamps. Asking there held the upload out of the turn over a label that changes nothing the model reads: the prompt saw only a three-line preview, the upload was excluded from the forced directed analysis, and full analysis waited two more user turns (the choice, then "Analyze it now"). So such an upload takes its passthrough typed `UNSTRUCTURED_TEXT`, not the guess the classifier could not stand behind, with no card. Bare-epoch timestamp parsing still follows the guess, as it did under the placeholder, so an unconfirmed config does not start reading `2147483647` as a date. The result's `evidence_metadata.classification` records the verdict as uncertain (`failed=True`, `suggested_types`), but intake does not persist it (#1710); `faultmaven_preprocessing_uncertain_classification_total{outcome}` (`clarification`, `passthrough`) is the lasting record. "Will an extractor run" is decided once, from the line count (a final newline ends the last line rather than starting another) and the capture shape, so the gate and the two passthroughs cannot disagree.
 
 A third trigger — **short-text ambiguity** — also sets the flag:
 
@@ -379,7 +379,7 @@ When a `.txt`-extension paste lands inside both size bounds **and** triggers pat
 
 Inside the guard, the per-category pattern checks themselves have signal-strength bars: **log-line shape requires at least two line-start datetime matches** before LOGS_AND_ERRORS counts as a candidate (ISS-050). A single datetime inside prose — e.g. a maintenance-window header like "scheduled for 2026-05-14 14:00 UTC" — is too weak; counting it would mis-suggest LOGS for any short notice that mentions a date. URL, email, code-fence, JSON-shape, and key:value patterns each contribute a single category vote on first match.
 
-Every classification_failed path populates `ClassificationResult.suggested_types` with 2–3 candidate DataTypes from the scoring pass. For an upload of 200 lines or more, the service short-circuits extraction and returns a placeholder `PreprocessingResult` with:
+Every classification_failed path populates `ClassificationResult.suggested_types` with 2–3 candidate DataTypes from the scoring pass. Where an extractor would run, the service short-circuits extraction and returns a placeholder `PreprocessingResult` with:
 
 - `extraction_method = "classification_failed"`
 - Content: a user-facing text like `[Classification uncertain for 'foo.csv' — requesting user input] Suggested types: metrics_and_performance, unstructured_text`
@@ -437,7 +437,7 @@ Both placeholder paths produce real `PreprocessingResult` objects so the downstr
 
 This lets us query classification distributions (e.g., "what fraction of turns hit `rule_based_best_effort` last week?") and detect pattern drift without touching logs. When Opik is not installed the decorator is not applied at all, and when tracing is disabled the wrapper re-checks the flag on every call and runs the undecorated function — so no Opik client is constructed either way.
 
-Independent of tracing, `PreprocessingService.classify_and_extract` counts every `classification_failed` verdict on the Prometheus counter `faultmaven_preprocessing_uncertain_classification_total{outcome}`: `clarification` for an upload of 200 lines or more put to the user, `passthrough` for a shorter one passed to the model raw (#2355). It is the only always-on record of how often the rules cannot decide, since a short uncertain upload no longer raises a card.
+Independent of tracing, `PreprocessingService.classify_and_extract` counts every `classification_failed` verdict on the Prometheus counter `faultmaven_preprocessing_uncertain_classification_total{outcome}`: `clarification` where an extractor would run and the user is asked, `passthrough` where none would and the upload goes to the model as `UNSTRUCTURED_TEXT` (#2355). It counts at preprocessing, before per-case dedup, so a re-sent duplicate counts again. It is the only always-on record of how often the rules cannot decide: no card shows for a passthrough, and intake persists no verdict.
 
 ---
 

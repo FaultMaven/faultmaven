@@ -297,6 +297,38 @@ _NO_BARE_EPOCH_TYPES = frozenset(
 )
 
 
+def _line_count(content: str) -> int:
+    """Lines as an editor counts them: a final newline ends the last line
+    rather than starting another. One count serves the clarification gate
+    and the small-file passthrough (#2355)."""
+    if not content:
+        return 0
+    return content.count("\n") + (0 if content.endswith("\n") else 1)
+
+
+@dataclasses.dataclass(frozen=True)
+class _CaptureShape:
+    """The structural signals a Copilot page capture carries. Real captures
+    from htmlToStructuredText emit a ``[captured_at: …]`` preamble or ``## ``
+    headings (typically both); a capture with neither is not trusted to skip
+    Tier-1 extraction."""
+
+    captured_at_preamble: bool
+    h2_heading: bool
+
+    @property
+    def valid(self) -> bool:
+        return self.captured_at_preamble or self.h2_heading
+
+
+def _page_capture_shape(content: str) -> _CaptureShape:
+    return _CaptureShape(
+        captured_at_preamble="[captured_at:" in content[:512],
+        # A `## ` heading at the start of the content or after a newline.
+        h2_heading=content.startswith("## ") or "\n## " in content,
+    )
+
+
 class PreprocessingService:
     """Tier 0+1 pipeline orchestrator for data preprocessing."""
 
@@ -423,12 +455,13 @@ class PreprocessingService:
           re-parsing with the UnstructuredTextExtractor.
         - **UNANALYZABLE**: user opted out (e.g., via VISUAL_EVIDENCE with
           vision disabled). Returns a reference-only placeholder.
-        - **classification_failed** on an upload of ``MIN_EXTRACTION_LINES``
-          or more: heuristics could not reach the confidence threshold, and
-          the type would pick the extractor. Returns a placeholder carrying
+        - **classification_failed** where an extractor will run: the
+          classifier could not decide the type, and the type would pick the
+          extractor. Returns a placeholder carrying
           suggested types; the turn offers them as clarification choices,
-          and a choice re-runs this under ``user_override``. A shorter
-          uncertain upload is not put to the user: it takes the small-file
+          and a choice re-runs this under ``user_override``. An uncertain
+          upload no extractor would read (under ``MIN_EXTRACTION_LINES``, or
+          a shape-valid page capture) is not put to the user: it takes its
           passthrough typed UNSTRUCTURED_TEXT (#2355).
 
         Phase 1.5 — Reclassification path: the caller can pass
@@ -504,33 +537,43 @@ class PreprocessingService:
                 start_time=start_time,
             )
 
-        # One count decides both the clarification gate below and the
-        # small-file passthrough (Path 4), so the two cannot disagree about
-        # which side of MIN_EXTRACTION_LINES an upload falls on.
-        line_count = content.count("\n") + 1
+        # Whether an extractor will read this upload is decided once, here,
+        # from the same two facts Path 3 and Path 4 act on: a shape-valid
+        # page capture is passed through at any length, and anything else
+        # under MIN_EXTRACTION_LINES is passed through raw. The clarification
+        # gate below reads the same answer, so it cannot disagree with them.
+        line_count = _line_count(content)
+        capture_shape = (
+            _page_capture_shape(content)
+            if classification.source_type == "page_capture"
+            else None
+        )
+        extractor_will_run = (
+            capture_shape is None or not capture_shape.valid
+        ) and line_count >= MIN_EXTRACTION_LINES
 
         # Path 2: classification_failed. Ask the user only where the type
-        # decides what the model reads (#2355). Below MIN_EXTRACTION_LINES no
-        # extractor runs whatever the type: Path 4 hands the raw content to
-        # the model. A card there would hold the upload out of the turn (a
-        # three-line preview, no directed analysis) over a label that changes
-        # nothing the model reads, and analysis would wait two more user
-        # turns. So a short upload passes through, typed UNSTRUCTURED_TEXT
-        # rather than the guess the classifier could not stand behind, and
-        # ``evidence_metadata.classification`` keeps the verdict uncertain.
-        if classification.classification_failed and line_count < MIN_EXTRACTION_LINES:
+        # picks the extractor (#2355). Where no extractor runs, the type
+        # changes nothing the model reads, and a card would hold the upload
+        # out of the turn (a three-line preview, no directed analysis) with
+        # analysis two more user turns away. So such an upload passes
+        # through, typed UNSTRUCTURED_TEXT rather than the guess the
+        # classifier could not stand behind. The verdict is recorded as
+        # uncertain on the result's ``evidence_metadata.classification``,
+        # which intake does not persist (#1710); the counter is the lasting
+        # record.
+        if classification.classification_failed and not extractor_will_run:
             PREPROCESSING_UNCERTAIN_CLASSIFICATION_TOTAL.labels(
                 outcome="passthrough"
             ).inc()
             logger.info(
                 "classify_and_extract: %s classification uncertain "
-                "(confidence=%.2f, guess=%s) with %d lines (< %d) — "
-                "raw passthrough as unstructured_text, no clarification",
+                "(confidence=%.2f, guess=%s, %d lines) and no extractor "
+                "runs — passthrough as unstructured_text, no clarification",
                 filename,
                 classification.confidence,
                 detailed_data_type.value,
                 line_count,
-                MIN_EXTRACTION_LINES,
             )
             detailed_data_type = DataType.UNSTRUCTURED_TEXT
             unified_data_type = to_unified_data_type(detailed_data_type)
@@ -585,13 +628,11 @@ class PreprocessingService:
         # htmlToStructuredText emit either a `[captured_at: …]` preamble or
         # `## ` markdown headings (typically both); inputs lacking BOTH
         # signals fall through to standard dispatch with a logged warning.
-        if classification.source_type == "page_capture":
-            has_captured_at = "[captured_at:" in content[:512]
-            # Match a `## ` heading either at the start of content or after a newline
-            has_h2_heading = content.startswith("## ") or "\n## " in content
-            shape_valid = has_captured_at or has_h2_heading
+        if capture_shape is not None:
+            has_captured_at = capture_shape.captured_at_preamble
+            has_h2_heading = capture_shape.h2_heading
 
-            if shape_valid:
+            if capture_shape.valid:
                 logger.info(
                     "classify_and_extract: page_capture detected, "
                     "skipping extractor (content already structured)"
@@ -1022,10 +1063,19 @@ class PreprocessingService:
         coverage_start_ts = None
         coverage_end_ts = None
         coverage_source: str | None = None
+        # An uncertain verdict passed through as UNSTRUCTURED_TEXT (#2355)
+        # keeps the epoch policy of the classifier's guess, as the
+        # clarification placeholder did: a config the rules could not
+        # confirm must not start reading ``maxBytes: 2147483647`` as 2038.
+        epoch_policy_type = (
+            classification.data_type
+            if classification.classification_failed
+            else detailed_data_type
+        )
         try:
             coverage_start_ts, coverage_end_ts, coverage_source = extract_time_range_ts(
                 content,
-                allow_bare_epoch=detailed_data_type not in _NO_BARE_EPOCH_TYPES,
+                allow_bare_epoch=epoch_policy_type not in _NO_BARE_EPOCH_TYPES,
             )
         except Exception:
             # extract_time_range_ts already swallows per-line parse

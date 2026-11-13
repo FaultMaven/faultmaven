@@ -48,9 +48,9 @@ This document describes the complete evidence flow architecture in FaultMaven. A
 │  │    (propagates source_type from source_metadata)                  │ │
 │  │ 2. Short-circuits:                                                 │ │
 │  │      - UNANALYZABLE → placeholder (extraction_method=none)        │ │
-│  │      - classification_failed, 200+ lines → placeholder +           │ │
-│  │        suggested_types for cooperative-clarification UX            │ │
-│  │        (under 200 lines: retyped unstructured_text, no card)       │ │
+│  │      - classification_failed, extractor would run →                │ │
+│  │        placeholder + suggested_types (clarification UX)            │ │
+│  │        (no extractor: retyped unstructured_text, no card)          │ │
 │  │      - source_type=page_capture → pass-through as structured MD   │ │
 │  │ 3. Tier 1: Type-specific mechanical extraction (structural index) │ │
 │  │    under 2s timeout; on timeout/error falls back to TEXT preview  │ │
@@ -358,10 +358,10 @@ User          API(/turns)    Investigation    Preprocessing    (loaded case)
 
 > **Canonical source:** [Data Classification Strategy §`classification_failed` Path](./data-classification-strategy.md#classification_failed-path-cooperative-clarification). This section summarises it.
 
-Triggered when Tier 0 classification produces `confidence < 0.50`. The outcome depends on the upload's length (#2355):
+Triggered when the Tier 0 classifier sets `classification_failed`. The outcome depends on whether an extractor would read the upload (#2355):
 
-- **Under `MIN_EXTRACTION_LINES` (200) lines:** nothing is asked. No extractor runs at that size whatever the type, so the upload is retyped `UNSTRUCTURED_TEXT` and takes `raw_passthrough`: the model reads the raw content in the same turn, and the upload forces directed analysis like any other evidence.
-- **200 lines or more:** `classify_and_extract` returns a placeholder (`extraction_method="classification_failed"`, `suggested_types` in metadata). The turn runs on the placeholder and a three-line preview; the upload does not force directed analysis, and the reply says it has not been analyzed yet. `_build_classification_clarification` then puts DECIDE choices ahead of the engine's follow-ups, each carrying a `file_reclassification` intent. A click (or a typed choice resolved by `IntentResolver`) is a mechanical turn with no LLM call that re-runs preprocessing under `user_override`; its reply offers "Analyze it now", which starts the analysis.
+- **No extractor would run** (under `MIN_EXTRACTION_LINES` (200) lines, or a shape-valid page capture at any length): nothing is asked. The upload is retyped `UNSTRUCTURED_TEXT` and takes its passthrough: the model reads the content in the same turn, and the upload forces directed analysis like any other evidence.
+- **An extractor would run:** `classify_and_extract` returns a placeholder (`extraction_method="classification_failed"`, `suggested_types` in metadata). The turn runs on the placeholder and a three-line preview; the upload does not force directed analysis, and the reply says it has not been analyzed yet. `_build_classification_clarification` then puts DECIDE choices ahead of the engine's follow-ups, each carrying a `file_reclassification` intent. A click (or a typed choice resolved by `IntentResolver`) is a mechanical turn with no LLM call that re-runs preprocessing under `user_override`; its reply offers "Analyze it now", which starts the analysis.
 
 ---
 

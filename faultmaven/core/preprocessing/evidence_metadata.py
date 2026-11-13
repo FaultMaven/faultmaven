@@ -44,9 +44,12 @@ class ClassificationMetadata(BaseModel):
     """
 
     failed: bool = False
-    """True when the classifier hit its confidence floor and short-
-    circuited to the user-clarification path. The suggested_types list
-    is non-empty in that case."""
+    """True when the classifier could not decide the type
+    (``classification_failed``). Where an extractor would run, the upload
+    then short-circuits to the user-clarification path; where none would
+    (under ``MIN_EXTRACTION_LINES``, or a shape-valid page capture), it
+    passes through as unstructured_text (#2355). The suggested_types list
+    is non-empty in both cases."""
 
     suggested_types: List[str] = Field(default_factory=list)
 

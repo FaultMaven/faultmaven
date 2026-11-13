@@ -757,9 +757,9 @@ class ClassificationResult(BaseModel):
     classification_failed: bool = Field(
         default=False,
         description=(
-            "True if confidence is below the clarification threshold. An upload "
-            "of MIN_EXTRACTION_LINES or more is then put to the user as type "
-            "choices; a shorter one passes through as unstructured_text"
+            "True if the classifier could not decide the type. Where an "
+            "extractor would run, the upload is put to the user as type "
+            "choices; otherwise it passes through as unstructured_text"
         ),
     )
     suggested_types: Optional[List[DataType]] = Field(

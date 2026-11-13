@@ -1,13 +1,14 @@
 """#2355: an uncertain upload is put to the user only where its type matters.
 
-Below ``MIN_EXTRACTION_LINES`` no extractor runs whatever the type: the
-small-file passthrough hands the raw content to the model. A clarification
+No extractor runs, whatever the type, on an upload under
+``MIN_EXTRACTION_LINES`` (the small-file passthrough hands the raw content to
+the model) or on a shape-valid page capture at any length. A clarification
 card there held the upload out of the turn (a three-line preview, no directed
 analysis) over a label that changes nothing the model reads. So a short
-uncertain upload passes through raw, typed ``UNSTRUCTURED_TEXT`` rather than
-the classifier's guess, with the verdict kept uncertain in its metadata. An
-upload of ``MIN_EXTRACTION_LINES`` lines or more, where the type picks the
-extractor, keeps the placeholder that raises the card.
+uncertain upload no extractor would read passes through, typed
+``UNSTRUCTURED_TEXT`` rather than the classifier's guess, with the verdict
+recorded as uncertain on the result. Where an extractor would run, the type
+picks it, and the upload keeps the placeholder that raises the card.
 
 The agent side keys every card effect (the choices, the "not analyzed yet"
 note, the exclusion from directed analysis) on
@@ -21,7 +22,7 @@ import pytest
 
 from faultmaven.core.preprocessing.models import to_unified_data_type
 from faultmaven.infrastructure.observability import evidence_metrics
-from faultmaven.models.api import DataType
+from faultmaven.models.api import DataType, SourceMetadata
 from faultmaven.modules.preprocessing.classifier import DataClassifier
 from faultmaven.modules.preprocessing.preprocessing_service import (
     MIN_EXTRACTION_LINES,
@@ -102,8 +103,8 @@ class TestShortUncertainUploadPassesThrough:
 
     @pytest.mark.asyncio
     async def test_the_guess_is_not_carried_onto_the_upload(self):
-        """A config guess would also switch bare-epoch parsing off; the type
-        the classifier could not stand behind is dropped, not passed on."""
+        """The type the classifier could not stand behind is dropped, not
+        passed on as the upload's type."""
         result = await _service(
             _uncertain_classifier(guess=DataType.STRUCTURED_CONFIG)
         ).classify_and_extract(content=_lines(12), filename="notes.txt", principal="u1")
@@ -153,6 +154,92 @@ class TestTheCutoffIsTheExtractionCutoff:
         assert result.extraction_method == "classification_failed"
         assert "Classification uncertain" in result.structural_index
         assert result.detailed_data_type == DataType.METRICS_AND_PERFORMANCE
+
+
+CAPTURE = "page-capture-20261113T081500.txt"
+_CAPTURE_SOURCE = SourceMetadata(source_type="page_capture")
+
+
+def _capture(n: int, *, shaped: bool = True) -> str:
+    head = "[captured_at: 2026-11-13T08:15:00Z]\n## Pod status\n" if shaped else ""
+    body_lines = n - (2 if shaped else 0)
+    return head + "\n".join(f"row {i}: Running" for i in range(body_lines))
+
+
+class TestLinesAreCountedAsAnEditorCountsThem:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("line_count", "method"),
+        [
+            (MIN_EXTRACTION_LINES - 1, "raw_passthrough"),
+            (MIN_EXTRACTION_LINES, "classification_failed"),
+        ],
+    )
+    async def test_a_final_newline_is_not_a_line(self, line_count, method):
+        """A file saved by an editor ends in a newline; that ends its last
+        line, so a 199-line file is still under the cutoff."""
+        result = await _service(_uncertain_classifier()).classify_and_extract(
+            content=_lines(line_count) + "\n", filename="app.out", principal="u1"
+        )
+
+        assert result.extraction_method == method
+
+
+class TestTheEpochPolicyFollowsTheGuess:
+    """Retyping must not re-open the bug ``_NO_BARE_EPOCH_TYPES`` closes: a
+    config the rules could not confirm reading a large integer as a date."""
+
+    CONFIG = "logging:\n  file:\n    maxBytes: 2147483647\n    backupCount: 5\n"
+
+    @pytest.mark.asyncio
+    async def test_an_uncertain_config_guess_keeps_bare_epochs_off(self):
+        result = await _service(
+            _uncertain_classifier(guess=DataType.STRUCTURED_CONFIG)
+        ).classify_and_extract(content=self.CONFIG, filename="app.conf", principal="u1")
+
+        assert result.detailed_data_type == DataType.UNSTRUCTURED_TEXT
+        assert result.coverage_start_ts is None
+
+    @pytest.mark.asyncio
+    async def test_an_uncertain_log_guess_keeps_bare_epochs_on(self):
+        """The control: the same bytes under a stream-shaped guess do read the
+        integer, so the test above is not passing for want of a parse."""
+        result = await _service(
+            _uncertain_classifier(guess=DataType.LOGS_AND_ERRORS)
+        ).classify_and_extract(content=self.CONFIG, filename="app.conf", principal="u1")
+
+        assert result.coverage_start_ts is not None
+
+
+class TestAPageCaptureIsNeverCarded:
+    """Path 3 passes a shape-valid capture through at any length, so its type
+    never picks an extractor."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("line_count", [12, MIN_EXTRACTION_LINES + 50])
+    async def test_an_uncertain_shaped_capture_passes_through(self, line_count):
+        result = await _service(_uncertain_classifier()).classify_and_extract(
+            content=_capture(line_count),
+            filename=CAPTURE,
+            source_metadata=_CAPTURE_SOURCE,
+            principal="u1",
+        )
+
+        assert result.extraction_method == "page_capture_passthrough"
+        assert result.detailed_data_type == DataType.UNSTRUCTURED_TEXT
+
+    @pytest.mark.asyncio
+    async def test_a_long_capture_failing_its_shape_check_is_carded(self):
+        """A capture without the shape signals is extracted like any upload,
+        so at the cutoff its type matters again."""
+        result = await _service(_uncertain_classifier()).classify_and_extract(
+            content=_capture(MIN_EXTRACTION_LINES + 50, shaped=False),
+            filename=CAPTURE,
+            source_metadata=_CAPTURE_SOURCE,
+            principal="u1",
+        )
+
+        assert result.extraction_method == "classification_failed"
 
 
 @pytest.mark.skipif(
