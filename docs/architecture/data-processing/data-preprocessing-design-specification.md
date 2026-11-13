@@ -8,7 +8,7 @@
 
 ### v5.7 → v5.8 (Clarification only where the type picks the extractor, #2355)
 
-An upload whose type the classifier cannot decide is put to the user only where an extractor would read it. An upload under `MIN_EXTRACTION_LINES` (200) lines, or a shape-valid page capture, takes its passthrough typed `UNSTRUCTURED_TEXT`, with no card; the rest keep the cooperative clarification (§2.4, §2.5). Line counts no longer count a final newline as a line. New counter `faultmaven_preprocessing_uncertain_classification_total{outcome}`. §2.5 now defers to the owning document instead of restating it.
+An upload whose type the classifier cannot decide is put to the user only where an extractor would read it. An upload under `MIN_EXTRACTION_LINES` (200) lines, or a shape-valid page capture, takes its passthrough typed `UNSTRUCTURED_TEXT`, with no card; the rest keep the cooperative clarification (§2.4, §2.5). The small-file passthrough's line count no longer counts a final newline as a line. New counter `faultmaven_preprocessing_uncertain_classification_total{outcome}`. §2.5 now defers to the owning document instead of restating it.
 
 ### v5.6 → v5.7 (LogsAndErrorsExtractor — Multi-Format and Multi-Service Generalisation)
 
@@ -635,7 +635,7 @@ Best-effort throughout: extraction errors degrade to `None`; the field is Option
 
 Four behaviours that the §2.4 entry-point flow doesn't surface but are load-bearing in production. All have inline `ISS-…` rationale anchors in the source.
 
-**Page-capture shape validation (security gate).** Before dispatching `source_type=page_capture` content to its passthrough branch, `PreprocessingService` validates structural markers (`has_captured_at`, `has_h2_heading`) on the incoming markdown. A capture that fails the shape check is hard-rejected — it indicates either a misbehaving copilot build or a content-injection attempt. The `PAGE_CAPTURE_SHAPE_INVALID_TOTAL` Prometheus counter increments on each rejection so operators can alert on a sudden spike. Implementation: `preprocessing_service.py:444–499`.
+**Page-capture shape validation (security gate).** Before dispatching `source_type=page_capture` content to its passthrough branch, `PreprocessingService` validates structural markers (a `[captured_at:` preamble, a `## ` heading; `_CaptureShape`) on the incoming markdown. A capture that fails the shape check does not get the passthrough: it is logged and falls through to the paths any upload takes (the small-file passthrough, or its type's extractor), since it indicates either a misbehaving copilot build or a content-injection attempt. The `PAGE_CAPTURE_SHAPE_INVALID_TOTAL` Prometheus counter increments on each fall-through so operators can alert on a sudden spike. Implementation: `PreprocessingService.classify_and_extract`, Path 3.
 
 **Placeholder content preview.** When `classification_failed=True` short-circuits to a placeholder result (where an extractor would run, §2.4), `_build_content_preview()` attaches a truncated preview of the original content to the placeholder so the agent has something concrete to reason about on the same turn (instead of just the literal "classification uncertain" string). ISS-030. Implementation: `preprocessing_service.py:152–212`.
 

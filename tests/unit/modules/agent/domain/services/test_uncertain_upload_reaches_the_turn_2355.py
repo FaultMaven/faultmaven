@@ -22,13 +22,13 @@ from faultmaven.modules.agent.domain.services.investigation_service.attachments 
 from faultmaven.modules.agent.domain.services.investigation_service.clarification import (
     _build_classification_clarification,
 )
-from faultmaven.modules.preprocessing.classifier import DataClassifier
 from faultmaven.modules.preprocessing.preprocessing_service import (
     MIN_EXTRACTION_LINES,
     PreprocessingService,
 )
 from tests.case_builders import inquiry_case
 from tests.unit.modules.preprocessing.extraction_stubs import CrimeScene
+from tests.unit.modules.preprocessing.uncertain_classifier import uncertain_classifier
 
 pytestmark = pytest.mark.unit
 
@@ -41,20 +41,9 @@ class _Storage:
 
 
 def _uncertain_service() -> PreprocessingService:
-    real = DataClassifier()
-
-    class _Uncertain(DataClassifier):
-        def classify(self, *args, **kwargs):
-            result = real.classify(*args, **kwargs)
-            result.classification_failed = True
-            result.confidence = 0.40
-            result.suggested_types = [
-                DataType.LOGS_AND_ERRORS,
-                DataType.UNSTRUCTURED_TEXT,
-            ]
-            return result
-
-    return PreprocessingService(classifier=_Uncertain(), logs_extractor=CrimeScene())
+    return PreprocessingService(
+        classifier=uncertain_classifier(), logs_extractor=CrimeScene()
+    )
 
 
 async def _preprocess(line_count: int):

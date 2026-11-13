@@ -32,6 +32,7 @@ from tests.unit.modules.preprocessing.extraction_stubs import CrimeScene
 from tests.unit.modules.preprocessing.test_classification_failed_preview import (
     AMBIGUOUS_CSV,
 )
+from tests.unit.modules.preprocessing.uncertain_classifier import uncertain_classifier
 
 pytestmark = pytest.mark.unit
 
@@ -43,28 +44,6 @@ def _service(classifier: DataClassifier | None = None) -> PreprocessingService:
         classifier=classifier or DataClassifier(),
         logs_extractor=CrimeScene(),
     )
-
-
-def _uncertain_classifier(guess: DataType | None = None) -> DataClassifier:
-    """The real classifier, forced below the threshold, optionally with a
-    given guess. Forced rather than coaxed so a test's outcome does not hang
-    on which content the rules happen to be unsure about."""
-    real = DataClassifier()
-
-    class _Uncertain(DataClassifier):
-        def classify(self, *args, **kwargs):
-            result = real.classify(*args, **kwargs)
-            result.classification_failed = True
-            result.confidence = 0.40
-            result.suggested_types = [
-                DataType.LOGS_AND_ERRORS,
-                DataType.UNSTRUCTURED_TEXT,
-            ]
-            if guess is not None:
-                result.data_type = guess
-            return result
-
-    return _Uncertain()
 
 
 def _lines(n: int) -> str:
@@ -106,7 +85,7 @@ class TestShortUncertainUploadPassesThrough:
         """The type the classifier could not stand behind is dropped, not
         passed on as the upload's type."""
         result = await _service(
-            _uncertain_classifier(guess=DataType.STRUCTURED_CONFIG)
+            uncertain_classifier(guess=DataType.STRUCTURED_CONFIG)
         ).classify_and_extract(content=_lines(12), filename="notes.txt", principal="u1")
 
         assert result.extraction_method == "raw_passthrough"
@@ -117,7 +96,7 @@ class TestShortUncertainUploadPassesThrough:
     @pytest.mark.asyncio
     async def test_a_short_paste_is_not_held_behind_a_placeholder(self):
         content = _lines(30)
-        result = await _service(_uncertain_classifier()).classify_and_extract(
+        result = await _service(uncertain_classifier()).classify_and_extract(
             content=content, filename=MINTED_PASTE, principal="u1"
         )
 
@@ -135,7 +114,7 @@ class TestTheCutoffIsTheExtractionCutoff:
         ],
     )
     async def test_the_card_starts_where_extraction_starts(self, line_count, method):
-        result = await _service(_uncertain_classifier()).classify_and_extract(
+        result = await _service(uncertain_classifier()).classify_and_extract(
             content=_lines(line_count), filename=MINTED_PASTE, principal="u1"
         )
 
@@ -144,7 +123,7 @@ class TestTheCutoffIsTheExtractionCutoff:
     @pytest.mark.asyncio
     async def test_a_long_uncertain_upload_keeps_its_guess_and_placeholder(self):
         result = await _service(
-            _uncertain_classifier(guess=DataType.METRICS_AND_PERFORMANCE)
+            uncertain_classifier(guess=DataType.METRICS_AND_PERFORMANCE)
         ).classify_and_extract(
             content=_lines(MIN_EXTRACTION_LINES + 50),
             filename="export.csv",
@@ -166,6 +145,15 @@ def _capture(n: int, *, shaped: bool = True) -> str:
     return head + "\n".join(f"row {i}: Running" for i in range(body_lines))
 
 
+def _shape_invalid_count() -> float:
+    if not evidence_metrics.PROMETHEUS_AVAILABLE:
+        return 0.0
+    from prometheus_client import REGISTRY
+
+    value = REGISTRY.get_sample_value("faultmaven_page_capture_shape_invalid_total")
+    return 0.0 if value is None else value
+
+
 class TestLinesAreCountedAsAnEditorCountsThem:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -178,7 +166,7 @@ class TestLinesAreCountedAsAnEditorCountsThem:
     async def test_a_final_newline_is_not_a_line(self, line_count, method):
         """A file saved by an editor ends in a newline; that ends its last
         line, so a 199-line file is still under the cutoff."""
-        result = await _service(_uncertain_classifier()).classify_and_extract(
+        result = await _service(uncertain_classifier()).classify_and_extract(
             content=_lines(line_count) + "\n", filename="app.out", principal="u1"
         )
 
@@ -194,7 +182,7 @@ class TestTheEpochPolicyFollowsTheGuess:
     @pytest.mark.asyncio
     async def test_an_uncertain_config_guess_keeps_bare_epochs_off(self):
         result = await _service(
-            _uncertain_classifier(guess=DataType.STRUCTURED_CONFIG)
+            uncertain_classifier(guess=DataType.STRUCTURED_CONFIG)
         ).classify_and_extract(content=self.CONFIG, filename="app.conf", principal="u1")
 
         assert result.detailed_data_type == DataType.UNSTRUCTURED_TEXT
@@ -205,7 +193,7 @@ class TestTheEpochPolicyFollowsTheGuess:
         """The control: the same bytes under a stream-shaped guess do read the
         integer, so the test above is not passing for want of a parse."""
         result = await _service(
-            _uncertain_classifier(guess=DataType.LOGS_AND_ERRORS)
+            uncertain_classifier(guess=DataType.LOGS_AND_ERRORS)
         ).classify_and_extract(content=self.CONFIG, filename="app.conf", principal="u1")
 
         assert result.coverage_start_ts is not None
@@ -218,7 +206,7 @@ class TestAPageCaptureIsNeverCarded:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("line_count", [12, MIN_EXTRACTION_LINES + 50])
     async def test_an_uncertain_shaped_capture_passes_through(self, line_count):
-        result = await _service(_uncertain_classifier()).classify_and_extract(
+        result = await _service(uncertain_classifier()).classify_and_extract(
             content=_capture(line_count),
             filename=CAPTURE,
             source_metadata=_CAPTURE_SOURCE,
@@ -229,10 +217,30 @@ class TestAPageCaptureIsNeverCarded:
         assert result.detailed_data_type == DataType.UNSTRUCTURED_TEXT
 
     @pytest.mark.asyncio
+    async def test_a_short_capture_failing_its_shape_check_takes_the_small_file_path(
+        self,
+    ):
+        """A capture without the shape signals keeps Path 3's fall-through
+        (warning and counter) and then goes the way any short upload goes."""
+        before = _shape_invalid_count()
+
+        result = await _service(uncertain_classifier()).classify_and_extract(
+            content=_capture(12, shaped=False),
+            filename=CAPTURE,
+            source_metadata=_CAPTURE_SOURCE,
+            principal="u1",
+        )
+
+        assert result.extraction_method == "raw_passthrough"
+        assert result.detailed_data_type == DataType.UNSTRUCTURED_TEXT
+        if evidence_metrics.PROMETHEUS_AVAILABLE:
+            assert _shape_invalid_count() == before + 1
+
+    @pytest.mark.asyncio
     async def test_a_long_capture_failing_its_shape_check_is_carded(self):
         """A capture without the shape signals is extracted like any upload,
         so at the cutoff its type matters again."""
-        result = await _service(_uncertain_classifier()).classify_and_extract(
+        result = await _service(uncertain_classifier()).classify_and_extract(
             content=_capture(MIN_EXTRACTION_LINES + 50, shaped=False),
             filename=CAPTURE,
             source_metadata=_CAPTURE_SOURCE,
@@ -272,7 +280,7 @@ class TestEveryUncertainVerdictIsCounted:
     async def test_each_outcome_counts_once(self, line_count, outcome, other):
         before, before_other = self._count(outcome), self._count(other)
 
-        await _service(_uncertain_classifier()).classify_and_extract(
+        await _service(uncertain_classifier()).classify_and_extract(
             content=_lines(line_count), filename=MINTED_PASTE, principal="u1"
         )
 
