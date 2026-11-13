@@ -204,7 +204,7 @@ class RedisTokenRevocationStore(SequentialRevocationState, ITokenRevocationStore
         key = self._make_key(jti)
         return await self.redis.exists(key) > 0
 
-    async def claim_token(self, jti: str, ttl: int) -> bool:
+    async def claim_token(self, jti: str, ttl: int) -> RefreshClaim:
         key = self._make_key(jti)
         # A per-call nonce, read back on nil (#2764). redis-py retries a command
         # whose reply was lost, so an applied SET NX can be resent and answer

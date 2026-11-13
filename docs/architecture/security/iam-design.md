@@ -309,13 +309,15 @@ caller can reach: it keeps store memory bounded rather than set by a claim any
 caller supplies. `AuthService.revoke_token`, which logout uses, applies the same
 rule to the `exp` the authenticated request path has already verified.
 
-Which ceiling applies is decided by the token's **own verified `type`**, never by
-which revoke method the request routed to. `token_type_hint` is optional in RFC
-7009 and may be wrong, and the endpoint routes an absent hint to the access
-path — so a genuine refresh token arrives there as a matter of course. Reading
-the ceiling from the route would truncate its entry to the access lifetime,
+There is one ceiling, the schema bound on token lifetime
+(`max_revocation_entry_ttl()`), and `revocation_entry_ttl` applies it to every
+jti writer, whatever the token's `type` and whichever revoke method the request
+routed to. `token_type_hint` is optional in RFC 7009 and may be wrong, and the
+endpoint routes an absent hint to the access path, so a genuine refresh token
+arrives there as a matter of course. A ceiling read from the route or from a
+configured per-type lifetime would truncate its entry to the access lifetime,
 expiring the revocation days before the token it revokes while the endpoint had
-already answered 200.
+already answered 200; the entry's length comes from the token's own `exp`.
 
 The OAuth rate limiter guarding `/revoke` remains in-memory and per-process, so
 its per-IP ceiling scales with replica count.
