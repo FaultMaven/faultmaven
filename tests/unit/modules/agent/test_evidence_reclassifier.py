@@ -292,6 +292,7 @@ class TestHappyPath:
         # Preprocessing was called with user_override + previous metadata.
         kwargs = preprocessing_service.reclassify_evidence.call_args.kwargs
         assert kwargs["user_override"] == DataType.LOGS_AND_ERRORS
+        assert kwargs["principal"] == "user_owner"  # the caller (#2645)
 
     @pytest.mark.asyncio
     async def test_metadata_contract_suppresses_low_confidence_marker(
@@ -416,6 +417,7 @@ class TestTheTerminalRefusalIsOneText:
                 case=case,
                 file_id="file_aaaaaaaaaaaa",
                 data_type_value="logs_and_errors",
+                user_id="u1",
             )
         assert str(exc.value) == _FILES_REFUSAL
         assert exc.value.details == {"case_state": CaseState.CLOSED.value}

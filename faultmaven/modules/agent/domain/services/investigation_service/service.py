@@ -1152,6 +1152,7 @@ class InvestigationService:
                     file_id=intent.file_id if intent else None,
                     data_type_value=intent.data_type if intent else None,
                     attachments=attachment_metadata or None,
+                    user_id=user_id,
                 )
             else:
                 # Dispatch table claims SERVICE but there's no handler.

@@ -177,7 +177,7 @@ def _preprocessing(*, hashed: bool = True):
     tells different files apart and matches identical ones. ``hashed=False``
     models an extractor that produced no hash."""
 
-    async def _classify(content, filename=None, source_metadata=None):
+    async def _classify(content, filename=None, source_metadata=None, *, principal):
         result = make_preprocessing_result()
         result.content_hash = (
             hashlib.sha256(content.encode("utf-8")).hexdigest() if hashed else ""

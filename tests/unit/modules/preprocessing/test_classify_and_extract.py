@@ -42,7 +42,7 @@ class TestClassifyAndExtract:
     async def test_basic_success(self, service):
         """classify_and_extract classifies and extracts pasted text."""
         content = _log_content()
-        result = await service.classify_and_extract(content=content)
+        result = await service.classify_and_extract(content=content, principal="u1")
 
         assert isinstance(result, PreprocessingResult)
         assert result.data_type == UnifiedDataType.LOGS
@@ -56,7 +56,7 @@ class TestClassifyAndExtract:
     @pytest.mark.asyncio
     async def test_uses_synthetic_filename(self, service, mock_classifier):
         """Default filename is 'pasted_content.txt'."""
-        await service.classify_and_extract(content="some data")
+        await service.classify_and_extract(content="some data", principal="u1")
         mock_classifier.classify.assert_called_once()
         call_args = mock_classifier.classify.call_args
         assert call_args[0][0] == "pasted_content.txt"
@@ -65,7 +65,7 @@ class TestClassifyAndExtract:
     async def test_custom_filename(self, service, mock_classifier):
         """Custom filename is passed to classifier."""
         await service.classify_and_extract(
-            content="some data", filename="user_paste.log"
+            content="some data", filename="user_paste.log", principal="u1"
         )
         call_args = mock_classifier.classify.call_args
         assert call_args[0][0] == "user_paste.log"
@@ -74,7 +74,7 @@ class TestClassifyAndExtract:
     async def test_content_hash_computed_from_text(self, service):
         """Content hash is SHA-256 of the text input, not summary."""
         content = "specific content for hash test"
-        result = await service.classify_and_extract(content=content)
+        result = await service.classify_and_extract(content=content, principal="u1")
 
         import hashlib
 
@@ -85,7 +85,7 @@ class TestClassifyAndExtract:
     async def test_content_size_from_text(self, service):
         """content_size_bytes reflects the original text size."""
         content = "a" * 1000
-        result = await service.classify_and_extract(content=content)
+        result = await service.classify_and_extract(content=content, principal="u1")
         assert result.content_size_bytes == len(content.encode("utf-8"))
 
     @pytest.mark.asyncio
@@ -93,14 +93,16 @@ class TestClassifyAndExtract:
         """Falls back to direct truncation when no extractor matches."""
         # Set classifier to return a type with no registered extractor
         mock_classifier.classify.return_value.data_type = DataType.VISUAL_EVIDENCE
-        result = await service.classify_and_extract(content=_log_content())
+        result = await service.classify_and_extract(
+            content=_log_content(), principal="u1"
+        )
 
         assert result.extraction_method == "direct"
 
     @pytest.mark.asyncio
     async def test_summary_generated(self, service):
         """Summary is generated from structural index."""
-        result = await service.classify_and_extract(content="some data")
+        result = await service.classify_and_extract(content="some data", principal="u1")
         assert result.summary is not None
         assert len(result.summary) > 0
 
@@ -108,7 +110,9 @@ class TestClassifyAndExtract:
     async def test_small_file_passthrough_skips_extractor(self, service, spawned):
         """Files below MIN_EXTRACTION_LINES skip extraction and use raw content."""
         small_content = "\n".join(f"2024-01-01 INFO line {i}" for i in range(50))
-        result = await service.classify_and_extract(content=small_content)
+        result = await service.classify_and_extract(
+            content=small_content, principal="u1"
+        )
 
         assert result.extraction_method == "raw_passthrough"
         assert spawned == [], "an extractor ran"
@@ -116,7 +120,9 @@ class TestClassifyAndExtract:
     @pytest.mark.asyncio
     async def test_file_at_threshold_runs_extractor(self, service):
         """Files at or above MIN_EXTRACTION_LINES still go through extraction."""
-        result = await service.classify_and_extract(content=_log_content(250))
+        result = await service.classify_and_extract(
+            content=_log_content(250), principal="u1"
+        )
 
         assert result.extraction_method == "crime_scene"
         assert marked(CrimeScene) in result.structural_index
@@ -147,7 +153,7 @@ class TestEmptyContentGracefulDegradation:
         self, real_classifier_service, spawned
     ):
         result = await real_classifier_service.classify_and_extract(
-            content="", filename="empty.bin"
+            content="", filename="empty.bin", principal="u1"
         )
 
         # Pipeline must produce a result, not raise.
@@ -162,7 +168,7 @@ class TestEmptyContentGracefulDegradation:
         self, real_classifier_service
     ):
         result = await real_classifier_service.classify_and_extract(
-            content="", filename="server.log"
+            content="", filename="server.log", principal="u1"
         )
 
         # The structural_index is what surfaces to the agent and (via the
@@ -179,7 +185,9 @@ class TestEmptyContentGracefulDegradation:
         """classification_failed=True triggers a frontend clarification
         modal. For an empty file there's nothing to clarify, so the flag
         must stay False."""
-        result = await real_classifier_service.classify_and_extract(content="")
+        result = await real_classifier_service.classify_and_extract(
+            content="", principal="u1"
+        )
 
         meta = result.extraction_metadata or {}
         evidence_meta = meta.get("evidence_metadata", {})
@@ -193,7 +201,7 @@ class TestEmptyContentGracefulDegradation:
         self, real_classifier_service
     ):
         result = await real_classifier_service.classify_and_extract(
-            content="   \n\t   \n", filename="blank.txt"
+            content="   \n\t   \n", filename="blank.txt", principal="u1"
         )
 
         assert result.detailed_data_type == DataType.UNANALYZABLE

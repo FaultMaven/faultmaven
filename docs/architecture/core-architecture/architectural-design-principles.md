@@ -1,7 +1,7 @@
 # FaultMaven Architectural Design Principles
 
-**Version**: 2.12
-**Date**: 2026-11-12
+**Version**: 2.14
+**Date**: 2026-11-13
 **Status**: Active
 **Related Documents**:
 
@@ -1037,6 +1037,8 @@ One check per clause. This table's Status column is the principle's only status 
 
 The mechanism is one shared worker, `faultmaven/infrastructure/worker_process.py`: a job runs in a spawned process of its own (`python -m` its worker module, which imports what the job needs and little else), killed and reaped at its deadline, a cancellation and any other end included, before its slot frees. The worker bounds itself before it touches the input: it dies with its parent, volunteers for the OOM killer, and sets its CPU-time and address-space limits, and the parent reads its output under a limit. A phased job gives each step a bound of its own (the start, the request, the work, the result), so the work's deadline counts the work alone. Each application declares its deadlines and limits. Built for **document preparation** (#2622): Stages 0-5 of a conversion, one worker per job under two slots, killed at the 120 s deadline (`document_preprocessor.py`, `preparation_worker.py`). Built for **Evidence Tier 1** (#2637): one phased worker per extraction under `max(2, int(index_cores()))` slots, killed when `extract` runs past its 2 s deadline; the wait for a slot, the start and each transfer have declared bounds of their own (`preprocessing_service.py`, `extraction_worker.py`). The runbook validator gate is next ([ruling on #2596](https://github.com/FaultMaven/faultmaven/issues/2596#issuecomment-6716225975)).
 
+**Admission** ([ruling on #2661](https://github.com/FaultMaven/faultmaven/issues/2661#issuecomment-6739425246), #2645). A principal that holds no slot of a worker takes one while one is free; a principal that already holds a slot takes another only while at least two are free, so a slot stays free for a newcomer. A freed slot goes to the waiting principal holding the fewest slots, earliest first among equals, if this rule admits it. A lone principal so uses N−1 of N slots. The principal is the user who asked, not the enterprise: the wait being shared out is people's, and one user's batch would otherwise hold every slot from their teammates. The residual: two newcomers arriving at once can leave one waiting while a third principal holds two slots. `FairSlots` in `worker_process.py` applies it to document preparation and Evidence Tier 1; the runbook gate adopts it when it becomes a worker (#2661, 3b).
+
 ### Enforcement
 
 | Check that fails on the next violation | Status |
@@ -1118,6 +1120,7 @@ The mechanism is one shared worker, `faultmaven/infrastructure/worker_process.py
 | 2.11 | 2026-11-12 | P13.4 states the ruled pip mechanism: every pip's vendored bundle linked to the OS bundle, no pip wheel holding a banned root, an image check that judges every pip bundle whatever its version or `legacy-certs`; with the reinstall, `--user`, later-venv and operator `REQUESTS_CA_BUNDLE`/`CURL_CA_BUNDLE` limit ([ruling on #2756](https://github.com/FaultMaven/faultmaven/issues/2756); S1.3a, #2758). To be built by S1.3b (#2759). |
 | 2.12 | 2026-11-12 | P13.4: the pip mechanism built in the core image (S1.3b, [#2759](https://github.com/FaultMaven/faultmaven/issues/2759)): every pip's vendored bundle linked to the OS bundle, the ensurepip pip wheel removed, the image check judging every pip bundle whatever its version, and `pip --isolated` and a pip without `PIP_CERT` measured from pip's own session at the image build. |
 | 2.13 | 2026-11-13 | P7 states the metrics switch and the label rules ([#2747](https://github.com/FaultMaven/faultmaven/issues/2747), stage D of [#2745](https://github.com/FaultMaven/faultmaven/issues/2745)): one switch, `ENABLE_METRICS`, read by the shim; every label bounded by code or by operator configuration. §1's presets no longer list a metrics variable. |
+| 2.14 | 2026-11-13 | P14 states the admission rule for its workers' slots ([ruling on #2661](https://github.com/FaultMaven/faultmaven/issues/2661#issuecomment-6739425246)), applied to document preparation and Evidence Tier 1 ([#2645](https://github.com/FaultMaven/faultmaven/issues/2645)). |
 
 ### Key Changes Across Versions
 
@@ -1138,4 +1141,4 @@ The mechanism is one shared worker, `faultmaven/infrastructure/worker_process.py
 
 **Document Owner**: Engineering Leadership
 **Status**: Active
-**Last Updated**: 2026-11-11
+**Last Updated**: 2026-11-13

@@ -66,7 +66,9 @@ class _PreprocessingDouble:
     """Returns a real result object — the row is built by assigning these onto
     a Pydantic ``UploadedFile``, so a Mock would not survive validation."""
 
-    async def classify_and_extract(self, content, filename, source_metadata=None):
+    async def classify_and_extract(
+        self, content, filename, source_metadata=None, *, principal
+    ):
         return SimpleNamespace(
             summary="Pod restart loop.",
             structural_index="ERROR x 42 between 10:00 and 10:05",

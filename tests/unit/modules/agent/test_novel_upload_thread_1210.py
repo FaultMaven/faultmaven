@@ -83,7 +83,9 @@ class _PreprocessingDouble:
     def __init__(self, content_hash: Optional[str] = None):
         self.content_hash = content_hash
 
-    async def classify_and_extract(self, content, filename, source_metadata=None):
+    async def classify_and_extract(
+        self, content, filename, source_metadata=None, *, principal
+    ):
         content_hash = (
             self.content_hash
             if self.content_hash is not None

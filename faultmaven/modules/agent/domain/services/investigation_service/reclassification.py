@@ -366,6 +366,8 @@ async def _handle_file_reclassification(
     file_id: Optional[str],
     data_type_value: Optional[str],
     attachments: Optional[List[Dict[str, Any]]] = None,
+    *,
+    user_id: str,
 ) -> Dict[str, Any]:
     """Resolve a classification_failed upload by reclassifying its file.
 
@@ -439,7 +441,7 @@ async def _handle_file_reclassification(
     # NotFoundError from storage (blob missing) passes through process_turn
     # unwrapped → 404, never a 5xx on a clicked suggestion.
     preprocessing_result, new_source_type = await _reextract_under_override(
-        file_storage_service, preprocessing_service, file_meta, data_type
+        file_storage_service, preprocessing_service, file_meta, data_type, user_id
     )
     # Folded for the metric label, whose ``to_type`` is the 6-valued
     # ``preprocessing_result.data_type``: the row may hold either
@@ -546,6 +548,7 @@ async def _reextract_under_override(
     preprocessing_service,
     file_meta: "UploadedFile",
     data_type: DataType,
+    user_id: str,
     previous_metadata: Optional[Dict[str, Any]] = None,
 ):
     """Retrieve the stored raw bytes behind *file_meta* and re-run
@@ -592,6 +595,7 @@ async def _reextract_under_override(
         filename=filename,
         user_override=data_type,
         previous_metadata=previous_metadata,
+        principal=user_id,
     )
     return preprocessing_result, _infer_source_type(
         preprocessing_result.detailed_data_type
@@ -706,7 +710,7 @@ class EvidenceReclassifier:
         return evidence_index
 
     async def apply_reclassification(
-        self, case: "Case", evidence_index: int, data_type: DataType
+        self, case: "Case", evidence_index: int, data_type: DataType, user_id: str
     ) -> AppliedReclassification:
         """Apply the reclassification IN PLACE on *case* and persist nothing.
 
@@ -740,6 +744,7 @@ class EvidenceReclassifier:
             self.preprocessing_service,
             file_meta,
             data_type,
+            user_id,
             previous_metadata=evidence.metadata,
         )
 
@@ -911,7 +916,9 @@ class EvidenceReclassifier:
         # does), which a turn may be holding, and a save that fails must leave
         # the store as it was. The copy is what is saved.
         working = case.model_copy(deep=True)
-        applied = await self.apply_reclassification(working, evidence_index, data_type)
+        applied = await self.apply_reclassification(
+            working, evidence_index, data_type, user_id
+        )
         await self.repository.save(working)
 
         # ``api`` counts a COMMITTED reclassification: the save has run.
@@ -950,7 +957,9 @@ class EvidenceReclassifier:
         evidence_index = self._require_reclassifiable(
             case, evidence_id, user_id, reads=True
         )
-        applied = await self.apply_reclassification(case, evidence_index, data_type)
+        applied = await self.apply_reclassification(
+            case, evidence_index, data_type, user_id
+        )
 
         # ``agent_tool`` counts an APPLIED reclassification: the write is on
         # the turn's aggregate and the turn's own save commits it, so a turn

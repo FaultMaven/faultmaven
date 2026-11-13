@@ -171,7 +171,7 @@ async def test_a_refused_page_costs_that_page_and_the_limit_reaches_the_worker(
 
     with caplog.at_level(logging.WARNING), apply_configuration(**_LOW_BUDGET):
         result = await DocumentPreprocessor().preprocess(
-            path, "application/pdf", conversion_id="conv_test"
+            path, "application/pdf", conversion_id="conv_test", principal="u1"
         )
 
     assert not result.is_rejected, (result.error_code, result.rejection_reason)
@@ -204,7 +204,7 @@ async def test_a_limit_refusal_is_document_too_complex(
 
     with caplog.at_level(logging.WARNING), apply_configuration(**limit):
         result = await DocumentPreprocessor().preprocess(
-            path, "application/pdf", conversion_id="conv_test"
+            path, "application/pdf", conversion_id="conv_test", principal="u1"
         )
 
     assert result.is_rejected
@@ -230,7 +230,7 @@ async def test_refused_pages_that_leave_too_little_are_document_too_complex(
 
     with apply_configuration(**_LOW_BUDGET):
         result = await DocumentPreprocessor().preprocess(
-            path, "application/pdf", conversion_id="conv_test"
+            path, "application/pdf", conversion_id="conv_test", principal="u1"
         )
 
     assert result.error_code == ConversionErrorCode.DOCUMENT_TOO_COMPLEX
@@ -242,7 +242,7 @@ async def test_the_skipped_page_list_names_ten_and_counts_the_rest(tmp_path):
 
     with apply_configuration(**_LOW_BUDGET):
         result = await DocumentPreprocessor().preprocess(
-            path, "application/pdf", conversion_id="conv_test"
+            path, "application/pdf", conversion_id="conv_test", principal="u1"
         )
 
     assert not result.is_rejected, result.rejection_reason
@@ -288,7 +288,10 @@ async def test_corruption_pypdf_reports_as_a_limit_stays_file_corrupt(
     files: FILE_CORRUPT for the whole document, as before #2153."""
     with caplog.at_level(logging.WARNING):
         result = await DocumentPreprocessor().preprocess(
-            build(tmp_path), "application/pdf", conversion_id="conv_test"
+            build(tmp_path),
+            "application/pdf",
+            conversion_id="conv_test",
+            principal="u1",
         )
 
     assert result.error_code == ConversionErrorCode.FILE_CORRUPT
@@ -312,7 +315,7 @@ async def test_the_other_refusals_keep_their_codes_in_the_worker(
     path.write_bytes(body)
 
     result = await DocumentPreprocessor().preprocess(
-        path, content_type, conversion_id="conv_test"
+        path, content_type, conversion_id="conv_test", principal="u1"
     )
 
     assert result.is_rejected
@@ -393,7 +396,7 @@ def on_entered(caplog):
 
 async def _preprocess(path: Path, content_type: str = "text/plain"):
     return await DocumentPreprocessor().preprocess(
-        path, content_type, conversion_id="conv_test"
+        path, content_type, conversion_id="conv_test", principal="u1"
     )
 
 
@@ -533,6 +536,43 @@ async def test_a_request_with_no_free_slot_is_busy_and_starts_no_worker(
     assert result.error_code == ConversionErrorCode.CONVERSION_BUSY
     assert "busy converting other documents" in result.rejection_reason
     assert spawned == []
+
+
+async def test_another_principal_holding_every_slot_leaves_this_one_busy(
+    tmp_path, monkeypatch, spawned, on_entered
+):
+    """The admission rule (#2645) reserves no slot that does not exist: with
+    one slot held by A, B's request waits its bound and is ``CONVERSION_BUSY``,
+    and no worker starts for it."""
+    _stage(monkeypatch, "never_return")
+    _slots(monkeypatch, 1)
+    monkeypatch.setattr(dp, "EXTRACTION_TIMEOUT_SECONDS", 60)
+    loop, entered = asyncio.get_running_loop(), asyncio.Event()
+    on_entered(lambda: loop.call_soon_threadsafe(entered.set))
+    holder = asyncio.create_task(
+        DocumentPreprocessor().preprocess(
+            _text_file(tmp_path, "a.txt"),
+            "text/plain",
+            conversion_id="conv_a",
+            principal="a",
+        )
+    )
+    await asyncio.wait_for(entered.wait(), 60)
+    monkeypatch.setattr(dp, "EXTRACTION_TIMEOUT_SECONDS", 0.2)  # B's slot wait
+
+    result = await DocumentPreprocessor().preprocess(
+        _text_file(tmp_path, "b.txt"),
+        "text/plain",
+        conversion_id="conv_b",
+        principal="b",
+    )
+
+    assert result.error_code == ConversionErrorCode.CONVERSION_BUSY
+    assert len(spawned) == 1, "a worker started for B"
+    holder.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await holder
+    assert not dp._preparation_slots().locked()
 
 
 def test_post_convert_answers_conversion_busy_with_retry_after(tmp_path, monkeypatch):
